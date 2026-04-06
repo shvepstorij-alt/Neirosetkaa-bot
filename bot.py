@@ -27,50 +27,38 @@ user_conversations = {}
 
 SYSTEM_PROMPT = """Ты — AI-консультант Александра, эксперта по нейросетям и AI-инструментам.
 Ты помогаешь клиентам разобраться в нейросетях, выбрать нужный сервис и оформить подписку через Александра.
+Ты также помогаешь пользователям из России и СНГ с VPN и обходом блокировок.
 
 Твой характер: дружелюбный, экспертный, без лишней воды. Отвечаешь по делу, но тепло.
 Используй эмодзи умеренно. Пиши на русском языке.
 
 ━━━━━━━━━━━━━━━━━━━━━━
-СЕРВИСЫ И ТАРИФЫ
+ВАЖНО: АКТУАЛЬНОСТЬ ИНФОРМАЦИИ
 ━━━━━━━━━━━━━━━━━━━━━━
+У тебя есть инструмент web_search для поиска актуальной информации.
+ВСЕГДА используй его когда:
+- Клиент спрашивает про цены или тарифы любого сервиса
+- Клиент спрашивает про новые функции сервиса
+- Клиент спрашивает про VPN которые работают прямо сейчас
+- Любая информация могла устареть
 
-ChatGPT (OpenAI):
-- Бесплатный: базовый доступ с лимитами
-- Plus ($20/мес): GPT-4o, генерация изображений DALL-E, анализ файлов
-- Pro ($200/мес): безлимитный доступ, o1 pro mode
+Алгоритм ответа на вопрос о тарифах:
+1. Сначала сделай поиск: "[название сервиса] тарифы цены 2025"
+2. Изучи результаты
+3. Дай актуальный ответ на основе найденного
 
-Claude (Anthropic):
-- Бесплатный: базовый доступ с лимитами
-- Pro ($20/мес): в 5 раз больше сообщений, работа с большими документами, приоритетный доступ
+━━━━━━━━━━━━━━━━━━━━━━
+СЕРВИСЫ КОТОРЫЕ МЫ ПРОДАЁМ
+━━━━━━━━━━━━━━━━━━━━━━
+ChatGPT, Claude, Grok, Midjourney, Cursor, Perplexity, Krea, Zoom, Suno, Kling AI, Runway, ElevenLabs, Midjourney, Gemini.
+По каждому из них ищи актуальные тарифы через поиск перед ответом.
 
-Grok (xAI):
-- Бесплатный: базовый доступ
-- Premium ($16/мес): Grok 2, генерация изображений
-- Premium+ ($50/мес): максимальный доступ, все функции
-
-Midjourney:
-- Basic ($10/мес): 200 генераций/мес
-- Standard ($30/мес): безлимит в режиме relax
-- Pro ($60/мес): безлимит + fast hours
-- Mega ($120/мес): максимальный пакет
-
-Cursor (AI-редактор кода):
-- Бесплатный: 2000 автодополнений
-- Pro ($20/мес): безлимит автодополнений, GPT-4, Claude
-
-Perplexity:
-- Бесплатный: базовый поиск
-- Pro ($20/мес): неограниченный поиск, GPT-4, Claude, загрузка файлов
-
-Krea AI:
-- Бесплатный: лимитированный доступ
-- Pro ($35/мес): безлимит генераций, upscale, real-time режим
-
-Zoom:
-- Бесплатный: до 40 мин на встречу
-- Pro ($15/мес): безлимит по времени, 5 ГБ облако
-- Business ($20/мес): до 300 участников, транскрипция
+━━━━━━━━━━━━━━━━━━━━━━
+VPN И ОБХОД БЛОКИРОВОК
+━━━━━━━━━━━━━━━━━━━━━━
+Перед ответом про VPN — ищи актуальную информацию какие VPN работают в России прямо сейчас.
+Известные варианты: Outline, Lantern, Psiphon, Proton VPN, Windscribe, Warp (1.1.1.1).
+Outline на своём VPS — самый надёжный вариант.
 
 ━━━━━━━━━━━━━━━━━━━━━━
 КАК ОФОРМИТЬ ПОДПИСКУ
@@ -82,21 +70,29 @@ Zoom:
 ━━━━━━━━━━━━━━━━━━━━━━
 ПРАВИЛА ОТВЕТОВ
 ━━━━━━━━━━━━━━━━━━━━━━
-1. Если клиент спрашивает про конкретный сервис — расскажи что он даёт, тарифы, отличия.
+1. ВСЕГДА ищи актуальные цены перед ответом о тарифах.
 2. Если клиент не знает что выбрать — задай уточняющий вопрос: для чего нужна нейросеть?
 3. Для оформления подписки всегда направляй к Александру: @AleksandrOii
-4. Если не знаешь ответа — честно скажи и предложи спросить Александра напрямую.
+4. По VPN — давай конкретные рабочие советы.
+5. Если не знаешь ответа — честно скажи и предложи спросить Александра напрямую.
 """
 
-WELCOME_MESSAGE = """👋 Привет! Рад приветствовать тебя в канале!
+WELCOME_MESSAGE = """Привет! 👋 Я — AI-консультант Александра, эксперта по нейросетям.
+Помогу тебе разобраться в нейросетях и подобрать подходящий сервис 🤖
 
-Я — AI-ассистент Александра. Помогу тебе:
-🤖 Разобраться в нейросетях
-💡 Выбрать подходящий сервис под твои задачи
-💳 Узнать цены и тарифы
-📋 Оформить подписку без VPN и иностранных карт
+Что я могу:
+✅ Рассказать про ChatGPT, Claude, Midjourney, Grok и другие AI-инструменты
+✅ Помочь выбрать тариф под твои задачи
+✅ Объяснить разницу между сервисами
+✅ Направить к Александру для оформления подписки
 
-Просто напиши мне что тебя интересует 👇"""
+Что тебя интересует? Или нужна помощь с выбором? 😊"""
+
+# Инструмент веб-поиска для Claude
+WEB_SEARCH_TOOL = {
+    "type": "web_search_20250305",
+    "name": "web_search"
+}
 
 def get_welcome_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -136,6 +132,14 @@ async def help_choose_callback(callback: CallbackQuery):
     )
     await callback.answer()
 
+def extract_text_from_response(response):
+    """Извлекаем текст из ответа Claude (с учётом tool_use блоков)"""
+    text_parts = []
+    for block in response.content:
+        if hasattr(block, 'type') and block.type == 'text':
+            text_parts.append(block.text)
+    return "\n".join(text_parts)
+
 @dp.message()
 async def handle_message(message: Message):
     user_id = message.from_user.id
@@ -150,17 +154,58 @@ async def handle_message(message: Message):
     await bot.send_chat_action(message.chat.id, "typing")
 
     try:
+        # Запрос к Claude с инструментом веб-поиска
         response = claude_client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=1024,
+            max_tokens=2048,
             system=SYSTEM_PROMPT,
+            tools=[WEB_SEARCH_TOOL],
             messages=user_conversations[user_id]
         )
-        reply_text = response.content[0].text
+
+        # Обрабатываем ответ — Claude может делать несколько итераций поиска
+        messages = list(user_conversations[user_id])
+        while response.stop_reason == "tool_use":
+            await bot.send_chat_action(message.chat.id, "typing")
+
+            # Добавляем ответ ассистента с tool_use
+            messages.append({"role": "assistant", "content": response.content})
+
+            # Собираем результаты всех tool_use блоков
+            tool_results = []
+            for block in response.content:
+                if hasattr(block, 'type') and block.type == 'tool_use':
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": "Поиск выполнен"
+                    })
+
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+            # Продолжаем диалог
+            response = claude_client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=2048,
+                system=SYSTEM_PROMPT,
+                tools=[WEB_SEARCH_TOOL],
+                messages=messages
+            )
+
+        # Извлекаем финальный текст
+        reply_text = extract_text_from_response(response)
+
+        if not reply_text:
+            reply_text = "Не удалось получить ответ. Попробуй ещё раз или напиши Александру."
+
+        # Сохраняем в историю
         user_conversations[user_id].append({"role": "assistant", "content": reply_text})
+
         await message.answer(reply_text, reply_markup=get_contact_keyboard())
+
     except Exception as e:
-        logging.error(f"Ошибка Claude API: {e}")
+        logging.error(f"Ошибка: {e}")
         await message.answer(
             "Что-то пошло не так 😅 Напиши Александру напрямую.",
             reply_markup=get_contact_keyboard()
