@@ -16,7 +16,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Neirosetkaalex")
 
 logging.basicConfig(level=logging.INFO)
 
