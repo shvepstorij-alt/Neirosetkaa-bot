@@ -85,13 +85,13 @@ WEB_SEARCH_TOOL = {
 
 def get_welcome_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")],
+        [InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/AleksandrOii")],
         [InlineKeyboardButton(text="🤖 Помочь с выбором нейросети", callback_data="help_choose")]
     ])
 
 def get_contact_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")]
+        [InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/AleksandrOii")]
     ])
 
 def clean_text(text):
