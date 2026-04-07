@@ -889,7 +889,6 @@ async def on_new_member(event: ChatMemberUpdated):
 # ══════════════════════════════════════════════════════════
 
 async def claude_with_search(uid: int, user_text: str) -> str:
-    """Вызывает Claude с инструментом веб-поиска. Автоматически ищет актуальные данные."""
     if uid not in user_conversations:
         user_conversations[uid] = []
 
@@ -898,57 +897,18 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         user_conversations[uid] = user_conversations[uid][-20:]
 
     try:
-        messages = list(user_conversations[uid])
-
-        # Первый вызов — с инструментом поиска
         resp = claude_client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=1500,
+            max_tokens=1024,
             system=SYSTEM_PROMPT,
-            tools=[WEB_SEARCH_TOOL],
-            messages=messages,
+            messages=user_conversations[uid],
         )
-
-        # Если Claude решил использовать поиск — обрабатываем tool_use
-        while resp.stop_reason == "tool_use":
-            tool_results = []
-            for block in resp.content:
-                if block.type == "tool_use":
-                    # Claude вызвал поиск — результат уже в блоке (встроенный поиск Anthropic)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": block.input if hasattr(block, 'input') else "search completed",
-                    })
-
-            # Добавляем ответ ассистента и результаты инструмента
-            messages.append({"role": "assistant", "content": resp.content})
-            messages.append({"role": "user", "content": tool_results})
-
-            # Повторный вызов с результатами поиска
-            resp = claude_client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=1500,
-                system=SYSTEM_PROMPT,
-                tools=[WEB_SEARCH_TOOL],
-                messages=messages,
-            )
-
-        # Извлекаем финальный текст
-        reply = ""
-        for block in resp.content:
-            if hasattr(block, "text"):
-                reply += block.text
-
-        if not reply:
-            reply = "Не смог найти актуальную информацию. Напиши Александру напрямую @AleksandrOii"
-
+        reply = resp.content[0].text
         user_conversations[uid].append({"role": "assistant", "content": reply})
         return reply
-
     except Exception as e:
         logging.error(f"Claude API error: {e}")
-        return "Что-то пошло не так 😅 Напиши Александру напрямую @AleksandrOii"
+        return "Что-то пошло не так 😅 Попробуй ещё раз или напиши @neirosetkaalex"
 
 
 # ══════════════════════════════════════════════════════════
