@@ -897,18 +897,67 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         user_conversations[uid] = user_conversations[uid][-20:]
 
     try:
+        messages = list(user_conversations[uid])
+
         resp = claude_client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=1024,
             system=SYSTEM_PROMPT,
-            messages=user_conversations[uid],
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=messages,
         )
-        reply = resp.content[0].text
+
+        # Обрабатываем tool_use если Claude решил искать
+        while resp.stop_reason == "tool_use":
+            assistant_content = resp.content
+            tool_results = []
+            for block in assistant_content:
+                if block.type == "tool_result":
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.tool_use_id,
+                        "content": block.content,
+                    })
+
+            messages.append({"role": "assistant", "content": assistant_content})
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+            resp = claude_client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=messages,
+            )
+
+        reply = ""
+        for block in resp.content:
+            if hasattr(block, "text"):
+                reply += block.text
+
+        if not reply:
+            reply = "Попробуй переформулировать вопрос 🙏"
+
         user_conversations[uid].append({"role": "assistant", "content": reply})
         return reply
+
     except Exception as e:
         logging.error(f"Claude API error: {e}")
-        return "Что-то пошло не так 😅 Попробуй ещё раз или напиши @neirosetkaalex"
+        # Fallback без поиска
+        try:
+            resp = claude_client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=user_conversations[uid],
+            )
+            reply = resp.content[0].text
+            user_conversations[uid].append({"role": "assistant", "content": reply})
+            return reply
+        except Exception as e2:
+            logging.error(f"Fallback error: {e2}")
+            return "Что-то пошло не так 😅 Попробуй ещё раз или напиши @neirosetkaalex"
 
 
 # ══════════════════════════════════════════════════════════
