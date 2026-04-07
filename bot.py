@@ -25,8 +25,8 @@ BOT_TOKEN      = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CHANNEL_ID     = os.getenv("CHANNEL_ID")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")  # канал
-PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "AleksandrOii")  # личка — замени на свой личный @username
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")      # канал
+PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "neirosetkaalex")  # личка Александра
 ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
 
 FREE_CREDITS   = 5   # кредитов при первом /start
