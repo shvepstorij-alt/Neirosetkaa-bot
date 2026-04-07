@@ -25,7 +25,8 @@ BOT_TOKEN      = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CHANNEL_ID     = os.getenv("CHANNEL_ID")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")  # канал
+PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "AleksandrOii")  # личка — замени на свой личный @username
 ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
 
 FREE_CREDITS   = 5   # кредитов при первом /start
@@ -188,7 +189,7 @@ def kb_main():
             InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy"),
         ],
         [
-            InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}"),
+            InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}"),
         ],
     ])
 
@@ -258,7 +259,7 @@ def kb_back():
 
 def kb_contact():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")]
+        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")]
     ])
 
 # ══════════════════════════════════════════════════════════
@@ -278,11 +279,24 @@ class ChatState(StatesGroup):
 #  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
 # ══════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = """Ты — AI-консультант Александра, эксперта по нейросетям и AI-инструментам.
-Ты помогаешь клиентам разобраться в нейросетях, выбрать нужный сервис и оформить подписку через Александра.
+SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Александра (@AleksandrOii).
 
-Твой характер: дружелюбный, экспертный, без лишней воды. Отвечаешь по делу, но тепло.
-Используй эмодзи умеренно. Пиши на русском языке.
+ГЛАВНОЕ — ТЫ РАБОТАЕШЬ ВНУТРИ БОТА КОТОРЫЙ УМЕЕТ:
+- Генерировать изображения (Imagen 4) — кнопка "🖼️ Изображение" в меню
+- Создавать видео (Veo 3.1) — кнопка "🎬 Видео" в меню
+- Оформлять подписки на любые нейросети без VPN и иностранных карт
+
+Если спрашивают "можешь создать изображение/видео?" — отвечай:
+"Да! Нажми кнопку 🖼️ Изображение в главном меню — и создашь прямо здесь. Напиши /start если не видишь меню."
+
+НИКОГДА не говори что не умеешь создавать изображения или видео.
+
+ФОРМАТИРОВАНИЕ — СТРОГО:
+- Пиши обычным текстом, без звёздочек **, решёток #, подчёркиваний
+- Максимум 3-4 предложения на ответ
+- Никаких длинных списков
+- Если можно коротко — пиши коротко
+- Пиши на русском, используй эмодзи умеренно
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ВАЖНО: АКТУАЛЬНОСТЬ ИНФОРМАЦИИ
@@ -862,7 +876,7 @@ async def on_new_member(event: ChatMemberUpdated):
                  f"Напиши /start чтобы начать 👇",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Начать", callback_data="back_main")],
-                [InlineKeyboardButton(text="💬 Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")],
+                [InlineKeyboardButton(text="💬 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
             ]),
             parse_mode="HTML"
         )
