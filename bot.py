@@ -1,867 +1,181 @@
 import asyncio
 import logging
-import aiosqlite
-import aiohttp
-import base64
+import json
 import os
-import re
+from datetime import datetime, timedelta
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, ChatMemberUpdated, InlineKeyboardMarkup,
-    InlineKeyboardButton, CallbackQuery,
-    LabeledPrice, PreCheckoutQuery, BufferedInputFile
+    InlineKeyboardButton, CallbackQuery, LabeledPrice, PreCheckoutQuery
 )
-from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, Command
 import anthropic
 from dotenv import load_dotenv
 
+from database import (
+    init_db, get_user, create_user, add_credits,
+    spend_credits, set_plan, get_stats, get_all_users
+)
+
 load_dotenv()
 
-# ─── Конфиг ───────────────────────────────────────────────
-BOT_TOKEN      = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-CHANNEL_ID     = os.getenv("CHANNEL_ID")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")      # канал
-PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "neirosetkaalex")  # личка Александра
-ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
-
-FREE_CREDITS   = 5   # кредитов при первом /start
-DB_PATH        = "bot.db"
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
 logging.basicConfig(level=logging.INFO)
 
-bot           = Bot(token=BOT_TOKEN)
-dp            = Dispatcher(storage=MemoryStorage())
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
-user_conversations = {}   # история чата с консультантом
+user_conversations = {}
 
-# ─── Модели изображений ───────────────────────────────────
-IMAGE_MODELS = {
-    "img_fast": {
-        "name": "⚡ Imagen 4 Fast",
-        "model_id": "imagen-4.0-fast-generate-001",
-        "credits": 1,
-        "price": "5₽",
-        "speed": "~2 сек",
-        "desc": "Быстро и качественно",
-    },
-    "img_std": {
-        "name": "✨ Imagen 4",
-        "model_id": "imagen-4.0-generate-001",
-        "credits": 2,
-        "price": "10₽",
-        "speed": "~5 сек",
-        "desc": "Флагман, чёткий текст",
-    },
-    "img_ultra": {
-        "name": "💎 Imagen 4 Ultra",
-        "model_id": "imagen-4.0-ultra-generate-001",
-        "credits": 3,
-        "price": "15₽",
-        "speed": "~8 сек",
-        "desc": "Максимальная точность",
-    },
-}
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Загрузка базы знаний
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def load_knowledge() -> str:
+    try:
+        with open("knowledge.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        text = "АКТУАЛЬНАЯ БАЗА ЗНАНИЙ (используй ТОЛЬКО эти данные для цен и тарифов):\n\n"
+        
+        for key, service in data["services"].items():
+            text += f"{service['emoji']} {service['name']}\n"
+            text += f"Описание: {service['description']}\n"
+            text += "Тарифы:\n"
+            for plan_key, plan in service["plans"].items():
+                price_info = ""
+                if plan.get("price_usd"):
+                    price_info = f"${plan['price_usd']}/мес (≈{plan.get('price_rub', '?')} ₽ / {plan.get('price_kzt', '?')} ₸)"
+                elif plan.get("price") == 0:
+                    price_info = "Бесплатно"
+                features = ", ".join(plan.get("features", []))
+                text += f"  • {plan['name']}: {price_info} — {features}\n"
+            text += f"Лучше всего для: {', '.join(service.get('best_for', []))}\n\n"
+        
+        vpn = data.get("vpn_info", {})
+        text += f"\n🔒 VPN INFO:\n{vpn.get('description', '')}\n"
+        for rec in vpn.get("recommendations", []):
+            text += f"  • {rec['name']} ({rec['price']}): {rec['note']}\n"
+        
+        how = data.get("how_to_buy", {})
+        text += "\n💳 КАК КУПИТЬ ПОДПИСКУ ЧЕРЕЗ АЛЕКСАНДРА:\n"
+        for i, step in enumerate(how.get("steps", []), 1):
+            text += f"  {i}. {step}\n"
+        text += "Преимущества: " + " | ".join(how.get("advantages", [])) + "\n"
+        
+        return text
+    except Exception as e:
+        logging.error(f"Ошибка загрузки knowledge.json: {e}")
+        return ""
 
-# ─── Модели видео ─────────────────────────────────────────
-VIDEO_MODELS = {
-    "vid_lite": {
-        "name": "💰 Veo 3.1 Lite",
-        "model_id": "veo-3.1-lite-generate-preview",
-        "credits": 15,
-        "price": "75₽",
-        "res": "720p",
-        "desc": "Бюджет, быстро",
-    },
-    "vid_fast": {
-        "name": "⚡ Veo 3.1 Fast",
-        "model_id": "veo-3.1-fast-generate-preview",
-        "credits": 25,
-        "price": "125₽",
-        "res": "1080p",
-        "desc": "Баланс цены и качества",
-    },
-    "vid_pro": {
-        "name": "🎬 Veo 3.1",
-        "model_id": "veo-3.1-generate-preview",
-        "credits": 65,
-        "price": "325₽",
-        "res": "4K + аудио",
-        "desc": "Кино-качество",
-    },
-}
+KNOWLEDGE_BASE = load_knowledge()
 
-# ─── Пакеты кредитов ──────────────────────────────────────
-CREDIT_PACKS = {
-    "p50":  {"name": "🥉 Старт",    "credits": 50,  "price": 199,  "stars": 40},
-    "p150": {"name": "🥈 Стандарт", "credits": 150, "price": 499,  "stars": 100},
-    "p500": {"name": "🥇 Про",      "credits": 500, "price": 1490, "stars": 300},
-}
+SYSTEM_PROMPT = f"""Ты — AI-консультант Александра, эксперта по нейросетям и AI-инструментам.
+Канал: @AleksandrOii | Telegram: t.me/AleksandrOii
 
-# ══════════════════════════════════════════════════════════
-#  БАЗА ДАННЫХ
-# ══════════════════════════════════════════════════════════
+Твой характер: дружелюбный, экспертный, без лишней воды. Отвечаешь по делу, но тепло.
+Используй эмодзи умеренно. Пиши на русском языке.
 
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id    INTEGER PRIMARY KEY,
-                credits    INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS generations (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER,
-                type       TEXT,
-                model      TEXT,
-                credits    INTEGER,
-                created_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        await db.commit()
-
-async def ensure_user(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO users (user_id, credits) VALUES (?, ?)",
-            (user_id, FREE_CREDITS)
-        )
-        await db.commit()
-
-async def get_credits(user_id: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT credits FROM users WHERE user_id=?", (user_id,)) as c:
-            row = await c.fetchone()
-            return row[0] if row else 0
-
-async def deduct(user_id: int, amount: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT credits FROM users WHERE user_id=?", (user_id,)) as c:
-            row = await c.fetchone()
-            if not row or row[0] < amount:
-                return False
-        await db.execute(
-            "UPDATE users SET credits = credits - ? WHERE user_id = ?",
-            (amount, user_id)
-        )
-        await db.commit()
-    return True
-
-async def add_credits(user_id: int, amount: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET credits = credits + ? WHERE user_id = ?",
-            (amount, user_id)
-        )
-        await db.commit()
-
-async def log_gen(user_id: int, gen_type: str, model: str, credits: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO generations (user_id, type, model, credits) VALUES (?,?,?,?)",
-            (user_id, gen_type, model, credits)
-        )
-        await db.commit()
-
-# ══════════════════════════════════════════════════════════
-#  КЛАВИАТУРЫ
-# ══════════════════════════════════════════════════════════
-
-def kb_main():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🖼️ Изображение", callback_data="menu_image"),
-            InlineKeyboardButton(text="🎬 Видео",        callback_data="menu_video"),
-        ],
-        [
-            InlineKeyboardButton(text="💬 Консультант AI", callback_data="menu_chat"),
-        ],
-        [
-            InlineKeyboardButton(text="💳 Баланс",         callback_data="menu_balance"),
-            InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy"),
-        ],
-        [
-            InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}"),
-        ],
-    ])
-
-def kb_image_models():
-    rows = []
-    for key, m in IMAGE_MODELS.items():
-        rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кр ({m['price']})",
-            callback_data=f"imodel:{key}"
-        )])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def kb_video_models():
-    rows = []
-    for key, m in VIDEO_MODELS.items():
-        rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кр ({m['price']})",
-            callback_data=f"vmodel:{key}"
-        )])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def kb_confirm(prefix: str, key: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Генерировать", callback_data=f"go:{prefix}:{key}"),
-            InlineKeyboardButton(text="✏️ Изменить",    callback_data=f"chprompt:{prefix}:{key}"),
-        ],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")],
-    ])
-
-def kb_buy():
-    rows = []
-    for key, p in CREDIT_PACKS.items():
-        rows.append([InlineKeyboardButton(
-            text=f"{p['name']} — {p['credits']} кр за {p['price']}₽",
-            callback_data=f"buy:{key}"
-        )])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def kb_pay_method(pack_key: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data=f"paystars:{pack_key}")],
-        [InlineKeyboardButton(text="◀️ Назад",          callback_data="menu_buy")],
-    ])
-
-def kb_after(menu: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔄 Ещё раз",    callback_data=f"menu_{menu}"),
-            InlineKeyboardButton(text="🏠 Главное",    callback_data="back_main"),
-        ],
-        [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy")],
-    ])
-
-def kb_cancel():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")]
-    ])
-
-def kb_back():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
-    ])
-
-def kb_contact():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")]
-    ])
-
-# ══════════════════════════════════════════════════════════
-#  FSM СОСТОЯНИЯ
-# ══════════════════════════════════════════════════════════
-
-class ImgState(StatesGroup):
-    waiting_prompt = State()
-
-class VidState(StatesGroup):
-    waiting_prompt = State()
-
-class ChatState(StatesGroup):
-    chatting = State()
-
-# ══════════════════════════════════════════════════════════
-#  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
-# ══════════════════════════════════════════════════════════
-
-SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Александра (@AleksandrOii).
-
-ГЛАВНОЕ — ТЫ РАБОТАЕШЬ ВНУТРИ БОТА КОТОРЫЙ УМЕЕТ:
-- Генерировать изображения (Imagen 4) — кнопка "🖼️ Изображение" в меню
-- Создавать видео (Veo 3.1) — кнопка "🎬 Видео" в меню
-- Оформлять подписки на любые нейросети без VPN и иностранных карт
-
-Если спрашивают "можешь создать изображение/видео?" — отвечай:
-"Да! Нажми кнопку 🖼️ Изображение в главном меню — и создашь прямо здесь. Напиши /start если не видишь меню."
-
-НИКОГДА не говори что не умеешь создавать изображения или видео.
-
-ФОРМАТИРОВАНИЕ — СТРОГО:
-- Используй HTML теги для выделения: <b>жирный текст</b>
-- НЕ используй звёздочки ** никогда — только <b>тег</b>
-- Максимум 3-4 предложения на ответ
-- Никаких длинных списков
-- Если можно коротко — пиши коротко
-- Пиши на русском, используй эмодзи умеренно
-
-АКТУАЛЬНЫЕ МОДЕЛИ (апрель 2026):
-Claude: Sonnet 4.5 (быстрая), Sonnet 4.6 (новейшая), Opus 4 (максимум) — все доступны в Claude Pro $20/мес
-ChatGPT: GPT-5, GPT-5.3, GPT-5.4 (новейшие) — GPT-4o ВЫВЕДЕН из обращения в феврале 2026
-Grok: Grok 3 (free), Grok 3.5 (SuperGrok Lite $10), Grok 4 (SuperGrok $30), Grok 4 Heavy ($300)
-Gemini: Gemini 2.5 Flash, Gemini 3.1 Pro — в Google One AI Premium $20/мес
+{KNOWLEDGE_BASE}
 
 ━━━━━━━━━━━━━━━━━━━━━━
-ВАЖНО: АКТУАЛЬНОСТЬ ИНФОРМАЦИИ
+ПРАВИЛА ОТВЕТОВ:
 ━━━━━━━━━━━━━━━━━━━━━━
-У тебя есть инструмент web_search. ВСЕГДА используй его когда клиент спрашивает про:
-- тарифы, цены, планы любого сервиса
-- новые модели или функции
-- сравнение сервисов
-- что нового в какой-либо нейросети
-
-Алгоритм: сначала поищи актуальную информацию, потом отвечай.
-Запросы для поиска делай на русском: "[сервис] тарифы 2026" или "[сервис] новые модели 2026"
-
-━━━━━━━━━━━━━━━━━━━━━━
-АКТУАЛЬНЫЕ ТАРИФЫ (апрель 2026)
-━━━━━━━━━━━━━━━━━━━━━━
-
-ChatGPT (OpenAI):
-Модели: GPT-5, GPT-5.3, GPT-5.4 (GPT-4o выведен из обращения в феврале 2026)
-Free — базовый GPT-5.3 с лимитами (10 сообщений каждые 5 часов), с рекламой
-Go — $8/мес, больше лимитов, но нет Sora/Codex/Deep Research, есть реклама — не рекомендуется
-Plus — $20/мес, лучший выбор: полный GPT-5, Sora, DALL-E/GPT Image, Deep Research (10/мес), Codex, Agent Mode, без рекламы
-Pro — $200/мес: GPT-5.4 Pro, 250 Deep Research/мес, двойной контекст — для профессионалов
-
-Claude (Anthropic):
-Модели: Sonnet 4.5 (быстрая), Sonnet 4.6 (новейшая), Opus 4 (максимальное качество)
-Free — Claude Sonnet 4.5 с лимитами
-Pro — $20/мес: Claude Opus 4, Sonnet 4.6, Projects, большие документы, приоритет
-Team — $25/мес/чел: совместная работа команды
-
-Grok (xAI):
-Модели: Grok 3, Grok 3.5, Grok 4, Grok 4 Heavy
-Free — Grok 3 с лимитами (~10 запросов каждые 2 часа), Aurora генерация изображений
-SuperGrok Lite — $10/мес: Grok 3.5 с расширенными лимитами
-SuperGrok — $30/мес: Grok 4, DeepSearch, безлимит изображений, Big Brain Mode, голос
-SuperGrok Heavy — $300/мес: Grok 4 Heavy, максимальное качество рассуждений
-(Также через X Premium $8/мес и X Premium+ $40/мес — вместе с фичами соцсети X)
-Особенность: самый низкий процент галлюцинаций (~4%), реальное время из X/Twitter, контекст 2М токенов
-
-Cursor (AI-редактор кода):
-Модели: GPT-5, Claude Sonnet 4.6, Gemini 3 и другие на выбор
-Hobby — бесплатно: 2000 автодополнений/мес, базовый доступ
-Pro — $20/мес ($16 при годовой оплате): безлимит Tab, $20 кредитов на AI-агенты, все топ-модели
-Pro+ — $60/мес: 3x больше кредитов для активных пользователей
-Ultra — $200/мес: 20x кредитов, для тех кто в Cursor весь рабочий день
-Teams — $40/польз./мес: командный доступ, SSO, общий биллинг
-Лучший AI-редактор кода в 2026 году
-
-Krea AI (генерация изображений в реальном времени):
-Free — лимитированный доступ
-Pro — $35/мес: безлимит генераций, upscale, real-time режим, видео
-
-Suno (генерация музыки):
-Версия: v4.5 — студийное качество, все жанры
-Free — несколько треков в день
-Pro — $8/мес: 2500 кредитов, коммерческое использование
-Premier — $24/мес: 10000 кредитов, приоритет
-
-Kling AI (генерация видео):
-Версия: Kling 2.1, Kling 3.0
-Free — 66 кредитов/день
-Standard — $8/мес: 660 кредитов/мес
-Pro — $27/мес: 3000 кредитов/мес
-Лучшее соотношение качество/цена для видео в 2026 году
-
-Runway (генерация видео):
-Версия: Gen-4 — кинематографическое качество
-Free — 125 кредитов (разово)
-Standard — $12/мес: 625 кредитов
-Pro — $28/мес: 2250 кредитов
-Лучше Kling по кинематографичности, но дороже
-
-ElevenLabs (синтез речи и клонирование голоса):
-Версия: движок v3 — неотличим от живого голоса, 70+ языков
-Free — 10 000 символов/мес (≈10 мин аудио), без коммерческих прав
-Starter — $5/мес: 30 000 символов, коммерческие права, клонирование голоса
-Creator — $22/мес: 100 000 символов, профессиональное клонирование
-
-HeyGen (AI-аватары и видео):
-Free — ограниченный доступ
-Creator — $24/мес: AI-аватары, перевод видео с сохранением голоса
-Business — $72/мес: командный доступ, API
-
-━━━━━━━━━━━━━━━━━━━━━━
-VPN ДЛЯ ДОСТУПА К НЕЙРОСЕТЯМ
-━━━━━━━━━━━━━━━━━━━━━━
-Для ChatGPT, Claude, Midjourney и др. нужен VPN из России.
-Лучшие варианты: Outline на своём VPS (самый надёжный), Proton VPN, Windscribe, 1.1.1.1 (Warp)
-ChatGPT Plus и другие подписки оформляет Александр — не нужна иностранная карта.
-
-━━━━━━━━━━━━━━━━━━━━━━
-КАК ОФОРМИТЬ ПОДПИСКУ
-━━━━━━━━━━━━━━━━━━━━━━
-Клиент пишет Александру в личку (@AleksandrOii), называет нужный сервис и тариф.
-Александр сам всё оформляет — не нужна иностранная карта или VPN.
-Оплата в рублях / тенге, быстро и без лишних сложностей.
-
-━━━━━━━━━━━━━━━━━━━━━━
-ПРАВИЛА ОТВЕТОВ
-━━━━━━━━━━━━━━━━━━━━━━
-1. ВСЕГДА используй web_search перед ответом о тарифах или моделях — информация обновляется часто
-2. Если клиент спрашивает про конкретный сервис — расскажи что он даёт, актуальные тарифы, отличия
+1. Цены и тарифы — ТОЛЬКО из базы знаний выше. Никогда не придумывай цены.
+2. Если спрашивают про конкретный сервис — расскажи что он даёт, тарифы, отличия.
 3. Если клиент не знает что выбрать — задай уточняющий вопрос: для чего нужна нейросеть?
-4. Для оформления подписки всегда направляй к Александру: @AleksandrOii
-5. Никогда не называй устаревшие модели (GPT-4o, GPT-4 Turbo) как текущие — сейчас актуальны GPT-5.x
-6. Если не знаешь — честно скажи и предложи спросить Александра напрямую
+4. Для оформления подписки ВСЕГДА направляй к Александру: @AleksandrOii
+5. По VPN — давай конкретные советы из базы знаний.
+6. Если не знаешь ответа — честно скажи и предложи спросить Александра напрямую.
+7. Никогда не обещай то, чего нет в базе знаний.
 """
 
-# Инструмент веб-поиска для Claude API
-WEB_SEARCH_TOOL = {
-    "type": "web_search_20250305",
-    "name": "web_search",
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Тарифные планы бота
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BOT_PLANS = {
+    "starter": {
+        "name": "⚡ Старт",
+        "price_stars": 150,
+        "price_rub": 299,
+        "credits": 50,
+        "days": 0,
+        "description": "50 кредитов (разово)"
+    },
+    "basic": {
+        "name": "🔥 Базовый",
+        "price_stars": 350,
+        "price_rub": 699,
+        "credits": 200,
+        "days": 30,
+        "description": "200 кредитов на 30 дней"
+    },
+    "pro": {
+        "name": "💎 Про",
+        "price_stars": 750,
+        "price_rub": 1490,
+        "credits": 600,
+        "days": 30,
+        "description": "600 кредитов на 30 дней"
+    }
 }
 
-# ══════════════════════════════════════════════════════════
-#  GOOGLE AI СЕРВИСЫ
-# ══════════════════════════════════════════════════════════
-
-async def api_generate_image(prompt: str, model_id: str) -> bytes:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:predict"
-    payload = {
-        "instances": [{"prompt": prompt}],
-        "parameters": {
-            "sampleCount": 1,
-            "aspectRatio": "1:1",
-            "safetyFilterLevel": "block_few",
-        }
-    }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    async with aiohttp.ClientSession() as s:
-        async with s.post(url, json=payload, headers=headers) as r:
-            if r.status != 200:
-                raise Exception(f"Imagen API {r.status}: {(await r.text())[:200]}")
-            data = await r.json()
-            return base64.b64decode(data["predictions"][0]["bytesBase64Encoded"])
-
-
-async def api_generate_video(prompt: str, model_id: str) -> bytes:
-    base = "https://generativelanguage.googleapis.com/v1beta"
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    payload = {
-        "instances": [{"prompt": prompt}],
-        "parameters": {"durationSeconds": 8, "aspectRatio": "16:9", "sampleCount": 1}
-    }
-    async with aiohttp.ClientSession() as s:
-        async with s.post(f"{base}/models/{model_id}:predictLongRunning",
-                          json=payload, headers=headers) as r:
-            if r.status != 200:
-                raise Exception(f"Veo API {r.status}: {(await r.text())[:200]}")
-            op_name = (await r.json()).get("name")
-
-        # polling
-        for _ in range(72):
-            await asyncio.sleep(5)
-            async with s.get(f"{base}/{op_name}", headers=headers) as pr:
-                if pr.status != 200:
-                    continue
-                pd = await pr.json()
-                if not pd.get("done"):
-                    continue
-                if "error" in pd:
-                    raise Exception(pd["error"].get("message", "Veo error"))
-                preds = pd.get("response", {}).get("predictions", [])
-                if not preds:
-                    raise Exception("Пустой ответ Veo API")
-                if preds[0].get("bytesBase64Encoded"):
-                    return base64.b64decode(preds[0]["bytesBase64Encoded"])
-                uri = preds[0].get("videoUri") or preds[0].get("gcsUri")
-                if uri:
-                    async with s.get(uri) as vr:
-                        return await vr.read()
-                raise Exception("Нет данных видео в ответе")
-    raise Exception("Превышено время ожидания (6 мин)")
-
-# ══════════════════════════════════════════════════════════
-#  ОБРАБОТЧИКИ — СТАРТ / МЕНЮ
-# ══════════════════════════════════════════════════════════
-
-WELCOME_NEW = """👋 Привет, {name}!
-
-Я — AI-ассистент Александра. Умею:
-🖼️ Генерировать изображения (Imagen 4)
-🎬 Создавать видео (Veo 3.1) 
-💬 Консультировать по нейросетям и VPN
-💳 Оформлять подписки без карты и VPN
-
-🎁 Тебе начислено <b>{credits} бесплатных кредитов</b>!
-
-Выбери действие 👇"""
-
-WELCOME_BACK = """👋 С возвращением, {name}!
-
-💳 Баланс: <b>{credits} кредитов</b>
-
-Выбери действие 👇"""
-
-
-@dp.message(F.text == "/start")
-async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
-    await ensure_user(message.from_user.id)
-    credits = await get_credits(message.from_user.id)
-    is_new = credits == FREE_CREDITS
-
-    text = (WELCOME_NEW if is_new else WELCOME_BACK).format(
-        name=message.from_user.first_name,
-        credits=credits
-    )
-    await message.answer(text, reply_markup=kb_main(), parse_mode="HTML")
-
-
-@dp.callback_query(F.data == "back_main")
-async def back_main(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    credits = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
-        f"👋 {cb.from_user.first_name}, баланс: <b>{credits} кр</b>\n\nВыбери действие 👇",
-        reply_markup=kb_main(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-# ══════════════════════════════════════════════════════════
-#  БАЛАНС / ОПЛАТА
-# ══════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data == "menu_balance")
-async def menu_balance(cb: CallbackQuery):
-    cr = await get_credits(cb.from_user.id)
-    lines = []
-    for k, m in IMAGE_MODELS.items():
-        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кр")
-    for k, m in VIDEO_MODELS.items():
-        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кр")
-
-    await cb.message.edit_text(
-        f"💳 <b>Баланс: {cr} кредитов</b> (≈{cr*5}₽)\n\n"
-        f"<b>Доступно:</b>\n" + "\n".join(lines),
-        reply_markup=kb_buy(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.callback_query(F.data == "menu_buy")
-async def menu_buy(cb: CallbackQuery):
-    cr = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
-        f"🛒 <b>Купить кредиты</b>\n\n💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"🥉 Старт — 50 кр → 199₽\n"
-        f"🥈 Стандарт — 150 кр → 499₽\n"
-        f"🥇 Про — 500 кр → 1490₽",
-        reply_markup=kb_buy(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("buy:"))
-async def buy_pack(cb: CallbackQuery):
-    key = cb.data.split(":")[1]
-    p = CREDIT_PACKS[key]
-    await cb.message.edit_text(
-        f"{p['name']}\n\n💎 <b>{p['credits']} кредитов</b>\n💰 {p['price']}₽\n\nВыбери способ оплаты:",
-        reply_markup=kb_pay_method(key), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("paystars:"))
-async def pay_stars(cb: CallbackQuery):
-    key = cb.data.split(":")[1]
-    p = CREDIT_PACKS[key]
-    await cb.message.answer_invoice(
-        title=f"{p['name']} — {p['credits']} кредитов",
-        description=f"Пополнение баланса AI-бота: {p['credits']} кредитов",
-        payload=f"stars:{key}:{cb.from_user.id}",
-        currency="XTR",
-        prices=[LabeledPrice(label=p['name'], amount=p['stars'])],
-    )
-    await cb.answer()
-
-
-@dp.pre_checkout_query()
-async def pre_checkout(q: PreCheckoutQuery):
-    await q.answer(ok=True)
-
-
-@dp.message(F.successful_payment)
-async def on_payment(message: Message):
-    parts = message.successful_payment.invoice_payload.split(":")
-    key = parts[1]
-    p = CREDIT_PACKS[key]
-    await add_credits(message.from_user.id, p["credits"])
-    cr = await get_credits(message.from_user.id)
-    await message.answer(
-        f"✅ <b>Оплата прошла!</b>\n\n"
-        f"💎 Начислено: +{p['credits']} кредитов\n"
-        f"💳 Баланс: <b>{cr} кр</b>",
-        reply_markup=kb_back(), parse_mode="HTML"
-    )
-
-# ══════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ
-# ══════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data == "menu_image")
-async def menu_image(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    cr = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
-        f"🖼️ <b>Создать изображение</b>\n\n"
-        f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"⚡ <b>Imagen 4 Fast</b> — 1 кр (5₽) | ~2 сек\n"
-        f"✨ <b>Imagen 4</b> — 2 кр (10₽) | ~5 сек\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 3 кр (15₽) | ~8 сек",
-        reply_markup=kb_image_models(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("imodel:"))
-async def choose_img_model(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[1]
-    m = IMAGE_MODELS[key]
-    cr = await get_credits(cb.from_user.id)
-    if cr < m["credits"]:
-        await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr}", show_alert=True)
-        return
-    await state.update_data(model_key=key)
-    await state.set_state(ImgState.waiting_prompt)
-    await cb.message.edit_text(
-        f"{m['name']} ✅\n\n"
-        f"💳 Спишется: <b>{m['credits']} кр</b> ({m['price']})\n"
-        f"⏱ Время: {m['speed']}\n\n"
-        f"✏️ <b>Введи промт:</b>\n\n"
-        f"<i>Пример: A futuristic city at night, neon lights, cyberpunk, 4k</i>",
-        reply_markup=kb_cancel(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.message(ImgState.waiting_prompt)
-async def img_prompt(message: Message, state: FSMContext):
-    data = await state.get_data()
-    key = data["model_key"]
-    m = IMAGE_MODELS[key]
-    prompt = message.text.strip()
-    await state.update_data(prompt=prompt)
-
-    await message.answer(
-        f"📝 <b>Проверь заказ:</b>\n\n"
-        f"🤖 {m['name']}\n"
-        f"💳 <b>{m['credits']} кр</b> ({m['price']})\n"
-        f"⏱ {m['speed']}\n\n"
-        f"📄 <i>{prompt}</i>",
-        reply_markup=kb_confirm("img", key), parse_mode="HTML"
-    )
-
-
-@dp.callback_query(F.data.startswith("go:img:"))
-async def go_image(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[2]
-    m = IMAGE_MODELS[key]
-    data = await state.get_data()
-    prompt = data.get("prompt", "")
-
-    ok = await deduct(cb.from_user.id, m["credits"])
-    if not ok:
-        await cb.answer("❌ Недостаточно кредитов!", show_alert=True)
-        return
-
-    await state.clear()
-    wait = await cb.message.edit_text(
-        f"⏳ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>",
-        parse_mode="HTML"
-    )
-
-    try:
-        img_bytes = await api_generate_image(prompt, m["model_id"])
-        await log_gen(cb.from_user.id, "image", key, m["credits"])
-        cr = await get_credits(cb.from_user.id)
-        await cb.message.answer_photo(
-            BufferedInputFile(img_bytes, "image.png"),
-            caption=f"✅ Готово! {m['name']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
-            reply_markup=kb_after("image")
-        )
-        await wait.delete()
-    except Exception as e:
-        await add_credits(cb.from_user.id, m["credits"])
-        await cb.message.edit_text(
-            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
-            reply_markup=kb_back()
-        )
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("chprompt:img:"))
-async def change_img_prompt(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[2]
-    await state.update_data(model_key=key)
-    await state.set_state(ImgState.waiting_prompt)
-    await cb.message.edit_text(
-        f"✏️ Введи новый промт для <b>{IMAGE_MODELS[key]['name']}</b>:",
-        reply_markup=kb_cancel(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-# ══════════════════════════════════════════════════════════
-#  ГЕНЕРАЦИЯ ВИДЕО
-# ══════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data == "menu_video")
-async def menu_video(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
-    cr = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
-        f"🎬 <b>Создать видео (8 сек)</b>\n\n"
-        f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 15 кр (75₽) | 720p\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 25 кр (125₽) | 1080p\n"
-        f"🎬 <b>Veo 3.1</b> — 65 кр (325₽) | 4K + аудио\n\n"
-        f"⏱ <i>Время генерации: 1–6 минут</i>",
-        reply_markup=kb_video_models(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("vmodel:"))
-async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[1]
-    m = VIDEO_MODELS[key]
-    cr = await get_credits(cb.from_user.id)
-    if cr < m["credits"]:
-        await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr}. Пополни баланс!", show_alert=True)
-        return
-    await state.update_data(model_key=key)
-    await state.set_state(VidState.waiting_prompt)
-    await cb.message.edit_text(
-        f"{m['name']} ✅\n\n"
-        f"💳 Спишется: <b>{m['credits']} кр</b> ({m['price']})\n"
-        f"📐 {m['res']} | 8 сек\n\n"
-        f"✏️ <b>Введи промт:</b>\n\n"
-        f"<i>Пример: A drone flies over Tokyo at night, cinematic, smooth motion</i>",
-        reply_markup=kb_cancel(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.message(VidState.waiting_prompt)
-async def vid_prompt(message: Message, state: FSMContext):
-    data = await state.get_data()
-    key = data["model_key"]
-    m = VIDEO_MODELS[key]
-    prompt = message.text.strip()
-    await state.update_data(prompt=prompt)
-
-    await message.answer(
-        f"📝 <b>Проверь заказ:</b>\n\n"
-        f"🤖 {m['name']}\n"
-        f"📐 {m['res']} | 8 сек\n"
-        f"💳 <b>{m['credits']} кр</b> ({m['price']})\n\n"
-        f"📄 <i>{prompt}</i>\n\n"
-        f"⚠️ <i>Генерация занимает 1–6 минут</i>",
-        reply_markup=kb_confirm("vid", key), parse_mode="HTML"
-    )
-
-
-@dp.callback_query(F.data.startswith("go:vid:"))
-async def go_video(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[2]
-    m = VIDEO_MODELS[key]
-    data = await state.get_data()
-    prompt = data.get("prompt", "")
-
-    ok = await deduct(cb.from_user.id, m["credits"])
-    if not ok:
-        await cb.answer("❌ Недостаточно кредитов!", show_alert=True)
-        return
-
-    await state.clear()
-    await cb.message.edit_text(
-        f"⏳ <b>Генерирую видео...</b>\n\n"
-        f"🤖 {m['name']} | {m['res']}\n"
-        f"📄 <i>{prompt[:80]}</i>\n\n"
-        f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
-        parse_mode="HTML"
-    )
-
-    try:
-        vid_bytes = await api_generate_video(prompt, m["model_id"])
-        await log_gen(cb.from_user.id, "video", key, m["credits"])
-        cr = await get_credits(cb.from_user.id)
-        await cb.message.answer_video(
-            BufferedInputFile(vid_bytes, "video.mp4"),
-            caption=f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
-            reply_markup=kb_after("video")
-        )
-    except Exception as e:
-        await add_credits(cb.from_user.id, m["credits"])
-        await cb.message.answer(
-            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
-            reply_markup=kb_back()
-        )
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("chprompt:vid:"))
-async def change_vid_prompt(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":")[2]
-    await state.update_data(model_key=key)
-    await state.set_state(VidState.waiting_prompt)
-    await cb.message.edit_text(
-        f"✏️ Введи новый промт для <b>{VIDEO_MODELS[key]['name']}</b>:",
-        reply_markup=kb_cancel(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-# ══════════════════════════════════════════════════════════
-#  КОНСУЛЬТАНТ (оригинальная логика сохранена)
-# ══════════════════════════════════════════════════════════
-
-@dp.callback_query(F.data == "menu_chat")
-async def menu_chat(cb: CallbackQuery, state: FSMContext):
-    await state.set_state(ChatState.chatting)
-    await cb.message.edit_text(
-        "💬 <b>Консультант AI</b>\n\n"
-        "Задай любой вопрос о нейросетях, VPN, подписках.\n"
-        "Это бесплатно 🎁\n\n"
-        "<i>Напиши вопрос:</i>",
-        reply_markup=kb_cancel(), parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-@dp.callback_query(F.data == "help_choose")
-async def help_choose(cb: CallbackQuery, state: FSMContext):
-    await state.set_state(ChatState.chatting)
-    await cb.message.answer(
-        "Расскажи — для каких задач нужна нейросеть?\n\n"
-        "• Писать тексты / посты\n"
-        "• Генерировать картинки\n"
-        "• Программирование\n"
-        "• Анализ документов\n"
-        "• Видео / музыка\n\n"
-        "Опиши своими словами 👇"
-    )
-    await cb.answer()
-
-
-@dp.message(ChatState.chatting)
-async def chat_message(message: Message, state: FSMContext):
-    await bot.send_chat_action(message.chat.id, "typing")
-    uid = message.from_user.id
-    reply = await claude_with_search(uid, message.text)
-    await message.answer(reply, reply_markup=kb_cancel(), parse_mode="HTML")
-
-# ══════════════════════════════════════════════════════════
-#  ПРИВЕТСТВИЕ НОВЫХ ПОДПИСЧИКОВ (оригинал сохранён)
-# ══════════════════════════════════════════════════════════
-
+CREDIT_COSTS = {
+    "image": 5,        # 1 изображение = 5 кредитов
+    "consultation": 0  # Консультация бесплатно
+}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Клавиатуры
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def main_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 Помочь с выбором", callback_data="help_choose"),
+         InlineKeyboardButton(text="💳 Тарифы и цены", callback_data="show_prices")],
+        [InlineKeyboardButton(text="🎨 Генерация изображений", callback_data="gen_image"),
+         InlineKeyboardButton(text="🔒 VPN для РФ", callback_data="vpn_help")],
+        [InlineKeyboardButton(text="💰 Мой баланс", callback_data="my_balance"),
+         InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")],
+        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")]
+    ])
+
+def contact_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+    ])
+
+def plans_keyboard():
+    buttons = []
+    for plan_id, plan in BOT_PLANS.items():
+        buttons.append([InlineKeyboardButton(
+            text=f"{plan['name']} — {plan['price_rub']} ₽ ({plan['credits']} кр.)",
+            callback_data=f"buy_plan_{plan_id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def services_keyboard():
+    services = [
+        ("🤖 ChatGPT", "info_chatgpt"), ("🧠 Claude", "info_claude"),
+        ("⚡ Grok", "info_grok"), ("🎨 Midjourney", "info_midjourney"),
+        ("💻 Cursor", "info_cursor"), ("🔍 Perplexity", "info_perplexity"),
+        ("✨ Krea AI", "info_krea"), ("🎵 Suno", "info_suno"),
+    ]
+    rows = [[InlineKeyboardButton(text=s[0], callback_data=s[1]) for s in services[i:i+2]]
+            for i in range(0, len(services), 2)]
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Приветствие новых подписчиков
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
 async def on_new_member(event: ChatMemberUpdated):
     if str(event.chat.id) != str(CHANNEL_ID):
@@ -869,122 +183,419 @@ async def on_new_member(event: ChatMemberUpdated):
     user = event.new_chat_member.user
     if user.is_bot:
         return
-    await ensure_user(user.id)
+    create_user(user.id, user.username, user.first_name)
+    welcome = (
+        f"👋 Привет, {user.first_name}! Рад видеть тебя в канале!\n\n"
+        "Я — AI-ассистент Александра. Помогу тебе:\n"
+        "🤖 Разобраться в нейросетях\n"
+        "💡 Выбрать подходящий сервис\n"
+        "💳 Узнать актуальные цены и тарифы\n"
+        "🎨 Сгенерировать изображения\n"
+        "🔒 Разобраться с VPN\n\n"
+        "Просто напиши мне или выбери ниже 👇"
+    )
     try:
-        await bot.send_message(
-            chat_id=user.id,
-            text=f"👋 Привет! Рад приветствовать тебя в канале!\n\n"
-                 f"Я — AI-ассистент Александра. Помогу:\n"
-                 f"🖼️ Создать изображение (Imagen 4)\n"
-                 f"🎬 Создать видео (Veo 3.1)\n"
-                 f"💬 Разобраться в нейросетях\n"
-                 f"💳 Оформить подписку без VPN и карты\n\n"
-                 f"🎁 Тебе начислено <b>{FREE_CREDITS} бесплатных кредитов</b>!\n\n"
-                 f"Напиши /start чтобы начать 👇",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 Начать", callback_data="back_main")],
-                [InlineKeyboardButton(text="💬 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
-            ]),
-            parse_mode="HTML"
-        )
+        await bot.send_message(user.id, welcome, reply_markup=main_keyboard())
     except Exception as e:
-        logging.warning(f"Не удалось отправить приветствие {user.id}: {e}")
+        logging.warning(f"Не удалось отправить {user.id}: {e}")
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Команды
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    user = message.from_user
+    create_user(user.id, user.username, user.first_name)
+    await message.answer(
+        f"👋 Привет, {user.first_name}!\n\n"
+        "Я AI-консультант по нейросетям. Помогу выбрать сервис, расскажу о тарифах и отвечу на любые вопросы об AI-инструментах.\n\n"
+        "Выбери что тебя интересует 👇",
+        reply_markup=main_keyboard()
+    )
 
-# ══════════════════════════════════════════════════════════
-#  ФУНКЦИЯ CLAUDE С ВЕБ-ПОИСКОМ
-# ══════════════════════════════════════════════════════════
+@dp.message(Command("balance"))
+async def cmd_balance(message: Message):
+    await show_balance(message.from_user.id, message)
 
-async def claude_with_search(uid: int, user_text: str) -> str:
-    if uid not in user_conversations:
-        user_conversations[uid] = []
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await show_admin_panel(message)
 
-    user_conversations[uid].append({"role": "user", "content": user_text})
-    if len(user_conversations[uid]) > 20:
-        user_conversations[uid] = user_conversations[uid][-20:]
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Callback обработчики
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.callback_query(F.data == "main_menu")
+async def cb_main_menu(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Главное меню — выбери что тебя интересует 👇",
+        reply_markup=main_keyboard()
+    )
+    await callback.answer()
 
+@dp.callback_query(F.data == "help_choose")
+async def cb_help_choose(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "Расскажи — для каких задач нужна нейросеть?\n\n"
+        "Например:\n"
+        "• Писать тексты / посты / статьи\n"
+        "• Генерировать картинки\n"
+        "• Помощь с кодом\n"
+        "• Анализ документов\n"
+        "• Создание видео / музыки\n"
+        "• Поиск информации в интернете\n\n"
+        "Или выбери интересующий сервис 👇",
+        reply_markup=services_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "show_prices")
+async def cb_show_prices(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "📋 Выбери сервис, чтобы узнать актуальные тарифы:",
+        reply_markup=services_keyboard()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("info_"))
+async def cb_service_info(callback: CallbackQuery):
+    service_key = callback.data.replace("info_", "")
     try:
-        messages = list(user_conversations[uid])
+        with open("knowledge.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        service = data["services"].get(service_key)
+        if not service:
+            await callback.answer("Сервис не найден")
+            return
+        
+        text = f"{service['emoji']} *{service['name']}*\n\n"
+        text += f"{service['description']}\n\n"
+        text += "📊 *Тарифы:*\n"
+        for plan in service["plans"].values():
+            price_info = ""
+            if plan.get("price_usd"):
+                price_info = f"${plan['price_usd']}/мес (≈{plan.get('price_rub', '?')} ₽)"
+            elif plan.get("price") == 0:
+                price_info = "Бесплатно"
+            text += f"\n• *{plan['name']}* — {price_info}\n"
+            for feat in plan.get("features", []):
+                text += f"  ✓ {feat}\n"
+        
+        text += f"\n✅ *Лучше всего для:* {', '.join(service.get('best_for', []))}"
+        text += f"\n\n💳 Оформить: @{ADMIN_USERNAME}"
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"Купить {service['name']}", url=f"https://t.me/{ADMIN_USERNAME}")],
+            [InlineKeyboardButton(text="◀️ К списку сервисов", callback_data="show_prices")]
+        ])
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception as e:
+        logging.error(f"Ошибка info: {e}")
+    await callback.answer()
 
-        resp = claude_client.messages.create(
+@dp.callback_query(F.data == "vpn_help")
+async def cb_vpn(callback: CallbackQuery):
+    try:
+        with open("knowledge.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        vpn = data["vpn_info"]
+        text = f"🔒 *VPN для России*\n\n{vpn['description']}\n\n*Рекомендации:*\n"
+        for rec in vpn["recommendations"]:
+            text += f"\n• *{rec['name']}* ({rec['price']})\n  {rec['note']}\n"
+        text += f"\n\n{vpn['note']}"
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contact_keyboard())
+    except Exception as e:
+        logging.error(f"Ошибка vpn: {e}")
+    await callback.answer()
+
+@dp.callback_query(F.data == "my_balance")
+async def cb_balance(callback: CallbackQuery):
+    await show_balance(callback.from_user.id, callback.message, edit=True)
+    await callback.answer()
+
+@dp.callback_query(F.data == "buy_credits")
+async def cb_buy_credits(callback: CallbackQuery):
+    text = (
+        "💰 *Тарифы для генерации изображений*\n\n"
+        "Кредиты используются для генерации изображений.\n"
+        "Консультации — *всегда бесплатно* 🆓\n\n"
+        "1 изображение = 5 кредитов\n\n"
+    )
+    for plan_id, plan in BOT_PLANS.items():
+        text += f"{plan['name']}\n"
+        text += f"  💳 {plan['price_rub']} ₽ | {plan['credits']} кредитов\n"
+        text += f"  {plan['description']}\n\n"
+    
+    text += "👇 Выбери тариф для оплаты через Telegram Stars"
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=plans_keyboard())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("buy_plan_"))
+async def cb_buy_plan(callback: CallbackQuery):
+    plan_id = callback.data.replace("buy_plan_", "")
+    plan = BOT_PLANS.get(plan_id)
+    if not plan:
+        await callback.answer("Тариф не найден")
+        return
+    
+    # Оплата через Telegram Stars
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title=plan["name"],
+        description=plan["description"],
+        payload=f"plan_{plan_id}_{callback.from_user.id}",
+        currency="XTR",  # Telegram Stars
+        prices=[LabeledPrice(label=plan["name"], amount=plan["price_stars"])],
+        provider_token=""
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "gen_image")
+async def cb_gen_image(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    user = get_user(user_id)
+    if not user:
+        create_user(user_id, callback.from_user.username, callback.from_user.first_name)
+        user = get_user(user_id)
+    
+    credits = user["credits"] if user else 0
+    cost = CREDIT_COSTS["image"]
+    
+    if credits < cost:
+        await callback.message.edit_text(
+            f"❌ Недостаточно кредитов\n\n"
+            f"У тебя: {credits} кр.\n"
+            f"Нужно: {cost} кр. (1 изображение)\n\n"
+            f"Купи кредиты, чтобы начать генерацию 👇",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]
+            ])
+        )
+        await callback.answer()
+        return
+    
+    await callback.message.edit_text(
+        f"🎨 *Генерация изображений*\n\n"
+        f"Баланс: {credits} кр. | Стоимость: {cost} кр. за изображение\n\n"
+        f"Опиши что хочешь сгенерировать — напиши описание на русском или английском.\n\n"
+        f"Пример: _портрет девушки в стиле аниме, синие волосы, закат_",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена", callback_data="main_menu")]
+        ])
+    )
+    user_conversations[user_id] = user_conversations.get(user_id, [])
+    user_conversations[f"mode_{user_id}"] = "image_gen"
+    await callback.answer()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Оплата
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.pre_checkout_query()
+async def pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+
+@dp.message(F.successful_payment)
+async def successful_payment(message: Message):
+    payload = message.successful_payment.invoice_payload
+    parts = payload.split("_")
+    plan_id = parts[1]
+    plan = BOT_PLANS.get(plan_id)
+    
+    if plan:
+        user_id = message.from_user.id
+        expires = (datetime.now() + timedelta(days=plan["days"])).isoformat() if plan["days"] > 0 else None
+        set_plan(user_id, plan_id, expires, plan["credits"])
+        add_credits(user_id, plan["credits"], f"Покупка тарифа {plan['name']}")
+        
+        await message.answer(
+            f"✅ *Оплата прошла успешно!*\n\n"
+            f"Тариф: {plan['name']}\n"
+            f"Начислено: {plan['credits']} кредитов\n\n"
+            f"Можешь начать генерировать изображения! 🎨",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+        logging.info(f"Оплата: user {user_id}, plan {plan_id}")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Вспомогательные функции
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def show_balance(user_id: int, message, edit=False):
+    user = get_user(user_id)
+    if not user:
+        create_user(user_id, "", "")
+        user = get_user(user_id)
+    
+    plan_name = {"free": "Бесплатный", "starter": "⚡ Старт", "basic": "🔥 Базовый", "pro": "💎 Про"}.get(user["plan"], user["plan"])
+    expires = ""
+    if user["plan_expires"]:
+        try:
+            exp = datetime.fromisoformat(user["plan_expires"])
+            expires = f"\nДействует до: {exp.strftime('%d.%m.%Y')}"
+        except:
+            pass
+    
+    text = (
+        f"💰 *Мой баланс*\n\n"
+        f"Тариф: {plan_name}{expires}\n"
+        f"Кредиты: {user['credits']} кр.\n\n"
+        f"📊 Стоимость генерации:\n"
+        f"• 1 изображение = {CREDIT_COSTS['image']} кр.\n"
+        f"• Консультация = бесплатно 🆓"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 Пополнить кредиты", callback_data="buy_credits")],
+        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="main_menu")]
+    ])
+    
+    if edit:
+        await message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    else:
+        await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Генерация изображений (заглушка — подключи Google Imagen API)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def generate_image(prompt: str, user_id: int) -> str | None:
+    """
+    Здесь подключаем Google Imagen API или другой.
+    Пока возвращаем None — подключи свой API ключ.
+    
+    Пример для Google Imagen:
+    from google.cloud import aiplatform
+    ...
+    """
+    # TODO: Подключить Google Imagen 3 API
+    # Временная заглушка
+    return None
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Основной обработчик сообщений
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.message()
+async def handle_message(message: Message):
+    if not message.text:
+        return
+    
+    user_id = message.from_user.id
+    create_user(user_id, message.from_user.username, message.from_user.first_name)
+    
+    # Режим генерации изображений
+    if user_conversations.get(f"mode_{user_id}") == "image_gen":
+        user_conversations[f"mode_{user_id}"] = None
+        
+        user = get_user(user_id)
+        cost = CREDIT_COSTS["image"]
+        
+        if not user or user["credits"] < cost:
+            await message.answer(
+                "❌ Недостаточно кредитов. Купи кредиты для генерации.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")]
+                ])
+            )
+            return
+        
+        await bot.send_chat_action(message.chat.id, "upload_photo")
+        
+        # Пытаемся сгенерировать
+        image_url = await generate_image(message.text, user_id)
+        
+        if image_url:
+            if spend_credits(user_id, cost, "image_generation"):
+                await bot.send_photo(message.chat.id, image_url,
+                    caption=f"🎨 Готово! Списано {cost} кредитов.\nОстаток: {user['credits'] - cost} кр.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🎨 Ещё изображение", callback_data="gen_image")],
+                        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+                    ])
+                )
+        else:
+            await message.answer(
+                "⚙️ Генерация изображений скоро будет доступна!\n\n"
+                "Пока обратись к Александру — он поможет с генерацией 🎨",
+                reply_markup=contact_keyboard()
+            )
+        return
+    
+    # Обычная консультация через Claude
+    if user_id not in user_conversations:
+        user_conversations[user_id] = []
+    
+    user_conversations[user_id].append({"role": "user", "content": message.text})
+    
+    if len(user_conversations[user_id]) > 20:
+        user_conversations[user_id] = user_conversations[user_id][-20:]
+    
+    await bot.send_chat_action(message.chat.id, "typing")
+    
+    try:
+        response = claude_client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=1024,
             system=SYSTEM_PROMPT,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=messages,
+            messages=user_conversations[user_id]
+        )
+        reply_text = response.content[0].text
+        user_conversations[user_id].append({"role": "assistant", "content": reply_text})
+        await message.answer(reply_text, reply_markup=contact_keyboard())
+    except Exception as e:
+        logging.error(f"Ошибка Claude API: {e}")
+        await message.answer(
+            "Что-то пошло не так 😅 Напиши Александру напрямую.",
+            reply_markup=contact_keyboard()
         )
 
-        # Обрабатываем tool_use если Claude решил искать
-        while resp.stop_reason == "tool_use":
-            assistant_content = resp.content
-            tool_results = []
-            for block in assistant_content:
-                if block.type == "tool_result":
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.tool_use_id,
-                        "content": block.content,
-                    })
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Админ панель
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def show_admin_panel(message: Message):
+    stats = get_stats()
+    text = (
+        "🔧 *Админ панель*\n\n"
+        f"👥 Всего пользователей: {stats['total_users']}\n"
+        f"💳 Платных пользователей: {stats['paid_users']}\n"
+        f"⚡ Потрачено кредитов: {stats['total_credits_spent']}\n"
+        f"🎨 Генераций изображений: {stats['total_images']}\n\n"
+        "Команды:\n"
+        "`/add_credits [user_id] [amount]` — добавить кредиты\n"
+        "`/users` — список пользователей"
+    )
+    await message.answer(text, parse_mode="Markdown")
 
-            messages.append({"role": "assistant", "content": assistant_content})
-            if tool_results:
-                messages.append({"role": "user", "content": tool_results})
-
-            resp = claude_client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                messages=messages,
-            )
-
-        reply = ""
-        for block in resp.content:
-            if hasattr(block, "text"):
-                reply += block.text
-
-        if not reply:
-            reply = "Попробуй переформулировать вопрос 🙏"
-
-        user_conversations[uid].append({"role": "assistant", "content": reply})
-        return reply
-
+@dp.message(Command("add_credits"))
+async def cmd_add_credits(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        parts = message.text.split()
+        user_id = int(parts[1])
+        amount = int(parts[2])
+        add_credits(user_id, amount, f"Ручное начисление от админа")
+        await message.answer(f"✅ Начислено {amount} кредитов пользователю {user_id}")
     except Exception as e:
-        logging.error(f"Claude API error: {e}")
-        # Fallback без поиска
-        try:
-            resp = claude_client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                messages=user_conversations[uid],
-            )
-            reply = resp.content[0].text
-            user_conversations[uid].append({"role": "assistant", "content": reply})
-            return reply
-        except Exception as e2:
-            logging.error(f"Fallback error: {e2}")
-            return "Что-то пошло не так 😅 Попробуй ещё раз или напиши @neirosetkaalex"
+        await message.answer(f"❌ Ошибка: {e}\nФормат: /add_credits [user_id] [amount]")
 
+@dp.message(Command("users"))
+async def cmd_users(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    users = get_all_users()
+    text = "👥 *Последние пользователи:*\n\n"
+    for u in users[:20]:
+        user_id, username, first_name, credits, plan, joined = u
+        uname = f"@{username}" if username else first_name
+        text += f"• {uname} | {credits} кр. | {plan}\n"
+    await message.answer(text, parse_mode="Markdown")
 
-# ══════════════════════════════════════════════════════════
-#  ОБЫЧНЫЕ СООБЩЕНИЯ (вне FSM — консультант по умолчанию)
-# ══════════════════════════════════════════════════════════
-
-@dp.message()
-async def handle_message(message: Message, state: FSMContext):
-    await ensure_user(message.from_user.id)
-    await bot.send_chat_action(message.chat.id, "typing")
-    uid = message.from_user.id
-    reply = await claude_with_search(uid, message.text)
-    await message.answer(reply, reply_markup=kb_contact(), parse_mode="HTML")
-
-# ══════════════════════════════════════════════════════════
-#  ЗАПУСК
-# ══════════════════════════════════════════════════════════
-
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Запуск
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def main():
-    await init_db()
+    init_db()
     logging.info("✅ Бот запущен!")
     await dp.start_polling(bot)
 
