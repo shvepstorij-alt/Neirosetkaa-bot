@@ -23,7 +23,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")       # канал
+PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "AleksandrOii") # личный аккаунт для покупки
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
 logging.basicConfig(level=logging.INFO)
@@ -35,7 +36,7 @@ claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 user_conversations = {}
 
 MY_PRICES = """
-ЦЕНЫ АЛЕКСАНДРА (только эти называй клиентам, в рублях):
+ЦЕНЫ (только эти называй клиентам, в рублях):
 
 ChatGPT Plus — 2000 руб/мес
 Claude Pro — 2000 руб/мес
@@ -61,23 +62,26 @@ Suno Premier — 3000 руб/мес
 Zoom Pro — 2000 руб/мес
 Zoom Business — 2300 руб/мес
 
-Оплата в рублях/тенге. Без иностранных карт. Оформление через @AleksandrOii за 15-30 минут.
+Оплата только в рублях. Без иностранных карт. Оформление за 5-15 минут.
 """
 
-SYSTEM_PROMPT = f"""Ты — AI-консультант Александра, эксперта по нейросетям (@AleksandrOii, t.me/AleksandrOii).
+SYSTEM_PROMPT = f"""Ты — AI-консультант по нейросетям и AI-инструментам.
 
-Характер: дружелюбный, экспертный, по делу. Пишешь на русском. Эмодзи умеренно.
+Характер: дружелюбный, экспертный, по делу. Пишешь на русском.
+ФОРМАТИРОВАНИЕ: только эмодзи умеренно. НИКОГДА не используй markdown: никаких **, *, ##, ___ и подобных символов. Пиши простым текстом.
 
 ЦЕНЫ (только эти называй):
 {MY_PRICES}
 
 ПРАВИЛА:
-1. Цены — ТОЛЬКО из списка выше. Никогда не называй официальные $ цены как итоговую стоимость клиенту.
-2. Для актуальной информации о возможностях сервисов — используй web_search.
-3. Если не знаешь что выбрать клиенту — спроси: для каких задач нужна нейросеть?
-4. Для покупки ВСЕГДА направляй к Александру: @AleksandrOii
-5. По VPN — помогай советами, рекомендуй бесплатные варианты (Outline, Lantern, Windscribe).
-6. СТРОГО ЗАПРЕЩЕНО отвечать на темы: политика, экономика, новости, отношения, медицина, юриспруденция и всё что НЕ связано с AI-инструментами, подписками и VPN.
+1. Цены — ТОЛЬКО из списка выше. Никогда не называй официальные $ цены как итоговую стоимость.
+2. ВСЕГДА используй web_search перед ответом о возможностях любого сервиса — никогда не отвечай по памяти, информация устаревает быстро.
+3. Если клиент не знает что выбрать — спроси: для каких задач нужна нейросеть?
+4. Для покупки направляй: @AleksandrOii (личный аккаунт, не канал).
+5. Упоминай про оформление подписки естественно, только когда это уместно — в конце ответа или когда клиент сам спрашивает про покупку. Не навязывай.
+6. Оплата только в рублях. Оформление за 5-15 минут.
+7. По VPN — помогай советами, рекомендуй бесплатные варианты (Outline, Lantern, Windscribe).
+8. СТРОГО ЗАПРЕЩЕНО отвечать на темы: политика, экономика, новости, отношения, медицина, юриспруденция и всё что НЕ связано с AI-инструментами, подписками и VPN.
 7. На запрещённые темы отвечай: "Я консультирую только по нейросетям и AI-инструментам 🤖 Спроси меня про это!"
 8. Никогда не придумывай цены — только из списка выше.
 """
@@ -98,12 +102,12 @@ def main_keyboard():
          InlineKeyboardButton(text="🔒 VPN для РФ", callback_data="vpn_help")],
         [InlineKeyboardButton(text="💰 Мой баланс", callback_data="my_balance"),
          InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")],
-        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")]
+        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")]
     ])
 
 def contact_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{ADMIN_USERNAME}")],
+        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
     ])
 
@@ -136,7 +140,7 @@ async def get_claude_response(messages: list) -> str:
         for block in response.content:
             if hasattr(block, "type") and block.type == "text":
                 full_text += block.text
-        return full_text.strip() or "Не удалось получить ответ. Напиши Александру: @AleksandrOii"
+        return full_text.strip() or f"Не удалось получить ответ. Напиши: @{PERSONAL_USERNAME}"
     except Exception as e:
         logging.error(f"Claude API error: {e}")
         return None
@@ -169,7 +173,7 @@ async def cmd_start(message: Message):
     create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     await message.answer(
         f"👋 Привет, {message.from_user.first_name}!\n\n"
-        "Я AI-консультант по нейросетям от Александра (@AleksandrOii).\n\n"
+        "Я AI-консультант по нейросетям.\n\n"
         "Отвечу на любые вопросы об AI-инструментах и помогу выбрать нужный сервис 🚀\n\n"
         "Выбери что тебя интересует 👇",
         reply_markup=main_keyboard()
@@ -249,10 +253,10 @@ async def cb_show_prices(callback: CallbackQuery):
         "✨ Krea Basic — 1000 ₽\n✨ Krea Pro — 3200 ₽\n"
         "🌐 Lovable Pro — 2700 ₽\n🎵 Suno Pro — 1000 ₽\n🎵 Suno Premier — 3000 ₽\n"
         "📹 Zoom Pro — 2000 ₽\n📹 Zoom Business — 2300 ₽\n\n"
-        "✅ Рубли/тенге | ✅ Без VPN | ✅ За 15–30 мин",
+        "✅ Оплата в рублях | ✅ Без VPN | ✅ Оформление за 5–15 мин",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛒 Купить подписку", url=f"https://t.me/{ADMIN_USERNAME}")],
+            [InlineKeyboardButton(text="🛒 Купить подписку", url=f"https://t.me/{PERSONAL_USERNAME}")],
             [InlineKeyboardButton(text="🔍 Подробнее о сервисах", callback_data="show_services")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]
         ])
@@ -281,10 +285,10 @@ async def cb_service_info(callback: CallbackQuery):
     response = await get_claude_response(messages)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🛒 Купить {name}", url=f"https://t.me/{ADMIN_USERNAME}")],
+        [InlineKeyboardButton(text=f"🛒 Купить {name}", url=f"https://t.me/{PERSONAL_USERNAME}")],
         [InlineKeyboardButton(text="◀️ К списку", callback_data="show_services")]
     ])
-    await callback.message.edit_text(response or f"Не удалось загрузить. Напиши @{ADMIN_USERNAME}", reply_markup=kb)
+    await callback.message.edit_text(response or f"Не удалось загрузить. Напиши @{PERSONAL_USERNAME}", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(F.data == "vpn_help")
