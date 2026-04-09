@@ -1,286 +1,923 @@
 import asyncio
 import logging
+import aiosqlite
+import aiohttp
+import base64
 import os
-from datetime import datetime, timedelta
-
+import re
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, ChatMemberUpdated, InlineKeyboardMarkup,
-    InlineKeyboardButton, CallbackQuery, LabeledPrice, PreCheckoutQuery,
-    BufferedInputFile
+    InlineKeyboardButton, CallbackQuery,
+    LabeledPrice, PreCheckoutQuery, BufferedInputFile,
+    ReplyKeyboardMarkup, KeyboardButton
 )
-from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, Command
+from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 import anthropic
 from dotenv import load_dotenv
 
-from database import (
-    init_db, get_user, create_user, add_credits,
-    spend_credits, set_plan, get_stats, get_all_users,
-    get_all_user_ids, log_question, get_popular_services,
-    block_user, unblock_user, is_blocked, find_user_by_username,
-    get_today_activity, get_top_active_users, get_credits_history,
-    get_credits_spent_by_user, get_maintenance_mode, set_maintenance_mode,
-    get_welcome_message, set_welcome_message, log_message
-)
-
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ─── Конфиг ───────────────────────────────────────────────
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")
-PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "AleksandrOii")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+CHANNEL_ID     = os.getenv("CHANNEL_ID")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")      # канал
+PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "neirosetkaalex")  # личка Александра
+ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
+
+FREE_CREDITS   = 5   # кредитов при первом /start
+DB_PATH        = "bot.db"
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+bot           = Bot(token=BOT_TOKEN)
+dp            = Dispatcher(storage=MemoryStorage())
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-user_conversations = {}
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# МОДЕЛИ И КРЕДИТЫ (с наценкой 30%)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CREDIT_VALUE_RUB = 5  # 1 кредит = 5 рублей
+user_conversations = {}   # история чата с консультантом
 
+# ─── Модели изображений ───────────────────────────────────
 IMAGE_MODELS = {
-    "img4":    {"name": "Imagen 4",         "model": "imagen-4.0-generate-001",        "credits": 1,  "price_rub": 5,   "desc": "Высокое качество Google"},
-    "nb2":     {"name": "Nano Banana 2",    "model": "gemini-3.1-flash-image-preview", "credits": 2,  "price_rub": 10,  "desc": "Gemini — быстро и чётко"},
-    "nb_pro":  {"name": "Nano Banana Pro",  "model": "gemini-3-pro-image-preview",     "credits": 3,  "price_rub": 15,  "desc": "Лучшее качество + текст на фото"},
+    "img_fast": {
+        "name": "⚡ Imagen 4 Fast",
+        "model_id": "imagen-4.0-fast-generate-001",
+        "credits": 1,
+        "price": "5₽",
+        "speed": "~2 сек",
+        "desc": "Быстро и качественно",
+    },
+    "img_std": {
+        "name": "✨ Imagen 4",
+        "model_id": "imagen-4.0-generate-001",
+        "credits": 2,
+        "price": "10₽",
+        "speed": "~5 сек",
+        "desc": "Флагман, чёткий текст",
+    },
+    "img_ultra": {
+        "name": "💎 Imagen 4 Ultra",
+        "model_id": "imagen-4.0-ultra-generate-001",
+        "credits": 3,
+        "price": "15₽",
+        "speed": "~8 сек",
+        "desc": "Максимальная точность",
+    },
 }
 
+# ─── Модели видео ─────────────────────────────────────────
 VIDEO_MODELS = {
-    "veo31l":  {"name": "Veo 3.1 Lite",  "model": "veo-3.1-lite-generate-preview",  "credits": 10,  "price_rub": 50,  "desc": "Быстро, базовое качество"},
-    "veo31f":  {"name": "Veo 3.1 Fast",  "model": "veo-3.1-fast-generate-preview",  "credits": 30,  "price_rub": 150, "desc": "Быстро + хорошее качество"},
-    "veo31":   {"name": "Veo 3.1",       "model": "veo-3.1-generate-preview",        "credits": 80,  "price_rub": 400, "desc": "Максимальное качество + аудио"},
+    "vid_lite": {
+        "name": "💰 Veo 3.1 Lite",
+        "model_id": "veo-3.1-lite-generate-preview",
+        "credits": 15,
+        "price": "75₽",
+        "res": "720p",
+        "desc": "Бюджет, быстро",
+    },
+    "vid_fast": {
+        "name": "⚡ Veo 3.1 Fast",
+        "model_id": "veo-3.1-fast-generate-preview",
+        "credits": 25,
+        "price": "125₽",
+        "res": "1080p",
+        "desc": "Баланс цены и качества",
+    },
+    "vid_pro": {
+        "name": "🎬 Veo 3.1",
+        "model_id": "veo-3.1-generate-preview",
+        "credits": 65,
+        "price": "325₽",
+        "res": "4K + аудио",
+        "desc": "Кино-качество",
+    },
 }
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# СИСТЕМНЫЙ ПРОМПТ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MY_PRICES = """
-ChatGPT Plus — 2000 руб/мес | Claude Pro — 2000 руб/мес | SuperGrok — 2000 руб/мес
-Gamma Basic — 1200 руб/мес | Gamma Pro — 2300 руб/мес
-Midjourney Basic — 1000 руб/мес | Midjourney Standard — 3000 руб/мес
-Cursor Pro — 2300 руб/мес | Kling AI Standard — 1000 руб/мес | Kling AI Pro — 2700 руб/мес
-Perplexity Pro — 2000 руб/мес | HeyGen Creator — 3000 руб/мес
-Higgsfield Starter — 1700 руб/мес | Higgsfield Plus — 5100 руб/мес
-Runway Standard — 1700 руб/мес | Runway Pro — 3700 руб/мес
-Krea Basic — 1000 руб/мес | Krea Pro — 3200 руб/мес
-Lovable Pro — 2700 руб/мес | Suno Pro — 1000 руб/мес | Suno Premier — 3000 руб/мес
-Zoom Pro — 2000 руб/мес | Zoom Business — 2300 руб/мес
-"""
-
-SYSTEM_PROMPT = f"""Ты — AI-консультант по нейросетям и AI-инструментам.
-
-Характер: дружелюбный, экспертный, по делу. Пишешь на русском.
-Форматирование: жирный текст только для названий сервисов и ключевых цифр. Никаких других markdown символов.
-
-МОИ ЦЕНЫ (только эти называй клиентам, в рублях):
-{MY_PRICES}
-
-ПРАВИЛА:
-1. Цены — ТОЛЬКО из списка выше.
-2. ВСЕГДА используй web_search перед ответом о возможностях любого сервиса.
-3. Если клиент не знает что выбрать — спроси для каких задач.
-4. Упоминай @{PERSONAL_USERNAME} для покупки только когда уместно, ненавязчиво.
-5. Оплата только в рублях. Оформление за 5-15 минут.
-6. По VPN — рекомендуй Outline, Lantern, Windscribe.
-7. ЗАПРЕЩЕНО: политика, экономика, медицина, новости, всё не связанное с AI.
-8. На запрещённые темы: "Я консультирую только по нейросетям 🤖"
-"""
-
-# Пакеты кредитов (1 кредит = 5 рублей)
+# ─── Пакеты кредитов ──────────────────────────────────────
 CREDIT_PACKS = {
-    "pack50":   {"name": "50 кредитов",   "price_stars": 50,   "price_rub": 250,  "credits": 50,  "description": "50 кредитов — 250 ₽"},
-    "pack100":  {"name": "100 кредитов",  "price_stars": 100,  "price_rub": 500,  "credits": 100, "description": "100 кредитов — 500 ₽"},
-    "pack300":  {"name": "300 кредитов",  "price_stars": 300,  "price_rub": 1500, "credits": 300, "description": "300 кредитов — 1500 ₽"},
-    "pack600":  {"name": "600 кредитов",  "price_stars": 600,  "price_rub": 3000, "credits": 600, "description": "600 кредитов — 3000 ₽"},
-    "pack1000": {"name": "1000 кредитов", "price_stars": 1000, "price_rub": 5000, "credits": 1000,"description": "1000 кредитов — 5000 ₽"},
+    "p50":  {"name": "🥉 Старт",    "credits": 50,  "price": 199,  "stars": 40},
+    "p150": {"name": "🥈 Стандарт", "credits": 150, "price": 499,  "stars": 100},
+    "p500": {"name": "🥇 Про",      "credits": 500, "price": 1490, "stars": 300},
 }
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# КЛАВИАТУРЫ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def main_keyboard():
+# ══════════════════════════════════════════════════════════
+#  БАЗА ДАННЫХ
+# ══════════════════════════════════════════════════════════
+
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id    INTEGER PRIMARY KEY,
+                credits    INTEGER DEFAULT 0,
+                is_blocked INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        # Добавляем колонку если её нет (миграция)
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+            await db.commit()
+        except Exception:
+            pass
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS generations (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER,
+                type       TEXT,
+                model      TEXT,
+                credits    INTEGER,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        await db.commit()
+
+async def ensure_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO users (user_id, credits) VALUES (?, ?)",
+            (user_id, FREE_CREDITS)
+        )
+        await db.commit()
+
+async def get_credits(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT credits FROM users WHERE user_id=?", (user_id,)) as c:
+            row = await c.fetchone()
+            return row[0] if row else 0
+
+async def deduct(user_id: int, amount: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT credits FROM users WHERE user_id=?", (user_id,)) as c:
+            row = await c.fetchone()
+            if not row or row[0] < amount:
+                return False
+        await db.execute(
+            "UPDATE users SET credits = credits - ? WHERE user_id = ?",
+            (amount, user_id)
+        )
+        await db.commit()
+    return True
+
+async def add_credits(user_id: int, amount: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET credits = credits + ? WHERE user_id = ?",
+            (amount, user_id)
+        )
+        await db.commit()
+
+async def block_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET is_blocked=1 WHERE user_id=?", (user_id,))
+        await db.commit()
+
+async def unblock_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET is_blocked=0 WHERE user_id=?", (user_id,))
+        await db.commit()
+
+async def is_blocked(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT is_blocked FROM users WHERE user_id=?", (user_id,)) as c:
+            row = await c.fetchone()
+            return bool(row and row[0])
+
+async def log_gen(user_id: int, gen_type: str, model: str, credits: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO generations (user_id, type, model, credits) VALUES (?,?,?,?)",
+            (user_id, gen_type, model, credits)
+        )
+        await db.commit()
+
+# ══════════════════════════════════════════════════════════
+#  КЛАВИАТУРЫ
+# ══════════════════════════════════════════════════════════
+
+def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 Помочь с выбором",       callback_data="help_choose"),
-         InlineKeyboardButton(text="🔒 VPN для РФ",             callback_data="vpn_help")],
-        [InlineKeyboardButton(text="🎨 Генерация изображений",  callback_data="choose_image_model"),
-         InlineKeyboardButton(text="🎬 Создать видео",          callback_data="choose_video_model")],
-        [InlineKeyboardButton(text="💰 Мой баланс",             callback_data="my_balance"),
-         InlineKeyboardButton(text="🛒 Купить кредиты",         callback_data="buy_credits")],
-        [InlineKeyboardButton(text="✍️ Написать для покупки",   url=f"https://t.me/{PERSONAL_USERNAME}")],
+        [
+            InlineKeyboardButton(text="🖼️ Изображение", callback_data="menu_image"),
+            InlineKeyboardButton(text="🎬 Видео",        callback_data="menu_video"),
+        ],
+        [
+            InlineKeyboardButton(text="💬 Консультант AI", callback_data="menu_chat"),
+        ],
+        [
+            InlineKeyboardButton(text="💳 Баланс",         callback_data="menu_balance"),
+            InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy"),
+        ],
+        [
+            InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}"),
+        ],
     ])
 
-def contact_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Написать для покупки", url=f"https://t.me/{PERSONAL_USERNAME}")],
-        [InlineKeyboardButton(text="🏠 Главное меню",         callback_data="main_menu")],
-    ])
-
-def image_model_keyboard(user_credits: int):
+def kb_image_models():
     rows = []
     for key, m in IMAGE_MODELS.items():
-        enough = "✅" if user_credits >= m["credits"] else "❌"
         rows.append([InlineKeyboardButton(
-            text=f"{enough} {m['name']} — {m['credits']} кр. | {m['desc']}",
-            callback_data=f"img_model_{key}"
+            text=f"{m['name']} — {m['credits']} кр ({m['price']})",
+            callback_data=f"imodel:{key}"
         )])
-    rows.append([InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def video_model_keyboard(user_credits: int):
+def kb_video_models():
     rows = []
     for key, m in VIDEO_MODELS.items():
-        enough = "✅" if user_credits >= m["credits"] else "❌"
         rows.append([InlineKeyboardButton(
-            text=f"{enough} {m['name']} — {m['credits']} кр. | {m['desc']}",
-            callback_data=f"vid_model_{key}"
+            text=f"{m['name']} — {m['credits']} кр ({m['price']})",
+            callback_data=f"vmodel:{key}"
         )])
-    rows.append([InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def services_keyboard():
-    services = [
-        ("🤖 ChatGPT", "info_chatgpt"), ("🧠 Claude", "info_claude"),
-        ("⚡ Grok", "info_grok"), ("🎨 Midjourney", "info_midjourney"),
-        ("💻 Cursor", "info_cursor"), ("🔍 Perplexity", "info_perplexity"),
-        ("✨ Krea AI", "info_krea"), ("🎵 Suno", "info_suno"),
-        ("🎬 Kling AI", "info_kling"), ("🎥 Runway", "info_runway"),
-        ("🎥 HeyGen", "info_heygen"), ("🎬 Higgsfield", "info_higgsfield"),
-        ("🌐 Lovable", "info_lovable"), ("📊 Gamma", "info_gamma"),
-        ("📹 Zoom", "info_zoom"),
-    ]
-    rows = [[InlineKeyboardButton(text=s[0], callback_data=s[1]) for s in services[i:i+2]]
-            for i in range(0, len(services), 2)]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def admin_keyboard():
-    maintenance = get_maintenance_mode()
-    maint_text = "✅ Техобслуж. ВКЛ" if maintenance else "🔄 Техобслуживание"
+def kb_confirm(prefix: str, key: str):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика",          callback_data="adm_stats"),
-         InlineKeyboardButton(text="📈 Активность",          callback_data="adm_activity")],
-        [InlineKeyboardButton(text="🔥 Популярные сервисы",  callback_data="adm_popular"),
-         InlineKeyboardButton(text="🏆 Топ активных",        callback_data="adm_top_users")],
-        [InlineKeyboardButton(text="👥 Пользователи",        callback_data="adm_users"),
-         InlineKeyboardButton(text="🔍 Найти по @username",  callback_data="adm_find_user")],
-        [InlineKeyboardButton(text="💳 Кредиты",             callback_data="adm_credits"),
-         InlineKeyboardButton(text="📜 История начислений",  callback_data="adm_credits_history")],
-        [InlineKeyboardButton(text="💰 Расход по юзерам",   callback_data="adm_credits_spent"),
-         InlineKeyboardButton(text="🚫 Блокировки",          callback_data="adm_blocks")],
-        [InlineKeyboardButton(text="✏️ Изменить приветствие", callback_data="adm_edit_welcome")],
-        [InlineKeyboardButton(text="📣 Рассылка",            callback_data="adm_broadcast"),
-         InlineKeyboardButton(text=maint_text,               callback_data="adm_maintenance")],
+        [
+            InlineKeyboardButton(text="✅ Генерировать", callback_data=f"go:{prefix}:{key}"),
+            InlineKeyboardButton(text="✏️ Изменить",    callback_data=f"chprompt:{prefix}:{key}"),
+        ],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")],
     ])
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async def generate_image(prompt: str, model_key: str) -> bytes | None:
-    try:
-        from google import genai
-        from google.genai import types
+def kb_buy():
+    rows = []
+    for key, p in CREDIT_PACKS.items():
+        rows.append([InlineKeyboardButton(
+            text=f"{p['name']} — {p['credits']} кр за {p['price']}₽",
+            callback_data=f"buy:{key}"
+        )])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        model_info = IMAGE_MODELS.get(model_key, IMAGE_MODELS["nb"])
-        model_name = model_info["model"]
+def kb_pay_method(pack_key: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data=f"paystars:{pack_key}")],
+        [InlineKeyboardButton(text="◀️ Назад",          callback_data="menu_buy")],
+    ])
 
-        if "gemini" in model_name:
-            # Nano Banana — через generate_content с modalities
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"]
-                )
-            )
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, "inline_data") and part.inline_data:
-                    return part.inline_data.data
-        else:
-            # Imagen 4
-            response = client.models.generate_images(
-                model=model_name,
-                prompt=prompt,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    aspect_ratio="1:1",
-                    safety_filter_level="BLOCK_MEDIUM_AND_ABOVE",
-                    person_generation="ALLOW_ADULT"
-                )
-            )
-            if response.generated_images:
-                return response.generated_images[0].image.image_bytes
-    except Exception as e:
-        logging.error(f"Image generation error: {e}")
-    return None
+def kb_after(menu: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Ещё раз",    callback_data=f"menu_{menu}"),
+            InlineKeyboardButton(text="🏠 Главное",    callback_data="back_main"),
+        ],
+        [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy")],
+    ])
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ГЕНЕРАЦИЯ ВИДЕО
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async def generate_video(prompt: str, model_key: str) -> bytes | None:
-    try:
-        from google import genai
+def kb_cancel():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")]
+    ])
 
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        model_info = VIDEO_MODELS.get(model_key, VIDEO_MODELS["veo31f"])
-        model_name = model_info["model"]
+def kb_back():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
+    ])
 
-        operation = client.models.generate_video(
-            model=model_name,
-            prompt=prompt,
-            config=genai.types.GenerateVideoConfig(
-                aspect_ratio="9:16",
-                number_of_videos=1
-            )
-        )
+def kb_contact():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")]
+    ])
 
-        # Ждём результат (до 5 минут)
-        for _ in range(60):
+
+def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    """Постоянная нижняя панель кнопок."""
+    rows = [
+        [KeyboardButton(text="🎨 Создать фото")],
+        [KeyboardButton(text="🎬 Создать видео")],
+        [KeyboardButton(text="👤 Мой профиль")],
+    ]
+    if is_admin:
+        rows.append([KeyboardButton(text="⚙️ Админ панель")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, persistent=True)
+
+# ══════════════════════════════════════════════════════════
+#  FSM СОСТОЯНИЯ
+# ══════════════════════════════════════════════════════════
+
+class ImgState(StatesGroup):
+    waiting_prompt = State()
+
+class VidState(StatesGroup):
+    waiting_prompt = State()
+
+class ChatState(StatesGroup):
+    chatting = State()
+
+class AdminState(StatesGroup):
+    waiting_user_id = State()
+    waiting_credits = State()
+    waiting_block_id = State()
+
+# ══════════════════════════════════════════════════════════
+#  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
+# ══════════════════════════════════════════════════════════
+
+SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Александра (@AleksandrOii).
+
+ГЛАВНОЕ — ТЫ РАБОТАЕШЬ ВНУТРИ БОТА КОТОРЫЙ УМЕЕТ:
+- Генерировать изображения (Imagen 4) — кнопка "🖼️ Изображение" в меню
+- Создавать видео (Veo 3.1) — кнопка "🎬 Видео" в меню
+- Оформлять подписки на любые нейросети без VPN и иностранных карт
+
+Если спрашивают "можешь создать изображение/видео?" — отвечай:
+"Да! Нажми кнопку 🖼️ Изображение в главном меню — и создашь прямо здесь. Напиши /start если не видишь меню."
+
+НИКОГДА не говори что не умеешь создавать изображения или видео.
+
+ФОРМАТИРОВАНИЕ — СТРОГО:
+- Используй HTML теги для выделения: <b>жирный текст</b>
+- НЕ используй звёздочки ** никогда — только <b>тег</b>
+- Максимум 3-4 предложения на ответ
+- Никаких длинных списков
+- Если можно коротко — пиши коротко
+- Пиши на русском, используй эмодзи умеренно
+
+АКТУАЛЬНЫЕ МОДЕЛИ (апрель 2026):
+Claude: Sonnet 4.5 (быстрая), Sonnet 4.6 (новейшая), Opus 4 (максимум) — все доступны в Claude Pro $20/мес
+ChatGPT: GPT-5, GPT-5.3, GPT-5.4 (новейшие) — GPT-4o ВЫВЕДЕН из обращения в феврале 2026
+Grok: Grok 3 (free), Grok 3.5 (SuperGrok Lite $10), Grok 4 (SuperGrok $30), Grok 4 Heavy ($300)
+Gemini: Gemini 2.5 Flash, Gemini 3.1 Pro — в Google One AI Premium $20/мес
+
+━━━━━━━━━━━━━━━━━━━━━━
+ВАЖНО: АКТУАЛЬНОСТЬ ИНФОРМАЦИИ
+━━━━━━━━━━━━━━━━━━━━━━
+У тебя есть инструмент web_search. ВСЕГДА используй его когда клиент спрашивает про:
+- тарифы, цены, планы любого сервиса
+- новые модели или функции
+- сравнение сервисов
+- что нового в какой-либо нейросети
+
+Алгоритм: сначала поищи актуальную информацию, потом отвечай.
+Запросы для поиска делай на русском: "[сервис] тарифы 2026" или "[сервис] новые модели 2026"
+
+━━━━━━━━━━━━━━━━━━━━━━
+АКТУАЛЬНЫЕ ТАРИФЫ (апрель 2026)
+━━━━━━━━━━━━━━━━━━━━━━
+
+ChatGPT (OpenAI):
+Модели: GPT-5, GPT-5.3, GPT-5.4 (GPT-4o выведен из обращения в феврале 2026)
+Free — базовый GPT-5.3 с лимитами (10 сообщений каждые 5 часов), с рекламой
+Go — $8/мес, больше лимитов, но нет Sora/Codex/Deep Research, есть реклама — не рекомендуется
+Plus — $20/мес, лучший выбор: полный GPT-5, Sora, DALL-E/GPT Image, Deep Research (10/мес), Codex, Agent Mode, без рекламы
+Pro — $200/мес: GPT-5.4 Pro, 250 Deep Research/мес, двойной контекст — для профессионалов
+
+Claude (Anthropic):
+Модели: Sonnet 4.5 (быстрая), Sonnet 4.6 (новейшая), Opus 4 (максимальное качество)
+Free — Claude Sonnet 4.5 с лимитами
+Pro — $20/мес: Claude Opus 4, Sonnet 4.6, Projects, большие документы, приоритет
+Team — $25/мес/чел: совместная работа команды
+
+Grok (xAI):
+Модели: Grok 3, Grok 3.5, Grok 4, Grok 4 Heavy
+Free — Grok 3 с лимитами (~10 запросов каждые 2 часа), Aurora генерация изображений
+SuperGrok Lite — $10/мес: Grok 3.5 с расширенными лимитами
+SuperGrok — $30/мес: Grok 4, DeepSearch, безлимит изображений, Big Brain Mode, голос
+SuperGrok Heavy — $300/мес: Grok 4 Heavy, максимальное качество рассуждений
+(Также через X Premium $8/мес и X Premium+ $40/мес — вместе с фичами соцсети X)
+Особенность: самый низкий процент галлюцинаций (~4%), реальное время из X/Twitter, контекст 2М токенов
+
+Cursor (AI-редактор кода):
+Модели: GPT-5, Claude Sonnet 4.6, Gemini 3 и другие на выбор
+Hobby — бесплатно: 2000 автодополнений/мес, базовый доступ
+Pro — $20/мес ($16 при годовой оплате): безлимит Tab, $20 кредитов на AI-агенты, все топ-модели
+Pro+ — $60/мес: 3x больше кредитов для активных пользователей
+Ultra — $200/мес: 20x кредитов, для тех кто в Cursor весь рабочий день
+Teams — $40/польз./мес: командный доступ, SSO, общий биллинг
+Лучший AI-редактор кода в 2026 году
+
+Krea AI (генерация изображений в реальном времени):
+Free — лимитированный доступ
+Pro — $35/мес: безлимит генераций, upscale, real-time режим, видео
+
+Suno (генерация музыки):
+Версия: v4.5 — студийное качество, все жанры
+Free — несколько треков в день
+Pro — $8/мес: 2500 кредитов, коммерческое использование
+Premier — $24/мес: 10000 кредитов, приоритет
+
+Kling AI (генерация видео):
+Версия: Kling 2.1, Kling 3.0
+Free — 66 кредитов/день
+Standard — $8/мес: 660 кредитов/мес
+Pro — $27/мес: 3000 кредитов/мес
+Лучшее соотношение качество/цена для видео в 2026 году
+
+Runway (генерация видео):
+Версия: Gen-4 — кинематографическое качество
+Free — 125 кредитов (разово)
+Standard — $12/мес: 625 кредитов
+Pro — $28/мес: 2250 кредитов
+Лучше Kling по кинематографичности, но дороже
+
+ElevenLabs (синтез речи и клонирование голоса):
+Версия: движок v3 — неотличим от живого голоса, 70+ языков
+Free — 10 000 символов/мес (≈10 мин аудио), без коммерческих прав
+Starter — $5/мес: 30 000 символов, коммерческие права, клонирование голоса
+Creator — $22/мес: 100 000 символов, профессиональное клонирование
+
+HeyGen (AI-аватары и видео):
+Free — ограниченный доступ
+Creator — $24/мес: AI-аватары, перевод видео с сохранением голоса
+Business — $72/мес: командный доступ, API
+
+━━━━━━━━━━━━━━━━━━━━━━
+TELEGRAM И VPN В России (апрель 2026)
+━━━━━━━━━━━━━━━━━━━━━━
+ВАЖНО: 4 апреля 2026 года Telegram официально заблокирован в России.
+Павел Дуров подтвердил блокировку. Роскомнадзор ввёл ограничения поэтапно:
+- август 2025 — заблокированы звонки
+- февраль 2026 — замедление трафика по всей стране
+- 1 апреля 2026 — полная блокировка
+
+65 млн россиян продолжают пользоваться Telegram через обходы. Дуров обещал адаптировать трафик чтобы его было сложнее обнаружить.
+
+Как обойти блокировку Telegram:
+1. Встроенный прокси в Telegram: Настройки → Данные и хранилище → Прокси → включить
+2. VPN: Outline на своём VPS (самый надёжный), Proton VPN, Windscribe
+3. MTProto прокси — специальный протокол Telegram, труднее блокировать
+Важно: обычные VPN-протоколы РКН научился блокировать, Outline/MTProto работают лучше
+
+Для ChatGPT, Claude, Midjourney и других нейросетей тоже нужен VPN.
+Лучшие варианты: Outline на своём VPS, Proton VPN, Windscribe, 1.1.1.1 (Warp)
+
+━━━━━━━━━━━━━━━━━━━━━━
+КАК ОФОРМИТЬ ПОДПИСКУ
+━━━━━━━━━━━━━━━━━━━━━━
+Клиент пишет Александру в личку (@AleksandrOii), называет нужный сервис и тариф.
+Александр сам всё оформляет — не нужна иностранная карта или VPN.
+Оплата в рублях / тенге, быстро и без лишних сложностей.
+
+━━━━━━━━━━━━━━━━━━━━━━
+ПРАВИЛА ОТВЕТОВ
+━━━━━━━━━━━━━━━━━━━━━━
+1. ВСЕГДА используй web_search перед ответом о тарифах или моделях — информация обновляется часто
+2. Если клиент спрашивает про конкретный сервис — расскажи что он даёт, актуальные тарифы, отличия
+3. Если клиент не знает что выбрать — задай уточняющий вопрос: для чего нужна нейросеть?
+4. Для оформления подписки всегда направляй к Александру: @AleksandrOii
+5. Никогда не называй устаревшие модели (GPT-4o, GPT-4 Turbo) как текущие — сейчас актуальны GPT-5.x
+6. Если не знаешь — честно скажи и предложи спросить Александра напрямую
+"""
+
+# Инструмент веб-поиска для Claude API
+WEB_SEARCH_TOOL = {
+    "type": "web_search_20250305",
+    "name": "web_search",
+}
+
+# ══════════════════════════════════════════════════════════
+#  GOOGLE AI СЕРВИСЫ
+# ══════════════════════════════════════════════════════════
+
+async def api_generate_image(prompt: str, model_id: str) -> bytes:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:predict"
+    payload = {
+        "instances": [{"prompt": prompt}],
+        "parameters": {
+            "sampleCount": 1,
+            "aspectRatio": "1:1",
+            "safetyFilterLevel": "block_few",
+        }
+    }
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, json=payload, headers=headers) as r:
+            if r.status != 200:
+                raise Exception(f"Imagen API {r.status}: {(await r.text())[:200]}")
+            data = await r.json()
+            return base64.b64decode(data["predictions"][0]["bytesBase64Encoded"])
+
+
+async def api_generate_video(prompt: str, model_id: str) -> bytes:
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+    payload = {
+        "instances": [{"prompt": prompt}],
+        "parameters": {"durationSeconds": 8, "aspectRatio": "16:9", "sampleCount": 1}
+    }
+    async with aiohttp.ClientSession() as s:
+        async with s.post(f"{base}/models/{model_id}:predictLongRunning",
+                          json=payload, headers=headers) as r:
+            if r.status != 200:
+                raise Exception(f"Veo API {r.status}: {(await r.text())[:200]}")
+            op_name = (await r.json()).get("name")
+
+        # polling
+        for _ in range(72):
             await asyncio.sleep(5)
-            operation = client.operations.get(operation)
-            if operation.done:
-                break
+            async with s.get(f"{base}/{op_name}", headers=headers) as pr:
+                if pr.status != 200:
+                    continue
+                pd = await pr.json()
+                if not pd.get("done"):
+                    continue
+                if "error" in pd:
+                    raise Exception(pd["error"].get("message", "Veo error"))
+                preds = pd.get("response", {}).get("predictions", [])
+                if not preds:
+                    raise Exception("Пустой ответ Veo API")
+                if preds[0].get("bytesBase64Encoded"):
+                    return base64.b64decode(preds[0]["bytesBase64Encoded"])
+                uri = preds[0].get("videoUri") or preds[0].get("gcsUri")
+                if uri:
+                    async with s.get(uri) as vr:
+                        return await vr.read()
+                raise Exception("Нет данных видео в ответе")
+    raise Exception("Превышено время ожидания (6 мин)")
 
-        if operation.done and hasattr(operation, "response"):
-            videos = operation.response.generated_videos
-            if videos:
-                return videos[0].video.video_bytes
-    except Exception as e:
-        logging.error(f"Video generation error: {e}")
-    return None
+# ══════════════════════════════════════════════════════════
+#  ОБРАБОТЧИКИ — СТАРТ / МЕНЮ
+# ══════════════════════════════════════════════════════════
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CLAUDE С ВЕБ-ПОИСКОМ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async def get_claude_response(messages: list) -> str:
+WELCOME_NEW = """👋 Привет, {name}!
+
+Я — AI-ассистент Александра. Умею:
+🖼️ Генерировать изображения (Imagen 4)
+🎬 Создавать видео (Veo 3.1) 
+💬 Консультировать по нейросетям и VPN
+💳 Оформлять подписки без карты и VPN
+
+🎁 Тебе начислено <b>{credits} бесплатных кредитов</b>!
+
+Выбери действие 👇"""
+
+WELCOME_BACK = """👋 С возвращением, {name}!
+
+💳 Баланс: <b>{credits} кредитов</b>
+
+Выбери действие 👇"""
+
+
+@dp.message(F.text == "/start")
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    await ensure_user(message.from_user.id)
+    credits = await get_credits(message.from_user.id)
+    is_new = credits == FREE_CREDITS
+
+    text = (WELCOME_NEW if is_new else WELCOME_BACK).format(
+        name=message.from_user.first_name,
+        credits=credits
+    )
+    is_admin = message.from_user.id == ADMIN_ID
+    await message.answer(text, reply_markup=kb_reply(is_admin), parse_mode="HTML")
+    await message.answer("Выбери действие 👇", reply_markup=kb_main())
+
+
+@dp.callback_query(F.data == "back_main")
+async def back_main(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    credits = await get_credits(cb.from_user.id)
+    await cb.message.edit_text(
+        f"👋 {cb.from_user.first_name}, баланс: <b>{credits} кр</b>\n\nВыбери действие 👇",
+        reply_markup=kb_main(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+# ══════════════════════════════════════════════════════════
+#  БАЛАНС / ОПЛАТА
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "menu_balance")
+async def menu_balance(cb: CallbackQuery):
+    cr = await get_credits(cb.from_user.id)
+    lines = []
+    for k, m in IMAGE_MODELS.items():
+        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кр")
+    for k, m in VIDEO_MODELS.items():
+        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кр")
+
+    await cb.message.edit_text(
+        f"💳 <b>Баланс: {cr} кредитов</b> (≈{cr*5}₽)\n\n"
+        f"<b>Доступно:</b>\n" + "\n".join(lines),
+        reply_markup=kb_buy(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "menu_buy")
+async def menu_buy(cb: CallbackQuery):
+    cr = await get_credits(cb.from_user.id)
+    await cb.message.edit_text(
+        f"🛒 <b>Купить кредиты</b>\n\n💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"🥉 Старт — 50 кр → 199₽\n"
+        f"🥈 Стандарт — 150 кр → 499₽\n"
+        f"🥇 Про — 500 кр → 1490₽",
+        reply_markup=kb_buy(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("buy:"))
+async def buy_pack(cb: CallbackQuery):
+    key = cb.data.split(":")[1]
+    p = CREDIT_PACKS[key]
+    await cb.message.edit_text(
+        f"{p['name']}\n\n💎 <b>{p['credits']} кредитов</b>\n💰 {p['price']}₽\n\nВыбери способ оплаты:",
+        reply_markup=kb_pay_method(key), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("paystars:"))
+async def pay_stars(cb: CallbackQuery):
+    key = cb.data.split(":")[1]
+    p = CREDIT_PACKS[key]
+    await cb.message.answer_invoice(
+        title=f"{p['name']} — {p['credits']} кредитов",
+        description=f"Пополнение баланса AI-бота: {p['credits']} кредитов",
+        payload=f"stars:{key}:{cb.from_user.id}",
+        currency="XTR",
+        prices=[LabeledPrice(label=p['name'], amount=p['stars'])],
+    )
+    await cb.answer()
+
+
+@dp.pre_checkout_query()
+async def pre_checkout(q: PreCheckoutQuery):
+    await q.answer(ok=True)
+
+
+@dp.message(F.successful_payment)
+async def on_payment(message: Message):
+    parts = message.successful_payment.invoice_payload.split(":")
+    key = parts[1]
+    p = CREDIT_PACKS[key]
+    await add_credits(message.from_user.id, p["credits"])
+    cr = await get_credits(message.from_user.id)
+    await message.answer(
+        f"✅ <b>Оплата прошла!</b>\n\n"
+        f"💎 Начислено: +{p['credits']} кредитов\n"
+        f"💳 Баланс: <b>{cr} кр</b>",
+        reply_markup=kb_back(), parse_mode="HTML"
+    )
+
+# ══════════════════════════════════════════════════════════
+#  ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "menu_image")
+async def menu_image(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(cb.from_user.id)
+    await cb.message.edit_text(
+        f"🖼️ <b>Создать изображение</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"⚡ <b>Imagen 4 Fast</b> — 1 кр (5₽) | ~2 сек\n"
+        f"✨ <b>Imagen 4</b> — 2 кр (10₽) | ~5 сек\n"
+        f"💎 <b>Imagen 4 Ultra</b> — 3 кр (15₽) | ~8 сек",
+        reply_markup=kb_image_models(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("imodel:"))
+async def choose_img_model(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":")[1]
+    m = IMAGE_MODELS[key]
+    cr = await get_credits(cb.from_user.id)
+    if cr < m["credits"]:
+        await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr}", show_alert=True)
+        return
+    await state.update_data(model_key=key)
+    await state.set_state(ImgState.waiting_prompt)
+    await cb.message.edit_text(
+        f"{m['name']} ✅\n\n"
+        f"💳 Спишется: <b>{m['credits']} кр</b> ({m['price']})\n"
+        f"⏱ Время: {m['speed']}\n\n"
+        f"✏️ <b>Введи промт:</b>\n\n"
+        f"<i>Пример: A futuristic city at night, neon lights, cyberpunk, 4k</i>",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(ImgState.waiting_prompt)
+async def img_prompt(message: Message, state: FSMContext):
+    data = await state.get_data()
+    key = data["model_key"]
+    m = IMAGE_MODELS[key]
+    prompt = message.text.strip()
+    await state.update_data(prompt=prompt)
+
+    await message.answer(
+        f"📝 <b>Проверь заказ:</b>\n\n"
+        f"🤖 {m['name']}\n"
+        f"💳 <b>{m['credits']} кр</b> ({m['price']})\n"
+        f"⏱ {m['speed']}\n\n"
+        f"📄 <i>{prompt}</i>",
+        reply_markup=kb_confirm("img", key), parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data.startswith("go:img:"))
+async def go_image(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":")[2]
+    m = IMAGE_MODELS[key]
+    data = await state.get_data()
+    prompt = data.get("prompt", "")
+
+    ok = await deduct(cb.from_user.id, m["credits"])
+    if not ok:
+        await cb.answer("❌ Недостаточно кредитов!", show_alert=True)
+        return
+
+    await state.clear()
+    wait = await cb.message.edit_text(
+        f"⏳ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>",
+        parse_mode="HTML"
+    )
+
     try:
-        response = claude_client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=messages
+        img_bytes = await api_generate_image(prompt, m["model_id"])
+        await log_gen(cb.from_user.id, "image", key, m["credits"])
+        cr = await get_credits(cb.from_user.id)
+        await cb.message.answer_photo(
+            BufferedInputFile(img_bytes, "image.png"),
+            caption=f"✅ Готово! {m['name']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
+            reply_markup=kb_after("image")
         )
-        full_text = ""
-        for block in response.content:
-            if hasattr(block, "type") and block.type == "text":
-                full_text += block.text
-        return full_text.strip() or f"Не удалось получить ответ. Напиши: @{PERSONAL_USERNAME}"
+        await wait.delete()
     except Exception as e:
-        logging.error(f"Claude API error: {e}")
-        return None
+        await add_credits(cb.from_user.id, m["credits"])
+        await cb.message.edit_text(
+            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            reply_markup=kb_back()
+        )
+    await cb.answer()
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ПРИВЕТСТВИЕ НОВЫХ ПОДПИСЧИКОВ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@dp.callback_query(F.data.startswith("chprompt:img:"))
+async def change_img_prompt(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":")[2]
+    await state.update_data(model_key=key)
+    await state.set_state(ImgState.waiting_prompt)
+    await cb.message.edit_text(
+        f"✏️ Введи новый промт для <b>{IMAGE_MODELS[key]['name']}</b>:",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+# ══════════════════════════════════════════════════════════
+#  ГЕНЕРАЦИЯ ВИДЕО
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "menu_video")
+async def menu_video(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(cb.from_user.id)
+    await cb.message.edit_text(
+        f"🎬 <b>Создать видео (8 сек)</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 15 кр (75₽) | 720p\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 25 кр (125₽) | 1080p\n"
+        f"🎬 <b>Veo 3.1</b> — 65 кр (325₽) | 4K + аудио\n\n"
+        f"⏱ <i>Время генерации: 1–6 минут</i>",
+        reply_markup=kb_video_models(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("vmodel:"))
+async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":")[1]
+    m = VIDEO_MODELS[key]
+    cr = await get_credits(cb.from_user.id)
+    if cr < m["credits"]:
+        await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr}. Пополни баланс!", show_alert=True)
+        return
+    await state.update_data(model_key=key)
+    await state.set_state(VidState.waiting_prompt)
+    await cb.message.edit_text(
+        f"{m['name']} ✅\n\n"
+        f"💳 Спишется: <b>{m['credits']} кр</b> ({m['price']})\n"
+        f"📐 {m['res']} | 8 сек\n\n"
+        f"✏️ <b>Введи промт:</b>\n\n"
+        f"<i>Пример: A drone flies over Tokyo at night, cinematic, smooth motion</i>",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(VidState.waiting_prompt)
+async def vid_prompt(message: Message, state: FSMContext):
+    data = await state.get_data()
+    key = data["model_key"]
+    m = VIDEO_MODELS[key]
+    prompt = message.text.strip()
+    await state.update_data(prompt=prompt)
+
+    await message.answer(
+        f"📝 <b>Проверь заказ:</b>\n\n"
+        f"🤖 {m['name']}\n"
+        f"📐 {m['res']} | 8 сек\n"
+        f"💳 <b>{m['credits']} кр</b> ({m['price']})\n\n"
+        f"📄 <i>{prompt}</i>\n\n"
+        f"⚠️ <i>Генерация занимает 1–6 минут</i>",
+        reply_markup=kb_confirm("vid", key), parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data.startswith("go:vid:"))
+async def go_video(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":")[2]
+    m = VIDEO_MODELS[key]
+    data = await state.get_data()
+    prompt = data.get("prompt", "")
+
+    ok = await deduct(cb.from_user.id, m["credits"])
+    if not ok:
+        await cb.answer("❌ Недостаточно кредитов!", show_alert=True)
+        return
+
+    await state.clear()
+    await cb.message.edit_text(
+        f"⏳ <b>Генерирую видео...</b>\n\n"
+        f"🤖 {m['name']} | {m['res']}\n"
+        f"📄 <i>{prompt[:80]}</i>\n\n"
+        f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
+        parse_mode="HTML"
+    )
+
+    try:
+        vid_bytes = await api_generate_video(prompt, m["model_id"])
+        await log_gen(cb.from_user.id, "video", key, m["credits"])
+        cr = await get_credits(cb.from_user.id)
+        await cb.message.answer_video(
+            BufferedInputFile(vid_bytes, "video.mp4"),
+            caption=f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
+            reply_markup=kb_after("video")
+        )
+    except Exception as e:
+        await add_credits(cb.from_user.id, m["credits"])
+        await cb.message.answer(
+            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            reply_markup=kb_back()
+        )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("chprompt:vid:"))
+async def change_vid_prompt(cb: CallbackQuery, state: FSMContext):
+    key = cb.data.split(":")[2]
+    await state.update_data(model_key=key)
+    await state.set_state(VidState.waiting_prompt)
+    await cb.message.edit_text(
+        f"✏️ Введи новый промт для <b>{VIDEO_MODELS[key]['name']}</b>:",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+# ══════════════════════════════════════════════════════════
+#  КОНСУЛЬТАНТ (оригинальная логика сохранена)
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "menu_chat")
+async def menu_chat(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(ChatState.chatting)
+    await cb.message.edit_text(
+        "💬 <b>Консультант AI</b>\n\n"
+        "Задай любой вопрос о нейросетях, VPN, подписках.\n"
+        "Это бесплатно 🎁\n\n"
+        "<i>Напиши вопрос:</i>",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "help_choose")
+async def help_choose(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(ChatState.chatting)
+    await cb.message.answer(
+        "Расскажи — для каких задач нужна нейросеть?\n\n"
+        "• Писать тексты / посты\n"
+        "• Генерировать картинки\n"
+        "• Программирование\n"
+        "• Анализ документов\n"
+        "• Видео / музыка\n\n"
+        "Опиши своими словами 👇"
+    )
+    await cb.answer()
+
+
+@dp.message(ChatState.chatting)
+async def chat_message(message: Message, state: FSMContext):
+    await bot.send_chat_action(message.chat.id, "typing")
+    uid = message.from_user.id
+    reply = await claude_with_search(uid, message.text)
+    await message.answer(reply, reply_markup=kb_cancel(), parse_mode="HTML")
+
+# ══════════════════════════════════════════════════════════
+#  ПРИВЕТСТВИЕ НОВЫХ ПОДПИСЧИКОВ (оригинал сохранён)
+# ══════════════════════════════════════════════════════════
+
 @dp.chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
 async def on_new_member(event: ChatMemberUpdated):
     if str(event.chat.id) != str(CHANNEL_ID):
@@ -288,769 +925,521 @@ async def on_new_member(event: ChatMemberUpdated):
     user = event.new_chat_member.user
     if user.is_bot:
         return
-    create_user(user.id, user.username, user.first_name)
+    await ensure_user(user.id)
     try:
-        custom_msg = get_welcome_message()
-        text = custom_msg if custom_msg else (
-            f"👋 Привет, {user.first_name}!\n\n"
-            "Я AI-консультант по нейросетям 🤖\n\n"
-            "Помогу тебе:\n"
-            "🔍 Выбрать нужную нейросеть\n"
-            "💳 Узнать цены и оформить подписку без VPN\n"
-            "🎨 Сгенерировать изображения и видео\n"
-            "🔒 Разобраться с VPN для России\n\n"
-            "Просто напиши или выбери ниже 👇"
+        await bot.send_message(
+            chat_id=user.id,
+            text=f"👋 Привет! Рад приветствовать тебя в канале!\n\n"
+                 f"Я — AI-ассистент Александра. Помогу:\n"
+                 f"🖼️ Создать изображение (Imagen 4)\n"
+                 f"🎬 Создать видео (Veo 3.1)\n"
+                 f"💬 Разобраться в нейросетях\n"
+                 f"💳 Оформить подписку без VPN и карты\n\n"
+                 f"🎁 Тебе начислено <b>{FREE_CREDITS} бесплатных кредитов</b>!\n\n"
+                 f"Напиши /start чтобы начать 👇",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Начать", callback_data="back_main")],
+                [InlineKeyboardButton(text="💬 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
+            ]),
+            parse_mode="HTML"
         )
-        await bot.send_message(user.id, text, parse_mode="Markdown", reply_markup=main_keyboard())
     except Exception as e:
-        logging.warning(f"Не удалось отправить {user.id}: {e}")
+        logging.warning(f"Не удалось отправить приветствие {user.id}: {e}")
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# КОМАНДЫ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+
+# ══════════════════════════════════════════════════════════
+#  ФУНКЦИЯ CLAUDE С ВЕБ-ПОИСКОМ
+# ══════════════════════════════════════════════════════════
+
+async def claude_with_search(uid: int, user_text: str) -> str:
+    if uid not in user_conversations:
+        user_conversations[uid] = []
+
+    user_conversations[uid].append({"role": "user", "content": user_text})
+    if len(user_conversations[uid]) > 20:
+        user_conversations[uid] = user_conversations[uid][-20:]
+
+    try:
+        messages = list(user_conversations[uid])
+
+        resp = claude_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=messages,
+        )
+
+        # Обрабатываем tool_use если Claude решил искать
+        while resp.stop_reason == "tool_use":
+            assistant_content = resp.content
+            tool_results = []
+            for block in assistant_content:
+                if block.type == "tool_result":
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.tool_use_id,
+                        "content": block.content,
+                    })
+
+            messages.append({"role": "assistant", "content": assistant_content})
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+
+            resp = claude_client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=messages,
+            )
+
+        reply = ""
+        for block in resp.content:
+            if hasattr(block, "text"):
+                reply += block.text
+
+        if not reply:
+            reply = "Попробуй переформулировать вопрос 🙏"
+
+        user_conversations[uid].append({"role": "assistant", "content": reply})
+        return reply
+
+    except Exception as e:
+        logging.error(f"Claude API error: {e}")
+        # Fallback без поиска
+        try:
+            resp = claude_client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=user_conversations[uid],
+            )
+            reply = resp.content[0].text
+            user_conversations[uid].append({"role": "assistant", "content": reply})
+            return reply
+        except Exception as e2:
+            logging.error(f"Fallback error: {e2}")
+            return "Что-то пошло не так 😅 Попробуй ещё раз или напиши @neirosetkaalex"
+
+
+# ══════════════════════════════════════════════════════════
+#  REPLY KEYBOARD HANDLERS
+# ══════════════════════════════════════════════════════════
+
+@dp.message(F.text == "🎨 Создать фото")
+async def reply_create_photo(message: Message, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(message.from_user.id)
     await message.answer(
-        f"👋 Привет, {message.from_user.first_name}!\n\n"
-        "Я AI-консультант по нейросетям.\n"
-        "Отвечу на вопросы, расскажу о тарифах, помогу сгенерировать изображение или видео 🚀\n\n"
-        "Выбери что тебя интересует 👇",
-        reply_markup=main_keyboard()
+        f"🖼️ <b>Создать изображение</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"⚡ <b>Imagen 4 Fast</b> — 1 кр (5₽) | ~2 сек\n"
+        f"✨ <b>Imagen 4</b> — 2 кр (10₽) | ~5 сек\n"
+        f"💎 <b>Imagen 4 Ultra</b> — 3 кр (15₽) | ~8 сек",
+        reply_markup=kb_image_models(), parse_mode="HTML"
     )
 
-@dp.message(Command("admin"))
-async def cmd_admin(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    await message.answer("🔧 *Админ панель*\n\nВыбери раздел:", parse_mode="Markdown", reply_markup=admin_keyboard())
 
-@dp.message(Command("add_credits"))
-async def cmd_add_credits(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        parts = message.text.split()
-        add_credits(int(parts[1]), int(parts[2]), "Ручное начисление")
-        await message.answer(f"✅ Начислено {parts[2]} кредитов пользователю {parts[1]}")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}\nФормат: /add_credits [user_id] [amount]")
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CALLBACKS — ОСНОВНЫЕ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.callback_query(F.data == "main_menu")
-async def cb_main_menu(callback: CallbackQuery):
-    await callback.message.edit_text("Главное меню 👇", reply_markup=main_keyboard())
-    await callback.answer()
-
-@dp.callback_query(F.data == "help_choose")
-async def cb_help_choose(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "Для каких задач нужна нейросеть? 🤔\n\n"
-        "• Тексты / посты\n• Изображения или видео\n• Код / разработка\n"
-        "• Анализ документов\n• Музыка / озвучка\n• Поиск информации\n\n"
-        "Опиши своими словами 👇",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Все сервисы", callback_data="show_services")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")]
-        ])
+@dp.message(F.text == "🎬 Создать видео")
+async def reply_create_video(message: Message, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(message.from_user.id)
+    await message.answer(
+        f"🎬 <b>Создать видео (8 сек)</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 15 кр (75₽) | 720p\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 25 кр (125₽) | 1080p\n"
+        f"🎬 <b>Veo 3.1</b> — 65 кр (325₽) | 4K + аудио\n\n"
+        f"⏱ <i>Время генерации: 1–6 минут</i>",
+        reply_markup=kb_video_models(), parse_mode="HTML"
     )
-    await callback.answer()
 
-@dp.callback_query(F.data == "show_services")
-async def cb_show_services(callback: CallbackQuery):
-    await callback.message.edit_text("Выбери сервис 👇", reply_markup=services_keyboard())
-    await callback.answer()
 
-@dp.callback_query(F.data.startswith("info_"))
-async def cb_service_info(callback: CallbackQuery):
-    service_key = callback.data.replace("info_", "")
-    service_names = {
-        "chatgpt": "ChatGPT Plus", "claude": "Claude Pro", "grok": "SuperGrok",
-        "midjourney": "Midjourney", "cursor": "Cursor Pro", "perplexity": "Perplexity Pro",
-        "krea": "Krea AI", "suno": "Suno", "kling": "Kling AI", "runway": "Runway",
-        "heygen": "HeyGen", "higgsfield": "Higgsfield", "lovable": "Lovable Pro",
-        "gamma": "Gamma", "zoom": "Zoom",
-    }
-    name = service_names.get(service_key, service_key)
-    log_question(callback.from_user.id, service_key)
-    await callback.message.edit_text(f"🔍 Ищу актуальную информацию о *{name}*...", parse_mode="Markdown")
-    messages = [{"role": "user", "content": f"Расскажи подробно что умеет {name}, для каких задач подходит и какая цена. Используй актуальную информацию."}]
-    response = await get_claude_response(messages)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🛒 Купить {name}", url=f"https://t.me/{PERSONAL_USERNAME}")],
-        [InlineKeyboardButton(text="◀️ К списку", callback_data="show_services")]
+@dp.message(F.text == "👤 Мой профиль")
+async def reply_profile(message: Message):
+    uid = message.from_user.id
+    await ensure_user(uid)
+    cr = await get_credits(uid)
+
+    # Считаем генерации
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
+        ) as c:
+            row = await c.fetchone()
+            total_gens = row[0]
+            total_credits_spent = row[1]
+
+    # Что доступно
+    can = []
+    if cr >= 1: can.append("✅ Imagen 4 Fast")
+    if cr >= 2: can.append("✅ Imagen 4")
+    if cr >= 3: can.append("✅ Imagen 4 Ultra")
+    if cr >= 15: can.append("✅ Veo 3.1 Lite")
+    if cr >= 25: can.append("✅ Veo 3.1 Fast")
+    if cr >= 65: can.append("✅ Veo 3.1 Pro")
+    if not can: can.append("❌ Пополни баланс")
+
+    text = (
+        f"👤 <b>Профиль</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"👋 Имя: {message.from_user.full_name}\n\n"
+        f"💳 <b>Баланс: {cr} кредитов</b> (≈{cr*5}₽)\n"
+        f"🎨 Генераций сделано: {total_gens}\n"
+        f"💸 Кредитов потрачено: {total_credits_spent}\n\n"
+        f"<b>Доступно сейчас:</b>\n" + "\n".join(can)
+    )
+    await message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
+
+
+def kb_admin_panel():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика сегодня", callback_data="adm_stat_day"),
+         InlineKeyboardButton(text="📈 За неделю",          callback_data="adm_stat_week")],
+        [InlineKeyboardButton(text="➕ Начислить кредиты",  callback_data="adm_give_credits")],
+        [InlineKeyboardButton(text="🚫 Блокировки",         callback_data="adm_blocks")],
     ])
-    await callback.message.edit_text(response or f"Не удалось загрузить. Напиши @{PERSONAL_USERNAME}", parse_mode="Markdown", reply_markup=kb)
-    await callback.answer()
 
-@dp.callback_query(F.data == "vpn_help")
-async def cb_vpn(callback: CallbackQuery):
-    log_question(callback.from_user.id, "vpn")
-    await callback.message.edit_text(
-        "🔒 *VPN для России*\n\n"
-        "*Бесплатные:*\n• Outline VPN — лучший выбор\n• Lantern — без настроек\n• Windscribe — 10 GB/мес\n\n"
-        "*Платные:*\n• ExpressVPN — самый быстрый\n• NordVPN — много серверов\n\n"
-        "💡 При покупке подписки через нас VPN не нужен — всё оформляем сами!",
-        parse_mode="Markdown", reply_markup=contact_keyboard()
-    )
-    await callback.answer()
+def kb_block_actions(target_id: int, currently_blocked: bool):
+    action = "adm_unblock" if currently_blocked else "adm_block"
+    label = "✅ Разблокировать" if currently_blocked else "🚫 Заблокировать"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=f"{action}:{target_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_blocks")],
+    ])
 
-@dp.callback_query(F.data == "my_balance")
-async def cb_balance(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user:
-        create_user(callback.from_user.id, callback.from_user.username, callback.from_user.first_name)
-        user = get_user(callback.from_user.id)
-    img_lines = "\n".join([f"• {m['name']}: {m['credits']} кр. ({m['price_rub']} ₽)" for m in IMAGE_MODELS.values()])
-    vid_lines = "\n".join([f"• {m['name']}: {m['credits']} кр. ({m['price_rub']} ₽)" for m in VIDEO_MODELS.values()])
-    text = (
-        f"💰 *Мой баланс*\n\n"
-        f"Кредиты: *{user['credits']}* кр. ({user['credits'] * 5} ₽)\n\n"
-        f"*Изображения:*\n{img_lines}\n\n"
-        f"*Видео (8 сек):*\n{vid_lines}\n\n"
-        f"Консультации — бесплатно 🆓"
-    )
-    await callback.message.edit_text(
-        text, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛒 Пополнить", callback_data="buy_credits")],
-            [InlineKeyboardButton(text="◀️ Меню", callback_data="main_menu")]
-        ])
-    )
-    await callback.answer()
 
-@dp.callback_query(F.data == "buy_credits")
-async def cb_buy_credits(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
-    balance = user["credits"] if user else 0
-    text = (
-        "💰 *Купить кредиты*\n\n"
-        f"Твой баланс: *{balance}* кр.\n"
-        "1 кредит = 5 ₽\n\n"
-        "*Что можно сделать:*\n"
-        "• Imagen 4 — 1 кр. (5 ₽)\n"
-        "• Nano Banana 2 — 2 кр. (10 ₽)\n"
-        "• Nano Banana Pro — 3 кр. (15 ₽)\n"
-        "• Veo 3.1 Lite — 10 кр. (50 ₽)\n"
-        "• Veo 3.1 Fast — 30 кр. (150 ₽)\n"
-        "• Veo 3.1 — 80 кр. (400 ₽)\n\n"
-        "👇 Выбери пакет:"
-    )
-    buttons = [
-        [InlineKeyboardButton(text=f"{p['name']} — {p['price_rub']} ₽", callback_data=f"buy_pack_{pid}")]
-        for pid, p in CREDIT_PACKS.items()
-    ]
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")])
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("buy_pack_"))
-async def cb_buy_pack(callback: CallbackQuery):
-    pack_id = callback.data.replace("buy_pack_", "")
-    pack = CREDIT_PACKS.get(pack_id)
-    if not pack:
-        await callback.answer("Пакет не найден")
+@dp.message(F.text == "⚙️ Админ панель")
+async def reply_admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Нет доступа")
         return
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=pack["name"], description=pack["description"],
-        payload=f"pack_{pack_id}_{callback.from_user.id}",
-        currency="XTR",
-        prices=[LabeledPrice(label=pack["name"], amount=pack["price_stars"])],
-        provider_token=""
-    )
-    await callback.answer()
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CALLBACKS — ВЫБОР МОДЕЛИ ИЗОБРАЖЕНИЙ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.callback_query(F.data == "choose_image_model")
-async def cb_choose_image_model(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user:
-        create_user(callback.from_user.id, callback.from_user.username, callback.from_user.first_name)
-        user = get_user(callback.from_user.id)
-    credits = user["credits"] if user else 0
-    await callback.message.edit_text(
-        f"🎨 *Генерация изображений*\n\nТвой баланс: *{credits}* кр.\n\nВыбери модель 👇",
-        parse_mode="Markdown",
-        reply_markup=image_model_keyboard(credits)
-    )
-    await callback.answer()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as c:
+            users = (await c.fetchone())[0]
+        async with db.execute("SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations") as c:
+            row = await c.fetchone()
+            gens, credits_used = row[0], row[1]
+        async with db.execute("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments") as c:
+            row = await c.fetchone()
+            payments, revenue = row[0], row[1]
+        async with db.execute(
+            "SELECT user_id, credits FROM users ORDER BY credits DESC LIMIT 5"
+        ) as c:
+            top = await c.fetchall()
 
-@dp.callback_query(F.data.startswith("img_model_"))
-async def cb_img_model_selected(callback: CallbackQuery):
-    model_key = callback.data.replace("img_model_", "")
-    model_info = IMAGE_MODELS.get(model_key)
-    if not model_info:
-        await callback.answer("Модель не найдена")
+    top_text = "\n".join([f"  {i+1}. ID {r[0]} — {r[1]} кр" for i, r in enumerate(top)])
+
+    await message.answer(
+        f"⚙️ <b>Админ панель</b>\n\n"
+        f"👥 Всего пользователей: <b>{users}</b>\n"
+        f"🎨 Всего генераций: <b>{gens}</b>\n"
+        f"💸 Кредитов использовано: <b>{credits_used}</b>\n"
+        f"💳 Платежей: <b>{payments}</b>\n"
+        f"💰 Выручка: <b>{revenue}₽</b>\n\n"
+        f"<b>Топ по балансу:</b>\n{top_text}",
+        reply_markup=kb_admin_panel(),
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data == "adm_stat_day")
+async def adm_stat_day(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
         return
-    user = get_user(callback.from_user.id)
-    credits = user["credits"] if user else 0
-    if credits < model_info["credits"]:
-        await callback.message.edit_text(
-            f"❌ Недостаточно кредитов\n\nНужно: *{model_info['credits']}* кр. | У тебя: *{credits}* кр.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")],
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="choose_image_model")]
-            ])
-        )
-        await callback.answer()
-        return
-    user_conversations[f"gen_image_{callback.from_user.id}"] = model_key
-    await callback.message.edit_text(
-        f"🎨 *{model_info['name']}* — {model_info['credits']} кр.\n\n"
-        f"Опиши что хочешь сгенерировать на русском или английском 👇",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Отмена", callback_data="choose_image_model")]
-        ])
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= date('now')"
+        ) as c:
+            new_users = (await c.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= date('now')"
+        ) as c:
+            row = await c.fetchone()
+            gens, credits_used = row[0], row[1]
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= date('now')"
+        ) as c:
+            row = await c.fetchone()
+            pays, revenue = row[0], row[1]
+        async with db.execute(
+            "SELECT type, COUNT(*) FROM generations WHERE created_at >= date('now') GROUP BY type"
+        ) as c:
+            by_type = await c.fetchall()
+
+    by_type_text = "\n".join([f"  • {r[0]}: {r[1]} шт" for r in by_type]) or "  нет данных"
+
+    await cb.message.answer(
+        f"📊 <b>Статистика за сегодня</b>\n\n"
+        f"👤 Новых пользователей: <b>{new_users}</b>\n"
+        f"🎨 Генераций: <b>{gens}</b>\n"
+        f"💸 Кредитов потрачено: <b>{credits_used}</b>\n"
+        f"💳 Оплат: <b>{pays}</b>\n"
+        f"💰 Выручка: <b>{revenue}₽</b>\n\n"
+        f"<b>По типу:</b>\n{by_type_text}",
+        parse_mode="HTML"
     )
-    await callback.answer()
+    await cb.answer()
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CALLBACKS — ВЫБОР МОДЕЛИ ВИДЕО
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.callback_query(F.data == "choose_video_model")
-async def cb_choose_video_model(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
-    if not user:
-        create_user(callback.from_user.id, callback.from_user.username, callback.from_user.first_name)
-        user = get_user(callback.from_user.id)
-    credits = user["credits"] if user else 0
-    await callback.message.edit_text(
-        f"🎬 *Генерация видео (8 сек)*\n\nТвой баланс: *{credits}* кр.\n\nВыбери модель 👇",
-        parse_mode="Markdown",
-        reply_markup=video_model_keyboard(credits)
-    )
-    await callback.answer()
 
-@dp.callback_query(F.data.startswith("vid_model_"))
-async def cb_vid_model_selected(callback: CallbackQuery):
-    model_key = callback.data.replace("vid_model_", "")
-    model_info = VIDEO_MODELS.get(model_key)
-    if not model_info:
-        await callback.answer("Модель не найдена")
+@dp.callback_query(F.data == "adm_stat_week")
+async def adm_stat_week(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
         return
-    user = get_user(callback.from_user.id)
-    credits = user["credits"] if user else 0
-    if credits < model_info["credits"]:
-        await callback.message.edit_text(
-            f"❌ Недостаточно кредитов\n\nНужно: *{model_info['credits']}* кр. | У тебя: *{credits}* кр.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")],
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="choose_video_model")]
-            ])
-        )
-        await callback.answer()
-        return
-    user_conversations[f"gen_video_{callback.from_user.id}"] = model_key
-    await callback.message.edit_text(
-        f"🎬 *{model_info['name']}* — {model_info['credits']} кр.\n\n"
-        f"Опиши сцену для видео. Чем детальнее — тем лучше результат 👇\n\n"
-        f"_Пример: закат над морем, волны бьются о скалы, сверху камера_",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Отмена", callback_data="choose_video_model")]
-        ])
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= date('now', '-7 days')"
+        ) as c:
+            new_users = (await c.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= date('now', '-7 days')"
+        ) as c:
+            row = await c.fetchone()
+            gens, credits_used = row[0], row[1]
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= date('now', '-7 days')"
+        ) as c:
+            row = await c.fetchone()
+            pays, revenue = row[0], row[1]
+        async with db.execute(
+            "SELECT date(created_at), COUNT(*) FROM generations "
+            "WHERE created_at >= date('now', '-7 days') GROUP BY date(created_at) ORDER BY 1"
+        ) as c:
+            by_day = await c.fetchall()
+
+    by_day_text = "\n".join([f"  {r[0]}: {r[1]} ген." for r in by_day]) or "  нет данных"
+
+    await cb.message.answer(
+        f"📈 <b>Статистика за 7 дней</b>\n\n"
+        f"👤 Новых пользователей: <b>{new_users}</b>\n"
+        f"🎨 Генераций: <b>{gens}</b>\n"
+        f"💸 Кредитов потрачено: <b>{credits_used}</b>\n"
+        f"💳 Оплат: <b>{pays}</b>\n"
+        f"💰 Выручка: <b>{revenue}₽</b>\n\n"
+        f"<b>По дням:</b>\n{by_day_text}",
+        parse_mode="HTML"
     )
-    await callback.answer()
+    await cb.answer()
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ОПЛАТА
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.pre_checkout_query()
-async def pre_checkout(query: PreCheckoutQuery):
-    await query.answer(ok=True)
-
-@dp.message(F.successful_payment)
-async def successful_payment(message: Message):
-    payload = message.successful_payment.invoice_payload
-    parts = payload.split("_")
-    pack_id = parts[1]
-    pack = CREDIT_PACKS.get(pack_id)
-    if pack:
-        add_credits(message.from_user.id, pack["credits"], f"Покупка {pack['name']}")
-        user = get_user(message.from_user.id)
-        await message.answer(
-            f"✅ *Оплата прошла!*\n\nНачислено: *{pack['credits']}* кредитов\nБаланс: *{user['credits']}* кр. 🎉",
-            parse_mode="Markdown", reply_markup=main_keyboard()
-        )
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CALLBACKS — АДМИН ПАНЕЛЬ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.callback_query(F.data == "adm_stats")
-async def adm_stats(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    s = get_stats()
-    await callback.message.edit_text(
-        "📊 *Статистика пользователей*\n\n"
-        f"👥 Всего: *{s['total_users']}*\n"
-        f"🆕 Новых сегодня: *{s['new_today']}*\n"
-        f"📅 Новых за неделю: *{s['new_week']}*\n"
-        f"💳 Платных: *{s['paid_users']}*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_activity")
-async def adm_activity(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    a = get_today_activity()
-    await callback.message.edit_text(
-        "📈 *Активность за сегодня*\n\n"
-        f"✉️ Действий: *{a['messages_today']}*\n"
-        f"👤 Активных пользователей: *{a['active_users_today']}*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_popular")
-async def adm_popular(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    popular = get_popular_services(10)
-    lines = "\n".join([f"{i+1}. *{n}* — {c} запросов" for i, (n, c) in enumerate(popular)]) if popular else "Пока нет данных"
-    await callback.message.edit_text(
-        f"🔥 *Популярные сервисы*\n\n{lines}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_top_users")
-async def adm_top_users(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    top = get_top_active_users(10)
-    lines = "\n".join([f"{i+1}. {'@'+u if u else f or str(uid)} — {c} действий" for i, (uid, u, f, c) in enumerate(top)]) if top else "Пока нет данных"
-    await callback.message.edit_text(
-        f"🏆 *Топ активных пользователей*\n\n{lines}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_users")
-async def adm_users(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    users = get_all_users()
-    lines = "\n".join([f"• {'@'+u if u else f or str(uid)} | {cr} кр. | {pl} | {(j or '')[:10]}" for uid, u, f, cr, pl, j in users[:15]])
-    await callback.message.edit_text(
-        f"👥 *Последние пользователи:*\n\n{lines or 'Пока никого'}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_find_user")
-async def adm_find_user(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    user_conversations[f"find_user_{callback.from_user.id}"] = True
-    await callback.message.edit_text(
-        "🔍 *Поиск пользователя*\n\nНапиши @username или user_id:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_credits")
-async def adm_credits(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    s = get_stats()
-    await callback.message.edit_text(
-        "💳 *Кредиты и генерации*\n\n"
-        f"⚡ Потрачено кредитов: *{s['total_credits_spent']}*\n"
-        f"🎨 Генераций изображений: *{s['total_images']}*\n\n"
-        "Нажми кнопку чтобы выдать кредиты пользователю 👇",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Выдать кредиты", callback_data="adm_give_credits")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]
-        ])
-    )
-    await callback.answer()
 
 @dp.callback_query(F.data == "adm_give_credits")
-async def adm_give_credits(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
+async def adm_give_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
         return
-    user_conversations[f"give_credits_step_{callback.from_user.id}"] = "awaiting_user_id"
-    await callback.message.edit_text(
-        "🎁 *Выдача кредитов — Шаг 1 из 2*\n\nНапиши user_id пользователя:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_credits")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("adm_amount_"))
-async def adm_choose_amount(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    parts = callback.data.split("_")
-    target_uid = int(parts[2])
-    amount = int(parts[3])
-    user = get_user(target_uid)
-    if not user:
-        await callback.answer("Пользователь не найден", show_alert=True)
-        return
-    add_credits(target_uid, amount, "Выдано админом")
-    updated = get_user(target_uid)
-    name = f"@{user['username']}" if user.get('username') else user.get('first_name') or str(target_uid)
-    await callback.message.edit_text(
-        f"✅ *Кредиты начислены!*\n\nПользователь: {name}\nНачислено: *{amount}* кр.\nНовый баланс: *{updated['credits']}* кр.",
-        parse_mode="Markdown",
+    await state.set_state(AdminState.waiting_user_id)
+    await cb.message.answer(
+        "➕ <b>Начислить кредиты</b>\n\nВведи Telegram ID пользователя:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Выдать ещё", callback_data="adm_give_credits")],
-            [InlineKeyboardButton(text="◀️ В меню", callback_data="adm_back")]
-        ])
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+        ]),
+        parse_mode="HTML"
     )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_user_id)
+async def adm_get_user_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
     try:
-        await bot.send_message(target_uid, f"🎁 Тебе начислено *{amount}* кредитов!\nБаланс: *{updated['credits']}* кр.", parse_mode="Markdown")
-    except:
-        pass
-    await callback.answer()
+        target_id = int(message.text.strip())
+        user = await get_user(target_id)
+        if not user:
+            await message.answer("❌ Пользователь не найден. Введи другой ID:")
+            return
+        await state.update_data(target_id=target_id)
+        await state.set_state(AdminState.waiting_credits)
+        await message.answer(
+            f"👤 Пользователь найден\n"
+            f"ID: <code>{target_id}</code>\n"
+            f"Текущий баланс: <b>{user['credits']} кр</b>\n\n"
+            f"Сколько кредитов начислить?",
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer("❌ Введи числовой ID:")
 
-@dp.callback_query(F.data == "adm_credits_history")
-async def adm_credits_history(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    history = get_credits_history(15)
-    lines = "\n".join([f"• {'@'+u if u else f or str(uid)} +{amt} | {(cr or '')[:10]}" for uid, u, f, amt, _, cr in history]) if history else "Пока нет данных"
-    await callback.message.edit_text(
-        f"📜 *История начислений*\n\n{lines}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
-    )
-    await callback.answer()
 
-@dp.callback_query(F.data == "adm_credits_spent")
-async def adm_credits_spent(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
+@dp.message(AdminState.waiting_credits)
+async def adm_give_credits_confirm(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
         return
-    data = get_credits_spent_by_user(10)
-    lines = "\n".join([f"{i+1}. {'@'+u if u else f or str(uid)} — {t} кр." for i, (uid, u, f, t) in enumerate(data)]) if data else "Пока нет данных"
-    await callback.message.edit_text(
-        f"💰 *Расход кредитов по пользователям*\n\n{lines}",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_back")]])
-    )
-    await callback.answer()
+    try:
+        amount = int(message.text.strip())
+        if amount <= 0:
+            await message.answer("❌ Введи положительное число:")
+            return
+        data = await state.get_data()
+        target_id = data["target_id"]
+        await add_credits(target_id, amount)
+        new_balance = await get_credits(target_id)
+        await state.clear()
+        await message.answer(
+            f"✅ <b>Кредиты начислены!</b>\n\n"
+            f"👤 ID: <code>{target_id}</code>\n"
+            f"➕ Начислено: <b>{amount} кр</b>\n"
+            f"💳 Новый баланс: <b>{new_balance} кр</b>",
+            parse_mode="HTML"
+        )
+        # Уведомляем пользователя
+        try:
+            await bot.send_message(
+                target_id,
+                f"🎁 Тебе начислено <b>{amount} кредитов</b> от администратора!\n"
+                f"💳 Баланс: <b>{new_balance} кр</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    except ValueError:
+        await message.answer("❌ Введи числовое количество кредитов:")
+
+
+@dp.callback_query(F.data == "adm_cancel")
+async def adm_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("❌ Отменено")
+    await cb.answer()
+
+
+# ─── Блокировки ───────────────────────────────────────────
 
 @dp.callback_query(F.data == "adm_blocks")
-async def adm_blocks(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
+async def adm_blocks_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
         return
-    user_conversations[f"block_step_{callback.from_user.id}"] = "awaiting_id"
-    await callback.message.edit_text(
-        "🚫 *Блокировка пользователя*\n\nНапиши @username или user_id:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_back")]])
-    )
-    await callback.answer()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM users WHERE is_blocked=1"
+            ) as c:
+                blocked_count = (await c.fetchone())[0]
+            async with db.execute(
+                "SELECT user_id FROM users WHERE is_blocked=1 LIMIT 10"
+            ) as c:
+                blocked_list = await c.fetchall()
 
-@dp.callback_query(F.data.startswith("adm_do_block_"))
-async def adm_do_block(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
+        blocked_text = ", ".join([str(r[0]) for r in blocked_list]) or "нет"
+
+        await cb.message.answer(
+            f"🚫 <b>Блокировки</b>\n\n"
+            f"Заблокировано пользователей: <b>{blocked_count}</b>\n"
+            f"ID: {blocked_text}\n\n"
+            f"Введи ID пользователя чтобы заблокировать или разблокировать:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+            ]),
+            parse_mode="HTML"
+        )
+        await state.set_state(AdminState.waiting_block_id)
+    except Exception as e:
+        logging.error(f"adm_blocks error: {e}")
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+@dp.message(AdminState.waiting_block_id)
+async def adm_block_check_user(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
         return
-    target_uid = int(callback.data.replace("adm_do_block_", ""))
-    block_user(target_uid)
-    await callback.message.edit_text(
-        f"🚫 Пользователь {target_uid} заблокирован.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню", callback_data="adm_back")]])
-    )
-    await callback.answer("Заблокировано", show_alert=True)
+    try:
+        target_id = int(message.text.strip())
+        user = await get_user(target_id)
+        if not user:
+            await message.answer("❌ Пользователь не найден. Введи другой ID:")
+            return
+        blocked = bool(user.get("is_blocked", 0))
+        status = "🚫 Заблокирован" if blocked else "✅ Активен"
+        await state.clear()
+        await message.answer(
+            f"👤 ID: <code>{target_id}</code>\n"
+            f"Статус: {status}\n"
+            f"Баланс: <b>{user['credits']} кр</b>",
+            reply_markup=kb_block_actions(target_id, blocked),
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer("❌ Введи числовой ID:")
 
-@dp.callback_query(F.data.startswith("adm_do_unblock_"))
-async def adm_do_unblock(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
+
+@dp.callback_query(F.data.startswith("adm_block:"))
+async def adm_do_block(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
         return
-    target_uid = int(callback.data.replace("adm_do_unblock_", ""))
-    unblock_user(target_uid)
-    await callback.message.edit_text(
-        f"✅ Пользователь {target_uid} разблокирован.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ В меню", callback_data="adm_back")]])
-    )
-    await callback.answer("Разблокировано", show_alert=True)
-
-@dp.callback_query(F.data == "adm_maintenance")
-async def adm_maintenance(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    current = get_maintenance_mode()
-    set_maintenance_mode(not current)
-    status = "ВКЛЮЧЁН 🔧" if not current else "ВЫКЛЮЧЕН ✅"
-    await callback.answer(f"Режим техобслуживания {status}", show_alert=True)
-    await callback.message.edit_text("🔧 *Админ панель*\n\nВыбери раздел:", parse_mode="Markdown", reply_markup=admin_keyboard())
-
-@dp.callback_query(F.data == "adm_edit_welcome")
-async def adm_edit_welcome(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    user_conversations[f"edit_welcome_{callback.from_user.id}"] = True
-    current = get_welcome_message()
-    preview = f"\n\nТекущее:\n_{current[:150]}_" if current else ""
-    await callback.message.edit_text(
-        f"✏️ *Изменить приветствие*{preview}\n\nНапиши новый текст:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_broadcast")
-async def adm_broadcast(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    user_conversations[f"broadcast_{callback.from_user.id}"] = True
-    await callback.message.edit_text(
-        "📣 *Рассылка*\n\nНапиши сообщение для всех пользователей бота:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_back")]])
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "adm_back")
-async def adm_back(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    # Очищаем все режимы ввода
-    for key in [f"find_user_{callback.from_user.id}", f"block_step_{callback.from_user.id}",
-                f"edit_welcome_{callback.from_user.id}", f"broadcast_{callback.from_user.id}",
-                f"give_credits_step_{callback.from_user.id}"]:
-        user_conversations.pop(key, None)
-    await callback.message.edit_text("🔧 *Админ панель*\n\nВыбери раздел:", parse_mode="Markdown", reply_markup=admin_keyboard())
-    await callback.answer()
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.message()
-async def handle_message(message: Message):
-    if not message.text:
-        return
-    user_id = message.from_user.id
-    create_user(user_id, message.from_user.username, message.from_user.first_name)
-
-    if is_blocked(user_id):
-        return
-
-    if user_id not in ADMIN_IDS and get_maintenance_mode():
-        await message.answer("🔧 Бот временно на техобслуживании. Скоро вернёмся!")
-        return
-
-    log_message(user_id)
-
-    # ── АДМИН: поиск пользователя ──
-    if user_id in ADMIN_IDS and user_conversations.get(f"find_user_{user_id}"):
-        user_conversations.pop(f"find_user_{user_id}", None)
-        q = message.text.strip()
-        found = find_user_by_username(q) if q.startswith("@") else get_user(int(q)) if q.isdigit() else find_user_by_username(q)
-        if found:
-            name = f"@{found['username']}" if found.get('username') else found.get('first_name') or str(found['user_id'])
-            is_bl = found.get('plan') == 'blocked'
-            await message.answer(
-                f"🔍 *Найден:* {name}\nID: `{found['user_id']}`\nКредиты: *{found['credits']}* кр.\nТариф: {found['plan']}",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🎁 Выдать кредиты", callback_data="adm_give_credits")],
-                    [InlineKeyboardButton(text="✅ Разблокировать" if is_bl else "🚫 Заблокировать",
-                                         callback_data=f"adm_do_unblock_{found['user_id']}" if is_bl else f"adm_do_block_{found['user_id']}")],
-                    [InlineKeyboardButton(text="◀️ В меню", callback_data="adm_back")]
-                ])
-            )
-        else:
-            await message.answer("❌ Пользователь не найден.")
-        return
-
-    # ── АДМИН: блокировка ──
-    if user_id in ADMIN_IDS and user_conversations.get(f"block_step_{user_id}") == "awaiting_id":
-        user_conversations.pop(f"block_step_{user_id}", None)
-        q = message.text.strip()
-        found = find_user_by_username(q) if q.startswith("@") else get_user(int(q)) if q.isdigit() else find_user_by_username(q)
-        if found:
-            name = f"@{found['username']}" if found.get('username') else found.get('first_name') or str(found['user_id'])
-            is_bl = found.get('plan') == 'blocked'
-            await message.answer(
-                f"Пользователь: {name}\nСтатус: {'🚫 Заблокирован' if is_bl else '✅ Активен'}",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"adm_do_block_{found['user_id']}")],
-                    [InlineKeyboardButton(text="✅ Разблокировать", callback_data=f"adm_do_unblock_{found['user_id']}")],
-                    [InlineKeyboardButton(text="◀️ Отмена", callback_data="adm_back")]
-                ])
-            )
-        else:
-            await message.answer("❌ Пользователь не найден.")
-        return
-
-    # ── АДМИН: изменение приветствия ──
-    if user_id in ADMIN_IDS and user_conversations.get(f"edit_welcome_{user_id}"):
-        user_conversations.pop(f"edit_welcome_{user_id}", None)
-        set_welcome_message(message.text)
-        await message.answer("✅ Приветственное сообщение обновлено!", reply_markup=admin_keyboard())
-        return
-
-    # ── АДМИН: рассылка ──
-    if user_id in ADMIN_IDS and user_conversations.get(f"broadcast_{user_id}"):
-        user_conversations.pop(f"broadcast_{user_id}", None)
-        all_ids = get_all_user_ids()
-        sent, failed = 0, 0
-        for uid in all_ids:
-            try:
-                await bot.send_message(uid, message.text, parse_mode="Markdown")
-                sent += 1
-                await asyncio.sleep(0.05)
-            except:
-                failed += 1
-        await message.answer(f"📣 *Рассылка завершена*\n\n✅ Отправлено: {sent}\n❌ Не доставлено: {failed}", parse_mode="Markdown", reply_markup=admin_keyboard())
-        return
-
-    # ── АДМИН: выдача кредитов ──
-    if user_id in ADMIN_IDS and user_conversations.get(f"give_credits_step_{user_id}") == "awaiting_user_id":
+    try:
+        target_id = int(cb.data.split(":")[1])
+        await block_user(target_id)
+        await cb.message.edit_text(
+            f"🚫 Пользователь <code>{target_id}</code> заблокирован.\n"
+            f"Он больше не сможет пользоваться ботом.",
+            reply_markup=kb_block_actions(target_id, True),
+            parse_mode="HTML"
+        )
         try:
-            target_uid = int(message.text.strip())
-            target_user = get_user(target_uid)
-            if not target_user:
-                await message.answer("❌ Пользователь не найден.")
-                return
-            user_conversations[f"give_credits_step_{user_id}"] = None
-            name = f"@{target_user['username']}" if target_user.get('username') else target_user.get('first_name') or str(target_uid)
-            await message.answer(
-                f"🎁 *Шаг 2 из 2*\n\nПользователь: {name}\nБаланс: *{target_user['credits']}* кр.\n\nСколько кредитов выдать?",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="10", callback_data=f"adm_amount_{target_uid}_10"),
-                     InlineKeyboardButton(text="20", callback_data=f"adm_amount_{target_uid}_20"),
-                     InlineKeyboardButton(text="30", callback_data=f"adm_amount_{target_uid}_30")],
-                    [InlineKeyboardButton(text="50", callback_data=f"adm_amount_{target_uid}_50"),
-                     InlineKeyboardButton(text="100", callback_data=f"adm_amount_{target_uid}_100"),
-                     InlineKeyboardButton(text="200", callback_data=f"adm_amount_{target_uid}_200")],
-                    [InlineKeyboardButton(text="300", callback_data=f"adm_amount_{target_uid}_300"),
-                     InlineKeyboardButton(text="500", callback_data=f"adm_amount_{target_uid}_500"),
-                     InlineKeyboardButton(text="1000", callback_data=f"adm_amount_{target_uid}_1000")],
-                    [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_credits")]
-                ])
-            )
-        except ValueError:
-            await message.answer("❌ Введи числовой user_id.")
+            await bot.send_message(target_id, "🚫 Ваш доступ к боту ограничен администратором.")
+        except Exception:
+            pass
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_unblock:"))
+async def adm_do_unblock(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
         return
+    try:
+        target_id = int(cb.data.split(":")[1])
+        await unblock_user(target_id)
+        await cb.message.edit_text(
+            f"✅ Пользователь <code>{target_id}</code> разблокирован.",
+            reply_markup=kb_block_actions(target_id, False),
+            parse_mode="HTML"
+        )
+        try:
+            await bot.send_message(target_id, "✅ Ваш доступ к боту восстановлен!")
+        except Exception:
+            pass
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
 
-    # ── ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЯ ──
-    if user_conversations.get(f"gen_image_{user_id}"):
-        model_key = user_conversations.pop(f"gen_image_{user_id}")
-        model_info = IMAGE_MODELS[model_key]
-        user = get_user(user_id)
-        if not user or user["credits"] < model_info["credits"]:
-            await message.answer("❌ Недостаточно кредитов.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")]]))
-            return
-        status_msg = await message.answer(f"🎨 Генерирую изображение через *{model_info['name']}*...", parse_mode="Markdown")
-        await bot.send_chat_action(message.chat.id, "upload_photo")
-        image_bytes = await generate_image(message.text, model_key)
-        if image_bytes:
-            if spend_credits(user_id, model_info["credits"], f"image_{model_key}"):
-                updated = get_user(user_id)
-                await bot.delete_message(message.chat.id, status_msg.message_id)
-                await bot.send_photo(
-                    message.chat.id,
-                    BufferedInputFile(image_bytes, "image.png"),
-                    caption=f"🎨 *{model_info['name']}*\nСписано: {model_info['credits']} кр. | Баланс: {updated['credits']} кр.",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🎨 Ещё изображение", callback_data="choose_image_model")],
-                        [InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")]
-                    ])
-                )
-        else:
-            await status_msg.edit_text("❌ Не удалось сгенерировать. Попробуй другой промт или модель.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Попробовать снова", callback_data="choose_image_model")]]))
+
+# ══════════════════════════════════════════════════════════
+#  ОБЫЧНЫЕ СООБЩЕНИЯ (вне FSM — консультант по умолчанию)
+# ══════════════════════════════════════════════════════════
+
+@dp.message()
+async def handle_message(message: Message, state: FSMContext):
+    await ensure_user(message.from_user.id)
+    uid = message.from_user.id
+    if await is_blocked(uid):
+        await message.answer("🚫 Ваш доступ к боту ограничен.")
         return
-
-    # ── ГЕНЕРАЦИЯ ВИДЕО ──
-    if user_conversations.get(f"gen_video_{user_id}"):
-        model_key = user_conversations.pop(f"gen_video_{user_id}")
-        model_info = VIDEO_MODELS[model_key]
-        user = get_user(user_id)
-        if not user or user["credits"] < model_info["credits"]:
-            await message.answer("❌ Недостаточно кредитов.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="buy_credits")]]))
-            return
-        status_msg = await message.answer(f"🎬 Генерирую видео через *{model_info['name']}*...\n\n⏳ Это займёт 1-3 минуты, жди!", parse_mode="Markdown")
-        await bot.send_chat_action(message.chat.id, "record_video")
-        video_bytes = await generate_video(message.text, model_key)
-        if video_bytes:
-            if spend_credits(user_id, model_info["credits"], f"video_{model_key}"):
-                updated = get_user(user_id)
-                await bot.delete_message(message.chat.id, status_msg.message_id)
-                await bot.send_video(
-                    message.chat.id,
-                    BufferedInputFile(video_bytes, "video.mp4"),
-                    caption=f"🎬 *{model_info['name']}*\nСписано: {model_info['credits']} кр. | Баланс: {updated['credits']} кр.",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🎬 Ещё видео", callback_data="choose_video_model")],
-                        [InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")]
-                    ])
-                )
-        else:
-            await status_msg.edit_text("❌ Не удалось создать видео. Попробуй другой промт.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Попробовать снова", callback_data="choose_video_model")]]))
-        return
-
-    # ── ОБЫЧНАЯ КОНСУЛЬТАЦИЯ ──
-    text_lower = message.text.lower()
-    for kw in ["chatgpt", "claude", "grok", "midjourney", "cursor", "perplexity", "krea", "suno", "kling", "runway", "heygen", "higgsfield", "lovable", "gamma", "zoom", "vpn"]:
-        if kw in text_lower:
-            log_question(user_id, kw)
-            break
-
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
-    user_conversations[user_id].append({"role": "user", "content": message.text})
-    if len(user_conversations[user_id]) > 20:
-        user_conversations[user_id] = user_conversations[user_id][-20:]
-
     await bot.send_chat_action(message.chat.id, "typing")
-    response = await get_claude_response(user_conversations[user_id])
-    if response:
-        user_conversations[user_id].append({"role": "assistant", "content": response})
-        await message.answer(response, parse_mode="Markdown", reply_markup=contact_keyboard())
-    else:
-        await message.answer("Что-то пошло не так 😅", reply_markup=contact_keyboard())
+    reply = await claude_with_search(uid, message.text)
+    await message.answer(reply, reply_markup=kb_contact(), parse_mode="HTML")
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ЗАПУСК
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ══════════════════════════════════════════════════════════
+#  ЗАПУСК
+# ══════════════════════════════════════════════════════════
+
 async def main():
-    init_db()
-    logging.info("Bot started!")
+    await init_db()
+    logging.info("✅ Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
