@@ -566,6 +566,9 @@ async def cmd_start(message: Message, state: FSMContext):
         credits=credits
     )
     is_admin = message.from_user.id == ADMIN_ID
+    # Сначала показываем нижнее меню (Reply Keyboard)
+    await message.answer("👇", reply_markup=kb_reply(is_admin))
+    # Потом приветствие с inline кнопками
     await message.answer(text, reply_markup=kb_main(), parse_mode="HTML")
 
 
