@@ -1679,39 +1679,53 @@ async def adm_find_start(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminState.waiting_find_user)
 async def adm_find_user(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID:
+        return
     txt = message.text.strip() if message.text else ""
     try:
         uid = int(txt)
     except (ValueError, TypeError):
-        await message.answer("❌ Введи числовой ID, например: <code>123456789</code>", parse_mode="HTML")
-        return
-    user = await get_user(uid)
-    if not user:
-        await message.answer(f"❌ Пользователь <code>{uid}</code> не найден в базе.", parse_mode="HTML")
-        await state.clear()
-        return
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
-            ) as c:
-                row = await c.fetchone()
-        blocked = "🚫 Да" if user.get("is_blocked") else "✅ Нет"
-        uname = f"@{user['username']}" if user.get("username") else "—"
-        await state.clear()
         await message.answer(
-            f"👤 <b>Пользователь</b>\n\n"
-            f"ID: <code>{uid}</code>\n"
-            f"Имя: {user.get('full_name', '—')}\n"
-            f"Username: {uname}\n"
-            f"Баланс: <b>{user['credits']} кр</b>\n"
-            f"Генераций: {row[0]}\n"
-            f"Кредитов потрачено: {row[1]}\n"
-            f"Заблокирован: {blocked}\n"
-            f"Регистрация: {str(user.get('created_at', '—'))[:10]}",
-            reply_markup=kb_block_actions(uid, bool(user.get("is_blocked"))),
+            "❌ Введи числовой Telegram ID\n<i>Пример: 123456789</i>",
             parse_mode="HTML"
         )
+        return
+    await state.clear()
+    user = await get_user(uid)
+    if not user:
+        await message.answer(
+            f"❌ Пользователь <code>{uid}</code> не найден.\n"
+            f"Он ещё не запускал бота.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
+        ) as c:
+            row = await c.fetchone()
+    blocked = "🚫 Да" if user.get("is_blocked") else "✅ Нет"
+    uname = f"@{user['username']}" if user.get("username") else "—"
+    await message.answer(
+        f"👤 <b>Пользователь найден</b>\n\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Имя: {user.get('full_name') or '—'}\n"
+        f"Username: {uname}\n"
+        f"Баланс: <b>{user['credits']} кр</b>\n"
+        f"Генераций: {row[0]}\n"
+        f"Кредитов потрачено: {row[1]}\n"
+        f"Заблокирован: {blocked}\n"
+        f"Регистрация: {str(user.get('created_at', ''))[:10]}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚫 Заблокировать" if not user.get("is_blocked") else "✅ Разблокировать",
+                                  callback_data=f"adm_block:{uid}" if not user.get("is_blocked") else f"adm_unblock:{uid}")],
+            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
+        ]),
+        parse_mode="HTML"
+    )
 
 
 # ─── История платежей ─────────────────────────────────────
@@ -1771,35 +1785,48 @@ async def adm_spend_show(message: Message, state: FSMContext):
         await message.answer("❌ Введи числовой ID, например: <code>123456789</code>", parse_mode="HTML")
         return
     await state.clear()
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT model, COUNT(*), SUM(credits) FROM generations WHERE user_id=? GROUP BY model ORDER BY COUNT(*) DESC",
-                (uid,)
-            ) as c:
-                rows = await c.fetchall()
-            async with db.execute(
-                "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
-            ) as c:
-                total = await c.fetchone()
-            user = await get_user(uid)
-        if not user:
-            await message.answer("❌ Пользователь не найден.")
-            return
-        if not rows:
-            await message.answer(f"💰 Пользователь <code>{uid}</code> ещё не делал генераций.", parse_mode="HTML")
-            return
-        lines = [f"  • {r[0]}: {r[1]} раз, {r[2]} кр" for r in rows]
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT model, COUNT(*), SUM(credits) FROM generations WHERE user_id=? GROUP BY model ORDER BY COUNT(*) DESC",
+            (uid,)
+        ) as c:
+            rows = await c.fetchall()
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
+        ) as c:
+            total = await c.fetchone()
+    user = await get_user(uid)
+    if not user:
         await message.answer(
-            f"💰 <b>Расход пользователя</b> <code>{uid}</code>\n\n"
-            f"Всего генераций: <b>{total[0]}</b>\n"
-            f"Всего кредитов: <b>{total[1]}</b>\n"
-            f"Текущий баланс: <b>{user['credits']} кр</b>\n\n"
-            f"<b>По моделям:</b>\n" + "\n".join(lines),
+            f"❌ Пользователь <code>{uid}</code> не найден в базе.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+            ]),
             parse_mode="HTML"
         )
-    except ValueError:
-        await message.answer("❌ Введи числовой ID:")
+        return
+    if not rows:
+        await message.answer(
+            f"💰 Пользователь <code>{uid}</code> ещё не делал генераций.\n"
+            f"Баланс: <b>{user['credits']} кр</b>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+            ]),
+            parse_mode="HTML"
+        )
+        return
+    lines = [f"  • {r[0]}: {r[1]} раз, {r[2] or 0} кр" for r in rows]
+    await message.answer(
+        f"💰 <b>Расход пользователя</b> <code>{uid}</code>\n\n"
+        f"Всего генераций: <b>{total[0]}</b>\n"
+        f"Всего кредитов потрачено: <b>{total[1]}</b>\n"
+        f"Текущий баланс: <b>{user['credits']} кр</b>\n\n"
+        f"<b>По моделям:</b>\n" + "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+        ]),
+        parse_mode="HTML"
+    )
 
 
 # ─── Изменить приветствие ─────────────────────────────────
