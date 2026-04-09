@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import aiosqlite
+import asyncpg
 import aiohttp
 import base64
 import os
@@ -31,7 +31,9 @@ PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "neirosetkaalex")  # личк
 ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
 
 FREE_CREDITS   = 5   # кредитов при первом /start
-DB_PATH        = "bot.db"
+DATABASE_URL   = os.getenv("DATABASE_URL")  # Railway PostgreSQL
+
+_pool = None  # глобальный connection pool
 
 logging.basicConfig(level=logging.INFO)
 
@@ -108,147 +110,152 @@ CREDIT_PACKS = {
 #  БАЗА ДАННЫХ
 # ══════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════
+#  БАЗА ДАННЫХ (PostgreSQL через asyncpg)
+# ══════════════════════════════════════════════════════════
+
+async def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    return _pool
+
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id    INTEGER PRIMARY KEY,
+                user_id    BIGINT PRIMARY KEY,
                 credits    INTEGER DEFAULT 0,
                 is_blocked INTEGER DEFAULT 0,
                 username   TEXT DEFAULT '',
                 full_name  TEXT DEFAULT '',
-                last_active TEXT DEFAULT (datetime('now')),
-                created_at TEXT DEFAULT (datetime('now'))
+                last_active TIMESTAMP DEFAULT NOW(),
+                created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT
             )
         """)
-        # Миграции — добавляем колонки если нет
-        for col, default in [
-            ("is_blocked", "0"), ("username", "''"),
-            ("full_name", "''"), ("last_active", "datetime('now')")
-        ]:
-            try:
-                await db.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
-            except Exception:
-                pass
-        # Дефолтные настройки
-        await db.execute("INSERT OR IGNORE INTO settings VALUES ('maintenance', '0')")
-        await db.commit()
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS generations (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER,
+                id         SERIAL PRIMARY KEY,
+                user_id    BIGINT,
                 type       TEXT,
                 model      TEXT,
                 credits    INTEGER,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS payments (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER,
+                id         SERIAL PRIMARY KEY,
+                user_id    BIGINT,
                 credits    INTEGER,
                 amount_rub INTEGER,
                 method     TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        await db.commit()
+        # Дефолтные настройки
+        await conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('maintenance', '0') ON CONFLICT DO NOTHING"
+        )
+    logging.info("✅ PostgreSQL инициализирован")
 
 async def ensure_user(user_id: int, username: str = "", full_name: str = ""):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO users (user_id, credits, username, full_name) VALUES (?, ?, ?, ?)",
-            (user_id, FREE_CREDITS, username, full_name)
-        )
-        await db.execute(
-            "UPDATE users SET username=?, full_name=?, last_active=datetime('now') WHERE user_id=?",
-            (username, full_name, user_id)
-        )
-        await db.commit()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (user_id, credits, username, full_name)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id) DO UPDATE
+            SET username=$3, full_name=$4, last_active=NOW()
+        """, user_id, FREE_CREDITS, username, full_name)
 
 async def get_setting(key: str, default: str = "") -> str:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT value FROM settings WHERE key=?", (key,)) as c:
-            row = await c.fetchone()
-            return row[0] if row else default
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM settings WHERE key=$1", key)
+        return row["value"] if row else default
 
 async def set_setting(key: str, value: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
-        await db.commit()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value=$2",
+            key, value
+        )
 
 async def get_user(user_id: int) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as c:
-            row = await c.fetchone()
-            return dict(row) if row else None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
+        return dict(row) if row else None
 
 async def get_credits(user_id: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT credits FROM users WHERE user_id=?", (user_id,)) as c:
-            row = await c.fetchone()
-            return row[0] if row else 0
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT credits FROM users WHERE user_id=$1", user_id)
+        return row["credits"] if row else 0
 
 async def log_payment(user_id: int, credits: int, amount_rub: int, method: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO payments (user_id, credits, amount_rub, method) VALUES (?,?,?,?)",
-            (user_id, credits, amount_rub, method)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO payments (user_id, credits, amount_rub, method) VALUES ($1,$2,$3,$4)",
+            user_id, credits, amount_rub, method
         )
-        await db.commit()
 
 async def deduct(user_id: int, amount: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT credits FROM users WHERE user_id=?", (user_id,)) as c:
-            row = await c.fetchone()
-            if not row or row[0] < amount:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT credits FROM users WHERE user_id=$1 FOR UPDATE", user_id
+            )
+            if not row or row["credits"] < amount:
                 return False
-        await db.execute(
-            "UPDATE users SET credits = credits - ? WHERE user_id = ?",
-            (amount, user_id)
-        )
-        await db.commit()
+            await conn.execute(
+                "UPDATE users SET credits = credits - $1 WHERE user_id = $2",
+                amount, user_id
+            )
     return True
 
 async def add_credits(user_id: int, amount: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET credits = credits + ? WHERE user_id = ?",
-            (amount, user_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET credits = credits + $1 WHERE user_id = $2",
+            amount, user_id
         )
-        await db.commit()
 
 async def block_user(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET is_blocked=1 WHERE user_id=?", (user_id,))
-        await db.commit()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET is_blocked=1 WHERE user_id=$1", user_id)
 
 async def unblock_user(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET is_blocked=0 WHERE user_id=?", (user_id,))
-        await db.commit()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET is_blocked=0 WHERE user_id=$1", user_id)
 
 async def is_blocked(user_id: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT is_blocked FROM users WHERE user_id=?", (user_id,)) as c:
-            row = await c.fetchone()
-            return bool(row and row[0])
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT is_blocked FROM users WHERE user_id=$1", user_id)
+        return bool(row and row["is_blocked"])
 
 async def log_gen(user_id: int, gen_type: str, model: str, credits: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO generations (user_id, type, model, credits) VALUES (?,?,?,?)",
-            (user_id, gen_type, model, credits)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO generations (user_id, type, model, credits) VALUES ($1,$2,$3,$4)",
+            user_id, gen_type, model, credits
         )
-        await db.commit()
 
 # ══════════════════════════════════════════════════════════
 #  КЛАВИАТУРЫ
@@ -1240,13 +1247,13 @@ async def reply_profile(message: Message):
     cr = await get_credits(uid)
 
     # Считаем генерации
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
-        ) as c:
-            row = await c.fetchone()
-            total_gens = row[0]
-            total_credits_spent = row[1]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=$1", uid
+        )
+        total_gens = row[0] or 0
+        total_credits_spent = row[1] or 0
 
     # Что доступно
     can = []
@@ -1272,21 +1279,15 @@ async def reply_profile(message: Message):
 
 
 async def get_admin_stats() -> dict:
-    """Получить статистику для админ панели."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM users") as c:
-            users = (await c.fetchone())[0]
-        async with db.execute("SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations") as c:
-            row = await c.fetchone()
-            gens, credits_used = row[0], row[1]
-        async with db.execute("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments") as c:
-            row = await c.fetchone()
-            payments, revenue = row[0], row[1]
-        async with db.execute(
-            "SELECT user_id, credits FROM users ORDER BY credits DESC LIMIT 5"
-        ) as c:
-            top = await c.fetchall()
-    top_text = "\n".join([f"  {i+1}. ID {r[0]} — {r[1]} кр" for i, r in enumerate(top)])
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        users = await conn.fetchval("SELECT COUNT(*) FROM users")
+        gens = await conn.fetchval("SELECT COUNT(*) FROM generations") or 0
+        credits_used = await conn.fetchval("SELECT COALESCE(SUM(credits),0) FROM generations") or 0
+        payments = await conn.fetchval("SELECT COUNT(*) FROM payments") or 0
+        revenue = await conn.fetchval("SELECT COALESCE(SUM(amount_rub),0) FROM payments") or 0
+        top = await conn.fetch("SELECT user_id, credits FROM users ORDER BY credits DESC LIMIT 5")
+    top_text = "\n".join([f"  {i+1}. ID {r['user_id']} — {r['credits']} кр" for i, r in enumerate(top)])
     return dict(users=users, gens=gens, credits_used=credits_used,
                 payments=payments, revenue=revenue, top_text=top_text)
 
@@ -1332,25 +1333,14 @@ async def adm_stat_day(cb: CallbackQuery):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT COUNT(*) FROM users WHERE created_at >= date('now')"
-        ) as c:
-            new_users = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= date('now')"
-        ) as c:
-            row = await c.fetchone()
-            gens, credits_used = row[0], row[1]
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= date('now')"
-        ) as c:
-            row = await c.fetchone()
-            pays, revenue = row[0], row[1]
-        async with db.execute(
-            "SELECT type, COUNT(*) FROM generations WHERE created_at >= date('now') GROUP BY type"
-        ) as c:
-            by_type = await c.fetchall()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        new_users = await conn.fetchval("SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE") or 0
+        row = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= CURRENT_DATE")
+        gens, credits_used = row[0] or 0, row[1] or 0
+        row2 = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= CURRENT_DATE")
+        pays, revenue = row2[0] or 0, row2[1] or 0
+        by_type = await conn.fetch("SELECT type, COUNT(*) FROM generations WHERE created_at >= CURRENT_DATE GROUP BY type")
 
     by_type_text = "\n".join([f"  • {r[0]}: {r[1]} шт" for r in by_type]) or "  нет данных"
 
@@ -1373,26 +1363,14 @@ async def adm_stat_week(cb: CallbackQuery):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT COUNT(*) FROM users WHERE created_at >= date('now', '-7 days')"
-        ) as c:
-            new_users = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= date('now', '-7 days')"
-        ) as c:
-            row = await c.fetchone()
-            gens, credits_used = row[0], row[1]
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= date('now', '-7 days')"
-        ) as c:
-            row = await c.fetchone()
-            pays, revenue = row[0], row[1]
-        async with db.execute(
-            "SELECT date(created_at), COUNT(*) FROM generations "
-            "WHERE created_at >= date('now', '-7 days') GROUP BY date(created_at) ORDER BY 1"
-        ) as c:
-            by_day = await c.fetchall()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        new_users = await conn.fetchval("SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '7 days'") or 0
+        row = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= NOW() - INTERVAL '7 days'")
+        gens, credits_used = row[0] or 0, row[1] or 0
+        row2 = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= NOW() - INTERVAL '7 days'")
+        pays, revenue = row2[0] or 0, row2[1] or 0
+        by_day = await conn.fetch("SELECT DATE(created_at), COUNT(*) FROM generations WHERE created_at >= NOW() - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY 1")
 
     by_day_text = "\n".join([f"  {r[0]}: {r[1]} ген." for r in by_day]) or "  нет данных"
 
@@ -1483,12 +1461,12 @@ async def adm_give_credits_confirm(message: Message, state: FSMContext):
     # Создаём пользователя если его нет
     user = await get_user(target_id)
     if not user:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR IGNORE INTO users (user_id, credits) VALUES (?, 0)",
-                (target_id,)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (user_id, credits) VALUES ($1, 0) ON CONFLICT DO NOTHING",
+                target_id
             )
-            await db.commit()
     await add_credits(target_id, amount)
     new_balance = await get_credits(target_id)
     await state.clear()
@@ -1532,17 +1510,12 @@ async def adm_blocks_menu(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT COUNT(*) FROM users WHERE is_blocked=1"
-            ) as c:
-                blocked_count = (await c.fetchone())[0]
-            async with db.execute(
-                "SELECT user_id FROM users WHERE is_blocked=1 LIMIT 10"
-            ) as c:
-                blocked_list = await c.fetchall()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            blocked_count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_blocked=1") or 0
+            blocked_list = await conn.fetch("SELECT user_id FROM users WHERE is_blocked=1 LIMIT 10")
 
-        blocked_text = ", ".join([str(r[0]) for r in blocked_list]) or "нет"
+        blocked_text = ", ".join([str(r["user_id"]) for r in blocked_list]) or "нет"
 
         await cb.message.answer(
             f"🚫 <b>Блокировки</b>\n\n"
@@ -1648,23 +1621,22 @@ async def adm_activity(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
             periods = [
-                ("Сегодня",    "date('now')"),
-                ("Вчера",      "date('now', '-1 day')"),
-                ("7 дней",     "date('now', '-7 days')"),
-                ("30 дней",    "date('now', '-30 days')"),
+                ("Сегодня",  "NOW() - INTERVAL '1 day'",  "CURRENT_DATE"),
+                ("Вчера",    "NOW() - INTERVAL '2 days'", "NOW() - INTERVAL '1 day'"),
+                ("7 дней",   "NOW() - INTERVAL '7 days'", "NOW()"),
+                ("30 дней",  "NOW() - INTERVAL '30 days'","NOW()"),
             ]
             lines = []
-            for label, since in periods:
-                async with db.execute(
+            for label, since, _ in periods:
+                row = await conn.fetchrow(
                     f"SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= {since}"
-                ) as c:
-                    row = await c.fetchone()
-                async with db.execute(
+                )
+                new_u = await conn.fetchval(
                     f"SELECT COUNT(*) FROM users WHERE created_at >= {since}"
-                ) as c:
-                    new_u = (await c.fetchone())[0]
+                ) or 0
                 lines.append(f"<b>{label}:</b> {row[0]} ген, +{new_u} юз, {row[1]} кр")
         await cb.message.answer(
             "📈 <b>Активность</b>\n\n" + "\n".join(lines),
@@ -1686,11 +1658,11 @@ async def adm_popular(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
                 "SELECT model, COUNT(*), SUM(credits) FROM generations GROUP BY model ORDER BY COUNT(*) DESC"
-            ) as c:
-                rows = await c.fetchall()
+            )
         if not rows:
             text = "🔥 <b>Популярные модели</b>\n\nПока нет генераций."
         else:
@@ -1712,13 +1684,13 @@ async def adm_top_users(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("""
-                SELECT g.user_id, u.username, COUNT(*) as cnt, COALESCE(SUM(g.credits),0)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT g.user_id, u.username, COUNT(*) as cnt, COALESCE(SUM(g.credits),0) as total_credits
                 FROM generations g LEFT JOIN users u ON g.user_id=u.user_id
-                GROUP BY g.user_id ORDER BY cnt DESC LIMIT 10
-            """) as c:
-                rows = await c.fetchall()
+                GROUP BY g.user_id, u.username ORDER BY cnt DESC LIMIT 10
+            """)
         if not rows:
             text = "🏆 <b>Топ активных</b>\n\nПока нет данных."
         else:
@@ -1743,17 +1715,16 @@ async def adm_users(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT COUNT(*) FROM users") as c:
-                total = (await c.fetchone())[0]
-            async with db.execute(
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            total = await conn.fetchval("SELECT COUNT(*) FROM users") or 0
+            rows = await conn.fetch(
                 "SELECT user_id, username, full_name, credits, created_at FROM users ORDER BY created_at DESC LIMIT 10"
-            ) as c:
-                rows = await c.fetchall()
+            )
         lines = []
         for r in rows:
-            uname = f"@{r[1]}" if r[1] else r[2] or f"ID {r[0]}"
-            lines.append(f"• {uname} — {r[3]} кр ({r[4][:10]})")
+            uname = f"@{r['username']}" if r['username'] else r['full_name'] or f"ID {r['user_id']}"
+            lines.append(f"• {uname} — {r['credits']} кр ({str(r['created_at'])[:10]})")
         text = f"👥 <b>Пользователи</b> (всего: {total})\n\n<b>Последние 10:</b>\n" + "\n".join(lines)
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
@@ -1806,11 +1777,11 @@ async def adm_find_user(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
         return
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
-        ) as c:
-            row = await c.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=$1", uid
+        )
     blocked = "🚫 Да" if user.get("is_blocked") else "✅ Нет"
     uname = f"@{user['username']}" if user.get("username") else "—"
     await message.answer(
@@ -1839,17 +1810,16 @@ async def adm_payments(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
                 "SELECT user_id, credits, amount_rub, method, created_at FROM payments ORDER BY created_at DESC LIMIT 15"
-            ) as c:
-                rows = await c.fetchall()
-            async with db.execute("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments") as c:
-                total_row = await c.fetchone()
+            )
+            total_row = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments")
         if not rows:
             text = "📋 <b>История платежей</b>\n\nПлатежей пока нет."
         else:
-            lines = [f"• ID {r[0]}: +{r[1]} кр, {r[2]}₽ ({r[4][:10]})" for r in rows]
+            lines = [f"• ID {r['user_id']}: +{r['credits']} кр, {r['amount_rub']}₽ ({str(r['created_at'])[:10]})" for r in rows]
             text = (f"📋 <b>История платежей</b>\n"
                     f"Всего: {total_row[0]} платежей, {total_row[1]}₽\n\n"
                     + "\n".join(lines))
@@ -1889,16 +1859,15 @@ async def adm_spend_show(message: Message, state: FSMContext):
         await message.answer("❌ Введи числовой ID, например: <code>123456789</code>", parse_mode="HTML")
         return
     await state.clear()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT model, COUNT(*), SUM(credits) FROM generations WHERE user_id=? GROUP BY model ORDER BY COUNT(*) DESC",
-            (uid,)
-        ) as c:
-            rows = await c.fetchall()
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
-        ) as c:
-            total = await c.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT model, COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=$1 GROUP BY model ORDER BY COUNT(*) DESC",
+            uid
+        )
+        total = await conn.fetchrow(
+            "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=$1", uid
+        )
     user = await get_user(uid)
     if not user:
         await message.answer(
@@ -1973,9 +1942,9 @@ async def adm_welcome_save(message: Message, state: FSMContext):
 async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM users WHERE is_blocked=0") as c:
-            total = (await c.fetchone())[0]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_blocked=0") or 0
     await state.set_state(AdminState.waiting_broadcast)
     await cb.message.answer(
         f"📢 <b>Рассылка</b>\n\n"
@@ -1994,13 +1963,14 @@ async def adm_broadcast_send(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
     await state.clear()
     text = message.text.strip()
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id FROM users WHERE is_blocked=0") as c:
-            users = await c.fetchall()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id FROM users WHERE is_blocked=0")
     sent = 0
     failed = 0
     status_msg = await message.answer(f"📢 Рассылка запущена... 0/{len(users)}")
-    for i, (uid,) in enumerate(users):
+    for i, r in enumerate(users):
+        uid = r["user_id"]
         try:
             await bot.send_message(uid, text, parse_mode="HTML")
             sent += 1
