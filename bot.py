@@ -184,11 +184,26 @@ async def set_setting(key: str, value: str):
         await db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
         await db.commit()
 
+async def get_user(user_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as c:
+            row = await c.fetchone()
+            return dict(row) if row else None
+
 async def get_credits(user_id: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT credits FROM users WHERE user_id=?", (user_id,)) as c:
             row = await c.fetchone()
             return row[0] if row else 0
+
+async def log_payment(user_id: int, credits: int, amount_rub: int, method: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO payments (user_id, credits, amount_rub, method) VALUES (?,?,?,?)",
+            (user_id, credits, amount_rub, method)
+        )
+        await db.commit()
 
 async def deduct(user_id: int, amount: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -1001,10 +1016,16 @@ async def help_choose(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(ChatState.chatting)
 async def chat_message(message: Message, state: FSMContext):
+    if not message.text:
+        return
     await bot.send_chat_action(message.chat.id, "typing")
     uid = message.from_user.id
     reply = await claude_with_search(uid, message.text)
-    await message.answer(reply, reply_markup=kb_cancel(), parse_mode="HTML")
+    # Отправляем без parse_mode чтобы не крашило на невалидном HTML
+    try:
+        await message.answer(reply, reply_markup=kb_cancel(), parse_mode="HTML")
+    except Exception:
+        await message.answer(reply, reply_markup=kb_cancel())
 
 # ══════════════════════════════════════════════════════════
 #  ПРИВЕТСТВИЕ НОВЫХ ПОДПИСЧИКОВ (оригинал сохранён)
@@ -1070,12 +1091,14 @@ async def claude_with_search(uid: int, user_text: str) -> str:
             assistant_content = resp.content
             tool_results = []
             for block in assistant_content:
-                # Ищем tool_use (не tool_result!)
+                # Ищем tool_use блоки
                 if hasattr(block, "type") and block.type == "tool_use":
+                    # Для web_search результат уже встроен в ответ Anthropic
+                    # Нам нужно только передать tool_result чтобы продолжить диалог
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": "Search completed",
+                        "content": [{"type": "text", "text": "Search results processed."}],
                     })
 
             messages.append({"role": "assistant", "content": assistant_content})
@@ -1990,6 +2013,8 @@ async def adm_back(cb: CallbackQuery):
 
 @dp.message()
 async def handle_message(message: Message, state: FSMContext):
+    if not message.text:
+        return
     await ensure_user(message.from_user.id, message.from_user.username or '', message.from_user.full_name)
     uid = message.from_user.id
     if uid != ADMIN_ID and await get_setting("maintenance") == "1":
@@ -2000,7 +2025,10 @@ async def handle_message(message: Message, state: FSMContext):
         return
     await bot.send_chat_action(message.chat.id, "typing")
     reply = await claude_with_search(uid, message.text)
-    await message.answer(reply, reply_markup=kb_contact(), parse_mode="HTML")
+    try:
+        await message.answer(reply, reply_markup=kb_contact(), parse_mode="HTML")
+    except Exception:
+        await message.answer(reply, reply_markup=kb_contact())
 
 # ══════════════════════════════════════════════════════════
 #  ЗАПУСК
