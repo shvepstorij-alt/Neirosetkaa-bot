@@ -115,15 +115,30 @@ async def init_db():
                 user_id    INTEGER PRIMARY KEY,
                 credits    INTEGER DEFAULT 0,
                 is_blocked INTEGER DEFAULT 0,
+                username   TEXT DEFAULT '',
+                full_name  TEXT DEFAULT '',
+                last_active TEXT DEFAULT (datetime('now')),
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
-        # Добавляем колонку если её нет (миграция)
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN is_blocked INTEGER DEFAULT 0")
-            await db.commit()
-        except Exception:
-            pass
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        # Миграции — добавляем колонки если нет
+        for col, default in [
+            ("is_blocked", "0"), ("username", "''"),
+            ("full_name", "''"), ("last_active", "datetime('now')")
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
+            except Exception:
+                pass
+        # Дефолтные настройки
+        await db.execute("INSERT OR IGNORE INTO settings VALUES ('maintenance', '0')")
+        await db.commit()
         await db.execute("""
             CREATE TABLE IF NOT EXISTS generations (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,12 +161,27 @@ async def init_db():
         """)
         await db.commit()
 
-async def ensure_user(user_id: int):
+async def ensure_user(user_id: int, username: str = "", full_name: str = ""):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR IGNORE INTO users (user_id, credits) VALUES (?, ?)",
-            (user_id, FREE_CREDITS)
+            "INSERT OR IGNORE INTO users (user_id, credits, username, full_name) VALUES (?, ?, ?, ?)",
+            (user_id, FREE_CREDITS, username, full_name)
         )
+        await db.execute(
+            "UPDATE users SET username=?, full_name=?, last_active=datetime('now') WHERE user_id=?",
+            (username, full_name, user_id)
+        )
+        await db.commit()
+
+async def get_setting(key: str, default: str = "") -> str:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM settings WHERE key=?", (key,)) as c:
+            row = await c.fetchone()
+            return row[0] if row else default
+
+async def set_setting(key: str, value: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, value))
         await db.commit()
 
 async def get_credits(user_id: int) -> int:
@@ -321,9 +351,13 @@ class ChatState(StatesGroup):
     chatting = State()
 
 class AdminState(StatesGroup):
-    waiting_user_id = State()
-    waiting_credits = State()
-    waiting_block_id = State()
+    waiting_user_id   = State()
+    waiting_credits   = State()
+    waiting_block_id  = State()
+    waiting_find_user = State()
+    waiting_broadcast = State()
+    waiting_welcome   = State()
+    waiting_spend_uid = State()
 
 # ══════════════════════════════════════════════════════════
 #  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
@@ -567,7 +601,7 @@ WELCOME_BACK = """👋 С возвращением, {name}!
 @dp.message(F.text == "/start")
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await ensure_user(message.from_user.id)
+    await ensure_user(message.from_user.id, message.from_user.username or '', message.from_user.full_name)
     credits = await get_credits(message.from_user.id)
     is_new = credits == FREE_CREDITS
 
@@ -1163,11 +1197,20 @@ async def get_admin_stats() -> dict:
 
 def kb_admin_panel():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика сегодня", callback_data="adm_stat_day"),
-         InlineKeyboardButton(text="📈 За неделю",          callback_data="adm_stat_week")],
-        [InlineKeyboardButton(text="➕ Начислить кредиты",  callback_data="adm_give_credits")],
-        [InlineKeyboardButton(text="🚫 Блокировки",         callback_data="adm_blocks")],
-        [InlineKeyboardButton(text="🏠 Главное меню",        callback_data="back_main")],
+        [InlineKeyboardButton(text="📊 Статистика",        callback_data="adm_stat_day"),
+         InlineKeyboardButton(text="📈 Активность",        callback_data="adm_activity")],
+        [InlineKeyboardButton(text="🔥 Популярные модели", callback_data="adm_popular"),
+         InlineKeyboardButton(text="🏆 Топ активных",      callback_data="adm_top_users")],
+        [InlineKeyboardButton(text="👥 Пользователи",      callback_data="adm_users"),
+         InlineKeyboardButton(text="🔍 Найти по ID",       callback_data="adm_find")],
+        [InlineKeyboardButton(text="💳 Начислить кредиты", callback_data="adm_give_credits"),
+         InlineKeyboardButton(text="📋 История платежей",  callback_data="adm_payments")],
+        [InlineKeyboardButton(text="💰 Расход по юзеру",   callback_data="adm_spend"),
+         InlineKeyboardButton(text="🚫 Блокировки",        callback_data="adm_blocks")],
+        [InlineKeyboardButton(text="✏️ Изменить приветствие", callback_data="adm_welcome")],
+        [InlineKeyboardButton(text="📢 Рассылка",          callback_data="adm_broadcast"),
+         InlineKeyboardButton(text="🔧 Техобслуживание",   callback_data="adm_maintenance")],
+        [InlineKeyboardButton(text="🏠 Главное меню",      callback_data="back_main")],
     ])
 
 def kb_block_actions(target_id: int, currently_blocked: bool):
@@ -1461,14 +1504,396 @@ async def adm_do_unblock(cb: CallbackQuery):
         await cb.answer()
 
 
+
+# ─── Активность ───────────────────────────────────────────
+
+@dp.callback_query(F.data == "adm_activity")
+async def adm_activity(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            periods = [
+                ("Сегодня",    "date('now')"),
+                ("Вчера",      "date('now', '-1 day')"),
+                ("7 дней",     "date('now', '-7 days')"),
+                ("30 дней",    "date('now', '-30 days')"),
+            ]
+            lines = []
+            for label, since in periods:
+                async with db.execute(
+                    f"SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= {since}"
+                ) as c:
+                    row = await c.fetchone()
+                async with db.execute(
+                    f"SELECT COUNT(*) FROM users WHERE created_at >= {since}"
+                ) as c:
+                    new_u = (await c.fetchone())[0]
+                lines.append(f"<b>{label}:</b> {row[0]} ген, +{new_u} юз, {row[1]} кр")
+        await cb.message.answer(
+            "📈 <b>Активность</b>\n\n" + "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+            ]),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+# ─── Популярные модели ────────────────────────────────────
+
+@dp.callback_query(F.data == "adm_popular")
+async def adm_popular(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT model, COUNT(*), SUM(credits) FROM generations GROUP BY model ORDER BY COUNT(*) DESC"
+            ) as c:
+                rows = await c.fetchall()
+        if not rows:
+            text = "🔥 <b>Популярные модели</b>\n\nПока нет генераций."
+        else:
+            lines = [f"  {i+1}. {r[0]}: <b>{r[1]} ген</b> ({r[2]} кр)" for i, r in enumerate(rows)]
+            text = "🔥 <b>Популярные модели</b>\n\n" + "\n".join(lines)
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+        ]), parse_mode="HTML")
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+# ─── Топ активных пользователей ───────────────────────────
+
+@dp.callback_query(F.data == "adm_top_users")
+async def adm_top_users(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT g.user_id, u.username, COUNT(*) as cnt, COALESCE(SUM(g.credits),0)
+                FROM generations g LEFT JOIN users u ON g.user_id=u.user_id
+                GROUP BY g.user_id ORDER BY cnt DESC LIMIT 10
+            """) as c:
+                rows = await c.fetchall()
+        if not rows:
+            text = "🏆 <b>Топ активных</b>\n\nПока нет данных."
+        else:
+            lines = []
+            for i, r in enumerate(rows):
+                uname = f"@{r[1]}" if r[1] else f"ID {r[0]}"
+                lines.append(f"  {i+1}. {uname}: {r[2]} ген, {r[3]} кр")
+            text = "🏆 <b>Топ активных пользователей</b>\n\n" + "\n".join(lines)
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+        ]), parse_mode="HTML")
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+# ─── Список пользователей ─────────────────────────────────
+
+@dp.callback_query(F.data == "adm_users")
+async def adm_users(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT COUNT(*) FROM users") as c:
+                total = (await c.fetchone())[0]
+            async with db.execute(
+                "SELECT user_id, username, full_name, credits, created_at FROM users ORDER BY created_at DESC LIMIT 10"
+            ) as c:
+                rows = await c.fetchall()
+        lines = []
+        for r in rows:
+            uname = f"@{r[1]}" if r[1] else r[2] or f"ID {r[0]}"
+            lines.append(f"• {uname} — {r[3]} кр ({r[4][:10]})")
+        text = f"👥 <b>Пользователи</b> (всего: {total})\n\n<b>Последние 10:</b>\n" + "\n".join(lines)
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+        ]), parse_mode="HTML")
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+# ─── Найти пользователя ───────────────────────────────────
+
+@dp.callback_query(F.data == "adm_find")
+async def adm_find_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await state.set_state(AdminState.waiting_find_user)
+    await cb.message.answer(
+        "🔍 <b>Найти пользователя</b>\n\nВведи Telegram ID:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_find_user)
+async def adm_find_user(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        uid = int(message.text.strip())
+        user = await get_user(uid)
+        if not user:
+            await message.answer("❌ Пользователь не найден.")
+            await state.clear()
+            return
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
+            ) as c:
+                row = await c.fetchone()
+        blocked = "🚫 Да" if user.get("is_blocked") else "✅ Нет"
+        uname = f"@{user['username']}" if user.get("username") else "—"
+        await state.clear()
+        await message.answer(
+            f"👤 <b>Пользователь</b>\n\n"
+            f"ID: <code>{uid}</code>\n"
+            f"Имя: {user.get('full_name', '—')}\n"
+            f"Username: {uname}\n"
+            f"Баланс: <b>{user['credits']} кр</b>\n"
+            f"Генераций: {row[0]}\n"
+            f"Кредитов потрачено: {row[1]}\n"
+            f"Заблокирован: {blocked}\n"
+            f"Регистрация: {str(user.get('created_at', '—'))[:10]}",
+            reply_markup=kb_block_actions(uid, bool(user.get("is_blocked"))),
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer("❌ Введи числовой ID:")
+
+
+# ─── История платежей ─────────────────────────────────────
+
+@dp.callback_query(F.data == "adm_payments")
+async def adm_payments(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT user_id, credits, amount_rub, method, created_at FROM payments ORDER BY created_at DESC LIMIT 15"
+            ) as c:
+                rows = await c.fetchall()
+            async with db.execute("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments") as c:
+                total_row = await c.fetchone()
+        if not rows:
+            text = "📋 <b>История платежей</b>\n\nПлатежей пока нет."
+        else:
+            lines = [f"• ID {r[0]}: +{r[1]} кр, {r[2]}₽ ({r[4][:10]})" for r in rows]
+            text = (f"📋 <b>История платежей</b>\n"
+                    f"Всего: {total_row[0]} платежей, {total_row[1]}₽\n\n"
+                    + "\n".join(lines))
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+        ]), parse_mode="HTML")
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+# ─── Расход по пользователю ───────────────────────────────
+
+@dp.callback_query(F.data == "adm_spend")
+async def adm_spend_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await state.set_state(AdminState.waiting_spend_uid)
+    await cb.message.answer(
+        "💰 <b>Расход по пользователю</b>\n\nВведи Telegram ID:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_spend_uid)
+async def adm_spend_show(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        uid = int(message.text.strip())
+        await state.clear()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT model, COUNT(*), SUM(credits) FROM generations WHERE user_id=? GROUP BY model ORDER BY COUNT(*) DESC",
+                (uid,)
+            ) as c:
+                rows = await c.fetchall()
+            async with db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
+            ) as c:
+                total = await c.fetchone()
+            user = await get_user(uid)
+        if not user:
+            await message.answer("❌ Пользователь не найден.")
+            return
+        if not rows:
+            await message.answer(f"💰 Пользователь <code>{uid}</code> ещё не делал генераций.", parse_mode="HTML")
+            return
+        lines = [f"  • {r[0]}: {r[1]} раз, {r[2]} кр" for r in rows]
+        await message.answer(
+            f"💰 <b>Расход пользователя</b> <code>{uid}</code>\n\n"
+            f"Всего генераций: <b>{total[0]}</b>\n"
+            f"Всего кредитов: <b>{total[1]}</b>\n"
+            f"Текущий баланс: <b>{user['credits']} кр</b>\n\n"
+            f"<b>По моделям:</b>\n" + "\n".join(lines),
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer("❌ Введи числовой ID:")
+
+
+# ─── Изменить приветствие ─────────────────────────────────
+
+@dp.callback_query(F.data == "adm_welcome")
+async def adm_welcome_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    current = await get_setting("welcome_extra", "")
+    await state.set_state(AdminState.waiting_welcome)
+    await cb.message.answer(
+        f"✏️ <b>Изменить приветствие</b>\n\n"
+        f"Текущий доп. текст:\n<i>{current or 'не задан'}</i>\n\n"
+        f"Введи новый текст (добавится к стандартному приветствию):\n"
+        f"Или напиши <b>убрать</b> чтобы удалить.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_welcome)
+async def adm_welcome_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await state.clear()
+    text = "" if message.text.strip().lower() == "убрать" else message.text.strip()
+    await set_setting("welcome_extra", text)
+    await message.answer(
+        f"✅ Приветствие {'удалено' if not text else 'обновлено'}!\n\n"
+        f"<i>{text or 'пусто'}</i>",
+        parse_mode="HTML"
+    )
+
+
+# ─── Рассылка ─────────────────────────────────────────────
+
+@dp.callback_query(F.data == "adm_broadcast")
+async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users WHERE is_blocked=0") as c:
+            total = (await c.fetchone())[0]
+    await state.set_state(AdminState.waiting_broadcast)
+    await cb.message.answer(
+        f"📢 <b>Рассылка</b>\n\n"
+        f"Получателей: <b>{total} пользователей</b>\n\n"
+        f"Введи текст сообщения (поддерживается HTML):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_broadcast)
+async def adm_broadcast_send(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    await state.clear()
+    text = message.text.strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM users WHERE is_blocked=0") as c:
+            users = await c.fetchall()
+    sent = 0
+    failed = 0
+    status_msg = await message.answer(f"📢 Рассылка запущена... 0/{len(users)}")
+    for i, (uid,) in enumerate(users):
+        try:
+            await bot.send_message(uid, text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            failed += 1
+        if (i + 1) % 20 == 0:
+            try:
+                await status_msg.edit_text(f"📢 Рассылка... {i+1}/{len(users)}")
+            except Exception:
+                pass
+    await status_msg.edit_text(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"✅ Отправлено: {sent}\n"
+        f"❌ Не доставлено: {failed}",
+        parse_mode="HTML"
+    )
+
+
+# ─── Техобслуживание ──────────────────────────────────────
+
+@dp.callback_query(F.data == "adm_maintenance")
+async def adm_maintenance(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        current = await get_setting("maintenance", "0")
+        new_val = "0" if current == "1" else "1"
+        await set_setting("maintenance", new_val)
+        status = "🔴 ВКЛЮЧЁН" if new_val == "1" else "🟢 ВЫКЛЮЧЕН"
+        await cb.message.answer(
+            f"🔧 <b>Техобслуживание {status}</b>\n\n"
+            f"{'Пользователи видят сообщение о техработах.' if new_val == '1' else 'Бот работает в штатном режиме.'}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+            ]),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}")
+    finally:
+        await cb.answer()
+
+
+# ─── Кнопка "назад к панели" ──────────────────────────────
+
+@dp.callback_query(F.data == "adm_back")
+async def adm_back(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await show_admin_panel(cb.message)
+    await cb.answer()
+
 # ══════════════════════════════════════════════════════════
 #  ОБЫЧНЫЕ СООБЩЕНИЯ (вне FSM — консультант по умолчанию)
 # ══════════════════════════════════════════════════════════
 
 @dp.message()
 async def handle_message(message: Message, state: FSMContext):
-    await ensure_user(message.from_user.id)
+    await ensure_user(message.from_user.id, message.from_user.username or '', message.from_user.full_name)
     uid = message.from_user.id
+    if uid != ADMIN_ID and await get_setting("maintenance") == "1":
+        await message.answer("🔧 Бот на техобслуживании. Скоро вернётся!")
+        return
     if await is_blocked(uid):
         await message.answer("🚫 Ваш доступ к боту ограничен.")
         return
