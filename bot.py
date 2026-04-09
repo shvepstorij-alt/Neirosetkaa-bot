@@ -1064,57 +1064,74 @@ async def on_new_member(event: ChatMemberUpdated):
 #  ФУНКЦИЯ CLAUDE С ВЕБ-ПОИСКОМ
 # ══════════════════════════════════════════════════════════
 
+def clean_reply(text: str) -> str:
+    """Убирает служебные теги и невалидный HTML из ответа."""
+    import re
+    # Убираем <search>...</search> теги
+    text = re.sub(r'<search>.*?</search>', '', text, flags=re.DOTALL)
+    # Убираем любые XML/HTML теги кроме разрешённых Telegram
+    allowed = {'b', '/b', 'i', '/i', 'code', '/code', 'pre', '/pre', 'a', '/a', 's', '/s', 'u', '/u'}
+    def replace_tag(m):
+        tag = m.group(1).strip().lower().split()[0]
+        return m.group(0) if tag in allowed else ''
+    text = re.sub(r'<([^>]+)>', replace_tag, text)
+    # Убираем лишние пустые строки
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 async def claude_with_search(uid: int, user_text: str) -> str:
     if uid not in user_conversations:
         user_conversations[uid] = []
 
+    # Сохраняем только текстовые сообщения в истории (не tool_use блоки)
     user_conversations[uid].append({"role": "user", "content": user_text})
     if len(user_conversations[uid]) > 20:
         user_conversations[uid] = user_conversations[uid][-20:]
 
     try:
-        messages = list(user_conversations[uid])
+        # Для API используем отдельную копию — не портим историю
+        api_messages = list(user_conversations[uid])
 
         resp = claude_client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=1024,
             system=SYSTEM_PROMPT,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=messages,
+            messages=api_messages,
         )
 
         # Обрабатываем tool_use если Claude решил искать
-        max_iterations = 5
+        max_iterations = 3
         iterations = 0
         while resp.stop_reason == "tool_use" and iterations < max_iterations:
             iterations += 1
             assistant_content = resp.content
             tool_results = []
             for block in assistant_content:
-                # Ищем tool_use блоки
                 if hasattr(block, "type") and block.type == "tool_use":
-                    # Для web_search результат уже встроен в ответ Anthropic
-                    # Нам нужно только передать tool_result чтобы продолжить диалог
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": [{"type": "text", "text": "Search results processed."}],
+                        "content": [{"type": "text", "text": "Search completed."}],
                     })
 
-            messages.append({"role": "assistant", "content": assistant_content})
+            # Обновляем только api_messages, НЕ user_conversations
+            api_messages.append({"role": "assistant", "content": assistant_content})
             if tool_results:
-                messages.append({"role": "user", "content": tool_results})
+                api_messages.append({"role": "user", "content": tool_results})
             else:
-                break  # нет tool_use блоков — выходим
+                break
 
             resp = claude_client.messages.create(
                 model="claude-sonnet-4-5",
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                messages=messages,
+                messages=api_messages,
             )
 
+        # Собираем текстовый ответ
         reply = ""
         for block in resp.content:
             if hasattr(block, "text"):
@@ -1123,20 +1140,27 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         if not reply:
             reply = "Попробуй переформулировать вопрос 🙏"
 
+        reply = clean_reply(reply)
+
+        # Сохраняем только текст в историю (без tool блоков)
         user_conversations[uid].append({"role": "assistant", "content": reply})
         return reply
 
     except Exception as e:
         logging.error(f"Claude API error: {e}")
-        # Fallback без поиска
+        # Fallback без поиска — используем чистую историю
         try:
+            clean_history = [
+                m for m in user_conversations[uid]
+                if isinstance(m.get("content"), str)
+            ]
             resp = claude_client.messages.create(
                 model="claude-sonnet-4-5",
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
-                messages=user_conversations[uid],
+                messages=clean_history,
             )
-            reply = resp.content[0].text
+            reply = clean_reply(resp.content[0].text)
             user_conversations[uid].append({"role": "assistant", "content": reply})
             return reply
         except Exception as e2:
