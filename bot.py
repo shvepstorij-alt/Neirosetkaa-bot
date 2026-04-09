@@ -565,11 +565,44 @@ async def cmd_start(message: Message, state: FSMContext):
         name=message.from_user.first_name,
         credits=credits
     )
-    is_admin = message.from_user.id == ADMIN_ID
-    # Сначала показываем нижнее меню (Reply Keyboard)
+    is_admin = (message.from_user.id == ADMIN_ID)
     await message.answer("👇", reply_markup=kb_reply(is_admin))
-    # Потом приветствие с inline кнопками
     await message.answer(text, reply_markup=kb_main(), parse_mode="HTML")
+
+
+@dp.message(F.text == "/admin")
+async def cmd_admin(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Нет доступа")
+        return
+    # Показываем нижнее меню с кнопкой Админ
+    await message.answer("👇", reply_markup=kb_reply(is_admin=True))
+    # Показываем админ панель
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as c:
+            users = (await c.fetchone())[0]
+        async with db.execute("SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations") as c:
+            row = await c.fetchone()
+            gens, credits_used = row[0], row[1]
+        async with db.execute("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments") as c:
+            row = await c.fetchone()
+            payments, revenue = row[0], row[1]
+        async with db.execute(
+            "SELECT user_id, credits FROM users ORDER BY credits DESC LIMIT 5"
+        ) as c:
+            top = await c.fetchall()
+    top_text = "\n".join([f"  {i+1}. ID {r[0]} — {r[1]} кр" for i, r in enumerate(top)])
+    await message.answer(
+        f"⚙️ <b>Админ панель</b>\n\n"
+        f"👥 Всего пользователей: <b>{users}</b>\n"
+        f"🎨 Всего генераций: <b>{gens}</b>\n"
+        f"💸 Кредитов использовано: <b>{credits_used}</b>\n"
+        f"💳 Платежей: <b>{payments}</b>\n"
+        f"💰 Выручка: <b>{revenue}₽</b>\n\n"
+        f"<b>Топ по балансу:</b>\n{top_text}",
+        reply_markup=kb_admin_panel(),
+        parse_mode="HTML"
+    )
 
 
 @dp.callback_query(F.data == "back_main")
