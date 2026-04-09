@@ -290,9 +290,8 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="🎨 Создать фото")],
-        [KeyboardButton(text="🎬 Создать видео")],
-        [KeyboardButton(text="👤 Мой профиль")],
+        [KeyboardButton(text="🎨 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏠 Главное меню")],
     ]
     if is_admin:
         rows.append([KeyboardButton(text="⚙️ Админ панель")])
@@ -542,7 +541,7 @@ WELCOME_NEW = """👋 Привет, {name}!
 🖼️ Генерировать изображения (Imagen 4)
 🎬 Создавать видео (Veo 3.1) 
 💬 Консультировать по нейросетям и VPN
-💳 Оформлять подписки без карты и VPN
+💳 Оформлять подписки без зарубежной карты
 
 🎁 Тебе начислено <b>{credits} бесплатных кредитов</b>!
 
@@ -567,8 +566,7 @@ async def cmd_start(message: Message, state: FSMContext):
         credits=credits
     )
     is_admin = message.from_user.id == ADMIN_ID
-    await message.answer(text, reply_markup=kb_reply(is_admin), parse_mode="HTML")
-    await message.answer("Выбери действие 👇", reply_markup=kb_main())
+    await message.answer(text, reply_markup=kb_main(), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "back_main")
@@ -1026,6 +1024,16 @@ async def claude_with_search(uid: int, user_text: str) -> str:
 # ══════════════════════════════════════════════════════════
 #  REPLY KEYBOARD HANDLERS
 # ══════════════════════════════════════════════════════════
+
+@dp.message(F.text == "🏠 Главное меню")
+async def reply_main_menu(message: Message, state: FSMContext):
+    await state.clear()
+    credits = await get_credits(message.from_user.id)
+    await message.answer(
+        f"👋 {message.from_user.first_name}, баланс: <b>{credits} кр</b>\n\nВыбери действие 👇",
+        reply_markup=kb_main(), parse_mode="HTML"
+    )
+
 
 @dp.message(F.text == "🎨 Создать фото")
 async def reply_create_photo(message: Message, state: FSMContext):
