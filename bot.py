@@ -12,7 +12,7 @@ from aiogram.types import (
     LabeledPrice, PreCheckoutQuery, BufferedInputFile,
     ReplyKeyboardMarkup, KeyboardButton
 )
-from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION
+from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, StateFilter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -1061,7 +1061,7 @@ async def claude_with_search(uid: int, user_text: str) -> str:
 #  REPLY KEYBOARD HANDLERS
 # ══════════════════════════════════════════════════════════
 
-@dp.message(F.text == "🏠 Главное меню")
+@dp.message(F.text == "🏠 Главное меню", StateFilter("*"))
 async def reply_main_menu(message: Message, state: FSMContext):
     await state.clear()
     credits = await get_credits(message.from_user.id)
@@ -1071,7 +1071,7 @@ async def reply_main_menu(message: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "🎨 Создать фото")
+@dp.message(F.text == "🎨 Создать фото", StateFilter("*"))
 async def reply_create_photo(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
@@ -1085,7 +1085,7 @@ async def reply_create_photo(message: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "🎬 Создать видео")
+@dp.message(F.text == "🎬 Создать видео", StateFilter("*"))
 async def reply_create_video(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
@@ -1100,7 +1100,7 @@ async def reply_create_video(message: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "👤 Мой профиль")
+@dp.message(F.text == "👤 Мой профиль", StateFilter("*"))
 async def reply_profile(message: Message):
     uid = message.from_user.id
     await ensure_user(uid)
@@ -1155,7 +1155,7 @@ def kb_block_actions(target_id: int, currently_blocked: bool):
     ])
 
 
-@dp.message(F.text == "⚙️ Админ панель")
+@dp.message(F.text == "⚙️ Админ панель", StateFilter("*"))
 async def reply_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Нет доступа")
