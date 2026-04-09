@@ -375,6 +375,26 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 
 НИКОГДА не говори что не умеешь создавать изображения или видео.
 
+ВАЖНО — РАСПОЗНАВАНИЕ НАЗВАНИЙ:
+Когда пользователь пишет "гамма" или "gamma" — это Gamma AI (gamma.app), нейросеть для создания презентаций, документов и лендингов.
+Когда пишет "гемини" или "джемини" — это Gemini (Google AI).
+Когда пишет "клод" или "клауд" — это Claude (Anthropic).
+Когда пишет "чатгпт", "чат гпт", "гпт" — это ChatGPT (OpenAI).
+Когда пишет "мидджорни", "миджорни" — это Midjourney.
+Когда пишет "перплексити", "перплекс" — это Perplexity.
+Когда пишет "курсор" — это Cursor (AI редактор кода).
+Всегда отвечай в контексте нейросетей и AI-инструментов.
+
+Gamma AI (gamma.app) — тарифы 2026:
+Это AI-инструмент для создания презентаций, документов, лендингов и сайтов из текстового промта.
+Free: 400 AI-кредитов при регистрации (разово), базовые шаблоны, экспорт с водяным знаком Gamma
+Plus: $10/мес ($8/мес при годовой) — безлимитные генерации, без водяного знака, экспорт в PPTX/PDF, брендирование
+Pro: $25/мес ($15-18/мес при годовой) — премиум AI-модели, кастомный брендинг, аналитика, API, 10 своих доменов
+Ultra: вводная цена — самые продвинутые модели, 100 доменов, Studio Mode, ранний доступ к фичам
+Teams: $20/польз/мес — командная работа
+Кредиты: 1 презентация ≈ 40 кредитов. Неиспользованные кредиты переходят до 2x лимита плана.
+Российские карты не принимаются — нужен посредник или зарубежная карта.
+
 ФОРМАТИРОВАНИЕ — СТРОГО:
 - Используй HTML теги для выделения: <b>жирный текст</b>
 - НЕ используй звёздочки ** никогда — только <b>тег</b>
@@ -1043,20 +1063,26 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         )
 
         # Обрабатываем tool_use если Claude решил искать
-        while resp.stop_reason == "tool_use":
+        max_iterations = 5
+        iterations = 0
+        while resp.stop_reason == "tool_use" and iterations < max_iterations:
+            iterations += 1
             assistant_content = resp.content
             tool_results = []
             for block in assistant_content:
-                if block.type == "tool_result":
+                # Ищем tool_use (не tool_result!)
+                if hasattr(block, "type") and block.type == "tool_use":
                     tool_results.append({
                         "type": "tool_result",
-                        "tool_use_id": block.tool_use_id,
-                        "content": block.content,
+                        "tool_use_id": block.id,
+                        "content": "Search completed",
                     })
 
             messages.append({"role": "assistant", "content": assistant_content})
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
+            else:
+                break  # нет tool_use блоков — выходим
 
             resp = claude_client.messages.create(
                 model="claude-sonnet-4-5",
@@ -1334,31 +1360,40 @@ async def adm_give_start(cb: CallbackQuery, state: FSMContext):
 async def adm_get_user_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    txt = message.text.strip() if message.text else ""
+    if not message.text:
+        await message.answer("❌ Отправь Telegram ID текстом")
+        return
+    txt = message.text.strip()
+    logging.info(f"ADMIN give_credits input: '{txt}'")
     try:
         target_id = int(txt)
     except (ValueError, TypeError):
         await message.answer(
-            "❌ Это не ID. Введи числовой Telegram ID пользователя\n"
-            f"<i>Пример: 123456789</i>",
+            f"❌ <code>{txt}</code> — не числовой ID\n"
+            f"Введи только цифры, например: <code>123456789</code>",
             parse_mode="HTML"
         )
         return
-    user = await get_user(target_id)
-    credits = user["credits"] if user else 0
-    status = "✅ Зарегистрирован" if user else "⚠️ Не использовал бота (кредиты будут созданы)"
-    await state.update_data(target_id=target_id)
-    await state.set_state(AdminState.waiting_credits)
-    await message.answer(
-        f"👤 ID: <code>{target_id}</code>\n"
-        f"Статус: {status}\n"
-        f"Баланс: <b>{credits} кр</b>\n\n"
-        f"Сколько кредитов начислить?",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
-        ]),
-        parse_mode="HTML"
-    )
+    try:
+        user = await get_user(target_id)
+        credits_balance = user["credits"] if user else 0
+        status = "✅ Зарегистрирован" if user else "⚠️ Не в базе (создам при начислении)"
+        await state.update_data(target_id=target_id)
+        await state.set_state(AdminState.waiting_credits)
+        await message.answer(
+            f"👤 ID: <code>{target_id}</code>\n"
+            f"Статус: {status}\n"
+            f"Баланс: <b>{credits_balance} кр</b>\n\n"
+            f"Сколько кредитов начислить?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+            ]),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"adm_get_user_id error: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
+        await state.clear()
 
 
 @dp.message(AdminState.waiting_credits)
