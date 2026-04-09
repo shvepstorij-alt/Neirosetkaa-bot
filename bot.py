@@ -634,7 +634,7 @@ async def show_admin_panel(message: Message):
         await message.answer(f"❌ Ошибка загрузки панели: {e}")
 
 
-@dp.message(F.text == "/admin")
+@dp.message(F.text == "/admin", StateFilter("*"))
 async def cmd_admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Нет доступа")
@@ -1334,64 +1334,89 @@ async def adm_give_start(cb: CallbackQuery, state: FSMContext):
 async def adm_get_user_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    txt = message.text.strip() if message.text else ""
     try:
-        target_id = int(message.text.strip())
-        user = await get_user(target_id)
-        if not user:
-            await message.answer("❌ Пользователь не найден. Введи другой ID:")
-            return
-        await state.update_data(target_id=target_id)
-        await state.set_state(AdminState.waiting_credits)
+        target_id = int(txt)
+    except (ValueError, TypeError):
         await message.answer(
-            f"👤 Пользователь найден\n"
-            f"ID: <code>{target_id}</code>\n"
-            f"Текущий баланс: <b>{user['credits']} кр</b>\n\n"
-            f"Сколько кредитов начислить?",
+            "❌ Это не ID. Введи числовой Telegram ID пользователя\n"
+            f"<i>Пример: 123456789</i>",
             parse_mode="HTML"
         )
-    except ValueError:
-        await message.answer("❌ Введи числовой ID:")
+        return
+    user = await get_user(target_id)
+    credits = user["credits"] if user else 0
+    status = "✅ Зарегистрирован" if user else "⚠️ Не использовал бота (кредиты будут созданы)"
+    await state.update_data(target_id=target_id)
+    await state.set_state(AdminState.waiting_credits)
+    await message.answer(
+        f"👤 ID: <code>{target_id}</code>\n"
+        f"Статус: {status}\n"
+        f"Баланс: <b>{credits} кр</b>\n\n"
+        f"Сколько кредитов начислить?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
+        ]),
+        parse_mode="HTML"
+    )
 
 
 @dp.message(AdminState.waiting_credits)
 async def adm_give_credits_confirm(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    txt = message.text.strip() if message.text else ""
     try:
-        amount = int(message.text.strip())
+        amount = int(txt)
         if amount <= 0:
             await message.answer("❌ Введи положительное число:")
             return
-        data = await state.get_data()
-        target_id = data["target_id"]
-        await add_credits(target_id, amount)
-        new_balance = await get_credits(target_id)
-        await state.clear()
-        await message.answer(
-            f"✅ <b>Кредиты начислены!</b>\n\n"
-            f"👤 ID: <code>{target_id}</code>\n"
-            f"➕ Начислено: <b>{amount} кр</b>\n"
-            f"💳 Новый баланс: <b>{new_balance} кр</b>",
+    except (ValueError, TypeError):
+        await message.answer("❌ Введи число, например: <code>50</code>", parse_mode="HTML")
+        return
+    data = await state.get_data()
+    target_id = data["target_id"]
+    # Создаём пользователя если его нет
+    user = await get_user(target_id)
+    if not user:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO users (user_id, credits) VALUES (?, 0)",
+                (target_id,)
+            )
+            await db.commit()
+    await add_credits(target_id, amount)
+    new_balance = await get_credits(target_id)
+    await state.clear()
+    await message.answer(
+        f"✅ <b>Кредиты начислены!</b>\n\n"
+        f"👤 ID: <code>{target_id}</code>\n"
+        f"➕ Начислено: <b>{amount} кр</b>\n"
+        f"💳 Новый баланс: <b>{new_balance} кр</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Ещё начислить", callback_data="adm_give_credits")],
+            [InlineKeyboardButton(text="◀️ Панель",        callback_data="adm_back")],
+        ]),
+        parse_mode="HTML"
+    )
+    try:
+        await bot.send_message(
+            target_id,
+            f"🎁 Тебе начислено <b>{amount} кредитов</b> от администратора!\n"
+            f"💳 Баланс: <b>{new_balance} кр</b>",
             parse_mode="HTML"
         )
-        # Уведомляем пользователя
-        try:
-            await bot.send_message(
-                target_id,
-                f"🎁 Тебе начислено <b>{amount} кредитов</b> от администратора!\n"
-                f"💳 Баланс: <b>{new_balance} кр</b>",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-    except ValueError:
-        await message.answer("❌ Введи числовое количество кредитов:")
+    except Exception:
+        pass
 
 
 @dp.callback_query(F.data == "adm_cancel")
 async def adm_cancel(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    await cb.message.edit_text("❌ Отменено")
+    try:
+        await cb.message.edit_text("❌ Отменено. Нажми /admin чтобы вернуться в панель.")
+    except Exception:
+        await cb.message.answer("❌ Отменено.")
     await cb.answer()
 
 
@@ -1437,24 +1462,31 @@ async def adm_blocks_menu(cb: CallbackQuery, state: FSMContext):
 async def adm_block_check_user(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    txt = message.text.strip() if message.text else ""
     try:
-        target_id = int(message.text.strip())
-        user = await get_user(target_id)
-        if not user:
-            await message.answer("❌ Пользователь не найден. Введи другой ID:")
-            return
-        blocked = bool(user.get("is_blocked", 0))
-        status = "🚫 Заблокирован" if blocked else "✅ Активен"
-        await state.clear()
+        target_id = int(txt)
+    except (ValueError, TypeError):
+        await message.answer("❌ Введи числовой Telegram ID, например: <code>123456789</code>", parse_mode="HTML")
+        return
+    user = await get_user(target_id)
+    if not user:
         await message.answer(
-            f"👤 ID: <code>{target_id}</code>\n"
-            f"Статус: {status}\n"
-            f"Баланс: <b>{user['credits']} кр</b>",
-            reply_markup=kb_block_actions(target_id, blocked),
+            f"❌ Пользователь <code>{target_id}</code> не найден в базе.\n"
+            f"Он ещё не использовал бота.",
             parse_mode="HTML"
         )
-    except ValueError:
-        await message.answer("❌ Введи числовой ID:")
+        await state.clear()
+        return
+    blocked = bool(user.get("is_blocked", 0))
+    status = "🚫 Заблокирован" if blocked else "✅ Активен"
+    await state.clear()
+    await message.answer(
+        f"👤 ID: <code>{target_id}</code>\n"
+        f"Статус: {status}\n"
+        f"Баланс: <b>{user['credits']} кр</b>",
+        reply_markup=kb_block_actions(target_id, blocked),
+        parse_mode="HTML"
+    )
 
 
 @dp.callback_query(F.data.startswith("adm_block:"))
@@ -1648,13 +1680,17 @@ async def adm_find_start(cb: CallbackQuery, state: FSMContext):
 @dp.message(AdminState.waiting_find_user)
 async def adm_find_user(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
+    txt = message.text.strip() if message.text else ""
     try:
-        uid = int(message.text.strip())
-        user = await get_user(uid)
-        if not user:
-            await message.answer("❌ Пользователь не найден.")
-            await state.clear()
-            return
+        uid = int(txt)
+    except (ValueError, TypeError):
+        await message.answer("❌ Введи числовой ID, например: <code>123456789</code>", parse_mode="HTML")
+        return
+    user = await get_user(uid)
+    if not user:
+        await message.answer(f"❌ Пользователь <code>{uid}</code> не найден в базе.", parse_mode="HTML")
+        await state.clear()
+        return
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
                 "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=?", (uid,)
@@ -1676,8 +1712,6 @@ async def adm_find_user(message: Message, state: FSMContext):
             reply_markup=kb_block_actions(uid, bool(user.get("is_blocked"))),
             parse_mode="HTML"
         )
-    except ValueError:
-        await message.answer("❌ Введи числовой ID:")
 
 
 # ─── История платежей ─────────────────────────────────────
@@ -1730,9 +1764,14 @@ async def adm_spend_start(cb: CallbackQuery, state: FSMContext):
 @dp.message(AdminState.waiting_spend_uid)
 async def adm_spend_show(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
+    txt = message.text.strip() if message.text else ""
     try:
-        uid = int(message.text.strip())
-        await state.clear()
+        uid = int(txt)
+    except (ValueError, TypeError):
+        await message.answer("❌ Введи числовой ID, например: <code>123456789</code>", parse_mode="HTML")
+        return
+    await state.clear()
+    try:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
                 "SELECT model, COUNT(*), SUM(credits) FROM generations WHERE user_id=? GROUP BY model ORDER BY COUNT(*) DESC",
