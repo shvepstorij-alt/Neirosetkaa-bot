@@ -134,6 +134,16 @@ async def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER,
+                credits    INTEGER,
+                amount_rub INTEGER,
+                method     TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
         await db.commit()
 
 async def ensure_user(user_id: int):
