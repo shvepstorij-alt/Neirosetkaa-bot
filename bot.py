@@ -762,11 +762,25 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
                     if video.get("bytesBase64Encoded"):
                         return base64.b64decode(video["bytesBase64Encoded"])
                     uri = video.get("uri") or video.get("videoUri")
+                    logging.info(f"Veo video uri: {uri[:100] if uri else 'None'}")
                     if uri and uri.startswith("https://"):
-                        async with s.get(uri) as vr:
-                            return await vr.read()
+                        vid_headers = {"x-goog-api-key": GEMINI_API_KEY}
+                        async with s.get(uri, headers=vid_headers) as vr:
+                            data_bytes = await vr.read()
+                            logging.info(f"Veo video downloaded: {len(data_bytes)} bytes, status: {vr.status}")
+                            if len(data_bytes) > 1000:
+                                return data_bytes
+                            raise Exception(f"Видео слишком маленькое ({len(data_bytes)} bytes). Попробуй ещё раз.")
+                    if uri and uri.startswith("gs://"):
+                        # Конвертируем GCS URI в HTTPS
+                        https_uri = uri.replace("gs://", "https://storage.googleapis.com/")
+                        async with s.get(https_uri) as vr:
+                            data_bytes = await vr.read()
+                            logging.info(f"Veo GCS download: {len(data_bytes)} bytes")
+                            if len(data_bytes) > 1000:
+                                return data_bytes
                     if uri:
-                        raise Exception(f"GCS URI — нужна настройка GCS: {uri[:80]}")
+                        raise Exception(f"Не удалось скачать видео: {uri[:80]}")
                     # Может быть напрямую в sample
                     if sample.get("bytesBase64Encoded"):
                         return base64.b64decode(sample["bytesBase64Encoded"])
@@ -1281,13 +1295,26 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     try:
         aspect = data.get("aspect_ratio", "16:9")
         vid_bytes = await api_generate_video(prompt, m["model_id"], aspect)
+        logging.info(f"Video ready: {len(vid_bytes)} bytes")
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
-        await cb.message.answer_video(
-            BufferedInputFile(vid_bytes, "video.mp4"),
-            caption=f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
-            reply_markup=kb_after("video", key)
-        )
+        caption = f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр"
+        try:
+            await cb.message.answer_video(
+                BufferedInputFile(vid_bytes, "video.mp4"),
+                caption=caption,
+                reply_markup=kb_after("video", key),
+                supports_streaming=True,
+            )
+        except Exception as video_err:
+            logging.warning(f"answer_video failed: {video_err}, trying as document")
+            # Fallback — отправить как файл
+            await cb.message.answer_document(
+                BufferedInputFile(vid_bytes, "video.mp4"),
+                caption=caption + "\n\n<i>Отправлено как файл — нажми для воспроизведения</i>",
+                reply_markup=kb_after("video", key),
+                parse_mode="HTML"
+            )
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
         await cb.message.answer(
