@@ -117,7 +117,17 @@ CREDIT_PACKS = {
 async def get_pool():
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+        if not DATABASE_URL:
+            raise RuntimeError("DATABASE_URL не задан! Добавь переменную в Railway.")
+        # Railway PostgreSQL требует SSL
+        _pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=5,
+            ssl="require",
+            statement_cache_size=0,  # совместимость с pgbouncer
+        )
+        logging.info("✅ PostgreSQL pool создан")
     return _pool
 
 async def init_db():
