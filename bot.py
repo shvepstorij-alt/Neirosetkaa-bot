@@ -715,29 +715,65 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
                           json=payload, headers=headers) as r:
             if r.status != 200:
                 raise Exception(f"Veo API {r.status}: {(await r.text())[:200]}")
-            op_name = (await r.json()).get("name")
+            op_data = await r.json()
+            op_name = op_data.get("name")
+            logging.info(f"Veo operation started: {op_name}")
+            if not op_name:
+                raise Exception(f"Veo не вернул operation name: {op_data}")
 
-        # polling
-        for _ in range(72):
+        # polling до 6 минут
+        for i in range(72):
             await asyncio.sleep(5)
             async with s.get(f"{base}/{op_name}", headers=headers) as pr:
                 if pr.status != 200:
+                    logging.warning(f"Poll status {pr.status}")
                     continue
                 pd = await pr.json()
                 if not pd.get("done"):
                     continue
+
+                logging.info(f"Veo done response keys: {list(pd.keys())}")
+
                 if "error" in pd:
                     raise Exception(pd["error"].get("message", "Veo error"))
+
+                # Структура 1: response.predictions[]
                 preds = pd.get("response", {}).get("predictions", [])
-                if not preds:
-                    raise Exception("Пустой ответ Veo API")
-                if preds[0].get("bytesBase64Encoded"):
-                    return base64.b64decode(preds[0]["bytesBase64Encoded"])
-                uri = preds[0].get("videoUri") or preds[0].get("gcsUri")
-                if uri:
-                    async with s.get(uri) as vr:
-                        return await vr.read()
-                raise Exception("Нет данных видео в ответе")
+                if preds:
+                    logging.info(f"Veo preds[0] keys: {list(preds[0].keys())}")
+                    p = preds[0]
+                    if p.get("bytesBase64Encoded"):
+                        return base64.b64decode(p["bytesBase64Encoded"])
+                    # GCS URI — скачиваем без auth (signed URL или публичный)
+                    uri = p.get("videoUri") or p.get("gcsUri") or p.get("uri")
+                    if uri and uri.startswith("https://"):
+                        async with s.get(uri) as vr:
+                            return await vr.read()
+                    if uri:
+                        raise Exception(f"GCS URI требует доп. настройки: {uri[:80]}")
+
+                # Структура 2: videos[] напрямую
+                videos = pd.get("response", {}).get("videos", [])
+                if videos:
+                    v = videos[0]
+                    if v.get("bytesBase64Encoded"):
+                        return base64.b64decode(v["bytesBase64Encoded"])
+                    uri = v.get("videoUri") or v.get("uri")
+                    if uri and uri.startswith("https://"):
+                        async with s.get(uri) as vr:
+                            return await vr.read()
+
+                # Структура 3: result.videos[]
+                result_videos = pd.get("result", {}).get("videos", [])
+                if result_videos:
+                    v = result_videos[0]
+                    if v.get("bytesBase64Encoded"):
+                        return base64.b64decode(v["bytesBase64Encoded"])
+
+                # Лог полного ответа для отладки
+                logging.error(f"Veo unknown response: {str(pd)[:500]}")
+                raise Exception(f"Неизвестная структура ответа Veo. Ключи: {list(pd.get('response', pd).keys())}")
+
     raise Exception("Превышено время ожидания (6 мин)")
 
 # ══════════════════════════════════════════════════════════
