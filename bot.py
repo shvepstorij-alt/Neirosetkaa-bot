@@ -76,24 +76,24 @@ VIDEO_MODELS = {
     "vid_lite": {
         "name": "💰 Veo 3.1 Lite",
         "model_id": "veo-3.1-lite-generate-preview",
-        "credits": 15,
-        "price": "75₽",
+        "credits": 10,
+        "price": "50₽",
         "res": "720p",
         "desc": "Бюджет, быстро",
     },
     "vid_fast": {
         "name": "⚡ Veo 3.1 Fast",
         "model_id": "veo-3.1-fast-generate-preview",
-        "credits": 25,
-        "price": "125₽",
+        "credits": 15,
+        "price": "75₽",
         "res": "1080p",
         "desc": "Баланс цены и качества",
     },
     "vid_pro": {
         "name": "🎬 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
-        "credits": 65,
-        "price": "325₽",
+        "credits": 40,
+        "price": "200₽",
         "res": "4K + аудио",
         "desc": "Кино-качество",
     },
@@ -981,9 +981,9 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🖼️ <b>Создать изображение</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"⚡ <b>Imagen 4 Fast</b> — 1 кр | ~2 сек\n"
-        f"✨ <b>Imagen 4</b> — 2 кр | ~5 сек\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 3 кр | ~8 сек"
+        f"⚡ <b>Imagen 4 Fast</b> — 1 кр (5₽) | ~2 сек\n"
+        f"✨ <b>Imagen 4</b> — 2 кр (10₽) | ~5 сек\n"
+        f"💎 <b>Imagen 4 Ultra</b> — 3 кр (15₽) | ~8 сек"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_models(), parse_mode="HTML")
@@ -1194,9 +1194,9 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 15 кр | 720p\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 25 кр | 1080p\n"
-        f"🎬 <b>Veo 3.1</b> — 65 кр | 4K + аудио\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 10 кр (50₽) | 720p\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 15 кр (75₽) | 1080p\n"
+        f"🎬 <b>Veo 3.1</b> — 40 кр (200₽) | 4K + аудио\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -1542,9 +1542,9 @@ async def reply_create_photo(message: Message, state: FSMContext):
     await message.answer(
         f"🖼️ <b>Создать изображение</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"⚡ <b>Imagen 4 Fast</b> — 1 кр | ~2 сек\n"
-        f"✨ <b>Imagen 4</b> — 2 кр | ~5 сек\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 3 кр | ~8 сек",
+        f"⚡ <b>Imagen 4 Fast</b> — 1 кр (5₽) | ~2 сек\n"
+        f"✨ <b>Imagen 4</b> — 2 кр (10₽) | ~5 сек\n"
+        f"💎 <b>Imagen 4 Ultra</b> — 3 кр (15₽) | ~8 сек",
         reply_markup=kb_image_models(), parse_mode="HTML"
     )
 
@@ -1556,9 +1556,9 @@ async def reply_create_video(message: Message, state: FSMContext):
     await message.answer(
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 15 кр | 720p\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 25 кр | 1080p\n"
-        f"🎬 <b>Veo 3.1</b> — 65 кр | 4K + аудио\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 10 кр (50₽) | 720p\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 15 кр (75₽) | 1080p\n"
+        f"🎬 <b>Veo 3.1</b> — 40 кр (200₽) | 4K + аудио\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
