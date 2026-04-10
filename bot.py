@@ -744,7 +744,6 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
                     p = preds[0]
                     if p.get("bytesBase64Encoded"):
                         return base64.b64decode(p["bytesBase64Encoded"])
-                    # GCS URI — скачиваем без auth (signed URL или публичный)
                     uri = p.get("videoUri") or p.get("gcsUri") or p.get("uri")
                     if uri and uri.startswith("https://"):
                         async with s.get(uri) as vr:
@@ -752,7 +751,31 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
                     if uri:
                         raise Exception(f"GCS URI требует доп. настройки: {uri[:80]}")
 
-                # Структура 2: videos[] напрямую
+                # Структура 2: response.generateVideoResponse.generatedSamples[]
+                gen_resp = pd.get("response", {}).get("generateVideoResponse", {})
+                samples = gen_resp.get("generatedSamples", [])
+                if samples:
+                    logging.info(f"Veo samples[0] keys: {list(samples[0].keys())}")
+                    sample = samples[0]
+                    # video.uri или video.bytesBase64Encoded
+                    video = sample.get("video", {})
+                    if video.get("bytesBase64Encoded"):
+                        return base64.b64decode(video["bytesBase64Encoded"])
+                    uri = video.get("uri") or video.get("videoUri")
+                    if uri and uri.startswith("https://"):
+                        async with s.get(uri) as vr:
+                            return await vr.read()
+                    if uri:
+                        raise Exception(f"GCS URI — нужна настройка GCS: {uri[:80]}")
+                    # Может быть напрямую в sample
+                    if sample.get("bytesBase64Encoded"):
+                        return base64.b64decode(sample["bytesBase64Encoded"])
+                    uri = sample.get("uri") or sample.get("videoUri")
+                    if uri and uri.startswith("https://"):
+                        async with s.get(uri) as vr:
+                            return await vr.read()
+
+                # Структура 3: videos[] напрямую
                 videos = pd.get("response", {}).get("videos", [])
                 if videos:
                     v = videos[0]
@@ -763,7 +786,7 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
                         async with s.get(uri) as vr:
                             return await vr.read()
 
-                # Структура 3: result.videos[]
+                # Структура 4: result.videos[]
                 result_videos = pd.get("result", {}).get("videos", [])
                 if result_videos:
                     v = result_videos[0]
@@ -771,7 +794,8 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
                         return base64.b64decode(v["bytesBase64Encoded"])
 
                 # Лог полного ответа для отладки
-                logging.error(f"Veo unknown response: {str(pd)[:500]}")
+                resp_str = str(pd.get("response", pd))[:600]
+                logging.error(f"Veo unknown response: {resp_str}")
                 raise Exception(f"Неизвестная структура ответа Veo. Ключи: {list(pd.get('response', pd).keys())}")
 
     raise Exception("Превышено время ожидания (6 мин)")
