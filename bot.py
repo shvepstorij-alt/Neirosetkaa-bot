@@ -278,6 +278,9 @@ def kb_main():
             InlineKeyboardButton(text="🎬 Видео",        callback_data="menu_video"),
         ],
         [
+            InlineKeyboardButton(text="✏️ Редактировать фото", callback_data="menu_edit"),
+        ],
+        [
             InlineKeyboardButton(text="💬 Консультант AI", callback_data="menu_chat"),
         ],
         [
@@ -415,6 +418,10 @@ def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
 class ImgState(StatesGroup):
     waiting_aspect = State()
     waiting_prompt = State()
+
+class EditState(StatesGroup):
+    waiting_photo  = State()   # ждём фото
+    waiting_prompt = State()   # ждём промт
 
 class VidState(StatesGroup):
     waiting_aspect = State()
@@ -653,6 +660,38 @@ async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:
             return base64.b64decode(data["predictions"][0]["bytesBase64Encoded"])
 
 
+async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1") -> bytes:
+    """Редактирование фото по референсу через Gemini Flash Image."""
+    img_b64 = base64.b64encode(image_bytes).decode()
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent"
+    payload = {
+        "contents": [{
+            "parts": [
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": img_b64
+                    }
+                },
+                {"text": prompt}
+            ]
+        }],
+        "generationConfig": {
+            "responseModalities": ["TEXT", "IMAGE"]
+        }
+    }
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, json=payload, headers=headers) as r:
+            if r.status != 200:
+                raise Exception(f"Gemini Edit API {r.status}: {(await r.text())[:300]}")
+            data = await r.json()
+            for part in data["candidates"][0]["content"]["parts"]:
+                if "inlineData" in part:
+                    return base64.b64decode(part["inlineData"]["data"])
+            raise Exception("Изображение не получено от Gemini")
+
+
 async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
     base = "https://generativelanguage.googleapis.com/v1beta"
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
@@ -854,14 +893,18 @@ async def on_payment(message: Message):
 async def menu_image(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
+    text = (
         f"🖼️ <b>Создать изображение</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"⚡ <b>Imagen 4 Fast</b> — 1 кр | ~2 сек\n"
         f"✨ <b>Imagen 4</b> — 2 кр | ~5 сек\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 3 кр | ~8 сек",
-        reply_markup=kb_image_models(), parse_mode="HTML"
+        f"💎 <b>Imagen 4 Ultra</b> — 3 кр | ~8 сек"
     )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_image_models(), parse_mode="HTML")
+    except Exception:
+        # Не получилось отредактировать (напр. это сообщение с фото)
+        await cb.message.answer(text, reply_markup=kb_image_models(), parse_mode="HTML")
     await cb.answer()
 
 
@@ -1063,15 +1106,18 @@ async def new_main_from_photo(cb: CallbackQuery, state: FSMContext):
 async def menu_video(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
+    text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"💰 <b>Veo 3.1 Lite</b> — 15 кр | 720p\n"
         f"⚡ <b>Veo 3.1 Fast</b> — 25 кр | 1080p\n"
         f"🎬 <b>Veo 3.1</b> — 65 кр | 4K + аудио\n\n"
-        f"⏱ <i>Время генерации: 1–6 минут</i>",
-        reply_markup=kb_video_models(), parse_mode="HTML"
+        f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_video_models(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb_video_models(), parse_mode="HTML")
     await cb.answer()
 
 
@@ -2202,6 +2248,146 @@ async def adm_back(cb: CallbackQuery):
         await cb.answer("❌", show_alert=True); return
     await show_admin_panel(cb.message)
     await cb.answer()
+
+# ══════════════════════════════════════════════════════════
+#  РЕДАКТИРОВАНИЕ ФОТО ПО РЕФЕРЕНСУ
+# ══════════════════════════════════════════════════════════
+
+EDIT_CREDIT_COST = 3  # стоимость редактирования = 3 кредита
+
+@dp.callback_query(F.data == "menu_edit")
+async def menu_edit(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(cb.from_user.id)
+    text = (
+        f"✏️ <b>Редактировать фото по референсу</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n"
+        f"💳 Стоимость: <b>{EDIT_CREDIT_COST} кр</b>\n\n"
+        f"Как это работает:\n"
+        f"1️⃣ Отправь своё фото\n"
+        f"2️⃣ Напиши что изменить\n"
+        f"3️⃣ Получи результат\n\n"
+        f"<i>Примеры: добавить закат, сменить фон, сделать в стиле аниме, убрать лишние объекты</i>"
+    )
+    if cr < EDIT_CREDIT_COST:
+        try:
+            await cb.message.edit_text(
+                f"❌ Недостаточно кредитов\n\nНужно {EDIT_CREDIT_COST} кр, у тебя {cr} кр.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
+                ]),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await cb.message.answer(
+                f"❌ Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кр.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy")],
+                ])
+            )
+        await cb.answer()
+        return
+
+    await state.set_state(EditState.waiting_photo)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_cancel(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb_cancel(), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(EditState.waiting_photo)
+async def edit_get_photo(message: Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("📷 Отправь <b>фотографию</b> — картинку из галереи или файл", parse_mode="HTML")
+        return
+
+    # Берём лучшее качество фото
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    file_bytes = await bot.download_file(file.file_path)
+    img_data = file_bytes.read()
+
+    await state.update_data(photo_bytes=list(img_data))
+    await state.set_state(EditState.waiting_prompt)
+    await message.answer(
+        f"✅ Фото получено!\n\n"
+        f"✏️ Теперь напиши <b>что изменить</b>:\n\n"
+        f"<i>Примеры:\n"
+        f"• Change background to sunset beach\n"
+        f"• Make it look like anime art style\n"
+        f"• Add snow falling\n"
+        f"• Remove the background, keep only the person</i>",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+
+
+@dp.message(EditState.waiting_prompt)
+async def edit_get_prompt(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("✏️ Напиши текстом что нужно изменить")
+        return
+
+    data = await state.get_data()
+    photo_bytes = bytes(data["photo_bytes"])
+    prompt = message.text.strip()
+
+    # Проверяем кредиты
+    cr = await get_credits(message.from_user.id)
+    if cr < EDIT_CREDIT_COST:
+        await state.clear()
+        await message.answer(f"❌ Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кр, у тебя {cr}.")
+        return
+
+    # Списываем кредиты
+    ok = await deduct(message.from_user.id, EDIT_CREDIT_COST)
+    if not ok:
+        await state.clear()
+        await message.answer("❌ Ошибка списания кредитов. Попробуй ещё раз.")
+        return
+
+    await state.clear()
+    wait = await message.answer(
+        f"⏳ Редактирую фото...\n\n"
+        f"🤖 Gemini Flash Image\n"
+        f"<i>{prompt[:80]}</i>",
+        parse_mode="HTML"
+    )
+
+    try:
+        result_bytes = await api_edit_image(photo_bytes, prompt)
+        await log_gen(message.from_user.id, "edit", "gemini-flash-image", EDIT_CREDIT_COST)
+        cr_left = await get_credits(message.from_user.id)
+        await message.answer_photo(
+            BufferedInputFile(result_bytes, "edited.png"),
+            caption=f"✅ Готово! ✏️ Редактирование\n💳 Списано {EDIT_CREDIT_COST} кр | Остаток: {cr_left} кр",
+            reply_markup=kb_after("edit", "edit")
+        )
+        await wait.delete()
+    except Exception as e:
+        await add_credits(message.from_user.id, EDIT_CREDIT_COST)
+        await wait.edit_text(
+            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            reply_markup=kb_back()
+        )
+
+
+@dp.callback_query(F.data.startswith("again:edit:"))
+async def edit_again(cb: CallbackQuery, state: FSMContext):
+    """Ещё раз редактировать."""
+    await state.clear()
+    cr = await get_credits(cb.from_user.id)
+    if cr < EDIT_CREDIT_COST:
+        await cb.answer(f"❌ Нужно {EDIT_CREDIT_COST} кр, у тебя {cr}", show_alert=True)
+        return
+    await state.set_state(EditState.waiting_photo)
+    await cb.message.answer(
+        f"📷 Отправь новое фото для редактирования:",
+        reply_markup=kb_cancel()
+    )
+    await cb.answer()
+
 
 # ══════════════════════════════════════════════════════════
 #  ОБЫЧНЫЕ СООБЩЕНИЯ (вне FSM — консультант по умолчанию)
