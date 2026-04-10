@@ -2047,7 +2047,14 @@ async def adm_users(cb: CallbackQuery):
             )
         lines = []
         for r in rows:
-            uname = f"@{r['username']}" if r['username'] else r['full_name'] or f"ID {r['user_id']}"
+            username = (r['username'] or "").strip()
+            full_name = (r['full_name'] or "").strip()
+            if username:
+                uname = f"@{username}"
+            elif full_name:
+                uname = full_name
+            else:
+                uname = f"ID {r['user_id']}"
             lines.append(f"• {uname} — {r['credits']} кр ({str(r['created_at'])[:10]})")
         text = f"👥 <b>Пользователи</b> (всего: {total})\n\n<b>Последние 10:</b>\n" + "\n".join(lines)
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
