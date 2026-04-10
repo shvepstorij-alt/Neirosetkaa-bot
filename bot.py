@@ -887,7 +887,8 @@ async def choose_img_model(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("iaspect:"))
 async def choose_img_aspect(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
-    key, ratio = parts[1], parts[2]
+    key = parts[1]
+    ratio = ":".join(parts[2:])  # "9:16", "16:9" etc
     m = IMAGE_MODELS[key]
     labels = {"1:1": "Квадрат 1:1", "16:9": "Широкий 16:9",
               "9:16": "Сторис 9:16", "4:3": "Фото 4:3", "3:4": "Портрет 3:4"}
@@ -1097,7 +1098,8 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("vaspect:"))
 async def choose_vid_aspect(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
-    key, ratio = parts[1], parts[2]
+    key = parts[1]
+    ratio = ":".join(parts[2:])  # "9:16", "16:9" etc
     m = VIDEO_MODELS[key]
     labels = {"16:9": "Горизонталь 16:9", "9:16": "Вертикаль 9:16", "1:1": "Квадрат 1:1"}
     await state.update_data(model_key=key, aspect_ratio=ratio)
