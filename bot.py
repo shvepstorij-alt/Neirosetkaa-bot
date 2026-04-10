@@ -1981,6 +1981,17 @@ async def adm_activity(cb: CallbackQuery):
 async def adm_popular(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
+    # Словарь ключ → читаемое название
+    MODEL_NAMES = {
+        "img_fast":          "⚡ Imagen 4 Fast",
+        "img_std":           "✨ Imagen 4",
+        "img_ultra":         "💎 Imagen 4 Ultra",
+        "vid_lite":          "💰 Veo 3.1 Lite",
+        "vid_fast":          "⚡ Veo 3.1 Fast",
+        "vid_pro":           "🎬 Veo 3.1 Pro",
+        "gemini-flash-image":"✏️ Редактирование фото",
+        "edit":              "✏️ Редактирование фото",
+    }
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -1990,7 +2001,10 @@ async def adm_popular(cb: CallbackQuery):
         if not rows:
             text = "🔥 <b>Популярные модели</b>\n\nПока нет генераций."
         else:
-            lines = [f"  {i+1}. {r[0]}: <b>{r[1]} ген</b> ({r[2]} кр)" for i, r in enumerate(rows)]
+            lines = []
+            for i, r in enumerate(rows):
+                name = MODEL_NAMES.get(r[0], r[0])
+                lines.append(f"  {i+1}. {name}: <b>{r[1]} ген</b> ({r[2]} кр)")
             text = "🔥 <b>Популярные модели</b>\n\n" + "\n".join(lines)
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
