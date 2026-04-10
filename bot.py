@@ -874,16 +874,39 @@ async def choose_img_model(cb: CallbackQuery, state: FSMContext):
         await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr}", show_alert=True)
         return
     await state.update_data(model_key=key)
-    await state.set_state(ImgState.waiting_prompt)
+    await state.set_state(ImgState.waiting_aspect)
     await cb.message.edit_text(
         f"{m['name']} ✅\n\n"
-        f"💳 Спишется: <b>{m['credits']} кр</b>\n"
-        f"⏱ Время: {m['speed']}\n\n"
+        f"💳 Спишется: <b>{m['credits']} кр</b>\n\n"
+        f"📐 <b>Выбери формат изображения:</b>",
+        reply_markup=kb_aspect_image(key), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("iaspect:"))
+async def choose_img_aspect(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    key, ratio = parts[1], parts[2]
+    m = IMAGE_MODELS[key]
+    labels = {"1:1": "Квадрат 1:1", "16:9": "Широкий 16:9",
+              "9:16": "Сторис 9:16", "4:3": "Фото 4:3", "3:4": "Портрет 3:4"}
+    await state.update_data(model_key=key, aspect_ratio=ratio)
+    await state.set_state(ImgState.waiting_prompt)
+    await cb.message.edit_text(
+        f"{m['name']} | 📐 {labels.get(ratio, ratio)}\n\n"
+        f"💳 Спишется: <b>{m['credits']} кр</b>\n\n"
         f"✏️ <b>Введи промт:</b>\n\n"
         f"<i>Пример: A futuristic city at night, neon lights, cyberpunk, 4k</i>",
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
     await cb.answer()
+
+
+@dp.message(ImgState.waiting_aspect)
+async def img_aspect_text(message: Message):
+    """Если написали текст вместо выбора формата."""
+    await message.answer("👆 Выбери формат кнопкой выше")
 
 
 @dp.message(ImgState.waiting_prompt)
@@ -1060,9 +1083,27 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
         await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr}. Пополни баланс!", show_alert=True)
         return
     await state.update_data(model_key=key)
-    await state.set_state(VidState.waiting_prompt)
+    await state.set_state(VidState.waiting_aspect)
     await cb.message.edit_text(
         f"{m['name']} ✅\n\n"
+        f"💳 Спишется: <b>{m['credits']} кр</b>\n"
+        f"📐 {m['res']} | 8 сек\n\n"
+        f"📐 <b>Выбери формат видео:</b>",
+        reply_markup=kb_aspect_video(key), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("vaspect:"))
+async def choose_vid_aspect(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    key, ratio = parts[1], parts[2]
+    m = VIDEO_MODELS[key]
+    labels = {"16:9": "Горизонталь 16:9", "9:16": "Вертикаль 9:16", "1:1": "Квадрат 1:1"}
+    await state.update_data(model_key=key, aspect_ratio=ratio)
+    await state.set_state(VidState.waiting_prompt)
+    await cb.message.edit_text(
+        f"{m['name']} | 📐 {labels.get(ratio, ratio)}\n\n"
         f"💳 Спишется: <b>{m['credits']} кр</b>\n"
         f"📐 {m['res']} | 8 сек\n\n"
         f"✏️ <b>Введи промт:</b>\n\n"
@@ -1070,6 +1111,12 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
     await cb.answer()
+
+
+@dp.message(VidState.waiting_aspect)
+async def vid_aspect_text(message: Message):
+    """Если написали текст вместо выбора формата."""
+    await message.answer("👆 Выбери формат кнопкой выше")
 
 
 @dp.message(VidState.waiting_prompt)
