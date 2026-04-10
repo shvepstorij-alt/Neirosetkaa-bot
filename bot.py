@@ -353,6 +353,40 @@ def kb_cancel():
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")]
     ])
 
+
+def kb_aspect_image(model_key: str):
+    """Выбор формата для изображений."""
+    ratios = [
+        ("1:1 Квадрат",    "1:1"),
+        ("16:9 Широкий",   "16:9"),
+        ("9:16 Сторис",    "9:16"),
+        ("4:3 Фото",       "4:3"),
+        ("3:4 Портрет",    "3:4"),
+    ]
+    rows = []
+    for i in range(0, len(ratios), 2):
+        row = []
+        for label, ratio in ratios[i:i+2]:
+            row.append(InlineKeyboardButton(
+                text=label,
+                callback_data=f"iaspect:{model_key}:{ratio}"
+            ))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_aspect_video(model_key: str):
+    """Выбор формата для видео."""
+    ratios = [
+        ("16:9 Горизонталь", "16:9"),
+        ("9:16 Вертикаль",   "9:16"),
+        ("1:1 Квадрат",      "1:1"),
+    ]
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"vaspect:{model_key}:{ratio}") for label, ratio in ratios]]
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 def kb_back():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
@@ -379,9 +413,11 @@ def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
 # ══════════════════════════════════════════════════════════
 
 class ImgState(StatesGroup):
+    waiting_aspect = State()
     waiting_prompt = State()
 
 class VidState(StatesGroup):
+    waiting_aspect = State()
     waiting_prompt = State()
 
 class ChatState(StatesGroup):
@@ -598,13 +634,13 @@ WEB_SEARCH_TOOL = {
 #  GOOGLE AI СЕРВИСЫ
 # ══════════════════════════════════════════════════════════
 
-async def api_generate_image(prompt: str, model_id: str) -> bytes:
+async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1") -> bytes:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:predict"
     payload = {
         "instances": [{"prompt": prompt}],
         "parameters": {
             "sampleCount": 1,
-            "aspectRatio": "1:1",
+            "aspectRatio": aspect_ratio,
             "safetyFilterLevel": "block_few",
         }
     }
@@ -617,12 +653,12 @@ async def api_generate_image(prompt: str, model_id: str) -> bytes:
             return base64.b64decode(data["predictions"][0]["bytesBase64Encoded"])
 
 
-async def api_generate_video(prompt: str, model_id: str) -> bytes:
+async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
     base = "https://generativelanguage.googleapis.com/v1beta"
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
     payload = {
         "instances": [{"prompt": prompt}],
-        "parameters": {"durationSeconds": 8, "aspectRatio": "16:9", "sampleCount": 1}
+        "parameters": {"durationSeconds": 8, "aspectRatio": aspect_ratio, "sampleCount": 1}
     }
     async with aiohttp.ClientSession() as s:
         async with s.post(f"{base}/models/{model_id}:predictLongRunning",
@@ -887,7 +923,8 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     )
 
     try:
-        img_bytes = await api_generate_image(prompt, m["model_id"])
+        aspect = data.get("aspect_ratio", "1:1")
+        img_bytes = await api_generate_image(prompt, m["model_id"], aspect)
         await log_gen(cb.from_user.id, "image", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         await cb.message.answer_photo(
@@ -1076,7 +1113,8 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     )
 
     try:
-        vid_bytes = await api_generate_video(prompt, m["model_id"])
+        aspect = data.get("aspect_ratio", "16:9")
+        vid_bytes = await api_generate_video(prompt, m["model_id"], aspect)
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         await cb.message.answer_video(
