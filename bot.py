@@ -2063,12 +2063,13 @@ async def adm_users(cb: CallbackQuery):
         for r in rows:
             username = (r['username'] or "").strip()
             full_name = (r['full_name'] or "").strip()
+            uid = r['user_id']
             if username:
                 uname = f"@{username}"
             elif full_name:
-                uname = full_name
+                uname = f"<a href='tg://user?id={uid}'>{full_name}</a>"
             else:
-                uname = f"ID {r['user_id']}"
+                uname = f"<a href='tg://user?id={uid}'>ID {uid}</a>"
             lines.append(f"• {uname} — {r['credits']} кр ({str(r['created_at'])[:10]})")
         text = f"👥 <b>Пользователи</b> (всего: {total})\n\n<b>Последние 10:</b>\n" + "\n".join(lines)
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
