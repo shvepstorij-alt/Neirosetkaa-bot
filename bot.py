@@ -334,14 +334,19 @@ def kb_pay_method(pack_key: str):
         [InlineKeyboardButton(text="◀️ Назад",          callback_data="menu_buy")],
     ])
 
-def kb_after(menu: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
+def kb_after(menu: str, model_key: str = ""):
+    rows = [
         [
-            InlineKeyboardButton(text="🔄 Ещё раз",    callback_data=f"menu_{menu}"),
-            InlineKeyboardButton(text="🏠 Главное",    callback_data="back_main"),
+            InlineKeyboardButton(text="🔄 Ещё раз",      callback_data=f"again:{menu}:{model_key}"),
+            InlineKeyboardButton(text="🔀 Сменить модель", callback_data=f"menu_{menu}"),
+        ],
+        [
+            InlineKeyboardButton(text="⬆️ Улучшить промт", callback_data=f"improve:{menu}:{model_key}"),
+            InlineKeyboardButton(text="🏠 Главное",        callback_data="new_main"),
         ],
         [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy")],
-    ])
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_cancel():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -888,7 +893,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer_photo(
             BufferedInputFile(img_bytes, "image.png"),
             caption=f"✅ Готово! {m['name']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
-            reply_markup=kb_after("image")
+            reply_markup=kb_after("image", key)
         )
         await wait.delete()
     except Exception as e:
@@ -905,9 +910,87 @@ async def change_img_prompt(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[2]
     await state.update_data(model_key=key)
     await state.set_state(ImgState.waiting_prompt)
-    await cb.message.edit_text(
+    await cb.message.answer(
         f"✏️ Введи новый промт для <b>{IMAGE_MODELS[key]['name']}</b>:",
         reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("again:"))
+async def after_gen_again(cb: CallbackQuery, state: FSMContext):
+    """Ещё раз — та же модель, новый промт."""
+    parts = cb.data.split(":")
+    menu = parts[1]   # "image" или "video"
+    key  = parts[2] if len(parts) > 2 else ""
+    await state.clear()
+    if menu == "image" and key in IMAGE_MODELS:
+        m = IMAGE_MODELS[key]
+        await state.update_data(model_key=key)
+        await state.set_state(ImgState.waiting_prompt)
+        await cb.message.answer(
+            f"{m['name']} — снова!\n\n"
+            f"💳 Спишется: <b>{m['credits']} кр</b>\n\n"
+            f"✏️ Введи промт:",
+            reply_markup=kb_cancel(), parse_mode="HTML"
+        )
+    elif menu == "video" and key in VIDEO_MODELS:
+        m = VIDEO_MODELS[key]
+        await state.update_data(model_key=key)
+        await state.set_state(VidState.waiting_prompt)
+        await cb.message.answer(
+            f"{m['name']} — снова!\n\n"
+            f"💳 Спишется: <b>{m['credits']} кр</b>\n\n"
+            f"✏️ Введи промт:",
+            reply_markup=kb_cancel(), parse_mode="HTML"
+        )
+    else:
+        await cb.message.answer("Выбери действие 👇", reply_markup=kb_main())
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("improve:"))
+async def after_gen_improve(cb: CallbackQuery, state: FSMContext):
+    """Улучшить промт — предлагает написать уточнение."""
+    parts = cb.data.split(":")
+    menu = parts[1]
+    key  = parts[2] if len(parts) > 2 else ""
+    await state.clear()
+    if menu == "image" and key in IMAGE_MODELS:
+        await state.update_data(model_key=key)
+        await state.set_state(ImgState.waiting_prompt)
+        await cb.message.answer(
+            f"✨ <b>Улучши промт</b>\n\n"
+            f"Напиши более подробный запрос. Советы:\n"
+            f"• Добавь стиль: <i>oil painting, photorealistic, anime</i>\n"
+            f"• Добавь освещение: <i>golden hour, neon lights, studio light</i>\n"
+            f"• Добавь детали: <i>4k, ultra detailed, cinematic</i>\n\n"
+            f"✏️ Новый промт:",
+            reply_markup=kb_cancel(), parse_mode="HTML"
+        )
+    elif menu == "video" and key in VIDEO_MODELS:
+        await state.update_data(model_key=key)
+        await state.set_state(VidState.waiting_prompt)
+        await cb.message.answer(
+            f"✨ <b>Улучши промт для видео</b>\n\n"
+            f"Советы:\n"
+            f"• Опиши движение: <i>camera slowly zooms in</i>\n"
+            f"• Добавь атмосферу: <i>cinematic, dramatic lighting</i>\n"
+            f"• Укажи детали сцены\n\n"
+            f"✏️ Новый промт:",
+            reply_markup=kb_cancel(), parse_mode="HTML"
+        )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "new_main")
+async def new_main_from_photo(cb: CallbackQuery, state: FSMContext):
+    """Главное меню новым сообщением (для фото/видео где нельзя edit_text)."""
+    await state.clear()
+    credits = await get_credits(cb.from_user.id)
+    await cb.message.answer(
+        f"👋 Баланс: <b>{credits} кр</b>\n\nВыбери действие 👇",
+        reply_markup=kb_main(), parse_mode="HTML"
     )
     await cb.answer()
 
@@ -999,7 +1082,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer_video(
             BufferedInputFile(vid_bytes, "video.mp4"),
             caption=f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
-            reply_markup=kb_after("video")
+            reply_markup=kb_after("video", key)
         )
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
