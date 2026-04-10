@@ -661,35 +661,46 @@ async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:
 
 
 async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1") -> bytes:
-    """Редактирование фото по референсу через Gemini 2.5 Flash Image."""
+    """Редактирование фото по референсу через Gemini. Пробует несколько моделей."""
     img_b64 = base64.b64encode(image_bytes).decode()
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent"
+    # Список моделей — пробуем по очереди
+    models = [
+        "gemini-2.5-flash-image",
+        "gemini-2.0-flash-exp-image-generation",
+    ]
     payload = {
         "contents": [{
             "parts": [
-                {
-                    "inlineData": {
-                        "mimeType": "image/jpeg",
-                        "data": img_b64
-                    }
-                },
+                {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
                 {"text": prompt}
             ]
         }],
-        "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"]
-        }
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
     }
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+    last_error = None
     async with aiohttp.ClientSession() as s:
-        async with s.post(url, json=payload, headers=headers) as r:
-            if r.status != 200:
-                raise Exception(f"Gemini Edit API {r.status}: {(await r.text())[:300]}")
-            data = await r.json()
-            for part in data["candidates"][0]["content"]["parts"]:
-                if "inlineData" in part:
-                    return base64.b64decode(part["inlineData"]["data"])
-            raise Exception("Gemini не вернул изображение. Попробуй другой промт.")
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            for attempt in range(3):  # 3 попытки на каждую модель
+                try:
+                    async with s.post(url, json=payload, headers=headers) as r:
+                        if r.status == 503:
+                            await asyncio.sleep(3 * (attempt + 1))
+                            continue
+                        if r.status != 200:
+                            last_error = f"API {r.status}: {(await r.text())[:150]}"
+                            break
+                        data = await r.json()
+                        for part in data["candidates"][0]["content"]["parts"]:
+                            if "inlineData" in part:
+                                return base64.b64decode(part["inlineData"]["data"])
+                        last_error = "Gemini не вернул изображение. Попробуй другой промт."
+                        break
+                except Exception as e:
+                    last_error = str(e)
+                    await asyncio.sleep(2)
+    raise Exception(last_error or "Все модели недоступны. Попробуй позже.")
 
 
 async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
