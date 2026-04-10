@@ -661,15 +661,15 @@ async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:
 
 
 async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1") -> bytes:
-    """Редактирование фото по референсу через Gemini Flash Image."""
+    """Редактирование фото по референсу через Gemini 2.5 Flash Image."""
     img_b64 = base64.b64encode(image_bytes).decode()
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent"
     payload = {
         "contents": [{
             "parts": [
                 {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
+                    "inlineData": {
+                        "mimeType": "image/jpeg",
                         "data": img_b64
                     }
                 },
@@ -689,7 +689,7 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
             for part in data["candidates"][0]["content"]["parts"]:
                 if "inlineData" in part:
                     return base64.b64decode(part["inlineData"]["data"])
-            raise Exception("Изображение не получено от Gemini")
+            raise Exception("Gemini не вернул изображение. Попробуй другой промт.")
 
 
 async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
