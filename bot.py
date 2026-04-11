@@ -2572,11 +2572,13 @@ async def handle_message(message: Message, state: FSMContext):
 async def pay_fk(cb: CallbackQuery):
     pack_key = cb.data.split(":")[1]
     p = CREDIT_PACKS[pack_key]
+    logging.info(f"payfk: pack={pack_key}, FK_MERCHANT_ID='{FK_MERCHANT_ID}'")
     if not FK_MERCHANT_ID:
-        await cb.answer("❌ Оплата через СБП временно недоступна", show_alert=True)
+        await cb.answer("❌ Оплата через СБП временно недоступна. Напиши @neirosetkaalex", show_alert=True)
         return
     order_id = await fk_create_order(cb.from_user.id, pack_key)
     pay_url = fk_payment_url(order_id, p["price"], cb.from_user.id)
+    logging.info(f"payfk url: {pay_url}")
     msg = (
         f"\U0001f3e6 <b>Оплата через СБП / Карту</b>\n\n"
         f"\U0001f4e6 {p['name']}: <b>{p['credits']} кредитов</b>\n"
