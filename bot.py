@@ -17,6 +17,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import anthropic
+import hashlib
+from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,6 +31,12 @@ CHANNEL_ID     = os.getenv("CHANNEL_ID")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")      # канал
 PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "neirosetkaalex")  # личка Александра
 ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
+
+# ─── FreeKassa ────────────────────────────────────────────
+FK_MERCHANT_ID = os.getenv("FK_MERCHANT_ID", "")
+FK_SECRET_1    = os.getenv("FK_SECRET_1", "")
+FK_SECRET_2    = os.getenv("FK_SECRET_2", "")
+FK_WEBHOOK_PORT = int(os.getenv("PORT", "8080"))  # Railway использует PORT
 
 FREE_CREDITS   = 5   # кредитов при первом /start
 DATABASE_URL   = os.getenv("DATABASE_URL")  # Railway PostgreSQL
@@ -167,6 +175,18 @@ async def init_db():
                 credits    INTEGER,
                 amount_rub INTEGER,
                 method     TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments_fk (
+                id         SERIAL PRIMARY KEY,
+                order_id   TEXT UNIQUE,
+                user_id    BIGINT,
+                credits    INTEGER,
+                amount_rub INTEGER,
+                pack_key   TEXT,
+                status     TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
@@ -332,9 +352,17 @@ def kb_buy():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_pay_method(pack_key: str):
+    p = CREDIT_PACKS[pack_key]
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data=f"paystars:{pack_key}")],
-        [InlineKeyboardButton(text="◀️ Назад",          callback_data="menu_buy")],
+        [InlineKeyboardButton(
+            text=f"🏦 СБП / Карта — {p['price']}₽",
+            callback_data=f"payfk:{pack_key}"
+        )],
+        [InlineKeyboardButton(
+            text=f"⭐ Telegram Stars — {p['stars']} ⭐",
+            callback_data=f"paystars:{pack_key}"
+        )],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_buy")],
     ])
 
 def kb_after(menu: str, model_key: str = ""):
@@ -2536,8 +2564,127 @@ async def handle_message(message: Message, state: FSMContext):
 #  ЗАПУСК
 # ══════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════
+#  FREEKASSA — ОПЛАТА СБП
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data.startswith("payfk:"))
+async def pay_fk(cb: CallbackQuery):
+    pack_key = cb.data.split(":")[1]
+    p = CREDIT_PACKS[pack_key]
+    if not FK_MERCHANT_ID:
+        await cb.answer("❌ Оплата через СБП временно недоступна", show_alert=True)
+        return
+    order_id = await fk_create_order(cb.from_user.id, pack_key)
+    pay_url = fk_payment_url(order_id, p["price"], cb.from_user.id)
+    msg = (
+        f"\U0001f3e6 <b>Оплата через СБП / Карту</b>\n\n"
+        f"\U0001f4e6 {p['name']}: <b>{p['credits']} кредитов</b>\n"
+        f"\U0001f4b0 Сумма: <b>{p['price']}\u20bd</b>\n\n"
+        f"Нажми кнопку ниже, выбери банк и оплати.\n"
+        f"Кредиты зачислятся <b>автоматически</b> после оплаты \u2705"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"\U0001f4b3 Оплатить {p['price']}\u20bd", url=pay_url)],
+        [InlineKeyboardButton(text="\u25c0\ufe0f Назад", callback_data=f"buy:{pack_key}")],
+    ])
+    try:
+        await cb.message.edit_text(msg, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(msg, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+# ══════════════════════════════════════════════════════════
+#  WEBHOOK-СЕРВЕР ДЛЯ FREEKASSA
+# ══════════════════════════════════════════════════════════
+
+async def fk_webhook_handler(request: web.Request) -> web.Response:
+    """Принимает уведомление от FreeKassa об успешной оплате."""
+    try:
+        data = await request.post()
+        logging.info(f"FK webhook: {dict(data)}")
+
+        merchant_id = data.get("MERCHANT_ID", "")
+        amount      = data.get("AMOUNT", "")
+        order_id    = data.get("MERCHANT_ORDER_ID", "")
+        sign        = data.get("SIGN", "")
+
+        # Проверяем подпись
+        expected = fk_sign_notify(amount, order_id)
+        if sign != expected:
+            logging.warning(f"FK wrong sign: got {sign}, expected {expected}")
+            return web.Response(text="WRONG SIGN")
+
+        # Проверяем merchant_id
+        if merchant_id != FK_MERCHANT_ID:
+            return web.Response(text="WRONG MERCHANT")
+
+        # Ищем заказ в БД
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM payments_fk WHERE order_id=$1", order_id
+            )
+            if not row:
+                logging.warning(f"FK order not found: {order_id}")
+                return web.Response(text="ORDER NOT FOUND")
+
+            if row["status"] == "paid":
+                return web.Response(text="YES")  # уже обработан
+
+            # Зачисляем кредиты
+            await conn.execute(
+                "UPDATE payments_fk SET status='paid' WHERE order_id=$1", order_id
+            )
+
+        user_id = row["user_id"]
+        credits = row["credits"]
+        amount_rub = row["amount_rub"]
+
+        await add_credits(user_id, credits)
+        await log_payment(user_id, credits, amount_rub, "freekassa")
+
+        # Уведомляем пользователя
+        try:
+            new_balance = await get_credits(user_id)
+            await bot.send_message(
+                user_id,
+                "\u2705 <b>Оплата прошла успешно!</b>\n\n"
+                f"\u2795 Начислено: <b>{credits} кредитов</b>\n"
+                f"\U0001f4b3 Баланс: <b>{new_balance} кр</b>\n\n"
+                "Можешь начинать генерацию! \U0001f680",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="\U0001f5bc\ufe0f Создать фото", callback_data="menu_image")],
+                    [InlineKeyboardButton(text="\U0001f3ac Создать видео", callback_data="menu_video")],
+                ])
+            )
+        except Exception as e:
+            logging.error(f"FK notify user error: {e}")
+
+        return web.Response(text="YES")
+
+    except Exception as e:
+        logging.error(f"FK webhook error: {e}")
+        return web.Response(text="ERROR", status=500)
+
+
+async def start_webhook_server():
+    """Запускаем aiohttp сервер для FreeKassa webhook."""
+    app = web.Application()
+    app.router.add_post("/fk_webhook", fk_webhook_handler)
+    app.router.add_get("/health", lambda r: web.Response(text="OK"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", FK_WEBHOOK_PORT)
+    await site.start()
+    logging.info(f"✅ FK webhook сервер запущен на порту {FK_WEBHOOK_PORT}")
+
+
 async def main():
     await init_db()
+    await start_webhook_server()
     logging.info("✅ Бот запущен!")
     await dp.start_polling(bot)
 
