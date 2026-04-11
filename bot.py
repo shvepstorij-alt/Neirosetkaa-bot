@@ -2568,6 +2568,40 @@ async def handle_message(message: Message, state: FSMContext):
 #  FREEKASSA — ОПЛАТА СБП
 # ══════════════════════════════════════════════════════════
 
+def fk_sign_form(amount: int, currency: str, order_id: str) -> str:
+    s = f"{FK_MERCHANT_ID}:{amount}:{FK_SECRET_1}:{currency}:{order_id}"
+    return hashlib.md5(s.encode()).hexdigest()
+
+def fk_sign_notify(amount: str, order_id: str) -> str:
+    s = f"{FK_MERCHANT_ID}:{amount}:{FK_SECRET_2}:{order_id}"
+    return hashlib.md5(s.encode()).hexdigest()
+
+def fk_payment_url(order_id: str, amount: int, user_id: int) -> str:
+    sign = fk_sign_form(amount, "RUB", order_id)
+    return (
+        f"https://pay.fk.money/"
+        f"?m={FK_MERCHANT_ID}"
+        f"&oa={amount}"
+        f"&currency=RUB"
+        f"&o={order_id}"
+        f"&s={sign}"
+        f"&us_uid={user_id}"
+        f"&lang=ru"
+    )
+
+async def fk_create_order(user_id: int, pack_key: str) -> str:
+    import time, random
+    p = CREDIT_PACKS[pack_key]
+    order_id = f"fk_{user_id}_{int(time.time())}_{random.randint(100,999)}"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO payments_fk (order_id, user_id, credits, amount_rub, pack_key)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (order_id) DO NOTHING
+        """, order_id, user_id, p["credits"], p["price"], pack_key)
+    return order_id
+
 @dp.callback_query(F.data.startswith("payfk:"))
 async def pay_fk(cb: CallbackQuery):
     pack_key = cb.data.split(":")[1]
