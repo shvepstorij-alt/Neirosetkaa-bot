@@ -38,7 +38,7 @@ FK_SECRET_1    = os.getenv("FK_SECRET_1", "")
 FK_SECRET_2    = os.getenv("FK_SECRET_2", "")
 FK_WEBHOOK_PORT = int(os.getenv("PORT", "8080"))  # Railway использует PORT
 
-FREE_CREDITS   = 5   # кредитов при первом /start
+FREE_CREDITS   = 50  # кредитов при первом /start
 DATABASE_URL   = os.getenv("DATABASE_URL")  # Railway PostgreSQL
 
 _pool = None  # глобальный connection pool
@@ -57,7 +57,7 @@ IMAGE_MODELS = {
     "img_fast": {
         "name": "⚡ Imagen 4 Fast",
         "model_id": "imagen-4.0-fast-generate-001",
-        "credits": 1,
+        "credits": 7,
         "price": "5₽",
         "speed": "~2 сек",
         "desc": "Быстро и качественно",
@@ -65,7 +65,7 @@ IMAGE_MODELS = {
     "img_std": {
         "name": "✨ Imagen 4",
         "model_id": "imagen-4.0-generate-001",
-        "credits": 2,
+        "credits": 10,
         "price": "10₽",
         "speed": "~5 сек",
         "desc": "Флагман, чёткий текст",
@@ -73,7 +73,7 @@ IMAGE_MODELS = {
     "img_ultra": {
         "name": "💎 Imagen 4 Ultra",
         "model_id": "imagen-4.0-ultra-generate-001",
-        "credits": 3,
+        "credits": 13,
         "price": "15₽",
         "speed": "~8 сек",
         "desc": "Максимальная точность",
@@ -85,7 +85,7 @@ VIDEO_MODELS = {
     "vid_lite": {
         "name": "💰 Veo 3.1 Lite",
         "model_id": "veo-3.1-lite-generate-preview",
-        "credits": 10,
+        "credits": 100,
         "price": "60₽",
         "res": "720p",
         "desc": "Бюджет, быстро",
@@ -93,7 +93,7 @@ VIDEO_MODELS = {
     "vid_fast": {
         "name": "⚡ Veo 3.1 Fast",
         "model_id": "veo-3.1-fast-generate-preview",
-        "credits": 20,
+        "credits": 200,
         "price": "120₽",
         "res": "1080p",
         "desc": "Баланс цены и качества",
@@ -101,7 +101,7 @@ VIDEO_MODELS = {
     "vid_pro": {
         "name": "🎬 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
-        "credits": 45,
+        "credits": 450,
         "price": "225₽",
         "res": "4K + аудио",
         "desc": "Кино-качество",
@@ -111,33 +111,33 @@ VIDEO_MODELS = {
 # ─── Пакеты кредитов ──────────────────────────────────────
 CREDIT_PACKS = {
     "p25": {
-        "name": "🎯 Пробный", "credits": 25, "price": 150, "stars": 30,
+        "name": "🎯 Пробный", "credits": 250, "price": 150, "stars": 30,
         "desc": "25 фото / 2 видео Lite / 1 видео Fast",
         "badge": "Попробовать за 150₽",
     },
     "p50": {
-        "name": "🥉 Старт", "credits": 50, "price": 249, "stars": 50,
+        "name": "🥉 Старт", "credits": 500, "price": 249, "stars": 50,
         "desc": "50 фото / 5 видео Lite / 2 видео Fast",
         "badge": "Популярный старт",
     },
     "p150": {
-        "name": "🥈 Базовый", "credits": 150, "price": 699, "stars": 140,
+        "name": "🥈 Базовый", "credits": 1500, "price": 699, "stars": 140,
         "desc": "150 фото / 15 видео Lite / 7 видео Fast / 3 видео Pro",
         "badge": "Хорошая экономия",
     },
     "p500": {
-        "name": "🥇 Про", "credits": 500, "price": 2390, "stars": 480,
+        "name": "🥇 Про", "credits": 5000, "price": 2390, "stars": 480,
         "desc": "500 фото / 50 видео Lite / 25 видео Fast / 11 видео Pro",
         "badge": "Выгоднее на 20%",
     },
     "p1200": {
-        "name": "💎 Бизнес", "credits": 1200, "price": 5790, "stars": 1160,
+        "name": "💎 Бизнес", "credits": 12000, "price": 5790, "stars": 1160,
         "desc": "1200 фото / 120 видео Lite / 60 видео Fast / 26 видео Pro",
         "badge": "Максимум",
     },
 }
 
-REF_BONUS = 20  # кредитов за реферал
+REF_BONUS = 200  # кредитов за реферал
 
 # ══════════════════════════════════════════════════════════
 #  БАЗА ДАННЫХ
@@ -388,7 +388,7 @@ def kb_buy():
     rows = []
     for key, p in CREDIT_PACKS.items():
         rows.append([InlineKeyboardButton(
-            text=f"{p['name']} — {p['credits']} кр за {p['price']}₽",
+            text=f"{p['name']} — {p['credits']} кр | {p['price']}₽",
             callback_data=f"buy:{key}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
@@ -474,7 +474,7 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="✨ Создать фото"), KeyboardButton(text="🎬 Создать видео")],
+        [KeyboardButton(text="✨ Создать фото"), KeyboardButton(text="🎥 Создать видео")],
         [KeyboardButton(text="🪪 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
     ]
     if is_admin:
@@ -542,7 +542,7 @@ Plus: $10/мес ($8/мес при годовой) — безлимитные г
 Pro: $25/мес ($15-18/мес при годовой) — премиум AI-модели, кастомный брендинг, аналитика, API, 10 своих доменов
 Ultra: вводная цена — самые продвинутые модели, 100 доменов, Studio Mode, ранний доступ к фичам
 Teams: $20/польз/мес — командная работа
-Кредиты: 1 презентация ≈ 40 кредитоведитов. Неиспользованные кредиты переходят до 2x лимита плана.
+Кредиты: 1 презентация ≈ 40 кредитов. Неиспользованные кредиты переходят до 2x лимита плана.
 Российские карты не принимаются — нужен посредник или зарубежная карта.
 
 ФОРМАТИРОВАНИЕ — СТРОГО:
@@ -600,7 +600,7 @@ SuperGrok Heavy — $300/мес: Grok 4 Heavy, максимальное каче
 Cursor (AI-редактор кода):
 Модели: GPT-5, Claude Sonnet 4.6, Gemini 3 и другие на выбор
 Hobby — бесплатно: 2000 автодополнений/мес, базовый доступ
-Pro — $20/мес ($16 при годовой оплате): безлимит Tab, $20 кредитоведитов на AI-агенты, все топ-модели
+Pro — $20/мес ($16 при годовой оплате): безлимит Tab, $20 кредитов на AI-агенты, все топ-модели
 Pro+ — $60/мес: 3x больше кредитов для активных пользователей
 Ultra — $200/мес: 20x кредитов, для тех кто в Cursor весь рабочий день
 Teams — $40/польз./мес: командный доступ, SSO, общий биллинг
@@ -613,7 +613,7 @@ Pro — $35/мес: безлимит генераций, upscale, real-time ре
 Suno (генерация музыки):
 Версия: v4.5 — студийное качество, все жанры
 Free — несколько треков в день
-Pro — $8/мес: 2500 кредитоведитов, коммерческое использование
+Pro — $8/мес: 2500 кредитов, коммерческое использование
 Premier — $24/мес: 10000 кредитов, приоритет
 
 Kling AI (генерация видео):
@@ -625,9 +625,9 @@ Pro — $27/мес: 3000 кредитов/мес
 
 Runway (генерация видео):
 Версия: Gen-4 — кинематографическое качество
-Free — 125 кредитоведитов (разово)
-Standard — $12/мес: 625 кредитоведитов
-Pro — $28/мес: 2250 кредитоведитов
+Free — 125 кредитов (разово)
+Standard — $12/мес: 625 кредитов
+Pro — $28/мес: 2250 кредитов
 Лучше Kling по кинематографичности, но дороже
 
 ElevenLabs (синтез речи и клонирование голоса):
@@ -888,7 +888,7 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
 #  ОБРАБОТЧИКИ — СТАРТ / МЕНЮ
 # ══════════════════════════════════════════════════════════
 
-WELCOME_NEW = """👋 Привет, {name}!
+WELCOME_NEW = """🌟 Привет, {name}!
 
 Я — AI-ассистент Александра. Умею:
 🖼️ Генерировать изображения (Imagen 4)
@@ -902,7 +902,7 @@ WELCOME_NEW = """👋 Привет, {name}!
 
 WELCOME_BACK = """👋 С возвращением, {name}!
 
-💳 Баланс: <b>{credits} кредитоведитов</b>
+💎 Баланс: <b>{credits} кредитов</b>
 
 Выбери действие 👇"""
 
@@ -941,15 +941,15 @@ async def cmd_start(message: Message, state: FSMContext):
             await bot.send_message(
                 referred_by,
                 f"🎉 <b>По твоей ссылке зарегистрировался новый пользователь!</b>\n\n"
-                f"💰 <b>+{REF_BONUS} кредитоведитоведитов</b> начислятся тебе когда он сделает первую покупку.",
+                f"💰 <b>+{REF_BONUS} кредитов</b> начислятся тебе когда он сделает первую покупку.",
                 parse_mode="HTML"
             )
         except Exception:
             pass
         text = (
-            f"👋 Привет, {message.from_user.first_name}!\n\n"
+            f"🌟 Привет, {message.from_user.first_name}!\n\n"
             f"🎁 Тебя пригласил друг — ты получил <b>+{REF_BONUS} бонусных кредитов!</b>\n\n"
-            f"💳 Баланс: <b>{credits} кредитоведитов</b> ({FREE_CREDITS} стартовых + {REF_BONUS} реферальных)\n\n"
+            f"💎 Баланс: <b>{credits} кредитов</b> ({FREE_CREDITS} стартовых + {REF_BONUS} реферальных)\n\n"
             f"Выбери что создать 👇"
         )
     else:
@@ -979,7 +979,7 @@ async def show_admin_panel(message: Message):
         )
     except Exception as e:
         logging.error(f"show_admin_panel error: {e}")
-        await message.answer(f"❌ Ошибка загрузки панели: {e}")
+        await message.answer(f"⛔ Ошибка загрузки панели: {e}")
 
 
 @dp.message(F.text == "/admin", StateFilter("*"))
@@ -996,7 +996,7 @@ async def back_main(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     credits = await get_credits(cb.from_user.id)
     await cb.message.edit_text(
-        f"👋 {cb.from_user.first_name}, баланс: <b>{credits} кредитоведитов</b>\n\nВыбери действие 👇",
+        f"👋 {cb.from_user.first_name}, баланс: <b>{credits} кредитов</b>\n\nВыбери действие 👇",
         reply_markup=kb_main(), parse_mode="HTML"
     )
     await cb.answer()
@@ -1017,15 +1017,15 @@ async def menu_ref(cb: CallbackQuery):
     earned = paid_refs * REF_BONUS
     text = (
         f"\U0001f91d <b>Пригласить друга</b>\n\n"
-        f"За каждого друга — <b>+{REF_BONUS} кредитоведитоведитов</b> тебе и ему!\n\n"
+        f"За каждого друга — <b>+{REF_BONUS} кредитов</b> тебе и ему!\n\n"
         f"<b>Как работает:</b>\n"
         f"1\u20e3 Поделись своей ссылкой\n"
-        f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_BONUS} кредитоведитоведитов</b>\n"
-        f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кредитоведитоведитов</b>\n\n"
+        f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_BONUS} кредитов</b>\n"
+        f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кредитов</b>\n\n"
         f"\U0001f4ca <b>Твоя статистика:</b>\n"
         f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
         f"\U0001f4b0 Купили: <b>{paid_refs}</b>\n"
-        f"\U0001f381 Заработано: <b>{earned} кредитоведитов ({earned * 5}\u20bd)</b>\n\n"
+        f"\U0001f381 Заработано: <b>{earned} кредитов ({earned * 5}\u20bd)</b>\n\n"
         f"\U0001f517 <b>Твоя ссылка:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         f"<i>Нажми на ссылку чтобы скопировать и отправь другу</i>"
@@ -1051,7 +1051,7 @@ async def menu_balance(cb: CallbackQuery):
         lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кр")
 
     await cb.message.edit_text(
-        f"💳 <b>Баланс: {cr} кредитоведитов</b>\n\n"
+        f"💳 <b>Баланс: {cr} кредитов</b>\n\n"
         f"<b>Доступно:</b>\n" + "\n".join(lines),
         reply_markup=kb_buy(), parse_mode="HTML"
     )
@@ -1061,14 +1061,17 @@ async def menu_balance(cb: CallbackQuery):
 @dp.callback_query(F.data == "menu_buy")
 async def menu_buy(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
-        f"🛒 <b>Купить кредиты</b>\n\n💳 Баланс: <b>{cr} кредитоведитов</b>\n\n"
-        "\n".join([
-            f"<b>{p['name']}</b> — {p['credits']} кредитов | {p['price']}\u20bd\n  <i>{p['desc']}</i>"
-            for p in CREDIT_PACKS.values()
-        ]),
-        reply_markup=kb_buy(), parse_mode="HTML"
-    )
+    lines = [f"💎 <b>Баланс: {cr} кредитов</b>\n"]
+    for p in CREDIT_PACKS.values():
+        lines.append(
+            f"{p['name']} — {p['credits']} кредитов | <b>{p['price']}₽</b>\n"
+            f"<i>  {p['desc']}</i>"
+        )
+    text = "\n\n".join(lines)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_buy(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
     await cb.answer()
 
 
@@ -1122,8 +1125,8 @@ async def process_referral_bonus(user_id: int):
             referrer_id,
             f"🎉 <b>Реферальный бонус!</b>\n\n"
             f"Твой друг сделал первую покупку.\n"
-            f"➕ Начислено: <b>+{REF_BONUS} кредитоведитоведитов</b>\n"
-            f"💳 Баланс: <b>{new_bal} кредитов</b>",
+            f"✨ Начислено: <b>+{REF_BONUS} кредитов</b>\n"
+            f"💎 Баланс: <b>{new_bal} кредитов</b>",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -1141,9 +1144,9 @@ async def on_payment(message: Message):
     await process_referral_bonus(user_id)
     cr = await get_credits(user_id)
     await message.answer(
-        f"✅ <b>Оплата прошла!</b>\n\n"
+        f"🎉 <b>Оплата прошла!</b>\n\n"
         f"💎 Начислено: +{p['credits']} кредитов\n"
-        f"💳 Баланс: <b>{cr} кредитоведитов</b>",
+        f"💎 Баланс: <b>{cr} кредитов</b>",
         reply_markup=kb_back(), parse_mode="HTML"
     )
 
@@ -1156,8 +1159,8 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
     text = (
-        f"🖼️ <b>Создать изображение</b>\n\n"
-        f"💳 Баланс: <b>{cr} кредитоведитов</b>\n\n"
+        f"🎨 <b>Создать изображение</b>\n\n"
+        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
         f"⚡ <b>Imagen 4 Fast</b> — 1 кредитедитов\n"
         f"✨ <b>Imagen 4</b> — 2 кредитаедитов\n"
         f"💎 <b>Imagen 4 Ultra</b> — 3 кредита"
@@ -1176,7 +1179,7 @@ async def choose_img_model(cb: CallbackQuery, state: FSMContext):
     m = IMAGE_MODELS[key]
     cr = await get_credits(cb.from_user.id)
     if cr < m["credits"]:
-        await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr} кредитов", show_alert=True)
+        await cb.answer(f"💸 Нужно {m['credits']} кредитов, у тебя {cr}", show_alert=True)
         return
     await state.update_data(model_key=key)
     await state.set_state(ImgState.waiting_aspect)
@@ -1202,7 +1205,7 @@ async def choose_img_aspect(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         f"{m['name']} | 📐 {labels.get(ratio, ratio)}\n\n"
         f"💳 Спишется: <b>{m['credits']} кредитов</b>\n\n"
-        f"✏️ <b>Введи промт:</b>\n\n"
+        f"💡 <b>Введи промт:</b>\n\n"
         f"<i>Пример: A futuristic city at night, neon lights, cyberpunk, 4k</i>",
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
@@ -1228,7 +1231,7 @@ async def img_prompt(message: Message, state: FSMContext):
         f"🤖 {m['name']}\n"
         f"💳 <b>{m['credits']} кредитов</b>\n"
         f"⏱ {m['speed']}\n\n"
-        f"📄 <i>{prompt}</i>",
+        f"📝 <i>{prompt}</i>",
         reply_markup=kb_confirm("img", key), parse_mode="HTML"
     )
 
@@ -1242,12 +1245,12 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
 
     ok = await deduct(cb.from_user.id, m["credits"])
     if not ok:
-        await cb.answer("❌ Недостаточно кредитов!", show_alert=True)
+        await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
     await state.clear()
     wait = await cb.message.edit_text(
-        f"⏳ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>",
+        f"⚙️ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>",
         parse_mode="HTML"
     )
 
@@ -1267,14 +1270,14 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         # Затем превью с кнопками
         await cb.message.answer_photo(
             BufferedInputFile(img_bytes, "image.png"),
-            caption=f"✅ Готово! {m['name']}\n💳 Списано {m['credits']} кредитов | Остаток: {cr} кредитоведитов",
+            caption=f"🎉 Готово! {m['name']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов",
             reply_markup=kb_after("image", key)
         )
         await wait.delete()
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
         await cb.message.edit_text(
-            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            f"⛔ Ошибка: {e}\n\nКредиты возвращены.",
             reply_markup=kb_back()
         )
     await cb.answer()
@@ -1302,7 +1305,7 @@ async def change_img_prompt(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key)
     await state.set_state(ImgState.waiting_prompt)
     await cb.message.answer(
-        f"✏️ Введи новый промт для <b>{IMAGE_MODELS[key]['name']}</b>:",
+        f"💡 Введи новый промт для <b>{IMAGE_MODELS[key]['name']}</b>:",
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
     await cb.answer()
@@ -1322,7 +1325,7 @@ async def after_gen_again(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer(
             f"{m['name']} — снова!\n\n"
             f"💳 Спишется: <b>{m['credits']} кредитов</b>\n\n"
-            f"✏️ Введи промт:",
+            f"💡 Введи промт:",
             reply_markup=kb_cancel(), parse_mode="HTML"
         )
     elif menu == "video" and key in VIDEO_MODELS:
@@ -1332,7 +1335,7 @@ async def after_gen_again(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer(
             f"{m['name']} — снова!\n\n"
             f"💳 Спишется: <b>{m['credits']} кредитов</b>\n\n"
-            f"✏️ Введи промт:",
+            f"💡 Введи промт:",
             reply_markup=kb_cancel(), parse_mode="HTML"
         )
     else:
@@ -1380,7 +1383,7 @@ async def new_main_from_photo(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     credits = await get_credits(cb.from_user.id)
     await cb.message.answer(
-        f"👋 Баланс: <b>{credits} кредитоведитов</b>\n\nВыбери действие 👇",
+        f"👋 Баланс: <b>{credits} кредитов</b>\n\nВыбери действие 👇",
         reply_markup=kb_main(), parse_mode="HTML"
     )
     await cb.answer()
@@ -1395,10 +1398,10 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
-        f"💳 Баланс: <b>{cr} кредитоведитов</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 10 кредитоведитов\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 20 кредитоведитов\n"
-        f"🎬 <b>Veo 3.1</b> — 45 кредитоведитов\n\n"
+        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 10 кредитов\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 20 кредитов\n"
+        f"🎬 <b>Veo 3.1</b> — 45 кредитов\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -1414,7 +1417,7 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
     m = VIDEO_MODELS[key]
     cr = await get_credits(cb.from_user.id)
     if cr < m["credits"]:
-        await cb.answer(f"❌ Нужно {m['credits']} кр, у тебя {cr}. Пополни баланс!", show_alert=True)
+        await cb.answer(f"💸 Нужно {m['credits']} кредитов. Пополни баланс!", show_alert=True)
         return
     await state.update_data(model_key=key)
     await state.set_state(VidState.waiting_aspect)
@@ -1441,7 +1444,7 @@ async def choose_vid_aspect(cb: CallbackQuery, state: FSMContext):
         f"{m['name']} | 📐 {labels.get(ratio, ratio)}\n\n"
         f"💳 Спишется: <b>{m['credits']} кредитов</b>\n"
         f"📐 {m['res']} | 8 сек\n\n"
-        f"✏️ <b>Введи промт:</b>\n\n"
+        f"💡 <b>Введи промт:</b>\n\n"
         f"<i>Пример: A drone flies over Tokyo at night, cinematic, smooth motion</i>",
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
@@ -1467,8 +1470,8 @@ async def vid_prompt(message: Message, state: FSMContext):
         f"🤖 {m['name']}\n"
         f"📐 {m['res']} | 8 сек\n"
         f"💳 <b>{m['credits']} кредитов</b> ({m['price']})\n\n"
-        f"📄 <i>{prompt}</i>\n\n"
-        f"⚠️ <i>Генерация занимает 1–6 минут</i>",
+        f"📝 <i>{prompt}</i>\n\n"
+        f"⏱ <i>Генерация занимает 1–6 минут</i>",
         reply_markup=kb_confirm("vid", key), parse_mode="HTML"
     )
 
@@ -1482,15 +1485,15 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
     ok = await deduct(cb.from_user.id, m["credits"])
     if not ok:
-        await cb.answer("❌ Недостаточно кредитов!", show_alert=True)
+        await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
     await state.clear()
     await cb.message.edit_text(
-        f"⏳ <b>Генерирую видео...</b>\n\n"
+        f"🎬 <b>Генерирую видео...</b>\n\n"
         f"🤖 {m['name']} | {m['res']}\n"
-        f"📄 <i>{prompt[:80]}</i>\n\n"
-        f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
+        f"📝 <i>{prompt[:80]}</i>\n\n"
+        f"🕐 Обычно 1–6 минут. Пришлю как только готово 👇",
         parse_mode="HTML"
     )
 
@@ -1500,7 +1503,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         logging.info(f"Video ready: {len(vid_bytes)} bytes")
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
-        caption = f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кредитов | Остаток: {cr} кредитоведитов"
+        caption = f"🎉 Готово! {m['name']} | {m['res']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов"
         # Оригинал как файл — меняем расширение чтобы Telegram не сжимал как видео
         await cb.message.answer_document(
             BufferedInputFile(vid_bytes, "original_video.mp4.file"),
@@ -1526,7 +1529,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
         await cb.message.answer(
-            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            f"⛔ Ошибка: {e}\n\nКредиты возвращены.",
             reply_markup=kb_back()
         )
     await cb.answer()
@@ -1538,7 +1541,7 @@ async def change_vid_prompt(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key)
     await state.set_state(VidState.waiting_prompt)
     await cb.message.edit_text(
-        f"✏️ Введи новый промт для <b>{VIDEO_MODELS[key]['name']}</b>:",
+        f"💡 Введи новый промт для <b>{VIDEO_MODELS[key]['name']}</b>:",
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
     await cb.answer()
@@ -1551,7 +1554,7 @@ async def change_vid_prompt(cb: CallbackQuery, state: FSMContext):
 async def menu_chat(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ChatState.chatting)
     await cb.message.edit_text(
-        "💬 <b>Консультант AI</b>\n\n"
+        "🤖 <b>Консультант AI</b>\n\n"
         "Задай любой вопрос о нейросетях, VPN, подписках.\n"
         "Это бесплатно 🎁\n\n"
         "<i>Напиши вопрос:</i>",
@@ -1605,8 +1608,8 @@ async def on_new_member(event: ChatMemberUpdated):
             chat_id=user.id,
             text=f"👋 Привет! Рад приветствовать тебя в канале!\n\n"
                  f"Я — AI-ассистент Александра. Помогу:\n"
-                 f"🖼️ Создать изображение (Imagen 4)\n"
-                 f"🎬 Создать видео (Veo 3.1)\n"
+                 f"🎨 Создать изображение (Imagen 4)\n"
+                 f"🎥 Создать видео (Veo 3.1)\n"
                  f"💬 Разобраться в нейросетях\n"
                  f"💳 Оформить подписку без VPN и карты\n\n"
                  f"🎁 Тебе начислено <b>{FREE_CREDITS} бесплатных кредитов</b>!\n\n"
@@ -1738,7 +1741,7 @@ async def reply_main_menu(message: Message, state: FSMContext):
     await state.clear()
     credits = await get_credits(message.from_user.id)
     await message.answer(
-        f"👋 {message.from_user.first_name}, баланс: <b>{credits} кредитоведитов</b>\n\nВыбери действие 👇",
+        f"👋 {message.from_user.first_name}, баланс: <b>{credits} кредитов</b>\n\nВыбери действие 👇",
         reply_markup=kb_main(), parse_mode="HTML"
     )
 
@@ -1748,8 +1751,8 @@ async def reply_create_photo(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
     await message.answer(
-        f"🖼️ <b>Создать изображение</b>\n\n"
-        f"💳 Баланс: <b>{cr} кредитоведитов</b>\n\n"
+        f"🎨 <b>Создать изображение</b>\n\n"
+        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
         f"⚡ <b>Imagen 4 Fast</b> — 1 кредитедитов\n"
         f"✨ <b>Imagen 4</b> — 2 кредитаедитов\n"
         f"💎 <b>Imagen 4 Ultra</b> — 3 кредита",
@@ -1757,16 +1760,16 @@ async def reply_create_photo(message: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "🎬 Создать видео", StateFilter("*"))
+@dp.message(F.text == "🎥 Создать видео", StateFilter("*"))
 async def reply_create_video(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
     await message.answer(
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
-        f"💳 Баланс: <b>{cr} кредитоведитов</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 10 кредитоведитов\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 20 кредитоведитов\n"
-        f"🎬 <b>Veo 3.1</b> — 45 кредитоведитов\n\n"
+        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 10 кредитов\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 20 кредитов\n"
+        f"🎬 <b>Veo 3.1</b> — 45 кредитов\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
@@ -1798,10 +1801,10 @@ async def reply_profile(message: Message):
     if not can: can.append("❌ Пополни баланс")
 
     text = (
-        f"👤 <b>Профиль</b>\n\n"
+        f"🪪 <b>Профиль</b>\n\n"
         f"🆔 ID: <code>{uid}</code>\n"
         f"👋 Имя: {message.from_user.full_name}\n\n"
-        f"💳 <b>Баланс: {cr} кредитоведитов</b>\n"
+        f"💳 <b>Баланс: {cr} кредитов</b>\n"
         f"🎨 Генераций сделано: {total_gens}\n"
         f"💸 Кредитов потрачено: {total_credits_spent}\n\n"
         f"<b>Доступно сейчас:</b>\n" + "\n".join(can)
@@ -1878,7 +1881,7 @@ async def adm_stat_day(cb: CallbackQuery):
 
     await cb.message.answer(
         f"📊 <b>Статистика за сегодня</b>\n\n"
-        f"👤 Новых пользователей: <b>{new_users}</b>\n"
+        f"🆕 Новых пользователей: <b>{new_users}</b>\n"
         f"🎨 Генераций: <b>{gens}</b>\n"
         f"💸 Кредитов потрачено: <b>{credits_used}</b>\n"
         f"💳 Оплат: <b>{pays}</b>\n"
@@ -1908,7 +1911,7 @@ async def adm_stat_week(cb: CallbackQuery):
 
     await cb.message.answer(
         f"📈 <b>Статистика за 7 дней</b>\n\n"
-        f"👤 Новых пользователей: <b>{new_users}</b>\n"
+        f"🆕 Новых пользователей: <b>{new_users}</b>\n"
         f"🎨 Генераций: <b>{gens}</b>\n"
         f"💸 Кредитов потрачено: <b>{credits_used}</b>\n"
         f"💳 Оплат: <b>{pays}</b>\n"
@@ -1948,7 +1951,7 @@ async def adm_get_user_id(message: Message, state: FSMContext):
         target_id = int(txt)
     except (ValueError, TypeError):
         await message.answer(
-            f"❌ <code>{txt}</code> — не числовой ID\n"
+            f"⛔ <code>{txt}</code> — не числовой ID\n"
             f"Введи только цифры, например: <code>123456789</code>",
             parse_mode="HTML"
         )
@@ -1971,7 +1974,7 @@ async def adm_get_user_id(message: Message, state: FSMContext):
         )
     except Exception as e:
         logging.error(f"adm_get_user_id error: {e}")
-        await message.answer(f"❌ Ошибка: {e}")
+        await message.answer(f"⛔ Ошибка: {e}")
         await state.clear()
 
 
@@ -2003,9 +2006,9 @@ async def adm_give_credits_confirm(message: Message, state: FSMContext):
     new_balance = await get_credits(target_id)
     await state.clear()
     await message.answer(
-        f"✅ <b>Кредиты начислены!</b>\n\n"
+        f"✨ <b>Кредиты начислены!</b>\n\n"
         f"👤 ID: <code>{target_id}</code>\n"
-        f"➕ Начислено: <b>{amount} кредитоведитов</b>\n"
+        f"✨ Начислено: <b>{amount} кредитов</b>\n"
         f"💳 Новый баланс: <b>{new_balance} кредитов</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Ещё начислить", callback_data="adm_give_credits")],
@@ -2016,8 +2019,8 @@ async def adm_give_credits_confirm(message: Message, state: FSMContext):
     try:
         await bot.send_message(
             target_id,
-            f"🎁 Тебе начислено <b>{amount} кредитоведитов</b> от администратора!\n"
-            f"💳 Баланс: <b>{new_balance} кредитов</b>",
+            f"🎁 Тебе начислено <b>{amount} кредитов</b> от администратора!\n"
+            f"💎 Баланс: <b>{new_balance} кредитов</b>",
             parse_mode="HTML"
         )
     except Exception:
@@ -2062,7 +2065,7 @@ async def adm_blocks_menu(cb: CallbackQuery, state: FSMContext):
         await state.set_state(AdminState.waiting_block_id)
     except Exception as e:
         logging.error(f"adm_blocks error: {e}")
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2080,7 +2083,7 @@ async def adm_block_check_user(message: Message, state: FSMContext):
     user = await get_user(target_id)
     if not user:
         await message.answer(
-            f"❌ Пользователь <code>{target_id}</code> не найден в базе.\n"
+            f"🔍 Пользователь <code>{target_id}</code> не найден в базе.\n"
             f"Он ещё не использовал бота.",
             parse_mode="HTML"
         )
@@ -2117,7 +2120,7 @@ async def adm_do_block(cb: CallbackQuery):
         except Exception:
             pass
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2140,7 +2143,7 @@ async def adm_do_unblock(cb: CallbackQuery):
         except Exception:
             pass
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2178,7 +2181,7 @@ async def adm_activity(cb: CallbackQuery):
             parse_mode="HTML"
         )
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2218,7 +2221,7 @@ async def adm_popular(cb: CallbackQuery):
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
         ]), parse_mode="HTML")
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2249,7 +2252,7 @@ async def adm_top_users(cb: CallbackQuery):
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
         ]), parse_mode="HTML")
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2284,7 +2287,7 @@ async def adm_users(cb: CallbackQuery):
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
         ]), parse_mode="HTML")
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2323,7 +2326,7 @@ async def adm_find_user(message: Message, state: FSMContext):
     user = await get_user(uid)
     if not user:
         await message.answer(
-            f"❌ Пользователь <code>{uid}</code> не найден.\n"
+            f"🔍 Пользователь <code>{uid}</code> не найден.\n"
             f"Он ещё не запускал бота.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
@@ -2366,11 +2369,11 @@ async def adm_find_user(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
     ]
     await message.answer(
-        f"👤 <b>Пользователь</b>\n\n"
+        f"🪪 <b>Пользователь</b>\n\n"
         f"🆔 ID: <code>{uid}</code>\n"
-        f"👤 Имя: {full_name or '—'}\n"
+        f"📋 Имя: {full_name or '—'}\n"
         f"📧 Username: {('@' + username) if username else '—'}\n"
-        f"💳 Баланс: <b>{user['credits']} кредитов</b>\n"
+        f"💎 Баланс: <b>{user['credits']} кредитов</b>\n"
         f"🎨 Генераций: <b>{row[0]}</b> ({row[1]} кредитов потрачено)\n"
         f"💰 Платежей: {pay_row[0]} на {pay_row[1]}₽\n"
         f"🕐 Последняя активность: {last_active or '—'}\n"
@@ -2425,7 +2428,7 @@ async def adm_payments(cb: CallbackQuery):
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
         ]), parse_mode="HTML")
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2469,7 +2472,7 @@ async def adm_spend_show(message: Message, state: FSMContext):
     user = await get_user(uid)
     if not user:
         await message.answer(
-            f"❌ Пользователь <code>{uid}</code> не найден в базе.",
+            f"🔍 Пользователь <code>{uid}</code> не найден в базе.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
             ]),
@@ -2607,7 +2610,7 @@ async def adm_maintenance(cb: CallbackQuery):
             parse_mode="HTML"
         )
     except Exception as e:
-        await cb.message.answer(f"❌ Ошибка: {e}")
+        await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
 
@@ -2625,7 +2628,7 @@ async def adm_back(cb: CallbackQuery):
 #  РЕДАКТИРОВАНИЕ ФОТО ПО РЕФЕРЕНСУ
 # ══════════════════════════════════════════════════════════
 
-EDIT_CREDIT_COST = 3  # стоимость редактирования = 3 кредитаедита
+EDIT_CREDIT_COST = 13  # стоимость редактирования = 13 кредитов
 
 @dp.callback_query(F.data == "menu_edit")
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
@@ -2633,8 +2636,8 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     text = (
         f"✏️ <b>Редактировать фото по референсу</b>\n\n"
-        f"💳 Баланс: <b>{cr} кредитоведитов</b>\n"
-        f"💳 Стоимость: <b>{EDIT_CREDIT_COST} кредитов</b>\n\n"
+        f"💎 Баланс: <b>{cr} кредитов</b>\n"
+        f"💰 Стоимость: <b>{EDIT_CREDIT_COST} кредитов</b>\n\n"
         f"Как это работает:\n"
         f"1️⃣ Отправь своё фото\n"
         f"2️⃣ Напиши что изменить\n"
@@ -2644,7 +2647,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
     if cr < EDIT_CREDIT_COST:
         try:
             await cb.message.edit_text(
-                f"❌ Недостаточно кредитов\n\nНужно {EDIT_CREDIT_COST} кредитов, у тебя {cr} кредитов.",
+                f"💸 Недостаточно кредитов\n\nНужно {EDIT_CREDIT_COST} кредитов, у тебя {cr} кредитов.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
@@ -2653,7 +2656,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
             )
         except Exception:
             await cb.message.answer(
-                f"❌ Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кр.",
+                f"💸 Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
                 ])
@@ -2709,19 +2712,19 @@ async def edit_get_prompt(message: Message, state: FSMContext):
     cr = await get_credits(message.from_user.id)
     if cr < EDIT_CREDIT_COST:
         await state.clear()
-        await message.answer(f"❌ Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кредитов, у тебя {cr}.")
+        await message.answer(f"💸 Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кредитов, у тебя {cr}.")
         return
 
     # Списываем кредиты
     ok = await deduct(message.from_user.id, EDIT_CREDIT_COST)
     if not ok:
         await state.clear()
-        await message.answer("❌ Ошибка списания кредитов. Попробуй ещё раз.")
+        await message.answer("⛔ Ошибка списания кредитов. Попробуй ещё раз.")
         return
 
     await state.clear()
     wait = await message.answer(
-        f"⏳ Редактирую фото...\n\n"
+        f"🖌️ Редактирую фото...\n\n"
         f"🤖 Gemini Flash Image\n"
         f"<i>{prompt[:80]}</i>",
         parse_mode="HTML"
@@ -2733,14 +2736,14 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         cr_left = await get_credits(message.from_user.id)
         await message.answer_photo(
             BufferedInputFile(result_bytes, "edited.png"),
-            caption=f"✅ Готово! ✏️ Редактирование\n💳 Списано {EDIT_CREDIT_COST} кредитов | Остаток: {cr_left} кр",
+            caption=f"🎉 Готово! ✏️ Редактирование\n💸 Списано {EDIT_CREDIT_COST} кредитов | Остаток: {cr_left} кр",
             reply_markup=kb_after("edit", "edit")
         )
         await wait.delete()
     except Exception as e:
         await add_credits(message.from_user.id, EDIT_CREDIT_COST)
         await wait.edit_text(
-            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            f"⛔ Ошибка: {e}\n\nКредиты возвращены.",
             reply_markup=kb_back()
         )
 
@@ -2772,7 +2775,7 @@ async def handle_message(message: Message, state: FSMContext):
     await ensure_user(message.from_user.id, message.from_user.username or '', message.from_user.full_name)
     uid = message.from_user.id
     if uid != ADMIN_ID and await get_setting("maintenance") == "1":
-        await message.answer("🔧 Бот на техобслуживании. Скоро вернётся!")
+        await message.answer("⚙️ Бот на техобслуживании. Скоро вернётся!")
         return
     if await is_blocked(uid):
         await message.answer("🚫 Ваш доступ к боту ограничен.")
@@ -2912,7 +2915,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
             await bot.send_message(
                 user_id,
                 "\u2705 <b>Оплата прошла успешно!</b>\n\n"
-                f"\u2795 Начислено: <b>{credits} кредитоведитов</b>\n"
+                f"\u2795 Начислено: <b>{credits} кредитов</b>\n"
                 f"\U0001f4b3 Баланс: <b>{new_balance} кредитов</b>\n\n"
                 "Можешь начинать генерацию! \U0001f680",
                 parse_mode="HTML",
