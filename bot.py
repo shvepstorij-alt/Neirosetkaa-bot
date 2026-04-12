@@ -58,7 +58,7 @@ IMAGE_MODELS = {
         "name": "⚡ Imagen 4 Fast",
         "model_id": "imagen-4.0-fast-generate-001",
         "credits": 7,
-        "price": "5₽",
+        "price": "4₽",
         "speed": "~2 сек",
         "desc": "Быстро и качественно",
     },
@@ -66,7 +66,7 @@ IMAGE_MODELS = {
         "name": "✨ Imagen 4",
         "model_id": "imagen-4.0-generate-001",
         "credits": 10,
-        "price": "10₽",
+        "price": "6₽",
         "speed": "~5 сек",
         "desc": "Флагман, чёткий текст",
     },
@@ -74,7 +74,7 @@ IMAGE_MODELS = {
         "name": "💎 Imagen 4 Ultra",
         "model_id": "imagen-4.0-ultra-generate-001",
         "credits": 13,
-        "price": "15₽",
+        "price": "8₽",
         "speed": "~8 сек",
         "desc": "Максимальная точность",
     },
@@ -237,7 +237,7 @@ async def ensure_user(user_id: int, username: str = "", full_name: str = "", ref
                 VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (user_id) DO UPDATE
                 SET username=$3, full_name=$4, last_active=NOW()
-            """, user_id, FREE_CREDITS + REF_BONUS, username, full_name, referred_by)
+            """, user_id, REF_BONUS, username, full_name, referred_by)
         else:
             await conn.execute("""
                 INSERT INTO users (user_id, credits, username, full_name)
@@ -950,7 +950,7 @@ async def cmd_start(message: Message, state: FSMContext):
         text = (
             f"🌟 Привет, {message.from_user.first_name}!\n\n"
             f"🎁 Тебя пригласил друг — ты получил <b>+{REF_BONUS} бонусных кредитов!</b>\n\n"
-            f"💎 Баланс: <b>{credits} кредитов</b> ({FREE_CREDITS} стартовых + {REF_BONUS} реферальных)\n\n"
+            f"💎 Баланс: <b>{credits} кредитов</b>\n\n"
             f"Выбери что создать 👇"
         )
     else:
@@ -1005,6 +1005,34 @@ async def back_main(cb: CallbackQuery, state: FSMContext):
 # ══════════════════════════════════════════════════════════
 #  БАЛАНС / ОПЛАТА
 # ══════════════════════════════════════════════════════════
+
+@dp.message(F.text == "/ref", StateFilter("*"))
+async def cmd_ref(message: Message):
+    """Команда /ref — показать реферальную ссылку."""
+    uid = message.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total_refs = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0
+        paid_refs  = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE", uid) or 0
+    me = await bot.get_me()
+    ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
+    earned = paid_refs * REF_BONUS
+    await message.answer(
+        f"\U0001f91d <b>Пригласить друга</b>\n\n"
+        f"За каждого друга — <b>+{REF_BONUS} кредитов</b> тебе и ему!\n\n"
+        f"<b>Как работает:</b>\n"
+        f"1\u20e3 Поделись своей ссылкой\n"
+        f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_BONUS} кредитов</b>\n"
+        f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кредитов</b>\n\n"
+        f"\U0001f4ca <b>Статистика:</b>\n"
+        f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
+        f"\U0001f4b0 Купили: <b>{paid_refs}</b>\n"
+        f"\U0001f381 Заработано: <b>{earned} кредитов</b>\n\n"
+        f"\U0001f517 <b>Твоя ссылка:</b>\n"
+        f"<code>{ref_link}</code>",
+        parse_mode="HTML"
+    )
+
 
 @dp.callback_query(F.data == "menu_ref")
 async def menu_ref(cb: CallbackQuery):
