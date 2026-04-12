@@ -1080,10 +1080,17 @@ async def menu_buy(cb: CallbackQuery):
 async def buy_pack(cb: CallbackQuery):
     key = cb.data.split(":")[1]
     p = CREDIT_PACKS[key]
-    await cb.message.edit_text(
-        f"{p['name']}\n\n💎 <b>{p['credits']} кредитов</b>\n💰 {p['price']}₽\n\nВыбери способ оплаты:",
-        reply_markup=kb_pay_method(key), parse_mode="HTML"
+    msg = (
+        f"{p['name']} — <b>{p.get('badge', '')}</b>\n\n"
+        f"💎 <b>{p['credits']} кредитов</b>\n"
+        f"💰 Цена: <b>{p['price']}₽</b>\n\n"
+        f"📦 <i>{p['desc']}</i>\n\n"
+        f"Выбери способ оплаты:"
     )
+    try:
+        await cb.message.edit_text(msg, reply_markup=kb_pay_method(key), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(msg, reply_markup=kb_pay_method(key), parse_mode="HTML")
     await cb.answer()
 
 
