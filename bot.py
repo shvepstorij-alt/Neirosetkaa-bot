@@ -1074,8 +1074,7 @@ async def menu_buy(cb: CallbackQuery):
     lines = [f"💎 <b>Баланс: {cr} кредитов</b>\n"]
     for p in CREDIT_PACKS.values():
         lines.append(
-            f"<b>{p['name']} — {p['price']}₽</b>\n"
-            f"<b><i>{p['credits']} кредитов</i></b>\n"
+            f"<b>{p['name']} — {p['credits']} кредитов — {p['price']}₽</b>\n"
             f"<i>{p['desc']}</i>"
         )
     text = "\n\n".join(lines)
