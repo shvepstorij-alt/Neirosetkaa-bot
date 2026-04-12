@@ -337,6 +337,9 @@ def kb_main():
             InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy"),
         ],
         [
+            InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="menu_ref"),
+        ],
+        [
             InlineKeyboardButton(text="✍️ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}"),
         ],
     ])
@@ -952,6 +955,42 @@ async def back_main(cb: CallbackQuery, state: FSMContext):
 # ══════════════════════════════════════════════════════════
 #  БАЛАНС / ОПЛАТА
 # ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "menu_ref")
+async def menu_ref(cb: CallbackQuery):
+    uid = cb.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total_refs = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0
+        paid_refs  = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE", uid) or 0
+    me = await bot.get_me()
+    ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
+    earned = paid_refs * REF_BONUS
+    text = (
+        f"\U0001f91d <b>Пригласить друга</b>\n\n"
+        f"За каждого друга — <b>+{REF_BONUS} кр</b> тебе и ему!\n\n"
+        f"<b>Как работает:</b>\n"
+        f"1\u20e3 Поделись своей ссылкой\n"
+        f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_BONUS} кр</b>\n"
+        f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кр</b>\n\n"
+        f"\U0001f4ca <b>Твоя статистика:</b>\n"
+        f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
+        f"\U0001f4b0 Купили: <b>{paid_refs}</b>\n"
+        f"\U0001f381 Заработано: <b>{earned} кр ({earned * 5}\u20bd)</b>\n\n"
+        f"\U0001f517 <b>Твоя ссылка:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"<i>Нажми на ссылку чтобы скопировать и отправь другу</i>"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+        ]), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+        ]), parse_mode="HTML")
+    await cb.answer()
+
 
 @dp.callback_query(F.data == "menu_balance")
 async def menu_balance(cb: CallbackQuery):
