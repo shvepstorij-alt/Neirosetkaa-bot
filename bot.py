@@ -1047,15 +1047,24 @@ async def menu_balance(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
     lines = []
     for k, m in IMAGE_MODELS.items():
-        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кредитов")
+        icon = "🟢" if cr >= m['credits'] else "🔴"
+        lines.append(f"{icon} {m['name']} — {m['credits']} кредитов")
     for k, m in VIDEO_MODELS.items():
-        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кредитов")
+        icon = "🟢" if cr >= m['credits'] else "🔴"
+        lines.append(f"{icon} {m['name']} — {m['credits']} кредитов")
 
-    await cb.message.edit_text(
-        f"💳 <b>Баланс: {cr} кредитов</b>\n\n"
-        f"<b>Доступно:</b>\n" + "\n".join(lines),
-        reply_markup=kb_buy(), parse_mode="HTML"
-    )
+    try:
+        await cb.message.edit_text(
+            f"💎 <b>Баланс: {cr} кредитов</b>\n\n"
+            f"<b>Доступные модели:</b>\n" + "\n".join(lines),
+            reply_markup=kb_buy(), parse_mode="HTML"
+        )
+    except Exception:
+        await cb.message.answer(
+            f"💎 <b>Баланс: {cr} кредитов</b>\n\n"
+            f"<b>Доступные модели:</b>\n" + "\n".join(lines),
+            reply_markup=kb_buy(), parse_mode="HTML"
+        )
     await cb.answer()
 
 
@@ -1065,8 +1074,9 @@ async def menu_buy(cb: CallbackQuery):
     lines = [f"💎 <b>Баланс: {cr} кредитов</b>\n"]
     for p in CREDIT_PACKS.values():
         lines.append(
-            f"{p['name']} — {p['credits']} кредитов | <b>{p['price']}₽</b>\n"
-            f"<i>  {p['desc']}</i>"
+            f"<b>{p['name']} — {p['price']}₽</b>\n"
+            f"<b><i>{p['credits']} кредитов</i></b>\n"
+            f"<i>{p['desc']}</i>"
         )
     text = "\n\n".join(lines)
     try:
@@ -1812,7 +1822,7 @@ async def reply_profile(message: Message):
         f"🪪 <b>Профиль</b>\n\n"
         f"🆔 ID: <code>{uid}</code>\n"
         f"👋 Имя: {message.from_user.full_name}\n\n"
-        f"💳 <b>Баланс: {cr} кредитов</b>\n"
+        f"💎 <b>Баланс: {cr} кредитов</b>\n"
         f"🎨 Генераций сделано: {total_gens}\n"
         f"💸 Кредитов потрачено: {total_credits_spent}\n\n"
         f"<b>Доступно сейчас:</b>\n" + "\n".join(can)
