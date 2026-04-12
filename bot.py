@@ -50,6 +50,7 @@ dp            = Dispatcher(storage=MemoryStorage())
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 user_conversations = {}   # история чата с консультантом
+user_orig_images = {}     # оригинальные байты последнего фото {user_id: bytes}
 
 # ─── Модели изображений ───────────────────────────────────
 IMAGE_MODELS = {
@@ -404,8 +405,7 @@ def kb_after(menu: str, model_key: str = ""):
             InlineKeyboardButton(text="🔀 Сменить модель", callback_data=f"menu_{menu}"),
         ],
         [
-            InlineKeyboardButton(text="⬆️ Улучшить промт", callback_data=f"improve:{menu}:{model_key}"),
-            InlineKeyboardButton(text="🏠 Главное",        callback_data="new_main"),
+            InlineKeyboardButton(text="🏠 Главное", callback_data="new_main"),
         ],
         [InlineKeyboardButton(text="🛒 Купить кредиты", callback_data="menu_buy")],
     ]
@@ -1246,6 +1246,15 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         img_bytes = await api_generate_image(prompt, m["model_id"], aspect)
         await log_gen(cb.from_user.id, "image", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
+        # Сохраняем оригинал в памяти для скачивания
+        user_orig_images[cb.from_user.id] = img_bytes
+        # Сначала отправляем оригинал как документ
+        await cb.message.answer_document(
+            BufferedInputFile(img_bytes, "original.png"),
+            caption="\U0001f4ce <b>Оригинал</b> — без сжатия, полное качество",
+            parse_mode="HTML"
+        )
+        # Затем превью с кнопками
         await cb.message.answer_photo(
             BufferedInputFile(img_bytes, "image.png"),
             caption=f"✅ Готово! {m['name']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр",
@@ -1259,6 +1268,22 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
             reply_markup=kb_back()
         )
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("download_orig:"))
+async def download_original(cb: CallbackQuery):
+    """Отправляет оригинальное фото как документ без сжатия."""
+    uid = cb.from_user.id
+    img_bytes = user_orig_images.get(uid)
+    if not img_bytes:
+        await cb.answer("❌ Оригинал не найден. Сгенерируй фото заново.", show_alert=True)
+        return
+    await cb.answer("⬇️ Отправляю оригинал...")
+    await cb.message.answer_document(
+        BufferedInputFile(img_bytes, "original_image.png"),
+        caption="\U0001f4ce <b>Оригинал без сжатия</b>\n\n<i>Файл в полном качестве</i>",
+        parse_mode="HTML"
+    )
 
 
 @dp.callback_query(F.data.startswith("chprompt:img:"))
@@ -1466,6 +1491,13 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         caption = f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр"
+        # Сначала отправляем оригинал как документ (без сжатия)
+        await cb.message.answer_document(
+            BufferedInputFile(vid_bytes, "original_video.mp4"),
+            caption="\U0001f4ce <b>Оригинал</b> — без сжатия, полное качество",
+            parse_mode="HTML"
+        )
+        # Затем превью с кнопками
         try:
             await cb.message.answer_video(
                 BufferedInputFile(vid_bytes, "video.mp4"),
@@ -1475,10 +1507,9 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
             )
         except Exception as video_err:
             logging.warning(f"answer_video failed: {video_err}, trying as document")
-            # Fallback — отправить как файл
             await cb.message.answer_document(
                 BufferedInputFile(vid_bytes, "video.mp4"),
-                caption=caption + "\n\n<i>Отправлено как файл — нажми для воспроизведения</i>",
+                caption=caption + "\n\n<i>Нажми для воспроизведения</i>",
                 reply_markup=kb_after("video", key),
                 parse_mode="HTML"
             )
