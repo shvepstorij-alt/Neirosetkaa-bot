@@ -359,7 +359,7 @@ def kb_image_models():
     rows = []
     for key, m in IMAGE_MODELS.items():
         rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кр",
+            text=f"{m['name']} — {m['credits']} кредитов",
             callback_data=f"imodel:{key}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
@@ -369,7 +369,7 @@ def kb_video_models():
     rows = []
     for key, m in VIDEO_MODELS.items():
         rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кр",
+            text=f"{m['name']} — {m['credits']} кредитов",
             callback_data=f"vmodel:{key}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
@@ -388,7 +388,7 @@ def kb_buy():
     rows = []
     for key, p in CREDIT_PACKS.items():
         rows.append([InlineKeyboardButton(
-            text=f"{p['name']} — {p['credits']} кр | {p['price']}₽",
+            text=f"{p['name']} — {p['credits']} кредитов | {p['price']}₽",
             callback_data=f"buy:{key}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
@@ -1046,9 +1046,9 @@ async def menu_balance(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
     lines = []
     for k, m in IMAGE_MODELS.items():
-        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кр")
+        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кредитов")
     for k, m in VIDEO_MODELS.items():
-        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кр")
+        lines.append(f"{'✅' if cr >= m['credits'] else '❌'} {m['name']} — {m['credits']} кредитов")
 
     await cb.message.edit_text(
         f"💳 <b>Баланс: {cr} кредитов</b>\n\n"
@@ -1162,8 +1162,8 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
         f"🎨 <b>Создать изображение</b>\n\n"
         f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
         f"⚡ <b>Imagen 4 Fast</b> — 1 кредитедитов\n"
-        f"✨ <b>Imagen 4</b> — 2 кредитаедитов\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 3 кредита"
+        f"✨ <b>Imagen 4</b> — 10 кредитов\n"
+        f"💎 <b>Imagen 4 Ultra</b> — 13 кредитов"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_models(), parse_mode="HTML")
@@ -1754,8 +1754,8 @@ async def reply_create_photo(message: Message, state: FSMContext):
         f"🎨 <b>Создать изображение</b>\n\n"
         f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
         f"⚡ <b>Imagen 4 Fast</b> — 1 кредитедитов\n"
-        f"✨ <b>Imagen 4</b> — 2 кредитаедитов\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 3 кредита",
+        f"✨ <b>Imagen 4</b> — 10 кредитов\n"
+        f"💎 <b>Imagen 4 Ultra</b> — 13 кредитов",
         reply_markup=kb_image_models(), parse_mode="HTML"
     )
 
@@ -1822,7 +1822,7 @@ async def get_admin_stats() -> dict:
         payments = await conn.fetchval("SELECT COUNT(*) FROM payments") or 0
         revenue = await conn.fetchval("SELECT COALESCE(SUM(amount_rub),0) FROM payments") or 0
         top = await conn.fetch("SELECT user_id, credits FROM users ORDER BY credits DESC LIMIT 5")
-    top_text = "\n".join([f"  {i+1}. ID {r['user_id']} — {r['credits']} кр" for i, r in enumerate(top)])
+    top_text = "\n".join([f"  {i+1}. ID {r['user_id']} — {r['credits']} кредитов" for i, r in enumerate(top)])
     return dict(users=users, gens=gens, credits_used=credits_used,
                 payments=payments, revenue=revenue, top_text=top_text)
 
@@ -2172,7 +2172,7 @@ async def adm_activity(cb: CallbackQuery):
                 new_u = await conn.fetchval(
                     f"SELECT COUNT(*) FROM users WHERE created_at >= {since}"
                 ) or 0
-                lines.append(f"<b>{label}:</b> {row[0]} ген, +{new_u} юз, {row[1]} кр")
+                lines.append(f"<b>{label}:</b> {row[0]} ген, +{new_u} юз, {row[1]} кредитов")
         await cb.message.answer(
             "📈 <b>Активность</b>\n\n" + "\n".join(lines),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2246,7 +2246,7 @@ async def adm_top_users(cb: CallbackQuery):
             lines = []
             for i, r in enumerate(rows):
                 uname = f"@{r[1]}" if r[1] else f"ID {r[0]}"
-                lines.append(f"  {i+1}. {uname}: {r[2]} ген, {r[3]} кр")
+                lines.append(f"  {i+1}. {uname}: {r[2]} ген, {r[3]} кредитов")
             text = "🏆 <b>Топ активных пользователей</b>\n\n" + "\n".join(lines)
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
@@ -2420,7 +2420,7 @@ async def adm_payments(cb: CallbackQuery):
         if not rows:
             text = "📋 <b>История платежей</b>\n\nПлатежей пока нет."
         else:
-            lines = [f"• ID {r['user_id']}: +{r['credits']} кр, {r['amount_rub']}₽ ({str(r['created_at'])[:10]})" for r in rows]
+            lines = [f"• ID {r['user_id']}: +{r['credits']} кредитов, {r['amount_rub']}₽ ({str(r['created_at'])[:10]})" for r in rows]
             text = (f"📋 <b>История платежей</b>\n"
                     f"Всего: {total_row[0]} платежей, {total_row[1]}₽\n\n"
                     + "\n".join(lines))
@@ -2489,7 +2489,7 @@ async def adm_spend_show(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
         return
-    lines = [f"  • {r[0]}: {r[1]} раз, {r[2] or 0} кр" for r in rows]
+    lines = [f"  • {r[0]}: {r[1]} раз, {r[2] or 0} кредитов" for r in rows]
     await message.answer(
         f"💰 <b>Расход пользователя</b> <code>{uid}</code>\n\n"
         f"Всего генераций: <b>{total[0]}</b>\n"
@@ -2656,7 +2656,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
             )
         except Exception:
             await cb.message.answer(
-                f"💸 Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кр.",
+                f"💸 Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кредитов.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
                 ])
@@ -2736,7 +2736,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         cr_left = await get_credits(message.from_user.id)
         await message.answer_photo(
             BufferedInputFile(result_bytes, "edited.png"),
-            caption=f"🎉 Готово! ✏️ Редактирование\n💸 Списано {EDIT_CREDIT_COST} кредитов | Остаток: {cr_left} кр",
+            caption=f"🎉 Готово! ✏️ Редактирование\n💸 Списано {EDIT_CREDIT_COST} кредитов | Остаток: {cr_left} кредитов",
             reply_markup=kb_after("edit", "edit")
         )
         await wait.delete()
