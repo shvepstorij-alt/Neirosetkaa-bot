@@ -2156,25 +2156,69 @@ async def adm_find_user(message: Message, state: FSMContext):
         row = await conn.fetchrow(
             "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE user_id=$1", uid
         )
+        pay_row = await conn.fetchrow(
+            "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE user_id=$1", uid
+        )
+        last_gen = await conn.fetchrow(
+            "SELECT model, created_at FROM generations WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1", uid
+        )
     blocked = "🚫 Да" if user.get("is_blocked") else "✅ Нет"
-    uname = f"@{user['username']}" if user.get("username") else "—"
+    username = (user.get("username") or "").strip()
+    full_name = (user.get("full_name") or "").strip()
+    uname = f"@{username}" if username else (full_name or "—")
+    last_active = str(user.get("last_active", ""))[:16].replace("T", " ")
+    created_at = str(user.get("created_at", ""))[:10]
+    last_gen_text = f"{last_gen['model']} ({str(last_gen['created_at'])[:10]})" if last_gen else "—"
+
+    kb_rows = [
+        [InlineKeyboardButton(
+            text="✍️ Написать пользователю",
+            url=f"tg://user?id={uid}"
+        )],
+        [InlineKeyboardButton(
+            text="💳 Начислить кредиты",
+            callback_data=f"adm_give_to:{uid}"
+        )],
+        [InlineKeyboardButton(
+            text="🚫 Заблокировать" if not user.get("is_blocked") else "✅ Разблокировать",
+            callback_data=f"adm_block:{uid}" if not user.get("is_blocked") else f"adm_unblock:{uid}"
+        )],
+        [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
+    ]
     await message.answer(
-        f"👤 <b>Пользователь найден</b>\n\n"
-        f"ID: <code>{uid}</code>\n"
-        f"Имя: {user.get('full_name') or '—'}\n"
-        f"Username: {uname}\n"
-        f"Баланс: <b>{user['credits']} кр</b>\n"
-        f"Генераций: {row[0]}\n"
-        f"Кредитов потрачено: {row[1]}\n"
-        f"Заблокирован: {blocked}\n"
-        f"Регистрация: {str(user.get('created_at', ''))[:10]}",
+        f"👤 <b>Пользователь</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"👤 Имя: {full_name or '—'}\n"
+        f"📧 Username: {('@' + username) if username else '—'}\n"
+        f"💳 Баланс: <b>{user['credits']} кр</b>\n"
+        f"🎨 Генераций: <b>{row[0]}</b> ({row[1]} кр потрачено)\n"
+        f"💰 Платежей: {pay_row[0]} на {pay_row[1]}₽\n"
+        f"🕐 Последняя активность: {last_active or '—'}\n"
+        f"🎯 Последняя генерация: {last_gen_text}\n"
+        f"🚫 Заблокирован: {blocked}\n"
+        f"📅 Регистрация: {created_at}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="HTML"
+    )
+
+
+# ─── Быстрое начисление из карточки пользователя ──────────
+
+@dp.callback_query(F.data.startswith("adm_give_to:"))
+async def adm_give_to(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    uid = int(cb.data.split(":")[1])
+    await state.update_data(target_user_id=uid)
+    await state.set_state(AdminState.waiting_credits)
+    await cb.message.answer(
+        f"\U0001f4b3 Начислить кредиты пользователю <code>{uid}</code>\n\nВведи количество кредитов:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚫 Заблокировать" if not user.get("is_blocked") else "✅ Разблокировать",
-                                  callback_data=f"adm_block:{uid}" if not user.get("is_blocked") else f"adm_unblock:{uid}")],
-            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="adm_cancel")]
         ]),
         parse_mode="HTML"
     )
+    await cb.answer()
 
 
 # ─── История платежей ─────────────────────────────────────
