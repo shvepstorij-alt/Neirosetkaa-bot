@@ -1491,11 +1491,11 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         caption = f"✅ Готово! {m['name']} | {m['res']}\n💳 Списано {m['credits']} кр | Остаток: {cr} кр"
-        # Сначала отправляем оригинал как документ (без сжатия)
+        # Оригинал как файл — меняем расширение чтобы Telegram не сжимал как видео
         await cb.message.answer_document(
-            BufferedInputFile(vid_bytes, "original_video.mp4"),
-            caption="\U0001f4ce <b>Оригинал</b> — без сжатия, полное качество",
-            parse_mode="HTML"
+            BufferedInputFile(vid_bytes, "original_video.mp4.file"),
+            caption="\U0001f4ce <b>Оригинал без сжатия</b> — переименуй в .mp4 для воспроизведения",
+            parse_mode="HTML",
         )
         # Затем превью с кнопками
         try:
