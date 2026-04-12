@@ -100,8 +100,8 @@ VIDEO_MODELS = {
     "vid_pro": {
         "name": "🎬 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
-        "credits": 45,
-        "price": "225₽",
+        "credits": 50,
+        "price": "250₽",
         "res": "4K + аудио",
         "desc": "Кино-качество",
     },
@@ -109,10 +109,24 @@ VIDEO_MODELS = {
 
 # ─── Пакеты кредитов ──────────────────────────────────────
 CREDIT_PACKS = {
-    "p50":  {"name": "🥉 Старт",    "credits": 50,  "price": 199,  "stars": 40},
-    "p150": {"name": "🥈 Стандарт", "credits": 150, "price": 499,  "stars": 100},
-    "p500": {"name": "🥇 Про",      "credits": 500, "price": 1490, "stars": 300},
+    "p50": {
+        "name": "🥉 Старт", "credits": 50, "price": 199, "stars": 40,
+        "desc": "50 фото Fast / 5 видео Lite / 2 видео Fast",
+        "badge": "Попробовать",
+    },
+    "p150": {
+        "name": "🥈 Стандарт", "credits": 150, "price": 499, "stars": 100,
+        "desc": "150 фото / 15 видео Lite / 7 видео Fast / 3 видео Pro",
+        "badge": "Популярный",
+    },
+    "p500": {
+        "name": "🥇 Про", "credits": 500, "price": 1490, "stars": 300,
+        "desc": "500 фото / 50 видео Lite / 25 видео Fast / 10 видео Pro",
+        "badge": "Выгоднее на 20%",
+    },
 }
+
+REF_BONUS = 20  # кредитов за реферал
 
 # ══════════════════════════════════════════════════════════
 #  БАЗА ДАННЫХ
@@ -143,13 +157,15 @@ async def init_db():
     async with pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id    BIGINT PRIMARY KEY,
-                credits    INTEGER DEFAULT 0,
-                is_blocked INTEGER DEFAULT 0,
-                username   TEXT DEFAULT '',
-                full_name  TEXT DEFAULT '',
-                last_active TIMESTAMP DEFAULT NOW(),
-                created_at TIMESTAMP DEFAULT NOW()
+                user_id        BIGINT PRIMARY KEY,
+                credits        INTEGER DEFAULT 0,
+                is_blocked     INTEGER DEFAULT 0,
+                username       TEXT DEFAULT '',
+                full_name      TEXT DEFAULT '',
+                last_active    TIMESTAMP DEFAULT NOW(),
+                created_at     TIMESTAMP DEFAULT NOW(),
+                referred_by    BIGINT DEFAULT NULL,
+                ref_bonus_paid BOOLEAN DEFAULT FALSE
             )
         """)
         await conn.execute("""
@@ -190,21 +206,34 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        for col, dfn in [("referred_by","BIGINT DEFAULT NULL"),("ref_bonus_paid","BOOLEAN DEFAULT FALSE")]:
+            try:
+                await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")
+            except Exception:
+                pass
         # Дефолтные настройки
         await conn.execute(
             "INSERT INTO settings (key, value) VALUES ('maintenance', '0') ON CONFLICT DO NOTHING"
         )
     logging.info("✅ PostgreSQL инициализирован")
 
-async def ensure_user(user_id: int, username: str = "", full_name: str = ""):
+async def ensure_user(user_id: int, username: str = "", full_name: str = "", referred_by: int = None):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (user_id, credits, username, full_name)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (user_id) DO UPDATE
-            SET username=$3, full_name=$4, last_active=NOW()
-        """, user_id, FREE_CREDITS, username, full_name)
+        if referred_by and referred_by != user_id:
+            await conn.execute("""
+                INSERT INTO users (user_id, credits, username, full_name, referred_by)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (user_id) DO UPDATE
+                SET username=$3, full_name=$4, last_active=NOW()
+            """, user_id, FREE_CREDITS + REF_BONUS, username, full_name, referred_by)
+        else:
+            await conn.execute("""
+                INSERT INTO users (user_id, credits, username, full_name)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id) DO UPDATE
+                SET username=$3, full_name=$4, last_active=NOW()
+            """, user_id, FREE_CREDITS, username, full_name)
 
 async def get_setting(key: str, default: str = "") -> str:
     pool = await get_pool()
@@ -946,9 +975,10 @@ async def menu_buy(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
     await cb.message.edit_text(
         f"🛒 <b>Купить кредиты</b>\n\n💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"🥉 Старт — 50 кр → 199₽\n"
-        f"🥈 Стандарт — 150 кр → 499₽\n"
-        f"🥇 Про — 500 кр → 1490₽",
+        "\n".join([
+            f"<b>{p['name']}</b> — {p['credits']} кр | {p['price']}\u20bd\n  <i>{p['desc']}</i>"
+            for p in CREDIT_PACKS.values()
+        ]),
         reply_markup=kb_buy(), parse_mode="HTML"
     )
     await cb.answer()
@@ -1224,7 +1254,7 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"💰 <b>Veo 3.1 Lite</b> — 10 кр\n"
         f"⚡ <b>Veo 3.1 Fast</b> — 20 кр\n"
-        f"🎬 <b>Veo 3.1</b> — 45 кр\n\n"
+        f"🎬 <b>Veo 3.1</b> — 50 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -1586,7 +1616,7 @@ async def reply_create_video(message: Message, state: FSMContext):
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"💰 <b>Veo 3.1 Lite</b> — 10 кр\n"
         f"⚡ <b>Veo 3.1 Fast</b> — 20 кр\n"
-        f"🎬 <b>Veo 3.1</b> — 45 кр\n\n"
+        f"🎬 <b>Veo 3.1</b> — 50 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
