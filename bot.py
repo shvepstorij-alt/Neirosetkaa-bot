@@ -92,16 +92,16 @@ VIDEO_MODELS = {
     "vid_fast": {
         "name": "⚡ Veo 3.1 Fast",
         "model_id": "veo-3.1-fast-generate-preview",
-        "credits": 15,
-        "price": "75₽",
+        "credits": 20,
+        "price": "100₽",
         "res": "1080p",
         "desc": "Баланс цены и качества",
     },
     "vid_pro": {
         "name": "🎬 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
-        "credits": 40,
-        "price": "200₽",
+        "credits": 45,
+        "price": "225₽",
         "res": "4K + аудио",
         "desc": "Кино-качество",
     },
@@ -1223,8 +1223,8 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"💰 <b>Veo 3.1 Lite</b> — 10 кр\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 15 кр\n"
-        f"🎬 <b>Veo 3.1</b> — 40 кр\n\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 20 кр\n"
+        f"🎬 <b>Veo 3.1</b> — 45 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -1585,8 +1585,8 @@ async def reply_create_video(message: Message, state: FSMContext):
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"💰 <b>Veo 3.1 Lite</b> — 10 кр\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 15 кр\n"
-        f"🎬 <b>Veo 3.1</b> — 40 кр\n\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 20 кр\n"
+        f"🎬 <b>Veo 3.1</b> — 45 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
