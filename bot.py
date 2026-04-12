@@ -897,18 +897,57 @@ WELCOME_BACK = """👋 С возвращением, {name}!
 Выбери действие 👇"""
 
 
-@dp.message(F.text == "/start")
+@dp.message(F.text.startswith("/start"), StateFilter("*"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await ensure_user(message.from_user.id, message.from_user.username or '', message.from_user.full_name)
-    credits = await get_credits(message.from_user.id)
-    is_new = credits == FREE_CREDITS
+    uid = message.from_user.id
 
-    text = (WELCOME_NEW if is_new else WELCOME_BACK).format(
-        name=message.from_user.first_name,
-        credits=credits
+    # Парсим реф-параметр: /start ref_123456
+    parts = message.text.strip().split()
+    referred_by = None
+    if len(parts) > 1 and parts[1].startswith("ref_"):
+        try:
+            rid = int(parts[1][4:])
+            if rid != uid:
+                referred_by = rid
+        except ValueError:
+            pass
+
+    existing = await get_user(uid)
+    is_new = existing is None
+
+    await ensure_user(
+        uid,
+        message.from_user.username or '',
+        message.from_user.full_name,
+        referred_by=referred_by if is_new else None
     )
-    is_admin = (message.from_user.id == ADMIN_ID)
+    credits = await get_credits(uid)
+    is_admin = (uid == ADMIN_ID)
+
+    # Уведомляем пригласившего
+    if is_new and referred_by:
+        try:
+            await bot.send_message(
+                referred_by,
+                f"🎉 <b>По твоей ссылке зарегистрировался новый пользователь!</b>\n\n"
+                f"💰 <b>+{REF_BONUS} кр</b> начислятся тебе когда он сделает первую покупку.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        text = (
+            f"👋 Привет, {message.from_user.first_name}!\n\n"
+            f"🎁 Тебя пригласил друг — ты получил <b>+{REF_BONUS} бонусных кредитов!</b>\n\n"
+            f"💳 Баланс: <b>{credits} кр</b> ({FREE_CREDITS} стартовых + {REF_BONUS} реферальных)\n\n"
+            f"Выбери что создать 👇"
+        )
+    else:
+        text = (WELCOME_NEW if is_new else WELCOME_BACK).format(
+            name=message.from_user.first_name,
+            credits=credits
+        )
+
     await message.answer("👇", reply_markup=kb_reply(is_admin))
     await message.answer(text, reply_markup=kb_main(), parse_mode="HTML")
 
@@ -1053,13 +1092,44 @@ async def pre_checkout(q: PreCheckoutQuery):
     await q.answer(ok=True)
 
 
+async def process_referral_bonus(user_id: int):
+    """Начисляет бонус пригласившему при первой покупке реферала."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT referred_by, ref_bonus_paid FROM users WHERE user_id=$1", user_id
+        )
+        if not row or not row["referred_by"] or row["ref_bonus_paid"]:
+            return
+        referrer_id = row["referred_by"]
+        await conn.execute(
+            "UPDATE users SET ref_bonus_paid=TRUE WHERE user_id=$1", user_id
+        )
+    await add_credits(referrer_id, REF_BONUS)
+    try:
+        new_bal = await get_credits(referrer_id)
+        await bot.send_message(
+            referrer_id,
+            f"🎉 <b>Реферальный бонус!</b>\n\n"
+            f"Твой друг сделал первую покупку.\n"
+            f"➕ Начислено: <b>+{REF_BONUS} кр</b>\n"
+            f"💳 Баланс: <b>{new_bal} кр</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"ref bonus notify error: {e}")
+
+
 @dp.message(F.successful_payment)
 async def on_payment(message: Message):
     parts = message.successful_payment.invoice_payload.split(":")
     key = parts[1]
+    user_id = message.from_user.id
     p = CREDIT_PACKS[key]
-    await add_credits(message.from_user.id, p["credits"])
-    cr = await get_credits(message.from_user.id)
+    await add_credits(user_id, p["credits"])
+    await log_payment(user_id, p["credits"], p["stars"], "stars")
+    await process_referral_bonus(user_id)
+    cr = await get_credits(user_id)
     await message.answer(
         f"✅ <b>Оплата прошла!</b>\n\n"
         f"💎 Начислено: +{p['credits']} кредитов\n"
@@ -2793,6 +2863,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
 
         await add_credits(user_id, credits)
         await log_payment(user_id, credits, amount_rub, "freekassa")
+        await process_referral_bonus(user_id)
 
         # Уведомляем пользователя
         try:
