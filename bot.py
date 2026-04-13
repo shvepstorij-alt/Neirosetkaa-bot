@@ -755,7 +755,7 @@ async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
                     "responseModalities": ["IMAGE", "TEXT"],
-                    "image_generation_config": {"aspect_ratio": aspect_ratio},
+                    "imageConfig": {"aspectRatio": aspect_ratio},
                 }
             }
             async with s.post(url, json=payload, headers=headers) as r:
