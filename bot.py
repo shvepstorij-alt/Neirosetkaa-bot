@@ -390,6 +390,43 @@ def fk_pay_url(amount: float, order_id: str, currency: str = "RUB", method_id: s
     return url
 
 
+async def fk_create_order(amount: float, order_id: str, user_id: int,
+                         payment_id: int = 36, currency: str = "RUB") -> str:
+    """Создаёт заказ через FreeKassa API и возвращает ссылку на оплату.
+    payment_id: 36 = Card RUB API, 44 = СБП API
+    """
+    import time as _time
+    nonce = str(int(_time.time() * 1000))
+    amount_str = f"{float(amount):.2f}"
+
+    params = {
+        "shopId": int(FK_SHOP_ID),
+        "nonce": nonce,
+        "paymentId": payment_id,
+        "i": payment_id,
+        "email": f"user{user_id}@bot.local",
+        "ip": "127.0.0.1",
+        "amount": float(amount_str),
+        "currency": currency,
+        "orderId": order_id,
+    }
+    # HMAC-SHA256 подпись: сортируем по ключам и склеиваем через |
+    sorted_vals = [str(v) for k, v in sorted(params.items())]
+    sign_str = "|".join(sorted_vals)
+    signature = hmac.new(FK_API_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
+    params["signature"] = signature
+
+    url = "https://api.fk.life/v1/orders/create"
+    headers = {"Content-Type": "application/json"}
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, json=params, headers=headers) as r:
+            data = await r.json()
+            logging.info(f"FK API create order response: {data}")
+            if data.get("type") == "success":
+                return data.get("location", "")
+            raise Exception(f"FK API error: {data.get('message', data)}")
+
+
 def fk_verify_webhook(data: dict) -> bool:
     """Проверяет подпись вебхука от FreeKassa.
     Подпись: MD5(MERCHANT_ID:AMOUNT:SECRET2:MERCHANT_ORDER_ID)
@@ -1331,17 +1368,17 @@ async def buy_pack(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("payfk:"))
 async def pay_fk(cb: CallbackQuery):
-    """Оплата через FreeKassa — Card RUB / СБП."""
-    key = cb.data.split(":")[1]
+    """Оплата через FreeKassa — Card RUB API (id=36) или СБП (id=42)."""
+    parts = cb.data.split(":")
+    key = parts[1]
+    method = parts[2] if len(parts) > 2 else "sbp"  # "card" или "sbp"
     p = CREDIT_PACKS[key]
     uid = cb.from_user.id
     amount = p["price"]
 
-    # Уникальный order_id: uid_timestamp
     import time as _time
     order_id = f"{uid}_{int(_time.time())}"
 
-    # Сохраняем ожидающий платёж
     pending_fk_payments[order_id] = {
         "user_id": uid,
         "credits": p["credits"],
@@ -1349,20 +1386,32 @@ async def pay_fk(cb: CallbackQuery):
         "pack": key,
     }
 
-    # Генерируем ссылку (без фиксации метода — пользователь сам выбирает карту или СБП)
-    pay_url = fk_pay_url(amount, order_id)
+    wait_msg = await cb.message.answer("⏳ Создаю ссылку на оплату...")
+    try:
+        if method == "card":
+            # Card RUB API — создаём заказ через API (id=36)
+            pay_url = await fk_create_order(amount, order_id, uid, payment_id=36)
+            label = "💳 Оплатить картой"
+        else:
+            # СБП — стандартная форма (работает без API)
+            pay_url = fk_pay_url(amount, order_id)
+            label = "🏦 Оплатить через СБП"
 
-    await cb.message.answer(
-        f"💳 <b>Оплата через карту / СБП</b>\n\n"
-        f"📦 {p['credits']} кредитов — <b>{amount}₽</b>\n\n"
-        f"Нажми кнопку ниже для перехода на страницу оплаты.\n"
-        f"После оплаты кредиты поступят <b>автоматически</b> в течение 1 минуты.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Перейти к оплате", url=pay_url)],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_buy")],
-        ]),
-        parse_mode="HTML"
-    )
+        await wait_msg.delete()
+        await cb.message.answer(
+            f"{label}\n\n"
+            f"📦 {p['credits']} кредитов — <b>{amount}₽</b>\n\n"
+            f"Нажми кнопку ниже для перехода на страницу оплаты.\n"
+            f"После оплаты кредиты поступят <b>автоматически</b> в течение 1 минуты.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=label, url=pay_url)],
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_buy")],
+            ]),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ Ошибка создания платежа: {e}")
+        del pending_fk_payments[order_id]
     await cb.answer()
 
 
