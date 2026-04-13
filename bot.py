@@ -3438,46 +3438,6 @@ def fk_payment_url(order_id: str, amount: int, user_id: int) -> str:
         f"&lang=ru"
     )
 
-async def fk_create_order(user_id: int, pack_key: str) -> str:
-    import time, random
-    p = CREDIT_PACKS[pack_key]
-    order_id = f"fk_{user_id}_{int(time.time())}_{random.randint(100,999)}"
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO payments_fk (order_id, user_id, credits, amount_rub, pack_key)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (order_id) DO NOTHING
-        """, order_id, user_id, p["credits"], p["price"], pack_key)
-    return order_id
-
-@dp.callback_query(F.data.startswith("payfk:"))
-async def pay_fk(cb: CallbackQuery):
-    pack_key = cb.data.split(":")[1]
-    p = CREDIT_PACKS[pack_key]
-    logging.info(f"payfk: pack={pack_key}, FK_MERCHANT_ID='{FK_MERCHANT_ID}'")
-    if not FK_MERCHANT_ID:
-        await cb.answer("❌ Оплата через СБП временно недоступна. Напиши @neirosetkaalex", show_alert=True)
-        return
-    order_id = await fk_create_order(cb.from_user.id, pack_key)
-    pay_url = fk_payment_url(order_id, p["price"], cb.from_user.id)
-    logging.info(f"payfk url: {pay_url}")
-    msg = (
-        f"\U0001f3e6 <b>Оплата через СБП / Карту</b>\n\n"
-        f"\U0001f4e6 {p['name']}: <b>{p['credits']} кредитов</b>\n"
-        f"\U0001f4b0 Сумма: <b>{p['price']}\u20bd</b>\n\n"
-        f"Нажми кнопку ниже, выбери банк и оплати.\n"
-        f"Кредиты зачислятся <b>автоматически</b> после оплаты \u2705"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"\U0001f4b3 Оплатить {p['price']}\u20bd", url=pay_url)],
-        [InlineKeyboardButton(text="\u25c0\ufe0f Назад", callback_data=f"buy:{pack_key}")],
-    ])
-    try:
-        await cb.message.edit_text(msg, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await cb.message.answer(msg, reply_markup=kb, parse_mode="HTML")
-    await cb.answer()
 
 
 # ══════════════════════════════════════════════════════════
