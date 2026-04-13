@@ -144,27 +144,27 @@ VIDEO_MODELS = {
 CREDIT_PACKS = {
     "p25": {
         "name": "🎯 Пробный", "credits": 250, "price": 149, "stars": 30,
-        "desc": "25 фото / 2 видео Lite / 1 видео Fast",
+        "desc": "35 фото / 2 видео Lite / 1 видео Fast",
         "badge": "Попробовать за 149₽",
     },
     "p50": {
         "name": "🥉 Старт", "credits": 500, "price": 279, "stars": 56,
-        "desc": "50 фото / 5 видео Lite / 2 видео Fast",
+        "desc": "70 фото / 5 видео Lite / 2 видео Fast / 1 видео Pro",
         "badge": "Популярный старт",
     },
     "p150": {
         "name": "🥈 Базовый", "credits": 1500, "price": 799, "stars": 160,
-        "desc": "150 фото / 15 видео Lite / 7 видео Fast / 3 видео Pro",
+        "desc": "210 фото / 15 видео Lite / 8 видео Fast / 3 видео Pro",
         "badge": "Хорошая экономия",
     },
     "p500": {
         "name": "🥇 Про", "credits": 5000, "price": 2490, "stars": 498,
-        "desc": "500 фото / 50 видео Lite / 25 видео Fast / 11 видео Pro",
+        "desc": "700 фото / 50 видео Lite / 28 видео Fast / 12 видео Pro",
         "badge": "Выгоднее на 13%",
     },
     "p1200": {
         "name": "💎 Бизнес", "credits": 12000, "price": 5790, "stars": 1160,
-        "desc": "1200 фото / 120 видео Lite / 60 видео Fast / 26 видео Pro",
+        "desc": "1700 фото / 120 видео Lite / 68 видео Fast / 30 видео Pro",
         "badge": "Максимум",
     },
 }
