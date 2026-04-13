@@ -532,8 +532,12 @@ def kb_pay_method(pack_key: str):
     p = CREDIT_PACKS[pack_key]
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"🏦 СБП / Карта — {p['price']}₽",
-            callback_data=f"payfk:{pack_key}"
+            text=f"🏦 СБП — {p['price']}₽",
+            callback_data=f"payfk:{pack_key}:sbp"
+        )],
+        [InlineKeyboardButton(
+            text=f"💳 Банковская карта — {p['price']}₽",
+            callback_data=f"payfk:{pack_key}:card"
         )],
         [InlineKeyboardButton(
             text=f"⭐ Telegram Stars — {p['stars']} ⭐",
