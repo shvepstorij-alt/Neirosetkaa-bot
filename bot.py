@@ -54,9 +54,11 @@ user_orig_images = {}     # оригинальные байты последне
 
 # ─── Модели изображений ───────────────────────────────────
 IMAGE_MODELS = {
+    # ── Imagen 4 ──────────────────────────────────────────
     "img_fast": {
         "name": "⚡ Imagen 4 Fast",
         "model_id": "imagen-4.0-fast-generate-001",
+        "api": "imagen",
         "credits": 7,
         "price": "4₽",
         "speed": "~2 сек",
@@ -65,6 +67,7 @@ IMAGE_MODELS = {
     "img_std": {
         "name": "✨ Imagen 4",
         "model_id": "imagen-4.0-generate-001",
+        "api": "imagen",
         "credits": 10,
         "price": "6₽",
         "speed": "~5 сек",
@@ -73,10 +76,39 @@ IMAGE_MODELS = {
     "img_ultra": {
         "name": "💎 Imagen 4 Ultra",
         "model_id": "imagen-4.0-ultra-generate-001",
+        "api": "imagen",
         "credits": 13,
         "price": "8₽",
         "speed": "~8 сек",
         "desc": "Максимальная точность",
+    },
+    # ── Nano Banana (Gemini Image) ─────────────────────────
+    "nb_flash": {
+        "name": "🍌 Nano Banana",
+        "model_id": "gemini-2.5-flash-image",
+        "api": "gemini",
+        "credits": 8,
+        "price": "5₽",
+        "speed": "~3 сек",
+        "desc": "Быстрый, диалоговый",
+    },
+    "nb_2": {
+        "name": "🍌✨ Nano Banana 2",
+        "model_id": "gemini-3.1-flash-image-preview",
+        "api": "gemini",
+        "credits": 10,
+        "price": "6₽",
+        "speed": "~4 сек",
+        "desc": "Новейший, лучшее качество",
+    },
+    "nb_pro": {
+        "name": "🍌💎 Nano Banana Pro",
+        "model_id": "gemini-3-pro-image-preview",
+        "api": "gemini",
+        "credits": 15,
+        "price": "9₽",
+        "speed": "~8 сек",
+        "desc": "4K, точный текст в картинке",
     },
 }
 
@@ -712,23 +744,46 @@ WEB_SEARCH_TOOL = {
 #  GOOGLE AI СЕРВИСЫ
 # ══════════════════════════════════════════════════════════
 
-async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1") -> bytes:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:predict"
-    payload = {
-        "instances": [{"prompt": prompt}],
-        "parameters": {
-            "sampleCount": 1,
-            "aspectRatio": aspect_ratio,
-            "safetyFilterLevel": "block_few",
-        }
-    }
+async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1", api_type: str = "imagen") -> bytes:
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
     async with aiohttp.ClientSession() as s:
-        async with s.post(url, json=payload, headers=headers) as r:
-            if r.status != 200:
-                raise Exception(f"Imagen API {r.status}: {(await r.text())[:200]}")
-            data = await r.json()
-            return base64.b64decode(data["predictions"][0]["bytesBase64Encoded"])
+
+        if api_type == "gemini":
+            # ── Nano Banana (generateContent) ─────────────────
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE", "TEXT"],
+                    "image_generation_config": {"aspect_ratio": aspect_ratio},
+                }
+            }
+            async with s.post(url, json=payload, headers=headers) as r:
+                if r.status != 200:
+                    raise Exception(f"Nano Banana API {r.status}: {(await r.text())[:300]}")
+                data = await r.json()
+                # Ищем inline image в частях ответа
+                for part in data.get("candidates", [{}])[0].get("content", {}).get("parts", []):
+                    if "inlineData" in part:
+                        return base64.b64decode(part["inlineData"]["data"])
+                raise Exception("Nano Banana: изображение не найдено в ответе")
+
+        else:
+            # ── Imagen (predict) ──────────────────────────────
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:predict"
+            payload = {
+                "instances": [{"prompt": prompt}],
+                "parameters": {
+                    "sampleCount": 1,
+                    "aspectRatio": aspect_ratio,
+                    "safetyFilterLevel": "block_few",
+                }
+            }
+            async with s.post(url, json=payload, headers=headers) as r:
+                if r.status != 200:
+                    raise Exception(f"Imagen API {r.status}: {(await r.text())[:200]}")
+                data = await r.json()
+                return base64.b64decode(data["predictions"][0]["bytesBase64Encoded"])
 
 
 async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1") -> bytes:
@@ -1301,7 +1356,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
 
     try:
         aspect = data.get("aspect_ratio", "1:1")
-        img_bytes = await api_generate_image(prompt, m["model_id"], aspect)
+        img_bytes = await api_generate_image(prompt, m["model_id"], aspect, m.get("api", "imagen"))
         await log_gen(cb.from_user.id, "image", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         # Сохраняем оригинал в памяти для скачивания
