@@ -373,13 +373,13 @@ async def log_gen(user_id: int, gen_type: str, model: str, credits: int):
 def fk_pay_url(amount: float, order_id: str, currency: str = "RUB", method_id: str = "") -> str:
     """Формирует ссылку на оплату FreeKassa.
     Подпись: MD5(shopId:amount:secret1:currency:orderId)
-    method_id: 36 = Card RUB API, 44 = СБП API, "" = на выбор пользователя
     """
-    sign_str = f"{FK_SHOP_ID}:{amount}:{FK_SECRET1}:{currency}:{order_id}"
+    amount_str = f"{float(amount):.2f}"  # FreeKassa требует формат "199.00"
+    sign_str = f"{FK_SHOP_ID}:{amount_str}:{FK_SECRET1}:{currency}:{order_id}"
     sign = hashlib.md5(sign_str.encode()).hexdigest()
     url = (
         f"https://pay.fk.money/?m={FK_SHOP_ID}"
-        f"&oa={amount}"
+        f"&oa={amount_str}"
         f"&currency={currency}"
         f"&o={order_id}"
         f"&s={sign}"
