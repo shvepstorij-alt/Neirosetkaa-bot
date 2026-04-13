@@ -87,7 +87,7 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana",
         "model_id": "gemini-2.5-flash-image",
         "api": "gemini",
-        "credits": 8,
+        "credits": 10,
         "price": "5₽",
         "speed": "~3 сек",
         "desc": "Быстрый, диалоговый",
@@ -96,7 +96,7 @@ IMAGE_MODELS = {
         "name": "🍌✨ Nano Banana 2",
         "model_id": "gemini-3.1-flash-image-preview",
         "api": "gemini",
-        "credits": 10,
+        "credits": 13,
         "price": "6₽",
         "speed": "~4 сек",
         "desc": "Новейший, лучшее качество",
@@ -105,8 +105,8 @@ IMAGE_MODELS = {
         "name": "🍌💎 Nano Banana Pro",
         "model_id": "gemini-3-pro-image-preview",
         "api": "gemini",
-        "credits": 15,
-        "price": "9₽",
+        "credits": 30,
+        "price": "14₽",
         "speed": "~8 сек",
         "desc": "4K, точный текст в картинке",
     },
@@ -125,7 +125,7 @@ VIDEO_MODELS = {
     "vid_fast": {
         "name": "⚡ Veo 3.1 Fast",
         "model_id": "veo-3.1-fast-generate-preview",
-        "credits": 200,
+        "credits": 175,
         "price": "120₽",
         "res": "1080p",
         "desc": "Баланс цены и качества",
@@ -133,7 +133,7 @@ VIDEO_MODELS = {
     "vid_pro": {
         "name": "🎬 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
-        "credits": 450,
+        "credits": 390,
         "price": "225₽",
         "res": "4K + аудио",
         "desc": "Кино-качество",
@@ -143,24 +143,24 @@ VIDEO_MODELS = {
 # ─── Пакеты кредитов ──────────────────────────────────────
 CREDIT_PACKS = {
     "p25": {
-        "name": "🎯 Пробный", "credits": 250, "price": 150, "stars": 30,
+        "name": "🎯 Пробный", "credits": 250, "price": 149, "stars": 30,
         "desc": "25 фото / 2 видео Lite / 1 видео Fast",
-        "badge": "Попробовать за 150₽",
+        "badge": "Попробовать за 149₽",
     },
     "p50": {
-        "name": "🥉 Старт", "credits": 500, "price": 249, "stars": 50,
+        "name": "🥉 Старт", "credits": 500, "price": 279, "stars": 56,
         "desc": "50 фото / 5 видео Lite / 2 видео Fast",
         "badge": "Популярный старт",
     },
     "p150": {
-        "name": "🥈 Базовый", "credits": 1500, "price": 699, "stars": 140,
+        "name": "🥈 Базовый", "credits": 1500, "price": 799, "stars": 160,
         "desc": "150 фото / 15 видео Lite / 7 видео Fast / 3 видео Pro",
         "badge": "Хорошая экономия",
     },
     "p500": {
-        "name": "🥇 Про", "credits": 5000, "price": 2390, "stars": 480,
+        "name": "🥇 Про", "credits": 5000, "price": 2490, "stars": 498,
         "desc": "500 фото / 50 видео Lite / 25 видео Fast / 11 видео Pro",
-        "badge": "Выгоднее на 20%",
+        "badge": "Выгоднее на 13%",
     },
     "p1200": {
         "name": "💎 Бизнес", "credits": 12000, "price": 5790, "stars": 1160,
@@ -2746,7 +2746,7 @@ async def adm_back(cb: CallbackQuery):
 #  РЕДАКТИРОВАНИЕ ФОТО ПО РЕФЕРЕНСУ
 # ══════════════════════════════════════════════════════════
 
-EDIT_CREDIT_COST = 13  # стоимость редактирования = 13 кредитов
+EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов
 
 @dp.callback_query(F.data == "menu_edit")
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
