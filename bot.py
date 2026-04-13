@@ -3,6 +3,8 @@ import logging
 import asyncpg
 import aiohttp
 import base64
+import hashlib
+import hmac
 import os
 import re
 from aiogram import Bot, Dispatcher, F
@@ -31,6 +33,11 @@ CHANNEL_ID     = os.getenv("CHANNEL_ID")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")      # канал
 PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "neirosetkaalex")  # личка Александра
 ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
+FK_SHOP_ID     = os.getenv("FK_SHOP_ID", "72106")
+FK_API_KEY     = os.getenv("FK_API_KEY", "")
+FK_SECRET1     = os.getenv("FK_SECRET1", "")
+FK_SECRET2     = os.getenv("FK_SECRET2", "")
+FK_WEBHOOK_URL = os.getenv("FK_WEBHOOK_URL", "")  # https://yourbot.up.railway.app/fk-notify
 
 # ─── FreeKassa ────────────────────────────────────────────
 FK_MERCHANT_ID = os.getenv("FK_MERCHANT_ID", "")
@@ -358,6 +365,52 @@ async def log_gen(user_id: int, gen_type: str, model: str, credits: int):
             "INSERT INTO generations (user_id, type, model, credits) VALUES ($1,$2,$3,$4)",
             user_id, gen_type, model, credits
         )
+
+# ══════════════════════════════════════════════════════════
+#  FREEKASSA — ГЕНЕРАЦИЯ ССЫЛОК И ВЕБХУК
+# ══════════════════════════════════════════════════════════
+
+def fk_pay_url(amount: float, order_id: str, currency: str = "RUB", method_id: str = "") -> str:
+    """Формирует ссылку на оплату FreeKassa.
+    Подпись: MD5(shopId:amount:secret1:currency:orderId)
+    method_id: 36 = Card RUB API, 44 = СБП API, "" = на выбор пользователя
+    """
+    sign_str = f"{FK_SHOP_ID}:{amount}:{FK_SECRET1}:{currency}:{order_id}"
+    sign = hashlib.md5(sign_str.encode()).hexdigest()
+    url = (
+        f"https://pay.fk.money/?m={FK_SHOP_ID}"
+        f"&oa={amount}"
+        f"&currency={currency}"
+        f"&o={order_id}"
+        f"&s={sign}"
+        f"&lang=ru"
+    )
+    if method_id:
+        url += f"&i={method_id}"
+    return url
+
+
+def fk_verify_webhook(data: dict) -> bool:
+    """Проверяет подпись вебхука от FreeKassa.
+    Подпись: MD5(MERCHANT_ID:AMOUNT:SECRET2:MERCHANT_ORDER_ID)
+    """
+    sign = hashlib.md5(
+        f"{data['MERCHANT_ID']}:{data['AMOUNT']}:{FK_SECRET2}:{data['MERCHANT_ORDER_ID']}"
+        .encode()
+    ).hexdigest()
+    return sign == data.get("SIGN", "")
+
+
+def fk_api_signature(params: dict) -> str:
+    """HMAC-SHA256 подпись для API запросов."""
+    sorted_vals = [str(v) for k, v in sorted(params.items())]
+    sign_str = "|".join(sorted_vals)
+    return hmac.new(FK_API_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
+
+
+# Хранилище ожидающих платежей: order_id -> {user_id, credits, amount}
+pending_fk_payments: dict = {}
+
 
 # ══════════════════════════════════════════════════════════
 #  КЛАВИАТУРЫ
@@ -1276,6 +1329,43 @@ async def buy_pack(cb: CallbackQuery):
     await cb.answer()
 
 
+@dp.callback_query(F.data.startswith("payfk:"))
+async def pay_fk(cb: CallbackQuery):
+    """Оплата через FreeKassa — Card RUB / СБП."""
+    key = cb.data.split(":")[1]
+    p = CREDIT_PACKS[key]
+    uid = cb.from_user.id
+    amount = p["price"]
+
+    # Уникальный order_id: uid_timestamp
+    import time as _time
+    order_id = f"{uid}_{int(_time.time())}"
+
+    # Сохраняем ожидающий платёж
+    pending_fk_payments[order_id] = {
+        "user_id": uid,
+        "credits": p["credits"],
+        "amount": amount,
+        "pack": key,
+    }
+
+    # Генерируем ссылку (без фиксации метода — пользователь сам выбирает карту или СБП)
+    pay_url = fk_pay_url(amount, order_id)
+
+    await cb.message.answer(
+        f"💳 <b>Оплата через карту / СБП</b>\n\n"
+        f"📦 {p['credits']} кредитов — <b>{amount}₽</b>\n\n"
+        f"Нажми кнопку ниже для перехода на страницу оплаты.\n"
+        f"После оплаты кредиты поступят <b>автоматически</b> в течение 1 минуты.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Перейти к оплате", url=pay_url)],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_buy")],
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
 @dp.callback_query(F.data.startswith("paystars:"))
 async def pay_stars(cb: CallbackQuery):
     key = cb.data.split(":")[1]
@@ -1694,28 +1784,22 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         caption = f"🎉 Готово! {m['name']} | {m['res']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов"
-        # Оригинал как файл — меняем расширение чтобы Telegram не сжимал как видео
-        await cb.message.answer_document(
-            BufferedInputFile(vid_bytes, "original_video.mp4.file"),
-            caption="\U0001f4ce <b>Оригинал без сжатия</b> — переименуй в .mp4 для воспроизведения",
-            parse_mode="HTML",
-        )
-        # Затем превью с кнопками
+        # 1. Видео для просмотра в чате и сохранения в галерею
         try:
             await cb.message.answer_video(
                 BufferedInputFile(vid_bytes, "video.mp4"),
-                caption=caption,
+                caption=caption + "\n\n👆 Сохрани в галерею — нажми и удержи видео",
                 reply_markup=kb_after("video", key),
                 supports_streaming=True,
             )
         except Exception as video_err:
-            logging.warning(f"answer_video failed: {video_err}, trying as document")
-            await cb.message.answer_document(
-                BufferedInputFile(vid_bytes, "video.mp4"),
-                caption=caption + "\n\n<i>Нажми для воспроизведения</i>",
-                reply_markup=kb_after("video", key),
-                parse_mode="HTML"
-            )
+            logging.warning(f"answer_video failed: {video_err}")
+        # 2. Оригинал как документ без сжатия
+        await cb.message.answer_document(
+            BufferedInputFile(vid_bytes, "video_original.mp4"),
+            caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
+            parse_mode="HTML",
+        )
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
         await cb.message.answer(
@@ -3216,26 +3300,30 @@ async def anim_prompt(message: Message, state: FSMContext):
         vid_bytes = await api_animate_image(first_bytes, prompt, aspect, last_bytes)
         await log_gen(message.from_user.id, "animate", "veo-3.1-animate", ANIM_CREDIT_COST)
         cr_left = await get_credits(message.from_user.id)
-        caption = (
-            f"✅ Готово! 🎞️ Анимация фото\n"
-            f"💳 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр"
-        )
+        kb_after_anim = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
+             InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
+        ])
+        # 1. Отправляем как видео — для просмотра прямо в чате и сохранения в галерею
         try:
             await message.answer_video(
                 BufferedInputFile(vid_bytes, "animation.mp4"),
-                caption=caption,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
-                     InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
-                ]),
+                caption=(
+                    f"✅ Готово! 🎞️ Анимация фото\n"
+                    f"💳 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр\n\n"
+                    f"👆 Сохрани в галерею — нажми и удержи видео"
+                ),
+                reply_markup=kb_after_anim,
                 supports_streaming=True,
             )
         except Exception:
-            await message.answer_document(
-                BufferedInputFile(vid_bytes, "animation.mp4"),
-                caption=caption + "\n<i>Нажми для воспроизведения</i>",
-                parse_mode="HTML"
-            )
+            pass
+        # 2. Отправляем как документ — оригинальное качество без сжатия
+        await message.answer_document(
+            BufferedInputFile(vid_bytes, "animation_original.mp4"),
+            caption="📁 <b>Оригинал без сжатия</b> — скачай для максимального качества",
+            parse_mode="HTML"
+        )
         await wait.delete()
     except Exception as e:
         await add_credits(message.from_user.id, ANIM_CREDIT_COST)
@@ -3343,68 +3431,70 @@ async def pay_fk(cb: CallbackQuery):
 #  WEBHOOK-СЕРВЕР ДЛЯ FREEKASSA
 # ══════════════════════════════════════════════════════════
 
+FK_WEBHOOK_PORT = int(os.getenv("FK_WEBHOOK_PORT", "8080"))
+# Разрешённые IP от FreeKassa
+FK_ALLOWED_IPS = {"168.119.157.136", "168.119.60.227", "178.154.197.79", "51.250.54.238"}
+
+
 async def fk_webhook_handler(request: web.Request) -> web.Response:
     """Принимает уведомление от FreeKassa об успешной оплате."""
     try:
-        data = await request.post()
-        logging.info(f"FK webhook: {dict(data)}")
+        data = dict(await request.post())
+        logging.info(f"FK webhook received: {data}")
 
         merchant_id = data.get("MERCHANT_ID", "")
         amount      = data.get("AMOUNT", "")
         order_id    = data.get("MERCHANT_ORDER_ID", "")
-        sign        = data.get("SIGN", "")
+        recv_sign   = data.get("SIGN", "")
 
-        # Проверяем подпись
-        expected = fk_sign_notify(amount, order_id)
-        if sign != expected:
-            logging.warning(f"FK wrong sign: got {sign}, expected {expected}")
-            return web.Response(text="WRONG SIGN")
-
-        # Проверяем merchant_id
-        if merchant_id != FK_MERCHANT_ID:
+        # 1. Проверяем ID магазина
+        if str(merchant_id) != str(FK_SHOP_ID):
+            logging.warning(f"FK wrong merchant: {merchant_id}")
             return web.Response(text="WRONG MERCHANT")
 
-        # Ищем заказ в БД
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM payments_fk WHERE order_id=$1", order_id
-            )
-            if not row:
-                logging.warning(f"FK order not found: {order_id}")
-                return web.Response(text="ORDER NOT FOUND")
+        # 2. Проверяем подпись: MD5(MERCHANT_ID:AMOUNT:SECRET2:MERCHANT_ORDER_ID)
+        expected_sign = hashlib.md5(
+            f"{FK_SHOP_ID}:{amount}:{FK_SECRET2}:{order_id}".encode()
+        ).hexdigest()
+        if recv_sign != expected_sign:
+            logging.warning(f"FK wrong sign. Got: {recv_sign}, expected: {expected_sign}")
+            return web.Response(text="WRONG SIGN")
 
-            if row["status"] == "paid":
-                return web.Response(text="YES")  # уже обработан
+        # 3. Ищем заказ в pending_fk_payments
+        payment = pending_fk_payments.get(order_id)
+        if not payment:
+            # Может уже обработан — отвечаем YES чтобы FK не повторял
+            logging.warning(f"FK order not found or already processed: {order_id}")
+            return web.Response(text="YES")
 
-            # Зачисляем кредиты
-            await conn.execute(
-                "UPDATE payments_fk SET status='paid' WHERE order_id=$1", order_id
-            )
+        # 4. Удаляем из pending (защита от повторной обработки)
+        del pending_fk_payments[order_id]
 
-        user_id = row["user_id"]
-        credits = row["credits"]
-        amount_rub = row["amount_rub"]
+        user_id    = payment["user_id"]
+        credits    = payment["credits"]
+        amount_rub = payment["amount"]
 
+        # 5. Зачисляем кредиты и логируем
         await add_credits(user_id, credits)
-        await log_payment(user_id, credits, amount_rub, "freekassa")
+        await log_payment(user_id, credits, int(amount_rub), "freekassa")
         await process_referral_bonus(user_id)
 
-        # Уведомляем пользователя
+        # 6. Уведомляем пользователя в Telegram
         try:
             new_balance = await get_credits(user_id)
             await bot.send_message(
                 user_id,
-                "\u2705 <b>Оплата прошла успешно!</b>\n\n"
-                f"\u2795 Начислено: <b>{credits} кредитов</b>\n"
-                f"\U0001f4b3 Баланс: <b>{new_balance} кредитов</b>\n\n"
-                "Можешь начинать генерацию! \U0001f680",
+                f"✅ <b>Оплата прошла успешно!</b>\n\n"
+                f"➕ Начислено: <b>{credits} кредитов</b>\n"
+                f"💳 Баланс: <b>{new_balance} кредитов</b>\n\n"
+                f"Можешь начинать генерацию! 🚀",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="\U0001f5bc\ufe0f Создать фото", callback_data="menu_image")],
-                    [InlineKeyboardButton(text="\U0001f3ac Создать видео", callback_data="menu_video")],
+                    [InlineKeyboardButton(text="🖼️ Создать фото", callback_data="menu_image")],
+                    [InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
                 ])
             )
+            logging.info(f"FK payment success: user={user_id} credits={credits}")
         except Exception as e:
             logging.error(f"FK notify user error: {e}")
 
@@ -3417,14 +3507,15 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
 
 async def start_webhook_server():
     """Запускаем aiohttp сервер для FreeKassa webhook."""
-    app = web.Application()
-    app.router.add_post("/fk_webhook", fk_webhook_handler)
-    app.router.add_get("/health", lambda r: web.Response(text="OK"))
-    runner = web.AppRunner(app)
+    from aiohttp import web as _web
+    app = _web.Application()
+    app.router.add_post("/fk-notify", fk_webhook_handler)
+    app.router.add_get("/health", lambda r: _web.Response(text="OK"))
+    runner = _web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", FK_WEBHOOK_PORT)
+    site = _web.TCPSite(runner, "0.0.0.0", FK_WEBHOOK_PORT)
     await site.start()
-    logging.info(f"✅ FK webhook сервер запущен на порту {FK_WEBHOOK_PORT}")
+    logging.info(f"✅ FK webhook сервер на порту {FK_WEBHOOK_PORT} → /fk-notify")
 
 
 async def main():
