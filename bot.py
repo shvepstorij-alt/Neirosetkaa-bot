@@ -371,6 +371,7 @@ def kb_main():
         ],
         [
             InlineKeyboardButton(text="🖌️ Редактировать фото", callback_data="menu_edit"),
+            InlineKeyboardButton(text="🎞️ Анимировать фото",   callback_data="menu_anim"),
         ],
         [
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
@@ -533,8 +534,15 @@ class ImgState(StatesGroup):
     waiting_prompt = State()
 
 class EditState(StatesGroup):
-    waiting_photo  = State()   # ждём фото
-    waiting_prompt = State()   # ждём промт
+    waiting_photo  = State()
+    waiting_prompt = State()
+
+class AnimState(StatesGroup):
+    waiting_mode       = State()   # выбор режима (1 или 2 кадра)
+    waiting_first_photo = State()  # первый кадр
+    waiting_last_photo  = State()  # последний кадр (если 2 кадра)
+    waiting_aspect     = State()   # формат
+    waiting_prompt     = State()   # промт
 
 class VidState(StatesGroup):
     waiting_aspect = State()
@@ -838,6 +846,72 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
                     last_error = str(e)
                     await asyncio.sleep(2)
     raise Exception(last_error or "Все модели недоступны. Попробуй позже.")
+
+
+async def api_animate_image(
+    first_bytes: bytes,
+    prompt: str,
+    aspect_ratio: str = "16:9",
+    last_bytes: bytes | None = None,
+) -> bytes:
+    """Анимация фото через Veo 3.1 (первый кадр + опционально последний)."""
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+
+    first_b64 = base64.b64encode(first_bytes).decode()
+    instance = {
+        "prompt": prompt,
+        "image": {"bytesBase64Encoded": first_b64, "mimeType": "image/jpeg"},
+    }
+    params = {"durationSeconds": 8, "aspectRatio": aspect_ratio, "sampleCount": 1}
+    if last_bytes:
+        last_b64 = base64.b64encode(last_bytes).decode()
+        instance["lastFrame"] = {"bytesBase64Encoded": last_b64, "mimeType": "image/jpeg"}
+
+    payload = {"instances": [instance], "parameters": params}
+
+    async with aiohttp.ClientSession() as s:
+        async with s.post(
+            f"{base}/models/veo-3.1-generate-preview:predictLongRunning",
+            json=payload, headers=headers
+        ) as r:
+            if r.status != 200:
+                raise Exception(f"Veo Anim API {r.status}: {(await r.text())[:200]}")
+            op_data = await r.json()
+            op_name = op_data.get("name")
+            if not op_name:
+                raise Exception(f"Veo Anim: нет operation name: {op_data}")
+            logging.info(f"Veo Anim operation: {op_name}")
+
+        for _ in range(72):
+            await asyncio.sleep(5)
+            async with s.get(f"{base}/{op_name}", headers=headers) as pr:
+                if pr.status != 200:
+                    continue
+                pd = await pr.json()
+                if not pd.get("done"):
+                    continue
+                if "error" in pd:
+                    raise Exception(pd["error"].get("message", "Veo Anim error"))
+                # Парсим ответ
+                gen_resp = pd.get("response", {}).get("generateVideoResponse", {})
+                samples = gen_resp.get("generatedSamples", [])
+                if samples:
+                    video = samples[0].get("video", {})
+                    if video.get("bytesBase64Encoded"):
+                        return base64.b64decode(video["bytesBase64Encoded"])
+                    uri = video.get("uri") or video.get("videoUri")
+                    if uri:
+                        vid_headers = {"x-goog-api-key": GEMINI_API_KEY}
+                        scheme = "https://storage.googleapis.com/" if uri.startswith("gs://") else None
+                        url = uri.replace("gs://", "https://storage.googleapis.com/") if scheme else uri
+                        async with s.get(url, headers=vid_headers) as vr:
+                            data_bytes = await vr.read()
+                            if len(data_bytes) > 1000:
+                                return data_bytes
+                logging.error(f"Veo Anim unknown response: {str(pd)[:300]}")
+                raise Exception("Неизвестная структура ответа Veo Anim")
+    raise Exception("Превышено время ожидания анимации (6 мин)")
 
 
 async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
@@ -2747,6 +2821,7 @@ async def adm_back(cb: CallbackQuery):
 # ══════════════════════════════════════════════════════════
 
 EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов
+ANIM_CREDIT_COST  = 360  # стоимость анимации фото = 360 кредитов
 
 @dp.callback_query(F.data == "menu_edit")
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
@@ -2973,6 +3048,201 @@ async def cmd_publicoffer(message: Message):
         parse_mode="HTML"
     )
 
+
+
+# ══════════════════════════════════════════════════════════
+#  АНИМАЦИЯ ФОТО (image-to-video через Veo 3.1)
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "menu_anim")
+async def menu_anim(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(cb.from_user.id)
+    text = (
+        f"🎞️ <b>Анимировать фото</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n"
+        f"💳 Стоимость: <b>{ANIM_CREDIT_COST} кр</b>\n\n"
+        f"Выбери режим:\n"
+        f"🖼️ <b>Один кадр</b> — анимируй фото по промту\n"
+        f"🖼️🖼️ <b>Два кадра</b> — плавный переход между двумя фото"
+    )
+    if cr < ANIM_CREDIT_COST:
+        try:
+            await cb.message.edit_text(
+                f"❌ Недостаточно кредитов\nНужно {ANIM_CREDIT_COST} кр, у тебя {cr} кр.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+                ]), parse_mode="HTML"
+            )
+        except Exception:
+            await cb.message.answer(f"❌ Недостаточно кредитов. Нужно {ANIM_CREDIT_COST} кр.")
+        await cb.answer()
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🖼️ Один кадр",       callback_data="anim_mode:one")],
+        [InlineKeyboardButton(text="🖼️🖼️ Два кадра",     callback_data="anim_mode:two")],
+        [InlineKeyboardButton(text="❌ Отмена",            callback_data="back_main")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("anim_mode:"))
+async def anim_mode(cb: CallbackQuery, state: FSMContext):
+    mode = cb.data.split(":")[1]  # "one" или "two"
+    await state.update_data(anim_mode=mode)
+    await state.set_state(AnimState.waiting_first_photo)
+    text = (
+        f"{'🖼️ Один кадр' if mode == 'one' else '🖼️🖼️ Два кадра'}\n\n"
+        f"📷 Отправь {'начальное' if mode == 'two' else ''} фото:"
+    )
+    await cb.message.answer(text, reply_markup=kb_cancel(), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(AnimState.waiting_first_photo)
+async def anim_first_photo(message: Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("📷 Отправь фото (не файл)")
+        return
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    fb = await bot.download_file(file.file_path)
+    await state.update_data(first_photo=list(fb.read()))
+
+    data = await state.get_data()
+    mode = data.get("anim_mode", "one")
+
+    if mode == "two":
+        await state.set_state(AnimState.waiting_last_photo)
+        await message.answer(
+            "✅ Первый кадр получен!\n\n📷 Теперь отправь <b>конечное фото</b>:",
+            reply_markup=kb_cancel(), parse_mode="HTML"
+        )
+    else:
+        await state.set_state(AnimState.waiting_aspect)
+        await message.answer(
+            "✅ Фото получено! Выбери формат видео:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
+                [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
+                [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
+                [InlineKeyboardButton(text="❌ Отмена",         callback_data="back_main")],
+            ])
+        )
+
+
+@dp.message(AnimState.waiting_last_photo)
+async def anim_last_photo(message: Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("📷 Отправь фото (не файл)")
+        return
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    lb = await bot.download_file(file.file_path)
+    await state.update_data(last_photo=list(lb.read()))
+    await state.set_state(AnimState.waiting_aspect)
+    await message.answer(
+        "✅ Оба кадра получены! Выбери формат видео:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
+            [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
+            [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
+            [InlineKeyboardButton(text="❌ Отмена",         callback_data="back_main")],
+        ])
+    )
+
+
+@dp.callback_query(F.data.startswith("anim_aspect:"))
+async def anim_aspect(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    ratio = ":".join(parts[1:])
+    labels = {"16:9": "Горизонталь 16:9", "9:16": "Вертикаль 9:16", "1:1": "Квадрат 1:1"}
+    await state.update_data(aspect_ratio=ratio)
+    await state.set_state(AnimState.waiting_prompt)
+    await cb.message.answer(
+        f"📐 {labels.get(ratio, ratio)}\n\n"
+        f"✏️ Опиши что должно происходить в видео:\n\n"
+        f"<i>Примеры:\n"
+        f"• Camera slowly zooms in, gentle wind moves the hair\n"
+        f"• Flowers bloom and petals fall, soft light\n"
+        f"• Ocean waves crash on the shore, cinematic</i>",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AnimState.waiting_prompt)
+async def anim_prompt(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("✏️ Напиши промт текстом")
+        return
+
+    data = await state.get_data()
+    prompt = message.text.strip()
+    first_bytes = bytes(data["first_photo"])
+    last_bytes = bytes(data["last_photo"]) if data.get("last_photo") else None
+    aspect = data.get("aspect_ratio", "16:9")
+    mode = data.get("anim_mode", "one")
+
+    cr = await get_credits(message.from_user.id)
+    if cr < ANIM_CREDIT_COST:
+        await state.clear()
+        await message.answer(f"❌ Недостаточно кредитов. Нужно {ANIM_CREDIT_COST} кр, у тебя {cr}.")
+        return
+
+    ok = await deduct(message.from_user.id, ANIM_CREDIT_COST)
+    if not ok:
+        await state.clear()
+        await message.answer("❌ Ошибка списания. Попробуй ещё раз.")
+        return
+
+    await state.clear()
+    mode_label = "🖼️🖼️ Два кадра" if mode == "two" else "🖼️ Один кадр"
+    wait = await message.answer(
+        f"⏳ Анимирую фото...\n\n"
+        f"🎬 Veo 3.1 | {mode_label} | {aspect}\n"
+        f"<i>{prompt[:80]}</i>\n\n"
+        f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
+        parse_mode="HTML"
+    )
+
+    try:
+        vid_bytes = await api_animate_image(first_bytes, prompt, aspect, last_bytes)
+        await log_gen(message.from_user.id, "animate", "veo-3.1-animate", ANIM_CREDIT_COST)
+        cr_left = await get_credits(message.from_user.id)
+        caption = (
+            f"✅ Готово! 🎞️ Анимация фото\n"
+            f"💳 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр"
+        )
+        try:
+            await message.answer_video(
+                BufferedInputFile(vid_bytes, "animation.mp4"),
+                caption=caption,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
+                     InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
+                ]),
+                supports_streaming=True,
+            )
+        except Exception:
+            await message.answer_document(
+                BufferedInputFile(vid_bytes, "animation.mp4"),
+                caption=caption + "\n<i>Нажми для воспроизведения</i>",
+                parse_mode="HTML"
+            )
+        await wait.delete()
+    except Exception as e:
+        await add_credits(message.from_user.id, ANIM_CREDIT_COST)
+        await wait.edit_text(
+            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            reply_markup=kb_back()
+        )
 
 
 # ══════════════════════════════════════════════════════════
