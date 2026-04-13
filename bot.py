@@ -397,24 +397,26 @@ async def fk_create_order(amount: float, order_id: str, user_id: int,
     """
     import time as _time
     nonce = str(int(_time.time() * 1000))
-    amount_str = f"{float(amount):.2f}"
+    amount_str = f"{float(amount):.2f}"  # "2490.00"
 
+    # Только нужные поля — без дублей
     params = {
         "shopId": int(FK_SHOP_ID),
         "nonce": nonce,
-        "paymentId": payment_id,
         "i": payment_id,
-        "email": f"user{user_id}@bot.local",
+        "email": f"user{user_id}@tgbot.local",
         "ip": "127.0.0.1",
-        "amount": float(amount_str),
+        "amount": amount_str,
         "currency": currency,
         "orderId": order_id,
     }
-    # HMAC-SHA256 подпись: сортируем по ключам и склеиваем через |
+    # HMAC-SHA256: сортируем по ключам, значения через |
     sorted_vals = [str(v) for k, v in sorted(params.items())]
     sign_str = "|".join(sorted_vals)
     signature = hmac.new(FK_API_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
     params["signature"] = signature
+
+    logging.info(f"FK API sign_str: {sign_str}")
 
     url = "https://api.fk.life/v1/orders/create"
     headers = {"Content-Type": "application/json"}
