@@ -388,10 +388,21 @@ def kb_main():
     ])
 
 def kb_image_models():
+    imagen_keys = ["img_fast", "img_std", "img_ultra"]
+    nano_keys   = ["nb_flash", "nb_2", "nb_pro"]
     rows = []
-    for key, m in IMAGE_MODELS.items():
+    for key in imagen_keys:
+        m = IMAGE_MODELS[key]
         rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кредитов",
+            text=f"{m['name']} — {m['credits']} кр",
+            callback_data=f"imodel:{key}"
+        )])
+    # Разделитель
+    rows.append([InlineKeyboardButton(text="─── 🍌 Nano Banana ───", callback_data="noop")])
+    for key in nano_keys:
+        m = IMAGE_MODELS[key]
+        rows.append([InlineKeyboardButton(
+            text=f"{m['name']} — {m['credits']} кр",
             callback_data=f"imodel:{key}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
@@ -1045,6 +1056,11 @@ async def cmd_admin(message: Message, state: FSMContext):
         return
     await state.clear()
     await show_admin_panel(message)
+
+
+@dp.callback_query(F.data == "noop")
+async def noop_handler(cb: CallbackQuery):
+    await cb.answer()
 
 
 @dp.callback_query(F.data == "back_main")
