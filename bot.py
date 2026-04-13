@@ -458,8 +458,8 @@ pending_fk_payments: dict = {}
 def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🎨 Изображение", callback_data="menu_image"),
-            InlineKeyboardButton(text="🎥 Видео",        callback_data="menu_video"),
+            InlineKeyboardButton(text="🖼 Изображение", callback_data="menu_image"),
+            InlineKeyboardButton(text="🎬 Видео",        callback_data="menu_video"),
         ],
         [
             InlineKeyboardButton(text="🖌️ Редактировать фото", callback_data="menu_edit"),
@@ -610,8 +610,8 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="✨ Создать фото"), KeyboardButton(text="🎥 Создать видео")],
-        [KeyboardButton(text="🪪 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
+        [KeyboardButton(text="🖼 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
     ]
     if is_admin:
         rows.append([KeyboardButton(text="🛠️ Админ панель")])
@@ -1495,11 +1495,16 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
     text = (
-        f"🎨 <b>Создать изображение</b>\n\n"
-        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
-        f"⚡ <b>Imagen 4 Fast</b> — 7 кредитов\n"
-        f"✨ <b>Imagen 4</b> — 10 кредитов\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 13 кредитов"
+        f"🖼 <b>Создать изображение</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"<b>Imagen 4</b>\n"
+        f"⚡ Fast — 7 кр\n"
+        f"✨ Standard — 10 кр\n"
+        f"💎 Ultra — 13 кр\n\n"
+        f"<b>Nano Banana (Gemini)</b>\n"
+        f"🍌 Flash — 10 кр\n"
+        f"🍌✨ v2 — 13 кр\n"
+        f"🍌💎 Pro — 30 кр"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_models(), parse_mode="HTML")
@@ -1734,10 +1739,10 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
-        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 100 кредитов\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 200 кредитов\n"
-        f"🎬 <b>Veo 3.1</b> — 450 кредитов\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 100 кр | 720p\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 175 кр | 1080p\n"
+        f"🎬 <b>Veo 3.1 Pro</b> — 390 кр | 4K + аудио\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -2078,36 +2083,41 @@ async def reply_main_menu(message: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "✨ Создать фото", StateFilter("*"))
+@dp.message(F.text == "🖼 Создать фото", StateFilter("*"))
 async def reply_create_photo(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
     await message.answer(
-        f"🎨 <b>Создать изображение</b>\n\n"
-        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
-        f"⚡ <b>Imagen 4 Fast</b> — 7 кредитов\n"
-        f"✨ <b>Imagen 4</b> — 10 кредитов\n"
-        f"💎 <b>Imagen 4 Ultra</b> — 13 кредитов",
+        f"🖼 <b>Создать изображение</b>\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"<b>Imagen 4</b>\n"
+        f"⚡ Fast — 7 кр\n"
+        f"✨ Standard — 10 кр\n"
+        f"💎 Ultra — 13 кр\n\n"
+        f"<b>Nano Banana (Gemini)</b>\n"
+        f"🍌 Flash — 10 кр\n"
+        f"🍌✨ v2 — 13 кр\n"
+        f"🍌💎 Pro — 30 кр",
         reply_markup=kb_image_models(), parse_mode="HTML"
     )
 
 
-@dp.message(F.text == "🎥 Создать видео", StateFilter("*"))
+@dp.message(F.text == "🎬 Создать видео", StateFilter("*"))
 async def reply_create_video(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
     await message.answer(
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
-        f"💎 Баланс: <b>{cr} кредитов</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 100 кредитов\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 200 кредитов\n"
-        f"🎬 <b>Veo 3.1</b> — 450 кредитов\n\n"
+        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 100 кр | 720p\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 175 кр | 1080p\n"
+        f"🎬 <b>Veo 3.1 Pro</b> — 390 кр | 4K + аудио\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
 
 
-@dp.message(F.text == "🪪 Мой профиль", StateFilter("*"))
+@dp.message(F.text == "👤 Мой профиль", StateFilter("*"))
 async def reply_profile(message: Message):
     uid = message.from_user.id
     await ensure_user(uid)
