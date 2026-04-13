@@ -538,10 +538,6 @@ def kb_pay_method(pack_key: str):
             callback_data=f"payfk:{pack_key}:sbp"
         )],
         [InlineKeyboardButton(
-            text=f"💳 Банковская карта — {p['price']}₽",
-            callback_data=f"payfk:{pack_key}:card"
-        )],
-        [InlineKeyboardButton(
             text=f"⭐ Telegram Stars — {p['stars']} ⭐",
             callback_data=f"paystars:{pack_key}"
         )],
@@ -1395,9 +1391,14 @@ async def pay_fk(cb: CallbackQuery):
     wait_msg = await cb.message.answer("⏳ Создаю ссылку на оплату...")
     try:
         if method == "card":
-            # Card RUB API — создаём заказ через API (id=36)
-            pay_url = await fk_create_order(amount, order_id, uid, payment_id=36)
-            label = "💳 Оплатить картой"
+            # Card RUB API — пробуем через API (id=36), при ошибке — форма с i=36
+            try:
+                pay_url = await fk_create_order(amount, order_id, uid, payment_id=36)
+                label = "💳 Оплатить картой"
+            except Exception as api_err:
+                logging.warning(f"Card API failed ({api_err}), falling back to form")
+                pay_url = fk_pay_url(amount, order_id, method_id="36")
+                label = "💳 Оплатить картой"
         else:
             # СБП — стандартная форма (работает без API)
             pay_url = fk_pay_url(amount, order_id)
