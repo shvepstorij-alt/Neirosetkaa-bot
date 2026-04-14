@@ -1988,8 +1988,8 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
     text = (
-        f"🖼 <b>Создать изображение</b>\n\n"
-        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"📷 <b>Создать изображение</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Imagen 4</b>\n"
         f"· Fast — 7 кр\n"
         f"· Standard — 10 кр\n"
@@ -2233,7 +2233,7 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
-        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"💰 <b>Veo 3.1 Lite</b> — 100 кр\n"
         f"⚡ <b>Veo 3.1 Fast</b> — 175 кр\n"
         f"🎬 <b>Veo 3.1 Pro</b> — 390 кр\n\n"
@@ -2591,8 +2591,8 @@ async def reply_create_photo(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
     await message.answer(
-        f"🖼 <b>Создать изображение</b>\n\n"
-        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"📷 <b>Создать изображение</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Imagen 4</b>\n"
         f"· Fast — 7 кр\n"
         f"· Standard — 10 кр\n"
@@ -2611,7 +2611,7 @@ async def reply_create_video(message: Message, state: FSMContext):
     cr = await get_credits(message.from_user.id)
     await message.answer(
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
-        f"💳 Баланс: <b>{cr} кр</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"💰 <b>Veo 3.1 Lite</b> — 100 кр\n"
         f"⚡ <b>Veo 3.1 Fast</b> — 175 кр\n"
         f"🎬 <b>Veo 3.1 Pro</b> — 390 кр\n\n"
@@ -2639,25 +2639,59 @@ async def reply_profile(message: Message):
         )
 
     MODEL_DISPLAY = {
-        "imagen-4.0-fast-generate-001": "Imagen 4 Fast",
-        "imagen-4.0-generate-001": "Imagen 4",
-        "imagen-4.0-ultra-generate-001": "Imagen 4 Ultra",
-        "gemini-2.5-flash-image": "Nano Banana",
-        "gemini-3.1-flash-image-preview": "Nano Banana 2",
-        "gemini-3-pro-image-preview": "Nano Banana Pro",
-        "veo-3.1-lite-generate-preview": "Veo 3.1 Lite",
-        "veo-3.1-fast-generate-preview": "Veo 3.1 Fast",
-        "veo-3.1-generate-preview": "Veo 3.1 Pro",
-        "gemini-flash-image": "Редактирование",
-        "veo-3.1-animate": "Анимация",
+        # ключи IMAGE_MODELS
+        "img_fast":  "Imagen 4 Fast",
+        "img_std":   "Imagen 4 Standard",
+        "img_ultra": "Imagen 4 Ultra",
+        "nb_flash":  "Nano Banana Flash",
+        "nb_2":      "Nano Banana v2",
+        "nb_pro":    "Nano Banana Pro",
+        # ключи VIDEO_MODELS
+        "vid_lite":  "Veo 3.1 Lite",
+        "vid_fast":  "Veo 3.1 Fast",
+        "vid_pro":   "Veo 3.1 Pro",
+        # специальные
+        "gemini-flash-image": "Редактирование фото",
+        "veo-3.1-animate":    "Анимация фото",
     }
 
     model_lines = ""
     if by_model:
-        model_lines = "\n<b>По моделям:</b>\n"
-        for r in by_model:
-            name = MODEL_DISPLAY.get(r['model'], r['model'])
-            model_lines += f"  · {name}: <b>{r['cnt']}</b>\n"
+        by_model_dict = {r['model']: r['cnt'] for r in by_model}
+
+        def fmt(key, label):
+            cnt = by_model_dict.get(key, 0)
+            return f"  · <b>{label}</b>: {cnt}" if cnt else None
+
+        img_lines = list(filter(None, [
+            fmt("img_fast",  "Imagen 4 Fast"),
+            fmt("img_std",   "Imagen 4 Standard"),
+            fmt("img_ultra", "Imagen 4 Ultra"),
+        ]))
+        nano_lines = list(filter(None, [
+            fmt("nb_flash", "Nano Banana Flash"),
+            fmt("nb_2",     "Nano Banana v2"),
+            fmt("nb_pro",   "Nano Banana Pro"),
+        ]))
+        vid_lines = list(filter(None, [
+            fmt("vid_lite", "Veo 3.1 Lite"),
+            fmt("vid_fast", "Veo 3.1 Fast"),
+            fmt("vid_pro",  "Veo 3.1 Pro"),
+        ]))
+        other_lines = list(filter(None, [
+            fmt("gemini-flash-image", "Редактирование фото"),
+            fmt("veo-3.1-animate",    "Анимация фото"),
+        ]))
+
+        model_lines = "\n"
+        if img_lines:
+            model_lines += "<b>Imagen 4:</b>\n" + "\n".join(img_lines) + "\n"
+        if nano_lines:
+            model_lines += "<b>Nano Banana:</b>\n" + "\n".join(nano_lines) + "\n"
+        if vid_lines:
+            model_lines += "<b>Veo 3.1:</b>\n" + "\n".join(vid_lines) + "\n"
+        if other_lines:
+            model_lines += "<b>Другое:</b>\n" + "\n".join(other_lines) + "\n"
 
     all_models = list(IMAGE_MODELS.items()) + list(VIDEO_MODELS.items())
     avail_lines = []
@@ -3745,7 +3779,7 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     text = (
         f"🏃 <b>Анимировать фото</b>\n\n"
-        f"💳 Баланс: <b>{cr} кр</b>\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n"
         f"💵 Стоимость: <b>{ANIM_CREDIT_COST} кр</b>\n\n"
         f"Выбери режим:\n"
         f"1️⃣ <b>Один кадр</b> — анимируй фото по промту\n"
@@ -3913,7 +3947,7 @@ async def anim_prompt(message: Message, state: FSMContext):
                 BufferedInputFile(vid_bytes, "animation.mp4"),
                 caption=(
                     f"✅ Готово! 🏃 Анимация фото\n"
-                    f"💳 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр"
+                    f"💵 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр"
                     + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else "")
                 ),
                 reply_markup=kb_after_anim,
@@ -4070,7 +4104,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                 user_id,
                 f"✅ <b>Оплата прошла успешно!</b>\n\n"
                 f"➕ Начислено: <b>{credits} кредитов</b>\n"
-                f"💳 Баланс: <b>{new_balance} кредитов</b>\n\n"
+                f"💵 Баланс: <b>{new_balance} кредитов</b>\n\n"
                 f"Можешь начинать генерацию! 🚀",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
