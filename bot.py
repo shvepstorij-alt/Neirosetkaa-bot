@@ -63,7 +63,7 @@ user_orig_images = {}     # оригинальные байты последне
 IMAGE_MODELS = {
     # ── Imagen 4 ──────────────────────────────────────────
     "img_fast": {
-        "name": "⚡ Imagen 4 Fast",
+        "name": "· Imagen 4 Fast",
         "model_id": "imagen-4.0-fast-generate-001",
         "api": "imagen",
         "credits": 7,
@@ -72,7 +72,7 @@ IMAGE_MODELS = {
         "desc": "Быстро и качественно",
     },
     "img_std": {
-        "name": "✨ Imagen 4",
+        "name": "· Imagen 4",
         "model_id": "imagen-4.0-generate-001",
         "api": "imagen",
         "credits": 10,
@@ -81,7 +81,7 @@ IMAGE_MODELS = {
         "desc": "Флагман, чёткий текст",
     },
     "img_ultra": {
-        "name": "💎 Imagen 4 Ultra",
+        "name": "◆ Imagen 4 Ultra",
         "model_id": "imagen-4.0-ultra-generate-001",
         "api": "imagen",
         "credits": 13,
@@ -91,7 +91,7 @@ IMAGE_MODELS = {
     },
     # ── Nano Banana (Gemini Image) ─────────────────────────
     "nb_flash": {
-        "name": "🍌 Nano Banana",
+        "name": "· Nano Banana",
         "model_id": "gemini-2.5-flash-image",
         "api": "gemini",
         "credits": 10,
@@ -100,7 +100,7 @@ IMAGE_MODELS = {
         "desc": "Быстрый, диалоговый",
     },
     "nb_2": {
-        "name": "🍌✨ Nano Banana 2",
+        "name": "· Nano Banana 2",
         "model_id": "gemini-3.1-flash-image-preview",
         "api": "gemini",
         "credits": 13,
@@ -109,7 +109,7 @@ IMAGE_MODELS = {
         "desc": "Новейший, лучшее качество",
     },
     "nb_pro": {
-        "name": "🍌💎 Nano Banana Pro",
+        "name": "◆ Nano Banana Pro",
         "model_id": "gemini-3-pro-image-preview",
         "api": "gemini",
         "credits": 30,
@@ -150,27 +150,27 @@ VIDEO_MODELS = {
 # ─── Пакеты кредитов ──────────────────────────────────────
 CREDIT_PACKS = {
     "p25": {
-        "name": "🎯 Пробный", "credits": 250, "price": 149, "stars": 30,
+        "name": "🎯 Пробный", "credits": 250, "price": 149, "stars": 60,
         "desc": "35 фото / 2 видео Lite / 1 видео Fast",
         "badge": "Попробовать за 149₽",
     },
     "p50": {
-        "name": "🥉 Старт", "credits": 500, "price": 279, "stars": 56,
+        "name": "🥉 Старт", "credits": 500, "price": 279, "stars": 112,
         "desc": "70 фото / 5 видео Lite / 2 видео Fast / 1 видео Pro",
         "badge": "Популярный старт",
     },
     "p150": {
-        "name": "🥈 Базовый", "credits": 1500, "price": 799, "stars": 160,
+        "name": "🥈 Базовый", "credits": 1500, "price": 799, "stars": 320,
         "desc": "210 фото / 15 видео Lite / 8 видео Fast / 3 видео Pro",
         "badge": "Хорошая экономия",
     },
     "p500": {
-        "name": "🥇 Про", "credits": 5000, "price": 2490, "stars": 498,
+        "name": "🥇 Про", "credits": 5000, "price": 2490, "stars": 996,
         "desc": "700 фото / 50 видео Lite / 28 видео Fast / 12 видео Pro",
         "badge": "Выгоднее на 13%",
     },
     "p1200": {
-        "name": "💎 Бизнес", "credits": 12000, "price": 5790, "stars": 1160,
+        "name": "💎 Бизнес", "credits": 12000, "price": 5790, "stars": 2316,
         "desc": "1700 фото / 120 видео Lite / 68 видео Fast / 30 видео Pro",
         "badge": "Максимум",
     },
@@ -241,6 +241,17 @@ async def init_db():
                 credits    INTEGER,
                 amount_rub INTEGER,
                 method     TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS fk_orders (
+                order_id   TEXT PRIMARY KEY,
+                user_id    BIGINT NOT NULL,
+                credits    INTEGER NOT NULL,
+                amount_rub INTEGER NOT NULL,
+                pack       TEXT,
+                status     TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
@@ -447,8 +458,38 @@ def fk_api_signature(params: dict) -> str:
     return hmac.new(FK_API_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
 
 
-# Хранилище ожидающих платежей: order_id -> {user_id, credits, amount}
+# pending_fk_payments — резервный кеш в памяти (основное хранилище — PostgreSQL fk_orders)
 pending_fk_payments: dict = {}
+
+
+async def fk_save_order(order_id: str, user_id: int, credits: int, amount: int, pack: str):
+    """Сохраняем заказ в БД (защита от потери при перезапуске)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (order_id) DO NOTHING
+        """, order_id, user_id, credits, amount, pack)
+
+
+async def fk_get_order(order_id: str) -> dict | None:
+    """Получаем заказ из БД."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM fk_orders WHERE order_id=$1", order_id
+        )
+        return dict(row) if row else None
+
+
+async def fk_mark_paid(order_id: str):
+    """Помечаем заказ как оплаченный."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE fk_orders SET status='paid' WHERE order_id=$1", order_id
+        )
 
 
 # ══════════════════════════════════════════════════════════
@@ -610,7 +651,7 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="🖼 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
+        [KeyboardButton(text="✨ Создать фото"), KeyboardButton(text="🎬 Создать видео")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
     ]
     if is_admin:
@@ -1387,6 +1428,8 @@ async def pay_fk(cb: CallbackQuery):
         "amount": amount,
         "pack": key,
     }
+    # Сохраняем в БД — не потеряется при перезапуске
+    await fk_save_order(order_id, uid, p["credits"], int(amount), key)
 
     wait_msg = await cb.message.answer("⏳ Создаю ссылку на оплату...")
     try:
@@ -1498,13 +1541,13 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
         f"🖼 <b>Создать изображение</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Imagen 4</b>\n"
-        f"⚡ Fast — 7 кр\n"
-        f"✨ Standard — 10 кр\n"
-        f"💎 Ultra — 13 кр\n\n"
-        f"<b>Nano Banana (Gemini)</b>\n"
-        f"🍌 Flash — 10 кр\n"
-        f"🍌✨ v2 — 13 кр\n"
-        f"🍌💎 Pro — 30 кр"
+        f"· Fast — 7 кр\n"
+        f"· Standard — 10 кр\n"
+        f"◆ Ultra — 13 кр\n\n"
+        f"<b>Nano Banana</b>\n"
+        f"· Flash — 10 кр\n"
+        f"· v2 — 13 кр\n"
+        f"◆ Pro — 30 кр"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_models(), parse_mode="HTML")
@@ -1740,9 +1783,9 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 100 кр | 720p\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 175 кр | 1080p\n"
-        f"🎬 <b>Veo 3.1 Pro</b> — 390 кр | 4K + аудио\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 100 кр\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 175 кр\n"
+        f"🎬 <b>Veo 3.1 Pro</b> — 390 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -2083,7 +2126,7 @@ async def reply_main_menu(message: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "🖼 Создать фото", StateFilter("*"))
+@dp.message(F.text == "✨ Создать фото", StateFilter("*"))
 async def reply_create_photo(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
@@ -2091,13 +2134,13 @@ async def reply_create_photo(message: Message, state: FSMContext):
         f"🖼 <b>Создать изображение</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Imagen 4</b>\n"
-        f"⚡ Fast — 7 кр\n"
-        f"✨ Standard — 10 кр\n"
-        f"💎 Ultra — 13 кр\n\n"
-        f"<b>Nano Banana (Gemini)</b>\n"
-        f"🍌 Flash — 10 кр\n"
-        f"🍌✨ v2 — 13 кр\n"
-        f"🍌💎 Pro — 30 кр",
+        f"· Fast — 7 кр\n"
+        f"· Standard — 10 кр\n"
+        f"◆ Ultra — 13 кр\n\n"
+        f"<b>Nano Banana</b>\n"
+        f"· Flash — 10 кр\n"
+        f"· v2 — 13 кр\n"
+        f"◆ Pro — 30 кр",
         reply_markup=kb_image_models(), parse_mode="HTML"
     )
 
@@ -2109,9 +2152,9 @@ async def reply_create_video(message: Message, state: FSMContext):
     await message.answer(
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 100 кр | 720p\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 175 кр | 1080p\n"
-        f"🎬 <b>Veo 3.1 Pro</b> — 390 кр | 4K + аудио\n\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 100 кр\n"
+        f"⚡ <b>Veo 3.1 Fast</b> — 175 кр\n"
+        f"🎬 <b>Veo 3.1 Pro</b> — 390 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
@@ -3486,15 +3529,28 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
             logging.warning(f"FK wrong sign. Got: {recv_sign}, expected: {expected_sign}")
             return web.Response(text="WRONG SIGN")
 
-        # 3. Ищем заказ в pending_fk_payments
+        # 3. Ищем заказ — сначала в памяти, потом в БД
         payment = pending_fk_payments.get(order_id)
         if not payment:
-            # Может уже обработан — отвечаем YES чтобы FK не повторял
-            logging.warning(f"FK order not found or already processed: {order_id}")
-            return web.Response(text="YES")
+            # В памяти нет — ищем в БД (бот мог перезапуститься)
+            db_order = await fk_get_order(order_id)
+            if not db_order:
+                logging.warning(f"FK order not found anywhere: {order_id}")
+                return web.Response(text="YES")
+            if db_order["status"] == "paid":
+                logging.info(f"FK order already paid: {order_id}")
+                return web.Response(text="YES")
+            payment = {
+                "user_id": db_order["user_id"],
+                "credits": db_order["credits"],
+                "amount":  db_order["amount_rub"],
+            }
+        else:
+            # Удаляем из памяти
+            del pending_fk_payments[order_id]
 
-        # 4. Удаляем из pending (защита от повторной обработки)
-        del pending_fk_payments[order_id]
+        # 4. Помечаем как оплаченный в БД (защита от двойного зачисления)
+        await fk_mark_paid(order_id)
 
         user_id    = payment["user_id"]
         credits    = payment["credits"]
