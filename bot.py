@@ -1812,9 +1812,9 @@ async def menu_balance(cb: CallbackQuery):
     text = (
         f"💵 <b>Баланс: {cr} кредитов</b>\n\n"
         f"<b>Доступные модели:</b>\n\n"
-        f"━ <b>IMAGEN 4</b> ━\n" + "\n".join(img_lines) + "\n\n"
-        f"━ <b>NANO BANANA</b> ━\n" + "\n".join(nano_lines) + "\n\n"
-        f"━ <b>VEO 3.1</b> ━\n" + "\n".join(vid_lines) + "\n\n"
+        f"🌟 <b>IMAGEN 4</b>\n" + "\n".join(img_lines) + "\n\n"
+        f"🍌 <b>NANO BANANA</b>\n" + "\n".join(nano_lines) + "\n\n"
+        f"🎥 <b>VEO 3.1</b>\n" + "\n".join(vid_lines) + "\n\n"
         f"<i>🔹 доступно · 🔸 нужно пополнить</i>"
     )
     try:
@@ -2685,13 +2685,13 @@ async def reply_profile(message: Message):
 
         model_lines = "\n"
         if img_lines:
-            model_lines += "<b>Imagen 4:</b>\n" + "\n".join(img_lines) + "\n"
+            model_lines += "🌟 <b>Imagen 4</b>\n" + "\n".join(img_lines) + "\n"
         if nano_lines:
-            model_lines += "<b>Nano Banana:</b>\n" + "\n".join(nano_lines) + "\n"
+            model_lines += "🍌 <b>Nano Banana</b>\n" + "\n".join(nano_lines) + "\n"
         if vid_lines:
-            model_lines += "<b>Veo 3.1:</b>\n" + "\n".join(vid_lines) + "\n"
+            model_lines += "🎥 <b>Veo 3.1</b>\n" + "\n".join(vid_lines) + "\n"
         if other_lines:
-            model_lines += "<b>Другое:</b>\n" + "\n".join(other_lines) + "\n"
+            model_lines += "✏️ <b>Другое</b>\n" + "\n".join(other_lines) + "\n"
 
     all_models = list(IMAGE_MODELS.items()) + list(VIDEO_MODELS.items())
     avail_lines = []
