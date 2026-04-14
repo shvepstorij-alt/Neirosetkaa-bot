@@ -499,12 +499,12 @@ async def fk_mark_paid(order_id: str):
 def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🖼 Изображение", callback_data="menu_image"),
+            InlineKeyboardButton(text="📷 Изображение", callback_data="menu_image"),
             InlineKeyboardButton(text="🎬 Видео",        callback_data="menu_video"),
         ],
         [
             InlineKeyboardButton(text="🖌️ Редактировать фото", callback_data="menu_edit"),
-            InlineKeyboardButton(text="🎞️ Анимировать фото",   callback_data="menu_anim"),
+            InlineKeyboardButton(text="🏃 Анимировать фото",   callback_data="menu_anim"),
         ],
         [
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
@@ -651,7 +651,7 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="✨ Создать фото"), KeyboardButton(text="🎬 Создать видео")],
+        [KeyboardButton(text="📷 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
     ]
     if is_admin:
@@ -2195,7 +2195,7 @@ async def reply_main_menu(message: Message, state: FSMContext):
     )
 
 
-@dp.message(F.text == "✨ Создать фото", StateFilter("*"))
+@dp.message(F.text == "📷 Создать фото", StateFilter("*"))
 async def reply_create_photo(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
@@ -3092,7 +3092,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
     text = (
         f"✏️ <b>Редактировать фото по референсу</b>\n\n"
         f"💎 Баланс: <b>{cr} кредитов</b>\n"
-        f"💰 Стоимость: <b>{EDIT_CREDIT_COST} кредитов</b>\n\n"
+        f"💵 Стоимость: <b>{EDIT_CREDIT_COST} кредитов</b>\n\n"
         f"Как это работает:\n"
         f"1️⃣ Отправь своё фото\n"
         f"2️⃣ Напиши что изменить\n"
@@ -3329,12 +3329,12 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
     text = (
-        f"🎞️ <b>Анимировать фото</b>\n\n"
+        f"🏃 <b>Анимировать фото</b>\n\n"
         f"💳 Баланс: <b>{cr} кр</b>\n"
-        f"💳 Стоимость: <b>{ANIM_CREDIT_COST} кр</b>\n\n"
+        f"💵 Стоимость: <b>{ANIM_CREDIT_COST} кр</b>\n\n"
         f"Выбери режим:\n"
-        f"🖼️ <b>Один кадр</b> — анимируй фото по промту\n"
-        f"🖼️🖼️ <b>Два кадра</b> — плавный переход между двумя фото"
+        f"1️⃣ <b>Один кадр</b> — анимируй фото по промту\n"
+        f"2️⃣ <b>Два кадра</b> — плавный переход между двумя фото"
     )
     if cr < ANIM_CREDIT_COST:
         try:
@@ -3351,8 +3351,8 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖼️ Один кадр",       callback_data="anim_mode:one")],
-        [InlineKeyboardButton(text="🖼️🖼️ Два кадра",     callback_data="anim_mode:two")],
+        [InlineKeyboardButton(text="1️⃣ Один кадр",       callback_data="anim_mode:one")],
+        [InlineKeyboardButton(text="2️⃣ Два кадра",     callback_data="anim_mode:two")],
         [InlineKeyboardButton(text="❌ Отмена",            callback_data="back_main")],
     ])
     try:
@@ -3473,7 +3473,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         return
 
     await state.clear()
-    mode_label = "🖼️🖼️ Два кадра" if mode == "two" else "🖼️ Один кадр"
+    mode_label = "2️⃣ Два кадра" if mode == "two" else "1️⃣ Один кадр"
     wait = await message.answer(
         f"⏳ Анимирую фото...\n\n"
         f"🎬 Veo 3.1 | {mode_label} | {aspect}\n"
