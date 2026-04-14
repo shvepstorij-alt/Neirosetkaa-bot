@@ -1986,7 +1986,8 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     try:
         aspect = data.get("aspect_ratio", "16:9")
         vid_bytes = await api_generate_video(prompt, m["model_id"], aspect)
-        logging.info(f"Video ready: {len(vid_bytes)} bytes")
+        size_mb = len(vid_bytes) / 1024 / 1024
+        logging.info(f"Video ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         caption = f"🎉 Готово! {m['name']} | {m['res']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов"
@@ -1994,21 +1995,25 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         try:
             await cb.message.answer_video(
                 BufferedInputFile(vid_bytes, "video.mp4"),
-                caption=caption + "\n\n👇 Ниже — файл без сжатия",
+                caption=caption + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else ""),
                 reply_markup=kb_after("video", key),
                 supports_streaming=True,
             )
         except Exception as video_err:
             logging.warning(f"answer_video failed: {video_err}")
-        # 2. Документ — всегда
-        try:
-            await cb.message.answer_document(
-                BufferedInputFile(vid_bytes, "video_original.mp4"),
-                caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
-                parse_mode="HTML",
-            )
-        except Exception as de:
-            logging.error(f"video answer_document failed: {de}")
+        # 2. Документ — только если файл < 48 МБ (лимит Telegram для ботов 50 МБ)
+        if size_mb < 48:
+            try:
+                await cb.message.answer_document(
+                    BufferedInputFile(vid_bytes, "video_original.mp4"),
+                    caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
+                    parse_mode="HTML",
+                )
+            except Exception as de:
+                logging.error(f"video answer_document failed ({size_mb:.1f} MB): {de}")
+                await notify_admin_error(f"Документ видео uid={cb.from_user.id} {size_mb:.1f}MB", de)
+        else:
+            logging.warning(f"Video too large for document: {size_mb:.1f} MB")
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
         await notify_admin_error(f"Генерация видео uid={cb.from_user.id} model={key}", e)
@@ -3522,35 +3527,41 @@ async def anim_prompt(message: Message, state: FSMContext):
 
     try:
         vid_bytes = await api_animate_image(first_bytes, prompt, aspect, last_bytes)
+        size_mb = len(vid_bytes) / 1024 / 1024
+        logging.info(f"Animation ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
         await log_gen(message.from_user.id, "animate", "veo-3.1-animate", ANIM_CREDIT_COST)
         cr_left = await get_credits(message.from_user.id)
         kb_after_anim = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
              InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
         ])
-        # 1. Отправляем как видео — для просмотра прямо в чате
+        # 1. Видео для просмотра в чате
         try:
             await message.answer_video(
                 BufferedInputFile(vid_bytes, "animation.mp4"),
                 caption=(
                     f"✅ Готово! 🏃 Анимация фото\n"
-                    f"💳 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр\n\n"
-                    f"👇 Ниже — файл без сжатия"
+                    f"💳 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр"
+                    + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else "")
                 ),
                 reply_markup=kb_after_anim,
                 supports_streaming=True,
             )
         except Exception as ve:
             logging.warning(f"answer_video failed: {ve}")
-        # 2. Документ — всегда, независимо от видео
-        try:
-            await message.answer_document(
-                BufferedInputFile(vid_bytes, "animation_original.mp4"),
-                caption="📁 <b>Оригинал без сжатия</b> — скачай для максимального качества",
-                parse_mode="HTML"
-            )
-        except Exception as de:
-            logging.error(f"answer_document failed: {de}")
+        # 2. Документ — только если < 48 МБ
+        if size_mb < 48:
+            try:
+                await message.answer_document(
+                    BufferedInputFile(vid_bytes, "animation_original.mp4"),
+                    caption="📁 <b>Оригинал без сжатия</b> — скачай для максимального качества",
+                    parse_mode="HTML"
+                )
+            except Exception as de:
+                logging.error(f"answer_document failed ({size_mb:.1f} MB): {de}")
+                await notify_admin_error(f"Документ анимации uid={message.from_user.id} {size_mb:.1f}MB", de)
+        else:
+            logging.warning(f"Animation too large for document: {size_mb:.1f} MB")
         await wait.delete()
     except Exception as e:
         await add_credits(message.from_user.id, ANIM_CREDIT_COST)
