@@ -1990,11 +1990,11 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
     text = (
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"<b>Imagen 4</b>\n"
+        f"🌟 <b>Imagen 4</b>\n"
         f"· Fast — 7 кр\n"
         f"· Standard — 10 кр\n"
         f"◆ Ultra — 13 кр\n\n"
-        f"<b>Nano Banana</b>\n"
+        f"🍌 <b>Nano Banana</b>\n"
         f"· Flash — 10 кр\n"
         f"· v2 — 13 кр\n"
         f"◆ Pro — 30 кр"
@@ -2593,11 +2593,11 @@ async def reply_create_photo(message: Message, state: FSMContext):
     await message.answer(
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"<b>Imagen 4</b>\n"
+        f"🌟 <b>Imagen 4</b>\n"
         f"· Fast — 7 кр\n"
         f"· Standard — 10 кр\n"
         f"◆ Ultra — 13 кр\n\n"
-        f"<b>Nano Banana</b>\n"
+        f"🍌 <b>Nano Banana</b>\n"
         f"· Flash — 10 кр\n"
         f"· v2 — 13 кр\n"
         f"◆ Pro — 30 кр",
