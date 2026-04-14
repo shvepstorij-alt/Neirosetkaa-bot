@@ -91,7 +91,7 @@ IMAGE_MODELS = {
     },
     # ── Nano Banana (Gemini Image) ─────────────────────────
     "nb_flash": {
-        "name": "· Nano Banana",
+        "name": "🍌 Nano Banana",
         "model_id": "gemini-2.5-flash-image",
         "api": "gemini",
         "credits": 10,
@@ -100,7 +100,7 @@ IMAGE_MODELS = {
         "desc": "Быстрый, диалоговый",
     },
     "nb_2": {
-        "name": "· Nano Banana 2",
+        "name": "🍌 Nano Banana 2",
         "model_id": "gemini-3.1-flash-image-preview",
         "api": "gemini",
         "credits": 13,
@@ -109,7 +109,7 @@ IMAGE_MODELS = {
         "desc": "Новейший, лучшее качество",
     },
     "nb_pro": {
-        "name": "◆ Nano Banana Pro",
+        "name": "🍌 Nano Banana Pro",
         "model_id": "gemini-3-pro-image-preview",
         "api": "gemini",
         "credits": 30,
@@ -542,7 +542,7 @@ def kb_main():
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
         ],
         [
-            InlineKeyboardButton(text="💎 Баланс",         callback_data="menu_balance"),
+            InlineKeyboardButton(text="💵 Баланс",         callback_data="menu_balance"),
             InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy"),
         ],
         [
@@ -1667,7 +1667,7 @@ async def cmd_start(message: Message, state: FSMContext):
         text = (
             f"🌟 Привет, {message.from_user.first_name}!\n\n"
             f"🎁 Тебя пригласил друг — ты получил <b>+{REF_BONUS} бонусных кредитов!</b>\n\n"
-            f"💎 Баланс: <b>{credits} кредитов</b>\n\n"
+            f"💵 Баланс: <b>{credits} кредитов</b>\n\n"
             f"Выбери что создать 👇"
         )
     else:
@@ -1741,8 +1741,8 @@ async def cmd_ref(message: Message):
     earned = paid_refs * REF_BONUS
     await message.answer(
         f"\U0001f91d <b>Пригласить друга</b>\n\n"
-        f"За каждого друга — <b>+{REF_BONUS} кредитов</b> тебе и ему!\n\n"
-        f"<b>Как работает:</b>\n"
+        f"<b>За каждого друга — +{REF_BONUS} кредитов тебе и ему!</b>\n\n"
+        f"❓ <b>Как работает:</b>\n"
         f"1\u20e3 Поделись своей ссылкой\n"
         f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_BONUS} кредитов</b>\n"
         f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кредитов</b>\n\n"
@@ -1768,8 +1768,8 @@ async def menu_ref(cb: CallbackQuery):
     earned = paid_refs * REF_BONUS
     text = (
         f"\U0001f91d <b>Пригласить друга</b>\n\n"
-        f"За каждого друга — <b>+{REF_BONUS} кредитов</b> тебе и ему!\n\n"
-        f"<b>Как работает:</b>\n"
+        f"<b>За каждого друга — +{REF_BONUS} кредитов тебе и ему!</b>\n\n"
+        f"❓ <b>Как работает:</b>\n"
         f"1\u20e3 Поделись своей ссылкой\n"
         f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_BONUS} кредитов</b>\n"
         f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кредитов</b>\n\n"
@@ -1795,33 +1795,39 @@ async def menu_ref(cb: CallbackQuery):
 @dp.callback_query(F.data == "menu_balance")
 async def menu_balance(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
-    lines = []
-    for k, m in IMAGE_MODELS.items():
-        icon = "🟢" if cr >= m['credits'] else "🔴"
-        lines.append(f"{icon} {m['name']} — {m['credits']} кредитов")
-    for k, m in VIDEO_MODELS.items():
-        icon = "🟢" if cr >= m['credits'] else "🔴"
-        lines.append(f"{icon} {m['name']} — {m['credits']} кредитов")
 
+    img_keys  = ["img_fast", "img_std", "img_ultra"]
+    nano_keys = ["nb_flash", "nb_2", "nb_pro"]
+    vid_keys  = ["vid_lite", "vid_fast", "vid_pro"]
+
+    def model_line(k, d):
+        m = d[k]
+        icon = "🔹" if cr >= m['credits'] else "🔸"
+        return f"{icon} <b>{m['name']}</b> — <i>{m['credits']} кр</i>"
+
+    img_lines  = [model_line(k, IMAGE_MODELS) for k in img_keys  if k in IMAGE_MODELS]
+    nano_lines = [model_line(k, IMAGE_MODELS) for k in nano_keys if k in IMAGE_MODELS]
+    vid_lines  = [model_line(k, VIDEO_MODELS) for k in vid_keys  if k in VIDEO_MODELS]
+
+    text = (
+        f"💵 <b>Баланс: {cr} кредитов</b>\n\n"
+        f"<b>Доступные модели:</b>\n\n"
+        f"━ <b>IMAGEN 4</b> ━\n" + "\n".join(img_lines) + "\n\n"
+        f"━ <b>NANO BANANA</b> ━\n" + "\n".join(nano_lines) + "\n\n"
+        f"━ <b>VEO 3.1</b> ━\n" + "\n".join(vid_lines) + "\n\n"
+        f"<i>🔹 доступно · 🔸 нужно пополнить</i>"
+    )
     try:
-        await cb.message.edit_text(
-            f"💎 <b>Баланс: {cr} кредитов</b>\n\n"
-            f"<b>Доступные модели:</b>\n" + "\n".join(lines),
-            reply_markup=kb_buy(), parse_mode="HTML"
-        )
+        await cb.message.edit_text(text, reply_markup=kb_buy(), parse_mode="HTML")
     except Exception:
-        await cb.message.answer(
-            f"💎 <b>Баланс: {cr} кредитов</b>\n\n"
-            f"<b>Доступные модели:</b>\n" + "\n".join(lines),
-            reply_markup=kb_buy(), parse_mode="HTML"
-        )
+        await cb.message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
     await cb.answer()
 
 
 @dp.callback_query(F.data == "menu_buy")
 async def menu_buy(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
-    lines = [f"💎 <b>Баланс: {cr} кредитов</b>\n"]
+    lines = [f"💵 <b>Баланс: {cr} кредитов</b>\n"]
     for p in CREDIT_PACKS.values():
         lines.append(
             f"<b>{p['name']} — {p['credits']} кредитов — {p['price']}₽</b>\n"
@@ -1949,7 +1955,7 @@ async def process_referral_bonus(user_id: int):
             f"🎉 <b>Реферальный бонус!</b>\n\n"
             f"Твой друг сделал первую покупку.\n"
             f"✨ Начислено: <b>+{REF_BONUS} кредитов</b>\n"
-            f"💎 Баланс: <b>{new_bal} кредитов</b>",
+            f"💵 Баланс: <b>{new_bal} кредитов</b>",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -1969,7 +1975,7 @@ async def on_payment(message: Message):
     await message.answer(
         f"🎉 <b>Оплата прошла!</b>\n\n"
         f"💎 Начислено: +{p['credits']} кредитов\n"
-        f"💎 Баланс: <b>{cr} кредитов</b>",
+        f"💵 Баланс: <b>{cr} кредитов</b>",
         reply_markup=kb_back(), parse_mode="HTML"
     )
 
@@ -2620,7 +2626,6 @@ async def reply_profile(message: Message):
     await ensure_user(uid)
     cr = await get_credits(uid)
 
-    # Считаем генерации
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -2628,25 +2633,49 @@ async def reply_profile(message: Message):
         )
         total_gens = row[0] or 0
         total_credits_spent = row[1] or 0
+        by_model = await conn.fetch(
+            "SELECT model, COUNT(*) as cnt FROM generations WHERE user_id=$1 GROUP BY model ORDER BY cnt DESC",
+            uid
+        )
 
-    # Что доступно
-    can = []
-    if cr >= 1: can.append("✅ Imagen 4 Fast")
-    if cr >= 2: can.append("✅ Imagen 4")
-    if cr >= 3: can.append("✅ Imagen 4 Ultra")
-    if cr >= 15: can.append("✅ Veo 3.1 Lite")
-    if cr >= 25: can.append("✅ Veo 3.1 Fast")
-    if cr >= 65: can.append("✅ Veo 3.1 Pro")
-    if not can: can.append("❌ Пополни баланс")
+    MODEL_DISPLAY = {
+        "imagen-4.0-fast-generate-001": "Imagen 4 Fast",
+        "imagen-4.0-generate-001": "Imagen 4",
+        "imagen-4.0-ultra-generate-001": "Imagen 4 Ultra",
+        "gemini-2.5-flash-image": "Nano Banana",
+        "gemini-3.1-flash-image-preview": "Nano Banana 2",
+        "gemini-3-pro-image-preview": "Nano Banana Pro",
+        "veo-3.1-lite-generate-preview": "Veo 3.1 Lite",
+        "veo-3.1-fast-generate-preview": "Veo 3.1 Fast",
+        "veo-3.1-generate-preview": "Veo 3.1 Pro",
+        "gemini-flash-image": "Редактирование",
+        "veo-3.1-animate": "Анимация",
+    }
+
+    model_lines = ""
+    if by_model:
+        model_lines = "\n<b>По моделям:</b>\n"
+        for r in by_model:
+            name = MODEL_DISPLAY.get(r['model'], r['model'])
+            model_lines += f"  · {name}: <b>{r['cnt']}</b>\n"
+
+    all_models = list(IMAGE_MODELS.items()) + list(VIDEO_MODELS.items())
+    avail_lines = []
+    for k, m in all_models:
+        icon = "▫️" if cr >= m['credits'] else "▪️"
+        avail_lines.append(f"{icon} <b>{m['name']}</b> — <i>{m['credits']} кр</i>")
 
     text = (
-        f"🪪 <b>Профиль</b>\n\n"
+        f"👤 <b>Профиль</b>\n\n"
         f"🆔 ID: <code>{uid}</code>\n"
         f"👋 Имя: {message.from_user.full_name}\n\n"
-        f"💎 <b>Баланс: {cr} кредитов</b>\n"
-        f"🎨 Генераций сделано: {total_gens}\n"
-        f"💸 Кредитов потрачено: {total_credits_spent}\n\n"
-        f"<b>Доступно сейчас:</b>\n" + "\n".join(can)
+        f"💵 <b>Баланс: {cr} кредитов</b>\n\n"
+        f"📊 <b>Статистика:</b>\n"
+        f"  Генераций: <b>{total_gens}</b>\n"
+        f"  Кредитов потрачено: <b>{total_credits_spent}</b>"
+        + model_lines +
+        f"\n<b>Доступно:</b>\n" + "\n".join(avail_lines) +
+        f"\n\n<i>▫️ доступно · ▪️ нужно пополнить</i>"
     )
     await message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
 
@@ -3476,7 +3505,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     text = (
         f"✏️ <b>Редактировать фото по референсу</b>\n\n"
-        f"💎 Баланс: <b>{cr} кредитов</b>\n"
+        f"💵 Баланс: <b>{cr} кредитов</b>\n"
         f"💵 Стоимость: <b>{EDIT_CREDIT_COST} кредитов</b>\n\n"
         f"Как это работает:\n"
         f"1️⃣ Отправь своё фото\n"
