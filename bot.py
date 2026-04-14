@@ -1957,22 +1957,25 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await log_gen(cb.from_user.id, "video", key, m["credits"])
         cr = await get_credits(cb.from_user.id)
         caption = f"🎉 Готово! {m['name']} | {m['res']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов"
-        # 1. Видео для просмотра в чате и сохранения в галерею
+        # 1. Видео для просмотра в чате
         try:
             await cb.message.answer_video(
                 BufferedInputFile(vid_bytes, "video.mp4"),
-                caption=caption + "\n\n👆 Сохрани в галерею — нажми и удержи видео",
+                caption=caption + "\n\n👇 Ниже — файл без сжатия",
                 reply_markup=kb_after("video", key),
                 supports_streaming=True,
             )
         except Exception as video_err:
             logging.warning(f"answer_video failed: {video_err}")
-        # 2. Оригинал как документ без сжатия
-        await cb.message.answer_document(
-            BufferedInputFile(vid_bytes, "video_original.mp4"),
-            caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
-            parse_mode="HTML",
-        )
+        # 2. Документ — всегда
+        try:
+            await cb.message.answer_document(
+                BufferedInputFile(vid_bytes, "video_original.mp4"),
+                caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
+                parse_mode="HTML",
+            )
+        except Exception as de:
+            logging.error(f"video answer_document failed: {de}")
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
         await cb.message.answer(
@@ -3490,26 +3493,29 @@ async def anim_prompt(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
              InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
         ])
-        # 1. Отправляем как видео — для просмотра прямо в чате и сохранения в галерею
+        # 1. Отправляем как видео — для просмотра прямо в чате
         try:
             await message.answer_video(
                 BufferedInputFile(vid_bytes, "animation.mp4"),
                 caption=(
-                    f"✅ Готово! 🎞️ Анимация фото\n"
+                    f"✅ Готово! 🏃 Анимация фото\n"
                     f"💳 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр\n\n"
-                    f"👆 Сохрани в галерею — нажми и удержи видео"
+                    f"👇 Ниже — файл без сжатия"
                 ),
                 reply_markup=kb_after_anim,
                 supports_streaming=True,
             )
-        except Exception:
-            pass
-        # 2. Отправляем как документ — оригинальное качество без сжатия
-        await message.answer_document(
-            BufferedInputFile(vid_bytes, "animation_original.mp4"),
-            caption="📁 <b>Оригинал без сжатия</b> — скачай для максимального качества",
-            parse_mode="HTML"
-        )
+        except Exception as ve:
+            logging.warning(f"answer_video failed: {ve}")
+        # 2. Документ — всегда, независимо от видео
+        try:
+            await message.answer_document(
+                BufferedInputFile(vid_bytes, "animation_original.mp4"),
+                caption="📁 <b>Оригинал без сжатия</b> — скачай для максимального качества",
+                parse_mode="HTML"
+            )
+        except Exception as de:
+            logging.error(f"answer_document failed: {de}")
         await wait.delete()
     except Exception as e:
         await add_credits(message.from_user.id, ANIM_CREDIT_COST)
