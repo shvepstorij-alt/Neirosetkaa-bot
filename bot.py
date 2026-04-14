@@ -493,6 +493,38 @@ async def fk_mark_paid(order_id: str):
 
 
 # ══════════════════════════════════════════════════════════
+#  ОБРАБОТКА ОШИБОК
+# ══════════════════════════════════════════════════════════
+
+def friendly_error(e: Exception) -> str:
+    """Возвращает понятное сообщение для клиента."""
+    err = str(e)
+    if "429" in err or "spending cap" in err or "quota" in err.lower():
+        return "⚠️ Временно превышен лимит запросов. Попробуй через несколько минут."
+    if "503" in err or "unavailable" in err.lower() or "overloaded" in err.lower():
+        return "⚠️ Сервис временно перегружен. Попробуй через 1–2 минуты."
+    if "timeout" in err.lower() or "timed out" in err.lower():
+        return "⚠️ Превышено время ожидания. Попробуй ещё раз."
+    if "400" in err:
+        return "⚠️ Промт не принят системой. Попробуй переформулировать запрос."
+    if "403" in err or "permission" in err.lower():
+        return "⚠️ Нет доступа к сервису. Мы уже разбираемся."
+    return "⚠️ Небольшая техническая проблемка. Попробуй ещё раз или напиши @neirosetkaalex"
+
+
+async def notify_admin_error(context: str, e: Exception):
+    """Отправляет реальную ошибку админу."""
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{str(e)[:800]}</code>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════
 #  КЛАВИАТУРЫ
 # ══════════════════════════════════════════════════════════
 
@@ -1729,14 +1761,15 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await wait.delete()
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
-        await cb.message.edit_text(
-            f"⛔ Ошибка: {e}\n\nКредиты возвращены.",
-            reply_markup=kb_back()
-        )
+        await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e)
+        try:
+            await cb.message.edit_text(
+                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                reply_markup=kb_back()
+            )
+        except Exception:
+            await cb.message.answer(f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.", reply_markup=kb_back())
     await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("download_orig:"))
 async def download_original(cb: CallbackQuery):
     """Отправляет оригинальное фото как документ без сжатия."""
     uid = cb.from_user.id
@@ -1978,8 +2011,9 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
             logging.error(f"video answer_document failed: {de}")
     except Exception as e:
         await add_credits(cb.from_user.id, m["credits"])
+        await notify_admin_error(f"Генерация видео uid={cb.from_user.id} model={key}", e)
         await cb.message.answer(
-            f"⛔ Ошибка: {e}\n\nКредиты возвращены.",
+            f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
             reply_markup=kb_back()
         )
     await cb.answer()
@@ -3208,8 +3242,9 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         await wait.delete()
     except Exception as e:
         await add_credits(message.from_user.id, EDIT_CREDIT_COST)
+        await notify_admin_error(f"Редактирование фото uid={message.from_user.id}", e)
         await wait.edit_text(
-            f"⛔ Ошибка: {e}\n\nКредиты возвращены.",
+            f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
             reply_markup=kb_back()
         )
 
@@ -3519,8 +3554,9 @@ async def anim_prompt(message: Message, state: FSMContext):
         await wait.delete()
     except Exception as e:
         await add_credits(message.from_user.id, ANIM_CREDIT_COST)
+        await notify_admin_error(f"Анимация фото uid={message.from_user.id}", e)
         await wait.edit_text(
-            f"❌ Ошибка: {e}\n\nКредиты возвращены.",
+            f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
             reply_markup=kb_back()
         )
 
