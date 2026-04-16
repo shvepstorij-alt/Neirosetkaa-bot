@@ -2067,7 +2067,7 @@ async def shop_pay_sbp(cb: CallbackQuery):
         f"🏦 <b>Оплата через СБП</b>\n\n"
         f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
         f"💵 Сумма: <b>{p['price']}₽</b>\n\n"
-        f"После оплаты Александр активирует подписку и напишет тебе в течение 1-2 часов."
+        f"После оплаты отправьте чек и номер заказа Александру — он активирует подписку 👇"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🏦 Оплатить {p['price']}₽", url=pay_url)],
@@ -2126,8 +2126,10 @@ async def shop_pay_stars(cb: CallbackQuery):
         try:
             await cb.message.edit_text(
                 f"⭐ <b>Оплата Telegram Stars</b>\n\n"
+                f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+                f"⭐ Сумма: <b>{p.get('stars', round(p['price']/2.5))} Stars</b>\n\n"
                 f"Счёт отправлен выше 👆\n"
-                f"После оплаты Александр активирует подписку.",
+                f"После оплаты отправьте скриншот Александру — он активирует подписку.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
                 ]),
@@ -2180,8 +2182,8 @@ async def shop_successful_payment(message: Message):
     await message.answer(
         f"✅ <b>Оплата прошла успешно!</b>\n\n"
         f"{s['emoji']} <b>{s['name']} {p['name']}</b> — {p['stars']} ⭐\n\n"
-        f"Александр уже получил уведомление и активирует подписку в течение 1-2 часов.\n\n"
-        f"👇 Можешь написать напрямую:",
+        f"Отправьте скриншот оплаты Александру — он активирует подписку.\n\n"
+        f"👇 Напишите напрямую:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="💬 Написать @neirosetkaalex",
