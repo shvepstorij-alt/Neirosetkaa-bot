@@ -1902,17 +1902,34 @@ def _shop_back_cat(key: str) -> str:
 async def menu_shop(cb: CallbackQuery):
     text = (
         "🛍 <b>Магазин подписок Neirosetka</b>\n\n"
-        "Все подписки оформляются за рубли — без иностранных карт и VPN.\n"
+        "Оплата в рублях — без иностранных карт и VPN.\n"
         "Активация в течение 1-2 часов после оплаты.\n\n"
-        "<b>Выбери категорию:</b>"
+        "👇 Выбери сервис:"
     )
+    # Все сервисы в порядке SHOP_CATEGORIES, по 2 кнопки в ряд
+    all_keys = []
+    for _, _, keys in SHOP_CATEGORIES:
+        all_keys.extend(keys)
+
     rows = []
-    for emoji, title, keys in SHOP_CATEGORIES:
-        cat_id = title.replace(" ", "_").lower()
-        rows.append([InlineKeyboardButton(
-            text=f"{emoji} {title}",
-            callback_data=f"shop_cat:{cat_id}"
-        )])
+    row = []
+    for key in all_keys:
+        s = SHOP_CATALOG.get(key)
+        if not s:
+            continue
+        row.append(InlineKeyboardButton(
+            text=f"{s['emoji']} {s['name']}",
+            callback_data=f"shop_svc:{key}"
+        ))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(
+        text="💬 Другой сервис — написать Александру",
+        callback_data="shop_other"
+    )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
@@ -1922,35 +1939,35 @@ async def menu_shop(cb: CallbackQuery):
     await cb.answer()
 
 
-@dp.callback_query(F.data.startswith("shop_cat:"))
-async def shop_category(cb: CallbackQuery):
-    cat_id = cb.data.split(":")[1]
-    found = None
-    for emoji, title, keys in SHOP_CATEGORIES:
-        if title.replace(" ", "_").lower() == cat_id:
-            found = (emoji, title, keys)
-            break
-    if not found:
-        await cb.answer("Категория не найдена", show_alert=True)
-        return
-    emoji, title, keys = found
-    text = f"{emoji} <b>{title}</b>\n\nВыбери сервис:"
-    rows = []
-    for key in keys:
-        s = SHOP_CATALOG.get(key)
-        if s:
-            min_price = min(p["price"] for p in s["plans"])
-            rows.append([InlineKeyboardButton(
-                text=f"{s['emoji']} {s['name']} — от {min_price}₽/мес",
-                callback_data=f"shop_svc:{key}"
-            )])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_shop")])
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+@dp.callback_query(F.data == "shop_other")
+async def shop_other(cb: CallbackQuery):
+    text = (
+        "💬 <b>Другой сервис</b>\n\n"
+        "Не нашёл нужный сервис в каталоге?\n"
+        "Напиши Александру — оформим любую подписку:\n\n"
+        "• Любой AI-сервис\n"
+        "• Любой тариф\n"
+        "• Оплата в рублях\n\n"
+        "👇 Нажми кнопку и напиши что нужно:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✍️ Написать @neirosetkaalex",
+            url=f"https://t.me/{PERSONAL_USERNAME}"
+        )],
+        [InlineKeyboardButton(text="⬅️ В магазин", callback_data="menu_shop")],
+    ])
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("shop_cat:"))
+async def shop_category(cb: CallbackQuery):
+    # Редирект в общий магазин — категории больше не используются
+    await menu_shop(cb)
 
 
 @dp.callback_query(F.data.startswith("shop_svc:"))
@@ -1975,8 +1992,8 @@ async def shop_service(cb: CallbackQuery):
             text=f"{p['name']} — {p['price']}₽/мес",
             callback_data=f"shop_confirm:{key}:{i}"
         )])
-    back_cat = _shop_back_cat(key)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_cat:{back_cat}")])
+    back_cat = "menu_shop"
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_shop")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
