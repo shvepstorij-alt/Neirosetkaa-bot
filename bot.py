@@ -2073,7 +2073,7 @@ async def shop_pay_sbp(cb: CallbackQuery):
         [InlineKeyboardButton(text=f"🏦 Оплатить {p['price']}₽", url=pay_url)],
         [InlineKeyboardButton(
             text="✅ Я оплатил — написать Александру",
-            url=f"https://t.me/{PERSONAL_USERNAME}?text=Оплатил+{s['name']}+{p['name']}+через+СБП,+заказ+{order_id}"
+            url=f"https://t.me/{PERSONAL_USERNAME}?text=Приветствую!+Оплатил+заказ+с+номером+{order_id}%0AСервис:+{s['name']}%0AТариф:+{p['name']}"
         )],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
     ])
@@ -2187,7 +2187,7 @@ async def shop_successful_payment(message: Message):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="💬 Написать @neirosetkaalex",
-                url=f"https://t.me/{PERSONAL_USERNAME}?text=Оплатил+{s['name']}+{p['name']}+через+Stars"
+                url=f"https://t.me/{PERSONAL_USERNAME}?text=Приветствую!+Оплатил+через+Stars%0AСервис:+{s['name']}%0AТариф:+{p['name']}"
             )],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
         ]),
