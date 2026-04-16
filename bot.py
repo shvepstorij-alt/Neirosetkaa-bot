@@ -1902,9 +1902,9 @@ def _shop_back_cat(key: str) -> str:
 async def menu_shop(cb: CallbackQuery):
     text = (
         "🛍 <b>Магазин подписок Neirosetka</b>\n\n"
-        "Оплата в рублях — без иностранных карт и VPN.\n"
-        "Активация в течение 1-2 часов после оплаты.\n\n"
-        "👇 Выбери сервис:"
+        "<i>Оплата в рублях — по СБП, без иностранных карт.\n"
+        "Активация в течение 5-30 минут после оплаты.</i>\n\n"
+        "<b>👇 Выбери сервис:</b>"
     )
     # Все сервисы в порядке SHOP_CATEGORIES, по 2 кнопки в ряд
     all_keys = []
@@ -1979,12 +1979,12 @@ async def shop_service(cb: CallbackQuery):
         return
     plans_text = ""
     for i, p in enumerate(s["plans"]):
-        plans_text += f"  {i+1}. <b>{p['name']}</b> — {p['price']}₽/мес\n     <i>{p['desc']}</i>\n"
+        plans_text += f"  {i+1}. <b>{p['name']} — {p['price']}₽/мес</b>\n     <i>{p['desc']}</i>\n"
     text = (
         f"{s['emoji']} <b>{s['name']}</b>\n\n"
-        f"{s['desc']}\n\n"
-        f"<b>Доступные тарифы:</b>\n{plans_text}\n"
-        f"👇 Выбери тариф:"
+        f"<i>{s['desc']}</i>\n\n"
+        f"Доступные тарифы:\n{plans_text}\n"
+        f"<b>👇 Выбери тариф:</b>"
     )
     rows = []
     for i, p in enumerate(s["plans"]):
