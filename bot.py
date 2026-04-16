@@ -547,6 +547,7 @@ def kb_main():
         ],
         [
             InlineKeyboardButton(text="🤝 Пригласить друга", callback_data="menu_ref"),
+            InlineKeyboardButton(text="🛍 Магазин",           callback_data="menu_shop"),
         ],
         [
             InlineKeyboardButton(text="💌 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}"),
@@ -1754,6 +1755,284 @@ async def cmd_ref(message: Message):
         f"<code>{ref_link}</code>",
         parse_mode="HTML"
     )
+
+
+
+# ══════════════════════════════════════════════════════════
+#  МАГАЗИН ПОДПИСОК
+# ══════════════════════════════════════════════════════════
+
+SHOP_CATALOG = {
+    "chatgpt": {
+        "name": "ChatGPT", "emoji": "🤖",
+        "desc": "GPT-5, DALL-E, Deep Research, Codex. Лучший универсальный ИИ.",
+        "plans": [
+            {"name": "Plus",  "price": 2000, "desc": "GPT-5, DALL-E, Deep Research 10/мес, Codex, Agent Mode"},
+            {"name": "Pro",   "price": 5000, "desc": "GPT-5.4 Pro, Deep Research 250/мес, максимальные лимиты"},
+        ]
+    },
+    "claude": {
+        "name": "Claude", "emoji": "⚡",
+        "desc": "Claude Opus 4, Projects, 200К токенов. Лучший для текстов и кода.",
+        "plans": [
+            {"name": "Pro",    "price": 2000, "desc": "Claude Opus 4, Sonnet 4.6, Projects, Claude Code"},
+            {"name": "Max 5x", "price": 5500, "desc": "Лимиты в 5× выше Pro, Opus 4.6 с контекстом 1М токенов"},
+        ]
+    },
+    "gemini": {
+        "name": "Gemini Advanced", "emoji": "💎",
+        "desc": "Gemini 3.1 Pro, Deep Research, интеграция Gmail/Drive/YouTube.",
+        "plans": [
+            {"name": "Advanced", "price": 2000, "desc": "Gemini 3.1 Pro, Deep Research, Google Workspace"},
+        ]
+    },
+    "grok": {
+        "name": "SuperGrok", "emoji": "𝕏",
+        "desc": "Grok 4, реальное время из X/Twitter, Aurora изображения.",
+        "plans": [
+            {"name": "SuperGrok",       "price": 2000, "desc": "Grok 4, DeepSearch, Aurora изображения, Big Brain Mode"},
+            {"name": "SuperGrok Heavy", "price": 8000, "desc": "Grok 4 Heavy, 8 агентов параллельно, максимум"},
+        ]
+    },
+    "cursor": {
+        "name": "Cursor", "emoji": "💻",
+        "desc": "AI редактор кода. Claude + GPT-5 + Gemini в одном IDE.",
+        "plans": [
+            {"name": "Pro",  "price": 2300, "desc": "Безлимит автодополнений, $20 кредитов на агентов"},
+            {"name": "Pro+", "price": 4000, "desc": "В 3× больше кредитов, фоновые агенты"},
+        ]
+    },
+    "midjourney": {
+        "name": "Midjourney", "emoji": "🎨",
+        "desc": "Лучший генератор изображений. v7 — фотореализм и арт.",
+        "plans": [
+            {"name": "Basic",    "price": 1000, "desc": "~200 изображений в Fast режиме"},
+            {"name": "Standard", "price": 3000, "desc": "Безлимит в Relax + 15ч Fast"},
+            {"name": "Pro",      "price": 5500, "desc": "30ч Fast + Stealth Mode (приватность)"},
+        ]
+    },
+    "kling": {
+        "name": "Kling AI", "emoji": "🎬",
+        "desc": "Генерация видео до 2 мин. Kling 3.0 — лучшее качество/цена.",
+        "plans": [
+            {"name": "Standard", "price": 900,  "desc": "660 кредитов/мес, видео 5-10 сек"},
+            {"name": "Pro",      "price": 2700, "desc": "3000 кредитов/мес, Pro режим"},
+        ]
+    },
+    "runway": {
+        "name": "Runway Gen-4", "emoji": "🎥",
+        "desc": "Кинематографическое видео Gen-4 Turbo.",
+        "plans": [
+            {"name": "Standard", "price": 1700, "desc": "625 кредитов/мес"},
+            {"name": "Pro",      "price": 3700, "desc": "2250 кредитов/мес, приоритет"},
+        ]
+    },
+    "elevenlabs": {
+        "name": "ElevenLabs", "emoji": "🎙",
+        "desc": "Клонирование голоса и синтез речи. Движок v3 — неотличим от человека.",
+        "plans": [
+            {"name": "Starter",  "price": 600,  "desc": "30К символов/мес, клонирование голоса"},
+            {"name": "Creator",  "price": 2300, "desc": "100К символов/мес, проф. клонирование, Dubbing Studio"},
+        ]
+    },
+    "heygen": {
+        "name": "HeyGen", "emoji": "🧑‍💼",
+        "desc": "AI-аватары и перевод видео с синхронизацией губ.",
+        "plans": [
+            {"name": "Creator", "price": 2700, "desc": "AI-аватары, Video Translate, 5 аватаров"},
+        ]
+    },
+    "suno": {
+        "name": "Suno", "emoji": "🎵",
+        "desc": "Генерация музыки с вокалом. v4.5 — студийное качество.",
+        "plans": [
+            {"name": "Pro",     "price": 1000, "desc": "2500 кредитов/мес, коммерческие права"},
+            {"name": "Premier", "price": 3000, "desc": "10К кредитов/мес, приоритет"},
+        ]
+    },
+    "perplexity": {
+        "name": "Perplexity Pro", "emoji": "🔍",
+        "desc": "AI-поиск с источниками. GPT-5 + Claude + Gemini в одном.",
+        "plans": [
+            {"name": "Pro", "price": 2000, "desc": "Deep Research, загрузка файлов, все модели"},
+        ]
+    },
+    "canva": {
+        "name": "Canva Pro", "emoji": "✏️",
+        "desc": "Дизайн с AI. Magic Studio, Brand Kit, Background Remover.",
+        "plans": [
+            {"name": "Pro", "price": 1200, "desc": "Все AI-инструменты, Brand Kit, безлимит шаблонов"},
+        ]
+    },
+    "lovable": {
+        "name": "Lovable Pro", "emoji": "🚀",
+        "desc": "Создание веб-приложений из текста без кода.",
+        "plans": [
+            {"name": "Pro", "price": 2700, "desc": "Полный доступ, деплой, кастомные домены"},
+        ]
+    },
+    "gamma": {
+        "name": "Gamma", "emoji": "📊",
+        "desc": "AI-презентации, документы и лендинги из промта.",
+        "plans": [
+            {"name": "Plus", "price": 1000, "desc": "Безлимит генераций, без водяного знака"},
+            {"name": "Pro",  "price": 2300, "desc": "Премиум модели, API, 10 доменов"},
+        ]
+    },
+}
+
+SHOP_CATEGORIES = [
+    ("🤖", "Чат и текст",      ["chatgpt", "claude", "gemini", "grok", "perplexity"]),
+    ("💻", "Код и разработка", ["cursor", "lovable"]),
+    ("🎨", "Изображения",      ["midjourney", "canva"]),
+    ("🎬", "Видео",            ["kling", "runway", "heygen"]),
+    ("🎵", "Аудио и голос",    ["elevenlabs", "suno"]),
+    ("📊", "Другое",           ["gamma"]),
+]
+
+
+@dp.callback_query(F.data == "menu_shop")
+async def menu_shop(cb: CallbackQuery):
+    text = (
+        "🛍 <b>Магазин подписок</b>\n\n"
+        "Оплата в рублях — без иностранных карт и VPN.\n"
+        "Оформление через @neirosetkaalex в течение 1-2 часов.\n\n"
+        "<b>Выбери категорию:</b>"
+    )
+    rows = []
+    for emoji, title, keys in SHOP_CATEGORIES:
+        cat_id = title.replace(" ", "_").lower()
+        rows.append([InlineKeyboardButton(
+            text=f"{emoji} {title}",
+            callback_data=f"shop_cat:{cat_id}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("shop_cat:"))
+async def shop_category(cb: CallbackQuery):
+    cat_id = cb.data.split(":")[1]
+    # Найти категорию по id
+    found = None
+    for emoji, title, keys in SHOP_CATEGORIES:
+        if title.replace(" ", "_").lower() == cat_id:
+            found = (emoji, title, keys)
+            break
+    if not found:
+        await cb.answer("Категория не найдена", show_alert=True)
+        return
+    emoji, title, keys = found
+    text = f"{emoji} <b>{title}</b>\n\nВыбери сервис:"
+    rows = []
+    for key in keys:
+        s = SHOP_CATALOG.get(key)
+        if s:
+            rows.append([InlineKeyboardButton(
+                text=f"{s['emoji']} {s['name']}",
+                callback_data=f"shop_svc:{key}"
+            )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_shop")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("shop_svc:"))
+async def shop_service(cb: CallbackQuery):
+    key = cb.data.split(":")[1]
+    s = SHOP_CATALOG.get(key)
+    if not s:
+        await cb.answer("Сервис не найден", show_alert=True)
+        return
+
+    plans_text = ""
+    for i, p in enumerate(s["plans"]):
+        plans_text += f"  {i+1}. <b>{p['name']}</b> — {p['price']}₽/мес\n     <i>{p['desc']}</i>\n"
+
+    text = (
+        f"{s['emoji']} <b>{s['name']}</b>\n\n"
+        f"<i>{s['desc']}</i>\n\n"
+        f"<b>Тарифы:</b>\n{plans_text}\n"
+        f"Выбери тариф для оформления:"
+    )
+    rows = []
+    for i, p in enumerate(s["plans"]):
+        rows.append([InlineKeyboardButton(
+            text=f"{p['name']} — {p['price']}₽/мес",
+            callback_data=f"shop_plan:{key}:{i}"
+        )])
+
+    # Найти категорию для кнопки назад
+    back_cat = "чат_и_текст"
+    for emoji, title, keys_list in SHOP_CATEGORIES:
+        if key in keys_list:
+            back_cat = title.replace(" ", "_").lower()
+            break
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_cat:{back_cat}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("shop_plan:"))
+async def shop_plan(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    key = parts[1]
+    plan_idx = int(parts[2])
+    s = SHOP_CATALOG.get(key)
+    if not s or plan_idx >= len(s["plans"]):
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    p = s["plans"][plan_idx]
+    uid = cb.from_user.id
+    username = cb.from_user.username or cb.from_user.full_name
+
+    # Уведомление Александру
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🛍 <b>Новый заказ из магазина!</b>\n\n"
+            f"👤 Пользователь: @{username} (ID: {uid})\n"
+            f"📦 Сервис: {s['emoji']} {s['name']}\n"
+            f"💳 Тариф: {p['name']} — {p['price']}₽/мес\n"
+            f"📝 Описание: {p['desc']}",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    text = (
+        f"✅ <b>Заявка принята!</b>\n\n"
+        f"📦 {s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+        f"💵 Стоимость: <b>{p['price']}₽/мес</b>\n\n"
+        f"Александр свяжется с тобой в ближайшие 1-2 часа для оплаты и активации.\n\n"
+        f"👇 Можешь написать сам прямо сейчас:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="💬 Написать @neirosetkaalex",
+            url=f"https://t.me/{PERSONAL_USERNAME}?text=Хочу+{s['name']}+{p['name']}+{p['price']}₽%2Fмес"
+        )],
+        [InlineKeyboardButton(text="🛍 В магазин", callback_data="menu_shop")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer("✅ Заявка отправлена Александру!")
 
 
 @dp.callback_query(F.data == "menu_ref")
