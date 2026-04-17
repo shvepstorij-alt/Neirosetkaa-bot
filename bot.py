@@ -3542,9 +3542,10 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 99 кр\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 249 кр\n"
-        f"🎬 <b>Veo 3.1 Pro</b> — 649 кр\n\n"
+        f"<b><i>🎥 Veo 3.1 — генерация видео по тексту</i></b>\n\n"
+        f"💰 <b>Lite</b> — 99 кр · <i>бюджет, быстро (720p)</i>\n"
+        f"⚡ <b>Fast</b> — 249 кр · <i>баланс цены и качества (1080p)</i>\n"
+        f"🎬 <b>Pro</b> — 649 кр · <i>кино-качество со звуком (4K)</i>\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -3952,9 +3953,10 @@ async def reply_create_video(message: Message, state: FSMContext):
     await message.answer(
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 99 кр\n"
-        f"⚡ <b>Veo 3.1 Fast</b> — 249 кр\n"
-        f"🎬 <b>Veo 3.1 Pro</b> — 649 кр\n\n"
+        f"<b><i>🎥 Veo 3.1 — генерация видео по тексту</i></b>\n\n"
+        f"💰 <b>Lite</b> — 99 кр · <i>бюджет, быстро (720p)</i>\n"
+        f"⚡ <b>Fast</b> — 249 кр · <i>баланс цены и качества (1080p)</i>\n"
+        f"🎬 <b>Pro</b> — 649 кр · <i>кино-качество со звуком (4K)</i>\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
@@ -5393,10 +5395,11 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🏃 <b>Анимировать фото</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n"
-        f"💵 Стоимость: <b>{ANIM_CREDIT_COST} кр</b>\n\n"
-        f"Выбери режим:\n"
-        f"1️⃣ <b>Один кадр</b> — анимируй фото по промту\n"
-        f"2️⃣ <b>Два кадра</b> — плавный переход между двумя фото"
+        f"💵 Стоимость: <b>{ANIM_CREDIT_COST} кр</b> · видео 8 сек (1080p)\n\n"
+        f"<b><i>🎥 Veo 3.1 — оживи своё фото</i></b>\n\n"
+        f"1️⃣ <b>Один кадр</b> — <i>анимируй фото по промту</i>\n"
+        f"2️⃣ <b>Два кадра</b> — <i>плавный переход между двумя фото</i>\n\n"
+        f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     if cr < ANIM_CREDIT_COST:
         try:
