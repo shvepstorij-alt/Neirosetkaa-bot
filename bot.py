@@ -114,11 +114,13 @@ user_orig_images = {}     # последнее фото: {user_id: {"data": byte
 _active_generations: set = set()  # {user_id}
 
 # B) Почасовой лимит: {user_id: [timestamps]}
-_photo_history: dict = {}  # фото + редактирование
-_video_history: dict = {}  # видео + анимация
+_photo_history: dict = {}      # фото + редактирование
+_video_history: dict = {}      # только видео (Veo text-to-video)
+_anim_history: dict = {}       # только анимация (Veo image-to-video)
 
 PHOTO_LIMIT_PER_HOUR = 30
-VIDEO_LIMIT_PER_HOUR = 10
+VIDEO_LIMIT_PER_HOUR = 20
+ANIM_LIMIT_PER_HOUR = 20
 
 # C) Глобальный семафор для Veo (чтобы не долбить Google API)
 _veo_semaphore = asyncio.Semaphore(5)
@@ -146,25 +148,28 @@ def _record_generation(uid: int, history: dict):
     history.setdefault(uid, []).append(_t.time())
 
 
-async def _check_can_generate(cb_or_msg, uid: int, is_video: bool) -> bool:
-    """Проверки перед генерацией. Возвращает True если можно."""
+async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
+    """Проверки перед генерацией. kind: 'photo' | 'video' | 'anim'. Возвращает True если можно."""
     # A) Одна активная генерация
     if uid in _active_generations:
         msg = "⏳ У тебя уже идёт генерация. Подожди, пока она закончится."
-        if hasattr(cb_or_msg, "answer"):
-            if isinstance(cb_or_msg, CallbackQuery):
-                await cb_or_msg.answer(msg, show_alert=True)
-            else:
-                await cb_or_msg.answer(msg)
+        if isinstance(cb_or_msg, CallbackQuery):
+            await cb_or_msg.answer(msg, show_alert=True)
+        else:
+            await cb_or_msg.answer(msg)
         return False
 
-    # B) Почасовой лимит
-    history = _video_history if is_video else _photo_history
-    limit = VIDEO_LIMIT_PER_HOUR if is_video else PHOTO_LIMIT_PER_HOUR
-    kind = "видео" if is_video else "фото"
+    # B) Почасовой лимит — по категории
+    if kind == "video":
+        history, limit, label = _video_history, VIDEO_LIMIT_PER_HOUR, "видео"
+    elif kind == "anim":
+        history, limit, label = _anim_history, ANIM_LIMIT_PER_HOUR, "анимаций"
+    else:
+        history, limit, label = _photo_history, PHOTO_LIMIT_PER_HOUR, "фото"
+
     can, minutes = _check_hourly_limit(uid, history, limit)
     if not can:
-        msg = f"⏰ Лимит: {limit} {kind} в час.\nПопробуй через {minutes} мин."
+        msg = f"⏰ Лимит: {limit} {label} в час.\nПопробуй через {minutes} мин."
         if isinstance(cb_or_msg, CallbackQuery):
             await cb_or_msg.answer(msg, show_alert=True)
         else:
@@ -3350,7 +3355,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     uid = cb.from_user.id
 
     # Rate limit
-    if not await _check_can_generate(cb, uid, is_video=False):
+    if not await _check_can_generate(cb, uid, kind="photo"):
         return
 
     ok = await deduct(uid, m["credits"])
@@ -3611,7 +3616,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     uid = cb.from_user.id
 
     # Rate limit
-    if not await _check_can_generate(cb, uid, is_video=True):
+    if not await _check_can_generate(cb, uid, kind="video"):
         return
 
     ok = await deduct(uid, m["credits"])
@@ -5165,7 +5170,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         return
 
     # Rate limit (редактирование = фото)
-    if not await _check_can_generate(message, uid, is_video=False):
+    if not await _check_can_generate(message, uid, kind="photo"):
         await state.clear()
         return
 
@@ -5482,7 +5487,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         return
 
     # Rate limit (анимация = видео)
-    if not await _check_can_generate(message, uid, is_video=True):
+    if not await _check_can_generate(message, uid, kind="anim"):
         await state.clear()
         return
 
@@ -5519,7 +5524,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         size_mb = len(vid_bytes) / 1024 / 1024
         logging.info(f"Animation ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
         await log_gen(uid, "animate", "veo-3.1-animate", ANIM_CREDIT_COST)
-        _record_generation(uid, _video_history)
+        _record_generation(uid, _anim_history)
         cr_left = await get_credits(uid)
         kb_after_anim = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
