@@ -3542,7 +3542,7 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 100 кр\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 99 кр\n"
         f"⚡ <b>Veo 3.1 Fast</b> — 249 кр\n"
         f"🎬 <b>Veo 3.1 Pro</b> — 649 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
@@ -3952,7 +3952,7 @@ async def reply_create_video(message: Message, state: FSMContext):
     await message.answer(
         f"🎬 <b>Создать видео (8 сек)</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"💰 <b>Veo 3.1 Lite</b> — 100 кр\n"
+        f"💰 <b>Veo 3.1 Lite</b> — 99 кр\n"
         f"⚡ <b>Veo 3.1 Fast</b> — 249 кр\n"
         f"🎬 <b>Veo 3.1 Pro</b> — 649 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
