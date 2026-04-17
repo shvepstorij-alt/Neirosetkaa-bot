@@ -1280,6 +1280,25 @@ class AdminState(StatesGroup):
 SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Александра (@AleksandrOii).
 
 ━━━━━━━━━━━━━━━━━━━━━━
+🔧 ПРАВИЛА ИСПОЛЬЗОВАНИЯ WEB-ПОИСКА (КРИТИЧНО)
+━━━━━━━━━━━━━━━━━━━━━━
+
+У тебя есть ВСТРОЕННЫЙ инструмент `web_search` — его вызывает платформа Anthropic автоматически. Ты НЕ пишешь вызовы инструмента текстом.
+
+**КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО:**
+- Писать `{"name": "web_search", "arguments": ...}` как обычный текст в ответе
+- Писать `Result 1: ...`, `URL: ...`, `Summary: ...` и подобную разметку как текст
+- Писать "Использую поиск..." или "Проверил дополнительно..." — это техническая служебная информация
+- Пересказывать результаты поиска с сохранением формата (Result 1, Result 2 и т.д.)
+
+**КАК ПРАВИЛЬНО:**
+1. Если нужны свежие данные — просто используй инструмент, это происходит невидимо для пользователя
+2. В своём ответе пиши ТОЛЬКО готовый нормальный текст для человека — живой, краткий, по делу
+3. Пользователь ДОЛЖЕН видеть только финальный текстовый ответ, без технических деталей работы инструмента
+4. Если нашёл информацию — перескажи её своими словами в обычном связном тексте
+5. Если не удалось найти — скажи прямо: "Свежих данных не нашёл, по последним известным мне сведениям..."
+
+━━━━━━━━━━━━━━━━━━━━━━
 🔒 ПРАВИЛА БЕЗОПАСНОСТИ (НЕНАРУШАЕМЫЕ)
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -3779,10 +3798,27 @@ async def on_new_member(event: ChatMemberUpdated):
 # ══════════════════════════════════════════════════════════
 
 def clean_reply(text: str) -> str:
-    """Убирает служебные теги и невалидный HTML из ответа."""
+    """Убирает служебные теги, сырые JSON-вызовы инструментов и невалидный HTML."""
     import re
     # Убираем <search>...</search> теги
     text = re.sub(r'<search>.*?</search>', '', text, flags=re.DOTALL)
+
+    # Убираем утечки JSON-вызовов инструментов в текст (если модель галлюцинирует)
+    # Паттерн типа: {"name": "web_search", "arguments": {...}}
+    text = re.sub(r'\{"name"\s*:\s*"web_search".*?\}\s*', '', text, flags=re.DOTALL)
+    text = re.sub(r'\{"type"\s*:\s*"tool_use".*?\}\s*', '', text, flags=re.DOTALL)
+
+    # Убираем строки с "Result N: ...", "URL: ...", "Summary: ..." — сырая разметка поиска
+    text = re.sub(r'^Result \d+:.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^URL:\s*https?://\S+\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^Summary:\s*.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^Published:\s*.*$', '', text, flags=re.MULTILINE)
+
+    # Убираем служебные фразы о работе инструмента
+    text = re.sub(r'^(Использую\s+поиск.*?[.:\n])\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
+    text = re.sub(r'^(Проверил\s+дополнительно.*?[.:\n])\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
+    text = re.sub(r'^(Ищу\s+актуальную.*?[.:\n])\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
+
     # Убираем любые XML/HTML теги кроме разрешённых Telegram
     allowed = {'b', '/b', 'i', '/i', 'code', '/code', 'pre', '/pre', 'a', '/a', 's', '/s', 'u', '/u'}
     def replace_tag(m):
@@ -3816,9 +3852,9 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         # Для API используем отдельную копию — не портим историю
         api_messages = list(conv)
 
-        # Claude Sonnet 4.6 с серверным web_search — Anthropic сам делает запросы
+        # Claude с серверным web_search — Anthropic сам делает запросы
         resp = claude_client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-7",
             max_tokens=2048,
             system=SYSTEM_PROMPT,
             tools=[{
@@ -3829,15 +3865,17 @@ async def claude_with_search(uid: int, user_text: str) -> str:
             messages=api_messages,
         )
 
-        # Web search — серверный инструмент Anthropic. 
-        # Сервер сам выполняет поиск и возвращает результаты внутри resp.content.
-
-        # Собираем текстовый ответ
+        # Собираем ТОЛЬКО text-блоки (без tool_use, tool_result, server_tool_use)
+        # Явная проверка type == "text", чтобы не попадали сырые JSON-блоки инструмента
         reply = ""
         for block in resp.content:
-            if hasattr(block, "text"):
-                reply += block.text
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                txt = getattr(block, "text", "")
+                if txt:
+                    reply += txt
 
+        reply = reply.strip()
         if not reply:
             reply = "Попробуй переформулировать вопрос 🙏"
 
@@ -3856,12 +3894,17 @@ async def claude_with_search(uid: int, user_text: str) -> str:
                 if isinstance(m.get("content"), str)
             ]
             resp = claude_client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-opus-4-7",
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
                 messages=clean_history,
             )
-            reply = clean_reply(resp.content[0].text)
+            # Та же защита для fallback
+            reply = ""
+            for block in resp.content:
+                if getattr(block, "type", None) == "text":
+                    reply += getattr(block, "text", "")
+            reply = clean_reply(reply.strip() or "Попробуй переформулировать 🙏")
             conv.append({"role": "assistant", "content": reply})
             return reply
         except Exception as e2:
