@@ -149,18 +149,23 @@ VIDEO_MODELS = {
 
 # ─── Пакеты кредитов ──────────────────────────────────────
 CREDIT_PACKS = {
+    "p15": {
+        "name": "🎯 Пробный", "credits": 150, "price": 99, "stars": 40,
+        "desc": "21 фото / 1 видео Lite",
+        "badge": "Попробовать за 99₽",
+    },
     "p25": {
-        "name": "🎯 Пробный", "credits": 250, "price": 149, "stars": 60,
+        "name": "🥉 Начальный", "credits": 250, "price": 149, "stars": 60,
         "desc": "35 фото / 2 видео Lite / 1 видео Fast",
-        "badge": "Попробовать за 149₽",
+        "badge": "Минимальный запас",
     },
     "p50": {
-        "name": "🥉 Старт", "credits": 500, "price": 279, "stars": 112,
+        "name": "🥈 Старт", "credits": 500, "price": 279, "stars": 112,
         "desc": "70 фото / 5 видео Lite / 2 видео Fast / 1 видео Pro",
-        "badge": "Популярный старт",
+        "badge": "Популярный",
     },
     "p150": {
-        "name": "🥈 Базовый", "credits": 1500, "price": 799, "stars": 320,
+        "name": "🏅 Базовый", "credits": 1500, "price": 799, "stars": 320,
         "desc": "210 фото / 15 видео Lite / 8 видео Fast / 3 видео Pro",
         "badge": "Хорошая экономия",
     },
@@ -611,10 +616,6 @@ def kb_pay_method(pack_key: str):
             text=f"🏦 СБП — {p['price']}₽",
             callback_data=f"payfk:{pack_key}:sbp"
         )],
-        [InlineKeyboardButton(
-            text=f"⭐ Telegram Stars — {p['stars']} ⭐",
-            callback_data=f"paystars:{pack_key}"
-        )],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_buy")],
     ])
 
@@ -780,14 +781,24 @@ Midjourney: v7 (текущая) — Basic $10, Standard $30, Pro $60, Mega $120/
 ━━━━━━━━━━━━━━━━━━━━━━
 ВАЖНО: АКТУАЛЬНОСТЬ ИНФОРМАЦИИ
 ━━━━━━━━━━━━━━━━━━━━━━
-У тебя есть инструмент web_search. ВСЕГДА используй его когда клиент спрашивает про:
-- тарифы, цены, планы любого сервиса
-- новые модели или функции
-- сравнение сервисов
-- что нового в какой-либо нейросети
+У тебя есть инструмент web_search — ИСПОЛЬЗУЙ ЕГО ВСЕГДА, когда:
+• клиент спрашивает про НОВУЮ версию любой нейросети (Claude 4.7, GPT-5.5, Gemini 4, Grok 5 и т.д.)
+• вопрос о конкретной модели/релизе которого ты можешь не знать
+• "что вышло нового", "последние обновления", "новая версия"
+• тарифы, цены, планы — могут меняться часто
+• сравнение сервисов в контексте "сейчас/сегодня"
+• любой вопрос где ответ может устареть
 
-Алгоритм: сначала поищи актуальную информацию, потом отвечай.
-Запросы для поиска делай на русском: "[сервис] тарифы 2026" или "[сервис] новые модели 2026"
+ПРАВИЛО: если не уверен что информация актуальна — ИЩИ. Лучше поискать лишний раз, чем соврать.
+
+Поисковые запросы делай на русском или английском:
+• "[название] новая версия 2026"
+• "[сервис] latest release 2026"
+• "Claude 4.7 release date features"
+
+После поиска честно говори: "По последним данным..." или "Проверил в сети..."
+
+НЕ ПРИДУМЫВАЙ ДАТЫ РЕЛИЗОВ, версии моделей, новые функции — если не знаешь точно, ищи.
 
 ━━━━━━━━━━━━━━━━━━━━━━
 АКТУАЛЬНЫЕ ТАРИФЫ (апрель 2026)
@@ -2025,10 +2036,6 @@ async def shop_confirm(cb: CallbackQuery):
             text=f"🏦 СБП — {p['price']}₽",
             callback_data=f"shop_pay_sbp:{key}:{plan_idx}"
         )],
-        [InlineKeyboardButton(
-            text=f"⭐ Telegram Stars — {round(p['price'] / 2.5)} ⭐",
-            callback_data=f"shop_pay_stars:{key}:{plan_idx}"
-        )],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_svc:{key}")],
     ])
     try:
@@ -2442,14 +2449,14 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
     text = (
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"🌟 <b>Imagen 4</b>\n"
-        f"· Fast — 7 кр\n"
-        f"· Standard — 10 кр\n"
-        f"◆ Ultra — 13 кр\n\n"
-        f"🍌 <b>Nano Banana</b>\n"
-        f"· Flash — 10 кр\n"
-        f"· v2 — 13 кр\n"
-        f"◆ Pro — 30 кр"
+        f"<b><i>🌟 Imagen 4 — генерация изображений</i></b>\n\n"
+        f"⚡ <b>Fast</b> — 7 кр · <i>для объёмных задач</i>\n"
+        f"🎯 <b>Standard</b> — 10 кр · <i>базовое решение (2K)</i>\n"
+        f"💎 <b>Ultra</b> — 13 кр · <i>премиум-сегмент (2K)</i>\n\n"
+        f"<b><i>🍌 Nano Banana — генерация и редактирование</i></b>\n\n"
+        f"✏️ <b>Flash</b> — 10 кр · <i>генерация по описанию</i>\n"
+        f"📈 <b>v2</b> — 13 кр · <i>оптимальный выбор (4K)</i>\n"
+        f"🏆 <b>Pro</b> — 30 кр · <i>для ответственной задачи (4K)</i>"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_models(), parse_mode="HTML")
@@ -2949,43 +2956,24 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         # Для API используем отдельную копию — не портим историю
         api_messages = list(user_conversations[uid])
 
+        # Claude Sonnet 4.6 с серверным web_search — Anthropic сам делает запросы
         resp = claude_client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1024,
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
             system=SYSTEM_PROMPT,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 3,
+            }],
             messages=api_messages,
         )
 
-        # Обрабатываем tool_use если Claude решил искать
-        max_iterations = 3
-        iterations = 0
-        while resp.stop_reason == "tool_use" and iterations < max_iterations:
-            iterations += 1
-            assistant_content = resp.content
-            tool_results = []
-            for block in assistant_content:
-                if hasattr(block, "type") and block.type == "tool_use":
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": [{"type": "text", "text": "Search completed."}],
-                    })
-
-            # Обновляем только api_messages, НЕ user_conversations
-            api_messages.append({"role": "assistant", "content": assistant_content})
-            if tool_results:
-                api_messages.append({"role": "user", "content": tool_results})
-            else:
-                break
-
-            resp = claude_client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                tools=[{"type": "web_search_20250305", "name": "web_search"}],
-                messages=api_messages,
-            )
+        # Web search — серверный инструмент Anthropic. 
+        # Сервер сам выполняет поиск и возвращает результаты внутри resp.content.
+        # Нам НЕ нужно самим делать tool_result — нужно просто собрать текст.
+        # stop_reason будет "end_turn" когда модель закончит.
+        # Если он "tool_use" — модель просит клиентский инструмент (которых у нас нет).
 
         # Собираем текстовый ответ
         reply = ""
@@ -3045,14 +3033,14 @@ async def reply_create_photo(message: Message, state: FSMContext):
     await message.answer(
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"🌟 <b>Imagen 4</b>\n"
-        f"· Fast — 7 кр\n"
-        f"· Standard — 10 кр\n"
-        f"◆ Ultra — 13 кр\n\n"
-        f"🍌 <b>Nano Banana</b>\n"
-        f"· Flash — 10 кр\n"
-        f"· v2 — 13 кр\n"
-        f"◆ Pro — 30 кр",
+        f"<b><i>🌟 Imagen 4 — генерация изображений</i></b>\n\n"
+        f"⚡ <b>Fast</b> — 7 кр · <i>для объёмных задач</i>\n"
+        f"🎯 <b>Standard</b> — 10 кр · <i>базовое решение (2K)</i>\n"
+        f"💎 <b>Ultra</b> — 13 кр · <i>премиум-сегмент (2K)</i>\n\n"
+        f"<b><i>🍌 Nano Banana — генерация и редактирование</i></b>\n\n"
+        f"✏️ <b>Flash</b> — 10 кр · <i>генерация по описанию</i>\n"
+        f"📈 <b>v2</b> — 13 кр · <i>оптимальный выбор (4K)</i>\n"
+        f"🏆 <b>Pro</b> — 30 кр · <i>для ответственной задачи (4K)</i>",
         reply_markup=kb_image_models(), parse_mode="HTML"
     )
 
