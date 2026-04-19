@@ -1038,37 +1038,57 @@ async def fk_mark_paid(order_id: str):
 # ══════════════════════════════════════════════════════════
 
 def friendly_error(e: Exception) -> str:
-    """Возвращает понятное сообщение для клиента."""
+    """Возвращает понятное сообщение для клиента (максимально короткое, без тех. деталей).
+    Safety-ошибки показываем как есть — клиенту нужно знать что надо переформулировать промт.
+    Все остальные ошибки (API 500/503/timeout/неизвестные) — одно универсальное сообщение."""
     err = str(e)
-    if "429" in err or "spending cap" in err or "quota" in err.lower():
-        return "⚠️ Временно превышен лимит запросов. Попробуй через несколько минут."
-    if "503" in err or "unavailable" in err.lower() or "overloaded" in err.lower():
-        return "⚠️ Сервис временно перегружен. Попробуй через 1–2 минуты."
-    if "timeout" in err.lower() or "timed out" in err.lower():
-        return "⚠️ Превышено время ожидания. Попробуй ещё раз."
-    if "400" in err:
-        return "⚠️ Промт не принят системой. Попробуй переформулировать запрос."
-    if "403" in err or "permission" in err.lower():
-        return "⚠️ Нет доступа к сервису. Мы уже разбираемся."
+    low = err.lower()
+    # Safety/блокировки контента — показываем как есть (клиент должен понимать что делать)
+    if ("🛡" in err or "фильтр" in low or "заблокирован" in low
+        or "переформулир" in low or "копирайт" in low):
+        return err
+    # Все остальные — одно универсальное сообщение
     return "⚠️ Небольшая техническая проблемка. Попробуй ещё раз или напиши @neirosetkaalex"
 
 
 async def notify_admin_error(context: str, e: Exception):
-    """Отправляет реальную ошибку админу + трекинг для алертов."""
+    """Отправляет реальную ошибку админу с деталями + трекинг для алертов.
+    Safety-блокировки — отдельный тип алерта (🟡 вместо 🔴), не считаются как инфра-ошибки."""
+    err_msg = str(e)
+    low = err_msg.lower()
+    is_safety = ("🛡" in err_msg or "фильтр" in low or "заблокирован" in low
+                 or "копирайт" in low or "переформулир" in low)
+
     # Логируем в БД
     try:
-        await log_event(None, "error", f"{context} | {str(e)[:500]}")
+        event_kind = "content_blocked" if is_safety else "error"
+        await log_event(None, event_kind, f"{context} | {err_msg[:500]}")
     except Exception:
         pass
+
+    # Safety — жёлтый алерт, не идёт в счётчик критических ошибок
+    if is_safety:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🟡 <b>Промт заблокирован фильтром</b> | {context}\n\n"
+                f"<i>Клиент попробовал нарушить safety. Кредиты возвращены.</i>\n\n"
+                f"<code>{err_msg[:600]}</code>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    # Реальная ошибка — красный алерт + счётчик
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{str(e)[:800]}</code>",
+            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{err_msg[:800]}</code>",
             parse_mode="HTML"
         )
     except Exception:
         pass
-    # Счётчик ошибок для алерта
     try:
         await track_error_for_alert()
     except Exception:
@@ -2015,11 +2035,52 @@ async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:
                 if r.status != 200:
                     raise Exception(f"Nano Banana API {r.status}: {(await r.text())[:300]}")
                 data = await r.json()
+
                 # Ищем inline image в частях ответа
-                for part in data.get("candidates", [{}])[0].get("content", {}).get("parts", []):
-                    if "inlineData" in part:
-                        return base64.b64decode(part["inlineData"]["data"])
-                raise Exception("Nano Banana: изображение не найдено в ответе")
+                candidates = data.get("candidates", [])
+                if candidates:
+                    cand = candidates[0]
+                    for part in cand.get("content", {}).get("parts", []):
+                        if "inlineData" in part:
+                            return base64.b64decode(part["inlineData"]["data"])
+
+                    # Изображения нет — смотрим причину
+                    finish_reason = cand.get("finishReason", "UNKNOWN")
+                    logging.warning(
+                        f"Nano Banana no image. model={model_id} reason={finish_reason} "
+                        f"response={str(data)[:500]}"
+                    )
+
+                    # Понятные ошибки для юзера
+                    if finish_reason in ("SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT"):
+                        raise Exception(
+                            "Промт заблокирован фильтром безопасности 🛡\n"
+                            "Попробуй переформулировать — избегай сцен с насилием, "
+                            "откровенным содержанием или узнаваемыми знаменитостями."
+                        )
+                    if finish_reason == "RECITATION":
+                        raise Exception(
+                            "Запрос слишком похож на защищённый копирайтом контент 📄\n"
+                            "Попробуй описать сцену своими словами."
+                        )
+                    # Модель вернула только текст вместо картинки
+                    text_parts = [
+                        p.get("text", "") for p in cand.get("content", {}).get("parts", [])
+                        if "text" in p
+                    ]
+                    if text_parts:
+                        raise Exception(
+                            f"Модель не смогла создать картинку. Совет: {text_parts[0][:200]}"
+                        )
+                    raise Exception(f"Пустой ответ (причина: {finish_reason}). Попробуй другой промт или модель.")
+
+                # Нет candidates вообще — prompt заблокирован на входе
+                block = data.get("promptFeedback", {}).get("blockReason", "UNKNOWN")
+                logging.warning(f"Nano Banana blocked. model={model_id} block={block}")
+                raise Exception(
+                    "Промт заблокирован фильтром безопасности 🛡\n"
+                    "Попробуй переформулировать запрос."
+                )
 
         else:
             # ── Imagen (predict) ──────────────────────────────
