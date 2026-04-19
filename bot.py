@@ -287,8 +287,8 @@ VIDEO_MODELS = {
     "vid_pro": {
         "name": "🎬 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
-        "credits": 649,
-        "price": "347₽",
+        "credits": 599,
+        "price": "319₽",
         "res": "4K + аудио",
         "desc": "Кино-качество",
     },
@@ -318,12 +318,12 @@ CREDIT_PACKS = {
     },
     "p500": {
         "name": "🥇 Про", "credits": 5000, "price": 2490, "stars": 996,
-        "desc": "700 фото / 50 видео Lite / 20 видео Fast / 7 видео Pro",
+        "desc": "700 фото / 50 видео Lite / 20 видео Fast / 8 видео Pro",
         "badge": "Выгоднее на 13%",
     },
     "p1200": {
         "name": "💎 Бизнес", "credits": 12000, "price": 5790, "stars": 2316,
-        "desc": "1700 фото / 120 видео Lite / 48 видео Fast / 18 видео Pro",
+        "desc": "1700 фото / 120 видео Lite / 48 видео Fast / 20 видео Pro",
         "badge": "Максимум",
     },
 }
@@ -2106,7 +2106,7 @@ async def api_animate_image(
 
     async with aiohttp.ClientSession() as s:
         async with s.post(
-            f"{base}/models/veo-3.1-generate-preview:predictLongRunning",
+            f"{base}/models/veo-3.1-fast-generate-preview:predictLongRunning",
             json=payload, headers=headers
         ) as r:
             if r.status != 200:
@@ -3545,7 +3545,7 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"<b><i>🎥 Veo 3.1 — генерация видео по тексту</i></b>\n\n"
         f"💰 <b>Lite</b> — 99 кр · <i>бюджет, быстро (720p)</i>\n"
         f"⚡ <b>Fast</b> — 249 кр · <i>баланс цены и качества (1080p)</i>\n"
-        f"🎬 <b>Pro</b> — 649 кр · <i>кино-качество со звуком (4K)</i>\n\n"
+        f"🎬 <b>Pro</b> — 599 кр · <i>кино-качество со звуком (4K)</i>\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -3620,7 +3620,7 @@ async def vid_prompt(message: Message, state: FSMContext):
         f"📝 <b>Проверь заказ:</b>\n\n"
         f"🤖 {m['name']}\n"
         f"📐 {m['res']} | 8 сек\n"
-        f"💳 <b>{m['credits']} кредитов</b> ({m['price']})\n\n"
+        f"💳 <b>{m['credits']} кредитов</b>\n\n"
         f"📝 <i>{prompt}</i>\n\n"
         f"⏱ <i>Генерация занимает 1–6 минут</i>",
         reply_markup=kb_confirm("vid", key), parse_mode="HTML"
@@ -3679,15 +3679,19 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         except Exception as video_err:
             logging.warning(f"answer_video failed: {video_err}")
         # 2. Документ — только если файл < 48 МБ (лимит Telegram для ботов 50 МБ)
+        # disable_content_type_detection=True заставляет Telegram показывать его 
+        # как документ-файл (а не как ещё один видеоплеер)
         if size_mb < 48:
             try:
-                await cb.message.answer_document(
-                    BufferedInputFile(vid_bytes, "video_original.mp4"),
+                await bot.send_document(
+                    chat_id=cb.message.chat.id,
+                    document=BufferedInputFile(vid_bytes, f"video_original_{key}.mp4"),
                     caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
                     parse_mode="HTML",
+                    disable_content_type_detection=True,
                 )
             except Exception as de:
-                logging.error(f"video answer_document failed ({size_mb:.1f} MB): {de}")
+                logging.error(f"video send_document failed ({size_mb:.1f} MB): {de}")
                 await notify_admin_error(f"Документ видео uid={uid} {size_mb:.1f}MB", de)
         else:
             logging.warning(f"Video too large for document: {size_mb:.1f} MB")
@@ -3956,7 +3960,7 @@ async def reply_create_video(message: Message, state: FSMContext):
         f"<b><i>🎥 Veo 3.1 — генерация видео по тексту</i></b>\n\n"
         f"💰 <b>Lite</b> — 99 кр · <i>бюджет, быстро (720p)</i>\n"
         f"⚡ <b>Fast</b> — 249 кр · <i>баланс цены и качества (1080p)</i>\n"
-        f"🎬 <b>Pro</b> — 649 кр · <i>кино-качество со звуком (4K)</i>\n\n"
+        f"🎬 <b>Pro</b> — 599 кр · <i>кино-качество со звуком (4K)</i>\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_models(), parse_mode="HTML"
     )
@@ -5127,7 +5131,7 @@ async def adm_promo_deact_start(cb: CallbackQuery, state: FSMContext):
 # ══════════════════════════════════════════════════════════
 
 EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов
-ANIM_CREDIT_COST  = 299  # стоимость анимации фото = 299 кредитов
+ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 кредитов
 
 @dp.callback_query(F.data == "menu_edit")
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
@@ -5591,15 +5595,19 @@ async def anim_prompt(message: Message, state: FSMContext):
         except Exception as ve:
             logging.warning(f"answer_video failed: {ve}")
         # 2. Документ — только если < 48 МБ
+        # disable_content_type_detection=True заставляет Telegram показывать его 
+        # как документ-файл (а не как ещё один видеоплеер)
         if size_mb < 48:
             try:
-                await message.answer_document(
-                    BufferedInputFile(vid_bytes, "animation_original.mp4"),
+                await bot.send_document(
+                    chat_id=message.chat.id,
+                    document=BufferedInputFile(vid_bytes, "animation_original.mp4"),
                     caption="📁 <b>Оригинал без сжатия</b> — скачай для максимального качества",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    disable_content_type_detection=True,
                 )
             except Exception as de:
-                logging.error(f"answer_document failed ({size_mb:.1f} MB): {de}")
+                logging.error(f"send_document failed ({size_mb:.1f} MB): {de}")
                 await notify_admin_error(f"Документ анимации uid={uid} {size_mb:.1f}MB", de)
         else:
             logging.warning(f"Animation too large for document: {size_mb:.1f} MB")
