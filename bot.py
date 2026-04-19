@@ -2305,46 +2305,102 @@ async def api_kling_motion_control(
                 raise Exception(f"EvoLink: нет task_id в ответе: {str(resp_data)[:300]}")
             logging.info(f"Kling Motion Control task started: {task_id}")
 
-        # 2. Polling — EvoLink Motion Control обычно 2-5 минут
-        # Делаем до 60 попыток с интервалом 5 сек = максимум 5 минут
-        for attempt in range(60):
+        # 2. Polling — Motion Control обычно 2-5 минут, но может занимать до 8 при нагрузке
+        # 96 попыток × 5 сек = 8 минут максимум
+        last_status = None
+        last_response = None
+        for attempt in range(96):
             await asyncio.sleep(5)
-            async with s.get(f"{base}/tasks/{task_id}", headers=headers) as pr:
-                if pr.status != 200:
-                    continue
-                pd = await pr.json()
-                status = pd.get("status", "").lower()
+            try:
+                async with s.get(f"{base}/tasks/{task_id}", headers=headers) as pr:
+                    if pr.status != 200:
+                        if attempt % 6 == 0:  # логируем раз в 30 сек
+                            logging.warning(f"Kling poll {task_id} status={pr.status}")
+                        continue
+                    pd = await pr.json()
+                    last_response = pd
+            except Exception as pe:
+                logging.warning(f"Kling poll exception attempt={attempt}: {pe}")
+                continue
 
-                if status in ("completed", "success", "succeeded", "finished"):
-                    # Достаём URL готового видео
-                    video_url_out = (
-                        pd.get("video", {}).get("url")
-                        or pd.get("output", {}).get("video_url")
-                        or pd.get("result", {}).get("video_url")
-                        or pd.get("video_url")
+            # Статус может быть в разных местах
+            status_raw = (
+                pd.get("status")
+                or pd.get("task_status")
+                or (pd.get("task_info", {}) or {}).get("status")
+                or (pd.get("data", {}) or {}).get("status")
+                or ""
+            )
+            status = str(status_raw).lower()
+
+            if status != last_status:
+                logging.info(f"Kling task {task_id} status: {status_raw} (attempt {attempt+1})")
+                last_status = status
+
+            # ── Успешные статусы (расширенный список)
+            if status in ("completed", "complete", "success", "succeed", "succeeded",
+                          "finished", "done", "ready"):
+                # Ищем URL видео во всех возможных местах
+                video_url_out = None
+                candidates = [
+                    pd.get("video_url"),
+                    pd.get("output_url"),
+                    pd.get("result_url"),
+                    (pd.get("video") or {}).get("url") if isinstance(pd.get("video"), dict) else None,
+                    (pd.get("output") or {}).get("video_url") if isinstance(pd.get("output"), dict) else None,
+                    (pd.get("output") or {}).get("url") if isinstance(pd.get("output"), dict) else None,
+                    (pd.get("result") or {}).get("video_url") if isinstance(pd.get("result"), dict) else None,
+                    (pd.get("result") or {}).get("url") if isinstance(pd.get("result"), dict) else None,
+                    (pd.get("data") or {}).get("video_url") if isinstance(pd.get("data"), dict) else None,
+                    (pd.get("data") or {}).get("url") if isinstance(pd.get("data"), dict) else None,
+                ]
+                # Также проверяем массивы: output.works[0].video.resource, data.generated[0]
+                if isinstance(pd.get("data", {}).get("generated"), list) and pd["data"]["generated"]:
+                    candidates.append(pd["data"]["generated"][0])
+                output_data = pd.get("output", {})
+                if isinstance(output_data, dict) and isinstance(output_data.get("works"), list) and output_data["works"]:
+                    work = output_data["works"][0]
+                    if isinstance(work, dict):
+                        video = work.get("video", {})
+                        if isinstance(video, dict):
+                            candidates.append(video.get("resource_without_watermark") or video.get("resource") or video.get("url"))
+
+                for c in candidates:
+                    if c and isinstance(c, str) and c.startswith("http"):
+                        video_url_out = c
+                        break
+
+                if not video_url_out:
+                    logging.error(f"Kling completed but no video URL. Response: {str(pd)[:800]}")
+                    raise Exception(f"EvoLink: задача завершена, но нет URL видео в ответе. Детали: {str(pd)[:300]}")
+
+                logging.info(f"Kling task {task_id} DONE, downloading {video_url_out}")
+                # Скачиваем результат
+                async with s.get(video_url_out) as vr:
+                    data_bytes = await vr.read()
+                    if len(data_bytes) < 1000:
+                        raise Exception(f"Получен слишком маленький файл ({len(data_bytes)} байт)")
+                    return data_bytes
+
+            # ── Ошибочные статусы
+            if status in ("failed", "error", "cancelled", "canceled", "rejected"):
+                err = pd.get("error", {})
+                err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
+                low = err_msg.lower()
+                if "safety" in low or "blocked" in low or "policy" in low:
+                    raise Exception(
+                        "Референсы заблокированы фильтром безопасности 🛡\n"
+                        "Попробуй другие фото/видео — избегай знаменитостей и брендов."
                     )
-                    if not video_url_out:
-                        raise Exception(f"EvoLink: нет URL видео в ответе: {str(pd)[:300]}")
-                    # Скачиваем результат
-                    async with s.get(video_url_out) as vr:
-                        data_bytes = await vr.read()
-                        if len(data_bytes) < 1000:
-                            raise Exception("Получен слишком маленький файл (возможно пустой)")
-                        return data_bytes
+                raise Exception(f"Kling Motion Control: {err_msg or status or 'неизвестная ошибка'}")
+            # pending / queued / generating / processing / running — продолжаем ждать
 
-                if status in ("failed", "error", "cancelled"):
-                    err = pd.get("error", {})
-                    err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
-                    low = err_msg.lower()
-                    if "safety" in low or "blocked" in low or "policy" in low:
-                        raise Exception(
-                            "Референсы заблокированы фильтром безопасности 🛡\n"
-                            "Попробуй другие фото/видео — избегай знаменитостей и брендов."
-                        )
-                    raise Exception(f"Kling Motion Control: {err_msg or 'неизвестная ошибка'}")
-                # queued / generating / processing — продолжаем ждать
-
-        raise Exception("Превышено время ожидания (5 мин). Попробуй ещё раз.")
+        # Таймаут — показываем последний известный статус для диагностики
+        logging.error(f"Kling timeout task={task_id}, last_status={last_status}, last_response={str(last_response)[:500]}")
+        raise Exception(
+            f"Превышено время ожидания (8 мин). Последний статус: {last_status}. "
+            f"Задача могла завершиться на стороне EvoLink — проверь в их логах. Кредиты возвращены."
+        )
 
 
 async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
