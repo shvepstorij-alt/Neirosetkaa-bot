@@ -1087,9 +1087,10 @@ async def notify_admin_error(context: str, e: Exception):
 
     # Реальная ошибка — красный алерт + счётчик
     try:
+        # Telegram лимит 4096 символов; оставляем 500 на форматирование
         await bot.send_message(
             ADMIN_ID,
-            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{err_msg[:800]}</code>",
+            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{err_msg[:3500]}</code>",
             parse_mode="HTML"
         )
     except Exception:
@@ -2340,41 +2341,52 @@ async def api_kling_motion_control(
             # ── Успешные статусы (расширенный список)
             if status in ("completed", "complete", "success", "succeed", "succeeded",
                           "finished", "done", "ready"):
-                # Ищем URL видео во всех возможных местах
-                video_url_out = None
-                candidates = [
-                    pd.get("video_url"),
-                    pd.get("output_url"),
-                    pd.get("result_url"),
-                    (pd.get("video") or {}).get("url") if isinstance(pd.get("video"), dict) else None,
-                    (pd.get("output") or {}).get("video_url") if isinstance(pd.get("output"), dict) else None,
-                    (pd.get("output") or {}).get("url") if isinstance(pd.get("output"), dict) else None,
-                    (pd.get("result") or {}).get("video_url") if isinstance(pd.get("result"), dict) else None,
-                    (pd.get("result") or {}).get("url") if isinstance(pd.get("result"), dict) else None,
-                    (pd.get("data") or {}).get("video_url") if isinstance(pd.get("data"), dict) else None,
-                    (pd.get("data") or {}).get("url") if isinstance(pd.get("data"), dict) else None,
-                ]
-                # Также проверяем массивы: output.works[0].video.resource, data.generated[0]
-                if isinstance(pd.get("data", {}).get("generated"), list) and pd["data"]["generated"]:
-                    candidates.append(pd["data"]["generated"][0])
-                output_data = pd.get("output", {})
-                if isinstance(output_data, dict) and isinstance(output_data.get("works"), list) and output_data["works"]:
-                    work = output_data["works"][0]
-                    if isinstance(work, dict):
-                        video = work.get("video", {})
-                        if isinstance(video, dict):
-                            candidates.append(video.get("resource_without_watermark") or video.get("resource") or video.get("url"))
+                # Рекурсивный поиск URL видео по всему JSON-ответу.
+                # Ищем поля со словами video/url/resource, значение которых — строка-URL на .mp4/.mov/.webm
+                # или содержит video/mp4 в самом URL.
+                found_urls = []
 
-                for c in candidates:
-                    if c and isinstance(c, str) and c.startswith("http"):
-                        video_url_out = c
-                        break
+                def _find_video_urls(obj, path=""):
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            _find_video_urls(v, f"{path}.{k}")
+                    elif isinstance(obj, list):
+                        for i, item in enumerate(obj):
+                            _find_video_urls(item, f"{path}[{i}]")
+                    elif isinstance(obj, str) and obj.startswith("http"):
+                        low = obj.lower()
+                        # URL считаем видео если: в пути/расширении есть video/mp4/mov
+                        # или в названии поля было "video" или "url" или "resource"
+                        path_low = path.lower()
+                        is_video = (
+                            ".mp4" in low or ".mov" in low or ".webm" in low
+                            or "/video" in low or "video_url" in low
+                            or "video" in path_low or "url" in path_low or "resource" in path_low
+                        )
+                        # Отсекаем превью/обложки
+                        is_cover = "cover" in path_low or "thumbnail" in path_low or "preview" in path_low or ".jpg" in low or ".png" in low
+                        if is_video and not is_cover:
+                            found_urls.append((path, obj))
+
+                _find_video_urls(pd)
+
+                # Сортируем: приоритет — без watermark
+                found_urls.sort(key=lambda x: (0 if "without_watermark" in x[0].lower() else 1))
+
+                video_url_out = found_urls[0][1] if found_urls else None
 
                 if not video_url_out:
-                    logging.error(f"Kling completed but no video URL. Response: {str(pd)[:800]}")
-                    raise Exception(f"EvoLink: задача завершена, но нет URL видео в ответе. Детали: {str(pd)[:300]}")
+                    logging.error(f"Kling completed but no video URL. Full response: {str(pd)}")
+                    # Для админа — полный JSON для диагностики
+                    raise Exception(
+                        f"EvoLink: задача завершена, но не нашёл URL видео. "
+                        f"Полный ответ: {str(pd)[:2000]}"
+                    )
 
-                logging.info(f"Kling task {task_id} DONE, downloading {video_url_out}")
+                logging.info(
+                    f"Kling task {task_id} DONE. Found {len(found_urls)} URL(s), "
+                    f"using: {found_urls[0][0]} = {video_url_out}"
+                )
                 # Скачиваем результат
                 async with s.get(video_url_out) as vr:
                     data_bytes = await vr.read()
@@ -5631,9 +5643,9 @@ ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 к
 
 # ─── Kling Motion Control: цены по длительности ────────────
 MOTION_PRICES = {
-    5:  299,   # 5 сек — 299 кр (себест. ~32₽, маржа ~80%)
-    8:  349,   # 8 сек — 349 кр (себест. ~52₽, маржа ~72%)
-    10: 399,   # 10 сек — 399 кр (себест. ~66₽, маржа ~69%)
+    5:  149,   # 5 сек — 149 кр (себест. ~40₽, маржа ~50%)
+    8:  299,   # 8 сек — 299 кр (себест. ~63₽, маржа ~60%)
+    10: 349,   # 10 сек — 349 кр (себест. ~79₽, маржа ~57%)
 }
 MOTION_MODEL_ID = "kling-v3-motion-control"  # EvoLink route name
 
