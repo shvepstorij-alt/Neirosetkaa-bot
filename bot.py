@@ -2279,17 +2279,26 @@ async def api_kling_motion_control(
         # 1. Отправляем задачу
         async with s.post(f"{base}/videos/generations", json=payload, headers=headers) as r:
             if r.status != 200 and r.status != 202:
-                err_text = (await r.text())[:400]
+                err_text = (await r.text())[:600]
+                logging.warning(
+                    f"EvoLink Motion Control ERROR status={r.status} body={err_text}"
+                )
+                low = err_text.lower()
                 # Safety блоки (контент)
-                if r.status == 400 and ("safety" in err_text.lower() or "blocked" in err_text.lower()):
+                if r.status == 400 and ("safety" in low or "blocked" in low or "policy" in low):
                     raise Exception(
                         "Референсы заблокированы фильтром безопасности 🛡\n"
                         "Попробуй загрузить другие фото/видео — избегай знаменитостей, "
                         "откровенного содержания, брендов."
                     )
-                if r.status == 402 or "balance" in err_text.lower() or "insufficient" in err_text.lower():
-                    raise Exception(f"EvoLink: недостаточно средств на балансе API. Свяжись с админом.")
-                raise Exception(f"EvoLink Motion Control API {r.status}: {err_text[:300]}")
+                # Только жёсткий индикатор нехватки баланса: HTTP 402 или явная фраза
+                if r.status == 402:
+                    raise Exception(f"EvoLink: баланс исчерпан (HTTP 402). Детали: {err_text[:200]}")
+                if ("insufficient_balance" in low or "insufficient balance" in low
+                    or "balance_insufficient" in low or "not enough balance" in low):
+                    raise Exception(f"EvoLink: баланс исчерпан. Детали: {err_text[:200]}")
+                # Все остальные ошибки показываем админу с реальным текстом
+                raise Exception(f"EvoLink API {r.status}: {err_text}")
             resp_data = await r.json()
             task_id = resp_data.get("task_id") or resp_data.get("id")
             if not task_id:
