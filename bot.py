@@ -2263,23 +2263,35 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
 #  ОБРАБОТЧИКИ — СТАРТ / МЕНЮ
 # ══════════════════════════════════════════════════════════
 
-WELCOME_NEW = """🌟 Привет, {name}!
+WELCOME_NEW = """👋 Привет, {name}!
+Я — бот Neirosetka 🎨 Помогу тебе создавать фото и видео с помощью ИИ прямо в Telegram — без регистраций и зарубежных карт.
+━━━━━━━━━━━━━━━━━━━━
+🎁 Тебе уже начислено {credits} бонусных кредитов
+Их хватит, чтобы попробовать почти все функции бота 👇
+━━━━━━━━━━━━━━━━━━━━
+🎨 Что я умею:
+📷 Генерация изображений
+🎬 Генерация видео
+🖌 Редактирование фото по описанию
+🏃 Анимация фото в видео
+🤖 AI-консультант по нейросетям и подключению VPN — бесплатно
+🛍 Магазин подписок — ChatGPT, Claude, Midjourney, Grok и многие другие!
+━━━━━━━━━━━━━━━━━━━━
+🚀 Как начать:
+1️⃣ Нажми 📷 Изображение или 🎬 Видео
+2️⃣ Выбери модель и напиши промт
+3️⃣ Получи готовый результат
 
-Я — AI-ассистент Александра. Умею:
-🖼️ Генерировать изображения (Imagen 4)
-🎬 Создавать видео (Veo 3.1) 
-💬 Консультировать по нейросетям и VPN
-💳 Оформлять подписки без зарубежной карты
-
-🎁 Тебе начислено <b>{credits} бесплатных кредитов</b>!
+⏳ Бонусные кредиты действуют 30 дней
+📢 Новости, гайды, новые фишки — в нашем канале @{channel}
 
 Выбери действие 👇"""
 
 WELCOME_BACK = """👋 С возвращением, {name}!
 
-💎 Баланс: <b>{credits} кредитов</b>
+💵 Твой баланс: <b>{credits} кредитов</b>
 
-Выбери действие 👇"""
+Выбери что создать сегодня 👇"""
 
 
 @dp.message(F.text.startswith("/start"), StateFilter("*"))
@@ -2322,19 +2334,33 @@ async def cmd_start(message: Message, state: FSMContext):
         except Exception:
             pass
         text = (
-            f"🌟 Привет, {message.from_user.first_name}!\n\n"
-            f"🎁 Тебя пригласил друг — ты получил <b>+{REF_BONUS} бонусных кредитов!</b>\n\n"
-            f"💵 Баланс: <b>{credits} кредитов</b>\n\n"
-            f"Выбери что создать 👇"
+            f"👋 Привет, {message.from_user.first_name}!\n"
+            f"Я — бот Neirosetka 🎨 Помогу создавать фото и видео с помощью ИИ прямо в Telegram.\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎁 Тебя пригласил друг!\n"
+            f"Получи <b>+{REF_BONUS} бонусных кредитов</b> 🎉\n"
+            f"💵 Баланс: <b>{credits} кредитов</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎨 Что можно сделать:\n"
+            f"📷 Генерация изображений\n"
+            f"🎬 Генерация видео\n"
+            f"🖌 Редактирование фото по описанию\n"
+            f"🏃 Анимация фото в видео\n"
+            f"🤖 AI-консультант по нейросетям и подключению VPN — бесплатно\n"
+            f"🛍 Магазин подписок — ChatGPT, Claude, Midjourney, Grok и многие другие!\n\n"
+            f"⏳ Кредиты действуют 30 дней\n"
+            f"📢 Гайды и новости у нас в канале @{ADMIN_USERNAME}\n\n"
+            f"Выбери действие 👇"
         )
     else:
         text = (WELCOME_NEW if is_new else WELCOME_BACK).format(
             name=message.from_user.first_name,
-            credits=credits
+            credits=credits,
+            channel=ADMIN_USERNAME,
         )
 
     await message.answer("👇", reply_markup=kb_reply(is_admin))
-    await message.answer(text, reply_markup=kb_main(), parse_mode="HTML")
+    await message.answer(text, reply_markup=kb_main(), parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def show_admin_panel(message: Message):
