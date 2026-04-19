@@ -2818,55 +2818,95 @@ async def shop_pay_stars(cb: CallbackQuery):
 
 
 @dp.pre_checkout_query()
-async def shop_pre_checkout(pre_checkout: PreCheckoutQuery):
-    """Подтверждаем оплату Stars для магазина."""
-    if pre_checkout.invoice_payload.startswith("shop:"):
-        await pre_checkout.answer(ok=True)
+async def on_pre_checkout(pre_checkout: PreCheckoutQuery):
+    """Единый обработчик — подтверждаем оплату Stars для любого payload."""
+    await pre_checkout.answer(ok=True)
 
 
 @dp.message(F.successful_payment)
-async def shop_successful_payment(message: Message):
-    """Успешная оплата Stars — показываем финальное сообщение."""
+async def on_successful_payment(message: Message):
+    """Единый обработчик Stars-платежей для магазина и пакетов кредитов."""
     payload = message.successful_payment.invoice_payload
-    if not payload.startswith("shop:"):
-        return
-    parts = payload.split(":")
-    key = parts[1]
-    plan_idx = int(parts[2])
-    s = SHOP_CATALOG.get(key)
-    if not s:
-        return
-    p = s["plans"][plan_idx]
     uid = message.from_user.id
     username = message.from_user.username or message.from_user.full_name
 
-    await message.answer(
-        f"✅ <b>Оплата прошла успешно!</b>\n\n"
-        f"{s['emoji']} <b>{s['name']} {p['name']}</b> — {p['stars']} ⭐\n\n"
-        f"Отправьте скриншот оплаты Александру — он активирует подписку.\n\n"
-        f"👇 Напишите напрямую:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="💬 Написать @neirosetkaalex",
-                url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил через Telegram Stars\nСервис: {s["name"]}\nТариф: {p["name"]}')
-            )],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
-        ]),
-        parse_mode="HTML"
-    )
+    # === 1. Магазин подписок (shop:SERVICE:PLAN_IDX) ===
+    if payload.startswith("shop:"):
+        parts = payload.split(":")
+        key = parts[1]
+        plan_idx = int(parts[2])
+        s = SHOP_CATALOG.get(key)
+        if not s:
+            return
+        p = s["plans"][plan_idx]
 
-    # Уведомить Александра об успешной оплате
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"💰 <b>Stars оплачено!</b>\n\n"
-            f"👤 @{username} (ID: {uid})\n"
-            f"📦 {s['emoji']} {s['name']} {p['name']}\n"
-            f"⭐ {p['stars']} Stars получено — активируй подписку!",
+        await message.answer(
+            f"✅ <b>Оплата прошла успешно!</b>\n\n"
+            f"{s['emoji']} <b>{s['name']} {p['name']}</b> — {p['stars']} ⭐\n\n"
+            f"Отправьте скриншот оплаты Александру — он активирует подписку.\n\n"
+            f"👇 Напишите напрямую:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💬 Написать @neirosetkaalex",
+                    url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил через Telegram Stars\nСервис: {s["name"]}\nТариф: {p["name"]}')
+                )],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+            ]),
             parse_mode="HTML"
         )
-    except Exception:
-        pass
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"💰 <b>Stars оплачено!</b>\n\n"
+                f"👤 @{username} (ID: {uid})\n"
+                f"📦 {s['emoji']} {s['name']} {p['name']}\n"
+                f"⭐ {p['stars']} Stars получено — активируй подписку!",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    # === 2. Пакеты кредитов (pack:KEY) ===
+    if payload.startswith("pack:"):
+        parts = payload.split(":")
+        key = parts[1]
+        p = CREDIT_PACKS.get(key)
+        if not p:
+            logging.warning(f"Unknown pack key in payment: {key}")
+            return
+
+        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=30)
+        await log_payment(uid, p["credits"], p["stars"], "stars")
+        await process_referral_bonus(uid)
+        cr = await get_credits(uid)
+        await message.answer(
+            f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+            f"➕ Начислено: <b>{p['credits']} кредитов</b>\n"
+            f"💵 Баланс: <b>{cr} кредитов</b>\n\n"
+            f"<i>⏳ Кредиты действуют 30 дней</i>\n\n"
+            f"Можешь начинать генерацию! 🚀",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📷 Создать фото", callback_data="menu_image")],
+                [InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+            ])
+        )
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"💰 <b>Stars: пакет кредитов куплен</b>\n\n"
+                f"👤 @{username} (ID: <code>{uid}</code>)\n"
+                f"📦 {p['name']} — {p['credits']} кр\n"
+                f"⭐ {p['stars']} Stars",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    logging.warning(f"Unknown successful_payment payload: {payload}")
 
 
 @dp.callback_query(F.data == "menu_ref")
@@ -3184,11 +3224,6 @@ async def pay_stars(cb: CallbackQuery):
     await cb.answer()
 
 
-@dp.pre_checkout_query()
-async def pre_checkout(q: PreCheckoutQuery):
-    await q.answer(ok=True)
-
-
 def _ref_bonus_for_count(count: int) -> int:
     """Возвращает размер реф-бонуса в зависимости от количества платящих рефералов."""
     if count < 5:
@@ -3248,24 +3283,6 @@ async def process_referral_bonus(user_id: int):
     except Exception as e:
         logging.error(f"ref bonus notify error: {e}")
 
-
-@dp.message(F.successful_payment)
-async def on_payment(message: Message):
-    parts = message.successful_payment.invoice_payload.split(":")
-    key = parts[1]
-    user_id = message.from_user.id
-    p = CREDIT_PACKS[key]
-    await add_credits_batch(user_id, p["credits"], source="purchase", days_valid=30)
-    await log_payment(user_id, p["credits"], p["stars"], "stars")
-    await process_referral_bonus(user_id)
-    cr = await get_credits(user_id)
-    await message.answer(
-        f"🎉 <b>Оплата прошла!</b>\n\n"
-        f"💎 Начислено: +{p['credits']} кредитов\n"
-        f"💵 Баланс: <b>{cr} кредитов</b>\n\n"
-        f"<i>⏳ Кредиты действуют 30 дней</i>",
-        reply_markup=kb_back(), parse_mode="HTML"
-    )
 
 # ══════════════════════════════════════════════════════════
 #  ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ
@@ -4508,17 +4525,55 @@ async def adm_top_users(cb: CallbackQuery):
 
 # ─── Список пользователей ─────────────────────────────────
 
+USERS_PAGE_SIZE = 15
+
+
 @dp.callback_query(F.data == "adm_users")
 async def adm_users(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
+    await _show_users_page(cb, page=0)
+
+
+@dp.callback_query(F.data.startswith("adm_users_p:"))
+async def adm_users_page(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        page = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        page = 0
+    await _show_users_page(cb, page)
+
+
+async def _show_users_page(cb: CallbackQuery, page: int):
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             total = await conn.fetchval("SELECT COUNT(*) FROM users") or 0
+            # Статистика: платящие, активные сегодня/7д, заблокированные
+            paid = await conn.fetchval(
+                "SELECT COUNT(DISTINCT user_id) FROM payments"
+            ) or 0
+            active_today = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE last_active > NOW() - INTERVAL '1 day'"
+            ) or 0
+            active_7d = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE last_active > NOW() - INTERVAL '7 days'"
+            ) or 0
+            blocked = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE is_blocked=TRUE"
+            ) or 0
+
+            max_page = max(0, (total - 1) // USERS_PAGE_SIZE)
+            page = max(0, min(page, max_page))
+            offset = page * USERS_PAGE_SIZE
             rows = await conn.fetch(
-                "SELECT user_id, username, full_name, credits, created_at FROM users ORDER BY created_at DESC LIMIT 10"
+                "SELECT user_id, username, full_name, credits, created_at, last_active "
+                "FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+                USERS_PAGE_SIZE, offset
             )
+
         lines = []
         for r in rows:
             username = (r['username'] or "").strip()
@@ -4530,11 +4585,45 @@ async def adm_users(cb: CallbackQuery):
                 uname = f"<a href='tg://user?id={uid}'>{full_name}</a>"
             else:
                 uname = f"<a href='tg://user?id={uid}'>ID {uid}</a>"
-            lines.append(f"• {uname} — {r['credits']} кредитов ({str(r['created_at'])[:10]})")
-        text = f"👥 <b>Пользователи</b> (всего: {total})\n\n<b>Последние 10:</b>\n" + "\n".join(lines)
-        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
-        ]), parse_mode="HTML")
+            date = str(r['created_at'])[:10] if r['created_at'] else "-"
+            lines.append(f"• {uname} · {r['credits']} кр · <code>{uid}</code> · рег. {date}")
+
+        text = (
+            f"👥 <b>Пользователи</b>\n\n"
+            f"📊 Всего: <b>{total}</b>\n"
+            f"💳 Платящих: <b>{paid}</b>\n"
+            f"🔥 Активных сегодня: <b>{active_today}</b>\n"
+            f"📅 Активных за 7д: <b>{active_7d}</b>\n"
+            f"🚫 Заблокированных: <b>{blocked}</b>\n\n"
+            f"<b>Страница {page+1}/{max_page+1}:</b>\n" + ("\n".join(lines) if lines else "Пусто")
+        )
+
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_users_p:{page-1}"))
+        nav.append(InlineKeyboardButton(text=f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_users_p:{page+1}"))
+
+        kb_rows = []
+        if nav:
+            kb_rows.append(nav)
+        kb_rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
+
+        try:
+            await cb.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            await cb.message.answer(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
     except Exception as e:
         await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
@@ -4655,31 +4744,135 @@ async def adm_give_to(cb: CallbackQuery, state: FSMContext):
 
 # ─── История платежей ─────────────────────────────────────
 
+PAYMENTS_PAGE_SIZE = 15
+
+
 @dp.callback_query(F.data == "adm_payments")
 async def adm_payments(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
+    await _show_payments_page(cb, page=0)
+
+
+@dp.callback_query(F.data.startswith("adm_pay_p:"))
+async def adm_payments_page(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        page = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        page = 0
+    await _show_payments_page(cb, page)
+
+
+async def _show_payments_page(cb: CallbackQuery, page: int):
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT user_id, credits, amount_rub, method, created_at FROM payments ORDER BY created_at DESC LIMIT 15"
+            # Общая статистика
+            total_count = await conn.fetchval("SELECT COUNT(*) FROM payments") or 0
+            total_sum = await conn.fetchval("SELECT COALESCE(SUM(amount_rub),0) FROM payments") or 0
+            total_credits = await conn.fetchval("SELECT COALESCE(SUM(credits),0) FROM payments") or 0
+
+            # Сегодня и за 7 дней
+            today_row = await conn.fetchrow(
+                "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments "
+                "WHERE created_at > NOW() - INTERVAL '1 day'"
             )
-            total_row = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments")
-        if not rows:
-            text = "📋 <b>История платежей</b>\n\nПлатежей пока нет."
+            week_row = await conn.fetchrow(
+                "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments "
+                "WHERE created_at > NOW() - INTERVAL '7 days'"
+            )
+
+            # Разбивка по методам
+            methods = await conn.fetch(
+                "SELECT method, COUNT(*) as n, COALESCE(SUM(amount_rub),0) as sum "
+                "FROM payments GROUP BY method ORDER BY sum DESC"
+            )
+
+            max_page = max(0, (total_count - 1) // PAYMENTS_PAGE_SIZE)
+            page = max(0, min(page, max_page))
+            offset = page * PAYMENTS_PAGE_SIZE
+
+            # Платежи + username
+            rows = await conn.fetch(
+                "SELECT p.user_id, p.credits, p.amount_rub, p.method, p.created_at, "
+                "       u.username, u.full_name "
+                "FROM payments p LEFT JOIN users u ON u.user_id = p.user_id "
+                "ORDER BY p.created_at DESC LIMIT $1 OFFSET $2",
+                PAYMENTS_PAGE_SIZE, offset
+            )
+
+        if total_count == 0:
+            text = "🧾 <b>История платежей</b>\n\nПлатежей пока нет."
+            kb_rows = [[InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]]
         else:
-            lines = [f"• ID {r['user_id']}: +{r['credits']} кредитов, {r['amount_rub']}₽ ({str(r['created_at'])[:10]})" for r in rows]
-            text = (f"📋 <b>История платежей</b>\n"
-                    f"Всего: {total_row[0]} платежей, {total_row[1]}₽\n\n"
-                    + "\n".join(lines))
-        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
-        ]), parse_mode="HTML")
+            method_lines = []
+            for m in methods:
+                emoji = "🏦" if m['method'] == "freekassa" else ("⭐" if m['method'] == "stars" else "💳")
+                method_lines.append(f"{emoji} {m['method']}: {m['n']} шт · {m['sum']}₽")
+
+            pay_lines = []
+            for r in rows:
+                username = (r['username'] or "").strip()
+                full_name = (r['full_name'] or "").strip()
+                uid = r['user_id']
+                if username:
+                    uname = f"@{username}"
+                elif full_name:
+                    uname = f"<a href='tg://user?id={uid}'>{full_name}</a>"
+                else:
+                    uname = f"ID <code>{uid}</code>"
+                dt = str(r['created_at'])[:16] if r['created_at'] else "-"
+                emoji = "🏦" if r['method'] == "freekassa" else ("⭐" if r['method'] == "stars" else "💳")
+                pay_lines.append(
+                    f"{emoji} {uname} · <b>{r['amount_rub']}₽</b> · +{r['credits']} кр · {dt}"
+                )
+
+            text = (
+                f"🧾 <b>История платежей</b>\n\n"
+                f"📊 <b>Всего:</b> {total_count} платежей · {total_sum}₽ · {total_credits} кр\n"
+                f"📅 За сутки: {today_row[0]} · {today_row[1]}₽\n"
+                f"📆 За 7 дней: {week_row[0]} · {week_row[1]}₽\n\n"
+                f"<b>По методам:</b>\n" + "\n".join(method_lines) + "\n\n"
+                f"<b>Страница {page+1}/{max_page+1}:</b>\n" + "\n".join(pay_lines)
+            )
+
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_pay_p:{page-1}"))
+            nav.append(InlineKeyboardButton(text=f"{page+1}/{max_page+1}", callback_data="noop"))
+            if page < max_page:
+                nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_pay_p:{page+1}"))
+
+            kb_rows = []
+            if nav:
+                kb_rows.append(nav)
+            kb_rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
+
+        try:
+            await cb.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            await cb.message.answer(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
     except Exception as e:
         await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
+
+
+@dp.callback_query(F.data == "noop")
+async def _noop(cb: CallbackQuery):
+    await cb.answer()
 
 
 # ─── Расход по пользователю ───────────────────────────────
