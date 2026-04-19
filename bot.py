@@ -4562,7 +4562,7 @@ async def _show_users_page(cb: CallbackQuery, page: int):
                 "SELECT COUNT(*) FROM users WHERE last_active > NOW() - INTERVAL '7 days'"
             ) or 0
             blocked = await conn.fetchval(
-                "SELECT COUNT(*) FROM users WHERE is_blocked=TRUE"
+                "SELECT COUNT(*) FROM users WHERE is_blocked=1"
             ) or 0
 
             max_page = max(0, (total - 1) // USERS_PAGE_SIZE)
@@ -4769,37 +4769,57 @@ async def _show_payments_page(cb: CallbackQuery, page: int):
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            # Общая статистика
-            total_count = await conn.fetchval("SELECT COUNT(*) FROM payments") or 0
-            total_sum = await conn.fetchval("SELECT COALESCE(SUM(amount_rub),0) FROM payments") or 0
-            total_credits = await conn.fetchval("SELECT COALESCE(SUM(credits),0) FROM payments") or 0
+            # Собираем ВСЕ платежи: из таблицы payments + оплаченные fk_orders
+            # (на случай если webhook не дошёл до log_payment, но деньги получены)
+            # UNION исключит дубли по (user_id, amount, created_at) с точностью до минуты
+            unified_sql = """
+                SELECT user_id, credits, amount_rub, method, created_at FROM payments
+                UNION ALL
+                SELECT user_id, credits, amount_rub, 'freekassa' as method, created_at
+                FROM fk_orders
+                WHERE status='paid'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM payments p
+                      WHERE p.user_id = fk_orders.user_id
+                        AND p.amount_rub = fk_orders.amount_rub
+                        AND ABS(EXTRACT(EPOCH FROM (p.created_at - fk_orders.created_at))) < 120
+                  )
+            """
 
-            # Сегодня и за 7 дней
+            # Общая статистика
+            total_count = await conn.fetchval(
+                f"SELECT COUNT(*) FROM ({unified_sql}) t"
+            ) or 0
+            total_sum = await conn.fetchval(
+                f"SELECT COALESCE(SUM(amount_rub),0) FROM ({unified_sql}) t"
+            ) or 0
+            total_credits = await conn.fetchval(
+                f"SELECT COALESCE(SUM(credits),0) FROM ({unified_sql}) t"
+            ) or 0
+
             today_row = await conn.fetchrow(
-                "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments "
-                "WHERE created_at > NOW() - INTERVAL '1 day'"
+                f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM ({unified_sql}) t "
+                f"WHERE created_at > NOW() - INTERVAL '1 day'"
             )
             week_row = await conn.fetchrow(
-                "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments "
-                "WHERE created_at > NOW() - INTERVAL '7 days'"
+                f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM ({unified_sql}) t "
+                f"WHERE created_at > NOW() - INTERVAL '7 days'"
             )
 
-            # Разбивка по методам
             methods = await conn.fetch(
-                "SELECT method, COUNT(*) as n, COALESCE(SUM(amount_rub),0) as sum "
-                "FROM payments GROUP BY method ORDER BY sum DESC"
+                f"SELECT method, COUNT(*) as n, COALESCE(SUM(amount_rub),0) as sum "
+                f"FROM ({unified_sql}) t GROUP BY method ORDER BY sum DESC"
             )
 
             max_page = max(0, (total_count - 1) // PAYMENTS_PAGE_SIZE)
             page = max(0, min(page, max_page))
             offset = page * PAYMENTS_PAGE_SIZE
 
-            # Платежи + username
             rows = await conn.fetch(
-                "SELECT p.user_id, p.credits, p.amount_rub, p.method, p.created_at, "
-                "       u.username, u.full_name "
-                "FROM payments p LEFT JOIN users u ON u.user_id = p.user_id "
-                "ORDER BY p.created_at DESC LIMIT $1 OFFSET $2",
+                f"SELECT t.user_id, t.credits, t.amount_rub, t.method, t.created_at, "
+                f"       u.username, u.full_name "
+                f"FROM ({unified_sql}) t LEFT JOIN users u ON u.user_id = t.user_id "
+                f"ORDER BY t.created_at DESC LIMIT $1 OFFSET $2",
                 PAYMENTS_PAGE_SIZE, offset
             )
 
