@@ -47,6 +47,7 @@ FK_WEBHOOK_PORT = int(os.getenv("PORT", "8080"))  # Railway использует
 
 FREE_CREDITS   = 150  # кредитов при первом /start без рефералки
 DATABASE_URL   = os.getenv("DATABASE_URL")  # Railway PostgreSQL
+EVOLINK_API_KEY = os.getenv("EVOLINK_API_KEY", "")  # Kling Motion Control через EvoLink
 
 _pool = None  # глобальный connection pool
 
@@ -117,10 +118,12 @@ _active_generations: set = set()  # {user_id}
 _photo_history: dict = {}      # фото + редактирование
 _video_history: dict = {}      # только видео (Veo text-to-video)
 _anim_history: dict = {}       # только анимация (Veo image-to-video)
+_motion_history: dict = {}     # Kling Motion Control (отдельный, т.к. медленнее)
 
 PHOTO_LIMIT_PER_HOUR = 30
 VIDEO_LIMIT_PER_HOUR = 20
 ANIM_LIMIT_PER_HOUR = 20
+MOTION_LIMIT_PER_HOUR = 10    # Motion Control идёт через внешний платный API
 
 # C) Глобальный семафор для Veo (чтобы не долбить Google API)
 _veo_semaphore = asyncio.Semaphore(5)
@@ -164,6 +167,8 @@ async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
         history, limit, label = _video_history, VIDEO_LIMIT_PER_HOUR, "видео"
     elif kind == "anim":
         history, limit, label = _anim_history, ANIM_LIMIT_PER_HOUR, "анимаций"
+    elif kind == "motion":
+        history, limit, label = _motion_history, MOTION_LIMIT_PER_HOUR, "Motion Control"
     else:
         history, limit, label = _photo_history, PHOTO_LIMIT_PER_HOUR, "фото"
 
@@ -1110,6 +1115,9 @@ def kb_main():
             InlineKeyboardButton(text="🏃 Анимировать фото",   callback_data="menu_anim"),
         ],
         [
+            InlineKeyboardButton(text="🎭 Motion Control (Kling)", callback_data="menu_motion"),
+        ],
+        [
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
         ],
         [
@@ -1280,6 +1288,12 @@ class AnimState(StatesGroup):
 class VidState(StatesGroup):
     waiting_aspect = State()
     waiting_prompt = State()
+
+class MotionState(StatesGroup):
+    waiting_image    = State()   # референс-фото персонажа
+    waiting_video    = State()   # референс-видео с движением
+    waiting_duration = State()   # выбор длительности (5/8/10)
+    waiting_prompt   = State()   # опциональный промт сцены
 
 class ChatState(StatesGroup):
     chatting = State()
@@ -2209,6 +2223,118 @@ async def api_animate_image(
     raise Exception("Превышено время ожидания анимации (6 мин)")
 
 
+# ══════════════════════════════════════════════════════════
+#  EVOLINK — Kling Motion Control
+# ══════════════════════════════════════════════════════════
+
+async def _tg_file_public_url(file_id: str) -> str:
+    """Получает публичный URL файла Telegram (действителен ~1 час).
+    EvoLink скачивает файл по этому URL для генерации."""
+    file = await bot.get_file(file_id)
+    return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+
+async def api_kling_motion_control(
+    image_url: str,
+    video_url: str,
+    duration: int = 8,
+    prompt: str = "",
+    aspect_ratio: str = "16:9",
+) -> bytes:
+    """Генерирует видео через Kling Motion Control на EvoLink.
+    
+    Args:
+        image_url: публичный URL референс-фото (персонаж)
+        video_url: публичный URL референс-видео (движение/эмоции)
+        duration: длительность видео в секундах (5, 8 или 10)
+        prompt: опциональный промт для описания сцены/фона
+        aspect_ratio: соотношение сторон ('16:9', '9:16', '1:1')
+    
+    Returns: bytes готового видео (mp4)
+    """
+    if not EVOLINK_API_KEY:
+        raise Exception("EvoLink API key not configured. Свяжись с админом.")
+
+    base = "https://api.evolink.ai/v1"
+    headers = {
+        "Authorization": f"Bearer {EVOLINK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": MOTION_MODEL_ID,
+        "image_url": image_url,
+        "video_url": video_url,
+        "duration": duration,
+        "aspect_ratio": aspect_ratio,
+        "character_orientation": "video",  # персонаж смотрит как в видео
+        "quality": "720p",  # 720p дешевле и достаточно качественно
+    }
+    if prompt.strip():
+        payload["prompt"] = prompt.strip()[:2500]
+
+    async with aiohttp.ClientSession() as s:
+        # 1. Отправляем задачу
+        async with s.post(f"{base}/videos/generations", json=payload, headers=headers) as r:
+            if r.status != 200 and r.status != 202:
+                err_text = (await r.text())[:400]
+                # Safety блоки (контент)
+                if r.status == 400 and ("safety" in err_text.lower() or "blocked" in err_text.lower()):
+                    raise Exception(
+                        "Референсы заблокированы фильтром безопасности 🛡\n"
+                        "Попробуй загрузить другие фото/видео — избегай знаменитостей, "
+                        "откровенного содержания, брендов."
+                    )
+                if r.status == 402 or "balance" in err_text.lower() or "insufficient" in err_text.lower():
+                    raise Exception(f"EvoLink: недостаточно средств на балансе API. Свяжись с админом.")
+                raise Exception(f"EvoLink Motion Control API {r.status}: {err_text[:300]}")
+            resp_data = await r.json()
+            task_id = resp_data.get("task_id") or resp_data.get("id")
+            if not task_id:
+                raise Exception(f"EvoLink: нет task_id в ответе: {str(resp_data)[:300]}")
+            logging.info(f"Kling Motion Control task started: {task_id}")
+
+        # 2. Polling — EvoLink Motion Control обычно 2-5 минут
+        # Делаем до 60 попыток с интервалом 5 сек = максимум 5 минут
+        for attempt in range(60):
+            await asyncio.sleep(5)
+            async with s.get(f"{base}/tasks/{task_id}", headers=headers) as pr:
+                if pr.status != 200:
+                    continue
+                pd = await pr.json()
+                status = pd.get("status", "").lower()
+
+                if status in ("completed", "success", "succeeded", "finished"):
+                    # Достаём URL готового видео
+                    video_url_out = (
+                        pd.get("video", {}).get("url")
+                        or pd.get("output", {}).get("video_url")
+                        or pd.get("result", {}).get("video_url")
+                        or pd.get("video_url")
+                    )
+                    if not video_url_out:
+                        raise Exception(f"EvoLink: нет URL видео в ответе: {str(pd)[:300]}")
+                    # Скачиваем результат
+                    async with s.get(video_url_out) as vr:
+                        data_bytes = await vr.read()
+                        if len(data_bytes) < 1000:
+                            raise Exception("Получен слишком маленький файл (возможно пустой)")
+                        return data_bytes
+
+                if status in ("failed", "error", "cancelled"):
+                    err = pd.get("error", {})
+                    err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
+                    low = err_msg.lower()
+                    if "safety" in low or "blocked" in low or "policy" in low:
+                        raise Exception(
+                            "Референсы заблокированы фильтром безопасности 🛡\n"
+                            "Попробуй другие фото/видео — избегай знаменитостей и брендов."
+                        )
+                    raise Exception(f"Kling Motion Control: {err_msg or 'неизвестная ошибка'}")
+                # queued / generating / processing — продолжаем ждать
+
+        raise Exception("Превышено время ожидания (5 мин). Попробуй ещё раз.")
+
+
 async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
     base = "https://generativelanguage.googleapis.com/v1beta"
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
@@ -2335,6 +2461,7 @@ WELCOME_NEW = """👋 Привет, {name}!
 🎬 Генерация видео
 🖌 Редактирование фото по описанию
 🏃 Анимация фото в видео
+🎭 Motion Control — перенос движений с видео на фото
 🤖 AI-консультант по нейросетям и подключению VPN — бесплатно
 🛍 Магазин подписок — ChatGPT, Claude, Midjourney, Grok и многие другие!
 ━━━━━━━━━━━━━━━━━━━━
@@ -2407,6 +2534,7 @@ async def cmd_start(message: Message, state: FSMContext):
             f"🎬 Генерация видео\n"
             f"🖌 Редактирование фото по описанию\n"
             f"🏃 Анимация фото в видео\n"
+            f"🎭 Motion Control — перенос движений с видео на фото\n"
             f"🤖 AI-консультант по нейросетям и подключению VPN — бесплатно\n"
             f"🛍 Магазин подписок — ChatGPT, Claude, Midjourney, Grok и многие другие!\n\n"
             f"⏳ Кредиты действуют 30 дней\n"
@@ -5433,6 +5561,14 @@ async def adm_promo_deact_start(cb: CallbackQuery, state: FSMContext):
 EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов
 ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 кредитов
 
+# ─── Kling Motion Control: цены по длительности ────────────
+MOTION_PRICES = {
+    5:  299,   # 5 сек — 299 кр (себест. ~32₽, маржа ~80%)
+    8:  349,   # 8 сек — 349 кр (себест. ~52₽, маржа ~72%)
+    10: 399,   # 10 сек — 399 кр (себест. ~66₽, маржа ~69%)
+}
+MOTION_MODEL_ID = "kling-v3-motion-control"  # EvoLink route name
+
 @dp.callback_query(F.data == "menu_edit")
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -5919,6 +6055,365 @@ async def anim_prompt(message: Message, state: FSMContext):
             f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
             reply_markup=kb_back()
         )
+    finally:
+        _active_generations.discard(uid)
+
+
+# ══════════════════════════════════════════════════════════
+#  🎭 KLING MOTION CONTROL (через EvoLink)
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "menu_motion")
+async def menu_motion(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(cb.from_user.id)
+    min_price = min(MOTION_PRICES.values())
+
+    text = (
+        "🎭 <b>Motion Control (Kling 3.0)</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n"
+        f"💵 Стоимость: от <b>{min_price} кр</b>\n\n"
+        "<b><i>🎬 Перенос движения и эмоций с видео на твоего персонажа</i></b>\n\n"
+        "📸 <b>Шаг 1</b> — фото персонажа (кого анимируем)\n"
+        "🎥 <b>Шаг 2</b> — видео с движениями/эмоциями\n"
+        "⏱ <b>Шаг 3</b> — длительность (5/8/10 сек)\n"
+        "✏️ <b>Шаг 4</b> — описание фона (опционально)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 <b>Для лучшего результата:</b>\n\n"
+        "<b>Фото персонажа:</b>\n"
+        "• чёткое, хорошо освещённое\n"
+        "• видно всё тело или верхнюю часть\n"
+        "• один человек в кадре\n"
+        "• без обрезанных частей\n\n"
+        "<b>Видео-референс:</b>\n"
+        "• 3–30 сек, один человек в кадре\n"
+        "• без резких склеек и движений камеры\n"
+        "• чёткие движения (танец, жесты, мимика)\n"
+        "• тот же ракурс что у фото (полный рост ↔ полный рост)\n\n"
+        "⏱ <i>Генерация 2–5 минут</i>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Готов? 👇"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="▶️ Начать", callback_data="mot_start")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "mot_start")
+async def mot_start(cb: CallbackQuery, state: FSMContext):
+    # Проверяем минимальный баланс (5 сек = 299 кр)
+    cr = await get_credits(cb.from_user.id)
+    min_price = min(MOTION_PRICES.values())
+    if cr < min_price:
+        try:
+            await cb.message.edit_text(
+                f"❌ Недостаточно кредитов\nНужно минимум {min_price} кр, у тебя {cr} кр.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+                ])
+            )
+        except Exception:
+            await cb.message.answer(f"❌ Недостаточно кредитов. Нужно {min_price} кр.")
+        await cb.answer()
+        return
+
+    # Проверка что EvoLink API настроен
+    if not EVOLINK_API_KEY:
+        await cb.answer("⚙️ Функция временно недоступна. Напиши @neirosetkaalex", show_alert=True)
+        return
+
+    await state.set_state(MotionState.waiting_image)
+    await cb.message.edit_text(
+        "🎭 <b>Motion Control — шаг 1/4</b>\n\n"
+        "📸 <b>Отправь фото персонажа</b>\n\n"
+        "<i>Кого будем анимировать? Загрузи фото одного человека (или мультяшного героя) — "
+        "на него будут перенесены движения с видео.</i>",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(MotionState.waiting_image, F.photo | F.document)
+async def mot_got_image(message: Message, state: FSMContext):
+    # Принимаем фото (photo) или документ (uncompressed)
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+        file_id = message.document.file_id
+    else:
+        await message.answer("📸 Отправь именно фото — JPG или PNG.")
+        return
+
+    await state.update_data(image_file_id=file_id)
+    await state.set_state(MotionState.waiting_video)
+    await message.answer(
+        "✅ Фото принято!\n\n"
+        "🎭 <b>Motion Control — шаг 2/4</b>\n\n"
+        "🎥 <b>Отправь видео-референс</b>\n\n"
+        "<i>Видео с движениями/эмоциями которые нужно перенести на персонажа.\n\n"
+        "Требования:\n"
+        "• длительность 3–30 сек\n"
+        "• один человек в кадре\n"
+        "• чёткие движения без резких склеек\n"
+        "• тот же ракурс что у фото</i>",
+        reply_markup=kb_cancel(), parse_mode="HTML"
+    )
+
+
+@dp.message(MotionState.waiting_image)
+async def mot_image_wrong(message: Message):
+    await message.answer("📸 Отправь фото персонажа (JPG или PNG), чтобы продолжить.")
+
+
+@dp.message(MotionState.waiting_video, F.video | F.video_note | F.document)
+async def mot_got_video(message: Message, state: FSMContext):
+    if message.video:
+        video = message.video
+        file_id = video.file_id
+        duration_sec = video.duration or 0
+    elif message.video_note:
+        video = message.video_note
+        file_id = video.file_id
+        duration_sec = video.duration or 0
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith("video/"):
+        file_id = message.document.file_id
+        duration_sec = 0  # не знаем, доверимся API
+    else:
+        await message.answer("🎥 Отправь именно видео — MP4, MOV.")
+        return
+
+    # Проверяем длительность (если известна)
+    if duration_sec and (duration_sec < 3 or duration_sec > 30):
+        await message.answer(
+            f"⚠️ Длительность видео — <b>{duration_sec} сек</b>.\n"
+            f"Нужно <b>от 3 до 30 секунд</b>. Загрузи другое видео.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Проверяем размер (Telegram limit 20MB для bot downloads без session)
+    file_size = getattr(message.video, "file_size", None) or getattr(message.document, "file_size", None) or 0
+    if file_size and file_size > 20 * 1024 * 1024:
+        await message.answer(
+            f"⚠️ Файл слишком большой ({file_size // 1024 // 1024} МБ).\n"
+            f"Максимум: 20 МБ. Сожми видео или уменьши разрешение.",
+        )
+        return
+
+    await state.update_data(video_file_id=file_id)
+    await state.set_state(MotionState.waiting_duration)
+
+    # Показываем выбор длительности с ценами
+    rows = []
+    for dur, price in sorted(MOTION_PRICES.items()):
+        rows.append([InlineKeyboardButton(
+            text=f"⏱ {dur} секунд · {price} кр",
+            callback_data=f"mot_dur:{dur}"
+        )])
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")])
+
+    await message.answer(
+        "✅ Видео принято!\n\n"
+        "🎭 <b>Motion Control — шаг 3/4</b>\n\n"
+        "⏱ <b>Выбери длительность видео:</b>\n\n"
+        "<i>Чем длиннее — тем больше движений войдёт, но и дороже.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        parse_mode="HTML"
+    )
+
+
+@dp.message(MotionState.waiting_video)
+async def mot_video_wrong(message: Message):
+    await message.answer("🎥 Отправь видео (MP4/MOV), чтобы продолжить.")
+
+
+@dp.callback_query(F.data.startswith("mot_dur:"), MotionState.waiting_duration)
+async def mot_got_duration(cb: CallbackQuery, state: FSMContext):
+    try:
+        dur = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        await cb.answer("Ошибка"); return
+
+    if dur not in MOTION_PRICES:
+        await cb.answer("Неверная длительность"); return
+
+    cr = await get_credits(cb.from_user.id)
+    price = MOTION_PRICES[dur]
+    if cr < price:
+        await cb.answer(
+            f"💸 Нужно {price} кр для {dur} секунд. У тебя {cr} кр.",
+            show_alert=True
+        )
+        return
+
+    await state.update_data(duration=dur, price=price)
+    await state.set_state(MotionState.waiting_prompt)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭ Пропустить промт", callback_data="mot_skip_prompt")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")],
+    ])
+    await cb.message.edit_text(
+        f"✅ Выбрано: {dur} секунд · {price} кр\n\n"
+        "🎭 <b>Motion Control — шаг 4/4</b>\n\n"
+        "✏️ <b>Опиши сцену/фон (опционально)</b>\n\n"
+        "<i>Движения будут взяты с видео, а этим промтом ты можешь задать фон, стиль, "
+        "освещение или любые детали.\n\n"
+        "Примеры:\n"
+        "• Neon-lit Tokyo street at night, cinematic\n"
+        "• Bright sunny beach, warm golden hour\n"
+        "• Professional studio with soft lighting\n\n"
+        "Или нажми «Пропустить» — будет использован фон с фото.</i>",
+        reply_markup=kb, parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "mot_skip_prompt", MotionState.waiting_prompt)
+async def mot_skip_prompt(cb: CallbackQuery, state: FSMContext):
+    await state.update_data(prompt="")
+    await _mot_confirm_and_run(cb.message, state, cb.from_user.id, edit=True)
+    await cb.answer()
+
+
+@dp.message(MotionState.waiting_prompt)
+async def mot_got_prompt(message: Message, state: FSMContext):
+    prompt = (message.text or "").strip()
+    ok_v, err = validate_gen_prompt(prompt) if prompt else (True, "")
+    if not ok_v:
+        await message.answer(err)
+        return
+    await state.update_data(prompt=prompt)
+    await _mot_confirm_and_run(message, state, message.from_user.id, edit=False)
+
+
+async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool):
+    """Запускает генерацию Motion Control после получения всех параметров."""
+    data = await state.get_data()
+    image_file_id = data.get("image_file_id")
+    video_file_id = data.get("video_file_id")
+    duration = data.get("duration", 8)
+    price = data.get("price", MOTION_PRICES.get(duration, 349))
+    prompt = data.get("prompt", "")
+
+    if not image_file_id or not video_file_id:
+        await msg_obj.answer("⚠️ Не хватает данных. Начни заново через меню.")
+        await state.clear()
+        return
+
+    # Rate limit
+    if not await _check_can_generate(msg_obj, uid, kind="motion"):
+        await state.clear()
+        return
+
+    # Проверка баланса ещё раз (мог измениться)
+    cr = await get_credits(uid)
+    if cr < price:
+        await state.clear()
+        await msg_obj.answer(f"❌ Недостаточно кредитов. Нужно {price} кр, у тебя {cr}.")
+        return
+
+    # Списываем
+    ok = await deduct(uid, price)
+    if not ok:
+        await state.clear()
+        await msg_obj.answer("❌ Ошибка списания. Попробуй ещё раз.")
+        return
+
+    _active_generations.add(uid)
+    await state.clear()
+
+    wait_text = (
+        f"⏳ Запускаю Motion Control...\n\n"
+        f"🎭 Kling 3.0 | {duration} сек | 720p\n"
+        + (f"<i>{prompt[:80]}</i>\n" if prompt else "")
+        + f"\n⏱ Обычно 2–5 минут. Пришлю как только готово 👇"
+    )
+    if edit:
+        try:
+            wait = await msg_obj.edit_text(wait_text, parse_mode="HTML")
+        except Exception:
+            wait = await msg_obj.answer(wait_text, parse_mode="HTML")
+    else:
+        wait = await msg_obj.answer(wait_text, parse_mode="HTML")
+
+    try:
+        # Получаем публичные URL файлов Telegram (EvoLink сам скачает)
+        image_url = await _tg_file_public_url(image_file_id)
+        video_url = await _tg_file_public_url(video_file_id)
+
+        # Запускаем генерацию (без retry — safety блоки не ретраятся, а ошибки API итак долгие)
+        vid_bytes = await api_kling_motion_control(
+            image_url=image_url,
+            video_url=video_url,
+            duration=duration,
+            prompt=prompt,
+            aspect_ratio="16:9",
+        )
+        size_mb = len(vid_bytes) / 1024 / 1024
+        logging.info(f"Motion Control ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
+        await log_gen(uid, "motion", MOTION_MODEL_ID, price)
+        _record_generation(uid, _motion_history)
+        cr_left = await get_credits(uid)
+
+        kb_after_mot = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_motion"),
+             InlineKeyboardButton(text="🏠 Главное", callback_data="back_main")],
+        ])
+        # 1. Видео плеером
+        try:
+            await bot.send_video(
+                chat_id=msg_obj.chat.id,
+                video=BufferedInputFile(vid_bytes, "motion_control.mp4"),
+                caption=(
+                    f"🎭 Готово! Motion Control · {duration} сек\n"
+                    f"💸 Списано {price} кр | Остаток: {cr_left} кр"
+                    + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else "")
+                ),
+                reply_markup=kb_after_mot,
+                supports_streaming=True,
+            )
+        except Exception as ve:
+            logging.warning(f"send_video failed: {ve}")
+
+        # 2. Документ (оригинал без сжатия)
+        if size_mb < 48:
+            try:
+                await bot.send_document(
+                    chat_id=msg_obj.chat.id,
+                    document=BufferedInputFile(vid_bytes, "motion_control_original.mp4"),
+                    caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
+                    parse_mode="HTML",
+                    disable_content_type_detection=True,
+                )
+            except Exception as de:
+                logging.error(f"Motion Control send_document failed ({size_mb:.1f} MB): {de}")
+
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+
+    except Exception as e:
+        await add_credits(uid, price)
+        await notify_admin_error(f"Motion Control uid={uid} duration={duration}", e)
+        try:
+            await wait.edit_text(
+                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                reply_markup=kb_back()
+            )
+        except Exception:
+            await msg_obj.answer(
+                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                reply_markup=kb_back()
+            )
     finally:
         _active_generations.discard(uid)
 
