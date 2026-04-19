@@ -2266,8 +2266,11 @@ async def api_kling_motion_control(
         "video_url": video_url,
         "duration": duration,
         "aspect_ratio": aspect_ratio,
-        "character_orientation": "video",  # персонаж смотрит как в видео
         "quality": "720p",  # 720p дешевле и достаточно качественно
+        # EvoLink требует motion-control-специфичные параметры в model_params
+        "model_params": {
+            "character_orientation": "video",  # персонаж смотрит как в референс-видео
+        },
     }
     if prompt.strip():
         payload["prompt"] = prompt.strip()[:2500]
