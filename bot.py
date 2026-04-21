@@ -1175,46 +1175,91 @@ def kb_main():
         ],
     ])
 
-def kb_image_models():
-    imagen_keys = ["img_fast", "img_std", "img_ultra"]
-    nano_keys   = ["nb_flash", "nb_2", "nb_pro"]
-    fal_keys    = ["flux_pro", "ideogram_v3"]
+def kb_image_brands():
+    """Верхний уровень: выбор бренда моделей."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌟 Imagen 4",     callback_data="iband:imagen")],
+        [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano")],
+        [InlineKeyboardButton(text="🎨 Flux",         callback_data="iband:flux")],
+        [InlineKeyboardButton(text="🖋 Ideogram",     callback_data="iband:ideogram")],
+        [InlineKeyboardButton(text="⬅️ Назад",        callback_data="back_main")],
+    ])
+
+
+# Маппинг бренда → ключи моделей (по возрастанию кредитов)
+IMAGE_BRAND_MODELS = {
+    "imagen":   ["img_fast", "img_std", "img_ultra"],
+    "nano":     ["nb_flash", "nb_2", "nb_pro"],
+    "flux":     ["flux_pro"],
+    "ideogram": ["ideogram_v3"],
+}
+
+IMAGE_BRAND_TITLES = {
+    "imagen":   "🌟 Imagen 4",
+    "nano":     "🍌 Nano Banana",
+    "flux":     "🎨 Flux",
+    "ideogram": "🖋 Ideogram",
+}
+
+
+def kb_image_models_for_brand(brand: str):
+    """Подменю конкретного бренда: список его моделей."""
+    keys = IMAGE_BRAND_MODELS.get(brand, [])
     rows = []
-    for key in imagen_keys:
-        m = IMAGE_MODELS[key]
-        rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кр",
-            callback_data=f"imodel:{key}"
-        )])
-    # Разделитель
-    rows.append([InlineKeyboardButton(text="─── 🍌 Nano Banana ───", callback_data="noop")])
-    for key in nano_keys:
-        m = IMAGE_MODELS[key]
-        rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кр",
-            callback_data=f"imodel:{key}"
-        )])
-    # Разделитель Flux & Ideogram
-    rows.append([InlineKeyboardButton(text="─── 🎨 Flux & Ideogram ───", callback_data="noop")])
-    for key in fal_keys:
+    for key in keys:
         if key in IMAGE_MODELS:
             m = IMAGE_MODELS[key]
             rows.append([InlineKeyboardButton(
                 text=f"{m['name']} — {m['credits']} кр",
                 callback_data=f"imodel:{key}"
             )])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_img_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def kb_video_models():
+
+# Старое имя для обратной совместимости (используется в /again и т.п.)
+def kb_image_models():
+    return kb_image_brands()
+
+def kb_video_brands():
+    """Верхний уровень: выбор бренда видео-моделей."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎥 Veo 3.1", callback_data="vband:veo")],
+        [InlineKeyboardButton(text="🎞 Kling",   callback_data="vband:kling")],
+        [InlineKeyboardButton(text="⬅️ Назад",    callback_data="back_main")],
+    ])
+
+
+# Маппинг бренда → ключи моделей видео (по возрастанию кредитов)
+VIDEO_BRAND_MODELS = {
+    "veo":   ["vid_lite", "vid_fast", "vid_pro"],
+    "kling": ["kling_turbo", "kling_pro"],
+}
+
+VIDEO_BRAND_TITLES = {
+    "veo":   "🎥 Veo 3.1",
+    "kling": "🎞 Kling",
+}
+
+
+def kb_video_models_for_brand(brand: str):
+    """Подменю конкретного видео-бренда: список его моделей."""
+    keys = VIDEO_BRAND_MODELS.get(brand, [])
     rows = []
-    for key, m in VIDEO_MODELS.items():
-        rows.append([InlineKeyboardButton(
-            text=f"{m['name']} — {m['credits']} кредитов",
-            callback_data=f"vmodel:{key}"
-        )])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    for key in keys:
+        if key in VIDEO_MODELS:
+            m = VIDEO_MODELS[key]
+            rows.append([InlineKeyboardButton(
+                text=f"{m['name']} — {m['credits']} кр",
+                callback_data=f"vmodel:{key}"
+            )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_vid_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# Старое имя для обратной совместимости
+def kb_video_models():
+    return kb_video_brands()
 
 def kb_confirm(prefix: str, key: str):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -3846,21 +3891,55 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
     text = (
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"<b><i>🌟 Imagen 4 — генерация изображений</i></b>\n\n"
-        f"⚡ <b>Fast</b> — 7 кр · <i>для объёмных задач</i>\n"
-        f"🎯 <b>Standard</b> — 10 кр · <i>базовое решение (2K)</i>\n"
-        f"💎 <b>Ultra</b> — 13 кр · <i>премиум-сегмент (2K)</i>\n\n"
-        f"<b><i>🍌 Nano Banana — генерация и редактирование</i></b>\n\n"
-        f"✏️ <b>Flash</b> — 10 кр · <i>генерация по описанию</i>\n"
-        f"📈 <b>v2</b> — 13 кр · <i>оптимальный выбор (4K)</i>\n"
-        f"🏆 <b>Pro</b> — 30 кр · <i>для ответственной задачи (4K)</i>"
+        f"<b>Выбери модель:</b>\n\n"
+        f"🌟 <b>Imagen 4</b> — флагман Google, от 7 кр\n"
+        f"🍌 <b>Nano Banana</b> — Gemini, 4K, от 10 кр\n"
+        f"🎨 <b>Flux</b> — фотореализм, от 12 кр\n"
+        f"🖋 <b>Ideogram</b> — идеальный текст в картинке, от 14 кр"
     )
     try:
-        await cb.message.edit_text(text, reply_markup=kb_image_models(), parse_mode="HTML")
+        await cb.message.edit_text(text, reply_markup=kb_image_brands(), parse_mode="HTML")
     except Exception:
         # Не получилось отредактировать (напр. это сообщение с фото)
-        await cb.message.answer(text, reply_markup=kb_image_models(), parse_mode="HTML")
+        await cb.message.answer(text, reply_markup=kb_image_brands(), parse_mode="HTML")
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("iband:"))
+async def choose_img_brand(cb: CallbackQuery, state: FSMContext):
+    """Открыть подменю моделей выбранного бренда."""
+    await state.clear()
+    brand = cb.data.split(":")[1]
+    if brand not in IMAGE_BRAND_MODELS:
+        await cb.answer()
+        return
+    cr = await get_credits(cb.from_user.id)
+    title = IMAGE_BRAND_TITLES.get(brand, brand)
+
+    # Список моделей бренда с описанием
+    lines = []
+    for key in IMAGE_BRAND_MODELS[brand]:
+        if key in IMAGE_MODELS:
+            m = IMAGE_MODELS[key]
+            icon = "🔹" if cr >= m['credits'] else "🔸"
+            lines.append(f"{icon} <b>{m['name'].lstrip('· ⚡💎◆🍌🎨🖋 ')}</b> — {m['credits']} кр\n   <i>{m['desc']}</i>")
+
+    text = (
+        f"{title}\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
+        + "\n\n".join(lines)
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_image_models_for_brand(brand), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb_image_models_for_brand(brand), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "back_img_brands")
+async def back_to_img_brands(cb: CallbackQuery, state: FSMContext):
+    """Возврат к выбору бренда из подменю."""
+    await menu_image(cb, state)
 
 
 @dp.callback_query(F.data.startswith("imodel:"))
@@ -4108,19 +4187,58 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
     text = (
-        f"🎬 <b>Создать видео (8 сек)</b>\n\n"
+        f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"<b><i>🎥 Veo 3.1 — генерация видео по тексту</i></b>\n\n"
-        f"💰 <b>Lite</b> — 99 кр · <i>бюджет, быстро (720p)</i>\n"
-        f"⚡ <b>Fast</b> — 249 кр · <i>баланс цены и качества (1080p)</i>\n"
-        f"🎬 <b>Pro</b> — 599 кр · <i>кино-качество со звуком (4K)</i>\n\n"
+        f"<b>Выбери модель:</b>\n\n"
+        f"🎥 <b>Veo 3.1</b> — Google, до 4K + аудио, от 99 кр\n"
+        f"🎞 <b>Kling</b> — #1 в бенчмарках, плавная физика, от 159 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
-        await cb.message.edit_text(text, reply_markup=kb_video_models(), parse_mode="HTML")
+        await cb.message.edit_text(text, reply_markup=kb_video_brands(), parse_mode="HTML")
     except Exception:
-        await cb.message.answer(text, reply_markup=kb_video_models(), parse_mode="HTML")
+        await cb.message.answer(text, reply_markup=kb_video_brands(), parse_mode="HTML")
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("vband:"))
+async def choose_vid_brand(cb: CallbackQuery, state: FSMContext):
+    """Открыть подменю моделей выбранного видео-бренда."""
+    await state.clear()
+    brand = cb.data.split(":")[1]
+    if brand not in VIDEO_BRAND_MODELS:
+        await cb.answer()
+        return
+    cr = await get_credits(cb.from_user.id)
+    title = VIDEO_BRAND_TITLES.get(brand, brand)
+
+    lines = []
+    for key in VIDEO_BRAND_MODELS[brand]:
+        if key in VIDEO_MODELS:
+            m = VIDEO_MODELS[key]
+            icon = "🔹" if cr >= m['credits'] else "🔸"
+            lines.append(
+                f"{icon} <b>{m['name'].lstrip('💰⚡🎬🎞🏆 ')}</b> — {m['credits']} кр\n"
+                f"   <i>{m['res']} · {m['desc']}</i>"
+            )
+
+    text = (
+        f"{title}\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
+        + "\n\n".join(lines)
+        + "\n\n⏱ <i>Время генерации: 1–6 минут</i>"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_video_models_for_brand(brand), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb_video_models_for_brand(brand), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "back_vid_brands")
+async def back_to_vid_brands(cb: CallbackQuery, state: FSMContext):
+    """Возврат к выбору бренда из подменю."""
+    await menu_video(cb, state)
 
 
 @dp.callback_query(F.data.startswith("vmodel:"))
@@ -4514,15 +4632,12 @@ async def reply_create_photo(message: Message, state: FSMContext):
     await message.answer(
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"<b><i>🌟 Imagen 4 — генерация изображений</i></b>\n\n"
-        f"⚡ <b>Fast</b> — 7 кр · <i>для объёмных задач</i>\n"
-        f"🎯 <b>Standard</b> — 10 кр · <i>базовое решение (2K)</i>\n"
-        f"💎 <b>Ultra</b> — 13 кр · <i>премиум-сегмент (2K)</i>\n\n"
-        f"<b><i>🍌 Nano Banana — генерация и редактирование</i></b>\n\n"
-        f"✏️ <b>Flash</b> — 10 кр · <i>генерация по описанию</i>\n"
-        f"📈 <b>v2</b> — 13 кр · <i>оптимальный выбор (4K)</i>\n"
-        f"🏆 <b>Pro</b> — 30 кр · <i>для ответственной задачи (4K)</i>",
-        reply_markup=kb_image_models(), parse_mode="HTML"
+        f"<b>Выбери модель:</b>\n\n"
+        f"🌟 <b>Imagen 4</b> — флагман Google, от 7 кр\n"
+        f"🍌 <b>Nano Banana</b> — Gemini, 4K, от 10 кр\n"
+        f"🎨 <b>Flux</b> — фотореализм, от 12 кр\n"
+        f"🖋 <b>Ideogram</b> — идеальный текст в картинке, от 14 кр",
+        reply_markup=kb_image_brands(), parse_mode="HTML"
     )
 
 
@@ -4531,14 +4646,13 @@ async def reply_create_video(message: Message, state: FSMContext):
     await state.clear()
     cr = await get_credits(message.from_user.id)
     await message.answer(
-        f"🎬 <b>Создать видео (8 сек)</b>\n\n"
+        f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
-        f"<b><i>🎥 Veo 3.1 — генерация видео по тексту</i></b>\n\n"
-        f"💰 <b>Lite</b> — 99 кр · <i>бюджет, быстро (720p)</i>\n"
-        f"⚡ <b>Fast</b> — 249 кр · <i>баланс цены и качества (1080p)</i>\n"
-        f"🎬 <b>Pro</b> — 599 кр · <i>кино-качество со звуком (4K)</i>\n\n"
+        f"<b>Выбери модель:</b>\n\n"
+        f"🎥 <b>Veo 3.1</b> — Google, до 4K + аудио, от 99 кр\n"
+        f"🎞 <b>Kling</b> — #1 в бенчмарках, плавная физика, от 159 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
-        reply_markup=kb_video_models(), parse_mode="HTML"
+        reply_markup=kb_video_brands(), parse_mode="HTML"
     )
 
 
