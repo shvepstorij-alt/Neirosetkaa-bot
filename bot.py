@@ -4712,36 +4712,184 @@ async def adm_do_unblock(cb: CallbackQuery):
 
 # ─── Активность ───────────────────────────────────────────
 
+ACTIVITY_DAYS_PER_PAGE = 3
+
+
 @dp.callback_query(F.data == "adm_activity")
 async def adm_activity(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
+    await _show_activity_page(cb, page=0)
+
+
+@dp.callback_query(F.data.startswith("adm_act_p:"))
+async def adm_activity_page(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        page = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        page = 0
+    await _show_activity_page(cb, page)
+
+
+async def _show_activity_page(cb: CallbackQuery, page: int):
+    """Показывает статистику по каждому дню с пагинацией (3 дня на странице)."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            periods = [
-                ("Сегодня",  "NOW() - INTERVAL '1 day'",  "CURRENT_DATE"),
-                ("Вчера",    "NOW() - INTERVAL '2 days'", "NOW() - INTERVAL '1 day'"),
-                ("7 дней",   "NOW() - INTERVAL '7 days'", "NOW()"),
-                ("30 дней",  "NOW() - INTERVAL '30 days'","NOW()"),
-            ]
-            lines = []
-            for label, since, _ in periods:
-                row = await conn.fetchrow(
-                    f"SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= {since}"
+            # Находим самый ранний день с активностью — чтобы знать границу пагинации
+            oldest_date = await conn.fetchval(
+                "SELECT MIN(DATE(created_at)) FROM users"
+            )
+            if not oldest_date:
+                await cb.message.answer(
+                    "📈 <b>Активность</b>\n\nДанных пока нет.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
+                    ]),
+                    parse_mode="HTML"
                 )
-                new_u = await conn.fetchval(
-                    f"SELECT COUNT(*) FROM users WHERE created_at >= {since}"
+                await cb.answer()
+                return
+
+            today = await conn.fetchval("SELECT CURRENT_DATE")
+            total_days = (today - oldest_date).days + 1
+            max_page = max(0, (total_days - 1) // ACTIVITY_DAYS_PER_PAGE)
+            page = max(0, min(page, max_page))
+
+            # Считаем общую сводку (за всё время)
+            total_users = await conn.fetchval("SELECT COUNT(*) FROM users") or 0
+            total_gens = await conn.fetchval("SELECT COUNT(*) FROM generations") or 0
+            total_spent = await conn.fetchval(
+                "SELECT COALESCE(SUM(credits),0) FROM generations"
+            ) or 0
+            # Купленные кредиты — через UNION payments + fk_orders (paid, не дубли)
+            total_bought = await conn.fetchval("""
+                SELECT COALESCE(SUM(credits),0) FROM (
+                    SELECT credits, created_at FROM payments
+                    UNION ALL
+                    SELECT credits, created_at FROM fk_orders
+                    WHERE status='paid'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM payments p
+                          WHERE p.user_id = fk_orders.user_id
+                            AND p.amount_rub = fk_orders.amount_rub
+                            AND ABS(EXTRACT(EPOCH FROM (p.created_at - fk_orders.created_at))) < 120
+                      )
+                ) t
+            """) or 0
+
+            # Достаём данные по дням для текущей страницы
+            offset_days = page * ACTIVITY_DAYS_PER_PAGE
+            # Страница 0 = сегодня и 2 предыдущих; страница 1 = ещё 3 раньше; и т.д.
+            day_blocks = []
+            day_labels = ["Сегодня", "Вчера", "Позавчера"]
+
+            for i in range(ACTIVITY_DAYS_PER_PAGE):
+                days_ago = offset_days + i
+                if days_ago >= total_days:
+                    break
+                # Рассчитываем границы дня
+                day_row = await conn.fetchrow("""
+                    SELECT
+                        CURRENT_DATE - $1::int AS day,
+                        (CURRENT_DATE - $1::int)::timestamp AS day_start,
+                        (CURRENT_DATE - $1::int + 1)::timestamp AS day_end
+                """, days_ago)
+                day_date = day_row["day"]
+                day_start = day_row["day_start"]
+                day_end = day_row["day_end"]
+
+                # Новые юзеры
+                new_users = await conn.fetchval(
+                    "SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at < $2",
+                    day_start, day_end
                 ) or 0
-                lines.append(f"<b>{label}:</b> {row[0]} ген, +{new_u} юз, {row[1]} кредитов")
-        await cb.message.answer(
-            "📈 <b>Активность</b>\n\n" + "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
-            ]),
-            parse_mode="HTML"
+
+                # Генерации и потраченные кредиты
+                gen_row = await conn.fetchrow(
+                    "SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations "
+                    "WHERE created_at >= $1 AND created_at < $2",
+                    day_start, day_end
+                )
+                gens_count = gen_row[0] or 0
+                spent_credits = gen_row[1] or 0
+
+                # Купленные кредиты за день (UNION)
+                bought_row = await conn.fetchrow("""
+                    SELECT COUNT(*), COALESCE(SUM(credits),0), COALESCE(SUM(amount_rub),0) FROM (
+                        SELECT credits, amount_rub, created_at FROM payments
+                        UNION ALL
+                        SELECT credits, amount_rub, created_at FROM fk_orders
+                        WHERE status='paid'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM payments p
+                              WHERE p.user_id = fk_orders.user_id
+                                AND p.amount_rub = fk_orders.amount_rub
+                                AND ABS(EXTRACT(EPOCH FROM (p.created_at - fk_orders.created_at))) < 120
+                          )
+                    ) t WHERE created_at >= $1 AND created_at < $2
+                """, day_start, day_end)
+                pay_count = bought_row[0] or 0
+                bought_credits = bought_row[1] or 0
+                revenue_rub = bought_row[2] or 0
+
+                # Человекочитаемая метка дня
+                if page == 0 and i < len(day_labels):
+                    label = day_labels[i]
+                    sublabel = day_date.strftime("%d.%m")
+                else:
+                    label = day_date.strftime("%d.%m.%Y")
+                    # День недели
+                    weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+                    sublabel = weekdays[day_date.weekday()]
+
+                day_blocks.append(
+                    f"📅 <b>{label}</b> · <i>{sublabel}</i>\n"
+                    f"  👥 Новых: <b>{new_users}</b>\n"
+                    f"  🎨 Генераций: <b>{gens_count}</b> · потрачено {spent_credits} кр\n"
+                    f"  💰 Покупок: <b>{pay_count}</b> · +{bought_credits} кр · {revenue_rub}₽"
+                )
+
+        # Формируем сообщение
+        header = (
+            f"📈 <b>Активность</b>\n\n"
+            f"📊 <b>Всего за всё время:</b>\n"
+            f"👥 Юзеров: {total_users} · 🎨 ген: {total_gens}\n"
+            f"💸 Потрачено: {total_spent} кр · 💰 Куплено: {total_bought} кр\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
         )
+        body = "\n\n".join(day_blocks) if day_blocks else "<i>Нет данных за этот период</i>"
+        text = header + body + f"\n\n<i>Страница {page+1}/{max_page+1}</i>"
+
+        # Кнопки навигации
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="◀️ Раньше", callback_data=f"adm_act_p:{page-1}"))
+        nav.append(InlineKeyboardButton(text=f"{page+1}/{max_page+1}", callback_data="noop"))
+        if page < max_page:
+            nav.append(InlineKeyboardButton(text="Позже ▶️", callback_data=f"adm_act_p:{page+1}"))
+
+        kb_rows = []
+        if nav:
+            kb_rows.append(nav)
+        kb_rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
+
+        try:
+            await cb.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await cb.message.answer(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                parse_mode="HTML"
+            )
     except Exception as e:
+        logging.error(f"adm_activity error: {e}")
         await cb.message.answer(f"⛔ Ошибка: {e}")
     finally:
         await cb.answer()
@@ -6782,9 +6930,58 @@ def _setup_signal_handlers(loop):
             pass
 
 
+async def set_bot_profile():
+    """Устанавливает описание бота (видно до нажатия /start) и команды в меню."""
+    try:
+        # Полное описание — до 512 символов, показывается на пустом экране до /start
+        await bot.set_my_description(
+            description=(
+                "🎨 Neirosetka — твой помощник в мире ИИ\n\n"
+                "Создавай фото и видео с помощью нейросетей прямо в Telegram, "
+                "без регистраций и зарубежных карт.\n\n"
+                "Что умею:\n"
+                "🍌 Генерация изображений\n"
+                "🎬 Генерация видео\n"
+                "🖌 Редактирование фото по описанию\n"
+                "🏃 Анимация фото в видео\n"
+                "🎭 Motion Control — перенос движений на персонажа\n"
+                "🤖 AI-консультант по VPN и нейросетям\n"
+                "🛍 Магазин подписок на нейросети с оплатой в рублях!\n\n"
+                "🎁 150 бонусных кредитов при старте!\n\n"
+                "Нажми «Начать» 👇"
+            )
+        )
+        # Короткое описание — до 120 символов, показывается в профиле/поиске
+        await bot.set_my_short_description(
+            short_description=(
+                "🎨 Фото, видео и подписки на ChatGPT, Claude, Midjourney в рублях. "
+                "150 кр в подарок 🎁"
+            )
+        )
+        logging.info("✅ Bot description set")
+    except Exception as e:
+        logging.warning(f"Could not set bot description: {e}")
+
+    # Команды в меню (кнопка ⌘ слева от поля ввода)
+    try:
+        from aiogram.types import BotCommand
+        await bot.set_my_commands([
+            BotCommand(command="start",       description="🏠 Главное меню"),
+            BotCommand(command="ref",         description="🤝 Пригласить друга"),
+            BotCommand(command="help",        description="❓ Помощь"),
+            BotCommand(command="privacy",     description="🔒 Политика конфиденциальности"),
+            BotCommand(command="publicoffer", description="📋 Публичная оферта"),
+        ])
+        logging.info("✅ Bot commands set")
+    except Exception as e:
+        logging.warning(f"Could not set bot commands: {e}")
+
+
 async def main():
     await init_db()
     await start_webhook_server()
+    # Устанавливаем описание бота и команды
+    await set_bot_profile()
     # Фоновые задачи
     asyncio.create_task(_memory_cleanup_loop())
     asyncio.create_task(db_cleanup_loop())
