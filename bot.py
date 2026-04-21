@@ -48,6 +48,7 @@ FK_WEBHOOK_PORT = int(os.getenv("PORT", "8080"))  # Railway использует
 FREE_CREDITS   = 150  # кредитов при первом /start без рефералки
 DATABASE_URL   = os.getenv("DATABASE_URL")  # Railway PostgreSQL
 EVOLINK_API_KEY = os.getenv("EVOLINK_API_KEY", "")  # Kling Motion Control через EvoLink
+FAL_API_KEY    = os.getenv("FAL_API_KEY", "")       # fal.ai — Flux 2 Pro, Ideogram V3, Kling 2.5/3.0
 
 _pool = None  # глобальный connection pool
 
@@ -269,6 +270,25 @@ IMAGE_MODELS = {
         "speed": "~8 сек",
         "desc": "4K, точный текст в картинке",
     },
+    # ── Black Forest Labs / Ideogram (через fal.ai) ────────
+    "flux_pro": {
+        "name": "🎨 Flux 2 Pro",
+        "model_id": "fal-ai/flux-2-pro",
+        "api": "fal",
+        "credits": 12,
+        "price": "6₽",
+        "speed": "~8 сек",
+        "desc": "Фотореализм от Black Forest Labs",
+    },
+    "ideogram_v3": {
+        "name": "🖋 Ideogram V3",
+        "model_id": "fal-ai/ideogram/v3",
+        "api": "fal",
+        "credits": 14,
+        "price": "7₽",
+        "speed": "~10 сек",
+        "desc": "Идеальный текст в картинке (для постеров, баннеров WB/Ozon)",
+    },
 }
 
 # ─── Модели видео ─────────────────────────────────────────
@@ -276,22 +296,43 @@ VIDEO_MODELS = {
     "vid_lite": {
         "name": "💰 Veo 3.1 Lite",
         "model_id": "veo-3.1-lite-generate-preview",
+        "api": "veo",
         "credits": 99,
         "price": "53₽",
         "res": "720p",
         "desc": "Бюджет, быстро",
     },
+    "kling_turbo": {
+        "name": "🎞 Kling 2.5 Turbo Pro",
+        "model_id": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+        "api": "fal",
+        "credits": 159,
+        "price": "85₽",
+        "res": "1080p + аудио",
+        "desc": "8 сек, плавная физика, с аудио",
+    },
     "vid_fast": {
         "name": "⚡ Veo 3.1 Fast",
         "model_id": "veo-3.1-fast-generate-preview",
+        "api": "veo",
         "credits": 249,
         "price": "133₽",
         "res": "1080p",
         "desc": "Баланс цены и качества",
     },
+    "kling_pro": {
+        "name": "🏆 Kling 3.0 Pro",
+        "model_id": "fal-ai/kling-video/v3/pro/text-to-video",
+        "api": "fal",
+        "credits": 359,
+        "price": "190₽",
+        "res": "1080p + аудио",
+        "desc": "#1 в бенчмарках, 5 сек с аудио",
+    },
     "vid_pro": {
         "name": "🎬 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
+        "api": "veo",
         "credits": 599,
         "price": "319₽",
         "res": "4K + аудио",
@@ -1137,6 +1178,7 @@ def kb_main():
 def kb_image_models():
     imagen_keys = ["img_fast", "img_std", "img_ultra"]
     nano_keys   = ["nb_flash", "nb_2", "nb_pro"]
+    fal_keys    = ["flux_pro", "ideogram_v3"]
     rows = []
     for key in imagen_keys:
         m = IMAGE_MODELS[key]
@@ -1152,6 +1194,15 @@ def kb_image_models():
             text=f"{m['name']} — {m['credits']} кр",
             callback_data=f"imodel:{key}"
         )])
+    # Разделитель Flux & Ideogram
+    rows.append([InlineKeyboardButton(text="─── 🎨 Flux & Ideogram ───", callback_data="noop")])
+    for key in fal_keys:
+        if key in IMAGE_MODELS:
+            m = IMAGE_MODELS[key]
+            rows.append([InlineKeyboardButton(
+                text=f"{m['name']} — {m['credits']} кр",
+                callback_data=f"imodel:{key}"
+            )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1370,9 +1421,28 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 ━━━━━━━━━━━━━━━━━━━━━━
 
 ГЛАВНОЕ — ТЫ РАБОТАЕШЬ ВНУТРИ БОТА КОТОРЫЙ УМЕЕТ:
-- Генерировать изображения (Imagen 4) — кнопка "🎨 Изображение" в меню
-- Создавать видео (Veo 3.1) — кнопка "🎥 Видео" в меню
+- Генерировать изображения (Imagen 4, Nano Banana, Flux 2 Pro, Ideogram V3) — кнопка "🎨 Изображение" в меню
+- Создавать видео (Veo 3.1, Kling 2.5 Turbo Pro, Kling 3.0 Pro) — кнопка "🎥 Видео" в меню
 - Оформлять подписки на любые нейросети — оплата в рублях, без иностранных карт
+
+МОДЕЛИ В БОТЕ И ЦЕНЫ (в кредитах, 1 пакет 150 кр = 99₽):
+
+🎨 Фото:
+- Imagen 4 Fast — 7 кр (быстро, базовое качество)
+- Imagen 4 — 10 кр (флагман Google, чёткий текст)
+- Imagen 4 Ultra — 13 кр (максимальная точность)
+- Nano Banana — 10 кр (Gemini, диалоговый)
+- Nano Banana 2 — 13 кр (новейший, лучшее качество)
+- Nano Banana Pro — 30 кр (4K, идеальный текст)
+- Flux 2 Pro — 12 кр (фотореализм от Black Forest Labs, как Midjourney)
+- Ideogram V3 — 14 кр (идеальный текст в картинке — для баннеров WB/Ozon, постеров)
+
+🎥 Видео:
+- Veo 3.1 Lite — 99 кр (720p, бюджет, 8 сек)
+- Kling 2.5 Turbo Pro — 159 кр (1080p + аудио, 8 сек, плавная физика)
+- Veo 3.1 Fast — 249 кр (1080p, баланс)
+- Kling 3.0 Pro — 359 кр (1080p + аудио, 5 сек, #1 в бенчмарках)
+- Veo 3.1 — 599 кр (4K + аудио, кино-качество)
 
 Если спрашивают "можешь создать изображение/видео?" — отвечай:
 "Да! Нажми кнопку 🖼️ Изображение в главном меню — и создашь прямо здесь. Напиши /start если не видишь меню."
@@ -2032,7 +2102,183 @@ async def _with_retry(coro_factory, max_attempts: int = 3, base_delay: float = 2
 
 # ─── Retry helper для Google API ──────────────────────────
 
+async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1") -> bytes:
+    """Генерация изображений через fal.ai (Flux 2 Pro, Ideogram V3).
+    Использует sync endpoint — результат приходит сразу."""
+    if not FAL_API_KEY:
+        raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
+
+    # Маппинг aspect_ratio для разных моделей
+    aspect_map_flux = {
+        "1:1": "square_hd",
+        "16:9": "landscape_16_9",
+        "9:16": "portrait_16_9",
+        "4:3": "landscape_4_3",
+        "3:4": "portrait_4_3",
+    }
+
+    url = f"https://fal.run/{model_id}"
+    headers = {
+        "Authorization": f"Key {FAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    # Разные payload под разные модели
+    if "flux-2" in model_id:
+        payload = {
+            "prompt": prompt,
+            "image_size": aspect_map_flux.get(aspect_ratio, "square_hd"),
+            "num_images": 1,
+            "enable_safety_checker": True,
+        }
+    elif "ideogram" in model_id:
+        payload = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "rendering_speed": "BALANCED",
+            "num_images": 1,
+        }
+    else:
+        payload = {"prompt": prompt}
+
+    timeout = aiohttp.ClientTimeout(total=180)  # 3 минуты максимум
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with s.post(url, json=payload, headers=headers) as r:
+            if r.status == 401 or r.status == 403:
+                raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
+            if r.status == 422:
+                err_text = (await r.text())[:300]
+                raise Exception(
+                    "Промт заблокирован фильтром безопасности 🛡\n"
+                    "Переформулируй — избегай сцен с насилием, NSFW или знаменитостями."
+                )
+            if r.status != 200:
+                raise Exception(f"fal.ai API {r.status}: {(await r.text())[:300]}")
+            data = await r.json()
+
+            # Ищем URL картинки в ответе
+            images = data.get("images", [])
+            if not images:
+                logging.warning(f"fal.ai no images. model={model_id} response={str(data)[:500]}")
+                raise Exception("Модель не вернула изображение. Попробуй другой промт.")
+
+            img_url = images[0].get("url") if isinstance(images[0], dict) else images[0]
+            if not img_url:
+                raise Exception("Пустой URL изображения от fal.ai")
+
+            # Скачиваем картинку
+            async with s.get(img_url) as img_r:
+                if img_r.status != 200:
+                    raise Exception(f"Не удалось скачать картинку: HTTP {img_r.status}")
+                img_bytes = await img_r.read()
+                if len(img_bytes) < 1000:
+                    raise Exception(f"Картинка слишком маленькая ({len(img_bytes)} bytes)")
+                return img_bytes
+
+
+async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
+    """Генерация видео через fal.ai (Kling 2.5 Turbo Pro, Kling 3.0 Pro).
+    Использует queue API с polling — аналогично Veo."""
+    if not FAL_API_KEY:
+        raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
+
+    headers = {
+        "Authorization": f"Key {FAL_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    # Payload под Kling
+    if "kling" in model_id:
+        if "v3" in model_id:
+            # Kling 3.0 Pro — 5 секунд с аудио
+            payload = {
+                "prompt": prompt,
+                "duration": "5",
+                "aspect_ratio": aspect_ratio,
+                "generate_audio": True,
+            }
+        else:
+            # Kling 2.5 Turbo Pro — 8 секунд с аудио
+            payload = {
+                "prompt": prompt,
+                "duration": "8",
+                "aspect_ratio": aspect_ratio,
+                "generate_audio": True,
+                "cfg_scale": 0.5,
+            }
+    else:
+        payload = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+
+    queue_url = f"https://queue.fal.run/{model_id}"
+
+    timeout = aiohttp.ClientTimeout(total=600)  # 10 минут максимум
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        # 1. Ставим задачу в очередь
+        async with s.post(queue_url, json=payload, headers=headers) as r:
+            if r.status == 401 or r.status == 403:
+                raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
+            if r.status == 422:
+                raise Exception(
+                    "Промт заблокирован фильтром безопасности 🛡\n"
+                    "Переформулируй — избегай сцен с насилием, NSFW или знаменитостями."
+                )
+            if r.status not in (200, 202):
+                raise Exception(f"fal.ai queue API {r.status}: {(await r.text())[:300]}")
+            submit_data = await r.json()
+            request_id = submit_data.get("request_id")
+            if not request_id:
+                raise Exception(f"fal.ai не вернул request_id: {str(submit_data)[:200]}")
+            logging.info(f"fal.ai video submitted: {request_id} ({model_id})")
+
+        status_url = f"{queue_url}/requests/{request_id}/status"
+        result_url = f"{queue_url}/requests/{request_id}"
+
+        # 2. Polling до 8 минут (96 итераций × 5 сек)
+        for i in range(96):
+            await asyncio.sleep(5)
+            async with s.get(status_url, headers=headers) as sr:
+                if sr.status != 200:
+                    logging.warning(f"fal.ai status poll {sr.status}")
+                    continue
+                sd = await sr.json()
+                status = sd.get("status", "")
+
+                if status == "COMPLETED":
+                    logging.info(f"fal.ai video completed after {(i+1)*5}s")
+                    break
+                if status in ("FAILED", "ERROR"):
+                    err_msg = sd.get("error", "Unknown error")
+                    raise Exception(f"fal.ai ошибка генерации: {err_msg}")
+                # IN_QUEUE, IN_PROGRESS — продолжаем ждать
+        else:
+            raise Exception("⏱ Таймаут генерации (>8 мин). Попробуй ещё раз.")
+
+        # 3. Получаем результат
+        async with s.get(result_url, headers=headers) as rr:
+            if rr.status != 200:
+                raise Exception(f"fal.ai result fetch {rr.status}: {(await rr.text())[:300]}")
+            rd = await rr.json()
+            video = rd.get("video", {})
+            vid_url = video.get("url") if isinstance(video, dict) else None
+            if not vid_url:
+                logging.warning(f"fal.ai no video url. response={str(rd)[:500]}")
+                raise Exception("fal.ai не вернул URL видео")
+
+            # Скачиваем видео
+            async with s.get(vid_url) as vr:
+                if vr.status != 200:
+                    raise Exception(f"Не удалось скачать видео: HTTP {vr.status}")
+                vid_bytes = await vr.read()
+                if len(vid_bytes) < 10000:
+                    raise Exception(f"Видео слишком маленькое ({len(vid_bytes)} bytes)")
+                return vid_bytes
+
+
 async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1", api_type: str = "imagen") -> bytes:
+    # Dispatch на fal.ai (Flux 2 Pro, Ideogram V3)
+    if api_type == "fal":
+        return await api_generate_fal_image(prompt, model_id, aspect_ratio)
+
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
     async with aiohttp.ClientSession() as s:
 
@@ -2415,7 +2661,11 @@ async def api_kling_motion_control(
         )
 
 
-async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
+async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9", api_type: str = "veo") -> bytes:
+    # Dispatch на fal.ai (Kling 2.5 Turbo Pro, Kling 3.0 Pro)
+    if api_type == "fal":
+        return await api_generate_fal_video(prompt, model_id, aspect_ratio)
+
     base = "https://generativelanguage.googleapis.com/v1beta"
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
     payload = {
@@ -3278,7 +3528,9 @@ async def menu_balance(cb: CallbackQuery):
 
     img_keys  = ["img_fast", "img_std", "img_ultra"]
     nano_keys = ["nb_flash", "nb_2", "nb_pro"]
+    fal_img_keys = ["flux_pro", "ideogram_v3"]
     vid_keys  = ["vid_lite", "vid_fast", "vid_pro"]
+    kling_keys = ["kling_turbo", "kling_pro"]
 
     def model_line(k, d):
         m = d[k]
@@ -3287,14 +3539,18 @@ async def menu_balance(cb: CallbackQuery):
 
     img_lines  = [model_line(k, IMAGE_MODELS) for k in img_keys  if k in IMAGE_MODELS]
     nano_lines = [model_line(k, IMAGE_MODELS) for k in nano_keys if k in IMAGE_MODELS]
+    fal_img_lines = [model_line(k, IMAGE_MODELS) for k in fal_img_keys if k in IMAGE_MODELS]
     vid_lines  = [model_line(k, VIDEO_MODELS) for k in vid_keys  if k in VIDEO_MODELS]
+    kling_lines = [model_line(k, VIDEO_MODELS) for k in kling_keys if k in VIDEO_MODELS]
 
     text = (
         f"💵 <b>Баланс: {cr} кредитов</b>\n\n"
         f"<b>Доступные модели:</b>\n\n"
         f"🌟 <b>IMAGEN 4</b>\n" + "\n".join(img_lines) + "\n\n"
         f"🍌 <b>NANO BANANA</b>\n" + "\n".join(nano_lines) + "\n\n"
+        f"🎨 <b>FLUX &amp; IDEOGRAM</b>\n" + "\n".join(fal_img_lines) + "\n\n"
         f"🎥 <b>VEO 3.1</b>\n" + "\n".join(vid_lines) + "\n\n"
+        f"🎞 <b>KLING</b>\n" + "\n".join(kling_lines) + "\n\n"
         f"<i>🔹 доступно · 🔸 нужно пополнить</i>"
     )
     try:
@@ -3968,11 +4224,19 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
     try:
         aspect = data.get("aspect_ratio", "16:9")
+        api_type = m.get("api", "veo")
         # Семафор: не более 5 Veo генераций одновременно (клиенту не видно)
-        async with _veo_semaphore:
+        # Для fal.ai — без семафора, параллельность там управляется самой платформой
+        if api_type == "veo":
+            async with _veo_semaphore:
+                vid_bytes = await _with_retry(
+                    lambda: api_generate_video(prompt, m["model_id"], aspect, api_type),
+                    max_attempts=2, base_delay=5.0, op_name=f"Veo {key}"
+                )
+        else:
             vid_bytes = await _with_retry(
-                lambda: api_generate_video(prompt, m["model_id"], aspect),
-                max_attempts=2, base_delay=5.0, op_name=f"Veo {key}"
+                lambda: api_generate_video(prompt, m["model_id"], aspect, api_type),
+                max_attempts=2, base_delay=5.0, op_name=f"fal {key}"
             )
         size_mb = len(vid_bytes) / 1024 / 1024
         logging.info(f"Video ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
@@ -4304,10 +4568,14 @@ async def reply_profile(message: Message):
         "nb_flash":  "Nano Banana Flash",
         "nb_2":      "Nano Banana v2",
         "nb_pro":    "Nano Banana Pro",
+        "flux_pro":  "Flux 2 Pro",
+        "ideogram_v3": "Ideogram V3",
         # ключи VIDEO_MODELS
         "vid_lite":  "Veo 3.1 Lite",
         "vid_fast":  "Veo 3.1 Fast",
         "vid_pro":   "Veo 3.1 Pro",
+        "kling_turbo": "Kling 2.5 Turbo Pro",
+        "kling_pro":   "Kling 3.0 Pro",
         # специальные
         "gemini-flash-image": "Редактирование фото",
         "veo-3.1-animate":    "Анимация фото",
@@ -4331,10 +4599,18 @@ async def reply_profile(message: Message):
             fmt("nb_2",     "Nano Banana v2"),
             fmt("nb_pro",   "Nano Banana Pro"),
         ]))
+        fal_img_lines = list(filter(None, [
+            fmt("flux_pro",    "Flux 2 Pro"),
+            fmt("ideogram_v3", "Ideogram V3"),
+        ]))
         vid_lines = list(filter(None, [
             fmt("vid_lite", "Veo 3.1 Lite"),
             fmt("vid_fast", "Veo 3.1 Fast"),
             fmt("vid_pro",  "Veo 3.1 Pro"),
+        ]))
+        kling_lines = list(filter(None, [
+            fmt("kling_turbo", "Kling 2.5 Turbo Pro"),
+            fmt("kling_pro",   "Kling 3.0 Pro"),
         ]))
         other_lines = list(filter(None, [
             fmt("gemini-flash-image", "Редактирование фото"),
@@ -4346,8 +4622,12 @@ async def reply_profile(message: Message):
             model_lines += "🌟 <b>Imagen 4</b>\n" + "\n".join(img_lines) + "\n"
         if nano_lines:
             model_lines += "🍌 <b>Nano Banana</b>\n" + "\n".join(nano_lines) + "\n"
+        if fal_img_lines:
+            model_lines += "🎨 <b>Flux &amp; Ideogram</b>\n" + "\n".join(fal_img_lines) + "\n"
         if vid_lines:
             model_lines += "🎥 <b>Veo 3.1</b>\n" + "\n".join(vid_lines) + "\n"
+        if kling_lines:
+            model_lines += "🎞 <b>Kling</b>\n" + "\n".join(kling_lines) + "\n"
         if other_lines:
             model_lines += "✏️ <b>Другое</b>\n" + "\n".join(other_lines) + "\n"
 
