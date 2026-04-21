@@ -2256,7 +2256,8 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
 
     queue_url = f"https://queue.fal.run/{model_id}"
 
-    timeout = aiohttp.ClientTimeout(total=600)  # 10 минут максимум
+    # Kling Pro реально долгий — до 25 минут на 5-10 секунд видео
+    timeout = aiohttp.ClientTimeout(total=1700)  # 28 минут запас на скачивание
     async with aiohttp.ClientSession(timeout=timeout) as s:
         # 1. Ставим задачу в очередь
         async with s.post(queue_url, json=payload, headers=headers) as r:
@@ -2278,25 +2279,36 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
         status_url = f"{queue_url}/requests/{request_id}/status"
         result_url = f"{queue_url}/requests/{request_id}"
 
-        # 2. Polling до 8 минут (96 итераций × 5 сек)
-        for i in range(96):
-            await asyncio.sleep(5)
+        # 2. Polling до 25 минут
+        # Первые 30 сек — сон (видео точно ещё не готово)
+        # Далее каждые 10 сек проверяем статус
+        await asyncio.sleep(30)
+        max_iterations = 150  # 150 × 10 сек = 25 минут
+        for i in range(max_iterations):
             async with s.get(status_url, headers=headers) as sr:
                 if sr.status != 200:
                     logging.warning(f"fal.ai status poll {sr.status}")
+                    await asyncio.sleep(10)
                     continue
                 sd = await sr.json()
                 status = sd.get("status", "")
 
                 if status == "COMPLETED":
-                    logging.info(f"fal.ai video completed after {(i+1)*5}s")
+                    elapsed = 30 + (i + 1) * 10
+                    logging.info(f"fal.ai video completed after ~{elapsed}s ({model_id})")
                     break
                 if status in ("FAILED", "ERROR"):
                     err_msg = sd.get("error", "Unknown error")
                     raise Exception(f"fal.ai ошибка генерации: {err_msg}")
-                # IN_QUEUE, IN_PROGRESS — продолжаем ждать
+
+                # Логируем прогресс каждую минуту (каждая 6-я итерация)
+                if (i + 1) % 6 == 0:
+                    elapsed_min = (30 + (i + 1) * 10) / 60
+                    logging.info(f"fal.ai still generating: {model_id} ({elapsed_min:.1f} min elapsed, status: {status})")
+
+                await asyncio.sleep(10)
         else:
-            raise Exception("⏱ Таймаут генерации (>8 мин). Попробуй ещё раз.")
+            raise Exception("⏱ Таймаут генерации (>25 мин). Попробуй ещё раз или выбери более быструю модель.")
 
         # 3. Получаем результат
         async with s.get(result_url, headers=headers) as rr:
@@ -4302,13 +4314,23 @@ async def vid_prompt(message: Message, state: FSMContext):
 
     await state.update_data(prompt=prompt)
 
+    # Адаптивный текст времени в зависимости от модели
+    api_type_ui = m.get("api", "veo")
+    if api_type_ui == "fal":
+        if "v3" in m.get("model_id", ""):
+            time_text = "5–20 минут (качественная модель)"
+        else:
+            time_text = "3–10 минут"
+    else:
+        time_text = "1–6 минут"
+
     await message.answer(
         f"📝 <b>Проверь заказ:</b>\n\n"
         f"🤖 {m['name']}\n"
         f"📐 {m['res']} | 8 сек\n"
         f"💳 <b>{m['credits']} кредитов</b>\n\n"
         f"📝 <i>{prompt}</i>\n\n"
-        f"⏱ <i>Генерация занимает 1–6 минут</i>",
+        f"⏱ <i>Генерация занимает {time_text}</i>",
         reply_markup=kb_confirm("vid", key), parse_mode="HTML"
     )
 
@@ -4332,13 +4354,104 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
     _active_generations.add(uid)
     await state.clear()
-    await cb.message.edit_text(
+
+    # Адаптивный текст начального сообщения в зависимости от модели
+    api_type_ui = m.get("api", "veo")
+    if api_type_ui == "fal":
+        if "v3" in m.get("model_id", ""):
+            time_estimate = "5–20 минут"
+        else:
+            time_estimate = "3–10 минут"
+    else:
+        time_estimate = "1–6 минут"
+
+    status_msg = await cb.message.edit_text(
         f"🎬 <b>Генерирую видео...</b>\n\n"
         f"🤖 {m['name']} | {m['res']}\n"
         f"📝 <i>{prompt[:80]}</i>\n\n"
-        f"🕐 Обычно 1–6 минут. Пришлю как только готово 👇",
+        f"🕐 Обычно {time_estimate}. Пришлю как только готово 👇",
         parse_mode="HTML"
     )
+
+    # Фоновая задача: анимированный прогресс-бар с %
+    # Оценочное среднее время генерации по моделям (в секундах)
+    estimated_times = {
+        "vid_lite":    60,    # Veo Lite ~ 1 мин
+        "vid_fast":    120,   # Veo Fast ~ 2 мин
+        "vid_pro":     180,   # Veo Pro ~ 3 мин
+        "kling_turbo": 300,   # Kling 2.5 Turbo Pro ~ 5 мин
+        "kling_pro":   600,   # Kling 3.0 Pro ~ 10 мин
+    }
+
+    async def progress_updates():
+        """Показывает анимированный прогресс-бар с % на основе прошедшего времени."""
+        # Эмодзи-спиннер для ощущения процесса
+        spinner_frames = ["✨", "⚡", "💫", "🌟", "⭐", "🎇", "🎆"]
+        # Оценочное время для этой модели
+        estimated_sec = estimated_times.get(key, 180)
+
+        try:
+            start_time = asyncio.get_event_loop().time()
+            iteration = 0
+
+            while True:
+                # Первую отрисовку делаем быстро — через 5 сек
+                # Далее каждые 10 сек
+                await asyncio.sleep(5 if iteration == 0 else 10)
+                iteration += 1
+
+                elapsed = asyncio.get_event_loop().time() - start_time
+
+                # Прогресс — максимум 95% пока не завершено по-настоящему
+                progress_pct = min(95, int(elapsed / estimated_sec * 100))
+
+                # Прогресс-бар из 20 блоков
+                bar_filled = int(progress_pct / 5)  # каждые 5% = 1 блок
+                bar = "▰" * bar_filled + "▱" * (20 - bar_filled)
+
+                # Форматирование времени
+                elapsed_min = int(elapsed / 60)
+                elapsed_sec = int(elapsed % 60)
+                elapsed_text = f"{elapsed_min}:{elapsed_sec:02d}"
+
+                # Остаточное время
+                if progress_pct >= 95:
+                    status_text = "🔄 Финализация видео..."
+                elif progress_pct > 0:
+                    remaining_sec = max(0, estimated_sec - elapsed)
+                    remaining_min = remaining_sec / 60
+                    if remaining_min >= 2:
+                        status_text = f"⏱ Осталось ~{int(remaining_min)} мин"
+                    elif remaining_min >= 1:
+                        status_text = f"⏱ Осталось ~1 мин"
+                    else:
+                        status_text = "⏱ Скоро готово..."
+                else:
+                    status_text = "🔄 Подготовка..."
+
+                spinner = spinner_frames[iteration % len(spinner_frames)]
+
+                try:
+                    await bot.edit_message_text(
+                        chat_id=cb.message.chat.id,
+                        message_id=status_msg.message_id,
+                        text=(
+                            f"🎬 <b>Генерирую видео — {progress_pct}%</b> {spinner}\n"
+                            f"<code>{bar}</code>\n\n"
+                            f"🤖 {m['name']} | {m['res']}\n"
+                            f"📝 <i>{prompt[:80]}</i>\n\n"
+                            f"⏳ Прошло: <b>{elapsed_text}</b>\n"
+                            f"{status_text}"
+                        ),
+                        parse_mode="HTML"
+                    )
+                except Exception as edit_err:
+                    # "message is not modified", сеть моргнула, сообщение удалили — не критично
+                    logging.debug(f"Progress update failed: {edit_err}")
+        except asyncio.CancelledError:
+            return
+
+    progress_task = asyncio.create_task(progress_updates())
 
     try:
         aspect = data.get("aspect_ratio", "16:9")
@@ -4352,10 +4465,8 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                     max_attempts=2, base_delay=5.0, op_name=f"Veo {key}"
                 )
         else:
-            vid_bytes = await _with_retry(
-                lambda: api_generate_video(prompt, m["model_id"], aspect, api_type),
-                max_attempts=2, base_delay=5.0, op_name=f"fal {key}"
-            )
+            # Для fal.ai — без retry, т.к. одна попытка уже до 25 минут
+            vid_bytes = await api_generate_video(prompt, m["model_id"], aspect, api_type)
         size_mb = len(vid_bytes) / 1024 / 1024
         logging.info(f"Video ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
         await log_gen(uid, "video", key, m["credits"])
@@ -4398,6 +4509,13 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         )
     finally:
         _active_generations.discard(uid)
+        # Отменяем фоновую задачу обновления статуса
+        if not progress_task.done():
+            progress_task.cancel()
+            try:
+                await progress_task
+            except (asyncio.CancelledError, Exception):
+                pass
     await cb.answer()
 
 
