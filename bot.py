@@ -303,13 +303,13 @@ VIDEO_MODELS = {
         "desc": "Бюджет, быстро",
     },
     "kling_turbo": {
-        "name": "🎞 Kling 2.5 Turbo Pro",
+        "name": "🎞 Kling 2.5 Turbo",
         "model_id": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
         "api": "fal",
-        "credits": 159,
-        "price": "85₽",
-        "res": "1080p + аудио",
-        "desc": "8 сек, плавная физика, с аудио",
+        "credits": 109,
+        "price": "58₽",
+        "res": "1080p",
+        "desc": "5 сек, плавная физика, быстро",
     },
     "vid_fast": {
         "name": "⚡ Veo 3.1 Fast",
@@ -1467,7 +1467,7 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 
 ГЛАВНОЕ — ТЫ РАБОТАЕШЬ ВНУТРИ БОТА КОТОРЫЙ УМЕЕТ:
 - Генерировать изображения (Imagen 4, Nano Banana, Flux 2 Pro, Ideogram V3) — кнопка "🎨 Изображение" в меню
-- Создавать видео (Veo 3.1, Kling 2.5 Turbo Pro, Kling 3.0 Pro) — кнопка "🎥 Видео" в меню
+- Создавать видео (Veo 3.1, Kling 2.5 Turbo, Kling 3.0 Pro) — кнопка "🎥 Видео" в меню
 - Оформлять подписки на любые нейросети — оплата в рублях, без иностранных карт
 
 МОДЕЛИ В БОТЕ И ЦЕНЫ (в кредитах, 1 пакет 150 кр = 99₽):
@@ -1484,7 +1484,7 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 
 🎥 Видео:
 - Veo 3.1 Lite — 99 кр (720p, бюджет, 8 сек)
-- Kling 2.5 Turbo Pro — 159 кр (1080p + аудио, 8 сек, плавная физика)
+- Kling 2.5 Turbo — 109 кр (1080p, 5 сек, без аудио, быстро)
 - Veo 3.1 Fast — 249 кр (1080p, баланс)
 - Kling 3.0 Pro — 359 кр (1080p + аудио, 5 сек, #1 в бенчмарках)
 - Veo 3.1 — 599 кр (4K + аудио, кино-качество)
@@ -2235,20 +2235,23 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
     # Payload под Kling
     if "kling" in model_id:
         if "v3" in model_id:
-            # Kling 3.0 Pro — 5 секунд с аудио
+            # Kling 3.0 Pro — 5 секунд с нативным аудио
             payload = {
                 "prompt": prompt,
                 "duration": "5",
                 "aspect_ratio": aspect_ratio,
                 "generate_audio": True,
+                "negative_prompt": "blur, distort, and low quality",
+                "cfg_scale": 0.5,
             }
         else:
-            # Kling 2.5 Turbo Pro — 8 секунд с аудио
+            # Kling 2.5 Turbo Pro — только 5 или 10 сек, БЕЗ аудио
+            # (generate_audio в этой версии не поддерживается)
             payload = {
                 "prompt": prompt,
-                "duration": "8",
+                "duration": "5",  # допустимые значения: "5" или "10"
                 "aspect_ratio": aspect_ratio,
-                "generate_audio": True,
+                "negative_prompt": "blur, distort, and low quality",
                 "cfg_scale": 0.5,
             }
     else:
@@ -2274,7 +2277,7 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
             request_id = submit_data.get("request_id")
             if not request_id:
                 raise Exception(f"fal.ai не вернул request_id: {str(submit_data)[:200]}")
-            logging.info(f"fal.ai video submitted: {request_id} ({model_id})")
+            logging.info(f"fal.ai video submitted: {request_id} ({model_id}) | payload_keys={list(payload.keys())}")
 
         status_url = f"{queue_url}/requests/{request_id}/status"
         result_url = f"{queue_url}/requests/{request_id}"
@@ -2284,6 +2287,7 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
         # Далее каждые 10 сек проверяем статус
         await asyncio.sleep(30)
         max_iterations = 150  # 150 × 10 сек = 25 минут
+        in_queue_count = 0  # счётчик подряд статусов IN_QUEUE — для детекции зомби
         for i in range(max_iterations):
             async with s.get(status_url, headers=headers) as sr:
                 if sr.status != 200:
@@ -2300,6 +2304,19 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                 if status in ("FAILED", "ERROR"):
                     err_msg = sd.get("error", "Unknown error")
                     raise Exception(f"fal.ai ошибка генерации: {err_msg}")
+
+                # Защита от зомби-запросов
+                if status == "IN_QUEUE":
+                    in_queue_count += 1
+                    # 30 итераций = 5 минут в очереди = что-то не так
+                    if in_queue_count >= 30:
+                        raise Exception(
+                            "⏱ Запрос завис в очереди fal.ai (5+ мин). "
+                            "Это может быть из-за нагрузки на сервис — попробуй ещё раз через минуту."
+                        )
+                else:
+                    # Статус сменился на IN_PROGRESS или другой — сбрасываем счётчик
+                    in_queue_count = 0
 
                 # Логируем прогресс каждую минуту (каждая 6-я итерация)
                 if (i + 1) % 6 == 0:
@@ -4203,7 +4220,7 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
         f"🎥 <b>Veo 3.1</b> — Google, до 4K + аудио, от 99 кр\n"
-        f"🎞 <b>Kling</b> — #1 в бенчмарках, плавная физика, от 159 кр\n\n"
+        f"🎞 <b>Kling</b> — #1 в бенчмарках, плавная физика, от 109 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>"
     )
     try:
@@ -4379,7 +4396,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         "vid_lite":    60,    # Veo Lite ~ 1 мин
         "vid_fast":    120,   # Veo Fast ~ 2 мин
         "vid_pro":     180,   # Veo Pro ~ 3 мин
-        "kling_turbo": 300,   # Kling 2.5 Turbo Pro ~ 5 мин
+        "kling_turbo": 300,   # Kling 2.5 Turbo ~ 5 мин
         "kling_pro":   600,   # Kling 3.0 Pro ~ 10 мин
     }
 
@@ -4768,7 +4785,7 @@ async def reply_create_video(message: Message, state: FSMContext):
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
         f"🎥 <b>Veo 3.1</b> — Google, до 4K + аудио, от 99 кр\n"
-        f"🎞 <b>Kling</b> — #1 в бенчмарках, плавная физика, от 159 кр\n\n"
+        f"🎞 <b>Kling</b> — #1 в бенчмарках, плавная физика, от 109 кр\n\n"
         f"⏱ <i>Время генерации: 1–6 минут</i>",
         reply_markup=kb_video_brands(), parse_mode="HTML"
     )
@@ -4806,7 +4823,7 @@ async def reply_profile(message: Message):
         "vid_lite":  "Veo 3.1 Lite",
         "vid_fast":  "Veo 3.1 Fast",
         "vid_pro":   "Veo 3.1 Pro",
-        "kling_turbo": "Kling 2.5 Turbo Pro",
+        "kling_turbo": "Kling 2.5 Turbo",
         "kling_pro":   "Kling 3.0 Pro",
         # специальные
         "gemini-flash-image": "Редактирование фото",
@@ -4841,7 +4858,7 @@ async def reply_profile(message: Message):
             fmt("vid_pro",  "Veo 3.1 Pro"),
         ]))
         kling_lines = list(filter(None, [
-            fmt("kling_turbo", "Kling 2.5 Turbo Pro"),
+            fmt("kling_turbo", "Kling 2.5 Turbo"),
             fmt("kling_pro",   "Kling 3.0 Pro"),
         ]))
         other_lines = list(filter(None, [
