@@ -118,7 +118,7 @@ user_orig_images = {}     # последнее фото: {user_id: {"data": byte
 
 # ─── Rate limit для генераций ─────────────────────────────
 # A) Одна активная генерация на юзера
-_active_generations: set = set()  # {user_id}
+_active_generations: set = set()  # {user_id}  ← устаревший in-memory кэш (оставлен для совместимости)
 
 # B) Почасовой лимит: {user_id: [timestamps]}
 _photo_history: dict = {}      # фото + редактирование
@@ -179,8 +179,17 @@ async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
     if not await check_not_blocked(cb_or_msg, uid):
         return False
 
-    # A) Одна активная генерация
-    if uid in _active_generations:
+    # A) Одна активная генерация — проверяем БД (переживает рестарт)
+    # Если юзер уже что-то генерит (активная запись <30 мин), блокируем.
+    # In-memory set дополнительно ускоряет проверку, но БД — источник истины.
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            """SELECT started_at FROM active_generations
+               WHERE user_id = $1 AND started_at > NOW() - INTERVAL '30 minutes'""",
+            uid
+        )
+    if existing:
         msg = "⏳ У тебя уже идёт генерация. Подожди, пока она закончится."
         if isinstance(cb_or_msg, CallbackQuery):
             await cb_or_msg.answer(msg, show_alert=True)
@@ -208,6 +217,206 @@ async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
         return False
 
     return True
+
+
+# ─── Персистентные active_generations (переживают рестарт) ─
+# Таблица active_generations надёжнее чем set в памяти — переживает перезапуски бота.
+# In-memory set оставлен для обратной совместимости старого кода.
+
+async def mark_generation_active(user_id: int, kind: str = "photo") -> bool:
+    """Атомарно помечает юзера как генерирующего.
+    Возвращает False если юзер уже генерит что-то (включая зависшие <30 мин).
+    Защищено от race condition через UNIQUE primary key.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Сначала удаляем зависшие записи этого юзера (старше 30 мин — страховка)
+        await conn.execute(
+            "DELETE FROM active_generations WHERE user_id = $1 AND started_at < NOW() - INTERVAL '30 minutes'",
+            user_id
+        )
+        try:
+            await conn.execute(
+                "INSERT INTO active_generations (user_id, kind) VALUES ($1, $2)",
+                user_id, kind
+            )
+            _active_generations.add(user_id)  # синхронизируем in-memory
+            return True
+        except asyncpg.UniqueViolationError:
+            # Юзер уже что-то генерит (активная запись <30 мин)
+            _active_generations.add(user_id)
+            return False
+
+
+async def unmark_generation_active(user_id: int):
+    """Убирает юзера из активных генераций. Вызывать в finally."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM active_generations WHERE user_id = $1", user_id)
+    _active_generations.discard(user_id)
+
+
+async def cleanup_stale_generations_loop():
+    """Раз в 5 минут чистит зависшие записи (старше 30 мин).
+    Защищает от ситуации когда бот упал в процессе генерации."""
+    while True:
+        try:
+            await asyncio.sleep(300)
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM active_generations WHERE started_at < NOW() - INTERVAL '30 minutes'"
+                )
+                if "DELETE 0" not in result:
+                    logging.info(f"🧹 Cleanup stale active_generations: {result}")
+        except Exception as e:
+            logging.error(f"cleanup_stale_generations_loop: {e}")
+
+
+async def auto_recover_lost_videos_loop():
+    """Раз в час ищет в events таймауты генерации видео с request_id
+    и автоматически пробует их восстановить.
+    
+    Отправляет найденные видео юзерам + алертит админу что было восстановлено.
+    """
+    import re
+    await asyncio.sleep(600)  # Первый запуск через 10 минут после старта бота
+    while True:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                # Ищем ошибки с Request ID за последние 6 часов, которые ещё не восстанавливались
+                events = await conn.fetch("""
+                    SELECT id, user_id, data, created_at FROM events
+                    WHERE kind = 'error'
+                      AND data LIKE '%Request ID:%'
+                      AND created_at > NOW() - INTERVAL '6 hours'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM events e2
+                          WHERE e2.user_id = events.user_id
+                            AND e2.kind = 'auto_recovered'
+                            AND e2.data LIKE '%' || SUBSTRING(events.data FROM 'Request ID: ([a-f0-9-]+)') || '%'
+                      )
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                """)
+
+            if not events:
+                await asyncio.sleep(3600)  # 1 час до следующей проверки
+                continue
+
+            logging.info(f"🔍 Auto-recover: найдено {len(events)} потерянных видео для восстановления")
+
+            recovered_count = 0
+            for ev in events:
+                try:
+                    # Извлекаем request_id из текста
+                    match = re.search(r'Request ID:\s*([a-f0-9-]+)', ev["data"] or "")
+                    if not match:
+                        continue
+                    request_id = match.group(1)
+                    target_uid = ev["user_id"]
+
+                    # Пробуем восстановить — ищем на endpoint'ах Kling
+                    endpoints = [
+                        "fal-ai/kling-video/v3/pro/text-to-video",
+                        "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+                        "fal-ai/kling-video/v3/standard/text-to-video",
+                    ]
+                    if not FAL_API_KEY:
+                        break  # Без ключа ничего не сделаем
+
+                    headers = {"Authorization": f"Key {FAL_API_KEY}"}
+                    vid_url = None
+
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
+                        for ep in endpoints:
+                            result_url = f"https://queue.fal.run/{ep}/requests/{request_id}"
+                            try:
+                                async with s.get(result_url, headers=headers) as r:
+                                    if r.status == 200:
+                                        rd = await r.json()
+                                        video = rd.get("video")
+                                        if isinstance(video, dict):
+                                            vid_url = video.get("url")
+                                        elif isinstance(video, str):
+                                            vid_url = video
+                                        if not vid_url:
+                                            vid_url = rd.get("video_url")
+                                        if vid_url:
+                                            break
+                            except Exception:
+                                pass
+
+                    if not vid_url:
+                        logging.debug(f"Auto-recover: видео {request_id} не найдено на fal.ai (возможно истекло)")
+                        continue
+
+                    # Скачиваем
+                    vid_bytes = None
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as dl:
+                        for attempt in range(3):
+                            try:
+                                async with dl.get(vid_url) as vr:
+                                    if vr.status == 200:
+                                        vid_bytes = await vr.read()
+                                        if len(vid_bytes) > 10000:
+                                            break
+                            except Exception:
+                                pass
+                            await asyncio.sleep(2)
+
+                    if not vid_bytes or len(vid_bytes) < 10000:
+                        logging.warning(f"Auto-recover: не скачалось видео {request_id}")
+                        continue
+
+                    # Отправляем юзеру
+                    size_mb = len(vid_bytes) / 1024 / 1024
+                    try:
+                        await bot.send_video(
+                            chat_id=target_uid,
+                            video=BufferedInputFile(vid_bytes, "recovered.mp4"),
+                            caption=(
+                                f"🎬 <b>Восстановили твоё видео!</b>\n\n"
+                                f"Оно генерировалось с задержкой — "
+                                f"мы автоматически его нашли и прислали тебе.\n\n"
+                                f"Извини за ожидание 🙏"
+                            ),
+                            parse_mode="HTML",
+                            supports_streaming=True,
+                        )
+                        await log_event(target_uid, "auto_recovered", f"request_id={request_id} size={size_mb:.1f}MB")
+                        recovered_count += 1
+                        logging.info(f"✅ Auto-recovered video {request_id} for uid={target_uid} ({size_mb:.1f} MB)")
+                    except Exception as send_err:
+                        logging.error(f"Auto-recover send failed: {send_err}")
+
+                    # Пауза между восстановлениями чтобы не заспамить
+                    await asyncio.sleep(3)
+
+                except Exception as rec_err:
+                    logging.error(f"Auto-recover item failed: {rec_err}")
+                    continue
+
+            if recovered_count > 0:
+                # Алерт админу об успешных восстановлениях
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔄 <b>Автовосстановление видео</b>\n\n"
+                        f"✅ Восстановлено: <b>{recovered_count}</b> видео\n"
+                        f"Юзерам уже отправили.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep(3600)  # Следующий проход через час
+
+        except Exception as e:
+            logging.error(f"auto_recover_lost_videos_loop: {e}")
+            await asyncio.sleep(3600)
+
 
 # ─── Фоновая чистка памяти ────────────────────────────────
 import time as _time_module
@@ -488,6 +697,16 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Добавляем новые колонки к существующим таблицам (идемпотентно)
+        for col, dfn in [
+            ("payment_method", "TEXT"),     # 'sbp' | 'card'
+            ("promo_code",     "TEXT"),     # применённый промокод
+            ("paid_at",        "TIMESTAMP") # когда пришёл webhook об оплате
+        ]:
+            try:
+                await conn.execute(f"ALTER TABLE fk_orders ADD COLUMN {col} {dfn}")
+            except Exception:
+                pass
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS payments_fk (
                 id         SERIAL PRIMARY KEY,
@@ -558,6 +777,15 @@ async def init_db():
                 kind       TEXT NOT NULL,
                 sent_at    TIMESTAMP DEFAULT NOW(),
                 PRIMARY KEY (user_id, kind)
+            )
+        """)
+        # Активные генерации — для защиты от двойного запуска.
+        # Переживает рестарт бота (в отличие от set'а в памяти).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS active_generations (
+                user_id    BIGINT PRIMARY KEY,
+                kind       TEXT NOT NULL,           -- 'photo'/'video'/'anim'/'motion'
+                started_at TIMESTAMP DEFAULT NOW()
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)")
@@ -652,27 +880,59 @@ async def check_promo_for_user(code: str, user_id: int) -> tuple[bool, str, dict
 
 
 async def redeem_promo(code: str, user_id: int) -> tuple[bool, str]:
-    """Применяет промокод с типом 'credits' — начисляет кредиты. 
-    Для 'percent' применение происходит в оплате пакета."""
-    ok, msg, p = await check_promo_for_user(code, user_id)
-    if not ok:
-        return False, msg
-    if p["kind"] != "credits":
-        return False, "Этот код — скидка, применяется при покупке пакета"
+    """Применяет промокод с типом 'credits' — начисляет кредиты.
+    Для 'percent' применение происходит в оплате пакета.
 
+    Защищена от race condition: если два запроса пройдут одновременно,
+    UNIQUE (code, user_id) в promo_uses сработает для одного из них,
+    и второй получит ошибку вместо двойного начисления.
+    """
+    code_upper = code.strip().upper()
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO promo_uses (code, user_id) VALUES ($1, $2)",
-                code.strip().upper(), user_id
+            # 1. Получаем промокод с блокировкой — никто другой не сможет его
+            #    использовать параллельно для того же user_id (и не сможет
+            #    исчерпать max_uses между нашими операциями)
+            p = await conn.fetchrow(
+                "SELECT * FROM promocodes WHERE code=$1 AND active=TRUE FOR UPDATE",
+                code_upper
             )
+            if not p:
+                return False, "Промокод не найден или деактивирован"
+
+            # 2. Проверка срока действия
+            if p["expires_at"]:
+                import datetime as _dt
+                if p["expires_at"] < _dt.datetime.now():
+                    return False, "Срок действия промокода истёк"
+
+            # 3. Проверка лимита использований
+            if p["max_uses"] and p["used_count"] >= p["max_uses"]:
+                return False, "Промокод уже использован максимальное число раз"
+
+            # 4. Проверка типа
+            if p["kind"] != "credits":
+                return False, "Этот код — скидка, применяется при покупке пакета"
+
+            # 5. Пытаемся вставить запись об использовании — тут сработает UNIQUE
+            try:
+                await conn.execute(
+                    "INSERT INTO promo_uses (code, user_id) VALUES ($1, $2)",
+                    code_upper, user_id
+                )
+            except asyncpg.UniqueViolationError:
+                return False, "Ты уже применял этот промокод"
+
+            # 6. Инкрементим счётчик использований промокода
             await conn.execute(
                 "UPDATE promocodes SET used_count = used_count + 1 WHERE code=$1",
-                code.strip().upper()
+                code_upper
             )
+
+    # Начисляем кредиты ВНЕ транзакции (т.к. add_credits_batch сам открывает свою)
     await add_credits_batch(user_id, p["value"], source="promo", days_valid=30)
-    await log_event(user_id, "promo_redeem", f"code={code} value={p['value']}")
+    await log_event(user_id, "promo_redeem", f"code={code_upper} value={p['value']}")
     return True, f"Начислено {p['value']} кредитов!"
 
 
@@ -888,32 +1148,45 @@ async def db_cleanup_loop():
 
 async def ensure_user(user_id: int, username: str = "", full_name: str = "", referred_by: int = None):
     """Создаёт юзера или обновляет last_active. При первом создании начисляет 
-    приветственные/реферальные кредиты как партию со сроком 30 дней."""
+    приветственные/реферальные кредиты как партию со сроком 30 дней.
+
+    ВАЖНО: детекция нового юзера через RETURNING (xmax=0 → INSERT, xmax>0 → UPDATE).
+    Раньше использовался 'INSERT 0 1' в conn.execute(), но PostgreSQL возвращает
+    его И при INSERT, И при ON CONFLICT DO UPDATE — из-за этого кредиты начислялись
+    КАЖДЫЙ раз при /start. Бах!
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Пытаемся вставить с credits=0 (реальное начисление будет через batch)
         if referred_by and referred_by != user_id:
-            result = await conn.execute("""
+            row = await conn.fetchrow("""
                 INSERT INTO users (user_id, credits, username, full_name, referred_by)
-                VALUES ($1, 0, $3, $4, $5)
+                VALUES ($1, 0, $2, $3, $4)
                 ON CONFLICT (user_id) DO UPDATE
-                SET username=$3, full_name=$4, last_active=NOW()
-            """, user_id, 0, username, full_name, referred_by)
-            is_new = "INSERT 0 1" in result
+                SET username=EXCLUDED.username,
+                    full_name=EXCLUDED.full_name,
+                    last_active=NOW()
+                RETURNING (xmax = 0) AS is_new
+            """, user_id, username, full_name, referred_by)
+            is_new = bool(row and row["is_new"])
             if is_new:
-                # Пригашённый друг получает реф-бонус как партию
+                # Пригашённый друг получает реф-бонус как партию (ТОЛЬКО при первой регистрации)
                 await add_credits_batch(user_id, REF_BONUS, source="referral", days_valid=30)
+                logging.info(f"✨ New user {user_id} with referrer {referred_by}: +{REF_BONUS} cr")
         else:
-            result = await conn.execute("""
+            row = await conn.fetchrow("""
                 INSERT INTO users (user_id, credits, username, full_name)
                 VALUES ($1, 0, $2, $3)
                 ON CONFLICT (user_id) DO UPDATE
-                SET username=$2, full_name=$3, last_active=NOW()
+                SET username=EXCLUDED.username,
+                    full_name=EXCLUDED.full_name,
+                    last_active=NOW()
+                RETURNING (xmax = 0) AS is_new
             """, user_id, username, full_name)
-            is_new = "INSERT 0 1" in result
+            is_new = bool(row and row["is_new"])
             if is_new:
-                # Приветственные кредиты партией на 30 дней
+                # Приветственные кредиты партией на 30 дней (ТОЛЬКО при первой регистрации)
                 await add_credits_batch(user_id, FREE_CREDITS, source="free", days_valid=30)
+                logging.info(f"✨ New user {user_id}: +{FREE_CREDITS} welcome cr")
 
 async def get_setting(key: str, default: str = "") -> str:
     pool = await get_pool()
@@ -1122,15 +1395,16 @@ def fk_api_signature(params: dict) -> str:
 pending_fk_payments: dict = {}
 
 
-async def fk_save_order(order_id: str, user_id: int, credits: int, amount: int, pack: str):
+async def fk_save_order(order_id: str, user_id: int, credits: int, amount: int,
+                         pack: str, payment_method: str = "sbp", promo_code: str | None = None):
     """Сохраняем заказ в БД (защита от потери при перезапуске)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, payment_method, promo_code)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (order_id) DO NOTHING
-        """, order_id, user_id, credits, amount, pack)
+        """, order_id, user_id, credits, amount, pack, payment_method, promo_code)
 
 
 async def fk_get_order(order_id: str) -> dict | None:
@@ -1144,11 +1418,11 @@ async def fk_get_order(order_id: str) -> dict | None:
 
 
 async def fk_mark_paid(order_id: str):
-    """Помечаем заказ как оплаченный."""
+    """Помечаем заказ как оплаченный с таймстампом."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE fk_orders SET status='paid' WHERE order_id=$1", order_id
+            "UPDATE fk_orders SET status='paid', paid_at=NOW() WHERE order_id=$1", order_id
         )
 
 
@@ -1203,6 +1477,48 @@ def kb_error_with_alt(menu: str, model_key: str):
     rows.append([InlineKeyboardButton(text="🔄 Попробовать ту же модель", callback_data=f"retry_{menu}:{model_key}")])
     rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def safe_send_media(
+    send_func,
+    *args,
+    max_attempts: int = 3,
+    op_name: str = "media",
+    **kwargs
+):
+    """Обёртка с retry для любой bot.send_* функции (send_photo, send_video, send_document, answer_video, answer_photo).
+    
+    Применяет exponential backoff при таймаутах и сетевых ошибках Telegram.
+    Безопасно: если все попытки провалились — исключение пробрасывается наружу.
+    
+    Пример использования:
+      await safe_send_media(cb.message.answer_photo, BufferedInputFile(data, "img.png"), caption="...")
+    """
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = await send_func(*args, **kwargs)
+            if attempt > 1:
+                logging.info(f"safe_send_media[{op_name}] succeeded on attempt {attempt}/{max_attempts}")
+            return result
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            is_retryable = (
+                "timeout" in err_str or "timed out" in err_str
+                or "reset" in err_str or "network" in err_str
+                or "temporarily" in err_str
+            )
+            if attempt < max_attempts and is_retryable:
+                delay = 2 * attempt  # 2s, 4s, 6s
+                logging.warning(f"safe_send_media[{op_name}] attempt {attempt}/{max_attempts} failed: {str(e)[:150]} — retrying in {delay}s")
+                await asyncio.sleep(delay)
+                continue
+            # Не ретраим / последняя попытка
+            logging.error(f"safe_send_media[{op_name}] failed after {attempt} attempts: {e}")
+            raise
+    if last_err:
+        raise last_err
 
 
 def friendly_error(e: Exception) -> str:
@@ -4404,7 +4720,10 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
         f"Выбери способ оплаты:"
     )
 
-    rows = [[InlineKeyboardButton(text=f"🏦 СБП — {final_price}₽", callback_data=f"payfk:{key}:sbp")]]
+    rows = [
+        [InlineKeyboardButton(text=f"🏦 СБП — {final_price}₽",    callback_data=f"payfk:{key}:sbp")],
+        [InlineKeyboardButton(text=f"💳 Картой — {final_price}₽", callback_data=f"payfk:{key}:card")],
+    ]
     if not promo_code:
         rows.append([InlineKeyboardButton(text="🎟 Применить промокод", callback_data=f"promo_apply:{key}")])
     else:
@@ -4523,7 +4842,11 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
         "promo_code": promo_code,
     }
     # Сохраняем в БД — не потеряется при перезапуске
-    await fk_save_order(order_id, uid, p["credits"], int(amount), key)
+    await fk_save_order(
+        order_id, uid, p["credits"], int(amount), key,
+        payment_method=method,
+        promo_code=promo_code
+    )
 
     wait_msg = await cb.message.answer("⏳ Создаю ссылку на оплату...")
     try:
@@ -4813,7 +5136,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
-    _active_generations.add(uid)
+    await mark_generation_active(uid, "photo")
     await state.clear()
     wait = await cb.message.edit_text(
         f"⚙️ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>",
@@ -4862,19 +5185,26 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         cr = await get_credits(uid)
         # Сохраняем оригинал в памяти для скачивания (с timestamp для автоочистки)
         user_orig_images[uid] = {"data": img_bytes, "ts": _time_module.time()}
-        # Сначала отправляем оригинал как документ
-        await cb.message.answer_document(
+        # Сначала отправляем оригинал как документ — с retry
+        await safe_send_media(
+            cb.message.answer_document,
             BufferedInputFile(img_bytes, "original.png"),
             caption="\U0001f4ce <b>Оригинал</b> — без сжатия, полное качество",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            op_name=f"img_document_{key}",
         )
-        # Затем превью с кнопками
-        await cb.message.answer_photo(
+        # Затем превью с кнопками — с retry
+        await safe_send_media(
+            cb.message.answer_photo,
             BufferedInputFile(img_bytes, "image.png"),
             caption=f"🎉 Готово! {m['name']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов",
-            reply_markup=kb_after("image", key)
+            reply_markup=kb_after("image", key),
+            op_name=f"img_photo_{key}",
         )
-        await wait.delete()
+        try:
+            await wait.delete()
+        except Exception:
+            pass
     except Exception as e:
         await img_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e)
@@ -4891,7 +5221,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML"
             )
     finally:
-        _active_generations.discard(uid)
+        await unmark_generation_active(uid)
     await cb.answer()
 async def download_original(cb: CallbackQuery):
     """Отправляет оригинальное фото как документ без сжатия."""
@@ -5272,7 +5602,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
-    _active_generations.add(uid)
+    await mark_generation_active(uid, "video")
     await state.clear()
 
     # Адаптивный текст начального сообщения в зависимости от модели
@@ -5518,7 +5848,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         except Exception as msg_err:
             logging.warning(f"Failed to send error message: {msg_err}")
     finally:
-        _active_generations.discard(uid)
+        await unmark_generation_active(uid)
         # Отменяем фоновую задачу обновления статуса
         if not progress_task.done():
             progress_task.cancel()
@@ -7215,52 +7545,77 @@ async def _show_payments_page(cb: CallbackQuery, page: int):
                 PAYMENTS_PAGE_SIZE, offset
             )
 
-        if total_count == 0:
-            text = "🧾 <b>История платежей</b>\n\nПлатежей пока нет."
-            kb_rows = [[InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]]
-        else:
-            method_lines = []
-            for m in methods:
-                emoji = "🏦" if m['method'] == "freekassa" else ("⭐" if m['method'] == "stars" else "💳")
-                method_lines.append(f"{emoji} {m['method']}: {m['n']} шт · {m['sum']}₽")
+            # Построение текста — остаётся внутри async with чтобы conn был доступен
+            if total_count == 0:
+                text = "🧾 <b>История платежей</b>\n\nПлатежей пока нет."
+                kb_rows = [[InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]]
+            else:
+                method_lines = []
+                for m in methods:
+                    emoji = "🏦" if m['method'] == "freekassa" else ("⭐" if m['method'] == "stars" else "💳")
+                    method_lines.append(f"{emoji} {m['method']}: {m['n']} шт · {m['sum']}₽")
 
-            pay_lines = []
-            for r in rows:
-                username = (r['username'] or "").strip()
-                full_name = (r['full_name'] or "").strip()
-                uid = r['user_id']
-                if username:
-                    uname = f"@{username}"
-                elif full_name:
-                    uname = f"<a href='tg://user?id={uid}'>{full_name}</a>"
-                else:
-                    uname = f"ID <code>{uid}</code>"
-                dt = str(r['created_at'])[:16] if r['created_at'] else "-"
-                emoji = "🏦" if r['method'] == "freekassa" else ("⭐" if r['method'] == "stars" else "💳")
-                pay_lines.append(
-                    f"{emoji} {uname} · <b>{r['amount_rub']}₽</b> · +{r['credits']} кр · {dt}"
+                pay_lines = []
+                for r in rows:
+                    username = (r['username'] or "").strip()
+                    full_name = (r['full_name'] or "").strip()
+                    uid = r['user_id']
+                    if username:
+                        uname = f"@{username}"
+                    elif full_name:
+                        uname = f"<a href='tg://user?id={uid}'>{full_name}</a>"
+                    else:
+                        uname = f"ID <code>{uid}</code>"
+                    dt = str(r['created_at'])[:16] if r['created_at'] else "-"
+                    emoji = "🏦" if r['method'] == "freekassa" else ("⭐" if r['method'] == "stars" else "💳")
+
+                    # Подтягиваем детали FreeKassa (метод + промокод) если есть
+                    details = ""
+                    if r['method'] == "freekassa":
+                        try:
+                            fk_row = await conn.fetchrow(
+                                """SELECT payment_method, promo_code FROM fk_orders
+                                   WHERE user_id=$1 AND amount_rub=$2
+                                     AND ABS(EXTRACT(EPOCH FROM (created_at - $3::timestamp))) < 600
+                                   ORDER BY created_at DESC LIMIT 1""",
+                                uid, r['amount_rub'], r['created_at']
+                            )
+                            if fk_row:
+                                pm = fk_row['payment_method'] or ""
+                                pc = fk_row['promo_code']
+                                if pm == "card":
+                                    details += " · 💳"
+                                elif pm == "sbp":
+                                    details += " · 🏦"
+                                if pc:
+                                    details += f" · 🎟 {pc}"
+                        except Exception:
+                            pass
+
+                    pay_lines.append(
+                        f"{emoji} {uname} · <b>{r['amount_rub']}₽</b> · +{r['credits']} кр{details} · {dt}"
+                    )
+
+                text = (
+                    f"🧾 <b>История платежей</b>\n\n"
+                    f"📊 <b>Всего:</b> {total_count} платежей · {total_sum}₽ · {total_credits} кр\n"
+                    f"📅 За сутки: {today_row[0]} · {today_row[1]}₽\n"
+                    f"📆 За 7 дней: {week_row[0]} · {week_row[1]}₽\n\n"
+                    f"<b>По методам:</b>\n" + "\n".join(method_lines) + "\n\n"
+                    f"<b>Страница {page+1}/{max_page+1}:</b>\n" + "\n".join(pay_lines)
                 )
 
-            text = (
-                f"🧾 <b>История платежей</b>\n\n"
-                f"📊 <b>Всего:</b> {total_count} платежей · {total_sum}₽ · {total_credits} кр\n"
-                f"📅 За сутки: {today_row[0]} · {today_row[1]}₽\n"
-                f"📆 За 7 дней: {week_row[0]} · {week_row[1]}₽\n\n"
-                f"<b>По методам:</b>\n" + "\n".join(method_lines) + "\n\n"
-                f"<b>Страница {page+1}/{max_page+1}:</b>\n" + "\n".join(pay_lines)
-            )
+                nav = []
+                if page > 0:
+                    nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_pay_p:{page-1}"))
+                nav.append(InlineKeyboardButton(text=f"{page+1}/{max_page+1}", callback_data="noop"))
+                if page < max_page:
+                    nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_pay_p:{page+1}"))
 
-            nav = []
-            if page > 0:
-                nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_pay_p:{page-1}"))
-            nav.append(InlineKeyboardButton(text=f"{page+1}/{max_page+1}", callback_data="noop"))
-            if page < max_page:
-                nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_pay_p:{page+1}"))
-
-            kb_rows = []
-            if nav:
-                kb_rows.append(nav)
-            kb_rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
+                kb_rows = []
+                if nav:
+                    kb_rows.append(nav)
+                kb_rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
 
         try:
             await cb.message.edit_text(
@@ -7850,7 +8205,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         await message.answer("⛔ Ошибка списания кредитов. Попробуй ещё раз.")
         return
 
-    _active_generations.add(uid)
+    await mark_generation_active(uid, "photo")
     await state.clear()
     wait = await message.answer(
         f"🖌️ Редактирую фото...\n\n"
@@ -7858,6 +8213,18 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         f"<i>{prompt[:80]}</i>",
         parse_mode="HTML"
     )
+
+    # Защита от двойного возврата кредитов
+    edit_refunded = False
+
+    async def edit_refund_once(reason: str = ""):
+        nonlocal edit_refunded
+        if edit_refunded:
+            logging.warning(f"edit_refund_once SKIPPED uid={uid} reason={reason}")
+            return
+        edit_refunded = True
+        await add_credits(uid, EDIT_CREDIT_COST)
+        logging.info(f"edit_refund_once EXECUTED uid={uid} credits={EDIT_CREDIT_COST} reason={reason}")
 
     try:
         result_bytes = await _with_retry(
@@ -7868,28 +8235,38 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         _record_generation(uid, _photo_history)
         cr_left = await get_credits(uid)
         caption = f"🎉 Готово! ✏️ Редактирование\n💸 Списано {EDIT_CREDIT_COST} кредитов | Остаток: {cr_left} кредитов"
-        # Оригинал без сжатия
-        await message.answer_document(
+        # Оригинал без сжатия — с retry
+        await safe_send_media(
+            message.answer_document,
             BufferedInputFile(result_bytes, "edited_original.png"),
             caption="📎 <b>Оригинал</b> — без сжатия, полное качество",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            op_name="edit_document",
         )
-        # Превью с кнопками
-        await message.answer_photo(
+        # Превью с кнопками — с retry
+        await safe_send_media(
+            message.answer_photo,
             BufferedInputFile(result_bytes, "edited.png"),
             caption=caption,
-            reply_markup=kb_after("edit", "edit")
+            reply_markup=kb_after("edit", "edit"),
+            op_name="edit_photo",
         )
-        await wait.delete()
+        try:
+            await wait.delete()
+        except Exception:
+            pass
     except Exception as e:
-        await add_credits(uid, EDIT_CREDIT_COST)
+        await edit_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Редактирование фото uid={uid}", e)
-        await wait.edit_text(
-            f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
-            reply_markup=kb_back()
-        )
+        try:
+            await wait.edit_text(
+                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                reply_markup=kb_back()
+            )
+        except Exception as msg_err:
+            logging.warning(f"edit error message failed: {msg_err}")
     finally:
-        _active_generations.discard(uid)
+        await unmark_generation_active(uid)
 
 
 @dp.callback_query(F.data.startswith("again:edit:"))
@@ -8166,7 +8543,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка списания. Попробуй ещё раз.")
         return
 
-    _active_generations.add(uid)
+    await mark_generation_active(uid, "anim")
     await state.clear()
     mode_label = "2️⃣ Два кадра" if mode == "two" else "1️⃣ Один кадр"
     wait = await message.answer(
@@ -8176,6 +8553,18 @@ async def anim_prompt(message: Message, state: FSMContext):
         f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
         parse_mode="HTML"
     )
+
+    # Защита от двойного возврата кредитов
+    anim_refunded = False
+
+    async def anim_refund_once(reason: str = ""):
+        nonlocal anim_refunded
+        if anim_refunded:
+            logging.warning(f"anim_refund_once SKIPPED uid={uid} reason={reason}")
+            return
+        anim_refunded = True
+        await add_credits(uid, ANIM_CREDIT_COST)
+        logging.info(f"anim_refund_once EXECUTED uid={uid} credits={ANIM_CREDIT_COST} reason={reason}")
 
     try:
         # Семафор: не более 5 Veo генераций одновременно (клиенту не видно)
@@ -8193,9 +8582,18 @@ async def anim_prompt(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
              InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
         ])
-        # 1. Видео для просмотра в чате
+
+        # Удаляем прогресс-сообщение ПЕРЕД отправкой видео
         try:
-            await message.answer_video(
+            await wait.delete()
+        except Exception:
+            pass
+
+        # 1. Видео с retry через safe_send_media
+        video_sent = False
+        try:
+            await safe_send_media(
+                message.answer_video,
                 BufferedInputFile(vid_bytes, "animation.mp4"),
                 caption=(
                     f"✅ Готово! 🏃 Анимация фото\n"
@@ -8204,36 +8602,56 @@ async def anim_prompt(message: Message, state: FSMContext):
                 ),
                 reply_markup=kb_after_anim,
                 supports_streaming=True,
+                op_name="anim_video",
             )
+            video_sent = True
         except Exception as ve:
-            logging.warning(f"answer_video failed: {ve}")
+            logging.error(f"anim answer_video failed: {ve}")
+
+        # Если видео не отправилось — возвращаем кредиты и выходим
+        if not video_sent:
+            await anim_refund_once("video_send_failed")
+            try:
+                await message.answer(
+                    f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не отправилось в Telegram.\n"
+                    f"Кредиты возвращены 💳\n"
+                    f"Напиши @neirosetkaalex — пришлём файл напрямую.",
+                    reply_markup=kb_back(),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+
         # 2. Документ — только если < 48 МБ
-        # disable_content_type_detection=True заставляет Telegram показывать его 
-        # как документ-файл (а не как ещё один видеоплеер)
         if size_mb < 48:
             try:
-                await bot.send_document(
+                await safe_send_media(
+                    bot.send_document,
                     chat_id=message.chat.id,
                     document=BufferedInputFile(vid_bytes, "animation_original.mp4"),
                     caption="📁 <b>Оригинал без сжатия</b> — скачай для максимального качества",
                     parse_mode="HTML",
                     disable_content_type_detection=True,
+                    op_name="anim_document",
                 )
             except Exception as de:
-                logging.error(f"send_document failed ({size_mb:.1f} MB): {de}")
-                await notify_admin_error(f"Документ анимации uid={uid} {size_mb:.1f}MB", de)
+                logging.error(f"anim send_document failed ({size_mb:.1f} MB): {de}")
+                # Документ не критичен — видео уже отправлено
         else:
             logging.warning(f"Animation too large for document: {size_mb:.1f} MB")
-        await wait.delete()
     except Exception as e:
-        await add_credits(uid, ANIM_CREDIT_COST)
+        await anim_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Анимация фото uid={uid}", e)
-        await wait.edit_text(
-            f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
-            reply_markup=kb_back()
-        )
+        try:
+            await wait.edit_text(
+                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                reply_markup=kb_back()
+            )
+        except Exception as msg_err:
+            logging.warning(f"anim error message failed: {msg_err}")
     finally:
-        _active_generations.discard(uid)
+        await unmark_generation_active(uid)
 
 
 # ══════════════════════════════════════════════════════════
@@ -8504,7 +8922,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         await msg_obj.answer("❌ Ошибка списания. Попробуй ещё раз.")
         return
 
-    _active_generations.add(uid)
+    await mark_generation_active(uid, "motion")
     await state.clear()
 
     wait_text = (
@@ -8520,6 +8938,18 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
             wait = await msg_obj.answer(wait_text, parse_mode="HTML")
     else:
         wait = await msg_obj.answer(wait_text, parse_mode="HTML")
+
+    # Защита от двойного возврата кредитов
+    motion_refunded = False
+
+    async def motion_refund_once(reason: str = ""):
+        nonlocal motion_refunded
+        if motion_refunded:
+            logging.warning(f"motion_refund_once SKIPPED uid={uid} reason={reason}")
+            return
+        motion_refunded = True
+        await add_credits(uid, price)
+        logging.info(f"motion_refund_once EXECUTED uid={uid} credits={price} reason={reason}")
 
     try:
         # Получаем публичные URL файлов Telegram (EvoLink сам скачает)
@@ -8544,9 +8974,18 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_motion"),
              InlineKeyboardButton(text="🏠 Главное", callback_data="back_main")],
         ])
-        # 1. Видео плеером
+
+        # Удаляем прогресс-сообщение ПЕРЕД отправкой (чистый UX)
         try:
-            await bot.send_video(
+            await wait.delete()
+        except Exception:
+            pass
+
+        # 1. Видео плеером — с retry
+        video_sent = False
+        try:
+            await safe_send_media(
+                bot.send_video,
                 chat_id=msg_obj.chat.id,
                 video=BufferedInputFile(vid_bytes, "motion_control.mp4"),
                 caption=(
@@ -8556,30 +8995,45 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 ),
                 reply_markup=kb_after_mot,
                 supports_streaming=True,
+                op_name="motion_video",
             )
+            video_sent = True
         except Exception as ve:
-            logging.warning(f"send_video failed: {ve}")
+            logging.error(f"motion send_video failed: {ve}")
 
-        # 2. Документ (оригинал без сжатия)
+        # Если видео не отправилось — возвращаем кредиты и выходим
+        if not video_sent:
+            await motion_refund_once("video_send_failed")
+            try:
+                await msg_obj.answer(
+                    f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не отправилось в Telegram.\n"
+                    f"Кредиты возвращены 💳\n"
+                    f"Напиши @neirosetkaalex — пришлём файл напрямую.",
+                    reply_markup=kb_back(),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+
+        # 2. Документ (оригинал без сжатия) — с retry
         if size_mb < 48:
             try:
-                await bot.send_document(
+                await safe_send_media(
+                    bot.send_document,
                     chat_id=msg_obj.chat.id,
                     document=BufferedInputFile(vid_bytes, "motion_control_original.mp4"),
                     caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
                     parse_mode="HTML",
                     disable_content_type_detection=True,
+                    op_name="motion_document",
                 )
             except Exception as de:
                 logging.error(f"Motion Control send_document failed ({size_mb:.1f} MB): {de}")
-
-        try:
-            await wait.delete()
-        except Exception:
-            pass
+                # Документ не критичен — видео уже отправлено
 
     except Exception as e:
-        await add_credits(uid, price)
+        await motion_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Motion Control uid={uid} duration={duration}", e)
         try:
             await wait.edit_text(
@@ -8587,12 +9041,15 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 reply_markup=kb_back()
             )
         except Exception:
-            await msg_obj.answer(
-                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
-                reply_markup=kb_back()
-            )
+            try:
+                await msg_obj.answer(
+                    f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                    reply_markup=kb_back()
+                )
+            except Exception as msg_err:
+                logging.warning(f"motion error message failed: {msg_err}")
     finally:
-        _active_generations.discard(uid)
+        await unmark_generation_active(uid)
 
 
 # ══════════════════════════════════════════════════════════
@@ -8796,7 +9253,9 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                 user_id,
                 f"✅ <b>Оплата прошла успешно!</b>\n\n"
                 f"➕ Начислено: <b>{credits} кредитов</b>\n"
-                f"💵 Баланс: <b>{new_balance} кредитов</b>\n\n"
+                f"💵 Баланс: <b>{new_balance} кредитов</b>\n"
+                f"💳 Способ: FreeKassa · {amount_rub}₽\n"
+                f"🆔 Заказ: <code>{order_id}</code>\n\n"
                 f"<i>⏳ Кредиты действуют 30 дней</i>\n\n"
                 f"Можешь начинать генерацию! 🚀",
                 parse_mode="HTML",
@@ -8808,6 +9267,35 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
             logging.info(f"FK payment success: user={user_id} credits={credits}")
         except Exception as e:
             logging.error(f"FK notify user error: {e}")
+
+        # 7. Уведомляем админа о поступлении денег
+        try:
+            # Получаем инфу о юзере для более полного уведомления
+            user_info = await get_user(user_id)
+            username = (user_info.get("username") or "").strip() if user_info else ""
+            full_name = (user_info.get("full_name") or "").strip() if user_info else ""
+            user_label = f"@{username}" if username else (full_name or f"ID {user_id}")
+
+            # Достаём метод оплаты и промокод из заказа
+            db_order = await fk_get_order(order_id)
+            method_used = (db_order or {}).get("payment_method", "sbp") if db_order else "sbp"
+            method_emoji = "🏦 СБП" if method_used == "sbp" else "💳 Карта"
+            promo_used = (db_order or {}).get("promo_code") if db_order else promo_code
+
+            admin_msg = (
+                f"💰 <b>Новая оплата FreeKassa</b>\n\n"
+                f"👤 {user_label} (<code>{user_id}</code>)\n"
+                f"💵 Сумма: <b>{amount_rub}₽</b>\n"
+                f"💎 Кредитов: <b>{credits}</b>\n"
+                f"🧾 Способ: {method_emoji}\n"
+                f"🆔 Заказ: <code>{order_id}</code>"
+            )
+            if promo_used:
+                admin_msg += f"\n🎟 Промокод: <code>{promo_used}</code>"
+
+            await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"FK admin notify error: {e}")
 
         return web.Response(text="YES")
 
@@ -8987,6 +9475,8 @@ async def main():
     asyncio.create_task(pool_health_monitor())
     asyncio.create_task(credit_batches_loop())
     asyncio.create_task(reminders_loop())
+    asyncio.create_task(cleanup_stale_generations_loop())
+    asyncio.create_task(auto_recover_lost_videos_loop())
     # Graceful shutdown
     loop = asyncio.get_running_loop()
     _setup_signal_handlers(loop)
