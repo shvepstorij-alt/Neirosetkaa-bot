@@ -2365,7 +2365,7 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
             logging.info(f"fal.ai video submitted: {request_id} ({model_id}) | payload_keys={list(payload.keys())}")
 
         status_url = f"{queue_url}/requests/{request_id}/status"
-        result_url = f"{queue_url}/requests/{request_id}"
+        result_url = f"{queue_url}/requests/{request_id}/response"  # /response на конце обязателен!
 
         # 2. Polling до 25 минут
         # Первые 30 сек — сон (видео точно ещё не готово)
@@ -2410,17 +2410,52 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
 
                 await asyncio.sleep(10)
         else:
+            # Перед сдачей — последняя попытка забрать результат напрямую.
+            # Бывает что статус "застрял" на IN_PROGRESS, но видео уже готово.
+            logging.warning(f"fal.ai polling timeout, trying direct result fetch: {request_id}")
+            try:
+                async with s.get(result_url, headers=headers) as last_try:
+                    if last_try.status == 200:
+                        last_data = await last_try.json()
+                        last_video = last_data.get("video", {})
+                        last_url = last_video.get("url") if isinstance(last_video, dict) else None
+                        if last_url:
+                            logging.info(f"fal.ai rescued video via direct fetch: {request_id}")
+                            async with s.get(last_url) as lr:
+                                if lr.status == 200:
+                                    lb = await lr.read()
+                                    if len(lb) > 10000:
+                                        return lb
+            except Exception as rescue_err:
+                logging.warning(f"fal.ai rescue attempt failed: {rescue_err}")
             raise Exception("⏱ Таймаут генерации (>25 мин). Попробуй ещё раз или выбери более быструю модель.")
 
         # 3. Получаем результат
         async with s.get(result_url, headers=headers) as rr:
             if rr.status != 200:
-                raise Exception(f"fal.ai result fetch {rr.status}: {(await rr.text())[:300]}")
+                # Расширенная диагностика если результат не забрался
+                err_text = (await rr.text())[:500]
+                logging.error(f"fal.ai result fetch FAILED: status={rr.status} url={result_url} body={err_text}")
+                raise Exception(f"fal.ai result fetch {rr.status}: {err_text[:200]}")
             rd = await rr.json()
-            video = rd.get("video", {})
-            vid_url = video.get("url") if isinstance(video, dict) else None
+
+            # Ищем URL видео в разных возможных местах структуры ответа
+            video = rd.get("video")
+            vid_url = None
+            if isinstance(video, dict):
+                vid_url = video.get("url")
+            elif isinstance(video, str):
+                vid_url = video
+            # Некоторые модели возвращают в "video_url" или в "output"
             if not vid_url:
-                logging.warning(f"fal.ai no video url. response={str(rd)[:500]}")
+                vid_url = rd.get("video_url")
+            if not vid_url:
+                output = rd.get("output")
+                if isinstance(output, dict):
+                    vid_url = output.get("video", {}).get("url") if isinstance(output.get("video"), dict) else output.get("video_url")
+
+            if not vid_url:
+                logging.warning(f"fal.ai no video url in response. keys={list(rd.keys())} full={str(rd)[:800]}")
                 raise Exception("fal.ai не вернул URL видео")
 
             # Скачиваем видео
