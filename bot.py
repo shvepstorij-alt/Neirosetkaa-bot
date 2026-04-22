@@ -1083,6 +1083,55 @@ async def fk_mark_paid(order_id: str):
 #  ОБРАБОТКА ОШИБОК
 # ══════════════════════════════════════════════════════════
 
+# ─── Альтернативы при перегрузке моделей ──────────────────
+# Если модель перегружена (503), предлагаем клиенту альтернативу с похожим качеством
+
+ALTERNATIVE_MODELS = {
+    # Для каждого ключа — (тип меню, ключ-альтернатива, причина)
+    "img":   {
+        "img_ultra":     ("img", "img_std",   "Imagen 4 (чуть проще, но почти не отличается)"),
+        "img_std":       ("img", "img_fast",  "Imagen 4 Fast (быстрее, та же база)"),
+        "nb_pro":        ("img", "img_ultra", "Imagen 4 Ultra (близкое качество, другой провайдер)"),
+        "nb_2":          ("img", "img_std",   "Imagen 4 (другой провайдер, не зависит от Gemini)"),
+        "nb_flash":      ("img", "img_fast",  "Imagen 4 Fast (другой провайдер)"),
+        "flux_pro":      ("img", "img_ultra", "Imagen 4 Ultra (фотореалистичная альтернатива)"),
+        "ideogram_v3":   ("img", "nb_pro",    "Nano Banana Pro (тоже хорошо рисует текст)"),
+    },
+    "vid": {
+        "vid_pro":      ("vid", "vid_fast",     "Veo 3.1 Fast (1080p вместо 4K)"),
+        "vid_fast":     ("vid", "vid_lite",     "Veo 3.1 Lite (быстрее)"),
+        "kling_pro":    ("vid", "kling_turbo",  "Kling 2.5 Turbo (быстрее, той же серии)"),
+        "kling_turbo":  ("vid", "vid_fast",     "Veo 3.1 Fast (другой провайдер)"),
+    },
+}
+
+
+def kb_error_with_alt(menu: str, model_key: str):
+    """Клавиатура для сообщения об ошибке с альтернативой и кнопкой Назад."""
+    rows = []
+    alt_data = ALTERNATIVE_MODELS.get(menu, {}).get(model_key)
+    if alt_data:
+        alt_menu, alt_key, _alt_desc = alt_data
+        # Получаем имя альтернативной модели
+        if alt_menu == "img" and alt_key in IMAGE_MODELS:
+            alt_name = IMAGE_MODELS[alt_key]["name"]
+            alt_credits = IMAGE_MODELS[alt_key]["credits"]
+            rows.append([InlineKeyboardButton(
+                text=f"💡 Попробовать {alt_name} ({alt_credits} кр)",
+                callback_data=f"alt_img:{alt_key}"
+            )])
+        elif alt_menu == "vid" and alt_key in VIDEO_MODELS:
+            alt_name = VIDEO_MODELS[alt_key]["name"]
+            alt_credits = VIDEO_MODELS[alt_key]["credits"]
+            rows.append([InlineKeyboardButton(
+                text=f"💡 Попробовать {alt_name} ({alt_credits} кр)",
+                callback_data=f"alt_vid:{alt_key}"
+            )])
+    rows.append([InlineKeyboardButton(text="🔄 Попробовать ту же модель", callback_data=f"retry_{menu}:{model_key}")])
+    rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def friendly_error(e: Exception) -> str:
     """Возвращает понятное сообщение для клиента (максимально короткое, без тех. деталей).
     Safety-ошибки показываем как есть — клиенту нужно знать что надо переформулировать промт.
@@ -1093,6 +1142,20 @@ def friendly_error(e: Exception) -> str:
     if ("🛡" in err or "фильтр" in low or "заблокирован" in low
         or "переформулир" in low or "копирайт" in low):
         return err
+    # Перегрузка модели на стороне провайдера (Google/fal.ai)
+    if ("503" in err or "unavailable" in low or "high demand" in low
+        or "currently overloaded" in low or "experiencing high demand" in low):
+        return (
+            "⚠️ <b>Модель сейчас перегружена</b> на стороне провайдера.\n\n"
+            "Это временно — обычно проходит за 1-3 минуты.\n"
+            "💡 Попробуй ещё раз или выбери другую модель."
+        )
+    # Rate limit
+    if "429" in err or "rate limit" in low or "too many requests" in low:
+        return (
+            "⚠️ Слишком много запросов сейчас.\n"
+            "Подожди минуту и попробуй снова 🙏"
+        )
     # Все остальные — одно универсальное сообщение
     return "⚠️ Небольшая техническая проблемка. Попробуй ещё раз или напиши @neirosetkaalex"
 
@@ -2124,11 +2187,15 @@ def _is_retryable_error(exc: Exception) -> bool:
     return any(t in msg for t in triggers)
 
 
-async def _with_retry(coro_factory, max_attempts: int = 3, base_delay: float = 2.0, op_name: str = "API"):
+async def _with_retry(coro_factory, max_attempts: int = 3, base_delay: float = 2.0,
+                      op_name: str = "API", on_retry=None):
     """Запускает coroutine с автоматическими повторами при транзиентных ошибках.
     
     coro_factory — функция которая создаёт НОВЫЙ coroutine при каждой попытке
     (нельзя повторно await'ить тот же coroutine).
+    on_retry — опциональный async callback (attempt, delay, error) для UI-уведомлений.
+    
+    Для 503 (перегрузка модели) — увеличенные паузы, т.к. короткие ретраи бесполезны.
     """
     last_exc = None
     for attempt in range(1, max_attempts + 1):
@@ -2138,8 +2205,26 @@ async def _with_retry(coro_factory, max_attempts: int = 3, base_delay: float = 2
             last_exc = e
             if attempt == max_attempts or not _is_retryable_error(e):
                 raise
-            delay = base_delay * (2 ** (attempt - 1))  # экспоненциальный бэкофф: 2с, 4с, 8с
+
+            # Адаптивная пауза: для 503 (перегрузка) ждём дольше
+            err_str = str(e).lower()
+            is_overload = ("503" in err_str or "unavailable" in err_str
+                           or "high demand" in err_str or "overloaded" in err_str)
+            if is_overload:
+                # Для перегрузки: 15с, 30с, 60с — даём времени стихнуть пику
+                delay = 15.0 * (2 ** (attempt - 1))
+            else:
+                # Для остальных (rate limit, timeout): обычный бэкофф 2с, 4с, 8с
+                delay = base_delay * (2 ** (attempt - 1))
             logging.warning(f"{op_name} attempt {attempt}/{max_attempts} failed: {str(e)[:150]} — retrying in {delay}s")
+
+            # Уведомляем UI если передан callback
+            if on_retry:
+                try:
+                    await on_retry(attempt, delay, e)
+                except Exception as cb_err:
+                    logging.debug(f"on_retry callback failed: {cb_err}")
+
             await asyncio.sleep(delay)
     if last_exc:
         raise last_exc
@@ -3990,6 +4075,29 @@ async def choose_img_model(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+@dp.callback_query(F.data.startswith("alt_img:"))
+async def choose_alt_img_model(cb: CallbackQuery, state: FSMContext):
+    """Клиент выбрал альтернативную фото-модель после ошибки 503."""
+    key = cb.data.split(":")[1]
+    if key not in IMAGE_MODELS:
+        await cb.answer()
+        return
+    # Переиспользуем основной flow выбора модели
+    cb.data = f"imodel:{key}"
+    await choose_img_model(cb, state)
+
+
+@dp.callback_query(F.data.startswith("retry_img:"))
+async def retry_img_model(cb: CallbackQuery, state: FSMContext):
+    """Клиент хочет попробовать ту же модель ещё раз после ошибки."""
+    key = cb.data.split(":")[1]
+    if key not in IMAGE_MODELS:
+        await cb.answer()
+        return
+    cb.data = f"imodel:{key}"
+    await choose_img_model(cb, state)
+
+
 @dp.callback_query(F.data.startswith("iaspect:"))
 async def choose_img_aspect(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
@@ -4067,9 +4175,28 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
 
     try:
         aspect = data.get("aspect_ratio", "1:1")
+
+        # Callback для уведомления юзера между попытками retry (особенно важно при 503)
+        async def notify_retry(attempt, delay, err):
+            err_low = str(err).lower()
+            is_overload = ("503" in str(err) or "unavailable" in err_low
+                           or "high demand" in err_low)
+            if is_overload:
+                wait_msg = f"⏳ Модель перегружена, жду {int(delay)} сек и пробую ещё раз ({attempt}/3)..."
+            else:
+                wait_msg = f"⏳ Временный сбой, повтор через {int(delay)} сек ({attempt}/3)..."
+            try:
+                await wait.edit_text(
+                    f"⚙️ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>\n\n{wait_msg}",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
         img_bytes = await _with_retry(
             lambda: api_generate_image(prompt, m["model_id"], aspect, m.get("api", "imagen")),
-            max_attempts=3, op_name=f"Imagen/Gemini {key}"
+            max_attempts=3, op_name=f"Imagen/Gemini {key}",
+            on_retry=notify_retry
         )
         await log_gen(uid, "image", key, m["credits"])
         _record_generation(uid, _photo_history)
@@ -4094,11 +4221,16 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e)
         try:
             await cb.message.edit_text(
-                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
-                reply_markup=kb_back()
+                f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+                reply_markup=kb_error_with_alt("img", key),
+                parse_mode="HTML"
             )
         except Exception:
-            await cb.message.answer(f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.", reply_markup=kb_back())
+            await cb.message.answer(
+                f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+                reply_markup=kb_error_with_alt("img", key),
+                parse_mode="HTML"
+            )
     finally:
         _active_generations.discard(uid)
     await cb.answer()
@@ -4288,6 +4420,28 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
         reply_markup=kb_aspect_video(key), parse_mode="HTML"
     )
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("alt_vid:"))
+async def choose_alt_vid_model(cb: CallbackQuery, state: FSMContext):
+    """Клиент выбрал альтернативную видео-модель после ошибки 503."""
+    key = cb.data.split(":")[1]
+    if key not in VIDEO_MODELS:
+        await cb.answer()
+        return
+    cb.data = f"vmodel:{key}"
+    await choose_vid_model(cb, state)
+
+
+@dp.callback_query(F.data.startswith("retry_vid:"))
+async def retry_vid_model(cb: CallbackQuery, state: FSMContext):
+    """Клиент хочет попробовать ту же видео-модель ещё раз после ошибки."""
+    key = cb.data.split(":")[1]
+    if key not in VIDEO_MODELS:
+        await cb.answer()
+        return
+    cb.data = f"vmodel:{key}"
+    await choose_vid_model(cb, state)
 
 
 @dp.callback_query(F.data.startswith("vaspect:"))
@@ -4521,8 +4675,9 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await add_credits(uid, m["credits"])
         await notify_admin_error(f"Генерация видео uid={uid} model={key}", e)
         await cb.message.answer(
-            f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
-            reply_markup=kb_back()
+            f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+            reply_markup=kb_error_with_alt("vid", key),
+            parse_mode="HTML"
         )
     finally:
         _active_generations.discard(uid)
