@@ -2325,6 +2325,8 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
     if not FAL_API_KEY:
         raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
 
+    logging.info(f"fal.ai START: model={model_id} duration={duration}s aspect={aspect_ratio} prompt_len={len(prompt)}")
+
     headers = {
         "Authorization": f"Key {FAL_API_KEY}",
         "Content-Type": "application/json",
@@ -2473,14 +2475,46 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                 logging.warning(f"fal.ai no video url in response. keys={list(rd.keys())} full={str(rd)[:800]}")
                 raise Exception("fal.ai не вернул URL видео")
 
-            # Скачиваем видео
-            async with s.get(vid_url) as vr:
-                if vr.status != 200:
-                    raise Exception(f"Не удалось скачать видео: HTTP {vr.status}")
-                vid_bytes = await vr.read()
-                if len(vid_bytes) < 10000:
-                    raise Exception(f"Видео слишком маленькое ({len(vid_bytes)} bytes)")
-                return vid_bytes
+            logging.info(f"fal.ai video URL obtained: {vid_url[:100]} (request_id={request_id})")
+
+    # 4. Скачивание видео — ОТДЕЛЬНАЯ сессия с собственным таймаутом (вне сессии polling)
+    # Это критично: polling мог «съесть» время общей сессии, а скачивание mp4 требует свежего окна.
+    # До 3 попыток с экспоненциальным бэкоффом.
+    download_timeout = aiohttp.ClientTimeout(total=300, sock_read=120)  # 5 мин общий, 2 мин на чтение
+    last_download_err = None
+    for attempt in range(1, 4):
+        try:
+            async with aiohttp.ClientSession(timeout=download_timeout) as dl_session:
+                async with dl_session.get(vid_url) as vr:
+                    if vr.status != 200:
+                        last_download_err = f"HTTP {vr.status}"
+                        logging.warning(f"fal.ai download attempt {attempt}/3 failed: {last_download_err}")
+                        await asyncio.sleep(2 * attempt)
+                        continue
+                    vid_bytes = await vr.read()
+                    if len(vid_bytes) < 10000:
+                        last_download_err = f"too small ({len(vid_bytes)} bytes)"
+                        logging.warning(f"fal.ai download attempt {attempt}/3: {last_download_err}")
+                        await asyncio.sleep(2 * attempt)
+                        continue
+                    size_mb = len(vid_bytes) / 1024 / 1024
+                    logging.info(f"fal.ai video DOWNLOADED: {size_mb:.1f} MB on attempt {attempt}/3 (request_id={request_id})")
+                    return vid_bytes
+        except asyncio.TimeoutError:
+            last_download_err = "timeout"
+            logging.warning(f"fal.ai download attempt {attempt}/3 timed out")
+            await asyncio.sleep(2 * attempt)
+        except Exception as dl_err:
+            last_download_err = str(dl_err)[:200]
+            logging.warning(f"fal.ai download attempt {attempt}/3 error: {last_download_err}")
+            await asyncio.sleep(2 * attempt)
+
+    # Все 3 попытки не удались — но видео есть на fal.ai, сообщаем админу request_id для ручного восстановления
+    logging.error(f"fal.ai DOWNLOAD FAILED after 3 attempts. request_id={request_id} url={vid_url[:200]} err={last_download_err}")
+    raise Exception(
+        f"Видео создано, но не удалось его скачать ({last_download_err}). "
+        f"Request ID: {request_id}. Админ восстановит вручную командой /recover."
+    )
 
 
 async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1", api_type: str = "imagen") -> bytes:
@@ -3128,6 +3162,127 @@ async def cmd_admin(message: Message, state: FSMContext):
 
     await state.clear()
     await show_admin_panel(message)
+
+
+@dp.message(F.text.startswith("/recover"), StateFilter("*"))
+async def cmd_recover(message: Message):
+    """Админская команда для ручного восстановления потерянного видео из fal.ai.
+    Использование: /recover <request_id> [<target_user_id>]
+    Если target_user_id не указан — видео отправится админу."""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer(
+            "📹 <b>Восстановление видео с fal.ai</b>\n\n"
+            "Использование:\n"
+            "<code>/recover &lt;request_id&gt;</code> — отправит видео тебе\n"
+            "<code>/recover &lt;request_id&gt; &lt;user_id&gt;</code> — отправит указанному юзеру\n\n"
+            "<b>Где взять request_id:</b>\n"
+            "1. https://fal.ai/dashboard → Latest generations\n"
+            "2. Кликни на нужное видео\n"
+            "3. В URL будет request_id (или скопируй из детального вида)",
+            parse_mode="HTML"
+        )
+        return
+
+    request_id = parts[1].strip()
+    target_uid = int(parts[2]) if len(parts) >= 3 and parts[2].strip().isdigit() else message.from_user.id
+
+    if not FAL_API_KEY:
+        await message.answer("⚠️ FAL_API_KEY не задан.")
+        return
+
+    status_msg = await message.answer(f"🔍 Ищу видео <code>{request_id}</code>...", parse_mode="HTML")
+
+    # Пробуем найти видео на разных известных endpoint'ах Kling
+    endpoints = [
+        "fal-ai/kling-video/v3/pro/text-to-video",
+        "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+        "fal-ai/kling-video/v3/standard/text-to-video",
+    ]
+    headers = {"Authorization": f"Key {FAL_API_KEY}"}
+    vid_url = None
+    found_endpoint = None
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
+        for ep in endpoints:
+            result_url = f"https://queue.fal.run/{ep}/requests/{request_id}/response"
+            try:
+                async with s.get(result_url, headers=headers) as r:
+                    if r.status == 200:
+                        rd = await r.json()
+                        video = rd.get("video")
+                        if isinstance(video, dict):
+                            vid_url = video.get("url")
+                        elif isinstance(video, str):
+                            vid_url = video
+                        if not vid_url:
+                            vid_url = rd.get("video_url")
+                        if vid_url:
+                            found_endpoint = ep
+                            break
+            except Exception as e:
+                logging.debug(f"recover: endpoint {ep} check failed: {e}")
+
+    if not vid_url:
+        await status_msg.edit_text(
+            f"❌ Не нашёл видео с request_id <code>{request_id}</code>\n\n"
+            f"Проверь ID в fal.ai dashboard. Возможно оно уже удалено (fal.ai хранит результаты ограниченное время).",
+            parse_mode="HTML"
+        )
+        return
+
+    await status_msg.edit_text(f"📥 Нашёл на <code>{found_endpoint}</code>, скачиваю...", parse_mode="HTML")
+
+    # Скачиваем с retry
+    vid_bytes = None
+    for attempt in range(1, 4):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as dl:
+                async with dl.get(vid_url) as vr:
+                    if vr.status == 200:
+                        vid_bytes = await vr.read()
+                        if len(vid_bytes) > 10000:
+                            break
+        except Exception as e:
+            logging.warning(f"recover download attempt {attempt}/3 failed: {e}")
+            await asyncio.sleep(2 * attempt)
+
+    if not vid_bytes or len(vid_bytes) < 10000:
+        await status_msg.edit_text(f"❌ Не удалось скачать видео по URL. Попробуй позже.")
+        return
+
+    size_mb = len(vid_bytes) / 1024 / 1024
+
+    # Отправляем юзеру
+    try:
+        await bot.send_video(
+            chat_id=target_uid,
+            video=BufferedInputFile(vid_bytes, "recovered.mp4"),
+            caption=(
+                f"🎬 Восстановленное видео\n"
+                f"(генерация, которая зависла — администратор вручную её забрал)"
+            ),
+            supports_streaming=True,
+        )
+        if size_mb < 48:
+            await bot.send_document(
+                chat_id=target_uid,
+                document=BufferedInputFile(vid_bytes, f"recovered_{request_id[:8]}.mp4"),
+                caption="📁 Оригинал без сжатия",
+                disable_content_type_detection=True,
+            )
+        await status_msg.edit_text(
+            f"✅ Видео отправлено юзеру <code>{target_uid}</code>\n"
+            f"📦 Размер: {size_mb:.1f} MB\n"
+            f"🔧 Endpoint: <code>{found_endpoint}</code>",
+            parse_mode="HTML"
+        )
+    except Exception as send_err:
+        logging.error(f"recover send_video failed: {send_err}")
+        await status_msg.edit_text(f"⚠️ Видео скачал ({size_mb:.1f} MB), но отправить не смог: {str(send_err)[:200]}")
 
 
 @dp.callback_query(F.data == "noop")
