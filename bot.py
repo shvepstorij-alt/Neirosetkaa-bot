@@ -157,8 +157,28 @@ def _record_generation(uid: int, history: dict):
     history.setdefault(uid, []).append(_t.time())
 
 
+async def check_not_blocked(cb_or_msg, uid: int) -> bool:
+    """Проверяет что юзер не заблокирован. Используется везде где есть платные действия.
+    Возвращает True если можно продолжать, False если заблокирован (и показывает сообщение)."""
+    if await is_blocked(uid):
+        msg = "🚫 Ваш аккаунт заблокирован. Для уточнений — напишите @neirosetkaalex"
+        try:
+            if isinstance(cb_or_msg, CallbackQuery):
+                await cb_or_msg.answer(msg, show_alert=True)
+            else:
+                await cb_or_msg.answer(msg)
+        except Exception:
+            pass
+        return False
+    return True
+
+
 async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
     """Проверки перед генерацией. kind: 'photo' | 'video' | 'anim'. Возвращает True если можно."""
+    # 0) Юзер не заблокирован
+    if not await check_not_blocked(cb_or_msg, uid):
+        return False
+
     # A) Одна активная генерация
     if uid in _active_generations:
         msg = "⏳ У тебя уже идёт генерация. Подожди, пока она закончится."
@@ -931,18 +951,56 @@ async def log_payment(user_id: int, credits: int, amount_rub: int, method: str):
     await log_event(user_id, "payment", f"method={method} credits={credits} amount={amount_rub}")
 
 async def deduct(user_id: int, amount: int) -> bool:
+    """Списывает кредиты с баланса юзера по FIFO из партий (самые старые первыми).
+    Атомарная операция: либо списали всю сумму, либо ничего (если не хватает).
+    Возвращает True если успешно."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # 1) Проверяем общий баланс с блокировкой
             row = await conn.fetchrow(
                 "SELECT credits FROM users WHERE user_id=$1 FOR UPDATE", user_id
             )
             if not row or row["credits"] < amount:
                 return False
+
+            # 2) Списываем из партий по FIFO — только из активных (не истёкших).
+            # Берём активные партии с кредитами, сортируем по expires_at ASC (сперва скоро истекающие),
+            # чтобы не терять кредиты. Партии без expires_at (NULL) идут в конец.
+            batches = await conn.fetch(
+                """SELECT id, credits_left FROM credit_batches
+                   WHERE user_id = $1 AND credits_left > 0
+                     AND (expires_at IS NULL OR expires_at > NOW())
+                   ORDER BY expires_at ASC NULLS LAST, id ASC
+                   FOR UPDATE""",
+                user_id
+            )
+
+            remaining = amount
+            for b in batches:
+                if remaining <= 0:
+                    break
+                take = min(remaining, b["credits_left"])
+                await conn.execute(
+                    "UPDATE credit_batches SET credits_left = credits_left - $1 WHERE id = $2",
+                    take, b["id"]
+                )
+                remaining -= take
+
+            # 3) Обновляем общий баланс в users (для обратной совместимости)
             await conn.execute(
                 "UPDATE users SET credits = credits - $1 WHERE user_id = $2",
                 amount, user_id
             )
+
+            # Если не хватило партий (что странно — значит где-то рассинхрон),
+            # логируем для диагностики, но не откатываем — общий баланс уже проверен
+            if remaining > 0:
+                logging.warning(
+                    f"deduct partial batch mismatch uid={user_id} amount={amount} "
+                    f"unallocated={remaining} — баланс списан, но партии не покрывают сумму"
+                )
+
     await log_event(user_id, "deduct", f"amount={amount}")
     return True
 
@@ -3126,6 +3184,11 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
 
+    # Заблокированный юзер получает короткое сообщение и ничего не происходит
+    if await is_blocked(uid):
+        await message.answer("🚫 Ваш аккаунт заблокирован. Для уточнений — напишите @neirosetkaalex")
+        return
+
     # Парсим реф-параметр: /start ref_123456
     parts = message.text.strip().split()
     referred_by = None
@@ -3133,7 +3196,9 @@ async def cmd_start(message: Message, state: FSMContext):
         try:
             rid = int(parts[1][4:])
             if rid != uid:
-                referred_by = rid
+                # Проверяем что пригласивший не заблокирован (иначе можно ему рефбонусами нагадить)
+                if not await is_blocked(rid):
+                    referred_by = rid
         except ValueError:
             pass
 
@@ -4305,9 +4370,12 @@ async def menu_buy(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("buy:"))
 async def buy_pack(cb: CallbackQuery, state: FSMContext):
+    uid = cb.from_user.id
+    # Блокировка распространяется и на покупку — иначе заблокированный мог бы купить пакет
+    if not await check_not_blocked(cb, uid):
+        return
     key = cb.data.split(":")[1]
     p = CREDIT_PACKS[key]
-    uid = cb.from_user.id
     data = await state.get_data()
     promo_code = data.get("promo_code")
     promo_discount = 0
@@ -4374,10 +4442,14 @@ async def promo_apply(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(PromoState.waiting_code)
 async def promo_code_input(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    # Заблокированные не могут применять промокоды (иначе можно фармить)
+    if not await check_not_blocked(message, uid):
+        await state.clear()
+        return
     code = (message.text or "").strip().upper()
     data = await state.get_data()
     key = data.get("promo_pack")
-    uid = message.from_user.id
 
     ok, msg_err, promo = await check_promo_for_user(code, uid)
     if not ok:
@@ -4526,6 +4598,14 @@ async def process_referral_bonus(user_id: int):
         if not row or not row["referred_by"] or row["ref_bonus_paid"]:
             return
         referrer_id = row["referred_by"]
+        # Если реферер заблокирован — не платим бонус, но помечаем что «обработано»
+        # чтобы не дёргать эту функцию каждый раз
+        if await is_blocked(referrer_id):
+            logging.info(f"Ref bonus SKIPPED: referrer {referrer_id} is blocked")
+            await conn.execute(
+                "UPDATE users SET ref_bonus_paid=TRUE WHERE user_id=$1", user_id
+            )
+            return
         # Считаем сколько у реферера уже было платящих
         paid_count = await conn.fetchval(
             "SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE",
@@ -8588,8 +8668,29 @@ FK_ALLOWED_IPS = {"168.119.157.136", "168.119.60.227", "178.154.197.79", "51.250
 async def fk_webhook_handler(request: web.Request) -> web.Response:
     """Принимает уведомление от FreeKassa об успешной оплате."""
     try:
+        # 0. Проверяем IP-адрес отправителя
+        # Railway использует X-Forwarded-For — берём первый IP в цепочке (реальный клиент)
+        client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if not client_ip:
+            client_ip = request.remote or ""
+
+        if client_ip not in FK_ALLOWED_IPS:
+            logging.warning(f"FK webhook from unauthorized IP: {client_ip}")
+            # Алерт админу — возможная попытка фрода
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>Попытка фрода на webhook!</b>\n\n"
+                    f"IP: <code>{client_ip}</code>\n"
+                    f"Заблокирован на уровне IP-whitelist FreeKassa.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return web.Response(text="FORBIDDEN", status=403)
+
         data = dict(await request.post())
-        logging.info(f"FK webhook received: {data}")
+        logging.info(f"FK webhook received from {client_ip}: {data}")
 
         merchant_id = data.get("MERCHANT_ID", "")
         amount      = data.get("AMOUNT", "")
@@ -8635,6 +8736,35 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
         user_id    = payment["user_id"]
         credits    = payment["credits"]
         amount_rub = payment["amount"]
+
+        # 4.1 Проверяем что оплаченная сумма совпадает с ожидаемой (защита от фрода)
+        try:
+            received_amount = float(amount)
+            expected_amount = float(amount_rub)
+            # Допустим погрешность 1 рубль (FreeKassa иногда округляет)
+            if abs(received_amount - expected_amount) > 1.0:
+                logging.error(
+                    f"FK AMOUNT MISMATCH! order={order_id} user={user_id} "
+                    f"expected={expected_amount} received={received_amount}"
+                )
+                # Алерт админу — фрод или баг
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 <b>Несовпадение суммы оплаты!</b>\n\n"
+                        f"Заказ: <code>{order_id}</code>\n"
+                        f"Юзер: <code>{user_id}</code>\n"
+                        f"Ожидали: <b>{expected_amount}₽</b>\n"
+                        f"Пришло: <b>{received_amount}₽</b>\n\n"
+                        f"Кредиты НЕ зачислены. Разберись вручную.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+                return web.Response(text="AMOUNT MISMATCH", status=400)
+        except (ValueError, TypeError) as ve:
+            logging.warning(f"FK AMOUNT parse error: {ve}")
+            # Если не смогли распарсить — осторожно продолжаем, подпись уже сошлась
 
         # 5. Зачисляем кредиты партией (на 30 дней) и логируем
         await add_credits_batch(user_id, credits, source="purchase", days_valid=30)
