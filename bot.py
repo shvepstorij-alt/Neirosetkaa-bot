@@ -3249,7 +3249,7 @@ async def cmd_audit_all(message: Message):
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Берём всех юзеров у кого баланс > 50 (остальные вряд ли пострадали)
-        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 ORDER BY credits DESC")
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 AND user_id != $1 ORDER BY credits DESC", ADMIN_ID)
 
         results = []
         for user in users:
@@ -3258,7 +3258,7 @@ async def cmd_audit_all(message: Message):
 
             # Начислено через credit_batches (все легальные источники)
             initial_row = await conn.fetchrow(
-                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1",
+                "SELECT COALESCE(SUM(credits_left), 0) AS total FROM credit_batches WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())",
                 uid
             )
             initial = int(initial_row["total"])
@@ -3297,22 +3297,24 @@ async def cmd_audit_all(message: Message):
 
     # Формируем отчёт
     text_lines = [
-        f"🔴 <b>Найдено {total_users} юзеров с лишними кредитами</b>\n",
-        f"💰 Общая переплата: <b>{total_excess} кр</b>\n",
-        f"\n<b>Топ подозрительных:</b>\n"
+        f"🔴 <b>Найдено {total_users} юзеров с лишними кредитами</b>",
+        f"💰 Общая переплата: <b>{total_excess} кр</b>",
+        "",
+        "<b>Топ подозрительных:</b>",
+        ""
     ]
 
-    # Показываем до 30 юзеров
-    for r in results[:30]:
+    # Показываем до 25 юзеров
+    for i, r in enumerate(results[:25], 1):
         text_lines.append(
-            f"<code>{r['uid']}</code> | "
-            f"сейчас: <b>{r['current']}</b> | "
-            f"должно: {r['expected']} | "
-            f"<b>+{r['diff']}</b> лишних\n"
+            f"<b>{i}.</b> <code>{r['uid']}</code>\n"
+            f"   💳 Сейчас: <b>{r['current']}</b> кр\n"
+            f"   ✅ Должно: {r['expected']} кр\n"
+            f"   ⚠️ Лишних: <b>+{r['diff']}</b>"
         )
 
-    if len(results) > 30:
-        text_lines.append(f"\n<i>...и ещё {len(results) - 30} юзеров</i>")
+    if len(results) > 25:
+        text_lines.append(f"\n<i>...и ещё {len(results) - 25} юзеров</i>")
 
     text_lines.append(
         f"\n\n<b>Что делать:</b>\n"
@@ -3321,7 +3323,7 @@ async def cmd_audit_all(message: Message):
         f"• <code>/fix_all_balances</code> — автоматически исправить все (ОСТОРОЖНО!)"
     )
 
-    full_text = "".join(text_lines)
+    full_text = "\n\n".join(text_lines)
     # Telegram лимит 4096 — режем если надо
     if len(full_text) > 4000:
         full_text = full_text[:3990] + "\n...[обрезано]"
@@ -3359,14 +3361,14 @@ async def cmd_fix_all_balances(message: Message):
     total_removed = 0
 
     async with pool.acquire() as conn:
-        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50")
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 AND user_id != $1", ADMIN_ID)
 
         for user in users:
             uid = user["user_id"]
             current = user["credits"]
 
             init_row = await conn.fetchrow(
-                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1",
+                "SELECT COALESCE(SUM(credits_left), 0) AS total FROM credit_batches WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())",
                 uid
             )
             spent_row = await conn.fetchrow(
@@ -5981,13 +5983,13 @@ async def adm_bal_audit_all(cb: CallbackQuery):
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 ORDER BY credits DESC")
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 AND user_id != $1 ORDER BY credits DESC", ADMIN_ID)
         results = []
         for user in users:
             uid = user["user_id"]
             current = user["credits"]
             init_row = await conn.fetchrow(
-                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", uid
+                "SELECT COALESCE(SUM(credits_left), 0) AS total FROM credit_batches WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())", uid
             )
             spent_row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
@@ -6010,19 +6012,22 @@ async def adm_bal_audit_all(cb: CallbackQuery):
 
     lines = [
         f"🔴 <b>Найдено {len(results)} юзеров с лишними кредитами</b>",
-        f"💰 Общая переплата: <b>{total_excess} кр</b>\n",
-        "<b>Топ подозрительных:</b>"
+        f"💰 Общая переплата: <b>{total_excess} кр</b>",
+        "",
+        "<b>Топ подозрительных:</b>",
+        ""
     ]
-    for r in results[:25]:
+    for i, r in enumerate(results[:25], 1):
         lines.append(
-            f"<code>{r['uid']}</code> | "
-            f"сейчас <b>{r['current']}</b> | должно {r['expected']} | "
-            f"<b>+{r['diff']}</b> лишних"
+            f"<b>{i}.</b> <code>{r['uid']}</code>\n"
+            f"   💳 Сейчас: <b>{r['current']}</b> кр\n"
+            f"   ✅ Должно: {r['expected']} кр\n"
+            f"   ⚠️ Лишних: <b>+{r['diff']}</b>"
         )
     if len(results) > 25:
         lines.append(f"\n<i>...и ещё {len(results) - 25} юзеров</i>")
 
-    full_text = "\n".join(lines)
+    full_text = "\n\n".join(lines)
     if len(full_text) > 4000:
         full_text = full_text[:3990] + "\n...[обрезано]"
 
@@ -6109,7 +6114,7 @@ async def adm_bal_got_uid(message: Message, state: FSMContext):
 
         current = user_row["credits"]
         init_row = await conn.fetchrow(
-            "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", target_uid
+            "SELECT COALESCE(SUM(credits_left), 0) AS total FROM credit_batches WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())", target_uid
         )
         spent_row = await conn.fetchrow(
             "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", target_uid
@@ -6261,13 +6266,13 @@ async def adm_bal_fix_all_confirm(cb: CallbackQuery):
     # Сначала показываем превью — сколько юзеров затронет
     pool = await get_pool()
     async with pool.acquire() as conn:
-        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50")
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 AND user_id != $1", ADMIN_ID)
         to_fix = []
         for user in users:
             uid = user["user_id"]
             current = user["credits"]
             init_row = await conn.fetchrow(
-                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", uid
+                "SELECT COALESCE(SUM(credits_left), 0) AS total FROM credit_batches WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())", uid
             )
             spent_row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
@@ -6314,12 +6319,12 @@ async def adm_bal_fix_all_do(cb: CallbackQuery):
     fixed_count = 0
     total_removed = 0
     async with pool.acquire() as conn:
-        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50")
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 AND user_id != $1", ADMIN_ID)
         for user in users:
             uid = user["user_id"]
             current = user["credits"]
             init_row = await conn.fetchrow(
-                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", uid
+                "SELECT COALESCE(SUM(credits_left), 0) AS total FROM credit_batches WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())", uid
             )
             spent_row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
