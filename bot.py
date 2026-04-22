@@ -310,6 +310,11 @@ VIDEO_MODELS = {
         "price": "58₽",
         "res": "1080p",
         "desc": "5 сек, плавная физика, быстро",
+        # Для моделей с выбором длительности — словарь {сек: (кредиты, цена_в_рублях_для_UI)}
+        "durations": {
+            5:  (109, "58₽"),
+            10: (207, "110₽"),  # 1.9x за поощрение длинных
+        },
     },
     "vid_fast": {
         "name": "⚡ Veo 3.1 Fast",
@@ -327,7 +332,12 @@ VIDEO_MODELS = {
         "credits": 359,
         "price": "190₽",
         "res": "1080p + аудио",
-        "desc": "#1 в бенчмарках, 5 сек с аудио",
+        "desc": "#1 в бенчмарках, с аудио",
+        "durations": {
+            5:  (359, "190₽"),
+            8:  (545, "289₽"),  # 1.52x, пропорционально времени
+            10: (682, "362₽"),  # 1.9x — поощрение за длинные
+        },
     },
     "vid_pro": {
         "name": "🎬 Veo 3.1",
@@ -1446,6 +1456,7 @@ class AnimState(StatesGroup):
     waiting_prompt     = State()   # промт
 
 class VidState(StatesGroup):
+    waiting_duration = State()   # выбор длительности (только для Kling)
     waiting_aspect = State()
     waiting_prompt = State()
 
@@ -2306,9 +2317,11 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
                 return img_bytes
 
 
-async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str = "16:9") -> bytes:
+async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str = "16:9",
+                                  duration: int = 5) -> bytes:
     """Генерация видео через fal.ai (Kling 2.5 Turbo Pro, Kling 3.0 Pro).
-    Использует queue API с polling — аналогично Veo."""
+    Использует queue API с polling — аналогично Veo.
+    duration — длина видео в секундах (5/10 для Turbo, 5/8/10 для Pro)."""
     if not FAL_API_KEY:
         raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
 
@@ -2320,10 +2333,10 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
     # Payload под Kling
     if "kling" in model_id:
         if "v3" in model_id:
-            # Kling 3.0 Pro — 5 секунд с нативным аудио
+            # Kling 3.0 Pro — 5/8/10/15 секунд с нативным аудио
             payload = {
                 "prompt": prompt,
-                "duration": "5",
+                "duration": str(duration),
                 "aspect_ratio": aspect_ratio,
                 "generate_audio": True,
                 "negative_prompt": "blur, distort, and low quality",
@@ -2332,9 +2345,11 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
         else:
             # Kling 2.5 Turbo Pro — только 5 или 10 сек, БЕЗ аудио
             # (generate_audio в этой версии не поддерживается)
+            # Валидация на стороне API: допустимые "5" или "10"
+            safe_duration = "10" if duration >= 10 else "5"
             payload = {
                 "prompt": prompt,
-                "duration": "5",  # допустимые значения: "5" или "10"
+                "duration": safe_duration,
                 "aspect_ratio": aspect_ratio,
                 "negative_prompt": "blur, distort, and low quality",
                 "cfg_scale": 0.5,
@@ -2855,10 +2870,11 @@ async def api_kling_motion_control(
         )
 
 
-async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9", api_type: str = "veo") -> bytes:
+async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9",
+                              api_type: str = "veo", duration: int = 8) -> bytes:
     # Dispatch на fal.ai (Kling 2.5 Turbo Pro, Kling 3.0 Pro)
     if api_type == "fal":
-        return await api_generate_fal_video(prompt, model_id, aspect_ratio)
+        return await api_generate_fal_video(prompt, model_id, aspect_ratio, duration)
 
     base = "https://generativelanguage.googleapis.com/v1beta"
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
@@ -4437,11 +4453,54 @@ async def back_to_vid_brands(cb: CallbackQuery, state: FSMContext):
     await menu_video(cb, state)
 
 
+def kb_vid_duration(model_key: str):
+    """Клавиатура выбора длительности для Kling-моделей."""
+    m = VIDEO_MODELS.get(model_key, {})
+    durations = m.get("durations", {})
+    rows = []
+    # Сортируем по возрастанию длительности
+    for sec in sorted(durations.keys()):
+        credits, price = durations[sec]
+        rows.append([InlineKeyboardButton(
+            text=f"🎬 {sec} секунд — {credits} кр ({price})",
+            callback_data=f"vdur:{model_key}:{sec}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_video")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @dp.callback_query(F.data.startswith("vmodel:"))
 async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[1]
     m = VIDEO_MODELS[key]
     cr = await get_credits(cb.from_user.id)
+
+    # Если у модели есть выбор длительности (Kling) — сначала спрашиваем её
+    if m.get("durations"):
+        # Проверяем минимальную цену (по самой короткой длительности)
+        min_credits = min(c for c, _ in m["durations"].values())
+        if cr < min_credits:
+            await cb.answer(f"💸 Нужно минимум {min_credits} кредитов. Пополни баланс!", show_alert=True)
+            return
+        await state.update_data(model_key=key)
+        await state.set_state(VidState.waiting_duration)
+        lines = ["<b>⏱ Выбери длительность видео:</b>\n"]
+        for sec in sorted(m["durations"].keys()):
+            credits, price = m["durations"][sec]
+            icon = "🔹" if cr >= credits else "🔸"
+            lines.append(f"{icon} <b>{sec} сек</b> — {credits} кр ({price})")
+        await cb.message.edit_text(
+            f"{m['name']} ✅\n\n"
+            f"📐 {m['res']}\n"
+            f"💵 Баланс: <b>{cr} кр</b>\n\n"
+            + "\n".join(lines) +
+            "\n\n<i>🔹 доступно · 🔸 нужно пополнить</i>",
+            reply_markup=kb_vid_duration(key), parse_mode="HTML"
+        )
+        await cb.answer()
+        return
+
+    # Veo — фиксированные 8 сек, сразу формат
     if cr < m["credits"]:
         await cb.answer(f"💸 Нужно {m['credits']} кредитов. Пополни баланс!", show_alert=True)
         return
@@ -4451,6 +4510,44 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
         f"{m['name']} ✅\n\n"
         f"💳 Спишется: <b>{m['credits']} кредитов</b>\n"
         f"📐 {m['res']} | 8 сек\n\n"
+        f"📐 <b>Выбери формат видео:</b>",
+        reply_markup=kb_aspect_video(key), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("vdur:"))
+async def choose_vid_duration(cb: CallbackQuery, state: FSMContext):
+    """Клиент выбрал длительность Kling-видео — переходим к выбору формата."""
+    parts = cb.data.split(":")
+    if len(parts) != 3:
+        await cb.answer()
+        return
+    key = parts[1]
+    try:
+        duration = int(parts[2])
+    except ValueError:
+        await cb.answer()
+        return
+
+    m = VIDEO_MODELS.get(key)
+    if not m or "durations" not in m or duration not in m["durations"]:
+        await cb.answer("Эта длительность недоступна")
+        return
+
+    credits, price = m["durations"][duration]
+    cr = await get_credits(cb.from_user.id)
+    if cr < credits:
+        await cb.answer(f"💸 Нужно {credits} кредитов, у тебя {cr}", show_alert=True)
+        return
+
+    await state.update_data(model_key=key, duration_sec=duration, credits_override=credits)
+    await state.set_state(VidState.waiting_aspect)
+    await cb.message.edit_text(
+        f"{m['name']} ✅\n\n"
+        f"⏱ <b>{duration} секунд</b>\n"
+        f"💳 Спишется: <b>{credits} кредитов</b> ({price})\n"
+        f"📐 {m['res']}\n\n"
         f"📐 <b>Выбери формат видео:</b>",
         reply_markup=kb_aspect_video(key), parse_mode="HTML"
     )
@@ -4520,6 +4617,10 @@ async def vid_prompt(message: Message, state: FSMContext):
 
     await state.update_data(prompt=prompt)
 
+    # Используем выбранную длительность и цену (Kling) или базовую (Veo)
+    credits_cost = data.get("credits_override") or m["credits"]
+    duration_sec = data.get("duration_sec") or 8
+
     # Адаптивный текст времени в зависимости от модели
     api_type_ui = m.get("api", "veo")
     if api_type_ui == "fal":
@@ -4533,8 +4634,8 @@ async def vid_prompt(message: Message, state: FSMContext):
     await message.answer(
         f"📝 <b>Проверь заказ:</b>\n\n"
         f"🤖 {m['name']}\n"
-        f"📐 {m['res']} | 8 сек\n"
-        f"💳 <b>{m['credits']} кредитов</b>\n\n"
+        f"📐 {m['res']} | {duration_sec} сек\n"
+        f"💳 <b>{credits_cost} кредитов</b>\n\n"
         f"📝 <i>{prompt}</i>\n\n"
         f"⏱ <i>Генерация занимает {time_text}</i>",
         reply_markup=kb_confirm("vid", key), parse_mode="HTML"
@@ -4549,11 +4650,16 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     prompt = data.get("prompt", "")
     uid = cb.from_user.id
 
+    # Для Kling-моделей используем выбранную длительность и её цену,
+    # для Veo — базовую цену из VIDEO_MODELS
+    credits_cost = data.get("credits_override") or m["credits"]
+    duration_sec = data.get("duration_sec") or 8  # Veo всегда 8
+
     # Rate limit
     if not await _check_can_generate(cb, uid, kind="video"):
         return
 
-    ok = await deduct(uid, m["credits"])
+    ok = await deduct(uid, credits_cost)
     if not ok:
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
@@ -4573,7 +4679,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
     status_msg = await cb.message.edit_text(
         f"🎬 <b>Генерирую видео...</b>\n\n"
-        f"🤖 {m['name']} | {m['res']}\n"
+        f"🤖 {m['name']} | {m['res']} | {duration_sec} сек\n"
         f"📝 <i>{prompt[:80]}</i>\n\n"
         f"🕐 Обычно {time_estimate}. Пришлю как только готово 👇",
         parse_mode="HTML"
@@ -4667,18 +4773,18 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         if api_type == "veo":
             async with _veo_semaphore:
                 vid_bytes = await _with_retry(
-                    lambda: api_generate_video(prompt, m["model_id"], aspect, api_type),
+                    lambda: api_generate_video(prompt, m["model_id"], aspect, api_type, duration_sec),
                     max_attempts=2, base_delay=5.0, op_name=f"Veo {key}"
                 )
         else:
             # Для fal.ai — без retry, т.к. одна попытка уже до 25 минут
-            vid_bytes = await api_generate_video(prompt, m["model_id"], aspect, api_type)
+            vid_bytes = await api_generate_video(prompt, m["model_id"], aspect, api_type, duration_sec)
         size_mb = len(vid_bytes) / 1024 / 1024
-        logging.info(f"Video ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
-        await log_gen(uid, "video", key, m["credits"])
+        logging.info(f"Video ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB), duration={duration_sec}s")
+        await log_gen(uid, "video", key, credits_cost)
         _record_generation(uid, _video_history)
         cr = await get_credits(uid)
-        caption = f"🎉 Готово! {m['name']} | {m['res']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов"
+        caption = f"🎉 Готово! {m['name']} | {m['res']} | {duration_sec} сек\n💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов"
         # 1. Видео для просмотра в чате
         try:
             await cb.message.answer_video(
@@ -4707,8 +4813,8 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         else:
             logging.warning(f"Video too large for document: {size_mb:.1f} MB")
     except Exception as e:
-        await add_credits(uid, m["credits"])
-        await notify_admin_error(f"Генерация видео uid={uid} model={key}", e)
+        await add_credits(uid, credits_cost)
+        await notify_admin_error(f"Генерация видео uid={uid} model={key} dur={duration_sec}s", e)
         await cb.message.answer(
             f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
             reply_markup=kb_error_with_alt("vid", key),
