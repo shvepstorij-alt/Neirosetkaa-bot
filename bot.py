@@ -2381,101 +2381,122 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                 raise Exception(f"fal.ai не вернул request_id: {str(submit_data)[:200]}")
             logging.info(f"fal.ai video submitted: {request_id} ({model_id}) | payload_keys={list(payload.keys())}")
 
-        status_url = f"{queue_url}/requests/{request_id}/status"
-        result_url = f"{queue_url}/requests/{request_id}/response"  # /response на конце обязателен!
+        # Используем long-poll через /response?wait=60s — единственно работающий способ.
+        # GET /status возвращает 405, но GET /response?wait=Ns держит соединение открытым
+        # до 60 сек, пока задача не завершится или не отвалится по таймауту.
+        result_url = f"{queue_url}/requests/{request_id}/response"
 
-        # 2. Polling до 25 минут
-        # Первые 30 сек — сон (видео точно ещё не готово)
-        # Далее каждые 10 сек проверяем статус
-        await asyncio.sleep(30)
-        max_iterations = 150  # 150 × 10 сек = 25 минут
-        in_queue_count = 0  # счётчик подряд статусов IN_QUEUE — для детекции зомби
+        # 2. Long-poll до 25 минут
+        # Каждая итерация — один long-poll запрос на 60 сек.
+        # 25 итераций × 60 сек = 25 минут общего времени ожидания.
+        max_iterations = 25
+        vid_url = None
+        in_queue_count = 0
         for i in range(max_iterations):
-            async with s.get(status_url, headers=headers) as sr:
-                if sr.status != 200:
-                    logging.warning(f"fal.ai status poll {sr.status}")
-                    await asyncio.sleep(10)
-                    continue
-                sd = await sr.json()
-                status = sd.get("status", "")
+            poll_url = f"{result_url}?wait=60s"
+            try:
+                async with s.get(poll_url, headers=headers) as pr:
+                    # Статусы которые могут прийти:
+                    # - 200: задача COMPLETED, в теле — результат
+                    # - 202: задача ещё IN_QUEUE/IN_PROGRESS, long-poll истёк
+                    # - 4xx/5xx: ошибка
+                    if pr.status == 200:
+                        pd = await pr.json()
+                        # Парсим URL видео из ответа
+                        video = pd.get("video")
+                        if isinstance(video, dict):
+                            vid_url = video.get("url")
+                        elif isinstance(video, str):
+                            vid_url = video
+                        if not vid_url:
+                            vid_url = pd.get("video_url")
+                        if not vid_url:
+                            output = pd.get("output")
+                            if isinstance(output, dict):
+                                vid_url = (output.get("video", {}).get("url")
+                                           if isinstance(output.get("video"), dict)
+                                           else output.get("video_url"))
+                        if vid_url:
+                            elapsed_min = (i + 1) * 60 / 60
+                            logging.info(f"fal.ai video completed after ~{elapsed_min:.1f} min ({model_id}) request_id={request_id}")
+                            logging.info(f"fal.ai video URL obtained: {vid_url[:100]}")
+                            break
+                        # Если 200 но URL не нашли — странно, логируем и ещё раз пробуем
+                        logging.warning(f"fal.ai 200 but no video url. keys={list(pd.keys())} full={str(pd)[:500]}")
+                        await asyncio.sleep(5)
+                        continue
 
-                if status == "COMPLETED":
-                    elapsed = 30 + (i + 1) * 10
-                    logging.info(f"fal.ai video completed after ~{elapsed}s ({model_id})")
-                    break
-                if status in ("FAILED", "ERROR"):
-                    err_msg = sd.get("error", "Unknown error")
-                    raise Exception(f"fal.ai ошибка генерации: {err_msg}")
+                    elif pr.status == 202:
+                        # Задача ещё не завершилась, тело содержит статус
+                        try:
+                            sd = await pr.json()
+                            status = sd.get("status", "IN_PROGRESS")
+                        except Exception:
+                            status = "IN_PROGRESS"
 
-                # Защита от зомби-запросов
-                if status == "IN_QUEUE":
-                    in_queue_count += 1
-                    # 30 итераций = 5 минут в очереди = что-то не так
-                    if in_queue_count >= 30:
-                        raise Exception(
-                            "⏱ Запрос завис в очереди fal.ai (5+ мин). "
-                            "Это может быть из-за нагрузки на сервис — попробуй ещё раз через минуту."
-                        )
-                else:
-                    # Статус сменился на IN_PROGRESS или другой — сбрасываем счётчик
-                    in_queue_count = 0
+                        if status in ("FAILED", "ERROR"):
+                            err_msg = sd.get("error", "Unknown error") if isinstance(sd, dict) else "Unknown"
+                            raise Exception(f"fal.ai ошибка генерации: {err_msg}")
 
-                # Логируем прогресс каждую минуту (каждая 6-я итерация)
-                if (i + 1) % 6 == 0:
-                    elapsed_min = (30 + (i + 1) * 10) / 60
-                    logging.info(f"fal.ai still generating: {model_id} ({elapsed_min:.1f} min elapsed, status: {status})")
+                        # Защита от зомби-запросов в очереди
+                        if status == "IN_QUEUE":
+                            in_queue_count += 1
+                            if in_queue_count >= 5:  # 5 × 60 сек = 5 минут в очереди
+                                raise Exception(
+                                    "⏱ Запрос завис в очереди fal.ai (5+ мин). "
+                                    "Это может быть из-за нагрузки на сервис — попробуй ещё раз через минуту."
+                                )
+                        else:
+                            in_queue_count = 0
 
-                await asyncio.sleep(10)
-        else:
-            # Перед сдачей — последняя попытка забрать результат напрямую.
-            # Бывает что статус "застрял" на IN_PROGRESS, но видео уже готово.
-            logging.warning(f"fal.ai polling timeout, trying direct result fetch: {request_id}")
+                        if (i + 1) % 2 == 0:
+                            elapsed_min = (i + 1) * 60 / 60
+                            logging.info(f"fal.ai still generating: {model_id} ({elapsed_min:.0f} min, status={status})")
+                        # Без sleep — просто переходим к следующему long-poll
+                        continue
+
+                    elif pr.status in (404, 410):
+                        err_text = (await pr.text())[:300]
+                        raise Exception(f"fal.ai request {pr.status}: {err_text}")
+
+                    else:
+                        # Другие коды ошибок (403, 500, 503) — логируем и ждём
+                        err_text = (await pr.text())[:200]
+                        logging.warning(f"fal.ai long-poll {pr.status}: {err_text}")
+                        await asyncio.sleep(10)
+                        continue
+
+            except asyncio.TimeoutError:
+                # Сам клиентский таймаут (28 минут на сессию) — пропускаем итерацию
+                logging.warning(f"fal.ai long-poll client timeout on iter {i+1}")
+                continue
+            except aiohttp.ClientError as ce:
+                logging.warning(f"fal.ai long-poll network error: {ce}")
+                await asyncio.sleep(5)
+                continue
+
+        if not vid_url:
+            # Таймаут исчерпан. Последняя попытка — дёрнуть /response без wait
+            logging.warning(f"fal.ai long-poll exhausted, trying direct fetch: {request_id}")
             try:
                 async with s.get(result_url, headers=headers) as last_try:
                     if last_try.status == 200:
-                        last_data = await last_try.json()
-                        last_video = last_data.get("video", {})
-                        last_url = last_video.get("url") if isinstance(last_video, dict) else None
-                        if last_url:
+                        ld = await last_try.json()
+                        v = ld.get("video")
+                        if isinstance(v, dict):
+                            vid_url = v.get("url")
+                        elif isinstance(v, str):
+                            vid_url = v
+                        if vid_url:
                             logging.info(f"fal.ai rescued video via direct fetch: {request_id}")
-                            async with s.get(last_url) as lr:
-                                if lr.status == 200:
-                                    lb = await lr.read()
-                                    if len(lb) > 10000:
-                                        return lb
             except Exception as rescue_err:
                 logging.warning(f"fal.ai rescue attempt failed: {rescue_err}")
-            raise Exception("⏱ Таймаут генерации (>25 мин). Попробуй ещё раз или выбери более быструю модель.")
-
-        # 3. Получаем результат
-        async with s.get(result_url, headers=headers) as rr:
-            if rr.status != 200:
-                # Расширенная диагностика если результат не забрался
-                err_text = (await rr.text())[:500]
-                logging.error(f"fal.ai result fetch FAILED: status={rr.status} url={result_url} body={err_text}")
-                raise Exception(f"fal.ai result fetch {rr.status}: {err_text[:200]}")
-            rd = await rr.json()
-
-            # Ищем URL видео в разных возможных местах структуры ответа
-            video = rd.get("video")
-            vid_url = None
-            if isinstance(video, dict):
-                vid_url = video.get("url")
-            elif isinstance(video, str):
-                vid_url = video
-            # Некоторые модели возвращают в "video_url" или в "output"
-            if not vid_url:
-                vid_url = rd.get("video_url")
-            if not vid_url:
-                output = rd.get("output")
-                if isinstance(output, dict):
-                    vid_url = output.get("video", {}).get("url") if isinstance(output.get("video"), dict) else output.get("video_url")
 
             if not vid_url:
-                logging.warning(f"fal.ai no video url in response. keys={list(rd.keys())} full={str(rd)[:800]}")
-                raise Exception("fal.ai не вернул URL видео")
-
-            logging.info(f"fal.ai video URL obtained: {vid_url[:100]} (request_id={request_id})")
+                raise Exception(
+                    f"⏱ Таймаут генерации (>25 мин). Request ID: {request_id}. "
+                    f"Попробуй ещё раз или выбери более быструю модель."
+                )
 
     # 4. Скачивание видео — ОТДЕЛЬНАЯ сессия с собственным таймаутом (вне сессии polling)
     # Это критично: polling мог «съесть» время общей сессии, а скачивание mp4 требует свежего окна.
