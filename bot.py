@@ -1482,6 +1482,10 @@ class AdminState(StatesGroup):
     waiting_broadcast = State()
     waiting_welcome   = State()
     waiting_spend_uid = State()
+    # Управление балансами
+    waiting_balance_uid      = State()   # введи UID (для любой операции с балансом)
+    waiting_balance_set      = State()   # введи новую сумму (операция "установить")
+    waiting_balance_deduct   = State()   # введи сколько снять (операция "снять")
 
 # ══════════════════════════════════════════════════════════
 #  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
@@ -3225,6 +3229,299 @@ async def cmd_admin(message: Message, state: FSMContext):
     await show_admin_panel(message)
 
 
+@dp.message(F.text.startswith("/audit_all"), StateFilter("*"))
+async def cmd_audit_all(message: Message):
+    """Массовый аудит: находит юзеров у которых баланс больше чем должен быть по истории.
+
+    Формула ожидаемого баланса:
+      initial = сумма всех начислений из credit_batches (purchase/free/referral/promo/admin)
+      spent   = сумма всех списаний из generations
+      expected = initial - spent
+      diff    = current_balance - expected
+
+    Если diff > 50 кредитов — подозрительно.
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await message.answer("🔍 Провожу аудит всех юзеров... Это займёт несколько секунд.")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Берём всех юзеров у кого баланс > 50 (остальные вряд ли пострадали)
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 ORDER BY credits DESC")
+
+        results = []
+        for user in users:
+            uid = user["user_id"]
+            current_balance = user["credits"]
+
+            # Начислено через credit_batches (все легальные источники)
+            initial_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1",
+                uid
+            )
+            initial = int(initial_row["total"])
+
+            # Потрачено на генерации
+            spent_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1",
+                uid
+            )
+            spent = int(spent_row["total"])
+
+            expected = initial - spent
+            diff = current_balance - expected
+
+            # Считаем только сильные расхождения (>50 кр — точно баг)
+            if diff > 50:
+                results.append({
+                    "uid": uid,
+                    "current": current_balance,
+                    "expected": expected,
+                    "diff": diff,
+                    "initial": initial,
+                    "spent": spent,
+                })
+
+    if not results:
+        await message.answer("✅ Подозрительных балансов не найдено. Все юзеры в норме.")
+        return
+
+    # Сортируем по размеру переплаты (больше всего наверху)
+    results.sort(key=lambda r: r["diff"], reverse=True)
+
+    # Общая статистика
+    total_excess = sum(r["diff"] for r in results)
+    total_users = len(results)
+
+    # Формируем отчёт
+    text_lines = [
+        f"🔴 <b>Найдено {total_users} юзеров с лишними кредитами</b>\n",
+        f"💰 Общая переплата: <b>{total_excess} кр</b>\n",
+        f"\n<b>Топ подозрительных:</b>\n"
+    ]
+
+    # Показываем до 30 юзеров
+    for r in results[:30]:
+        text_lines.append(
+            f"<code>{r['uid']}</code> | "
+            f"сейчас: <b>{r['current']}</b> | "
+            f"должно: {r['expected']} | "
+            f"<b>+{r['diff']}</b> лишних\n"
+        )
+
+    if len(results) > 30:
+        text_lines.append(f"\n<i>...и ещё {len(results) - 30} юзеров</i>")
+
+    text_lines.append(
+        f"\n\n<b>Что делать:</b>\n"
+        f"• <code>/audit &lt;user_id&gt;</code> — посмотреть детали юзера\n"
+        f"• <code>/setcredits &lt;user_id&gt; &lt;amount&gt;</code> — исправить баланс\n"
+        f"• <code>/fix_all_balances</code> — автоматически исправить все (ОСТОРОЖНО!)"
+    )
+
+    full_text = "".join(text_lines)
+    # Telegram лимит 4096 — режем если надо
+    if len(full_text) > 4000:
+        full_text = full_text[:3990] + "\n...[обрезано]"
+
+    await message.answer(full_text, parse_mode="HTML")
+
+
+@dp.message(F.text.startswith("/fix_all_balances"), StateFilter("*"))
+async def cmd_fix_all_balances(message: Message):
+    """Массово исправляет балансы всех юзеров у которых баланс больше чем должен быть.
+    Устанавливает реальный ожидаемый баланс (initial - spent).
+
+    ВНИМАНИЕ: необратимая операция! Перед запуском лучше посмотреть /audit_all.
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # Требуем подтверждение: /fix_all_balances CONFIRM
+    parts = (message.text or "").split()
+    if len(parts) < 2 or parts[1].strip().upper() != "CONFIRM":
+        await message.answer(
+            "⚠️ <b>Массовое исправление балансов</b>\n\n"
+            "Эта команда установит всем юзерам с завышенным балансом правильное значение "
+            "(= сумма начислений − сумма потраченного).\n\n"
+            "Чтобы подтвердить выполнение, напиши:\n"
+            "<code>/fix_all_balances CONFIRM</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    await message.answer("🔧 Исправляю балансы... Это может занять минуту.")
+
+    pool = await get_pool()
+    fixed_count = 0
+    total_removed = 0
+
+    async with pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50")
+
+        for user in users:
+            uid = user["user_id"]
+            current = user["credits"]
+
+            init_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1",
+                uid
+            )
+            spent_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1",
+                uid
+            )
+            expected = int(init_row["total"]) - int(spent_row["total"])
+            expected = max(0, expected)  # Не ставим отрицательный баланс
+            diff = current - expected
+
+            if diff > 50:
+                await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", expected, uid)
+                await log_event(uid, "admin_auto_fix", f"from={current} to={expected} removed={diff}")
+                fixed_count += 1
+                total_removed += diff
+
+    await message.answer(
+        f"✅ <b>Исправлено балансов: {fixed_count}</b>\n"
+        f"💰 Удалено лишних кредитов: <b>{total_removed} кр</b>\n\n"
+        f"Все затронутые юзеры получили правильный баланс (начислено − потрачено).",
+        parse_mode="HTML"
+    )
+
+
+@dp.message(F.text.startswith("/audit"), StateFilter("*"))
+async def cmd_audit_user(message: Message):
+    """Админская команда: показывает историю кредитов юзера.
+    Использование: /audit <user_id>"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].strip().lstrip("-").isdigit():
+        await message.answer(
+            "🔍 <b>Аудит кредитов юзера</b>\n\n"
+            "Использование: <code>/audit &lt;user_id&gt;</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    target_uid = int(parts[1])
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Текущий баланс
+        user_row = await conn.fetchrow("SELECT credits, created_at FROM users WHERE user_id=$1", target_uid)
+        if not user_row:
+            await message.answer(f"❌ Юзер {target_uid} не найден")
+            return
+
+        # История событий
+        events = await conn.fetch(
+            "SELECT kind, details, created_at FROM events "
+            "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50",
+            target_uid
+        )
+        # История генераций
+        gens = await conn.fetch(
+            "SELECT type, model, credits, created_at FROM generations "
+            "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30",
+            target_uid
+        )
+
+    # Считаем сумму refund_or_add из events
+    total_refunds = 0
+    refund_count = 0
+    for ev in events:
+        if ev["kind"] == "refund_or_add":
+            details = ev["details"] or ""
+            # Парсим "amount=109"
+            try:
+                amt = int(details.split("amount=")[1].split()[0])
+                total_refunds += amt
+                refund_count += 1
+            except Exception:
+                pass
+
+    total_spent = sum(g["credits"] for g in gens)
+
+    text = (
+        f"🔍 <b>Аудит юзера {target_uid}</b>\n\n"
+        f"💰 Текущий баланс: <b>{user_row['credits']} кр</b>\n"
+        f"📅 Зарегистрирован: {user_row['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"📊 <b>Сводка:</b>\n"
+        f"• Потрачено на генерации: {total_spent} кр ({len(gens)} шт за последние 30)\n"
+        f"• Возвратов/начислений: {total_refunds} кр ({refund_count} событий)\n\n"
+    )
+
+    if refund_count > 3:
+        text += f"⚠️ <b>МНОГО ВОЗВРАТОВ</b> — возможна подозрительная активность!\n\n"
+
+    text += "<b>Последние события:</b>\n"
+    for ev in events[:15]:
+        ts = ev["created_at"].strftime("%d.%m %H:%M")
+        text += f"<code>{ts}</code> {ev['kind']}: {(ev['details'] or '')[:50]}\n"
+
+    text += "\n<b>Последние генерации:</b>\n"
+    for g in gens[:10]:
+        ts = g["created_at"].strftime("%d.%m %H:%M")
+        text += f"<code>{ts}</code> {g['type']}/{g['model']}: -{g['credits']} кр\n"
+
+    # Telegram max message = 4096 chars, режем если надо
+    if len(text) > 4000:
+        text = text[:3990] + "\n...[обрезано]"
+
+    await message.answer(text, parse_mode="HTML")
+
+
+@dp.message(F.text.startswith("/setcredits"), StateFilter("*"))
+async def cmd_set_credits(message: Message):
+    """Админская команда: установить баланс кредитов юзера на конкретное значение.
+    Использование: /setcredits <user_id> <amount>"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "💰 <b>Установка баланса юзера</b>\n\n"
+            "Использование: <code>/setcredits &lt;user_id&gt; &lt;amount&gt;</code>\n"
+            "Пример: <code>/setcredits 675546503 150</code> — поставить 150 кредитов",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        target_uid = int(parts[1])
+        new_amount = int(parts[2])
+    except ValueError:
+        await message.answer("❌ Неверный формат. Должны быть числа.")
+        return
+
+    if new_amount < 0:
+        await message.answer("❌ Баланс не может быть отрицательным")
+        return
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Получаем текущий баланс
+        old_row = await conn.fetchrow("SELECT credits FROM users WHERE user_id=$1", target_uid)
+        if not old_row:
+            await message.answer(f"❌ Юзер {target_uid} не найден")
+            return
+        old_credits = old_row["credits"]
+        await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", new_amount, target_uid)
+
+    await log_event(target_uid, "admin_set_credits", f"from={old_credits} to={new_amount} by_admin={message.from_user.id}")
+    await message.answer(
+        f"✅ Баланс юзера <code>{target_uid}</code> изменён:\n"
+        f"Было: <b>{old_credits} кр</b>\n"
+        f"Стало: <b>{new_amount} кр</b>",
+        parse_mode="HTML"
+    )
+
+
 @dp.message(F.text.startswith("/recover"), StateFilter("*"))
 async def cmd_recover(message: Message):
     """Админская команда для ручного восстановления потерянного видео из fal.ai.
@@ -4441,6 +4738,18 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
 
+    # Флаг чтобы избежать двойного возврата кредитов
+    img_refunded = False
+
+    async def img_refund_once(reason: str = ""):
+        nonlocal img_refunded
+        if img_refunded:
+            logging.warning(f"img_refund_once SKIPPED uid={uid} reason={reason}")
+            return
+        img_refunded = True
+        await add_credits(uid, m["credits"])
+        logging.info(f"img_refund_once EXECUTED uid={uid} credits={m['credits']} reason={reason}")
+
     try:
         aspect = data.get("aspect_ratio", "1:1")
 
@@ -4485,7 +4794,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         )
         await wait.delete()
     except Exception as e:
-        await add_credits(cb.from_user.id, m["credits"])
+        await img_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e)
         try:
             await cb.message.edit_text(
@@ -4982,6 +5291,19 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
     progress_task = asyncio.create_task(progress_updates())
 
+    # Флаг чтобы избежать двойного возврата кредитов при вложенных исключениях
+    refunded = False
+
+    async def refund_once(reason: str = ""):
+        """Возвращает кредиты только один раз, логирует."""
+        nonlocal refunded
+        if refunded:
+            logging.warning(f"refund_once SKIPPED (already refunded) uid={uid} reason={reason}")
+            return
+        refunded = True
+        await add_credits(uid, credits_cost)
+        logging.info(f"refund_once EXECUTED uid={uid} credits={credits_cost} reason={reason}")
+
     try:
         aspect = data.get("aspect_ratio", "16:9")
         api_type = m.get("api", "veo")
@@ -5055,7 +5377,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
             except Exception:
                 pass
             # Возвращаем кредиты т.к. юзер не получил видео
-            await add_credits(uid, credits_cost)
+            await refund_once("video_send_failed")
             return  # Выходим — документ тоже не пытаемся отправить
         # 2. Документ — только если файл < 48 МБ (лимит Telegram для ботов 50 МБ)
         # disable_content_type_detection=True заставляет Telegram показывать его 
@@ -5103,13 +5425,16 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         else:
             logging.warning(f"Video too large for document: {size_mb:.1f} MB")
     except Exception as e:
-        await add_credits(uid, credits_cost)
+        await refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Генерация видео uid={uid} model={key} dur={duration_sec}s", e)
-        await cb.message.answer(
-            f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
-            reply_markup=kb_error_with_alt("vid", key),
-            parse_mode="HTML"
-        )
+        try:
+            await cb.message.answer(
+                f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+                reply_markup=kb_error_with_alt("vid", key),
+                parse_mode="HTML"
+            )
+        except Exception as msg_err:
+            logging.warning(f"Failed to send error message: {msg_err}")
     finally:
         _active_generations.discard(uid)
         # Отменяем фоновую задачу обновления статуса
@@ -5511,6 +5836,7 @@ def kb_admin_panel():
          InlineKeyboardButton(text="🔎 Найти по ID",       callback_data="adm_find")],
         [InlineKeyboardButton(text="💰 Начислить кредиты", callback_data="adm_give_credits"),
          InlineKeyboardButton(text="🧾 История платежей",  callback_data="adm_payments")],
+        [InlineKeyboardButton(text="💳 Управление балансами", callback_data="adm_balance_menu")],
         [InlineKeyboardButton(text="📉 Расход по юзеру",   callback_data="adm_spend"),
          InlineKeyboardButton(text="🔒 Блокировки",        callback_data="adm_blocks")],
         [InlineKeyboardButton(text="🎟 Промокоды",          callback_data="adm_promos")],
@@ -5596,6 +5922,429 @@ async def adm_stat_week(cb: CallbackQuery):
         parse_mode="HTML"
     )
     await cb.answer()
+
+
+# ══════════════════════════════════════════════════════════
+#  УПРАВЛЕНИЕ БАЛАНСАМИ КЛИЕНТОВ (админ)
+# ══════════════════════════════════════════════════════════
+
+def kb_balance_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Аудит всех юзеров", callback_data="adm_bal_audit_all")],
+        [InlineKeyboardButton(text="👤 Аудит юзера по ID",  callback_data="adm_bal_audit_one")],
+        [InlineKeyboardButton(text="✏️ Установить баланс", callback_data="adm_bal_set")],
+        [InlineKeyboardButton(text="➖ Снять кредиты",     callback_data="adm_bal_deduct")],
+        [InlineKeyboardButton(text="🔧 Исправить все автоматом", callback_data="adm_bal_fix_all")],
+        [InlineKeyboardButton(text="⬅️ Назад в админку",    callback_data="adm_back")],
+    ])
+
+
+@dp.callback_query(F.data == "adm_balance_menu")
+async def adm_balance_menu(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.message.edit_text(
+        "💳 <b>Управление балансами</b>\n\n"
+        "🔍 <b>Аудит всех</b> — найдёт юзеров с завышенным балансом\n"
+        "👤 <b>Аудит юзера</b> — детали по конкретному ID\n"
+        "✏️ <b>Установить баланс</b> — точное значение\n"
+        "➖ <b>Снять кредиты</b> — отнять у клиента\n"
+        "🔧 <b>Исправить все</b> — массовый фикс по формуле (начислено − потрачено)",
+        reply_markup=kb_balance_menu(),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_back")
+async def adm_back_to_panel(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer()
+        return
+    await cb.message.edit_text(
+        "🛠 <b>Админ-панель</b>\n\nВыбери действие:",
+        reply_markup=kb_admin_panel(),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+# ── Аудит всех юзеров ─────────────────────────────────────
+@dp.callback_query(F.data == "adm_bal_audit_all")
+async def adm_bal_audit_all(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.answer("🔍 Провожу аудит...")
+    await cb.message.edit_text("🔍 Провожу аудит всех юзеров... Это займёт несколько секунд.")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50 ORDER BY credits DESC")
+        results = []
+        for user in users:
+            uid = user["user_id"]
+            current = user["credits"]
+            init_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", uid
+            )
+            spent_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
+            )
+            expected = int(init_row["total"]) - int(spent_row["total"])
+            diff = current - expected
+            if diff > 50:
+                results.append({"uid": uid, "current": current, "expected": expected, "diff": diff})
+
+    if not results:
+        await cb.message.edit_text(
+            "✅ <b>Подозрительных балансов не найдено</b>\n\nВсе юзеры в норме.",
+            reply_markup=kb_balance_menu(),
+            parse_mode="HTML"
+        )
+        return
+
+    results.sort(key=lambda r: r["diff"], reverse=True)
+    total_excess = sum(r["diff"] for r in results)
+
+    lines = [
+        f"🔴 <b>Найдено {len(results)} юзеров с лишними кредитами</b>",
+        f"💰 Общая переплата: <b>{total_excess} кр</b>\n",
+        "<b>Топ подозрительных:</b>"
+    ]
+    for r in results[:25]:
+        lines.append(
+            f"<code>{r['uid']}</code> | "
+            f"сейчас <b>{r['current']}</b> | должно {r['expected']} | "
+            f"<b>+{r['diff']}</b> лишних"
+        )
+    if len(results) > 25:
+        lines.append(f"\n<i>...и ещё {len(results) - 25} юзеров</i>")
+
+    full_text = "\n".join(lines)
+    if len(full_text) > 4000:
+        full_text = full_text[:3990] + "\n...[обрезано]"
+
+    await cb.message.edit_text(full_text, reply_markup=kb_balance_menu(), parse_mode="HTML")
+
+
+# ── Аудит одного юзера ────────────────────────────────────
+@dp.callback_query(F.data == "adm_bal_audit_one")
+async def adm_bal_audit_one_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.set_state(AdminState.waiting_balance_uid)
+    await state.update_data(balance_action="audit")
+    await cb.message.edit_text(
+        "👤 <b>Аудит юзера</b>\n\nВведи Telegram ID пользователя:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_balance_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+# ── Установить баланс ─────────────────────────────────────
+@dp.callback_query(F.data == "adm_bal_set")
+async def adm_bal_set_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.set_state(AdminState.waiting_balance_uid)
+    await state.update_data(balance_action="set")
+    await cb.message.edit_text(
+        "✏️ <b>Установить баланс</b>\n\nВведи Telegram ID пользователя:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_balance_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+# ── Снять кредиты ─────────────────────────────────────────
+@dp.callback_query(F.data == "adm_bal_deduct")
+async def adm_bal_deduct_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.set_state(AdminState.waiting_balance_uid)
+    await state.update_data(balance_action="deduct")
+    await cb.message.edit_text(
+        "➖ <b>Снять кредиты</b>\n\nВведи Telegram ID пользователя:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_balance_menu")]
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+# ── Обработчик ввода UID (общий для 3 операций) ───────────
+@dp.message(AdminState.waiting_balance_uid)
+async def adm_bal_got_uid(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    txt = (message.text or "").strip()
+    try:
+        target_uid = int(txt)
+    except ValueError:
+        await message.answer(f"⛔ <code>{txt}</code> — не числовой ID", parse_mode="HTML")
+        return
+
+    data = await state.get_data()
+    action = data.get("balance_action", "audit")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        user_row = await conn.fetchrow("SELECT credits, created_at FROM users WHERE user_id=$1", target_uid)
+        if not user_row:
+            await message.answer(f"❌ Юзер <code>{target_uid}</code> не найден в БД", parse_mode="HTML",
+                                  reply_markup=kb_balance_menu())
+            await state.clear()
+            return
+
+        current = user_row["credits"]
+        init_row = await conn.fetchrow(
+            "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", target_uid
+        )
+        spent_row = await conn.fetchrow(
+            "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", target_uid
+        )
+        expected = int(init_row["total"]) - int(spent_row["total"])
+        gens_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM generations WHERE user_id = $1", target_uid
+        )
+        purchases_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM credit_batches WHERE user_id = $1 AND source = 'purchase'", target_uid
+        )
+
+    diff = current - expected
+
+    info = (
+        f"👤 <b>Юзер {target_uid}</b>\n"
+        f"📅 Зарегистрирован: {user_row['created_at'].strftime('%d.%m.%Y')}\n\n"
+        f"💰 Текущий баланс: <b>{current} кр</b>\n"
+        f"📥 Начислено всего: {int(init_row['total'])} кр\n"
+        f"📤 Потрачено на генерации: {int(spent_row['total'])} кр ({gens_count} шт)\n"
+        f"🛒 Покупок: {purchases_count}\n"
+        f"🎯 Должно быть: <b>{expected} кр</b>\n"
+    )
+
+    if diff > 50:
+        info += f"\n⚠️ <b>Переплата: +{diff} кр</b>"
+    elif diff < -50:
+        info += f"\n⚠️ <b>Недостача: {diff} кр</b>"
+    else:
+        info += f"\n✅ Баланс в норме (расхождение {diff} кр)"
+
+    if action == "audit":
+        # Показали — и хватит, возвращаемся в меню
+        await state.clear()
+        await message.answer(info, reply_markup=kb_balance_menu(), parse_mode="HTML")
+        return
+
+    # Для set/deduct сохраняем UID и спрашиваем сумму
+    await state.update_data(target_uid=target_uid, current_balance=current, expected_balance=expected)
+
+    if action == "set":
+        await state.set_state(AdminState.waiting_balance_set)
+        await message.answer(
+            info + f"\n\n✏️ <b>Сколько поставить?</b>\n"
+                   f"Введи число (рекомендуется <b>{max(0, expected)} кр</b> — правильный баланс)",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_balance_menu")]
+            ]),
+            parse_mode="HTML"
+        )
+    elif action == "deduct":
+        recommended_deduct = max(0, diff) if diff > 0 else 0
+        await state.set_state(AdminState.waiting_balance_deduct)
+        await message.answer(
+            info + f"\n\n➖ <b>Сколько снять?</b>\n"
+                   f"Введи число"
+                   + (f" (рекомендуется <b>{recommended_deduct} кр</b> — удалит переплату)" if recommended_deduct else ""),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_balance_menu")]
+            ]),
+            parse_mode="HTML"
+        )
+
+
+# ── Установка нового баланса ──────────────────────────────
+@dp.message(AdminState.waiting_balance_set)
+async def adm_bal_set_confirm(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    txt = (message.text or "").strip()
+    try:
+        new_balance = int(txt)
+    except ValueError:
+        await message.answer(f"⛔ <code>{txt}</code> — не число", parse_mode="HTML")
+        return
+    if new_balance < 0:
+        await message.answer("❌ Баланс не может быть отрицательным")
+        return
+
+    data = await state.get_data()
+    target_uid = data.get("target_uid")
+    old_balance = data.get("current_balance", 0)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", new_balance, target_uid)
+    await log_event(target_uid, "admin_set_credits",
+                    f"from={old_balance} to={new_balance} by_admin={message.from_user.id}")
+
+    await state.clear()
+    await message.answer(
+        f"✅ <b>Баланс обновлён</b>\n\n"
+        f"👤 <code>{target_uid}</code>\n"
+        f"Было: <b>{old_balance} кр</b>\n"
+        f"Стало: <b>{new_balance} кр</b>\n"
+        f"Разница: <b>{new_balance - old_balance:+d} кр</b>",
+        reply_markup=kb_balance_menu(),
+        parse_mode="HTML"
+    )
+
+
+# ── Снятие кредитов ───────────────────────────────────────
+@dp.message(AdminState.waiting_balance_deduct)
+async def adm_bal_deduct_confirm(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    txt = (message.text or "").strip()
+    try:
+        amount = int(txt)
+    except ValueError:
+        await message.answer(f"⛔ <code>{txt}</code> — не число", parse_mode="HTML")
+        return
+    if amount <= 0:
+        await message.answer("❌ Сумма должна быть положительной")
+        return
+
+    data = await state.get_data()
+    target_uid = data.get("target_uid")
+    old_balance = data.get("current_balance", 0)
+    new_balance = max(0, old_balance - amount)  # не уходим в минус
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", new_balance, target_uid)
+    await log_event(target_uid, "admin_deduct_credits",
+                    f"from={old_balance} to={new_balance} amount={amount} by_admin={message.from_user.id}")
+
+    await state.clear()
+    actual_deducted = old_balance - new_balance
+    await message.answer(
+        f"✅ <b>Кредиты сняты</b>\n\n"
+        f"👤 <code>{target_uid}</code>\n"
+        f"Было: <b>{old_balance} кр</b>\n"
+        f"Запросил снять: {amount} кр\n"
+        f"Снято: <b>{actual_deducted} кр</b>\n"
+        f"Стало: <b>{new_balance} кр</b>"
+        + (f"\n\n<i>ℹ️ Снято меньше т.к. баланс не уходит в минус</i>" if actual_deducted < amount else ""),
+        reply_markup=kb_balance_menu(),
+        parse_mode="HTML"
+    )
+
+
+# ── Массовый фикс всех балансов ───────────────────────────
+@dp.callback_query(F.data == "adm_bal_fix_all")
+async def adm_bal_fix_all_confirm(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    # Сначала показываем превью — сколько юзеров затронет
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50")
+        to_fix = []
+        for user in users:
+            uid = user["user_id"]
+            current = user["credits"]
+            init_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", uid
+            )
+            spent_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
+            )
+            expected = max(0, int(init_row["total"]) - int(spent_row["total"]))
+            if current - expected > 50:
+                to_fix.append({"uid": uid, "current": current, "expected": expected})
+
+    if not to_fix:
+        await cb.message.edit_text(
+            "✅ Нечего исправлять — все балансы в норме.",
+            reply_markup=kb_balance_menu()
+        )
+        await cb.answer()
+        return
+
+    total_remove = sum(r["current"] - r["expected"] for r in to_fix)
+
+    await cb.message.edit_text(
+        f"🔧 <b>Массовое исправление балансов</b>\n\n"
+        f"Будет исправлено юзеров: <b>{len(to_fix)}</b>\n"
+        f"Будет удалено кредитов: <b>{total_remove}</b>\n\n"
+        f"⚠️ Это необратимая операция!\n"
+        f"Для каждого юзера баланс будет установлен = <b>начислено − потрачено</b>\n\n"
+        f"Подтвердить?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, исправить", callback_data="adm_bal_fix_all_do")],
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_balance_menu")],
+        ]),
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_bal_fix_all_do")
+async def adm_bal_fix_all_do(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.answer("Исправляю...")
+    await cb.message.edit_text("🔧 Исправляю балансы...")
+
+    pool = await get_pool()
+    fixed_count = 0
+    total_removed = 0
+    async with pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id, credits FROM users WHERE credits > 50")
+        for user in users:
+            uid = user["user_id"]
+            current = user["credits"]
+            init_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits_init), 0) AS total FROM credit_batches WHERE user_id = $1", uid
+            )
+            spent_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
+            )
+            expected = max(0, int(init_row["total"]) - int(spent_row["total"]))
+            diff = current - expected
+            if diff > 50:
+                await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", expected, uid)
+                await log_event(uid, "admin_auto_fix",
+                                f"from={current} to={expected} removed={diff} by_admin={cb.from_user.id}")
+                fixed_count += 1
+                total_removed += diff
+
+    await cb.message.edit_text(
+        f"✅ <b>Исправлено балансов: {fixed_count}</b>\n"
+        f"💰 Удалено лишних кредитов: <b>{total_removed} кр</b>\n\n"
+        f"Все затронутые юзеры получили правильный баланс.",
+        reply_markup=kb_balance_menu(),
+        parse_mode="HTML"
+    )
+
+
+# ══════════════════════════════════════════════════════════
+#  КОНЕЦ: УПРАВЛЕНИЕ БАЛАНСАМИ
+# ══════════════════════════════════════════════════════════
 
 
 @dp.callback_query(F.data == "adm_give_credits")
