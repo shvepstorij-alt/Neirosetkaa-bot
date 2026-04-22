@@ -54,7 +54,12 @@ _pool = None  # глобальный connection pool
 
 logging.basicConfig(level=logging.INFO)
 
-bot           = Bot(token=BOT_TOKEN)
+# Увеличенный таймаут для отправки крупных файлов (видео до 50 МБ).
+# Дефолт aiogram = 60 сек, чего недостаточно для 25-50 МБ файлов на медленном канале.
+from aiogram.client.session.aiohttp import AiohttpSession
+_bot_session = AiohttpSession(timeout=300)  # 5 минут на запрос к Telegram API
+
+bot           = Bot(token=BOT_TOKEN, session=_bot_session)
 dp            = Dispatcher(storage=MemoryStorage())
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
@@ -4997,31 +5002,104 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         _record_generation(uid, _video_history)
         cr = await get_credits(uid)
         caption = f"🎉 Готово! {m['name']} | {m['res']} | {duration_sec} сек\n💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов"
-        # 1. Видео для просмотра в чате
+        # СНАЧАЛА удаляем сообщение прогресс-бара чтобы юзер не видел "90%" во время отправки
+        if not progress_task.done():
+            progress_task.cancel()
+            try:
+                await progress_task
+            except (asyncio.CancelledError, Exception):
+                pass
         try:
-            await cb.message.answer_video(
-                BufferedInputFile(vid_bytes, "video.mp4"),
-                caption=caption + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else ""),
-                reply_markup=kb_after("video", key),
-                supports_streaming=True,
-            )
-        except Exception as video_err:
-            logging.warning(f"answer_video failed: {video_err}")
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        # 1. Видео для просмотра в чате — с retry, т.к. крупные файлы могут отвалиться
+        video_sent = False
+        video_err = None
+        for vid_attempt in range(1, 4):
+            try:
+                await cb.message.answer_video(
+                    BufferedInputFile(vid_bytes, "video.mp4"),
+                    caption=caption + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else ""),
+                    reply_markup=kb_after("video", key),
+                    supports_streaming=True,
+                )
+                video_sent = True
+                if vid_attempt > 1:
+                    logging.info(f"answer_video succeeded on attempt {vid_attempt}/3 ({size_mb:.1f} MB)")
+                break
+            except Exception as ve:
+                video_err = ve
+                err_str = str(ve).lower()
+                is_timeout = "timeout" in err_str or "timed out" in err_str
+                if vid_attempt < 3 and is_timeout:
+                    logging.warning(f"answer_video attempt {vid_attempt}/3 timed out ({size_mb:.1f} MB) — retrying")
+                    await asyncio.sleep(3 * vid_attempt)
+                    continue
+                logging.error(f"answer_video failed ({size_mb:.1f} MB): {ve}")
+                break
+
+        if not video_sent:
+            # Видео не отправилось вообще — критическая ситуация, сообщаем и не списываем кредиты
+            await notify_admin_error(f"Видео НЕ отправлено uid={uid} {size_mb:.1f}MB", video_err)
+            try:
+                await cb.message.answer(
+                    f"⚠️ <b>Видео сгенерировано, но не загрузилось в Telegram</b>\n\n"
+                    f"Размер файла: {size_mb:.1f} МБ — возможно слишком большой для текущего канала.\n"
+                    f"Кредиты возвращены 💳\n"
+                    f"Напиши @neirosetkaalex — пришлём файл напрямую.",
+                    parse_mode="HTML",
+                    reply_markup=kb_back()
+                )
+            except Exception:
+                pass
+            # Возвращаем кредиты т.к. юзер не получил видео
+            await add_credits(uid, credits_cost)
+            return  # Выходим — документ тоже не пытаемся отправить
         # 2. Документ — только если файл < 48 МБ (лимит Telegram для ботов 50 МБ)
         # disable_content_type_detection=True заставляет Telegram показывать его 
         # как документ-файл (а не как ещё один видеоплеер)
         if size_mb < 48:
-            try:
-                await bot.send_document(
-                    chat_id=cb.message.chat.id,
-                    document=BufferedInputFile(vid_bytes, f"video_original_{key}.mp4"),
-                    caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
-                    parse_mode="HTML",
-                    disable_content_type_detection=True,
-                )
-            except Exception as de:
-                logging.error(f"video send_document failed ({size_mb:.1f} MB): {de}")
-                await notify_admin_error(f"Документ видео uid={uid} {size_mb:.1f}MB", de)
+            doc_sent = False
+            doc_err = None
+            for doc_attempt in range(1, 4):  # 3 попытки
+                try:
+                    await bot.send_document(
+                        chat_id=cb.message.chat.id,
+                        document=BufferedInputFile(vid_bytes, f"video_original_{key}.mp4"),
+                        caption="📁 <b>Оригинал без сжатия</b> — максимальное качество",
+                        parse_mode="HTML",
+                        disable_content_type_detection=True,
+                    )
+                    doc_sent = True
+                    if doc_attempt > 1:
+                        logging.info(f"video send_document succeeded on attempt {doc_attempt}/3 ({size_mb:.1f} MB)")
+                    break
+                except Exception as de:
+                    doc_err = de
+                    err_str = str(de).lower()
+                    is_timeout = "timeout" in err_str or "timed out" in err_str
+                    if doc_attempt < 3 and is_timeout:
+                        logging.warning(f"video send_document attempt {doc_attempt}/3 timed out ({size_mb:.1f} MB) — retrying")
+                        await asyncio.sleep(2 * doc_attempt)
+                        continue
+                    # Не таймаут или последняя попытка — выходим
+                    break
+
+            if not doc_sent:
+                logging.error(f"video send_document FAILED after 3 attempts ({size_mb:.1f} MB): {doc_err}")
+                # Сообщаем юзеру что видео есть в чате, но оригинал не дошёл — это не критично
+                try:
+                    await cb.message.answer(
+                        f"⚠️ Не удалось отправить файл-оригинал ({size_mb:.1f} МБ) — медленный канал.\n"
+                        f"Видео доступно в сообщении выше для просмотра. "
+                        f"Если нужен файл — напиши @neirosetkaalex.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+                await notify_admin_error(f"Документ видео uid={uid} {size_mb:.1f}MB", doc_err)
         else:
             logging.warning(f"Video too large for document: {size_mb:.1f} MB")
     except Exception as e:
