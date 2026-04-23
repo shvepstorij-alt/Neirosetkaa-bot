@@ -1834,34 +1834,25 @@ def kb_chat_ongoing():
 
 
 def kb_after_consultant_reply(intent: str | None = None, model_hint: str | None = None):
-    """Умная клавиатура под ответом консультанта — если обнаружен интент, добавляет кнопку «Сгенерировать».
+    """Умная клавиатура под ответом консультанта.
+
+    Всегда ведёт на МЕНЮ ВЫБОРА МОДЕЛИ, не на конкретную — клиент должен
+    сам выбрать что использовать. model_hint игнорируется (оставлен в сигнатуре
+    для обратной совместимости).
 
     intent: 'image' | 'video' | 'edit' | 'animate' | None
-    model_hint: ключ рекомендованной модели (например 'ideogram_v3') — для прямого перехода
     """
     rows = []
     if intent == "image":
-        if model_hint:
-            rows.append([InlineKeyboardButton(
-                text="🎨 Сгенерировать это в боте",
-                callback_data=f"imodel:{model_hint}"
-            )])
-        else:
-            rows.append([InlineKeyboardButton(
-                text="🎨 Сгенерировать фото в боте",
-                callback_data="menu_image"
-            )])
+        rows.append([InlineKeyboardButton(
+            text="🎨 Сгенерировать фото в боте",
+            callback_data="menu_image"
+        )])
     elif intent == "video":
-        if model_hint:
-            rows.append([InlineKeyboardButton(
-                text="🎬 Сгенерировать это в боте",
-                callback_data=f"vmodel:{model_hint}"
-            )])
-        else:
-            rows.append([InlineKeyboardButton(
-                text="🎬 Сгенерировать видео в боте",
-                callback_data="menu_video"
-            )])
+        rows.append([InlineKeyboardButton(
+            text="🎬 Сгенерировать видео в боте",
+            callback_data="menu_video"
+        )])
     elif intent == "edit":
         rows.append([InlineKeyboardButton(
             text="✏️ Отредактировать фото в боте",
@@ -2158,8 +2149,8 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 🎯 ИНТЕГРАЦИЯ С ГЕНЕРАЦИЕЙ — ВАЖНО!
 ━━━━━━━━━━━━━━━━━━━━━━
 
-Под твоими ответами бот автоматически показывает кнопку «Сгенерировать это в боте»,
-если клиент хочет что-то создать (фото, видео, отредактировать, анимировать).
+Под твоими ответами бот автоматически показывает кнопку «Сгенерировать в боте»,
+которая ведёт в меню ВЫБОРА МОДЕЛИ (не в конкретную модель).
 
 Детект работает по триггерам в запросе:
 • "нужно фото/картинку/баннер", "сгенерируй фото", "помоги с промтом" → кнопка 🎨 фото
@@ -2167,23 +2158,31 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 • "убери фон", "отредактируй фото" → кнопка ✏️ редактировать
 • "оживи фото", "анимируй" → кнопка 🏃 анимировать
 
-ПОЭТОМУ: когда составляешь промт для клиента — заканчивай словами:
-"Готовый промт есть. Нажми кнопку ниже чтобы сгенерировать прямо сейчас 👇"
+ПОЭТОМУ: когда составляешь промт для клиента — объясни какую модель выбрать
+и заканчивай словами:
+"Нажми кнопку ниже — откроется меню моделей. Выбери <b>Название модели</b>."
 или
-"Попробуй этот промт — кнопка снизу откроет нужную модель в боте."
+"Промт готов. Выбери модель в меню ниже 👇"
 
-Не надо объяснять как попасть в меню — есть кнопка, клиент просто её нажмёт.
-
-ВАЖНО: если в промте для фото явно подходит конкретная модель, УПОМИНАЙ её название в тексте ответа:
-• "идеально подойдёт <b>Ideogram V3</b> в этом боте (14 кр)" — если текст в картинке
-• "рекомендую <b>Flux 2 Pro</b> (12 кр) — лучший фотореализм" — для фото товаров
-• "бери <b>Nano Banana Pro</b> (30 кр) — 4K и точный текст" — для премиум-качества
-• "<b>GPT Image 2</b> (20 кр) — #1 в Image Arena, универсальный" — золотая середина
-• "<b>GPT Image 2 Pro</b> (45 кр) — 99% точный текст, thinking mode" — инфографика, вывески, UI mockups
+В ответе РЕКОМЕНДУЙ конкретную модель (по задаче), но напоминай что
+выбор за клиентом — это удобнее и прозрачнее:
+• "идеально подойдёт <b>Ideogram V3</b> (14 кр) — отличный текст в картинке"
+• "рекомендую <b>Flux 2 Pro</b> (12 кр) — лучший фотореализм для фото товаров"
+• "бери <b>Nano Banana Pro</b> (30 кр) — 4K и точный текст"
+• "<b>GPT Image 2</b> (20 кр) — #1 в Image Arena" — золотая середина
+• "<b>GPT Image 2 Pro</b> (45 кр) — 99% точный текст" — инфографика, вывески, UI mockups
 • "<b>GPT Image 2 Fast</b> (10 кр) — проверить идею дёшево"
-• "<b>Kling 3.0 Pro</b> (359 кр) идеален — видео со звуком" — если нужен звук
-• "<b>Kling 2.5 Turbo</b> (109 кр) — быстро и дёшево" — для скорости
-• "<b>Veo 3.1</b> (599 кр) — кино-качество 4K" — для максимума
+• "<b>Kling 3.0 Pro</b> (359 кр) — видео со звуком"
+• "<b>Kling 2.5 Turbo</b> (109 кр) — быстро и дёшево"
+• "<b>Veo 3.1</b> (599 кр) — кино-качество 4K"
+
+Иногда лучше дать НЕСКОЛЬКО вариантов с разной ценой — чтобы клиент сам выбрал:
+"Для твоей задачи подойдут 3 модели:
+• <b>GPT Image 2 Fast</b> (10 кр) — протестить промт
+• <b>Ideogram V3</b> (14 кр) — хороший текст
+• <b>GPT Image 2 Pro</b> (45 кр) — идеальный текст, но дороже
+
+Нажми кнопку ниже 👇"
 
 🎯 КОГДА РЕКОМЕНДОВАТЬ GPT IMAGE 2 (важно!):
 
@@ -6661,23 +6660,9 @@ async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
 
     # Детект намерения для умной кнопки под ответом
     intent, model_hint = detect_consultant_intent(preset_message, reply)
-    try:
-        await cb.message.answer(
-            reply,
-            reply_markup=kb_after_consultant_reply(intent, model_hint),
-            parse_mode="HTML",
-        )
-    except Exception as send_err:
-        logging.warning(f"Failed to send preset reply with HTML: {send_err}")
-        # Fallback: стрипаем всё форматирование
-        plain = _strip_all_formatting(reply)
-        try:
-            await cb.message.answer(
-                plain,
-                reply_markup=kb_after_consultant_reply(intent, model_hint),
-            )
-        except Exception as send_err2:
-            logging.error(f"Failed to send preset reply at all: {send_err2}")
+    kb = kb_after_consultant_reply(intent, model_hint)
+    # Отправляем с разбивкой на части — клавиатура всегда на последнем куске
+    await _send_long_reply(cb.message, reply, reply_markup=kb)
 
 
 @dp.callback_query(F.data == "help_choose")
@@ -6701,17 +6686,9 @@ async def chat_message(message: Message, state: FSMContext):
     # Детект намерения — если клиент явно хочет что-то сгенерировать,
     # добавим кнопку «Сгенерировать это в боте»
     intent, model_hint = detect_consultant_intent(message.text, reply)
-
-    try:
-        await message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint), parse_mode="HTML")
-    except Exception as e:
-        logging.warning(f"HTML parse failed, retry without parse_mode: {e}")
-        # Fallback: стрипаем всё форматирование и шлём как plain text
-        plain = _strip_all_formatting(reply)
-        try:
-            await message.answer(plain, reply_markup=kb_after_consultant_reply(intent, model_hint))
-        except Exception as e2:
-            logging.error(f"Plain text answer also failed: {e2}")
+    kb = kb_after_consultant_reply(intent, model_hint)
+    # Отправляем с разбивкой на части — клавиатура всегда на последнем куске
+    await _send_long_reply(message, reply, reply_markup=kb)
 
 
 def detect_consultant_intent(user_text: str, reply_text: str) -> tuple[str | None, str | None]:
@@ -6967,6 +6944,74 @@ def _strip_all_formatting(text: str) -> str:
     # Лишние пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def _split_long_message(text: str, max_len: int = 3800) -> list:
+    """Разбивает длинное сообщение на части по max_len символов.
+    Старается резать по границам абзацев/предложений, чтобы не разбивать HTML теги."""
+    if len(text) <= max_len:
+        return [text]
+
+    parts = []
+    remaining = text
+    while len(remaining) > max_len:
+        # Ищем разумную точку разреза в пределах max_len
+        cut_at = max_len
+        # Пробуем найти границу абзаца (\n\n) в последней трети
+        paragraph_break = remaining.rfind('\n\n', max_len // 2, max_len)
+        if paragraph_break > 0:
+            cut_at = paragraph_break
+        else:
+            # Иначе ищем конец предложения (. или ? или !)
+            for delim in ['. ', '! ', '? ', '\n']:
+                sentence_break = remaining.rfind(delim, max_len // 2, max_len)
+                if sentence_break > 0:
+                    cut_at = sentence_break + len(delim) - 1
+                    break
+            else:
+                # Нет хороших границ — режем по пробелу
+                space_break = remaining.rfind(' ', max_len // 2, max_len)
+                if space_break > 0:
+                    cut_at = space_break
+
+        parts.append(remaining[:cut_at].strip())
+        remaining = remaining[cut_at:].strip()
+
+    if remaining:
+        parts.append(remaining)
+
+    return parts
+
+
+async def _send_long_reply(message_or_cb, text: str, reply_markup=None,
+                            is_callback: bool = False):
+    """Отправляет длинный ответ консультанта, разбивая на части если надо.
+    Клавиатура ВСЕГДА прикрепляется к ПОСЛЕДНЕЙ части — так она не 'уезжает' вверх.
+
+    message_or_cb: Message (из chat_message) или CallbackQuery.message (из preset)
+    text: ответ консультанта (может быть длинным)
+    reply_markup: клавиатура для последнего сообщения
+    is_callback: передан ли message_or_cb как CallbackQuery.message
+    """
+    # Клиент Telegram — это объект Message (даже если пришло из callback)
+    send_target = message_or_cb
+
+    parts = _split_long_message(text, max_len=3800)
+
+    for i, part in enumerate(parts):
+        is_last = (i == len(parts) - 1)
+        kb = reply_markup if is_last else None
+
+        try:
+            await send_target.answer(part, reply_markup=kb, parse_mode="HTML")
+        except Exception as e:
+            # HTML не распарсился — стрипаем форматирование и шлём plain text
+            logging.warning(f"HTML send failed (part {i+1}/{len(parts)}): {e}")
+            plain = _strip_all_formatting(part)
+            try:
+                await send_target.answer(plain, reply_markup=kb)
+            except Exception as e2:
+                logging.error(f"Plain text also failed (part {i+1}): {e2}")
 
 
 def _get_conv(uid: int) -> list:
