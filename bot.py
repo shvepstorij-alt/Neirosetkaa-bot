@@ -1661,6 +1661,7 @@ def kb_main():
 def kb_image_brands():
     """Верхний уровень: выбор бренда моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🆕 GPT Image 2",  callback_data="iband:gptimg")],
         [InlineKeyboardButton(text="🌟 Imagen 4",     callback_data="iband:imagen")],
         [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano")],
         [InlineKeyboardButton(text="🎨 Flux",         callback_data="iband:flux")],
@@ -1671,6 +1672,7 @@ def kb_image_brands():
 
 # Маппинг бренда → ключи моделей (по возрастанию кредитов)
 IMAGE_BRAND_MODELS = {
+    "gptimg":   ["gptimg_fast", "gptimg_std", "gptimg_pro"],
     "imagen":   ["img_fast", "img_std", "img_ultra"],
     "nano":     ["nb_flash", "nb_2", "nb_pro"],
     "flux":     ["flux_pro"],
@@ -1678,6 +1680,7 @@ IMAGE_BRAND_MODELS = {
 }
 
 IMAGE_BRAND_TITLES = {
+    "gptimg":   "🆕 GPT Image 2 (OpenAI)",
     "imagen":   "🌟 Imagen 4",
     "nano":     "🍌 Nano Banana",
     "flux":     "🎨 Flux",
@@ -1800,7 +1803,7 @@ def kb_chat_presets():
         [InlineKeyboardButton(text="🛡 Настройка VPN",               callback_data="chat_preset:vpn")],
         [InlineKeyboardButton(text="📱 Как зарегистрироваться в нейросети", callback_data="chat_preset:register")],
         [InlineKeyboardButton(text="⚖️ Сравнить нейросети",          callback_data="chat_preset:compare")],
-        [InlineKeyboardButton(text="💡 Что выбрать для моей задачи", callback_data="chat_preset:choose")],
+        [InlineKeyboardButton(text="💬 Другой вопрос",               callback_data="chat_free_question")],
         [InlineKeyboardButton(text="🚫 В главное меню",              callback_data="back_main")],
     ])
 
@@ -5413,6 +5416,7 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
+        f"🆕 <b>GPT Image 2</b> — OpenAI, #1 в Image Arena, от 10 кр\n"
         f"🌟 <b>Imagen 4</b> — флагман Google, от 7 кр\n"
         f"🍌 <b>Nano Banana</b> — Gemini, 4K, от 10 кр\n"
         f"🎨 <b>Flux</b> — фотореализм, от 12 кр\n"
@@ -6378,6 +6382,37 @@ CHAT_PRESETS = {
 }
 
 
+@dp.callback_query(F.data == "chat_free_question")
+async def chat_free_question(cb: CallbackQuery, state: FSMContext):
+    """Клиент хочет задать свой вопрос — просим его написать."""
+    await state.set_state(ChatState.chatting)
+    try:
+        await cb.message.edit_text(
+            "💬 <b>Задай свой вопрос</b>\n\n"
+            "Я помогу с:\n"
+            "• Настройкой любой нейросети или VPN\n"
+            "• Промтами для фото и видео\n"
+            "• Сравнением тарифов и моделей\n"
+            "• Оформлением подписок в рублях\n\n"
+            "<i>Просто напиши что интересует 👇</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Вернуться к пресетам", callback_data="chat_presets_again")],
+                [InlineKeyboardButton(text="🚫 В главное меню",       callback_data="back_main")],
+            ]),
+            parse_mode="HTML",
+        )
+    except Exception:
+        await cb.message.answer(
+            "💬 <b>Задай свой вопрос</b>\n\n<i>Просто напиши что интересует 👇</i>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 К пресетам", callback_data="chat_presets_again")],
+                [InlineKeyboardButton(text="🚫 В меню",     callback_data="back_main")],
+            ]),
+            parse_mode="HTML",
+        )
+    await cb.answer()
+
+
 @dp.callback_query(F.data.startswith("chat_preset:"))
 async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
     """Обработчик клика по пресету — отправляет заранее заготовленный запрос в Claude."""
@@ -6651,82 +6686,116 @@ async def claude_with_search(uid: int, user_text: str) -> str:
     if len(conv) > 20:
         del conv[:-20]
 
-    try:
-        # Нормализуем ПЕРЕД отправкой — чистим возможные повторы ролей
-        api_messages = _normalize_history(list(conv))
-
-        # Claude Sonnet 4.6 — быстрее и дешевле Opus, но достаточно умная для консультанта
-        resp = claude_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            system=SYSTEM_PROMPT,
-            tools=[{
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 3,
-            }],
-            messages=api_messages,
+    # Проверяем что API ключ настроен
+    if not CLAUDE_API_KEY:
+        logging.error("Claude API: CLAUDE_API_KEY не задан!")
+        if conv and conv[-1].get("role") == "user":
+            conv.pop()
+        return (
+            "⚠️ Консультант временно недоступен (API ключ не настроен).\n\n"
+            "Напиши @neirosetkaalex — он поможет напрямую."
         )
 
-        # Собираем ТОЛЬКО text-блоки (без tool_use, tool_result, server_tool_use)
-        # Явная проверка type == "text", чтобы не попадали сырые JSON-блоки инструмента
-        reply = ""
-        for block in resp.content:
-            block_type = getattr(block, "type", None)
-            if block_type == "text":
-                txt = getattr(block, "text", "")
-                if txt:
-                    reply += txt
+    # Список моделей для последовательного fallback: Sonnet → Haiku → Sonnet старее
+    models_to_try = [
+        "claude-sonnet-4-6",       # Основная: быстрая, умная
+        "claude-haiku-4-5-20251001",  # Резерв: максимально дешёвая и стабильная
+        "claude-sonnet-4-5-20250929",  # Последний резерв: предыдущая стабильная
+    ]
 
-        reply = reply.strip()
-        if not reply:
-            reply = "Попробуй переформулировать вопрос 🙏"
+    api_messages = _normalize_history(list(conv))
+    last_error = None
 
-        reply = clean_reply(reply)
-
-        # Сохраняем только текст в историю (без tool блоков)
-        conv.append({"role": "assistant", "content": reply})
-        return reply
-
-    except Exception as e:
-        # Подробное логирование — чтобы видеть именно что случилось
-        import traceback
-        err_type = type(e).__name__
-        err_msg = str(e)[:500]
-        logging.error(f"Claude API error [{err_type}]: {err_msg}")
-        logging.error(f"Claude API traceback: {traceback.format_exc()[:1500]}")
-
-        # Fallback без поиска — используем нормализованную историю
+    # Попытка 1: с web_search, пробуя каждую модель
+    for model_name in models_to_try:
         try:
-            clean_history = _normalize_history(list(conv))
             resp = claude_client.messages.create(
-                model="claude-sonnet-4-6",
+                model=model_name,
+                max_tokens=2048,
+                system=SYSTEM_PROMPT,
+                tools=[{
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 3,
+                }],
+                messages=api_messages,
+            )
+            # Собираем ТОЛЬКО text-блоки
+            reply = ""
+            for block in resp.content:
+                if getattr(block, "type", None) == "text":
+                    reply += getattr(block, "text", "")
+            reply = reply.strip()
+            if not reply:
+                reply = "Попробуй переформулировать вопрос 🙏"
+            reply = clean_reply(reply)
+            conv.append({"role": "assistant", "content": reply})
+            return reply
+        except Exception as e:
+            last_error = e
+            err_type = type(e).__name__
+            err_msg = str(e)[:500]
+            logging.warning(f"Claude API [{model_name}] with search failed [{err_type}]: {err_msg}")
+            # Если это проблема с моделью — пробуем следующую
+            # Если проблема с web_search — попробуем без него
+            continue
+
+    # Попытка 2: БЕЗ web_search, пробуя каждую модель
+    logging.info("Claude API: все попытки с web_search провалились, пробую без search")
+    for model_name in models_to_try:
+        try:
+            resp = claude_client.messages.create(
+                model=model_name,
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
-                messages=clean_history,
+                messages=api_messages,
             )
-            # Та же защита для fallback
             reply = ""
             for block in resp.content:
                 if getattr(block, "type", None) == "text":
                     reply += getattr(block, "text", "")
             reply = clean_reply(reply.strip() or "Попробуй переформулировать 🙏")
             conv.append({"role": "assistant", "content": reply})
+            logging.info(f"Claude API: fallback без search сработал на {model_name}")
             return reply
-        except Exception as e2:
-            err_type2 = type(e2).__name__
-            err_msg2 = str(e2)[:500]
-            logging.error(f"Fallback error [{err_type2}]: {err_msg2}")
+        except Exception as e:
+            last_error = e
+            err_type = type(e).__name__
+            err_msg = str(e)[:500]
+            logging.warning(f"Claude API [{model_name}] no-search failed [{err_type}]: {err_msg}")
+            continue
 
-            # Откатываем последний user message из истории — чтобы при следующей попытке
-            # не было повторяющихся ролей
-            if conv and conv[-1].get("role") == "user":
-                conv.pop()
+    # Всё провалилось — подробный лог + откат истории
+    import traceback
+    logging.error(f"Claude API: ВСЕ попытки упали. Последняя ошибка: {last_error}")
+    logging.error(f"Claude API traceback: {traceback.format_exc()[:1500]}")
 
-            return (
-                "⚠️ Временная ошибка AI-консультанта.\n\n"
-                "Попробуй ещё раз через минуту или напиши @neirosetkaalex."
-            )
+    # Откатываем user message чтобы при следующей попытке не было проблем с историей
+    if conv and conv[-1].get("role") == "user":
+        conv.pop()
+
+    # Разбор по типу ошибки — даём понятное сообщение
+    err_str = str(last_error).lower() if last_error else ""
+    if "authentication" in err_str or "unauthorized" in err_str or "api_key" in err_str:
+        return (
+            "⚠️ Проблема с API-ключом консультанта.\n\n"
+            "Администратор: проверь CLAUDE_API_KEY в Railway Variables.\n\n"
+            "Пока напиши @neirosetkaalex — поможет напрямую."
+        )
+    if "rate_limit" in err_str or "rate limit" in err_str:
+        return (
+            "⏳ Консультант перегружен — попробуй через минуту.\n\n"
+            "Или сразу напиши @neirosetkaalex."
+        )
+    if "billing" in err_str or "credit" in err_str or "insufficient" in err_str:
+        return (
+            "⚠️ Кончились средства на API консультанта.\n\n"
+            "Напиши @neirosetkaalex — он пополнит и поможет напрямую."
+        )
+    return (
+        "⚠️ Консультант временно недоступен.\n\n"
+        "Попробуй через минуту или напиши @neirosetkaalex — он поможет напрямую."
+    )
 
 
 # ══════════════════════════════════════════════════════════
