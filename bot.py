@@ -1761,6 +1761,71 @@ def kb_cancel():
     ])
 
 
+def kb_chat_presets():
+    """Быстрые пресеты при входе в консультанта — типичные вопросы одним кликом."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎨 Помоги с промтом для фото",  callback_data="chat_preset:prompt_img")],
+        [InlineKeyboardButton(text="🎬 Помоги с промтом для видео", callback_data="chat_preset:prompt_vid")],
+        [InlineKeyboardButton(text="🛡 Настройка VPN",               callback_data="chat_preset:vpn")],
+        [InlineKeyboardButton(text="📱 Как зарегистрироваться в нейросети", callback_data="chat_preset:register")],
+        [InlineKeyboardButton(text="⚖️ Сравнить нейросети",          callback_data="chat_preset:compare")],
+        [InlineKeyboardButton(text="💡 Что выбрать для моей задачи", callback_data="chat_preset:choose")],
+        [InlineKeyboardButton(text="🚫 В главное меню",              callback_data="back_main")],
+    ])
+
+
+def kb_chat_ongoing():
+    """Клавиатура во время активного диалога — чтобы можно было вернуться к пресетам."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Быстрые пресеты", callback_data="chat_presets_again")],
+        [InlineKeyboardButton(text="🚫 В главное меню",  callback_data="back_main")],
+    ])
+
+
+def kb_after_consultant_reply(intent: str | None = None, model_hint: str | None = None):
+    """Умная клавиатура под ответом консультанта — если обнаружен интент, добавляет кнопку «Сгенерировать».
+
+    intent: 'image' | 'video' | 'edit' | 'animate' | None
+    model_hint: ключ рекомендованной модели (например 'ideogram_v3') — для прямого перехода
+    """
+    rows = []
+    if intent == "image":
+        if model_hint:
+            rows.append([InlineKeyboardButton(
+                text="🎨 Сгенерировать это в боте",
+                callback_data=f"imodel:{model_hint}"
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                text="🎨 Сгенерировать фото в боте",
+                callback_data="menu_image"
+            )])
+    elif intent == "video":
+        if model_hint:
+            rows.append([InlineKeyboardButton(
+                text="🎬 Сгенерировать это в боте",
+                callback_data=f"vmodel:{model_hint}"
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                text="🎬 Сгенерировать видео в боте",
+                callback_data="menu_video"
+            )])
+    elif intent == "edit":
+        rows.append([InlineKeyboardButton(
+            text="✏️ Отредактировать фото в боте",
+            callback_data="menu_edit"
+        )])
+    elif intent == "animate":
+        rows.append([InlineKeyboardButton(
+            text="🏃 Анимировать фото в боте",
+            callback_data="menu_anim"
+        )])
+    rows.append([InlineKeyboardButton(text="📋 Пресеты", callback_data="chat_presets_again"),
+                 InlineKeyboardButton(text="🚫 В главное меню", callback_data="back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def kb_aspect_image(model_key: str):
     """Выбор формата для изображений."""
     ratios = [
@@ -1979,6 +2044,34 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 "Для баннеров с текстом — Ideogram V3 в меню бота, 14 кр"
 
 НЕ НАДО: "Купите подписку!", "Используйте наши услуги!" — это спам. Предлагай как решение задачи.
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎯 ИНТЕГРАЦИЯ С ГЕНЕРАЦИЕЙ — ВАЖНО!
+━━━━━━━━━━━━━━━━━━━━━━
+
+Под твоими ответами бот автоматически показывает кнопку «Сгенерировать это в боте»,
+если клиент хочет что-то создать (фото, видео, отредактировать, анимировать).
+
+Детект работает по триггерам в запросе:
+• "нужно фото/картинку/баннер", "сгенерируй фото", "помоги с промтом" → кнопка 🎨 фото
+• "нужно видео", "сделай ролик", "reels" → кнопка 🎬 видео
+• "убери фон", "отредактируй фото" → кнопка ✏️ редактировать
+• "оживи фото", "анимируй" → кнопка 🏃 анимировать
+
+ПОЭТОМУ: когда составляешь промт для клиента — заканчивай словами:
+"Готовый промт есть. Нажми кнопку ниже чтобы сгенерировать прямо сейчас 👇"
+или
+"Попробуй этот промт — кнопка снизу откроет нужную модель в боте."
+
+Не надо объяснять как попасть в меню — есть кнопка, клиент просто её нажмёт.
+
+ВАЖНО: если в промте для фото явно подходит конкретная модель, УПОМИНАЙ её название в тексте ответа:
+• "идеально подойдёт <b>Ideogram V3</b> в этом боте (14 кр)" — если текст в картинке
+• "рекомендую <b>Flux 2 Pro</b> (12 кр) — лучший фотореализм" — для фото товаров
+• "бери <b>Nano Banana Pro</b> (30 кр) — 4K и точный текст" — для премиум-качества
+• "<b>Kling 3.0 Pro</b> (359 кр) идеален — видео со звуком" — если нужен звук
+• "<b>Kling 2.5 Turbo</b> (109 кр) — быстро и дёшево" — для скорости
+• "<b>Veo 3.1</b> (599 кр) — кино-качество 4K" — для максимума
 
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -6140,28 +6233,111 @@ async def change_vid_prompt(cb: CallbackQuery, state: FSMContext):
 async def menu_chat(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ChatState.chatting)
     await cb.message.edit_text(
-        "🤖 <b>Консультант AI</b>\n\n"
-        "Задай любой вопрос о нейросетях, VPN, подписках.\n"
-        "Это бесплатно 🎁\n\n"
-        "<i>Напиши вопрос:</i>",
-        reply_markup=kb_cancel(), parse_mode="HTML"
+        "🤖 <b>AI-Консультант</b>\n\n"
+        "Я эксперт по нейросетям, VPN и промптингу.\n"
+        "Помогу составить промт, настроить VPN, выбрать подходящую нейросеть.\n\n"
+        "Это <b>бесплатно</b> 🎁\n\n"
+        "<b>Выбери быстрый пресет</b> или просто напиши свой вопрос 👇",
+        reply_markup=kb_chat_presets(), parse_mode="HTML"
     )
     await cb.answer()
+
+
+@dp.callback_query(F.data == "chat_presets_again")
+async def chat_presets_again(cb: CallbackQuery, state: FSMContext):
+    """Показать пресеты снова во время диалога."""
+    await state.set_state(ChatState.chatting)
+    await cb.message.answer(
+        "📋 <b>Быстрые пресеты</b>\n\n"
+        "Или просто напиши вопрос своими словами 👇",
+        reply_markup=kb_chat_presets(), parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+# Скрытые сообщения-пресеты — отправляются в Claude как будто юзер написал
+CHAT_PRESETS = {
+    "prompt_img": (
+        "Помоги составить промт для генерации изображения. "
+        "Задай мне пару вопросов чтобы понять что именно нужно (задача, стиль, настроение), "
+        "а потом составь готовый промт на английском по формуле."
+    ),
+    "prompt_vid": (
+        "Помоги составить промт для генерации видео. "
+        "Задай мне 2-3 вопроса чтобы понять сцену, движение и атмосферу, "
+        "а потом составь готовый промт на английском."
+    ),
+    "vpn": (
+        "Хочу настроить VPN. Задай мне уточняющие вопросы: на каком устройстве, "
+        "для каких целей (нейросети/telegram/соцсети), и какой бюджет. "
+        "Потом порекомендуй конкретный VPN с инструкцией как установить."
+    ),
+    "register": (
+        "Хочу зарегистрироваться в нейросети, но не знаю с чего начать. "
+        "Расскажи универсальный алгоритм регистрации из России "
+        "(VPN → виртуальный номер → оплата → аккаунт), а потом спроси "
+        "в какой именно нейросети я хочу зарегистрироваться и помоги пошагово."
+    ),
+    "compare": (
+        "Хочу сравнить нейросети. Задай вопрос: какие именно нейросети сравнить "
+        "или для какой задачи нужно сравнение. Потом дай честное сравнение "
+        "с плюсами и минусами каждой."
+    ),
+    "choose": (
+        "Помоги выбрать нейросеть для моей задачи. "
+        "Задай мне вопросы: что именно я хочу делать (текст, фото, видео, код, аудио), "
+        "какой бюджет, из какой страны я захожу (если важен VPN). "
+        "Потом порекомендуй 2-3 подходящих варианта с обоснованием."
+    ),
+}
+
+
+@dp.callback_query(F.data.startswith("chat_preset:"))
+async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
+    """Обработчик клика по пресету — отправляет заранее заготовленный запрос в Claude."""
+    preset_key = cb.data.split(":", 1)[1]
+    preset_message = CHAT_PRESETS.get(preset_key)
+    if not preset_message:
+        await cb.answer()
+        return
+
+    await state.set_state(ChatState.chatting)
+    # Показываем юзеру что он "выбрал"
+    preset_labels = {
+        "prompt_img": "🎨 Помоги с промтом для фото",
+        "prompt_vid": "🎬 Помоги с промтом для видео",
+        "vpn":        "🛡 Настройка VPN",
+        "register":   "📱 Как зарегистрироваться в нейросети",
+        "compare":    "⚖️ Сравнить нейросети",
+        "choose":     "💡 Что выбрать для моей задачи",
+    }
+    label = preset_labels.get(preset_key, "Пресет")
+    try:
+        await cb.message.edit_text(
+            f"<i>Ты выбрал: {label}</i>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    await cb.answer("Готовлю ответ...")
+    await bot.send_chat_action(cb.message.chat.id, "typing")
+    uid = cb.from_user.id
+    reply = await claude_with_search(uid, preset_message)
+
+    # Детект намерения для умной кнопки под ответом
+    intent, model_hint = detect_consultant_intent(preset_message, reply)
+    try:
+        await cb.message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint))
 
 
 @dp.callback_query(F.data == "help_choose")
 async def help_choose(cb: CallbackQuery, state: FSMContext):
-    await state.set_state(ChatState.chatting)
-    await cb.message.answer(
-        "Расскажи — для каких задач нужна нейросеть?\n\n"
-        "• Писать тексты / посты\n"
-        "• Генерировать картинки\n"
-        "• Программирование\n"
-        "• Анализ документов\n"
-        "• Видео / музыка\n\n"
-        "Опиши своими словами 👇"
-    )
-    await cb.answer()
+    """Устаревший хэндлер — редиректит на пресет 'choose'."""
+    cb.data = "chat_preset:choose"
+    await chat_preset_handler(cb, state)
 
 
 @dp.message(ChatState.chatting)
@@ -6174,10 +6350,84 @@ async def chat_message(message: Message, state: FSMContext):
     await bot.send_chat_action(message.chat.id, "typing")
     uid = message.from_user.id
     reply = await claude_with_search(uid, message.text)
+
+    # Детект намерения — если клиент явно хочет что-то сгенерировать,
+    # добавим кнопку «Сгенерировать это в боте»
+    intent, model_hint = detect_consultant_intent(message.text, reply)
+
     try:
-        await message.answer(reply, reply_markup=kb_cancel(), parse_mode="HTML")
+        await message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint), parse_mode="HTML")
     except Exception:
-        await message.answer(reply, reply_markup=kb_cancel())
+        await message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint))
+
+
+def detect_consultant_intent(user_text: str, reply_text: str) -> tuple[str | None, str | None]:
+    """Анализирует запрос юзера и ответ консультанта, возвращает (intent, model_hint).
+
+    intent: 'image' | 'video' | 'edit' | 'animate' | None
+    model_hint: ключ модели из IMAGE_MODELS/VIDEO_MODELS или None
+    
+    Логика: ищем триггерные слова в ОБЕИХ сторонах диалога:
+    - "сгенерируй мне", "нарисуй", "сделай фото" → image
+    - "видео", "ролик", "reels", "reels тикток" → video
+    - "отредактируй", "измени фото", "убери фон" → edit
+    - "оживи", "анимируй фото" → animate
+    """
+    combined = (user_text + " " + reply_text).lower()
+
+    # Индикаторы редактирования (проверяем РАНЬШЕ фото-триггеров, т.к. пересекаются)
+    edit_triggers = ["отредактируй", "убрать фон", "убери фон", "измени фото",
+                     "добавь на фото", "замени на фото", "стилизуй фото",
+                     "редактирование", "edit photo", "remove background"]
+    if any(t in combined for t in edit_triggers) and ("фото" in combined or "картин" in combined or "image" in combined):
+        return ("edit", None)
+
+    # Индикаторы анимации
+    anim_triggers = ["оживи фото", "оживи старое фото", "анимируй", "анимация фото",
+                     "anim photo", "сделать видео из фото", "из фото в видео"]
+    if any(t in combined for t in anim_triggers):
+        return ("animate", None)
+
+    # Индикаторы видео
+    video_triggers = ["видео", "ролик", "reels", "тикток", "shorts", "клип", "video"]
+    video_strong = ["сделай видео", "сгенерируй видео", "нужно видео", "хочу видео",
+                    "создай видео", "generate video", "video generation"]
+    if any(t in combined for t in video_strong) or (any(t in combined for t in video_triggers) and
+                                                     ("сделать" in combined or "нужн" in combined or "хочу" in combined or "генерац" in combined)):
+        # Попробуем определить конкретную модель
+        if "kling 3" in combined or "клинг 3" in combined or "kling pro" in combined or "аудио" in combined or "со звуком" in combined:
+            return ("video", "kling_pro")
+        if "kling 2" in combined or "клинг 2" in combined or "kling turbo" in combined or "быстр" in combined:
+            return ("video", "kling_turbo")
+        if "veo" in combined or "вео" in combined or "4k" in combined:
+            return ("video", "vid_pro")
+        if "дёшев" in combined or "дешев" in combined or "бюджет" in combined:
+            return ("video", "vid_lite")
+        return ("video", None)
+
+    # Индикаторы изображения
+    img_triggers = ["сгенерируй фото", "сгенерируй картинк", "создай фото", "создай картинк",
+                    "нарисуй", "сгенерируй изображен", "сделай картинк", "сделай фото",
+                    "generate image", "make image", "generate photo"]
+    img_weak = ["фото", "картинк", "изображен", "баннер", "постер", "photo", "image"]
+    wants_image = any(t in combined for t in img_triggers) or (
+        any(t in combined for t in img_weak) and
+        ("сделать" in combined or "нужн" in combined or "хочу" in combined or "помоги" in combined)
+    )
+    if wants_image:
+        # Определяем конкретную модель по контексту
+        if "баннер" in combined or "постер" in combined or "текст в картин" in combined or "с надпис" in combined or "ideogram" in combined:
+            return ("image", "ideogram_v3")
+        if "wildberries" in combined or "wb" in combined or "ozon" in combined or "маркетплейс" in combined or "фотореализм" in combined or "flux" in combined:
+            return ("image", "flux_pro")
+        if "4k" in combined or "точный текст" in combined or "максимальное качество" in combined or "nano banana pro" in combined:
+            return ("image", "nb_pro")
+        if "быстр" in combined or "дёшев" in combined or "дешев" in combined:
+            return ("image", "img_fast")
+        return ("image", None)
+
+    return (None, None)
+
 
 # ══════════════════════════════════════════════════════════
 #  ПРИВЕТСТВИЕ НОВЫХ ПОДПИСЧИКОВ (оригинал сохранён)
