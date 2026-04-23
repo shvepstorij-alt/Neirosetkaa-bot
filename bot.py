@@ -1967,6 +1967,60 @@ class AdminState(StatesGroup):
 SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Александра (@AleksandrOii).
 
 ━━━━━━━━━━━━━━━━━━━━━━
+📝 ФОРМАТ ОТВЕТОВ (ВАЖНО!)
+━━━━━━━━━━━━━━━━━━━━━━
+
+Ты отправляешь сообщения в Telegram — поэтому:
+
+**КАК ФОРМАТИРОВАТЬ:**
+• Используй <b>жирный</b> через HTML-теги, НЕ через **звёздочки**
+• Используй <i>курсив</i> через HTML-теги, НЕ через *звёздочки*
+• Используй <code>код</code> для технических названий (модели, команды)
+• Для ссылок: <a href="https://...">название</a>
+• Для списков — ПРОСТЫЕ маркеры `•` или `—`, БЕЗ markdown-звёздочек
+• Короткие абзацы 2-4 строки, разделённые пустой строкой
+
+**ЧЕГО ИЗБЕГАТЬ:**
+❌ НЕ используй **двойные звёздочки** — они показываются в Telegram как сырой текст
+❌ НЕ используй эмодзи-цифры 1️⃣ 2️⃣ 3️⃣ — используй обычные числа "1.", "2.", "3."
+❌ НЕ делай простыни текста без пробелов — разделяй на абзацы
+❌ НЕ используй markdown таблицы — в Telegram они выглядят криво
+❌ НЕ используй ### заголовки — используй <b>Заголовок</b>
+
+**ХОРОШИЙ ПРИМЕР ФОРМАТА:**
+
+Отлично, помогу с настройкой VPN 🎯
+
+Задам 3 вопроса:
+
+<b>1. Устройство?</b>
+• iPhone / iPad
+• Android
+• Windows
+• Mac
+
+<b>2. Для чего VPN?</b>
+• Нейросети (ChatGPT, Claude)
+• Telegram разблокировка
+• Соцсети (Instagram, TikTok)
+
+<b>3. Бюджет?</b>
+• Бесплатно / до 200₽
+• 200-500₽/мес
+• Премиум
+
+Напиши ответы — дам конкретный VPN 👇
+
+**ПЛОХОЙ ПРИМЕР (ТАК НЕ ДЕЛАЙ):**
+
+**1️⃣ На каком устройстве ты будешь использовать VPN?**
+  * iPhone/iPad
+  * Android телефон
+  ...
+
+Видишь разницу? Короче, чище, с HTML вместо звёздочек, без избыточных эмодзи.
+
+━━━━━━━━━━━━━━━━━━━━━━
 🔧 ПРАВИЛА ИСПОЛЬЗОВАНИЯ WEB-ПОИСКА (КРИТИЧНО)
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2385,13 +2439,53 @@ Teams: $20/польз/мес — командная работа
 Кредиты: 1 презентация ≈ 40 кредитов. Неиспользованные кредиты переходят до 2x лимита плана.
 Российские карты не принимаются — нужен посредник или зарубежная карта.
 
-ФОРМАТИРОВАНИЕ — СТРОГО:
-- Используй HTML теги для выделения: <b>жирный текст</b>
-- НЕ используй звёздочки ** никогда — только <b>тег</b>
-- Максимум 3-4 предложения на ответ
-- Никаких длинных списков
-- Если можно коротко — пиши коротко
-- Пиши на русском, используй эмодзи умеренно
+ФОРМАТИРОВАНИЕ — КРАЙНЕ ВАЖНО!
+
+Telegram использует HTML parse_mode. Markdown НЕ РАБОТАЕТ — звёздочки просто будут видны клиенту как текст.
+
+✅ ПРАВИЛЬНО (HTML):
+<b>Жирный текст</b>
+<i>Курсив</i>
+<code>код или команда</code>
+<u>подчёркнутый</u>
+
+❌ НЕПРАВИЛЬНО (markdown — клиент увидит звёздочки):
+**Жирный текст**
+*курсив*
+`код`
+__подчёркнутый__
+
+ПРИМЕРЫ:
+
+✅ Хорошо отформатированный ответ:
+"<b>1️⃣ На каком устройстве?</b>
+• iPhone/iPad
+• Android
+• Windows/Mac
+
+<b>2️⃣ Для чего VPN?</b>
+• ChatGPT, Claude, Midjourney
+• Telegram
+• Instagram, TikTok
+
+<b>3️⃣ Бюджет?</b>
+• Бесплатно
+• До 500₽/мес
+• Премиум"
+
+❌ Плохо (клиент увидит звёздочки):
+"**1️⃣ На каком устройстве?**
+• iPhone/iPad..."
+
+ДРУГИЕ ПРАВИЛА:
+- Ставь пустую строку между логическими блоками/вопросами — так читать намного легче
+- Используй эмодзи-цифры (1️⃣ 2️⃣ 3️⃣) для нумерации вопросов
+- Используй • для простых списков (не —, не *)
+- Делай ответ структурированным: короткие абзацы по 2-3 строки
+- Эмодзи в умеренных количествах — 1-2 на блок, не больше
+- Для ссылок: <a href="https://example.com">текст ссылки</a>
+- В конце ответа — всегда вопрос или призыв к действию, чтобы диалог продолжался
+- Длина ответа: для простых вопросов 3-5 строк, для сложных с уточнениями до 15-20
 
 АКТУАЛЬНЫЕ МОДЕЛИ (апрель 2026):
 Claude: Haiku 4.5, Sonnet 4.6 (новейшая), Opus 4 — доступны в Claude Pro $20/мес
@@ -3091,10 +3185,16 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
         }
     elif "gpt-image-2" in model_id:
         # GPT Image 2 через fal.ai: параметры size + quality
-        # В зависимости от quality генерация занимает разное время
+        # ВАЖНО: fal.ai принимает параметр "image_size" как предустановки ИЛИ объект {width,height}
+        # Используем width/height — это универсально и принимается всеми endpoint'ами
+        size_str = aspect_map_gptimg.get(aspect_ratio, "1024x1024")
+        try:
+            w, h = map(int, size_str.split("x"))
+        except Exception:
+            w, h = 1024, 1024
         payload = {
             "prompt": prompt,
-            "image_size": aspect_map_gptimg.get(aspect_ratio, "1024x1024"),
+            "image_size": {"width": w, "height": h},
             "quality": quality if quality in ("low", "medium", "high") else "medium",
             "num_images": 1,
             "output_format": "png",
@@ -3110,10 +3210,22 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
             if r.status == 401 or r.status == 403:
                 raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
             if r.status == 422:
-                err_text = (await r.text())[:300]
+                err_text = (await r.text())[:500]
+                err_lower = err_text.lower()
+                # 422 может быть: safety, validation error, bad params
+                # Смотрим текст ошибки — если про safety/moderation → реальная блокировка
+                if ("safety" in err_lower or "moderation" in err_lower or
+                    "policy" in err_lower or "nsfw" in err_lower or "violat" in err_lower or
+                    "inappropriate" in err_lower or "blocked" in err_lower):
+                    logging.warning(f"fal.ai safety block for model={model_id}: {err_text}")
+                    raise Exception(
+                        "🛡 Промт не прошёл фильтр безопасности.\n\n"
+                        "Переформулируй — избегай сцен с насилием, NSFW контента или упоминаний знаменитостей."
+                    )
+                # Иначе — это валидационная ошибка параметров, покажем админу детали
+                logging.error(f"fal.ai 422 (validation) for model={model_id}: {err_text} | payload={str(payload)[:300]}")
                 raise Exception(
-                    "Промт заблокирован фильтром безопасности 🛡\n"
-                    "Переформулируй — избегай сцен с насилием, NSFW или знаменитостями."
+                    f"⚠️ Ошибка параметров модели (422). Попробуй другой формат изображения или напиши @neirosetkaalex."
                 )
             if r.status != 200:
                 raise Exception(f"fal.ai API {r.status}: {(await r.text())[:300]}")
@@ -6466,9 +6578,11 @@ async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
         )
     except Exception as send_err:
         logging.warning(f"Failed to send preset reply with HTML: {send_err}")
+        # Fallback: стрипаем всё форматирование
+        plain = _strip_all_formatting(reply)
         try:
             await cb.message.answer(
-                reply,
+                plain,
                 reply_markup=kb_after_consultant_reply(intent, model_hint),
             )
         except Exception as send_err2:
@@ -6499,8 +6613,14 @@ async def chat_message(message: Message, state: FSMContext):
 
     try:
         await message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint), parse_mode="HTML")
-    except Exception:
-        await message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint))
+    except Exception as e:
+        logging.warning(f"HTML parse failed, retry without parse_mode: {e}")
+        # Fallback: стрипаем всё форматирование и шлём как plain text
+        plain = _strip_all_formatting(reply)
+        try:
+            await message.answer(plain, reply_markup=kb_after_consultant_reply(intent, model_hint))
+        except Exception as e2:
+            logging.error(f"Plain text answer also failed: {e2}")
 
 
 def detect_consultant_intent(user_text: str, reply_text: str) -> tuple[str | None, str | None]:
@@ -6619,17 +6739,17 @@ async def on_new_member(event: ChatMemberUpdated):
 # ══════════════════════════════════════════════════════════
 
 def clean_reply(text: str) -> str:
-    """Убирает служебные теги, сырые JSON-вызовы инструментов и невалидный HTML."""
+    """Убирает служебные теги, сырые JSON-вызовы инструментов, конвертирует
+    markdown в HTML (Telegram parse_mode=HTML не понимает **/__/*)."""
     import re
     # Убираем <search>...</search> теги
     text = re.sub(r'<search>.*?</search>', '', text, flags=re.DOTALL)
 
     # Убираем утечки JSON-вызовов инструментов в текст (если модель галлюцинирует)
-    # Паттерн типа: {"name": "web_search", "arguments": {...}}
     text = re.sub(r'\{"name"\s*:\s*"web_search".*?\}\s*', '', text, flags=re.DOTALL)
     text = re.sub(r'\{"type"\s*:\s*"tool_use".*?\}\s*', '', text, flags=re.DOTALL)
 
-    # Убираем строки с "Result N: ...", "URL: ...", "Summary: ..." — сырая разметка поиска
+    # Убираем строки с "Result N: ...", "URL: ...", "Summary: ..."
     text = re.sub(r'^Result \d+:.*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^URL:\s*https?://\S+\s*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^Summary:\s*.*$', '', text, flags=re.MULTILINE)
@@ -6640,13 +6760,113 @@ def clean_reply(text: str) -> str:
     text = re.sub(r'^(Проверил\s+дополнительно.*?[.:\n])\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
     text = re.sub(r'^(Ищу\s+актуальную.*?[.:\n])\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
 
-    # Убираем любые XML/HTML теги кроме разрешённых Telegram
-    allowed = {'b', '/b', 'i', '/i', 'code', '/code', 'pre', '/pre', 'a', '/a', 's', '/s', 'u', '/u'}
+    # ── ЭКРАНИРОВАНИЕ HTML-спецсимволов ─────────────────────
+    # Сначала защищаем &, < и > чтобы они не ломали парсер Telegram.
+    # Делаем это ДО конвертации markdown, потом восстанавливаем
+    # настоящие HTML теги которые мы сами создали.
+    text = text.replace('&', '&amp;')
+    # < и > защитим частично — только те что НЕ принадлежат нашим markdown-шаблонам
+    # Это сложно, поэтому делаем проще: заменяем все < > на safe-placeholder,
+    # конвертируем markdown, и потом возвращаем символы.
+    PLACEHOLDER_LT = '\x00LT\x00'
+    PLACEHOLDER_GT = '\x00GT\x00'
+    text = text.replace('<', PLACEHOLDER_LT).replace('>', PLACEHOLDER_GT)
+
+    # ── MARKDOWN → HTML КОНВЕРТАЦИЯ ──────────────────────────
+    # Тройной backtick код-блоки → <pre>
+    text = re.sub(r'```(?:\w+)?\n?(.*?)```', r'<pre>\1</pre>', text, flags=re.DOTALL)
+
+    # Одинарный backtick inline-код → <code>
+    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+
+    # ***жирный-курсив*** → <b><i>...</i></b>  (тройные звёздочки — ДО двойных!)
+    text = re.sub(r'\*\*\*([^\*\n]+?)\*\*\*', r'<b><i>\1</i></b>', text)
+
+    # **жирный** → <b>жирный</b>  (двойные звёздочки, ОЧЕНЬ ЛИБЕРАЛЬНО)
+    # Разрешаем переносы внутри — иногда Claude кладёт "**начало\nконец**"
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
+
+    # __подчёркнутый__ → <u>подчёркнутый</u>
+    text = re.sub(r'__([^_\n]+?)__', r'<u>\1</u>', text)
+
+    # *курсив* → <i>курсив</i> (одинарные, не внутри слова)
+    text = re.sub(r'(?<!\w)\*([^\*\n]+?)\*(?!\w)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_([^_\n]+?)_(?!\w)', r'<i>\1</i>', text)
+
+    # ~~зачёркнутый~~ → <s>зачёркнутый</s>
+    text = re.sub(r'~~([^~\n]+?)~~', r'<s>\1</s>', text)
+
+    # Markdown-ссылки [текст](url) → <a href="url">текст</a>
+    text = re.sub(r'\[([^\]]+)\]\((https?://[^\s\)]+)\)', r'<a href="\2">\1</a>', text)
+
+    # Markdown-заголовки (# Заголовок) → <b>Заголовок</b>
+    text = re.sub(r'^#{1,6}\s+(.+?)\s*$', r'<b>\1</b>', text, flags=re.MULTILINE)
+
+    # Убираем ВСЕ оставшиеся непарные ** (если модель ошиблась с закрытием)
+    text = re.sub(r'\*\*', '', text)
+    # Убираем непарные одиночные * которые остались
+    text = re.sub(r'(?<!\w)\*(?!\w)', '', text)
+
+    # ── ВОЗВРАЩАЕМ НАСТОЯЩИЕ HTML ТЕГИ ──────────────────────
+    # Мы заменили все < > на плейсхолдеры. Наши regex создали настоящие теги
+    # типа <b>, <i>, <code> через Python — они пишутся как обычные < >.
+    # Плейсхолдеры возвращаем как &lt; &gt; — это безопасно для Telegram HTML.
+    text = text.replace(PLACEHOLDER_LT, '&lt;').replace(PLACEHOLDER_GT, '&gt;')
+
+    # ── САНИТИЗАЦИЯ ТЕГОВ ─────────────────────────────────
+    # Разрешённые Telegram теги
+    allowed = {'b', '/b', 'i', '/i', 'code', '/code', 'pre', '/pre',
+               'a', '/a', 's', '/s', 'u', '/u', 'br'}
     def replace_tag(m):
         tag = m.group(1).strip().lower().split()[0]
         return m.group(0) if tag in allowed else ''
     text = re.sub(r'<([^>]+)>', replace_tag, text)
+
+    # Проверяем что все теги закрыты — если нет, сбалансируем
+    text = _balance_html_tags(text)
+
     # Убираем лишние пустые строки
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def _balance_html_tags(text: str) -> str:
+    """Проверяет баланс открытых/закрытых HTML тегов. Удаляет незакрытые."""
+    import re
+    # Считаем открытые и закрытые теги для каждого типа
+    pairs = ['b', 'i', 'code', 'pre', 'u', 's', 'a']
+    for tag in pairs:
+        opens = len(re.findall(f'<{tag}(?:\\s[^>]*)?>', text))
+        closes = len(re.findall(f'</{tag}>', text))
+        # Удаляем лишние открытия (берём последние)
+        while opens > closes:
+            text = re.sub(f'<{tag}(?:\\s[^>]*)?>(?=[^<]*$)', '', text, count=1)
+            opens -= 1
+        # Удаляем лишние закрытия (берём первые)
+        while closes > opens:
+            text = re.sub(f'</{tag}>', '', text, count=1)
+            closes -= 1
+    return text
+
+
+def _strip_all_formatting(text: str) -> str:
+    """Удаляет ВСЁ форматирование — для fallback когда HTML parser падает.
+    Возвращает чистый plain text без любых спецсимволов форматирования."""
+    import re
+    # Убираем все HTML теги
+    text = re.sub(r'<[^>]+>', '', text)
+    # Убираем markdown
+    text = re.sub(r'\*+', '', text)
+    text = re.sub(r'_+', '', text)
+    text = re.sub(r'`+', '', text)
+    text = re.sub(r'~+', '', text)
+    # Убираем markdown-ссылки оставляя текст
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    # Убираем заголовки #
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    # HTML entities обратно
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"')
+    # Лишние пустые строки
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
