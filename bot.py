@@ -3177,17 +3177,18 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
         }
     elif "gpt-image-2" in model_id:
         # GPT Image 2 через fal.ai — поддерживает все форматы
-        # image_size передаём как строку "WIDTHxHEIGHT" — стандартный формат fal.ai
+        # ВАЖНО: fal.ai принимает image_size как предустановленные значения
+        # (те же что у Flux): square_hd/square/portrait_4_3/portrait_16_9/landscape_4_3/landscape_16_9
         size_map_gptimg = {
-            "1:1":  "1024x1024",
-            "16:9": "1536x1024",  # горизонтальный
-            "9:16": "1024x1536",  # вертикальный (сторис)
-            "4:3":  "1280x960",   # классическое фото
-            "3:4":  "960x1280",   # портрет
+            "1:1":  "square_hd",         # 1024x1024 квадрат
+            "16:9": "landscape_16_9",    # горизонтальный
+            "9:16": "portrait_16_9",     # вертикальный (сторис/Reels)
+            "4:3":  "landscape_4_3",     # классическое фото
+            "3:4":  "portrait_4_3",      # портрет
         }
         payload = {
             "prompt": prompt,
-            "image_size": size_map_gptimg.get(aspect_ratio, "1024x1024"),
+            "image_size": size_map_gptimg.get(aspect_ratio, "square_hd"),
             "quality": quality if quality in ("low", "medium", "high") else "medium",
             "num_images": 1,
         }
