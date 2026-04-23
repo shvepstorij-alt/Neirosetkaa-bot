@@ -523,6 +523,37 @@ IMAGE_MODELS = {
         "speed": "~10 сек",
         "desc": "Идеальный текст в картинке (для постеров, баннеров WB/Ozon)",
     },
+    # ── OpenAI GPT Image 2 (через fal.ai, 3 уровня качества) ───
+    "gptimg_fast": {
+        "name": "🆕 GPT Image 2 Fast",
+        "model_id": "openai/gpt-image-2",
+        "api": "fal",
+        "quality": "low",
+        "credits": 10,
+        "price": "5₽",
+        "speed": "~8 сек",
+        "desc": "OpenAI, бюджет — проверить идею",
+    },
+    "gptimg_std": {
+        "name": "🆕 GPT Image 2",
+        "model_id": "openai/gpt-image-2",
+        "api": "fal",
+        "quality": "medium",
+        "credits": 20,
+        "price": "11₽",
+        "speed": "~15 сек",
+        "desc": "#1 в Image Arena, рекомендованное качество",
+    },
+    "gptimg_pro": {
+        "name": "🆕 GPT Image 2 Pro",
+        "model_id": "openai/gpt-image-2",
+        "api": "fal",
+        "quality": "high",
+        "credits": 45,
+        "price": "24₽",
+        "speed": "~25 сек",
+        "desc": "Топ 4K, 99% точность текста, thinking mode",
+    },
 }
 
 # ─── Модели видео ─────────────────────────────────────────
@@ -1998,6 +2029,9 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 • Nano Banana (Gemini) 1/2/Pro — от 10 до 30 кр (Pro = 4K)
 • Flux 2 Pro — 12 кр, фотореализм уровня Midjourney
 • Ideogram V3 — 14 кр, идеальный текст в изображении (баннеры, логотипы)
+• 🆕 GPT Image 2 Fast — 10 кр, OpenAI, проверить идею
+• 🆕 GPT Image 2 — 20 кр, OpenAI, #1 в Image Arena — для большинства задач
+• 🆕 GPT Image 2 Pro — 45 кр, 99% точность текста, thinking mode, топ качество
 
 ✏️ РЕДАКТИРОВАНИЕ ФОТО (10 кр): загрузил фото → описал что изменить → готово
 Примеры: "убрать фон", "сделать зимнюю сцену", "добавить очки"
@@ -2069,9 +2103,31 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 • "идеально подойдёт <b>Ideogram V3</b> в этом боте (14 кр)" — если текст в картинке
 • "рекомендую <b>Flux 2 Pro</b> (12 кр) — лучший фотореализм" — для фото товаров
 • "бери <b>Nano Banana Pro</b> (30 кр) — 4K и точный текст" — для премиум-качества
+• "<b>GPT Image 2</b> (20 кр) — #1 в Image Arena, универсальный" — золотая середина
+• "<b>GPT Image 2 Pro</b> (45 кр) — 99% точный текст, thinking mode" — инфографика, вывески, UI mockups
+• "<b>GPT Image 2 Fast</b> (10 кр) — проверить идею дёшево"
 • "<b>Kling 3.0 Pro</b> (359 кр) идеален — видео со звуком" — если нужен звук
 • "<b>Kling 2.5 Turbo</b> (109 кр) — быстро и дёшево" — для скорости
 • "<b>Veo 3.1</b> (599 кр) — кино-качество 4K" — для максимума
+
+🎯 КОГДА РЕКОМЕНДОВАТЬ GPT IMAGE 2 (важно!):
+
+GPT Image 2 от OpenAI (вышел 21 апреля 2026, #1 в Image Arena с отрывом +242 пункта) —
+имеет уникальное преимущество: <b>99% точность текста в картинках</b> и thinking mode
+(рассуждает перед генерацией). Три уровня качества:
+
+• <b>Fast (10 кр)</b> — клиент-новичок, хочет попробовать дёшево
+• <b>Medium (20 кр)</b> — стандарт, для большинства задач: посты, креативы, иллюстрации  
+• <b>Pro (45 кр)</b> — премиум: инфографика, вывески, меню ресторана, UI screenshots,
+  многоязычный текст, логотипы — всё где важна точность текста
+
+Сравни с другими:
+• Ideogram V3 (14 кр) vs GPT Image 2 Medium (20 кр): оба хорошо пишут текст,
+  но GPT Image 2 лучше понимает сложные композиции и работает с инфографикой
+• Nano Banana Pro (30 кр) vs GPT Image 2 Pro (45 кр): оба 4K, но GPT Image 2 Pro
+  сейчас ЛИДЕР рейтинга по всем параметрам (21 апреля 2026)
+• Flux 2 Pro (12 кр) vs GPT Image 2 Medium (20 кр): Flux дешевле для фотореализма,
+  GPT лучше для любых задач с текстом и сложными сценами
 
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2981,9 +3037,13 @@ async def _with_retry(coro_factory, max_attempts: int = 3, base_delay: float = 2
 
 # ─── Retry helper для Google API ──────────────────────────
 
-async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1") -> bytes:
-    """Генерация изображений через fal.ai (Flux 2 Pro, Ideogram V3).
-    Использует sync endpoint — результат приходит сразу."""
+async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
+                                  quality: str = "medium") -> bytes:
+    """Генерация изображений через fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2).
+    Использует sync endpoint — результат приходит сразу.
+    
+    quality: для GPT Image 2 — 'low' / 'medium' / 'high'. Для остальных игнорируется.
+    """
     if not FAL_API_KEY:
         raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
 
@@ -2994,6 +3054,15 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
         "9:16": "portrait_16_9",
         "4:3": "landscape_4_3",
         "3:4": "portrait_4_3",
+    }
+
+    # GPT Image 2 требует точные размеры в формате "WIDTHxHEIGHT"
+    aspect_map_gptimg = {
+        "1:1":  "1024x1024",
+        "16:9": "1536x1024",
+        "9:16": "1024x1536",
+        "4:3":  "1280x960",
+        "3:4":  "960x1280",
     }
 
     url = f"https://fal.run/{model_id}"
@@ -3017,10 +3086,22 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
             "rendering_speed": "BALANCED",
             "num_images": 1,
         }
+    elif "gpt-image-2" in model_id:
+        # GPT Image 2 через fal.ai: параметры size + quality
+        # В зависимости от quality генерация занимает разное время
+        payload = {
+            "prompt": prompt,
+            "image_size": aspect_map_gptimg.get(aspect_ratio, "1024x1024"),
+            "quality": quality if quality in ("low", "medium", "high") else "medium",
+            "num_images": 1,
+            "output_format": "png",
+        }
     else:
         payload = {"prompt": prompt}
 
-    timeout = aiohttp.ClientTimeout(total=180)  # 3 минуты максимум
+    # GPT Image 2 high quality + thinking mode может занять до 60 сек — увеличим timeout
+    timeout_sec = 300 if "gpt-image-2" in model_id and quality == "high" else 180
+    timeout = aiohttp.ClientTimeout(total=timeout_sec)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         async with s.post(url, json=payload, headers=headers) as r:
             if r.status == 401 or r.status == 403:
@@ -3311,10 +3392,11 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
     )
 
 
-async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1", api_type: str = "imagen") -> bytes:
-    # Dispatch на fal.ai (Flux 2 Pro, Ideogram V3)
+async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
+                              api_type: str = "imagen", quality: str = "medium") -> bytes:
+    # Dispatch на fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2)
     if api_type == "fal":
-        return await api_generate_fal_image(prompt, model_id, aspect_ratio)
+        return await api_generate_fal_image(prompt, model_id, aspect_ratio, quality=quality)
 
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
     async with aiohttp.ClientSession() as s:
@@ -5531,7 +5613,11 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
                 pass
 
         img_bytes = await _with_retry(
-            lambda: api_generate_image(prompt, m["model_id"], aspect, m.get("api", "imagen")),
+            lambda: api_generate_image(
+                prompt, m["model_id"], aspect,
+                m.get("api", "imagen"),
+                quality=m.get("quality", "medium"),
+            ),
             max_attempts=3, op_name=f"Imagen/Gemini {key}",
             on_retry=notify_retry
         )
@@ -6313,9 +6399,11 @@ async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
     }
     label = preset_labels.get(preset_key, "Пресет")
     try:
+        # Оставляем клавиатуру с пресетами — чтобы юзер мог выбрать другой пока ждёт
         await cb.message.edit_text(
-            f"<i>Ты выбрал: {label}</i>",
-            parse_mode="HTML"
+            f"<i>Ты выбрал: {label}</i>\n\n⏳ Готовлю ответ...",
+            parse_mode="HTML",
+            reply_markup=kb_chat_presets(),
         )
     except Exception:
         pass
@@ -6323,14 +6411,33 @@ async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
     await cb.answer("Готовлю ответ...")
     await bot.send_chat_action(cb.message.chat.id, "typing")
     uid = cb.from_user.id
-    reply = await claude_with_search(uid, preset_message)
+
+    try:
+        reply = await claude_with_search(uid, preset_message)
+    except Exception as e:
+        logging.error(f"chat_preset_handler claude call failed: {e}")
+        reply = (
+            "⚠️ Не удалось получить ответ от консультанта.\n\n"
+            "Попробуй ещё раз через минуту или выбери другой пресет."
+        )
 
     # Детект намерения для умной кнопки под ответом
     intent, model_hint = detect_consultant_intent(preset_message, reply)
     try:
-        await cb.message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint), parse_mode="HTML")
-    except Exception:
-        await cb.message.answer(reply, reply_markup=kb_after_consultant_reply(intent, model_hint))
+        await cb.message.answer(
+            reply,
+            reply_markup=kb_after_consultant_reply(intent, model_hint),
+            parse_mode="HTML",
+        )
+    except Exception as send_err:
+        logging.warning(f"Failed to send preset reply with HTML: {send_err}")
+        try:
+            await cb.message.answer(
+                reply,
+                reply_markup=kb_after_consultant_reply(intent, model_hint),
+            )
+        except Exception as send_err2:
+            logging.error(f"Failed to send preset reply at all: {send_err2}")
 
 
 @dp.callback_query(F.data == "help_choose")
@@ -6416,6 +6523,16 @@ def detect_consultant_intent(user_text: str, reply_text: str) -> tuple[str | Non
     )
     if wants_image:
         # Определяем конкретную модель по контексту
+        # GPT Image 2 — явное упоминание, инфографика, вывеска, меню ресторана
+        if ("gpt image" in combined or "gpt-image" in combined or "чатгпт image" in combined
+            or "инфографик" in combined or "вывеск" in combined or "меню ресторана" in combined
+            or "скриншот интерфейса" in combined or "ui mockup" in combined):
+            # GPT Image 2 Pro — премиум с 99% текстом
+            return ("image", "gptimg_pro")
+        if "gpt image 2 fast" in combined or "gpt фаст" in combined:
+            return ("image", "gptimg_fast")
+        if "gpt image 2 medium" in combined or "gpt стандарт" in combined:
+            return ("image", "gptimg_std")
         if "баннер" in combined or "постер" in combined or "текст в картин" in combined or "с надпис" in combined or "ideogram" in combined:
             return ("image", "ideogram_v3")
         if "wildberries" in combined or "wb" in combined or "ozon" in combined or "маркетплейс" in combined or "фотореализм" in combined or "flux" in combined:
@@ -6512,18 +6629,35 @@ def _get_conv(uid: int) -> list:
 async def claude_with_search(uid: int, user_text: str) -> str:
     conv = _get_conv(uid)
 
+    # Нормализация истории: убираем подряд идущие сообщения с одинаковой ролью
+    # (может случиться если предыдущий API-вызов упал посередине)
+    def _normalize_history(msgs: list) -> list:
+        cleaned = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            content = m.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if cleaned and cleaned[-1].get("role") == m.get("role"):
+                # Та же роль подряд — заменяем последнее сообщение на новое (актуальнее)
+                cleaned[-1] = m
+            else:
+                cleaned.append(m)
+        return cleaned
+
     # Сохраняем только текстовые сообщения в истории (не tool_use блоки)
     conv.append({"role": "user", "content": user_text})
     if len(conv) > 20:
         del conv[:-20]
 
     try:
-        # Для API используем отдельную копию — не портим историю
-        api_messages = list(conv)
+        # Нормализуем ПЕРЕД отправкой — чистим возможные повторы ролей
+        api_messages = _normalize_history(list(conv))
 
-        # Claude с серверным web_search — Anthropic сам делает запросы
+        # Claude Sonnet 4.6 — быстрее и дешевле Opus, но достаточно умная для консультанта
         resp = claude_client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-sonnet-4-6",
             max_tokens=2048,
             system=SYSTEM_PROMPT,
             tools=[{
@@ -6555,15 +6689,18 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         return reply
 
     except Exception as e:
-        logging.error(f"Claude API error: {e}")
-        # Fallback без поиска — используем чистую историю
+        # Подробное логирование — чтобы видеть именно что случилось
+        import traceback
+        err_type = type(e).__name__
+        err_msg = str(e)[:500]
+        logging.error(f"Claude API error [{err_type}]: {err_msg}")
+        logging.error(f"Claude API traceback: {traceback.format_exc()[:1500]}")
+
+        # Fallback без поиска — используем нормализованную историю
         try:
-            clean_history = [
-                m for m in conv
-                if isinstance(m.get("content"), str)
-            ]
+            clean_history = _normalize_history(list(conv))
             resp = claude_client.messages.create(
-                model="claude-opus-4-7",
+                model="claude-sonnet-4-6",
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
                 messages=clean_history,
@@ -6577,8 +6714,19 @@ async def claude_with_search(uid: int, user_text: str) -> str:
             conv.append({"role": "assistant", "content": reply})
             return reply
         except Exception as e2:
-            logging.error(f"Fallback error: {e2}")
-            return "Что-то пошло не так 😅 Попробуй ещё раз или напиши @neirosetkaalex"
+            err_type2 = type(e2).__name__
+            err_msg2 = str(e2)[:500]
+            logging.error(f"Fallback error [{err_type2}]: {err_msg2}")
+
+            # Откатываем последний user message из истории — чтобы при следующей попытке
+            # не было повторяющихся ролей
+            if conv and conv[-1].get("role") == "user":
+                conv.pop()
+
+            return (
+                "⚠️ Временная ошибка AI-консультанта.\n\n"
+                "Попробуй ещё раз через минуту или напиши @neirosetkaalex."
+            )
 
 
 # ══════════════════════════════════════════════════════════
