@@ -3154,15 +3154,6 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
         "3:4": "portrait_4_3",
     }
 
-    # GPT Image 2 требует точные размеры в формате "WIDTHxHEIGHT"
-    aspect_map_gptimg = {
-        "1:1":  "1024x1024",
-        "16:9": "1536x1024",
-        "9:16": "1024x1536",
-        "4:3":  "1280x960",
-        "3:4":  "960x1280",
-    }
-
     url = f"https://fal.run/{model_id}"
     headers = {
         "Authorization": f"Key {FAL_API_KEY}",
@@ -3185,21 +3176,22 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
             "num_images": 1,
         }
     elif "gpt-image-2" in model_id:
-        # GPT Image 2 через fal.ai: параметры size + quality
-        # ВАЖНО: fal.ai принимает параметр "image_size" как предустановки ИЛИ объект {width,height}
-        # Используем width/height — это универсально и принимается всеми endpoint'ами
-        size_str = aspect_map_gptimg.get(aspect_ratio, "1024x1024")
-        try:
-            w, h = map(int, size_str.split("x"))
-        except Exception:
-            w, h = 1024, 1024
+        # GPT Image 2 через fal.ai — поддерживает все форматы
+        # image_size передаём как строку "WIDTHxHEIGHT" — стандартный формат fal.ai
+        size_map_gptimg = {
+            "1:1":  "1024x1024",
+            "16:9": "1536x1024",  # горизонтальный
+            "9:16": "1024x1536",  # вертикальный (сторис)
+            "4:3":  "1280x960",   # классическое фото
+            "3:4":  "960x1280",   # портрет
+        }
         payload = {
             "prompt": prompt,
-            "image_size": {"width": w, "height": h},
+            "image_size": size_map_gptimg.get(aspect_ratio, "1024x1024"),
             "quality": quality if quality in ("low", "medium", "high") else "medium",
             "num_images": 1,
-            "output_format": "png",
         }
+        logging.info(f"GPT Image 2 payload: model={model_id} quality={quality} aspect={aspect_ratio} size={payload['image_size']}")
     else:
         payload = {"prompt": prompt}
 
@@ -3214,7 +3206,6 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
                 err_text = (await r.text())[:500]
                 err_lower = err_text.lower()
                 # 422 может быть: safety, validation error, bad params
-                # Смотрим текст ошибки — если про safety/moderation → реальная блокировка
                 if ("safety" in err_lower or "moderation" in err_lower or
                     "policy" in err_lower or "nsfw" in err_lower or "violat" in err_lower or
                     "inappropriate" in err_lower or "blocked" in err_lower):
@@ -3223,11 +3214,16 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
                         "🛡 Промт не прошёл фильтр безопасности.\n\n"
                         "Переформулируй — избегай сцен с насилием, NSFW контента или упоминаний знаменитостей."
                     )
-                # Иначе — это валидационная ошибка параметров, покажем админу детали
-                logging.error(f"fal.ai 422 (validation) for model={model_id}: {err_text} | payload={str(payload)[:300]}")
+                # Иначе — валидационная ошибка: логируем полный текст для админа
+                logging.error(f"fal.ai 422 (validation) model={model_id} payload={payload} response={err_text}")
                 raise Exception(
-                    f"⚠️ Ошибка параметров модели (422). Попробуй другой формат изображения или напиши @neirosetkaalex."
+                    f"⚠️ Ошибка параметров модели. Попробуй другой формат или напиши @neirosetkaalex."
                 )
+            if r.status != 200:
+                # Детальное логирование любой другой ошибки
+                err_text = (await r.text())[:500]
+                logging.error(f"fal.ai HTTP {r.status} model={model_id} payload={payload} response={err_text}")
+                raise Exception(f"fal.ai API {r.status}: {err_text[:200]}")
             if r.status != 200:
                 raise Exception(f"fal.ai API {r.status}: {(await r.text())[:300]}")
             data = await r.json()
