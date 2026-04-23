@@ -450,7 +450,7 @@ async def _memory_cleanup_loop():
 IMAGE_MODELS = {
     # ── Imagen 4 ──────────────────────────────────────────
     "img_fast": {
-        "name": "· Imagen 4 Fast",
+        "name": "⚡ Imagen 4 Fast",
         "model_id": "imagen-4.0-fast-generate-001",
         "api": "imagen",
         "credits": 7,
@@ -459,7 +459,7 @@ IMAGE_MODELS = {
         "desc": "Быстро и качественно",
     },
     "img_std": {
-        "name": "· Imagen 4",
+        "name": "🌟 Imagen 4",
         "model_id": "imagen-4.0-generate-001",
         "api": "imagen",
         "credits": 10,
@@ -468,7 +468,7 @@ IMAGE_MODELS = {
         "desc": "Флагман, чёткий текст",
     },
     "img_ultra": {
-        "name": "◆ Imagen 4 Ultra",
+        "name": "✨ Imagen 4 Ultra",
         "model_id": "imagen-4.0-ultra-generate-001",
         "api": "imagen",
         "credits": 13,
@@ -506,7 +506,7 @@ IMAGE_MODELS = {
     },
     # ── Black Forest Labs / Ideogram (через fal.ai) ────────
     "flux_pro": {
-        "name": "🎨 Flux 2 Pro",
+        "name": "🎭 Flux 2 Pro",
         "model_id": "fal-ai/flux-2-pro",
         "api": "fal",
         "credits": 12,
@@ -515,7 +515,7 @@ IMAGE_MODELS = {
         "desc": "Фотореализм от Black Forest Labs",
     },
     "ideogram_v3": {
-        "name": "🖋 Ideogram V3",
+        "name": "✒️ Ideogram V3",
         "model_id": "fal-ai/ideogram/v3",
         "api": "fal",
         "credits": 14,
@@ -525,7 +525,7 @@ IMAGE_MODELS = {
     },
     # ── OpenAI GPT Image 2 (через fal.ai, 3 уровня качества) ───
     "gptimg_fast": {
-        "name": "🆕 GPT Image 2 Fast",
+        "name": "⚡ GPT Image 2 Fast",
         "model_id": "openai/gpt-image-2",
         "api": "fal",
         "quality": "low",
@@ -535,7 +535,7 @@ IMAGE_MODELS = {
         "desc": "OpenAI, бюджет — проверить идею",
     },
     "gptimg_std": {
-        "name": "🆕 GPT Image 2",
+        "name": "🤖 GPT Image 2",
         "model_id": "openai/gpt-image-2",
         "api": "fal",
         "quality": "medium",
@@ -545,7 +545,7 @@ IMAGE_MODELS = {
         "desc": "#1 в Image Arena, рекомендованное качество",
     },
     "gptimg_pro": {
-        "name": "🆕 GPT Image 2 Pro",
+        "name": "💎 GPT Image 2 Pro",
         "model_id": "openai/gpt-image-2",
         "api": "fal",
         "quality": "high",
@@ -559,7 +559,7 @@ IMAGE_MODELS = {
 # ─── Модели видео ─────────────────────────────────────────
 VIDEO_MODELS = {
     "vid_lite": {
-        "name": "💰 Veo 3.1 Lite",
+        "name": "🎞 Veo 3.1 Lite",
         "model_id": "veo-3.1-lite-generate-preview",
         "api": "veo",
         "credits": 99,
@@ -568,7 +568,7 @@ VIDEO_MODELS = {
         "desc": "Бюджет, быстро",
     },
     "kling_turbo": {
-        "name": "🎞 Kling 2.5 Turbo",
+        "name": "⚡ Kling 2.5 Turbo",
         "model_id": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
         "api": "fal",
         "credits": 109,
@@ -582,7 +582,7 @@ VIDEO_MODELS = {
         },
     },
     "vid_fast": {
-        "name": "⚡ Veo 3.1 Fast",
+        "name": "🎥 Veo 3.1 Fast",
         "model_id": "veo-3.1-fast-generate-preview",
         "api": "veo",
         "credits": 249,
@@ -605,7 +605,7 @@ VIDEO_MODELS = {
         },
     },
     "vid_pro": {
-        "name": "🎬 Veo 3.1",
+        "name": "💎 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
         "api": "veo",
         "credits": 599,
@@ -1661,11 +1661,11 @@ def kb_main():
 def kb_image_brands():
     """Верхний уровень: выбор бренда моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🆕 GPT Image 2",  callback_data="iband:gptimg")],
+        [InlineKeyboardButton(text="🤖 GPT Image 2",  callback_data="iband:gptimg")],
         [InlineKeyboardButton(text="🌟 Imagen 4",     callback_data="iband:imagen")],
         [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano")],
-        [InlineKeyboardButton(text="🎨 Flux",         callback_data="iband:flux")],
-        [InlineKeyboardButton(text="🖋 Ideogram",     callback_data="iband:ideogram")],
+        [InlineKeyboardButton(text="🎭 Flux",         callback_data="iband:flux")],
+        [InlineKeyboardButton(text="✒️ Ideogram",     callback_data="iband:ideogram")],
         [InlineKeyboardButton(text="⬅️ Назад",        callback_data="back_main")],
     ])
 
@@ -1680,11 +1680,11 @@ IMAGE_BRAND_MODELS = {
 }
 
 IMAGE_BRAND_TITLES = {
-    "gptimg":   "🆕 GPT Image 2 (OpenAI)",
+    "gptimg":   "🤖 GPT Image 2 (OpenAI)",
     "imagen":   "🌟 Imagen 4",
     "nano":     "🍌 Nano Banana",
-    "flux":     "🎨 Flux",
-    "ideogram": "🖋 Ideogram",
+    "flux":     "🎭 Flux",
+    "ideogram": "✒️ Ideogram",
 }
 
 
@@ -2032,9 +2032,9 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 • Nano Banana (Gemini) 1/2/Pro — от 10 до 30 кр (Pro = 4K)
 • Flux 2 Pro — 12 кр, фотореализм уровня Midjourney
 • Ideogram V3 — 14 кр, идеальный текст в изображении (баннеры, логотипы)
-• 🆕 GPT Image 2 Fast — 10 кр, OpenAI, проверить идею
-• 🆕 GPT Image 2 — 20 кр, OpenAI, #1 в Image Arena — для большинства задач
-• 🆕 GPT Image 2 Pro — 45 кр, 99% точность текста, thinking mode, топ качество
+• ⚡ GPT Image 2 Fast — 10 кр, OpenAI, проверить идею
+• 🤖 GPT Image 2 — 20 кр, OpenAI, #1 в Image Arena — для большинства задач
+• 💎 GPT Image 2 Pro — 45 кр, 99% точность текста, thinking mode, топ качество
 
 ✏️ РЕДАКТИРОВАНИЕ ФОТО (10 кр): загрузил фото → описал что изменить → готово
 Примеры: "убрать фон", "сделать зимнюю сцену", "добавить очки"
@@ -5416,11 +5416,11 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f"🆕 <b>GPT Image 2</b> — OpenAI, #1 в Image Arena, от 10 кр\n"
+        f"🤖 <b>GPT Image 2</b> — OpenAI, #1 в Image Arena, от 10 кр\n"
         f"🌟 <b>Imagen 4</b> — флагман Google, от 7 кр\n"
         f"🍌 <b>Nano Banana</b> — Gemini, 4K, от 10 кр\n"
-        f"🎨 <b>Flux</b> — фотореализм, от 12 кр\n"
-        f"🖋 <b>Ideogram</b> — идеальный текст в картинке, от 14 кр"
+        f"🎭 <b>Flux</b> — фотореализм, от 12 кр\n"
+        f"✒️ <b>Ideogram</b> — идеальный текст в картинке, от 14 кр"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_brands(), parse_mode="HTML")
@@ -6661,6 +6661,64 @@ def _get_conv(uid: int) -> list:
     return entry["data"]
 
 
+def _classify_query_complexity(user_text: str, history: list) -> str:
+    """Определяет сложность запроса для выбора модели.
+
+    Возвращает 'simple' (→ Haiku) или 'complex' (→ Sonnet).
+
+    Простые (Haiku 4.5):
+    - Короткие вопросы (до 150 символов)
+    - Типичные FAQ: цены, регистрация, VPN, как работает X
+    - Просьбы о промте по шаблону
+    - Первое сообщение в диалоге без контекста
+
+    Сложные (Sonnet 4.6):
+    - Длинные детальные запросы (>300 символов)
+    - Сравнения нескольких моделей/сервисов
+    - Многошаговые задачи ("сначала X, потом Y, потом Z")
+    - Технические детали API/интеграции
+    - Философские/абстрактные вопросы
+    - Длинная история диалога (5+ реплик — нужно помнить контекст)
+    """
+    text = (user_text or "").lower().strip()
+    text_len = len(text)
+
+    # Явные маркеры сложности
+    complex_triggers = [
+        # Сравнения
+        "сравни", "сравнение", "vs", "разница между", "что лучше", "чем отличается",
+        "плюсы и минусы", "pros and cons",
+        # Многошаговые задачи
+        "пошагово", "поэтапно", "алгоритм", "подробно объясни", "детально",
+        "многошагов", "комплекс",
+        # Анализ и принятие решений
+        "проанализируй", "какой из", "какую из", "какие варианты",
+        "подбери оптимальный", "рекомендуй с учётом",
+        # Техника
+        "api", "интеграц", "webhook", "настрой код", "разработк",
+        "архитектур", "схем",
+        # Креатив/сочинительство
+        "напиши статью", "напиши пост", "напиши сценарий", "придумай историю",
+        "сочини", "креативн", "нестандартн",
+    ]
+
+    # Если встретилось явное слово-сложность — точно Sonnet
+    for trigger in complex_triggers:
+        if trigger in text:
+            return "complex"
+
+    # Длинный запрос (>300 симв) — скорее всего детальная задача
+    if text_len > 300:
+        return "complex"
+
+    # Длинная история (5+ сообщений) — нужен контекст, лучше Sonnet
+    if isinstance(history, list) and len(history) >= 10:  # 5 пар user/assistant
+        return "complex"
+
+    # Во всех остальных случаях — Haiku (экономим)
+    return "simple"
+
+
 async def claude_with_search(uid: int, user_text: str) -> str:
     conv = _get_conv(uid)
 
@@ -6691,17 +6749,45 @@ async def claude_with_search(uid: int, user_text: str) -> str:
         logging.error("Claude API: CLAUDE_API_KEY не задан!")
         if conv and conv[-1].get("role") == "user":
             conv.pop()
+        # Разовый алерт админу при первом обращении после запуска
+        try:
+            now_ts = _time_module.time()
+            last_alert = getattr(claude_with_search, "_last_admin_alert", 0)
+            if now_ts - last_alert > 600:
+                setattr(claude_with_search, "_last_admin_alert", now_ts)
+                await bot.send_message(
+                    ADMIN_ID,
+                    "🚨 <b>AI-Консультант: API ключ не задан</b>\n\n"
+                    "Добавь <code>CLAUDE_API_KEY</code> в Railway Variables.",
+                    parse_mode="HTML"
+                )
+        except Exception:
+            pass
         return (
-            "⚠️ Консультант временно недоступен (API ключ не настроен).\n\n"
-            "Напиши @neirosetkaalex — он поможет напрямую."
+            "⚠️ Консультант временно недоступен — у нас небольшие технические работы.\n\n"
+            "Попробуй через пару минут 🙏\n"
+            "Если срочно — напиши @neirosetkaalex, он поможет напрямую."
         )
 
-    # Список моделей для последовательного fallback: Sonnet → Haiku → Sonnet старее
-    models_to_try = [
-        "claude-sonnet-4-6",       # Основная: быстрая, умная
-        "claude-haiku-4-5-20251001",  # Резерв: максимально дешёвая и стабильная
-        "claude-sonnet-4-5-20250929",  # Последний резерв: предыдущая стабильная
-    ]
+    # Гибридная маршрутизация: простые вопросы → Haiku (в 5 раз дешевле),
+    # сложные → Sonnet. Fallback список включает обе модели чтобы быть устойчивыми.
+    complexity = _classify_query_complexity(user_text, conv)
+    if complexity == "simple":
+        # Haiku первая, если упадёт — перейдём на Sonnet
+        models_to_try = [
+            "claude-haiku-4-5-20251001",    # Основная для простых: 5x дешевле
+            "claude-sonnet-4-6",            # Fallback: умнее
+            "claude-sonnet-4-5-20250929",   # Последний резерв
+        ]
+        logging.info(f"Consultant [uid={uid}]: SIMPLE query → Haiku")
+    else:
+        # Sonnet первая — для сложных вопросов
+        models_to_try = [
+            "claude-sonnet-4-6",            # Основная для сложных
+            "claude-haiku-4-5-20251001",    # Fallback если Sonnet недоступен
+            "claude-sonnet-4-5-20250929",   # Последний резерв
+        ]
+        logging.info(f"Consultant [uid={uid}]: COMPLEX query → Sonnet")
 
     api_messages = _normalize_history(list(conv))
     last_error = None
@@ -6774,27 +6860,51 @@ async def claude_with_search(uid: int, user_text: str) -> str:
     if conv and conv[-1].get("role") == "user":
         conv.pop()
 
-    # Разбор по типу ошибки — даём понятное сообщение
+    # Разбор типа ошибки — для АДМИНСКОГО алерта (не для клиента!)
     err_str = str(last_error).lower() if last_error else ""
+    admin_diagnosis = "Неизвестная ошибка API"
+    admin_action = "Проверь Railway Logs — там полный traceback."
     if "authentication" in err_str or "unauthorized" in err_str or "api_key" in err_str:
-        return (
-            "⚠️ Проблема с API-ключом консультанта.\n\n"
-            "Администратор: проверь CLAUDE_API_KEY в Railway Variables.\n\n"
-            "Пока напиши @neirosetkaalex — поможет напрямую."
-        )
-    if "rate_limit" in err_str or "rate limit" in err_str:
-        return (
-            "⏳ Консультант перегружен — попробуй через минуту.\n\n"
-            "Или сразу напиши @neirosetkaalex."
-        )
-    if "billing" in err_str or "credit" in err_str or "insufficient" in err_str:
-        return (
-            "⚠️ Кончились средства на API консультанта.\n\n"
-            "Напиши @neirosetkaalex — он пополнит и поможет напрямую."
-        )
+        admin_diagnosis = "🔑 Проблема с API-ключом Claude"
+        admin_action = "Проверь CLAUDE_API_KEY в Railway Variables."
+    elif "rate_limit" in err_str or "rate limit" in err_str:
+        admin_diagnosis = "⏳ Rate limit на Anthropic API"
+        admin_action = "Временное ограничение, само пройдёт через минуту."
+    elif "billing" in err_str or "credit balance is too low" in err_str or "insufficient" in err_str:
+        admin_diagnosis = "💳 Кончились средства на Anthropic API"
+        admin_action = "Пополни баланс: https://console.anthropic.com/ → Billing"
+    elif "not found" in err_str or "model" in err_str and "does not exist" in err_str:
+        admin_diagnosis = "🤖 Модель недоступна на твоём tier"
+        admin_action = "Нужно обновить tier или переключить модель."
+    elif "connection" in err_str or "timeout" in err_str:
+        admin_diagnosis = "🌐 Проблема с сетью (timeout/connection)"
+        admin_action = "Обычно восстанавливается сама. Если часто — проверь Railway."
+
+    # Шлём админу диагностику, но не чаще чем раз в 10 минут (чтобы не спамить)
+    try:
+        now_ts = _time_module.time()
+        last_alert = getattr(claude_with_search, "_last_admin_alert", 0)
+        if now_ts - last_alert > 600:  # 10 минут
+            setattr(claude_with_search, "_last_admin_alert", now_ts)
+            err_snippet = str(last_error)[:300] if last_error else "(no error message)"
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 <b>AI-Консультант упал</b>\n\n"
+                f"<b>Диагноз:</b> {admin_diagnosis}\n"
+                f"<b>Что делать:</b> {admin_action}\n\n"
+                f"<b>Юзер:</b> <code>{uid}</code>\n"
+                f"<b>Ошибка:</b> <code>{err_snippet}</code>\n\n"
+                f"<i>Алерты приходят не чаще раза в 10 минут. Подробности — в Railway Logs.</i>",
+                parse_mode="HTML"
+            )
+    except Exception as alert_err:
+        logging.warning(f"Не удалось отправить админ-алерт: {alert_err}")
+
+    # КЛИЕНТУ — только нейтральное сообщение без технических деталей
     return (
-        "⚠️ Консультант временно недоступен.\n\n"
-        "Попробуй через минуту или напиши @neirosetkaalex — он поможет напрямую."
+        "⚠️ Консультант временно недоступен — у нас небольшие технические работы.\n\n"
+        "Попробуй через пару минут 🙏\n"
+        "Если срочно — напиши @neirosetkaalex, он поможет напрямую."
     )
 
 
@@ -7912,11 +8022,11 @@ async def adm_popular(cb: CallbackQuery):
     # Словарь ключ → читаемое название
     MODEL_NAMES = {
         "img_fast":          "⚡ Imagen 4 Fast",
-        "img_std":           "✨ Imagen 4",
-        "img_ultra":         "💎 Imagen 4 Ultra",
-        "vid_lite":          "💰 Veo 3.1 Lite",
-        "vid_fast":          "⚡ Veo 3.1 Fast",
-        "vid_pro":           "🎬 Veo 3.1 Pro",
+        "img_std":           "🌟 Imagen 4",
+        "img_ultra":         "✨ Imagen 4 Ultra",
+        "vid_lite":          "🎞 Veo 3.1 Lite",
+        "vid_fast":          "🎥 Veo 3.1 Fast",
+        "vid_pro":           "💎 Veo 3.1",
         "gemini-flash-image":"✏️ Редактирование фото",
         "edit":              "✏️ Редактирование фото",
     }
