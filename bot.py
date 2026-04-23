@@ -1585,8 +1585,25 @@ async def notify_admin_error(context: str, e: Exception):
     Safety-блокировки — отдельный тип алерта (🟡 вместо 🔴), не считаются как инфра-ошибки."""
     err_msg = str(e)
     low = err_msg.lower()
-    is_safety = ("🛡" in err_msg or "фильтр" in low or "заблокирован" in low
-                 or "копирайт" in low or "переформулир" in low)
+
+    # Сначала проверяем точные не-safety проблемы (инфра, downstream)
+    is_infra_problem = (
+        "нестабил" in low or "downstream" in low or
+        "openai gpt image" in low or "недоступ" in low or
+        "api ключ" in low or "rate limit" in low or
+        "сейчас нестабил" in low or "временно недоступна" in low
+    )
+
+    # Safety — только явные индикаторы контент-фильтра
+    is_safety = (
+        not is_infra_problem and (
+            "🛡" in err_msg or
+            "nsfw" in low or "насили" in low or "знаменит" in low or
+            "violat" in low or "moderat" in low or "inappropriate" in low or
+            "контент-полит" in low or "content policy" in low or
+            ("фильтр" in low and "безопасн" in low)
+        )
+    )
 
     # Логируем в БД
     try:
@@ -3161,12 +3178,14 @@ async def _with_retry(coro_factory, max_attempts: int = 3, base_delay: float = 2
 # ─── Retry helper для Google API ──────────────────────────
 
 async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
-                                  quality: str = "medium") -> bytes:
+                                  quality: str = "medium", _retry_count: int = 0) -> bytes:
     """Генерация изображений через fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2).
     Использует sync endpoint — результат приходит сразу.
     
     quality: для GPT Image 2 — 'low' / 'medium' / 'high'. Для остальных игнорируется.
+    _retry_count: счётчик повторных попыток (внутренний параметр для retry при downstream errors)
     """
+    MAX_DOWNSTREAM_RETRIES = 2  # Всего 3 попытки (0, 1, 2) — начальная + 2 retry
     if not FAL_API_KEY:
         raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
 
@@ -3263,25 +3282,40 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
             if r.status != 200:
                 # Детальное логирование любой другой ошибки
                 err_text = (await r.text())[:500]
-                logging.error(f"fal.ai HTTP {r.status} model={model_id} payload={payload} response={err_text}")
+                logging.error(f"fal.ai HTTP {r.status} model={model_id} payload={payload} response={err_text} retry={_retry_count}")
 
-                # Особая обработка downstream_service_error (проблема на стороне модели,
-                # например OpenAI отклонил запрос из-за контент-политики)
+                # Особая обработка downstream_service_error
+                # Это сбой на стороне underlying модели (OpenAI для GPT Image 2)
                 err_lower = err_text.lower()
-                if "downstream_service_error" in err_lower or "downstream service error" in err_lower:
-                    if "gpt-image-2" in model_id:
-                        raise Exception(
-                            "⚠️ OpenAI отклонил запрос.\n\n"
-                            "Возможные причины:\n"
-                            "• Промт содержит чувствительный контент (политика, исторические отсылки, знаменитости)\n"
-                            "• Текст на картинке сложный для модели (лучше писать на английском)\n"
-                            "• Временный сбой OpenAI\n\n"
-                            "Переформулируй промт проще и попробуй снова 🙏"
+                is_downstream = ("downstream_service_error" in err_lower or
+                                "downstream service error" in err_lower)
+
+                if is_downstream and "gpt-image-2" in model_id:
+                    # Retry — OpenAI иногда временно глючит, особенно с новой моделью GPT Image 2
+                    if _retry_count < MAX_DOWNSTREAM_RETRIES:
+                        wait_sec = 3 * (_retry_count + 1)  # 3s, 6s
+                        logging.info(f"GPT Image 2 downstream error — retry #{_retry_count + 1} через {wait_sec}с")
+                        await asyncio.sleep(wait_sec)
+                        return await api_generate_fal_image(
+                            prompt, model_id, aspect_ratio,
+                            quality=quality,
+                            _retry_count=_retry_count + 1,
                         )
-                    else:
-                        raise Exception(
-                            "⚠️ Модель временно недоступна. Попробуй через минуту или выбери другую модель."
-                        )
+                    # Все 3 попытки упали — даём честное объяснение клиенту
+                    raise Exception(
+                        "⚠️ OpenAI GPT Image 2 сейчас нестабилен (модель вышла 21 апреля — возможны сбои).\n\n"
+                        "Попробуй альтернативу:\n"
+                        "• 🍌 <b>Nano Banana Pro</b> (30 кр) — 4K от Google\n"
+                        "• ✒️ <b>Ideogram V3</b> (14 кр) — отличный текст в картинке\n"
+                        "• 🎭 <b>Flux 2 Pro</b> (12 кр) — фотореализм\n\n"
+                        "Или повтори попытку через пару минут 🙏"
+                    )
+
+                if is_downstream:
+                    # Для не-GPT моделей — просто сообщаем
+                    raise Exception(
+                        "⚠️ Модель временно недоступна. Попробуй через минуту или выбери другую модель."
+                    )
 
                 raise Exception(f"fal.ai API {r.status}: {err_text[:200]}")
             if r.status != 200:
