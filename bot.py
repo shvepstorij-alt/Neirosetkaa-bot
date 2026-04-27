@@ -11394,16 +11394,52 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
 
 
 async def start_webhook_server():
-    """Запускаем aiohttp сервер для FreeKassa webhook."""
+    """Запускаем aiohttp сервер для FreeKassa webhook.
+
+    Регистрируем НЕСКОЛЬКО endpoint'ов на всякий случай — мало ли как настроен
+    Notification URL в кабинете FK. Все они ведут на один и тот же handler.
+    Также поддерживаем GET для удобной диагностики (чтобы открыть в браузере).
+    """
     from aiohttp import web as _web
+
+    # Простой GET-handler для диагностики — можно открыть URL в браузере и увидеть OK
+    async def webhook_get_diag(request):
+        return _web.Response(
+            text="FK webhook endpoint is alive. Use POST for actual notifications.",
+            status=200,
+            content_type="text/plain"
+        )
+
     app = _web.Application()
-    app.router.add_post("/fk-notify", fk_webhook_handler)
+
+    # Список всех URL paths которые принимаем как webhook от FreeKassa
+    # Если в FK кабинете настроен любой из этих — будет работать
+    webhook_paths = [
+        "/fk-notify",       # Основной (с дефисом)
+        "/fk_webhook",      # Альтернативный (с подчёркиванием) — был настроен в FK
+        "/fk_notify",       # Ещё одна возможная вариация
+        "/fk-webhook",      # И ещё одна
+        "/freekassa",       # Короткая версия
+        "/fk",              # Самая короткая
+    ]
+
+    for path in webhook_paths:
+        app.router.add_post(path, fk_webhook_handler)
+        # GET для диагностики на тех же URL — чтобы можно было открыть в браузере и проверить
+        app.router.add_get(path, webhook_get_diag)
+
+    # Health check
     app.router.add_get("/health", lambda r: _web.Response(text="OK"))
+
     runner = _web.AppRunner(app)
     await runner.setup()
     site = _web.TCPSite(runner, "0.0.0.0", FK_WEBHOOK_PORT)
     await site.start()
-    logging.info(f"✅ FK webhook сервер на порту {FK_WEBHOOK_PORT} → /fk-notify")
+    logging.info(
+        f"✅ FK webhook сервер на порту {FK_WEBHOOK_PORT}\n"
+        f"   Принимаем POST на: {', '.join(webhook_paths)}\n"
+        f"   Диагностика GET: открой любой URL в браузере → должен вернуть 200 OK"
+    )
 
 
 # ─── Мониторинг и graceful shutdown ───────────────────────
