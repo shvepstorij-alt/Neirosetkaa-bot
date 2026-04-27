@@ -484,107 +484,124 @@ async def fk_check_order_status(order_id: str) -> dict | None:
     """Запрашивает у FreeKassa API статус заказа по нашему MERCHANT_ORDER_ID.
 
     Возвращает {"status": "paid"|"new"|"failed", "amount": ...} или None при ошибке.
-    
-    Использует POST /v1/orders на api.freekassa.ru.
-    Документация: https://docs.freekassa.ru/
-    
-    КРИТИЧНО: фильтр по нашему ID — поле `paymentId`, а НЕ `orderId`!
-    `orderId` в API FreeKassa = их внутренний айди (которого мы не знаем).
-    `paymentId` = наш MERCHANT_ORDER_ID (тот что мы передавали при создании).
+
+    Пробует несколько endpoint'ов поочерёдно — если один заблокирован, переходит к другому.
+    Поле для фильтра — `paymentId` (наш merchant_order_id), а не `orderId`.
     """
     if not FK_API_KEY:
         logging.warning("fk_check_order_status: FK_API_KEY не задан в Railway Variables")
         return None
 
-    try:
-        # Nonce в МИЛЛИСЕКУНДАХ — иначе при 2 запросах в одну секунду FK отвергнет
-        nonce = str(int(_time_module.time() * 1000))
+    # Список endpoint'ов в порядке приоритета — попробуем каждый
+    endpoints = [
+        "https://api.freekassa.ru/v1/orders",
+        "https://api.fk.life/v1/orders",
+        "https://api.fk.money/v1/orders",
+    ]
 
-        # Параметры запроса. paymentId = НАШ order_id (merchant side)
-        params = {
-            "shopId": int(FK_SHOP_ID),
-            "nonce": nonce,
-            "paymentId": str(order_id),
-        }
+    last_error = None
+    for endpoint in endpoints:
+        try:
+            # Nonce в МИЛЛИСЕКУНДАХ — иначе при 2 запросах в одну секунду FK отвергнет
+            nonce = str(int(_time_module.time() * 1000))
 
-        # HMAC-SHA256 подпись: значения отсортированных по ключам параметров через |
-        sorted_vals = [str(v) for k, v in sorted(params.items())]
-        sign_str = "|".join(sorted_vals)
-        signature = hmac.new(FK_API_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
-        params["signature"] = signature
+            params = {
+                "shopId": int(FK_SHOP_ID),
+                "nonce": nonce,
+                "paymentId": str(order_id),
+            }
 
-        # Официальный endpoint FreeKassa API v1
-        url = "https://api.freekassa.ru/v1/orders"
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+            # HMAC-SHA256 подпись: значения отсортированных по ключам параметров через |
+            sorted_vals = [str(v) for k, v in sorted(params.items())]
+            sign_str = "|".join(sorted_vals)
+            signature = hmac.new(FK_API_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
+            params["signature"] = signature
 
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.post(url, json=params, headers=headers) as r:
-                resp_text = await r.text()
+            headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
-                if r.status != 200:
-                    logging.warning(
-                        f"FK API /orders status={r.status} order={order_id} "
-                        f"response={resp_text[:300]}"
-                    )
-                    return None
+            # Уменьшенный timeout 8 сек — чтобы быстрее переключаться между endpoint'ами
+            timeout = aiohttp.ClientTimeout(total=8)
 
-                try:
-                    import json as _json
-                    data = _json.loads(resp_text) if resp_text else {}
-                except Exception as parse_err:
-                    logging.error(f"FK API parse error: {parse_err} response={resp_text[:200]}")
-                    return None
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.post(endpoint, json=params, headers=headers) as r:
+                    resp_text = await r.text()
 
-                # Проверяем тип ответа FK
-                if data.get("type") == "error":
-                    logging.warning(
-                        f"FK API /orders type=error: order={order_id} "
-                        f"response={resp_text[:300]}"
-                    )
-                    return None
+                    if r.status != 200:
+                        logging.warning(
+                            f"FK API {endpoint} status={r.status} paymentId={order_id} "
+                            f"response={resp_text[:200]}"
+                        )
+                        last_error = f"HTTP {r.status}"
+                        continue
 
-                orders = data.get("orders") or []
-                if not orders:
+                    try:
+                        import json as _json
+                        data = _json.loads(resp_text) if resp_text else {}
+                    except Exception as parse_err:
+                        logging.error(f"FK API parse error: {parse_err} response={resp_text[:200]}")
+                        last_error = "parse error"
+                        continue
+
+                    if data.get("type") == "error":
+                        logging.warning(
+                            f"FK API {endpoint} type=error paymentId={order_id} "
+                            f"response={resp_text[:200]}"
+                        )
+                        last_error = "api error"
+                        continue
+
+                    orders = data.get("orders") or []
+                    if not orders:
+                        logging.info(
+                            f"FK API {endpoint}: пусто для paymentId={order_id} "
+                            f"(заказ ещё не создан в FK или не оплачен)"
+                        )
+                        # Endpoint работает но заказ не найден — возвращаем None но НЕ пробуем другие
+                        # endpoint'ы (они дадут тот же результат)
+                        return None
+
+                    order = orders[0]
+                    fk_int_status = order.get("status")
+                    merchant_id_fk = order.get("merchant_order_id", "")
+                    fk_internal_id = order.get("fk_order_id", "")
+                    amount = order.get("amount", 0)
+
                     logging.info(
-                        f"FK API /orders: пусто для paymentId={order_id} "
-                        f"(заказ ещё не создан в FK или не оплачен)"
+                        f"FK API {endpoint}: paymentId={order_id} → "
+                        f"fk_status={fk_int_status} amount={amount} "
+                        f"fk_internal={fk_internal_id}"
                     )
-                    return None
 
-                order = orders[0]
-                # FK status codes: 0=new, 1=paid, 8=fail, 9=cancel
-                fk_int_status = order.get("status")
-                merchant_id_fk = order.get("merchant_order_id", "")
-                fk_internal_id = order.get("fk_order_id", "")
-                amount = order.get("amount", 0)
+                    if fk_int_status == 1:
+                        return {
+                            "status": "paid",
+                            "amount": amount,
+                            "fk_order_id": fk_internal_id,
+                            "merchant_order_id": merchant_id_fk,
+                        }
+                    elif fk_int_status == 8:
+                        return {"status": "failed"}
+                    elif fk_int_status == 9:
+                        return {"status": "cancelled"}
+                    else:
+                        return {"status": "new"}
 
-                logging.info(
-                    f"FK API /orders: paymentId={order_id} → "
-                    f"fk_status={fk_int_status} amount={amount} "
-                    f"fk_internal={fk_internal_id}"
-                )
+        except asyncio.TimeoutError:
+            logging.warning(f"FK API {endpoint} TIMEOUT for paymentId={order_id} — пробуем следующий")
+            last_error = "timeout"
+            continue
+        except aiohttp.ClientError as e:
+            logging.warning(f"FK API {endpoint} ClientError: {e} — пробуем следующий")
+            last_error = f"network: {e}"
+            continue
+        except Exception as e:
+            logging.error(f"FK API {endpoint} exception paymentId={order_id}: {type(e).__name__}: {e}")
+            last_error = str(e)
+            continue
 
-                if fk_int_status == 1:
-                    return {
-                        "status": "paid",
-                        "amount": amount,
-                        "fk_order_id": fk_internal_id,
-                        "merchant_order_id": merchant_id_fk,
-                    }
-                elif fk_int_status == 8:
-                    return {"status": "failed"}
-                elif fk_int_status == 9:
-                    return {"status": "cancelled"}
-                else:
-                    return {"status": "new"}
-
-    except asyncio.TimeoutError:
-        logging.warning(f"FK API /orders timeout for paymentId={order_id}")
-        return None
-    except Exception as e:
-        logging.error(f"FK API /orders exception paymentId={order_id}: {type(e).__name__}: {e}")
-        return None
+    # Все endpoint'ы упали
+    logging.error(f"❌ FK API: все endpoint'ы недоступны для paymentId={order_id}, last_error={last_error}")
+    return None
 
 
 # ─── Фоновая чистка памяти ────────────────────────────────
@@ -4447,6 +4464,123 @@ async def cmd_admin(message: Message, state: FSMContext):
 
     await state.clear()
     await show_admin_panel(message)
+
+
+@dp.message(F.text.startswith("/credit"), StateFilter("*"))
+async def cmd_credit(message: Message):
+    """Быстрое ручное зачисление кредитов админом.
+
+    Использование:
+    /credit ORDER_ID  — зачислить по pending заказу из БД (берёт credits/amount оттуда)
+    /credit UID СУММА — зачислить кредиты юзеру (БЕЗ привязки к заказу, только баланс)
+
+    Примеры:
+    /credit 603210532_1777318959
+    /credit 603210532 150
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        await message.answer(
+            "<b>Использование:</b>\n\n"
+            "<code>/credit ORDER_ID</code> — зачислить pending заказ из БД\n"
+            "<code>/credit UID СУММА</code> — добавить кредиты юзеру\n\n"
+            "<b>Примеры:</b>\n"
+            "<code>/credit 603210532_1777318959</code>\n"
+            "<code>/credit 603210532 150</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    arg1 = parts[1]
+
+    # Вариант 1: /credit ORDER_ID — зачислить по существующему заказу
+    if "_" in arg1:
+        order_id = arg1
+        try:
+            db_order = await fk_get_order(order_id)
+            if not db_order:
+                await message.answer(f"❌ Заказ <code>{order_id}</code> не найден в БД", parse_mode="HTML")
+                return
+
+            if db_order["status"] == "paid":
+                await message.answer(
+                    f"⚠️ Заказ уже зачислен ранее.\n"
+                    f"Юзер: <code>{db_order['user_id']}</code>\n"
+                    f"Кредитов: {db_order['credits']}",
+                    parse_mode="HTML"
+                )
+                return
+
+            # Зачисляем через общую функцию (с уведомлением юзера и атомарной защитой)
+            payment = {
+                "user_id": db_order["user_id"],
+                "credits": db_order["credits"],
+                "amount":  db_order["amount_rub"],
+                "promo_code": db_order.get("promo_code"),
+            }
+            success = await fk_credit_paid_order(order_id, payment, source="manual_admin")
+            if success:
+                await message.answer(
+                    f"✅ <b>Зачислено!</b>\n\n"
+                    f"Юзер: <code>{db_order['user_id']}</code>\n"
+                    f"Кредитов: {db_order['credits']}\n"
+                    f"Сумма: {db_order['amount_rub']}₽",
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer("⚠️ Заказ уже был зачислен (race condition)")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: <code>{e}</code>", parse_mode="HTML")
+        return
+
+    # Вариант 2: /credit UID СУММА — добавить кредиты напрямую
+    if len(parts) < 3:
+        await message.answer("❌ Укажи сумму: <code>/credit UID СУММА</code>", parse_mode="HTML")
+        return
+
+    try:
+        target_uid = int(arg1)
+        credits_to_add = int(parts[2])
+    except ValueError:
+        await message.answer("❌ UID и СУММА должны быть числами", parse_mode="HTML")
+        return
+
+    try:
+        await add_credits_batch(target_uid, credits_to_add, source="admin_manual", days_valid=30)
+        new_balance = await get_credits(target_uid)
+
+        # Уведомляем юзера
+        try:
+            await bot.send_message(
+                target_uid,
+                f"🎉 <b>Зачислены кредиты!</b>\n\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>Зачислено:</b> +{credits_to_add} кредитов\n"
+                f"💵 <b>Баланс:</b> <b>{new_balance} кр</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<i>⏳ Кредиты действуют 30 дней</i>\n\n"
+                f"Можешь начинать генерацию! 🚀",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🖼️ Создать фото", callback_data="menu_image"),
+                     InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
+                ])
+            )
+        except Exception as e:
+            logging.error(f"/credit notify user error: {e}")
+
+        await message.answer(
+            f"✅ <b>Зачислено!</b>\n\n"
+            f"Юзер: <code>{target_uid}</code>\n"
+            f"Кредитов: +{credits_to_add}\n"
+            f"Новый баланс: <b>{new_balance}</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: <code>{e}</code>", parse_mode="HTML")
 
 
 @dp.message(F.text.startswith("/test_fk"), StateFilter("*"))
@@ -10890,7 +11024,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
 #  ОБЫЧНЫЕ СООБЩЕНИЯ (вне FSM — консультант по умолчанию)
 # ══════════════════════════════════════════════════════════
 
-@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk"))
+@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
         return
@@ -11095,8 +11229,25 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
 
 async def fk_webhook_handler(request: web.Request) -> web.Response:
     """Принимает уведомление от FreeKassa об успешной оплате."""
+    # 0. ПЕРВЫМ ДЕЛОМ — пытаемся распарсить body для логов даже если потом откажем
+    raw_body = ""
     try:
-        # 0. Проверяем IP-адрес отправителя
+        raw_body = await request.text()
+    except Exception:
+        pass
+
+    # Логируем КАЖДЫЙ запрос к этому endpoint — для диагностики
+    logging.info(
+        f"📥 FK webhook ВХОД: "
+        f"method={request.method} "
+        f"remote={request.remote} "
+        f"x-forwarded-for={request.headers.get('X-Forwarded-For', 'NONE')} "
+        f"body_len={len(raw_body)} "
+        f"body={raw_body[:300]}"
+    )
+
+    try:
+        # Проверяем IP-адрес отправителя
         # Railway использует X-Forwarded-For — берём первый IP в цепочке (реальный клиент)
         client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
         if not client_ip:
@@ -11122,14 +11273,15 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                 except Exception:
                     pass
             else:
-                logging.warning(f"FK webhook from unauthorized IP: {client_ip}")
-                # Алерт админу — возможная попытка фрода
+                logging.warning(f"❌ FK webhook ОТКЛОНЁН — IP не в whitelist: {client_ip}")
+                # Алерт админу — может быть это FK с новым IP!
                 try:
                     await bot.send_message(
                         ADMIN_ID,
                         f"🚨 <b>Webhook заблокирован — неизвестный IP</b>\n\n"
-                        f"IP: <code>{client_ip}</code>\n\n"
-                        f"<b>Если FreeKassa обновили список IP</b> — установи в Railway "
+                        f"IP: <code>{client_ip}</code>\n"
+                        f"Body: <code>{raw_body[:200]}</code>\n\n"
+                        f"<b>Если это FreeKassa с новым IP</b> — установи в Railway "
                         f"переменную <code>FK_IP_CHECK=disabled</code> чтобы временно принимать "
                         f"платежи. Подпись webhook всё равно проверяется!",
                         parse_mode="HTML"
@@ -11138,8 +11290,24 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                     pass
                 return web.Response(text="FORBIDDEN", status=403)
 
-        data = dict(await request.post())
-        logging.info(f"FK webhook received from {client_ip}: {data}")
+        # Парсим — поддерживаем и form-data и JSON (FK иногда меняет формат)
+        data = {}
+        try:
+            data = dict(await request.post())
+        except Exception:
+            pass
+        if not data and raw_body:
+            # Пробуем как JSON
+            try:
+                import json as _json
+                data = _json.loads(raw_body)
+            except Exception:
+                # Пробуем как query string
+                from urllib.parse import parse_qs
+                parsed = parse_qs(raw_body)
+                data = {k: v[0] if isinstance(v, list) and v else v for k, v in parsed.items()}
+
+        logging.info(f"FK webhook PARSED from {client_ip}: {data}")
 
         merchant_id = data.get("MERCHANT_ID", "")
         amount      = data.get("AMOUNT", "")
