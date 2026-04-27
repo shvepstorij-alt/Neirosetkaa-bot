@@ -3686,12 +3686,19 @@ async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:
 
 
 async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1") -> bytes:
-    """Редактирование фото по референсу через Gemini. Пробует несколько моделей."""
+    """Редактирование фото по референсу через Gemini. Пробует несколько моделей.
+    
+    Список моделей в порядке приоритета (свежие → старые стабильные):
+    - gemini-3.1-flash-image-preview (Nano Banana 2, февраль 2026) — новая, быстрая
+    - gemini-2.5-flash-image (Nano Banana) — стабильная основная
+    - gemini-3-pro-image-preview (Nano Banana Pro) — премиум-резерв
+    """
     img_b64 = base64.b64encode(image_bytes).decode()
-    # Список моделей — пробуем по очереди
+    # Список моделей — пробуем по очереди от свежей к стабильным
     models = [
-        "gemini-2.5-flash-image",
-        "gemini-2.0-flash-exp-image-generation",
+        "gemini-2.5-flash-image",              # Стабильная основа (Nano Banana)
+        "gemini-3.1-flash-image-preview",      # Nano Banana 2 (preview)
+        "gemini-3-pro-image-preview",          # Премиум резерв (Nano Banana Pro)
     ]
     payload = {
         "contents": [{
@@ -3713,6 +3720,11 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
                         if r.status == 503:
                             await asyncio.sleep(3 * (attempt + 1))
                             continue
+                        if r.status == 404:
+                            # Модель не существует или больше не поддерживается — пропускаем сразу
+                            last_error = f"Модель {model} недоступна (404)"
+                            logging.warning(f"Gemini model {model} returned 404 — skipping")
+                            break
                         if r.status != 200:
                             last_error = f"API {r.status}: {(await r.text())[:150]}"
                             break
