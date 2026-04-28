@@ -5139,25 +5139,20 @@ async def cmd_ref(message: Message):
 SHOP_CATALOG = {
     "chatgpt": {
         "name": "ChatGPT", "emoji": "✨",
-        "desc": "Самый популярный ИИ-помощник от OpenAI. GPT-5, генерация изображений DALL-E, Deep Research, Codex для кода и Agent Mode.",
+        "desc": "Самый популярный ИИ-помощник от OpenAI. GPT-5, генерация изображений GPT Image 2, Deep Research, Codex для кода и Agent Mode.",
         "plans": [
-            {"name": "Plus",  "price": 2000, "stars": 800, "desc": "GPT-5, DALL-E/GPT Image, Deep Research 10/мес, Codex, Agent Mode, без рекламы"},
-            {"name": "Pro",   "price": 5000, "stars": 2000, "desc": "GPT-5.4 Pro, Deep Research 250/мес, Codex 5× лимиты, максимальные возможности"},
+            {"name": "Plus / Pro", "price": 2000,  "stars": 800,  "desc": "GPT-5, GPT Image 2, Deep Research, Codex, Agent Mode, без рекламы — выбери Plus или Pro при оформлении"},
+            {"name": "Max 5×",     "price": 9000,  "stars": 3600, "desc": "Лимиты в 5× выше Pro, ранний доступ ко всем новинкам OpenAI"},
+            {"name": "Max 20×",    "price": 15000, "stars": 6000, "desc": "Лимиты в 20× выше Pro, для агентств и тяжёлых нагрузок"},
         ]
     },
     "claude": {
         "name": "Claude", "emoji": "⚡",
         "desc": "Лучший ИИ для текстов, анализа и кода от Anthropic. Огромный контекст 200К токенов, Projects с памятью, Claude Code.",
         "plans": [
-            {"name": "Pro",    "price": 2000, "stars": 800,  "desc": "Claude Opus 4, Sonnet 4.6, Projects, Claude Code, приоритетный доступ"},
-            {"name": "Max 5×", "price": 5500, "stars": 2200, "desc": "Лимиты в 5× выше Pro, Opus 4.6 с контекстом 1М токенов, ранний доступ к фичам"},
-        ]
-    },
-    "gemini": {
-        "name": "Gemini", "emoji": "💠",
-        "desc": "Мультимодальный ИИ от Google. Deep Research, интеграция с Gmail, Drive, YouTube. Nano Banana изображения включены.",
-        "plans": [
-            {"name": "Advanced", "price": 2000, "stars": 800, "desc": "Gemini 3.1 Pro, Deep Research, Google Workspace (Gmail, Drive, Docs, YouTube)"},
+            {"name": "Pro",    "price": 2000,  "stars": 800,  "desc": "Claude Opus 4.7, Sonnet 4.6, Projects, Claude Code, приоритетный доступ"},
+            {"name": "Max 5×", "price": 9000,  "stars": 3600, "desc": "Лимиты в 5× выше Pro, Opus 4.7 с контекстом 1М токенов, ранний доступ к фичам"},
+            {"name": "Max 20×","price": 15000, "stars": 6000, "desc": "Лимиты в 20× выше Pro, для агентств и команд, максимальные возможности"},
         ]
     },
     "grok": {
@@ -5187,7 +5182,7 @@ SHOP_CATALOG = {
         "name": "Lovable Pro", "emoji": "🚀",
         "desc": "Создание полноценных веб-приложений из текста без единой строки кода. Деплой одной кнопкой.",
         "plans": [
-            {"name": "Pro", "price": 2700, "stars": 1080, "desc": "Полный доступ, деплой, кастомные домены, React + Supabase"},
+            {"name": "Pro", "price": 2300, "stars": 920, "desc": "Полный доступ, деплой, кастомные домены, React + Supabase"},
         ]
     },
     "midjourney": {
@@ -5256,7 +5251,7 @@ SHOP_CATALOG = {
 }
 
 SHOP_CATEGORIES = [
-    ("💬", "Чат и текст",      ["chatgpt", "claude", "gemini", "grok", "perplexity"]),
+    ("💬", "Чат и текст",      ["chatgpt", "claude", "grok", "perplexity"]),
     ("💻", "Код и разработка", ["cursor", "lovable"]),
     ("🖼", "Изображения",      ["midjourney", "canva"]),
     ("🎬", "Видео",            ["kling", "runway", "heygen"]),
