@@ -1900,10 +1900,6 @@ def kb_main():
             InlineKeyboardButton(text="🏃 Анимировать фото",   callback_data="menu_anim"),
         ],
         [
-            InlineKeyboardButton(text="🔍 Апскейл фото 4x",    callback_data="menu_upscale"),
-            InlineKeyboardButton(text="✨ Улучшить промт",      callback_data="menu_improve"),
-        ],
-        [
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
         ],
         [
@@ -1922,12 +1918,13 @@ def kb_main():
 def kb_image_brands():
     """Верхний уровень: выбор бренда моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 GPT Image",  callback_data="iband:gptimg",   style="success")],
-        [InlineKeyboardButton(text="🌟 Imagen",     callback_data="iband:imagen",   style="primary")],
-        [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano",    style="success")],
-        [InlineKeyboardButton(text="🎭 Flux",        callback_data="iband:flux",    style="primary")],
-        [InlineKeyboardButton(text="✒️ Ideogram",    callback_data="iband:ideogram",style="success")],
-        [InlineKeyboardButton(text="⬅️ Назад",       callback_data="back_main")],
+        [InlineKeyboardButton(text="🤖 GPT Image",   callback_data="iband:gptimg",   style="success")],
+        [InlineKeyboardButton(text="🌟 Imagen",      callback_data="iband:imagen",   style="primary")],
+        [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano",     style="success")],
+        [InlineKeyboardButton(text="🎭 Flux",         callback_data="iband:flux",    style="primary")],
+        [InlineKeyboardButton(text="✒️ Ideogram",     callback_data="iband:ideogram",style="success")],
+        [InlineKeyboardButton(text="🔍 Улучшить фото", callback_data="menu_upscale")],
+        [InlineKeyboardButton(text="⬅️ Назад",        callback_data="back_main")],
     ])
 
 
@@ -2044,8 +2041,9 @@ def kb_confirm(prefix: str, key: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🚀 Генерировать", callback_data=f"go:{prefix}:{key}"),
-            InlineKeyboardButton(text="✍️ Изменить промт",    callback_data=f"chprompt:{prefix}:{key}"),
+            InlineKeyboardButton(text="✍️ Изменить промт", callback_data=f"chprompt:{prefix}:{key}"),
         ],
+        [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_prompt:{prefix}:{key}")],
         [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
     ])
 
@@ -6845,7 +6843,70 @@ async def change_img_prompt(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.callback_query(F.data.startswith("again:"))
+@dp.callback_query(F.data.startswith("improve_prompt:"))
+async def improve_prompt_inline(cb: CallbackQuery, state: FSMContext):
+    """Улучшает текущий промт через Claude и предлагает генерировать с ним."""
+    parts = cb.data.split(":")
+    prefix = parts[1]  # img или vid
+    key = parts[2]
+
+    data = await state.get_data()
+    current_prompt = data.get("prompt", "")
+    if not current_prompt:
+        await cb.answer("Промт не найден. Введи промт снова.", show_alert=True)
+        return
+
+    await cb.answer()
+    wait = await cb.message.answer("✨ Улучшаю промт...")
+
+    try:
+        system = (
+            "Ты эксперт по промтам для AI-генерации изображений и видео. "
+            "Улучши промт пользователя: сделай его более детальным, добавь стиль, освещение, "
+            "настроение и технические детали. Отвечай ТОЛЬКО готовым промтом на английском, "
+            "без объяснений и вводных слов. Максимум 120 слов."
+        )
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                system=system,
+                messages=[{"role": "user", "content": f"Улучши этот промт: {current_prompt}"}],
+            )
+        )
+        improved = resp.content[0].text.strip().strip('"').strip("'")
+        await state.update_data(prompt=improved)
+
+        m = IMAGE_MODELS.get(key) or VIDEO_MODELS.get(key)
+        model_name = m["name"] if m else key
+
+        await wait.delete()
+        await cb.message.answer(
+            f"✨ <b>Промт улучшен!</b>\n\n"
+            f"<b>Было:</b> <i>{current_prompt[:100]}</i>\n\n"
+            f"<b>Стало:</b>\n<code>{improved}</code>\n\n"
+            f"Модель: <b>{model_name}</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Генерировать", callback_data=f"go:{prefix}:{key}")],
+                [InlineKeyboardButton(text="✍️ Изменить ещё", callback_data=f"improve_prompt:{prefix}:{key}")],
+                [InlineKeyboardButton(text="🔙 Оригинальный промт", callback_data=f"chprompt:{prefix}:{key}")],
+                [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+            ])
+        )
+    except Exception as e:
+        logging.error(f"improve_prompt_inline error: {e}")
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await cb.message.answer(
+            "⚠️ Не удалось улучшить промт. Попробуй снова.",
+            reply_markup=kb_confirm(prefix, key)
+        )
+
+
 async def after_gen_again(cb: CallbackQuery, state: FSMContext):
     """Ещё раз — та же модель, новый промт."""
     parts = cb.data.split(":")
@@ -10360,7 +10421,7 @@ async def menu_upscale(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     text = (
-        f"🔍 <b>Апскейл фото 4x</b>\n\n"
+        f"🔍 <b>Улучшить фото (4x)</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n"
         f"💵 Стоимость: <b>{UPSCALE_CREDIT_COST} кр</b>\n\n"
         f"Увеличивает разрешение в 4 раза с сохранением деталей.\n"
@@ -10389,7 +10450,7 @@ async def do_upscale(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    wait = await message.answer("⏳ Апскейл 4x... обычно 20–40 сек")
+    wait = await message.answer("⏳ Улучшаю фото... обычно 20–40 сек")
     try:
         # Скачиваем фото
         photo = message.photo[-1]
@@ -10458,12 +10519,12 @@ async def do_upscale(message: Message, state: FSMContext):
         await message.answer_photo(
             BufferedInputFile(out_bytes, "upscaled_4x.jpg"),
             caption=(
-                f"✅ <b>Апскейл 4x готов!</b>\n"
+                f"✅ <b>Фото улучшено!</b>\n"
                 f"💸 Списано {UPSCALE_CREDIT_COST} кр | Остаток: {new_cr} кр"
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔍 Ещё апскейл", callback_data="menu_upscale")],
+                [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale")],
                 [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
             ])
         )
