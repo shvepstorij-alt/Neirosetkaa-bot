@@ -10458,22 +10458,10 @@ async def do_upscale(message: Message, state: FSMContext):
         buf = await bot.download_file(file.file_path)
         img_bytes = buf.read()
 
-        # Загружаем на fal.ai storage
-        async with aiohttp.ClientSession() as s:
-            upload_headers = {
-                "Authorization": f"Key {FAL_API_KEY}",
-                "Content-Type": "image/jpeg",
-            }
-            async with s.post(
-                "https://rest.alpha.fal.ai/storage/upload/file?file_name=input.jpg",
-                headers=upload_headers,
-                data=img_bytes,
-                timeout=aiohttp.ClientTimeout(total=60)
-            ) as r:
-                upload_data = await r.json()
-                image_url = upload_data.get("access_url") or upload_data.get("url")
-                if not image_url:
-                    raise Exception(f"Upload failed: {upload_data}")
+        # Конвертируем фото в base64 data URI — fal.ai принимает напрямую
+        import base64 as _b64
+        img_b64 = _b64.b64encode(img_bytes).decode("utf-8")
+        image_data_uri = f"data:image/jpeg;base64,{img_b64}"
 
         # Запускаем апскейл через Clarity Upscaler
         upscale_headers = {
@@ -10481,7 +10469,7 @@ async def do_upscale(message: Message, state: FSMContext):
             "Content-Type": "application/json",
         }
         payload = {
-            "image_url": image_url,
+            "image_url": image_data_uri,
             "scale": 4,
             "creativity": 0.35,
             "resemblance": 0.85,
