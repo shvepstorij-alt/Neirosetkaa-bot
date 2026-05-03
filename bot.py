@@ -1918,12 +1918,12 @@ def kb_main():
 def kb_image_brands():
     """Верхний уровень: выбор бренда моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 GPT Image 2",  callback_data="iband:gptimg")],
-        [InlineKeyboardButton(text="🌟 Imagen 4",     callback_data="iband:imagen")],
-        [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano")],
-        [InlineKeyboardButton(text="🎭 Flux",         callback_data="iband:flux")],
-        [InlineKeyboardButton(text="✒️ Ideogram",     callback_data="iband:ideogram")],
-        [InlineKeyboardButton(text="⬅️ Назад",        callback_data="back_main")],
+        [InlineKeyboardButton(text="🤖 GPT Image",  callback_data="iband:gptimg",   style="success")],
+        [InlineKeyboardButton(text="🌟 Imagen",     callback_data="iband:imagen",   style="primary")],
+        [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano",    style="success")],
+        [InlineKeyboardButton(text="🎭 Flux",        callback_data="iband:flux",    style="primary")],
+        [InlineKeyboardButton(text="✒️ Ideogram",    callback_data="iband:ideogram",style="success")],
+        [InlineKeyboardButton(text="⬅️ Назад",       callback_data="back_main")],
     ])
 
 
@@ -1947,15 +1947,29 @@ IMAGE_BRAND_TITLES = {
 
 def kb_image_models_for_brand(brand: str):
     """Подменю конкретного бренда: список его моделей."""
+    BRAND_STYLES = {
+        "gptimg":   "success",
+        "imagen":   "primary",
+        "nano":     "success",
+        "flux":     "primary",
+        "ideogram": "success",
+    }
+    style = BRAND_STYLES.get(brand)
     keys = IMAGE_BRAND_MODELS.get(brand, [])
     rows = []
     for key in keys:
         if key in IMAGE_MODELS:
             m = IMAGE_MODELS[key]
-            rows.append([InlineKeyboardButton(
-                text=f"{m['name']} — {m['credits']} кр",
-                callback_data=f"imodel:{key}"
-            )])
+            # Убираем цифры из названия модели для кнопки
+            import re
+            clean_name = re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            btn = InlineKeyboardButton(
+                text=f"{clean_name} — {m['credits']} кр",
+                callback_data=f"imodel:{key}",
+            )
+            if style:
+                btn.style = style
+            rows.append([btn])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_img_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1967,11 +1981,11 @@ def kb_image_models():
 def kb_video_brands():
     """Верхний уровень: выбор бренда видео-моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎥 Veo 3.1 (Google)",       callback_data="vband:veo")],
-        [InlineKeyboardButton(text="🎞 Kling (Kuaishou)",        callback_data="vband:kling")],
-        [InlineKeyboardButton(text="🎬 Seedance (ByteDance)",    callback_data="vband:seedance")],
-        [InlineKeyboardButton(text="🌊 Wan 2.2 (Alibaba)",       callback_data="vband:wan")],
-        [InlineKeyboardButton(text="⬅️ Назад",                   callback_data="back_main")],
+        [InlineKeyboardButton(text="🎥 Veo (Google)",       callback_data="vband:veo",      style="primary")],
+        [InlineKeyboardButton(text="🎞 Kling (Kuaishou)",   callback_data="vband:kling",    style="success")],
+        [InlineKeyboardButton(text="🎬 Seedance (ByteDance)",callback_data="vband:seedance",style="primary")],
+        [InlineKeyboardButton(text="🌊 Wan (Alibaba)",       callback_data="vband:wan",     style="success")],
+        [InlineKeyboardButton(text="⬅️ Назад",               callback_data="back_main")],
     ])
 
 
@@ -1993,21 +2007,27 @@ VIDEO_BRAND_TITLES = {
 
 def kb_video_models_for_brand(brand: str):
     """Подменю конкретного видео-бренда: список его моделей."""
+    VIDEO_BRAND_STYLES = {
+        "veo":      "primary",
+        "kling":    "success",
+        "seedance": "primary",
+        "wan":      "success",
+    }
+    style = VIDEO_BRAND_STYLES.get(brand)
     keys = VIDEO_BRAND_MODELS.get(brand, [])
     rows = []
+    import re
     for key in keys:
         if key in VIDEO_MODELS:
             m = VIDEO_MODELS[key]
-            rows.append([InlineKeyboardButton(
-                text=f"{m['name']} — {m['credits']} кр",
-                callback_data=f"vmodel:{key}"
-            )])
-    # Для Kling добавляем Motion Control отдельной кнопкой
-    if brand == "kling":
-        rows.append([InlineKeyboardButton(
-            text="🎭 Motion Control — от 149 кр",
-            callback_data="menu_motion"
-        )])
+            clean_name = re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            btn = InlineKeyboardButton(
+                text=f"{clean_name} — {m['credits']} кр",
+                callback_data=f"vmodel:{key}",
+            )
+            if style:
+                btn.style = style
+            rows.append([btn])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_vid_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
