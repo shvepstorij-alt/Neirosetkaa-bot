@@ -3425,6 +3425,30 @@ async def compress_video(vid_bytes: bytes, target_mb: float = 45.0) -> bytes:
                 pass
 
 
+async def upload_large_file(file_bytes: bytes, filename: str = "video.mp4") -> str | None:
+    """Загружает большой файл на 0x0.st и возвращает ссылку для скачивания.
+    Файл живёт 24 часа. Используется когда видео > 48 МБ и не влезает в Telegram.
+    Возвращает URL или None при ошибке.
+    """
+    try:
+        import aiohttp as _aiohttp
+        timeout = _aiohttp.ClientTimeout(total=120)
+        async with _aiohttp.ClientSession(timeout=timeout) as s:
+            data = _aiohttp.FormData()
+            data.add_field("file", file_bytes, filename=filename, content_type="video/mp4")
+            async with s.post("https://0x0.st", data=data) as r:
+                if r.status == 200:
+                    url = (await r.text()).strip()
+                    if url.startswith("http"):
+                        logging.info(f"upload_large_file: {len(file_bytes)/1024/1024:.1f}MB → {url}")
+                        return url
+        logging.warning(f"upload_large_file: bad response {r.status}")
+        return None
+    except Exception as e:
+        logging.error(f"upload_large_file failed: {e}")
+        return None
+
+
 async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
                                   quality: str = "medium", _retry_count: int = 0) -> bytes:
     """Генерация изображений через fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2).
@@ -7260,13 +7284,11 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 pass
             await refund_once("video_send_failed")
             return
-        # 2. Документ — только если файл < 48 МБ (лимит Telegram для ботов 50 МБ)
-        # disable_content_type_detection=True заставляет Telegram показывать его 
-        # как документ-файл (а не как ещё один видеоплеер)
+        # 2. Оригинал без сжатия — если < 48 МБ отправляем файлом, иначе загружаем на хостинг
         if size_mb < 48:
             doc_sent = False
             doc_err = None
-            for doc_attempt in range(1, 4):  # 3 попытки
+            for doc_attempt in range(1, 4):
                 try:
                     await bot.send_document(
                         chat_id=cb.message.chat.id,
@@ -7276,35 +7298,37 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                         disable_content_type_detection=True,
                     )
                     doc_sent = True
-                    if doc_attempt > 1:
-                        logging.info(f"video send_document succeeded on attempt {doc_attempt}/3 ({size_mb:.1f} MB)")
                     break
                 except Exception as de:
                     doc_err = de
                     err_str = str(de).lower()
-                    is_timeout = "timeout" in err_str or "timed out" in err_str
-                    if doc_attempt < 3 and is_timeout:
-                        logging.warning(f"video send_document attempt {doc_attempt}/3 timed out ({size_mb:.1f} MB) — retrying")
+                    if doc_attempt < 3 and ("timeout" in err_str or "timed out" in err_str):
                         await asyncio.sleep(2 * doc_attempt)
                         continue
-                    # Не таймаут или последняя попытка — выходим
                     break
-
             if not doc_sent:
-                logging.error(f"video send_document FAILED after 3 attempts ({size_mb:.1f} MB): {doc_err}")
-                # Сообщаем юзеру что видео есть в чате, но оригинал не дошёл — это не критично
-                try:
-                    await cb.message.answer(
-                        f"⚠️ Не удалось отправить файл-оригинал ({size_mb:.1f} МБ) — медленный канал.\n"
-                        f"Видео доступно в сообщении выше для просмотра. "
-                        f"Если нужен файл — напиши @neirosetkaalex.",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
+                logging.error(f"video send_document FAILED ({size_mb:.1f} MB): {doc_err}")
                 await notify_admin_error(f"Документ видео uid={uid} {size_mb:.1f}MB", doc_err)
         else:
-            logging.warning(f"Video too large for document: {size_mb:.1f} MB")
+            # Файл > 48 МБ — загружаем на временный хостинг и даём ссылку
+            try:
+                upload_url = await upload_large_file(vid_bytes, f"video_original_{key}.mp4")
+                if upload_url:
+                    await cb.message.answer(
+                        f"📁 <b>Оригинал без сжатия</b>\n\n"
+                        f"Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
+                        f"Скачай по ссылке (доступна 24 часа):\n"
+                        f"<a href='{upload_url}'>{upload_url}</a>",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                else:
+                    await cb.message.answer(
+                        f"📁 Оригинал ({size_mb:.1f} МБ) — слишком большой для Telegram.\n"
+                        f"Напиши @neirosetkaalex — пришлём файл напрямую."
+                    )
+            except Exception as up_err:
+                logging.error(f"upload_large_file failed for video: {up_err}")
     except Exception as e:
         await refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Генерация видео uid={uid} model={key} dur={duration_sec}s", e)
@@ -10613,16 +10637,33 @@ async def anim_prompt(message: Message, state: FSMContext):
         except Exception:
             pass
 
+        # Сжимаем если > 45 МБ
+        if size_mb > 45:
+            try:
+                await message.answer("⏳ Видео большое, сжимаю для отправки...")
+                vid_bytes_compressed = await compress_video(vid_bytes)
+                size_mb_compressed = len(vid_bytes_compressed) / 1024 / 1024
+                logging.info(f"Anim compressed: {size_mb:.1f} → {size_mb_compressed:.1f} MB")
+                vid_bytes_to_send = vid_bytes_compressed
+                size_mb_to_send = size_mb_compressed
+            except Exception as comp_err:
+                logging.error(f"Anim compression failed: {comp_err}")
+                vid_bytes_to_send = vid_bytes
+                size_mb_to_send = size_mb
+        else:
+            vid_bytes_to_send = vid_bytes
+            size_mb_to_send = size_mb
+
         # 1. Видео с retry через safe_send_media
         video_sent = False
         try:
             await safe_send_media(
                 message.answer_video,
-                BufferedInputFile(vid_bytes, "animation.mp4"),
+                BufferedInputFile(vid_bytes_to_send, "animation.mp4"),
                 caption=(
                     f"✅ Готово! 🏃 Анимация фото\n"
                     f"💵 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр"
-                    + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else "")
+                    + ("\n\n👇 Ниже — оригинал без сжатия" if size_mb < 48 else "")
                 ),
                 reply_markup=kb_after_anim,
                 supports_streaming=True,
@@ -10647,7 +10688,7 @@ async def anim_prompt(message: Message, state: FSMContext):
                 pass
             return
 
-        # 2. Документ — только если < 48 МБ
+        # 2. Оригинал без сжатия
         if size_mb < 48:
             try:
                 await safe_send_media(
@@ -10661,9 +10702,25 @@ async def anim_prompt(message: Message, state: FSMContext):
                 )
             except Exception as de:
                 logging.error(f"anim send_document failed ({size_mb:.1f} MB): {de}")
-                # Документ не критичен — видео уже отправлено
         else:
-            logging.warning(f"Animation too large for document: {size_mb:.1f} MB")
+            try:
+                upload_url = await upload_large_file(vid_bytes, "animation_original.mp4")
+                if upload_url:
+                    await message.answer(
+                        f"📁 <b>Оригинал без сжатия</b>\n\n"
+                        f"Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
+                        f"Скачай по ссылке (доступна 24 часа):\n"
+                        f"<a href='{upload_url}'>{upload_url}</a>",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                else:
+                    await message.answer(
+                        f"📁 Оригинал ({size_mb:.1f} МБ) — слишком большой для Telegram.\n"
+                        f"Напиши @neirosetkaalex — пришлём файл напрямую."
+                    )
+            except Exception as up_err:
+                logging.error(f"upload_large_file anim failed: {up_err}")
     except Exception as e:
         await anim_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Анимация фото uid={uid}", e)
@@ -11005,17 +11062,34 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         except Exception:
             pass
 
+        # Сжимаем если > 45 МБ
+        if size_mb > 45:
+            try:
+                await msg_obj.answer("⏳ Видео большое, сжимаю для отправки...")
+                vid_bytes_compressed = await compress_video(vid_bytes)
+                size_mb_compressed = len(vid_bytes_compressed) / 1024 / 1024
+                logging.info(f"Motion compressed: {size_mb:.1f} → {size_mb_compressed:.1f} MB")
+                vid_bytes_to_send = vid_bytes_compressed
+                size_mb_to_send = size_mb_compressed
+            except Exception as comp_err:
+                logging.error(f"Motion compression failed: {comp_err}")
+                vid_bytes_to_send = vid_bytes
+                size_mb_to_send = size_mb
+        else:
+            vid_bytes_to_send = vid_bytes
+            size_mb_to_send = size_mb
+
         # 1. Видео плеером — с retry
         video_sent = False
         try:
             await safe_send_media(
                 bot.send_video,
                 chat_id=msg_obj.chat.id,
-                video=BufferedInputFile(vid_bytes, "motion_control.mp4"),
+                video=BufferedInputFile(vid_bytes_to_send, "motion_control.mp4"),
                 caption=(
                     f"🎭 Готово! Motion Control · {duration} сек\n"
                     f"💸 Списано {price} кр | Остаток: {cr_left} кр"
-                    + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else "")
+                    + ("\n\n👇 Ниже — оригинал без сжатия" if size_mb < 48 else "")
                 ),
                 reply_markup=kb_after_mot,
                 supports_streaming=True,
@@ -11040,7 +11114,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 pass
             return
 
-        # 2. Документ (оригинал без сжатия) — с retry
+        # 2. Оригинал без сжатия
         if size_mb < 48:
             try:
                 await safe_send_media(
@@ -11054,7 +11128,25 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 )
             except Exception as de:
                 logging.error(f"Motion Control send_document failed ({size_mb:.1f} MB): {de}")
-                # Документ не критичен — видео уже отправлено
+        else:
+            try:
+                upload_url = await upload_large_file(vid_bytes, "motion_control_original.mp4")
+                if upload_url:
+                    await msg_obj.answer(
+                        f"📁 <b>Оригинал без сжатия</b>\n\n"
+                        f"Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
+                        f"Скачай по ссылке (доступна 24 часа):\n"
+                        f"<a href='{upload_url}'>{upload_url}</a>",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                else:
+                    await msg_obj.answer(
+                        f"📁 Оригинал ({size_mb:.1f} МБ) — слишком большой для Telegram.\n"
+                        f"Напиши @neirosetkaalex — пришлём файл напрямую."
+                    )
+            except Exception as up_err:
+                logging.error(f"upload_large_file motion failed: {up_err}")
 
     except Exception as e:
         await motion_refund_once(f"exception:{type(e).__name__}")
