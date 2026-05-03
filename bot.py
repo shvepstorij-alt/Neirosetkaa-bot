@@ -667,8 +667,8 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana",
         "model_id": "gemini-2.5-flash-image",
         "api": "gemini",
-        "credits": 10,
-        "price": "5₽",
+        "credits": 13,
+        "price": "7₽",
         "speed": "~3 сек",
         "desc": "Быстрый, диалоговый",
     },
@@ -748,10 +748,23 @@ VIDEO_MODELS = {
         "name": "🎞 Veo 3.1 Lite",
         "model_id": "veo-3.1-lite-generate-preview",
         "api": "veo",
-        "credits": 99,
-        "price": "53₽",
+        "credits": 239,
+        "price": "127₽",
         "res": "720p",
-        "desc": "Бюджет, быстро",
+        "desc": "Бюджет Google, с аудио",
+    },
+    "wan_22": {
+        "name": "🌊 Wan 2.2",
+        "model_id": "fal-ai/wan/v2.2-a14b/text-to-video",
+        "api": "fal",
+        "credits": 80,
+        "price": "45₽",
+        "res": "720p",
+        "desc": "Топ open-source, движения людей",
+        "durations": {
+            5:  (80, "45₽"),
+            10: (150, "84₽"),
+        },
     },
     "kling_turbo": {
         "name": "⚡ Kling 2.5 Turbo",
@@ -760,11 +773,23 @@ VIDEO_MODELS = {
         "credits": 109,
         "price": "58₽",
         "res": "1080p",
-        "desc": "5 сек, плавная физика, быстро",
-        # Для моделей с выбором длительности — словарь {сек: (кредиты, цена_в_рублях_для_UI)}
+        "desc": "Плавная физика, быстро",
         "durations": {
             5:  (109, "58₽"),
-            10: (207, "110₽"),  # 1.9x за поощрение длинных
+            10: (207, "110₽"),
+        },
+    },
+    "seedance_15": {
+        "name": "🎬 Seedance 1.5 Pro",
+        "model_id": "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
+        "api": "fal",
+        "credits": 149,
+        "price": "79₽",
+        "res": "720p + аудио",
+        "desc": "ByteDance, нативное аудио",
+        "durations": {
+            5:  (149, "79₽"),
+            10: (280, "149₽"),
         },
     },
     "vid_fast": {
@@ -780,24 +805,38 @@ VIDEO_MODELS = {
         "name": "🏆 Kling 3.0 Pro",
         "model_id": "fal-ai/kling-video/v3/pro/text-to-video",
         "api": "fal",
-        "credits": 359,
-        "price": "190₽",
+        "credits": 391,
+        "price": "208₽",
         "res": "1080p + аудио",
-        "desc": "#1 в бенчмарках, с аудио",
+        "desc": "Кинематограф + аудио",
         "durations": {
-            5:  (359, "190₽"),
-            8:  (545, "289₽"),  # 1.52x, пропорционально времени
-            10: (682, "362₽"),  # 1.9x — поощрение за длинные
+            5:  (391, "208₽"),
+            8:  (593, "315₽"),
+            10: (741, "393₽"),
+        },
+    },
+    "seedance_20": {
+        "name": "🔥 Seedance 2.0",
+        "model_id": "bytedance/seedance-2.0/text-to-video",
+        "api": "fal",
+        "credits": 449,
+        "price": "239₽",
+        "res": "720p + аудио",
+        "desc": "#1 с аудио в Video Arena",
+        "durations": {
+            5:  (449, "239₽"),
+            10: (849, "449₽"),
+            15: (1249, "664₽"),
         },
     },
     "vid_pro": {
         "name": "💎 Veo 3.1",
         "model_id": "veo-3.1-generate-preview",
         "api": "veo",
-        "credits": 599,
-        "price": "319₽",
+        "credits": 640,
+        "price": "340₽",
         "res": "4K + аудио",
-        "desc": "Кино-качество",
+        "desc": "Кино-качество Google",
     },
 }
 
@@ -1680,7 +1719,10 @@ ALTERNATIVE_MODELS = {
         "vid_pro":      ("vid", "vid_fast",     "Veo 3.1 Fast (1080p вместо 4K)"),
         "vid_fast":     ("vid", "vid_lite",     "Veo 3.1 Lite (быстрее)"),
         "kling_pro":    ("vid", "kling_turbo",  "Kling 2.5 Turbo (быстрее, той же серии)"),
-        "kling_turbo":  ("vid", "vid_fast",     "Veo 3.1 Fast (другой провайдер)"),
+        "kling_turbo":  ("vid", "seedance_15",  "Seedance 1.5 Pro (другой провайдер)"),
+        "seedance_20":  ("vid", "seedance_15",  "Seedance 1.5 Pro (стабильнее)"),
+        "seedance_15":  ("vid", "kling_turbo",  "Kling 2.5 Turbo (другой провайдер)"),
+        "wan_22":       ("vid", "vid_lite",     "Veo 3.1 Lite (другой провайдер)"),
     },
 }
 
@@ -1925,21 +1967,27 @@ def kb_image_models():
 def kb_video_brands():
     """Верхний уровень: выбор бренда видео-моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎥 Veo 3.1", callback_data="vband:veo")],
-        [InlineKeyboardButton(text="🎞 Kling",   callback_data="vband:kling")],
-        [InlineKeyboardButton(text="⬅️ Назад",    callback_data="back_main")],
+        [InlineKeyboardButton(text="🎥 Veo 3.1 (Google)",       callback_data="vband:veo")],
+        [InlineKeyboardButton(text="🎞 Kling (Kuaishou)",        callback_data="vband:kling")],
+        [InlineKeyboardButton(text="🎬 Seedance (ByteDance)",    callback_data="vband:seedance")],
+        [InlineKeyboardButton(text="🌊 Wan 2.2 (Alibaba)",       callback_data="vband:wan")],
+        [InlineKeyboardButton(text="⬅️ Назад",                   callback_data="back_main")],
     ])
 
 
 # Маппинг бренда → ключи моделей видео (по возрастанию кредитов)
 VIDEO_BRAND_MODELS = {
-    "veo":   ["vid_lite", "vid_fast", "vid_pro"],
-    "kling": ["kling_turbo", "kling_pro"],
+    "veo":      ["vid_lite", "vid_fast", "vid_pro"],
+    "kling":    ["kling_turbo", "kling_pro"],
+    "seedance": ["seedance_15", "seedance_20"],
+    "wan":      ["wan_22"],
 }
 
 VIDEO_BRAND_TITLES = {
-    "veo":   "🎥 Veo 3.1",
-    "kling": "🎞 Kling",
+    "veo":      "🎥 Veo 3.1",
+    "kling":    "🎞 Kling",
+    "seedance": "🎬 Seedance (ByteDance)",
+    "wan":      "🌊 Wan 2.2 (Alibaba)",
 }
 
 
@@ -2297,7 +2345,7 @@ SYSTEM_PROMPT = """Ты — AI-ассистент Telegram бота Алекса
 
 🎨 ГЕНЕРАЦИЯ ФОТО (меню "📷 Создать фото"):
 • Imagen 4 Fast/Standard/Ultra — Google, от 7 до 13 кр за фото
-• Nano Banana (Gemini) 1/2/Pro — от 10 до 30 кр (Pro = 4K)
+• Nano Banana (Gemini) 1/2/Pro — от 13 до 30 кр (Pro = 4K)
 • Flux 2 Pro — 12 кр, фотореализм уровня Midjourney
 • Ideogram V3 — 14 кр, идеальный текст в изображении (баннеры, логотипы)
 • ⚡ GPT Image 2 Fast — 10 кр, OpenAI, проверить идею
@@ -2556,7 +2604,7 @@ Cinematic, Blade Runner atmosphere, volumetric fog."
 - Imagen 4 Fast — 7 кр (быстро, базовое качество)
 - Imagen 4 — 10 кр (флагман Google, чёткий текст)
 - Imagen 4 Ultra — 13 кр (максимальная точность)
-- Nano Banana — 10 кр (Gemini, диалоговый)
+- Nano Banana — 13 кр (Gemini, диалоговый)
 - Nano Banana 2 — 13 кр (новейший, лучшее качество)
 - Nano Banana Pro — 30 кр (4K, идеальный текст)
 - Flux 2 Pro — 12 кр (фотореализм от Black Forest Labs, как Midjourney)
@@ -3632,10 +3680,9 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
         "Content-Type": "application/json",
     }
 
-    # Payload под Kling
+    # Payload под разные модели
     if "kling" in model_id:
         if "v3" in model_id:
-            # Kling 3.0 Pro — 5/8/10/15 секунд с нативным аудио
             payload = {
                 "prompt": prompt,
                 "duration": str(duration),
@@ -3645,9 +3692,6 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                 "cfg_scale": 0.5,
             }
         else:
-            # Kling 2.5 Turbo Pro — только 5 или 10 сек, БЕЗ аудио
-            # (generate_audio в этой версии не поддерживается)
-            # Валидация на стороне API: допустимые "5" или "10"
             safe_duration = "10" if duration >= 10 else "5"
             payload = {
                 "prompt": prompt,
@@ -3656,6 +3700,21 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                 "negative_prompt": "blur, distort, and low quality",
                 "cfg_scale": 0.5,
             }
+    elif "seedance" in model_id:
+        payload = {
+            "prompt": prompt,
+            "duration": str(duration),
+            "aspect_ratio": aspect_ratio,
+            "resolution": "720p",
+        }
+    elif "wan" in model_id:
+        safe_duration = min(duration, 10)
+        payload = {
+            "prompt": prompt,
+            "num_frames": safe_duration * 16,
+            "aspect_ratio": aspect_ratio,
+            "resolution": "720p",
+        }
     else:
         payload = {"prompt": prompt, "aspect_ratio": aspect_ratio}
 
@@ -6822,8 +6881,10 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
         f"🎥 <b>Veo 3.1</b> — Google, до 4K + аудио, от 99 кр\n"
-        f"🎞 <b>Kling</b> — #1 в бенчмарках, плавная физика, от 109 кр\n\n"
-        f"⏱ <i>Время генерации: 1–6 минут</i>"
+        f"🎞 <b>Kling</b> — плавная физика + аудио, от 109 кр\n"
+        f"🎬 <b>Seedance</b> — ByteDance, нативное аудио, от 149 кр\n"
+        f"🌊 <b>Wan 2.2</b> — Alibaba, топ open-source, от 75 кр\n\n"
+        f"⏱ <i>Время генерации: 1–10 минут</i>"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_video_brands(), parse_mode="HTML")
