@@ -3378,6 +3378,53 @@ async def _with_retry(coro_factory, max_attempts: int = 3, base_delay: float = 2
 
 # ─── Retry helper для Google API ──────────────────────────
 
+async def compress_video(vid_bytes: bytes, target_mb: float = 45.0) -> bytes:
+    """Сжимает видео через ffmpeg чтобы уложиться в лимит Telegram (50 МБ).
+    Уменьшает битрейт пропорционально целевому размеру.
+    Возвращает сжатые байты или оригинал если ffmpeg недоступен.
+    """
+    import tempfile, subprocess, os as _os
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as fin:
+        fin.write(vid_bytes)
+        fin_path = fin.name
+    fout_path = fin_path.replace(".mp4", "_compressed.mp4")
+    try:
+        # Получаем длительность через ffprobe
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", fin_path],
+            capture_output=True, text=True, timeout=30
+        )
+        duration = float(probe.stdout.strip()) if probe.stdout.strip() else 60.0
+        # Целевой битрейт в kbps (оставляем 128k на аудио)
+        target_kbps = int((target_mb * 8 * 1024) / duration) - 128
+        target_kbps = max(500, target_kbps)  # минимум 500 kbps для приемлемого качества
+        result = subprocess.run([
+            "ffmpeg", "-y", "-i", fin_path,
+            "-c:v", "libx264", "-b:v", f"{target_kbps}k",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            fout_path
+        ], capture_output=True, timeout=120)
+        if result.returncode == 0 and _os.path.exists(fout_path):
+            with open(fout_path, "rb") as f:
+                compressed = f.read()
+            logging.info(f"compress_video: {len(vid_bytes)/1024/1024:.1f}MB → {len(compressed)/1024/1024:.1f}MB")
+            return compressed
+        else:
+            logging.error(f"ffmpeg error: {result.stderr[:300]}")
+            return vid_bytes
+    except Exception as e:
+        logging.error(f"compress_video exception: {e}")
+        return vid_bytes
+    finally:
+        for p in [fin_path, fout_path]:
+            try:
+                _os.unlink(p)
+            except Exception:
+                pass
+
+
 async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
                                   quality: str = "medium", _retry_count: int = 0) -> bytes:
     """Генерация изображений через fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2).
@@ -5890,8 +5937,7 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
     )
 
     rows = [
-        [InlineKeyboardButton(text=f"🏦 СБП — {final_price}₽",    callback_data=f"payfk:{key}:sbp")],
-        [InlineKeyboardButton(text=f"💳 Картой — {final_price}₽", callback_data=f"payfk:{key}:card")],
+        [InlineKeyboardButton(text=f"🏦 Оплатить через СБП — {final_price}₽", callback_data=f"payfk:{key}:sbp")],
     ]
     if not promo_code:
         rows.append([InlineKeyboardButton(text="🎟 Применить промокод", callback_data=f"promo_apply:{key}")])
@@ -6808,7 +6854,7 @@ def kb_vid_duration(model_key: str):
     for sec in sorted(durations.keys()):
         credits, price = durations[sec]
         rows.append([InlineKeyboardButton(
-            text=f"🎬 {sec} секунд — {credits} кр ({price})",
+            text=f"🎬 {sec} секунд — {credits} кр",
             callback_data=f"vdur:{model_key}:{sec}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_video")])
@@ -6834,7 +6880,7 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
         for sec in sorted(m["durations"].keys()):
             credits, price = m["durations"][sec]
             icon = "🔹" if cr >= credits else "🔸"
-            lines.append(f"{icon} <b>{sec} сек</b> — {credits} кр ({price})")
+            lines.append(f"{icon} <b>{sec} сек</b> — {credits} кр")
         await cb.message.edit_text(
             f"{m['name']} ✅\n\n"
             f"📐 {m['res']}\n"
@@ -7156,39 +7202,55 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         except Exception:
             pass
 
-        # 1. Видео для просмотра в чате — с retry, т.к. крупные файлы могут отвалиться
+        # Сжимаем если видео > 45 МБ (лимит Telegram 50 МБ)
+        if size_mb > 45:
+            try:
+                await cb.message.answer("⏳ Видео большое, сжимаю для отправки...")
+                vid_bytes_compressed = await compress_video(vid_bytes)
+                size_mb_compressed = len(vid_bytes_compressed) / 1024 / 1024
+                logging.info(f"Compressed: {size_mb:.1f} → {size_mb_compressed:.1f} MB")
+                vid_bytes_to_send = vid_bytes_compressed
+                size_mb_to_send = size_mb_compressed
+            except Exception as comp_err:
+                logging.error(f"Compression failed: {comp_err}")
+                vid_bytes_to_send = vid_bytes
+                size_mb_to_send = size_mb
+        else:
+            vid_bytes_to_send = vid_bytes
+            size_mb_to_send = size_mb
+
+        # 1. Видео для просмотра в чате — с retry
         video_sent = False
         video_err = None
         for vid_attempt in range(1, 4):
             try:
                 await cb.message.answer_video(
-                    BufferedInputFile(vid_bytes, "video.mp4"),
-                    caption=caption + ("\n\n👇 Ниже — файл без сжатия" if size_mb < 48 else ""),
+                    BufferedInputFile(vid_bytes_to_send, "video.mp4"),
+                    caption=caption + ("\n\n👇 Ниже — оригинал без сжатия" if size_mb < 48 else ""),
                     reply_markup=kb_after("video", key),
                     supports_streaming=True,
                 )
                 video_sent = True
                 if vid_attempt > 1:
-                    logging.info(f"answer_video succeeded on attempt {vid_attempt}/3 ({size_mb:.1f} MB)")
+                    logging.info(f"answer_video succeeded on attempt {vid_attempt}/3 ({size_mb_to_send:.1f} MB)")
                 break
             except Exception as ve:
                 video_err = ve
                 err_str = str(ve).lower()
                 is_timeout = "timeout" in err_str or "timed out" in err_str
                 if vid_attempt < 3 and is_timeout:
-                    logging.warning(f"answer_video attempt {vid_attempt}/3 timed out ({size_mb:.1f} MB) — retrying")
+                    logging.warning(f"answer_video attempt {vid_attempt}/3 timed out ({size_mb_to_send:.1f} MB) — retrying")
                     await asyncio.sleep(3 * vid_attempt)
                     continue
-                logging.error(f"answer_video failed ({size_mb:.1f} MB): {ve}")
+                logging.error(f"answer_video failed ({size_mb_to_send:.1f} MB): {ve}")
                 break
 
         if not video_sent:
-            # Видео не отправилось вообще — критическая ситуация, сообщаем и не списываем кредиты
-            await notify_admin_error(f"Видео НЕ отправлено uid={uid} {size_mb:.1f}MB", video_err)
+            await notify_admin_error(f"Видео НЕ отправлено uid={uid} {size_mb_to_send:.1f}MB", video_err)
             try:
                 await cb.message.answer(
                     f"⚠️ <b>Видео сгенерировано, но не загрузилось в Telegram</b>\n\n"
-                    f"Размер файла: {size_mb:.1f} МБ — возможно слишком большой для текущего канала.\n"
+                    f"Размер файла: {size_mb_to_send:.1f} МБ — слишком большой для отправки.\n"
                     f"Кредиты возвращены 💳\n"
                     f"Напиши @neirosetkaalex — пришлём файл напрямую.",
                     parse_mode="HTML",
@@ -7196,9 +7258,8 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 )
             except Exception:
                 pass
-            # Возвращаем кредиты т.к. юзер не получил видео
             await refund_once("video_send_failed")
-            return  # Выходим — документ тоже не пытаемся отправить
+            return
         # 2. Документ — только если файл < 48 МБ (лимит Telegram для ботов 50 МБ)
         # disable_content_type_detection=True заставляет Telegram показывать его 
         # как документ-файл (а не как ещё один видеоплеер)
