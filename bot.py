@@ -1858,9 +1858,6 @@ def kb_main():
             InlineKeyboardButton(text="🏃 Анимировать фото",   callback_data="menu_anim"),
         ],
         [
-            InlineKeyboardButton(text="🎭 Motion Control (Kling)", callback_data="menu_motion"),
-        ],
-        [
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
         ],
         [
@@ -1957,6 +1954,12 @@ def kb_video_models_for_brand(brand: str):
                 text=f"{m['name']} — {m['credits']} кр",
                 callback_data=f"vmodel:{key}"
             )])
+    # Для Kling добавляем Motion Control отдельной кнопкой
+    if brand == "kling":
+        rows.append([InlineKeyboardButton(
+            text="🎭 Motion Control — от 149 кр",
+            callback_data="menu_motion"
+        )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_vid_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -4161,11 +4164,11 @@ async def api_kling_motion_control(
                 raise Exception(f"EvoLink: нет task_id в ответе: {str(resp_data)[:300]}")
             logging.info(f"Kling Motion Control task started: {task_id}")
 
-        # 2. Polling — Motion Control обычно 2-5 минут, но может занимать до 8 при нагрузке
-        # 96 попыток × 5 сек = 8 минут максимум
+        # 2. Polling — Motion Control обычно 2-5 минут, но может занимать до 15 при нагрузке
+        # 240 попыток × 5 сек = 20 минут максимум
         last_status = None
         last_response = None
-        for attempt in range(96):
+        for attempt in range(240):
             await asyncio.sleep(5)
             try:
                 async with s.get(f"{base}/tasks/{task_id}", headers=headers) as pr:
@@ -4265,7 +4268,7 @@ async def api_kling_motion_control(
         # Таймаут — показываем последний известный статус для диагностики
         logging.error(f"Kling timeout task={task_id}, last_status={last_status}, last_response={str(last_response)[:500]}")
         raise Exception(
-            f"Превышено время ожидания (8 мин). Последний статус: {last_status}. "
+            f"Превышено время ожидания (20 мин). Последний статус: {last_status}. "
             f"Задача могла завершиться на стороне EvoLink — проверь в их логах. Кредиты возвращены."
         )
 
@@ -6849,6 +6852,15 @@ async def choose_vid_brand(cb: CallbackQuery, state: FSMContext):
                 f"{icon} <b>{m['name'].lstrip('💰⚡🎬🎞🏆 ')}</b> — {m['credits']} кр\n"
                 f"   <i>{m['res']} · {m['desc']}</i>"
             )
+
+    # Для Kling добавляем описание Motion Control
+    if brand == "kling":
+        min_motion = min(MOTION_PRICES.values())
+        icon = "🔹" if cr >= min_motion else "🔸"
+        lines.append(
+            f"{icon} <b>Motion Control</b> — от {min_motion} кр\n"
+            f"   <i>Перенос движений с видео на твоего персонажа</i>"
+        )
 
     text = (
         f"{title}\n\n"
@@ -10786,13 +10798,13 @@ async def menu_motion(cb: CallbackQuery, state: FSMContext):
         "• без резких склеек и движений камеры\n"
         "• чёткие движения (танец, жесты, мимика)\n"
         "• тот же ракурс что у фото (полный рост ↔ полный рост)\n\n"
-        "⏱ <i>Генерация 2–5 минут</i>\n"
+        "⏱ <i>Генерация 3–10 минут</i>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "Готов? 👇"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="▶️ Начать", callback_data="mot_start")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="vband:kling")],
     ])
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -11030,7 +11042,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         f"⏳ Запускаю Motion Control...\n\n"
         f"🎭 Kling 3.0 | {duration} сек | 720p\n"
         + (f"<i>{prompt[:80]}</i>\n" if prompt else "")
-        + f"\n⏱ Обычно 2–5 минут. Пришлю как только готово 👇"
+        + f"\n⏱ Обычно 3–10 минут. Пришлю как только готово 👇"
     )
     if edit:
         try:
