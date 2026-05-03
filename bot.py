@@ -7226,57 +7226,66 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         except Exception:
             pass
 
-        # Сжимаем если видео > 45 МБ (лимит Telegram 50 МБ)
-        if size_mb > 45:
+        # Если видео > 48 МБ — сразу на хостинг, не пытаемся через Telegram
+        if size_mb > 48:
             try:
-                await cb.message.answer("⏳ Видео большое, сжимаю для отправки...")
-                vid_bytes_compressed = await compress_video(vid_bytes)
-                size_mb_compressed = len(vid_bytes_compressed) / 1024 / 1024
-                logging.info(f"Compressed: {size_mb:.1f} → {size_mb_compressed:.1f} MB")
-                vid_bytes_to_send = vid_bytes_compressed
-                size_mb_to_send = size_mb_compressed
-            except Exception as comp_err:
-                logging.error(f"Compression failed: {comp_err}")
-                vid_bytes_to_send = vid_bytes
-                size_mb_to_send = size_mb
-        else:
-            vid_bytes_to_send = vid_bytes
-            size_mb_to_send = size_mb
+                await cb.message.answer("⏳ Видео большое, загружаю на хостинг...")
+                upload_url = await upload_large_file(vid_bytes, f"video_original_{key}.mp4")
+                if upload_url:
+                    await cb.message.answer(
+                        f"🎉 <b>Готово! {m['name']}</b>\n"
+                        f"💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов\n\n"
+                        f"📁 Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
+                        f"Скачай оригинал по ссылке (доступна 24 часа):\n"
+                        f"<a href='{upload_url}'>{upload_url}</a>",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=kb_after("video", key),
+                    )
+                else:
+                    await refund_once("upload_failed")
+                    await cb.message.answer(
+                        f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не удалось доставить.\n"
+                        f"Кредиты возвращены 💳\nНапиши @neirosetkaalex.",
+                        reply_markup=kb_back(),
+                    )
+            except Exception as up_err:
+                logging.error(f"video large upload failed: {up_err}")
+                await refund_once("upload_exception")
+            return
 
-        # 1. Видео для просмотра в чате — с retry
+        # Видео <= 48 МБ — отправляем через Telegram
         video_sent = False
         video_err = None
         for vid_attempt in range(1, 4):
             try:
                 await cb.message.answer_video(
-                    BufferedInputFile(vid_bytes_to_send, "video.mp4"),
-                    caption=caption + ("\n\n👇 Ниже — оригинал без сжатия" if size_mb < 48 else ""),
+                    BufferedInputFile(vid_bytes, "video.mp4"),
+                    caption=caption + "\n\n👇 Ниже — оригинал без сжатия",
                     reply_markup=kb_after("video", key),
                     supports_streaming=True,
                 )
                 video_sent = True
                 if vid_attempt > 1:
-                    logging.info(f"answer_video succeeded on attempt {vid_attempt}/3 ({size_mb_to_send:.1f} MB)")
+                    logging.info(f"answer_video succeeded on attempt {vid_attempt}/3 ({size_mb:.1f} MB)")
                 break
             except Exception as ve:
                 video_err = ve
                 err_str = str(ve).lower()
                 is_timeout = "timeout" in err_str or "timed out" in err_str
                 if vid_attempt < 3 and is_timeout:
-                    logging.warning(f"answer_video attempt {vid_attempt}/3 timed out ({size_mb_to_send:.1f} MB) — retrying")
+                    logging.warning(f"answer_video attempt {vid_attempt}/3 timed out ({size_mb:.1f} MB) — retrying")
                     await asyncio.sleep(3 * vid_attempt)
                     continue
-                logging.error(f"answer_video failed ({size_mb_to_send:.1f} MB): {ve}")
+                logging.error(f"answer_video failed ({size_mb:.1f} MB): {ve}")
                 break
 
         if not video_sent:
-            await notify_admin_error(f"Видео НЕ отправлено uid={uid} {size_mb_to_send:.1f}MB", video_err)
+            await notify_admin_error(f"Видео НЕ отправлено uid={uid} {size_mb:.1f}MB", video_err)
             try:
                 await cb.message.answer(
-                    f"⚠️ <b>Видео сгенерировано, но не загрузилось в Telegram</b>\n\n"
-                    f"Размер файла: {size_mb_to_send:.1f} МБ — слишком большой для отправки.\n"
-                    f"Кредиты возвращены 💳\n"
-                    f"Напиши @neirosetkaalex — пришлём файл напрямую.",
+                    f"⚠️ <b>Видео не загрузилось в Telegram</b>\n\n"
+                    f"Кредиты возвращены 💳\nНапиши @neirosetkaalex.",
                     parse_mode="HTML",
                     reply_markup=kb_back()
                 )
@@ -10637,33 +10646,44 @@ async def anim_prompt(message: Message, state: FSMContext):
         except Exception:
             pass
 
-        # Сжимаем если > 45 МБ
-        if size_mb > 45:
+        # Если видео > 48 МБ — сразу на хостинг
+        if size_mb > 48:
             try:
-                await message.answer("⏳ Видео большое, сжимаю для отправки...")
-                vid_bytes_compressed = await compress_video(vid_bytes)
-                size_mb_compressed = len(vid_bytes_compressed) / 1024 / 1024
-                logging.info(f"Anim compressed: {size_mb:.1f} → {size_mb_compressed:.1f} MB")
-                vid_bytes_to_send = vid_bytes_compressed
-                size_mb_to_send = size_mb_compressed
-            except Exception as comp_err:
-                logging.error(f"Anim compression failed: {comp_err}")
-                vid_bytes_to_send = vid_bytes
-                size_mb_to_send = size_mb
-        else:
-            vid_bytes_to_send = vid_bytes
-            size_mb_to_send = size_mb
+                await message.answer("⏳ Видео большое, загружаю на хостинг...")
+                upload_url = await upload_large_file(vid_bytes, "animation_original.mp4")
+                if upload_url:
+                    await message.answer(
+                        f"✅ <b>Готово! 🏃 Анимация фото</b>\n"
+                        f"💵 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр\n\n"
+                        f"📁 Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
+                        f"Скачай оригинал по ссылке (доступна 24 часа):\n"
+                        f"<a href='{upload_url}'>{upload_url}</a>",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=kb_after_anim,
+                    )
+                else:
+                    await anim_refund_once("upload_failed")
+                    await message.answer(
+                        f"⚠️ Анимация создана ({size_mb:.1f} МБ), но не удалось доставить.\n"
+                        f"Кредиты возвращены 💳\nНапиши @neirosetkaalex.",
+                        reply_markup=kb_back(),
+                    )
+            except Exception as up_err:
+                logging.error(f"anim large upload failed: {up_err}")
+                await anim_refund_once("upload_exception")
+            return
 
-        # 1. Видео с retry через safe_send_media
+        # Видео <= 48 МБ — отправляем через Telegram
         video_sent = False
         try:
             await safe_send_media(
                 message.answer_video,
-                BufferedInputFile(vid_bytes_to_send, "animation.mp4"),
+                BufferedInputFile(vid_bytes, "animation.mp4"),
                 caption=(
                     f"✅ Готово! 🏃 Анимация фото\n"
-                    f"💵 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр"
-                    + ("\n\n👇 Ниже — оригинал без сжатия" if size_mb < 48 else "")
+                    f"💵 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр\n\n"
+                    f"👇 Ниже — оригинал без сжатия"
                 ),
                 reply_markup=kb_after_anim,
                 supports_streaming=True,
@@ -11062,34 +11082,52 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         except Exception:
             pass
 
-        # Сжимаем если > 45 МБ
-        if size_mb > 45:
+        # Если видео > 48 МБ — сразу загружаем на хостинг, не пытаемся через Telegram
+        if size_mb > 48:
             try:
-                await msg_obj.answer("⏳ Видео большое, сжимаю для отправки...")
-                vid_bytes_compressed = await compress_video(vid_bytes)
-                size_mb_compressed = len(vid_bytes_compressed) / 1024 / 1024
-                logging.info(f"Motion compressed: {size_mb:.1f} → {size_mb_compressed:.1f} MB")
-                vid_bytes_to_send = vid_bytes_compressed
-                size_mb_to_send = size_mb_compressed
-            except Exception as comp_err:
-                logging.error(f"Motion compression failed: {comp_err}")
-                vid_bytes_to_send = vid_bytes
-                size_mb_to_send = size_mb
-        else:
-            vid_bytes_to_send = vid_bytes
-            size_mb_to_send = size_mb
+                await msg_obj.answer("⏳ Видео большое, загружаю на хостинг...")
+                upload_url = await upload_large_file(vid_bytes, "motion_control_original.mp4")
+                if upload_url:
+                    await msg_obj.answer(
+                        f"🎭 <b>Готово! Motion Control · {duration} сек</b>\n"
+                        f"💸 Списано {price} кр | Остаток: {cr_left} кр\n\n"
+                        f"📁 Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
+                        f"Скачай оригинал по ссылке (доступна 24 часа):\n"
+                        f"<a href='{upload_url}'>{upload_url}</a>",
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                        reply_markup=kb_after_mot,
+                    )
+                else:
+                    # Загрузка не удалась — возвращаем кредиты
+                    await motion_refund_once("upload_failed")
+                    await msg_obj.answer(
+                        f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не удалось доставить.\n"
+                        f"Кредиты возвращены 💳\n"
+                        f"Напиши @neirosetkaalex — пришлём файл напрямую.",
+                        reply_markup=kb_back(),
+                    )
+            except Exception as up_err:
+                logging.error(f"motion large file handling failed: {up_err}")
+                await motion_refund_once("upload_exception")
+                await msg_obj.answer(
+                    f"⚠️ Не удалось доставить видео. Кредиты возвращены 💳\n"
+                    f"Напиши @neirosetkaalex — разберёмся.",
+                    reply_markup=kb_back(),
+                )
+            return  # Дальше не идём — документ уже обработан выше
 
-        # 1. Видео плеером — с retry
+        # Видео <= 48 МБ — отправляем через Telegram
         video_sent = False
         try:
             await safe_send_media(
                 bot.send_video,
                 chat_id=msg_obj.chat.id,
-                video=BufferedInputFile(vid_bytes_to_send, "motion_control.mp4"),
+                video=BufferedInputFile(vid_bytes, "motion_control.mp4"),
                 caption=(
                     f"🎭 Готово! Motion Control · {duration} сек\n"
-                    f"💸 Списано {price} кр | Остаток: {cr_left} кр"
-                    + ("\n\n👇 Ниже — оригинал без сжатия" if size_mb < 48 else "")
+                    f"💸 Списано {price} кр | Остаток: {cr_left} кр\n\n"
+                    f"👇 Ниже — оригинал без сжатия"
                 ),
                 reply_markup=kb_after_mot,
                 supports_streaming=True,
@@ -11099,7 +11137,6 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         except Exception as ve:
             logging.error(f"motion send_video failed: {ve}")
 
-        # Если видео не отправилось — возвращаем кредиты и выходим
         if not video_sent:
             await motion_refund_once("video_send_failed")
             try:
