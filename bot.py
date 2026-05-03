@@ -1900,6 +1900,10 @@ def kb_main():
             InlineKeyboardButton(text="🏃 Анимировать фото",   callback_data="menu_anim"),
         ],
         [
+            InlineKeyboardButton(text="🔍 Апскейл фото 4x",    callback_data="menu_upscale"),
+            InlineKeyboardButton(text="✨ Улучшить промт",      callback_data="menu_improve"),
+        ],
+        [
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
         ],
         [
@@ -2224,6 +2228,13 @@ class MotionState(StatesGroup):
     waiting_video    = State()   # референс-видео с движением
     waiting_duration = State()   # выбор длительности (5/8/10)
     waiting_prompt   = State()   # опциональный промт сцены
+
+class UpscaleState(StatesGroup):
+    waiting_photo = State()
+
+class ImproveState(StatesGroup):
+    waiting_prompt = State()   # текстовый промт для улучшения
+    waiting_model  = State()   # выбор модели после улучшения
 
 class ChatState(StatesGroup):
     chatting = State()
@@ -5773,11 +5784,18 @@ async def menu_ref(cb: CallbackQuery):
     async with pool.acquire() as conn:
         total_refs = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0
         paid_refs  = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE", uid) or 0
-        # Сумма заработанных реф-кредитов (из events)
         earned_sum = await conn.fetchval(
             "SELECT COALESCE(SUM(CAST(SPLIT_PART(SPLIT_PART(data, 'credits=', 2), ' ', 1) AS INTEGER)), 0) "
             "FROM events WHERE user_id=$1 AND kind='batch_add_referral'", uid
         ) or 0
+        # Последние 5 приглашённых с именами
+        recent_refs = await conn.fetch(
+            """SELECT u.first_name, u.username, u.ref_bonus_paid,
+                      u.created_at::date as joined
+               FROM users u WHERE u.referred_by=$1
+               ORDER BY u.created_at DESC LIMIT 5""",
+            uid
+        )
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
 
@@ -5800,6 +5818,21 @@ async def menu_ref(cb: CallbackQuery):
         tier = "👑 Топ-реферер"
         next_level_msg = "Максимальный уровень 🔥"
 
+    # Строим список последних приглашённых
+    friends_lines = []
+    for i, r in enumerate(recent_refs, 1):
+        name = r["first_name"] or "Пользователь"
+        username = f" (@{r['username']})" if r["username"] else ""
+        status = "✅ Купил" if r["ref_bonus_paid"] else "⏳ Не купил"
+        joined = r["joined"].strftime("%d.%m") if r["joined"] else ""
+        friends_lines.append(f"{i}. {name}{username} · {status} · {joined}")
+
+    friends_block = ""
+    if friends_lines:
+        friends_block = "\n\n👥 <b>Последние приглашённые:</b>\n" + "\n".join(friends_lines)
+    elif total_refs == 0:
+        friends_block = "\n\n<i>Ты ещё никого не пригласил</i>"
+
     text = (
         f"\U0001f91d <b>Пригласить друга</b>\n\n"
         f"<b>Твой уровень: {tier}</b>\n"
@@ -5818,7 +5851,8 @@ async def menu_ref(cb: CallbackQuery):
         f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
         f"\U0001f4b0 Купили: <b>{paid_refs}</b>\n"
         f"\U0001f381 Заработано: <b>{earned_sum} кредитов</b>\n"
-        f"<i>{next_level_msg}</i>\n\n"
+        f"<i>{next_level_msg}</i>"
+        f"{friends_block}\n\n"
         f"\U0001f517 <b>Твоя ссылка:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         f"<i>Нажми на ссылку чтобы скопировать и отправь другу</i>"
@@ -10242,6 +10276,10 @@ async def adm_promo_deact_start(cb: CallbackQuery, state: FSMContext):
 
 EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов
 ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 кредитов
+UPSCALE_CREDIT_COST = 20  # апскейл 4x — себест ~$0.12/4MP → 20 кр (~10.6₽), маржа ~30%
+
+# Стоимость улучшения промта — списывается только когда юзер генерирует
+IMPROVE_CREDIT_COST = 0   # само улучшение бесплатно, платит только за генерацию
 
 # ─── Kling Motion Control: цены по длительности ────────────
 MOTION_PRICES = {
@@ -10250,6 +10288,378 @@ MOTION_PRICES = {
     10: 349,   # 10 сек — 349 кр (себест. ~79₽, маржа ~57%)
 }
 MOTION_MODEL_ID = "kling-v3-motion-control"  # EvoLink route name
+
+# ─── УВЕДОМЛЕНИЯ ОБ ИСТЕКАЮЩИХ КРЕДИТАХ ───────────────────────────────────────
+
+async def check_expiring_credits(user_id: int):
+    """Проверяет истекающие кредиты и шлёт уведомление если нужно.
+    Вызывается после каждой генерации."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Кредиты которые истекут в течение 3 дней
+        expiring = await conn.fetchval(
+            """SELECT COALESCE(SUM(credits_left), 0) FROM credit_batches
+               WHERE user_id=$1 AND credits_left > 0
+               AND expires_at IS NOT NULL
+               AND expires_at > NOW()
+               AND expires_at < NOW() + INTERVAL '3 days'""",
+            user_id
+        ) or 0
+        total = await conn.fetchval(
+            """SELECT COALESCE(SUM(credits_left), 0) FROM credit_batches
+               WHERE user_id=$1 AND credits_left > 0
+               AND (expires_at IS NULL OR expires_at > NOW())""",
+            user_id
+        ) or 0
+        # Когда именно истекают
+        nearest = await conn.fetchval(
+            """SELECT MIN(expires_at) FROM credit_batches
+               WHERE user_id=$1 AND credits_left > 0
+               AND expires_at IS NOT NULL AND expires_at > NOW()
+               AND expires_at < NOW() + INTERVAL '3 days'""",
+            user_id
+        )
+    if expiring > 0 and nearest:
+        days_left = (nearest - __import__('datetime').datetime.now()).days + 1
+        days_left = max(1, days_left)
+        try:
+            await bot.send_message(
+                user_id,
+                f"⏰ <b>Напоминание о кредитах</b>\n\n"
+                f"У тебя <b>{expiring} кредитов</b> сгорит через <b>{days_left} дн.</b>\n"
+                f"Всего на балансе: {total} кр\n\n"
+                f"Успей использовать или пополни баланс 👇",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🎨 Генерировать", callback_data="menu_image")],
+                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                ])
+            )
+        except Exception:
+            pass
+
+
+# ─── АПСКЕЙЛ ФОТО ──────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "menu_upscale")
+async def menu_upscale(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    cr = await get_credits(cb.from_user.id)
+    if cr < UPSCALE_CREDIT_COST:
+        try:
+            await cb.message.edit_text(
+                f"💸 Недостаточно кредитов\n\nНужно {UPSCALE_CREDIT_COST} кр, у тебя {cr} кр.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+                ]),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        await cb.answer()
+        return
+    text = (
+        f"🔍 <b>Апскейл фото 4x</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n"
+        f"💵 Стоимость: <b>{UPSCALE_CREDIT_COST} кр</b>\n\n"
+        f"Увеличивает разрешение в 4 раза с сохранением деталей.\n"
+        f"Идеально для: фото из бота, аватарок, постеров, принтов.\n\n"
+        f"📎 Отправь фото для апскейла:"
+    )
+    await state.set_state(UpscaleState.waiting_photo)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_cancel(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb_cancel(), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(UpscaleState.waiting_photo, F.photo)
+async def do_upscale(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    cr = await get_credits(uid)
+    if cr < UPSCALE_CREDIT_COST:
+        await message.answer(
+            f"💸 Недостаточно кредитов. Нужно {UPSCALE_CREDIT_COST} кр.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+            ])
+        )
+        await state.clear()
+        return
+
+    wait = await message.answer("⏳ Апскейл 4x... обычно 20–40 сек")
+    try:
+        # Скачиваем фото
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        buf = await bot.download_file(file.file_path)
+        img_bytes = buf.read()
+
+        # Загружаем на fal.ai storage
+        async with aiohttp.ClientSession() as s:
+            upload_headers = {
+                "Authorization": f"Key {FAL_API_KEY}",
+                "Content-Type": "image/jpeg",
+            }
+            async with s.post(
+                "https://rest.alpha.fal.ai/storage/upload/file?file_name=input.jpg",
+                headers=upload_headers,
+                data=img_bytes,
+                timeout=aiohttp.ClientTimeout(total=60)
+            ) as r:
+                upload_data = await r.json()
+                image_url = upload_data.get("access_url") or upload_data.get("url")
+                if not image_url:
+                    raise Exception(f"Upload failed: {upload_data}")
+
+        # Запускаем апскейл через Clarity Upscaler
+        upscale_headers = {
+            "Authorization": f"Key {FAL_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "image_url": image_url,
+            "scale": 4,
+            "creativity": 0.35,
+            "resemblance": 0.85,
+            "prompt": "masterpiece, best quality, highres, detailed",
+            "negative_prompt": "(worst quality, low quality, normal quality:2)",
+        }
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                "https://fal.run/fal-ai/clarity-upscaler",
+                headers=upscale_headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120)
+            ) as r:
+                result = await r.json()
+
+        out_url = result.get("image", {}).get("url")
+        if not out_url:
+            raise Exception(f"Upscale failed: {str(result)[:200]}")
+
+        # Скачиваем результат
+        async with aiohttp.ClientSession() as s:
+            async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=60)) as r:
+                out_bytes = await r.read()
+
+        # Списываем кредиты
+        success = await deduct(uid, UPSCALE_CREDIT_COST)
+        if not success:
+            await wait.delete()
+            await message.answer("💸 Недостаточно кредитов.")
+            await state.clear()
+            return
+
+        new_cr = await get_credits(uid)
+        await wait.delete()
+        await message.answer_photo(
+            BufferedInputFile(out_bytes, "upscaled_4x.jpg"),
+            caption=(
+                f"✅ <b>Апскейл 4x готов!</b>\n"
+                f"💸 Списано {UPSCALE_CREDIT_COST} кр | Остаток: {new_cr} кр"
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Ещё апскейл", callback_data="menu_upscale")],
+                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            ])
+        )
+        # Отправляем документом для скачивания в оригинале
+        await message.answer_document(
+            BufferedInputFile(out_bytes, "upscaled_4x.png"),
+            caption="📁 Оригинал без сжатия",
+        )
+        await log_event(uid, "upscale", f"credits={UPSCALE_CREDIT_COST}")
+        await check_expiring_credits(uid)
+
+    except Exception as e:
+        logging.error(f"Upscale error uid={uid}: {e}")
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await message.answer(
+            f"⚠️ Ошибка апскейла. Попробуй ещё раз или напиши @neirosetkaalex.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Попробовать снова", callback_data="menu_upscale")],
+                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            ])
+        )
+    await state.clear()
+
+
+@dp.message(UpscaleState.waiting_photo)
+async def upscale_wrong_input(message: Message):
+    await message.answer("📎 Пожалуйста, отправь фото (не файлом, а именно фото).")
+
+
+# ─── ПРОМТ-АССИСТЕНТ ────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "menu_improve")
+async def menu_improve(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    text = (
+        f"✨ <b>Промт-ассистент</b>\n\n"
+        f"Напиши свою идею простыми словами — я улучшу её до профессионального промта\n"
+        f"и сразу предложу выбрать модель для генерации.\n\n"
+        f"<b>Примеры:</b>\n"
+        f"• <i>девушка в кафе</i>\n"
+        f"• <i>котик в космосе реалистично</i>\n"
+        f"• <i>закат на море в стиле масляной живописи</i>\n\n"
+        f"✏️ Напиши свой запрос:"
+    )
+    await state.set_state(ImproveState.waiting_prompt)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb_cancel(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb_cancel(), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(ImproveState.waiting_prompt, F.text)
+async def do_improve_prompt(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    user_idea = message.text.strip()
+
+    if len(user_idea) < 3:
+        await message.answer("Напиши чуть подробнее — хотя бы несколько слов.")
+        return
+
+    wait = await message.answer("✨ Улучшаю промт...")
+
+    try:
+        system = (
+            "Ты эксперт по промтам для AI-генерации изображений. "
+            "Твоя задача: взять простую идею пользователя и превратить её в профессиональный промт "
+            "на английском языке для генерации изображения. "
+            "Промт должен быть детальным, описывать стиль, освещение, настроение, технические детали. "
+            "Отвечай ТОЛЬКО готовым промтом без объяснений, без кавычек, без вводных слов. "
+            "Максимум 150 слов."
+        )
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                system=system,
+                messages=[{"role": "user", "content": f"Идея пользователя: {user_idea}"}],
+            )
+        )
+        improved = resp.content[0].text
+        improved = improved.strip().strip('"').strip("'")
+
+        await state.update_data(improved_prompt=improved, original_idea=user_idea)
+        await state.set_state(ImproveState.waiting_model)
+
+        await wait.delete()
+        await message.answer(
+            f"✨ <b>Улучшенный промт:</b>\n\n"
+            f"<code>{improved}</code>\n\n"
+            f"Выбери модель для генерации 👇",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⚡ Imagen Fast — 7 кр",  callback_data="improve_gen:img_fast", style="primary")],
+                [InlineKeyboardButton(text="🤖 GPT Image — 10 кр",  callback_data="improve_gen:gptimg_fast", style="success")],
+                [InlineKeyboardButton(text="🍌 Nano Banana — 13 кр", callback_data="improve_gen:nb_flash",   style="success")],
+                [InlineKeyboardButton(text="🎭 Flux Pro — 12 кр",   callback_data="improve_gen:flux_pro",   style="primary")],
+                [InlineKeyboardButton(text="✏️ Изменить промт",      callback_data="menu_improve")],
+                [InlineKeyboardButton(text="🏡 Главное меню",        callback_data="back_main")],
+            ])
+        )
+    except Exception as e:
+        logging.error(f"Improve prompt error uid={uid}: {e}")
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await message.answer(
+            "⚠️ Не удалось улучшить промт. Попробуй ещё раз.",
+            reply_markup=kb_cancel()
+        )
+        await state.clear()
+
+
+@dp.callback_query(F.data.startswith("improve_gen:"))
+async def improve_gen(cb: CallbackQuery, state: FSMContext):
+    model_key = cb.data.split(":")[1]
+    data = await state.get_data()
+    improved_prompt = data.get("improved_prompt", "")
+    if not improved_prompt:
+        await cb.answer("Промт не найден, начни заново.", show_alert=True)
+        await state.clear()
+        return
+
+    m = IMAGE_MODELS.get(model_key)
+    if not m:
+        await cb.answer("Модель не найдена.", show_alert=True)
+        return
+
+    uid = cb.from_user.id
+    cr = await get_credits(uid)
+    if cr < m["credits"]:
+        await cb.answer(f"Недостаточно кредитов. Нужно {m['credits']} кр.", show_alert=True)
+        return
+
+    await state.clear()
+    wait = await cb.message.answer(f"🎨 Генерирую с улучшенным промтом...\n<i>{improved_prompt[:80]}...</i>", parse_mode="HTML")
+    try:
+        # Генерируем изображение
+        cb.data = f"imodel:{model_key}"
+        # Используем общую функцию генерации через FSM-стейт
+        if m["api"] == "imagen":
+            img_bytes = await api_generate_imagen(improved_prompt, m["model_id"])
+        elif m["api"] == "gemini":
+            img_bytes = await api_generate_gemini_image(improved_prompt, m["model_id"])
+        else:
+            img_bytes = await api_generate_fal_image(improved_prompt, m["model_id"])
+
+        success = await deduct(uid, m["credits"])
+        if not success:
+            await wait.delete()
+            await cb.message.answer("💸 Недостаточно кредитов.")
+            return
+
+        new_cr = await get_credits(uid)
+        await wait.delete()
+        await cb.message.answer_photo(
+            BufferedInputFile(img_bytes, "generated.jpg"),
+            caption=(
+                f"✅ <b>{m['name']}</b>\n"
+                f"✨ Промт улучшен ассистентом\n"
+                f"💸 Списано {m['credits']} кр | Остаток: {new_cr} кр"
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✨ Улучшить другой промт", callback_data="menu_improve")],
+                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            ])
+        )
+        await log_event(uid, "improve_gen", f"model={model_key} credits={m['credits']}")
+        await check_expiring_credits(uid)
+
+    except Exception as e:
+        logging.error(f"improve_gen error uid={uid} model={model_key}: {e}")
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await cb.message.answer(
+            "⚠️ Ошибка генерации. Попробуй другую модель.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✨ Попробовать снова", callback_data="menu_improve")],
+                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            ])
+        )
+    await cb.answer()
+
+
+@dp.message(ImproveState.waiting_prompt)
+async def improve_wrong_input(message: Message):
+    await message.answer("✏️ Напиши свою идею текстом.")
+
 
 @dp.callback_query(F.data == "menu_edit")
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
