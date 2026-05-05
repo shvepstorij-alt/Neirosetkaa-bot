@@ -667,8 +667,8 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana",
         "model_id": "gemini-2.5-flash-image",
         "api": "gemini",
-        "credits": 13,
-        "price": "7₽",
+        "credits": 10,
+        "price": "5₽",
         "speed": "~3 сек",
         "desc": "Быстрый, диалоговый",
     },
@@ -1982,11 +1982,11 @@ def kb_image_models():
 def kb_video_brands():
     """Верхний уровень: выбор бренда видео-моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎥 Veo (Google)",       callback_data="vband:veo",      style="primary")],
-        [InlineKeyboardButton(text="🎞 Kling (Kuaishou)",   callback_data="vband:kling",    style="success")],
-        [InlineKeyboardButton(text="🎬 Seedance (ByteDance)",callback_data="vband:seedance",style="primary")],
-        [InlineKeyboardButton(text="🌊 Wan (Alibaba)",       callback_data="vband:wan",     style="success")],
-        [InlineKeyboardButton(text="⬅️ Назад",               callback_data="back_main")],
+        [InlineKeyboardButton(text="🎥 Veo",      callback_data="vband:veo",      style="primary")],
+        [InlineKeyboardButton(text="🎞 Kling",    callback_data="vband:kling",    style="success")],
+        [InlineKeyboardButton(text="🎬 Seedance", callback_data="vband:seedance", style="primary")],
+        [InlineKeyboardButton(text="🌊 Wan",      callback_data="vband:wan",      style="success")],
+        [InlineKeyboardButton(text="⬅️ Назад",    callback_data="back_main")],
     ])
 
 
@@ -1999,10 +1999,10 @@ VIDEO_BRAND_MODELS = {
 }
 
 VIDEO_BRAND_TITLES = {
-    "veo":      "🎥 Veo 3.1",
+    "veo":      "🎥 Veo",
     "kling":    "🎞 Kling",
-    "seedance": "🎬 Seedance (ByteDance)",
-    "wan":      "🌊 Wan 2.2 (Alibaba)",
+    "seedance": "🎬 Seedance",
+    "wan":      "🌊 Wan",
 }
 
 
@@ -5778,22 +5778,32 @@ async def on_successful_payment(message: Message):
 @dp.callback_query(F.data == "menu_ref")
 async def menu_ref(cb: CallbackQuery):
     uid = cb.from_user.id
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        total_refs = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0
-        paid_refs  = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE", uid) or 0
-        earned_sum = await conn.fetchval(
-            "SELECT COALESCE(SUM(CAST(SPLIT_PART(SPLIT_PART(data, 'credits=', 2), ' ', 1) AS INTEGER)), 0) "
-            "FROM events WHERE user_id=$1 AND kind='batch_add_referral'", uid
-        ) or 0
-        # Последние 5 приглашённых с именами
-        recent_refs = await conn.fetch(
-            """SELECT u.first_name, u.username, u.ref_bonus_paid,
-                      u.created_at::date as joined
-               FROM users u WHERE u.referred_by=$1
-               ORDER BY u.created_at DESC LIMIT 5""",
-            uid
-        )
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            total_refs = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0
+            paid_refs  = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE", uid) or 0
+            earned_sum = await conn.fetchval(
+                "SELECT COALESCE(SUM(CAST(SPLIT_PART(SPLIT_PART(data, 'credits=', 2), ' ', 1) AS INTEGER)), 0) "
+                "FROM events WHERE user_id=$1 AND kind='batch_add_referral'", uid
+            ) or 0
+            # Последние 5 приглашённых — с защитой если колонки нет
+            try:
+                recent_refs = await conn.fetch(
+                    """SELECT u.first_name, u.username, u.ref_bonus_paid,
+                              u.created_at::date as joined
+                       FROM users u WHERE u.referred_by=$1
+                       ORDER BY u.created_at DESC LIMIT 5""",
+                    uid
+                )
+            except Exception as ref_err:
+                logging.warning(f"recent_refs query failed: {ref_err}")
+                recent_refs = []
+    except Exception as e:
+        logging.error(f"menu_ref DB error uid={uid}: {e}")
+        await cb.answer("⚠️ Ошибка загрузки. Попробуй снова.", show_alert=True)
+        return
+
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
 
@@ -6995,10 +7005,10 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f"🎥 <b>Veo 3.1</b> — Google, до 4K + аудио, от 99 кр\n"
+        f"🎥 <b>Veo</b> — до 4K + аудио, от 239 кр\n"
         f"🎞 <b>Kling</b> — плавная физика + аудио, от 109 кр\n"
-        f"🎬 <b>Seedance</b> — ByteDance, нативное аудио, от 149 кр\n"
-        f"🌊 <b>Wan 2.2</b> — Alibaba, топ open-source, от 75 кр\n\n"
+        f"🎬 <b>Seedance</b> — нативное аудио, от 149 кр\n"
+        f"🌊 <b>Wan</b> — топ open-source, от 80 кр\n\n"
         f"⏱ <i>Время генерации: 1–10 минут</i>"
     )
     try:
