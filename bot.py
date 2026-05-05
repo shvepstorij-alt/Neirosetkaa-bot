@@ -975,7 +975,11 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        for col, dfn in [("referred_by","BIGINT DEFAULT NULL"),("ref_bonus_paid","BOOLEAN DEFAULT FALSE")]:
+        for col, dfn in [
+            ("referred_by",    "BIGINT DEFAULT NULL"),
+            ("ref_bonus_paid", "BOOLEAN DEFAULT FALSE"),
+            ("coins",          "NUMERIC(10,2) DEFAULT 0"),
+        ]:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")
             except Exception:
@@ -1052,6 +1056,36 @@ async def init_db():
             "INSERT INTO settings (key, value) VALUES ('maintenance', '0') ON CONFLICT DO NOTHING"
         )
     logging.info("✅ PostgreSQL инициализирован")
+
+
+# ── МОНЕТКИ ────────────────────────────────────────────────────────────────────
+COINS_REF_PERCENT = 0.10  # 10% от суммы первой покупки реферала → монетки рефереру
+
+async def get_coins(user_id: int) -> float:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            "SELECT COALESCE(coins, 0) FROM users WHERE user_id=$1", user_id
+        )
+        return float(val or 0)
+
+async def add_coins(user_id: int, amount: float, reason: str = ""):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET coins = COALESCE(coins, 0) + $1 WHERE user_id=$2",
+            round(amount, 2), user_id
+        )
+    logging.info(f"add_coins uid={user_id} +{amount:.2f} reason={reason}")
+
+async def deduct_coins(user_id: int, amount: float) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE users SET coins = coins - $1 WHERE user_id=$2 AND COALESCE(coins,0) >= $1",
+            round(amount, 2), user_id
+        )
+        return int(result.split()[-1]) > 0
 
 
 async def log_event(user_id: int | None, kind: str, data: str = ""):
@@ -5275,6 +5309,7 @@ async def cmd_ref(message: Message):
         paid_refs  = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE", uid) or 0
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
+    user_coins = await get_coins(uid)
     earned = paid_refs * REF_BONUS
     await message.answer(
         f"\U0001f91d <b>Пригласить друга</b>\n\n"
@@ -5589,15 +5624,42 @@ async def shop_pay_sbp(cb: CallbackQuery):
             ON CONFLICT (order_id) DO NOTHING
         """, order_id, uid, 0, p["price"], f"shop:{key}:{plan_idx}")
 
-    pay_url = fk_pay_url(p["price"], order_id)
+    user_coins = await get_coins(uid)
+    final_shop_price = p["price"]
+    coins_used = 0
+    if user_coins >= 1:
+        coins_used = int(min(user_coins, final_shop_price))
+        final_shop_price = max(0, final_shop_price - coins_used)
+
+    pay_url = fk_pay_url(final_shop_price, order_id) if final_shop_price > 0 else None
+
+    coins_line = f"\n🪙 Монетки: <b>−{coins_used}₽</b>" if coins_used > 0 else ""
+    price_line = f"<s>{p['price']}₽</s> → <b>{final_shop_price}₽</b>" if coins_used > 0 else f"<b>{p['price']}₽</b>"
+
     text = (
         f"🏦 <b>Оплата через СБП</b>\n\n"
         f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
-        f"💵 Сумма: <b>{p['price']}₽</b>\n\n"
+        f"💵 Сумма: {price_line}{coins_line}\n\n"
         f"После оплаты отправьте чек и номер заказа Александру — он активирует подписку 👇"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🏦 Оплатить {p['price']}₽", url=pay_url)],
+    shop_buttons = []
+    if coins_used > 0 and final_shop_price == 0:
+        # Полностью покрыто монетками
+        shop_buttons.append([InlineKeyboardButton(
+            text=f"✅ Оплатить монетками ({coins_used}₽)",
+            callback_data=f"shop_full_coins:{key}:{plan_idx}:{coins_used}"
+        )])
+    elif coins_used > 0:
+        # Частично монетками + остаток СБП
+        shop_buttons.append([InlineKeyboardButton(
+            text=f"🪙 Применить {coins_used}₽ монетками + СБП {final_shop_price}₽",
+            callback_data=f"shop_coins_sbp:{key}:{plan_idx}:{coins_used}"
+        )])
+        shop_buttons.append([InlineKeyboardButton(text=f"🏦 Оплатить без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id))])
+    else:
+        shop_buttons.append([InlineKeyboardButton(text=f"🏦 Оплатить {p['price']}₽", url=pay_url)])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
             text="✅ Я оплатил — написать Александру",
             url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил заказ с номером {order_id}\nСервис: {s["name"]}\nТариф: {p["name"]}')
@@ -5623,6 +5685,63 @@ async def shop_pay_sbp(cb: CallbackQuery):
         )
     except Exception:
         pass
+    await cb.answer()
+
+
+# ── ОПЛАТА МОНЕТКАМИ ──────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data.startswith("pay_coins:"))
+async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    key = parts[1]
+    rest = int(parts[2])
+    p = CREDIT_PACKS.get(key)
+    if not p:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    uid = cb.from_user.id
+    user_coins = await get_coins(uid)
+    coins_used = min(int(user_coins), p["price"])
+
+    if rest == 0:
+        ok = await deduct_coins(uid, coins_used)
+        if not ok:
+            await cb.answer("Недостаточно монеток.", show_alert=True)
+            return
+        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=30)
+        new_cr = await get_credits(uid)
+        new_coins = await get_coins(uid)
+        await cb.message.edit_text(
+            "\u2705 <b>\u041e\u043f\u043b\u0430\u0447\u0435\u043d\u043e \u043c\u043e\u043d\u0435\u0442\u043a\u0430\u043c\u0438!</b>\n\n"
+            f"📦 {p['name']} — {p['credits']} кредитов\n"
+            f"🪙 Списано: {coins_used}₽ монетками\n"
+            f"💵 Баланс кредитов: <b>{new_cr} кр</b>\n"
+            f"🪙 Баланс монеток: <b>{new_coins:.0f}₽</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            ])
+        )
+    else:
+        ok = await deduct_coins(uid, coins_used)
+        if not ok:
+            await cb.answer("Недостаточно монеток.", show_alert=True)
+            return
+        import time as _t
+        order_id = f"cr_{uid}_{int(_t.time())}"
+        await fk_save_order(order_id, uid, p["credits"], rest, key)
+        pay_url = fk_pay_url(rest, order_id)
+        await cb.message.edit_text(
+            "\U0001fa99 <b>\u041c\u043e\u043d\u0435\u0442\u043a\u0438 \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u044b!</b>\n\n"
+            f"📦 {p['name']} — {p['credits']} кредитов\n"
+            f"🪙 Списано монетками: <b>{coins_used}₽</b>\n"
+            f"💵 Осталось доплатить: <b>{rest}₽</b> через СБП",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"🏦 Доплатить {rest}₽ через СБП", url=pay_url)],
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_buy")],
+            ])
+        )
     await cb.answer()
 
 
@@ -5858,7 +5977,8 @@ async def menu_ref(cb: CallbackQuery):
         f"\U0001f4ca <b>Твоя статистика:</b>\n"
         f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
         f"\U0001f4b0 Купили: <b>{paid_refs}</b>\n"
-        f"\U0001f381 Заработано: <b>{earned_sum} кредитов</b>\n"
+        f"\U0001f381 Кредитов заработано: <b>{earned_sum} кр</b>\n"
+        f"🪙 Монеток на балансе: <b>{user_coins:.0f}₽</b>\n"
         f"<i>{next_level_msg}</i>"
         f"{friends_block}\n\n"
         f"\U0001f517 <b>Твоя ссылка:</b>\n"
@@ -6084,9 +6204,23 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
         f"Выбери способ оплаты:"
     )
 
-    rows = [
-        [InlineKeyboardButton(text=f"🏦 Оплатить через СБП — {final_price}₽", callback_data=f"payfk:{key}:sbp")],
-    ]
+    # Показываем кнопку монеток если есть баланс
+    user_coins = await get_coins(cb.from_user.id)
+    rows = []
+    if user_coins >= 1:
+        coins_cover = min(user_coins, final_price)
+        rest = max(0, final_price - int(coins_cover))
+        if rest == 0:
+            rows.append([InlineKeyboardButton(
+                text=f"🪙 Оплатить монетками ({int(coins_cover)}₽)",
+                callback_data=f"pay_coins:{key}:0"
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                text=f"🪙 Частично монетками ({int(coins_cover)}₽) + СБП ({rest}₽)",
+                callback_data=f"pay_coins:{key}:{rest}"
+            )])
+    rows.append([InlineKeyboardButton(text=f"🏦 Оплатить через СБП — {final_price}₽", callback_data=f"payfk:{key}:sbp")])
     if not promo_code:
         rows.append([InlineKeyboardButton(text="🎟 Применить промокод", callback_data=f"promo_apply:{key}")])
     else:
@@ -6537,8 +6671,30 @@ async def process_referral_bonus(user_id: int):
 
     bonus_amount = _ref_bonus_for_count(paid_count)
     await add_credits_batch(referrer_id, bonus_amount, source="referral", days_valid=30)
+
+    # Начисляем монетки — 10% от суммы покупки реферала
+    # Сумму покупки берём из последнего платежа реферала
+    try:
+        pool2 = await get_pool()
+        async with pool2.acquire() as conn2:
+            last_amount = await conn2.fetchval(
+                """SELECT amount_rub FROM fk_orders
+                   WHERE user_id=$1 AND status='paid'
+                   ORDER BY paid_at DESC LIMIT 1""",
+                user_id
+            )
+        if last_amount:
+            coins_earned = round(float(last_amount) * COINS_REF_PERCENT, 2)
+            await add_coins(referrer_id, coins_earned, reason=f"ref_purchase uid={user_id}")
+        else:
+            coins_earned = 0
+    except Exception as ce:
+        logging.error(f"coins accrual error: {ce}")
+        coins_earned = 0
+
     try:
         new_bal = await get_credits(referrer_id)
+        new_coins = await get_coins(referrer_id)
         tier_note = ""
         if paid_count + 1 == 5:
             tier_note = "\n🎖 Ты достиг уровня 5+ рефералов — теперь 250 кр за друга!"
@@ -6548,12 +6704,15 @@ async def process_referral_bonus(user_id: int):
             tier_note = "\n🥇 Ты достиг уровня 20+ рефералов — теперь 325 кр за друга!"
         elif paid_count + 1 == 50:
             tier_note = "\n💎 50+ рефералов! Топовый уровень — 350 кр за друга!"
+        coins_line = f"\n🪙 Монетки: <b>+{coins_earned:.0f}₽</b> (10% от покупки)" if coins_earned > 0 else ""
         await bot.send_message(
             referrer_id,
             f"🎉 <b>Реферальный бонус!</b>\n\n"
             f"Твой друг сделал первую покупку.\n"
-            f"✨ Начислено: <b>+{bonus_amount} кредитов</b>\n"
-            f"💵 Баланс: <b>{new_bal} кредитов</b>"
+            f"✨ Кредиты: <b>+{bonus_amount} кр</b>\n"
+            f"💵 Баланс кредитов: <b>{new_bal} кр</b>"
+            f"{coins_line}\n"
+            f"🪙 Баланс монеток: <b>{new_coins:.0f}₽</b>"
             f"{tier_note}",
             parse_mode="HTML"
         )
