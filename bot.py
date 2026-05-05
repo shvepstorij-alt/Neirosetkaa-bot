@@ -5909,7 +5909,7 @@ async def menu_ref(cb: CallbackQuery):
             # Последние 5 приглашённых — с защитой если колонки нет
             try:
                 recent_refs = await conn.fetch(
-                    """SELECT u.first_name, u.username, u.ref_bonus_paid,
+                    """SELECT u.full_name, u.username, u.ref_bonus_paid,
                               u.created_at::date as joined
                        FROM users u WHERE u.referred_by=$1
                        ORDER BY u.created_at DESC LIMIT 5""",
@@ -5925,6 +5925,7 @@ async def menu_ref(cb: CallbackQuery):
 
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
+    user_coins = await get_coins(uid)
 
     # Текущий уровень и следующий бонус
     next_bonus = _ref_bonus_for_count(paid_refs)
@@ -5948,7 +5949,7 @@ async def menu_ref(cb: CallbackQuery):
     # Строим список последних приглашённых
     friends_lines = []
     for i, r in enumerate(recent_refs, 1):
-        name = r["first_name"] or "Пользователь"
+        name = r["full_name"] or "Пользователь"
         username = f" (@{r['username']})" if r["username"] else ""
         status = "✅ Купил" if r["ref_bonus_paid"] else "⏳ Не купил"
         joined = r["joined"].strftime("%d.%m") if r["joined"] else ""
