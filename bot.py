@@ -5745,6 +5745,110 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+@dp.callback_query(F.data.startswith("shop_full_coins:"))
+async def shop_full_coins(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    key, plan_idx, coins_used = parts[1], int(parts[2]), int(parts[3])
+    s = SHOP_CATALOG.get(key)
+    if not s:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    p = s["plans"][plan_idx]
+    uid = cb.from_user.id
+    ok = await deduct_coins(uid, coins_used)
+    if not ok:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
+    new_coins = await get_coins(uid)
+    username = cb.from_user.username or cb.from_user.full_name
+    await cb.message.edit_text(
+        f"\U0001fa99 <b>Оплачено монетками!</b>\n\n"
+        f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+        f"\U0001fa99 Списано: <b>{coins_used}\u20bd</b>\n"
+        f"\U0001fa99 Остаток монеток: <b>{new_coins:.0f}\u20bd</b>\n\n"
+        f"Александр активирует подписку в течение часа \U0001f447",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="\u2705 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
+            [InlineKeyboardButton(text="\U0001f3e1 Главное меню", callback_data="back_main")],
+        ])
+    )
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"\U0001fa99 <b>Заказ оплачен монетками (магазин)</b>\n\n"
+            f"\U0001f464 @{username} (ID: {uid})\n"
+            f"\U0001f4e6 {s['emoji']} {s['name']} {p['name']}\n"
+            f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
+            f"\U0001f4b5 СБП: 0\u20bd",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("shop_coins_sbp:"))
+async def shop_coins_sbp(cb: CallbackQuery):
+    parts = cb.data.split(":")
+    key, plan_idx, coins_used = parts[1], int(parts[2]), int(parts[3])
+    s = SHOP_CATALOG.get(key)
+    if not s:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    p = s["plans"][plan_idx]
+    uid = cb.from_user.id
+    rest = p["price"] - coins_used
+    ok = await deduct_coins(uid, coins_used)
+    if not ok:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
+    import time as _t
+    order_id = f"shop_{uid}_{int(_t.time())}"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack) "
+            "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (order_id) DO NOTHING",
+            order_id, uid, 0, rest, f"shop:{key}:{plan_idx}"
+        )
+    pay_url = fk_pay_url(rest, order_id)
+    username = cb.from_user.username or cb.from_user.full_name
+    import urllib.parse
+    msg_text = urllib.parse.quote(
+        f"Привет! Оплатил заказ {order_id}\n"
+        f"Сервис: {s['name']}\nТариф: {p['name']}\n"
+        f"Монетки: {coins_used}\u20bd + СБП: {rest}\u20bd"
+    )
+    await cb.message.edit_text(
+        f"\U0001fa99 <b>Монетки применены!</b>\n\n"
+        f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+        f"\U0001fa99 Монетками: <b>{coins_used}\u20bd</b>\n"
+        f"\U0001f4b5 Доплата СБП: <b>{rest}\u20bd</b>\n\n"
+        f"После оплаты напиши Александру \U0001f447",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"\U0001f3e6 Оплатить {rest}\u20bd через СБП", url=pay_url)],
+            [InlineKeyboardButton(text="\u2705 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}?text={msg_text}")],
+            [InlineKeyboardButton(text="\u2b05\ufe0f Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
+        ])
+    )
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"\U0001fa99 <b>Заказ (монетки + СБП)</b>\n\n"
+            f"\U0001f464 @{username} (ID: {uid})\n"
+            f"\U0001f4e6 {s['emoji']} {s['name']} {p['name']}\n"
+            f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
+            f"\U0001f4b5 СБП: {rest}\u20bd\n"
+            f"\U0001f194 Заказ: <code>{order_id}</code>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await cb.answer()
+
+
 @dp.callback_query(F.data.startswith("shop_pay_stars:"))
 async def shop_pay_stars(cb: CallbackQuery):
     """Оплата Telegram Stars."""
@@ -12255,7 +12359,8 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
             del pending_fk_payments[order_id]
 
         # 4. Помечаем как оплаченный в БД (защита от двойного зачисления)
-        await fk_mark_paid(order_id)
+        # ВАЖНО: fk_credit_paid_order сама вызывает fk_mark_paid внутри,
+        # поэтому здесь НЕ вызываем — иначе кредиты не зачислятся (mark вернёт False)
 
         user_id    = payment["user_id"]
         credits    = payment["credits"]
