@@ -6884,11 +6884,12 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f"🤖 <b>GPT Image 2</b> — OpenAI, #1 в Image Arena, от 10 кр\n"
-        f"🌟 <b>Imagen 4</b> — флагман Google, от 7 кр\n"
-        f"🍌 <b>Nano Banana</b> — Gemini, 4K, от 10 кр\n"
-        f"🎭 <b>Flux</b> — фотореализм, от 12 кр\n"
-        f"✒️ <b>Ideogram</b> — идеальный текст в картинке, от 14 кр"
+        f"🤖 <b>GPT Image</b> — OpenAI, #1 в Image Arena\n"
+        f"🌟 <b>Imagen</b> — флагман Google\n"
+        f"🍌 <b>Nano Banana</b> — Gemini, быстро и качественно\n"
+        f"🎭 <b>Flux</b> — художественный фотореализм\n"
+        f"✒️ <b>Ideogram</b> — идеальный текст в картинке\n"
+        f"⚡ <b>Grok Imagine</b> — xAI, высокий реализм"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_brands(), parse_mode="HTML")
@@ -10657,7 +10658,37 @@ async def adm_promo_deact_start(cb: CallbackQuery, state: FSMContext):
 #  РЕДАКТИРОВАНИЕ ФОТО ПО РЕФЕРЕНСУ
 # ══════════════════════════════════════════════════════════
 
-EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов
+EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов (дефолт Gemini)
+
+EDIT_MODELS = {
+    "edit_gemini": {
+        "name": "🍌 Nano Banana",
+        "api": "gemini",
+        "credits": 10,
+        "desc": "Gemini — быстро, диалоговый редактор",
+    },
+    "edit_grok": {
+        "name": "⚡ Grok Imagine",
+        "api": "fal",
+        "model_id": "xai/grok-imagine-image/edit",
+        "credits": 10,
+        "desc": "xAI — точное следование инструкциям",
+    },
+    "edit_gpt": {
+        "name": "🤖 GPT Image",
+        "api": "fal",
+        "model_id": "openai/gpt-image-2/edit",
+        "credits": 15,
+        "desc": "OpenAI — реализм, сложные правки",
+    },
+    "edit_flux": {
+        "name": "🎭 Flux Kontext",
+        "api": "fal",
+        "model_id": "fal-ai/flux-1/kontext/dev",
+        "credits": 14,
+        "desc": "Black Forest Labs — художественный стиль",
+    },
+}
 ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 кредитов (Veo, дефолт)
 
 # Модели для анимации фото (image-to-video)
@@ -11071,20 +11102,12 @@ async def improve_wrong_input(message: Message):
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
-    text = (
-        f"✏️ <b>Редактировать фото по референсу</b>\n\n"
-        f"💵 Баланс: <b>{cr} кредитов</b>\n"
-        f"💵 Стоимость: <b>{EDIT_CREDIT_COST} кредитов</b>\n\n"
-        f"Как это работает:\n"
-        f"1️⃣ Отправь своё фото\n"
-        f"2️⃣ Напиши что изменить\n"
-        f"3️⃣ Получи результат\n\n"
-        f"<i>Примеры: добавить закат, сменить фон, сделать в стиле аниме, убрать лишние объекты</i>"
-    )
-    if cr < EDIT_CREDIT_COST:
+    min_cost = min(m["credits"] for m in EDIT_MODELS.values())
+
+    if cr < min_cost:
         try:
             await cb.message.edit_text(
-                f"💸 Недостаточно кредитов\n\nНужно {EDIT_CREDIT_COST} кредитов, у тебя {cr} кредитов.",
+                f"💸 Недостаточно кредитов\n\nНужно {min_cost} кредитов, у тебя {cr} кредитов.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
@@ -11093,7 +11116,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
             )
         except Exception:
             await cb.message.answer(
-                f"💸 Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кредитов.",
+                f"💸 Недостаточно кредитов. Нужно {min_cost} кредитов.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
                 ])
@@ -11101,7 +11124,56 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
+    lines = []
+    for key, m in EDIT_MODELS.items():
+        icon = "🔹" if cr >= m["credits"] else "🔸"
+        lines.append(f"{icon} <b>{m['name']}</b> — {m['credits']} кр\n   <i>{m['desc']}</i>")
+
+    text = (
+        f"🖌️ <b>Редактировать фото</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
+        + "\n\n".join(lines) +
+        f"\n\n<i>Примеры: смени фон, добавь закат, сделай в стиле аниме</i>"
+    )
+
+    styles = {"edit_gemini": "success", "edit_grok": "primary", "edit_gpt": "success", "edit_flux": "primary"}
+    rows = []
+    for key, m in EDIT_MODELS.items():
+        btn = InlineKeyboardButton(
+            text=f"{m['name']} — {m['credits']} кр",
+            callback_data=f"edit_model:{key}"
+        )
+        if styles.get(key):
+            btn.style = styles[key]
+        rows.append([btn])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("edit_model:"))
+async def edit_model_select(cb: CallbackQuery, state: FSMContext):
+    model_key = cb.data.split(":")[1]
+    m = EDIT_MODELS.get(model_key)
+    if not m:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    cr = await get_credits(cb.from_user.id)
+    if cr < m["credits"]:
+        await cb.answer(f"Недостаточно кредитов. Нужно {m['credits']} кр.", show_alert=True)
+        return
+
+    await state.update_data(edit_model_key=model_key)
     await state.set_state(EditState.waiting_photo)
+    text = (
+        f"<b>{m['name']}</b> — {m['desc']}\n\n"
+        f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
+        f"📷 Отправь фото для редактирования:"
+    )
     try:
         await cb.message.edit_text(text, reply_markup=kb_cancel(), parse_mode="HTML")
     except Exception:
@@ -11144,28 +11216,27 @@ async def edit_get_prompt(message: Message, state: FSMContext):
     data = await state.get_data()
     photo_bytes = bytes(data["photo_bytes"])
     prompt = message.text.strip()
+    model_key = data.get("edit_model_key", "edit_gemini")
+    m = EDIT_MODELS.get(model_key, EDIT_MODELS["edit_gemini"])
+    edit_cost = m["credits"]
     uid = message.from_user.id
 
-    # Валидация промта
     ok_v, err = validate_gen_prompt(prompt)
     if not ok_v:
         await message.answer(err)
         return
 
-    # Rate limit (редактирование = фото)
     if not await _check_can_generate(message, uid, kind="photo"):
         await state.clear()
         return
 
-    # Проверяем кредиты
     cr = await get_credits(uid)
-    if cr < EDIT_CREDIT_COST:
+    if cr < edit_cost:
         await state.clear()
-        await message.answer(f"💸 Недостаточно кредитов. Нужно {EDIT_CREDIT_COST} кредитов, у тебя {cr}.")
+        await message.answer(f"💸 Недостаточно кредитов. Нужно {edit_cost} кредитов, у тебя {cr}.")
         return
 
-    # Списываем кредиты
-    ok = await deduct(uid, EDIT_CREDIT_COST)
+    ok = await deduct(uid, edit_cost)
     if not ok:
         await state.clear()
         await message.answer("⛔ Ошибка списания кредитов. Попробуй ещё раз.")
@@ -11175,12 +11246,11 @@ async def edit_get_prompt(message: Message, state: FSMContext):
     await state.clear()
     wait = await message.answer(
         f"🖌️ Редактирую фото...\n\n"
-        f"🤖 Gemini Flash Image\n"
+        f"{m['name']}\n"
         f"<i>{prompt[:80]}</i>",
         parse_mode="HTML"
     )
 
-    # Защита от двойного возврата кредитов
     edit_refunded = False
 
     async def edit_refund_once(reason: str = ""):
@@ -11189,19 +11259,48 @@ async def edit_get_prompt(message: Message, state: FSMContext):
             logging.warning(f"edit_refund_once SKIPPED uid={uid} reason={reason}")
             return
         edit_refunded = True
-        await add_credits(uid, EDIT_CREDIT_COST)
-        logging.info(f"edit_refund_once EXECUTED uid={uid} credits={EDIT_CREDIT_COST} reason={reason}")
+        await add_credits(uid, edit_cost)
+        logging.info(f"edit_refund_once EXECUTED uid={uid} credits={edit_cost} reason={reason}")
 
     try:
-        result_bytes = await _with_retry(
-            lambda: api_edit_image(photo_bytes, prompt),
-            max_attempts=3, op_name="Edit image"
-        )
-        await log_gen(uid, "edit", "gemini-flash-image", EDIT_CREDIT_COST)
+        if m["api"] == "gemini":
+            result_bytes = await _with_retry(
+                lambda: api_edit_image(photo_bytes, prompt),
+                max_attempts=3, op_name="Edit image Gemini"
+            )
+        else:
+            # fal.ai редактирование (Grok, GPT Image, Flux Kontext)
+            import base64 as _b64
+            img_b64 = _b64.b64encode(photo_bytes).decode("utf-8")
+            image_data_uri = f"data:image/jpeg;base64,{img_b64}"
+            fal_headers = {
+                "Authorization": f"Key {FAL_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "prompt": prompt,
+                "image_url": image_data_uri,
+            }
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    f"https://fal.run/{m['model_id']}",
+                    headers=fal_headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=120)
+                ) as r:
+                    result = await r.json()
+                out_url = (result.get("images") or [{}])[0].get("url")
+                if not out_url:
+                    out_url = result.get("image", {}).get("url")
+                if not out_url:
+                    raise Exception(f"No image URL: {str(result)[:200]}")
+                async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=60)) as dr:
+                    result_bytes = await dr.read()
+
+        await log_gen(uid, "edit", model_key, edit_cost)
         _record_generation(uid, _photo_history)
         cr_left = await get_credits(uid)
-        caption = f"🎉 Готово! ✏️ Редактирование\n💸 Списано {EDIT_CREDIT_COST} кредитов | Остаток: {cr_left} кредитов"
-        # Оригинал без сжатия — с retry
+        caption = f"🎉 Готово! 🖌️ Редактирование — {m['name']}\n💸 Списано {edit_cost} кр | Остаток: {cr_left} кр"
         await safe_send_media(
             message.answer_document,
             BufferedInputFile(result_bytes, "edited_original.png"),
@@ -11209,7 +11308,6 @@ async def edit_get_prompt(message: Message, state: FSMContext):
             parse_mode="HTML",
             op_name="edit_document",
         )
-        # Превью с кнопками — с retry
         await safe_send_media(
             message.answer_photo,
             BufferedInputFile(result_bytes, "edited.png"),
@@ -11223,7 +11321,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
             pass
     except Exception as e:
         await edit_refund_once(f"exception:{type(e).__name__}")
-        await notify_admin_error(f"Редактирование фото uid={uid}", e)
+        await notify_admin_error(f"Редактирование фото uid={uid} model={model_key}", e)
         try:
             await wait.edit_text(
                 f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
