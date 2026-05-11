@@ -12167,28 +12167,62 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         # Метод оплаты для сообщения
         db_order_for_msg = await fk_get_order(order_id)
         method_used_msg = (db_order_for_msg or {}).get("payment_method", "sbp") if db_order_for_msg else "sbp"
-        method_label = "🏦 СБП" if method_used_msg == "sbp" else "💳 Карта"
 
-        await bot.send_message(
-            user_id,
-            f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"💎 <b>Зачислено:</b> +{credits} кредитов\n"
-            f"💵 <b>Баланс:</b> {old_balance} → <b>{new_balance} кр</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💳 Способ оплаты: {method_label} · {amount_rub}₽\n"
-            f"🆔 Заказ: <code>{order_id}</code>\n\n"
-            f"<i>⏳ Кредиты действуют 30 дней с момента покупки</i>"
-            f"{delayed_note}\n\n"
-            f"<b>Готов творить? 🚀</b>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🖼️ Создать фото", callback_data="menu_image"),
-                 InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
-                [InlineKeyboardButton(text="🤖 AI-Консультант", callback_data="menu_chat")],
-                [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
-            ])
-        )
+        # Определяем тип заказа — магазин или кредиты
+        is_shop_order = order_id.startswith("shop_")
+        pack_info = (db_order_for_msg or {}).get("pack", "") if db_order_for_msg else pack
+
+        if is_shop_order:
+            # Заказ из магазина — показываем информацию о товаре
+            shop_key = pack_info.split(":")[1] if pack_info and ":" in pack_info else ""
+            plan_idx = int(pack_info.split(":")[2]) if pack_info and pack_info.count(":") >= 2 else 0
+            s = SHOP_CATALOG.get(shop_key, {})
+            plans = s.get("plans", [])
+            p = plans[plan_idx] if plan_idx < len(plans) else {}
+            service_name = f"{s.get('emoji', '')} {s.get('name', '')} — {p.get('name', '')}" if s else "Товар из магазина"
+
+            await bot.send_message(
+                user_id,
+                f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 <b>Товар:</b> {service_name}\n"
+                f"💵 <b>Сумма:</b> {amount_rub}₽\n"
+                f"🏦 <b>Способ оплаты:</b> СБП\n"
+                f"━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🆔 Заказ: <code>{order_id}</code>\n\n"
+                f"Александр свяжется с тобой и активирует подписку в течение часа 🙌\n"
+                f"{delayed_note}\n\n"
+                f"<i>Пока ждёшь — попробуй генерацию фото и видео прямо в боте! 🎨</i>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🎨 Генерировать фото", callback_data="menu_image"),
+                     InlineKeyboardButton(text="🎬 Генерировать видео", callback_data="menu_video")],
+                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                ])
+            )
+        else:
+            # Покупка кредитов — показываем баланс
+            await bot.send_message(
+                user_id,
+                f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>Зачислено:</b> +{credits} кредитов\n"
+                f"💵 <b>Баланс:</b> {old_balance} → <b>{new_balance} кр</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n\n"
+                f"🏦 Способ оплаты: СБП · {amount_rub}₽\n"
+                f"🆔 Заказ: <code>{order_id}</code>\n\n"
+                f"<i>⏳ Кредиты действуют 30 дней с момента покупки</i>"
+                f"{delayed_note}\n\n"
+                f"<b>Готов творить? 🚀</b>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🖼️ Создать фото", callback_data="menu_image"),
+                     InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
+                    [InlineKeyboardButton(text="🤖 AI-Консультант", callback_data="menu_chat")],
+                    [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                ])
+            )
         logging.info(f"FK payment success ({source}): user={user_id} credits=+{credits} balance={old_balance}→{new_balance} order={order_id}")
     except Exception as e:
         logging.error(f"FK notify user error ({source}): {e}")
