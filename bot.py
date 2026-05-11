@@ -667,8 +667,8 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana",
         "model_id": "gemini-2.5-flash-image",
         "api": "gemini",
-        "credits": 10,
-        "price": "5₽",
+        "credits": 13,
+        "price": "7₽",
         "speed": "~3 сек",
         "desc": "Быстрый, диалоговый",
     },
@@ -676,8 +676,8 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana 2",
         "model_id": "gemini-3.1-flash-image-preview",
         "api": "gemini",
-        "credits": 13,
-        "price": "6₽",
+        "credits": 15,
+        "price": "8₽",
         "speed": "~4 сек",
         "desc": "Новейший, лучшее качество",
     },
@@ -708,6 +708,25 @@ IMAGE_MODELS = {
         "price": "7₽",
         "speed": "~10 сек",
         "desc": "Идеальный текст в картинке (для постеров, баннеров WB/Ozon)",
+    },
+    # ── xAI Grok Imagine (через fal.ai) ──────────────────────
+    "grok_img": {
+        "name": "⚡ Grok Imagine",
+        "model_id": "xai/grok-imagine-image",
+        "api": "fal",
+        "credits": 10,
+        "price": "5₽",
+        "speed": "~5 сек",
+        "desc": "xAI, фотореализм, точный текст",
+    },
+    "grok_img_pro": {
+        "name": "🔥 Grok Imagine Pro",
+        "model_id": "fal-ai/grok-imagine-pro",
+        "api": "fal",
+        "credits": 14,
+        "price": "7₽",
+        "speed": "~8 сек",
+        "desc": "Макс. качество, лучший реализм",
     },
     # ── OpenAI GPT Image 2 (через fal.ai, 3 уровня качества) ───
     "gptimg_fast": {
@@ -783,13 +802,13 @@ VIDEO_MODELS = {
         "name": "🎬 Seedance 1.5 Pro",
         "model_id": "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
         "api": "fal",
-        "credits": 149,
-        "price": "79₽",
+        "credits": 99,
+        "price": "55₽",
         "res": "720p + аудио",
         "desc": "ByteDance, нативное аудио",
         "durations": {
-            5:  (149, "79₽"),
-            10: (280, "149₽"),
+            5:  (99, "55₽"),
+            10: (188, "105₽"),
         },
     },
     "vid_fast": {
@@ -1952,13 +1971,14 @@ def kb_main():
 def kb_image_brands():
     """Верхний уровень: выбор бренда моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 GPT Image",   callback_data="iband:gptimg",   style="success")],
-        [InlineKeyboardButton(text="🌟 Imagen",      callback_data="iband:imagen",   style="primary")],
-        [InlineKeyboardButton(text="🍌 Nano Banana", callback_data="iband:nano",     style="success")],
-        [InlineKeyboardButton(text="🎭 Flux",         callback_data="iband:flux",    style="primary")],
-        [InlineKeyboardButton(text="✒️ Ideogram",     callback_data="iband:ideogram",style="success")],
-        [InlineKeyboardButton(text="🔍 Улучшить фото", callback_data="menu_upscale")],
-        [InlineKeyboardButton(text="⬅️ Назад",        callback_data="back_main")],
+        [InlineKeyboardButton(text="🤖 GPT Image",      callback_data="iband:gptimg",   style="success")],
+        [InlineKeyboardButton(text="🌟 Imagen",         callback_data="iband:imagen",   style="primary")],
+        [InlineKeyboardButton(text="🍌 Nano Banana",    callback_data="iband:nano",     style="success")],
+        [InlineKeyboardButton(text="🎭 Flux",            callback_data="iband:flux",    style="primary")],
+        [InlineKeyboardButton(text="✒️ Ideogram",        callback_data="iband:ideogram",style="success")],
+        [InlineKeyboardButton(text="⚡ Grok Imagine",    callback_data="iband:grok",    style="primary")],
+        [InlineKeyboardButton(text="🔍 Улучшить фото",  callback_data="menu_upscale")],
+        [InlineKeyboardButton(text="⬅️ Назад",           callback_data="back_main")],
     ])
 
 
@@ -1969,6 +1989,7 @@ IMAGE_BRAND_MODELS = {
     "nano":     ["nb_flash", "nb_2", "nb_pro"],
     "flux":     ["flux_pro"],
     "ideogram": ["ideogram_v3"],
+    "grok":     ["grok_img", "grok_img_pro"],
 }
 
 IMAGE_BRAND_TITLES = {
@@ -1977,6 +1998,7 @@ IMAGE_BRAND_TITLES = {
     "nano":     "🍌 Nano Banana",
     "flux":     "🎭 Flux",
     "ideogram": "✒️ Ideogram",
+    "grok":     "⚡ Grok Imagine (xAI)",
 }
 
 
@@ -1988,6 +2010,7 @@ def kb_image_models_for_brand(brand: str):
         "nano":     "success",
         "flux":     "primary",
         "ideogram": "success",
+        "grok":     "primary",
     }
     style = BRAND_STYLES.get(brand)
     keys = IMAGE_BRAND_MODELS.get(brand, [])
@@ -10610,7 +10633,42 @@ async def adm_promo_deact_start(cb: CallbackQuery, state: FSMContext):
 # ══════════════════════════════════════════════════════════
 
 EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов
-ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 кредитов
+ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 кредитов (Veo, дефолт)
+
+# Модели для анимации фото (image-to-video)
+ANIM_MODELS = {
+    "anim_veo": {
+        "name": "🎥 Veo 3.1",
+        "api": "veo_anim",
+        "credits": 249,
+        "desc": "Google, 8 сек, 1080p + аудио",
+        "duration": 8,
+    },
+    "anim_grok": {
+        "name": "⚡ Grok Imagine",
+        "api": "fal",
+        "model_id": "xai/grok-imagine-video/image-to-video",
+        "credits": 99,
+        "desc": "xAI, 6 сек, 720p + аудио",
+        "duration": 6,
+    },
+    "anim_kling": {
+        "name": "🎞 Kling 2.5 Turbo",
+        "api": "fal",
+        "model_id": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+        "credits": 109,
+        "desc": "Плавная физика, 5 сек, 1080p",
+        "duration": 5,
+    },
+    "anim_wan": {
+        "name": "🌊 Wan 2.2",
+        "api": "fal",
+        "model_id": "fal-ai/wan/v2.2-a14b/image-to-video",
+        "credits": 80,
+        "desc": "Бюджетный, 5 сек, 720p",
+        "duration": 5,
+    },
+}
 UPSCALE_CREDIT_COST = 20  # апскейл 4x — себест ~$0.12/4MP → 20 кр (~10.6₽), маржа ~30%
 
 # Стоимость улучшения промта — списывается только когда юзер генерирует
@@ -11269,34 +11327,92 @@ async def cmd_publicoffer(message: Message):
 async def menu_anim(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
-    text = (
-        f"🏃 <b>Анимировать фото</b>\n\n"
-        f"💵 Баланс: <b>{cr} кр</b>\n"
-        f"💵 Стоимость: <b>{ANIM_CREDIT_COST} кр</b> · видео 8 сек (1080p)\n\n"
-        f"<b><i>🎥 Veo 3.1 — оживи своё фото</i></b>\n\n"
-        f"1️⃣ <b>Один кадр</b> — <i>анимируй фото по промту</i>\n"
-        f"2️⃣ <b>Два кадра</b> — <i>плавный переход между двумя фото</i>\n\n"
-        f"⏱ <i>Время генерации: 1–6 минут</i>"
-    )
-    if cr < ANIM_CREDIT_COST:
+
+    min_cost = min(m["credits"] for m in ANIM_MODELS.values())
+    if cr < min_cost:
         try:
             await cb.message.edit_text(
-                f"❌ Недостаточно кредитов\nНужно {ANIM_CREDIT_COST} кр, у тебя {cr} кр.",
+                f"❌ Недостаточно кредитов\nНужно минимум {min_cost} кр, у тебя {cr} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
                     [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
                 ]), parse_mode="HTML"
             )
         except Exception:
-            await cb.message.answer(f"❌ Недостаточно кредитов. Нужно {ANIM_CREDIT_COST} кр.")
+            await cb.message.answer(f"❌ Недостаточно кредитов. Нужно минимум {min_cost} кр.")
         await cb.answer()
         return
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1️⃣ Один кадр",       callback_data="anim_mode:one")],
-        [InlineKeyboardButton(text="2️⃣ Два кадра",     callback_data="anim_mode:two")],
-        [InlineKeyboardButton(text="❌ Отмена",            callback_data="back_main")],
-    ])
+    # Строим список моделей
+    lines = []
+    for key, m in ANIM_MODELS.items():
+        icon = "🔹" if cr >= m["credits"] else "🔸"
+        lines.append(f"{icon} <b>{m['name']}</b> — {m['credits']} кр\n   <i>{m['desc']}</i>")
+
+    text = (
+        f"🏃 <b>Анимировать фото</b>\n\n"
+        f"💵 Баланс: <b>{cr} кр</b>\n\n"
+        + "\n\n".join(lines) +
+        f"\n\n⏱ <i>Время генерации: 1–6 минут</i>"
+    )
+
+    # Кнопки моделей
+    rows = []
+    styles = {"anim_veo": "primary", "anim_grok": "success", "anim_kling": "success", "anim_wan": "primary"}
+    for key, m in ANIM_MODELS.items():
+        btn = InlineKeyboardButton(
+            text=f"{m['name']} — {m['credits']} кр",
+            callback_data=f"anim_model:{key}"
+        )
+        if styles.get(key):
+            btn.style = styles[key]
+        rows.append([btn])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("anim_model:"))
+async def anim_model_select(cb: CallbackQuery, state: FSMContext):
+    model_key = cb.data.split(":")[1]
+    m = ANIM_MODELS.get(model_key)
+    if not m:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    cr = await get_credits(cb.from_user.id)
+    if cr < m["credits"]:
+        await cb.answer(f"Недостаточно кредитов. Нужно {m['credits']} кр.", show_alert=True)
+        return
+
+    await state.update_data(anim_model_key=model_key)
+
+    # Veo поддерживает два кадра, остальные — только один
+    if model_key == "anim_veo":
+        text = (
+            f"<b>{m['name']}</b> — {m['desc']}\n\n"
+            f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
+            f"Выбери режим:"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="1️⃣ Один кадр",   callback_data="anim_mode:one")],
+            [InlineKeyboardButton(text="2️⃣ Два кадра",   callback_data="anim_mode:two")],
+            [InlineKeyboardButton(text="⬅️ Назад",        callback_data="menu_anim")],
+        ])
+    else:
+        text = (
+            f"<b>{m['name']}</b> — {m['desc']}\n\n"
+            f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
+            f"📷 Отправь фото для анимации:"
+        )
+        await state.update_data(anim_mode="one")
+        await state.set_state(AnimState.waiting_first_photo)
+        kb = kb_cancel()
+
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -11401,26 +11517,27 @@ async def anim_prompt(message: Message, state: FSMContext):
     last_bytes = bytes(data["last_photo"]) if data.get("last_photo") else None
     aspect = data.get("aspect_ratio", "16:9")
     mode = data.get("anim_mode", "one")
+    model_key = data.get("anim_model_key", "anim_veo")
+    m = ANIM_MODELS.get(model_key, ANIM_MODELS["anim_veo"])
+    anim_cost = m["credits"]
     uid = message.from_user.id
 
-    # Валидация промта
     ok_v, err = validate_gen_prompt(prompt)
     if not ok_v:
         await message.answer(err)
         return
 
-    # Rate limit (анимация = видео)
     if not await _check_can_generate(message, uid, kind="anim"):
         await state.clear()
         return
 
     cr = await get_credits(uid)
-    if cr < ANIM_CREDIT_COST:
+    if cr < anim_cost:
         await state.clear()
-        await message.answer(f"❌ Недостаточно кредитов. Нужно {ANIM_CREDIT_COST} кр, у тебя {cr}.")
+        await message.answer(f"❌ Недостаточно кредитов. Нужно {anim_cost} кр, у тебя {cr}.")
         return
 
-    ok = await deduct(uid, ANIM_CREDIT_COST)
+    ok = await deduct(uid, anim_cost)
     if not ok:
         await state.clear()
         await message.answer("❌ Ошибка списания. Попробуй ещё раз.")
@@ -11431,13 +11548,12 @@ async def anim_prompt(message: Message, state: FSMContext):
     mode_label = "2️⃣ Два кадра" if mode == "two" else "1️⃣ Один кадр"
     wait = await message.answer(
         f"⏳ Анимирую фото...\n\n"
-        f"🎬 Veo 3.1 | {mode_label} | {aspect}\n"
+        f"{m['name']} | {mode_label} | {aspect}\n"
         f"<i>{prompt[:80]}</i>\n\n"
         f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
         parse_mode="HTML"
     )
 
-    # Защита от двойного возврата кредитов
     anim_refunded = False
 
     async def anim_refund_once(reason: str = ""):
@@ -11446,19 +11562,76 @@ async def anim_prompt(message: Message, state: FSMContext):
             logging.warning(f"anim_refund_once SKIPPED uid={uid} reason={reason}")
             return
         anim_refunded = True
-        await add_credits(uid, ANIM_CREDIT_COST)
-        logging.info(f"anim_refund_once EXECUTED uid={uid} credits={ANIM_CREDIT_COST} reason={reason}")
+        await add_credits(uid, anim_cost)
+        logging.info(f"anim_refund_once EXECUTED uid={uid} credits={anim_cost} reason={reason}")
 
     try:
-        # Семафор: не более 5 Veo генераций одновременно (клиенту не видно)
-        async with _veo_semaphore:
-            vid_bytes = await _with_retry(
-                lambda: api_animate_image(first_bytes, prompt, aspect, last_bytes),
-                max_attempts=2, base_delay=5.0, op_name="Veo animate"
-            )
+        # Генерация в зависимости от модели
+        if m["api"] == "veo_anim":
+            async with _veo_semaphore:
+                vid_bytes = await _with_retry(
+                    lambda: api_animate_image(first_bytes, prompt, aspect, last_bytes),
+                    max_attempts=2, base_delay=5.0, op_name="Veo animate"
+                )
+        else:
+            # fal.ai модели (Grok, Kling, Wan)
+            import base64 as _b64
+            img_b64 = _b64.b64encode(first_bytes).decode("utf-8")
+            image_data_uri = f"data:image/jpeg;base64,{img_b64}"
+
+            fal_headers = {
+                "Authorization": f"Key {FAL_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            fal_payload = {
+                "image_url": image_data_uri,
+                "prompt": prompt,
+                "duration": m["duration"],
+                "aspect_ratio": aspect,
+            }
+
+            async with aiohttp.ClientSession() as s:
+                # Submit
+                async with s.post(
+                    f"https://queue.fal.run/{m['model_id']}",
+                    headers=fal_headers,
+                    json=fal_payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as r:
+                    submit = await r.json()
+                    request_id = submit.get("request_id")
+                    if not request_id:
+                        raise Exception(f"fal submit failed: {submit}")
+
+                # Poll
+                status_url = submit.get("status_url", f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status")
+                response_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
+                for _ in range(180):
+                    await asyncio.sleep(5)
+                    async with s.get(status_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
+                        st = await sr.json()
+                        if st.get("status") == "COMPLETED":
+                            break
+                        if st.get("status") == "FAILED":
+                            raise Exception(f"fal failed: {st}")
+                else:
+                    raise Exception("fal timeout 15min")
+
+                # Get result
+                async with s.get(response_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                    result = await rr.json()
+
+                video_url = (result.get("video") or {}).get("url")
+                if not video_url:
+                    raise Exception(f"No video URL: {result}")
+
+                # Download
+                async with s.get(video_url, timeout=aiohttp.ClientTimeout(total=120)) as dv:
+                    vid_bytes = await dv.read()
+
         size_mb = len(vid_bytes) / 1024 / 1024
-        logging.info(f"Animation ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
-        await log_gen(uid, "animate", "veo-3.1-animate", ANIM_CREDIT_COST)
+        logging.info(f"Animation ready ({m['name']}): {size_mb:.1f} MB")
+        await log_gen(uid, "animate", model_key, anim_cost)
         _record_generation(uid, _anim_history)
         cr_left = await get_credits(uid)
         kb_after_anim = InlineKeyboardMarkup(inline_keyboard=[
@@ -11480,7 +11653,7 @@ async def anim_prompt(message: Message, state: FSMContext):
                 if upload_url:
                     await message.answer(
                         f"✅ <b>Готово! 🏃 Анимация фото</b>\n"
-                        f"💵 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр\n\n"
+                        f"💵 Списано {anim_cost} кр | Остаток: {cr_left} кр\n\n"
                         f"📁 Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
                         f"Скачай оригинал по ссылке (доступна 24 часа):\n"
                         f"<a href='{upload_url}'>{upload_url}</a>",
@@ -11508,7 +11681,7 @@ async def anim_prompt(message: Message, state: FSMContext):
                 BufferedInputFile(vid_bytes, "animation.mp4"),
                 caption=(
                     f"✅ Готово! 🏃 Анимация фото\n"
-                    f"💵 Списано {ANIM_CREDIT_COST} кр | Остаток: {cr_left} кр\n\n"
+                    f"💵 Списано {anim_cost} кр | Остаток: {cr_left} кр\n\n"
                     f"👇 Ниже — оригинал без сжатия"
                 ),
                 reply_markup=kb_after_anim,
