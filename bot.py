@@ -834,6 +834,19 @@ VIDEO_MODELS = {
             10: (741, "393₽"),
         },
     },
+    "grok_vid": {
+        "name": "⚡ Grok Imagine",
+        "model_id": "xai/grok-imagine-video/text-to-video",
+        "api": "fal",
+        "credits": 99,
+        "price": "55₽",
+        "res": "720p + аудио",
+        "desc": "xAI, нативное аудио, быстро",
+        "durations": {
+            6:  (99,  "55₽"),
+            10: (165, "92₽"),
+        },
+    },
     "seedance_20": {
         "name": "🔥 Seedance 2.0",
         "model_id": "bytedance/seedance-2.0/text-to-video",
@@ -2043,6 +2056,7 @@ def kb_video_brands():
         [InlineKeyboardButton(text="🎞 Kling",    callback_data="vband:kling",    style="success")],
         [InlineKeyboardButton(text="🎬 Seedance", callback_data="vband:seedance", style="primary")],
         [InlineKeyboardButton(text="🌊 Wan",      callback_data="vband:wan",      style="success")],
+        [InlineKeyboardButton(text="⚡ Grok",     callback_data="vband:grok",     style="primary")],
         [InlineKeyboardButton(text="⬅️ Назад",    callback_data="back_main")],
     ])
 
@@ -2053,6 +2067,7 @@ VIDEO_BRAND_MODELS = {
     "kling":    ["kling_turbo", "kling_pro"],
     "seedance": ["seedance_15", "seedance_20"],
     "wan":      ["wan_22"],
+    "grok":     ["grok_vid"],
 }
 
 VIDEO_BRAND_TITLES = {
@@ -2060,6 +2075,7 @@ VIDEO_BRAND_TITLES = {
     "kling":    "🎞 Kling",
     "seedance": "🎬 Seedance",
     "wan":      "🌊 Wan",
+    "grok":     "⚡ Grok",
 }
 
 
@@ -2070,6 +2086,7 @@ def kb_video_models_for_brand(brand: str):
         "kling":    "success",
         "seedance": "primary",
         "wan":      "success",
+        "grok":     "primary",
     }
     style = VIDEO_BRAND_STYLES.get(brand)
     keys = VIDEO_BRAND_MODELS.get(brand, [])
@@ -3798,6 +3815,13 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
         payload = {
             "prompt": prompt,
             "num_frames": safe_duration * 16,
+            "aspect_ratio": aspect_ratio,
+            "resolution": "720p",
+        }
+    elif "grok-imagine-video" in model_id:
+        payload = {
+            "prompt": prompt,
+            "duration": str(duration),
             "aspect_ratio": aspect_ratio,
             "resolution": "720p",
         }
@@ -7294,8 +7318,9 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"<b>Выбери модель:</b>\n\n"
         f"🎥 <b>Veo</b> — до 4K + аудио, от 239 кр\n"
         f"🎞 <b>Kling</b> — плавная физика + аудио, от 109 кр\n"
-        f"🎬 <b>Seedance</b> — нативное аудио, от 149 кр\n"
-        f"🌊 <b>Wan</b> — топ open-source, от 80 кр\n\n"
+        f"🎬 <b>Seedance</b> — нативное аудио, от 99 кр\n"
+        f"🌊 <b>Wan</b> — топ open-source, от 80 кр\n"
+        f"⚡ <b>Grok</b> — xAI, нативное аудио, от 99 кр\n\n"
         f"⏱ <i>Время генерации: 1–10 минут</i>"
     )
     try:
