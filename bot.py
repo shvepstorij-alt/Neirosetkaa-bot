@@ -721,12 +721,13 @@ IMAGE_MODELS = {
     },
     "grok_img_pro": {
         "name": "🔥 Grok Imagine Pro",
-        "model_id": "fal-ai/grok-imagine-pro",
+        "model_id": "xai/grok-imagine-image",
         "api": "fal",
         "credits": 14,
         "price": "7₽",
-        "speed": "~8 сек",
-        "desc": "Макс. качество, лучший реализм",
+        "speed": "~10 сек",
+        "desc": "xAI Pro — чище, резче, лучший текст",
+        "quality": "quality",  # quality mode вместо speed mode
     },
     # ── OpenAI GPT Image 2 (через fal.ai, 3 уровня качества) ───
     "gptimg_fast": {
@@ -2815,6 +2816,15 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
             "num_images": 1,
         }
         logging.info(f"GPT Image 2 payload: model={model_id} quality={quality} aspect={aspect_ratio} size={payload['image_size']}")
+    elif "grok-imagine-image" in model_id:
+        payload = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "num_images": 1,
+        }
+        # Grok Imagine Pro использует quality mode
+        if quality == "quality":
+            payload["mode"] = "quality"
     else:
         payload = {"prompt": prompt}
 
@@ -6754,11 +6764,15 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     # Фоновая задача: анимированный прогресс-бар с %
     # Оценочное среднее время генерации по моделям (в секундах)
     estimated_times = {
-        "vid_lite":    60,    # Veo Lite ~ 1 мин
-        "vid_fast":    120,   # Veo Fast ~ 2 мин
-        "vid_pro":     180,   # Veo Pro ~ 3 мин
-        "kling_turbo": 300,   # Kling 2.5 Turbo ~ 5 мин
-        "kling_pro":   600,   # Kling 3.0 Pro ~ 10 мин
+        "vid_lite":     120,   # Veo Lite ~ 2 мин
+        "vid_fast":     180,   # Veo Fast ~ 3 мин
+        "vid_pro":      240,   # Veo Pro ~ 4 мин
+        "kling_turbo":  300,   # Kling 2.5 Turbo ~ 5 мин
+        "kling_pro":    600,   # Kling 3.0 Pro ~ 10 мин
+        "seedance_15":  180,   # Seedance 1.5 Pro ~ 3 мин
+        "seedance_20":  240,   # Seedance 2.0 ~ 4 мин
+        "wan_22":       120,   # Wan 2.2 ~ 2 мин
+        "grok_vid":     120,   # Grok ~ 2 мин
     }
 
     async def progress_updates():
@@ -10421,13 +10435,40 @@ async def edit_get_prompt(message: Message, state: FSMContext):
                 "image_url": image_data_uri,
             }
             async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    f"https://fal.run/{m['model_id']}",
-                    headers=fal_headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=120)
-                ) as r:
-                    result = await r.json()
+                # Быстрые модели (< 15 сек) — синхронный вызов
+                # Медленные (Grok, GPT Image) — через очередь
+                is_slow = any(x in m['model_id'] for x in ['grok', 'gpt-image'])
+                if is_slow:
+                    async with s.post(
+                        f"https://queue.fal.run/{m['model_id']}",
+                        headers=fal_headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    ) as r:
+                        submit = await r.json()
+                        request_id = submit.get("request_id")
+                        if not request_id:
+                            raise Exception(f"fal submit failed: {submit}")
+                    status_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
+                    response_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
+                    for _ in range(60):
+                        await asyncio.sleep(5)
+                        async with s.get(status_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
+                            st = await sr.json()
+                            if st.get("status") == "COMPLETED":
+                                break
+                            if st.get("status") == "FAILED":
+                                raise Exception(f"fal edit failed: {st}")
+                    async with s.get(response_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                        result = await rr.json()
+                else:
+                    async with s.post(
+                        f"https://fal.run/{m['model_id']}",
+                        headers=fal_headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=120)
+                    ) as r:
+                        result = await r.json()
                 out_url = (result.get("images") or [{}])[0].get("url")
                 if not out_url:
                     out_url = result.get("image", {}).get("url")
