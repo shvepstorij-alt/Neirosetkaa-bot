@@ -92,7 +92,12 @@ def validate_gen_prompt(text: str) -> tuple[bool, str]:
     text_lower = text.lower()
     for bad in GEN_BLOCKLIST:
         if bad in text_lower:
-            return False, "⚠️ В промте запрещённое содержимое. Переформулируй, пожалуйста."
+            return False, (
+                "⚠️ Промт содержит запрещённый контент.\n\n"
+                "Бот не генерирует контент связанный с насилием, "
+                "NSFW или незаконной деятельностью.\n\n"
+                "Попробуй переформулировать запрос 🙏"
+            )
     return True, ""
 
 
@@ -118,6 +123,7 @@ user_orig_images = {}     # последнее фото: {user_id: {"data": byte
 
 # ─── Rate limit для генераций ─────────────────────────────
 # A) Одна активная генерация на юзера
+MAX_CONCURRENT_GENS = 3  # максимум одновременных генераций на пользователя
 _active_generations: set = set()  # {user_id}  ← устаревший in-memory кэш (оставлен для совместимости)
 
 # B) Почасовой лимит: {user_id: [timestamps]}
@@ -179,18 +185,16 @@ async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
     if not await check_not_blocked(cb_or_msg, uid):
         return False
 
-    # A) Одна активная генерация — проверяем БД (переживает рестарт)
-    # Если юзер уже что-то генерит (активная запись <30 мин), блокируем.
-    # In-memory set дополнительно ускоряет проверку, но БД — источник истины.
+    # A) Проверяем количество активных генераций (макс MAX_CONCURRENT_GENS)
     pool = await get_pool()
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            """SELECT started_at FROM active_generations
+        active_count = await conn.fetchval(
+            """SELECT COUNT(*) FROM active_generations
                WHERE user_id = $1 AND started_at > NOW() - INTERVAL '30 minutes'""",
             uid
-        )
-    if existing:
-        msg = "⏳ У тебя уже идёт генерация. Подожди, пока она закончится."
+        ) or 0
+    if active_count >= MAX_CONCURRENT_GENS:
+        msg = f"⏳ У тебя уже {active_count} генераций. Максимум {MAX_CONCURRENT_GENS} одновременно."
         if isinstance(cb_or_msg, CallbackQuery):
             await cb_or_msg.answer(msg, show_alert=True)
         else:
@@ -224,36 +228,45 @@ async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
 # In-memory set оставлен для обратной совместимости старого кода.
 
 async def mark_generation_active(user_id: int, kind: str = "photo") -> bool:
-    """Атомарно помечает юзера как генерирующего.
-    Возвращает False если юзер уже генерит что-то (включая зависшие <30 мин).
-    Защищено от race condition через UNIQUE primary key.
+    """Помечает юзера как генерирующего. Допускает до MAX_CONCURRENT_GENS записей.
+    Возвращает False если лимит исчерпан.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Сначала удаляем зависшие записи этого юзера (старше 30 мин — страховка)
         await conn.execute(
             "DELETE FROM active_generations WHERE user_id = $1 AND started_at < NOW() - INTERVAL '30 minutes'",
             user_id
         )
-        try:
-            await conn.execute(
-                "INSERT INTO active_generations (user_id, kind) VALUES ($1, $2)",
-                user_id, kind
-            )
-            _active_generations.add(user_id)  # синхронизируем in-memory
-            return True
-        except asyncpg.UniqueViolationError:
-            # Юзер уже что-то генерит (активная запись <30 мин)
-            _active_generations.add(user_id)
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM active_generations WHERE user_id = $1",
+            user_id
+        ) or 0
+        if count >= MAX_CONCURRENT_GENS:
             return False
+        await conn.execute(
+            "INSERT INTO active_generations (user_id, kind) VALUES ($1, $2)",
+            user_id, kind
+        )
+        _active_generations.add(user_id)
+        return True
 
 
 async def unmark_generation_active(user_id: int):
-    """Убирает юзера из активных генераций. Вызывать в finally."""
+    """Убирает одну активную генерацию юзера (самую старую). Вызывать в finally."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM active_generations WHERE user_id = $1", user_id)
-    _active_generations.discard(user_id)
+        await conn.execute(
+            "DELETE FROM active_generations WHERE id = ("
+            "  SELECT id FROM active_generations WHERE user_id = $1 "
+            "  ORDER BY started_at ASC LIMIT 1"
+            ")",
+            user_id
+        )
+        remaining = await conn.fetchval(
+            "SELECT COUNT(*) FROM active_generations WHERE user_id = $1", user_id
+        ) or 0
+    if remaining == 0:
+        _active_generations.discard(user_id)
 
 
 async def cleanup_stale_generations_loop():
@@ -1027,6 +1040,18 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Избранное
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS favorites (
+                id         SERIAL PRIMARY KEY,
+                user_id    BIGINT NOT NULL,
+                file_id    TEXT NOT NULL,
+                media_type TEXT DEFAULT 'photo',
+                prompt     TEXT,
+                model      TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         # Промокоды
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS promocodes (
@@ -1076,7 +1101,8 @@ async def init_db():
         # Переживает рестарт бота (в отличие от set'а в памяти).
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS active_generations (
-                user_id    BIGINT PRIMARY KEY,
+                id         SERIAL PRIMARY KEY,
+                user_id    BIGINT NOT NULL,
                 kind       TEXT NOT NULL,           -- 'photo'/'video'/'anim'/'motion'
                 started_at TIMESTAMP DEFAULT NOW()
             )
@@ -1088,11 +1114,42 @@ async def init_db():
         await conn.execute(
             "INSERT INTO settings (key, value) VALUES ('maintenance', '0') ON CONFLICT DO NOTHING"
         )
+        # Миграция: active_generations — если старая таблица с user_id PRIMARY KEY, пересоздаём
+        try:
+            has_id = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='active_generations' AND column_name='id')"
+            )
+            if not has_id:
+                await conn.execute("DROP TABLE IF EXISTS active_generations")
+                await conn.execute("""
+                    CREATE TABLE active_generations (
+                        id         SERIAL PRIMARY KEY,
+                        user_id    BIGINT NOT NULL,
+                        kind       TEXT NOT NULL,
+                        started_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                logging.info("✅ Migrated active_generations table (added id, removed PK on user_id)")
+        except Exception as mig_err:
+            logging.warning(f"active_generations migration: {mig_err}")
+
     logging.info("✅ PostgreSQL инициализирован")
 
 
 # ── МОНЕТКИ ────────────────────────────────────────────────────────────────────
-COINS_REF_PERCENT = 0.10  # 10% от суммы первой покупки реферала → монетки рефереру
+COINS_REF_PERCENT = 0.10  # 10% от суммы первой покупки реферала
+
+async def get_gen_count(user_id: int) -> int:
+    """Возвращает общее количество генераций пользователя."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            "SELECT COUNT(*) FROM events WHERE user_id=$1 AND kind LIKE 'gen_%'",
+            user_id
+        )
+        return int(val or 0)
+
 
 async def get_coins(user_id: int) -> float:
     pool = await get_pool()
@@ -2027,6 +2084,7 @@ def kb_main():
         ],
         [
             InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
+            InlineKeyboardButton(text="❤️ Избранное",      callback_data="menu_favorites"),
         ],
         [
             InlineKeyboardButton(text="💵 Баланс",         callback_data="menu_balance"),
@@ -2205,11 +2263,12 @@ def kb_pay_method(pack_key: str):
 def kb_after(menu: str, model_key: str = ""):
     rows = [
         [
-            InlineKeyboardButton(text="🍌 Ещё раз",      callback_data=f"again:{menu}:{model_key}"),
+            InlineKeyboardButton(text="🔄 Ещё раз",       callback_data=f"again:{menu}:{model_key}"),
             InlineKeyboardButton(text="🎯 Сменить модель", callback_data=f"menu_{menu}"),
         ],
         [
-            InlineKeyboardButton(text="🏡 Главное", callback_data="new_main"),
+            InlineKeyboardButton(text="❤️ В избранное",    callback_data="fav_save"),
+            InlineKeyboardButton(text="🏡 Главное",        callback_data="new_main"),
         ],
         [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
     ]
@@ -2342,6 +2401,7 @@ class ImgState(StatesGroup):
 class EditState(StatesGroup):
     waiting_photo  = State()
     waiting_prompt = State()
+    waiting_confirm = State()
 
 class AnimState(StatesGroup):
     waiting_mode       = State()   # выбор режима (1 или 2 кадра)
@@ -2349,6 +2409,7 @@ class AnimState(StatesGroup):
     waiting_last_photo  = State()  # последний кадр (если 2 кадра)
     waiting_aspect     = State()   # формат
     waiting_prompt     = State()   # промт
+    waiting_confirm    = State()   # подтверждение
 
 class VidState(StatesGroup):
     waiting_duration = State()   # выбор длительности (только для Kling)
@@ -3716,13 +3777,14 @@ WELCOME_NEW = """👋 Привет, {name}!
 Их хватит, чтобы попробовать почти все функции бота 👇
 ━━━━━━━━━━━━━━━━━━━━
 🎨 Что я умею:
-📷 Генерация изображений
-🎬 Генерация видео
+📷 Генерация фото — GPT Image, Imagen, Grok, Flux и другие
+🎬 Генерация видео — Veo, Kling, Seedance, Wan, Grok
 🖌 Редактирование фото по описанию
 🏃 Анимация фото в видео
-🎭 Motion Control — перенос движений с видео на фото
-🤖 AI-консультант по нейросетям и подключению VPN — бесплатно
-🛍 Магазин подписок — ChatGPT, Claude, Midjourney, Grok и многие другие!
+🔍 Улучшение качества фото 4x
+✨ Промт-ассистент — AI улучшает твой запрос
+🤖 AI-консультант по нейросетям — бесплатно
+🛍 Магазин подписок — ChatGPT, Claude, Grok и другие
 ━━━━━━━━━━━━━━━━━━━━
 🚀 Как начать:
 1️⃣ Нажми 📷 Изображение или 🎬 Видео
@@ -3736,7 +3798,8 @@ WELCOME_NEW = """👋 Привет, {name}!
 
 WELCOME_BACK = """👋 С возвращением, {name}!
 
-💵 Твой баланс: <b>{credits} кредитов</b>
+💵 Баланс: <b>{credits} кр</b>
+🎨 Генераций: <b>{gen_count}</b>
 
 Выбери что создать сегодня 👇"""
 
@@ -3808,9 +3871,11 @@ async def cmd_start(message: Message, state: FSMContext):
             f"Выбери действие 👇"
         )
     else:
+        gen_count = await get_gen_count(uid) if not is_new else 0
         text = (WELCOME_NEW if is_new else WELCOME_BACK).format(
             name=message.from_user.first_name,
             credits=credits,
+            gen_count=gen_count,
             channel=ADMIN_USERNAME,
         )
 
@@ -6245,6 +6310,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         )
         await log_gen(uid, "image", key, m["credits"])
         _record_generation(uid, _photo_history)
+        await check_expiring_credits(uid)
         cr = await get_credits(uid)
         # Сохраняем оригинал в памяти для скачивания (с timestamp для автоочистки)
         user_orig_images[uid] = {"data": img_bytes, "ts": _time_module.time()}
@@ -6876,6 +6942,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         logging.info(f"Video ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB), duration={duration_sec}s")
         await log_gen(uid, "video", key, credits_cost)
         _record_generation(uid, _video_history)
+        await check_expiring_credits(uid)
         cr = await get_credits(uid)
         caption = f"🎉 Готово! {m['name']} | {m['res']} | {duration_sec} сек\n💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов"
         # СНАЧАЛА удаляем сообщение прогресс-бара чтобы юзер не видел "90%" во время отправки
@@ -9830,14 +9897,14 @@ EDIT_MODELS = {
     "edit_gpt": {
         "name": "🤖 GPT Image",
         "api": "fal",
-        "model_id": "openai/gpt-image-2/edit",
+        "model_id": "fal-ai/gpt-image-2/edit",
         "credits": 15,
         "desc": "OpenAI — реализм, сложные правки",
     },
     "edit_flux": {
         "name": "🎭 Flux Kontext",
         "api": "fal",
-        "model_id": "fal-ai/flux-1/kontext/dev",
+        "model_id": "fal-ai/flux-kontext/dev",
         "credits": 14,
         "desc": "Black Forest Labs — художественный стиль",
     },
@@ -10367,7 +10434,6 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    photo_bytes = bytes(data["photo_bytes"])
     prompt = message.text.strip()
     model_key = data.get("edit_model_key", "edit_gemini")
     m = EDIT_MODELS.get(model_key, EDIT_MODELS["edit_gemini"])
@@ -10379,25 +10445,107 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         await message.answer(err)
         return
 
-    if not await _check_can_generate(message, uid, kind="photo"):
+    # Сохраняем промт и показываем подтверждение с кнопкой улучшить
+    await state.update_data(edit_prompt=prompt)
+    await state.set_state(EditState.waiting_confirm)
+    await message.answer(
+        f"🖌️ <b>Подтверди редактирование</b>\n\n"
+        f"Модель: <b>{m['name']}</b>\n"
+        f"💵 Стоимость: <b>{edit_cost} кр</b>\n\n"
+        f"📝 <i>{prompt[:150]}</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
+            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_edit:{model_key}")],
+            [InlineKeyboardButton(text="✍️ Изменить промт", callback_data=f"edit_model:{model_key}")],
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+        ])
+    )
+
+
+@dp.callback_query(F.data.startswith("improve_edit:"))
+async def improve_edit_prompt(cb: CallbackQuery, state: FSMContext):
+    model_key = cb.data.split(":")[1]
+    data = await state.get_data()
+    current_prompt = data.get("edit_prompt", "")
+    if not current_prompt:
+        await cb.answer("Промт не найден", show_alert=True)
+        return
+    await cb.answer()
+    wait = await cb.message.answer("✨ Улучшаю промт...")
+    try:
+        system = (
+            "Ты эксперт по промтам для AI-редактирования изображений. "
+            "Улучши промт: сделай инструкцию чёткой, добавь детали стиля, освещения. "
+            "Отвечай ТОЛЬКО готовым промтом на английском, без объяснений. Максимум 80 слов."
+        )
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                system=system,
+                messages=[{"role": "user", "content": f"Улучши промт для редактирования фото: {current_prompt}"}],
+            )
+        )
+        improved = resp.content[0].text.strip().strip('"').strip("'")
+        await state.update_data(edit_prompt=improved)
+        m = EDIT_MODELS.get(model_key, EDIT_MODELS["edit_gemini"])
+        await wait.delete()
+        await cb.message.answer(
+            f"✨ <b>Промт улучшен!</b>\n\n"
+            f"<b>Было:</b> <i>{current_prompt[:80]}</i>\n\n"
+            f"<b>Стало:</b>\n<code>{improved}</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
+                [InlineKeyboardButton(text="✨ Улучшить ещё", callback_data=f"improve_edit:{model_key}")],
+                [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+            ])
+        )
+    except Exception as e:
+        logging.error(f"improve_edit error: {e}")
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await cb.message.answer("⚠️ Не удалось улучшить. Попробуй снова.")
+
+
+@dp.callback_query(F.data.startswith("go_edit:"))
+async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
+    model_key = cb.data.split(":")[1]
+    data = await state.get_data()
+    prompt = data.get("edit_prompt", "")
+    photo_bytes = bytes(data.get("photo_bytes", b""))
+    if not prompt or not photo_bytes:
+        await cb.answer("Данные потеряны. Начни заново.", show_alert=True)
+        await state.clear()
+        return
+    m = EDIT_MODELS.get(model_key, EDIT_MODELS["edit_gemini"])
+    edit_cost = m["credits"]
+    uid = cb.from_user.id
+
+    if not await _check_can_generate(cb.message, uid, kind="photo"):
         await state.clear()
         return
 
     cr = await get_credits(uid)
     if cr < edit_cost:
         await state.clear()
-        await message.answer(f"💸 Недостаточно кредитов. Нужно {edit_cost} кредитов, у тебя {cr}.")
+        await cb.message.answer(f"💸 Недостаточно кредитов. Нужно {edit_cost} кр.")
         return
 
     ok = await deduct(uid, edit_cost)
     if not ok:
         await state.clear()
-        await message.answer("⛔ Ошибка списания кредитов. Попробуй ещё раз.")
+        await cb.message.answer("⛔ Ошибка списания.")
         return
 
     await mark_generation_active(uid, "photo")
     await state.clear()
-    wait = await message.answer(
+    await cb.answer()
+    wait = await cb.message.answer(
         f"🖌️ Редактирую фото...\n\n"
         f"{m['name']}\n"
         f"<i>{prompt[:80]}</i>",
@@ -10429,46 +10577,55 @@ async def edit_get_prompt(message: Message, state: FSMContext):
             fal_headers = {
                 "Authorization": f"Key {FAL_API_KEY}",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
             }
             payload = {
                 "prompt": prompt,
                 "image_url": image_data_uri,
             }
             async with aiohttp.ClientSession() as s:
-                # Быстрые модели (< 15 сек) — синхронный вызов
-                # Медленные (Grok, GPT Image) — через очередь
-                is_slow = any(x in m['model_id'] for x in ['grok', 'gpt-image'])
-                if is_slow:
-                    async with s.post(
-                        f"https://queue.fal.run/{m['model_id']}",
-                        headers=fal_headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=30)
-                    ) as r:
-                        submit = await r.json()
-                        request_id = submit.get("request_id")
-                        if not request_id:
-                            raise Exception(f"fal submit failed: {submit}")
-                    status_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
-                    response_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
-                    for _ in range(60):
-                        await asyncio.sleep(5)
-                        async with s.get(status_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
-                            st = await sr.json()
+                # Все edit модели через queue (они могут быть медленными)
+                async with s.post(
+                    f"https://queue.fal.run/{m['model_id']}",
+                    headers=fal_headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as r:
+                    submit = await r.json()
+                    request_id = submit.get("request_id")
+                    if not request_id:
+                        raise Exception(f"fal submit failed: {submit}")
+                status_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
+                response_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
+                for poll_i in range(60):
+                    await asyncio.sleep(5)
+                    try:
+                        async with s.get(
+                            status_url,
+                            headers={"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"},
+                            timeout=aiohttp.ClientTimeout(total=15)
+                        ) as sr:
+                            if sr.content_type and "json" in sr.content_type:
+                                st = await sr.json()
+                            else:
+                                raw = await sr.text()
+                                logging.warning(f"fal edit poll non-JSON: {raw[:200]}")
+                                continue
                             if st.get("status") == "COMPLETED":
                                 break
                             if st.get("status") == "FAILED":
                                 raise Exception(f"fal edit failed: {st}")
-                    async with s.get(response_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
-                        result = await rr.json()
+                    except aiohttp.ContentTypeError:
+                        logging.warning(f"fal edit poll ContentTypeError attempt {poll_i}")
+                        continue
                 else:
-                    async with s.post(
-                        f"https://fal.run/{m['model_id']}",
-                        headers=fal_headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=120)
-                    ) as r:
-                        result = await r.json()
+                    raise Exception("fal edit timeout 5 min")
+                async with s.get(
+                    response_url,
+                    headers={"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as rr:
+                    result = await rr.json()
                 out_url = (result.get("images") or [{}])[0].get("url")
                 if not out_url:
                     out_url = result.get("image", {}).get("url")
@@ -10479,17 +10636,18 @@ async def edit_get_prompt(message: Message, state: FSMContext):
 
         await log_gen(uid, "edit", model_key, edit_cost)
         _record_generation(uid, _photo_history)
+        await check_expiring_credits(uid)
         cr_left = await get_credits(uid)
         caption = f"🎉 Готово! 🖌️ Редактирование — {m['name']}\n💸 Списано {edit_cost} кр | Остаток: {cr_left} кр"
         await safe_send_media(
-            message.answer_document,
+            cb.message.answer_document,
             BufferedInputFile(result_bytes, "edited_original.png"),
             caption="📎 <b>Оригинал</b> — без сжатия, полное качество",
             parse_mode="HTML",
             op_name="edit_document",
         )
         await safe_send_media(
-            message.answer_photo,
+            cb.message.answer_photo,
             BufferedInputFile(result_bytes, "edited.png"),
             caption=caption,
             reply_markup=kb_after("edit", "edit"),
@@ -10522,6 +10680,106 @@ async def edit_again(cb: CallbackQuery, state: FSMContext):
 # ══════════════════════════════════════════════════════════
 #  ПОДДЕРЖКА / ПОЛИТИКА / ОФЕРТА
 # ══════════════════════════════════════════════════════════
+
+# ── ИЗБРАННОЕ ──────────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "fav_save")
+async def fav_save(cb: CallbackQuery):
+    """Сохраняет последний результат генерации в избранное."""
+    uid = cb.from_user.id
+    msg = cb.message
+
+    # Ищем фото или видео в сообщении
+    file_id = None
+    media_type = "photo"
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+        media_type = "photo"
+    elif msg.video:
+        file_id = msg.video.file_id
+        media_type = "video"
+    elif msg.document:
+        file_id = msg.document.file_id
+        media_type = "document"
+
+    if not file_id:
+        await cb.answer("Нечего сохранять", show_alert=True)
+        return
+
+    # Извлекаем промт и модель из caption
+    caption = msg.caption or ""
+    prompt_match = None
+    model_match = None
+    if caption:
+        import re
+        model_match = re.search(r'(GPT Image|Imagen|Nano Banana|Flux|Ideogram|Grok|Veo|Kling|Seedance|Wan)', caption)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Проверяем дубликат
+        exists = await conn.fetchval(
+            "SELECT 1 FROM favorites WHERE user_id=$1 AND file_id=$2", uid, file_id
+        )
+        if exists:
+            await cb.answer("Уже в избранном ❤️", show_alert=True)
+            return
+        await conn.execute(
+            "INSERT INTO favorites (user_id, file_id, media_type, prompt, model) VALUES ($1, $2, $3, $4, $5)",
+            uid, file_id, media_type, caption[:200] if caption else None,
+            model_match.group(1) if model_match else None
+        )
+    await cb.answer("❤️ Сохранено в избранное!")
+
+
+@dp.callback_query(F.data == "menu_favorites")
+async def menu_favorites(cb: CallbackQuery):
+    uid = cb.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        count = await conn.fetchval("SELECT COUNT(*) FROM favorites WHERE user_id=$1", uid) or 0
+        items = await conn.fetch(
+            "SELECT file_id, media_type, prompt, model, created_at FROM favorites "
+            "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
+            uid
+        )
+
+    if count == 0:
+        try:
+            await cb.message.edit_text(
+                "❤️ <b>Избранное</b>\n\nПока пусто. Нажми ❤️ после генерации чтобы сохранить.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                ])
+            )
+        except Exception:
+            pass
+        await cb.answer()
+        return
+
+    await cb.answer()
+    # Отправляем последние 10 избранных
+    for item in items:
+        try:
+            caption = f"❤️ {item['model'] or 'Генерация'} · {item['created_at'].strftime('%d.%m.%Y')}"
+            if item["media_type"] == "photo":
+                await cb.message.answer_photo(item["file_id"], caption=caption)
+            elif item["media_type"] == "video":
+                await cb.message.answer_video(item["file_id"], caption=caption)
+            else:
+                await cb.message.answer_document(item["file_id"], caption=caption)
+        except Exception as e:
+            logging.warning(f"fav send failed: {e}")
+
+    await cb.message.answer(
+        f"❤️ <b>Избранное</b> — {count} сохранений\n\n"
+        f"Показаны последние {len(items)}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+        ])
+    )
+
 
 @dp.message(F.text == "/help", StateFilter("*"))
 async def cmd_help(message: Message):
@@ -10806,40 +11064,118 @@ async def anim_prompt(message: Message, state: FSMContext):
 
     data = await state.get_data()
     prompt = message.text.strip()
-    first_bytes = bytes(data["first_photo"])
-    last_bytes = bytes(data["last_photo"]) if data.get("last_photo") else None
-    aspect = data.get("aspect_ratio", "16:9")
-    mode = data.get("anim_mode", "one")
     model_key = data.get("anim_model_key", "anim_veo")
     m = ANIM_MODELS.get(model_key, ANIM_MODELS["anim_veo"])
-    anim_cost = m["credits"]
-    uid = message.from_user.id
 
     ok_v, err = validate_gen_prompt(prompt)
     if not ok_v:
         await message.answer(err)
         return
 
-    if not await _check_can_generate(message, uid, kind="anim"):
+    await state.update_data(anim_prompt_text=prompt)
+    await state.set_state(AnimState.waiting_confirm)
+    await message.answer(
+        f"🏃 <b>Подтверди анимацию</b>\n\n"
+        f"Модель: <b>{m['name']}</b>\n"
+        f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
+        f"📝 <i>{prompt[:150]}</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
+            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_anim:{model_key}")],
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+        ])
+    )
+
+
+@dp.callback_query(F.data.startswith("improve_anim:"))
+async def improve_anim_prompt(cb: CallbackQuery, state: FSMContext):
+    model_key = cb.data.split(":")[1]
+    data = await state.get_data()
+    current_prompt = data.get("anim_prompt_text", "")
+    if not current_prompt:
+        await cb.answer("Промт не найден", show_alert=True)
+        return
+    await cb.answer()
+    wait = await cb.message.answer("✨ Улучшаю промт...")
+    try:
+        system = (
+            "Ты эксперт по промтам для AI-анимации фото. "
+            "Улучши промт: опиши движение, камеру, атмосферу. "
+            "Отвечай ТОЛЬКО готовым промтом на английском, без объяснений. Максимум 80 слов."
+        )
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                system=system,
+                messages=[{"role": "user", "content": f"Улучши промт для анимации фото: {current_prompt}"}],
+            )
+        )
+        improved = resp.content[0].text.strip().strip('"').strip("'")
+        await state.update_data(anim_prompt_text=improved)
+        m = ANIM_MODELS.get(model_key, ANIM_MODELS["anim_veo"])
+        await wait.delete()
+        await cb.message.answer(
+            f"✨ <b>Промт улучшен!</b>\n\n"
+            f"<b>Было:</b> <i>{current_prompt[:80]}</i>\n\n"
+            f"<b>Стало:</b>\n<code>{improved}</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
+                [InlineKeyboardButton(text="✨ Улучшить ещё", callback_data=f"improve_anim:{model_key}")],
+                [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+            ])
+        )
+    except Exception as e:
+        logging.error(f"improve_anim error: {e}")
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        await cb.message.answer("⚠️ Не удалось улучшить. Попробуй снова.")
+
+
+@dp.callback_query(F.data.startswith("go_anim:"))
+async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
+    model_key = cb.data.split(":")[1]
+    data = await state.get_data()
+    prompt = data.get("anim_prompt_text", "")
+    first_bytes = bytes(data.get("first_photo", []))
+    last_bytes = bytes(data["last_photo"]) if data.get("last_photo") else None
+    aspect = data.get("aspect_ratio", "16:9")
+    mode = data.get("anim_mode", "one")
+    m = ANIM_MODELS.get(model_key, ANIM_MODELS["anim_veo"])
+    anim_cost = m["credits"]
+    uid = cb.from_user.id
+
+    if not prompt or not first_bytes:
+        await cb.answer("Данные потеряны. Начни заново.", show_alert=True)
+        await state.clear()
+        return
+
+    if not await _check_can_generate(cb.message, uid, kind="anim"):
         await state.clear()
         return
 
     cr = await get_credits(uid)
     if cr < anim_cost:
         await state.clear()
-        await message.answer(f"❌ Недостаточно кредитов. Нужно {anim_cost} кр, у тебя {cr}.")
+        await cb.message.answer(f"❌ Недостаточно кредитов. Нужно {anim_cost} кр.")
         return
 
     ok = await deduct(uid, anim_cost)
     if not ok:
         await state.clear()
-        await message.answer("❌ Ошибка списания. Попробуй ещё раз.")
+        await cb.message.answer("❌ Ошибка списания.")
         return
 
     await mark_generation_active(uid, "anim")
     await state.clear()
+    await cb.answer()
     mode_label = "2️⃣ Два кадра" if mode == "two" else "1️⃣ Один кадр"
-    wait = await message.answer(
+    wait = await cb.message.answer(
         f"⏳ Анимирую фото...\n\n"
         f"{m['name']} | {mode_label} | {aspect}\n"
         f"<i>{prompt[:80]}</i>\n\n"
@@ -10875,6 +11211,7 @@ async def anim_prompt(message: Message, state: FSMContext):
             fal_headers = {
                 "Authorization": f"Key {FAL_API_KEY}",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
             }
             fal_payload = {
                 "image_url": image_data_uri,
@@ -10897,21 +11234,29 @@ async def anim_prompt(message: Message, state: FSMContext):
                         raise Exception(f"fal submit failed: {submit}")
 
                 # Poll
+                poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
                 status_url = submit.get("status_url", f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status")
                 response_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
-                for _ in range(180):
+                for poll_i in range(180):
                     await asyncio.sleep(5)
-                    async with s.get(status_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
-                        st = await sr.json()
-                        if st.get("status") == "COMPLETED":
-                            break
-                        if st.get("status") == "FAILED":
-                            raise Exception(f"fal failed: {st}")
+                    try:
+                        async with s.get(status_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
+                            if sr.content_type and "json" in sr.content_type:
+                                st = await sr.json()
+                            else:
+                                logging.warning(f"fal anim poll non-JSON attempt {poll_i}")
+                                continue
+                            if st.get("status") == "COMPLETED":
+                                break
+                            if st.get("status") == "FAILED":
+                                raise Exception(f"fal failed: {st}")
+                    except aiohttp.ContentTypeError:
+                        continue
                 else:
                     raise Exception("fal timeout 15min")
 
                 # Get result
-                async with s.get(response_url, headers=fal_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                async with s.get(response_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
                     result = await rr.json()
 
                 video_url = (result.get("video") or {}).get("url")
@@ -10926,6 +11271,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         logging.info(f"Animation ready ({m['name']}): {size_mb:.1f} MB")
         await log_gen(uid, "animate", model_key, anim_cost)
         _record_generation(uid, _anim_history)
+        await check_expiring_credits(uid)
         cr_left = await get_credits(uid)
         kb_after_anim = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
@@ -10941,10 +11287,10 @@ async def anim_prompt(message: Message, state: FSMContext):
         # Если видео > 48 МБ — сразу на хостинг
         if size_mb > 48:
             try:
-                await message.answer("⏳ Видео большое, загружаю на хостинг...")
+                await cb.message.answer("⏳ Видео большое, загружаю на хостинг...")
                 upload_url = await upload_large_file(vid_bytes, "animation_original.mp4")
                 if upload_url:
-                    await message.answer(
+                    await cb.message.answer(
                         f"✅ <b>Готово! 🏃 Анимация фото</b>\n"
                         f"💵 Списано {anim_cost} кр | Остаток: {cr_left} кр\n\n"
                         f"📁 Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
@@ -10956,7 +11302,7 @@ async def anim_prompt(message: Message, state: FSMContext):
                     )
                 else:
                     await anim_refund_once("upload_failed")
-                    await message.answer(
+                    await cb.message.answer(
                         f"⚠️ Анимация создана ({size_mb:.1f} МБ), но не удалось доставить.\n"
                         f"Кредиты возвращены 💳\nНапиши @neirosetkaalex.",
                         reply_markup=kb_back(),
@@ -10970,7 +11316,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         video_sent = False
         try:
             await safe_send_media(
-                message.answer_video,
+                cb.message.answer_video,
                 BufferedInputFile(vid_bytes, "animation.mp4"),
                 caption=(
                     f"✅ Готово! 🏃 Анимация фото\n"
@@ -10989,7 +11335,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         if not video_sent:
             await anim_refund_once("video_send_failed")
             try:
-                await message.answer(
+                await cb.message.answer(
                     f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не отправилось в Telegram.\n"
                     f"Кредиты возвращены 💳\n"
                     f"Напиши @neirosetkaalex — пришлём файл напрямую.",
@@ -11018,7 +11364,7 @@ async def anim_prompt(message: Message, state: FSMContext):
             try:
                 upload_url = await upload_large_file(vid_bytes, "animation_original.mp4")
                 if upload_url:
-                    await message.answer(
+                    await cb.message.answer(
                         f"📁 <b>Оригинал без сжатия</b>\n\n"
                         f"Файл {size_mb:.1f} МБ — слишком большой для Telegram.\n"
                         f"Скачай по ссылке (доступна 24 часа):\n"
@@ -11027,7 +11373,7 @@ async def anim_prompt(message: Message, state: FSMContext):
                         disable_web_page_preview=True,
                     )
                 else:
-                    await message.answer(
+                    await cb.message.answer(
                         f"📁 Оригинал ({size_mb:.1f} МБ) — слишком большой для Telegram.\n"
                         f"Напиши @neirosetkaalex — пришлём файл напрямую."
                     )
