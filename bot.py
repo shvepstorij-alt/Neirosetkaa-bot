@@ -10634,8 +10634,9 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                     request_id = submit.get("request_id")
                     if not request_id:
                         raise Exception(f"fal submit failed: {submit}")
-                status_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
-                response_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
+                status_url = submit.get("status_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
+                response_url = submit.get("response_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
+                logging.info(f"fal edit submitted: {request_id} status_url={status_url[:80]} response_url={response_url[:80]}")
                 for poll_i in range(60):
                     await asyncio.sleep(5)
                     try:
@@ -10662,20 +10663,29 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                 # Get result — с retry
                 result = None
                 _res_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
-                for res_attempt in range(10):
-                    try:
-                        async with s.get(response_url, headers=_res_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
-                            if rr.content_type and "json" in rr.content_type:
-                                result = await rr.json()
-                                break
-                            else:
-                                logging.warning(f"fal edit result non-JSON attempt {res_attempt}/10")
-                                await asyncio.sleep(5)
-                    except aiohttp.ContentTypeError:
-                        logging.warning(f"fal edit result ContentTypeError attempt {res_attempt}/10")
-                        await asyncio.sleep(5)
+                urls_to_try = [response_url]
+                if "queue.fal.run" in response_url:
+                    urls_to_try.append(response_url.replace("queue.fal.run", "fal.run"))
+                elif "fal.run" in response_url:
+                    urls_to_try.append(response_url.replace("fal.run", "queue.fal.run"))
+
+                for try_url in urls_to_try:
+                    for res_attempt in range(5):
+                        try:
+                            async with s.get(try_url, headers=_res_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                                if rr.content_type and "json" in rr.content_type:
+                                    result = await rr.json()
+                                    break
+                                else:
+                                    logging.warning(f"fal edit result non-JSON url={try_url[:60]} attempt {res_attempt}/5")
+                                    await asyncio.sleep(5)
+                        except aiohttp.ContentTypeError:
+                            logging.warning(f"fal edit result CTE attempt {res_attempt}/5")
+                            await asyncio.sleep(5)
+                    if result:
+                        break
                 if not result:
-                    raise Exception("fal edit result: не удалось получить JSON после 10 попыток")
+                    raise Exception("fal edit result: не удалось получить JSON")
                 out_url = (result.get("images") or [{}])[0].get("url")
                 if not out_url:
                     out_url = result.get("image", {}).get("url")
@@ -11285,8 +11295,9 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
 
                 # Poll
                 poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
-                status_url = submit.get("status_url", f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status")
-                response_url = f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
+                status_url = submit.get("status_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
+                response_url = submit.get("response_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
+                logging.info(f"fal anim submitted: {request_id} status_url={status_url[:80]} response_url={response_url[:80]}")
                 for poll_i in range(180):
                     await asyncio.sleep(5)
                     try:
@@ -11305,22 +11316,36 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 else:
                     raise Exception("fal timeout 15min")
 
-                # Get result — с retry на случай non-JSON ответа (fal иногда отдаёт HTML сразу после COMPLETED)
+                # Get result — с retry и fallback URLs
                 result = None
-                for res_attempt in range(10):
-                    try:
-                        async with s.get(response_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
-                            if rr.content_type and "json" in rr.content_type:
-                                result = await rr.json()
-                                break
-                            else:
-                                logging.warning(f"fal anim result non-JSON attempt {res_attempt}/10: {rr.content_type}")
-                                await asyncio.sleep(5)
-                    except aiohttp.ContentTypeError:
-                        logging.warning(f"fal anim result ContentTypeError attempt {res_attempt}/10")
-                        await asyncio.sleep(5)
+                # Пробуем разные форматы URL — fal иногда использует разные домены
+                urls_to_try = [response_url]
+                if f"queue.fal.run" in response_url:
+                    alt = response_url.replace("queue.fal.run", "fal.run")
+                    urls_to_try.append(alt)
+                elif f"fal.run" in response_url:
+                    alt = response_url.replace("fal.run", "queue.fal.run")
+                    urls_to_try.append(alt)
+                # Также пробуем gateway
+                urls_to_try.append(f"https://gateway.fal.ai/{m['model_id']}/requests/{request_id}")
+
+                for url_attempt, try_url in enumerate(urls_to_try):
+                    for res_attempt in range(5):
+                        try:
+                            async with s.get(try_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                                if rr.content_type and "json" in rr.content_type:
+                                    result = await rr.json()
+                                    break
+                                else:
+                                    logging.warning(f"fal anim result non-JSON url={try_url[:60]} attempt {res_attempt}/5: {rr.content_type}")
+                                    await asyncio.sleep(5)
+                        except aiohttp.ContentTypeError:
+                            logging.warning(f"fal anim result CTE url={try_url[:60]} attempt {res_attempt}/5")
+                            await asyncio.sleep(5)
+                    if result:
+                        break
                 if not result:
-                    raise Exception("fal result: не удалось получить JSON после 10 попыток (50 сек)")
+                    raise Exception(f"fal result: не удалось получить JSON. URLs tried: {[u[:60] for u in urls_to_try]}")
 
                 video_url = (result.get("video") or {}).get("url")
                 if not video_url:
