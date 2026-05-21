@@ -3197,7 +3197,7 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
         # 3. Получаем результат (если ещё не получили через 405-fallback или rescue)
         if not vid_url:
             rd = None
-            for _res_att in range(3):
+            for _res_att in range(10):
                 try:
                     async with s.get(result_url, headers=get_headers) as rr:
                         if rr.status != 200:
@@ -3208,13 +3208,13 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                             rd = await rr.json()
                             break
                         else:
-                            logging.warning(f"fal.ai result non-JSON attempt {_res_att}: {rr.content_type}")
-                            await asyncio.sleep(3)
+                            logging.warning(f"fal.ai result non-JSON attempt {_res_att}/10: {rr.content_type}")
+                            await asyncio.sleep(5)
                 except aiohttp.ContentTypeError:
-                    logging.warning(f"fal.ai result ContentTypeError attempt {_res_att}")
-                    await asyncio.sleep(3)
+                    logging.warning(f"fal.ai result ContentTypeError attempt {_res_att}/10")
+                    await asyncio.sleep(5)
             if not rd:
-                raise Exception(f"fal.ai result: не удалось получить JSON после 3 попыток. Request ID: {request_id}")
+                raise Exception(f"fal.ai result: не удалось получить JSON после 10 попыток. Request ID: {request_id}")
 
                 # Парсим URL видео
                 video = rd.get("video")
@@ -10662,20 +10662,20 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                 # Get result — с retry
                 result = None
                 _res_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
-                for res_attempt in range(3):
+                for res_attempt in range(10):
                     try:
                         async with s.get(response_url, headers=_res_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
                             if rr.content_type and "json" in rr.content_type:
                                 result = await rr.json()
                                 break
                             else:
-                                logging.warning(f"fal edit result non-JSON attempt {res_attempt}")
-                                await asyncio.sleep(3)
+                                logging.warning(f"fal edit result non-JSON attempt {res_attempt}/10")
+                                await asyncio.sleep(5)
                     except aiohttp.ContentTypeError:
-                        logging.warning(f"fal edit result ContentTypeError attempt {res_attempt}")
-                        await asyncio.sleep(3)
+                        logging.warning(f"fal edit result ContentTypeError attempt {res_attempt}/10")
+                        await asyncio.sleep(5)
                 if not result:
-                    raise Exception("fal edit result: не удалось получить JSON")
+                    raise Exception("fal edit result: не удалось получить JSON после 10 попыток")
                 out_url = (result.get("images") or [{}])[0].get("url")
                 if not out_url:
                     out_url = result.get("image", {}).get("url")
@@ -11305,22 +11305,22 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 else:
                     raise Exception("fal timeout 15min")
 
-                # Get result — с retry на случай non-JSON ответа
+                # Get result — с retry на случай non-JSON ответа (fal иногда отдаёт HTML сразу после COMPLETED)
                 result = None
-                for res_attempt in range(3):
+                for res_attempt in range(10):
                     try:
                         async with s.get(response_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
                             if rr.content_type and "json" in rr.content_type:
                                 result = await rr.json()
                                 break
                             else:
-                                logging.warning(f"fal anim result non-JSON attempt {res_attempt}: {rr.content_type}")
-                                await asyncio.sleep(3)
+                                logging.warning(f"fal anim result non-JSON attempt {res_attempt}/10: {rr.content_type}")
+                                await asyncio.sleep(5)
                     except aiohttp.ContentTypeError:
-                        logging.warning(f"fal anim result ContentTypeError attempt {res_attempt}")
-                        await asyncio.sleep(3)
+                        logging.warning(f"fal anim result ContentTypeError attempt {res_attempt}/10")
+                        await asyncio.sleep(5)
                 if not result:
-                    raise Exception("fal result: не удалось получить JSON после 3 попыток")
+                    raise Exception("fal result: не удалось получить JSON после 10 попыток (50 сек)")
 
                 video_url = (result.get("video") or {}).get("url")
                 if not video_url:
