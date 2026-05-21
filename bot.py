@@ -347,7 +347,7 @@ async def auto_recover_lost_videos_loop():
                             result_url = f"https://queue.fal.run/{ep}/requests/{request_id}"
                             try:
                                 async with s.get(result_url, headers=headers) as r:
-                                    if r.status == 200:
+                                    if r.status == 200 and r.content_type and "json" in r.content_type:
                                         rd = await r.json()
                                         video = rd.get("video")
                                         if isinstance(video, dict):
@@ -2954,7 +2954,11 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
                 raise Exception(f"fal.ai API {r.status}: {err_text[:200]}")
             if r.status != 200:
                 raise Exception(f"fal.ai API {r.status}: {(await r.text())[:300]}")
-            data = await r.json()
+            if r.content_type and "json" in r.content_type:
+                data = await r.json()
+            else:
+                raw = await r.text()
+                raise Exception(f"fal.ai image non-JSON: {raw[:200]}")
 
             # Ищем URL картинки в ответе
             images = data.get("images", [])
@@ -3083,9 +3087,15 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
         for i in range(max_iterations):
             try:
                 async with s.get(status_url, headers=get_headers) as sr:
+                    # Защита от non-JSON ответов
+                    if sr.content_type and "json" not in sr.content_type:
+                        consecutive_errors += 1
+                        if consecutive_errors % 5 == 0:
+                            logging.warning(f"fal.ai status poll non-JSON: {sr.content_type}")
+                        await asyncio.sleep(10)
+                        continue
+
                     if sr.status == 200:
-                        # Статус 200 ИЛИ 202 возможны для статус-эндпоинта
-                        # 200 означает COMPLETED
                         sd = await sr.json()
                         status = sd.get("status", "")
                         consecutive_errors = 0
@@ -3096,8 +3106,12 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                             break
 
                     elif sr.status == 202:
-                        # Задача в очереди или в обработке
-                        sd = await sr.json()
+                        try:
+                            sd = await sr.json()
+                        except (aiohttp.ContentTypeError, Exception):
+                            consecutive_errors += 1
+                            await asyncio.sleep(10)
+                            continue
                         status = sd.get("status", "IN_PROGRESS")
                         consecutive_errors = 0
 
@@ -3129,7 +3143,7 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                         try:
                             async with s.get(result_url, headers=get_headers) as rr2:
                                 if rr2.status == 200:
-                                    rd2 = await rr2.json()
+                                    rd2 = await rr2.json() if rr2.content_type and "json" in rr2.content_type else {}
                                     # Проверяем есть ли уже результат
                                     v2 = rd2.get("video")
                                     if isinstance(v2, dict) and v2.get("url"):
@@ -3150,9 +3164,9 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
                         if consecutive_errors >= 10:
                             raise Exception(f"fal.ai status API возвращает ошибки 10 раз подряд: {sr.status}")
 
-            except aiohttp.ClientError as ce:
+            except (aiohttp.ClientError, aiohttp.ContentTypeError) as ce:
                 consecutive_errors += 1
-                logging.warning(f"fal.ai status poll network error: {ce}")
+                logging.warning(f"fal.ai status poll error: {ce}")
                 if consecutive_errors >= 10:
                     raise Exception(f"fal.ai сеть упала 10 раз подряд: {ce}")
 
@@ -3163,7 +3177,7 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
             try:
                 async with s.get(result_url, headers=get_headers) as last_try:
                     if last_try.status == 200:
-                        ld = await last_try.json()
+                        ld = await last_try.json() if last_try.content_type and "json" in last_try.content_type else {}
                         v = ld.get("video")
                         if isinstance(v, dict):
                             vid_url = v.get("url")
@@ -3182,12 +3196,25 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
 
         # 3. Получаем результат (если ещё не получили через 405-fallback или rescue)
         if not vid_url:
-            async with s.get(result_url, headers=get_headers) as rr:
-                if rr.status != 200:
-                    err_text = (await rr.text())[:500]
-                    logging.error(f"fal.ai result fetch FAILED: status={rr.status} url={result_url} body={err_text}")
-                    raise Exception(f"fal.ai result fetch {rr.status}: {err_text[:200]}")
-                rd = await rr.json()
+            rd = None
+            for _res_att in range(3):
+                try:
+                    async with s.get(result_url, headers=get_headers) as rr:
+                        if rr.status != 200:
+                            err_text = (await rr.text())[:500]
+                            logging.error(f"fal.ai result fetch FAILED: status={rr.status} url={result_url} body={err_text}")
+                            raise Exception(f"fal.ai result fetch {rr.status}: {err_text[:200]}")
+                        if rr.content_type and "json" in rr.content_type:
+                            rd = await rr.json()
+                            break
+                        else:
+                            logging.warning(f"fal.ai result non-JSON attempt {_res_att}: {rr.content_type}")
+                            await asyncio.sleep(3)
+                except aiohttp.ContentTypeError:
+                    logging.warning(f"fal.ai result ContentTypeError attempt {_res_att}")
+                    await asyncio.sleep(3)
+            if not rd:
+                raise Exception(f"fal.ai result: не удалось получить JSON после 3 попыток. Request ID: {request_id}")
 
                 # Парсим URL видео
                 video = rd.get("video")
@@ -3433,7 +3460,11 @@ async def api_animate_image(
             async with s.get(f"{base}/{op_name}", headers=headers) as pr:
                 if pr.status != 200:
                     continue
-                pd = await pr.json()
+                try:
+                    pd = await pr.json()
+                except (aiohttp.ContentTypeError, Exception) as je:
+                    logging.warning(f"Veo anim poll json error: {je}")
+                    continue
                 if not pd.get("done"):
                     continue
                 if "error" in pd:
@@ -3553,7 +3584,11 @@ async def api_kling_motion_control(
                         if attempt % 6 == 0:  # логируем раз в 30 сек
                             logging.warning(f"Kling poll {task_id} status={pr.status}")
                         continue
-                    pd = await pr.json()
+                    try:
+                        pd = await pr.json()
+                    except (aiohttp.ContentTypeError, Exception) as je:
+                        logging.warning(f"Kling poll json error attempt={attempt}: {je}")
+                        continue
                     last_response = pd
             except Exception as pe:
                 logging.warning(f"Kling poll exception attempt={attempt}: {pe}")
@@ -4465,7 +4500,7 @@ async def cmd_recover(message: Message):
             result_url = f"https://queue.fal.run/{ep}/requests/{request_id}"
             try:
                 async with s.get(result_url, headers=headers) as r:
-                    if r.status == 200:
+                    if r.status == 200 and r.content_type and "json" in r.content_type:
                         rd = await r.json()
                         video = rd.get("video")
                         if isinstance(video, dict):
@@ -10091,7 +10126,11 @@ async def do_upscale(message: Message, state: FSMContext):
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=120)
             ) as r:
-                result = await r.json()
+                if r.content_type and "json" in r.content_type:
+                    result = await r.json()
+                else:
+                    raw = await r.text()
+                    raise Exception(f"Upscale non-JSON response: {raw[:200]}")
 
         out_url = result.get("image", {}).get("url")
         if not out_url:
@@ -10620,12 +10659,23 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                         continue
                 else:
                     raise Exception("fal edit timeout 5 min")
-                async with s.get(
-                    response_url,
-                    headers={"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as rr:
-                    result = await rr.json()
+                # Get result — с retry
+                result = None
+                _res_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
+                for res_attempt in range(3):
+                    try:
+                        async with s.get(response_url, headers=_res_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                            if rr.content_type and "json" in rr.content_type:
+                                result = await rr.json()
+                                break
+                            else:
+                                logging.warning(f"fal edit result non-JSON attempt {res_attempt}")
+                                await asyncio.sleep(3)
+                    except aiohttp.ContentTypeError:
+                        logging.warning(f"fal edit result ContentTypeError attempt {res_attempt}")
+                        await asyncio.sleep(3)
+                if not result:
+                    raise Exception("fal edit result: не удалось получить JSON")
                 out_url = (result.get("images") or [{}])[0].get("url")
                 if not out_url:
                     out_url = result.get("image", {}).get("url")
@@ -11255,9 +11305,22 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 else:
                     raise Exception("fal timeout 15min")
 
-                # Get result
-                async with s.get(response_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
-                    result = await rr.json()
+                # Get result — с retry на случай non-JSON ответа
+                result = None
+                for res_attempt in range(3):
+                    try:
+                        async with s.get(response_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                            if rr.content_type and "json" in rr.content_type:
+                                result = await rr.json()
+                                break
+                            else:
+                                logging.warning(f"fal anim result non-JSON attempt {res_attempt}: {rr.content_type}")
+                                await asyncio.sleep(3)
+                    except aiohttp.ContentTypeError:
+                        logging.warning(f"fal anim result ContentTypeError attempt {res_attempt}")
+                        await asyncio.sleep(3)
+                if not result:
+                    raise Exception("fal result: не удалось получить JSON после 3 попыток")
 
                 video_url = (result.get("video") or {}).get("url")
                 if not video_url:
