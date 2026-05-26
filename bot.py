@@ -2027,6 +2027,8 @@ async def notify_admin_error(context: str, e: Exception):
             "nsfw" in low or "насили" in low or "знаменит" in low or
             "violat" in low or "moderat" in low or "inappropriate" in low or
             "контент-полит" in low or "content policy" in low or
+            "content_policy_violation" in low or
+            "flagged by a content checker" in low or
             ("фильтр" in low and "безопасн" in low)
         )
     )
@@ -2902,11 +2904,13 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
                 # 422 может быть: safety, validation error, bad params
                 if ("safety" in err_lower or "moderation" in err_lower or
                     "policy" in err_lower or "nsfw" in err_lower or "violat" in err_lower or
-                    "inappropriate" in err_lower or "blocked" in err_lower):
+                    "inappropriate" in err_lower or "blocked" in err_lower or
+                    "content_policy_violation" in err_lower or "flagged by a content" in err_lower):
                     logging.warning(f"fal.ai safety block for model={model_id}: {err_text}")
                     raise Exception(
-                        "🛡 Промт не прошёл фильтр безопасности.\n\n"
-                        "Переформулируй — избегай сцен с насилием, NSFW контента или упоминаний знаменитостей."
+                        "🛡 Контент заблокирован моделью.\n\n"
+                        "Модель отклонила запрос по правилам безопасности.\n"
+                        "Попробуй переформулировать — избегай NSFW, насилия или знаменитостей."
                     )
                 # Иначе — валидационная ошибка: логируем полный текст для админа
                 logging.error(f"fal.ai 422 (validation) model={model_id} payload={payload} response={err_text}")
@@ -3216,24 +3220,31 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
             if not rd:
                 raise Exception(f"fal.ai result: не удалось получить JSON после 10 попыток. Request ID: {request_id}")
 
-                # Парсим URL видео
-                video = rd.get("video")
-                if isinstance(video, dict):
-                    vid_url = video.get("url")
-                elif isinstance(video, str):
-                    vid_url = video
-                if not vid_url:
-                    vid_url = rd.get("video_url")
-                if not vid_url:
-                    output = rd.get("output")
-                    if isinstance(output, dict):
-                        vid_url = (output.get("video", {}).get("url")
-                                   if isinstance(output.get("video"), dict)
-                                   else output.get("video_url"))
+            # Парсим URL видео
+            video = rd.get("video")
+            if isinstance(video, dict):
+                vid_url = video.get("url")
+            elif isinstance(video, str):
+                vid_url = video
+            if not vid_url:
+                vid_url = rd.get("video_url")
+            if not vid_url:
+                output = rd.get("output")
+                if isinstance(output, dict):
+                    vid_url = (output.get("video", {}).get("url")
+                               if isinstance(output.get("video"), dict)
+                               else output.get("video_url"))
 
-                if not vid_url:
-                    logging.error(f"fal.ai no video url in response. keys={list(rd.keys())} full={str(rd)[:800]}")
-                    raise Exception(f"fal.ai не вернул URL видео. Request ID: {request_id}")
+            if not vid_url:
+                # Проверяем content_policy_violation
+                rd_str = str(rd).lower()
+                if "content_policy_violation" in rd_str or "flagged by a content" in rd_str:
+                    raise Exception(
+                        "🛡 Контент заблокирован моделью.\n\n"
+                        "Попробуй переформулировать — избегай NSFW, насилия или знаменитостей."
+                    )
+                logging.error(f"fal.ai no video url in response. keys={list(rd.keys())} full={str(rd)[:800]}")
+                raise Exception(f"fal.ai не вернул URL видео. Request ID: {request_id}")
 
         logging.info(f"fal.ai video URL obtained: {vid_url[:100]} (request_id={request_id})")
 
@@ -10618,10 +10629,25 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             }
-            payload = {
-                "prompt": prompt,
-                "image_url": image_data_uri,
-            }
+            # Разные модели требуют разные поля
+            if "gpt-image" in m['model_id']:
+                # GPT Image 2 edit: image_urls (массив), не image_url
+                payload = {
+                    "prompt": prompt,
+                    "image_urls": [image_data_uri],
+                }
+            elif "flux-kontext" in m['model_id']:
+                # Flux Kontext: image_url + prompt
+                payload = {
+                    "prompt": prompt,
+                    "image_url": image_data_uri,
+                }
+            else:
+                # Grok и другие: image_url + prompt
+                payload = {
+                    "prompt": prompt,
+                    "image_url": image_data_uri,
+                }
             async with aiohttp.ClientSession() as s:
                 # Все edit модели через queue (они могут быть медленными)
                 async with s.post(
@@ -10690,6 +10716,13 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                 if not out_url:
                     out_url = result.get("image", {}).get("url")
                 if not out_url:
+                    result_str = str(result).lower()
+                    if "content_policy_violation" in result_str or "flagged by a content" in result_str:
+                        raise Exception(
+                            "🛡 Контент заблокирован моделью.\n\n"
+                            "Модель отклонила запрос по правилам безопасности.\n"
+                            "Попробуй переформулировать."
+                        )
                     raise Exception(f"No image URL: {str(result)[:200]}")
                 async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=60)) as dr:
                     result_bytes = await dr.read()
@@ -11349,7 +11382,15 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
 
                 video_url = (result.get("video") or {}).get("url")
                 if not video_url:
-                    raise Exception(f"No video URL: {result}")
+                    # Проверяем — это content policy violation?
+                    result_str = str(result).lower()
+                    if "content_policy_violation" in result_str or "flagged by a content" in result_str:
+                        raise Exception(
+                            "🛡 Контент заблокирован моделью.\n\n"
+                            "Модель отклонила запрос по правилам безопасности.\n"
+                            "Попробуй переформулировать — избегай NSFW, насилия или знаменитостей."
+                        )
+                    raise Exception(f"No video URL: {str(result)[:200]}")
 
                 # Download
                 async with s.get(video_url, timeout=aiohttp.ClientTimeout(total=120)) as dv:
