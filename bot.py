@@ -1270,7 +1270,7 @@ async def load_prices_from_db():
     logging.info("✅ Цены загружены из БД")
 
 
-
+async def get_coins(user_id: int) -> float:
     pool = await get_pool()
     async with pool.acquire() as conn:
         val = await conn.fetchval(
