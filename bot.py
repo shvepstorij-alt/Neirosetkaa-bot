@@ -1003,7 +1003,8 @@ async def init_db():
         for col, dfn in [
             ("payment_method", "TEXT"),     # 'sbp' | 'card'
             ("promo_code",     "TEXT"),     # применённый промокод
-            ("paid_at",        "TIMESTAMP") # когда пришёл webhook об оплате
+            ("paid_at",        "TIMESTAMP"), # когда пришёл webhook об оплате
+            ("admin_msg_id",   "BIGINT"),   # ID сообщения админу для редактирования
         ]:
             try:
                 await conn.execute(f"ALTER TABLE fk_orders ADD COLUMN {col} {dfn}")
@@ -1134,6 +1135,45 @@ async def init_db():
         except Exception as mig_err:
             logging.warning(f"active_generations migration: {mig_err}")
 
+        # Таблицы для редактирования цен через админку
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_credit_packs (
+                key         TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                credits     INTEGER NOT NULL,
+                price       INTEGER NOT NULL,
+                stars       INTEGER DEFAULT 0,
+                description TEXT DEFAULT '',
+                badge       TEXT DEFAULT '',
+                enabled     BOOLEAN DEFAULT TRUE,
+                sort_order  INTEGER DEFAULT 0
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_shop_items (
+                key         TEXT NOT NULL,
+                plan_idx    INTEGER NOT NULL,
+                service_name TEXT NOT NULL,
+                emoji       TEXT DEFAULT '',
+                service_desc TEXT DEFAULT '',
+                plan_name   TEXT NOT NULL,
+                price       INTEGER NOT NULL,
+                stars       INTEGER DEFAULT 0,
+                plan_desc   TEXT DEFAULT '',
+                enabled     BOOLEAN DEFAULT TRUE,
+                sort_order  INTEGER DEFAULT 0,
+                PRIMARY KEY (key, plan_idx)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_gen_prices (
+                model_key   TEXT PRIMARY KEY,
+                section     TEXT NOT NULL,
+                credits     INTEGER NOT NULL,
+                enabled     BOOLEAN DEFAULT TRUE
+            )
+        """)
+
     logging.info("✅ PostgreSQL инициализирован")
 
 
@@ -1151,7 +1191,86 @@ async def get_gen_count(user_id: int) -> int:
         return int(val or 0)
 
 
-async def get_coins(user_id: int) -> float:
+# ── ДИНАМИЧЕСКИЕ ЦЕНЫ ─────────────────────────────────────────────────────────
+
+async def load_prices_from_db():
+    """Загружает цены из БД и обновляет глобальные словари. 
+    Если БД пуста — записывает дефолтные значения из кода."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Кредитные пакеты
+        rows = await conn.fetch("SELECT * FROM bot_credit_packs WHERE enabled=TRUE ORDER BY sort_order, price")
+        if rows:
+            CREDIT_PACKS.clear()
+            for i, r in enumerate(rows):
+                CREDIT_PACKS[r["key"]] = {
+                    "name": r["name"], "credits": r["credits"],
+                    "price": r["price"], "stars": r["stars"],
+                    "desc": r["description"], "badge": r["badge"],
+                }
+        else:
+            # Записываем дефолтные в БД
+            for i, (key, p) in enumerate(CREDIT_PACKS.items()):
+                await conn.execute("""
+                    INSERT INTO bot_credit_packs (key, name, credits, price, stars, description, badge, sort_order)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (key) DO NOTHING
+                """, key, p["name"], p["credits"], p["price"], p.get("stars", 0),
+                    p.get("desc", ""), p.get("badge", ""), i)
+
+        # Товары магазина
+        rows_shop = await conn.fetch("SELECT * FROM bot_shop_items WHERE enabled=TRUE ORDER BY key, sort_order, plan_idx")
+        if rows_shop:
+            SHOP_CATALOG.clear()
+            for r in rows_shop:
+                k = r["key"]
+                if k not in SHOP_CATALOG:
+                    SHOP_CATALOG[k] = {
+                        "name": r["service_name"], "emoji": r["emoji"],
+                        "desc": r["service_desc"], "plans": []
+                    }
+                SHOP_CATALOG[k]["plans"].append({
+                    "name": r["plan_name"], "price": r["price"],
+                    "stars": r["stars"], "desc": r["plan_desc"]
+                })
+        else:
+            # Записываем дефолтные в БД
+            for key, s in SHOP_CATALOG.items():
+                for i, p in enumerate(s.get("plans", [])):
+                    await conn.execute("""
+                        INSERT INTO bot_shop_items
+                        (key, plan_idx, service_name, emoji, service_desc, plan_name, price, stars, plan_desc, sort_order)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (key, plan_idx) DO NOTHING
+                    """, key, i, s["name"], s.get("emoji",""), s.get("desc",""),
+                        p["name"], p["price"], p.get("stars",0), p.get("desc",""), i)
+
+        # Цены на генерации
+        rows_gen = await conn.fetch("SELECT * FROM bot_gen_prices WHERE enabled=TRUE")
+        if rows_gen:
+            for r in rows_gen:
+                key = r["model_key"]
+                credits = r["credits"]
+                if key in IMAGE_MODELS:
+                    IMAGE_MODELS[key]["credits"] = credits
+                elif key in VIDEO_MODELS:
+                    VIDEO_MODELS[key]["credits"] = credits
+                elif key in ANIM_MODELS:
+                    ANIM_MODELS[key]["credits"] = credits
+                elif key in EDIT_MODELS:
+                    EDIT_MODELS[key]["credits"] = credits
+        else:
+            # Записываем дефолтные
+            all_models = list(IMAGE_MODELS.items()) + list(VIDEO_MODELS.items()) + list(ANIM_MODELS.items()) + list(EDIT_MODELS.items())
+            for key, m in all_models:
+                section = "image" if key in IMAGE_MODELS else "video" if key in VIDEO_MODELS else "anim" if key in ANIM_MODELS else "edit"
+                await conn.execute("""
+                    INSERT INTO bot_gen_prices (model_key, section, credits)
+                    VALUES ($1,$2,$3) ON CONFLICT (model_key) DO NOTHING
+                """, key, section, m.get("credits", 10))
+
+    logging.info("✅ Цены загружены из БД")
+
+
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         val = await conn.fetchval(
@@ -4976,18 +5095,27 @@ async def shop_pay_sbp(cb: CallbackQuery):
     except Exception:
         await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
-    # Уведомить Александра
+    # Уведомить Александра — одно сообщение, которое обновится при оплате
     username = cb.from_user.username or cb.from_user.full_name
     try:
-        await bot.send_message(
+        admin_msg = await bot.send_message(
             ADMIN_ID,
-            f"🛍 <b>Заказ из магазина (СБП)</b>\n\n"
-            f"👤 @{username} (ID: {uid})\n"
+            f"🛍 <b>Новый заказ из магазина</b>\n\n"
+            f"👤 @{username} (<code>{uid}</code>)\n"
             f"📦 {s['emoji']} {s['name']} {p['name']}\n"
-            f"💵 {p['price']}₽/мес\n"
-            f"🆔 Заказ: <code>{order_id}</code>",
+            f"💵 Сумма: <b>{p['price']}₽</b>\n"
+            f"🏦 Способ: СБП\n"
+            f"🆔 Заказ: <code>{order_id}</code>\n\n"
+            f"⏳ <b>Статус: ожидает оплаты</b>",
             parse_mode="HTML"
         )
+        # Сохраняем message_id в БД для последующего редактирования
+        pool2 = await get_pool()
+        async with pool2.acquire() as conn2:
+            await conn2.execute(
+                "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
+                admin_msg.message_id, order_id
+            )
     except Exception:
         pass
     await cb.answer()
@@ -5789,8 +5917,30 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
         )
 
         # Запускаем активный мониторинг этого заказа в фоне
-        # Бот сам будет проверять статус каждые 5 сек и зачислит как только клиент оплатит
         asyncio.create_task(fk_monitor_order(order_id))
+
+        # Уведомляем админа — одно сообщение, обновится при оплате
+        try:
+            username = cb.from_user.username or cb.from_user.full_name
+            admin_msg = await bot.send_message(
+                ADMIN_ID,
+                f"\U0001f4b0 <b>\u041d\u043e\u0432\u044b\u0439 \u0437\u0430\u043a\u0430\u0437</b>\n\n"
+                f"\U0001f464 @{username} (<code>{uid}</code>)\n"
+                f"\U0001f4e6 {p['credits']} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432\n"
+                f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount}\u20bd</b>\n"
+                f"\U0001f3e6 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
+                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
+                f"\u23f3 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b</b>",
+                parse_mode="HTML"
+            )
+            pool3 = await get_pool()
+            async with pool3.acquire() as conn3:
+                await conn3.execute(
+                    "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
+                    admin_msg.message_id, order_id
+                )
+        except Exception:
+            pass
 
     except Exception as e:
         await wait_msg.edit_text(f"❌ Ошибка создания платежа: {e}")
@@ -8086,6 +8236,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="📉 Расход по юзеру",   callback_data="adm_spend"),
          InlineKeyboardButton(text="🔒 Блокировки",        callback_data="adm_blocks")],
         [InlineKeyboardButton(text="🎟 Промокоды",          callback_data="adm_promos")],
+        [InlineKeyboardButton(text="💵 Редактор цен",      callback_data="adm_prices")],
         [InlineKeyboardButton(text="📝 Изменить приветствие", callback_data="adm_welcome")],
         [InlineKeyboardButton(text="📣 Рассылка",          callback_data="adm_broadcast"),
          InlineKeyboardButton(text="⚙️ Техобслуживание",   callback_data="adm_maintenance")],
@@ -9676,6 +9827,357 @@ class AdmPromoState(StatesGroup):
     waiting_value = State()
     waiting_uses = State()
     waiting_days = State()
+
+
+
+
+
+# ── РЕДАКТОР ЦЕН ──────────────────────────────────────────────────────────────
+
+class AdminEditState(StatesGroup):
+    waiting_value = State()
+
+
+@dp.callback_query(F.data == "adm_prices")
+async def adm_prices(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer()
+        return
+    await cb.message.edit_text(
+        "\U0001f4b5 <b>\u0420\u0435\u0434\u0430\u043a\u0442\u043e\u0440 \u0446\u0435\u043d \u0438 \u0442\u043e\u0432\u0430\u0440\u043e\u0432</b>\n\n\u0412\u044b\u0431\u0435\u0440\u0438 \u0440\u0430\u0437\u0434\u0435\u043b:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="\U0001f4e6 \u041f\u0430\u043a\u0435\u0442\u044b \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432", callback_data="adm_prices_packs")],
+            [InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d \u043f\u043e\u0434\u043f\u0438\u0441\u043e\u043a", callback_data="adm_prices_shop")],
+            [InlineKeyboardButton(text="\U0001f3a8 \u0426\u0435\u043d\u044b \u043d\u0430 \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0438", callback_data="adm_prices_gen")],
+            [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_panel")],
+        ])
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_prices_packs")
+async def adm_prices_packs(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    lines = [f"\u2022 <b>{p['name']}</b> \u2014 {p['credits']} \u043a\u0440 \u0437\u0430 <b>{p['price']}\u20bd</b>" for _, p in CREDIT_PACKS.items()]
+    rows = [[InlineKeyboardButton(text=f"\u270f\ufe0f {p['name']} ({p['price']}\u20bd)", callback_data=f"adm_edit_pack:{key}")] for key, p in CREDIT_PACKS.items()]
+    rows += [[InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043f\u0430\u043a\u0435\u0442", callback_data="adm_add_pack")],
+             [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices")]]
+    await cb.message.edit_text(
+        "\U0001f4e6 <b>\u041f\u0430\u043a\u0435\u0442\u044b \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432</b>\n\n" + "\n".join(lines),
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_edit_pack:"))
+async def adm_edit_pack(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    key = cb.data.split(":")[1]
+    p = CREDIT_PACKS.get(key)
+    if not p:
+        await cb.answer("\u041f\u0430\u043a\u0435\u0442 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d", show_alert=True); return
+    await state.update_data(edit_pack_key=key)
+    await cb.message.edit_text(
+        f"\u270f\ufe0f <b>\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043f\u0430\u043a\u0435\u0442\u0430</b>\n\n\u041a\u043b\u044e\u0447: <code>{key}</code>\n\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435: <b>{p['name']}</b>\n\u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432: <b>{p['credits']}</b>\n\u0426\u0435\u043d\u0430: <b>{p['price']}\u20bd</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="\U0001f4b0 \u0426\u0435\u043d\u0430", callback_data=f"adm_pack_field:{key}:price"),
+             InlineKeyboardButton(text="\U0001f48e \u041a\u0440\u0435\u0434\u0438\u0442\u044b", callback_data=f"adm_pack_field:{key}:credits")],
+            [InlineKeyboardButton(text="\U0001f4dd \u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435", callback_data=f"adm_pack_field:{key}:name")],
+            [InlineKeyboardButton(text="\U0001f5d1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c", callback_data=f"adm_del_pack:{key}")],
+            [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices_packs")],
+        ]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_pack_field:"))
+async def adm_pack_field(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    parts = cb.data.split(":")
+    key, field = parts[1], parts[2]
+    p = CREDIT_PACKS.get(key, {})
+    field_names = {"price": "\u0446\u0435\u043d\u0443 (\u20bd)", "credits": "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432", "name": "\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435"}
+    await state.update_data(edit_pack_key=key, edit_pack_field=field)
+    await state.set_state(AdminEditState.waiting_value)
+    await cb.message.edit_text(
+        f"\u270f\ufe0f \u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f <b>{field_names.get(field, field)}</b>\n\n\u0422\u0435\u043a\u0443\u0449\u0435\u0435: <code>{p.get(field, '')}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data="adm_prices_packs")]]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_del_pack:"))
+async def adm_del_pack(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    key = cb.data.split(":")[1]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE bot_credit_packs SET enabled=FALSE WHERE key=$1", key)
+    CREDIT_PACKS.pop(key, None)
+    await cb.answer("\u041f\u0430\u043a\u0435\u0442 \u0443\u0434\u0430\u043b\u0451\u043d", show_alert=True)
+    await adm_prices_packs(cb)
+
+
+@dp.callback_query(F.data == "adm_add_pack")
+async def adm_add_pack(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    await state.update_data(edit_pack_key=None, edit_pack_field="new_pack")
+    await state.set_state(AdminEditState.waiting_value)
+    await cb.message.edit_text(
+        "\u2795 <b>\u041d\u043e\u0432\u044b\u0439 \u043f\u0430\u043a\u0435\u0442</b>\n\n\u0424\u043e\u0440\u043c\u0430\u0442:\n<code>\u043a\u043b\u044e\u0447|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043a\u0440\u0435\u0434\u0438\u0442\u044b|\u0446\u0435\u043d\u0430</code>\n\n\u041f\u0440\u0438\u043c\u0435\u0440: <code>p300|\U0001f3c6 \u041c\u0430\u043a\u0441\u0438\u043c\u0443\u043c|3000|1490</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data="adm_prices_packs")]]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_prices_shop")
+async def adm_prices_shop(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    rows = [[InlineKeyboardButton(text=f"{s['emoji']} {s['name']} ({len(s['plans'])} \u0442\u0430\u0440\u0438\u0444\u043e\u0432)", callback_data=f"adm_shop_service:{key}")] for key, s in SHOP_CATALOG.items()]
+    rows += [[InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u0435\u0440\u0432\u0438\u0441", callback_data="adm_add_service")],
+             [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices")]]
+    await cb.message.edit_text("\U0001f6cd <b>\u041c\u0430\u0433\u0430\u0437\u0438\u043d \u043f\u043e\u0434\u043f\u0438\u0441\u043e\u043a</b>",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_shop_service:"))
+async def adm_shop_service(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    key = cb.data.split(":")[1]
+    s = SHOP_CATALOG.get(key)
+    if not s:
+        await cb.answer("\u0421\u0435\u0440\u0432\u0438\u0441 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d", show_alert=True); return
+    plans_text = "\n".join([f"  {i}. {p['name']} \u2014 <b>{p['price']}\u20bd</b>" for i, p in enumerate(s['plans'])])
+    rows = [[InlineKeyboardButton(text=f"\u270f\ufe0f {p['name']} ({p['price']}\u20bd)", callback_data=f"adm_shop_plan:{key}:{i}")] for i, p in enumerate(s['plans'])]
+    rows += [[InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0442\u0430\u0440\u0438\u0444", callback_data=f"adm_add_plan:{key}")],
+             [InlineKeyboardButton(text="\U0001f5d1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0435\u0440\u0432\u0438\u0441", callback_data=f"adm_del_service:{key}")],
+             [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices_shop")]]
+    await cb.message.edit_text(f"{s['emoji']} <b>{s['name']}</b>\n\n{plans_text}",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_shop_plan:"))
+async def adm_shop_plan(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    parts = cb.data.split(":")
+    key, plan_idx = parts[1], int(parts[2])
+    s = SHOP_CATALOG.get(key, {})
+    plans = s.get("plans", [])
+    if plan_idx >= len(plans):
+        await cb.answer("\u0422\u0430\u0440\u0438\u0444 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d", show_alert=True); return
+    p = plans[plan_idx]
+    await cb.message.edit_text(
+        f"\u270f\ufe0f <b>{s.get('name', key)} \u2014 {p['name']}</b>\n\n\u0426\u0435\u043d\u0430: <b>{p['price']}\u20bd</b>\n{p.get('desc', '')}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="\U0001f4b0 \u0426\u0435\u043d\u0430", callback_data=f"adm_plan_field:{key}:{plan_idx}:price"),
+             InlineKeyboardButton(text="\U0001f4dd \u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435", callback_data=f"adm_plan_field:{key}:{plan_idx}:name")],
+            [InlineKeyboardButton(text="\U0001f4c4 \u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", callback_data=f"adm_plan_field:{key}:{plan_idx}:desc")],
+            [InlineKeyboardButton(text="\U0001f5d1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0442\u0430\u0440\u0438\u0444", callback_data=f"adm_del_plan:{key}:{plan_idx}")],
+            [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data=f"adm_shop_service:{key}")],
+        ]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_plan_field:"))
+async def adm_plan_field(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    parts = cb.data.split(":")
+    key, plan_idx, field = parts[1], int(parts[2]), parts[3]
+    s = SHOP_CATALOG.get(key, {})
+    p = s.get("plans", [])[plan_idx] if plan_idx < len(s.get("plans", [])) else {}
+    field_names = {"price": "\u0446\u0435\u043d\u0443 (\u20bd)", "name": "\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435", "desc": "\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"}
+    await state.update_data(edit_shop_key=key, edit_shop_plan=plan_idx, edit_shop_field=field)
+    await state.set_state(AdminEditState.waiting_value)
+    await cb.message.edit_text(
+        f"\u270f\ufe0f \u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f <b>{field_names.get(field, field)}</b>\n\n\u0422\u0435\u043a\u0443\u0449\u0435\u0435: <code>{p.get(field, '')}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data=f"adm_shop_service:{key}")]]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_del_plan:"))
+async def adm_del_plan(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    parts = cb.data.split(":")
+    key, plan_idx = parts[1], int(parts[2])
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE bot_shop_items SET enabled=FALSE WHERE key=$1 AND plan_idx=$2", key, plan_idx)
+    if key in SHOP_CATALOG and plan_idx < len(SHOP_CATALOG[key]["plans"]):
+        SHOP_CATALOG[key]["plans"].pop(plan_idx)
+    await cb.answer("\u0422\u0430\u0440\u0438\u0444 \u0443\u0434\u0430\u043b\u0451\u043d", show_alert=True)
+    await adm_shop_service(cb)
+
+
+@dp.callback_query(F.data.startswith("adm_del_service:"))
+async def adm_del_service(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    key = cb.data.split(":")[1]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE bot_shop_items SET enabled=FALSE WHERE key=$1", key)
+    SHOP_CATALOG.pop(key, None)
+    await cb.answer("\u0421\u0435\u0440\u0432\u0438\u0441 \u0443\u0434\u0430\u043b\u0451\u043d", show_alert=True)
+    await adm_prices_shop(cb)
+
+
+@dp.callback_query(F.data == "adm_add_service")
+async def adm_add_service(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    await state.update_data(edit_shop_key=None, edit_shop_field="new_service")
+    await state.set_state(AdminEditState.waiting_value)
+    await cb.message.edit_text(
+        "\u2795 <b>\u041d\u043e\u0432\u044b\u0439 \u0441\u0435\u0440\u0432\u0438\u0441</b>\n\n\u0424\u043e\u0440\u043c\u0430\u0442:\n<code>\u043a\u043b\u044e\u0447|\u044d\u043c\u043e\u0434\u0437\u0438|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435</code>\n\n\u041f\u0440\u0438\u043c\u0435\u0440: <code>notion|\U0001f4d3|Notion AI|\u0418\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 \u0434\u043b\u044f \u0437\u0430\u043c\u0435\u0442\u043e\u043a \u0441 AI</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data="adm_prices_shop")]]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_add_plan:"))
+async def adm_add_plan(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    key = cb.data.split(":")[1]
+    await state.update_data(edit_shop_key=key, edit_shop_field="new_plan")
+    await state.set_state(AdminEditState.waiting_value)
+    sname = SHOP_CATALOG.get(key, {}).get("name", key)
+    await cb.message.edit_text(
+        f"\u2795 <b>\u041d\u043e\u0432\u044b\u0439 \u0442\u0430\u0440\u0438\u0444 \u0434\u043b\u044f {sname}</b>\n\n\u0424\u043e\u0440\u043c\u0430\u0442:\n<code>\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u0446\u0435\u043d\u0430|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435</code>\n\n\u041f\u0440\u0438\u043c\u0435\u0440: <code>Business|5000|\u0414\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data=f"adm_shop_service:{key}")]]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_prices_gen")
+async def adm_prices_gen(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    await cb.message.edit_text(
+        "\U0001f3a8 <b>\u0426\u0435\u043d\u044b \u043d\u0430 \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0438</b>\n\n\u0412\u044b\u0431\u0435\u0440\u0438 \u0440\u0430\u0437\u0434\u0435\u043b:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="\U0001f4f7 \u0424\u043e\u0442\u043e-\u043c\u043e\u0434\u0435\u043b\u0438", callback_data="adm_gen_section:image")],
+            [InlineKeyboardButton(text="\U0001f3ac \u0412\u0438\u0434\u0435\u043e-\u043c\u043e\u0434\u0435\u043b\u0438", callback_data="adm_gen_section:video")],
+            [InlineKeyboardButton(text="\U0001f58c\ufe0f \u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435", callback_data="adm_gen_section:edit")],
+            [InlineKeyboardButton(text="\U0001f3c3 \u0410\u043d\u0438\u043c\u0430\u0446\u0438\u044f", callback_data="adm_gen_section:anim")],
+            [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices")],
+        ]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gen_section:"))
+async def adm_gen_section(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    section = cb.data.split(":")[1]
+    models = {"image": IMAGE_MODELS, "video": VIDEO_MODELS, "edit": EDIT_MODELS, "anim": ANIM_MODELS}.get(section, {})
+    rows = [[InlineKeyboardButton(text=f"\u270f\ufe0f {m['name']} \u2014 {m.get('credits',0)} \u043a\u0440", callback_data=f"adm_edit_gen:{key}:{section}")] for key, m in models.items()]
+    rows.append([InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices_gen")])
+    snames = {"image": "\u0424\u043e\u0442\u043e", "video": "\u0412\u0438\u0434\u0435\u043e", "edit": "\u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435", "anim": "\u0410\u043d\u0438\u043c\u0430\u0446\u0438\u044f"}
+    await cb.message.edit_text(f"\U0001f3a8 <b>{snames.get(section, section)}</b>", parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_edit_gen:"))
+async def adm_edit_gen(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    parts = cb.data.split(":")
+    key, section = parts[1], parts[2]
+    m = {"image": IMAGE_MODELS, "video": VIDEO_MODELS, "edit": EDIT_MODELS, "anim": ANIM_MODELS}.get(section, {}).get(key, {})
+    await state.update_data(edit_gen_key=key, edit_gen_section=section, edit_pack_field="gen_credits")
+    await state.set_state(AdminEditState.waiting_value)
+    await cb.message.edit_text(
+        f"\u270f\ufe0f <b>{m.get('name', key)}</b>\n\n\u0422\u0435\u043a\u0443\u0449\u0430\u044f \u0446\u0435\u043d\u0430: <b>{m.get('credits', 0)} \u043a\u0440</b>\n\n\u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data=f"adm_gen_section:{section}")]]))
+    await cb.answer()
+
+
+@dp.message(AdminEditState.waiting_value)
+async def adm_edit_value(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    value = message.text.strip()
+    pool = await get_pool()
+    field = data.get("edit_pack_field", "")
+    pack_key = data.get("edit_pack_key")
+    shop_key = data.get("edit_shop_key")
+    shop_field = data.get("edit_shop_field", "")
+    shop_plan = data.get("edit_shop_plan")
+    gen_key = data.get("edit_gen_key")
+    gen_section = data.get("edit_gen_section")
+    try:
+        if field in ("price", "credits", "name") and pack_key:
+            val = int(value) if field != "name" else value
+            CREDIT_PACKS[pack_key][field] = val
+            async with pool.acquire() as conn:
+                await conn.execute(f"UPDATE bot_credit_packs SET {field}=$1 WHERE key=$2", val, pack_key)
+            await state.clear()
+            await message.answer(f"\u2705 {CREDIT_PACKS[pack_key]['name']} \u2192 {field} = <code>{val}</code>", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f4e6 \u041a \u043f\u0430\u043a\u0435\u0442\u0430\u043c", callback_data="adm_prices_packs")]]))
+        elif field == "new_pack":
+            parts = [x.strip() for x in value.split("|")]
+            if len(parts) < 4: await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043a\u043b\u044e\u0447|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043a\u0440\u0435\u0434\u0438\u0442\u044b|\u0446\u0435\u043d\u0430"); return
+            nk, nm, nc, np_ = parts[0], parts[1], int(parts[2]), int(parts[3])
+            CREDIT_PACKS[nk] = {"name": nm, "credits": nc, "price": np_, "stars": 0, "desc": "", "badge": ""}
+            async with pool.acquire() as conn:
+                await conn.execute("INSERT INTO bot_credit_packs (key,name,credits,price,sort_order) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (key) DO UPDATE SET name=$2,credits=$3,price=$4,enabled=TRUE", nk, nm, nc, np_, len(CREDIT_PACKS))
+            await state.clear()
+            await message.answer(f"\u2705 \u041f\u0430\u043a\u0435\u0442 <b>{nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f4e6 \u041a \u043f\u0430\u043a\u0435\u0442\u0430\u043c", callback_data="adm_prices_packs")]]))
+        elif shop_field in ("price", "name", "desc") and shop_key and shop_plan is not None:
+            val = int(value) if shop_field == "price" else value
+            SHOP_CATALOG[shop_key]["plans"][shop_plan][shop_field] = val
+            col = {"price": "price", "name": "plan_name", "desc": "plan_desc"}[shop_field]
+            async with pool.acquire() as conn:
+                await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2 AND plan_idx=$3", val, shop_key, shop_plan)
+            await state.clear()
+            await message.answer(f"\u2705 \u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e!", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
+        elif shop_field == "new_service":
+            parts = [x.strip() for x in value.split("|")]
+            if len(parts) < 4: await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043a\u043b\u044e\u0447|\u044d\u043c\u043e\u0434\u0437\u0438|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"); return
+            nk, em, nm, desc = parts[0], parts[1], parts[2], parts[3]
+            SHOP_CATALOG[nk] = {"name": nm, "emoji": em, "desc": desc, "plans": []}
+            await state.clear()
+            await message.answer(f"\u2705 \u0421\u0435\u0440\u0432\u0438\u0441 <b>{em} {nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
+        elif shop_field == "new_plan" and shop_key:
+            parts = [x.strip() for x in value.split("|")]
+            if len(parts) < 3: await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u0446\u0435\u043d\u0430|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"); return
+            pn, pr, pd = parts[0], int(parts[1]), parts[2]
+            s = SHOP_CATALOG.get(shop_key, {})
+            ni = len(s.get("plans", []))
+            s.setdefault("plans", []).append({"name": pn, "price": pr, "stars": 0, "desc": pd})
+            async with pool.acquire() as conn:
+                await conn.execute("INSERT INTO bot_shop_items (key,plan_idx,service_name,emoji,service_desc,plan_name,price,plan_desc) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (key,plan_idx) DO UPDATE SET plan_name=$6,price=$7,plan_desc=$8,enabled=TRUE",
+                    shop_key, ni, s["name"], s.get("emoji",""), s.get("desc",""), pn, pr, pd)
+            await state.clear()
+            await message.answer(f"\u2705 \u0422\u0430\u0440\u0438\u0444 <b>{pn}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
+        elif field == "gen_credits" and gen_key:
+            nc = int(value)
+            models = {"image": IMAGE_MODELS, "video": VIDEO_MODELS, "edit": EDIT_MODELS, "anim": ANIM_MODELS}.get(gen_section, {})
+            if gen_key in models: models[gen_key]["credits"] = nc
+            async with pool.acquire() as conn:
+                await conn.execute("INSERT INTO bot_gen_prices (model_key,section,credits) VALUES ($1,$2,$3) ON CONFLICT (model_key) DO UPDATE SET credits=$3", gen_key, gen_section, nc)
+            mn = models.get(gen_key, {}).get("name", gen_key)
+            await state.clear()
+            await message.answer(f"\u2705 <b>{mn}</b> \u2192 <b>{nc} \u043a\u0440</b>", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f3a8 \u041a \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044f\u043c", callback_data="adm_prices_gen")]]))
+        else:
+            await message.answer("\u274c \u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u043e\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435.")
+            await state.clear()
+    except ValueError:
+        await message.answer("\u274c \u0412\u0432\u0435\u0434\u0438 \u0447\u0438\u0441\u043b\u043e.")
+    except Exception as e:
+        logging.error(f"adm_edit_value: {e}")
+        await message.answer(f"\u274c \u041e\u0448\u0438\u0431\u043a\u0430: {e}")
+        await state.clear()
+
 
 
 @dp.callback_query(F.data == "adm_promos")
@@ -12175,38 +12677,54 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         full_name = (user_info.get("full_name") or "").strip() if user_info else ""
         user_label = f"@{username}" if username else (full_name or f"ID {user_id}")
 
-        db_order = await fk_get_order(order_id)
-        method_used = (db_order or {}).get("payment_method", "sbp") if db_order else "sbp"
-        method_emoji = "🏦 СБП" if method_used == "sbp" else "💳 Карта"
-        promo_used = (db_order or {}).get("promo_code") if db_order else promo_code
+        # Пробуем отредактировать существующее сообщение (если было при создании заказа)
+        db_order_admin = await fk_get_order(order_id)
+        admin_msg_id = (db_order_admin or {}).get("admin_msg_id") if db_order_admin else None
 
-        # Префикс показывает источник зачисления
-        title_map = {
-            "webhook":        "💰 <b>Новая оплата FreeKassa</b>",
-            "active_monitor": "⚡ <b>Платёж пойман активным мониторингом</b>",
-            "manual_check":   "🔍 <b>Клиент сам проверил — платёж зачислен</b>",
-            "auto_check":     "🔄 <b>Платёж восстановлен (auto-check FK API)</b>",
-        }
-        title = title_map.get(source, f"💰 <b>Платёж FreeKassa ({source})</b>")
+        is_shop = order_id.startswith("shop_")
+        pack_info = (db_order_admin or {}).get("pack", "") if db_order_admin else pack
 
-        admin_msg = (
-            f"{title}\n\n"
-            f"👤 {user_label} (<code>{user_id}</code>)\n"
-            f"💵 Сумма: <b>{amount_rub}₽</b>\n"
-            f"💎 Кредитов: <b>{credits}</b>\n"
-            f"🧾 Способ: {method_emoji}\n"
-            f"🆔 Заказ: <code>{order_id}</code>"
-        )
+        if is_shop and pack_info:
+            shop_key = pack_info.split(":")[1] if ":" in pack_info else ""
+            plan_idx = int(pack_info.split(":")[2]) if pack_info.count(":") >= 2 else 0
+            s_cat = SHOP_CATALOG.get(shop_key, {})
+            plans = s_cat.get("plans", [])
+            p_cat = plans[plan_idx] if plan_idx < len(plans) else {}
+            service_name = f"{s_cat.get('emoji', '')} {s_cat.get('name', '')} {p_cat.get('name', '')}" if s_cat else "Товар из магазина"
+
+            admin_msg = (
+                f"\u2705 <b>Заказ оплачен!</b>\n\n"
+                f"\U0001f464 {user_label} (<code>{user_id}</code>)\n"
+                f"\U0001f4e6 {service_name}\n"
+                f"\U0001f4b5 Сумма: <b>{amount_rub}\u20bd</b>\n"
+                f"\U0001f3e6 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
+                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
+                f"\u2705 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u043f\u043b\u0430\u0447\u0435\u043d</b>"
+            )
+        else:
+            admin_msg = (
+                f"\U0001f4b0 <b>\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0430!</b>\n\n"
+                f"\U0001f464 {user_label} (<code>{user_id}</code>)\n"
+                f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount_rub}\u20bd</b>\n"
+                f"\U0001f48e \u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432: <b>{credits}</b>\n"
+                f"\U0001f3e6 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
+                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
+                f"\u2705 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u043f\u043b\u0430\u0447\u0435\u043d</b>"
+            )
         if promo_used:
-            admin_msg += f"\n🎟 Промокод: <code>{promo_used}</code>"
-        if source == "auto_check":
-            admin_msg += "\n\n<i>⚠️ Webhook не дошёл — авто-проверка нашла оплату через FK API.</i>"
-        elif source == "active_monitor":
-            admin_msg += "\n\n<i>ℹ️ Активный мониторинг отработал — webhook задержался.</i>"
-        elif source == "manual_check":
-            admin_msg += "\n\n<i>ℹ️ Клиент нажал «Проверить оплату» — оплата найдена и зачислена.</i>"
+            admin_msg += f"\n\U0001f39f \u041f\u0440\u043e\u043c\u043e\u043a\u043e\u0434: <code>{promo_used}</code>"
 
-        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+        if admin_msg_id:
+            # Редактируем существующее сообщение
+            try:
+                await bot.edit_message_text(
+                    admin_msg, chat_id=ADMIN_ID,
+                    message_id=admin_msg_id, parse_mode="HTML"
+                )
+            except Exception:
+                await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+        else:
+            await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
     except Exception as e:
         logging.error(f"FK admin notify error: {e}")
 
@@ -12578,6 +13096,7 @@ async def set_bot_profile():
 
 async def main():
     await init_db()
+    await load_prices_from_db()
     await start_webhook_server()
     # Устанавливаем описание бота и команды
     await set_bot_profile()
