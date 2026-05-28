@@ -13411,8 +13411,14 @@ async def main():
     await init_db()
     await load_prices_from_db()
     asyncio.create_task(setup_webhook_server())
-    asyncio.create_task(background_loop())
+    asyncio.create_task(cleanup_stale_generations_loop())
+    asyncio.create_task(auto_recover_lost_videos_loop())
+    asyncio.create_task(fk_auto_check_loop())
+    asyncio.create_task(_memory_cleanup_loop())
+    asyncio.create_task(credit_batches_loop())
     asyncio.create_task(subscription_reminder_loop())
+    asyncio.create_task(reminders_loop())
+    asyncio.create_task(db_cleanup_loop())
     await dp.start_polling(bot)
 
 
