@@ -8408,57 +8408,39 @@ async def reply_profile(message: Message):
     if by_model:
         by_model_dict = {r['model']: r['cnt'] for r in by_model}
 
-        def fmt(key, label):
-            cnt = by_model_dict.get(key, 0)
-            return f"  · <b>{label}</b>: {cnt}" if cnt else None
+        def brand_total(*keys):
+            return sum(by_model_dict.get(k, 0) for k in keys)
 
-        img_lines = list(filter(None, [
-            fmt("img_fast",  "Imagen 4 Fast"),
-            fmt("img_std",   "Imagen 4 Standard"),
-            fmt("img_ultra", "Imagen 4 Ultra"),
-        ]))
-        nano_lines = list(filter(None, [
-            fmt("nb_flash", "Nano Banana Flash"),
-            fmt("nb_2",     "Nano Banana v2"),
-            fmt("nb_pro",   "Nano Banana Pro"),
-        ]))
-        fal_img_lines = list(filter(None, [
-            fmt("flux_pro",    "Flux 2 Pro"),
-            fmt("ideogram_v3", "Ideogram V3"),
-        ]))
-        vid_lines = list(filter(None, [
-            fmt("vid_lite", "Veo 3.1 Lite"),
-            fmt("vid_fast", "Veo 3.1 Fast"),
-            fmt("vid_pro",  "Veo 3.1 Pro"),
-        ]))
-        kling_lines = list(filter(None, [
-            fmt("kling_turbo", "Kling 2.5 Turbo"),
-            fmt("kling_pro",   "Kling 3.0 Pro"),
-        ]))
-        other_lines = list(filter(None, [
-            fmt("gemini-flash-image", "Редактирование фото"),
-            fmt("veo-3.1-animate",    "Анимация фото"),
-        ]))
+        # Бренды: (эмодзи + название, список ключей)
+        BRANDS = [
+            ("🌟 Imagen 4",          ["img_fast", "img_std", "img_ultra"]),
+            ("🍌 Nano Banana",        ["nb_flash", "nb_2", "nb_pro"]),
+            ("🎨 Flux &amp; Ideogram",["flux_pro", "ideogram_v3"]),
+            ("🎥 Veo 3.1",            ["vid_lite", "vid_fast", "vid_pro"]),
+            ("🎞 Kling",              ["kling_turbo", "kling_pro"]),
+            ("✏️ Редактирование",     ["gemini-flash-image"]),
+            ("🎭 Анимация",           ["veo-3.1-animate"]),
+        ]
 
-        model_lines = "\n"
-        if img_lines:
-            model_lines += "🌟 <b>Imagen 4</b>\n" + "\n".join(img_lines) + "\n"
-        if nano_lines:
-            model_lines += "🍌 <b>Nano Banana</b>\n" + "\n".join(nano_lines) + "\n"
-        if fal_img_lines:
-            model_lines += "🎨 <b>Flux &amp; Ideogram</b>\n" + "\n".join(fal_img_lines) + "\n"
-        if vid_lines:
-            model_lines += "🎥 <b>Veo 3.1</b>\n" + "\n".join(vid_lines) + "\n"
-        if kling_lines:
-            model_lines += "🎞 <b>Kling</b>\n" + "\n".join(kling_lines) + "\n"
-        if other_lines:
-            model_lines += "✏️ <b>Другое</b>\n" + "\n".join(other_lines) + "\n"
+        brand_parts = []
+        for label, keys in BRANDS:
+            total = brand_total(*keys)
+            if total:
+                brand_parts.append(f"  {label} — <b>{total}</b>")
 
-    all_models = list(IMAGE_MODELS.items()) + list(VIDEO_MODELS.items())
-    avail_lines = []
-    for k, m in all_models:
-        icon = "▫️" if cr >= m['credits'] else "▪️"
-        avail_lines.append(f"{icon} <b>{m['name']}</b> - <i>{m['credits']} кр</i>")
+        if brand_parts:
+            model_lines = "\n" + "\n".join(brand_parts) + "\n"
+
+    # Загружаем историю покупок пользователя
+    async with pool.acquire() as conn:
+        purchases = await conn.fetch(
+            """SELECT pack, amount_rub, credits, paid_at
+               FROM fk_orders
+               WHERE user_id=$1 AND status='paid'
+               ORDER BY paid_at DESC NULLS LAST
+               LIMIT 10""",
+            uid
+        )
 
     # Загружаем подписки пользователя
     import datetime as _dt
@@ -8490,18 +8472,45 @@ async def reply_profile(message: Message):
 
     coins_block = f"\n\U0001fa99 \u041c\u043e\u043d\u0435\u0442\u043a\u0438: <b>{coins:.0f}\u20bd</b>" if coins > 0 else ""
 
+    # \u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a
+    purchases_block = ""
+    if purchases:
+        PACK_NAMES = {
+            "p15": "\ud83c\udfaf \u041f\u0440\u043e\u0431\u043d\u044b\u0439 (150 \u043a\u0440)",
+            "p25": "\ud83e\udd49 \u041d\u0430\u0447\u0430\u043b\u044c\u043d\u044b\u0439 (250 \u043a\u0440)",
+            "p50": "\ud83e\udd48 \u0421\u0442\u0430\u0440\u0442 (500 \u043a\u0440)",
+            "p150": "\ud83c\udfc5 \u0411\u0430\u0437\u043e\u0432\u044b\u0439 (1500 \u043a\u0440)",
+            "p500": "\ud83e\udd47 \u041f\u0440\u043e (5000 \u043a\u0440)",
+            "p1200": "\ud83d\udc8e \u0411\u0438\u0437\u043d\u0435\u0441 (12000 \u043a\u0440)",
+        }
+        pur_lines = []
+        for p in purchases:
+            pack = p["pack"] or ""
+            dt = p["paid_at"]
+            date_str = dt.strftime("%d.%m.%Y") if dt else "\u2014"
+            amount = p["amount_rub"] or 0
+            credits_val = p["credits"] or 0
+            if pack.startswith("shop:"):
+                parts = pack.split(":")
+                svc_key = parts[1] if len(parts) > 1 else pack
+                from_catalog = SHOP_CATALOG.get(svc_key, {})
+                label = f"{from_catalog.get('emoji', '\ud83d\udecd')} {from_catalog.get('name', svc_key)}"
+            else:
+                label = PACK_NAMES.get(pack, f"+{credits_val} \u043a\u0440")
+            pur_lines.append(f"  \u2022 {date_str} \u2014 {label} \u2014 <b>{amount}\u20bd</b>")
+        purchases_block = "\n\n\ud83e\uddfe <b>\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a:</b>\n" + "\n".join(pur_lines)
+
     text = (
-        f"\U0001f464 <b>\u041f\u0440\u043e\u0444\u0438\u043b\u044c</b>\n\n"
-        f"\U0001f194 ID: <code>{uid}</code>\n"
-        f"\U0001f44b \u0418\u043c\u044f: {message.from_user.full_name}\n\n"
-        f"\U0001f4b5 <b>\u0411\u0430\u043b\u0430\u043d\u0441: {cr} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432</b>"
+        f"\ud83d\udc64 <b>\u041f\u0440\u043e\u0444\u0438\u043b\u044c</b>\n\n"
+        f"\ud83c\udd94 ID: <code>{uid}</code>\n"
+        f"\ud83d\udc4b \u0418\u043c\u044f: {message.from_user.full_name}\n\n"
+        f"\ud83d\udcb5 <b>\u0411\u0430\u043b\u0430\u043d\u0441: {cr} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432</b>"
         f"{coins_block}\n\n"
-        f"\U0001f4ca <b>\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430:</b>\n"
-        f"  \u0413\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0439: <b>{total_gens}</b>\n"
-        f"  \u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432 \u043f\u043e\u0442\u0440\u0430\u0447\u0435\u043d\u043e: <b>{total_credits_spent}</b>"
+        f"\ud83d\udcca <b>\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430:</b>\n"
+        f"  <b>\u0413\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0439:</b> {total_gens}\n"
+        f"  <b>\u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432 \u043f\u043e\u0442\u0440\u0430\u0447\u0435\u043d\u043e:</b> {total_credits_spent}"
         + model_lines
-        + f"\n<b>\u0414\u043e\u0441\u0442\u0443\u043f\u043d\u043e:</b>\n" + "\n".join(avail_lines)
-        + f"\n\n<i>\u25ab\ufe0f \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e \u00b7 \u25aa\ufe0f \u043d\u0443\u0436\u043d\u043e \u043f\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u044c</i>"
+        + purchases_block
         + subs_block
     )
     await message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
@@ -9486,11 +9495,69 @@ async def adm_popular(cb: CallbackQuery):
         if not rows:
             text = "🔥 <b>Популярные модели</b>\n\nПока нет генераций."
         else:
-            lines = []
-            for i, r in enumerate(rows):
-                name = MODEL_NAMES.get(r[0], r[0])
-                lines.append(f"  {i+1}. {name}: <b>{r[1]} ген</b> ({r[2]} кредитов)")
-            text = "🔥 <b>Популярные модели</b>\n\n" + "\n".join(lines)
+            # Группируем по категориям
+            CATEGORIES = {
+                "photo": {
+                    "label": "🖼 Фото",
+                    "keys": ["img_fast", "img_std", "img_ultra",
+                             "nb_flash", "nb_2", "nb_pro",
+                             "flux_pro", "ideogram_v3"],
+                },
+                "video": {
+                    "label": "🎥 Видео",
+                    "keys": ["vid_lite", "vid_fast", "vid_pro",
+                             "kling_turbo", "kling_pro"],
+                },
+                "edit": {
+                    "label": "✏️ Редактирование",
+                    "keys": ["gemini-flash-image", "edit"],
+                },
+                "anim": {
+                    "label": "🎭 Анимация",
+                    "keys": ["veo-3.1-animate"],
+                },
+            }
+            # Словарь ключ → (gens, credits) из БД
+            stats = {r[0]: (r[1], r[2] or 0) for r in rows}
+            other_keys = set(stats.keys())
+
+            sections = []
+            for cat in CATEGORIES.values():
+                cat_rows = []
+                for key in cat["keys"]:
+                    if key in stats:
+                        other_keys.discard(key)
+                        name = MODEL_NAMES.get(key, key)
+                        gens, creds = stats[key]
+                        cat_rows.append((name, gens, creds))
+                if cat_rows:
+                    # Сортируем по числу генераций внутри категории
+                    cat_rows.sort(key=lambda x: x[1], reverse=True)
+                    lines = "\n".join(
+                        f"    • <b>{n}</b>: {g} ген · {c} кр"
+                        for n, g, c in cat_rows
+                    )
+                    sections.append(f"{cat['label']}\n{lines}")
+
+            # Остальные модели (если есть неизвестные ключи)
+            if other_keys:
+                extra_lines = []
+                for key in other_keys:
+                    name = MODEL_NAMES.get(key, key)
+                    gens, creds = stats[key]
+                    extra_lines.append(f"    • <b>{name}</b>: {gens} ген · {creds} кр")
+                sections.append("🔧 Прочее\n" + "\n".join(extra_lines))
+
+            # Итого
+            total_gens = sum(v[0] for v in stats.values())
+            total_creds = sum(v[1] for v in stats.values())
+
+            text = (
+                "🔥 <b>Популярные модели</b>\n\n"
+                + "\n\n".join(sections)
+                + f"\n\n━━━━━━━━━━━━━━\n"
+                + f"📊 Итого: <b>{total_gens} ген</b> · <b>{total_creds} кр</b>"
+            )
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
         ]), parse_mode="HTML")
