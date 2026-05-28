@@ -1262,12 +1262,17 @@ async def load_prices_from_db():
                     """, key, i, s["name"], s.get("emoji",""), s.get("desc",""),
                         p["name"], p["price"], p.get("stars",0), p.get("desc",""), i)
 
-        # Цены на генерации
-        rows_gen = await conn.fetch("SELECT * FROM bot_gen_prices WHERE enabled=TRUE")
+        # Цены на генерации + список отключённых моделей
+        rows_gen = await conn.fetch("SELECT * FROM bot_gen_prices")
         if rows_gen:
+            DISABLED_MODELS.clear()
             for r in rows_gen:
                 key = r["model_key"]
                 credits = r["credits"]
+                enabled = r["enabled"]
+                if not enabled:
+                    DISABLED_MODELS.add(key)
+                    continue
                 if key in IMAGE_MODELS:
                     IMAGE_MODELS[key]["credits"] = credits
                 elif key in VIDEO_MODELS:
@@ -2353,7 +2358,7 @@ def kb_image_models_for_brand(brand: str):
     keys = IMAGE_BRAND_MODELS.get(brand, [])
     rows = []
     for key in keys:
-        if key in IMAGE_MODELS:
+        if key in IMAGE_MODELS and key not in DISABLED_MODELS:
             m = IMAGE_MODELS[key]
             # Убираем цифры из названия модели для кнопки
             import re
@@ -2417,7 +2422,7 @@ def kb_video_models_for_brand(brand: str):
     rows = []
     import re
     for key in keys:
-        if key in VIDEO_MODELS:
+        if key in VIDEO_MODELS and key not in DISABLED_MODELS:
             m = VIDEO_MODELS[key]
             clean_name = re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
             btn = InlineKeyboardButton(
@@ -8451,6 +8456,8 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="📉 Расход по юзеру",   callback_data="adm_spend"),
          InlineKeyboardButton(text="🔒 Блокировки",        callback_data="adm_blocks")],
         [InlineKeyboardButton(text="🎟 Промокоды",          callback_data="adm_promos")],
+        [InlineKeyboardButton(text="🤖 Управление моделями", callback_data="adm_models")],
+        [InlineKeyboardButton(text="🛍 Продажи магазина",  callback_data="adm_shop_sales")],
         [InlineKeyboardButton(text="💵 Редактор цен",      callback_data="adm_prices")],
         [InlineKeyboardButton(text="📝 Изменить приветствие", callback_data="adm_welcome")],
         [InlineKeyboardButton(text="📣 Рассылка",          callback_data="adm_broadcast"),
@@ -10395,6 +10402,197 @@ async def adm_edit_value(message: Message, state: FSMContext):
 
 
 
+# ══════════════════════════════════════════════════════════
+#  УПРАВЛЕНИЕ МОДЕЛЯМИ (вкл/выкл) — /admin → 🤖 Управление моделями
+# ══════════════════════════════════════════════════════════
+
+def _all_models_map():
+    return {"image": IMAGE_MODELS, "video": VIDEO_MODELS, "edit": EDIT_MODELS, "anim": ANIM_MODELS}
+
+def _section_label(s: str) -> str:
+    return {"image": "📷 Фото", "video": "🎬 Видео", "edit": "🖌 Редактирование", "anim": "🏃 Анимация"}.get(s, s)
+
+@dp.callback_query(F.data == "adm_models")
+async def adm_models(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    rows = [
+        [InlineKeyboardButton(text="📷 Фото-модели",        callback_data="adm_models_sec:image")],
+        [InlineKeyboardButton(text="🎬 Видео-модели",       callback_data="adm_models_sec:video")],
+        [InlineKeyboardButton(text="🖌 Редактирование",     callback_data="adm_models_sec:edit")],
+        [InlineKeyboardButton(text="🏃 Анимация",           callback_data="adm_models_sec:anim")],
+        [InlineKeyboardButton(text="⬅️ Назад",              callback_data="adm_back")],
+    ]
+    total_off = len(DISABLED_MODELS)
+    text = (
+        f"🤖 <b>Управление моделями</b>\n\n"
+        f"Отключено сейчас: <b>{total_off}</b>\n\n"
+        f"Выбери раздел чтобы включить или выключить модели.\n"
+        f"Отключённые модели не видны пользователям."
+    )
+    await cb.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("adm_models_sec:"))
+async def adm_models_sec(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    section = cb.data.split(":")[1]
+    models = _all_models_map().get(section, {})
+    rows = []
+    for key, m in models.items():
+        status = "❌" if key in DISABLED_MODELS else "✅"
+        rows.append([InlineKeyboardButton(
+            text=f"{status} {m['name']} — {m.get('credits', 0)} кр",
+            callback_data=f"adm_toggle_model:{key}:{section}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_models")])
+    label = _section_label(section)
+    off_count = sum(1 for k in models if k in DISABLED_MODELS)
+    await cb.message.edit_text(
+        f"🤖 <b>{label}</b>\n\n"
+        f"✅ — включена  |  ❌ — выключена\n"
+        f"Отключено: {off_count} из {len(models)}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("adm_toggle_model:"))
+async def adm_toggle_model(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    parts = cb.data.split(":")
+    key, section = parts[1], parts[2]
+    models = _all_models_map().get(section, {})
+    if key not in models:
+        await cb.answer("Модель не найдена", show_alert=True)
+        return
+
+    # Переключаем
+    new_enabled = key in DISABLED_MODELS  # если сейчас выключена — включаем
+    if new_enabled:
+        DISABLED_MODELS.discard(key)
+    else:
+        DISABLED_MODELS.add(key)
+
+    # Сохраняем в БД
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO bot_gen_prices (model_key, section, credits, enabled) "
+            "VALUES ($1, $2, $3, $4) ON CONFLICT (model_key) DO UPDATE SET enabled=$4",
+            key, section, models[key].get("credits", 10), new_enabled
+        )
+
+    m_name = models[key]["name"]
+    status_text = "включена ✅" if new_enabled else "выключена ❌"
+    await cb.answer(f"{m_name} {status_text}", show_alert=False)
+
+    # Обновляем список
+    rows = []
+    for k, m in models.items():
+        status = "❌" if k in DISABLED_MODELS else "✅"
+        rows.append([InlineKeyboardButton(
+            text=f"{status} {m['name']} — {m.get('credits', 0)} кр",
+            callback_data=f"adm_toggle_model:{k}:{section}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_models")])
+    label = _section_label(section)
+    off_count = sum(1 for k in models if k in DISABLED_MODELS)
+    try:
+        await cb.message.edit_text(
+            f"🤖 <b>{label}</b>\n\n"
+            f"✅ — включена  |  ❌ — выключена\n"
+            f"Отключено: {off_count} из {len(models)}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+        )
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════
+#  СТАТИСТИКА ПРОДАЖ МАГАЗИНА — /admin → 🛍 Продажи магазина
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data == "adm_shop_sales")
+async def adm_shop_sales(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    rows = [
+        [InlineKeyboardButton(text="📅 Сегодня",   callback_data="adm_shop_sales_p:day")],
+        [InlineKeyboardButton(text="📆 Неделя",    callback_data="adm_shop_sales_p:week")],
+        [InlineKeyboardButton(text="🗓 Месяц",     callback_data="adm_shop_sales_p:month")],
+        [InlineKeyboardButton(text="⬅️ Назад",     callback_data="adm_back")],
+    ]
+    await cb.message.edit_text(
+        "🛍 <b>Продажи магазина</b>\n\nВыбери период:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("adm_shop_sales_p:"))
+async def adm_shop_sales_period(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    period = cb.data.split(":")[1]
+
+    interval_sql = {"day": "CURRENT_DATE", "week": "NOW() - INTERVAL '7 days'", "month": "NOW() - INTERVAL '30 days'"}
+    period_label = {"day": "сегодня", "week": "7 дней", "month": "30 дней"}
+    since = interval_sql.get(period, "CURRENT_DATE")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows_db = await conn.fetch(
+            f"SELECT pack, amount_rub, paid_at FROM fk_orders "
+            f"WHERE order_id LIKE 'shop_%' AND status='paid' AND paid_at >= {since} "
+            f"ORDER BY paid_at DESC"
+        )
+
+    total_orders = len(rows_db)
+    total_revenue = sum(r["amount_rub"] for r in rows_db)
+
+    # Разбивка по сервисам
+    by_service: dict = {}
+    for r in rows_db:
+        pack = r["pack"] or ""
+        # pack формат: "shop:KEY:plan_idx"
+        parts = pack.split(":")
+        if len(parts) >= 2:
+            svc_key = parts[1]
+            svc = SHOP_CATALOG.get(svc_key, {})
+            svc_name = f"{svc.get('emoji', '')} {svc.get('name', svc_key)}".strip()
+        else:
+            svc_name = pack or "Неизвестно"
+        if svc_name not in by_service:
+            by_service[svc_name] = {"count": 0, "revenue": 0}
+        by_service[svc_name]["count"] += 1
+        by_service[svc_name]["revenue"] += r["amount_rub"]
+
+    # Сортируем по выручке
+    sorted_svc = sorted(by_service.items(), key=lambda x: x[1]["revenue"], reverse=True)
+    breakdown = "\n".join(
+        f"  • {name}: <b>{d['count']} шт</b> — <b>{d['revenue']}₽</b>"
+        for name, d in sorted_svc
+    ) or "  нет продаж"
+
+    label = period_label.get(period, period)
+    text = (
+        f"🛍 <b>Продажи магазина за {label}</b>\n\n"
+        f"📦 Заказов: <b>{total_orders}</b>\n"
+        f"💰 Выручка: <b>{total_revenue}₽</b>\n\n"
+        f"<b>По сервисам:</b>\n{breakdown}"
+    )
+    rows = [
+        [InlineKeyboardButton(text="📅 Сегодня",  callback_data="adm_shop_sales_p:day"),
+         InlineKeyboardButton(text="📆 Неделя",   callback_data="adm_shop_sales_p:week"),
+         InlineKeyboardButton(text="🗓 Месяц",    callback_data="adm_shop_sales_p:month")],
+        [InlineKeyboardButton(text="⬅️ Назад",    callback_data="adm_shop_sales")],
+    ]
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
 @dp.callback_query(F.data == "adm_promos")
 async def adm_promos(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
@@ -10709,6 +10907,10 @@ ANIM_MODELS = {
     },
 }
 UPSCALE_CREDIT_COST = 20  # апскейл 4x - себест ~$0.12/4MP → 20 кр (~10.6₽), маржа ~30%
+
+# Множество отключённых моделей (ключи из IMAGE/VIDEO/EDIT/ANIM_MODELS).
+# Заполняется из bot_gen_prices.enabled=FALSE при старте и обновляется через /admin.
+DISABLED_MODELS: set = set()
 
 # Стоимость улучшения промта - списывается только когда юзер генерирует
 IMPROVE_CREDIT_COST = 0   # само улучшение бесплатно, платит только за генерацию
@@ -11089,7 +11291,8 @@ async def improve_wrong_input(message: Message):
 async def menu_edit(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
-    min_cost = min(m["credits"] for m in EDIT_MODELS.values())
+    active_edit = {k: v for k, v in EDIT_MODELS.items() if k not in DISABLED_MODELS}
+    min_cost = min(m["credits"] for m in active_edit.values()) if active_edit else 0
 
     if cr < min_cost:
         try:
@@ -11112,7 +11315,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
         return
 
     lines = []
-    for key, m in EDIT_MODELS.items():
+    for key, m in active_edit.items():
         icon = "🔹" if cr >= m["credits"] else "🔸"
         lines.append(f"{icon} <b>{m['name']}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
 
@@ -11125,7 +11328,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
 
     styles = {"edit_gemini": "success", "edit_grok": "primary", "edit_gpt": "success", "edit_flux": "primary"}
     rows = []
-    for key, m in EDIT_MODELS.items():
+    for key, m in active_edit.items():
         btn = InlineKeyboardButton(
             text=f"{m['name']} - {m['credits']} кр",
             callback_data=f"edit_model:{key}"
@@ -11689,7 +11892,8 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     cr = await get_credits(cb.from_user.id)
 
-    min_cost = min(m["credits"] for m in ANIM_MODELS.values())
+    active_anim = {k: v for k, v in ANIM_MODELS.items() if k not in DISABLED_MODELS}
+    min_cost = min(m["credits"] for m in active_anim.values()) if active_anim else 0
     if cr < min_cost:
         try:
             await cb.message.edit_text(
@@ -11706,7 +11910,7 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
 
     # Строим список моделей
     lines = []
-    for key, m in ANIM_MODELS.items():
+    for key, m in active_anim.items():
         icon = "🔹" if cr >= m["credits"] else "🔸"
         lines.append(f"{icon} <b>{m['name']}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
 
@@ -11720,7 +11924,7 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
     # Кнопки моделей
     rows = []
     styles = {"anim_veo": "primary", "anim_grok": "success", "anim_kling": "success", "anim_wan": "primary"}
-    for key, m in ANIM_MODELS.items():
+    for key, m in active_anim.items():
         btn = InlineKeyboardButton(
             text=f"{m['name']} - {m['credits']} кр",
             callback_data=f"anim_model:{key}"
