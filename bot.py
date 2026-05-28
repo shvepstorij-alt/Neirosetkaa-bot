@@ -12897,7 +12897,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         admin_msg_id = (db_order_admin or {}).get("admin_msg_id") if db_order_admin else None
 
         is_shop = order_id.startswith("shop_")
-        pack_info = (db_order_admin or {}).get("pack", "") if db_order_admin else pack
+        pack_info = (db_order_admin or {}).get("pack", "") if db_order_admin else ""
 
         if is_shop and pack_info:
             shop_key = pack_info.split(":")[1] if ":" in pack_info else ""
@@ -12926,8 +12926,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
                 f"\u2705 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u043f\u043b\u0430\u0447\u0435\u043d</b>"
             )
-        if promo_used:
-            admin_msg += f"\n\U0001f39f \u041f\u0440\u043e\u043c\u043e\u043a\u043e\u0434: <code>{promo_used}</code>"
+        if promo_code:
+            admin_msg += f"\n\U0001f39f \u041f\u0440\u043e\u043c\u043e\u043a\u043e\u0434: <code>{promo_code}</code>"
 
         if admin_msg_id:
             # Редактируем существующее сообщение
