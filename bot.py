@@ -7799,7 +7799,7 @@ def clean_reply(text: str) -> str:
     text = re.sub(r'^(Ищу\s+актуальную.*?[.:\n])\s*', '', text, flags=re.IGNORECASE | re.MULTILINE)
 
     # Убираем разделители (горизонтальные линии, Markdown HR, ━━━, ___, ---)
-    text = re.sub(r'^[━─-\-_]{3,}$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[━─\-_]{3,}$', '', text, flags=re.MULTILINE)
     # Убираем "═══" и "━━━" которые Claude любит ставить вокруг заголовков
     text = re.sub(r'[━═]{3,}', '', text)
 
