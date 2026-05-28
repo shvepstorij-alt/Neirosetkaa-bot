@@ -8494,7 +8494,9 @@ async def reply_profile(message: Message):
                 parts = pack.split(":")
                 svc_key = parts[1] if len(parts) > 1 else pack
                 from_catalog = SHOP_CATALOG.get(svc_key, {})
-                label = f"{from_catalog.get('emoji', '\ud83d\udecd')} {from_catalog.get('name', svc_key)}"
+                svc_emoji = from_catalog.get("emoji", "\ud83d\udecd")
+                svc_name = from_catalog.get("name", svc_key)
+                label = f"{svc_emoji} {svc_name}"
             else:
                 label = PACK_NAMES.get(pack, f"+{credits_val} \u043a\u0440")
             pur_lines.append(f"  \u2022 {date_str} \u2014 {label} \u2014 <b>{amount}\u20bd</b>")
