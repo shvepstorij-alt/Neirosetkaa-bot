@@ -8704,7 +8704,7 @@ async def adm_stat_pick(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.message(AdminState.waiting_stat_date, StateFilter(AdminState.waiting_stat_date))
+@dp.message(StateFilter(AdminState.waiting_stat_date))
 async def adm_stat_date_input(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
