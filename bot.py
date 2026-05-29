@@ -1237,22 +1237,52 @@ async def load_prices_from_db():
                     p.get("desc", ""), p.get("badge", ""), i)
 
         # Товары магазина
-        rows_shop = await conn.fetch("SELECT * FROM bot_shop_items WHERE enabled=TRUE ORDER BY key, sort_order, plan_idx")
+        # Сохраняем дефолтные описания из кода (имена, emoji, тексты описаний)
+        # Цены и включённость берём из БД — чтобы сохранялись правки через админку
+        _code_catalog = {k: v for k, v in SHOP_CATALOG.items()}
+
+        rows_shop = await conn.fetch("SELECT * FROM bot_shop_items ORDER BY key, sort_order, plan_idx")
         if rows_shop:
             SHOP_CATALOG.clear()
             for r in rows_shop:
+                if not r["enabled"]:
+                    continue
                 k = r["key"]
+                # Описание сервиса берём из кода (если есть), иначе из БД
+                code_svc = _code_catalog.get(k, {})
                 if k not in SHOP_CATALOG:
                     SHOP_CATALOG[k] = {
-                        "name": r["service_name"], "emoji": r["emoji"],
-                        "desc": r["service_desc"], "plans": []
+                        "name":  code_svc.get("name",  r["service_name"]),
+                        "emoji": code_svc.get("emoji", r["emoji"]),
+                        "desc":  code_svc.get("desc",  r["service_desc"]),
+                        "plans": []
                     }
+                plan_idx = r["plan_idx"]
+                if plan_idx < 0:
+                    continue  # placeholder-строка без тарифа
+                # Описание плана берём из кода по индексу (если есть), иначе из БД
+                code_plans = code_svc.get("plans", [])
+                code_plan = code_plans[plan_idx] if plan_idx < len(code_plans) else {}
                 SHOP_CATALOG[k]["plans"].append({
-                    "name": r["plan_name"], "price": r["price"],
-                    "stars": r["stars"], "desc": r["plan_desc"]
+                    "name":  code_plan.get("name",  r["plan_name"]),
+                    "price": r["price"],   # цена — из БД (сохраняет правки через /admin)
+                    "stars": r["stars"],
+                    "desc":  code_plan.get("desc",  r["plan_desc"]),
                 })
+
+            # Синхронизируем описания из кода обратно в БД (чтобы не устаревали)
+            for key, svc in _code_catalog.items():
+                await conn.execute(
+                    "UPDATE bot_shop_items SET service_name=$1, emoji=$2, service_desc=$3 WHERE key=$4",
+                    svc["name"], svc.get("emoji", ""), svc.get("desc", ""), key
+                )
+                for i, plan in enumerate(svc.get("plans", [])):
+                    await conn.execute(
+                        "UPDATE bot_shop_items SET plan_name=$1, plan_desc=$2 WHERE key=$3 AND plan_idx=$4",
+                        plan["name"], plan.get("desc", ""), key, i
+                    )
         else:
-            # Записываем дефолтные в БД
+            # БД пуста — записываем всё из кода
             for key, s in SHOP_CATALOG.items():
                 for i, p in enumerate(s.get("plans", [])):
                     await conn.execute("""
