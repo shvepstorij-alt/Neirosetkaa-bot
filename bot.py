@@ -5157,16 +5157,21 @@ async def menu_shop(cb: CallbackQuery):
         "Активация в течение 5-30 минут после оплаты.</i>\n\n"
         "<b>👇 Выбери сервис:</b>"
     )
-    # Все сервисы в порядке SHOP_CATEGORIES, по 2 кнопки в ряд
-    all_keys = []
+    # Все сервисы из SHOP_CATALOG у которых есть хотя бы один тариф, по 2 кнопки в ряд
+    # Сначала показываем в порядке SHOP_CATEGORIES, затем всё остальное из SHOP_CATALOG
+    ordered_keys = []
     for _, _, keys in SHOP_CATEGORIES:
-        all_keys.extend(keys)
+        ordered_keys.extend(keys)
+    # Добавляем ключи из SHOP_CATALOG которых нет в SHOP_CATEGORIES
+    for key in SHOP_CATALOG:
+        if key not in ordered_keys:
+            ordered_keys.append(key)
 
     rows = []
     row = []
-    for key in all_keys:
+    for key in ordered_keys:
         s = SHOP_CATALOG.get(key)
-        if not s:
+        if not s or not s.get("plans"):
             continue
         row.append(InlineKeyboardButton(
             text=f"{s['emoji']} {s['name']}",
@@ -10509,12 +10514,25 @@ async def adm_edit_value(message: Message, state: FSMContext):
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
         elif shop_field == "new_service":
             parts = [x.strip() for x in value.split("|")]
-            if len(parts) < 4: await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043a\u043b\u044e\u0447|\u044d\u043c\u043e\u0434\u0437\u0438|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"); return
+            if len(parts) < 4:
+                await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043a\u043b\u044e\u0447|\u044d\u043c\u043e\u0434\u0437\u0438|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435")
+                return
             nk, em, nm, desc = parts[0], parts[1], parts[2], parts[3]
             SHOP_CATALOG[nk] = {"name": nm, "emoji": em, "desc": desc, "plans": []}
+            # \u0421\u043e\u0445\u0440\u0430\u043d\u044f\u0435\u043c \u0441\u0435\u0440\u0432\u0438\u0441 \u0432 \u0411\u0414 \u043a\u0430\u043a placeholder (plan_idx=-1, \u0447\u0442\u043e\u0431\u044b \u043d\u0435 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u043b\u0441\u044f \u0432 \u043c\u0430\u0433\u0430\u0437\u0438\u043d\u0435)
+            # \u041f\u0440\u0438 \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0438\u0438 \u043f\u0435\u0440\u0432\u043e\u0433\u043e \u0442\u0430\u0440\u0438\u0444\u0430 \u043e\u043d \u043f\u043e\u044f\u0432\u0438\u0442\u0441\u044f \u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u043e
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO bot_shop_items
+                    (key, plan_idx, service_name, emoji, service_desc, plan_name, price, plan_desc, enabled)
+                    VALUES ($1, -1, $2, $3, $4, '', 0, '', FALSE)
+                    ON CONFLICT (key, plan_idx) DO UPDATE
+                    SET service_name=$2, emoji=$3, service_desc=$4
+                """, nk, nm, em, desc)
             await state.clear()
-            await message.answer(f"\u2705 \u0421\u0435\u0440\u0432\u0438\u0441 <b>{em} {nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
+            await message.answer(f"\u2705 \u0421\u0435\u0440\u0432\u0438\u0441 <b>{em} {nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!\n\n\u0422\u0435\u043f\u0435\u0440\u044c \u0434\u043e\u0431\u0430\u0432\u044c \u0442\u0430\u0440\u0438\u0444\u044b \u0447\u0435\u0440\u0435\u0437 \u0440\u0435\u0434\u0430\u043a\u0442\u043e\u0440.", parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\ud83d\udecd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
         elif shop_field == "new_plan" and shop_key:
             parts = [x.strip() for x in value.split("|")]
             if len(parts) < 3: await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u0446\u0435\u043d\u0430|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"); return
