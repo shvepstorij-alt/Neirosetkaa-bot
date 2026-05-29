@@ -13680,5 +13680,8 @@ async def main():
     asyncio.create_task(subscription_reminder_loop())
     asyncio.create_task(reminders_loop())
     asyncio.create_task(db_cleanup_loop())
+    await dp.start_polling(bot)
+
+
 if __name__ == "__main__":
     asyncio.run(main())
