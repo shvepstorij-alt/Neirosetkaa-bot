@@ -2652,6 +2652,8 @@ class AdminState(StatesGroup):
     waiting_balance_uid      = State()   # введи UID (для любой операции с балансом)
     waiting_balance_set      = State()   # введи новую сумму (операция "установить")
     waiting_balance_deduct   = State()   # введи сколько снять (операция "снять")
+    # Статистика за произвольный день
+    waiting_stat_date        = State()   # введи дату в формате ДД.ММ.ГГГГ
 
 # ══════════════════════════════════════════════════════════
 #  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
@@ -8539,7 +8541,7 @@ async def get_admin_stats() -> dict:
 
 def kb_admin_panel():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика",        callback_data="adm_stat_day"),
+        [InlineKeyboardButton(text="📊 Статистика",        callback_data="adm_stat_menu"),
          InlineKeyboardButton(text="📈 Активность",        callback_data="adm_activity")],
         [InlineKeyboardButton(text="🔥 Топ моделей", callback_data="adm_popular"),
          InlineKeyboardButton(text="👑 Топ юзеров",      callback_data="adm_top_users")],
@@ -8578,64 +8580,196 @@ async def reply_admin(message: Message, state: FSMContext):
     await show_admin_panel(message)
 
 
-@dp.callback_query(F.data == "adm_stat_day")
-async def adm_stat_day(cb: CallbackQuery):
+# ─── Меню выбора периода статистики ──────────────────────
+
+def kb_stat_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Сегодня",      callback_data="adm_stat_day"),
+         InlineKeyboardButton(text="📆 7 дней",        callback_data="adm_stat_week")],
+        [InlineKeyboardButton(text="🗓 30 дней",       callback_data="adm_stat_month"),
+         InlineKeyboardButton(text="🔎 Выбрать день",  callback_data="adm_stat_pick")],
+        [InlineKeyboardButton(text="◀️ Панель",        callback_data="adm_back")],
+    ])
+
+@dp.callback_query(F.data == "adm_stat_menu")
+async def adm_stat_menu_handler(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌ Нет доступа", show_alert=True)
-        return
+        await cb.answer("❌", show_alert=True); return
+    try:
+        await cb.message.edit_text(
+            "📊 <b>Статистика</b>\n\nВыбери период:",
+            reply_markup=kb_stat_menu(), parse_mode="HTML"
+        )
+    except Exception:
+        await cb.message.answer(
+            "📊 <b>Статистика</b>\n\nВыбери период:",
+            reply_markup=kb_stat_menu(), parse_mode="HTML"
+        )
+    await cb.answer()
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        new_users = await conn.fetchval("SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE") or 0
-        row = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= CURRENT_DATE")
-        gens, credits_used = row[0] or 0, row[1] or 0
-        row2 = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= CURRENT_DATE")
-        pays, revenue = row2[0] or 0, row2[1] or 0
-        by_type = await conn.fetch("SELECT type, COUNT(*) FROM generations WHERE created_at >= CURRENT_DATE GROUP BY type")
 
+async def _build_stat_text(conn, since_sql: str, label: str) -> str:
+    """Формирует текст статистики за произвольный период. since_sql — SQL-выражение для WHERE."""
+    new_users = await conn.fetchval(f"SELECT COUNT(*) FROM users WHERE created_at >= {since_sql}") or 0
+    row = await conn.fetchrow(f"SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= {since_sql}")
+    gens, credits_used = row[0] or 0, row[1] or 0
+    row2 = await conn.fetchrow(f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= {since_sql}")
+    pays, revenue = row2[0] or 0, row2[1] or 0
+    by_type = await conn.fetch(f"SELECT type, COUNT(*) FROM generations WHERE created_at >= {since_sql} GROUP BY type")
+    cr_row = await conn.fetchrow(
+        f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM fk_orders "
+        f"WHERE status='paid' AND (pack NOT LIKE 'shop:%' OR pack IS NULL) AND paid_at >= {since_sql}"
+    )
+    sh_row = await conn.fetchrow(
+        f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM fk_orders "
+        f"WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at >= {since_sql}"
+    )
     by_type_text = "\n".join([f"  • {r[0]}: {r[1]} шт" for r in by_type]) or "  нет данных"
-
-    await cb.message.answer(
-        f"📊 <b>Статистика за сегодня</b>\n\n"
+    cr_n, cr_sum = cr_row[0] or 0, cr_row[1] or 0
+    sh_n, sh_sum = sh_row[0] or 0, sh_row[1] or 0
+    return (
+        f"📊 <b>Статистика: {label}</b>\n\n"
         f"🆕 Новых пользователей: <b>{new_users}</b>\n"
         f"🎨 Генераций: <b>{gens}</b>\n"
         f"💸 Кредитов потрачено: <b>{credits_used}</b>\n"
         f"💳 Оплат: <b>{pays}</b>\n"
-        f"💰 Выручка: <b>{revenue}₽</b>\n\n"
-        f"<b>По типу:</b>\n{by_type_text}",
-        parse_mode="HTML"
+        f"💰 Выручка: <b>{revenue}₽</b>\n"
+        f"  ├ 💳 Кредиты: <b>{cr_n} шт · {cr_sum}₽</b>\n"
+        f"  └ 🛍 Магазин: <b>{sh_n} шт · {sh_sum}₽</b>\n\n"
+        f"<b>По типу генераций:</b>\n{by_type_text}"
     )
+
+
+@dp.callback_query(F.data == "adm_stat_day")
+async def adm_stat_day(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        text = await _build_stat_text(conn, "CURRENT_DATE", "сегодня")
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_stat_menu")]])
+    await cb.message.answer(text, reply_markup=back_kb, parse_mode="HTML")
     await cb.answer()
 
 
 @dp.callback_query(F.data == "adm_stat_week")
 async def adm_stat_week(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌ Нет доступа", show_alert=True)
-        return
-
+        await cb.answer("❌ Нет доступа", show_alert=True); return
     pool = await get_pool()
     async with pool.acquire() as conn:
-        new_users = await conn.fetchval("SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '7 days'") or 0
-        row = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations WHERE created_at >= NOW() - INTERVAL '7 days'")
-        gens, credits_used = row[0] or 0, row[1] or 0
-        row2 = await conn.fetchrow("SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments WHERE created_at >= NOW() - INTERVAL '7 days'")
-        pays, revenue = row2[0] or 0, row2[1] or 0
-        by_day = await conn.fetch("SELECT DATE(created_at), COUNT(*) FROM generations WHERE created_at >= NOW() - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY 1")
-
+        text = await _build_stat_text(conn, "NOW() - INTERVAL '7 days'", "7 дней")
+        # Дополняем разбивкой по дням
+        by_day = await conn.fetch(
+            "SELECT DATE(created_at), COUNT(*) FROM generations "
+            "WHERE created_at >= NOW() - INTERVAL '7 days' GROUP BY DATE(created_at) ORDER BY 1"
+        )
     by_day_text = "\n".join([f"  {r[0]}: {r[1]} ген." for r in by_day]) or "  нет данных"
+    text += f"\n\n<b>По дням:</b>\n{by_day_text}"
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_stat_menu")]])
+    await cb.message.answer(text, reply_markup=back_kb, parse_mode="HTML")
+    await cb.answer()
 
+
+@dp.callback_query(F.data == "adm_stat_month")
+async def adm_stat_month(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        text = await _build_stat_text(conn, "NOW() - INTERVAL '30 days'", "30 дней")
+        by_week = await conn.fetch(
+            "SELECT DATE_TRUNC('week', created_at)::date, COUNT(*) FROM generations "
+            "WHERE created_at >= NOW() - INTERVAL '30 days' GROUP BY 1 ORDER BY 1"
+        )
+    week_text = "\n".join([f"  Неделя с {r[0]}: {r[1]} ген." for r in by_week]) or "  нет данных"
+    text += f"\n\n<b>По неделям:</b>\n{week_text}"
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="adm_stat_menu")]])
+    await cb.message.answer(text, reply_markup=back_kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_stat_pick")
+async def adm_stat_pick(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await state.set_state(AdminState.waiting_stat_date)
     await cb.message.answer(
-        f"📈 <b>Статистика за 7 дней</b>\n\n"
+        "📅 <b>Введи дату</b> в формате <code>ДД.ММ.ГГГГ</code>\n\nНапример: <code>28.05.2026</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="❌ Отмена", callback_data="adm_stat_menu")
+        ]])
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_stat_date, StateFilter(AdminState.waiting_stat_date))
+async def adm_stat_date_input(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    import datetime as _dt
+    raw = (message.text or "").strip()
+    try:
+        dt = _dt.datetime.strptime(raw, "%d.%m.%Y").date()
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат. Введи дату как <code>ДД.ММ.ГГГГ</code>, например <code>28.05.2026</code>",
+            parse_mode="HTML"
+        )
+        return
+    await state.clear()
+    since_sql = f"'{dt.isoformat()}'::date"
+    until_sql = f"'{dt.isoformat()}'::date + INTERVAL '1 day'"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        new_users = await conn.fetchval(
+            f"SELECT COUNT(*) FROM users WHERE created_at >= {since_sql} AND created_at < {until_sql}"
+        ) or 0
+        row = await conn.fetchrow(
+            f"SELECT COUNT(*), COALESCE(SUM(credits),0) FROM generations "
+            f"WHERE created_at >= {since_sql} AND created_at < {until_sql}"
+        )
+        gens, credits_used = row[0] or 0, row[1] or 0
+        row2 = await conn.fetchrow(
+            f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM payments "
+            f"WHERE created_at >= {since_sql} AND created_at < {until_sql}"
+        )
+        pays, revenue = row2[0] or 0, row2[1] or 0
+        by_type = await conn.fetch(
+            f"SELECT type, COUNT(*) FROM generations "
+            f"WHERE created_at >= {since_sql} AND created_at < {until_sql} GROUP BY type"
+        )
+        cr_row = await conn.fetchrow(
+            f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM fk_orders "
+            f"WHERE status='paid' AND (pack NOT LIKE 'shop:%' OR pack IS NULL) "
+            f"AND paid_at >= {since_sql} AND paid_at < {until_sql}"
+        )
+        sh_row = await conn.fetchrow(
+            f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM fk_orders "
+            f"WHERE status='paid' AND pack LIKE 'shop:%' "
+            f"AND paid_at >= {since_sql} AND paid_at < {until_sql}"
+        )
+    by_type_text = "\n".join([f"  • {r[0]}: {r[1]} шт" for r in by_type]) or "  нет данных"
+    cr_n, cr_sum = cr_row[0] or 0, cr_row[1] or 0
+    sh_n, sh_sum = sh_row[0] or 0, sh_row[1] or 0
+    label = dt.strftime("%d.%m.%Y")
+    text = (
+        f"📊 <b>Статистика за {label}</b>\n\n"
         f"🆕 Новых пользователей: <b>{new_users}</b>\n"
         f"🎨 Генераций: <b>{gens}</b>\n"
         f"💸 Кредитов потрачено: <b>{credits_used}</b>\n"
         f"💳 Оплат: <b>{pays}</b>\n"
-        f"💰 Выручка: <b>{revenue}₽</b>\n\n"
-        f"<b>По дням:</b>\n{by_day_text}",
-        parse_mode="HTML"
+        f"💰 Выручка: <b>{revenue}₽</b>\n"
+        f"  ├ 💳 Кредиты: <b>{cr_n} шт · {cr_sum}₽</b>\n"
+        f"  └ 🛍 Магазин: <b>{sh_n} шт · {sh_sum}₽</b>\n\n"
+        f"<b>По типу генераций:</b>\n{by_type_text}"
     )
-    await cb.answer()
+    back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Другой день", callback_data="adm_stat_pick")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm_stat_menu")],
+    ])
+    await message.answer(text, reply_markup=back_kb, parse_mode="HTML")
 
 
 # ══════════════════════════════════════════════════════════
@@ -9893,6 +10027,16 @@ async def _show_payments_page(cb: CallbackQuery, page: int):
                 f"FROM ({unified_sql}) t GROUP BY method ORDER BY sum DESC"
             )
 
+            # Разбивка кредиты vs магазин (из fk_orders)
+            cat_cr = await conn.fetchrow(
+                "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM fk_orders "
+                "WHERE status='paid' AND (pack NOT LIKE 'shop:%' OR pack IS NULL)"
+            )
+            cat_sh = await conn.fetchrow(
+                "SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM fk_orders "
+                "WHERE status='paid' AND pack LIKE 'shop:%'"
+            )
+
             max_page = max(0, (total_count - 1) // PAYMENTS_PAGE_SIZE)
             page = max(0, min(page, max_page))
             offset = page * PAYMENTS_PAGE_SIZE
@@ -9952,13 +10096,35 @@ async def _show_payments_page(cb: CallbackQuery, page: int):
                         except Exception:
                             pass
 
+                        # Определяем категорию платежа: магазин или кредиты
+                    is_shop = False
+                    try:
+                        fk_pack = await conn.fetchval(
+                            "SELECT pack FROM fk_orders WHERE user_id=$1 AND amount_rub=$2 "
+                            "AND ABS(EXTRACT(EPOCH FROM (created_at - $3::timestamp))) < 600 "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            uid, r['amount_rub'], r['created_at']
+                        )
+                        if fk_pack and str(fk_pack).startswith("shop:"):
+                            is_shop = True
+                    except Exception:
+                        pass
+                    cat_tag = " 🛍" if is_shop else " 💳"
+
                     pay_lines.append(
-                        f"{emoji} {uname} · <b>{r['amount_rub']}₽</b> · +{r['credits']} кр{details} · {dt}"
+                        f"{emoji} {uname} · <b>{r['amount_rub']}₽</b>{cat_tag} · +{r['credits']} кр{details} · {dt}"
                     )
+
+                cr_n_all = cat_cr[0] or 0
+                cr_s_all = cat_cr[1] or 0
+                sh_n_all = cat_sh[0] or 0
+                sh_s_all = cat_sh[1] or 0
 
                 text = (
                     f"🧾 <b>История платежей</b>\n\n"
                     f"📊 <b>Всего:</b> {total_count} платежей · {total_sum}₽ · {total_credits} кр\n"
+                    f"  ├ 💳 Кредиты: <b>{cr_n_all} шт · {cr_s_all}₽</b>\n"
+                    f"  └ 🛍 Магазин: <b>{sh_n_all} шт · {sh_s_all}₽</b>\n"
                     f"📅 За сутки: {today_row[0]} · {today_row[1]}₽\n"
                     f"📆 За 7 дней: {week_row[0]} · {week_row[1]}₽\n\n"
                     f"<b>По методам:</b>\n" + "\n".join(method_lines) + "\n\n"
@@ -11255,8 +11421,10 @@ async def do_upscale(message: Message, state: FSMContext):
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale")],
-                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale"),
+                 InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
+                 InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
             ])
         )
         # Отправляем документом для скачивания в оригинале
@@ -11425,8 +11593,10 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✨ Улучшить другой промт", callback_data="menu_improve")],
-                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                [InlineKeyboardButton(text="✨ Улучшить другой промт", callback_data="menu_improve"),
+                 InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
+                 InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
             ])
         )
         await log_event(uid, "improve_gen", f"model={model_key} credits={m['credits']}")
@@ -12492,6 +12662,8 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         kb_after_anim = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
              InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
+            [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
+             InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
         ])
 
         # Удаляем прогресс-сообщение ПЕРЕД отправкой видео
@@ -12928,6 +13100,8 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         kb_after_mot = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_motion"),
              InlineKeyboardButton(text="🏠 Главное", callback_data="back_main")],
+            [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
+             InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
         ])
 
         # Удаляем прогресс-сообщение ПЕРЕД отправкой (чистый UX)
@@ -13444,7 +13618,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
         credits    = payment["credits"]
         amount_rub = payment["amount"]
 
-        # 4.1 Проверяем сумму (защита от фрода)
+        # 4.1 Проверяем что оплаченная сумма совпадает с ожидаемой (защита от фрода)
         try:
             received_amount = float(amount)
             expected_amount = float(amount_rub)
@@ -13485,7 +13659,7 @@ async def setup_webhook_server():
     FK_WEBHOOK_PATH = "/" + FK_WEBHOOK_PATH.split("/", 1)[-1] if "/" in FK_WEBHOOK_PATH else "/fk_webhook"
     for path in set([FK_WEBHOOK_PATH, "/fk-webhook", "/fk_webhook"]):
         app.router.add_post(path, fk_webhook_handler)
-        logging.info(f"FK webhook зарегистрирован: POST {path}")
+        logging.info(f"FK webhook зарегистрован: POST {path}")
     port = int(os.getenv("FK_WEBHOOK_PORT", "8080"))
     runner = web.AppRunner(app)
     await runner.setup()
