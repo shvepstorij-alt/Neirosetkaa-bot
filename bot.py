@@ -5023,113 +5023,113 @@ async def cmd_ref(message: Message):
 SHOP_CATALOG = {
     "chatgpt": {
         "name": "ChatGPT", "emoji": "✨",
-        "desc": "Самый популярный ИИ-помощник от OpenAI. GPT-5, генерация изображений GPT Image 2, Deep Research, Codex для кода и Agent Mode.",
+        "desc": "Самый популярный ИИ от OpenAI. GPT-5.5 (апрель 2026) — умнее, быстрее, сам доводит задачи до конца. Deep Research, Codex, Agent Mode, Sora.",
         "plans": [
-            {"name": "Plus / Pro", "price": 2000,  "stars": 800,  "desc": "GPT-5, GPT Image 2, Deep Research, Codex, Agent Mode, без рекламы - выбери Plus или Pro при оформлении"},
-            {"name": "Max 5×",     "price": 9000,  "stars": 3600, "desc": "Лимиты в 5× выше Pro, ранний доступ ко всем новинкам OpenAI"},
-            {"name": "Max 20×",    "price": 15000, "stars": 6000, "desc": "Лимиты в 20× выше Pro, для агентств и тяжёлых нагрузок"},
+            {"name": "Plus",   "price": 2000,  "stars": 800,  "desc": "GPT-5.5 и GPT-5.5 Instant, Deep Research (10 раз/мес), Sora, Codex, Agent Mode, DALL-E — 20$/мес"},
+            {"name": "Pro 5×", "price": 9000,  "stars": 3600, "desc": "GPT-5.5 Pro, лимиты в 5× выше Plus, расширенный Codex, фоновые агенты — 100$/мес"},
+            {"name": "Pro Max","price": 15000, "stars": 6000, "desc": "GPT-5.5 Pro без лимитов, максимум Deep Research и Agent Mode, 1М контекст — 200$/мес"},
         ]
     },
     "claude": {
         "name": "Claude", "emoji": "⚡",
-        "desc": "Лучший ИИ для текстов, анализа и кода от Anthropic. Огромный контекст 200К токенов, Projects с памятью, Claude Code.",
+        "desc": "Лучший ИИ для текстов, анализа и кода от Anthropic. Opus 4.8 (28 мая 2026) — Dynamic Workflows, сильнее в коде и агентских задачах. 200К токенов.",
         "plans": [
-            {"name": "Pro",    "price": 2000,  "stars": 800,  "desc": "Claude Opus 4.7, Sonnet 4.6, Projects, Claude Code, приоритетный доступ"},
-            {"name": "Max 5×", "price": 9000,  "stars": 3600, "desc": "Лимиты в 5× выше Pro, Opus 4.7 с контекстом 1М токенов, ранний доступ к фичам"},
-            {"name": "Max 20×","price": 15000, "stars": 6000, "desc": "Лимиты в 20× выше Pro, для агентств и команд, максимальные возможности"},
+            {"name": "Pro",    "price": 2000,  "stars": 800,  "desc": "Claude Opus 4.8, Sonnet 4.6, Dynamic Workflows, Projects, Claude Code, Research — 20$/мес"},
+            {"name": "Max 5×", "price": 9000,  "stars": 3600, "desc": "В 5× больше сообщений чем Pro (~225 за 5 часов), ранний доступ к новым моделям и фичам — 100$/мес"},
+            {"name": "Max 20×","price": 15000, "stars": 6000, "desc": "В 20× больше чем Pro (~900 за 5 часов), для агентств и интенсивной работы — 200$/мес"},
         ]
     },
     "grok": {
         "name": "SuperGrok", "emoji": "𝕏",
-        "desc": "ИИ от xAI (Elon Musk). Знает что происходит в X/Twitter прямо сейчас. Aurora - безлимитные изображения.",
+        "desc": "ИИ от xAI. Grok 4.3 (май 2026) — 1М токенов контекст, видеовход, Custom Skills. Реальное время X/Twitter. Aurora — безлимит изображений.",
         "plans": [
-            {"name": "SuperGrok",       "price": 2000, "stars": 800,  "desc": "Grok 4, DeepSearch, Aurora изображения безлимит, Big Brain Mode, голос"},
-            {"name": "SuperGrok Heavy", "price": 8000, "stars": 3200, "desc": "Grok 4 Heavy, 8 параллельных агентов, 256К контекст, максимальные лимиты"},
+            {"name": "SuperGrok",       "price": 2000, "stars": 800,  "desc": "Grok 4.3, DeepSearch, Aurora (изображения безлимит), Big Brain Mode, Custom Skills, голос, 1М контекст — 30$/мес"},
+            {"name": "SuperGrok Heavy", "price": 8000, "stars": 3200, "desc": "Grok 4.3 Heavy, 8 параллельных агентов, 256К контекст, Grok Build 0.1 (агентный код), максимальные лимиты — 300$/мес"},
         ]
     },
     "perplexity": {
         "name": "Perplexity Pro", "emoji": "🔍",
-        "desc": "Лучший AI-поиск с источниками. Использует GPT-5 + Claude + Gemini одновременно. Идеальная замена Google.",
+        "desc": "Лучший AI-поиск + автономный агент. Perplexity Computer выполняет задачи вместо тебя. GPT-5.5, Opus 4.8, Gemini 3.1 Pro на выбор.",
         "plans": [
-            {"name": "Pro", "price": 2000, "stars": 800, "desc": "Deep Research, загрузка файлов PDF/CSV, все модели, 300+ источников"},
+            {"name": "Pro", "price": 2000, "stars": 800, "desc": "Безлимит Pro Search, Deep Research, Perplexity Computer, выбор модели (GPT-5.5/Opus 4.8/Gemini 3.1/Grok 4.3), PDF/CSV — 20$/мес"},
         ]
     },
     "cursor": {
         "name": "Cursor", "emoji": "💻",
-        "desc": "Лучший AI-редактор кода. Claude Sonnet 4.6 + GPT-5 + Gemini прямо в IDE. Работает как VS Code.",
+        "desc": "Лучший AI-редактор кода. Composer 2.5, Opus 4.8 + GPT-5.5 в IDE. Jira/Teams интеграция, Loop-агенты, Shared Canvases. Как VS Code.",
         "plans": [
-            {"name": "Pro",  "price": 2300, "stars": 920, "desc": "Безлимит Tab-автодополнений, $20 кредитов на агентов, все топ-модели"},
-            {"name": "Pro+", "price": 4000, "stars": 1600, "desc": "В 3× больше кредитов, фоновые агенты, параллельные задачи"},
+            {"name": "Pro",  "price": 2300, "stars": 920,  "desc": "Безлимит Tab-автодополнений, Composer 2.5, $20 кредитов/мес на агентов, Jira/Teams интеграция — 20$/мес"},
+            {"name": "Pro+", "price": 5500, "stars": 2200, "desc": "В 3× больше кредитов ($60), Loop-агенты, фоновые задачи, параллельные репозитории — 60$/мес"},
         ]
     },
     "lovable": {
         "name": "Lovable Pro", "emoji": "🚀",
-        "desc": "Создание полноценных веб-приложений из текста без единой строки кода. Деплой одной кнопкой.",
+        "desc": "Создание полноценных веб-приложений из текста без кода. Деплой одной кнопкой. React + Supabase, кастомные домены.",
         "plans": [
-            {"name": "Pro", "price": 2300, "stars": 920, "desc": "Полный доступ, деплой, кастомные домены, React + Supabase"},
+            {"name": "Pro", "price": 2300, "stars": 920, "desc": "Безлимит сообщений, деплой, кастомные домены, React + Supabase, GitHub интеграция"},
         ]
     },
     "midjourney": {
         "name": "Midjourney", "emoji": "🖼",
-        "desc": "Лучший генератор изображений. Версия v7 - фотореализм и художественные стили. Работает в Discord и на сайте.",
+        "desc": "Топ-генератор изображений. V8.1 (апрель 2026) — в 4–5× быстрее V7, HD 2K, сверхстабильные стили и Moodboards. Discord + сайт.",
         "plans": [
-            {"name": "Basic",    "price": 1000, "stars": 400, "desc": "~200 изображений в Fast режиме, коммерческие права"},
-            {"name": "Standard", "price": 3000, "stars": 1200, "desc": "Безлимит в Relax режиме + 15ч Fast, коммерческие права"},
-            {"name": "Pro",      "price": 5500, "stars": 2200, "desc": "30ч Fast + Stealth Mode (изображения приватны) + для компаний"},
+            {"name": "Basic",    "price": 1000, "stars": 400,  "desc": "~200 изображений в Fast режиме, Omni Reference, V8.1, коммерческие права"},
+            {"name": "Standard", "price": 3000, "stars": 1200, "desc": "Безлимит в Relax режиме + 15 ч Fast, Draft Mode (10× быстрее), HD 2K, коммерческие права"},
+            {"name": "Pro",      "price": 5500, "stars": 2200, "desc": "30 ч Fast + Stealth Mode (приватные изображения), параллельные задачи, для компаний"},
         ]
     },
     "canva": {
         "name": "Canva Pro", "emoji": "✏️",
-        "desc": "Дизайн с AI. Magic Studio, Brand Kit, удаление фона, изменение размера под все соцсети одним кликом.",
+        "desc": "Дизайн с AI. Magic Studio, Brand Kit, удаление фона, изменение размера под все соцсети одним кликом. 100М+ шаблонов.",
         "plans": [
-            {"name": "Pro", "price": 1200, "stars": 480, "desc": "Magic Design, Magic Write, Background Remover, Brand Kit, безлимит шаблонов"},
+            {"name": "Pro", "price": 1200, "stars": 480, "desc": "Magic Design, Magic Write, Background Remover, Brand Kit, безлимит шаблонов и хранилище 1TB"},
         ]
     },
     "kling": {
         "name": "Kling AI", "emoji": "🎬",
-        "desc": "Генерация видео до 2 мин. Kling 3.0 Omni - лучшее соотношение качество/цена на рынке видео.",
+        "desc": "Генерация видео. Kling 3.0 (Omni One) — мультимодальная архитектура, до 15 сек, 4K 60fps, нативное аудио, 6 связанных сцен.",
         "plans": [
-            {"name": "Standard", "price": 900,  "stars": 360, "desc": "660 кредитов/мес, видео 5-10 сек, Standard режим"},
-            {"name": "Pro",      "price": 2700, "stars": 1080, "desc": "3000 кредитов/мес, Pro режим, приоритет, 2 мин видео"},
+            {"name": "Standard", "price": 900,  "stars": 360,  "desc": "~660 кредитов/мес, Kling 3.0, видео до 10 сек, 1080p, Standard режим, коммерческие права"},
+            {"name": "Pro",      "price": 2700, "stars": 1080, "desc": "~3000 кредитов/мес, Kling 3.0 Pro, до 15 сек, 4K, нативное аудио, приоритет"},
         ]
     },
     "runway": {
         "name": "Runway Gen-4", "emoji": "🎥",
-        "desc": "Кинематографическое видео Gen-4 Turbo. Лучше Kling по художественному качеству. Motion Brush, Camera Controls.",
+        "desc": "Кинематографическое AI-видео. Gen-4.5 + Runway Agent (май 2026). 1 подписка: Veo 3.1, Kling, Seedance 2.0, FLUX. Camera Controls, 4K.",
         "plans": [
-            {"name": "Standard", "price": 1700, "stars": 680, "desc": "625 кредитов/мес, Gen-4 Turbo"},
-            {"name": "Pro",      "price": 3700, "stars": 1480, "desc": "2250 кредитов/мес, приоритет, Lip Sync, 4K"},
+            {"name": "Standard", "price": 1700, "stars": 680,  "desc": "625 кредитов/мес, Gen-4.5, Veo 3.1, Kling, Seedance 2.0 — все модели в одной подписке"},
+            {"name": "Pro",      "price": 3700, "stars": 1480, "desc": "2250 кредитов/мес, Runway Agent, Lip Sync, 4K, приоритет, расширенный доступ ко всем моделям"},
         ]
     },
     "heygen": {
         "name": "HeyGen", "emoji": "🧑‍💼",
-        "desc": "AI-аватары и перевод видео с синхронизацией губ на 175+ языков. Идеально для YouTube и обучающего контента.",
+        "desc": "AI-аватары и перевод видео. Avatar V (2026) — студийное качество с 15-сек записи. Video Agent, Sora 2/Veo 3.1 b-roll. 175+ языков.",
         "plans": [
-            {"name": "Creator", "price": 2700, "stars": 1080, "desc": "AI-аватары, Video Translate (перевод с клоном голоса), 5 аватаров, без водяного знака"},
+            {"name": "Creator", "price": 2700, "stars": 1080, "desc": "Avatar V, безлимит видео 1080p, 700+ аватаров, Video Agent, Video Translate (175+ языков), аудио-дублирование — 29$/мес"},
         ]
     },
     "elevenlabs": {
         "name": "ElevenLabs", "emoji": "🎙",
-        "desc": "Лучший сервис клонирования голоса и синтеза речи. Движок v3 - неотличим от живого человека. 70+ языков.",
+        "desc": "Лучший синтез и клонирование голоса. Eleven v3 — вздыхает, шепчет, смеётся. Music v2 (май 2026) — смена жанров в треке. 70+ языков.",
         "plans": [
-            {"name": "Starter",  "price": 600,  "stars": 240, "desc": "30К символов/мес, мгновенное клонирование голоса, коммерческие права"},
-            {"name": "Creator",  "price": 2300, "stars": 920, "desc": "100К символов/мес, проф. клонирование, Dubbing Studio, 192kbps"},
+            {"name": "Starter",  "price": 600,  "stars": 240, "desc": "Мгновенное клонирование голоса (1–5 мин аудио), Eleven v3, Music v2, коммерческие права — 5$/мес"},
+            {"name": "Creator",  "price": 2300, "stars": 920, "desc": "Профессиональное клонирование (гиперреализм), Dubbing Studio, 192kbps, 100К символов/мес — 22$/мес"},
         ]
     },
     "suno": {
         "name": "Suno", "emoji": "🎵",
-        "desc": "Генерация музыки с вокалом из текста. v4.5 - студийное качество, любой жанр, коммерческие права.",
+        "desc": "Генерация музыки с вокалом из текста. v5.5 — студийное качество, клонирование своего голоса (Voices), My Taste, любой жанр.",
         "plans": [
-            {"name": "Pro",     "price": 1000, "stars": 400, "desc": "2500 кредитов/мес, коммерческие права, без водяного знака"},
-            {"name": "Premier", "price": 3000, "stars": 1200, "desc": "10К кредитов/мес, приоритетная генерация, первый доступ к новым фичам"},
+            {"name": "Pro",     "price": 1000, "stars": 400,  "desc": "2500 кредитов/мес, коммерческие права, Voices (клон голоса), My Taste, без водяного знака"},
+            {"name": "Premier", "price": 3000, "stars": 1200, "desc": "10К кредитов/мес, Custom Models, приоритетная генерация, ранний доступ к новым фичам"},
         ]
     },
     "gamma": {
         "name": "Gamma", "emoji": "📊",
-        "desc": "AI-презентации, документы и лендинги из текста за секунды. Экспорт в PPTX/PDF, без водяного знака.",
+        "desc": "AI-презентации, документы и лендинги из текста за секунды. Экспорт в PPTX/PDF, аналитика просмотров, кастомные домены.",
         "plans": [
-            {"name": "Plus", "price": 1000, "stars": 400, "desc": "Безлимит генераций, без водяного знака, экспорт PPTX/PDF"},
-            {"name": "Pro",  "price": 2300, "stars": 920,  "desc": "Премиум AI-модели, API, 10 кастомных доменов, Studio Mode"},
+            {"name": "Plus", "price": 1000, "stars": 400, "desc": "Безлимит генераций, без водяного знака, экспорт PPTX/PDF, аналитика"},
+            {"name": "Pro",  "price": 2300, "stars": 920, "desc": "Премиум AI-модели, API доступ, 10 кастомных доменов, Studio Mode"},
         ]
     },
 }
@@ -13680,8 +13680,5 @@ async def main():
     asyncio.create_task(subscription_reminder_loop())
     asyncio.create_task(reminders_loop())
     asyncio.create_task(db_cleanup_loop())
-    await dp.start_polling(bot)
-
-
 if __name__ == "__main__":
     asyncio.run(main())
