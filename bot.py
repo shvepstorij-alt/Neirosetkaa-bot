@@ -8433,6 +8433,9 @@ async def reply_profile(message: Message):
             "SELECT model, COUNT(*) as cnt FROM generations WHERE user_id=$1 GROUP BY model ORDER BY cnt DESC",
             uid
         )
+        # Рефералы
+        total_refs = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0
+        paid_refs  = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE", uid) or 0
 
     MODEL_DISPLAY = {
         # ключи IMAGE_MODELS
@@ -8566,21 +8569,32 @@ async def reply_profile(message: Message):
         purchases_block = "\n\n\ud83e\uddfe <b>\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a:</b>\n" + "\n".join(pur_lines)
 
     safe_name = strip_surrogates(message.from_user.full_name or "")
+    # \u0411\u043b\u043e\u043a \u0440\u0435\u0444\u0435\u0440\u0430\u043b\u043e\u0432
+    refs_block = ""
+    if total_refs > 0:
+        refs_block = f"\n\n\ud83e\udd1d <b>\u0420\u0435\u0444\u0435\u0440\u0430\u043b\u044b:</b> {total_refs} \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u043e \u00b7 {paid_refs} \u0441 \u043f\u043e\u043a\u0443\u043f\u043a\u043e\u0439"
+
     text = (
         f"\ud83d\udc64 <b>\u041f\u0440\u043e\u0444\u0438\u043b\u044c</b>\n\n"
         f"\ud83c\udd94 ID: <code>{uid}</code>\n"
         f"\ud83d\udc4b \u0418\u043c\u044f: {safe_name}\n\n"
         f"\ud83d\udcb5 <b>\u0411\u0430\u043b\u0430\u043d\u0441: {cr} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432</b>"
-        f"{coins_block}\n\n"
+        f"{coins_block}"
+        f"{refs_block}\n\n"
         f"\ud83d\udcca <b>\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430:</b>\n"
         f"  <b>\u0413\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0439:</b> {total_gens}\n"
         f"  <b>\u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432 \u043f\u043e\u0442\u0440\u0430\u0447\u0435\u043d\u043e:</b> {total_credits_spent}"
         + model_lines
-        + purchases_block
         + subs_block
     )
+    kb_profile = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧾 Покупки",        callback_data="profile_history"),
+         InlineKeyboardButton(text="🏡 Главное меню",   callback_data="back_main")],
+        [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy"),
+         InlineKeyboardButton(text="❤️ Избранное",      callback_data="menu_favorites")],
+    ])
     try:
-        await message.answer(strip_surrogates(text), reply_markup=kb_buy(), parse_mode="HTML")
+        await message.answer(strip_surrogates(text), reply_markup=kb_profile, parse_mode="HTML")
     except Exception as e:
         import logging
         logging.error(f"reply_profile send error uid={uid}: {e}")
@@ -12275,6 +12289,65 @@ async def fav_save(cb: CallbackQuery):
     await cb.answer("❤️ Сохранено в избранное!")
 
 
+@dp.callback_query(F.data == "profile_history")
+async def profile_history(cb: CallbackQuery):
+    """История покупок пользователя."""
+    uid = cb.from_user.id
+    await cb.answer()
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT pack, amount_rub, credits, paid_at
+                   FROM fk_orders
+                   WHERE user_id=$1 AND status='paid'
+                   ORDER BY paid_at DESC NULLS LAST
+                   LIMIT 20""",
+                uid
+            )
+        if not rows:
+            await cb.message.answer("🧾 <b>История покупок</b>\n\nПокупок пока нет.", parse_mode="HTML")
+            return
+
+        PACK_NAMES = {
+            "p15":   "🎯 Пробный (150 кр)",
+            "p25":   "🥉 Начальный (250 кр)",
+            "p50":   "🥈 Старт (500 кр)",
+            "p150":  "🏅 Базовый (1500 кр)",
+            "p500":  "🥇 Про (5000 кр)",
+            "p1200": "💎 Бизнес (12000 кр)",
+        }
+        lines = []
+        for p in rows:
+            pack = p["pack"] or ""
+            dt = p["paid_at"]
+            date_str = dt.strftime("%d.%m.%Y") if dt else "—"
+            amount = p["amount_rub"] or 0
+            if pack.startswith("shop:"):
+                parts = pack.split(":")
+                svc_key = parts[1] if len(parts) > 1 else pack
+                svc = SHOP_CATALOG.get(svc_key, {})
+                label = f"{svc.get('emoji','🛍')} {svc.get('name', svc_key)}"
+            else:
+                credits_val = p["credits"] or 0
+                label = PACK_NAMES.get(pack, f"+{credits_val} кр")
+            lines.append(f"• {date_str} — {label} — <b>{amount}₽</b>")
+
+        total = sum(r["amount_rub"] or 0 for r in rows)
+        text = (
+            f"🧾 <b>История покупок</b>\n"
+            f"<i>Последние {len(rows)} операций · итого {total}₽</i>\n\n"
+            + "\n".join(lines)
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👤 Профиль", callback_data="noop"),
+        ]])
+        await cb.message.answer(strip_surrogates(text), parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"profile_history error uid={uid}: {e}")
+        await cb.message.answer("⚠️ Не удалось загрузить историю покупок.")
+
+
 @dp.callback_query(F.data == "menu_favorites")
 async def menu_favorites(cb: CallbackQuery):
     uid = cb.from_user.id
@@ -13577,6 +13650,24 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             plans = s.get("plans", [])
             p = plans[plan_idx] if plan_idx < len(plans) else {}
             service_name = f"{s.get('emoji', '')} {s.get('name', '')} - {p.get('name', '')}" if s else "Товар из магазина"
+
+            # Автоматически создаём подписку на 1 месяц
+            import datetime as _dt2
+            try:
+                expires_at = _dt2.datetime.now() + _dt2.timedelta(days=30)
+                svc_display = f"{s.get('name', shop_key)}"
+                plan_display = p.get("name", "")
+                pool_sub = await get_pool()
+                async with pool_sub.acquire() as conn_sub:
+                    await conn_sub.execute("""
+                        INSERT INTO user_subscriptions
+                        (user_id, service_key, service_name, plan_name, expires_at, created_by)
+                        VALUES ($1,$2,$3,$4,$5,$6)
+                        ON CONFLICT DO NOTHING
+                    """, user_id, shop_key, svc_display, plan_display, expires_at, 0)
+                logging.info(f"Подписка создана: user={user_id} svc={shop_key} до {expires_at.date()}")
+            except Exception as sub_err:
+                logging.error(f"Ошибка создания подписки: {sub_err}")
 
             await bot.send_message(
                 user_id,
