@@ -10522,12 +10522,46 @@ async def adm_shop_service(cb: CallbackQuery):
     if not s:
         await cb.answer("\u0421\u0435\u0440\u0432\u0438\u0441 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d", show_alert=True); return
     plans_text = "\n".join([f"  {i}. {p['name']} \u2014 <b>{p['price']}\u20bd</b>" for i, p in enumerate(s['plans'])])
+    # \u0422\u0430\u0440\u0438\u0444\u044b
     rows = [[InlineKeyboardButton(text=f"\u270f\ufe0f {p['name']} ({p['price']}\u20bd)", callback_data=f"adm_shop_plan:{key}:{i}")] for i, p in enumerate(s['plans'])]
-    rows += [[InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0442\u0430\u0440\u0438\u0444", callback_data=f"adm_add_plan:{key}")],
-             [InlineKeyboardButton(text="\U0001f5d1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0435\u0440\u0432\u0438\u0441", callback_data=f"adm_del_service:{key}")],
-             [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices_shop")]]
-    await cb.message.edit_text(f"{s['emoji']} <b>{s['name']}</b>\n\n{plans_text}",
-        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    # \u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0441\u0430\u043c\u043e\u0433\u043e \u0441\u0435\u0440\u0432\u0438\u0441\u0430
+    rows += [
+        [InlineKeyboardButton(text="\ud83d\udcdd \u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435", callback_data=f"adm_svc_field:{key}:name"),
+         InlineKeyboardButton(text="\ud83c\udfad \u042d\u043c\u043e\u0434\u0437\u0438",   callback_data=f"adm_svc_field:{key}:emoji")],
+        [InlineKeyboardButton(text="\ud83d\udcc4 \u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", callback_data=f"adm_svc_field:{key}:desc")],
+        [InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0442\u0430\u0440\u0438\u0444",  callback_data=f"adm_add_plan:{key}")],
+        [InlineKeyboardButton(text="\ud83d\uddd1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0435\u0440\u0432\u0438\u0441",  callback_data=f"adm_del_service:{key}")],
+        [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices_shop")],
+    ]
+    text = (
+        f"{s['emoji']} <b>{s['name']}</b>\n"
+        f"<i>{s.get('desc', '')}</i>\n\n"
+        + (plans_text if plans_text else "<i>\u0422\u0430\u0440\u0438\u0444\u043e\u0432 \u043d\u0435\u0442</i>")
+    )
+    await cb.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await cb.answer()
+
+
+# \u2500\u2500\u2500 \u0420\u0435\u0434\u0430\u043a\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043f\u043e\u043b\u0435\u0439 \u0441\u0435\u0440\u0432\u0438\u0441\u0430 (\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 / \u044d\u043c\u043e\u0434\u0437\u0438 / \u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435) \u2500\u2500
+
+@dp.callback_query(F.data.startswith("adm_svc_field:"))
+async def adm_svc_field(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    parts = cb.data.split(":")
+    key, field = parts[1], parts[2]
+    s = SHOP_CATALOG.get(key, {})
+    field_labels = {"name": "\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435", "emoji": "\u044d\u043c\u043e\u0434\u0437\u0438", "desc": "\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"}
+    current = s.get(field, "")
+    await state.update_data(edit_shop_key=key, edit_shop_plan=None, edit_shop_field=f"svc_{field}")
+    await state.set_state(AdminEditState.waiting_value)
+    await cb.message.edit_text(
+        f"\u270f\ufe0f \u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 <b>{field_labels.get(field, field)}</b> \u0434\u043b\u044f <b>{s.get('emoji','')} {s.get('name', key)}</b>\n\n"
+        f"\u0422\u0435\u043a\u0443\u0449\u0435\u0435: <code>{current}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data=f"adm_shop_service:{key}")
+        ]])
+    )
     await cb.answer()
 
 
@@ -10587,6 +10621,26 @@ async def adm_del_plan(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_del_service:"))
 async def adm_del_service(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    key = cb.data.split(":")[1]
+    s = SHOP_CATALOG.get(key, {})
+    name = f"{s.get('emoji','')} {s.get('name', key)}"
+    # \u041f\u0435\u0440\u0432\u044b\u0439 \u0448\u0430\u0433 \u2014 \u0437\u0430\u043f\u0440\u043e\u0441 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f
+    await cb.message.edit_text(
+        f"\ud83d\uddd1 <b>\u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0435\u0440\u0432\u0438\u0441?</b>\n\n"
+        f"{name}\n\n"
+        f"\u26a0\ufe0f \u042d\u0442\u043e \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u043d\u0435\u043b\u044c\u0437\u044f \u043e\u0442\u043c\u0435\u043d\u0438\u0442\u044c. \u0412\u0441\u0435 \u0442\u0430\u0440\u0438\u0444\u044b \u0441\u0435\u0440\u0432\u0438\u0441\u0430 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043b\u0435\u043d\u044b.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="\u2705 \u0414\u0430, \u0443\u0434\u0430\u043b\u0438\u0442\u044c",  callback_data=f"adm_del_service_confirm:{key}")],
+            [InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430",       callback_data=f"adm_shop_service:{key}")],
+        ])
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_del_service_confirm:"))
+async def adm_del_service_confirm(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID: return
     key = cb.data.split(":")[1]
     pool = await get_pool()
@@ -10708,6 +10762,25 @@ async def adm_edit_value(message: Message, state: FSMContext):
             await state.clear()
             await message.answer(f"\u2705 \u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e!", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
+        elif shop_field in ("svc_name", "svc_emoji", "svc_desc") and shop_key:
+            field_map = {"svc_name": "name", "svc_emoji": "emoji", "svc_desc": "desc"}
+            col_map   = {"svc_name": "service_name", "svc_emoji": "emoji", "svc_desc": "service_desc"}
+            f = field_map[shop_field]
+            col = col_map[shop_field]
+            if shop_key in SHOP_CATALOG:
+                SHOP_CATALOG[shop_key][f] = value
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2", value, shop_key)
+            await state.clear()
+            svc = SHOP_CATALOG.get(shop_key, {})
+            await message.answer(
+                f"\u2705 {svc.get('emoji','')} <b>{svc.get('name', shop_key)}</b> \u2014 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e!",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="\u2b05\ufe0f \u041a \u0441\u0435\u0440\u0432\u0438\u0441\u0443", callback_data=f"adm_shop_service:{shop_key}")
+                ]])
+            )
         elif shop_field == "new_service":
             parts = [x.strip() for x in value.split("|")]
             if len(parts) < 4:
