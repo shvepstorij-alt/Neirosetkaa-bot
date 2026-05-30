@@ -8654,9 +8654,39 @@ async def _build_stat_text(conn, since_sql: str, label: str) -> str:
         f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM fk_orders "
         f"WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at >= {since_sql}"
     )
+    # Продажи магазина по сервисам
+    shop_detail = await conn.fetch(
+        f"SELECT pack, COUNT(*) as cnt, COALESCE(SUM(amount_rub),0) as revenue "
+        f"FROM fk_orders WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at >= {since_sql} "
+        f"GROUP BY pack ORDER BY cnt DESC"
+    )
+
     by_type_text = "\n".join([f"  • {r[0]}: {r[1]} шт" for r in by_type]) or "  нет данных"
     cr_n, cr_sum = cr_row[0] or 0, cr_row[1] or 0
     sh_n, sh_sum = sh_row[0] or 0, sh_row[1] or 0
+
+    # Группируем детали магазина по сервису
+    shop_by_svc: dict = {}
+    for r in shop_detail:
+        pack = r["pack"] or ""
+        parts = pack.split(":")
+        svc_key = parts[1] if len(parts) > 1 else pack
+        svc = SHOP_CATALOG.get(svc_key, {})
+        svc_name = f"{svc.get('emoji','')}{svc.get('name', svc_key)}".strip()
+        if svc_name not in shop_by_svc:
+            shop_by_svc[svc_name] = {"cnt": 0, "rev": 0}
+        shop_by_svc[svc_name]["cnt"] += r["cnt"]
+        shop_by_svc[svc_name]["rev"] += r["revenue"]
+
+    if shop_by_svc:
+        shop_lines = "\n".join(
+            f"    • {name}: <b>{d['cnt']} шт · {d['rev']}₽</b>"
+            for name, d in shop_by_svc.items()
+        )
+        shop_detail_text = f"\n{shop_lines}"
+    else:
+        shop_detail_text = ""
+
     return (
         f"📊 <b>Статистика: {label}</b>\n\n"
         f"🆕 Новых пользователей: <b>{new_users}</b>\n"
@@ -8665,7 +8695,8 @@ async def _build_stat_text(conn, since_sql: str, label: str) -> str:
         f"💳 Оплат: <b>{pays}</b>\n"
         f"💰 Выручка: <b>{revenue}₽</b>\n"
         f"  ├ 💳 Кредиты: <b>{cr_n} шт · {cr_sum}₽</b>\n"
-        f"  └ 🛍 Магазин: <b>{sh_n} шт · {sh_sum}₽</b>\n\n"
+        f"  └ 🛍 Магазин: <b>{sh_n} шт · {sh_sum}₽</b>"
+        + shop_detail_text + "\n\n"
         f"<b>По типу генераций:</b>\n{by_type_text}"
     )
 
@@ -8780,9 +8811,35 @@ async def adm_stat_date_input(message: Message, state: FSMContext):
             f"WHERE status='paid' AND pack LIKE 'shop:%' "
             f"AND paid_at >= {since_sql} AND paid_at < {until_sql}"
         )
+        shop_detail = await conn.fetch(
+            f"SELECT pack, COUNT(*) as cnt, COALESCE(SUM(amount_rub),0) as revenue "
+            f"FROM fk_orders WHERE status='paid' AND pack LIKE 'shop:%' "
+            f"AND paid_at >= {since_sql} AND paid_at < {until_sql} "
+            f"GROUP BY pack ORDER BY cnt DESC"
+        )
     by_type_text = "\n".join([f"  • {r[0]}: {r[1]} шт" for r in by_type]) or "  нет данных"
     cr_n, cr_sum = cr_row[0] or 0, cr_row[1] or 0
     sh_n, sh_sum = sh_row[0] or 0, sh_row[1] or 0
+
+    shop_by_svc: dict = {}
+    for r in shop_detail:
+        pack = r["pack"] or ""
+        parts = pack.split(":")
+        svc_key = parts[1] if len(parts) > 1 else pack
+        svc = SHOP_CATALOG.get(svc_key, {})
+        svc_name = f"{svc.get('emoji','')}{svc.get('name', svc_key)}".strip()
+        if svc_name not in shop_by_svc:
+            shop_by_svc[svc_name] = {"cnt": 0, "rev": 0}
+        shop_by_svc[svc_name]["cnt"] += r["cnt"]
+        shop_by_svc[svc_name]["rev"] += r["revenue"]
+
+    shop_detail_text = ""
+    if shop_by_svc:
+        shop_detail_text = "\n" + "\n".join(
+            f"    • {name}: <b>{d['cnt']} шт · {d['rev']}₽</b>"
+            for name, d in shop_by_svc.items()
+        )
+
     label = dt.strftime("%d.%m.%Y")
     text = (
         f"📊 <b>Статистика за {label}</b>\n\n"
@@ -8792,7 +8849,8 @@ async def adm_stat_date_input(message: Message, state: FSMContext):
         f"💳 Оплат: <b>{pays}</b>\n"
         f"💰 Выручка: <b>{revenue}₽</b>\n"
         f"  ├ 💳 Кредиты: <b>{cr_n} шт · {cr_sum}₽</b>\n"
-        f"  └ 🛍 Магазин: <b>{sh_n} шт · {sh_sum}₽</b>\n\n"
+        f"  └ 🛍 Магазин: <b>{sh_n} шт · {sh_sum}₽</b>"
+        + shop_detail_text + "\n\n"
         f"<b>По типу генераций:</b>\n{by_type_text}"
     )
     back_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -8840,11 +8898,18 @@ async def adm_back_to_panel(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer()
         return
-    await cb.message.edit_text(
-        "🛠 <b>Админ-панель</b>\n\nВыбери действие:",
-        reply_markup=kb_admin_panel(),
-        parse_mode="HTML"
-    )
+    try:
+        await cb.message.edit_text(
+            "🛠 <b>Админ-панель</b>\n\nВыбери действие:",
+            reply_markup=kb_admin_panel(),
+            parse_mode="HTML"
+        )
+    except Exception:
+        await cb.message.answer(
+            "🛠 <b>Админ-панель</b>\n\nВыбери действие:",
+            reply_markup=kb_admin_panel(),
+            parse_mode="HTML"
+        )
     await cb.answer()
 
 
@@ -10382,12 +10447,7 @@ async def adm_maintenance(cb: CallbackQuery):
 
 # ─── Кнопка "назад к панели" ──────────────────────────────
 
-@dp.callback_query(F.data == "adm_back")
-async def adm_back(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌", show_alert=True); return
-    await show_admin_panel(cb.message)
-    await cb.answer()
+# adm_back обработчик выше (adm_back_to_panel)
 
 
 # ─── АДМИН: промокоды ────────────────────────────────────
@@ -10421,7 +10481,7 @@ async def adm_prices(cb: CallbackQuery):
             [InlineKeyboardButton(text="\U0001f4e6 \u041f\u0430\u043a\u0435\u0442\u044b \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432", callback_data="adm_prices_packs")],
             [InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d \u043f\u043e\u0434\u043f\u0438\u0441\u043e\u043a", callback_data="adm_prices_shop")],
             [InlineKeyboardButton(text="\U0001f3a8 \u0426\u0435\u043d\u044b \u043d\u0430 \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u0438", callback_data="adm_prices_gen")],
-            [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_panel")],
+            [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_back")],
         ])
     )
     await cb.answer()
