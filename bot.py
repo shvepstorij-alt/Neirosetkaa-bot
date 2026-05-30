@@ -2329,15 +2329,11 @@ def kb_main():
             InlineKeyboardButton(text="❤️ Избранное",      callback_data="menu_favorites"),
         ],
         [
-            InlineKeyboardButton(text="💵 Баланс",         callback_data="menu_balance"),
             InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy"),
+            InlineKeyboardButton(text="🛍 Магазин",         callback_data="menu_shop"),
         ],
         [
-            InlineKeyboardButton(text="🤝 Пригласить друга", callback_data="menu_ref"),
-            InlineKeyboardButton(text="🛍 Магазин",           callback_data="menu_shop"),
-        ],
-        [
-            InlineKeyboardButton(text="💌 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}"),
+            InlineKeyboardButton(text="👤 Мой профиль", callback_data="menu_profile"),
         ],
     ])
 
@@ -8406,9 +8402,20 @@ async def reply_create_video(message: Message, state: FSMContext):
     )
 
 
+@dp.callback_query(F.data == "menu_profile")
+async def menu_profile_cb(cb: CallbackQuery):
+    """Открыть профиль через inline-кнопку в главном меню."""
+    await cb.answer()
+    await _show_profile(cb.message, cb.from_user)
+
+
 @dp.message(F.text == "👤 Мой профиль", StateFilter("*"))
 async def reply_profile(message: Message):
-    uid = message.from_user.id
+    await _show_profile(message, message.from_user)
+
+
+async def _show_profile(message: Message, user):
+    uid = user.id
     try:
         await ensure_user(uid)
         cr = await get_credits(uid)
@@ -8568,7 +8575,7 @@ async def reply_profile(message: Message):
             pur_lines.append(f"  \u2022 {date_str} \u2014 {label} \u2014 <b>{amount}\u20bd</b>")
         purchases_block = "\n\n\ud83e\uddfe <b>\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a:</b>\n" + "\n".join(pur_lines)
 
-    safe_name = strip_surrogates(message.from_user.full_name or "")
+    safe_name = strip_surrogates(user.full_name or "")
     # \u0411\u043b\u043e\u043a \u0440\u0435\u0444\u0435\u0440\u0430\u043b\u043e\u0432
     refs_block = ""
     if total_refs > 0:
@@ -8588,6 +8595,7 @@ async def reply_profile(message: Message):
         + subs_block
     )
     kb_profile = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤝 Пригласить друга 🟢", callback_data="menu_ref")],
         [InlineKeyboardButton(text="🧾 Покупки",        callback_data="profile_history"),
          InlineKeyboardButton(text="🏡 Главное меню",   callback_data="back_main")],
         [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy"),
@@ -8618,9 +8626,7 @@ async def get_admin_stats() -> dict:
 def kb_admin_panel():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика",        callback_data="adm_stat_menu"),
-         InlineKeyboardButton(text="📈 Активность",        callback_data="adm_activity")],
-        [InlineKeyboardButton(text="🔥 Топ моделей", callback_data="adm_popular"),
-         InlineKeyboardButton(text="👑 Топ юзеров",      callback_data="adm_top_users")],
+         InlineKeyboardButton(text="📁 Аналитика",        callback_data="adm_analytics_menu")],
         [InlineKeyboardButton(text="👤 Пользователи",      callback_data="adm_users"),
          InlineKeyboardButton(text="🔎 Найти по ID",       callback_data="adm_find")],
         [InlineKeyboardButton(text="💰 Начислить кредиты", callback_data="adm_give_credits"),
@@ -8657,6 +8663,32 @@ async def reply_admin(message: Message, state: FSMContext):
 
 
 # ─── Меню выбора периода статистики ──────────────────────
+
+# ─── Папка "Аналитика" (Топ моделей / Топ юзеров / Активность / Пользователи) ──
+
+@dp.callback_query(F.data == "adm_analytics_menu")
+async def adm_analytics_menu_handler(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔥 Топ моделей",   callback_data="adm_popular"),
+         InlineKeyboardButton(text="👑 Топ юзеров",    callback_data="adm_top_users")],
+        [InlineKeyboardButton(text="📈 Активность",    callback_data="adm_activity"),
+         InlineKeyboardButton(text="👤 Пользователи",  callback_data="adm_users")],
+        [InlineKeyboardButton(text="◀️ Панель",        callback_data="adm_back")],
+    ])
+    try:
+        await cb.message.edit_text(
+            "📁 <b>Аналитика</b>\n\nВыбери раздел:",
+            reply_markup=kb, parse_mode="HTML"
+        )
+    except Exception:
+        await cb.message.answer(
+            "📁 <b>Аналитика</b>\n\nВыбери раздел:",
+            reply_markup=kb, parse_mode="HTML"
+        )
+    await cb.answer()
+
 
 def kb_stat_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -13527,9 +13559,9 @@ async def handle_message(message: Message, state: FSMContext):
     await bot.send_chat_action(message.chat.id, "typing")
     reply = await claude_with_search(uid, message.text)
     try:
-        await message.answer(reply, reply_markup=kb_contact(), parse_mode="HTML")
+        await message.answer(reply, reply_markup=kb_after_consultant_reply(), parse_mode="HTML")
     except Exception:
-        await message.answer(reply, reply_markup=kb_contact())
+        await message.answer(reply, reply_markup=kb_after_consultant_reply())
 
 # ══════════════════════════════════════════════════════════
 #  ЗАПУСК
