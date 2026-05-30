@@ -930,6 +930,10 @@ REF_BONUS = 200  # кредитов за реферал
 #  БАЗА ДАННЫХ (PostgreSQL через asyncpg)
 # ══════════════════════════════════════════════════════════
 
+def strip_surrogates(s: str) -> str:
+    """Удаляет суррогатные символы из строки (могут приходить из Telegram full_name или БД)."""
+    return s.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+
 async def get_pool():
     global _pool
     if _pool is None:
@@ -8561,10 +8565,11 @@ async def reply_profile(message: Message):
             pur_lines.append(f"  \u2022 {date_str} \u2014 {label} \u2014 <b>{amount}\u20bd</b>")
         purchases_block = "\n\n\ud83e\uddfe <b>\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a:</b>\n" + "\n".join(pur_lines)
 
+    safe_name = strip_surrogates(message.from_user.full_name or "")
     text = (
         f"\ud83d\udc64 <b>\u041f\u0440\u043e\u0444\u0438\u043b\u044c</b>\n\n"
         f"\ud83c\udd94 ID: <code>{uid}</code>\n"
-        f"\ud83d\udc4b \u0418\u043c\u044f: {message.from_user.full_name}\n\n"
+        f"\ud83d\udc4b \u0418\u043c\u044f: {safe_name}\n\n"
         f"\ud83d\udcb5 <b>\u0411\u0430\u043b\u0430\u043d\u0441: {cr} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432</b>"
         f"{coins_block}\n\n"
         f"\ud83d\udcca <b>\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430:</b>\n"
@@ -8575,9 +8580,8 @@ async def reply_profile(message: Message):
         + subs_block
     )
     try:
-        await message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
+        await message.answer(strip_surrogates(text), reply_markup=kb_buy(), parse_mode="HTML")
     except Exception as e:
-        # Если HTML невалидный — отправляем без форматирования
         import logging
         logging.error(f"reply_profile send error uid={uid}: {e}")
         await message.answer("⚠️ Не удалось отобразить профиль. Попробуй позже.")
