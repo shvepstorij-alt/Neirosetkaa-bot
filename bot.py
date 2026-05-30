@@ -8405,8 +8405,18 @@ async def reply_create_video(message: Message, state: FSMContext):
 @dp.message(F.text == "👤 Мой профиль", StateFilter("*"))
 async def reply_profile(message: Message):
     uid = message.from_user.id
-    await ensure_user(uid)
-    cr = await get_credits(uid)
+    try:
+        await ensure_user(uid)
+        cr = await get_credits(uid)
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка загрузки профиля: {e}")
+        return
+
+    try:
+        pool = await get_pool()
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка подключения к БД: {e}")
+        return
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -8469,26 +8479,38 @@ async def reply_profile(message: Message):
             model_lines = "\n" + "\n".join(brand_parts) + "\n"
 
     # Загружаем историю покупок пользователя
-    async with pool.acquire() as conn:
-        purchases = await conn.fetch(
-            """SELECT pack, amount_rub, credits, paid_at
-               FROM fk_orders
-               WHERE user_id=$1 AND status='paid'
-               ORDER BY paid_at DESC NULLS LAST
-               LIMIT 10""",
-            uid
-        )
+    purchases = []
+    try:
+        async with pool.acquire() as conn:
+            purchases = await conn.fetch(
+                """SELECT pack, amount_rub, credits, paid_at
+                   FROM fk_orders
+                   WHERE user_id=$1 AND status='paid'
+                   ORDER BY paid_at DESC NULLS LAST
+                   LIMIT 10""",
+                uid
+            )
+    except Exception:
+        pass
 
-    # Загружаем подписки пользователя
+    # Загружаем подписки пользователя (таблица может не существовать в старых БД)
     import datetime as _dt
-    async with pool.acquire() as conn:
-        subs = await conn.fetch("""
-            SELECT service_name, plan_name, expires_at
-            FROM user_subscriptions
-            WHERE user_id=$1 AND is_active=TRUE AND expires_at > NOW()
-            ORDER BY expires_at ASC
-        """, uid)
-    coins = await get_coins(uid)
+    subs = []
+    try:
+        async with pool.acquire() as conn:
+            subs = await conn.fetch("""
+                SELECT service_name, plan_name, expires_at
+                FROM user_subscriptions
+                WHERE user_id=$1 AND is_active=TRUE AND expires_at > NOW()
+                ORDER BY expires_at ASC
+            """, uid)
+    except Exception:
+        pass  # таблица не существует — игнорируем
+
+    try:
+        coins = await get_coins(uid)
+    except Exception:
+        coins = 0
 
     subs_block = ""
     if subs:
@@ -8552,7 +8574,13 @@ async def reply_profile(message: Message):
         + purchases_block
         + subs_block
     )
-    await message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
+    try:
+        await message.answer(text, reply_markup=kb_buy(), parse_mode="HTML")
+    except Exception as e:
+        # Если HTML невалидный — отправляем без форматирования
+        import logging
+        logging.error(f"reply_profile send error uid={uid}: {e}")
+        await message.answer("⚠️ Не удалось отобразить профиль. Попробуй позже.")
 
 
 
