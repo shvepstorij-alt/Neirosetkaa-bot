@@ -13727,7 +13727,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     pending = await get_pending_activation(user_id)
     if not pending:
         return _resp({"success": False, "error": f"Время истекло. Обратись к @{PERSONAL_USERNAME}"})
-    code = pending["code"]; order_id = pending["order_id"]; plan_name = pending["plan_name"]
+    client_code = (body.get("code") or "").strip()
+    code = client_code if client_code else pending["code"]
+    order_id = pending["order_id"]; plan_name = pending["plan_name"]
     logging.info(f"Mini App activation: user={user_id} code={code}")
     result = await activate_chatgpt(code, access_token)
     if result.get("success"):
@@ -13754,35 +13756,6 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 await bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
         except Exception: pass
         return _resp({"success": False, "error": error_text})
-
-
-@dp.message(F.text == "/test_gpt_webapp", StateFilter("*"))
-async def test_gpt_webapp(message: Message):
-    """Тест Mini App кнопки без оплаты. Только для админа."""
-    if not is_admin(message.from_user.id):
-        return
-    uid = message.from_user.id
-    # Берём первый свободный код
-    code = await get_next_gpt_code("plus")
-    if code is None:
-        await message.answer("❌ Нет свободных кодов. Добавь: /add_gpt_codes plus\nCODE")
-        return
-    import urllib.parse as _uparse
-    await save_pending_activation(uid, code, "test_order", "plus", "Plus")
-    webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote('Plus')}"
-    from aiogram.types import WebAppInfo
-    await message.answer(
-        f"🧪 <b>Тест Mini App</b>\n\n"
-        f"Код: <code>{code}</code>\n"
-        f"Нажми кнопку чтобы открыть Mini App 👇",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="✨ Активировать подписку",
-                web_app=WebAppInfo(url=webapp_url)
-            )],
-        ])
-    )
 
 
 @dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/sub"))
@@ -13968,7 +13941,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"Добавь коды: /add_gpt_codes", parse_mode="HTML")
                 else:
                     await save_pending_activation(user_id, _code, order_id, _plan_key, _plan_name)
-                    _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}"
+                    _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}&code={_uparse.quote(_code)}"
                     from aiogram.types import WebAppInfo
                     await bot.send_message(
                         user_id,
