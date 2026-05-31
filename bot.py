@@ -13537,7 +13537,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
 #  ОБЫЧНЫЕ СООБЩЕНИЯ (вне FSM - консультант по умолчанию)
 # ══════════════════════════════════════════════════════════
 
-@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit"))
+@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/sub"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
         return
