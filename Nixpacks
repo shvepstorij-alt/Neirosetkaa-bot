@@ -1,2 +1,5 @@
 [phases.setup]
-nixPkgs = ["ffmpeg"]
+nixPkgs = ["ffmpeg", "chromium"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt", "playwright install chromium"]
