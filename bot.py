@@ -13764,7 +13764,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         await delete_pending_activation(user_id)
         try:
             _email = _extract_email_from_token(access_token)
-        await bot.send_message(ADMIN_ID,
+            await bot.send_message(ADMIN_ID,
                 f"✅ <b>ChatGPT авто-активация OK</b>\n"
                 f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
                 f"📧 {_email or '—'}\n"
