@@ -14174,14 +14174,6 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                                 url=f"https://t.me/{PERSONAL_USERNAME}")],
                         ])
                     )
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🛍 <b>Заказ ChatGPT (ручная активация)</b>\n"
-                        f"👤 <code>{user_id}</code>  📦 {service_name}\n"
-                        f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
-                        parse_mode="HTML"
-                    )
-                    return
                 if not CHATGPT_WEBAPP_ENABLED:
                     await bot.send_message(
                         user_id,
