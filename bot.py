@@ -7758,7 +7758,7 @@ async def help_choose(cb: CallbackQuery, state: FSMContext):
     await chat_preset_handler(cb, state)
 
 
-@dp.message(ChatState.chatting)
+@dp.message(ChatState.chatting, ~F.text.startswith("/"))
 async def chat_message(message: Message, state: FSMContext):
     if not message.text:
         return
