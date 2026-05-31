@@ -25,6 +25,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from chatgpt_activation import activate_chatgpt  # авто-активация ChatGPT
+
 # ─── Конфиг ───────────────────────────────────────────────
 BOT_TOKEN      = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
@@ -1197,7 +1199,89 @@ async def init_db():
             )
         """)
 
+        # ── GPT коды и pending активации
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gpt_codes (
+                id          SERIAL PRIMARY KEY,
+                code        TEXT NOT NULL UNIQUE,
+                plan        TEXT NOT NULL DEFAULT 'plus',
+                is_used     BOOLEAN NOT NULL DEFAULT FALSE,
+                used_by     BIGINT,
+                used_at     TIMESTAMPTZ,
+                order_id    TEXT,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gpt_codes_free ON gpt_codes(plan, is_used) WHERE is_used = FALSE"
+        )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gpt_pending_activations (
+                id          SERIAL PRIMARY KEY,
+                user_id     BIGINT NOT NULL UNIQUE,
+                code        TEXT NOT NULL,
+                order_id    TEXT NOT NULL,
+                plan        TEXT NOT NULL DEFAULT 'plus',
+                plan_name   TEXT NOT NULL DEFAULT 'Plus',
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at  TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '2 hours')
+            )
+        """)
+
     logging.info("✅ PostgreSQL инициализирован")
+
+
+# ── GPT АКТИВАЦИЯ — вспомогательные функции ─────────────────────────────────
+
+WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
+
+def plan_name_to_key(plan_name: str) -> str:
+    return {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max"}.get(plan_name, "plus")
+
+async def get_next_gpt_code(plan: str = "plus"):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE gpt_codes SET is_used=TRUE, used_at=NOW()
+               WHERE id=(SELECT id FROM gpt_codes WHERE plan=$1 AND is_used=FALSE
+                         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+               RETURNING code""", plan)
+    return row["code"] if row else None
+
+async def release_gpt_code(code: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL WHERE code=$1", code)
+
+async def mark_gpt_code_used(code: str, user_id: int, order_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE gpt_codes SET used_by=$1, order_id=$2 WHERE code=$3", user_id, order_id, code)
+
+async def save_pending_activation(user_id: int, code: str, order_id: str, plan: str, plan_name: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO gpt_pending_activations (user_id, code, order_id, plan, plan_name)
+               VALUES ($1,$2,$3,$4,$5)
+               ON CONFLICT (user_id) DO UPDATE
+               SET code=$2, order_id=$3, plan=$4, plan_name=$5,
+                   created_at=NOW(), expires_at=NOW()+INTERVAL '2 hours'""",
+            user_id, code, order_id, plan, plan_name)
+
+async def get_pending_activation(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM gpt_pending_activations WHERE user_id=$1 AND expires_at>NOW()", user_id)
+    return dict(row) if row else None
+
+async def delete_pending_activation(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM gpt_pending_activations WHERE user_id=$1", user_id)
 
 
 # ── МОНЕТКИ ────────────────────────────────────────────────────────────────────
@@ -13537,6 +13621,141 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
 #  ОБЫЧНЫЕ СООБЩЕНИЯ (вне FSM - консультант по умолчанию)
 # ══════════════════════════════════════════════════════════
 
+# ── Admin команды GPT кодов ──────────────────────────────────────────────────
+
+@dp.message(F.text.startswith("/add_gpt_codes"), StateFilter("*"))
+async def admin_add_gpt_codes(message: Message):
+    """Добавляет коды ChatGPT. /add_gpt_codes plus\nCODE1\nCODE2"""
+    if not is_admin(message.from_user.id):
+        return
+    lines = message.text.strip().split("\n")
+    parts = lines[0].split()
+    plan = parts[1].lower() if len(parts) > 1 else "plus"
+    if plan not in ("plus", "pro_5x", "pro_max"):
+        await message.answer(
+            "❌ План: <code>plus</code>, <code>pro_5x</code>, <code>pro_max</code>\n"
+            "Пример: <code>/add_gpt_codes plus\nCODE1\nCODE2</code>", parse_mode="HTML")
+        return
+    codes = [l.strip() for l in lines[1:] if l.strip()]
+    if not codes:
+        await message.answer("❌ Нет кодов.\n<code>/add_gpt_codes plus\nCODE1</code>", parse_mode="HTML")
+        return
+    pool = await get_pool()
+    added = skipped = 0
+    async with pool.acquire() as conn:
+        for code in codes:
+            try:
+                await conn.execute("INSERT INTO gpt_codes (code, plan) VALUES ($1, $2)", code, plan)
+                added += 1
+            except Exception:
+                skipped += 1
+    async with pool.acquire() as conn:
+        remaining = await conn.fetchval(
+            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
+    await message.answer(
+        f"✅ <b>Коды добавлены</b>\n\n📦 {plan}\n➕ {added} добавлено  ⏭ {skipped} дублей\n"
+        f"📊 Свободных: <b>{remaining}</b>", parse_mode="HTML")
+
+
+@dp.message(F.text == "/gpt_codes_status", StateFilter("*"))
+async def admin_gpt_codes_status(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT plan, COUNT(*) FILTER(WHERE NOT is_used) AS free,
+                      COUNT(*) FILTER(WHERE is_used) AS used
+               FROM gpt_codes GROUP BY plan ORDER BY plan""")
+    if not rows:
+        await message.answer("📭 Кодов нет. Добавь: /add_gpt_codes")
+        return
+    lines = ["📊 <b>Коды ChatGPT:</b>\n"]
+    for r in rows:
+        icon = "✅" if r["free"] > 2 else ("⚠️" if r["free"] > 0 else "🚨")
+        lines.append(f"{icon} <b>{r['plan']}</b>: {r['free']} свободных / {r['used']} использованных")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+# ── Mini App handlers ─────────────────────────────────────────────────────────
+
+_WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chatgpt_webapp.html")
+
+async def webapp_chatgpt_handler(request: web.Request) -> web.Response:
+    try:
+        with open(_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
+            _html = _f.read()
+        return web.Response(text=_html, content_type="text/html", charset="utf-8")
+    except FileNotFoundError:
+        return web.Response(text="Mini App not found", status=404)
+
+def _verify_tg_init_data(init_data: str) -> int | None:
+    try:
+        from urllib.parse import parse_qsl, unquote
+        import json as _json
+        params = dict(parse_qsl(init_data, keep_blank_values=True))
+        recv_hash = params.pop("hash", None)
+        if not recv_hash:
+            return None
+        data_check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
+        secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        expected = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, recv_hash):
+            return None
+        user_data = _json.loads(unquote(params.get("user", "{}")))
+        return user_data.get("id")
+    except Exception as _e:
+        logging.warning(f"initData verify: {_e}")
+        return None
+
+async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
+    import json as _json
+    def _resp(data, status=200):
+        return web.Response(text=_json.dumps(data, ensure_ascii=False),
+                            content_type="application/json", status=status)
+    try:
+        body = await request.json()
+    except Exception:
+        return _resp({"success": False, "error": "Неверный формат"}, 400)
+    access_token = (body.get("token") or "").strip()
+    init_data    = (body.get("init_data") or "").strip()
+    user_id = _verify_tg_init_data(init_data)
+    if not user_id:
+        return _resp({"success": False, "error": "Ошибка авторизации."}, 403)
+    if not access_token.startswith("eyJ") or len(access_token) < 100:
+        return _resp({"success": False, "error": "Некорректный токен."})
+    pending = await get_pending_activation(user_id)
+    if not pending:
+        return _resp({"success": False, "error": f"Время истекло. Обратись к @{PERSONAL_USERNAME}"})
+    code = pending["code"]; order_id = pending["order_id"]; plan_name = pending["plan_name"]
+    logging.info(f"Mini App activation: user={user_id} code={code}")
+    result = await activate_chatgpt(code, access_token)
+    if result.get("success"):
+        await mark_gpt_code_used(code, user_id, order_id)
+        await delete_pending_activation(user_id)
+        try:
+            await bot.send_message(ADMIN_ID,
+                f"✅ <b>ChatGPT авто-активация OK</b>\n👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                f"🔑 <code>{code}</code>\n🆔 <code>{order_id}</code>", parse_mode="HTML")
+        except Exception: pass
+        return _resp({"success": True})
+    else:
+        await release_gpt_code(code)
+        await delete_pending_activation(user_id)
+        error_text = result.get("error", "Ошибка")
+        try:
+            screenshot = result.get("screenshot")
+            txt = (f"❌ <b>ChatGPT авто-активация НЕУДАЧА</b>\n👤 <code>{user_id}</code>\n"
+                   f"🔑 <code>{code}</code>\n❗ {error_text}\nКод возвращён.")
+            if screenshot:
+                await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
+                                     caption=txt, parse_mode="HTML")
+            else:
+                await bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
+        except Exception: pass
+        return _resp({"success": False, "error": error_text})
+
+
 @dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/sub"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
@@ -13701,26 +13920,61 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             except Exception as sub_err:
                 logging.error(f"Ошибка создания подписки: {sub_err}")
 
-            await bot.send_message(
-                user_id,
-                f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"📦 <b>Товар:</b> {service_name}\n"
-                f"💵 <b>Сумма:</b> {amount_rub}₽\n"
-                f"🏦 <b>Способ оплаты:</b> СБП\n"
-                f"━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🆔 Заказ: <code>{order_id}</code>\n\n"
-                f"Александр свяжется с тобой и активирует подписку в течение часа 🙌\n"
-                f"{delayed_note}\n\n"
-                f"<i>Пока ждёшь - попробуй генерацию фото и видео прямо в боте! 🎨</i>",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🎨 Генерировать фото", callback_data="menu_image"),
-                     InlineKeyboardButton(text="🎬 Генерировать видео", callback_data="menu_video")],
-                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
-                    [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
-                ])
-            )
+            if shop_key == "chatgpt":
+                import urllib.parse as _uparse
+                _plan_name = p.get("name", "Plus")
+                _plan_key  = plan_name_to_key(_plan_name)
+                _code      = await get_next_gpt_code(_plan_key)
+                if _code is None:
+                    await bot.send_message(
+                        user_id,
+                        f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"⚠️ Коды временно закончились. Александр активирует вручную в течение часа 🙌"
+                        f"{delayed_note}", parse_mode="HTML")
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 <b>КОДЫ ChatGPT ЗАКОНЧИЛИСЬ!</b>\n"
+                        f"Заказ <code>{order_id}</code> — активируй вручную!\n"
+                        f"Добавь коды: /add_gpt_codes", parse_mode="HTML")
+                else:
+                    await save_pending_activation(user_id, _code, order_id, _plan_key, _plan_name)
+                    _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}"
+                    from aiogram.types import WebAppInfo
+                    await bot.send_message(
+                        user_id,
+                        f"🎉 <b>Оплата прошла!</b>\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"Осталось активировать подписку — нажми кнопку ниже 👇{delayed_note}",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(
+                                text="✨ Активировать подписку",
+                                web_app=WebAppInfo(url=_webapp_url))],
+                            [InlineKeyboardButton(
+                                text="❓ Нужна помощь",
+                                url=f"https://t.me/{PERSONAL_USERNAME}")],
+                        ]))
+            else:
+                await bot.send_message(
+                    user_id,
+                    f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"📦 <b>Товар:</b> {service_name}\n"
+                    f"💵 <b>Сумма:</b> {amount_rub}₽\n"
+                    f"🏦 <b>Способ оплаты:</b> СБП\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🆔 Заказ: <code>{order_id}</code>\n\n"
+                    f"Александр свяжется с тобой и активирует подписку в течение часа 🙌\n"
+                    f"{delayed_note}\n\n"
+                    f"<i>Пока ждёшь - попробуй генерацию фото и видео прямо в боте! 🎨</i>",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🎨 Генерировать фото", callback_data="menu_image"),
+                         InlineKeyboardButton(text="🎬 Генерировать видео", callback_data="menu_video")],
+                        [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                    ]))
         else:
             # Покупка кредитов - показываем баланс
             await bot.send_message(
@@ -13978,6 +14232,9 @@ async def setup_webhook_server():
     for path in set([FK_WEBHOOK_PATH, "/fk-webhook", "/fk_webhook"]):
         app.router.add_post(path, fk_webhook_handler)
         logging.info(f"FK webhook зарегистрован: POST {path}")
+    app.router.add_get("/webapp/chatgpt", webapp_chatgpt_handler)
+    app.router.add_post("/api/activate-chatgpt", api_activate_chatgpt_handler)
+    logging.info("Mini App: /webapp/chatgpt + /api/activate-chatgpt")
     port = int(os.getenv("FK_WEBHOOK_PORT", "8080"))
     runner = web.AppRunner(app)
     await runner.setup()
