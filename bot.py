@@ -1215,6 +1215,12 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_gpt_codes_free ON gpt_codes(plan, is_used) WHERE is_used = FALSE"
         )
+        # Миграция: добавить email и reserved_at если нет
+        for _col, _def in [("email", "TEXT"), ("reserved_at", "TIMESTAMPTZ")]:
+            try:
+                await conn.execute(f"ALTER TABLE gpt_codes ADD COLUMN {_col} {_def}")
+            except Exception:
+                pass
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS gpt_pending_activations (
                 id          SERIAL PRIMARY KEY,
@@ -1243,7 +1249,7 @@ async def get_next_gpt_code(plan: str = "plus"):
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """UPDATE gpt_codes SET is_used=TRUE, used_at=NOW()
+            """UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
                WHERE id=(SELECT id FROM gpt_codes WHERE plan=$1 AND is_used=FALSE
                          ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
                RETURNING code""", plan)
@@ -1255,11 +1261,29 @@ async def release_gpt_code(code: str):
         await conn.execute(
             "UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL WHERE code=$1", code)
 
-async def mark_gpt_code_used(code: str, user_id: int, order_id: str):
+def _extract_email_from_token(token: str) -> str:
+    """Извлекает email из JWT accessToken без верификации подписи."""
+    try:
+        import base64, json as _json
+        payload_b64 = token.split(".")[1]
+        # base64url padding
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
+        # OpenAI кладёт email в https://api.openai.com/profile
+        profile = payload.get("https://api.openai.com/profile", {})
+        return profile.get("email", "") or payload.get("email", "")
+    except Exception:
+        return ""
+
+
+async def mark_gpt_code_used(code: str, user_id: int, order_id: str, email: str = ""):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE gpt_codes SET used_by=$1, order_id=$2 WHERE code=$3", user_id, order_id, code)
+            "UPDATE gpt_codes SET used_by=$1, order_id=$2, email=$3, used_at=NOW() WHERE code=$4",
+            user_id, order_id, email, code)
 
 async def save_pending_activation(user_id: int, code: str, order_id: str, plan: str, plan_name: str):
     pool = await get_pool()
@@ -13735,11 +13759,15 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     logging.info(f"Mini App activation: user={user_id} code={code}")
     result = await activate_chatgpt(code, access_token)
     if result.get("success"):
-        await mark_gpt_code_used(code, user_id, order_id)
+        _email = _extract_email_from_token(access_token)
+        await mark_gpt_code_used(code, user_id, order_id, _email)
         await delete_pending_activation(user_id)
         try:
-            await bot.send_message(ADMIN_ID,
-                f"✅ <b>ChatGPT авто-активация OK</b>\n👤 <code>{user_id}</code>  📦 {plan_name}\n"
+            _email = _extract_email_from_token(access_token)
+        await bot.send_message(ADMIN_ID,
+                f"✅ <b>ChatGPT авто-активация OK</b>\n"
+                f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                f"📧 {_email or '—'}\n"
                 f"🔑 <code>{code}</code>\n🆔 <code>{order_id}</code>", parse_mode="HTML")
         except Exception: pass
         return _resp({"success": True})
@@ -13777,11 +13805,12 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT plan,
-                      COUNT(*) FILTER(WHERE NOT is_used) AS free,
-                      COUNT(*) FILTER(WHERE is_used)     AS used
+                      COUNT(*) FILTER(WHERE NOT is_used)                        AS free,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NOT NULL)    AS activated,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NULL)        AS reserved
                FROM gpt_codes GROUP BY plan ORDER BY plan""")
         total_activations = await conn.fetchval(
-            "SELECT COUNT(*) FROM gpt_codes WHERE is_used=TRUE") or 0
+            "SELECT COUNT(*) FROM gpt_codes WHERE is_used=TRUE AND used_by IS NOT NULL") or 0
         last_used = await conn.fetchrow(
             """SELECT code, plan, used_at, used_by
                FROM gpt_codes WHERE is_used=TRUE
@@ -13790,7 +13819,8 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
     codes_text = ""
     for r in rows:
         icon = "✅" if r["free"] > 2 else ("⚠️" if r["free"] > 0 else "🚨")
-        codes_text += f"\n{icon} <b>{r['plan']}</b>: {r['free']} свободных / {r['used']} использованных"
+        reserved_str = f" / ⏳ {r['reserved']} ждут" if r["reserved"] > 0 else ""
+        codes_text += f"\n{icon} <b>{r['plan']}</b>: {r['free']} свободных / {r['activated']} активированных{reserved_str}"
     if not codes_text:
         codes_text = "\n📭 Кодов нет — добавь через кнопку ниже"
 
@@ -13912,7 +13942,7 @@ async def adm_gpt_history(cb: CallbackQuery):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT code, plan, used_at, used_by, order_id
+            """SELECT code, plan, used_at, used_by, order_id, email
                FROM gpt_codes WHERE is_used=TRUE
                ORDER BY used_at DESC
                LIMIT $1 OFFSET $2""",
@@ -13931,8 +13961,10 @@ async def adm_gpt_history(cb: CallbackQuery):
         used_at = r["used_at"]
         used_str = used_at.strftime("%d.%m.%y %H:%M") if used_at and hasattr(used_at, 'strftime') else "—"
         plan_short = {"plus": "Plus", "pro_5x": "Pro5×", "pro_max": "ProMax"}.get(r["plan"], r["plan"])
+        email_str = r["email"] if r.get("email") else "—"
         lines.append(
-            f"• <code>{r['code'][:16]}...</code> [{plan_short}]\n"
+            f"• <code>{r['code']}</code> [{plan_short}]\n"
+            f"  📧 {email_str}\n"
             f"  👤 <code>{r['used_by'] or '—'}</code>  ⏱ {used_str}"
         )
 
@@ -14491,6 +14523,37 @@ async def setup_webhook_server():
     logging.info(f"✅ FK webhook сервер запущен на порту {port}")
 
 
+
+async def gpt_codes_cleanup_loop():
+    """Раз в 30 минут освобождает коды которые зарезервированы > 2 часов но не активированы.
+    Это происходит если клиент оплатил но так и не открыл Mini App."""
+    while True:
+        try:
+            await asyncio.sleep(1800)  # 30 минут
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                released = await conn.execute(
+                    """UPDATE gpt_codes
+                       SET is_used=FALSE, reserved_at=NULL
+                       WHERE is_used=TRUE
+                         AND used_by IS NULL
+                         AND reserved_at < NOW() - INTERVAL '2 hours'"""
+                )
+                if released and released != "UPDATE 0":
+                    logging.info(f"🔑 gpt_codes cleanup: {released}")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🔑 <b>Коды ChatGPT возвращены в пул</b>\n"
+                            f"Клиенты оплатили но не активировали в течение 2 часов.\n"
+                            f"<i>{released}</i>",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"gpt_codes_cleanup_loop: {e}")
+
 async def main():
     await init_db()
     await load_prices_from_db()
@@ -14503,6 +14566,7 @@ async def main():
     asyncio.create_task(subscription_reminder_loop())
     asyncio.create_task(reminders_loop())
     asyncio.create_task(db_cleanup_loop())
+    asyncio.create_task(gpt_codes_cleanup_loop())
     await dp.start_polling(bot)
 
 
