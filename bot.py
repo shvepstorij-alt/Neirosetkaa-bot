@@ -1234,6 +1234,7 @@ async def init_db():
 # ── GPT АКТИВАЦИЯ — вспомогательные функции ─────────────────────────────────
 
 WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
+CHATGPT_WEBAPP_ENABLED = os.getenv("CHATGPT_WEBAPP_ENABLED", "1") == "1"
 
 def plan_name_to_key(plan_name: str) -> str:
     return {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max"}.get(plan_name, "plus")
@@ -8725,6 +8726,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="📝 Изменить приветствие", callback_data="adm_welcome")],
         [InlineKeyboardButton(text="📣 Рассылка",          callback_data="adm_broadcast"),
          InlineKeyboardButton(text="⚙️ Техобслуживание",   callback_data="adm_maintenance")],
+        [InlineKeyboardButton(text="✨ ChatGPT Mini App",  callback_data="adm_gpt_webapp")],
         [InlineKeyboardButton(text="🏡 Главное меню",      callback_data="back_main")],
     ])
 
@@ -13758,6 +13760,208 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         return _resp({"success": False, "error": error_text})
 
 
+
+class GptAdminState(StatesGroup):
+    waiting_codes = State()  # ожидаем коды для добавления
+    waiting_plan  = State()  # ожидаем план
+
+
+@dp.callback_query(F.data == "adm_gpt_webapp")
+async def adm_gpt_webapp_menu(cb: CallbackQuery):
+    """Управление ChatGPT Mini App из админки."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    global CHATGPT_WEBAPP_ENABLED
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT plan,
+                      COUNT(*) FILTER(WHERE NOT is_used) AS free,
+                      COUNT(*) FILTER(WHERE is_used)     AS used
+               FROM gpt_codes GROUP BY plan ORDER BY plan""")
+        total_activations = await conn.fetchval(
+            "SELECT COUNT(*) FROM gpt_codes WHERE is_used=TRUE") or 0
+        last_used = await conn.fetchrow(
+            """SELECT code, plan, used_at, used_by
+               FROM gpt_codes WHERE is_used=TRUE
+               ORDER BY used_at DESC LIMIT 1""")
+
+    codes_text = ""
+    for r in rows:
+        icon = "✅" if r["free"] > 2 else ("⚠️" if r["free"] > 0 else "🚨")
+        codes_text += f"\n{icon} <b>{r['plan']}</b>: {r['free']} свободных / {r['used']} использованных"
+    if not codes_text:
+        codes_text = "\n📭 Кодов нет — добавь через кнопку ниже"
+
+    last_txt = ""
+    if last_used:
+        import datetime as _dt
+        used_at = last_used["used_at"]
+        if used_at:
+            used_str = used_at.strftime("%d.%m %H:%M") if hasattr(used_at, 'strftime') else str(used_at)[:16]
+            last_txt = f"\n\n⏱ Последняя активация: <code>{last_used['code']}</code> ({used_str})"
+
+    status = "✅ ВКЛЮЧЁН" if CHATGPT_WEBAPP_ENABLED else "🔴 ВЫКЛЮЧЕН (тех. работы)"
+    text = (
+        f"✨ <b>ChatGPT Mini App</b>\n\n"
+        f"Статус: <b>{status}</b>\n\n"
+        f"<b>Коды активации:</b>{codes_text}\n"
+        f"📊 Всего активаций: <b>{total_activations}</b>"
+        f"{last_txt}\n\n"
+        f"<i>При выключении клиенты получают сообщение о тех. работах</i>"
+    )
+    toggle_text = "🔴 Выключить (тех. работы)" if CHATGPT_WEBAPP_ENABLED else "✅ Включить"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=toggle_text, callback_data="adm_gpt_toggle")],
+        [InlineKeyboardButton(text="➕ Добавить коды plus",   callback_data="adm_gpt_add:plus"),
+         InlineKeyboardButton(text="➕ Pro 5×",               callback_data="adm_gpt_add:pro_5x")],
+        [InlineKeyboardButton(text="➕ Pro Max",              callback_data="adm_gpt_add:pro_max")],
+        [InlineKeyboardButton(text="📋 История использования", callback_data="adm_gpt_history:0")],
+        [InlineKeyboardButton(text="⬅️ Назад в панель",      callback_data="adm_back")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_gpt_toggle")
+async def adm_gpt_toggle(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    global CHATGPT_WEBAPP_ENABLED
+    CHATGPT_WEBAPP_ENABLED = not CHATGPT_WEBAPP_ENABLED
+    status = "✅ ВКЛЮЧЁН" if CHATGPT_WEBAPP_ENABLED else "🔴 ВЫКЛЮЧЕН"
+    await cb.answer(f"Mini App {status}", show_alert=True)
+    await adm_gpt_webapp_menu(cb)
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_add:"))
+async def adm_gpt_add_start(cb: CallbackQuery, state: FSMContext):
+    """Начало добавления кодов — запрашиваем список."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    plan = cb.data.split(":")[1]
+    await state.update_data(gpt_add_plan=plan)
+    await state.set_state(GptAdminState.waiting_codes)
+    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    await cb.message.answer(
+        f"➕ <b>Добавление кодов — {plan_labels.get(plan, plan)}</b>\n\n"
+        f"Отправь коды — каждый с новой строки:\n\n"
+        f"<code>CODE1\nCODE2\nCODE3</code>\n\n"
+        f"Или отправь /cancel чтобы отменить",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(GptAdminState.waiting_codes, StateFilter("*"))
+async def adm_gpt_codes_input(message: Message, state: FSMContext):
+    """Получаем коды и сохраняем в БД."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Отменено")
+        return
+    data = await state.get_data()
+    plan = data.get("gpt_add_plan", "plus")
+    codes = [l.strip() for l in (message.text or "").split("\n") if l.strip()]
+    if not codes:
+        await message.answer("❌ Нет кодов. Отправь каждый код с новой строки.")
+        return
+    pool = await get_pool()
+    added = skipped = 0
+    async with pool.acquire() as conn:
+        for code in codes:
+            try:
+                await conn.execute("INSERT INTO gpt_codes (code, plan) VALUES ($1, $2)", code, plan)
+                added += 1
+            except Exception:
+                skipped += 1
+    async with pool.acquire() as conn:
+        remaining = await conn.fetchval(
+            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
+    await state.clear()
+    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    await message.answer(
+        f"✅ <b>Коды добавлены!</b>\n\n"
+        f"📦 План: <b>{plan_labels.get(plan, plan)}</b>\n"
+        f"➕ Добавлено: <b>{added}</b>\n"
+        f"⏭ Дублей: <b>{skipped}</b>\n"
+        f"📊 Свободных теперь: <b>{remaining}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад к Mini App", callback_data="adm_gpt_webapp")],
+        ])
+    )
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_history:"))
+async def adm_gpt_history(cb: CallbackQuery):
+    """История использования кодов с пагинацией."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    offset = int(cb.data.split(":")[1])
+    limit = 8
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT code, plan, used_at, used_by, order_id
+               FROM gpt_codes WHERE is_used=TRUE
+               ORDER BY used_at DESC
+               LIMIT $1 OFFSET $2""",
+            limit + 1, offset)
+        total = await conn.fetchval("SELECT COUNT(*) FROM gpt_codes WHERE is_used=TRUE") or 0
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    if not rows:
+        await cb.answer("Нет использованных кодов", show_alert=True)
+        return
+
+    lines = [f"📋 <b>История активаций</b> (всего {total}):\n"]
+    for r in rows:
+        used_at = r["used_at"]
+        used_str = used_at.strftime("%d.%m.%y %H:%M") if used_at and hasattr(used_at, 'strftime') else "—"
+        plan_short = {"plus": "Plus", "pro_5x": "Pro5×", "pro_max": "ProMax"}.get(r["plan"], r["plan"])
+        lines.append(
+            f"• <code>{r['code'][:16]}...</code> [{plan_short}]\n"
+            f"  👤 <code>{r['used_by'] or '—'}</code>  ⏱ {used_str}"
+        )
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_gpt_history:{offset-limit}"))
+    if has_more:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_gpt_history:{offset+limit}"))
+
+    kb_rows = []
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")])
+
+    try:
+        await cb.message.edit_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+            parse_mode="HTML"
+        )
+    except Exception:
+        await cb.message.answer(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+            parse_mode="HTML"
+        )
+    await cb.answer()
+
+
 @dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/sub"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
@@ -13925,6 +14129,48 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             if shop_key == "chatgpt":
                 import urllib.parse as _uparse
                 _plan_name = p.get("name", "Plus")
+                if not CHATGPT_WEBAPP_ENABLED:
+                    await bot.send_message(
+                        user_id,
+                        f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"🔧 Сейчас ведутся технические работы. "
+                        f"Александр активирует подписку вручную в течение часа 🙌{delayed_note}",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="❓ Написать Александру",
+                                url=f"https://t.me/{PERSONAL_USERNAME}")],
+                        ])
+                    )
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🛍 <b>Заказ ChatGPT (ручная активация)</b>\n"
+                        f"👤 <code>{user_id}</code>  📦 {service_name}\n"
+                        f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
+                        parse_mode="HTML"
+                    )
+                    return
+                if not CHATGPT_WEBAPP_ENABLED:
+                    await bot.send_message(
+                        user_id,
+                        f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"🔧 Сейчас ведутся технические работы. "
+                        f"Александр активирует подписку вручную в течение часа 🙌{delayed_note}",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="❓ Написать Александру",
+                                url=f"https://t.me/{PERSONAL_USERNAME}")],
+                        ])
+                    )
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🛍 <b>Заказ ChatGPT (ручная активация)</b>\n"
+                        f"👤 <code>{user_id}</code>  📦 {service_name}\n"
+                        f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
+                        parse_mode="HTML"
+                    )
+                    return
                 _plan_key  = plan_name_to_key(_plan_name)
                 _code      = await get_next_gpt_code(_plan_key)
                 if _code is None:
