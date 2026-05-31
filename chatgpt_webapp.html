@@ -6,449 +6,489 @@
   <title>Активация ChatGPT</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root {
-      --tg-theme-bg-color: #ffffff;
-      --tg-theme-text-color: #000000;
-      --tg-theme-hint-color: #999999;
-      --tg-theme-link-color: #2481cc;
-      --tg-theme-button-color: #2481cc;
-      --tg-theme-button-text-color: #ffffff;
-      --tg-theme-secondary-bg-color: #f1f1f1;
-    }
-
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: var(--tg-theme-bg-color);
-      color: var(--tg-theme-text-color);
+      background: #0a0a0a;
+      color: #ffffff;
       min-height: 100vh;
-      padding: 0 0 100px;
+      padding-bottom: 120px;
     }
 
-    /* ── Экраны ─────────────────────────────────────────── */
-    .screen { display: none; padding: 20px 16px; animation: fadeIn .25s ease; }
+    /* ── Экраны ───────────────────────────────────────────── */
+    .screen { display: none; animation: fadeUp .3s ease; }
     .screen.active { display: block; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
 
-    /* ── Шапка ──────────────────────────────────────────── */
-    .header {
+    /* ── Шапка ────────────────────────────────────────────── */
+    .top-bar {
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 20px 16px 0;
+      gap: 14px;
+      padding: 24px 20px 0;
     }
-    .header-icon {
-      width: 48px; height: 48px;
-      background: linear-gradient(135deg, #10a37f, #0d8a6b);
-      border-radius: 14px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 26px;
-      flex-shrink: 0;
-    }
-    .header-text h1 { font-size: 18px; font-weight: 700; }
-    .header-text p { font-size: 13px; color: var(--tg-theme-hint-color); margin-top: 2px; }
-
-    /* ── Карточка ───────────────────────────────────────── */
-    .card {
-      background: var(--tg-theme-secondary-bg-color);
+    .logo {
+      width: 52px; height: 52px;
+      background: #10a37f;
       border-radius: 16px;
-      padding: 16px;
-      margin: 16px 0 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+      flex-shrink: 0;
+      box-shadow: 0 0 20px rgba(16,163,127,0.4);
+    }
+    .top-titles h1 {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.3px;
+    }
+    .top-titles p {
+      font-size: 13px;
+      color: #666;
+      margin-top: 2px;
     }
 
-    /* ── Шаги инструкции ────────────────────────────────── */
-    .steps { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
+    /* ── Зелёная полоса ───────────────────────────────────── */
+    .accent-line {
+      height: 2px;
+      background: linear-gradient(90deg, #10a37f, transparent);
+      margin: 20px 20px 0;
+      border-radius: 2px;
+    }
+
+    /* ── Контент ──────────────────────────────────────────── */
+    .content { padding: 20px; }
+
+    /* ── Шаги ─────────────────────────────────────────────── */
+    .steps-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #10a37f;
+      margin-bottom: 16px;
+    }
+
     .step {
       display: flex;
-      gap: 12px;
+      gap: 14px;
+      margin-bottom: 20px;
       align-items: flex-start;
     }
     .step-num {
-      width: 28px; height: 28px;
-      background: var(--tg-theme-button-color);
-      color: var(--tg-theme-button-text-color);
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 700;
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-    .step-body h3 { font-size: 14px; font-weight: 600; }
-    .step-body p { font-size: 13px; color: var(--tg-theme-hint-color); margin-top: 3px; line-height: 1.4; }
-
-    /* ── Кнопки ─────────────────────────────────────────── */
-    .btn {
-      width: 100%;
-      padding: 14px;
-      border: none;
-      border-radius: 12px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity .15s, transform .1s;
-    }
-    .btn:active { opacity: 0.85; transform: scale(0.98); }
-    .btn-primary {
-      background: var(--tg-theme-button-color);
-      color: var(--tg-theme-button-text-color);
-    }
-    .btn-secondary {
-      background: var(--tg-theme-secondary-bg-color);
-      color: var(--tg-theme-text-color);
-      border: 1px solid rgba(0,0,0,0.08);
-    }
-    .btn-success {
+      width: 32px; height: 32px;
       background: #10a37f;
       color: #fff;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; font-weight: 800;
+      flex-shrink: 0;
+      box-shadow: 0 0 12px rgba(16,163,127,0.3);
     }
-    .btn-group { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
-
-    /* ── Ссылка-кнопка ──────────────────────────────────── */
-    .link-btn {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 13px 14px;
-      background: rgba(36, 129, 204, 0.1);
-      border-radius: 12px;
+    .step-body h3 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .step-body p {
+      font-size: 13px;
+      color: #888;
+      line-height: 1.5;
+    }
+    .step-body a {
+      color: #10a37f;
       text-decoration: none;
-      color: var(--tg-theme-button-color);
-      font-size: 14px; font-weight: 600;
-      margin-top: 14px;
-    }
-    .link-btn svg { flex-shrink: 0; }
-
-    /* ── Поле токена ────────────────────────────────────── */
-    .token-label {
-      font-size: 13px;
       font-weight: 600;
-      color: var(--tg-theme-hint-color);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin: 16px 0 8px;
     }
-    textarea {
-      width: 100%;
-      min-height: 120px;
-      padding: 12px 14px;
-      background: var(--tg-theme-secondary-bg-color);
-      border: 1.5px solid transparent;
-      border-radius: 12px;
-      font-size: 13px;
-      font-family: monospace;
-      color: var(--tg-theme-text-color);
-      resize: none;
-      outline: none;
-      transition: border-color .2s;
-      line-break: anywhere;
-    }
-    textarea:focus { border-color: var(--tg-theme-button-color); }
-    textarea::placeholder { color: var(--tg-theme-hint-color); font-family: inherit; }
 
-    .token-hint {
-      font-size: 12px;
-      color: var(--tg-theme-hint-color);
-      margin-top: 6px;
-      line-height: 1.4;
+    /* ── Разделитель ──────────────────────────────────────── */
+    .sep {
+      height: 1px;
+      background: #1a1a1a;
+      margin: 4px 0 20px;
     }
-    .token-hint code {
-      background: rgba(0,0,0,0.06);
-      padding: 1px 5px;
-      border-radius: 4px;
+
+    /* ── Ссылка-кнопка ────────────────────────────────────── */
+    .link-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #111;
+      border: 1px solid #1e1e1e;
+      border-left: 3px solid #10a37f;
+      border-radius: 14px;
+      padding: 14px 16px;
+      text-decoration: none;
+      margin-bottom: 24px;
+      transition: background .15s;
+    }
+    .link-card:active { background: #161616; }
+    .link-card-text { font-size: 14px; font-weight: 600; color: #10a37f; }
+    .link-card-sub  { font-size: 12px; color: #555; margin-top: 2px; }
+    .link-card svg  { flex-shrink: 0; color: #10a37f; }
+
+    /* ── Поля ввода ───────────────────────────────────────── */
+    .field-label {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: #555;
+      margin-bottom: 8px;
+    }
+    .field-wrap { margin-bottom: 16px; }
+
+    input[type="text"], textarea {
+      width: 100%;
+      background: #111;
+      border: 1.5px solid #1e1e1e;
+      border-radius: 14px;
+      padding: 14px 16px;
+      font-size: 14px;
+      color: #fff;
+      font-family: inherit;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+      -webkit-appearance: none;
+    }
+    input[type="text"]:focus, textarea:focus {
+      border-color: #10a37f;
+      box-shadow: 0 0 0 3px rgba(16,163,127,0.15);
+    }
+    input[type="text"]::placeholder, textarea::placeholder { color: #333; }
+    textarea { min-height: 110px; resize: none; font-family: monospace; font-size: 13px; line-break: anywhere; }
+
+    .field-hint {
+      font-size: 12px;
+      color: #444;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+    .field-hint code {
+      background: #1a1a1a;
+      color: #10a37f;
+      padding: 1px 6px;
+      border-radius: 5px;
       font-size: 11px;
     }
 
-    /* ── Ошибка ─────────────────────────────────────────── */
-    .error-box {
-      background: rgba(255, 59, 48, 0.1);
-      border: 1px solid rgba(255, 59, 48, 0.25);
-      border-radius: 10px;
-      padding: 10px 12px;
-      font-size: 13px;
-      color: #ff3b30;
+    /* ── Кнопки ───────────────────────────────────────────── */
+    .btn {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+      letter-spacing: -0.2px;
+    }
+    .btn:active { opacity: 0.85; transform: scale(0.98); }
+
+    .btn-green {
+      background: #10a37f;
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(16,163,127,0.35);
+    }
+    .btn-green:disabled {
+      background: #1a1a1a;
+      color: #333;
+      box-shadow: none;
+      cursor: not-allowed;
+    }
+    .btn-outline {
+      background: transparent;
+      color: #555;
+      border: 1.5px solid #1e1e1e;
       margin-top: 10px;
+    }
+
+    /* ── Ошибка ───────────────────────────────────────────── */
+    .err {
+      background: rgba(255,59,48,0.08);
+      border: 1px solid rgba(255,59,48,0.2);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #ff6b6b;
+      margin-bottom: 16px;
       display: none;
     }
-    .error-box.visible { display: block; }
+    .err.show { display: block; }
 
-    /* ── Лоадер ─────────────────────────────────────────── */
-    .loader-screen {
+    /* ── Лоадер ───────────────────────────────────────────── */
+    .loader-wrap {
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
-      min-height: 60vh; gap: 20px;
+      min-height: 65vh; gap: 24px; padding: 40px 20px;
     }
-    .spinner {
-      width: 48px; height: 48px;
-      border: 4px solid rgba(36, 129, 204, 0.2);
-      border-top-color: var(--tg-theme-button-color);
+    .spinner-ring {
+      width: 56px; height: 56px;
+      border: 3px solid #1a1a1a;
+      border-top-color: #10a37f;
       border-radius: 50%;
       animation: spin .8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .loader-text { font-size: 15px; font-weight: 600; }
-    .loader-sub { font-size: 13px; color: var(--tg-theme-hint-color); text-align: center; }
+    .loader-title { font-size: 18px; font-weight: 700; }
+    .loader-sub   { font-size: 14px; color: #555; text-align: center; line-height: 1.6; }
 
-    /* ── Результат ──────────────────────────────────────── */
-    .result-screen {
+    /* ── Результат ────────────────────────────────────────── */
+    .result-wrap {
       display: flex; flex-direction: column;
       align-items: center; text-align: center;
-      padding: 40px 20px;
+      padding: 50px 24px 40px;
       gap: 16px;
     }
-    .result-icon { font-size: 64px; }
-    .result-title { font-size: 20px; font-weight: 700; }
-    .result-sub { font-size: 14px; color: var(--tg-theme-hint-color); line-height: 1.5; }
-    .result-error-sub { font-size: 13px; color: var(--tg-theme-hint-color); line-height: 1.5; max-width: 280px; }
+    .result-emoji { font-size: 72px; line-height: 1; }
+    .result-title { font-size: 22px; font-weight: 800; letter-spacing: -0.4px; }
+    .result-sub   { font-size: 14px; color: #666; line-height: 1.6; max-width: 280px; }
 
-    /* ── Разделитель ────────────────────────────────────── */
-    .divider {
-      height: 1px;
-      background: rgba(0,0,0,0.07);
-      margin: 16px 0;
-    }
-
-    /* ── Заголовок секции ───────────────────────────────── */
-    .section-title {
-      font-size: 13px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--tg-theme-hint-color);
-      margin-bottom: 10px;
-    }
+    .glow-green { color: #10a37f; text-shadow: 0 0 20px rgba(16,163,127,0.5); }
   </style>
 </head>
 <body>
 
-<!-- ── Шапка (общая) ──────────────────────────────────── -->
-<div class="header">
-  <div class="header-icon">✨</div>
-  <div class="header-text">
-    <h1>Активация ChatGPT</h1>
-    <p>Следуй инструкции — займёт 1 минуту</p>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════
-     ЭКРАН 1: Инструкция как получить токен
-══════════════════════════════════════════════════════════ -->
-<div id="screen-instruction" class="screen active">
-  <div class="card">
-    <div class="section-title">Что нужно сделать</div>
-    <div class="steps">
-      <div class="step">
-        <div class="step-num">1</div>
-        <div class="step-body">
-          <h3>Войди в ChatGPT</h3>
-          <p>Нажми кнопку ниже — откроется страница ChatGPT. Войди в свой аккаунт, если ещё не вошёл.</p>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">2</div>
-        <div class="step-body">
-          <h3>Перейди на страницу с токеном</h3>
-          <p>После входа открой эту ссылку — она покажет данные твоего аккаунта в виде текста.</p>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">3</div>
-        <div class="step-body">
-          <h3>Скопируй accessToken</h3>
-          <p>Найди поле <code style="background:rgba(0,0,0,0.07);padding:1px 5px;border-radius:4px;font-size:11px;">accessToken</code> и скопируй длинное значение начинающееся с <code style="background:rgba(0,0,0,0.07);padding:1px 5px;border-radius:4px;font-size:11px;">eyJ</code></p>
-        </div>
-      </div>
+<!-- ═══════════════════════════════════════════════
+     ЭКРАН 1 — Инструкция
+═══════════════════════════════════════════════════ -->
+<div id="s1" class="screen active">
+  <div class="top-bar">
+    <div class="logo">✨</div>
+    <div class="top-titles">
+      <h1>Активация ChatGPT</h1>
+      <p>Следуй инструкции — 1 минута</p>
     </div>
   </div>
+  <div class="accent-line"></div>
 
-  <a class="link-btn" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">
-    <span>Открыть страницу с токеном</span>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-      <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
-      <polyline points="15 3 21 3 21 9"/>
-      <line x1="10" y1="14" x2="21" y2="3"/>
-    </svg>
-  </a>
+  <div class="content">
+    <div class="steps-title">Что нужно сделать</div>
 
-  <div class="btn-group">
-    <button class="btn btn-primary" onclick="showTokenScreen()">
-      Токен скопирован → Продолжить
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h3>Войди в ChatGPT</h3>
+        <p>Авторизуйся на сайте <a href="https://chatgpt.com" target="_blank">chatgpt.com</a> через свой аккаунт</p>
+      </div>
+    </div>
+    <div class="sep"></div>
+
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h3>Перейди на страницу с токеном</h3>
+        <p>Открой ссылку ниже в том же браузере — скопируй весь текст со страницы</p>
+      </div>
+    </div>
+
+    <a class="link-card" href="https://chatgpt.com/api/auth/session" target="_blank">
+      <div>
+        <div class="link-card-text">chatgpt.com/api/auth/session</div>
+        <div class="link-card-sub">Нажми и скопируй весь текст</div>
+      </div>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
+        <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+      </svg>
+    </a>
+
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <h3>Вставь код и токен</h3>
+        <p>На следующем экране введи свой код активации и скопированный текст токена</p>
+      </div>
+    </div>
+
+    <button class="btn btn-green" onclick="showScreen('s2')" style="margin-top:8px;">
+      Продолжить →
     </button>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════
-     ЭКРАН 2: Ввод токена
-══════════════════════════════════════════════════════════ -->
-<div id="screen-token" class="screen">
-  <div class="card">
-    <div class="section-title">Вставь токен</div>
-    <p style="font-size:13px;color:var(--tg-theme-hint-color);line-height:1.5;">
-      Скопируй значение поля <code style="background:rgba(0,0,0,0.07);padding:1px 5px;border-radius:4px;">accessToken</code>
-      со страницы и вставь сюда:
-    </p>
+
+<!-- ═══════════════════════════════════════════════
+     ЭКРАН 2 — Ввод кода и токена
+═══════════════════════════════════════════════════ -->
+<div id="s2" class="screen">
+  <div class="top-bar">
+    <div class="logo">🔑</div>
+    <div class="top-titles">
+      <h1>Введи данные</h1>
+      <p>Шаг 2 из 2</p>
+    </div>
   </div>
+  <div class="accent-line"></div>
 
-  <div class="token-label">Токен доступа</div>
-  <textarea
-    id="token-input"
-    placeholder="eyJhbGciOiJSUzI1NiIs..."
-    oninput="onTokenInput()"
-    autocomplete="off"
-    autocorrect="off"
-    spellcheck="false"
-  ></textarea>
-  <div class="token-hint">
-    Токен начинается с <code>eyJ</code> и очень длинный (1000+ символов).
-    Это безопасно — он нужен только для активации.
-  </div>
+  <div class="content">
+    <div class="err" id="err-box"></div>
 
-  <div id="error-box" class="error-box"></div>
+    <div class="field-wrap">
+      <div class="field-label">Код активации</div>
+      <input type="text" id="code-input"
+        placeholder="BYPRICEZ2VAXIC9R"
+        autocomplete="off" autocorrect="off" spellcheck="false"
+        oninput="validateInputs()" />
+      <div class="field-hint">Код который тебе выдал Александр</div>
+    </div>
 
-  <div class="btn-group">
-    <button class="btn btn-primary" id="activate-btn" onclick="startActivation()" disabled>
+    <div class="field-wrap">
+      <div class="field-label">Токен аккаунта</div>
+      <textarea id="token-input"
+        placeholder="Вставь весь скопированный текст со страницы chatgpt.com/api/auth/session..."
+        oninput="validateInputs()"
+        autocomplete="off" autocorrect="off" spellcheck="false"
+      ></textarea>
+      <div class="field-hint">
+        Скопируй весь текст со страницы — токен начинается с <code>eyJ</code>
+      </div>
+    </div>
+
+    <button class="btn btn-green" id="activate-btn" onclick="startActivation()" disabled>
       Активировать подписку
     </button>
-    <button class="btn btn-secondary" onclick="showInstruction()">
-      ← Назад к инструкции
-    </button>
+    <button class="btn btn-outline" onclick="showScreen('s1')">← Назад</button>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════
-     ЭКРАН 3: Загрузка
-══════════════════════════════════════════════════════════ -->
-<div id="screen-loading" class="screen">
-  <div class="loader-screen">
-    <div class="spinner"></div>
-    <div class="loader-text">Активируем подписку...</div>
-    <div class="loader-sub">Это займёт 15–30 секунд.<br>Не закрывай приложение.</div>
+
+<!-- ═══════════════════════════════════════════════
+     ЭКРАН 3 — Загрузка
+═══════════════════════════════════════════════════ -->
+<div id="s3" class="screen">
+  <div class="loader-wrap">
+    <div class="spinner-ring"></div>
+    <div class="loader-title">Активируем...</div>
+    <div class="loader-sub">Подключаемся к ChatGPT.<br>Не закрывай приложение — 15–30 сек.</div>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════
-     ЭКРАН 4: Успех
-══════════════════════════════════════════════════════════ -->
-<div id="screen-success" class="screen">
-  <div class="result-screen">
-    <div class="result-icon">🎉</div>
-    <div class="result-title">Подписка активирована!</div>
-    <div class="result-sub">
-      ChatGPT Plus успешно подключён к твоему аккаунту.<br>
-      Можешь зайти в ChatGPT и пользоваться.
-    </div>
-    <a href="https://chatgpt.com" target="_blank" style="width:100%;text-decoration:none;margin-top:8px;">
-      <button class="btn btn-success" style="width:100%;">Открыть ChatGPT</button>
+
+<!-- ═══════════════════════════════════════════════
+     ЭКРАН 4 — Успех
+═══════════════════════════════════════════════════ -->
+<div id="s4" class="screen">
+  <div class="result-wrap">
+    <div class="result-emoji">🎉</div>
+    <div class="result-title glow-green">Готово!</div>
+    <div class="result-title" id="success-plan" style="font-size:18px;margin-top:-8px;">ChatGPT Plus активирован</div>
+    <div class="result-sub">Подписка подключена к твоему аккаунту. Можешь заходить в ChatGPT и пользоваться.</div>
+    <a href="https://chatgpt.com" target="_blank" style="width:100%;text-decoration:none;margin-top:16px;">
+      <button class="btn btn-green">Открыть ChatGPT</button>
     </a>
-    <button class="btn btn-secondary" style="margin-top:8px;" onclick="Telegram.WebApp.close()">
-      Закрыть
-    </button>
+    <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════
-     ЭКРАН 5: Ошибка
-══════════════════════════════════════════════════════════ -->
-<div id="screen-error" class="screen">
-  <div class="result-screen">
-    <div class="result-icon">😔</div>
-    <div class="result-title">Не удалось активировать</div>
-    <div class="result-error-sub" id="error-detail">
-      Произошла ошибка при активации. Александр активирует вручную — напиши ему.
-    </div>
-    <button class="btn btn-primary" style="margin-top:16px;" onclick="showTokenScreen()">
-      Попробовать снова
-    </button>
-    <button class="btn btn-secondary" style="margin-top:8px;" onclick="Telegram.WebApp.close()">
-      Закрыть
-    </button>
+
+<!-- ═══════════════════════════════════════════════
+     ЭКРАН 5 — Ошибка
+═══════════════════════════════════════════════════ -->
+<div id="s5" class="screen">
+  <div class="result-wrap">
+    <div class="result-emoji">😔</div>
+    <div class="result-title">Не получилось</div>
+    <div class="result-sub" id="err-detail">Произошла ошибка. Напиши Александру — он поможет.</div>
+    <button class="btn btn-green" style="margin-top:16px;" onclick="showScreen('s2')">Попробовать снова</button>
+    <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
   </div>
 </div>
+
 
 <script>
-  // ── Инициализация Telegram WebApp ────────────────────────
   const tg = window.Telegram.WebApp;
   tg.ready();
   tg.expand();
 
-  // Применяем тему Telegram
-  if (tg.themeParams) {
-    const p = tg.themeParams;
-    const r = document.documentElement.style;
-    if (p.bg_color)           r.setProperty('--tg-theme-bg-color',           p.bg_color);
-    if (p.text_color)         r.setProperty('--tg-theme-text-color',         p.text_color);
-    if (p.hint_color)         r.setProperty('--tg-theme-hint-color',         p.hint_color);
-    if (p.link_color)         r.setProperty('--tg-theme-link-color',         p.link_color);
-    if (p.button_color)       r.setProperty('--tg-theme-button-color',       p.button_color);
-    if (p.button_text_color)  r.setProperty('--tg-theme-button-text-color',  p.button_text_color);
-    if (p.secondary_bg_color) r.setProperty('--tg-theme-secondary-bg-color', p.secondary_bg_color);
+  // URL params
+  const params = new URLSearchParams(window.location.search);
+  const planName = params.get('plan') || 'Plus';
+  const preCode  = params.get('code') || '';
+
+  // Подставляем код если передан
+  if (preCode) {
+    document.getElementById('code-input').value = preCode;
   }
 
-  // Получаем plan из URL-параметров
-  const urlParams = new URLSearchParams(window.location.search);
-  const planName = urlParams.get('plan') || 'Plus';
+  // Обновляем экран успеха
+  document.getElementById('success-plan').textContent = `ChatGPT ${planName} активирован`;
 
-  // Обновляем заголовок успеха с реальным планом
-  document.querySelector('#screen-success .result-sub').textContent =
-    `ChatGPT ${planName} успешно подключён к твоему аккаунту.\nМожешь зайти в ChatGPT и пользоваться.`;
-
-  // ── Навигация между экранами ─────────────────────────────
   function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(id).classList.add('active');
     window.scrollTo(0, 0);
   }
-  function showInstruction() { showScreen('screen-instruction'); }
-  function showTokenScreen() { showScreen('screen-token'); }
 
-  // ── Валидация токена ─────────────────────────────────────
-  function onTokenInput() {
-    const val = document.getElementById('token-input').value.trim();
-    const btn = document.getElementById('activate-btn');
-    const err = document.getElementById('error-box');
-    btn.disabled = val.length < 50;
-    err.classList.remove('visible');
+  function validateInputs() {
+    const code  = document.getElementById('code-input').value.trim();
+    const token = document.getElementById('token-input').value.trim();
+    const btn   = document.getElementById('activate-btn');
+    document.getElementById('err-box').classList.remove('show');
+    btn.disabled = code.length < 5 || token.length < 50;
   }
 
-  // ── Активация ────────────────────────────────────────────
-  async function startActivation() {
-    const token = document.getElementById('token-input').value.trim();
-    const errBox = document.getElementById('error-box');
+  // Извлекает accessToken из JSON или возвращает строку как есть
+  function extractToken(raw) {
+    raw = raw.trim();
+    try {
+      const obj = JSON.parse(raw);
+      if (obj.accessToken) return obj.accessToken;
+    } catch(e) {}
+    // Попробуем regex
+    const m = raw.match(/"accessToken"\s*:\s*"([^"]+)"/);
+    if (m) return m[1];
+    // Если уже токен (eyJ...)
+    if (raw.startsWith('eyJ')) return raw;
+    return raw;
+  }
 
-    // Валидация
+  async function startActivation() {
+    const codeRaw  = document.getElementById('code-input').value.trim();
+    const tokenRaw = document.getElementById('token-input').value.trim();
+    const errBox   = document.getElementById('err-box');
+
+    const token = extractToken(tokenRaw);
+
     if (!token.startsWith('eyJ') || token.length < 100) {
-      errBox.textContent = 'Похоже это не тот токен. Убедись что скопировал значение поля "accessToken".';
-      errBox.classList.add('visible');
+      errBox.textContent = 'Токен не найден. Убедись что скопировал весь текст со страницы chatgpt.com/api/auth/session';
+      errBox.classList.add('show');
       return;
     }
 
-    showScreen('screen-loading');
+    showScreen('s3');
 
     try {
       const resp = await fetch('/api/activate-chatgpt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          token: token,
-          init_data: tg.initData   // для верификации пользователя на сервере
+          token:     token,
+          code:      codeRaw,
+          init_data: tg.initData
         })
       });
 
       const data = await resp.json();
 
       if (data.success) {
-        tg.HapticFeedback.notificationOccurred('success');
-        showScreen('screen-success');
+        tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('success');
+        showScreen('s4');
       } else {
-        tg.HapticFeedback.notificationOccurred('error');
-        const detail = document.getElementById('error-detail');
-        detail.textContent = data.error || 'Произошла ошибка. Обратитесь к Александру.';
-        showScreen('screen-error');
+        tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('error');
+        document.getElementById('err-detail').textContent =
+          data.error || 'Ошибка активации. Напиши Александру.';
+        showScreen('s5');
       }
-
-    } catch (e) {
-      tg.HapticFeedback.notificationOccurred('error');
-      document.getElementById('error-detail').textContent =
-        'Нет соединения с сервером. Попробуй ещё раз или обратись к Александру.';
-      showScreen('screen-error');
+    } catch(e) {
+      tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('error');
+      document.getElementById('err-detail').textContent =
+        'Нет соединения с сервером. Попробуй снова.';
+      showScreen('s5');
     }
   }
 </script>
