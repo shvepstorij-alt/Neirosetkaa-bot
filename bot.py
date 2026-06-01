@@ -10905,9 +10905,19 @@ async def adm_add_service(cb: CallbackQuery, state: FSMContext):
     await state.update_data(edit_shop_key=None, edit_shop_field="new_service")
     await state.set_state(AdminEditState.waiting_value)
     await cb.message.edit_text(
-        "\u2795 <b>\u041d\u043e\u0432\u044b\u0439 \u0441\u0435\u0440\u0432\u0438\u0441</b>\n\n\u0424\u043e\u0440\u043c\u0430\u0442:\n<code>\u043a\u043b\u044e\u0447|\u044d\u043c\u043e\u0434\u0437\u0438|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435</code>\n\n\u041f\u0440\u0438\u043c\u0435\u0440: <code>notion|\U0001f4d3|Notion AI|\u0418\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 \u0434\u043b\u044f \u0437\u0430\u043c\u0435\u0442\u043e\u043a \u0441 AI</code>",
+        "➕ <b>Новый сервис</b>\n\n"
+        "Отправь 4 строки подряд:\n\n"
+        "<code>ключ\n"
+        "эмодзи\n"
+        "название\n"
+        "описание</code>\n\n"
+        "Пример:\n"
+        "<code>notion\n"
+        "📓\n"
+        "Notion AI\n"
+        "Инструмент для заметок с AI</code>",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u274c \u041e\u0442\u043c\u0435\u043d\u0430", callback_data="adm_prices_shop")]]))
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_prices_shop")]]))
     await cb.answer()
 
 
@@ -11030,9 +11040,12 @@ async def adm_edit_value(message: Message, state: FSMContext):
                 ]])
             )
         elif shop_field == "new_service":
-            parts = [x.strip() for x in value.split("|")]
+            parts = [x.strip() for x in value.split("\n") if x.strip()]
             if len(parts) < 4:
-                await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043a\u043b\u044e\u0447|\u044d\u043c\u043e\u0434\u0437\u0438|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435")
+                await message.answer(
+                    "❌ Нужно 4 строки:\n\n<code>ключ\nэмодзи\nназвание\nописание</code>",
+                    parse_mode="HTML"
+                )
                 return
             nk, em, nm, desc = parts[0], parts[1], parts[2], parts[3]
             SHOP_CATALOG[nk] = {"name": nm, "emoji": em, "desc": desc, "plans": []}
