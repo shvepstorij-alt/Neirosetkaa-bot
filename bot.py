@@ -14007,7 +14007,7 @@ async def adm_gpt_history(cb: CallbackQuery):
     await cb.answer()
 
 
-@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/sub"))
+@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
         return
