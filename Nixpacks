@@ -1,5 +1,6 @@
 [phases.setup]
+# chromium — системный браузер для Playwright (вместо playwright install chromium)
 nixPkgs = ["ffmpeg", "chromium"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt", "playwright install chromium"]
+cmds = ["pip install -r requirements.txt"]
