@@ -1,6 +1,10 @@
 [phases.setup]
-# chromium — системный браузер для Playwright (вместо playwright install chromium)
-nixPkgs = ["ffmpeg", "chromium"]
+nixPkgs = ["ffmpeg"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+# Сначала ставим зависимости, потом скачиваем браузер в /app/pw-browsers
+# (этот путь попадает в финальный Docker-образ, в отличие от /root/.cache)
+cmds = [
+  "pip install -r requirements.txt",
+  "PLAYWRIGHT_BROWSERS_PATH=/app/pw-browsers python -m playwright install chromium"
+]
