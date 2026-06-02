@@ -1,19 +1,17 @@
 """
-chatgpt_activation.py
-Автоматическая активация ChatGPT подписки через 987ai.vip с помощью Playwright.
+chatgpt_activation.py — активация ChatGPT через 987ai.vip (Playwright).
 
-Railway: браузер хранится в /app/pw-browsers (попадает в Docker-образ).
-Путь задаётся через PLAYWRIGHT_BROWSERS_PATH до любого импорта playwright.
+Библиотеки Chromium устанавливаются через apt-get при сборке (nixpacks.toml).
+Браузер скачивается в /app/pw-browsers при сборке И при старте как fallback.
 """
 
 import asyncio
 import logging
 import os
 
-# ── ВАЖНО: устанавливаем путь к браузеру ДО импорта playwright ──────────────
-# /tmp/pw-browsers — всегда доступен на запись в любом контейнере Railway.
-# Браузер скачивается один раз при старте бота (см. _ensure_playwright_browser в bot.py).
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/tmp/pw-browsers")
+# Путь к браузеру — /app/pw-browsers скачан при сборке и живёт в Docker-образе.
+# os.environ.setdefault не перезаписывает если переменная уже выставлена (напр. Railway Variables).
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/app/pw-browsers")
 
 logger = logging.getLogger(__name__)
 
@@ -22,37 +20,33 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
     """
     Активирует подписку ChatGPT через сайт 987ai.vip.
 
-    Args:
-        card_code:    Код карты (например BYPRICEZ2VAXIC9R)
-        access_token: accessToken из chatgpt.com/api/auth/session
-
     Returns:
-        {"success": True, "message": "..."} или {"success": False, "error": "..."}
+        {"success": True, "message": "..."} или {"success": False, "error": "...", "screenshot": bytes|None}
     """
     try:
         from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
     except ImportError:
-        return {
-            "success": False,
-            "error": "Playwright не установлен. Выполни: pip install playwright"
-        }
-
-    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/app/pw-browsers")
-    logger.info(f"Playwright browsers path: {browsers_path}")
+        return {"success": False, "error": "Playwright не установлен на сервере."}
 
     url = f"https://www.987ai.vip/recharge?card={card_code}"
+    logger.info(f"activate_chatgpt: card={card_code}, PLAYWRIGHT_BROWSERS_PATH={os.environ.get('PLAYWRIGHT_BROWSERS_PATH')}")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-setuid-sandbox",
-                "--single-process",
-            ]
-        )
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-setuid-sandbox",
+                    "--single-process",
+                ]
+            )
+        except Exception as launch_err:
+            logger.error(f"Chromium launch failed: {launch_err}")
+            return {"success": False, "error": f"Не удалось запустить браузер: {launch_err}"}
+
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -121,7 +115,7 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 await final_btn.click()
                 logger.info("Нажали 'Подтвердить пополнение'")
             except PlaywrightTimeout:
-                logger.warning("Кнопка шага 3 не найдена — проверяем текст страницы")
+                logger.warning("Кнопка шага 3 не найдена — смотрим текст страницы")
 
             await asyncio.sleep(3.0)
 
@@ -146,24 +140,24 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             for marker in error_markers:
                 if marker in page_text:
                     logger.warning(f"Ошибка активации (маркер: {marker})")
-                    return {"success": False, "error": _extract_error_text(page_text)}
+                    return {"success": False, "error": _extract_error_text(page_text), "screenshot": None}
 
             # Нет явных маркеров — скриншот для диагностики
             screenshot = await page.screenshot(full_page=True)
-            logger.warning("Результат активации неизвестен, нет явных маркеров")
+            logger.warning("Результат неизвестен, нет маркеров — отправляем скриншот")
             return {
                 "success": False,
-                "error": "Не удалось определить результат. Обратитесь к Александру.",
+                "error": "Не удалось определить результат активации. Александр посмотрит скриншот.",
                 "screenshot": screenshot
             }
 
         except PlaywrightTimeout as e:
             logger.error(f"Таймаут на 987ai.vip: {e}")
-            return {"success": False, "error": "Сайт не ответил вовремя. Попробуй снова."}
+            return {"success": False, "error": "Сайт не ответил вовремя. Попробуй снова.", "screenshot": None}
 
         except Exception as e:
             logger.error(f"Ошибка активации: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "screenshot": None}
 
         finally:
             await browser.close()
