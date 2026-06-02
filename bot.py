@@ -13760,6 +13760,22 @@ async def _run_activation_job(
 ):
     """Фоновая задача: Playwright-активация. Не держит HTTP-соединение."""
     try:
+        # ── Тестовый режим: код начинается с TEST → пропускаем Playwright ────
+        if code.startswith("TEST-"):
+            await asyncio.sleep(3)  # имитируем задержку активации
+            await delete_pending_activation(user_id)
+            _activation_jobs[job_id] = {"status": "done", "success": True}
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🧪 <b>Тест активации завершён</b>\n"
+                    f"👤 <code>{user_id}</code> — тестовый код, нигде не записан.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return
+        # ─────────────────────────────────────────────────────────────────────
         result = await activate_chatgpt(code, access_token)
         if result.get("success"):
             _email = _extract_email_from_token(access_token)
@@ -14029,12 +14045,16 @@ async def adm_gpt_history(cb: CallbackQuery):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT code, plan, used_at, used_by, order_id, email
-               FROM gpt_codes WHERE is_used=TRUE
-               ORDER BY used_at DESC
+            """SELECT gc.code, gc.plan, gc.used_at, gc.used_by, gc.order_id, gc.email,
+                      u.username, u.full_name
+               FROM gpt_codes gc
+               LEFT JOIN users u ON u.user_id = gc.used_by
+               WHERE gc.is_used = TRUE AND gc.used_by IS NOT NULL
+               ORDER BY gc.used_at DESC
                LIMIT $1 OFFSET $2""",
             limit + 1, offset)
-        total = await conn.fetchval("SELECT COUNT(*) FROM gpt_codes WHERE is_used=TRUE") or 0
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM gpt_codes WHERE is_used=TRUE AND used_by IS NOT NULL") or 0
 
     has_more = len(rows) > limit
     rows = rows[:limit]
@@ -14043,16 +14063,24 @@ async def adm_gpt_history(cb: CallbackQuery):
         await cb.answer("Нет использованных кодов", show_alert=True)
         return
 
+    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
     lines = [f"📋 <b>История активаций</b> (всего {total}):\n"]
     for r in rows:
         used_at = r["used_at"]
-        used_str = used_at.strftime("%d.%m.%y %H:%M") if used_at and hasattr(used_at, 'strftime') else "—"
-        plan_short = {"plus": "Plus", "pro_5x": "Pro5×", "pro_max": "ProMax"}.get(r["plan"], r["plan"])
-        email_str = r["email"] if r.get("email") else "—"
+        used_str = used_at.strftime("%d.%m.%y %H:%M") if used_at and hasattr(used_at, "strftime") else "—"
+        plan_name = plan_labels.get(r["plan"], r["plan"])
+        email_str  = r["email"] or "—"
+        uid_str    = str(r["used_by"]) if r["used_by"] else "—"
+        uname      = r["username"] or ""
+        fname      = r["full_name"] or ""
+        tg_nick    = f"@{uname}" if uname else (fname if fname else f"id{uid_str}")
         lines.append(
-            f"• <code>{r['code']}</code> [{plan_short}]\n"
-            f"  📧 {email_str}\n"
-            f"  👤 <code>{r['used_by'] or '—'}</code>  ⏱ {used_str}"
+            f"\n• код — <code>{r['code']}</code>\n"
+            f"Тариф — {plan_name}\n"
+            f"почта аккаунта: 📧 {email_str}\n"
+            f"👤 id: <code>{uid_str}</code>\n"
+            f"{tg_nick}\n"
+            f"время активации: ⏱ {used_str}"
         )
 
     nav = []
@@ -14436,7 +14464,74 @@ async def test_gpt_webapp(message: Message):
     )
 
 
-@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp"))
+@dp.message(F.text.startswith("/test_chatgpt"), StateFilter("*"))
+async def test_chatgpt_full(message: Message):
+    """
+    Полный тест потока ChatGPT с ФЕЙКОВЫМ кодом.
+    Только для админа. Код нигде не записывается в gpt_codes.
+    Использование: /test_chatgpt       → Plus
+                   /test_chatgpt pro   → Pro 5×
+    """
+    if not is_admin(message.from_user.id):
+        return
+
+    import random, string as _string, urllib.parse as _uparse
+    from aiogram.types import WebAppInfo
+
+    # Определяем тариф из аргумента команды
+    parts = message.text.strip().split()
+    arg = parts[1].lower() if len(parts) > 1 else ""
+    if arg == "pro":
+        plan_key, plan_name = "pro_5x", "Pro 5×"
+    elif arg == "max":
+        plan_key, plan_name = "pro_max", "Pro Max"
+    else:
+        plan_key, plan_name = "plus", "Plus"
+
+    # Генерируем фейковый код — похож на реальный, помечен TEST-
+    suffix = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=12))
+    fake_code = f"TEST-{suffix}"
+    fake_order = f"TEST-ORD-{suffix[:6]}"
+
+    uid = message.from_user.id
+
+    # Сохраняем pending activation (код не входит в gpt_codes)
+    await save_pending_activation(uid, fake_code, fake_order, plan_key, plan_name)
+
+    webapp_url = (
+        f"{WEBAPP_BASE_URL}/webapp/chatgpt"
+        f"?plan={_uparse.quote(plan_name)}&code={_uparse.quote(fake_code)}"
+    )
+
+    # Отправляем сообщение — точная копия того что видит реальный клиент
+    await message.answer(
+        f"🎉 <b>Оплата прошла!</b>
+
+"
+        f"📦 <b>ChatGPT {plan_name}</b>
+
+"
+        f"Осталось активировать подписку — нажми кнопку ниже 👇
+
+"
+        f"<i>⚠️ ТЕСТ — это фейковый код, нигде не записан</i>
+"
+        f"<i>🔑 Код: <code>{fake_code}</code></i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="✨ Активировать подписку",
+                web_app=WebAppInfo(url=webapp_url)
+            )],
+            [InlineKeyboardButton(
+                text="❓ Нужна помощь",
+                url=f"https://t.me/{PERSONAL_USERNAME}"
+            )],
+        ])
+    )
+
+
+@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") & ~F.text.startswith("/test_chatgpt"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
         return
