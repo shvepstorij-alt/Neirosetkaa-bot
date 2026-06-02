@@ -597,35 +597,51 @@
     <div class="step-row">
       <div class="step-ico">1️⃣</div>
       <div class="step-body">
-        <div class="sh">Войди в ChatGPT</div>
-        <div class="sp">Авторизуйся на chatgpt.com — в том же браузере</div>
+        <div class="sh">Зайди на сайт chatgpt.com</div>
+        <div class="sp">Открой в Google Chrome или Safari</div>
       </div>
     </div>
 
     <div class="step-row">
       <div class="step-ico">2️⃣</div>
       <div class="step-body">
-        <div class="sh">Открой страницу с токеном — скопируй весь текст</div>
+        <div class="sh">Авторизуйся в свой аккаунт</div>
+        <div class="sp">Войди через email или Google/Apple</div>
+      </div>
+    </div>
+
+    <div class="step-row">
+      <div class="step-ico">3️⃣</div>
+      <div class="step-body">
+        <div class="sh">Открой страницу с токеном в том же браузере</div>
       </div>
     </div>
 
     <a class="link-card" href="https://chatgpt.com/api/auth/session" target="_blank">
       <div>
         <div class="lc-text">chatgpt.com/api/auth/session</div>
-        <div class="lc-sub">Нажми — скопируй всё что на странице</div>
+        <div class="lc-sub">Нажми — откроется в Chrome или Safari</div>
       </div>
       <span class="lc-arrow">↗</span>
     </a>
 
+    <div class="step-row">
+      <div class="step-ico">4️⃣</div>
+      <div class="step-body">
+        <div class="sh">Скопируй весь текст и вставь ниже</div>
+        <div class="sp">Начинается с <code style="background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:10px;">{"WARNING</code> &nbsp;заканчивается на&nbsp; <code style="background:var(--bg3);padding:1px 5px;border-radius:4px;font-size:10px;">false}}}</code></div>
+      </div>
+    </div>
+
     <div class="field-wrap">
-      <div class="field-lbl">3️⃣ &nbsp;Вставь скопированный текст</div>
+      <div class="field-lbl">Вставь скопированный текст</div>
       <textarea id="token-input"
-        placeholder="Вставь весь текст со страницы chatgpt.com/api/auth/session…&#10;Токен начинается с eyJ..."
+        placeholder='{"WARNING":..., "accessToken":"eyJ..."}&#10;&#10;Вставь весь текст со страницы'
         oninput="validateToken()"
         autocomplete="off" autocorrect="off" spellcheck="false"
       ></textarea>
       <div class="field-hint">
-        Скопируй <b>весь</b> текст страницы — токен начинается с <code>eyJ</code>
+        Скопируй <b>весь</b> текст страницы целиком — от начала до конца
       </div>
     </div>
   </div>
