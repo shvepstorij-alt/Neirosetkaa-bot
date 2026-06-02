@@ -14268,9 +14268,13 @@ async def adm_gpt_pending_codes(cb: CallbackQuery):
         lines.append(f"• <code>{r['code']}</code>  👤 {tg_str}  ⏱ {date_str}")
         code_btns.append([
             InlineKeyboardButton(
-                text=f"🔓 Вернуть в пул: {r['code']}",
+                text=f"🔓 В пул",
                 callback_data=f"adm_gpt_release:{r['id']}:{plan}"
-            )
+            ),
+            InlineKeyboardButton(
+                text=f"🗑 {r['code']}",
+                callback_data=f"adm_gpt_del_pending:{r['id']}:{plan}"
+            ),
         ])
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -14343,6 +14347,65 @@ async def adm_gpt_release_confirm(cb: CallbackQuery):
             "DELETE FROM gpt_pending_activations WHERE code=$1", row["code"]
         )
     await cb.answer(f"✅ Код {row['code']} возвращён в пул", show_alert=True)
+    cb.data = f"adm_gpt_pending:{plan}"
+    await adm_gpt_pending_codes(cb)
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_del_pending:"))
+async def adm_gpt_del_pending(cb: CallbackQuery):
+    """Подтверждение перед удалением ждущего кода."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code, used_by FROM gpt_codes WHERE id=$1", code_id)
+    if not row:
+        await cb.answer("Код не найден", show_alert=True)
+        return
+    if row["used_by"] is not None:
+        await cb.answer("❌ Код уже активирован", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить",
+                              callback_data=f"adm_gpt_del_pending_confirm:{code_id}:{plan}")],
+        [InlineKeyboardButton(text="❌ Отмена",
+                              callback_data=f"adm_gpt_pending:{plan}")],
+    ])
+    try:
+        await cb.message.edit_text(
+            f"🗑 <b>Удалить ждущий код?</b>\n\n"
+            f"<code>{row['code']}</code>\n\n"
+            f"Код и его pending-активация будут удалены. Клиент не сможет активировать.",
+            parse_mode="HTML", reply_markup=kb
+        )
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_del_pending_confirm:"))
+async def adm_gpt_del_pending_confirm(cb: CallbackQuery):
+    """Удаляем ждущий код и его pending-активацию."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code, used_by FROM gpt_codes WHERE id=$1", code_id)
+        if not row:
+            await cb.answer("Код не найден", show_alert=True)
+            return
+        if row["used_by"] is not None:
+            await cb.answer("❌ Код уже активирован, нельзя удалить", show_alert=True)
+            return
+        await conn.execute("DELETE FROM gpt_pending_activations WHERE code=$1", row["code"])
+        await conn.execute("DELETE FROM gpt_codes WHERE id=$1", code_id)
+    await cb.answer(f"✅ Код {row['code']} удалён", show_alert=True)
     cb.data = f"adm_gpt_pending:{plan}"
     await adm_gpt_pending_codes(cb)
 
