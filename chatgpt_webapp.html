@@ -1,354 +1,636 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-theme="light">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-  <title>Активация ChatGPT</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Активация ChatGPT — Александр ИИ</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0a0a0a;
-      color: #ffffff;
-      min-height: 100vh;
-      padding-bottom: 120px;
+    :root {
+      --bg:        #f9fafb;
+      --bg2:       #ffffff;
+      --bg3:       #f3f4f6;
+      --border:    #e5e7eb;
+      --text:      #111111;
+      --text2:     #6b7280;
+      --text3:     #9ca3af;
+      --green:     #10a37f;
+      --green-bg:  #ecfdf5;
+      --green-brd: #a7f3d0;
+      --green-txt: #065f46;
+      --code-bg:   #f0fdf4;
+      --code-brd:  #bbf7d0;
+      --code-txt:  #166534;
+    }
+    [data-theme="dark"] {
+      --bg:        #0f0f0f;
+      --bg2:       #1a1a1a;
+      --bg3:       #111111;
+      --border:    #2a2a2a;
+      --text:      #e5e5e5;
+      --text2:     #888888;
+      --text3:     #555555;
+      --green:     #10a37f;
+      --green-bg:  #0d2318;
+      --green-brd: #1a4232;
+      --green-txt: #4ade80;
+      --code-bg:   #0d2318;
+      --code-brd:  #1a4232;
+      --code-txt:  #4ade80;
     }
 
-    /* ── Экраны ───────────────────────────────────────────── */
-    .screen { display: none; animation: fadeUp .3s ease; }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+      transition: background .25s, color .25s;
+    }
+
+    /* ── THEME TOGGLE ── */
+    .theme-btn {
+      position: fixed;
+      top: 14px; right: 16px;
+      z-index: 100;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 11px;
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--text2);
+      transition: all .2s;
+    }
+    .theme-btn:active { transform: scale(.96); }
+
+    /* ── SCREENS ── */
+    .screen { display: none; animation: fadeUp .3s ease; padding-bottom: 110px; }
     .screen.active { display: block; }
     @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(12px); }
+      from { opacity: 0; transform: translateY(10px); }
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    /* ── Шапка ────────────────────────────────────────────── */
-    .top-bar {
+    /* ── BRAND HEADER ── */
+    .brand-hdr {
       display: flex;
       align-items: center;
-      gap: 14px;
-      padding: 24px 20px 0;
+      gap: 12px;
+      padding: 20px 18px 0;
     }
-    .logo {
-      width: 52px; height: 52px;
-      background: #10a37f;
-      border-radius: 16px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 28px;
+    .avatar-wrap {
+      width: 46px; height: 46px;
+      border-radius: 14px;
+      overflow: hidden;
       flex-shrink: 0;
-      box-shadow: 0 0 20px rgba(16,163,127,0.4);
+      border: 2px solid var(--green);
+      box-shadow: 0 0 12px rgba(16,163,127,.25);
     }
-    .top-titles h1 {
-      font-size: 20px;
-      font-weight: 800;
-      letter-spacing: -0.3px;
+    .avatar-wrap img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
     }
-    .top-titles p {
-      font-size: 13px;
-      color: #666;
-      margin-top: 2px;
-    }
+    .brand-name { font-size: 16px; font-weight: 600; color: var(--text); }
+    .brand-sub  { font-size: 11px; color: var(--text3); margin-top: 2px; }
 
-    /* ── Зелёная полоса ───────────────────────────────────── */
+    /* ── ACCENT LINE ── */
     .accent-line {
       height: 2px;
-      background: linear-gradient(90deg, #10a37f, transparent);
-      margin: 20px 20px 0;
+      background: linear-gradient(90deg, var(--green), transparent);
+      margin: 14px 18px 0;
       border-radius: 2px;
     }
 
-    /* ── Контент ──────────────────────────────────────────── */
-    .content { padding: 20px; }
+    /* ── CONTENT ── */
+    .content { padding: 16px 18px 0; }
 
-    /* ── Шаги ─────────────────────────────────────────────── */
-    .steps-title {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-      color: #10a37f;
-      margin-bottom: 16px;
-    }
-
-    .step {
-      display: flex;
-      gap: 14px;
-      margin-bottom: 20px;
-      align-items: flex-start;
-    }
-    .step-num {
-      width: 32px; height: 32px;
-      background: #10a37f;
-      color: #fff;
-      border-radius: 10px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 15px; font-weight: 800;
-      flex-shrink: 0;
-      box-shadow: 0 0 12px rgba(16,163,127,0.3);
-    }
-    .step-body h3 {
-      font-size: 15px;
-      font-weight: 700;
-      margin-bottom: 4px;
-    }
-    .step-body p {
+    /* ── GREETING ── */
+    .greeting {
+      background: var(--green-bg);
+      border: 1px solid var(--green-brd);
+      border-radius: 12px;
+      padding: 11px 14px;
       font-size: 13px;
-      color: #888;
-      line-height: 1.5;
-    }
-    .step-body a {
-      color: #10a37f;
-      text-decoration: none;
-      font-weight: 600;
+      color: var(--green-txt);
+      line-height: 1.55;
+      margin-bottom: 14px;
     }
 
-    /* ── Разделитель ──────────────────────────────────────── */
-    .sep {
-      height: 1px;
-      background: #1a1a1a;
-      margin: 4px 0 20px;
-    }
-
-    /* ── Ссылка-кнопка ────────────────────────────────────── */
-    .link-card {
+    /* ── PROGRESS ── */
+    .progress { margin-bottom: 16px; }
+    .progress-steps {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      background: #111;
-      border: 1px solid #1e1e1e;
-      border-left: 3px solid #10a37f;
-      border-radius: 14px;
-      padding: 14px 16px;
-      text-decoration: none;
-      margin-bottom: 24px;
-      transition: background .15s;
     }
-    .link-card:active { background: #161616; }
-    .link-card-text { font-size: 14px; font-weight: 600; color: #10a37f; }
-    .link-card-sub  { font-size: 12px; color: #555; margin-top: 2px; }
-    .link-card svg  { flex-shrink: 0; color: #10a37f; }
+    .pstep {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      position: relative;
+    }
+    .pstep:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      top: 11px; left: 60%;
+      width: 80%; height: 2px;
+      background: var(--border);
+      transition: background .3s;
+    }
+    .pstep.done::after  { background: var(--green); }
+    .pstep.curr::after  { background: var(--green); opacity: .4; }
+    .pnum {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 600;
+      background: var(--border);
+      color: var(--text3);
+      position: relative; z-index: 1;
+      transition: all .3s;
+    }
+    .pstep.done .pnum { background: var(--green); color: #fff; }
+    .pstep.curr .pnum { background: var(--bg2); border: 2px solid var(--green); color: var(--green); }
+    .plbl { font-size: 9px; color: var(--text3); text-align: center; transition: color .3s; }
+    .pstep.done .plbl, .pstep.curr .plbl { color: var(--green); }
 
-    /* ── Поля ввода ───────────────────────────────────────── */
-    .field-label {
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 1.2px;
-      color: #555;
-      margin-bottom: 8px;
+    /* ── CODE CARD ── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
     }
-    .field-wrap { margin-bottom: 16px; }
+    .card-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px;
+    }
+    .card-icon { font-size: 18px; }
+    .card-title { font-size: 12px; font-weight: 600; color: var(--text); }
+
+    .code-box {
+      background: var(--code-bg);
+      border: 1px solid var(--code-brd);
+      border-radius: 10px;
+      padding: 11px 14px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 16px;
+      color: var(--code-txt);
+      letter-spacing: 2px;
+      text-align: center;
+      font-weight: 600;
+    }
+    .code-hint {
+      font-size: 10px;
+      color: var(--text3);
+      text-align: center;
+      margin-top: 6px;
+    }
+
+    /* ── STEP ROWS ── */
+    .step-row {
+      display: flex; gap: 10px;
+      align-items: flex-start;
+      margin-bottom: 13px;
+    }
+    .step-ico { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+    .step-body .sh { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+    .step-body .sp { font-size: 11px; color: var(--text2); line-height: 1.5; }
+
+    /* ── LINK CARD ── */
+    .link-card {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--green);
+      border-radius: 12px;
+      padding: 11px 14px;
+      margin-bottom: 14px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    .link-card:active { opacity: .75; }
+    .lc-text { font-size: 13px; font-weight: 600; color: var(--green); }
+    .lc-sub  { font-size: 10px; color: var(--text3); margin-top: 2px; }
+    .lc-arrow { color: var(--green); font-size: 18px; flex-shrink: 0; }
+
+    /* ── FIELDS ── */
+    .field-wrap { margin-bottom: 13px; }
+    .field-lbl  { font-size: 11px; font-weight: 600; color: var(--text2); margin-bottom: 6px; }
+    .field-hint { font-size: 10px; color: var(--text3); margin-top: 5px; line-height: 1.5; }
+    .field-hint code {
+      background: var(--bg3);
+      color: var(--green);
+      padding: 1px 5px; border-radius: 4px;
+      font-size: 10px;
+    }
 
     input[type="text"], textarea {
       width: 100%;
-      background: #111;
-      border: 1.5px solid #1e1e1e;
-      border-radius: 14px;
-      padding: 14px 16px;
-      font-size: 14px;
-      color: #fff;
+      background: var(--bg3);
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: var(--text);
       font-family: inherit;
       outline: none;
       transition: border-color .2s, box-shadow .2s;
       -webkit-appearance: none;
     }
     input[type="text"]:focus, textarea:focus {
-      border-color: #10a37f;
-      box-shadow: 0 0 0 3px rgba(16,163,127,0.15);
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(16,163,127,.15);
     }
-    input[type="text"]::placeholder, textarea::placeholder { color: #333; }
-    textarea { min-height: 110px; resize: none; font-family: monospace; font-size: 13px; line-break: anywhere; }
+    input[type="text"]::placeholder, textarea::placeholder { color: var(--text3); }
+    textarea {
+      min-height: 100px; resize: none;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px; line-break: anywhere;
+    }
 
-    .field-hint {
+    /* ── ERROR BOX ── */
+    .err-box {
+      background: rgba(239,68,68,.08);
+      border: 1px solid rgba(239,68,68,.25);
+      border-radius: 10px;
+      padding: 10px 13px;
       font-size: 12px;
-      color: #444;
-      margin-top: 6px;
-      line-height: 1.5;
+      color: #ef4444;
+      margin-bottom: 13px;
+      display: none;
     }
-    .field-hint code {
-      background: #1a1a1a;
-      color: #10a37f;
-      padding: 1px 6px;
-      border-radius: 5px;
-      font-size: 11px;
-    }
+    .err-box.show { display: block; }
 
-    /* ── Кнопки ───────────────────────────────────────────── */
+    /* ── BUTTONS ── */
+    .btn-wrap {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      padding: 12px 18px 20px;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      z-index: 50;
+    }
     .btn {
       width: 100%;
-      padding: 16px;
+      padding: 15px;
       border: none;
       border-radius: 14px;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 700;
       cursor: pointer;
       transition: opacity .15s, transform .1s;
-      letter-spacing: -0.2px;
+      letter-spacing: -.2px;
     }
-    .btn:active { opacity: 0.85; transform: scale(0.98); }
-
+    .btn:active { opacity: .85; transform: scale(.98); }
     .btn-green {
-      background: #10a37f;
+      background: var(--green);
       color: #fff;
-      box-shadow: 0 4px 20px rgba(16,163,127,0.35);
-    }
-    .btn-green:disabled {
-      background: #1a1a1a;
-      color: #333;
-      box-shadow: none;
-      cursor: not-allowed;
+      box-shadow: 0 4px 18px rgba(16,163,127,.3);
     }
     .btn-outline {
       background: transparent;
-      color: #555;
-      border: 1.5px solid #1e1e1e;
-      margin-top: 10px;
+      color: var(--text3);
+      border: 1.5px solid var(--border);
+      margin-top: 9px;
+      font-size: 14px;
+    }
+    .btn-green:disabled {
+      background: var(--border);
+      color: var(--text3);
+      box-shadow: none;
+      cursor: not-allowed;
     }
 
-    /* ── Ошибка ───────────────────────────────────────────── */
-    .err {
-      background: rgba(255,59,48,0.08);
-      border: 1px solid rgba(255,59,48,0.2);
-      border-radius: 12px;
-      padding: 12px 14px;
-      font-size: 13px;
-      color: #ff6b6b;
-      margin-bottom: 16px;
-      display: none;
+    /* ══════════════════════════════════════════
+       LOADING SCREEN — Анимация персонажа
+    ══════════════════════════════════════════ */
+    .loading-screen {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+      gap: 0;
     }
-    .err.show { display: block; }
 
-    /* ── Лоадер ───────────────────────────────────────────── */
-    .loader-wrap {
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      min-height: 65vh; gap: 24px; padding: 40px 20px;
+    .anim-scene {
+      width: 240px;
+      height: 240px;
+      position: relative;
+      margin-bottom: 28px;
     }
-    .spinner-ring {
-      width: 56px; height: 56px;
-      border: 3px solid #1a1a1a;
-      border-top-color: #10a37f;
+
+    /* Character in center */
+    .anim-char {
+      position: absolute;
+      width: 80px; height: 80px;
+      border-radius: 22px;
+      overflow: hidden;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      border: 3px solid var(--green);
+      box-shadow: 0 0 20px rgba(16,163,127,.4);
+      animation: char-bob 1.8s ease-in-out infinite;
+    }
+    .anim-char img { width: 100%; height: 100%; object-fit: cover; }
+
+    @keyframes char-bob {
+      0%, 100% { transform: translate(-50%, -50%) rotate(-4deg) scale(1); }
+      50%       { transform: translate(-50%, -50%) rotate(4deg) scale(1.03); }
+    }
+
+    /* Rotating rings */
+    .ring {
+      position: absolute;
       border-radius: 50%;
-      animation: spin .8s linear infinite;
+      border: 2px solid transparent;
+      top: 50%; left: 50%;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .loader-title { font-size: 18px; font-weight: 700; }
-    .loader-sub   { font-size: 14px; color: #555; text-align: center; line-height: 1.6; }
-
-    /* ── Результат ────────────────────────────────────────── */
-    .result-wrap {
-      display: flex; flex-direction: column;
-      align-items: center; text-align: center;
-      padding: 50px 24px 40px;
-      gap: 16px;
+    .ring-1 {
+      width: 110px; height: 110px;
+      margin-top: -55px; margin-left: -55px;
+      border-top-color: var(--green);
+      border-right-color: var(--green);
+      animation: spin-cw 1.4s linear infinite;
     }
-    .result-emoji { font-size: 72px; line-height: 1; }
-    .result-title { font-size: 22px; font-weight: 800; letter-spacing: -0.4px; }
-    .result-sub   { font-size: 14px; color: #666; line-height: 1.6; max-width: 280px; }
+    .ring-2 {
+      width: 150px; height: 150px;
+      margin-top: -75px; margin-left: -75px;
+      border-bottom-color: var(--green);
+      border-left-color: var(--green);
+      opacity: .6;
+      animation: spin-ccw 2s linear infinite;
+    }
+    .ring-3 {
+      width: 196px; height: 196px;
+      margin-top: -98px; margin-left: -98px;
+      border-top-color: var(--green);
+      border-right-color: var(--green);
+      opacity: .25;
+      animation: spin-cw 3s linear infinite;
+    }
+    @keyframes spin-cw  { to { transform: rotate(360deg); } }
+    @keyframes spin-ccw { to { transform: rotate(-360deg); } }
 
-    .glow-green { color: #10a37f; text-shadow: 0 0 20px rgba(16,163,127,0.5); }
+    /* Wire nodes — 4 corners */
+    .wire-node {
+      position: absolute;
+      width: 18px; height: 18px;
+      background: var(--bg2);
+      border: 2px solid var(--green);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px;
+      animation: node-pulse 1.5s ease-in-out infinite;
+      z-index: 5;
+    }
+    .wn-1 { top: 10px; left: 50%; transform: translateX(-50%); animation-delay: 0s; }
+    .wn-2 { bottom: 10px; left: 50%; transform: translateX(-50%); animation-delay: .4s; }
+    .wn-3 { left: 10px; top: 50%; transform: translateY(-50%); animation-delay: .8s; }
+    .wn-4 { right: 10px; top: 50%; transform: translateY(-50%); animation-delay: 1.2s; }
+
+    @keyframes node-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(16,163,127,.5); }
+      50%       { box-shadow: 0 0 0 5px rgba(16,163,127,0); }
+    }
+
+    /* Moving packets along wires */
+    .packet {
+      position: absolute;
+      width: 7px; height: 7px;
+      background: var(--green);
+      border-radius: 50%;
+      z-index: 6;
+      box-shadow: 0 0 6px rgba(16,163,127,.8);
+    }
+    .pkt-v1 { left: calc(50% - 3px); animation: move-down 1.6s ease-in-out infinite; }
+    .pkt-v2 { left: calc(50% - 3px); animation: move-up 1.6s ease-in-out infinite .8s; }
+    .pkt-h1 { top: calc(50% - 3px); animation: move-right 1.6s ease-in-out infinite .3s; }
+    .pkt-h2 { top: calc(50% - 3px); animation: move-left 1.6s ease-in-out infinite 1.1s; }
+
+    @keyframes move-down  { 0%,100%{opacity:0;top:52px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;top:176px;} }
+    @keyframes move-up    { 0%,100%{opacity:0;top:176px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;top:52px;} }
+    @keyframes move-right { 0%,100%{opacity:0;left:52px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;left:176px;} }
+    @keyframes move-left  { 0%,100%{opacity:0;left:176px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;left:52px;} }
+
+    /* Dots in corner nodes */
+    .wire-node::before {
+      content: '';
+      width: 6px; height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: dot-blink 1s ease-in-out infinite;
+    }
+    @keyframes dot-blink { 0%,100%{opacity:.4;} 50%{opacity:1;} }
+
+    .loader-title { font-size: 19px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+    .loader-sub   { font-size: 13px; color: var(--text2); text-align: center; line-height: 1.6; max-width: 240px; }
+
+    /* Progress dots */
+    .prog-dots { display: flex; gap: 6px; margin-top: 18px; }
+    .prog-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--border);
+    }
+    .prog-dot:nth-child(1) { animation: dot-anim 1.2s ease-in-out infinite 0s; }
+    .prog-dot:nth-child(2) { animation: dot-anim 1.2s ease-in-out infinite .2s; }
+    .prog-dot:nth-child(3) { animation: dot-anim 1.2s ease-in-out infinite .4s; }
+    @keyframes dot-anim { 0%,100%{background:var(--border);} 50%{background:var(--green);} }
+
+
+    /* ══════════════════════════════════════════
+       SUCCESS SCREEN
+    ══════════════════════════════════════════ */
+    .result-screen {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 24px 110px;
+    }
+
+    .success-photo-wrap {
+      width: 160px; height: 160px;
+      border-radius: 28px;
+      overflow: hidden;
+      margin-bottom: 22px;
+      border: 3px solid var(--green);
+      box-shadow: 0 0 30px rgba(16,163,127,.35);
+      animation: success-pop .5s cubic-bezier(.34,1.56,.64,1) both;
+    }
+    .success-photo-wrap img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+
+    @keyframes success-pop {
+      from { transform: scale(.6); opacity: 0; }
+      to   { transform: scale(1);  opacity: 1; }
+    }
+
+    .success-badge {
+      background: var(--green-bg);
+      border: 1px solid var(--green-brd);
+      border-radius: 30px;
+      padding: 5px 16px;
+      font-size: 12px;
+      color: var(--green-txt);
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+    .success-title { font-size: 26px; font-weight: 800; color: var(--green); letter-spacing: -.5px; margin-bottom: 6px; }
+    .success-sub-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+    .success-sub   { font-size: 13px; color: var(--text2); line-height: 1.65; text-align: center; max-width: 270px; margin-bottom: 24px; }
+
+    .btn-wrap-inline { width: 100%; }
+
+    /* ══════════════════════════════════════════
+       ERROR SCREEN
+    ══════════════════════════════════════════ */
+    .error-emoji { font-size: 72px; margin-bottom: 14px; line-height: 1; animation: shake .5s ease both; }
+    @keyframes shake {
+      0%,100%{transform:rotate(0);} 25%{transform:rotate(-8deg);} 75%{transform:rotate(8deg);}
+    }
+    .error-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+    .error-sub   { font-size: 13px; color: var(--text2); line-height: 1.65; text-align: center; max-width: 260px; margin-bottom: 24px; }
   </style>
 </head>
 <body>
 
-<!-- ═══════════════════════════════════════════════
-     ЭКРАН 1 — Инструкция
-═══════════════════════════════════════════════════ -->
+<button class="theme-btn" id="themeBtn" onclick="toggleTheme()">☾</button>
+
+<!-- ═══════════════════════════════════
+     ЭКРАН 1 — Подтверждение кода
+═══════════════════════════════════════ -->
 <div id="s1" class="screen active">
-  <div class="top-bar">
-    <div class="logo">✨</div>
-    <div class="top-titles">
-      <h1>Активация ChatGPT</h1>
-      <p>Следуй инструкции — 1 минута</p>
+  <div class="brand-hdr">
+    <div class="avatar-wrap">
+      <img src="https://i.ibb.co/rGvgXht5/1.jpg" alt="Александр ИИ" onerror="this.style.display='none';this.parentElement.style.background='#10a37f';this.parentElement.innerHTML='<span style=\'color:#fff;font-size:18px;font-weight:600;display:flex;align-items:center;justify-content:center;height:100%;\'>АИ</span>';" />
+    </div>
+    <div>
+      <div class="brand-name">Александр ИИ</div>
+      <div class="brand-sub">Активация подписки</div>
     </div>
   </div>
   <div class="accent-line"></div>
 
   <div class="content">
-    <div class="steps-title">Что нужно сделать</div>
-
-    <div class="step">
-      <div class="step-num">1</div>
-      <div class="step-body">
-        <h3>Войди в ChatGPT</h3>
-        <p>Авторизуйся на сайте <a href="https://chatgpt.com" target="_blank">chatgpt.com</a> через свой аккаунт</p>
+    <div class="progress">
+      <div class="progress-steps">
+        <div class="pstep curr">
+          <div class="pnum">1</div>
+          <div class="plbl">Код</div>
+        </div>
+        <div class="pstep">
+          <div class="pnum">2</div>
+          <div class="plbl">Токен</div>
+        </div>
+        <div class="pstep">
+          <div class="pnum">3</div>
+          <div class="plbl">Готово</div>
+        </div>
       </div>
     </div>
-    <div class="sep"></div>
 
-    <div class="step">
-      <div class="step-num">2</div>
+    <div class="greeting">
+      Привет! 👋 Твой код активации уже подставлен автоматически. Убедись что он верный — и жми «Продолжить».
+    </div>
+
+    <div class="card">
+      <div class="card-row">
+        <div class="card-icon">🎫</div>
+        <div class="card-title">Твой код активации</div>
+      </div>
+      <div class="code-box" id="code-display">—</div>
+      <div class="code-hint">Автоматически подставлен из твоего заказа</div>
+    </div>
+  </div>
+
+  <div class="btn-wrap">
+    <button class="btn btn-green" onclick="showScreen('s2')">Всё верно — продолжить →</button>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════
+     ЭКРАН 2 — Получить токен
+═══════════════════════════════════════ -->
+<div id="s2" class="screen">
+  <div class="brand-hdr">
+    <div class="avatar-wrap">
+      <img src="https://i.ibb.co/rGvgXht5/1.jpg" alt="Александр ИИ" onerror="this.style.display='none';this.parentElement.style.background='#10a37f';this.parentElement.innerHTML='<span style=\'color:#fff;font-size:18px;font-weight:600;display:flex;align-items:center;justify-content:center;height:100%;\'>АИ</span>';" />
+    </div>
+    <div>
+      <div class="brand-name">Александр ИИ</div>
+      <div class="brand-sub">Шаг 2 из 3</div>
+    </div>
+  </div>
+  <div class="accent-line"></div>
+
+  <div class="content">
+    <div class="progress">
+      <div class="progress-steps">
+        <div class="pstep done">
+          <div class="pnum">✓</div>
+          <div class="plbl">Код</div>
+        </div>
+        <div class="pstep curr">
+          <div class="pnum">2</div>
+          <div class="plbl">Токен</div>
+        </div>
+        <div class="pstep">
+          <div class="pnum">3</div>
+          <div class="plbl">Готово</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="err-box" id="err-box"></div>
+
+    <div class="step-row">
+      <div class="step-ico">1️⃣</div>
       <div class="step-body">
-        <h3>Перейди на страницу с токеном</h3>
-        <p>Открой ссылку ниже в том же браузере — скопируй весь текст со страницы</p>
+        <div class="sh">Войди в ChatGPT</div>
+        <div class="sp">Авторизуйся на chatgpt.com — в том же браузере</div>
+      </div>
+    </div>
+
+    <div class="step-row">
+      <div class="step-ico">2️⃣</div>
+      <div class="step-body">
+        <div class="sh">Открой страницу с токеном — скопируй весь текст</div>
       </div>
     </div>
 
     <a class="link-card" href="https://chatgpt.com/api/auth/session" target="_blank">
       <div>
-        <div class="link-card-text">chatgpt.com/api/auth/session</div>
-        <div class="link-card-sub">Нажми и скопируй весь текст</div>
+        <div class="lc-text">chatgpt.com/api/auth/session</div>
+        <div class="lc-sub">Нажми — скопируй всё что на странице</div>
       </div>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/>
-        <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-      </svg>
+      <span class="lc-arrow">↗</span>
     </a>
 
-    <div class="step">
-      <div class="step-num">3</div>
-      <div class="step-body">
-        <h3>Вставь код и токен</h3>
-        <p>На следующем экране введи свой код активации и скопированный текст токена</p>
-      </div>
-    </div>
-
-    <button class="btn btn-green" onclick="showScreen('s2')" style="margin-top:8px;">
-      Продолжить →
-    </button>
-  </div>
-</div>
-
-
-<!-- ═══════════════════════════════════════════════
-     ЭКРАН 2 — Ввод кода и токена
-═══════════════════════════════════════════════════ -->
-<div id="s2" class="screen">
-  <div class="top-bar">
-    <div class="logo">🔑</div>
-    <div class="top-titles">
-      <h1>Введи данные</h1>
-      <p>Шаг 2 из 2</p>
-    </div>
-  </div>
-  <div class="accent-line"></div>
-
-  <div class="content">
-    <div class="err" id="err-box"></div>
-
     <div class="field-wrap">
-      <div class="field-label">Код активации</div>
-      <input type="text" id="code-input"
-        placeholder="BYPRICEZ2VAXIC9R"
-        autocomplete="off" autocorrect="off" spellcheck="false"
-        oninput="validateInputs()" />
-      <div class="field-hint">Код который тебе выдал Александр</div>
-    </div>
-
-    <div class="field-wrap">
-      <div class="field-label">Токен аккаунта</div>
+      <div class="field-lbl">3️⃣ &nbsp;Вставь скопированный текст</div>
       <textarea id="token-input"
-        placeholder="Вставь весь скопированный текст со страницы chatgpt.com/api/auth/session..."
-        oninput="validateInputs()"
+        placeholder="Вставь весь текст со страницы chatgpt.com/api/auth/session…&#10;Токен начинается с eyJ..."
+        oninput="validateToken()"
         autocomplete="off" autocorrect="off" spellcheck="false"
       ></textarea>
       <div class="field-hint">
-        Скопируй весь текст со страницы — токен начинается с <code>eyJ</code>
+        Скопируй <b>весь</b> текст страницы — токен начинается с <code>eyJ</code>
       </div>
     </div>
+  </div>
 
+  <div class="btn-wrap">
     <button class="btn btn-green" id="activate-btn" onclick="startActivation()" disabled>
       Активировать подписку
     </button>
@@ -357,98 +639,161 @@
 </div>
 
 
-<!-- ═══════════════════════════════════════════════
-     ЭКРАН 3 — Загрузка
-═══════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════
+     ЭКРАН 3 — Загрузка (анимация)
+═══════════════════════════════════════ -->
 <div id="s3" class="screen">
-  <div class="loader-wrap">
-    <div class="spinner-ring"></div>
+  <div class="loading-screen">
+    <div class="anim-scene">
+
+      <!-- Outer rings -->
+      <div class="ring ring-3"></div>
+      <div class="ring ring-2"></div>
+      <div class="ring ring-1"></div>
+
+      <!-- Wire endpoint nodes -->
+      <div class="wire-node wn-1"></div>
+      <div class="wire-node wn-2"></div>
+      <div class="wire-node wn-3"></div>
+      <div class="wire-node wn-4"></div>
+
+      <!-- Moving data packets -->
+      <div class="packet pkt-v1"></div>
+      <div class="packet pkt-v2"></div>
+      <div class="packet pkt-h1"></div>
+      <div class="packet pkt-h2"></div>
+
+      <!-- Character -->
+      <div class="anim-char">
+        <img src="https://i.ibb.co/rGvgXht5/1.jpg" alt="Активация..." onerror="this.style.display='none';this.parentElement.style.background='#10a37f';this.parentElement.innerHTML='<span style=\'color:#fff;font-size:28px;display:flex;align-items:center;justify-content:center;height:100%;\'>⚡</span>';" />
+      </div>
+
+    </div>
+
     <div class="loader-title">Активируем...</div>
-    <div class="loader-sub">Подключаемся к ChatGPT.<br>Не закрывай приложение — 15–30 сек.</div>
+    <div class="loader-sub">Подключаемся к ChatGPT.<br>Не закрывай приложение — займёт 15–30 сек.</div>
+    <div class="prog-dots">
+      <div class="prog-dot"></div>
+      <div class="prog-dot"></div>
+      <div class="prog-dot"></div>
+    </div>
   </div>
 </div>
 
 
-<!-- ═══════════════════════════════════════════════
+<!-- ═══════════════════════════════════
      ЭКРАН 4 — Успех
-═══════════════════════════════════════════════════ -->
+═══════════════════════════════════════ -->
 <div id="s4" class="screen">
-  <div class="result-wrap">
-    <div class="result-emoji">🎉</div>
-    <div class="result-title glow-green">Готово!</div>
-    <div class="result-title" id="success-plan" style="font-size:18px;margin-top:-8px;">ChatGPT Plus активирован</div>
-    <div class="result-sub">Подписка подключена к твоему аккаунту. Можешь заходить в ChatGPT и пользоваться.</div>
-    <a href="https://chatgpt.com" target="_blank" style="width:100%;text-decoration:none;margin-top:16px;">
-      <button class="btn btn-green">Открыть ChatGPT</button>
-    </a>
-    <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
+  <div class="result-screen">
+    <div class="success-photo-wrap">
+      <img
+        src="https://i.ibb.co/3yB8F3bs/image.jpg"
+        alt="Готово!"
+        onerror="this.style.display='none';this.parentElement.style.background='#10a37f';this.parentElement.innerHTML='<span style=\'color:#fff;font-size:60px;display:flex;align-items:center;justify-content:center;height:100%;\'>🎉</span>';"
+      />
+    </div>
+
+    <div class="success-badge">✅ Активация завершена</div>
+    <div class="success-title">Готово!</div>
+    <div class="success-sub-title" id="success-plan">ChatGPT Plus активирован</div>
+    <div class="success-sub">
+      Подписка подключена к твоему аккаунту. Можешь заходить в ChatGPT и пользоваться прямо сейчас — я всегда на связи!
+    </div>
+
+    <div class="btn-wrap-inline">
+      <a href="https://chatgpt.com" target="_blank" style="text-decoration:none;display:block;">
+        <button class="btn btn-green" style="margin-bottom:9px;">Открыть ChatGPT ↗</button>
+      </a>
+      <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
+    </div>
   </div>
 </div>
 
 
-<!-- ═══════════════════════════════════════════════
+<!-- ═══════════════════════════════════
      ЭКРАН 5 — Ошибка
-═══════════════════════════════════════════════════ -->
+═══════════════════════════════════════ -->
 <div id="s5" class="screen">
-  <div class="result-wrap">
-    <div class="result-emoji">😔</div>
-    <div class="result-title">Не получилось</div>
-    <div class="result-sub" id="err-detail">Произошла ошибка. Напиши Александру — он поможет.</div>
-    <button class="btn btn-green" style="margin-top:16px;" onclick="showScreen('s2')">Попробовать снова</button>
-    <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
+  <div class="result-screen">
+    <div class="error-emoji">😔</div>
+    <div class="error-title">Не получилось</div>
+    <div class="error-sub" id="err-detail">
+      Возможно токен истёк или скопирован неверно. Напиши Александру — помогу в течение 10 минут!
+    </div>
+
+    <div class="btn-wrap-inline">
+      <button class="btn btn-green" style="margin-bottom:9px;" onclick="showScreen('s2')">Попробовать снова</button>
+      <a href="https://t.me/neirosetkaalex" target="_blank" style="text-decoration:none;display:block;">
+        <button class="btn btn-outline">Написать Александру ↗</button>
+      </a>
+    </div>
   </div>
 </div>
 
 
 <script>
+  // ── Telegram WebApp ──────────────────────
   const tg = window.Telegram.WebApp;
   tg.ready();
   tg.expand();
 
-  // URL params
-  const params = new URLSearchParams(window.location.search);
+  // ── URL params ───────────────────────────
+  const params   = new URLSearchParams(window.location.search);
   const planName = params.get('plan') || 'Plus';
   const preCode  = params.get('code') || '';
 
-  // Подставляем код если передан
-  if (preCode) {
-    document.getElementById('code-input').value = preCode;
-  }
-
-  // Обновляем экран успеха
+  // Подставляем код и название плана
+  document.getElementById('code-display').textContent = preCode || '—';
   document.getElementById('success-plan').textContent = `ChatGPT ${planName} активирован`;
 
+  // ── Тема ─────────────────────────────────
+  const root = document.documentElement;
+  let darkMode = false;
+
+  // Подстраиваемся под тему Telegram
+  if (tg.colorScheme === 'dark') {
+    darkMode = true;
+    root.setAttribute('data-theme', 'dark');
+    document.getElementById('themeBtn').textContent = '☀';
+  }
+
+  function toggleTheme() {
+    darkMode = !darkMode;
+    root.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+    document.getElementById('themeBtn').textContent = darkMode ? '☀' : '☾';
+  }
+
+  // ── Навигация ─────────────────────────────
   function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(id).classList.add('active');
     window.scrollTo(0, 0);
   }
 
-  function validateInputs() {
-    const code  = document.getElementById('code-input').value.trim();
+  // ── Валидация токена ─────────────────────
+  function validateToken() {
     const token = document.getElementById('token-input').value.trim();
     const btn   = document.getElementById('activate-btn');
     document.getElementById('err-box').classList.remove('show');
-    btn.disabled = code.length < 5 || token.length < 50;
+    btn.disabled = token.length < 50;
   }
 
-  // Извлекает accessToken из JSON или возвращает строку как есть
+  // ── Извлечь accessToken ──────────────────
   function extractToken(raw) {
     raw = raw.trim();
     try {
       const obj = JSON.parse(raw);
       if (obj.accessToken) return obj.accessToken;
     } catch(e) {}
-    // Попробуем regex
     const m = raw.match(/"accessToken"\s*:\s*"([^"]+)"/);
     if (m) return m[1];
-    // Если уже токен (eyJ...)
     if (raw.startsWith('eyJ')) return raw;
     return raw;
   }
 
+  // ── Активация ────────────────────────────
   async function startActivation() {
-    const codeRaw  = document.getElementById('code-input').value.trim();
     const tokenRaw = document.getElementById('token-input').value.trim();
     const errBox   = document.getElementById('err-box');
 
@@ -468,7 +813,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token:     token,
-          code:      codeRaw,
+          code:      preCode,
           init_data: tg.initData
         })
       });
@@ -481,16 +826,17 @@
       } else {
         tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('error');
         document.getElementById('err-detail').textContent =
-          data.error || 'Ошибка активации. Напиши Александру.';
+          data.error || 'Ошибка активации. Напиши Александру — помогу!';
         showScreen('s5');
       }
     } catch(e) {
       tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('error');
       document.getElementById('err-detail').textContent =
-        'Нет соединения с сервером. Попробуй снова.';
+        'Нет соединения с сервером. Попробуй снова через несколько секунд.';
       showScreen('s5');
     }
   }
 </script>
+
 </body>
 </html>
