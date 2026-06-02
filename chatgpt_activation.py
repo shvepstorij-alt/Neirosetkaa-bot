@@ -2,36 +2,20 @@
 chatgpt_activation.py
 Автоматическая активация ChatGPT подписки через 987ai.vip с помощью Playwright.
 
-Railway/Nix: использует системный Chromium (nixPkg chromium), не требует playwright install.
+Railway: браузер хранится в /app/pw-browsers (попадает в Docker-образ).
+Путь задаётся через PLAYWRIGHT_BROWSERS_PATH до любого импорта playwright.
 """
 
 import asyncio
 import logging
-import shutil
-from typing import Optional
+import os
+
+# ── ВАЖНО: устанавливаем путь к браузеру ДО импорта playwright ──────────────
+# Railway multi-stage build: /root/.cache не попадает в финальный образ.
+# /app/pw-browsers — внутри папки приложения, всегда доступен в runtime.
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/app/pw-browsers")
 
 logger = logging.getLogger(__name__)
-
-
-def _find_chromium() -> Optional[str]:
-    """
-    Ищет системный Chromium на Railway/Nix.
-    Возвращает путь или None (тогда Playwright использует свой скачанный браузер).
-    """
-    candidates = [
-        "chromium",
-        "chromium-browser",
-        "chromium-headless-shell",
-        "google-chrome",
-        "google-chrome-stable",
-    ]
-    for name in candidates:
-        path = shutil.which(name)
-        if path:
-            logger.info(f"Системный Chromium найден: {path}")
-            return path
-    logger.warning("Системный Chromium не найден — Playwright попробует свой")
-    return None
 
 
 async def activate_chatgpt(card_code: str, access_token: str) -> dict:
@@ -53,26 +37,22 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             "error": "Playwright не установлен. Выполни: pip install playwright"
         }
 
+    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/app/pw-browsers")
+    logger.info(f"Playwright browsers path: {browsers_path}")
+
     url = f"https://www.987ai.vip/recharge?card={card_code}"
-    chromium_path = _find_chromium()
 
     async with async_playwright() as p:
-        launch_kwargs = {
-            "headless": True,
-            "args": [
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--disable-setuid-sandbox",
                 "--single-process",
             ]
-        }
-        # Используем системный Chromium если нашли
-        if chromium_path:
-            launch_kwargs["executable_path"] = chromium_path
-
-        browser = await p.chromium.launch(**launch_kwargs)
-
+        )
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -168,18 +148,18 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                     logger.warning(f"Ошибка активации (маркер: {marker})")
                     return {"success": False, "error": _extract_error_text(page_text)}
 
-            # Не нашли маркеров — скриншот для диагностики
+            # Нет явных маркеров — скриншот для диагностики
             screenshot = await page.screenshot(full_page=True)
             logger.warning("Результат активации неизвестен, нет явных маркеров")
             return {
                 "success": False,
-                "error": "Не удалось определить результат активации. Обратитесь к Александру.",
+                "error": "Не удалось определить результат. Обратитесь к Александру.",
                 "screenshot": screenshot
             }
 
         except PlaywrightTimeout as e:
             logger.error(f"Таймаут на 987ai.vip: {e}")
-            return {"success": False, "error": f"Сайт не ответил вовремя. Попробуй снова."}
+            return {"success": False, "error": "Сайт не ответил вовремя. Попробуй снова."}
 
         except Exception as e:
             logger.error(f"Ошибка активации: {e}", exc_info=True)
