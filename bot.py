@@ -11066,8 +11066,13 @@ async def adm_edit_value(message: Message, state: FSMContext):
             await message.answer(f"\u2705 \u0421\u0435\u0440\u0432\u0438\u0441 <b>{em} {nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!\n\n\u0422\u0435\u043f\u0435\u0440\u044c \u0434\u043e\u0431\u0430\u0432\u044c \u0442\u0430\u0440\u0438\u0444\u044b \u0447\u0435\u0440\u0435\u0437 \u0440\u0435\u0434\u0430\u043a\u0442\u043e\u0440.", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\ud83d\udecd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
         elif shop_field == "new_plan" and shop_key:
-            parts = [x.strip() for x in value.split("|")]
-            if len(parts) < 3: await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u0446\u0435\u043d\u0430|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"); return
+            parts = [x.strip() for x in value.split("\n") if x.strip()]
+            if len(parts) < 3:
+                await message.answer(
+                    "❌ Нужно 3 строки:\n\n<code>название\nцена (число)\nописание</code>",
+                    parse_mode="HTML"
+                )
+                return
             pn, pr, pd = parts[0], int(parts[1]), parts[2]
             s = SHOP_CATALOG.get(shop_key, {})
             ni = len(s.get("plans", []))
@@ -13761,12 +13766,29 @@ async def _run_activation_job(
             await mark_gpt_code_used(code, user_id, order_id, _email)
             await delete_pending_activation(user_id)
             try:
+                import datetime as _dt
+                _used_at = _dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+                # Получаем username и full_name клиента из БД
+                try:
+                    _pool = await get_pool()
+                    async with _pool.acquire() as _conn:
+                        _urow = await _conn.fetchrow(
+                            "SELECT username, full_name FROM users WHERE user_id=$1", user_id
+                        )
+                    _username  = _urow["username"]  if _urow and _urow["username"]  else ""
+                    _full_name = _urow["full_name"] if _urow and _urow["full_name"] else ""
+                except Exception:
+                    _username = _full_name = ""
+                _tg_name = (f"@{_username}" if _username else _full_name) or f"id{user_id}"
                 await bot.send_message(
                     ADMIN_ID,
-                    f"✅ <b>ChatGPT авто-активация OK</b>\n"
-                    f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
-                    f"📧 {_email or '—'}\n"
-                    f"🔑 <code>{code}</code>\n🆔 <code>{order_id}</code>",
+                    f"✅ <b>ChatGPT авто-активация OK</b>\n\n"
+                    f"👤 Клиент: <b>{_tg_name}</b>  (<code>{user_id}</code>)\n"
+                    f"📧 Email: <b>{_email or '—'}</b>\n"
+                    f"🔑 Код: <code>{code}</code>\n"
+                    f"📦 Тариф: <b>{plan_name}</b>\n"
+                    f"⏱ Время: <b>{_used_at}</b>\n"
+                    f"🆔 Order: <code>{order_id}</code>",
                     parse_mode="HTML"
                 )
             except Exception:
@@ -13907,10 +13929,11 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
     toggle_text = "🔴 Выключить (тех. работы)" if CHATGPT_WEBAPP_ENABLED else "✅ Включить"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data="adm_gpt_toggle")],
-        [InlineKeyboardButton(text="➕ Добавить коды plus",   callback_data="adm_gpt_add:plus"),
-         InlineKeyboardButton(text="➕ Pro 5×",               callback_data="adm_gpt_add:pro_5x")],
-        [InlineKeyboardButton(text="➕ Pro Max",              callback_data="adm_gpt_add:pro_max")],
-        [InlineKeyboardButton(text="📋 История использования", callback_data="adm_gpt_history:0")],
+        [InlineKeyboardButton(text="➕ Добавить plus",       callback_data="adm_gpt_add:plus"),
+         InlineKeyboardButton(text="➕ Pro 5×",              callback_data="adm_gpt_add:pro_5x"),
+         InlineKeyboardButton(text="➕ Pro Max",             callback_data="adm_gpt_add:pro_max")],
+        [InlineKeyboardButton(text="📦 Свободные коды",     callback_data="adm_gpt_free:plus"),
+         InlineKeyboardButton(text="📋 История активаций",   callback_data="adm_gpt_history:0")],
         [InlineKeyboardButton(text="⬅️ Назад в панель",      callback_data="adm_back")],
     ])
     try:
@@ -14055,6 +14078,100 @@ async def adm_gpt_history(cb: CallbackQuery):
             parse_mode="HTML"
         )
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_free:"))
+async def adm_gpt_free_codes(cb: CallbackQuery):
+    """Просмотр свободных (неиспользованных) кодов с возможностью удалить."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    plan = cb.data.split(":")[1]
+    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, code, created_at FROM gpt_codes
+               WHERE plan=$1 AND is_used=FALSE
+               ORDER BY id ASC LIMIT 20""", plan)
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
+
+    plan_nav = [
+        InlineKeyboardButton(text="Plus",    callback_data="adm_gpt_free:plus"),
+        InlineKeyboardButton(text="Pro 5×",  callback_data="adm_gpt_free:pro_5x"),
+        InlineKeyboardButton(text="Pro Max", callback_data="adm_gpt_free:pro_max"),
+    ]
+
+    if not rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            plan_nav,
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")],
+        ])
+        try:
+            await cb.message.edit_text(
+                f"📦 <b>Свободные коды — {plan_labels.get(plan, plan)}</b>\n\n"
+                f"📭 Кодов нет. Добавь через «➕ Добавить».",
+                parse_mode="HTML", reply_markup=kb
+            )
+        except Exception:
+            pass
+        await cb.answer()
+        return
+
+    lines = [f"📦 <b>Свободные коды — {plan_labels.get(plan, plan)}</b> (всего {total}):\n"]
+    code_btns = []
+    for r in rows:
+        created = r["created_at"]
+        date_str = created.strftime("%d.%m.%y") if created and hasattr(created, "strftime") else "—"
+        lines.append(f"• <code>{r['code']}</code>  <i>{date_str}</i>")
+        code_btns.append([
+            InlineKeyboardButton(
+                text=f"🗑 {r['code']}",
+                callback_data=f"adm_gpt_del_code:{r['id']}:{plan}"
+            )
+        ])
+
+    if total > 20:
+        lines.append(f"\n<i>Показаны первые 20 из {total}</i>")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        plan_nav,
+        *code_btns,
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")],
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_del_code:"))
+async def adm_gpt_del_code(cb: CallbackQuery):
+    """Удаление конкретного свободного кода."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code, is_used FROM gpt_codes WHERE id=$1", code_id)
+        if not row:
+            await cb.answer("Код не найден", show_alert=True)
+            return
+        if row["is_used"]:
+            await cb.answer("❌ Код уже использован, нельзя удалить", show_alert=True)
+            return
+        await conn.execute("DELETE FROM gpt_codes WHERE id=$1", code_id)
+    await cb.answer(f"🗑 Код {row['code']} удалён", show_alert=True)
+    # Обновляем список
+    cb.data = f"adm_gpt_free:{plan}"
+    await adm_gpt_free_codes(cb)
+
 
 
 
