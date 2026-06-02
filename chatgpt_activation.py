@@ -117,38 +117,80 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             except PlaywrightTimeout:
                 logger.warning("Кнопка шага 3 не найдена — смотрим текст страницы")
 
-            await asyncio.sleep(3.0)
-
-            # ── Проверяем результат ───────────────────────────────────────
-            page_text = (await page.inner_text("body")).lower()
-
+            # ── Ждём результата: polling до 90 секунд ────────────────────
+            # Сайт показывает "Обработка..." пока идёт обработка,
+            # затем меняет на зелёный (успех) или красный (ошибка).
             success_markers = [
-                "успешно", "success", "成功", "充值成功",
-                "activated", "активирован", "подписка активирована"
+                "успешно", "success", "成功", "充值成功", "recharge successful",
+                "activated", "активирован", "подписка активирована",
+                "充值完成", "完成",
             ]
             error_markers = [
-                "ошибка", "error", "失败", "неверный токен",
-                "invalid token", "token expired", "токен истёк",
-                "не найден", "not found", "войдите снова"
+                "失败", "failed", "неверный токен", "invalid token",
+                "token expired", "токен истёк", "не найден", "not found",
+                "войдите снова", "充值失败", "错误",
+            ]
+            # Маркеры "ещё обрабатывается" — продолжаем ждать
+            processing_markers = [
+                "обработка", "обрабатываем", "processing", "处理中", "请稍候",
             ]
 
-            for marker in success_markers:
-                if marker in page_text:
-                    logger.info(f"Активация успешна (маркер: {marker})")
-                    return {"success": True, "message": "Подписка успешно активирована!"}
+            max_polls = 30       # 30 × 3с = 90 секунд максимум
+            final_result = None
 
-            for marker in error_markers:
-                if marker in page_text:
-                    logger.warning(f"Ошибка активации (маркер: {marker})")
-                    return {"success": False, "error": _extract_error_text(page_text), "screenshot": None}
+            for attempt in range(max_polls):
+                await asyncio.sleep(3.0)
+                try:
+                    page_text = (await page.inner_text("body")).lower()
+                except Exception:
+                    break  # страница закрылась или ошибка — выходим
 
-            # Нет явных маркеров — скриншот для диагностики
+                logger.info(f"Polling {attempt+1}/{max_polls}: проверяем результат")
+
+                # Сайт ещё обрабатывает — ждём
+                if any(m in page_text for m in processing_markers):
+                    logger.debug(f"Ещё обрабатывается (попытка {attempt+1})")
+                    continue
+
+                # Успех
+                for marker in success_markers:
+                    if marker in page_text:
+                        logger.info(f"✅ Активация успешна (маркер: '{marker}')")
+                        final_result = {"success": True, "message": "Подписка успешно активирована!"}
+                        break
+
+                if final_result:
+                    break
+
+                # Ошибка
+                for marker in error_markers:
+                    if marker in page_text:
+                        logger.warning(f"❌ Ошибка активации (маркер: '{marker}')")
+                        final_result = {
+                            "success": False,
+                            "error": _extract_error_text(page_text),
+                            "screenshot": None,
+                        }
+                        break
+
+                if final_result:
+                    break
+
+                # Нет ни processing, ни success, ни error — возможно итоговый экран
+                # Делаем ещё 2 попытки на всякий случай
+                if attempt >= max_polls - 3:
+                    logger.warning(f"Неизвестное состояние страницы после {attempt+1} попыток")
+
+            if final_result:
+                return final_result
+
+            # Исчерпали попытки или неизвестный результат — скриншот для диагностики
             screenshot = await page.screenshot(full_page=True)
-            logger.warning("Результат неизвестен, нет маркеров — отправляем скриншот")
+            logger.warning(f"Таймаут polling ({max_polls * 3}с) — результат неизвестен, скриншот отправлен")
             return {
                 "success": False,
-                "error": "Не удалось определить результат активации. Александр посмотрит скриншот.",
-                "screenshot": screenshot
+                "error": "Сайт долго обрабатывал запрос. Александр проверит скриншот.",
+                "screenshot": screenshot,
             }
 
         except PlaywrightTimeout as e:
