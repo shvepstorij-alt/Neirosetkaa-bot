@@ -14638,6 +14638,37 @@ async def gpt_codes_cleanup_loop():
             logging.error(f"gpt_codes_cleanup_loop: {e}")
 
 
+async def _ensure_playwright_browser():
+    """
+    Скачивает Playwright Chromium в /tmp/pw-browsers при старте бота если его нет.
+    /tmp/ всегда доступен на запись в Railway-контейнере.
+    Занимает ~1-2 минуты при первом запуске после деплоя, потом мгновенно.
+    """
+    import glob
+    browsers_path = "/tmp/pw-browsers"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
+
+    pattern = f"{browsers_path}/chromium*/chrome-headless-shell-linux64/chrome-headless-shell"
+    if glob.glob(pattern):
+        logging.info(f"✅ Playwright browser уже установлен в {browsers_path}")
+        return
+
+    logging.info("⬇️  Playwright browser не найден — скачиваем (1-2 мин)...")
+    env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": browsers_path}
+    proc = await asyncio.create_subprocess_exec(
+        "python", "-m", "playwright", "install", "chromium",
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode == 0:
+        installed = glob.glob(pattern)
+        logging.info(f"✅ Playwright browser установлен: {installed[0] if installed else 'путь не найден'}")
+    else:
+        logging.error(f"❌ Playwright install failed (code {proc.returncode}): {stderr.decode()[:500]}")
+
+
 async def _activation_jobs_cleanup_loop():
     """Каждый час удаляет завершённые задачи из _activation_jobs."""
     while True:
@@ -14649,6 +14680,7 @@ async def _activation_jobs_cleanup_loop():
             logging.info(f"🧹 activation_jobs cleanup: {len(done_keys)} tasks removed")
 
 async def main():
+    await _ensure_playwright_browser()
     await init_db()
     await load_prices_from_db()
     asyncio.create_task(setup_webhook_server())
