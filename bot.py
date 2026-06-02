@@ -13933,7 +13933,8 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
          InlineKeyboardButton(text="➕ Pro 5×",              callback_data="adm_gpt_add:pro_5x"),
          InlineKeyboardButton(text="➕ Pro Max",             callback_data="adm_gpt_add:pro_max")],
         [InlineKeyboardButton(text="📦 Свободные коды",     callback_data="adm_gpt_free:plus"),
-         InlineKeyboardButton(text="📋 История активаций",   callback_data="adm_gpt_history:0")],
+         InlineKeyboardButton(text="⏳ Ждущие коды",         callback_data="adm_gpt_pending:plus")],
+        [InlineKeyboardButton(text="📋 История активаций",   callback_data="adm_gpt_history:0")],
         [InlineKeyboardButton(text="⬅️ Назад в панель",      callback_data="adm_back")],
     ])
     try:
@@ -14151,7 +14152,42 @@ async def adm_gpt_free_codes(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_gpt_del_code:"))
 async def adm_gpt_del_code(cb: CallbackQuery):
-    """Удаление конкретного свободного кода."""
+    """Шаг 1 — показываем подтверждение перед удалением."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code, is_used FROM gpt_codes WHERE id=$1", code_id)
+    if not row:
+        await cb.answer("Код не найден", show_alert=True)
+        return
+    if row["is_used"]:
+        await cb.answer("❌ Код уже использован, нельзя удалить", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить",
+                              callback_data=f"adm_gpt_del_confirm:{code_id}:{plan}")],
+        [InlineKeyboardButton(text="❌ Отмена",
+                              callback_data=f"adm_gpt_free:{plan}")],
+    ])
+    try:
+        await cb.message.edit_text(
+            f"🗑 <b>Удалить код?</b>\n\n"
+            f"<code>{row['code']}</code>\n\n"
+            f"Это действие нельзя отменить.",
+            parse_mode="HTML", reply_markup=kb
+        )
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_del_confirm:"))
+async def adm_gpt_del_confirm(cb: CallbackQuery):
+    """Шаг 2 — подтверждение получено, удаляем код."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
@@ -14164,15 +14200,151 @@ async def adm_gpt_del_code(cb: CallbackQuery):
             await cb.answer("Код не найден", show_alert=True)
             return
         if row["is_used"]:
-            await cb.answer("❌ Код уже использован, нельзя удалить", show_alert=True)
+            await cb.answer("❌ Код уже использован", show_alert=True)
             return
         await conn.execute("DELETE FROM gpt_codes WHERE id=$1", code_id)
-    await cb.answer(f"🗑 Код {row['code']} удалён", show_alert=True)
-    # Обновляем список
+    await cb.answer(f"✅ Код {row['code']} удалён", show_alert=True)
     cb.data = f"adm_gpt_free:{plan}"
     await adm_gpt_free_codes(cb)
 
 
+
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_pending:"))
+async def adm_gpt_pending_codes(cb: CallbackQuery):
+    """Просмотр ждущих (зарезервированных) кодов — is_used=TRUE, used_by=NULL."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    plan = cb.data.split(":")[1]
+    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT gc.id, gc.code, gc.reserved_at,
+                      pa.user_id AS pa_uid, u.username, u.full_name
+               FROM gpt_codes gc
+               LEFT JOIN gpt_pending_activations pa ON pa.code = gc.code
+               LEFT JOIN users u ON u.user_id = pa.user_id
+               WHERE gc.plan = $1 AND gc.is_used = TRUE AND gc.used_by IS NULL
+               ORDER BY gc.reserved_at ASC NULLS LAST
+               LIMIT 20""", plan)
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND is_used=TRUE AND used_by IS NULL", plan) or 0
+
+    plan_nav = [
+        InlineKeyboardButton(text="Plus",    callback_data="adm_gpt_pending:plus"),
+        InlineKeyboardButton(text="Pro 5×",  callback_data="adm_gpt_pending:pro_5x"),
+        InlineKeyboardButton(text="Pro Max", callback_data="adm_gpt_pending:pro_max"),
+    ]
+
+    if not rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            plan_nav,
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")],
+        ])
+        try:
+            await cb.message.edit_text(
+                f"⏳ <b>Ждущие коды — {plan_labels.get(plan, plan)}</b>\n\n"
+                f"Нет зарезервированных кодов.",
+                parse_mode="HTML", reply_markup=kb
+            )
+        except Exception:
+            pass
+        await cb.answer()
+        return
+
+    lines = [f"⏳ <b>Ждущие коды — {plan_labels.get(plan, plan)}</b> (всего {total}):\n"
+             f"<i>Зарезервированы, но клиент ещё не активировал</i>\n"]
+    code_btns = []
+    for r in rows:
+        reserved = r["reserved_at"]
+        date_str = reserved.strftime("%d.%m %H:%M") if reserved and hasattr(reserved, "strftime") else "—"
+        uname = r["username"] or r["full_name"] or (f"id{r['pa_uid']}" if r["pa_uid"] else "—")
+        tg_str = f"@{uname}" if r["username"] else uname
+        lines.append(f"• <code>{r['code']}</code>  👤 {tg_str}  ⏱ {date_str}")
+        code_btns.append([
+            InlineKeyboardButton(
+                text=f"🔓 Вернуть в пул: {r['code']}",
+                callback_data=f"adm_gpt_release:{r['id']}:{plan}"
+            )
+        ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        plan_nav,
+        *code_btns,
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")],
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_release:"))
+async def adm_gpt_release_code(cb: CallbackQuery):
+    """Шаг 1 — подтверждение перед возвратом ждущего кода в пул."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code FROM gpt_codes WHERE id=$1", code_id)
+    if not row:
+        await cb.answer("Код не найден", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, вернуть в пул",
+                              callback_data=f"adm_gpt_release_confirm:{code_id}:{plan}")],
+        [InlineKeyboardButton(text="❌ Отмена",
+                              callback_data=f"adm_gpt_pending:{plan}")],
+    ])
+    try:
+        await cb.message.edit_text(
+            f"🔓 <b>Вернуть код в пул?</b>\n\n"
+            f"<code>{row['code']}</code>\n\n"
+            f"Код станет свободным и может быть выдан другому клиенту.",
+            parse_mode="HTML", reply_markup=kb
+        )
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_release_confirm:"))
+async def adm_gpt_release_confirm(cb: CallbackQuery):
+    """Шаг 2 — возвращаем ждущий код в пул."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code, used_by FROM gpt_codes WHERE id=$1", code_id)
+        if not row:
+            await cb.answer("Код не найден", show_alert=True)
+            return
+        if row["used_by"] is not None:
+            await cb.answer("❌ Код уже активирован, нельзя вернуть", show_alert=True)
+            return
+        # Возвращаем код в пул
+        await conn.execute(
+            "UPDATE gpt_codes SET is_used=FALSE, reserved_at=NULL WHERE id=$1", code_id
+        )
+        # Удаляем pending активацию если есть
+        await conn.execute(
+            "DELETE FROM gpt_pending_activations WHERE code=$1", row["code"]
+        )
+    await cb.answer(f"✅ Код {row['code']} возвращён в пул", show_alert=True)
+    cb.data = f"adm_gpt_pending:{plan}"
+    await adm_gpt_pending_codes(cb)
 
 
 @dp.message(F.text == "/test_gpt_webapp", StateFilter("*"))
