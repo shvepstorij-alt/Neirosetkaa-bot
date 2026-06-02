@@ -11,9 +11,9 @@ import logging
 import os
 
 # ── ВАЖНО: устанавливаем путь к браузеру ДО импорта playwright ──────────────
-# Railway multi-stage build: /root/.cache не попадает в финальный образ.
-# /app/pw-browsers — внутри папки приложения, всегда доступен в runtime.
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/app/pw-browsers")
+# /tmp/pw-browsers — всегда доступен на запись в любом контейнере Railway.
+# Браузер скачивается один раз при старте бота (см. _ensure_playwright_browser в bot.py).
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/tmp/pw-browsers")
 
 logger = logging.getLogger(__name__)
 
