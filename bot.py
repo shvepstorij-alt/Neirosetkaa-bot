@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import os
 import re
+import uuid
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, ChatMemberUpdated, InlineKeyboardMarkup,
@@ -127,6 +128,7 @@ user_orig_images = {}     # последнее фото: {user_id: {"data": byte
 # A) Одна активная генерация на юзера
 MAX_CONCURRENT_GENS = 3  # максимум одновременных генераций на пользователя
 _active_generations: set = set()  # {user_id}  ← устаревший in-memory кэш (оставлен для совместимости)
+_activation_jobs: dict = {}  # {job_id: {"status": "pending"|"done", ...}}
 
 # B) Почасовой лимит: {user_id: [timestamps]}
 _photo_history: dict = {}      # фото + редактирование
@@ -13747,7 +13749,59 @@ def _verify_tg_init_data(init_data: str) -> int | None:
         logging.warning(f"initData verify: {_e}")
         return None
 
+async def _run_activation_job(
+    job_id: str, code: str, access_token: str,
+    user_id: int, order_id: str, plan_name: str
+):
+    """Фоновая задача: Playwright-активация. Не держит HTTP-соединение."""
+    try:
+        result = await activate_chatgpt(code, access_token)
+        if result.get("success"):
+            _email = _extract_email_from_token(access_token)
+            await mark_gpt_code_used(code, user_id, order_id, _email)
+            await delete_pending_activation(user_id)
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"✅ <b>ChatGPT авто-активация OK</b>\n"
+                    f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                    f"📧 {_email or '—'}\n"
+                    f"🔑 <code>{code}</code>\n🆔 <code>{order_id}</code>",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            _activation_jobs[job_id] = {"status": "done", "success": True}
+        else:
+            await release_gpt_code(code)
+            await delete_pending_activation(user_id)
+            error_text = result.get("error", "Ошибка активации")
+            _activation_jobs[job_id] = {"status": "done", "success": False, "error": error_text}
+            try:
+                screenshot = result.get("screenshot")
+                txt = (
+                    f"❌ <b>ChatGPT авто-активация НЕУДАЧА</b>\n"
+                    f"👤 <code>{user_id}</code>\n"
+                    f"🔑 <code>{code}</code>\n"
+                    f"❗ {error_text}\nКод возвращён в пул."
+                )
+                if screenshot:
+                    await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
+                                         caption=txt, parse_mode="HTML")
+                else:
+                    await bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
+            except Exception:
+                pass
+    except Exception as e:
+        logging.error(f"_run_activation_job {job_id}: {e}", exc_info=True)
+        _activation_jobs[job_id] = {
+            "status": "done", "success": False,
+            "error": "Внутренняя ошибка сервера. Напиши Александру."
+        }
+
+
 async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
+    """POST /api/activate-chatgpt — запускает задачу в фоне, сразу возвращает job_id."""
     import json as _json
     def _resp(data, status=200):
         return web.Response(text=_json.dumps(data, ensure_ascii=False),
@@ -13755,50 +13809,46 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return _resp({"success": False, "error": "Неверный формат"}, 400)
+        return _resp({"success": False, "error": "Неверный формат запроса"}, 400)
+
     access_token = (body.get("token") or "").strip()
     init_data    = (body.get("init_data") or "").strip()
+
     user_id = _verify_tg_init_data(init_data)
     if not user_id:
-        return _resp({"success": False, "error": "Ошибка авторизации."}, 403)
+        return _resp({"success": False, "error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
     if not access_token.startswith("eyJ") or len(access_token) < 100:
-        return _resp({"success": False, "error": "Некорректный токен."})
+        return _resp({"success": False, "error": "Некорректный токен. Скопируй текст со страницы ещё раз."})
+
     pending = await get_pending_activation(user_id)
     if not pending:
-        return _resp({"success": False, "error": f"Время истекло. Обратись к @{PERSONAL_USERNAME}"})
+        return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
+
     client_code = (body.get("code") or "").strip()
-    code = client_code if client_code else pending["code"]
-    order_id = pending["order_id"]; plan_name = pending["plan_name"]
-    logging.info(f"Mini App activation: user={user_id} code={code}")
-    result = await activate_chatgpt(code, access_token)
-    if result.get("success"):
-        _email = _extract_email_from_token(access_token)
-        await mark_gpt_code_used(code, user_id, order_id, _email)
-        await delete_pending_activation(user_id)
-        try:
-            _email = _extract_email_from_token(access_token)
-            await bot.send_message(ADMIN_ID,
-                f"✅ <b>ChatGPT авто-активация OK</b>\n"
-                f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
-                f"📧 {_email or '—'}\n"
-                f"🔑 <code>{code}</code>\n🆔 <code>{order_id}</code>", parse_mode="HTML")
-        except Exception: pass
-        return _resp({"success": True})
-    else:
-        await release_gpt_code(code)
-        await delete_pending_activation(user_id)
-        error_text = result.get("error", "Ошибка")
-        try:
-            screenshot = result.get("screenshot")
-            txt = (f"❌ <b>ChatGPT авто-активация НЕУДАЧА</b>\n👤 <code>{user_id}</code>\n"
-                   f"🔑 <code>{code}</code>\n❗ {error_text}\nКод возвращён.")
-            if screenshot:
-                await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
-                                     caption=txt, parse_mode="HTML")
-            else:
-                await bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
-        except Exception: pass
-        return _resp({"success": False, "error": error_text})
+    code      = client_code if client_code else pending["code"]
+    order_id  = pending["order_id"]
+    plan_name = pending["plan_name"]
+
+    job_id = str(uuid.uuid4())[:12]
+    _activation_jobs[job_id] = {"status": "pending"}
+    asyncio.create_task(
+        _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name)
+    )
+    logging.info(f"ChatGPT activation started: job={job_id} user={user_id} code={code}")
+    return _resp({"job_id": job_id, "status": "started"})
+
+
+async def api_activation_status_handler(request: web.Request) -> web.Response:
+    """GET /api/activate-status/{job_id} — статус задачи активации."""
+    import json as _json
+    job_id = request.match_info.get("job_id", "")
+    job    = _activation_jobs.get(job_id)
+    if not job:
+        return web.Response(
+            text=_json.dumps({"status": "not_found", "error": "Задача не найдена"}),
+            content_type="application/json", status=404
+        )
+    return web.Response(text=_json.dumps(job, ensure_ascii=False), content_type="application/json")
 
 
 
@@ -14546,7 +14596,8 @@ async def setup_webhook_server():
         logging.info(f"FK webhook зарегистрован: POST {path}")
     app.router.add_get("/webapp/chatgpt", webapp_chatgpt_handler)
     app.router.add_post("/api/activate-chatgpt", api_activate_chatgpt_handler)
-    logging.info("Mini App: /webapp/chatgpt + /api/activate-chatgpt")
+    app.router.add_get("/api/activate-status/{job_id}", api_activation_status_handler)
+    logging.info("Mini App: /webapp/chatgpt + /api/activate-chatgpt + /api/activate-status")
     port = int(os.getenv("FK_WEBHOOK_PORT", "8080"))
     runner = web.AppRunner(app)
     await runner.setup()
@@ -14586,6 +14637,17 @@ async def gpt_codes_cleanup_loop():
         except Exception as e:
             logging.error(f"gpt_codes_cleanup_loop: {e}")
 
+
+async def _activation_jobs_cleanup_loop():
+    """Каждый час удаляет завершённые задачи из _activation_jobs."""
+    while True:
+        await asyncio.sleep(3600)
+        done_keys = [k for k, v in list(_activation_jobs.items()) if v.get("status") == "done"]
+        for k in done_keys:
+            del _activation_jobs[k]
+        if done_keys:
+            logging.info(f"🧹 activation_jobs cleanup: {len(done_keys)} tasks removed")
+
 async def main():
     await init_db()
     await load_prices_from_db()
@@ -14599,6 +14661,7 @@ async def main():
     asyncio.create_task(reminders_loop())
     asyncio.create_task(db_cleanup_loop())
     asyncio.create_task(gpt_codes_cleanup_loop())
+    asyncio.create_task(_activation_jobs_cleanup_loop())
     await dp.start_polling(bot)
 
 
