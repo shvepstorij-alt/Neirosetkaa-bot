@@ -14505,17 +14505,10 @@ async def test_chatgpt_full(message: Message):
 
     # Отправляем сообщение — точная копия того что видит реальный клиент
     await message.answer(
-        f"🎉 <b>Оплата прошла!</b>
-
-"
-        f"📦 <b>ChatGPT {plan_name}</b>
-
-"
-        f"Осталось активировать подписку — нажми кнопку ниже 👇
-
-"
-        f"<i>⚠️ ТЕСТ — это фейковый код, нигде не записан</i>
-"
+        f"🎉 <b>Оплата прошла!</b>\n\n"
+        f"📦 <b>ChatGPT {plan_name}</b>\n\n"
+        f"Осталось активировать подписку — нажми кнопку ниже 👇\n\n"
+        f"<i>⚠️ ТЕСТ — это фейковый код, нигде не записан</i>\n"
         f"<i>🔑 Код: <code>{fake_code}</code></i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
