@@ -2,9 +2,6 @@
 nixPkgs = ["ffmpeg"]
 
 [phases.install]
-# Сначала ставим зависимости, потом скачиваем браузер в /app/pw-browsers
-# (этот путь попадает в финальный Docker-образ, в отличие от /root/.cache)
-cmds = [
-  "pip install -r requirements.txt",
-  "PLAYWRIGHT_BROWSERS_PATH=/app/pw-browsers python -m playwright install chromium"
-]
+# Playwright браузер скачивается при старте бота (_ensure_playwright_browser в main())
+# а не здесь — Railway не переносит build-кэш в runtime-контейнер
+cmds = ["pip install -r requirements.txt"]
