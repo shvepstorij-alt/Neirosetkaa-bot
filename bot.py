@@ -26,6 +26,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Таймзона для отображения времени (UTC+5 = Yekaterinburg / Kazakhstan)
+import datetime as _dt_tz
+_BOT_TZ = _dt_tz.timezone(_dt_tz.timedelta(hours=5))
+
 from chatgpt_activation import activate_chatgpt  # авто-активация ChatGPT
 
 # ─── Конфиг ───────────────────────────────────────────────
@@ -4913,7 +4917,7 @@ async def cmd_audit_user(message: Message):
     text = (
         f"🔍 <b>Аудит юзера {target_uid}</b>\n\n"
         f"💰 Текущий баланс: <b>{user_row['credits']} кр</b>\n"
-        f"📅 Зарегистрирован: {user_row['created_at'].strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"📅 Зарегистрирован: {user_row['created_at'].astimezone(_BOT_TZ).strftime('%d.%m.%Y %H:%M')}\n\n"
         f"📊 <b>Сводка:</b>\n"
         f"• Потрачено на генерации: {total_spent} кр ({len(gens)} шт за последние 30)\n"
         f"• Возвратов/начислений: {total_refunds} кр ({refund_count} событий)\n\n"
@@ -4924,12 +4928,12 @@ async def cmd_audit_user(message: Message):
 
     text += "<b>Последние события:</b>\n"
     for ev in events[:15]:
-        ts = ev["created_at"].strftime("%d.%m %H:%M")
+        ts = ev["created_at"].astimezone(_BOT_TZ).strftime("%d.%m %H:%M")
         text += f"<code>{ts}</code> {ev['kind']}: {(ev['details'] or '')[:50]}\n"
 
     text += "\n<b>Последние генерации:</b>\n"
     for g in gens[:10]:
-        ts = g["created_at"].strftime("%d.%m %H:%M")
+        ts = g["created_at"].astimezone(_BOT_TZ).strftime("%d.%m %H:%M")
         text += f"<code>{ts}</code> {g['type']}/{g['model']}: -{g['credits']} кр\n"
 
     # Telegram max message = 4096 chars, режем если надо
@@ -13810,7 +13814,7 @@ async def _run_activation_job(
             await delete_pending_activation(user_id)
             try:
                 import datetime as _dt
-                _used_at = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M")
+                _used_at = _dt.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
                 # Получаем username и full_name клиента из БД
                 try:
                     _pool = await get_pool()
@@ -13848,7 +13852,7 @@ async def _run_activation_job(
             _activation_jobs[job_id] = {"status": "done", "success": False, "error": error_text}
             try:
                 import datetime as _dt
-                _fail_at = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M")
+                _fail_at = _dt.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
                 try:
                     _pool2 = await get_pool()
                     async with _pool2.acquire() as _conn2:
@@ -14337,7 +14341,7 @@ async def adm_gpt_pending_codes(cb: CallbackQuery):
     code_btns = []
     for r in rows:
         reserved = r["reserved_at"]
-        date_str = reserved.strftime("%d.%m %H:%M") if reserved and hasattr(reserved, "strftime") else "—"
+        date_str = reserved.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if reserved and hasattr(reserved, "strftime") else "—"
         uname = r["username"] or r["full_name"] or (f"id{r['pa_uid']}" if r["pa_uid"] else "—")
         tg_str = f"@{uname}" if r["username"] else uname
         lines.append(f"• <code>{r['code']}</code>  👤 {tg_str}  ⏱ {date_str}")
