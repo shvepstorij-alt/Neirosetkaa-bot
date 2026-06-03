@@ -14639,7 +14639,7 @@ async def test_chatgpt_full(message: Message):
             )],
             [InlineKeyboardButton(
                 text="❓ Нужна помощь",
-                url=f"https://t.me/{PERSONAL_USERNAME}"
+                callback_data="gpt_need_help"
             )],
         ])
     )
@@ -14876,7 +14876,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                                 web_app=WebAppInfo(url=_webapp_url))],
                             [InlineKeyboardButton(
                                 text="❓ Нужна помощь",
-                                url=f"https://t.me/{PERSONAL_USERNAME}")],
+                                callback_data="gpt_need_help")],
                         ]))
             else:
                 await bot.send_message(
@@ -15263,6 +15263,87 @@ async def _activation_jobs_cleanup_loop():
         if done_keys:
             logging.info(f"🧹 activation_jobs cleanup: {len(done_keys)} tasks removed")
 
+
+
+
+# ── Помощь с активацией ChatGPT ──────────────────────────────────────────────
+
+@dp.callback_query(F.data == "gpt_need_help")
+async def cb_gpt_need_help(cb: CallbackQuery):
+    await cb.answer()
+    uid = cb.from_user.id
+    await ensure_user(uid, cb.from_user.username or '', cb.from_user.full_name)
+    await cb.message.answer(
+        "❓ <b>Нужна помощь с активацией?</b>\n\n"
+        "Напиши Александру — он активирует вручную в течение 15–30 минут.\n\n"
+        "После того как Александр активировал твою подписку — нажми кнопку ниже 👇",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="💬 Написать Александру",
+                url=f"https://t.me/{PERSONAL_USERNAME}"
+            )],
+            [InlineKeyboardButton(
+                text="✅ Активировали тариф вручную",
+                callback_data="gpt_manual_activated"
+            )],
+        ])
+    )
+    try:
+        pending = await get_pending_activation(uid)
+        code_info = (
+            f"\n🔑 Код: <code>{pending['code']}</code>"
+            f"\n📦 Тариф: <b>{pending.get('plan_name', '?')}</b>"
+        ) if pending else ""
+        await bot.send_message(
+            ADMIN_ID,
+            f"❓ <b>Клиент нажал «Нужна помощь»</b>\n\n"
+            f"👤 <code>{uid}</code>{code_info}\n\n"
+            f"Активируй вручную и попроси клиента нажать «Активировали тариф вручную».",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "gpt_manual_activated")
+async def cb_gpt_manual_activated(cb: CallbackQuery):
+    await cb.answer()
+    uid = cb.from_user.id
+    pending = await get_pending_activation(uid)
+    if pending:
+        code = pending["code"]
+        plan_name = pending.get("plan_name", "?")
+        await release_gpt_code(code)
+        await delete_pending_activation(uid)
+        await log_event(uid, "manual_activated", f"code={code} plan={plan_name}")
+        await cb.message.answer(
+            "✅ <b>Готово!</b>\n\n"
+            "Сессия закрыта. Можешь заходить в ChatGPT и пользоваться 🎉\n\n"
+            "Если возникнут вопросы — пиши @neirosetkaalex",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
+            ])
+        )
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"✅ <b>Ручная активация подтверждена клиентом</b>\n\n"
+                f"👤 <code>{uid}</code>\n"
+                f"🔑 Код: <code>{code}</code> — возвращён в пул\n"
+                f"📦 Тариф: <b>{plan_name}</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    else:
+        await cb.message.answer(
+            "ℹ️ Активная сессия не найдена — возможно уже завершена ранее.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
+            ])
+        )
 
 
 # ══════════════════════════════════════════════════════════
