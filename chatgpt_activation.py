@@ -101,19 +101,36 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             logger.info("Нажали 'Проверить карту'")
 
             # ── ШАГ 2: Ввести токен ───────────────────────────────────────
-            token_area = page.locator(
-                "textarea, "
-                "input[type='text']:not([value]):not([readonly]), "
-                "input[type='password']"
-            ).last
-            await token_area.wait_for(state="visible", timeout=20_000)
+            # ВАЖНО: ждём именно textarea — она есть ТОЛЬКО на Step 2.
+            # На Step 1 её нет (там обычный <input>). Это гарантирует что
+            # мы не вольём JWT в поле карты если Step 2 ещё не загрузился.
+            token_area = page.locator("textarea").last
+            try:
+                await token_area.wait_for(state="visible", timeout=25_000)
+            except PlaywrightTimeout:
+                diag_ss = None
+                try:
+                    diag_ss = await page.screenshot(full_page=True)
+                except Exception:
+                    pass
+                page_txt = ""
+                try:
+                    page_txt = (await page.inner_text("body"))[:400]
+                except Exception:
+                    pass
+                logger.error(f"Step 2 не загрузился (нет textarea). Страница: {page_txt!r}")
+                return {
+                    "success": False,
+                    "error": "Карта не прошла проверку или сайт не загрузил шаг 2. Проверь код карты.",
+                    "screenshot": diag_ss,
+                }
             await asyncio.sleep(1.0)
             await token_area.fill("")
             await token_area.fill(access_token)
             await asyncio.sleep(0.8)
-            logger.info("Токен введён")
+            logger.info(f"Токен введён в textarea (длина: {len(access_token)})")
 
-            # ── Диагностика: логируем все видимые кнопки после ввода токена ──
+            # ── Диагностика: логируем все видимые кнопки и поля ─────────────
             try:
                 all_btns = page.locator("button")
                 btn_count = await all_btns.count()
@@ -130,6 +147,16 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 logger.info(f"Видимые кнопки после ввода токена: {', '.join(visible_btn_texts) or '(не найдено)'}")
             except Exception as log_err:
                 logger.warning(f"Не удалось перечислить кнопки: {log_err}")
+
+            # Проверяем что токен попал именно в textarea, а не куда-то ещё
+            try:
+                actual_val = (await token_area.input_value()).strip()
+                if actual_val.startswith("eyJ"):
+                    logger.info(f"✅ Токен в поле подтверждён (начало: {actual_val[:20]}...)")
+                else:
+                    logger.warning(f"⚠️ В токен-поле неожиданное значение: {actual_val[:40]!r}")
+            except Exception:
+                pass
 
             # ── Ищем кнопку Шага 2 — расширенный список + fallback ───────
             # Приоритетные тексты (в порядке проверки)
