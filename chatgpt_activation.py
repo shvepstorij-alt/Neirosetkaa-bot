@@ -147,70 +147,6 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             await asyncio.sleep(0.8)
             logger.info(f"Токен введён в textarea (длина: {len(access_token)})")
 
-            # ── Принудительное пополнение — всегда включаем ──────────────────
-            # Если у клиента уже активна подписка, без этой галочки сайт откажет.
-            # Ищем чекбокс по тексту рядом с ним или по атрибутам.
-            FORCE_LABELS = [
-                "принудительное пополнение",
-                "强制充值",
-                "force recharge",
-                "force top",
-                "принудительн",
-                "принуд",
-            ]
-            try:
-                force_checked = False
-                # Вариант 1: label рядом с чекбоксом содержит текст
-                for label_text in FORCE_LABELS:
-                    label = page.locator(f"label:has-text('{label_text}')").first
-                    try:
-                        if await label.is_visible():
-                            checkbox = page.locator(
-                                f"label:has-text('{label_text}') input[type='checkbox']"
-                            ).first
-                            if not await checkbox.count():
-                                # чекбокс может быть братом label
-                                checkbox = page.locator(
-                                    f"input[type='checkbox']"
-                                ).first
-                            if await checkbox.is_visible():
-                                is_checked = await checkbox.is_checked()
-                                if not is_checked:
-                                    await checkbox.check()
-                                    logger.info(f"✅ Чекбокс 'принудительное пополнение' включён (label: '{label_text}')")
-                                else:
-                                    logger.info(f"✅ Чекбокс 'принудительное пополнение' уже был включён")
-                                force_checked = True
-                                break
-                    except Exception:
-                        pass
-
-                # Вариант 2: ищем любой чекбокс на странице и кликаем
-                if not force_checked:
-                    all_checkboxes = page.locator("input[type='checkbox']")
-                    cb_count = await all_checkboxes.count()
-                    for i in range(cb_count):
-                        cb = all_checkboxes.nth(i)
-                        try:
-                            if await cb.is_visible():
-                                is_checked = await cb.is_checked()
-                                if not is_checked:
-                                    await cb.check()
-                                    logger.info(f"✅ Чекбокс #{i} включён (принудительное пополнение)")
-                                else:
-                                    logger.info(f"✅ Чекбокс #{i} уже был включён")
-                                force_checked = True
-                                break
-                        except Exception:
-                            pass
-
-                if not force_checked:
-                    logger.info("ℹ️ Чекбокс 'принудительное пополнение' не найден — пропускаем")
-            except Exception as cb_err:
-                logger.warning(f"Ошибка при работе с чекбоксом: {cb_err}")
-
-            await asyncio.sleep(0.5)
-
             # ── Диагностика: логируем все видимые кнопки и поля ─────────────
             try:
                 all_btns = page.locator("button")
@@ -335,7 +271,51 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             logger.info("Нажали кнопку 'Подтвердить аккаунт'")
 
             # ── ШАГ 3: Подтвердить пополнение ────────────────────────────
-            await asyncio.sleep(2.0)
+            # Шаг 3 загружается после "Проверить аккаунт". Ждём его.
+            await asyncio.sleep(2.5)
+
+            # ── Принудительное пополнение — включаем чекбокс на Шаге 3 ──────
+            # Чекбокс появляется ТОЛЬКО на Шаге 3 (подтверждение пополнения).
+            # Без него сайт не активирует если подписка уже активна.
+            try:
+                # Ищем чекбокс рядом с текстом "Принудительное пополнение"
+                force_cb = None
+                for cb_label in ["Принудительное пополнение", "强制充值", "Force Recharge", "Принудительн"]:
+                    try:
+                        # Сначала ищем внутри label
+                        cb = page.locator(f"label:has-text('{cb_label}') input[type='checkbox']").first
+                        if await cb.count() and await cb.is_visible():
+                            force_cb = cb
+                            break
+                        # Потом ищем label и берём соседний чекбокс
+                        lbl = page.locator(f"label:has-text('{cb_label}')").first
+                        if await lbl.is_visible():
+                            force_cb = page.locator("input[type='checkbox']").first
+                            break
+                    except Exception:
+                        pass
+
+                # Fallback: любой видимый чекбокс на странице
+                if not force_cb:
+                    all_cbs = page.locator("input[type='checkbox']")
+                    for i in range(await all_cbs.count()):
+                        cb = all_cbs.nth(i)
+                        if await cb.is_visible():
+                            force_cb = cb
+                            break
+
+                if force_cb:
+                    if not await force_cb.is_checked():
+                        await force_cb.check()
+                        logger.info("✅ Чекбокс 'Принудительное пополнение' включён")
+                    else:
+                        logger.info("✅ Чекбокс 'Принудительное пополнение' уже был включён")
+                else:
+                    logger.info("ℹ️ Чекбокс 'Принудительное пополнение' не найден на Шаге 3")
+            except Exception as cb_err:
+                logger.warning(f"Ошибка чекбокса на Шаге 3: {cb_err}")
+
+            await asyncio.sleep(0.5)
 
             STEP3_TEXTS = [
                 "Подтвердить пополнение",
