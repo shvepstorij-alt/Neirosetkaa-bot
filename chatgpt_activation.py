@@ -115,10 +115,27 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                     pass
                 page_txt = ""
                 try:
-                    page_txt = (await page.inner_text("body"))[:400]
+                    page_txt = await page.inner_text("body")
                 except Exception:
                     pass
-                logger.error(f"Step 2 не загрузился (нет textarea). Страница: {page_txt!r}")
+                page_txt_lower = page_txt.lower()
+
+                # Проверяем: код уже использован на сайте?
+                already_used_markers = [
+                    "уже использован", "already used", "已使用", "已激活",
+                    "пополнить с существующей", "существующей записью",
+                    "аккаунт пополнения",   # текст под «уже использован»
+                ]
+                if any(m in page_txt_lower for m in already_used_markers):
+                    logger.warning(f"Код {card_code} уже использован на 987ai.vip — нужен новый")
+                    return {
+                        "success": False,
+                        "code_already_used": True,
+                        "error": f"Код {card_code} уже занят. Выдаём следующий автоматически.",
+                        "screenshot": diag_ss,
+                    }
+
+                logger.error(f"Step 2 не загрузился (нет textarea). Страница: {page_txt[:400]!r}")
                 return {
                     "success": False,
                     "error": "Карта не прошла проверку или сайт не загрузил шаг 2. Проверь код карты.",
@@ -129,6 +146,70 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             await token_area.fill(access_token)
             await asyncio.sleep(0.8)
             logger.info(f"Токен введён в textarea (длина: {len(access_token)})")
+
+            # ── Принудительное пополнение — всегда включаем ──────────────────
+            # Если у клиента уже активна подписка, без этой галочки сайт откажет.
+            # Ищем чекбокс по тексту рядом с ним или по атрибутам.
+            FORCE_LABELS = [
+                "принудительное пополнение",
+                "强制充值",
+                "force recharge",
+                "force top",
+                "принудительн",
+                "принуд",
+            ]
+            try:
+                force_checked = False
+                # Вариант 1: label рядом с чекбоксом содержит текст
+                for label_text in FORCE_LABELS:
+                    label = page.locator(f"label:has-text('{label_text}')").first
+                    try:
+                        if await label.is_visible():
+                            checkbox = page.locator(
+                                f"label:has-text('{label_text}') input[type='checkbox']"
+                            ).first
+                            if not await checkbox.count():
+                                # чекбокс может быть братом label
+                                checkbox = page.locator(
+                                    f"input[type='checkbox']"
+                                ).first
+                            if await checkbox.is_visible():
+                                is_checked = await checkbox.is_checked()
+                                if not is_checked:
+                                    await checkbox.check()
+                                    logger.info(f"✅ Чекбокс 'принудительное пополнение' включён (label: '{label_text}')")
+                                else:
+                                    logger.info(f"✅ Чекбокс 'принудительное пополнение' уже был включён")
+                                force_checked = True
+                                break
+                    except Exception:
+                        pass
+
+                # Вариант 2: ищем любой чекбокс на странице и кликаем
+                if not force_checked:
+                    all_checkboxes = page.locator("input[type='checkbox']")
+                    cb_count = await all_checkboxes.count()
+                    for i in range(cb_count):
+                        cb = all_checkboxes.nth(i)
+                        try:
+                            if await cb.is_visible():
+                                is_checked = await cb.is_checked()
+                                if not is_checked:
+                                    await cb.check()
+                                    logger.info(f"✅ Чекбокс #{i} включён (принудительное пополнение)")
+                                else:
+                                    logger.info(f"✅ Чекбокс #{i} уже был включён")
+                                force_checked = True
+                                break
+                        except Exception:
+                            pass
+
+                if not force_checked:
+                    logger.info("ℹ️ Чекбокс 'принудительное пополнение' не найден — пропускаем")
+            except Exception as cb_err:
+                logger.warning(f"Ошибка при работе с чекбоксом: {cb_err}")
+
+            await asyncio.sleep(0.5)
 
             # ── Диагностика: логируем все видимые кнопки и поля ─────────────
             try:
@@ -403,6 +484,118 @@ def _extract_error_text(page_text: str) -> str:
         if len(line) > 5 and any(m in line for m in ["ошибка", "error", "失败", "invalid", "expired"]):
             return line[:200]
     return "Ошибка активации. Возможно токен истёк или уже использован."
+
+
+async def check_gpt_code(card_code: str) -> dict:
+    """
+    Проверяет код активации на 987ai.vip (только Шаг 1 — без токена).
+
+    Returns одно из:
+        {"status": "ok"}                          — код валидный, Step 2 открылся
+        {"status": "used",  "email": "..."}       — код уже использован
+        {"status": "invalid"}                     — код не существует
+        {"status": "error", "error": "..."}       — сетевая ошибка / таймаут
+    """
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"status": "error", "error": "Playwright не установлен"}
+
+    url = f"https://www.987ai.vip/recharge?card={card_code}"
+    logger.debug(f"check_gpt_code: {card_code}")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage",
+                      "--disable-gpu", "--single-process"]
+            )
+        except Exception as e:
+            return {"status": "error", "error": f"Браузер не запустился: {e}"}
+
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="ru-RU"
+        )
+        page = await context.new_page()
+
+        try:
+            await page.goto(url, timeout=25_000, wait_until="networkidle")
+
+            # Вводим код и нажимаем «Проверить карту»
+            card_input = page.locator("input").first
+            await card_input.wait_for(state="visible", timeout=12_000)
+            await card_input.fill("")
+            await card_input.fill(card_code)
+            await asyncio.sleep(0.4)
+
+            verify_btn = page.locator(
+                "button:has-text('Проверить карту'), "
+                "button:has-text('验证卡密'), "
+                "button:has-text('Check Card'), "
+                "button:has-text('Verify Card')"
+            ).first
+            await verify_btn.wait_for(state="visible", timeout=8_000)
+            await verify_btn.click()
+
+            # Ждём реакции сайта (до 12 сек)
+            await asyncio.sleep(2.0)
+            try:
+                page_text = await page.inner_text("body")
+            except Exception:
+                page_text = ""
+            pt_lower = page_text.lower()
+
+            # ── Код уже использован ──────────────────────────────────────
+            used_markers = [
+                "уже использован", "already used", "已使用", "已激活",
+                "пополнить с существующей", "аккаунт пополнения",
+            ]
+            if any(m in pt_lower for m in used_markers):
+                # Пробуем вытащить email
+                email = ""
+                import re as _re
+                m = _re.search(r'[\w.+-]+@[\w.-]+\.\w+', page_text)
+                if m:
+                    email = m.group(0)
+                logger.info(f"check_gpt_code {card_code}: USED email={email}")
+                return {"status": "used", "email": email}
+
+            # ── Код не существует ────────────────────────────────────────
+            invalid_markers = [
+                "не существует", "does not exist", "不存在", "invalid card",
+                "ключ не найден", "card not found",
+            ]
+            if any(m in pt_lower for m in invalid_markers):
+                logger.info(f"check_gpt_code {card_code}: INVALID")
+                return {"status": "invalid"}
+
+            # ── Шаг 2 загрузился — textarea видна ───────────────────────
+            try:
+                textarea = page.locator("textarea").last
+                await textarea.wait_for(state="visible", timeout=10_000)
+                logger.info(f"check_gpt_code {card_code}: OK")
+                return {"status": "ok"}
+            except PlaywrightTimeout:
+                pass
+
+            # ── Неизвестное состояние ────────────────────────────────────
+            logger.warning(f"check_gpt_code {card_code}: unknown state — {page_text[:200]!r}")
+            return {"status": "error", "error": f"Неизвестный ответ сайта: {page_text[:100]}"}
+
+        except PlaywrightTimeout as e:
+            logger.warning(f"check_gpt_code {card_code}: timeout — {e}")
+            return {"status": "error", "error": "timeout"}
+        except Exception as e:
+            logger.error(f"check_gpt_code {card_code}: {e}")
+            return {"status": "error", "error": str(e)[:200]}
+        finally:
+            await browser.close()
 
 
 if __name__ == "__main__":
