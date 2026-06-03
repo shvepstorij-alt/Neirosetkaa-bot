@@ -15345,17 +15345,15 @@ async def gpt_code_rechecker_loop():
                     icon = "♻️" if st == "used" else "❌"
                     lines.append(f"{icon} <code>{code}</code> — {st}" + (f" ({em})" if em else ""))
                 try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🔍 <b>Речекер кодов: найдены проблемные</b>
-
-"
-                        + "\n".join(lines) +
-                        f"\n\n✅ Проверено рабочих: <b>{ok_count}</b>\n"
+                    _lines_str = "\n".join(lines)
+                    _msg = (
+                        f"🔍 <b>Речекер кодов: найдены проблемные</b>\n\n"
+                        f"{_lines_str}\n\n"
+                        f"✅ Проверено рабочих: <b>{ok_count}</b>\n"
                         f"⚠️ Помечено: <b>{len(flagged)}</b>\n\n"
-                        f"Плохие коды исключены из выдачи автоматически.",
-                        parse_mode="HTML"
+                        f"Плохие коды исключены из выдачи автоматически."
                     )
+                    await bot.send_message(ADMIN_ID, _msg, parse_mode="HTML")
                 except Exception:
                     pass
             else:
