@@ -13709,17 +13709,44 @@ async def admin_gpt_codes_status(message: Message):
         return
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """SELECT plan, COUNT(*) FILTER(WHERE NOT is_used) AS free,
-                      COUNT(*) FILTER(WHERE is_used) AS used
+        # Свободные коды с деталями
+        free_rows = await conn.fetch(
+            """SELECT plan, code, created_at FROM gpt_codes
+               WHERE is_used = FALSE ORDER BY plan, id""")
+        # Статистика по тарифам
+        stat_rows = await conn.fetch(
+            """SELECT plan,
+                      COUNT(*) FILTER(WHERE NOT is_used)                     AS free,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NOT NULL)  AS used,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NULL)      AS pending
                FROM gpt_codes GROUP BY plan ORDER BY plan""")
-    if not rows:
+    if not stat_rows:
         await message.answer("📭 Кодов нет. Добавь: /add_gpt_codes")
         return
-    lines = ["📊 <b>Коды ChatGPT:</b>\n"]
-    for r in rows:
+
+    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    # Группируем свободные коды по тарифу
+    from collections import defaultdict
+    free_by_plan = defaultdict(list)
+    for r in free_rows:
+        free_by_plan[r["plan"]].append(r["code"])
+
+    lines = ["📊 <b>Коды ChatGPT — статус</b>\n"]
+    for r in stat_rows:
+        plan = r["plan"]
+        label = plan_labels.get(plan, plan)
         icon = "✅" if r["free"] > 2 else ("⚠️" if r["free"] > 0 else "🚨")
-        lines.append(f"{icon} <b>{r['plan']}</b>: {r['free']} свободных / {r['used']} использованных")
+        pending_str = f"  ⏳ {r['pending']} ждут" if r["pending"] else ""
+        lines.append(
+            f"\n{icon} <b>{label}</b>: {r['free']} своб / {r['used']} актив{pending_str}"
+        )
+        codes = free_by_plan.get(plan, [])
+        if codes:
+            for i, c in enumerate(codes, 1):
+                lines.append(f"  {i}. <code>{c}</code>")
+        else:
+            lines.append("  <i>свободных нет</i>")
+
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
@@ -13796,17 +13823,21 @@ async def _run_activation_job(
                 except Exception:
                     _username = _full_name = ""
                 _tg_name = (f"@{_username}" if _username else _full_name) or f"id{user_id}"
-                await bot.send_message(
-                    ADMIN_ID,
+                _caption = (
                     f"✅ <b>ChatGPT авто-активация OK</b>\n\n"
                     f"👤 Клиент: <b>{_tg_name}</b>  (<code>{user_id}</code>)\n"
                     f"📧 Email: <b>{_email or '—'}</b>\n"
                     f"🔑 Код: <code>{code}</code>\n"
                     f"📦 Тариф: <b>{plan_name}</b>\n"
                     f"⏱ Время: <b>{_used_at}</b>\n"
-                    f"🆔 Order: <code>{order_id}</code>",
-                    parse_mode="HTML"
+                    f"🆔 Order: <code>{order_id}</code>"
                 )
+                _screenshot = result.get("screenshot")
+                if _screenshot:
+                    await bot.send_photo(ADMIN_ID, BufferedInputFile(_screenshot, "ok.png"),
+                                         caption=_caption, parse_mode="HTML")
+                else:
+                    await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
             except Exception:
                 pass
             _activation_jobs[job_id] = {"status": "done", "success": True}
@@ -13816,12 +13847,28 @@ async def _run_activation_job(
             error_text = result.get("error", "Ошибка активации")
             _activation_jobs[job_id] = {"status": "done", "success": False, "error": error_text}
             try:
+                import datetime as _dt
+                _fail_at = _dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+                try:
+                    _pool2 = await get_pool()
+                    async with _pool2.acquire() as _conn2:
+                        _urow2 = await _conn2.fetchrow(
+                            "SELECT username, full_name FROM users WHERE user_id=$1", user_id
+                        )
+                    _un2 = _urow2["username"]  if _urow2 and _urow2["username"]  else ""
+                    _fn2 = _urow2["full_name"] if _urow2 and _urow2["full_name"] else ""
+                except Exception:
+                    _un2 = _fn2 = ""
+                _tg2 = (f"@{_un2}" if _un2 else _fn2) or f"id{user_id}"
                 screenshot = result.get("screenshot")
                 txt = (
-                    f"❌ <b>ChatGPT авто-активация НЕУДАЧА</b>\n"
-                    f"👤 <code>{user_id}</code>\n"
-                    f"🔑 <code>{code}</code>\n"
-                    f"❗ {error_text}\nКод возвращён в пул."
+                    f"❌ <b>ChatGPT авто-активация НЕУДАЧА</b>\n\n"
+                    f"👤 Клиент: <b>{_tg2}</b>  (<code>{user_id}</code>)\n"
+                    f"🔑 Код: <code>{code}</code>\n"
+                    f"📦 Тариф: <b>{plan_name}</b>\n"
+                    f"⏱ Время: <b>{_fail_at}</b>\n"
+                    f"❗ {error_text}\n"
+                    f"🔄 Код возвращён в пул."
                 )
                 if screenshot:
                     await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
@@ -14065,7 +14112,7 @@ async def adm_gpt_history(cb: CallbackQuery):
 
     plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
     lines = [f"📋 <b>История активаций</b> (всего {total}):\n"]
-    for r in rows:
+    for idx, r in enumerate(rows, start=offset + 1):
         used_at = r["used_at"]
         used_str = used_at.strftime("%d.%m.%y %H:%M") if used_at and hasattr(used_at, "strftime") else "—"
         plan_name = plan_labels.get(r["plan"], r["plan"])
@@ -14075,7 +14122,7 @@ async def adm_gpt_history(cb: CallbackQuery):
         fname      = r["full_name"] or ""
         tg_nick    = f"@{uname}" if uname else (fname if fname else f"id{uid_str}")
         lines.append(
-            f"\n• код — <code>{r['code']}</code>\n"
+            f"\n{idx}. код — <code>{r['code']}</code>\n"
             f"Тариф — {plan_name}\n"
             f"почта аккаунта: 📧 {email_str}\n"
             f"👤 id: <code>{uid_str}</code>\n"
