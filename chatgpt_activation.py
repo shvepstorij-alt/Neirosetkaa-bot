@@ -263,7 +263,7 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             else:
                 logger.warning("Кнопка шага 3 не найдена — возможно шагов 2, смотрим результат")
 
-            # ── Ждём результата: polling до 90 секунд ────────────────────
+            # ── Ждём результата: polling до 5 минут ──────────────────────
             success_markers = [
                 "успешно", "success", "成功", "充值成功", "recharge successful",
                 "activated", "активирован", "подписка активирована",
@@ -274,11 +274,16 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 "token expired", "токен истёк", "не найден", "not found",
                 "войдите снова", "充值失败", "错误",
             ]
+            # Маркеры "ещё обрабатывается / в очереди" — продолжаем ждать
             processing_markers = [
                 "обработка", "обрабатываем", "processing", "处理中", "请稍候",
+                # Маркеры очереди
+                "очередь", "в очереди", "queue", "排队", "等待中",
+                "ожидайте", "подождите", "pending", "waiting",
+                "поставлен в очередь", "queued",
             ]
 
-            max_polls = 30       # 30 × 3с = 90 секунд максимум
+            max_polls = 100      # 100 × 3с = 5 минут (покрывает очереди на сайте)
             final_result = None
 
             for attempt in range(max_polls):
