@@ -819,7 +819,7 @@
 
   // ── Polling результата ───────────────────
   async function pollResult(jobId) {
-    const MAX = 60;   // 60 × 3с = 3 минуты максимум
+    const MAX = 120;  // 120 × 3с = 6 минут (с запасом для очередей на 987ai.vip)
     for (let i = 0; i < MAX; i++) {
       await sleep(3000);
       try {
