@@ -156,7 +156,11 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 for marker in success_markers:
                     if marker in page_text:
                         logger.info(f"✅ Активация успешна (маркер: '{marker}')")
-                        final_result = {"success": True, "message": "Подписка успешно активирована!"}
+                        try:
+                            _ss = await page.screenshot(full_page=True)
+                        except Exception:
+                            _ss = None
+                        final_result = {"success": True, "message": "Подписка успешно активирована!", "screenshot": _ss}
                         break
 
                 if final_result:
@@ -166,10 +170,14 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 for marker in error_markers:
                     if marker in page_text:
                         logger.warning(f"❌ Ошибка активации (маркер: '{marker}')")
+                        try:
+                            _ss_err = await page.screenshot(full_page=True)
+                        except Exception:
+                            _ss_err = None
                         final_result = {
                             "success": False,
                             "error": _extract_error_text(page_text),
-                            "screenshot": None,
+                            "screenshot": _ss_err,
                         }
                         break
 
