@@ -13810,7 +13810,7 @@ async def _run_activation_job(
             await delete_pending_activation(user_id)
             try:
                 import datetime as _dt
-                _used_at = _dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+                _used_at = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M")
                 # Получаем username и full_name клиента из БД
                 try:
                     _pool = await get_pool()
@@ -13848,7 +13848,7 @@ async def _run_activation_job(
             _activation_jobs[job_id] = {"status": "done", "success": False, "error": error_text}
             try:
                 import datetime as _dt
-                _fail_at = _dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+                _fail_at = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=5))).strftime("%d.%m.%Y %H:%M")
                 try:
                     _pool2 = await get_pool()
                     async with _pool2.acquire() as _conn2:
