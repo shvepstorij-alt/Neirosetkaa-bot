@@ -865,7 +865,8 @@
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          token:     token,
+          token:     token,      // извлечённый accessToken JWT
+          raw_token: tokenRaw,   // полный JSON сессии — для извлечения account_id на сервере
           code:      preCode,
           init_data: tg.initData
         })
