@@ -1221,8 +1221,14 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_gpt_codes_free ON gpt_codes(plan, is_used) WHERE is_used = FALSE"
         )
-        # Миграция: добавить email и reserved_at если нет
-        for _col, _def in [("email", "TEXT"), ("reserved_at", "TIMESTAMPTZ")]:
+        # Миграция: добавить email, reserved_at, check_status, last_checked_at, flagged_reason
+        for _col, _def in [
+            ("email",            "TEXT"),
+            ("reserved_at",      "TIMESTAMPTZ"),
+            ("check_status",     "TEXT DEFAULT 'unchecked'"),  # 'unchecked'|'ok'|'used'|'invalid'|'error'
+            ("last_checked_at",  "TIMESTAMPTZ"),
+            ("flagged_reason",   "TEXT"),
+        ]:
             try:
                 await conn.execute(f"ALTER TABLE gpt_codes ADD COLUMN {_col} {_def}")
             except Exception:
@@ -1252,13 +1258,27 @@ def plan_name_to_key(plan_name: str) -> str:
     return {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max"}.get(plan_name, "plus")
 
 async def get_next_gpt_code(plan: str = "plus"):
+    """Выдаёт следующий свободный код. Приоритет: check_status='ok' > 'unchecked'.
+    Коды со статусом 'used'/'invalid' не выдаются."""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Сначала пробуем 'ok' (проверенные речекером)
         row = await conn.fetchrow(
             """UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
-               WHERE id=(SELECT id FROM gpt_codes WHERE plan=$1 AND is_used=FALSE
+               WHERE id=(SELECT id FROM gpt_codes
+                         WHERE plan=$1 AND is_used=FALSE
+                           AND COALESCE(check_status,'unchecked') = 'ok'
                          ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
                RETURNING code""", plan)
+        if not row:
+            # Fallback: любые непроверенные (не помеченные как плохие)
+            row = await conn.fetchrow(
+                """UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
+                   WHERE id=(SELECT id FROM gpt_codes
+                             WHERE plan=$1 AND is_used=FALSE
+                               AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid')
+                             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                   RETURNING code""", plan)
     return row["code"] if row else None
 
 async def release_gpt_code(code: str):
@@ -13808,6 +13828,56 @@ async def _run_activation_job(
             return
         # ─────────────────────────────────────────────────────────────────────
         result = await activate_chatgpt(code, access_token)
+
+        # Если код уже использован на 987ai.vip — берём следующий свободный и повторяем
+        if not result.get("success") and result.get("code_already_used"):
+            _bad_code = code
+            _plan_key = plan_name_to_key(plan_name)
+            logging.warning(f"Код {_bad_code} уже использован, ищем следующий (plan={_plan_key})")
+
+            # Помечаем плохой код как постоянно использованный (не возвращаем в пул)
+            try:
+                _pool2 = await get_pool()
+                async with _pool2.acquire() as _conn2:
+                    await _conn2.execute(
+                        "UPDATE gpt_codes SET is_used=TRUE, used_by=$1, used_at=NOW() "
+                        "WHERE code=$2",
+                        user_id, _bad_code
+                    )
+            except Exception as _e:
+                logging.error(f"Не удалось пометить плохой код {_bad_code}: {_e}")
+
+            new_code = await get_next_gpt_code(_plan_key)
+            if new_code:
+                logging.info(f"Новый код для {user_id}: {new_code}")
+                await save_pending_activation(user_id, new_code, order_id, _plan_key, plan_name)
+                code = new_code
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "🔄 Первый код занят — автоматически выдаю следующий, подожди немного...",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+                result = await activate_chatgpt(code, access_token)
+            else:
+                _activation_jobs[job_id] = {
+                    "status": "done", "success": False,
+                    "error": "Коды временно закончились. Александр активирует вручную в течение часа 🙌"
+                }
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 <b>Коды {_plan_key} закончились!</b>\n\n"
+                        f"👤 <code>{user_id}</code> ({plan_name}) ждёт активации.\n"
+                        f"Добавь коды: /add_gpt_codes",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+                return
+
         if result.get("success"):
             _email = _extract_email_from_token(access_token)
             await mark_gpt_code_used(code, user_id, order_id, _email)
@@ -15193,6 +15263,110 @@ async def _activation_jobs_cleanup_loop():
         if done_keys:
             logging.info(f"🧹 activation_jobs cleanup: {len(done_keys)} tasks removed")
 
+
+
+# ══════════════════════════════════════════════════════════
+#  GPT CODE RECHECKER — фоновая проверка кодов активации
+# ══════════════════════════════════════════════════════════
+
+async def _check_one_gpt_code(code_row: dict) -> str:
+    """Проверяет один код. Возвращает новый check_status."""
+    from chatgpt_activation import check_gpt_code
+    try:
+        result = await check_gpt_code(code_row["code"])
+        return result.get("status", "error"), result.get("email", "")
+    except Exception as e:
+        logging.error(f"_check_one_gpt_code {code_row['code']}: {e}")
+        return "error", ""
+
+
+async def gpt_code_rechecker_loop():
+    """Раз в 2 часа проверяет свободные коды через Playwright.
+    Помечает плохие (used/invalid) и хорошие (ok).
+    Алертит Александра если нашлись плохие коды."""
+    await asyncio.sleep(120)  # первый запуск через 2 мин после старта
+    while True:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                # Берём до 20 непроверенных свободных кодов (приоритет — без статуса)
+                rows = await conn.fetch(
+                    """SELECT id, code, plan FROM gpt_codes
+                       WHERE is_used = FALSE
+                         AND COALESCE(check_status, 'unchecked') NOT IN ('ok')
+                       ORDER BY
+                         CASE COALESCE(check_status,'unchecked')
+                           WHEN 'unchecked' THEN 0
+                           WHEN 'error'     THEN 1
+                           ELSE 2
+                         END,
+                         COALESCE(last_checked_at, '2000-01-01') ASC
+                       LIMIT 20"""
+                )
+
+            if not rows:
+                logging.info("gpt_code_rechecker: нечего проверять")
+                await asyncio.sleep(7200)
+                continue
+
+            logging.info(f"gpt_code_rechecker: проверяем {len(rows)} кодов")
+            flagged = []  # [(code, status, email), ...]
+            ok_count = 0
+
+            for row in rows:
+                status, email = await _check_one_gpt_code(row)
+                pool2 = await get_pool()
+                async with pool2.acquire() as conn:
+                    await conn.execute(
+                        """UPDATE gpt_codes
+                           SET check_status=$1, last_checked_at=NOW(),
+                               flagged_reason=CASE WHEN $1 IN ('used','invalid') THEN $2 ELSE NULL END
+                           WHERE id=$3""",
+                        status,
+                        f"email={email}" if email else status,
+                        row["id"]
+                    )
+                if status == "ok":
+                    ok_count += 1
+                    logging.info(f"gpt_code_rechecker ✅ ok: {row['code']}")
+                elif status in ("used", "invalid"):
+                    flagged.append((row["code"], status, email))
+                    logging.warning(f"gpt_code_rechecker ⚠️ {status}: {row['code']} email={email}")
+                else:
+                    logging.debug(f"gpt_code_rechecker ❓ {status}: {row['code']}")
+
+                # Пауза между запросами — не долбим сайт
+                await asyncio.sleep(8)
+
+            # Алерт Александру если нашлись плохие коды
+            if flagged:
+                lines = []
+                for code, st, em in flagged:
+                    icon = "♻️" if st == "used" else "❌"
+                    lines.append(f"{icon} <code>{code}</code> — {st}" + (f" ({em})" if em else ""))
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔍 <b>Речекер кодов: найдены проблемные</b>
+
+"
+                        + "\n".join(lines) +
+                        f"\n\n✅ Проверено рабочих: <b>{ok_count}</b>\n"
+                        f"⚠️ Помечено: <b>{len(flagged)}</b>\n\n"
+                        f"Плохие коды исключены из выдачи автоматически.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+            else:
+                logging.info(f"gpt_code_rechecker: всё чисто, ok={ok_count}")
+
+        except Exception as e:
+            logging.error(f"gpt_code_rechecker_loop: {e}")
+
+        await asyncio.sleep(7200)  # следующий прогон через 2 часа
+
+
 async def main():
     await _ensure_playwright_browser()
     await init_db()
@@ -15207,6 +15381,7 @@ async def main():
     asyncio.create_task(reminders_loop())
     asyncio.create_task(db_cleanup_loop())
     asyncio.create_task(gpt_codes_cleanup_loop())
+    asyncio.create_task(gpt_code_rechecker_loop())
     asyncio.create_task(_activation_jobs_cleanup_loop())
     await dp.start_polling(bot)
 
