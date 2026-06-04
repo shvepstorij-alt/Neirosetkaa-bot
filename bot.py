@@ -8762,7 +8762,20 @@ async def _show_profile(message: Message, user):
         + model_lines
         + subs_block
     )
+    # БАГ 6 FIX: кнопка Активировать Claude если есть pending
+    _claude_pending_btn = []
+    try:
+        _cp = await get_claude_pending_activation(uid)
+        if _cp:
+            _claude_pending_btn = [[InlineKeyboardButton(
+                text=f"⚡ Активировать Claude {_cp.get('plan_name', '')}",
+                callback_data="claude_reopen_webapp"
+            )]]
+    except Exception:
+        pass
+
     kb_profile = InlineKeyboardMarkup(inline_keyboard=[
+        *_claude_pending_btn,
         [InlineKeyboardButton(text="🤝 Пригласить друга 🟢", callback_data="menu_ref")],
         [InlineKeyboardButton(text="🧾 Покупки",        callback_data="profile_history"),
          InlineKeyboardButton(text="🏡 Главное меню",   callback_data="back_main")],
@@ -15646,11 +15659,6 @@ async def gpt_code_rechecker_loop():
 #  CLAUDE MINI APP
 # ═══════════════════════════════════════════════════════════════════
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CLAUDE MINI APP — вставить в bot.py ПЕРЕД функцией async def main()
-#  Файл: claude_activation_backend.py  →  скопировать содержимое в bot.py
-# ══════════════════════════════════════════════════════════════════════════════
-
 # ─── Путь к HTML и флаг включения ────────────────────────────────────────────
 _CLAUDE_WEBAPP_HTML_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "claude_webapp.html"
@@ -15807,6 +15815,22 @@ async def _send_claude_webapp_to_user(
 
 # ─── Фоновый polling job ──────────────────────────────────────────────────────
 
+async def _claude_test_activation_job(fake_bpa: int, user_id: int, plan_name: str):
+    """Симулирует успешную активацию для тестового кода TEST-."""
+    await asyncio.sleep(4)  # имитируем задержку как в реальном сценарии
+    _claude_job_results[fake_bpa] = {"status": "done", "success": True}
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🧪 <b>Claude тест завершён</b>\n"
+            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+            f"Это фейковая активация — реальный код не потрачен.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
 async def _claude_activation_polling_job(
     bpa_order_id: int, code: str, user_id: int,
     order_id: str, plan_name: str, org_id: str
@@ -15856,6 +15880,22 @@ async def _claude_activation_polling_job(
                     _un = _fn = ""
                 _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
 
+                # БАГ 2 FIX: уведомляем клиента об успехе (на случай если закрыл WebApp)
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"✅ <b>Claude {plan_name} активирован!</b>\n\n"
+                        f"Подписка привязана к твоему аккаунту.\n"
+                        f"Обычно появляется в течение 5–10 минут.\n\n"
+                        f"Заходи в Claude и пользуйся 🎉",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
+                        ])
+                    )
+                except Exception:
+                    pass
+
                 try:
                     await bot.send_message(
                         ADMIN_ID,
@@ -15880,7 +15920,8 @@ async def _claude_activation_polling_job(
                 _claude_job_results[bpa_order_id] = {
                     "status": "done", "success": False, "error": _err
                 }
-                if "out of stock" in _err.lower():
+                # БАГ 8 FIX: проверяем оба варианта написания
+                if "out of stock" in _err.lower() or "out-of-stock" in _err.lower():
                     await release_claude_code(code)
                 await delete_claude_pending_activation(user_id)
                 try:
@@ -15915,16 +15956,42 @@ async def _claude_activation_polling_job(
             logging.error(f"Claude poll #{attempt} bpa={bpa_order_id}: {_e}")
 
     # ── Таймаут ────────────────────────────────────────────────
+    # БАГ 1 FIX: возвращаем код в пул и удаляем pending
     _claude_job_results[bpa_order_id] = {
         "status": "done", "success": False,
         "error": "Активация затянулась. Напиши Александру — он поможет!"
     }
     try:
+        await release_claude_code(code)
+    except Exception:
+        pass
+    try:
+        await delete_claude_pending_activation(user_id)
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            user_id,
+            f"⏰ <b>Активация Claude затянулась</b>\n\n"
+            f"Мы не получили подтверждение от сервиса активации.\n"
+            f"Напиши Александру — разберёмся и активируем вручную!",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="💬 Написать Александру",
+                    url=f"https://t.me/{PERSONAL_USERNAME}"
+                )],
+            ])
+        )
+    except Exception:
+        pass
+    try:
         await bot.send_message(
             ADMIN_ID,
             f"⏰ <b>Claude TIMEOUT</b>\n"
             f"👤 <code>{user_id}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
-            f"10 минут — проверь вручную на bypriceactivate.pro",
+            f"10 минут — проверь вручную на bypriceactivate.pro\n"
+            f"Код возвращён в пул.",
             parse_mode="HTML"
         )
     except Exception:
@@ -15981,6 +16048,23 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     code      = pending["code"]
     order_id  = pending["order_id"]
     plan_name = pending["plan_name"]
+
+    # ТЕСТ: если код фейковый (TEST-) — симулируем успех без реального запроса
+    if code.startswith("TEST-"):
+        import random as _rand
+        fake_bpa = _rand.randint(9000000, 9999999)
+        _claude_job_results[fake_bpa] = {"status": "queued"}
+        asyncio.create_task(_claude_test_activation_job(fake_bpa, user_id, plan_name))
+        await delete_claude_pending_activation(user_id)
+        logging.info(f"Claude TEST activation: fake_bpa={fake_bpa} user={user_id}")
+        return _resp({"order_id": fake_bpa, "status": "queued"})
+
+    # БАГ 3 FIX: если job уже запущен — не делаем новый POST, просто возвращаем существующий order_id
+    existing_bpa = pending.get("bpa_order_id")
+    if existing_bpa:
+        # Polling job уже работает или завершился — возвращаем клиенту тот же order_id
+        logging.info(f"Claude reuse bpa={existing_bpa} user={user_id}")
+        return _resp({"order_id": existing_bpa, "status": "queued"})
 
     try:
         async with aiohttp.ClientSession(
@@ -16452,30 +16536,96 @@ async def adm_claude_do_send(message: Message, state: FSMContext):
 
 @dp.message(F.text.startswith("/test_claude_webapp"), StateFilter("*"))
 async def test_claude_webapp(message: Message):
+    """
+    Полный тест Claude Mini App с ФЕЙКОВЫМ кодом.
+    Только для админа. Реальные коды из БД не тратятся.
+    """
     if message.from_user.id != ADMIN_ID:
         return
-    import urllib.parse as _up4, time as _t3
+
+    import random, string as _string, urllib.parse as _up4
     from aiogram.types import WebAppInfo as _WAI4
-    code = await get_next_claude_code("pro")
-    if not code:
-        await message.answer("🚨 Нет свободных кодов Pro для теста.")
-        return
-    order_id = f"claude_test_{message.from_user.id}_{int(_t3.time())}"
-    await save_claude_pending_activation(message.from_user.id, code, order_id, "pro", "Pro")
+
+    # Фейковый код — не из БД, пропустит реальную активацию
+    suffix = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=12))
+    fake_code  = f"TEST-{suffix}"
+    fake_order = f"TEST-ORD-{suffix[:6]}"
+    uid = message.from_user.id
+
+    await save_claude_pending_activation(uid, fake_code, fake_order, "pro", "Pro")
+
     webapp_url = (
         f"{WEBAPP_BASE_URL}/webapp/claude"
-        f"?plan={_up4.quote('Pro')}&code={_up4.quote(code)}"
+        f"?plan={_up4.quote('Pro')}&code={_up4.quote(fake_code)}"
     )
+
     await message.answer(
-        f"🧪 <b>Тест Claude WebApp</b>\nКод: <code>{code}</code>",
+        f"🎉 <b>Оплата прошла!</b>\n\n"
+        f"📦 <b>Claude Pro</b>\n\n"
+        f"Осталось активировать подписку — нажми кнопку ниже 👇\n\n"
+        f"<i>⚠️ ТЕСТ — фейковый код, реальной активации нет</i>\n"
+        f"<i>🔑 Код: <code>{fake_code}</code></i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text="⚡ Открыть Claude WebApp",
+                text="⚡ Активировать Claude",
                 web_app=_WAI4(url=webapp_url)
+            )],
+            [InlineKeyboardButton(
+                text="❓ Нужна помощь",
+                url=f"https://t.me/{PERSONAL_USERNAME}"
             )],
         ])
     )
+
+
+
+async def claude_codes_cleanup_loop():
+    """Каждые 30 минут возвращает в пул коды которые зарезервированы
+    но не активированы > 2 часов (клиент получил код но не открыл WebApp)."""
+    while True:
+        try:
+            await asyncio.sleep(1800)  # 30 минут
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                # Коды: is_used=TRUE (зарезервированы), но used_by=NULL (не активированы)
+                # И при этом pending_activation для них истёкла или не существует
+                released = await conn.execute(
+                    """UPDATE claude_codes
+                       SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
+                       WHERE is_used=TRUE
+                         AND used_by IS NULL
+                         AND NOT EXISTS (
+                             SELECT 1 FROM claude_pending_activations p
+                             WHERE p.code = claude_codes.code
+                               AND p.expires_at > NOW()
+                         )"""
+                )
+                if released and released != "UPDATE 0":
+                    logging.info(f"🔑 claude_codes cleanup: {released}")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🔑 <b>Коды Claude возвращены в пул</b>\n"
+                            f"Клиенты оплатили но не активировали в течение 2 часов.\n"
+                            f"<i>{released}</i>",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"claude_codes_cleanup_loop: {e}")
+
+
+async def _claude_job_results_cleanup_loop():
+    """Каждый час удаляет завершённые записи из _claude_job_results."""
+    while True:
+        await asyncio.sleep(3600)
+        done_keys = [k for k, v in list(_claude_job_results.items()) if v.get("status") == "done"]
+        for k in done_keys:
+            del _claude_job_results[k]
+        if done_keys:
+            logging.info(f"🧹 claude_job_results cleanup: {len(done_keys)} removed")
 
 
 async def main():
@@ -16494,6 +16644,8 @@ async def main():
     asyncio.create_task(gpt_codes_cleanup_loop())
     asyncio.create_task(gpt_code_rechecker_loop())
     asyncio.create_task(_activation_jobs_cleanup_loop())
+    asyncio.create_task(claude_codes_cleanup_loop())
+    asyncio.create_task(_claude_job_results_cleanup_loop())
     await dp.start_polling(bot)
 
 
