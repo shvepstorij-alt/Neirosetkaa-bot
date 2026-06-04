@@ -357,11 +357,26 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 "activated", "активирован", "подписка активирована",
                 "充值完成", "完成",
             ]
-            error_markers = [
-                "失败", "failed", "неверный токен", "invalid token",
-                "token expired", "токен истёк", "не найден", "not found",
-                "войдите снова", "充值失败", "错误",
+            # Маркеры невалидного токена (клиент неправильно скопировал)
+            token_invalid_markers = [
+                "token无效或已过期",  # скриншот 2: точный текст сайта
+                "token无效",
+                "无效或已过期",
+                "token invalid or expired",
+                "token invalid",
+                "invalid token",
+                "token expired",
+                "неверный токен",
+                "токен истёк",
+                "войдите снова",
+                "token is invalid",
+                "access token",  # "invalid access token"
             ]
+            error_markers = [
+                "失败", "failed",
+                "не найден", "not found",
+                "充值失败", "错误",
+            ] + token_invalid_markers
             # Маркеры "ещё обрабатывается / в очереди" — продолжаем ждать
             processing_markers = [
                 "обработка", "обрабатываем", "processing", "处理中", "请稍候",
@@ -407,8 +422,11 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                             _ss_err = await page.screenshot(full_page=True)
                         except Exception:
                             _ss_err = None
+                        # Определяем тип ошибки: невалидный токен или другая
+                        _is_token_err = any(m in page_text for m in token_invalid_markers)
                         final_result = {
                             "success": False,
+                            "token_invalid": _is_token_err,
                             "error": _extract_error_text(page_text),
                             "screenshot": _ss_err,
                         }
