@@ -133,6 +133,7 @@ user_orig_images = {}     # последнее фото: {user_id: {"data": byte
 MAX_CONCURRENT_GENS = 3  # максимум одновременных генераций на пользователя
 _active_generations: set = set()  # {user_id}  ← устаревший in-memory кэш (оставлен для совместимости)
 _activation_jobs: dict = {}  # {job_id: {"status": "pending"|"done", ...}}
+_gpt_retry_counts: dict = {}  # {user_id: int} — счётчик попыток активации
 
 # B) Почасовой лимит: {user_id: [timestamps]}
 _photo_history: dict = {}      # фото + редактирование
@@ -13916,9 +13917,106 @@ async def _run_activation_job(
                 pass
             _activation_jobs[job_id] = {"status": "done", "success": True}
         else:
-            await release_gpt_code(code)
-            await delete_pending_activation(user_id)
             error_text = result.get("error", "Ошибка активации")
+            _plan_key = plan_name_to_key(plan_name)
+            import urllib.parse as _uparse2
+            from aiogram.types import WebAppInfo as _WebAppInfo
+
+            # ── Тип ошибки определяет что делать дальше ──────────────────────
+            _token_invalid = result.get("token_invalid", False)
+
+            if _token_invalid:
+                # Токен от клиента невалидный/истёк — код не трогаем, просим переcкопировать
+                # Pending остаётся с тем же кодом, сессия жива
+                _same_url = (
+                    f"{WEBAPP_BASE_URL}/webapp/chatgpt"
+                    f"?plan={_uparse2.quote(plan_name)}&code={_uparse2.quote(code)}"
+                )
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "❌ <b>Токен недействителен или истёк</b>\n\n"
+                        "Токен нужно скопировать заново — он обновляется после каждого входа в ChatGPT.\n\n"
+                        "<b>Как получить новый токен:</b>\n"
+                        "1. Зайди на <b>chatgpt.com</b> и войди в аккаунт\n"
+                        "2. Открой <b>chatgpt.com/api/auth/session</b>\n"
+                        "3. Скопируй весь текст целиком и вставь в форму\n\n"
+                        "👇 Нажми кнопку ниже и попробуй снова",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(
+                                text="🔄 Ввести токен заново",
+                                web_app=_WebAppInfo(url=_same_url)
+                            )],
+                            [InlineKeyboardButton(
+                                text="❓ Нужна помощь",
+                                callback_data="gpt_need_help"
+                            )],
+                        ])
+                    )
+                except Exception as _te:
+                    logging.error(f"Token invalid message failed: {_te}")
+
+            else:
+                # Другая ошибка (таймаут, сеть, неизвестное) — код остаётся тем же
+                # Считаем попытки только для не-токенных ошибок
+                _gpt_retry_counts.setdefault(user_id, 0)
+                _gpt_retry_counts[user_id] += 1
+                attempt = _gpt_retry_counts[user_id]
+                MAX_RETRIES = 3
+
+                if attempt < MAX_RETRIES:
+                    # Pending остаётся, код тот же — клиент просто повторяет
+                    _same_url = (
+                        f"{WEBAPP_BASE_URL}/webapp/chatgpt"
+                        f"?plan={_uparse2.quote(plan_name)}&code={_uparse2.quote(code)}"
+                    )
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            f"⚠️ <b>Попытка {attempt} из {MAX_RETRIES} не удалась</b>\n\n"
+                            f"{error_text}\n\n"
+                            f"Попробуй ещё раз 👇",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="🔄 Повторить активацию",
+                                    web_app=_WebAppInfo(url=_same_url)
+                                )],
+                                [InlineKeyboardButton(
+                                    text="❓ Нужна помощь",
+                                    callback_data="gpt_need_help"
+                                )],
+                            ])
+                        )
+                    except Exception as _re:
+                        logging.error(f"Retry message failed: {_re}")
+                else:
+                    # Исчерпаны все попытки — удаляем сессию, возвращаем код
+                    await release_gpt_code(code)
+                    await delete_pending_activation(user_id)
+                    _gpt_retry_counts.pop(user_id, None)
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            f"😔 <b>Не удалось активировать после {MAX_RETRIES} попыток</b>\n\n"
+                            f"Напиши Александру — активирую вручную в течение 15–30 минут!",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="💬 Написать Александру",
+                                    url=f"https://t.me/{PERSONAL_USERNAME}"
+                                )],
+                            ])
+                        )
+                    except Exception:
+                        pass
+                    _activation_jobs[job_id] = {
+                        "status": "done", "success": False,
+                        "error": f"Не удалось после {MAX_RETRIES} попыток. Напиши @{PERSONAL_USERNAME}"
+                    }
+                    return  # выходим, не перезаписываем job ниже
+
             _activation_jobs[job_id] = {"status": "done", "success": False, "error": error_text}
             try:
                 import datetime as _dt
@@ -13983,8 +14081,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     if not pending:
         return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
 
-    client_code = (body.get("code") or "").strip()
-    code      = client_code if client_code else pending["code"]
+    # Всегда используем pending["code"] — он актуальный даже после retry
+    # URL-код от клиента игнорируем — pending является авторитетным источником
+    code = pending["code"]
     order_id  = pending["order_id"]
     plan_name = pending["plan_name"]
 
