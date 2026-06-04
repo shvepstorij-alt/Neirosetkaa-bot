@@ -14790,7 +14790,15 @@ async def test_chatgpt_full(message: Message):
     )
 
 
-@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") & ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp"))
+@dp.message(
+    StateFilter(None),  # только вне FSM-состояний — иначе перехватывает admin/edit states
+    ~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") &
+    ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") &
+    ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") &
+    ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") &
+    ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") &
+    ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp")
+)
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
         return
