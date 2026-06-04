@@ -14777,7 +14777,7 @@ async def test_chatgpt_full(message: Message):
     )
 
 
-@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") & ~F.text.startswith("/test_chatgpt"))
+@dp.message(~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") & ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") & ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") & ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") & ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") & ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
         return
@@ -15740,11 +15740,24 @@ async def count_claude_codes_by_plan() -> dict:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT plan,
-                      COUNT(*) FILTER(WHERE NOT is_used)                     AS free,
-                      COUNT(*) FILTER(WHERE is_used AND used_by IS NOT NULL) AS activated
+                      COUNT(*) FILTER(WHERE NOT is_used)                      AS free,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NOT NULL)  AS activated,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NULL)      AS reserved
                FROM claude_codes GROUP BY plan ORDER BY plan"""
         )
-    return {r["plan"]: {"free": r["free"], "activated": r["activated"]} for r in rows}
+        total_act = await conn.fetchval(
+            "SELECT COUNT(*) FROM claude_codes WHERE is_used=TRUE AND used_by IS NOT NULL"
+        ) or 0
+        last_used = await conn.fetchrow(
+            """SELECT code, plan, used_at, used_by
+               FROM claude_codes WHERE is_used=TRUE AND used_by IS NOT NULL
+               ORDER BY used_at DESC LIMIT 1"""
+        )
+    return {
+        "by_plan": {r["plan"]: {"free": r["free"], "activated": r["activated"], "reserved": r["reserved"]} for r in rows},
+        "total_activations": total_act,
+        "last_used": dict(last_used) if last_used else None,
+    }
 
 
 # ─── Отправить WebApp клиенту ─────────────────────────────────────────────────
@@ -16109,30 +16122,49 @@ class ClaudeAdminState(StatesGroup):
 @dp.callback_query(F.data == "adm_claude_webapp")
 async def adm_claude_webapp_menu(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌", show_alert=True)
+        await cb.answer("❌ Нет доступа", show_alert=True)
         return
-    stats = await count_claude_codes_by_plan()
+    data = await count_claude_codes_by_plan()
+    by_plan    = data.get("by_plan", {})
+    total_act  = data.get("total_activations", 0)
+    last_used  = data.get("last_used")
+
     LABELS = {"pro": "Claude Pro", "max_5x": "Claude Max 5×", "max_20x": "Claude Max 20×"}
     codes_text = ""
     for key, label in LABELS.items():
-        s = stats.get(key, {"free": 0, "activated": 0})
+        s = by_plan.get(key, {"free": 0, "activated": 0, "reserved": 0})
         icon = "✅" if s["free"] > 2 else ("⚠️" if s["free"] > 0 else "🚨")
-        codes_text += f"\n{icon} <b>{label}</b>: {s['free']} своб / {s['activated']} активировано"
-    status_str = "✅ ВКЛЮЧЁН" if CLAUDE_WEBAPP_ENABLED else "🔴 ВЫКЛЮЧЕН"
+        reserved_str = f" / ⏳ {s['reserved']} ждут" if s.get("reserved", 0) > 0 else ""
+        codes_text += f"\n{icon} <b>{label}</b>: {s['free']} свободных / {s['activated']} активировано{reserved_str}"
+    if not codes_text:
+        codes_text = "\n📭 Кодов нет — добавь через кнопку ниже"
+
+    last_txt = ""
+    if last_used:
+        used_at = last_used.get("used_at")
+        if used_at:
+            used_str = used_at.strftime("%d.%m %H:%M") if hasattr(used_at, "strftime") else str(used_at)[:16]
+            last_txt = f"\n\n⏱ Последняя: <code>{last_used['code']}</code> ({used_str})"
+
+    status_str = "✅ ВКЛЮЧЁН" if CLAUDE_WEBAPP_ENABLED else "🔴 ВЫКЛЮЧЕН (тех. работы)"
     text = (
         f"⚡ <b>Claude Mini App</b>\n\n"
         f"Статус: <b>{status_str}</b>\n\n"
-        f"<b>Коды:</b>{codes_text or chr(10) + '📭 Кодов нет'}\n\n"
-        f"<i>Коды покупай на bypriceactivate.pro</i>"
+        f"<b>Коды активации:</b>{codes_text}\n"
+        f"📊 Всего активаций: <b>{total_act}</b>"
+        f"{last_txt}\n\n"
+        f"<i>При выключении клиенты получают сообщение о тех. работах</i>"
     )
-    toggle_txt = "🔴 Выключить" if CLAUDE_WEBAPP_ENABLED else "✅ Включить"
+    toggle_txt = "🔴 Выключить (тех. работы)" if CLAUDE_WEBAPP_ENABLED else "✅ Включить"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=toggle_txt, callback_data="adm_claude_toggle")],
-        [InlineKeyboardButton(text="➕ Pro",    callback_data="adm_claude_add:pro"),
-         InlineKeyboardButton(text="➕ Max 5×", callback_data="adm_claude_add:max_5x"),
-         InlineKeyboardButton(text="➕ Max 20×",callback_data="adm_claude_add:max_20x")],
-        [InlineKeyboardButton(text="📤 Отправить WebApp юзеру", callback_data="adm_claude_send")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_admin")],
+        [InlineKeyboardButton(text=toggle_txt,              callback_data="adm_claude_toggle")],
+        [InlineKeyboardButton(text="➕ Pro",                 callback_data="adm_claude_add:pro"),
+         InlineKeyboardButton(text="➕ Max 5×",             callback_data="adm_claude_add:max_5x"),
+         InlineKeyboardButton(text="➕ Max 20×",            callback_data="adm_claude_add:max_20x")],
+        [InlineKeyboardButton(text="📦 Свободные коды",    callback_data="adm_claude_free:pro"),
+         InlineKeyboardButton(text="⏳ Ждущие",             callback_data="adm_claude_pending")],
+        [InlineKeyboardButton(text="📋 История активаций",  callback_data="adm_claude_history:0")],
+        [InlineKeyboardButton(text="⬅️ Назад в панель",     callback_data="adm_back")],
     ])
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -16152,6 +16184,162 @@ async def adm_claude_toggle(cb: CallbackQuery):
         show_alert=True
     )
     await adm_claude_webapp_menu(cb)
+
+@dp.callback_query(F.data.startswith("adm_claude_history:"))
+async def adm_claude_history(cb: CallbackQuery):
+    """История активаций Claude с пагинацией."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    offset = int(cb.data.split(":")[1])
+    limit = 8
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT cc.code, cc.plan, cc.used_at, cc.used_by, cc.order_id, cc.org_id,
+                      u.username, u.full_name
+               FROM claude_codes cc
+               LEFT JOIN users u ON u.user_id = cc.used_by
+               WHERE cc.is_used = TRUE AND cc.used_by IS NOT NULL
+               ORDER BY cc.used_at DESC
+               LIMIT $1 OFFSET $2""",
+            limit + 1, offset)
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM claude_codes WHERE is_used=TRUE AND used_by IS NOT NULL") or 0
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    if not rows:
+        await cb.answer("Нет активаций", show_alert=True)
+        return
+
+    PLAN_LABELS = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
+    lines = [f"📋 <b>История активаций Claude</b> (всего {total}):\n"]
+    for idx, r in enumerate(rows, start=offset + 1):
+        used_at = r["used_at"]
+        used_str = used_at.strftime("%d.%m.%y %H:%M") if used_at and hasattr(used_at, "strftime") else "—"
+        plan_name = PLAN_LABELS.get(r["plan"], r["plan"])
+        uid_str = str(r["used_by"]) if r["used_by"] else "—"
+        uname = r["username"] or ""
+        fname = r["full_name"] or ""
+        tg_nick = f"@{uname}" if uname else (fname if fname else f"id{uid_str}")
+        org = (r["org_id"] or "—")[:18]
+        lines.append(
+            f"\n{idx}. <code>{r['code']}</code>  [{plan_name}]"
+            f"\n👤 <code>{uid_str}</code> {tg_nick}"
+            f"\n🆔 Org: <code>{org}</code>"
+            f"\n⏱ {used_str}"
+        )
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_claude_history:{offset - limit}"))
+    if has_more:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_claude_history:{offset + limit}"))
+    kb_rows = []
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")])
+    try:
+        await cb.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_claude_free:"))
+async def adm_claude_free_codes(cb: CallbackQuery):
+    """Просмотр свободных кодов Claude."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    plan = cb.data.split(":")[1]
+    PLAN_LABELS = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, code, created_at FROM claude_codes "
+            "WHERE plan=$1 AND is_used=FALSE ORDER BY id ASC LIMIT 20", plan)
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM claude_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
+
+    plan_nav = [
+        InlineKeyboardButton(text="Pro",    callback_data="adm_claude_free:pro"),
+        InlineKeyboardButton(text="Max 5×", callback_data="adm_claude_free:max_5x"),
+        InlineKeyboardButton(text="Max 20×",callback_data="adm_claude_free:max_20x"),
+    ]
+    if not rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[plan_nav, [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]])
+        try:
+            await cb.message.edit_text(f"📦 <b>Свободные коды — Claude {PLAN_LABELS.get(plan, plan)}</b>\n\n📭 Кодов нет.", parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+        await cb.answer()
+        return
+
+    lines = [f"📦 <b>Свободные коды — Claude {PLAN_LABELS.get(plan, plan)}</b> (всего {total}):\n"]
+    for r in rows:
+        created = r["created_at"]
+        date_str = created.strftime("%d.%m.%y") if created and hasattr(created, "strftime") else "—"
+        lines.append(f"• <code>{r['code']}</code>  <i>{date_str}</i>")
+    if total > 20:
+        lines.append(f"\n<i>Показаны первые 20 из {total}</i>")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        plan_nav,
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")],
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_claude_pending")
+async def adm_claude_pending_codes(cb: CallbackQuery):
+    """Ждущие активации — клиенты у которых есть pending (ещё не ввели Org ID)."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT p.user_id, p.code, p.plan_name, p.created_at, p.expires_at,
+                      u.username, u.full_name
+               FROM claude_pending_activations p
+               LEFT JOIN users u ON u.user_id = p.user_id
+               WHERE p.expires_at > NOW()
+               ORDER BY p.created_at DESC""")
+
+    if not rows:
+        await cb.answer("Нет ждущих активаций", show_alert=True)
+        return
+
+    lines = [f"⏳ <b>Ждущие активации Claude</b> ({len(rows)}):\n"]
+    for r in rows:
+        uname = r["username"] or ""
+        fname = r["full_name"] or ""
+        tg = f"@{uname}" if uname else (fname or f"id{r['user_id']}")
+        created = r["created_at"]
+        created_str = created.strftime("%d.%m %H:%M") if created and hasattr(created, "strftime") else "—"
+        expires = r["expires_at"]
+        exp_str = expires.strftime("%H:%M") if expires and hasattr(expires, "strftime") else "—"
+        lines.append(
+            f"\n• {tg} (<code>{r['user_id']}</code>)"
+            f"\n  {r['plan_name']} | <code>{r['code']}</code>"
+            f"\n  создан: {created_str} | истекает: {exp_str}"
+        )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("adm_claude_add:"))
