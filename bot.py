@@ -5618,27 +5618,35 @@ async def shop_pay_sbp(cb: CallbackQuery):
     import time as _time
     order_id = f"shop_{uid}_{int(_time.time())}"
 
-    # Сохраняем заказ в БД
+    # Считаем итоговую сумму ДО записи в БД — чтобы сохранить правильную сумму
+    user_coins = await get_coins(uid)
+    # Применяем промокодную цену если передана
+    price_after_promo = promo_final if promo_final and promo_final < p["price"] else p["price"]
+    coins_used = 0
+    if user_coins >= 1:
+        coins_used = int(min(user_coins, price_after_promo))
+        price_after_promo = max(0, price_after_promo - coins_used)
+    final_shop_price = price_after_promo
+
+    # Сохраняем заказ в БД с РЕАЛЬНОЙ суммой (после промокода и монеток)
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, promo_code)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (order_id) DO NOTHING
-        """, order_id, uid, 0, p["price"], f"shop:{key}:{plan_idx}")
-
-    user_coins = await get_coins(uid)
-    # Применяем промокодную цену если передана
-    final_shop_price = promo_final if promo_final and promo_final < p["price"] else p["price"]
-    coins_used = 0
-    if user_coins >= 1:
-        coins_used = int(min(user_coins, final_shop_price))
-        final_shop_price = max(0, final_shop_price - coins_used)
+        """, order_id, uid, 0, final_shop_price if final_shop_price > 0 else p["price"],
+            f"shop:{key}:{plan_idx}",
+            f"promo_applied" if promo_final and promo_final < p["price"] else None)
 
     pay_url = fk_pay_url(final_shop_price, order_id) if final_shop_price > 0 else None
 
     coins_line = f"\n🪙 Монетки: <b>−{coins_used}₽</b>" if coins_used > 0 else ""
-    price_line = f"<s>{p['price']}₽</s> → <b>{final_shop_price}₽</b>" if coins_used > 0 else f"<b>{p['price']}₽</b>"
+    has_discount = promo_final and promo_final < p["price"]
+    if coins_used > 0 or has_discount:
+        price_line = f"<s>{p['price']}₽</s> → <b>{final_shop_price}₽</b>"
+    else:
+        price_line = f"<b>{p['price']}₽</b>"
 
     text = (
         f"🏦 <b>Оплата через СБП</b>\n\n"
@@ -14241,6 +14249,40 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     if not pending:
         return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
 
+    # Guard: block double activation within 35 days
+    try:
+        _pool_dbl = await get_pool()
+        async with _pool_dbl.acquire() as _c_dbl:
+            _recent_act = await _c_dbl.fetchrow(
+                "SELECT code, plan, used_at, email FROM gpt_codes"
+                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '35 days'"
+                " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
+                user_id
+            )
+        if _recent_act:
+            _us = _recent_act['used_at'].strftime('%d.%m.%Y %H:%M') if _recent_act['used_at'] else '-'
+            logging.warning(f'Double GPT activation blocked user={user_id} code={_recent_act["code"]}')
+            try:
+                _warn_msg = (
+                    "\u26a0\ufe0f <b>\u041f\u043e\u043f\u044b\u0442\u043a\u0430 \u0434\u0432\u043e\u0439\u043d\u043e\u0439 \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u0438 ChatGPT</b>\n\n"
+                    f"\U0001f464 <code>{user_id}</code>\n"
+                    f"\U0001f511 \u0423\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d: <code>{_recent_act['code']}</code>\n"
+                    f"\U0001f4e6 \u0422\u0430\u0440\u0438\u0444: <b>{_recent_act['plan']}</b>\n"
+                    f"\u23f1 \u0414\u0430\u0442\u0430: <b>{_us}</b>\n"
+                    f"\U0001f4e7 Email: {_recent_act.get('email') or '-'}\n\n"
+                    "\u0412\u0442\u043e\u0440\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u0430. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043f\u0435\u0440\u0432\u044b\u0439 \u0440\u0430\u0437 \u0431\u044b\u043b\u0430 \u043b\u043e\u0436\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430."
+                )
+                await bot.send_message(ADMIN_ID, _warn_msg, parse_mode='HTML')
+            except Exception:
+                pass
+            return _resp({"success": False, "error": (
+                "\u041f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 \u0443\u0436\u0435 \u0431\u044b\u043b\u0430 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d\u0430 \u043d\u0430 \u044d\u0442\u043e\u0442 \u0430\u043a\u043a\u0430\u0443\u043d\u0442. "
+                "\u0415\u0441\u043b\u0438 \u0447\u0442\u043e-\u0442\u043e \u043d\u0435 \u0442\u0430\u043a \u2014 \u043d\u0430\u043f\u0438\u0448\u0438 \u0410\u043b\u0435\u043a\u0441\u0430\u043d\u0434\u0440\u0443."
+            )})
+    except Exception as _dbl_e:
+        logging.error(f'double-activation check: {_dbl_e}')
+
+
     # Всегда используем pending["code"] — он актуальный даже после retry
     # URL-код от клиента игнорируем — pending является авторитетным источником
     code = pending["code"]
@@ -15442,25 +15484,65 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
         try:
             received_amount = float(amount)
             expected_amount = float(amount_rub)
+            is_shop_order = order_id.startswith("shop_")
+
             if abs(received_amount - expected_amount) > 1.0:
-                logging.error(
-                    f"FK AMOUNT MISMATCH! order={order_id} user={user_id} "
-                    f"expected={expected_amount} received={received_amount}"
-                )
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🚨 <b>Несовпадение суммы оплаты!</b>\n\n"
-                        f"Заказ: <code>{order_id}</code>\n"
-                        f"Юзер: <code>{user_id}</code>\n"
-                        f"Ожидали: <b>{expected_amount}₽</b>\n"
-                        f"Пришло: <b>{received_amount}₽</b>\n\n"
-                        f"Кредиты НЕ зачислены. Разберись вручную.",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-                return web.Response(text="AMOUNT MISMATCH", status=400)
+                # Определяем тип заказа для правильного сообщения и логики
+                db_order_for_check = await fk_get_order(order_id)
+                pack_info = (db_order_for_check or {}).get("pack", "") if db_order_for_check else ""
+                promo_in_db = (db_order_for_check or {}).get("promo_code", "") if db_order_for_check else ""
+
+                if is_shop_order:
+                    # Магазин: клиент мог оплатить больше (без скидки) — это ОК
+                    if received_amount >= expected_amount:
+                        logging.info(
+                            f"FK SHOP: received {received_amount} >= expected {expected_amount} — OK"
+                        )
+                        # Продолжаем обработку
+                    else:
+                        # Оплачено меньше ожидаемого — алертим но НЕ блокируем webhook
+                        # (деньги пришли, клиент заплатил что-то — разбираемся вручную)
+                        logging.error(
+                            f"FK SHOP AMOUNT LOW! order={order_id} user={user_id} "
+                            f"expected={expected_amount} received={received_amount} pack={pack_info}"
+                        )
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"⚠️ <b>Магазин: сумма меньше ожидаемой</b>\n\n"
+                                f"Заказ: <code>{order_id}</code>\n"
+                                f"Юзер: <code>{user_id}</code>\n"
+                                f"Сервис: <code>{pack_info}</code>\n"
+                                f"Ожидали: <b>{expected_amount}₽</b>\n"
+                                f"Пришло: <b>{received_amount}₽</b>\n"
+                                f"Промокод: <code>{promo_in_db or 'нет'}</code>\n\n"
+                                f"⚠️ Подписка оформлена, но сумма расходится. Проверь вручную.",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                        # НЕ блокируем — зачисляем с предупреждением
+                else:
+                    # Кредиты: строгая проверка — если меньше, блокируем (фрод)
+                    if received_amount < expected_amount - 1.0:
+                        logging.error(
+                            f"FK CREDITS AMOUNT MISMATCH! order={order_id} user={user_id} "
+                            f"expected={expected_amount} received={received_amount}"
+                        )
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🚨 <b>Несовпадение суммы — КРЕДИТЫ</b>\n\n"
+                                f"Заказ: <code>{order_id}</code>\n"
+                                f"Юзер: <code>{user_id}</code>\n"
+                                f"Ожидали: <b>{expected_amount}₽</b>\n"
+                                f"Пришло: <b>{received_amount}₽</b>\n\n"
+                                f"🚫 Кредиты НЕ зачислены. Разберись вручную.",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                        return web.Response(text="AMOUNT MISMATCH", status=400)
         except (ValueError, TypeError) as ve:
             logging.warning(f"FK AMOUNT parse error: {ve}")
 
