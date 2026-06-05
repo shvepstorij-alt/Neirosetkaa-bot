@@ -153,33 +153,91 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             await asyncio.sleep(2.5)
 
             async def _check_force_checkbox():
+                """Принудительно включает чекбокс несколькими способами.
+                JS-клик наиболее надёжен для Vue/React компонентов."""
                 try:
-                    for lbl_text in ["Принудительное пополнение","强制充值","Force Recharge","Принудительн"]:
-                        lbl = page.locator(f"label:has-text('{lbl_text}'), span:has-text('{lbl_text}')").first
-                        if await lbl.count() and await lbl.is_visible():
-                            cb = page.locator("input[type='checkbox']").first
-                            if await cb.count() and await cb.is_visible():
-                                if not await cb.is_checked():
-                                    await cb.check()
-                                    logger.info("✅ Чекбокс включён через input")
-                                else:
-                                    logger.info("✅ Чекбокс уже включён")
+                    await asyncio.sleep(0.8)
+
+                    # Способ 1: JavaScript — самый надёжный для React/Vue
+                    try:
+                        already = await page.evaluate("""
+                            () => {
+                                const cb = document.querySelector('input[type="checkbox"]');
+                                if (!cb) return null;
+                                const was = cb.checked;
+                                if (!cb.checked) { cb.click(); }
+                                return {was: was, now: cb.checked};
+                            }
+                        """)
+                        if already is not None:
+                            status = "уже был" if already.get("was") else "включён через JS"
+                            logger.info(f"✅ Чекбокс {status}")
+                            if already.get("now"):
                                 return True
-                            await lbl.click()
-                            await asyncio.sleep(0.3)
-                            logger.info(f"✅ Чекбокс включён кликом по label '{lbl_text}'")
-                            return True
-                    all_cbs = page.locator("input[type='checkbox']")
-                    for i in range(await all_cbs.count()):
-                        cb = all_cbs.nth(i)
-                        if await cb.is_visible():
-                            if not await cb.is_checked():
-                                await cb.check()
-                                logger.info(f"✅ Чекбокс #{i} включён (fallback)")
-                            else:
-                                logger.info(f"✅ Чекбокс #{i} уже включён")
-                            return True
-                    logger.info("ℹ️ Чекбокс не найден")
+                    except Exception as js_e:
+                        logger.warning(f"JS checkbox: {js_e}")
+
+                    # Способ 2: клик по label с текстом
+                    for lbl_text in ["Принудительное пополнение","强制充值","Force Recharge","Принудительн","force","Force"]:
+                        try:
+                            lbl = page.locator(f"label:has-text('{lbl_text}'), span:has-text('{lbl_text}')").first
+                            if await lbl.count() and await lbl.is_visible():
+                                cb = page.locator("input[type='checkbox']").first
+                                if await cb.count():
+                                    if not await cb.is_checked():
+                                        await cb.click(force=True)
+                                        await asyncio.sleep(0.3)
+                                        if not await cb.is_checked():
+                                            await lbl.click(force=True)
+                                        logger.info(f"✅ Чекбокс через label '{lbl_text}'")
+                                    else:
+                                        logger.info("✅ Чекбокс уже включён")
+                                    return True
+                                await lbl.click(force=True)
+                                await asyncio.sleep(0.3)
+                                logger.info(f"✅ Клик по label '{lbl_text}'")
+                                return True
+                        except Exception:
+                            pass
+
+                    # Способ 3: любой видимый чекбокс
+                    try:
+                        all_cbs = page.locator("input[type='checkbox']")
+                        for i in range(await all_cbs.count()):
+                            cb = all_cbs.nth(i)
+                            try:
+                                if not await cb.is_checked():
+                                    await cb.click(force=True)
+                                    await asyncio.sleep(0.2)
+                                logger.info(f"✅ Чекбокс #{i} (любой)")
+                                return True
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    # Способ 4: JS click на label/parent
+                    try:
+                        await page.evaluate("""
+                            () => {
+                                const cb = document.querySelector('input[type="checkbox"]');
+                                if (cb) { cb.click(); if (cb.parentElement) cb.parentElement.click(); return true; }
+                                const labels = document.querySelectorAll('label');
+                                for (const l of labels) {
+                                    const t = (l.innerText||'').toLowerCase();
+                                    if (t.includes('force') || t.includes('принудит') || t.includes('充值')) {
+                                        l.click(); return true;
+                                    }
+                                }
+                                return false;
+                            }
+                        """)
+                        logger.info("✅ JS label/parent click")
+                        return True
+                    except Exception:
+                        pass
+
+                    logger.info("ℹ️ Чекбокс не найден ни одним способом")
                     return False
                 except Exception as e:
                     logger.warning(f"Чекбокс ошибка: {e}")
@@ -189,7 +247,12 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
             await asyncio.sleep(0.5)
 
             STEP3_TEXTS = ["Подтвердить пополнение","确认充值","Confirm Recharge","Confirm","确认","充值","Activate","激活","Complete","完成","Submit"]
-            STEP3_RETRY_MARKERS = ["пополнение не удалось","若提交多次","充值未成功","充值失败了","提交失败","recharge failed","top up failed"]
+            STEP3_RETRY_MARKERS = [
+                "пополнение не удалось","若提交多次","充值未成功","充值失败了","提交失败",
+                "recharge failed","top up failed",
+                "уже plus","уже является plus","already plus","already subscribed",
+                "смените аккаунт","пользователь уже",
+            ]
             MAX_STEP3_RETRIES = 5
 
             async def _click_step3():
@@ -234,8 +297,9 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                     step3_retries += 1
                     if step3_retries <= MAX_STEP3_RETRIES:
                         logger.warning(f"⚠️ «Пополнение не удалось» — повтор {step3_retries}/{MAX_STEP3_RETRIES}")
+                        await asyncio.sleep(1.5)
                         await _check_force_checkbox()
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(1.5)
                         await _click_step3()
                         continue
                     else:
