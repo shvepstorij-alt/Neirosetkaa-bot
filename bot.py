@@ -5459,7 +5459,7 @@ async def shop_service(cb: CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("shop_confirm:"))
-async def shop_confirm(cb: CallbackQuery):
+async def shop_confirm(cb: CallbackQuery, state: FSMContext):
     """Экран подтверждения заказа - до оплаты."""
     parts = cb.data.split(":")
     key = parts[1]
@@ -5469,25 +5469,136 @@ async def shop_confirm(cb: CallbackQuery):
         await cb.answer("Ошибка", show_alert=True)
         return
     p = s["plans"][plan_idx]
+    uid = cb.from_user.id
+
+    # Проверяем применённый промокод из состояния
+    data = await state.get_data()
+    promo_code = data.get(f"shop_promo_{key}_{plan_idx}")
+    promo_discount = 0
+    promo_text = ""
+    base_price = p["price"]
+
+    if promo_code:
+        ok_p, _, promo = await check_promo_for_user(promo_code, uid)
+        if ok_p and promo and promo["kind"] == "percent":
+            promo_discount = promo["value"]
+            promo_text = f"\n🎟 Промокод <b>{promo_code}</b>: -{promo_discount}%"
+
+    final_price = max(1, int(base_price * (100 - promo_discount) / 100)) if promo_discount > 0 else base_price
+    price_line = f"<s>{base_price}₽</s> → <b>{final_price}₽</b>/мес{promo_text}" if promo_discount > 0 else f"<b>{base_price}₽/мес</b>"
+
     text = (
         f"📋 <b>Подтверждение заказа</b>\n\n"
         f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
-        f"💵 Стоимость: <b>{p['price']}₽/мес</b>\n\n"
+        f"💵 Стоимость: {price_line}\n\n"
         f"<b>Что входит:</b>\n<i>{p['desc']}</i>\n\n"
         f"Выбери способ оплаты:"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+
+    rows = [
         [InlineKeyboardButton(
-            text=f"🏦 СБП - {p['price']}₽",
-            callback_data=f"shop_pay_sbp:{key}:{plan_idx}"
+            text=f"🏦 СБП — {final_price}₽",
+            callback_data=f"shop_pay_sbp:{key}:{plan_idx}:{final_price}"
         )],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_svc:{key}")],
-    ])
+    ]
+    if not promo_code:
+        rows.append([InlineKeyboardButton(
+            text="🎟 Применить промокод",
+            callback_data=f"shop_promo_apply:{key}:{plan_idx}"
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text=f"❌ Убрать промокод ({promo_code})",
+            callback_data=f"shop_promo_remove:{key}:{plan_idx}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_svc:{key}")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
+
+
+class ShopPromoState(StatesGroup):
+    waiting_code = State()
+
+
+@dp.callback_query(F.data.startswith("shop_promo_apply:"))
+async def shop_promo_apply(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    key, plan_idx = parts[1], parts[2]
+    await state.set_state(ShopPromoState.waiting_code)
+    await state.update_data(shop_promo_key=key, shop_promo_plan=plan_idx)
+    await cb.message.answer(
+        "🎟 <b>Введи промокод</b>\n\nОтправь код одним сообщением:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data=f"shop_confirm:{key}:{plan_idx}")]
+        ])
+    )
+    await cb.answer()
+
+
+@dp.message(ShopPromoState.waiting_code)
+async def shop_promo_receive(message: Message, state: FSMContext):
+    code = (message.text or "").strip().upper()
+    data = await state.get_data()
+    key = data.get("shop_promo_key", "")
+    plan_idx = data.get("shop_promo_plan", "0")
+    uid = message.from_user.id
+
+    ok, msg_txt, promo = await check_promo_for_user(code, uid)
+    if not ok:
+        await message.answer(
+            f"❌ {msg_txt}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")]
+            ])
+        )
+        await state.set_state(None)
+        return
+
+    if promo["kind"] != "percent":
+        await message.answer(
+            "⚠️ Этот промокод даёт кредиты, а не скидку на подписку.\n"
+            "Для оплаты подписок работают только промокоды со скидкой (%).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")]
+            ])
+        )
+        await state.set_state(None)
+        return
+
+    await state.update_data(**{f"shop_promo_{key}_{plan_idx}": code})
+    await state.set_state(None)
+    await message.answer(
+        f"✅ Промокод <b>{code}</b> применён — скидка {promo['value']}%!",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Перейти к оплате", callback_data=f"shop_confirm:{key}:{plan_idx}")]
+        ])
+    )
+
+
+@dp.callback_query(F.data.startswith("shop_promo_remove:"))
+async def shop_promo_remove(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    key, plan_idx = parts[1], parts[2]
+    data = await state.get_data()
+    promo_key = f"shop_promo_{key}_{plan_idx}"
+    if promo_key in data:
+        await state.update_data(**{promo_key: None})
+    await cb.answer("Промокод убран")
+    # Перерисовываем экран
+    fake_cb = type("FakeCB", (), {
+        "data": f"shop_confirm:{key}:{plan_idx}",
+        "from_user": cb.from_user,
+        "message": cb.message,
+        "answer": cb.answer,
+    })()
+    await shop_confirm(fake_cb, state)
 
 
 @dp.callback_query(F.data.startswith("shop_pay_sbp:"))
@@ -5496,6 +5607,8 @@ async def shop_pay_sbp(cb: CallbackQuery):
     parts = cb.data.split(":")
     key = parts[1]
     plan_idx = int(parts[2])
+    # Если передан final_price (с учётом промокода) — используем его
+    promo_final = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
     s = SHOP_CATALOG.get(key)
     if not s:
         await cb.answer("Ошибка", show_alert=True)
@@ -5515,7 +5628,8 @@ async def shop_pay_sbp(cb: CallbackQuery):
         """, order_id, uid, 0, p["price"], f"shop:{key}:{plan_idx}")
 
     user_coins = await get_coins(uid)
-    final_shop_price = p["price"]
+    # Применяем промокодную цену если передана
+    final_shop_price = promo_final if promo_final and promo_final < p["price"] else p["price"]
     coins_used = 0
     if user_coins >= 1:
         coins_used = int(min(user_coins, final_shop_price))
