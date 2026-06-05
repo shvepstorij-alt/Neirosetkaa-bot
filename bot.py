@@ -14497,12 +14497,9 @@ async def adm_gpt_history(cb: CallbackQuery):
         fname      = r["full_name"] or ""
         tg_nick    = f"@{uname}" if uname else (fname if fname else f"id{uid_str}")
         lines.append(
-            f"\n{idx}. код — <code>{r['code']}</code>\n"
-            f"Тариф — {plan_name}\n"
-            f"почта аккаунта: 📧 {email_str}\n"
-            f"👤 id: <code>{uid_str}</code>\n"
-            f"{tg_nick}\n"
-            f"время активации: ⏱ {used_str}"
+            f"\n{idx}. {tg_nick}  <i>{used_str}</i>\n"
+            f"📧 {email_str}\n"
+            f"🔑 <code>{r['code']}</code>"
         )
 
     nav = []
@@ -16035,6 +16032,28 @@ async def _claude_test_activation_job(fake_bpa: int, user_id: int, plan_name: st
         pass
 
 
+async def _take_claude_bpa_screenshot(bpa_order_id: int) -> bytes | None:
+    """Делает скриншот статуса активации на bypriceactivate.pro."""
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as _p:
+            _br = await _p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--single-process"]
+            )
+            _pg = await _br.new_page(viewport={"width": 900, "height": 500})
+            await _pg.goto(
+                f"https://bypriceactivate.pro/api/activate/{bpa_order_id}",
+                timeout=20000, wait_until="networkidle"
+            )
+            _ss = await _pg.screenshot(full_page=True)
+            await _br.close()
+            return _ss
+    except Exception as _se:
+        logging.warning(f"Claude BPA screenshot failed: {_se}")
+        return None
+
+
 async def _claude_activation_polling_job(
     bpa_order_id: int, code: str, user_id: int,
     order_id: str, plan_name: str, org_id: str
@@ -16101,17 +16120,24 @@ async def _claude_activation_polling_job(
                     pass
 
                 try:
-                    await bot.send_message(
-                        ADMIN_ID,
+                    _caption_ok = (
                         f"✅ <b>Claude авто-активация OK</b>\n\n"
                         f"👤 <b>{_tg}</b>  (<code>{user_id}</code>)\n"
                         f"🔑 Код: <code>{code}</code>\n"
                         f"📦 Тариф: <b>{plan_name}</b>\n"
                         f"🆔 Org ID: <code>{org_id}</code>\n"
                         f"🔢 BPA: <code>{bpa_order_id}</code>\n"
-                        f"⏱ {_ts}",
-                        parse_mode="HTML"
+                        f"⏱ {_ts}"
                     )
+                    _ss_ok = await _take_claude_bpa_screenshot(bpa_order_id)
+                    if _ss_ok:
+                        await bot.send_photo(
+                            ADMIN_ID,
+                            BufferedInputFile(_ss_ok, "claude_ok.png"),
+                            caption=_caption_ok, parse_mode="HTML"
+                        )
+                    else:
+                        await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
                 except Exception:
                     pass
                 await log_event(user_id, "claude_activation_ok",
@@ -16129,14 +16155,21 @@ async def _claude_activation_polling_job(
                     await release_claude_code(code)
                 await delete_claude_pending_activation(user_id)
                 try:
-                    await bot.send_message(
-                        ADMIN_ID,
+                    _caption_fail = (
                         f"❌ <b>Claude FAILED</b>\n"
                         f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
                         f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
-                        f"❌ {_err[:300]}",
-                        parse_mode="HTML"
+                        f"❌ {_err[:300]}"
                     )
+                    _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
+                    if _ss_fail:
+                        await bot.send_photo(
+                            ADMIN_ID,
+                            BufferedInputFile(_ss_fail, "claude_fail.png"),
+                            caption=_caption_fail, parse_mode="HTML"
+                        )
+                    else:
+                        await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
                     await bot.send_message(
                         user_id,
                         f"😔 <b>Активация Claude не прошла</b>\n\n"
@@ -16514,10 +16547,9 @@ async def adm_claude_history(cb: CallbackQuery):
         tg_nick = f"@{uname}" if uname else (fname if fname else f"id{uid_str}")
         org = (r["org_id"] or "—")[:18]
         lines.append(
-            f"\n{idx}. <code>{r['code']}</code>  [{plan_name}]"
-            f"\n👤 <code>{uid_str}</code> {tg_nick}"
-            f"\n🆔 Org: <code>{org}</code>"
-            f"\n⏱ {used_str}"
+            f"\n{idx}. {tg_nick}  <i>{used_str}</i>\n"
+            f"🆔 <code>{org}</code>\n"
+            f"🔑 <code>{r['code']}</code>"
         )
 
     nav = []
