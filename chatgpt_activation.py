@@ -243,17 +243,23 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                     logger.warning(f"Чекбокс ошибка: {e}")
                     return False
 
-            await _check_force_checkbox()
-            await asyncio.sleep(0.5)
+            # Чекбокс НЕ включаем сразу — только если нужно (см. retry логику ниже)
 
             STEP3_TEXTS = ["Подтвердить пополнение","确认充值","Confirm Recharge","Confirm","确认","充值","Activate","激活","Complete","完成","Submit"]
-            STEP3_RETRY_MARKERS = [
-                "пополнение не удалось","若提交多次","充值未成功","充值失败了","提交失败",
-                "recharge failed","top up failed",
-                "уже plus","уже является plus","already plus","already subscribed",
-                "смените аккаунт","пользователь уже",
+            # Маркеры: клиент УЖЕ имеет Plus → нужно принудительное пополнение
+            ALREADY_PLUS_MARKERS = [
+                "уже plus", "уже является plus", "already plus", "already subscribed",
+                "пользователь уже", "смените аккаунт",
+                "you are currently subscribed", "уже подписан",
             ]
-            MAX_STEP3_RETRIES = 5
+            # Маркеры: обычный сбой (сеть, таймаут) → повтор БЕЗ чекбокса
+            GENERIC_RETRY_MARKERS = [
+                "пополнение не удалось", "若提交多次", "充值未成功", "充值失败了",
+                "提交失败", "recharge failed", "top up failed",
+            ]
+            MAX_STEP3_RETRIES = 3   # попыток с force-checkbox
+            MAX_GENERIC_RETRIES = 2 # попыток без force-checkbox
+            generic_retries = 0
 
             async def _click_step3():
                 for text in STEP3_TEXTS:
@@ -271,7 +277,15 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 logger.warning("Кнопка Шага 3 не найдена — смотрим результат")
 
             # Polling
-            success_markers = ["успешно","success","成功","充值成功","recharge successful","activated","активирован","подписка активирована","充值完成","完成"]
+            # ВАЖНО: success_markers включают специфичные русские фразы первыми
+            # чтобы перекрыть случай когда в DOM есть и старый "не удалось" и новый "успешно"
+            success_markers = [
+                "пополнение успешно", "аккаунт успешно пополнен",
+                "успешно активирован", "подписка активирована",
+                "recharge successful", "recharge success",
+                "充值成功", "充值完成", "激活成功",
+                "успешно", "success", "成功", "完成", "activated",
+            ]
             token_invalid_markers = ["token无效或已过期","token无效","无效或已过期","token invalid or expired","token invalid","invalid token","token expired","неверный токен","токен истёк","войдите снова","token is invalid"]
             error_markers = ["失败","failed","не найден","not found","充值失败","错误"] + token_invalid_markers
             processing_markers = ["обработка","обрабатываем","processing","处理中","请稍候","очередь","в очереди","queue","排队","等待中","ожидайте","подождите","pending","waiting","поставлен в очередь","queued"]
@@ -293,24 +307,10 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                     logger.debug(f"Обрабатывается ({attempt+1})")
                     continue
 
-                if any(m in page_text for m in STEP3_RETRY_MARKERS):
-                    step3_retries += 1
-                    if step3_retries <= MAX_STEP3_RETRIES:
-                        logger.warning(f"⚠️ «Пополнение не удалось» — повтор {step3_retries}/{MAX_STEP3_RETRIES}")
-                        await asyncio.sleep(1.5)
-                        await _check_force_checkbox()
-                        await asyncio.sleep(1.5)
-                        await _click_step3()
-                        continue
-                    else:
-                        ss = None
-                        try:
-                            ss = await page.screenshot(full_page=True)
-                        except Exception:
-                            pass
-                        final_result = {"success": False, "token_invalid": False, "error": "Пополнение не удалось после нескольких попыток. Возможно токен устарел — скопируй заново.", "screenshot": ss}
-                        break
-
+                # ── УСПЕХ ПРОВЕРЯЕМ ПЕРВЫМ ──────────────────────────────────────
+                # Это исправляет случай когда DOM содержит и старый "не удалось"
+                # и новый "успешно" (после принудительного повтора) — успех должен
+                # выигрывать всегда.
                 for marker in success_markers:
                     if marker in page_text:
                         logger.info(f"✅ Успешно (маркер: '{marker}')")
@@ -323,6 +323,42 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                         break
                 if final_result:
                     break
+
+                # ── СЦЕНАРИЙ 1: клиент уже имеет Plus → включаем force recharge ──
+                if any(m in page_text for m in ALREADY_PLUS_MARKERS):
+                    step3_retries += 1
+                    if step3_retries <= MAX_STEP3_RETRIES:
+                        logger.warning(f"⚠️ Клиент уже Plus — включаем принудительное пополнение ({step3_retries}/{MAX_STEP3_RETRIES})")
+                        await asyncio.sleep(1.5)
+                        await _check_force_checkbox()   # включаем ТОЛЬКО сейчас
+                        await asyncio.sleep(1.5)
+                        await _click_step3()
+                        continue
+                    else:
+                        ss = None
+                        try:
+                            ss = await page.screenshot(full_page=True)
+                        except Exception:
+                            pass
+                        final_result = {"success": False, "token_invalid": False, "error": "Клиент уже имеет Plus, принудительное пополнение не помогло. Напиши Александру.", "screenshot": ss}
+                        break
+
+                # ── СЦЕНАРИЙ 2: обычный сбой → retry без force checkbox ────────
+                elif any(m in page_text for m in GENERIC_RETRY_MARKERS):
+                    generic_retries += 1
+                    if generic_retries <= MAX_GENERIC_RETRIES:
+                        logger.warning(f"⚠️ Обычный сбой — повтор {generic_retries}/{MAX_GENERIC_RETRIES} (без принудительного)")
+                        await asyncio.sleep(2.0)
+                        await _click_step3()
+                        continue
+                    else:
+                        ss = None
+                        try:
+                            ss = await page.screenshot(full_page=True)
+                        except Exception:
+                            pass
+                        final_result = {"success": False, "token_invalid": False, "error": "Пополнение не удалось после нескольких попыток. Возможно токен устарел — скопируй заново.", "screenshot": ss}
+                        break
 
                 for marker in error_markers:
                     if marker in page_text:
