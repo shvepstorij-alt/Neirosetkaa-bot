@@ -15755,6 +15755,89 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
         )
 
 
+
+
+# ── Помощь с активацией Claude ──────────────────────────────────────────────
+
+@dp.callback_query(F.data == "claude_need_help")
+async def cb_claude_need_help(cb: CallbackQuery):
+    await cb.answer()
+    uid = cb.from_user.id
+    await ensure_user(uid, cb.from_user.username or '', cb.from_user.full_name)
+    await cb.message.answer(
+        "❓ <b>Нужна помощь с активацией Claude?</b>\n\n"
+        "Напиши Александру — активирует вручную в течение 15\u201330 минут.\n\n"
+        "После того как Александр активировал твою подписку — нажми кнопку ниже \U0001f447",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="\U0001f4ac Написать Александру",
+                url=f"https://t.me/{PERSONAL_USERNAME}"
+            )],
+            [InlineKeyboardButton(
+                text="\u2705 Активировали тариф вручную",
+                callback_data="claude_manual_activated"
+            )],
+        ])
+    )
+    try:
+        pending = await get_claude_pending_activation(uid)
+        code_info = (
+            f"\n\U0001f511 Код: <code>{pending['code']}</code>"
+            f"\n\U0001f4e6 Тариф: <b>{pending.get('plan_name', '?')}</b>"
+        ) if pending else ""
+        await bot.send_message(
+            ADMIN_ID,
+            "❓ <b>Клиент нажал «Нужна помощь» — Claude</b>\n\n"
+            f"\U0001f464 <code>{uid}</code>{code_info}\n\n"
+            "Активируй Claude вручную и попроси клиента нажать «Активировали тариф вручную».",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "claude_manual_activated")
+async def cb_claude_manual_activated(cb: CallbackQuery):
+    await cb.answer()
+    uid = cb.from_user.id
+    pending = await get_claude_pending_activation(uid)
+    if pending:
+        code = pending["code"]
+        plan_name = pending.get("plan_name", "?")
+        # Помечаем код как использованный вручную (без bpa)
+        await mark_claude_code_used(code, uid, pending.get("order_id", ""), pending.get("org_id", ""))
+        await delete_claude_pending_activation(uid)
+        await log_event(uid, "claude_manual_activated", f"code={code} plan={plan_name}")
+        await cb.message.answer(
+            "\u2705 <b>Готово!</b>\n\n"
+            "Подписка активирована. Можешь заходить в Claude и пользоваться \U0001f389\n\n"
+            "Если возникнут вопросы — пиши @neirosetkaalex",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="\U0001f3e0 Главное меню", callback_data="back_main")]
+            ])
+        )
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                "\u2705 <b>Ручная активация Claude подтверждена клиентом</b>\n\n"
+                f"\U0001f464 <code>{uid}</code>\n"
+                f"\U0001f511 Код: <code>{code}</code>\n"
+                f"\U0001f4e6 Тариф: <b>{plan_name}</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    else:
+        await cb.message.answer(
+            "\u2139\ufe0f Активная сессия не найдена — возможно уже завершена ранее.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="\U0001f3e0 Главное меню", callback_data="back_main")]
+            ])
+        )
+
+
 # ══════════════════════════════════════════════════════════
 #  GPT CODE RECHECKER — фоновая проверка кодов активации
 # ══════════════════════════════════════════════════════════
@@ -16002,7 +16085,7 @@ async def _send_claude_webapp_to_user(
                 )],
                 [InlineKeyboardButton(
                     text="❓ Нужна помощь",
-                    url=f"https://t.me/{PERSONAL_USERNAME}"
+                    callback_data="claude_need_help"
                 )],
             ])
         )
@@ -16178,8 +16261,12 @@ async def _claude_activation_polling_job(
                         parse_mode="HTML",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(
-                                text="💬 Написать Александру",
-                                url=f"https://t.me/{PERSONAL_USERNAME}"
+                                text="✅ Активировали тариф вручную",
+                                callback_data="claude_manual_activated"
+                            )],
+                            [InlineKeyboardButton(
+                                text="❓ Нужна помощь",
+                                callback_data="claude_need_help"
                             )],
                         ])
                     )
@@ -16215,8 +16302,12 @@ async def _claude_activation_polling_job(
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
-                    text="💬 Написать Александру",
-                    url=f"https://t.me/{PERSONAL_USERNAME}"
+                    text="✅ Активировали тариф вручную",
+                    callback_data="claude_manual_activated"
+                )],
+                [InlineKeyboardButton(
+                    text="❓ Нужна помощь",
+                    callback_data="claude_need_help"
                 )],
             ])
         )
