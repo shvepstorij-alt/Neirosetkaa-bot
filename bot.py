@@ -15771,12 +15771,12 @@ async def cb_claude_need_help(cb: CallbackQuery):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text="\U0001f4ac Написать Александру",
-                url=f"https://t.me/{PERSONAL_USERNAME}"
+                text="\u2705 Александр уже активировал",
+                callback_data="claude_manual_activated"
             )],
             [InlineKeyboardButton(
-                text="\u2705 Активировали тариф вручную",
-                callback_data="claude_manual_activated"
+                text="\U0001f4ac Написать Александру",
+                url=f"https://t.me/{PERSONAL_USERNAME}"
             )],
         ])
     )
@@ -15790,7 +15790,7 @@ async def cb_claude_need_help(cb: CallbackQuery):
             ADMIN_ID,
             "❓ <b>Клиент нажал «Нужна помощь» — Claude</b>\n\n"
             f"\U0001f464 <code>{uid}</code>{code_info}\n\n"
-            "Активируй Claude вручную и попроси клиента нажать «Активировали тариф вручную».",
+            "Активируй Claude вручную и попроси клиента нажать «Александр уже активировал».",
             parse_mode="HTML"
         )
     except Exception:
@@ -16517,7 +16517,7 @@ async def claude_reopen_webapp(cb: CallbackQuery):
             )],
             [InlineKeyboardButton(
                 text="❓ Нужна помощь",
-                url=f"https://t.me/{PERSONAL_USERNAME}"
+                callback_data="claude_need_help"
             )],
         ])
     )
@@ -16900,7 +16900,7 @@ async def test_claude_webapp(message: Message):
             )],
             [InlineKeyboardButton(
                 text="❓ Нужна помощь",
-                url=f"https://t.me/{PERSONAL_USERNAME}"
+                callback_data="claude_need_help"
             )],
         ])
     )
