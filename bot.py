@@ -16661,7 +16661,7 @@ async def adm_claude_history(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_claude_free:"))
 async def adm_claude_free_codes(cb: CallbackQuery):
-    """Просмотр свободных кодов Claude."""
+    """Просмотр свободных кодов Claude с возможностью удалить."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
@@ -16681,24 +16681,38 @@ async def adm_claude_free_codes(cb: CallbackQuery):
         InlineKeyboardButton(text="Max 20×",callback_data="adm_claude_free:max_20x"),
     ]
     if not rows:
-        kb = InlineKeyboardMarkup(inline_keyboard=[plan_nav, [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            plan_nav,
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")],
+        ])
         try:
-            await cb.message.edit_text(f"📦 <b>Свободные коды — Claude {PLAN_LABELS.get(plan, plan)}</b>\n\n📭 Кодов нет.", parse_mode="HTML", reply_markup=kb)
+            await cb.message.edit_text(
+                f"📦 <b>Свободные коды — Claude {PLAN_LABELS.get(plan, plan)}</b>\n\n📭 Кодов нет.",
+                parse_mode="HTML", reply_markup=kb)
         except Exception:
             pass
         await cb.answer()
         return
 
     lines = [f"📦 <b>Свободные коды — Claude {PLAN_LABELS.get(plan, plan)}</b> (всего {total}):\n"]
+    code_btns = []
     for r in rows:
         created = r["created_at"]
         date_str = created.strftime("%d.%m.%y") if created and hasattr(created, "strftime") else "—"
         lines.append(f"• <code>{r['code']}</code>  <i>{date_str}</i>")
+        code_btns.append([
+            InlineKeyboardButton(
+                text=f"🗑 {r['code']}",
+                callback_data=f"adm_claude_del_code:{r['id']}:{plan}"
+            )
+        ])
+
     if total > 20:
         lines.append(f"\n<i>Показаны первые 20 из {total}</i>")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         plan_nav,
+        *code_btns,
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")],
     ])
     try:
@@ -16706,6 +16720,64 @@ async def adm_claude_free_codes(cb: CallbackQuery):
     except Exception:
         await cb.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_claude_del_code:"))
+async def adm_claude_del_code(cb: CallbackQuery):
+    """Шаг 1 — подтверждение удаления кода Claude."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code, is_used FROM claude_codes WHERE id=$1", code_id)
+    if not row:
+        await cb.answer("Код не найден", show_alert=True)
+        return
+    if row["is_used"]:
+        await cb.answer("❌ Код уже использован, нельзя удалить", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить",
+                              callback_data=f"adm_claude_del_confirm:{code_id}:{plan}")],
+        [InlineKeyboardButton(text="❌ Отмена",
+                              callback_data=f"adm_claude_free:{plan}")],
+    ])
+    try:
+        await cb.message.edit_text(
+            f"🗑 <b>Удалить код Claude?</b>\n\n"
+            f"<code>{row['code']}</code>\n\n"
+            f"Это действие нельзя отменить.",
+            parse_mode="HTML", reply_markup=kb
+        )
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_claude_del_confirm:"))
+async def adm_claude_del_confirm(cb: CallbackQuery):
+    """Шаг 2 — подтверждение получено, удаляем код Claude."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    code_id, plan = int(parts[1]), parts[2]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code, is_used FROM claude_codes WHERE id=$1", code_id)
+        if not row:
+            await cb.answer("Код не найден", show_alert=True)
+            return
+        if row["is_used"]:
+            await cb.answer("❌ Код уже использован", show_alert=True)
+            return
+        await conn.execute("DELETE FROM claude_codes WHERE id=$1", code_id)
+    await cb.answer(f"✅ Код {row['code']} удалён", show_alert=True)
+    cb.data = f"adm_claude_free:{plan}"
+    await adm_claude_free_codes(cb)
 
 
 @dp.callback_query(F.data == "adm_claude_pending")
