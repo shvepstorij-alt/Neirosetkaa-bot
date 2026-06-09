@@ -23,11 +23,13 @@ BASE_URL = "https://api.ns.gifts"
 
 
 class NSGiftsClient:
-    def __init__(self, user_id: int, login: str, password: str, api_secret: str):
+    def __init__(self, user_id: int, login: str, password: str, api_secret: str,
+                 proxy: str = ""):
         self.user_id    = user_id
         self.login      = login
         self.password   = password
         self.api_secret = api_secret
+        self.proxy      = proxy or None     # None → без прокси
 
         self._token: Optional[str] = None
         self._token_expires: float = 0.0
@@ -83,6 +85,7 @@ class NSGiftsClient:
         async with aiohttp.ClientSession() as s:
             async with s.post(
                 BASE_URL + path, headers=headers, data=body,
+                proxy=self.proxy,
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as r:
                 data = await r.json()
@@ -109,6 +112,7 @@ class NSGiftsClient:
         async with aiohttp.ClientSession() as s:
             async with s.request(
                 method, url, headers=headers, data=body,
+                proxy=self.proxy,
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as r:
                 if r.status == 401:
@@ -118,6 +122,7 @@ class NSGiftsClient:
                     headers = self._make_headers(method, path, query, body, self._token)
                     async with s.request(
                         method, url, headers=headers, data=body,
+                        proxy=self.proxy,
                         timeout=aiohttp.ClientTimeout(total=30)
                     ) as r2:
                         r2.raise_for_status()
