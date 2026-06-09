@@ -26,6 +26,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+NSGIFTS_USER_ID    = int(os.getenv("NSGIFTS_USER_ID", "0"))
+NSGIFTS_LOGIN      = os.getenv("NSGIFTS_LOGIN", "")
+NSGIFTS_PASSWORD   = os.getenv("NSGIFTS_PASSWORD", "")
+NSGIFTS_API_SECRET = os.getenv("NSGIFTS_API_SECRET", "")
+_nsgifts_client    = None   # инициализируется в startup
+
+
 # Таймзона для отображения времени (UTC+5 = Yekaterinburg / Kazakhstan)
 import datetime as _dt_tz
 _BOT_TZ = _dt_tz.timezone(_dt_tz.timedelta(hours=5))
@@ -1279,6 +1286,35 @@ async def init_db():
                 expires_at   TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '2 hours')
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS nsgifts_orders (
+                id            SERIAL PRIMARY KEY,
+                user_id       BIGINT NOT NULL,
+                fk_order_id   TEXT NOT NULL UNIQUE,
+                ns_custom_id  TEXT,
+                service_id    INTEGER NOT NULL,
+                service_name  TEXT NOT NULL DEFAULT \'\',
+                quantity      INTEGER DEFAULT 1,
+                price_usd     NUMERIC(10,4),
+                price_rub     INTEGER,
+                status        TEXT DEFAULT \'pending\',
+                pins_json     TEXT,
+                error_msg     TEXT,
+                created_at    TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nsgifts_uid ON nsgifts_orders(user_id)"
+        )
+        for _k, _v in [
+            ("nsgifts_usd_rate",          "100"),
+            ("nsgifts_markup",            "15"),
+            ("nsgifts_balance_threshold", "30"),
+        ]:
+            await conn.execute(
+                "INSERT INTO settings(key, value) VALUES($1,$2) ON CONFLICT DO NOTHING",
+                _k, _v
+            )
     logging.info("✅ PostgreSQL инициализирован")
 
 
@@ -5330,6 +5366,13 @@ SHOP_CATALOG = {
             {"name": "Pro",  "price": 2300, "stars": 920, "desc": "Премиум AI-модели, API доступ, 10 кастомных доменов, Studio Mode"},
         ]
     },
+    "appstore": {
+        "name":  "App Store / iCloud",
+        "emoji": "🍎",
+        "desc":  "Пополнение Apple ID. Подходит для App Store, iCloud+, Apple Music, Apple TV+. Моментальная автодоставка кода.",
+        "plans": [],
+        "_nsgifts": True,
+    },
 }
 
 SHOP_CATEGORIES = [
@@ -5371,7 +5414,19 @@ async def menu_shop(cb: CallbackQuery):
     row = []
     for key in ordered_keys:
         s = SHOP_CATALOG.get(key)
-        if not s or not s.get("plans"):
+        if not s:
+            continue
+        # NS Gifts сервисы — кастомный callback, показываем даже без plans
+        if s.get("_nsgifts"):
+            row.append(InlineKeyboardButton(
+                text=f"{s['emoji']} {s['name']}",
+                callback_data="nsg_start"
+            ))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+            continue
+        if not s.get("plans"):
             continue
         row.append(InlineKeyboardButton(
             text=f"{s['emoji']} {s['name']}",
@@ -15085,6 +15140,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         method_used_msg = (db_order_for_msg or {}).get("payment_method", "sbp") if db_order_for_msg else "sbp"
 
         # Определяем тип заказа - магазин или кредиты
+        # NS Gifts (App Store / iCloud) — мгновенная доставка кода
+        if order_id.startswith("nsg_"):
+            await nsgifts_fulfill_after_payment(order_id, user_id)
+            return True
+
         is_shop_order = order_id.startswith("shop_")
         pack_info = (db_order_for_msg or {}).get("pack", "") if db_order_for_msg else pack
 
@@ -17045,8 +17105,688 @@ async def main():
     asyncio.create_task(_activation_jobs_cleanup_loop())
     asyncio.create_task(claude_codes_cleanup_loop())
     asyncio.create_task(_claude_job_results_cleanup_loop())
+    # NS Gifts: инициализируем клиент и фоновые задачи
+    global _nsgifts_client
+    if NSGIFTS_USER_ID and NSGIFTS_LOGIN and NSGIFTS_API_SECRET:
+        from ns_gifts import NSGiftsClient
+        _nsgifts_client = NSGiftsClient(
+            user_id    = NSGIFTS_USER_ID,
+            login      = NSGIFTS_LOGIN,
+            password   = NSGIFTS_PASSWORD,
+            api_secret = NSGIFTS_API_SECRET,
+        )
+        logging.info("✅ NS Gifts client initialized")
+        asyncio.create_task(nsgifts_balance_alert_loop())
+    else:
+        logging.warning("⚠️  NS Gifts: env-переменные не заданы — App Store отключён")
+
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+# ─── /myip — текущий исходящий IP сервера (Railway) ──────────────────────────
+@dp.message(F.text == "/myip")
+async def cmd_myip(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get("https://api.ipify.org", timeout=aiohttp.ClientTimeout(total=5)) as r:
+                ip = await r.text()
+        await message.answer(f"🌐 Outbound IP сервера:\n<code>{ip.strip()}</code>\n\nДобавь этот IP в whitelist NS Gifts.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось получить IP: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Хелперы настроек NS Gifts
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def _nsg_usd_rate() -> float:
+    v = await get_setting("nsgifts_usd_rate")
+    try:    return float(v)
+    except: return 100.0
+
+async def _nsg_markup() -> float:
+    v = await get_setting("nsgifts_markup")
+    try:    return float(v)
+    except: return 15.0
+
+async def _nsg_threshold() -> float:
+    v = await get_setting("nsgifts_balance_threshold")
+    try:    return float(v)
+    except: return 30.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  ХЕНДЛЕР: shop_svc:appstore — выбор региона
+#  ВАЖНО: зарегистрируй ЭТО ДО существующего @dp.callback_query(F.data.startswith("shop_svc:"))
+#  Если вставляешь в конец файла — переименуй callback_data в меню на "nsg_start"
+#  (см. ниже menu_shop_nsg_override — он заменит стандартную кнопку appstore)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "nsg_start")
+async def nsg_start(cb: CallbackQuery):
+    """Экран выбора региона App Store / iCloud."""
+    await cb.answer()
+    if not _nsgifts_client:
+        await cb.message.answer("⚠️ Сервис временно недоступен. Напиши @neirosetkaalex")
+        return
+
+    from ns_gifts import get_stock_cached, get_apple_categories, region_flag
+    stock = await get_stock_cached(_nsgifts_client)
+    cats  = get_apple_categories(stock)
+
+    if not cats:
+        await cb.message.answer("⚠️ Каталог Apple Gift Card временно пуст. Попробуй позже.")
+        return
+
+    rows = []
+    for cat in cats:
+        flag  = region_flag(cat["category_name"])
+        # Очищаем название: "Apple Gift Card Russia" → "Russia"
+        short = cat["category_name"]
+        for strip in ("Apple Gift Card", "App Store", "iTunes", "Gift Card"):
+            short = short.replace(strip, "").strip()
+        rows.append([InlineKeyboardButton(
+            text=f"{flag} {short}",
+            callback_data=f"nsg_cat:{cat['category_id']}"
+        )])
+
+    rows.append([InlineKeyboardButton(text="⬅️ В магазин", callback_data="menu_shop")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    text = (
+        "🍎 <b>App Store / iCloud — пополнение Apple ID</b>\n\n"
+        "Код придёт <b>автоматически сразу</b> после оплаты.\n"
+        "Подходит для App Store, iCloud+, Apple Music, Apple TV+.\n\n"
+        "<b>Выбери регион пополнения:</b>"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("nsg_cat:"))
+async def nsg_cat(cb: CallbackQuery):
+    """Экран выбора суммы пополнения."""
+    await cb.answer()
+    if not _nsgifts_client:
+        await cb.message.answer("⚠️ Сервис временно недоступен.")
+        return
+
+    cat_id = int(cb.data.split(":")[1])
+
+    from ns_gifts import get_stock_cached, get_apple_categories, region_flag, calc_price_rub
+    stock    = await get_stock_cached(_nsgifts_client)
+    cats     = get_apple_categories(stock)
+    cat      = next((c for c in cats if c["category_id"] == cat_id), None)
+
+    if not cat:
+        await cb.message.answer("⚠️ Категория не найдена. Попробуй снова.")
+        return
+
+    usd_rate   = await _nsg_usd_rate()
+    markup_pct = await _nsg_markup()
+
+    # Фильтруем только товары в наличии, сортируем по цене
+    services = sorted(
+        [s for s in cat.get("services", []) if s.get("in_stock", 0) > 0],
+        key=lambda s: s["price"]
+    )
+
+    if not services:
+        await cb.message.answer("⚠️ Товары в этой категории закончились. Попробуй позже.")
+        return
+
+    flag  = region_flag(cat["category_name"])
+    short = cat["category_name"]
+    for strip in ("Apple Gift Card", "App Store", "iTunes", "Gift Card"):
+        short = short.replace(strip, "").strip()
+
+    rows = []
+    for svc in services:
+        price_rub = calc_price_rub(svc["price"], usd_rate, markup_pct)
+        # Извлекаем номинал из названия: "Apple Gift Card | USA | 5 USD" → "5 USD"
+        parts    = svc["service_name"].split("|")
+        nominal  = parts[-1].strip() if parts else svc["service_name"]
+        rows.append([InlineKeyboardButton(
+            text=f"{nominal}  —  {price_rub:,} ₽".replace(",", " "),
+            callback_data=f"nsg_svc:{svc['service_id']}:{cat_id}"
+        )])
+
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_start")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    text = (
+        f"🍎 <b>App Store / iCloud — {flag} {short}</b>\n\n"
+        f"Выбери сумму пополнения 👇\n\n"
+        f"<i>Курс: 1 USD = {usd_rate:.0f} ₽ · Код придёт сразу после оплаты</i>"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("nsg_svc:"))
+async def nsg_svc(cb: CallbackQuery):
+    """Экран подтверждения — показывает цену и кнопку оплаты."""
+    await cb.answer()
+    if not _nsgifts_client:
+        await cb.message.answer("⚠️ Сервис временно недоступен.")
+        return
+
+    parts      = cb.data.split(":")
+    service_id = int(parts[1])
+    cat_id     = int(parts[2])
+    uid        = cb.from_user.id
+
+    if not await check_not_blocked(cb, uid):
+        return
+
+    from ns_gifts import get_stock_cached, get_apple_categories, calc_price_rub
+    stock      = await get_stock_cached(_nsgifts_client)
+    cats       = get_apple_categories(stock)
+    cat        = next((c for c in cats if c["category_id"] == cat_id), None)
+    service    = None
+    if cat:
+        service = next((s for s in cat.get("services", [])
+                        if s["service_id"] == service_id), None)
+
+    if not service:
+        await cb.message.answer("⚠️ Товар не найден. Попробуй выбрать снова.")
+        return
+
+    usd_rate   = await _nsg_usd_rate()
+    markup_pct = await _nsg_markup()
+    price_rub  = calc_price_rub(service["price"], usd_rate, markup_pct)
+
+    # Формируем order_id для FreeKassa
+    import time as _t
+    order_id = f"nsg_{service_id}_{uid}_{int(_t.time())}"
+
+    # Сохраняем в nsgifts_orders (status=pending, ждём оплаты)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO nsgifts_orders
+                (user_id, fk_order_id, service_id, service_name,
+                 quantity, price_usd, price_rub, status)
+            VALUES ($1,$2,$3,$4,1,$5,$6,'pending')
+            ON CONFLICT (fk_order_id) DO NOTHING
+        """, uid, order_id, service_id,
+             service.get("service_name", ""), service["price"], price_rub)
+
+    # Сохраняем в fk_orders (credits=0 — не начисляем кредиты)
+    await fk_save_order(order_id, uid, 0, price_rub, pack=f"nsg:{service_id}")
+
+    # Ссылка на оплату FreeKassa
+    pay_url = fk_payment_url(order_id, price_rub, uid)
+
+    parts_name = service.get("service_name", "").split("|")
+    nominal    = parts_name[-1].strip() if parts_name else service.get("service_name", "")
+
+    text = (
+        f"🍎 <b>App Store / iCloud</b>\n\n"
+        f"📦 <b>{service.get('service_name', nominal)}</b>\n"
+        f"💵 Цена: <b>{price_rub:,} ₽</b>\n\n".replace(",", " ") +
+        f"После оплаты код придёт <b>автоматически</b> в этот чат.\n"
+        f"🆔 Заказ: <code>{order_id}</code>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"💳 Оплатить {price_rub:,} ₽".replace(",", " "),
+            url=pay_url
+        )],
+        [InlineKeyboardButton(
+            text="🔄 Проверить оплату",
+            callback_data=f"nsg_check:{order_id}"
+        )],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"nsg_cat:{cat_id}")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("nsg_check:"))
+async def nsg_check_payment(cb: CallbackQuery):
+    """Ручная проверка оплаты по кнопке (если FK webhook задержался)."""
+    await cb.answer("Проверяем оплату…", show_alert=False)
+    order_id = cb.data.split(":", 1)[1]
+    uid      = cb.from_user.id
+
+    fk_status = await fk_check_order_status(order_id)
+    if fk_status and fk_status.get("status") == "paid":
+        # Оплачен — выполняем заказ
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1", order_id
+            )
+        if row and row["status"] == "pending":
+            await nsgifts_fulfill_after_payment(order_id, uid)
+        else:
+            await cb.message.answer("✅ Заказ уже выполнен — код должен быть выше в чате.")
+    else:
+        await cb.answer(
+            "Оплата пока не найдена. Если оплатил — подожди 1–2 минуты и попробуй снова.",
+            show_alert=True
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Выполнение заказа через NS Gifts API (вызывается после подтверждения оплаты)
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
+    """
+    Вызывается из fk_credit_paid_order когда order_id начинается с 'nsg_'.
+    1. Ищем запись в nsgifts_orders
+    2. Создаём заказ в NS Gifts
+    3. Оплачиваем → получаем пин-коды
+    4. Отправляем пользователю
+    """
+    if not _nsgifts_client:
+        logging.error("NSGifts: client not initialized, cannot fulfill")
+        await bot.send_message(
+            user_id,
+            "⚠️ Оплата получена, но автодоставка временно недоступна.\n"
+            "Напиши @neirosetkaalex — код пришлю вручную в течение 15 минут.",
+        )
+        await bot.send_message(
+            ADMIN_ID,
+            f"🚨 <b>NSGifts: client not init</b>\n"
+            f"fk_order={fk_order_id}  uid={user_id}\nАктивируй вручную!",
+            parse_mode="HTML"
+        )
+        return
+
+    pool = await get_pool()
+
+    # 1. Получаем информацию о заказе
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1", fk_order_id
+        )
+
+    if not row:
+        logging.error(f"NSGifts: order not found for fk_order={fk_order_id}")
+        await bot.send_message(
+            ADMIN_ID,
+            f"🚨 <b>NSGifts: запись не найдена</b>\n"
+            f"fk_order={fk_order_id}  uid={user_id}",
+            parse_mode="HTML"
+        )
+        return
+
+    if row["status"] == "fulfilled":
+        logging.info(f"NSGifts: order {fk_order_id} already fulfilled")
+        return   # идемпотентность — уже выполнен
+
+    service_id   = row["service_id"]
+    service_name = row["service_name"]
+    price_rub    = row["price_rub"]
+
+    # Уведомляем что обрабатываем
+    try:
+        await bot.send_message(
+            user_id,
+            "✅ <b>Оплата получена!</b>\n\nПолучаем код — займёт пару секунд… ⏳",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+    try:
+        # 2. Создаём заказ
+        create_resp = await _nsgifts_client.create_order(service_id, quantity=1)
+        custom_id   = create_resp.get("custom_id") or create_resp.get("_custom_id")
+
+        if not custom_id:
+            raise RuntimeError(f"create_order: no custom_id in response: {create_resp}")
+
+        # Сохраняем custom_id
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE nsgifts_orders SET ns_custom_id=$1, status='paying' "
+                "WHERE fk_order_id=$2",
+                custom_id, fk_order_id
+            )
+
+        # 3. Оплачиваем
+        pay_resp = await _nsgifts_client.pay_order(custom_id)
+        status   = pay_resp.get("status", "")
+        pins     = pay_resp.get("pins") or []
+
+        if status == "insufficient":
+            raise RuntimeError("Insufficient balance on NS Gifts account")
+
+        if not pins:
+            raise RuntimeError(f"pay_order returned no pins: {pay_resp}")
+
+        # 4. Сохраняем и отправляем
+        import json as _json
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE nsgifts_orders SET status='fulfilled', "
+                "ns_custom_id=$1, pins_json=$2 WHERE fk_order_id=$3",
+                custom_id, _json.dumps(pins), fk_order_id
+            )
+
+        # Формируем красивое сообщение с кодом
+        pins_text = "\n".join(f"<code>{p}</code>" for p in pins)
+        await bot.send_message(
+            user_id,
+            f"🎉 <b>Вот твой код!</b>\n\n"
+            f"📦 <b>{service_name}</b>\n\n"
+            f"🔑 <b>Код активации:</b>\n{pins_text}\n\n"
+            f"<b>Как использовать:</b>\n"
+            f"• Открой App Store → нажми на свой аватар → Погасить подарочную карту\n"
+            f"• Введи код или нажми «Использовать камеру»\n\n"
+            f"Если что-то не так — пиши @{PERSONAL_USERNAME} 🙌",
+            parse_mode="HTML"
+        )
+
+        # Алерт администратору
+        balance = await _nsgifts_client.check_balance()
+        threshold = await _nsg_threshold()
+        balance_warn = f"\n⚠️ <b>Баланс NS Gifts: ${balance:.2f}</b> — пора пополнить!" \
+                       if balance < threshold else f"\nБаланс NS Gifts: ${balance:.2f}"
+        await bot.send_message(
+            ADMIN_ID,
+            f"✅ <b>Apple Gift Card продан</b>\n\n"
+            f"👤 <code>{user_id}</code>\n"
+            f"📦 {service_name}\n"
+            f"💵 {price_rub} ₽\n"
+            f"🔑 {', '.join(pins)}"
+            f"{balance_warn}",
+            parse_mode="HTML"
+        )
+        await log_event(user_id, "nsgifts_fulfilled",
+                        f"fk={fk_order_id} ns={custom_id} pins={len(pins)}")
+
+    except Exception as e:
+        logging.error(f"NSGifts fulfill failed for {fk_order_id}: {e}", exc_info=True)
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE nsgifts_orders SET status='failed', error_msg=$1 "
+                "WHERE fk_order_id=$2",
+                str(e)[:500], fk_order_id
+            )
+
+        # Сообщение пользователю
+        await bot.send_message(
+            user_id,
+            "😔 Оплата прошла, но при выдаче кода возникла ошибка.\n\n"
+            f"Напиши @{PERSONAL_USERNAME} — код пришлю вручную в течение 15 минут! 🙏"
+        )
+
+        # Алерт администратору с деталями
+        await bot.send_message(
+            ADMIN_ID,
+            f"🚨 <b>NSGifts ОШИБКА выдачи</b>\n\n"
+            f"👤 <code>{user_id}</code>\n"
+            f"📦 {service_name}  (service_id={service_id})\n"
+            f"💵 {price_rub} ₽\n"
+            f"🆔 FK: <code>{fk_order_id}</code>\n\n"
+            f"❌ Ошибка: <code>{str(e)[:300]}</code>\n\n"
+            f"Активируй вручную через кабинет wholesale.ns.gifts",
+            parse_mode="HTML"
+        )
+        await log_event(user_id, "nsgifts_failed",
+                        f"fk={fk_order_id} error={str(e)[:300]}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Фоновый цикл: алерт на низкий баланс NS Gifts
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def nsgifts_balance_alert_loop():
+    """Проверяет баланс NS Gifts раз в час. Шлёт алерт если ниже порога."""
+    await asyncio.sleep(600)   # первый запуск через 10 мин после старта
+    _alerted_low = False       # не спамить одно сообщение
+
+    while True:
+        try:
+            if _nsgifts_client:
+                balance   = await _nsgifts_client.check_balance()
+                threshold = await _nsg_threshold()
+                if balance < threshold and not _alerted_low:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ <b>NS Gifts: низкий баланс!</b>\n\n"
+                        f"Текущий баланс: <b>${balance:.2f}</b>\n"
+                        f"Порог: ${threshold:.0f}\n\n"
+                        f"Пополни кабинет: https://wholesale.ns.gifts",
+                        parse_mode="HTML"
+                    )
+                    _alerted_low = True
+                    logging.warning(f"NSGifts low balance alert: ${balance:.2f}")
+                elif balance >= threshold:
+                    _alerted_low = False   # сбрасываем флаг после пополнения
+        except Exception as e:
+            logging.error(f"nsgifts_balance_alert_loop: {e}")
+
+        await asyncio.sleep(3600)   # раз в час
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Хендлер: обход стандартного shop_svc для appstore
+#  Вставить В НАЧАЛО bot.py (после импортов) или ПЕРЕД существующим shop_svc:
+#  Иначе: в меню магазина замени callback_data appstore с "shop_svc:appstore"
+#  на "nsg_start" (в функции menu_shop, в цикле where key == "appstore")
+#
+#  ИЛИ: добавь в начало существующего shop_svc хендлера:
+#    if key == "appstore":
+#        await cb.message.edit_text("…")  # редирект на nsg_start
+#        await nsg_start(cb)
+#        return
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Админка NS Gifts — кнопка «🍎 App Store» в разделе настроек
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "adm_nsgifts")
+async def adm_nsgifts_menu(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    balance_str = "—"
+    if _nsgifts_client:
+        try:
+            bal = await _nsgifts_client.check_balance()
+            balance_str = f"${bal:.4f}"
+        except Exception:
+            balance_str = "ошибка запроса"
+
+    usd_rate   = await _nsg_usd_rate()
+    markup_pct = await _nsg_markup()
+    threshold  = await _nsg_threshold()
+
+    text = (
+        f"🍎 <b>App Store / iCloud — NS Gifts</b>\n\n"
+        f"💰 Баланс кабинета: <b>{balance_str}</b>\n"
+        f"💱 Курс USD → ₽: <b>{usd_rate:.0f}</b>\n"
+        f"📈 Наценка: <b>{markup_pct:.0f}%</b>\n"
+        f"🔔 Алерт при балансе < <b>${threshold:.0f}</b>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💱 Изменить курс USD",      callback_data="adm_nsg_rate")],
+        [InlineKeyboardButton(text="📈 Изменить наценку %",     callback_data="adm_nsg_markup")],
+        [InlineKeyboardButton(text="🔔 Порог алерта баланса",   callback_data="adm_nsg_threshold")],
+        [InlineKeyboardButton(text="🔄 Обновить кеш каталога",  callback_data="adm_nsg_refresh")],
+        [InlineKeyboardButton(text="📊 Последние продажи",      callback_data="adm_nsg_sales")],
+        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="back_main")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+class AdmNsgState(StatesGroup):
+    waiting_rate      = State()
+    waiting_markup    = State()
+    waiting_threshold = State()
+
+
+@dp.callback_query(F.data == "adm_nsg_rate")
+async def adm_nsg_rate_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    await state.set_state(AdmNsgState.waiting_rate)
+    usd_rate = await _nsg_usd_rate()
+    await cb.message.answer(
+        f"💱 Текущий курс: <b>{usd_rate:.0f} ₽/USD</b>\n\n"
+        f"Введи новый курс (только число, например <code>98</code>):",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdmNsgState.waiting_rate, F.text)
+async def adm_nsg_rate_set(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        assert 50 <= val <= 500
+    except Exception:
+        await message.answer("❌ Неверный формат. Введи число от 50 до 500:")
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO settings(key,value) VALUES('nsgifts_usd_rate',$1) "
+            "ON CONFLICT(key) DO UPDATE SET value=$1", str(val)
+        )
+    await state.clear()
+    await message.answer(f"✅ Курс обновлён: <b>{val:.0f} ₽/USD</b>", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_nsg_markup")
+async def adm_nsg_markup_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    await state.set_state(AdmNsgState.waiting_markup)
+    markup = await _nsg_markup()
+    await cb.message.answer(
+        f"📈 Текущая наценка: <b>{markup:.0f}%</b>\n\n"
+        f"Введи новую наценку (например <code>20</code>):",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdmNsgState.waiting_markup, F.text)
+async def adm_nsg_markup_set(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        assert 0 <= val <= 200
+    except Exception:
+        await message.answer("❌ Неверный формат. Введи % от 0 до 200:")
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO settings(key,value) VALUES('nsgifts_markup',$1) "
+            "ON CONFLICT(key) DO UPDATE SET value=$1", str(val)
+        )
+    await state.clear()
+    await message.answer(f"✅ Наценка обновлена: <b>{val:.0f}%</b>", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_nsg_threshold")
+async def adm_nsg_threshold_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID: return
+    await state.set_state(AdmNsgState.waiting_threshold)
+    thr = await _nsg_threshold()
+    await cb.message.answer(
+        f"🔔 Текущий порог: <b>${thr:.0f}</b>\n\n"
+        f"Введи новый порог в USD (например <code>50</code>):",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdmNsgState.waiting_threshold, F.text)
+async def adm_nsg_threshold_set(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        val = float(message.text.strip())
+        assert 0 <= val <= 10000
+    except Exception:
+        await message.answer("❌ Введи число:")
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO settings(key,value) VALUES('nsgifts_balance_threshold',$1) "
+            "ON CONFLICT(key) DO UPDATE SET value=$1", str(val)
+        )
+    await state.clear()
+    await message.answer(f"✅ Порог обновлён: <b>${val:.0f}</b>", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_nsg_refresh")
+async def adm_nsg_refresh_cache(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    from ns_gifts import invalidate_stock_cache, get_stock_cached, get_apple_categories
+    invalidate_stock_cache()
+    stock = await get_stock_cached(_nsgifts_client) if _nsgifts_client else {}
+    cats  = get_apple_categories(stock)
+    await cb.answer(f"✅ Кеш сброшен. Категорий Apple: {len(cats)}", show_alert=True)
+
+
+@dp.callback_query(F.data == "adm_nsg_sales")
+async def adm_nsg_sales(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID: return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT user_id, service_name, price_rub, status, created_at
+            FROM nsgifts_orders
+            ORDER BY created_at DESC LIMIT 20
+        """)
+    if not rows:
+        await cb.answer("Продаж пока нет", show_alert=True)
+        return
+    lines = ["📊 <b>Последние 20 продаж App Store:</b>\n"]
+    for r in rows:
+        icon = "✅" if r["status"] == "fulfilled" else ("❌" if r["status"] == "failed" else "⏳")
+        lines.append(
+            f"{icon} <code>{r['user_id']}</code> · {r['service_name']} · "
+            f"{r['price_rub']} ₽ · {r['status']}"
+        )
+    total = sum(r["price_rub"] or 0 for r in rows if r["status"] == "fulfilled")
+    lines.append(f"\n💰 Сумма выполненных: <b>{total:,} ₽</b>".replace(",", " "))
+    await cb.message.answer("\n".join(lines), parse_mode="HTML")
+    await cb.answer()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Вспомогательная: сохранить FK-заказ (адаптер для совместимости)
+#  Скопируй или проверь что fk_save_order уже есть в bot.py.
+#  Если нет — добавь:
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def fk_save_order(order_id: str, user_id: int, credits: int,
+                        amount_rub: int, pack: str = ""):
+    """Сохраняет заказ в fk_orders (status=pending)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, status)
+            VALUES ($1,$2,$3,$4,$5,'pending')
+            ON CONFLICT (order_id) DO NOTHING
+        """, order_id, user_id, credits, amount_rub, pack)
