@@ -15005,7 +15005,10 @@ async def test_chatgpt_full(message: Message):
     ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") &
     ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") &
     ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") &
-    ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp")
+    ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp") &
+    ~F.text.startswith("/myip") & ~F.text.startswith("/audit") &
+    ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
+    ~F.text.startswith("/recover")
 )
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
