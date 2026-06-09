@@ -15615,6 +15615,17 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
         return web.Response(text="ERROR", status=500)
 
 
+
+async def getip_handler(request: web.Request) -> web.Response:
+    """GET /getip — возвращает исходящий IP сервера (для NS Gifts whitelist)."""
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get("https://api.ipify.org", timeout=aiohttp.ClientTimeout(total=5)) as r:
+                ip = await r.text()
+        return web.Response(text=f"Outbound IP: {ip.strip()}", content_type="text/plain")
+    except Exception as e:
+        return web.Response(text=f"Error: {e}", status=500)
+
 async def setup_webhook_server():
     app = web.Application()
     FK_WEBHOOK_PATH = os.getenv("FK_WEBHOOK_URL", "").replace("https://", "").replace("http://", "")
@@ -15622,6 +15633,8 @@ async def setup_webhook_server():
     for path in set([FK_WEBHOOK_PATH, "/fk-webhook", "/fk_webhook"]):
         app.router.add_post(path, fk_webhook_handler)
         logging.info(f"FK webhook зарегистрован: POST {path}")
+    # /getip — временный эндпоинт для получения исходящего IP
+    app.router.add_get("/getip", getip_handler)
     app.router.add_get("/webapp/chatgpt", webapp_chatgpt_handler)
     app.router.add_get("/webapp/claude", webapp_claude_handler)
     app.router.add_post("/api/activate-claude", api_activate_claude_handler)
