@@ -17129,9 +17129,13 @@ if __name__ == "__main__":
 
 
 # ─── /myip — текущий исходящий IP сервера (Railway) ──────────────────────────
-@dp.message(F.text == "/myip")
+@dp.message(F.text == "/myip", StateFilter("*"))
 async def cmd_myip(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
+    # Проверяем по ID или по username (на случай если ADMIN_ID не задан)
+    uid      = message.from_user.id
+    uname    = (message.from_user.username or "").lower()
+    is_me    = (ADMIN_ID and uid == ADMIN_ID) or uname == ADMIN_USERNAME.lower()
+    if not is_me:
         return
     try:
         async with aiohttp.ClientSession() as s:
