@@ -30,6 +30,7 @@ NSGIFTS_USER_ID    = int(os.getenv("NSGIFTS_USER_ID", "0"))
 NSGIFTS_LOGIN      = os.getenv("NSGIFTS_LOGIN", "")
 NSGIFTS_PASSWORD   = os.getenv("NSGIFTS_PASSWORD", "")
 NSGIFTS_API_SECRET = os.getenv("NSGIFTS_API_SECRET", "")
+WEBSHARE_PROXY     = os.getenv("WEBSHARE_PROXY", "")   # http://user:pass@host:port
 _nsgifts_client    = None   # инициализируется в startup
 
 
@@ -17130,6 +17131,7 @@ async def main():
             login      = NSGIFTS_LOGIN,
             password   = NSGIFTS_PASSWORD,
             api_secret = NSGIFTS_API_SECRET,
+            proxy      = WEBSHARE_PROXY,
         )
         logging.info("✅ NS Gifts client initialized")
         asyncio.create_task(nsgifts_balance_alert_loop())
