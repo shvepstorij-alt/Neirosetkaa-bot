@@ -17139,11 +17139,6 @@ async def main():
     await dp.start_polling(bot)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-
 # ─── /myip — текущий исходящий IP сервера (Railway) ──────────────────────────
 @dp.message(F.text == "/myip", StateFilter("*"))
 async def cmd_myip(message: Message, state: FSMContext):
@@ -17810,3 +17805,7 @@ async def fk_save_order(order_id: str, user_id: int, credits: int,
             VALUES ($1,$2,$3,$4,$5,'pending')
             ON CONFLICT (order_id) DO NOTHING
         """, order_id, user_id, credits, amount_rub, pack)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
