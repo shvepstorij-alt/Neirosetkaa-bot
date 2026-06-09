@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Активация ChatGPT — Александр ИИ</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
   <style>
     :root {
       --bg:        #f9fafb;
@@ -754,172 +754,193 @@
 
 
 <script>
-  // ── Telegram WebApp ──────────────────────
-  const tg = window.Telegram.WebApp;
-  tg.ready();
-  tg.expand();
+// ═══════════════════════════════════════════════════════════════════
+//  Глобальное состояние (доступно из onclick-атрибутов в HTML)
+// ═══════════════════════════════════════════════════════════════════
+var tg        = null;   // задаётся в DOMContentLoaded
+var codeInput = null;
+var s1Btn     = null;
 
-  // ── URL params ───────────────────────────
-  const params   = new URLSearchParams(window.location.search);
-  const planName = params.get('plan') || 'Plus';
-  const preCode  = params.get('code') || '';
+// ─── Навигация ───────────────────────────────────────────────────
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(function(s) { s.classList.remove('active'); });
+  var el = document.getElementById(id);
+  if (el) el.classList.add('active');
+  window.scrollTo(0, 0);
+}
 
-  // Подставляем код и название плана
-  const codeInput = document.getElementById('code-input');
-  const s1Btn     = document.getElementById('s1-continue-btn');
-  if (preCode) {
-    codeInput.value = preCode;
-    s1Btn.disabled  = false;
-  } else {
-    document.getElementById('s1-greeting').textContent = 'Код не подставился автоматически. Введи его вручную — он был в сообщении от Александра.';
-    document.getElementById('code-hint').textContent   = 'Посмотри код в чате бота';
-  }
-  document.getElementById('success-plan').textContent = `ChatGPT ${planName} активирован`;
+// ─── Тема ────────────────────────────────────────────────────────
+function toggleTheme() {
+  var root    = document.documentElement;
+  var darkNow = root.getAttribute('data-theme') === 'dark';
+  root.setAttribute('data-theme', darkNow ? 'light' : 'dark');
+  var btn = document.getElementById('themeBtn');
+  if (btn) btn.textContent = darkNow ? '☾' : '☀';
+}
 
-  // ── Валидация кода (Шаг 1) ───────────────
-  function validateCode() {
-    const val = codeInput.value.trim();
-    s1Btn.disabled = val.length < 3;
-  }
+// ─── Закрытие ────────────────────────────────────────────────────
+function closeTg() { if (tg) try { tg.close(); } catch(e) {} }
 
-  function goToStep2() {
-    const val = codeInput.value.trim();
-    if (val.length < 3) return;
-    showScreen('s2');
-  }
+// ─── Шаг 1: валидация кода ──────────────────────────────────────
+function validateCode() {
+  if (!codeInput || !s1Btn) return;
+  s1Btn.disabled = codeInput.value.trim().length < 3;
+}
 
-  // ── Тема ─────────────────────────────────
-  const root = document.documentElement;
-  let darkMode = false;
+function goToStep2() {
+  if (!codeInput) return;
+  if (codeInput.value.trim().length < 3) return;
+  showScreen('s2');
+}
 
-  // Подстраиваемся под тему Telegram
-  if (tg.colorScheme === 'dark') {
-    darkMode = true;
-    root.setAttribute('data-theme', 'dark');
-    document.getElementById('themeBtn').textContent = '☀';
-  }
+// ─── Шаг 2: валидация токена ─────────────────────────────────────
+function validateToken() {
+  var el  = document.getElementById('token-input');
+  var btn = document.getElementById('activate-btn');
+  var err = document.getElementById('err-box');
+  if (err) err.classList.remove('show');
+  if (btn && el) btn.disabled = el.value.trim().length < 50;
+}
 
-  function toggleTheme() {
-    darkMode = !darkMode;
-    root.setAttribute('data-theme', darkMode ? 'dark' : 'light');
-    document.getElementById('themeBtn').textContent = darkMode ? '☀' : '☾';
-  }
+// ─── Вспомогательные ─────────────────────────────────────────────
+function extractToken(raw) {
+  raw = raw.trim();
+  try { var obj = JSON.parse(raw); if (obj.accessToken) return obj.accessToken; } catch(e) {}
+  var m = raw.match(/"accessToken"\s*:\s*"([^"]+)"/);
+  if (m) return m[1];
+  if (raw.startsWith('eyJ')) return raw;
+  return raw;
+}
 
-  // ── Навигация ─────────────────────────────
-  function showScreen(id) {
-    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(id).classList.add('active');
-    window.scrollTo(0, 0);
-  }
+var _sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
 
-  // ── Валидация токена ─────────────────────
-  function validateToken() {
-    const token = document.getElementById('token-input').value.trim();
-    const btn   = document.getElementById('activate-btn');
-    document.getElementById('err-box').classList.remove('show');
-    btn.disabled = token.length < 50;
-  }
+function showError(msg) {
+  if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+  var el = document.getElementById('err-detail');
+  if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
+  showScreen('s5');
+}
 
-  // ── Извлечь accessToken ──────────────────
-  function extractToken(raw) {
-    raw = raw.trim();
+// ─── Polling ─────────────────────────────────────────────────────
+async function pollResult(jobId) {
+  for (var i = 0; i < 120; i++) {
+    await _sleep(3000);
     try {
-      const obj = JSON.parse(raw);
-      if (obj.accessToken) return obj.accessToken;
-    } catch(e) {}
-    const m = raw.match(/"accessToken"\s*:\s*"([^"]+)"/);
-    if (m) return m[1];
-    if (raw.startsWith('eyJ')) return raw;
-    return raw;
-  }
-
-  // ── Вспомогательные ─────────────────────
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-  function showError(msg) {
-    tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('error');
-    document.getElementById('err-detail').textContent = msg || 'Ошибка активации. Напиши Александру!';
-    showScreen('s5');
-  }
-
-  // ── Polling результата ───────────────────
-  async function pollResult(jobId) {
-    const MAX = 120;  // 120 × 3с = 6 минут (с запасом для очередей на 987ai.vip)
-    for (let i = 0; i < MAX; i++) {
-      await sleep(3000);
-      try {
-        const r    = await fetch(`/api/activate-status/${jobId}`);
-        const data = await r.json();
-
-        if (data.status === 'done') {
-          if (data.success) {
-            tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('success');
-            showScreen('s4');
-          } else {
-            showError(data.error);
-          }
-          return;
+      var r    = await fetch('/api/activate-status/' + jobId);
+      var data = await r.json();
+      if (data.status === 'done') {
+        if (data.success) {
+          if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+          showScreen('s4');
+        } else {
+          showError(data.error);
         }
-        // status === 'pending' — продолжаем ждать
-      } catch(e) {
-        // Сеть временно недоступна — продолжаем попытки
+        return;
       }
-    }
-    // Вышли по таймауту
-    showError('Активация занимает слишком долго. Напиши Александру — он поможет!');
+    } catch(e) {}
   }
+  showError('Активация занимает слишком долго. Напиши Александру — он поможет!');
+}
 
-  // ── Активация ────────────────────────────
-  async function startActivation() {
-    const tokenRaw = document.getElementById('token-input').value.trim();
-    const errBox   = document.getElementById('err-box');
+// ─── Запуск активации ────────────────────────────────────────────
+async function startActivation() {
+  var tokenRaw = (document.getElementById('token-input').value || '').trim();
+  var errBox   = document.getElementById('err-box');
+  var code     = codeInput ? codeInput.value.trim() : '';
+  var token    = extractToken(tokenRaw);
 
-    const token = extractToken(tokenRaw);
-
-    if (!token.startsWith('eyJ') || token.length < 100) {
+  if (!token.startsWith('eyJ') || token.length < 100) {
+    if (errBox) {
       errBox.textContent = 'Токен не найден. Убедись что скопировал весь текст со страницы chatgpt.com/api/auth/session';
       errBox.classList.add('show');
+    }
+    return;
+  }
+
+  showScreen('s3');
+
+  try {
+    var resp = await fetch('/api/activate-chatgpt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token:     token,
+        raw_token: tokenRaw,
+        code:      code,
+        init_data: tg ? tg.initData : ''
+      })
+    });
+
+    if (!resp.ok) {
+      var errMsg = 'Ошибка сервера. Попробуй снова.';
+      try { var d = await resp.json(); errMsg = d.error || errMsg; } catch(_) {}
+      showError(errMsg);
       return;
     }
 
-    showScreen('s3');
-
-    try {
-      // Шаг 1: запускаем задачу — сервер отвечает сразу с job_id
-      const resp = await fetch('/api/activate-chatgpt', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          token:     token,      // извлечённый accessToken JWT
-          raw_token: tokenRaw,   // полный JSON сессии — для извлечения account_id на сервере
-          code:      document.getElementById('code-input').value.trim(),
-          init_data: tg.initData
-        })
-      });
-
-      // Обработка HTTP-ошибок (403 авторизация, 400 формат)
-      if (!resp.ok) {
-        let errMsg = 'Ошибка сервера. Попробуй снова.';
-        try { const d = await resp.json(); errMsg = d.error || errMsg; } catch(_) {}
-        showError(errMsg);
-        return;
-      }
-
-      const { job_id, error } = await resp.json();
-
-      // Если сервер сразу вернул ошибку (без job_id)
-      if (!job_id) {
-        showError(error || 'Не удалось запустить активацию.');
-        return;
-      }
-
-      // Шаг 2: polling — ждём результата
-      await pollResult(job_id);
-
-    } catch(e) {
-      showError('Нет соединения с сервером. Проверь интернет и попробуй снова.');
-    }
+    var res = await resp.json();
+    if (!res.job_id) { showError(res.error || 'Не удалось запустить активацию.'); return; }
+    await pollResult(res.job_id);
+  } catch(e) {
+    showError('Нет соединения с сервером. Проверь интернет и попробуй снова.');
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Инициализация — запускается после загрузки всех defer-скриптов
+// ═══════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', function () {
+
+  // Безопасный доступ к Telegram WebApp (fallback если скрипт не загрузился)
+  tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : {
+    ready: function(){},
+    expand: function(){},
+    close: function(){ try { window.history.back(); } catch(e){} },
+    colorScheme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light',
+    initData: '',
+    HapticFeedback: null,
+    initDataUnsafe: {}
+  };
+
+  try { tg.ready(); } catch(e) {}
+
+  // expand() с задержкой — исправляет баг на iOS когда поля ввода не активны
+  setTimeout(function() { try { tg.expand(); } catch(e) {} }, 200);
+
+  // Кэшируем DOM-элементы
+  codeInput = document.getElementById('code-input');
+  s1Btn     = document.getElementById('s1-continue-btn');
+
+  // Тема из Telegram
+  if (tg.colorScheme === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    var tb = document.getElementById('themeBtn');
+    if (tb) tb.textContent = '☀';
+  }
+
+  // URL-параметры
+  var params   = new URLSearchParams(window.location.search);
+  var planName = params.get('plan') || 'Plus';
+  var preCode  = params.get('code') || '';
+
+  if (preCode && codeInput) {
+    codeInput.value = preCode;
+    if (s1Btn) s1Btn.disabled = false;
+  } else {
+    var gr = document.getElementById('s1-greeting');
+    var ch = document.getElementById('code-hint');
+    if (gr) gr.textContent = 'Код не подставился автоматически. Введи его вручную — он был в сообщении от Александра.';
+    if (ch) ch.textContent = 'Посмотри код в чате бота';
+  }
+
+  var spEl = document.getElementById('success-plan');
+  if (spEl) spEl.textContent = 'ChatGPT ' + planName + ' активирован';
+
+  // iOS-фикс: явно убираем disabled со всех полей (на случай если браузер выставил его)
+  document.querySelectorAll('input, textarea').forEach(function(el) {
+    el.removeAttribute('disabled');
+  });
+});
 </script>
 
 </body>
