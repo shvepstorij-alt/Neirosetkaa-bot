@@ -5292,6 +5292,11 @@ def tg_emoji(svc: dict, fallback: str = "") -> str:
     return fb
 
 
+def _btn_emoji_id(key: str, s: dict) -> str:
+    """Возвращает emoji_id для icon_custom_emoji_id в InlineKeyboardButton, или ''."""
+    return s.get("emoji_id") or CUSTOM_EMOJI_IDS.get(key, "") or CUSTOM_EMOJI_IDS.get(s.get("_key", ""), "")
+
+
 SHOP_CATALOG = {
     "chatgpt": {
         "name": "ChatGPT", "emoji": "✨", "emoji_id": "5796185041717433060",
@@ -5456,9 +5461,11 @@ async def menu_shop(cb: CallbackQuery):
             continue
         # NS Gifts сервисы — кастомный callback, показываем даже без plans
         if s.get("_nsgifts"):
+            _eid = _btn_emoji_id(key, s)
             row.append(InlineKeyboardButton(
-                text=f"{s['emoji']} {s['name']}",
-                callback_data="nsg_start"
+                text=s['name'] if _eid else f"{s['emoji']} {s['name']}",
+                callback_data="nsg_start",
+                **{"icon_custom_emoji_id": _eid} if _eid else {}
             ))
             if len(row) == 2:
                 rows.append(row)
@@ -5466,9 +5473,11 @@ async def menu_shop(cb: CallbackQuery):
             continue
         if not s.get("plans"):
             continue
+        _eid = _btn_emoji_id(key, s)
         row.append(InlineKeyboardButton(
-            text=f"{s['emoji']} {s['name']}",
-            callback_data=f"shop_svc:{key}"
+            text=s['name'] if _eid else f"{s['emoji']} {s['name']}",
+            callback_data=f"shop_svc:{key}",
+            **{"icon_custom_emoji_id": _eid} if _eid else {}
         ))
         if len(row) == 2:
             rows.append(row)
