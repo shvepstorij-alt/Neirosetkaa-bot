@@ -6429,10 +6429,11 @@ async def payment_issue_handler(cb: CallbackQuery):
 @dp.callback_query(F.data == "menu_buy")
 async def menu_buy(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
+    _pack_fallbacks = {"p15": "🎯", "p25": "🥉", "p50": "🥈", "p150": "🏅", "p500": "🥇", "p1200": "💎"}
     lines = [f"💵 <b>Баланс: {cr} кредитов</b>\n"]
     for key, p in CREDIT_PACKS.items():
         raw_name = p['name'].split(' ', 1)[-1] if ' ' in p['name'] else p['name']
-        ename = tg_emoji_ui(f"pack_{key}", "")
+        ename = tg_emoji_ui(f"pack_{key}", _pack_fallbacks.get(key, ""))
         lines.append(
             f"{ename} <b>{raw_name} - {p['credits']} кредитов - {p['price']}₽</b>\n"
             f"<i>{p['desc']}</i>"
@@ -6471,7 +6472,8 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
     final_price = max(1, int(base_price * (100 - promo_discount) / 100)) if promo_discount > 0 else base_price
 
     _pack_raw_name = p['name'].split(' ', 1)[-1] if ' ' in p['name'] else p['name']
-    _pack_ename = tg_emoji_ui(f"pack_{key}", "")
+    _pack_orig_emoji = p['name'].split(' ', 1)[0] if ' ' in p['name'] else ""
+    _pack_ename = tg_emoji_ui(f"pack_{key}", _pack_orig_emoji)
     msg = (
         f"{_pack_ename} {_pack_raw_name} - <b>{p.get('badge', '')}</b>\n\n"
         f"💎 <b>{p['credits']} кредитов</b>\n"
@@ -7088,18 +7090,24 @@ async def choose_img_brand(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     _brand_name = IMAGE_BRAND_TITLES.get(brand, brand)
     _brand_eid_key = f"iband_{brand}"
-    title = f"{tg_emoji_ui(_brand_eid_key, '')} <b>{_brand_name}</b>" if UI_EMOJI_IDS.get(_brand_eid_key) else f"<b>{_brand_name}</b>"
+    _iband_title_fb = {"gptimg": "🤖", "imagen": "🌟", "nano": "🍌", "flux": "🎭", "ideogram": "✒️", "grok": "⚡"}.get(brand, "")
+    title = f"{tg_emoji_ui(_brand_eid_key, _iband_title_fb)} <b>{_brand_name}</b>" if UI_EMOJI_IDS.get(_brand_eid_key) else f"<b>{_brand_name}</b>"
 
     # Список моделей бренда с описанием
     import re as _re_img
     _iband_eid = UI_EMOJI_IDS.get(_brand_eid_key, "")
+    _iband_fallbacks = {
+        "iband_gptimg": "🤖", "iband_imagen": "🌟", "iband_nano": "🍌",
+        "iband_flux": "🎭", "iband_ideogram": "✒️", "iband_grok": "⚡",
+    }
+    _iband_fb = _iband_fallbacks.get(_brand_eid_key, "")
     lines = []
     for key in IMAGE_BRAND_MODELS[brand]:
         if key in IMAGE_MODELS:
             m = IMAGE_MODELS[key]
             icon = "🔹" if cr >= m['credits'] else "🔸"
             clean = _re_img.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
-            model_ename = f'<tg-emoji emoji-id="{_iband_eid}">{""}</tg-emoji> ' if _iband_eid else ""
+            model_ename = f'<tg-emoji emoji-id="{_iband_eid}">{_iband_fb}</tg-emoji> ' if _iband_eid else ""
             lines.append(f"{icon} {model_ename}<b>{clean}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
 
     text = (
@@ -7527,7 +7535,12 @@ async def choose_vid_brand(cb: CallbackQuery, state: FSMContext):
     cr = await get_credits(cb.from_user.id)
     _vbrand_name = VIDEO_BRAND_TITLES.get(brand, brand)
     _vbrand_eid_key = f"vband_{brand}"
-    title = f"{tg_emoji_ui(_vbrand_eid_key, '')} <b>{_vbrand_name}</b>" if UI_EMOJI_IDS.get(_vbrand_eid_key) else f"<b>{_vbrand_name}</b>"
+    _vbrand_fallbacks = {
+        "vband_veo": "🎥", "vband_kling": "🎞", "vband_seedance": "🎬",
+        "vband_wan": "🌊", "vband_grok": "⚡",
+    }
+    _vbrand_fb = _vbrand_fallbacks.get(_vbrand_eid_key, "")
+    title = f"{tg_emoji_ui(_vbrand_eid_key, _vbrand_fb)} <b>{_vbrand_name}</b>" if UI_EMOJI_IDS.get(_vbrand_eid_key) else f"<b>{_vbrand_name}</b>"
 
     import re as _re_vid
     _vband_eid = UI_EMOJI_IDS.get(_vbrand_eid_key, "")
@@ -7537,7 +7550,7 @@ async def choose_vid_brand(cb: CallbackQuery, state: FSMContext):
             m = VIDEO_MODELS[key]
             icon = "🔹" if cr >= m['credits'] else "🔸"
             clean_vname = _re_vid.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
-            model_ename = f'<tg-emoji emoji-id="{_vband_eid}">{""}</tg-emoji> ' if _vband_eid else ""
+            model_ename = f'<tg-emoji emoji-id="{_vband_eid}">{_vbrand_fb}</tg-emoji> ' if _vband_eid else ""
             lines.append(
                 f"{icon} {model_ename}<b>{clean_vname}</b> - {m['credits']} кр\n"
                 f"   <i>{m['res']} · {m['desc']}</i>"
@@ -12282,10 +12295,10 @@ async def do_improve_prompt(message: Message, state: FSMContext):
             f"Выбери модель для генерации 👇",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡ Imagen Fast - 7 кр",  callback_data="improve_gen:img_fast", style="primary")],
-                [InlineKeyboardButton(text="🤖 GPT Image - 10 кр",  callback_data="improve_gen:gptimg_fast", style="success")],
-                [InlineKeyboardButton(text="🍌 Nano Banana - 13 кр", callback_data="improve_gen:nb_flash",   style="success")],
-                [InlineKeyboardButton(text="🎭 Flux Pro - 12 кр",   callback_data="improve_gen:flux_pro",   style="primary")],
+                [InlineKeyboardButton(text="Imagen Fast - 7 кр",  callback_data="improve_gen:img_fast",    **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_imagen"]} if UI_EMOJI_IDS.get("iband_imagen") else {})],
+                [InlineKeyboardButton(text="GPT Image - 10 кр",   callback_data="improve_gen:gptimg_fast", **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_gptimg"]} if UI_EMOJI_IDS.get("iband_gptimg") else {})],
+                [InlineKeyboardButton(text="Nano Banana - 13 кр", callback_data="improve_gen:nb_flash",    **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_nano"]} if UI_EMOJI_IDS.get("iband_nano") else {})],
+                [InlineKeyboardButton(text="Flux Pro - 12 кр",    callback_data="improve_gen:flux_pro",    **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_flux"]} if UI_EMOJI_IDS.get("iband_flux") else {})],
                 [InlineKeyboardButton(text="✏️ Изменить промт",      callback_data="menu_improve")],
                 [_eib("Главное меню", "back_main")],
             ])
@@ -12417,12 +12430,15 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
         "edit_gpt":    "iband_gptimg",
         "edit_flux":   "iband_flux",
     }
+    _EDIT_EMOJI_FB = {
+        "iband_nano": "🍌", "iband_grok": "⚡", "iband_gptimg": "🤖", "iband_flux": "🎭",
+    }
     import re as _re_edit
     lines = []
     for key, m in active_edit.items():
         icon = "🔹" if cr >= m["credits"] else "🔸"
         ek = _EDIT_EMOJI_KEY.get(key, "")
-        ename = tg_emoji_ui(ek, "") if ek else ""
+        ename = tg_emoji_ui(ek, _EDIT_EMOJI_FB.get(ek, "")) if ek else ""
         clean_name = _re_edit.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
         lines.append(f"{icon} {ename} <b>{clean_name}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
 
@@ -12433,7 +12449,6 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
         f"\n\n<i>Примеры: смени фон, добавь закат, сделай в стиле аниме</i>"
     )
 
-    styles = {"edit_gemini": "success", "edit_grok": "primary", "edit_gpt": "success", "edit_flux": "primary"}
     rows = []
     for key, m in active_edit.items():
         ek = _EDIT_EMOJI_KEY.get(key, "")
@@ -12444,8 +12459,6 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
             callback_data=f"edit_model:{key}",
             **{"icon_custom_emoji_id": eid} if eid else {}
         )
-        if styles.get(key):
-            btn.style = styles[key]
         rows.append([btn])
     rows.append([_eib("Главное меню", "back_main")])
 
@@ -13078,11 +13091,25 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
+    _ANIM_EMOJI_KEY = {
+        "anim_veo":   "vband_veo",
+        "anim_grok":  "vband_grok",
+        "anim_kling": "vband_kling",
+        "anim_wan":   "vband_wan",
+    }
+    _ANIM_FALLBACK = {
+        "anim_veo": "🎥", "anim_grok": "⚡", "anim_kling": "🎞", "anim_wan": "🌊",
+    }
+    import re as _re_anim
+
     # Строим список моделей
     lines = []
     for key, m in active_anim.items():
         icon = "🔹" if cr >= m["credits"] else "🔸"
-        lines.append(f"{icon} <b>{m['name']}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
+        ek = _ANIM_EMOJI_KEY.get(key, "")
+        ename = tg_emoji_ui(ek, _ANIM_FALLBACK.get(key, "")) if ek else ""
+        clean_aname = _re_anim.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
+        lines.append(f"{icon} {ename} <b>{clean_aname}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
 
     text = (
         f"🏃 <b>Анимировать фото</b>\n\n"
@@ -13093,14 +13120,15 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
 
     # Кнопки моделей
     rows = []
-    styles = {"anim_veo": "primary", "anim_grok": "success", "anim_kling": "success", "anim_wan": "primary"}
     for key, m in active_anim.items():
+        ek = _ANIM_EMOJI_KEY.get(key, "")
+        eid = UI_EMOJI_IDS.get(ek, "")
+        clean_aname = _re_anim.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
         btn = InlineKeyboardButton(
-            text=f"{m['name']} - {m['credits']} кр",
-            callback_data=f"anim_model:{key}"
+            text=f"{clean_aname} - {m['credits']} кр",
+            callback_data=f"anim_model:{key}",
+            **{"icon_custom_emoji_id": eid} if eid else {}
         )
-        if styles.get(key):
-            btn.style = styles[key]
         rows.append([btn])
     rows.append([_eib("Главное меню", "back_main")])
 
