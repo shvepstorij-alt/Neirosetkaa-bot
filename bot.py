@@ -6575,13 +6575,21 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
         "promo_code": promo_code,
     }
     # Сохраняем в БД - не потеряется при перезапуске
-    await fk_save_order(
-        order_id, uid, p["credits"], int(amount), key,
-        payment_method=method,
-        promo_code=promo_code
-    )
+    try:
+        await fk_save_order(
+            order_id, uid, p["credits"], int(amount), key,
+            payment_method=method,
+            promo_code=promo_code
+        )
+    except Exception as _db_err:
+        logging.error(f"pay_fk: fk_save_order failed: {_db_err}")
+        # Продолжаем - заказ есть в памяти, оплату сможем обработать
 
-    wait_msg = await cb.message.answer("⏳ Создаю ссылку на оплату...")
+    wait_msg = None
+    try:
+        wait_msg = await cb.message.answer("⏳ Создаю ссылку на оплату...")
+    except Exception:
+        pass
     try:
         if method == "card":
             # Card RUB API - пробуем через API (id=36), при ошибке - форма с i=36
@@ -6597,7 +6605,11 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             pay_url = fk_pay_url(amount, order_id)
             label = "🏦 Оплатить через СБП"
 
-        await wait_msg.delete()
+        if wait_msg:
+            try:
+                await wait_msg.delete()
+            except Exception:
+                pass
         await cb.message.answer(
             f"{label}\n\n"
             f"📦 <b>{p['credits']} кредитов</b> - {amount}₽\n\n"
@@ -6641,9 +6653,17 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             pass
 
     except Exception as e:
-        await wait_msg.edit_text(f"❌ Ошибка создания платежа: {e}")
-        del pending_fk_payments[order_id]
-    await cb.answer()
+        logging.error(f"pay_fk error: {e}")
+        try:
+            if wait_msg:
+                await wait_msg.edit_text(f"❌ Ошибка создания платежа: {e}")
+            else:
+                await cb.message.answer(f"❌ Ошибка создания платежа: {e}")
+        except Exception:
+            pass
+        pending_fk_payments.pop(order_id, None)
+    finally:
+        await cb.answer()
 
 
 async def fk_monitor_order(order_id: str):
