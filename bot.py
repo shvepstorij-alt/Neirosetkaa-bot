@@ -2523,38 +2523,24 @@ async def notify_admin_error(context: str, e: Exception):
 
 def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Изображение", callback_data="menu_image",    icon_custom_emoji_id="5389108217496231210"),
-            InlineKeyboardButton(text="Видео",        callback_data="menu_video",    icon_custom_emoji_id="5294300937605633051"),
-        ],
-        [
-            InlineKeyboardButton(text="Редактировать...", callback_data="menu_edit", icon_custom_emoji_id="5222108309795908493"),
-            InlineKeyboardButton(text="Анимировать ф...", callback_data="menu_anim", icon_custom_emoji_id="5316558613479701521"),
-        ],
-        [
-            InlineKeyboardButton(text="Консультант AI", callback_data="menu_chat",      icon_custom_emoji_id="4970126766132691795"),
-            InlineKeyboardButton(text="Избранное",       callback_data="menu_favorites", icon_custom_emoji_id="5343726841427405712"),
-        ],
-        [
-            InlineKeyboardButton(text="Купить кредиты", callback_data="menu_buy",  icon_custom_emoji_id="5217961106554769883"),
-            InlineKeyboardButton(text="Магазин",         callback_data="menu_shop", icon_custom_emoji_id="5395463407589672312"),
-        ],
-        [
-            InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", icon_custom_emoji_id="6032994772321309200"),
-        ],
+        [_eib("Изображение",   "menu_image"),    _eib("Видео",     "menu_video")],
+        [_eib("Редактировать...","menu_edit"),    _eib("Анимировать...","menu_anim")],
+        [_eib("Консультант AI", "menu_chat"),     _eib("Избранное", "menu_favorites")],
+        [_eib("Купить кредиты","menu_buy"),       _eib("Магазин",   "menu_shop")],
+        [_eib("Мой профиль",   "menu_profile")],
     ])
 
 def kb_image_brands():
     """Верхний уровень: выбор бренда моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 GPT Image",      callback_data="iband:gptimg",   style="success")],
-        [InlineKeyboardButton(text="🌟 Imagen",         callback_data="iband:imagen",   style="primary")],
-        [InlineKeyboardButton(text="🍌 Nano Banana",    callback_data="iband:nano",     style="success")],
-        [InlineKeyboardButton(text="🎭 Flux",            callback_data="iband:flux",    style="primary")],
-        [InlineKeyboardButton(text="✒️ Ideogram",        callback_data="iband:ideogram",style="success")],
-        [InlineKeyboardButton(text="⚡ Grok Imagine",    callback_data="iband:grok",    style="primary")],
-        [InlineKeyboardButton(text="🔍 Улучшить фото",  callback_data="menu_upscale")],
-        [InlineKeyboardButton(text="⬅️ Назад",           callback_data="back_main")],
+        [_eib("GPT Image",    "iband:gptimg",   "iband_gptimg")],
+        [_eib("Imagen",       "iband:imagen",   "iband_imagen")],
+        [_eib("Nano Banana",  "iband:nano",     "iband_nano")],
+        [_eib("Flux",         "iband:flux",     "iband_flux")],
+        [_eib("Ideogram",     "iband:ideogram", "iband_ideogram")],
+        [_eib("Grok Imagine", "iband:grok",     "iband_grok")],
+        [_eib("Улучшить фото","menu_upscale")],
+        [_eib("Главное меню", "back_main")],
     ])
 
 
@@ -2580,30 +2566,20 @@ IMAGE_BRAND_TITLES = {
 
 def kb_image_models_for_brand(brand: str):
     """Подменю конкретного бренда: список его моделей."""
-    BRAND_STYLES = {
-        "gptimg":   "success",
-        "imagen":   "primary",
-        "nano":     "success",
-        "flux":     "primary",
-        "ideogram": "success",
-        "grok":     "primary",
-    }
-    style = BRAND_STYLES.get(brand)
+    import re as _re
+    brand_eid = UI_EMOJI_IDS.get(f"iband_{brand}", "")
     keys = IMAGE_BRAND_MODELS.get(brand, [])
     rows = []
     for key in keys:
         if key in IMAGE_MODELS and key not in DISABLED_MODELS:
             m = IMAGE_MODELS[key]
-            # Убираем цифры из названия модели для кнопки
-            import re
-            clean_name = re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
-            btn = InlineKeyboardButton(
+            clean_name = _re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            btn_kwargs = {"icon_custom_emoji_id": brand_eid} if brand_eid else {}
+            rows.append([InlineKeyboardButton(
                 text=f"{clean_name} - {m['credits']} кр",
                 callback_data=f"imodel:{key}",
-            )
-            if style:
-                btn.style = style
-            rows.append([btn])
+                **btn_kwargs
+            )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_img_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2615,12 +2591,12 @@ def kb_image_models():
 def kb_video_brands():
     """Верхний уровень: выбор бренда видео-моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎥 Veo",      callback_data="vband:veo",      style="primary")],
-        [InlineKeyboardButton(text="🎞 Kling",    callback_data="vband:kling",    style="success")],
-        [InlineKeyboardButton(text="🎬 Seedance", callback_data="vband:seedance", style="primary")],
-        [InlineKeyboardButton(text="🌊 Wan",      callback_data="vband:wan",      style="success")],
-        [InlineKeyboardButton(text="⚡ Grok",     callback_data="vband:grok",     style="primary")],
-        [InlineKeyboardButton(text="⬅️ Назад",    callback_data="back_main")],
+        [_eib("Veo",         "vband:veo",      "vband_veo")],
+        [_eib("Kling",       "vband:kling",    "vband_kling")],
+        [_eib("Seedance",    "vband:seedance", "vband_seedance")],
+        [_eib("Wan",         "vband:wan",      "vband_wan")],
+        [_eib("Grok",        "vband:grok",     "vband_grok")],
+        [_eib("Главное меню","back_main")],
     ])
 
 
@@ -2644,28 +2620,20 @@ VIDEO_BRAND_TITLES = {
 
 def kb_video_models_for_brand(brand: str):
     """Подменю конкретного видео-бренда: список его моделей."""
-    VIDEO_BRAND_STYLES = {
-        "veo":      "primary",
-        "kling":    "success",
-        "seedance": "primary",
-        "wan":      "success",
-        "grok":     "primary",
-    }
-    style = VIDEO_BRAND_STYLES.get(brand)
+    import re as _re
+    brand_eid = UI_EMOJI_IDS.get(f"vband_{brand}", "")
     keys = VIDEO_BRAND_MODELS.get(brand, [])
     rows = []
-    import re
     for key in keys:
         if key in VIDEO_MODELS and key not in DISABLED_MODELS:
             m = VIDEO_MODELS[key]
-            clean_name = re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
-            btn = InlineKeyboardButton(
+            clean_name = _re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            btn_kwargs = {"icon_custom_emoji_id": brand_eid} if brand_eid else {}
+            rows.append([InlineKeyboardButton(
                 text=f"{clean_name} - {m['credits']} кр",
                 callback_data=f"vmodel:{key}",
-            )
-            if style:
-                btn.style = style
-            rows.append([btn])
+                **btn_kwargs
+            )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_vid_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2687,12 +2655,15 @@ def kb_confirm(prefix: str, key: str):
 def kb_buy():
     rows = []
     for key, p in CREDIT_PACKS.items():
-        rows.append([InlineKeyboardButton(
+        eid = UI_EMOJI_IDS.get(f"pack_{key}", "")
+        btn = InlineKeyboardButton(
             text=f"{p['name']} - {p['credits']} кредитов | {p['price']}₽",
-            callback_data=f"buy:{key}"
-        )])
-    rows.append([InlineKeyboardButton(text="❓ Я оплатил, но не пришло", callback_data="payment_issue")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+            callback_data=f"buy:{key}",
+            **{"icon_custom_emoji_id": eid} if eid else {}
+        )
+        rows.append([btn])
+    rows.append([_eib("Я оплатил, но не пришло", "payment_issue")])
+    rows.append([_eib("Главное меню", "back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_pay_method(pack_key: str):
@@ -2728,13 +2699,13 @@ def kb_cancel():
 def kb_chat_presets():
     """Быстрые пресеты при входе в консультанта - типичные вопросы одним кликом."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎨 Помоги с промтом для фото",  callback_data="chat_preset:prompt_img")],
-        [InlineKeyboardButton(text="🎬 Помоги с промтом для видео", callback_data="chat_preset:prompt_vid")],
-        [InlineKeyboardButton(text="🛡 Настройка VPN",               callback_data="chat_preset:vpn")],
-        [InlineKeyboardButton(text="📱 Как зарегистрироваться в нейросети", callback_data="chat_preset:register")],
-        [InlineKeyboardButton(text="⚖️ Сравнить нейросети",          callback_data="chat_preset:compare")],
-        [InlineKeyboardButton(text="💬 Другой вопрос",               callback_data="chat_free_question")],
-        [InlineKeyboardButton(text="🚫 В главное меню",              callback_data="back_main")],
+        [_eib("Помоги с промтом для фото",      "chat_preset:prompt_img", "chat_prompt_img")],
+        [_eib("Помоги с промтом для видео",     "chat_preset:prompt_vid", "chat_prompt_vid")],
+        [_eib("Настройка VPN",                  "chat_preset:vpn",        "chat_vpn")],
+        [_eib("Как зарегистрироваться в нейросети", "chat_preset:register", "chat_register")],
+        [_eib("Сравнить нейросети",             "chat_preset:compare",    "chat_compare")],
+        [_eib("Другой вопрос",                  "chat_free_question",     "chat_other")],
+        [_eib("Главное меню",                   "back_main")],
     ])
 
 
@@ -5291,6 +5262,67 @@ CUSTOM_EMOJI_IDS: dict[str, str] = {
     # Добавляй сюда: "точный_ключ_из_БД": "emoji_id",
 }
 
+# ── Единый словарь кастомных эмодзи для UI-кнопок бота ──────────────────
+# Используй везде — в кнопках InlineKeyboard и в текстах через tg_emoji_ui()
+UI_EMOJI_IDS: dict[str, str] = {
+    # Главное меню
+    "menu_image":     "5389108217496231210",
+    "menu_video":     "5294300937605633051",
+    "menu_edit":      "5222108309795908493",
+    "menu_anim":      "5316558613479701521",
+    "menu_chat":      "4970126766132691795",
+    "menu_favorites": "5343726841427405712",
+    "menu_buy":       "5217961106554769883",
+    "menu_shop":      "5395463407589672312",
+    "menu_profile":   "6032994772321309200",
+    "back_main":      "5429438067779855308",   # Главное меню (везде вместо Назад)
+    # Консультант
+    "chat_prompt_img":  "5472353728893840528",
+    "chat_prompt_vid":  "5292273171876034433",
+    "chat_vpn":         "5794362687093740845",
+    "chat_register":    "5319058069697600910",
+    "chat_compare":     "5915566771561043160",
+    "chat_other":       "5363974777549644122",
+    # Пакеты кредитов
+    "pack_p15":   "5393089050884202480",   # Пробный
+    "pack_p25":   "5321146746653394729",   # Начальный
+    "pack_p50":   "5208563958629292552",   # Старт
+    "pack_p150":  "5458604417592863845",   # Базовый
+    "pack_p500":  "5301036773470642140",   # Про
+    "pack_p1200": "5332814802702056788",   # Бизнес
+    "payment_issue": "5332679880599418983",
+    # Модели изображений
+    "iband_gptimg":  "5796185041717433060",
+    "iband_imagen":  "5433861579152049018",
+    "iband_nano":    "5472003813613255661",
+    "iband_flux":    "5413378532225082498",
+    "iband_ideogram":"5247250550130486334",
+    "iband_grok":    "5319288443153445517",
+    "menu_upscale":  "5402076544828988757",
+    # Модели видео
+    "vband_veo":     "5321197740800120767",
+    "vband_kling":   "6208240742352031210",
+    "vband_seedance":"5895646644522718739",
+    "vband_wan":     "5420102282052121327",
+    "vband_grok":    "5319288443153445517",
+}
+
+
+def _eib(text: str, callback_data: str, eid_key: str = "") -> "InlineKeyboardButton":
+    """Создаёт InlineKeyboardButton с icon_custom_emoji_id из UI_EMOJI_IDS."""
+    eid = UI_EMOJI_IDS.get(eid_key or callback_data, "")
+    if eid:
+        return InlineKeyboardButton(text=text, callback_data=callback_data, icon_custom_emoji_id=eid)
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
+
+
+def tg_emoji_ui(key: str, fallback: str = "") -> str:
+    """Возвращает <tg-emoji> тег для UI-элемента по ключу из UI_EMOJI_IDS."""
+    eid = UI_EMOJI_IDS.get(key, "")
+    if eid:
+        return f'<tg-emoji emoji-id="{eid}">{fallback}</tg-emoji>'
+    return fallback
+
 
 def tg_emoji(svc: dict, fallback: str = "") -> str:
     """Возвращает <tg-emoji> тег если есть emoji_id, иначе обычный эмодзи."""
@@ -6466,7 +6498,7 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
         rows.append([InlineKeyboardButton(text="🎟 Применить промокод", callback_data=f"promo_apply:{key}")])
     else:
         rows.append([InlineKeyboardButton(text="❌ Убрать промокод", callback_data=f"promo_remove:{key}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_buy")])
+    rows.append([_eib("Главное меню", "back_main")])
 
     await state.update_data(promo_pack=key, promo_final_price=final_price)
 
@@ -6655,7 +6687,7 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text=label, url=pay_url)],
                 [InlineKeyboardButton(text="🔍 Проверить оплату", callback_data=f"check_pay:{order_id}")],
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu_buy")],
+                [_eib("Главное меню", "back_main")],
             ]),
             parse_mode="HTML"
         )
