@@ -375,6 +375,20 @@
       Привет! 👋 Твой код активации подставлен автоматически. Проверь — и жми «Продолжить».
     </div>
 
+    <!-- Видимый блок с кодом (показывается если код подставлен) -->
+    <div id="code-display-card" class="card" style="display:none;text-align:center;">
+      <div class="card-row" style="justify-content:center;">
+        <div class="card-icon">🎫</div>
+        <div class="card-title">Твой код активации</div>
+      </div>
+      <div class="code-box" id="code-display-text" style="margin-bottom:10px;cursor:pointer;" onclick="copyCode()">—</div>
+      <button onclick="copyCode()" style="
+        background:var(--orange);color:#fff;border:none;border-radius:10px;
+        padding:9px 22px;font-size:13px;font-weight:600;cursor:pointer;width:100%;
+      ">📋 Скопировать код</button>
+      <div class="code-hint" style="margin-top:6px;">Нажми чтобы скопировать — затем продолжай</div>
+    </div>
+
     <div class="card">
       <div class="card-row">
         <div class="card-icon">🎫</div>
@@ -701,6 +715,54 @@ async function startActivation() {
   }
 }
 
+// ─── Копирование кода ────────────────────────────────────────────
+function copyCode() {
+  var code = codeInput ? codeInput.value.trim() : '';
+  if (!code) return;
+  try {
+    navigator.clipboard.writeText(code).then(function() {
+      var btn = document.querySelector('#code-display-card button');
+      if (btn) { btn.textContent = '✅ Скопировано!'; setTimeout(function(){ btn.textContent = '📋 Скопировать код'; }, 2000); }
+    });
+  } catch(e) {
+    var ta = document.createElement('textarea');
+    ta.value = code; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand('copy'); } catch(_) {}
+    document.body.removeChild(ta);
+  }
+  if (tg && tg.HapticFeedback) try { tg.HapticFeedback.impactOccurred('light'); } catch(e) {}
+}
+
+// ─── Принудительная активация полей ─────────────────────────────
+function forceEnableInputs() {
+  document.querySelectorAll('input, textarea').forEach(function(el) {
+    el.removeAttribute('disabled');
+    el.removeAttribute('readonly');
+    el.style.pointerEvents = 'auto';
+    el.style.userSelect    = 'text';
+    el.style.webkitUserSelect = 'text';
+  });
+}
+
+// ─── MutationObserver: следим чтобы поля не заблокировались ─────
+function watchInputs() {
+  var observer = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      if (m.type === 'attributes' && (m.attributeName === 'disabled' || m.attributeName === 'readonly')) {
+        var el = m.target;
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+          el.removeAttribute('disabled');
+          el.removeAttribute('readonly');
+        }
+      }
+    });
+  });
+  document.querySelectorAll('input, textarea').forEach(function(el) {
+    observer.observe(el, { attributes: true });
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Инициализация — после загрузки всех defer-скриптов
 // ═══════════════════════════════════════════════════════════════════
@@ -718,11 +780,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
   try { tg.ready(); } catch(e) {}
 
-  // expand() с задержкой — исправляет баг на iOS когда поля ввода не активны
-  setTimeout(function() { try { tg.expand(); } catch(e) {} }, 200);
+  // expand() с задержкой + повторная активация полей после
+  setTimeout(function() {
+    try { tg.expand(); } catch(e) {}
+    setTimeout(forceEnableInputs, 100);
+    setTimeout(forceEnableInputs, 500);
+    setTimeout(forceEnableInputs, 1500);
+  }, 200);
 
   codeInput = document.getElementById('code-input');
   s1Btn     = document.getElementById('s1-continue-btn');
+
+  // MutationObserver
+  watchInputs();
 
   if (tg.colorScheme === 'dark') {
     document.documentElement.setAttribute('data-theme', 'dark');
@@ -732,25 +802,54 @@ document.addEventListener('DOMContentLoaded', function () {
 
   var params   = new URLSearchParams(window.location.search);
   var planName = params.get('plan') || 'Pro';
-  var preCode  = params.get('code') || '';
+  var preCode  = params.get('code') || (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
 
-  if (preCode && codeInput) {
-    codeInput.value = preCode;
-    if (s1Btn) s1Btn.disabled = false;
-  } else {
-    var gr = document.getElementById('s1-greeting');
-    var ch = document.getElementById('code-hint');
-    if (gr) gr.textContent = 'Код не подставился автоматически. Введи его вручную — он был в сообщении от Александра.';
-    if (ch) ch.textContent = 'Посмотри код в чате бота';
+  function applyCode(code) {
+    if (!code) return false;
+    if (codeInput) {
+      codeInput.value = code;
+      validateCode();
+    }
+    var dispCard = document.getElementById('code-display-card');
+    var dispText = document.getElementById('code-display-text');
+    if (dispCard) dispCard.style.display = 'block';
+    if (dispText) dispText.textContent = code;
+    return true;
+  }
+
+  if (!applyCode(preCode)) {
+    var retries = 0;
+    var retryInterval = setInterval(function() {
+      retries++;
+      var retryCode = new URLSearchParams(window.location.search).get('code')
+                   || (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+      if (retryCode) {
+        applyCode(retryCode);
+        clearInterval(retryInterval);
+      } else if (retries >= 5) {
+        clearInterval(retryInterval);
+        var gr = document.getElementById('s1-greeting');
+        var ch = document.getElementById('code-hint');
+        if (gr) gr.textContent = '⚠️ Код не подставился автоматически. Введи его вручную — он был в сообщении от Александра.';
+        if (ch) ch.textContent = 'Посмотри код в чате бота';
+      }
+    }, 500);
   }
 
   var spEl = document.getElementById('success-plan');
   if (spEl) spEl.textContent = 'Claude ' + planName + ' активирован';
 
-  // iOS-фикс: убираем disabled со всех полей ввода
-  document.querySelectorAll('input, textarea').forEach(function(el) {
-    el.removeAttribute('disabled');
-  });
+  forceEnableInputs();
+
+  // Фикс для org-input (UUID поле) на iOS
+  var orgInput = document.getElementById('org-input');
+  if (orgInput) {
+    orgInput.addEventListener('touchstart', function() {
+      this.removeAttribute('disabled');
+      this.removeAttribute('readonly');
+      this.focus();
+    }, { passive: true });
+  }
 });
 </script>
 
