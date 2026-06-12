@@ -1464,7 +1464,7 @@ async def load_prices_from_db():
                         "_key":  k,
                         "name":  code_svc.get("name",  r["service_name"]),
                         "emoji": code_svc.get("emoji", r["emoji"]),
-                        "emoji_id": code_svc.get("emoji_id", ""),
+                        "emoji_id": code_svc.get("emoji_id", "") or CUSTOM_EMOJI_IDS.get(k, ""),
                         "desc":  code_svc.get("desc",  r["service_desc"]),
                         "plans": []
                     }
