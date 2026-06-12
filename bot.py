@@ -2688,7 +2688,7 @@ def kb_after(menu: str, model_key: str = ""):
             InlineKeyboardButton(text="❤️ В избранное",    callback_data="fav_save"),
             _eib("Главное меню", "back_main"),
         ],
-        [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+        [_eib("Купить кредиты", "menu_buy")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -5293,6 +5293,9 @@ UI_EMOJI_IDS: dict[str, str] = {
     "pack_p500":  "5301036773470642140",   # Про
     "pack_p1200": "5332814802702056788",   # Бизнес
     "payment_issue": "5332679880599418983",
+    # Кнопки профиля
+    "menu_ref":       "5291891396528061648",   # Пригласить друга
+    "profile_history":"5388971216629412467",   # Покупки
     # Модели изображений
     "iband_gptimg":  "5796185041717433060",
     "iband_imagen":  "5433861579152049018",
@@ -6427,9 +6430,11 @@ async def payment_issue_handler(cb: CallbackQuery):
 async def menu_buy(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
     lines = [f"💵 <b>Баланс: {cr} кредитов</b>\n"]
-    for p in CREDIT_PACKS.values():
+    for key, p in CREDIT_PACKS.items():
+        raw_name = p['name'].split(' ', 1)[-1] if ' ' in p['name'] else p['name']
+        ename = tg_emoji_ui(f"pack_{key}", "")
         lines.append(
-            f"<b>{p['name']} - {p['credits']} кредитов - {p['price']}₽</b>\n"
+            f"{ename} <b>{raw_name} - {p['credits']} кредитов - {p['price']}₽</b>\n"
             f"<i>{p['desc']}</i>"
         )
     text = "\n\n".join(lines) + "\n\n<i>⏳ Кредиты действуют 30 дней после покупки</i>"
@@ -6465,8 +6470,10 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
     base_price = p["price"]
     final_price = max(1, int(base_price * (100 - promo_discount) / 100)) if promo_discount > 0 else base_price
 
+    _pack_raw_name = p['name'].split(' ', 1)[-1] if ' ' in p['name'] else p['name']
+    _pack_ename = tg_emoji_ui(f"pack_{key}", "")
     msg = (
-        f"{p['name']} - <b>{p.get('badge', '')}</b>\n\n"
+        f"{_pack_ename} {_pack_raw_name} - <b>{p.get('badge', '')}</b>\n\n"
         f"💎 <b>{p['credits']} кредитов</b>\n"
     )
     if promo_discount > 0:
@@ -7055,12 +7062,12 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f"🤖 <b>GPT Image</b> - OpenAI, #1 в Image Arena\n"
-        f"🌟 <b>Imagen</b> - флагман Google\n"
-        f"🍌 <b>Nano Banana</b> - Gemini, быстро и качественно\n"
-        f"🎭 <b>Flux</b> - художественный фотореализм\n"
-        f"✒️ <b>Ideogram</b> - идеальный текст в картинке\n"
-        f"⚡ <b>Grok Imagine</b> - xAI, высокий реализм"
+        f'{tg_emoji_ui("iband_gptimg", "🤖")} <b>GPT Image</b> - OpenAI, #1 в Image Arena\n'
+        f'{tg_emoji_ui("iband_imagen", "🌟")} <b>Imagen</b> - флагман Google\n'
+        f'{tg_emoji_ui("iband_nano", "🍌")} <b>Nano Banana</b> - Gemini, быстро и качественно\n'
+        f'{tg_emoji_ui("iband_flux", "🎭")} <b>Flux</b> - художественный фотореализм\n'
+        f'{tg_emoji_ui("iband_ideogram", "✒️")} <b>Ideogram</b> - идеальный текст в картинке\n'
+        f'{tg_emoji_ui("iband_grok", "⚡")} <b>Grok Imagine</b> - xAI, высокий реализм'
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb_image_brands(), parse_mode="HTML")
@@ -7084,14 +7091,16 @@ async def choose_img_brand(cb: CallbackQuery, state: FSMContext):
     title = f"{tg_emoji_ui(_brand_eid_key, '')} <b>{_brand_name}</b>" if UI_EMOJI_IDS.get(_brand_eid_key) else f"<b>{_brand_name}</b>"
 
     # Список моделей бренда с описанием
+    import re as _re_img
+    _iband_eid = UI_EMOJI_IDS.get(_brand_eid_key, "")
     lines = []
     for key in IMAGE_BRAND_MODELS[brand]:
         if key in IMAGE_MODELS:
             m = IMAGE_MODELS[key]
             icon = "🔹" if cr >= m['credits'] else "🔸"
-            import re as _re
-            clean = _re.sub(r'^[\s⚡💎◆🍌🎨🖋✨🤖🌟🎭✒️🔥]+', '', m['name']).strip()
-            lines.append(f"{icon} <b>{clean}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
+            clean = _re_img.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
+            model_ename = f'<tg-emoji emoji-id="{_iband_eid}">{""}</tg-emoji> ' if _iband_eid else ""
+            lines.append(f"{icon} {model_ename}<b>{clean}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
 
     text = (
         f"{title}\n\n"
@@ -7493,11 +7502,11 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f"🎥 <b>Veo</b> - до 4K + аудио, от 239 кр\n"
-        f"🎞 <b>Kling</b> - плавная физика + аудио, от 109 кр\n"
-        f"🎬 <b>Seedance</b> - нативное аудио, от 99 кр\n"
-        f"🌊 <b>Wan</b> - топ open-source, от 80 кр\n"
-        f"⚡ <b>Grok</b> - xAI, нативное аудио, от 99 кр\n\n"
+        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Veo</b> - до 4K + аудио, от 239 кр\n'
+        f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от 109 кр\n'
+        f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от 99 кр\n'
+        f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от 80 кр\n'
+        f'{tg_emoji_ui("vband_grok", "⚡")} <b>Grok</b> - xAI, нативное аудио, от 99 кр\n\n'
         f"⏱ <i>Время генерации: 1–10 минут</i>"
     )
     try:
@@ -7520,13 +7529,17 @@ async def choose_vid_brand(cb: CallbackQuery, state: FSMContext):
     _vbrand_eid_key = f"vband_{brand}"
     title = f"{tg_emoji_ui(_vbrand_eid_key, '')} <b>{_vbrand_name}</b>" if UI_EMOJI_IDS.get(_vbrand_eid_key) else f"<b>{_vbrand_name}</b>"
 
+    import re as _re_vid
+    _vband_eid = UI_EMOJI_IDS.get(_vbrand_eid_key, "")
     lines = []
     for key in VIDEO_BRAND_MODELS[brand]:
         if key in VIDEO_MODELS:
             m = VIDEO_MODELS[key]
             icon = "🔹" if cr >= m['credits'] else "🔸"
+            clean_vname = _re_vid.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
+            model_ename = f'<tg-emoji emoji-id="{_vband_eid}">{""}</tg-emoji> ' if _vband_eid else ""
             lines.append(
-                f"{icon} <b>{m['name'].lstrip('💰⚡🎬🎞🏆 ')}</b> - {m['credits']} кр\n"
+                f"{icon} {model_ename}<b>{clean_vname}</b> - {m['credits']} кр\n"
                 f"   <i>{m['res']} · {m['desc']}</i>"
             )
 
@@ -8848,10 +8861,12 @@ async def reply_create_photo(message: Message, state: FSMContext):
         f"📷 <b>Создать изображение</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f"🌟 <b>Imagen 4</b> - флагман Google, от 7 кр\n"
-        f"🍌 <b>Nano Banana</b> - Gemini, 4K, от 10 кр\n"
-        f"🎨 <b>Flux</b> - фотореализм, от 12 кр\n"
-        f"🖋 <b>Ideogram</b> - идеальный текст в картинке, от 14 кр",
+        f'{tg_emoji_ui("iband_gptimg", "🤖")} <b>GPT Image</b> - OpenAI, #1 в Image Arena\n'
+        f'{tg_emoji_ui("iband_imagen", "🌟")} <b>Imagen 4</b> - флагман Google, от 7 кр\n'
+        f'{tg_emoji_ui("iband_nano", "🍌")} <b>Nano Banana</b> - Gemini, 4K, от 10 кр\n'
+        f'{tg_emoji_ui("iband_flux", "🎭")} <b>Flux</b> - фотореализм, от 12 кр\n'
+        f'{tg_emoji_ui("iband_ideogram", "✒️")} <b>Ideogram</b> - идеальный текст, от 14 кр\n'
+        f'{tg_emoji_ui("iband_grok", "⚡")} <b>Grok Imagine</b> - xAI, высокий реализм',
         reply_markup=kb_image_brands(), parse_mode="HTML"
     )
 
@@ -8864,9 +8879,12 @@ async def reply_create_video(message: Message, state: FSMContext):
         f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f"🎥 <b>Veo 3.1</b> - Google, до 4K + аудио, от 99 кр\n"
-        f"🎞 <b>Kling</b> - #1 в бенчмарках, плавная физика, от 109 кр\n\n"
-        f"⏱ <i>Время генерации: 1–6 минут</i>",
+        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Veo</b> - до 4K + аудио, от 239 кр\n'
+        f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от 109 кр\n'
+        f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от 99 кр\n'
+        f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от 80 кр\n'
+        f'{tg_emoji_ui("vband_grok", "⚡")} <b>Grok</b> - xAI, нативное аудио, от 99 кр\n\n'
+        f"⏱ <i>Время генерации: 1–10 минут</i>",
         reply_markup=kb_video_brands(), parse_mode="HTML"
     )
 
@@ -9077,11 +9095,11 @@ async def _show_profile(message: Message, user):
 
     kb_profile = InlineKeyboardMarkup(inline_keyboard=[
         *_claude_pending_btn,
-        [InlineKeyboardButton(text="🤝 Пригласить друга 🟢", callback_data="menu_ref")],
-        [InlineKeyboardButton(text="🧾 Покупки",        callback_data="profile_history"),
+        [_eib("Пригласить друга", "menu_ref")],
+        [_eib("Покупки", "profile_history"),
          _eib("Главное меню", "back_main")],
-        [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy"),
-         InlineKeyboardButton(text="❤️ Избранное",      callback_data="menu_favorites")],
+        [_eib("Купить кредиты", "menu_buy"),
+         _eib("Избранное", "menu_favorites")],
     ])
     try:
         await message.answer(strip_surrogates(text), reply_markup=kb_profile, parse_mode="HTML")
@@ -12041,7 +12059,7 @@ async def check_expiring_credits(user_id: int):
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🎨 Генерировать", callback_data="menu_image")],
-                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [_eib("Купить кредиты", "menu_buy")],
                 ])
             )
         except Exception:
@@ -12059,7 +12077,7 @@ async def menu_upscale(cb: CallbackQuery, state: FSMContext):
             await cb.message.edit_text(
                 f"💸 Недостаточно кредитов\n\nНужно {UPSCALE_CREDIT_COST} кр, у тебя {cr} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [_eib("Купить кредиты", "menu_buy")],
                     [_eib("Главное меню", "back_main")],
                 ]),
                 parse_mode="HTML"
@@ -12092,7 +12110,7 @@ async def do_upscale(message: Message, state: FSMContext):
         await message.answer(
             f"💸 Недостаточно кредитов. Нужно {UPSCALE_CREDIT_COST} кр.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                [_eib("Купить кредиты", "menu_buy")],
             ])
         )
         await state.clear()
@@ -12167,7 +12185,7 @@ async def do_upscale(message: Message, state: FSMContext):
                 [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale"),
                  _eib("Главное меню", "back_main")],
                 [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
-                 InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                 _eib("Купить кредиты", "menu_buy")],
             ])
         )
         # Отправляем документом для скачивания в оригинале
@@ -12339,7 +12357,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
                 [InlineKeyboardButton(text="✨ Улучшить другой промт", callback_data="menu_improve"),
                  _eib("Главное меню", "back_main")],
                 [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
-                 InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                 _eib("Купить кредиты", "menu_buy")],
             ])
         )
         await log_event(uid, "improve_gen", f"model={model_key} credits={m['credits']}")
@@ -12378,7 +12396,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
             await cb.message.edit_text(
                 f"💸 Недостаточно кредитов\n\nНужно {min_cost} кредитов, у тебя {cr} кредитов.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [_eib("Купить кредиты", "menu_buy")],
                     [_eib("Главное меню", "back_main")],
                 ]),
                 parse_mode="HTML"
@@ -12387,16 +12405,26 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
             await cb.message.answer(
                 f"💸 Недостаточно кредитов. Нужно {min_cost} кредитов.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [_eib("Купить кредиты", "menu_buy")],
                 ])
             )
         await cb.answer()
         return
 
+    _EDIT_EMOJI_KEY = {
+        "edit_gemini": "iband_nano",
+        "edit_grok":   "iband_grok",
+        "edit_gpt":    "iband_gptimg",
+        "edit_flux":   "iband_flux",
+    }
+    import re as _re_edit
     lines = []
     for key, m in active_edit.items():
         icon = "🔹" if cr >= m["credits"] else "🔸"
-        lines.append(f"{icon} <b>{m['name']}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
+        ek = _EDIT_EMOJI_KEY.get(key, "")
+        ename = tg_emoji_ui(ek, "") if ek else ""
+        clean_name = _re_edit.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
+        lines.append(f"{icon} {ename} <b>{clean_name}</b> - {m['credits']} кр\n   <i>{m['desc']}</i>")
 
     text = (
         f"🖌️ <b>Редактировать фото</b>\n\n"
@@ -12408,9 +12436,13 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
     styles = {"edit_gemini": "success", "edit_grok": "primary", "edit_gpt": "success", "edit_flux": "primary"}
     rows = []
     for key, m in active_edit.items():
+        ek = _EDIT_EMOJI_KEY.get(key, "")
+        eid = UI_EMOJI_IDS.get(ek, "")
+        clean_name = _re_edit.sub(r'^[^\w\s]+\s*', '', m['name']).strip()
         btn = InlineKeyboardButton(
-            text=f"{m['name']} - {m['credits']} кр",
-            callback_data=f"edit_model:{key}"
+            text=f"{clean_name} - {m['credits']} кр",
+            callback_data=f"edit_model:{key}",
+            **{"icon_custom_emoji_id": eid} if eid else {}
         )
         if styles.get(key):
             btn.style = styles[key]
@@ -13037,7 +13069,7 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
             await cb.message.edit_text(
                 f"❌ Недостаточно кредитов\nНужно минимум {min_cost} кр, у тебя {cr} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [_eib("Купить кредиты", "menu_buy")],
                     [_eib("Главное меню", "back_main")],
                 ]), parse_mode="HTML"
             )
@@ -13465,7 +13497,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
              _eib("Главное меню", "back_main")],
             [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
-             InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+             _eib("Купить кредиты", "menu_buy")],
         ])
 
         # Удаляем прогресс-сообщение ПЕРЕД отправкой видео
@@ -13639,7 +13671,7 @@ async def mot_start(cb: CallbackQuery, state: FSMContext):
             await cb.message.edit_text(
                 f"❌ Недостаточно кредитов\nНужно минимум {min_price} кр, у тебя {cr} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                    [_eib("Купить кредиты", "menu_buy")],
                     [_eib("Главное меню", "back_main")],
                 ])
             )
@@ -13903,7 +13935,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_motion"),
              _eib("Главное меню", "back_main")],
             [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
-             InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+             _eib("Купить кредиты", "menu_buy")],
         ])
 
         # Удаляем прогресс-сообщение ПЕРЕД отправкой (чистый UX)
@@ -15446,7 +15478,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="🎨 Генерировать фото", callback_data="menu_image"),
                          InlineKeyboardButton(text="🎬 Генерировать видео", callback_data="menu_video")],
-                        [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
+                        [_eib("Купить кредиты", "menu_buy")],
                         [_eib("Главное меню", "back_main")],
                     ]))
         else:
