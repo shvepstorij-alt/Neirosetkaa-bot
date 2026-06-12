@@ -1461,8 +1461,10 @@ async def load_prices_from_db():
                 code_svc = _code_catalog.get(k, {})
                 if k not in SHOP_CATALOG:
                     SHOP_CATALOG[k] = {
+                        "_key":  k,
                         "name":  code_svc.get("name",  r["service_name"]),
                         "emoji": code_svc.get("emoji", r["emoji"]),
+                        "emoji_id": code_svc.get("emoji_id", ""),
                         "desc":  code_svc.get("desc",  r["service_desc"]),
                         "plans": []
                     }
@@ -4504,7 +4506,7 @@ async def shop_renew(cb: CallbackQuery):
     # Перенаправляем в магазин на этот сервис
     cb.data = f"adm_shop_service:{key}"
     await cb.message.answer(
-        f"{s['emoji']} <b>\u041f\u0440\u043e\u0434\u043b\u0438\u0442\u044c {s['name']}</b>\n\n{s['desc']}",
+        f"{tg_emoji(s)} <b>\u041f\u0440\u043e\u0434\u043b\u0438\u0442\u044c {s['name']}</b>\n\n{s['desc']}",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{p['name']} - {p['price']}₽", callback_data=f"shop_confirm:{key}:{i}")]
@@ -5255,9 +5257,44 @@ async def cmd_ref(message: Message):
 #  МАГАЗИН ПОДПИСОК
 # ══════════════════════════════════════════════════════════
 
+# ── Кастомные Telegram эмодзи по ключу сервиса ───────────────────────────────
+# Добавляй новые по мере нахождения через @JsonDumpBot
+CUSTOM_EMOJI_IDS: dict[str, str] = {
+    # Уже есть в SHOP_CATALOG.emoji_id — дублируем здесь для DB-сервисов
+    "chatgpt":    "5796185041717433060",
+    "claude":     "5321196473784773037",
+    "grok":       "5319288443153445517",
+    "perplexity": "5321199630585732877",
+    "cursor":     "5399826553196527022",
+    "midjourney": "5310161156613110960",
+    "canva":      "5229235451541338986",
+    "appstore":   "5366400016732666411",
+    # DB-сервисы
+    "capcut":     "5285497929686069998",
+    "spotify":    "6008235948012211945",
+    "youtube":    "5427158904729513162",
+    "zoom":       "5881799193219043268",
+    "github":     "5417836094098007862",
+    "higgsfield": "5197646705813634076",
+    "krea":       "5366101877282845405",
+    "suno":       "5429372861586359061",
+    # Добавляй сюда: "ключ_сервиса": "emoji_id",
+}
+
+
+def tg_emoji(svc: dict, fallback: str = "") -> str:
+    """Возвращает <tg-emoji> тег если есть emoji_id, иначе обычный эмодзи."""
+    fb  = fallback or svc.get("emoji", "")
+    key = svc.get("_key", "")
+    eid = svc.get("emoji_id") or CUSTOM_EMOJI_IDS.get(key, "")
+    if eid:
+        return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
+    return fb
+
+
 SHOP_CATALOG = {
     "chatgpt": {
-        "name": "ChatGPT", "emoji": "✨",
+        "name": "ChatGPT", "emoji": "✨", "emoji_id": "5796185041717433060",
         "desc": "Самый популярный ИИ от OpenAI. GPT-5.5 (апрель 2026) — умнее, быстрее, сам доводит задачи до конца. Deep Research, Codex, Agent Mode, Sora.",
         "plans": [
             {"name": "Plus",   "price": 2000,  "stars": 800,  "desc": "GPT-5.5 и GPT-5.5 Instant, Deep Research (10 раз/мес), Sora, Codex, Agent Mode, DALL-E — 20$/мес"},
@@ -5266,7 +5303,7 @@ SHOP_CATALOG = {
         ]
     },
     "claude": {
-        "name": "Claude", "emoji": "⚡",
+        "name": "Claude", "emoji": "⚡", "emoji_id": "5321196473784773037",
         "desc": "Лучший ИИ для текстов, анализа и кода от Anthropic. Opus 4.8 (28 мая 2026) — Dynamic Workflows, сильнее в коде и агентских задачах. 200К токенов.",
         "plans": [
             {"name": "Pro",    "price": 2000,  "stars": 800,  "desc": "Claude Opus 4.8, Sonnet 4.6, Dynamic Workflows, Projects, Claude Code, Research — 20$/мес"},
@@ -5275,7 +5312,7 @@ SHOP_CATALOG = {
         ]
     },
     "grok": {
-        "name": "SuperGrok", "emoji": "𝕏",
+        "name": "SuperGrok", "emoji": "𝕏", "emoji_id": "5319288443153445517",
         "desc": "ИИ от xAI. Grok 4.3 (май 2026) — 1М токенов контекст, видеовход, Custom Skills. Реальное время X/Twitter. Aurora — безлимит изображений.",
         "plans": [
             {"name": "SuperGrok",       "price": 2000, "stars": 800,  "desc": "Grok 4.3, DeepSearch, Aurora (изображения безлимит), Big Brain Mode, Custom Skills, голос, 1М контекст — 30$/мес"},
@@ -5283,14 +5320,14 @@ SHOP_CATALOG = {
         ]
     },
     "perplexity": {
-        "name": "Perplexity Pro", "emoji": "🔍",
+        "name": "Perplexity Pro", "emoji": "🔍", "emoji_id": "5321199630585732877",
         "desc": "Лучший AI-поиск + автономный агент. Perplexity Computer выполняет задачи вместо тебя. GPT-5.5, Opus 4.8, Gemini 3.1 Pro на выбор.",
         "plans": [
             {"name": "Pro", "price": 2000, "stars": 800, "desc": "Безлимит Pro Search, Deep Research, Perplexity Computer, выбор модели (GPT-5.5/Opus 4.8/Gemini 3.1/Grok 4.3), PDF/CSV — 20$/мес"},
         ]
     },
     "cursor": {
-        "name": "Cursor", "emoji": "💻",
+        "name": "Cursor", "emoji": "💻", "emoji_id": "5399826553196527022",
         "desc": "Лучший AI-редактор кода. Composer 2.5, Opus 4.8 + GPT-5.5 в IDE. Jira/Teams интеграция, Loop-агенты, Shared Canvases. Как VS Code.",
         "plans": [
             {"name": "Pro",  "price": 2300, "stars": 920,  "desc": "Безлимит Tab-автодополнений, Composer 2.5, $20 кредитов/мес на агентов, Jira/Teams интеграция — 20$/мес"},
@@ -5305,7 +5342,7 @@ SHOP_CATALOG = {
         ]
     },
     "midjourney": {
-        "name": "Midjourney", "emoji": "🖼",
+        "name": "Midjourney", "emoji": "🖼", "emoji_id": "5310161156613110960",
         "desc": "Топ-генератор изображений. V8.1 (апрель 2026) — в 4–5× быстрее V7, HD 2K, сверхстабильные стили и Moodboards. Discord + сайт.",
         "plans": [
             {"name": "Basic",    "price": 1000, "stars": 400,  "desc": "~200 изображений в Fast режиме, Omni Reference, V8.1, коммерческие права"},
@@ -5314,7 +5351,7 @@ SHOP_CATALOG = {
         ]
     },
     "canva": {
-        "name": "Canva Pro", "emoji": "✏️",
+        "name": "Canva Pro", "emoji": "✏️", "emoji_id": "5229235451541338986",
         "desc": "Дизайн с AI. Magic Studio, Brand Kit, удаление фона, изменение размера под все соцсети одним кликом. 100М+ шаблонов.",
         "plans": [
             {"name": "Pro", "price": 1200, "stars": 480, "desc": "Magic Design, Magic Write, Background Remover, Brand Kit, безлимит шаблонов и хранилище 1TB"},
@@ -5352,7 +5389,7 @@ SHOP_CATALOG = {
         ]
     },
     "suno": {
-        "name": "Suno", "emoji": "🎵",
+        "name": "Suno", "emoji": "🎵", "emoji_id": "5429372861586359061",
         "desc": "Генерация музыки с вокалом из текста. v5.5 — студийное качество, клонирование своего голоса (Voices), My Taste, любой жанр.",
         "plans": [
             {"name": "Pro",     "price": 1000, "stars": 400,  "desc": "2500 кредитов/мес, коммерческие права, Voices (клон голоса), My Taste, без водяного знака"},
@@ -5369,7 +5406,7 @@ SHOP_CATALOG = {
     },
     "appstore": {
         "name":  "App Store / iCloud",
-        "emoji": "🍎",
+        "emoji": "🍎", "emoji_id": "5366400016732666411",
         "desc":  "Пополнение Apple ID. Подходит для App Store, iCloud+, Apple Music, Apple TV+. Моментальная автодоставка кода.",
         "plans": [],
         "_nsgifts": True,
@@ -5493,7 +5530,7 @@ async def shop_service(cb: CallbackQuery):
     for i, p in enumerate(s["plans"]):
         plans_text += f"  {i+1}. <b>{p['name']} - {p['price']}₽/мес</b>\n     <i>{p['desc']}</i>\n"
     text = (
-        f"{s['emoji']} <b>{s['name']}</b>\n\n"
+        f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
         f"<i>{s['desc']}</i>\n\n"
         f"Доступные тарифы:\n{plans_text}\n"
         f"<b>👇 Выбери тариф:</b>"
@@ -5545,7 +5582,7 @@ async def shop_confirm(cb: CallbackQuery, state: FSMContext):
 
     text = (
         f"📋 <b>Подтверждение заказа</b>\n\n"
-        f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+        f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
         f"💵 Стоимость: {price_line}\n\n"
         f"<b>Что входит:</b>\n<i>{p['desc']}</i>\n\n"
         f"Выбери способ оплаты:"
@@ -5706,7 +5743,7 @@ async def shop_pay_sbp(cb: CallbackQuery):
 
     text = (
         f"🏦 <b>Оплата через СБП</b>\n\n"
-        f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+        f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
         f"💵 Сумма: {price_line}{coins_line}\n\n"
         f"После оплаты отправьте чек и номер заказа Александру - он активирует подписку 👇"
     )
@@ -5746,7 +5783,7 @@ async def shop_pay_sbp(cb: CallbackQuery):
             ADMIN_ID,
             f"🛍 <b>Новый заказ из магазина</b>\n\n"
             f"👤 @{username} (<code>{uid}</code>)\n"
-            f"📦 {s['emoji']} {s['name']} {p['name']}\n"
+            f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"💵 Сумма: <b>{p['price']}₽</b>\n"
             f"🏦 Способ: СБП\n"
             f"🆔 Заказ: <code>{order_id}</code>\n\n"
@@ -5840,7 +5877,7 @@ async def shop_full_coins(cb: CallbackQuery):
     username = cb.from_user.username or cb.from_user.full_name
     await cb.message.edit_text(
         f"\U0001fa99 <b>Оплачено монетками!</b>\n\n"
-        f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+        f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
         f"\U0001fa99 Списано: <b>{coins_used}\u20bd</b>\n"
         f"\U0001fa99 Остаток монеток: <b>{new_coins:.0f}\u20bd</b>\n\n"
         f"Александр активирует подписку в течение часа \U0001f447",
@@ -5855,7 +5892,7 @@ async def shop_full_coins(cb: CallbackQuery):
             ADMIN_ID,
             f"\U0001fa99 <b>Заказ оплачен монетками (магазин)</b>\n\n"
             f"\U0001f464 @{username} (ID: {uid})\n"
-            f"\U0001f4e6 {s['emoji']} {s['name']} {p['name']}\n"
+            f"\U0001f4e6 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
             f"\U0001f4b5 СБП: 0\u20bd",
             parse_mode="HTML"
@@ -5899,7 +5936,7 @@ async def shop_coins_sbp(cb: CallbackQuery):
     )
     await cb.message.edit_text(
         f"\U0001fa99 <b>Монетки применены!</b>\n\n"
-        f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+        f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
         f"\U0001fa99 Монетками: <b>{coins_used}\u20bd</b>\n"
         f"\U0001f4b5 Доплата СБП: <b>{rest}\u20bd</b>\n\n"
         f"После оплаты напиши Александру \U0001f447",
@@ -5915,7 +5952,7 @@ async def shop_coins_sbp(cb: CallbackQuery):
             ADMIN_ID,
             f"\U0001fa99 <b>Заказ (монетки + СБП)</b>\n\n"
             f"\U0001f464 @{username} (ID: {uid})\n"
-            f"\U0001f4e6 {s['emoji']} {s['name']} {p['name']}\n"
+            f"\U0001f4e6 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
             f"\U0001f4b5 СБП: {rest}\u20bd\n"
             f"\U0001f194 Заказ: <code>{order_id}</code>",
@@ -5953,7 +5990,7 @@ async def shop_pay_stars(cb: CallbackQuery):
         try:
             await cb.message.edit_text(
                 f"⭐ <b>Оплата Telegram Stars</b>\n\n"
-                f"{s['emoji']} <b>{s['name']} {p['name']}</b>\n"
+                f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
                 f"⭐ Сумма: <b>{p.get('stars', round(p['price']/2.5))} Stars</b>\n\n"
                 f"Счёт отправлен выше 👆\n"
                 f"После оплаты отправьте скриншот Александру - он активирует подписку.",
@@ -5974,7 +6011,7 @@ async def shop_pay_stars(cb: CallbackQuery):
             ADMIN_ID,
             f"🛍 <b>Заказ из магазина (Stars)</b>\n\n"
             f"👤 @{username} (ID: {uid})\n"
-            f"📦 {s['emoji']} {s['name']} {p['name']}\n"
+            f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"⭐ {p['stars']} Stars",
             parse_mode="HTML"
         )
@@ -6008,7 +6045,7 @@ async def on_successful_payment(message: Message):
 
         await message.answer(
             f"✅ <b>Оплата прошла успешно!</b>\n\n"
-            f"{s['emoji']} <b>{s['name']} {p['name']}</b> - {p['stars']} ⭐\n\n"
+            f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b> - {p['stars']} ⭐\n\n"
             f"Отправьте скриншот оплаты Александру - он активирует подписку.\n\n"
             f"👇 Напишите напрямую:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -6025,7 +6062,7 @@ async def on_successful_payment(message: Message):
                 ADMIN_ID,
                 f"💰 <b>Stars оплачено!</b>\n\n"
                 f"👤 @{username} (ID: {uid})\n"
-                f"📦 {s['emoji']} {s['name']} {p['name']}\n"
+                f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
                 f"⭐ {p['stars']} Stars получено - активируй подписку!",
                 parse_mode="HTML"
             )
@@ -11033,7 +11070,7 @@ async def adm_shop_service(cb: CallbackQuery):
         [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices_shop")],
     ]
     text = (
-        f"{s['emoji']} <b>{s['name']}</b>\n"
+        f"{tg_emoji(s)} <b>{s['name']}</b>\n"
         f"<i>{s.get('desc', '')}</i>\n\n"
         + (plans_text if plans_text else "<i>\u0422\u0430\u0440\u0438\u0444\u043e\u0432 \u043d\u0435\u0442</i>")
     )
@@ -15943,7 +15980,7 @@ async def gpt_code_rechecker_loop():
                 rows = await conn.fetch(
                     """SELECT id, code, plan FROM gpt_codes
                        WHERE is_used = FALSE
-                         AND COALESCE(check_status, 'unchecked') NOT IN ('ok')
+                         AND COALESCE(check_status, 'unchecked') NOT IN ('ok', 'used', 'invalid')
                        ORDER BY
                          CASE COALESCE(check_status,'unchecked')
                            WHEN 'unchecked' THEN 0
