@@ -6605,6 +6605,32 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             pay_url = fk_pay_url(amount, order_id)
             label = "🏦 Оплатить через СБП"
 
+        # Уведомляем админа ПЕРВЫМ - до показа URL пользователю,
+        # чтобы admin_msg_id точно сохранился до возможного вебхука об оплате
+        # (после этого блока запустим мониторинг)
+        try:
+            username = cb.from_user.username or cb.from_user.full_name
+            admin_msg = await bot.send_message(
+                ADMIN_ID,
+                f"\U0001f4b0 <b>\u041d\u043e\u0432\u044b\u0439 \u0437\u0430\u043a\u0430\u0437</b>\n\n"
+                f"\U0001f464 @{username} (<code>{uid}</code>)\n"
+                f"\U0001f4e6 {p['credits']} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432\n"
+                f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount}\u20bd</b>\n"
+                f"\U0001f3e6 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
+                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
+                f"\u23f3 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b</b>",
+                parse_mode="HTML"
+            )
+            pool3 = await get_pool()
+            async with pool3.acquire() as conn3:
+                await conn3.execute(
+                    "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
+                    admin_msg.message_id, order_id
+                )
+        except Exception as _adm_err:
+            logging.error(f"pay_fk admin notify error: {_adm_err}")
+
+        # Показываем платёжную ссылку пользователю ПОСЛЕ сохранения admin_msg_id
         if wait_msg:
             try:
                 await wait_msg.delete()
@@ -6626,31 +6652,8 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
 
-        # Запускаем активный мониторинг этого заказа в фоне
+        # Запускаем мониторинг ПОСЛЕ того как admin_msg_id уже сохранён
         asyncio.create_task(fk_monitor_order(order_id))
-
-        # Уведомляем админа - одно сообщение, обновится при оплате
-        try:
-            username = cb.from_user.username or cb.from_user.full_name
-            admin_msg = await bot.send_message(
-                ADMIN_ID,
-                f"\U0001f4b0 <b>\u041d\u043e\u0432\u044b\u0439 \u0437\u0430\u043a\u0430\u0437</b>\n\n"
-                f"\U0001f464 @{username} (<code>{uid}</code>)\n"
-                f"\U0001f4e6 {p['credits']} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432\n"
-                f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount}\u20bd</b>\n"
-                f"\U0001f3e6 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
-                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
-                f"\u23f3 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b</b>",
-                parse_mode="HTML"
-            )
-            pool3 = await get_pool()
-            async with pool3.acquire() as conn3:
-                await conn3.execute(
-                    "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
-                    admin_msg.message_id, order_id
-                )
-        except Exception:
-            pass
 
     except Exception as e:
         logging.error(f"pay_fk error: {e}")
