@@ -6405,7 +6405,10 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
     if not await check_not_blocked(cb, uid):
         return
     key = cb.data.split(":")[1]
-    p = CREDIT_PACKS[key]
+    p = CREDIT_PACKS.get(key)
+    if not p:
+        await cb.answer("Пакет не найден, попробуй открыть меню заново", show_alert=True)
+        return
     data = await state.get_data()
     promo_code = data.get("promo_code")
     promo_discount = 0
@@ -6546,7 +6549,10 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     key = parts[1]
     method = parts[2] if len(parts) > 2 else "sbp"
-    p = CREDIT_PACKS[key]
+    p = CREDIT_PACKS.get(key)
+    if not p:
+        await cb.answer("Пакет не найден, открой меню заново", show_alert=True)
+        return
     uid = cb.from_user.id
 
     # Применённый промокод (если есть)
