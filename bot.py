@@ -2524,23 +2524,23 @@ async def notify_admin_error(context: str, e: Exception):
 def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📷 Изображение", callback_data="menu_image"),
-            InlineKeyboardButton(text="🎬 Видео",        callback_data="menu_video"),
+            InlineKeyboardButton(text="Изображение", callback_data="menu_image",    icon_custom_emoji_id="5389108217496231210"),
+            InlineKeyboardButton(text="Видео",        callback_data="menu_video",    icon_custom_emoji_id="5294300937605633051"),
         ],
         [
-            InlineKeyboardButton(text="🖌️ Редактировать фото", callback_data="menu_edit"),
-            InlineKeyboardButton(text="🏃 Анимировать фото",   callback_data="menu_anim"),
+            InlineKeyboardButton(text="Редактировать...", callback_data="menu_edit", icon_custom_emoji_id="5222108309795908493"),
+            InlineKeyboardButton(text="Анимировать ф...", callback_data="menu_anim", icon_custom_emoji_id="5316558613479701521"),
         ],
         [
-            InlineKeyboardButton(text="🤖 Консультант AI", callback_data="menu_chat"),
-            InlineKeyboardButton(text="❤️ Избранное",      callback_data="menu_favorites"),
+            InlineKeyboardButton(text="Консультант AI", callback_data="menu_chat",      icon_custom_emoji_id="4970126766132691795"),
+            InlineKeyboardButton(text="Избранное",       callback_data="menu_favorites", icon_custom_emoji_id="5343726841427405712"),
         ],
         [
-            InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy"),
-            InlineKeyboardButton(text="🛍 Магазин",         callback_data="menu_shop"),
+            InlineKeyboardButton(text="Купить кредиты", callback_data="menu_buy",  icon_custom_emoji_id="5217961106554769883"),
+            InlineKeyboardButton(text="Магазин",         callback_data="menu_shop", icon_custom_emoji_id="5395463407589672312"),
         ],
         [
-            InlineKeyboardButton(text="👤 Мой профиль", callback_data="menu_profile"),
+            InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", icon_custom_emoji_id="6032994772321309200"),
         ],
     ])
 
@@ -5286,6 +5286,8 @@ CUSTOM_EMOJI_IDS: dict[str, str] = {
     "Perplexity":    "5321199630585732877",
     "Icloud":        "5366400016732666411",
     "Freepik":       "5442943781420687477",
+    "Manus":         "5327991760587083576",
+    "Kling AI":      "5294300937605633051",
     # Добавляй сюда: "точный_ключ_из_БД": "emoji_id",
 }
 
