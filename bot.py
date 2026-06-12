@@ -1817,7 +1817,7 @@ async def send_reminder(user_id: int, kind: str, text: str) -> bool:
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎨 Генерировать фото", callback_data="menu_image"),
                  InlineKeyboardButton(text="🎬 Генерировать видео", callback_data="menu_video")],
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
         pool = await get_pool()
@@ -2379,7 +2379,7 @@ def kb_error_with_alt(menu: str, model_key: str):
                 callback_data=f"alt_vid:{alt_key}"
             )])
     rows.append([InlineKeyboardButton(text="🔄 Попробовать ту же модель", callback_data=f"retry_{menu}:{model_key}")])
-    rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")])
+    rows.append([_eib("Главное меню", "back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2555,12 +2555,12 @@ IMAGE_BRAND_MODELS = {
 }
 
 IMAGE_BRAND_TITLES = {
-    "gptimg":   "🤖 GPT Image 2 (OpenAI)",
-    "imagen":   "🌟 Imagen 4",
-    "nano":     "🍌 Nano Banana",
-    "flux":     "🎭 Flux",
-    "ideogram": "✒️ Ideogram",
-    "grok":     "⚡ Grok Imagine (xAI)",
+    "gptimg":   "GPT Image 2 (OpenAI)",
+    "imagen":   "Imagen 4",
+    "nano":     "Nano Banana",
+    "flux":     "Flux",
+    "ideogram": "Ideogram",
+    "grok":     "Grok Imagine (xAI)",
 }
 
 
@@ -2610,11 +2610,11 @@ VIDEO_BRAND_MODELS = {
 }
 
 VIDEO_BRAND_TITLES = {
-    "veo":      "🎥 Veo",
-    "kling":    "🎞 Kling",
-    "seedance": "🎬 Seedance",
-    "wan":      "🌊 Wan",
-    "grok":     "⚡ Grok",
+    "veo":      "Veo",
+    "kling":    "Kling",
+    "seedance": "Seedance",
+    "wan":      "Wan",
+    "grok":     "Grok",
 }
 
 
@@ -2649,15 +2649,17 @@ def kb_confirm(prefix: str, key: str):
             InlineKeyboardButton(text="✍️ Изменить промт", callback_data=f"chprompt:{prefix}:{key}"),
         ],
         [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_prompt:{prefix}:{key}")],
-        [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+        [_eib("Главное меню", "back_main")],
     ])
 
 def kb_buy():
     rows = []
     for key, p in CREDIT_PACKS.items():
         eid = UI_EMOJI_IDS.get(f"pack_{key}", "")
+        # Strip leading emoji from name since icon_custom_emoji_id is set separately
+        raw_name = p['name'].split(' ', 1)[-1] if ' ' in p['name'] else p['name']
         btn = InlineKeyboardButton(
-            text=f"{p['name']} - {p['credits']} кредитов | {p['price']}₽",
+            text=f"{raw_name} - {p['credits']} кредитов | {p['price']}₽",
             callback_data=f"buy:{key}",
             **{"icon_custom_emoji_id": eid} if eid else {}
         )
@@ -2684,7 +2686,7 @@ def kb_after(menu: str, model_key: str = ""):
         ],
         [
             InlineKeyboardButton(text="❤️ В избранное",    callback_data="fav_save"),
-            InlineKeyboardButton(text="🏡 Главное",        callback_data="new_main"),
+            _eib("Главное меню", "back_main"),
         ],
         [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
     ]
@@ -2692,7 +2694,7 @@ def kb_after(menu: str, model_key: str = ""):
 
 def kb_cancel():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")]
+        [_eib("Главное меню", "back_main")]
     ])
 
 
@@ -2713,7 +2715,7 @@ def kb_chat_ongoing():
     """Клавиатура во время активного диалога - чтобы можно было вернуться к пресетам."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Быстрые пресеты", callback_data="chat_presets_again")],
-        [InlineKeyboardButton(text="🚫 В главное меню",  callback_data="back_main")],
+        [_eib("Главное меню", "back_main")],
     ])
 
 
@@ -2748,7 +2750,7 @@ def kb_after_consultant_reply(intent: str | None = None, model_hint: str | None 
             callback_data="menu_anim"
         )])
     rows.append([InlineKeyboardButton(text="📋 Пресеты", callback_data="chat_presets_again"),
-                 InlineKeyboardButton(text="🚫 В главное меню", callback_data="back_main")])
+                 _eib("Главное меню", "back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2770,7 +2772,7 @@ def kb_aspect_image(model_key: str):
                 callback_data=f"iaspect:{model_key}:{ratio}"
             ))
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")])
+    rows.append([_eib("Главное меню", "back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2782,12 +2784,12 @@ def kb_aspect_video(model_key: str):
         ("1:1 Квадрат",      "1:1"),
     ]
     rows = [[InlineKeyboardButton(text=label, callback_data=f"vaspect:{model_key}:{ratio}") for label, ratio in ratios]]
-    rows.append([InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")])
+    rows.append([_eib("Главное меню", "back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_back():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")]
+        [_eib("Главное меню", "back_main")]
     ])
 
 def kb_contact():
@@ -4482,7 +4484,7 @@ async def shop_renew(cb: CallbackQuery):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"{p['name']} - {p['price']}₽", callback_data=f"shop_confirm:{key}:{i}")]
             for i, p in enumerate(s.get("plans", []))
-        ] + [[InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")]])
+        ] + [[_eib("Главное меню", "back_main")]])
     )
 
 @dp.message(F.text.startswith("/sub"), StateFilter("*"))
@@ -5530,7 +5532,7 @@ async def menu_shop(cb: CallbackQuery):
         text="💬 Другой сервис - написать Александру",
         callback_data="shop_other"
     )])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    rows.append([_eib("Главное меню", "back_main")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -5884,7 +5886,7 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
             f"🪙 Баланс монеток: <b>{new_coins:.0f}₽</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     else:
@@ -5935,7 +5937,7 @@ async def shop_full_coins(cb: CallbackQuery):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="\u2705 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
-            [InlineKeyboardButton(text="\U0001f3e1 Главное меню", callback_data="back_main")],
+            [_eib("Главное меню", "back_main")],
         ])
     )
     try:
@@ -6104,7 +6106,7 @@ async def on_successful_payment(message: Message):
                     text="💬 Написать @neirosetkaalex",
                     url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил через Telegram Stars\nСервис: {s["name"]}\nТариф: {p["name"]}')
                 )],
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ]),
             parse_mode="HTML"
         )
@@ -6144,7 +6146,7 @@ async def on_successful_payment(message: Message):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📷 Создать фото", callback_data="menu_image")],
                 [InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
         try:
@@ -6257,11 +6259,11 @@ async def menu_ref(cb: CallbackQuery):
     )
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            [_eib("Главное меню", "back_main")],
         ]), parse_mode="HTML")
     except Exception:
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            [_eib("Главное меню", "back_main")],
         ]), parse_mode="HTML")
     await cb.answer()
 
@@ -6404,7 +6406,7 @@ async def payment_issue_handler(cb: CallbackQuery):
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⬅️ К пакетам", callback_data="menu_buy")],
-                    [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                    [_eib("Главное меню", "back_main")],
                 ])
             )
     except Exception as e:
@@ -6416,7 +6418,7 @@ async def payment_issue_handler(cb: CallbackQuery):
         await cb.message.answer(
             "⚠️ Не удалось проверить автоматически. Напиши @neirosetkaalex - он разберётся вручную.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
 
@@ -6924,7 +6926,7 @@ async def report_pay_handler(cb: CallbackQuery):
             "<i>Если очень срочно - напиши лично @neirosetkaalex с чеком об оплате 🙏</i>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     except Exception as e:
@@ -7077,7 +7079,9 @@ async def choose_img_brand(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     cr = await get_credits(cb.from_user.id)
-    title = IMAGE_BRAND_TITLES.get(brand, brand)
+    _brand_name = IMAGE_BRAND_TITLES.get(brand, brand)
+    _brand_eid_key = f"iband_{brand}"
+    title = f"{tg_emoji_ui(_brand_eid_key, '')} <b>{_brand_name}</b>" if UI_EMOJI_IDS.get(_brand_eid_key) else f"<b>{_brand_name}</b>"
 
     # Список моделей бренда с описанием
     lines = []
@@ -7386,7 +7390,7 @@ async def improve_prompt_inline(cb: CallbackQuery, state: FSMContext):
                 [InlineKeyboardButton(text="🚀 Генерировать", callback_data=f"go:{prefix}:{key}")],
                 [InlineKeyboardButton(text="✍️ Изменить ещё", callback_data=f"improve_prompt:{prefix}:{key}")],
                 [InlineKeyboardButton(text="🔙 Оригинальный промт", callback_data=f"chprompt:{prefix}:{key}")],
-                [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     except Exception as e:
@@ -7512,7 +7516,9 @@ async def choose_vid_brand(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     cr = await get_credits(cb.from_user.id)
-    title = VIDEO_BRAND_TITLES.get(brand, brand)
+    _vbrand_name = VIDEO_BRAND_TITLES.get(brand, brand)
+    _vbrand_eid_key = f"vband_{brand}"
+    title = f"{tg_emoji_ui(_vbrand_eid_key, '')} <b>{_vbrand_name}</b>" if UI_EMOJI_IDS.get(_vbrand_eid_key) else f"<b>{_vbrand_name}</b>"
 
     lines = []
     for key in VIDEO_BRAND_MODELS[brand]:
@@ -8148,7 +8154,7 @@ async def chat_free_question(cb: CallbackQuery, state: FSMContext):
             "<i>Просто напиши что интересует 👇</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📋 Вернуться к пресетам", callback_data="chat_presets_again")],
-                [InlineKeyboardButton(text="🚫 В главное меню",       callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ]),
             parse_mode="HTML",
         )
@@ -8157,7 +8163,7 @@ async def chat_free_question(cb: CallbackQuery, state: FSMContext):
             "💬 <b>Задай свой вопрос</b>\n\n<i>Просто напиши что интересует 👇</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📋 К пресетам", callback_data="chat_presets_again")],
-                [InlineKeyboardButton(text="🚫 В меню",     callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ]),
             parse_mode="HTML",
         )
@@ -8342,7 +8348,7 @@ async def on_new_member(event: ChatMemberUpdated):
                  f"🎁 Тебе начислено <b>{FREE_CREDITS} бесплатных кредитов</b>!\n\n"
                  f"Напиши /start чтобы начать 👇",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✨ Начать", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
                 [InlineKeyboardButton(text="💌 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
             ]),
             parse_mode="HTML"
@@ -8937,13 +8943,13 @@ async def _show_profile(message: Message, user):
 
         # Бренды: (эмодзи + название, список ключей)
         BRANDS = [
-            ("🌟 Imagen 4",          ["img_fast", "img_std", "img_ultra"]),
-            ("🍌 Nano Banana",        ["nb_flash", "nb_2", "nb_pro"]),
-            ("🎨 Flux &amp; Ideogram",["flux_pro", "ideogram_v3"]),
-            ("🎥 Veo 3.1",            ["vid_lite", "vid_fast", "vid_pro"]),
-            ("🎞 Kling",              ["kling_turbo", "kling_pro"]),
-            ("✏️ Редактирование",     ["gemini-flash-image"]),
-            ("🎭 Анимация",           ["veo-3.1-animate"]),
+            (f'{tg_emoji_ui("iband_imagen", "🌟")} Imagen 4',        ["img_fast", "img_std", "img_ultra"]),
+            (f'{tg_emoji_ui("iband_nano",   "🍌")} Nano Banana',      ["nb_flash", "nb_2", "nb_pro"]),
+            (f'{tg_emoji_ui("iband_flux",   "🎨")} Flux &amp; Ideogram', ["flux_pro", "ideogram_v3"]),
+            (f'{tg_emoji_ui("vband_veo",    "🎥")} Veo 3.1',          ["vid_lite", "vid_fast", "vid_pro"]),
+            (f'{tg_emoji_ui("vband_kling",  "🎞")} Kling',            ["kling_turbo", "kling_pro"]),
+            ("✏️ Редактирование",                                      ["gemini-flash-image"]),
+            ("🎭 Анимация",                                            ["veo-3.1-animate"]),
         ]
 
         brand_parts = []
@@ -9073,7 +9079,7 @@ async def _show_profile(message: Message, user):
         *_claude_pending_btn,
         [InlineKeyboardButton(text="🤝 Пригласить друга 🟢", callback_data="menu_ref")],
         [InlineKeyboardButton(text="🧾 Покупки",        callback_data="profile_history"),
-         InlineKeyboardButton(text="🏡 Главное меню",   callback_data="back_main")],
+         _eib("Главное меню", "back_main")],
         [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy"),
          InlineKeyboardButton(text="❤️ Избранное",      callback_data="menu_favorites")],
     ])
@@ -9119,7 +9125,7 @@ def kb_admin_panel():
          InlineKeyboardButton(text="⚙️ Техобслуживание",   callback_data="adm_maintenance")],
         [InlineKeyboardButton(text="✨ ChatGPT Mini App",  callback_data="adm_gpt_webapp")],
         [InlineKeyboardButton(text="⚡ Claude Mini App",   callback_data="adm_claude_webapp")],
-        [InlineKeyboardButton(text="🏡 Главное меню",      callback_data="back_main")],
+        [_eib("Главное меню", "back_main")],
     ])
 
 def kb_block_actions(target_id: int, currently_blocked: bool):
@@ -12054,7 +12060,7 @@ async def menu_upscale(cb: CallbackQuery, state: FSMContext):
                 f"💸 Недостаточно кредитов\n\nНужно {UPSCALE_CREDIT_COST} кр, у тебя {cr} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+                    [_eib("Главное меню", "back_main")],
                 ]),
                 parse_mode="HTML"
             )
@@ -12159,7 +12165,7 @@ async def do_upscale(message: Message, state: FSMContext):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale"),
-                 InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                 _eib("Главное меню", "back_main")],
                 [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
                  InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
             ])
@@ -12182,7 +12188,7 @@ async def do_upscale(message: Message, state: FSMContext):
             f"⚠️ Ошибка апскейла. Попробуй ещё раз или напиши @neirosetkaalex.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔍 Попробовать снова", callback_data="menu_upscale")],
-                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     await state.clear()
@@ -12263,7 +12269,7 @@ async def do_improve_prompt(message: Message, state: FSMContext):
                 [InlineKeyboardButton(text="🍌 Nano Banana - 13 кр", callback_data="improve_gen:nb_flash",   style="success")],
                 [InlineKeyboardButton(text="🎭 Flux Pro - 12 кр",   callback_data="improve_gen:flux_pro",   style="primary")],
                 [InlineKeyboardButton(text="✏️ Изменить промт",      callback_data="menu_improve")],
-                [InlineKeyboardButton(text="🏡 Главное меню",        callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     except Exception as e:
@@ -12331,7 +12337,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✨ Улучшить другой промт", callback_data="menu_improve"),
-                 InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                 _eib("Главное меню", "back_main")],
                 [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
                  InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
             ])
@@ -12349,7 +12355,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
             "⚠️ Ошибка генерации. Попробуй другую модель.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✨ Попробовать снова", callback_data="menu_improve")],
-                [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     await cb.answer()
@@ -12373,7 +12379,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
                 f"💸 Недостаточно кредитов\n\nНужно {min_cost} кредитов, у тебя {cr} кредитов.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+                    [_eib("Главное меню", "back_main")],
                 ]),
                 parse_mode="HTML"
             )
@@ -12409,7 +12415,7 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
         if styles.get(key):
             btn.style = styles[key]
         rows.append([btn])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    rows.append([_eib("Главное меню", "back_main")])
 
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
@@ -12501,7 +12507,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
             [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_edit:{model_key}")],
             [InlineKeyboardButton(text="✍️ Изменить промт", callback_data=f"edit_model:{model_key}")],
-            [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+            [_eib("Главное меню", "back_main")],
         ])
     )
 
@@ -12543,7 +12549,7 @@ async def improve_edit_prompt(cb: CallbackQuery, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
                 [InlineKeyboardButton(text="✨ Улучшить ещё", callback_data=f"improve_edit:{model_key}")],
-                [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     except Exception as e:
@@ -12894,7 +12900,7 @@ async def menu_favorites(cb: CallbackQuery):
                 "❤️ <b>Избранное</b>\n\nПока пусто. Нажми ❤️ после генерации чтобы сохранить.",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+                    [_eib("Главное меню", "back_main")],
                 ])
             )
         except Exception:
@@ -12921,7 +12927,7 @@ async def menu_favorites(cb: CallbackQuery):
         f"Показаны последние {len(items)}",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏡 Главное меню", callback_data="back_main")],
+            [_eib("Главное меню", "back_main")],
         ])
     )
 
@@ -13032,7 +13038,7 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
                 f"❌ Недостаточно кредитов\nНужно минимум {min_cost} кр, у тебя {cr} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+                    [_eib("Главное меню", "back_main")],
                 ]), parse_mode="HTML"
             )
         except Exception:
@@ -13064,7 +13070,7 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
         if styles.get(key):
             btn.style = styles[key]
         rows.append([btn])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    rows.append([_eib("Главное меню", "back_main")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
@@ -13157,7 +13163,7 @@ async def anim_first_photo(message: Message, state: FSMContext):
                 [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
                 [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
                 [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
-                [InlineKeyboardButton(text="❌ Отмена",         callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
 
@@ -13178,7 +13184,7 @@ async def anim_last_photo(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
             [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
             [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
-            [InlineKeyboardButton(text="❌ Отмена",         callback_data="back_main")],
+            [_eib("Главное меню", "back_main")],
         ])
     )
 
@@ -13229,7 +13235,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
             [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_anim:{model_key}")],
-            [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+            [_eib("Главное меню", "back_main")],
         ])
     )
 
@@ -13271,7 +13277,7 @@ async def improve_anim_prompt(cb: CallbackQuery, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
                 [InlineKeyboardButton(text="✨ Улучшить ещё", callback_data=f"improve_anim:{model_key}")],
-                [InlineKeyboardButton(text="🚫 Отмена", callback_data="back_main")],
+                [_eib("Главное меню", "back_main")],
             ])
         )
     except Exception as e:
@@ -13457,7 +13463,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         cr_left = await get_credits(uid)
         kb_after_anim = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_anim"),
-             InlineKeyboardButton(text="🏠 Главное", callback_data="new_main")],
+             _eib("Главное меню", "back_main")],
             [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
              InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
         ])
@@ -13634,7 +13640,7 @@ async def mot_start(cb: CallbackQuery, state: FSMContext):
                 f"❌ Недостаточно кредитов\nНужно минимум {min_price} кр, у тебя {cr} кр.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
+                    [_eib("Главное меню", "back_main")],
                 ])
             )
         except Exception:
@@ -13735,7 +13741,7 @@ async def mot_got_video(message: Message, state: FSMContext):
             text=f"⏱ {dur} секунд · {price} кр",
             callback_data=f"mot_dur:{dur}"
         )])
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")])
+    rows.append([_eib("Главное меню", "back_main")])
 
     await message.answer(
         "✅ Видео принято!\n\n"
@@ -13776,7 +13782,7 @@ async def mot_got_duration(cb: CallbackQuery, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏭ Пропустить промт", callback_data="mot_skip_prompt")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_main")],
+        [_eib("Главное меню", "back_main")],
     ])
     await cb.message.edit_text(
         f"✅ Выбрано: {dur} секунд · {price} кр\n\n"
@@ -13895,7 +13901,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
 
         kb_after_mot = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Ещё раз", callback_data="menu_motion"),
-             InlineKeyboardButton(text="🏠 Главное", callback_data="back_main")],
+             _eib("Главное меню", "back_main")],
             [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
              InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
         ])
@@ -15441,7 +15447,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         [InlineKeyboardButton(text="🎨 Генерировать фото", callback_data="menu_image"),
                          InlineKeyboardButton(text="🎬 Генерировать видео", callback_data="menu_video")],
                         [InlineKeyboardButton(text="⚡ Купить кредиты", callback_data="menu_buy")],
-                        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                        [_eib("Главное меню", "back_main")],
                     ]))
         else:
             # Покупка кредитов - показываем баланс
@@ -15462,7 +15468,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     [InlineKeyboardButton(text="🖼️ Создать фото", callback_data="menu_image"),
                      InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
                     [InlineKeyboardButton(text="🤖 AI-Консультант", callback_data="menu_chat")],
-                    [InlineKeyboardButton(text="🏠 В главное меню", callback_data="back_main")],
+                    [_eib("Главное меню", "back_main")],
                 ])
             )
         logging.info(f"FK payment success ({source}): user={user_id} credits=+{credits} balance={old_balance}→{new_balance} order={order_id}")
@@ -15926,7 +15932,7 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
             "Если возникнут вопросы — пиши @neirosetkaalex",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
+                [_eib("Главное меню", "back_main")]
             ])
         )
         try:
@@ -15944,7 +15950,7 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
         await cb.message.answer(
             "ℹ️ Активная сессия не найдена — возможно уже завершена ранее.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")]
+                [_eib("Главное меню", "back_main")]
             ])
         )
 
@@ -16009,7 +16015,7 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
             "Если возникнут вопросы — пиши @neirosetkaalex",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="\U0001f3e0 Главное меню", callback_data="back_main")]
+                [_eib("Главное меню", "back_main")]
             ])
         )
         try:
@@ -16027,7 +16033,7 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
         await cb.message.answer(
             "\u2139\ufe0f Активная сессия не найдена — возможно уже завершена ранее.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="\U0001f3e0 Главное меню", callback_data="back_main")]
+                [_eib("Главное меню", "back_main")]
             ])
         )
 
@@ -17817,7 +17823,7 @@ async def adm_nsgifts_menu(cb: CallbackQuery):
         [InlineKeyboardButton(text="🔔 Порог алерта баланса",   callback_data="adm_nsg_threshold")],
         [InlineKeyboardButton(text="🔄 Обновить кеш каталога",  callback_data="adm_nsg_refresh")],
         [InlineKeyboardButton(text="📊 Последние продажи",      callback_data="adm_nsg_sales")],
-        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="back_main")],
+        [_eib("Главное меню", "back_main")],
     ])
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
