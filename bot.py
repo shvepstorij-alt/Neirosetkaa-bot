@@ -15046,7 +15046,7 @@ async def test_chatgpt_full(message: Message):
     ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp") &
     ~F.text.startswith("/myip") & ~F.text.startswith("/audit") &
     ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
-    ~F.text.startswith("/recover")
+    ~F.text.startswith("/recover") & ~F.text.startswith("/emoji")
 )
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
@@ -17194,6 +17194,43 @@ async def cmd_myip(message: Message, state: FSMContext):
         await message.answer(f"🌐 Outbound IP сервера:\n<code>{ip.strip()}</code>\n\nДобавь этот IP в whitelist NS Gifts.", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ Не удалось получить IP: {e}")
+
+
+# ─── /emoji — захватить символ кастомного эмодзи для вставки в кнопки ────────
+@dp.message(F.text.startswith("/emoji"), StateFilter("*"))
+async def cmd_emoji_capture(message: Message, state: FSMContext):
+    """Отправь /emoji и следом (или в одном сообщении) кастомный эмодзи.
+    Бот ответит точным символом и Unicode-repr для вставки в button text."""
+    uid   = message.from_user.id
+    uname = (message.from_user.username or "").lower()
+    is_me = (ADMIN_ID and uid == ADMIN_ID) or uname == ADMIN_USERNAME.lower()
+    if not is_me:
+        return
+
+    # Берём текст после команды
+    raw = message.text[len("/emoji"):].strip()
+    if not raw:
+        await message.answer(
+            "Отправь команду вместе с эмодзи, например:\n"
+            "<code>/emoji 🐱</code>\n\n"
+            "Или пришли следующим сообщением — ответь реплаем на него командой /emoji_reply",
+            parse_mode="HTML"
+        )
+        return
+
+    lines = []
+    for i, ch in enumerate(raw):
+        cp  = ord(ch)
+        esc = f"\\U{cp:08X}" if cp > 0xFFFF else f"\\u{cp:04X}"
+        lines.append(f"[{i}] <code>{ch}</code>  U+{cp:04X}  <code>{esc}</code>")
+
+    # Также показываем repr всей строки — для прямой вставки в Python
+    full_repr = repr(raw)
+    await message.answer(
+        f"🔡 <b>Символы ({len(raw)} шт.):</b>\n" + "\n".join(lines) +
+        f"\n\n📋 <b>Python repr (вставь в код):</b>\n<code>{full_repr}</code>",
+        parse_mode="HTML"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
