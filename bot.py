@@ -15055,7 +15055,7 @@ async def test_chatgpt_full(message: Message):
     ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp") &
     ~F.text.startswith("/myip") & ~F.text.startswith("/audit") &
     ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
-    ~F.text.startswith("/recover") & ~F.text.startswith("/emoji")
+    ~F.text.startswith("/recover") & ~F.text.startswith("/emoji") & ~F.text.startswith("/shopkeys")
 )
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
@@ -17238,6 +17238,25 @@ async def cmd_emoji_capture(message: Message, state: FSMContext):
     await message.answer(
         f"🔡 <b>Символы ({len(raw)} шт.):</b>\n" + "\n".join(lines) +
         f"\n\n📋 <b>Python repr (вставь в код):</b>\n<code>{full_repr}</code>",
+        parse_mode="HTML"
+    )
+
+
+# ─── /shopkeys — показать реальные ключи SHOP_CATALOG и их emoji_id ──────────
+@dp.message(F.text == "/shopkeys", StateFilter("*"))
+async def cmd_shopkeys(message: Message, state: FSMContext):
+    uid   = message.from_user.id
+    uname = (message.from_user.username or "").lower()
+    is_me = (ADMIN_ID and uid == ADMIN_ID) or uname == ADMIN_USERNAME.lower()
+    if not is_me:
+        return
+    lines = []
+    for key, s in SHOP_CATALOG.items():
+        eid = s.get("emoji_id", "")
+        eid_display = f"✅ {eid}" if eid else "❌ нет"
+        lines.append(f"<code>{key}</code> — {s.get('name','')} | emoji_id: {eid_display}")
+    await message.answer(
+        f"🗝 <b>SHOP_CATALOG ключи ({len(SHOP_CATALOG)} шт.):</b>\n\n" + "\n".join(lines),
         parse_mode="HTML"
     )
 
