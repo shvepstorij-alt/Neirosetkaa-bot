@@ -32,7 +32,7 @@ from db import (
     get_credits, get_pool, get_user, log_payment, redeem_promo,
 )
 from keyboards import (
-    _btn_emoji_id, _eib, kb_buy, tg_emoji, tg_emoji_ui,
+    _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
 )
 from common import (
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
@@ -225,8 +225,9 @@ async def shop_confirm(cb: CallbackQuery, state: FSMContext):
 
     rows = [
         [InlineKeyboardButton(
-            text=f"🏦 СБП — {final_price}₽",
-            callback_data=f"shop_pay_sbp:{key}:{plan_idx}:{final_price}"
+            text=f"СБП — {final_price}₽",
+            callback_data=f"shop_pay_sbp:{key}:{plan_idx}:{final_price}",
+            **pay_btn_kwargs()
         )],
     ]
     if not promo_code:
@@ -397,9 +398,9 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             text=f"🪙 Применить {coins_used}₽ монетками + СБП {final_shop_price}₽",
             callback_data=f"shop_coins_sbp:{key}:{plan_idx}:{coins_used}"
         )])
-        shop_buttons.append([InlineKeyboardButton(text=f"🏦 Оплатить без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id))])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id), **pay_btn_kwargs())])
     else:
-        shop_buttons.append([InlineKeyboardButton(text=f"🏦 Оплатить {p['price']}₽", url=pay_url)])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить {p['price']}₽", url=pay_url, **pay_btn_kwargs())])
 
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
@@ -497,7 +498,7 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
             f"💵 Осталось доплатить: <b>{rest}₽</b> через СБП",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"🏦 Доплатить {rest}₽ через СБП", url=pay_url)],
+                [InlineKeyboardButton(text=f"Доплатить {rest}₽ через СБП", url=pay_url, **pay_btn_kwargs())],
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_buy")],
             ])
         )
@@ -1119,7 +1120,7 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
                 text=f"🪙 Частично монетками ({int(coins_cover)}₽) + СБП ({rest}₽)",
                 callback_data=f"pay_coins:{key}:{rest}"
             )])
-    rows.append([InlineKeyboardButton(text=f"🏦 Оплатить через СБП - {final_price}₽", callback_data=f"payfk:{key}:sbp")])
+    rows.append([InlineKeyboardButton(text=f"Оплатить через СБП - {final_price}₽", callback_data=f"payfk:{key}:sbp", **pay_btn_kwargs())])
     if not promo_code:
         rows.append([InlineKeyboardButton(text="🎟 Применить промокод", callback_data=f"promo_apply:{key}")])
     else:
@@ -1265,7 +1266,7 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
         else:
             # СБП - стандартная форма (работает без API)
             pay_url = fk_pay_url(amount, order_id)
-            label = "🏦 Оплатить через СБП"
+            label = "Оплатить через СБП"
 
         # Уведомляем админа ПЕРВЫМ - до показа URL пользователю,
         # чтобы admin_msg_id точно сохранился до возможного вебхука об оплате
@@ -1307,7 +1308,7 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             f"<i>Бот проверяет статус оплаты каждые 5 секунд и зачислит кредиты сразу как только платёж пройдёт. "
             f"Если что-то пошло не так - нажми «🔍 Проверить оплату».</i>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=label, url=pay_url)],
+                [InlineKeyboardButton(text=label, url=pay_url, **(pay_btn_kwargs() if method != "card" else {}))],
                 [InlineKeyboardButton(text="🔍 Проверить оплату", callback_data=f"check_pay:{order_id}")],
                 [_eib("Главное меню", "back_main")],
             ]),
