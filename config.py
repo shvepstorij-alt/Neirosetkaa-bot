@@ -1710,3 +1710,70 @@ _claude_job_results: dict = {}
 
 # ─── Хелперы БД ──────────────────────────────────────────────────────────────
 
+
+
+# ── Имя модели с закреплённым кастомным эмодзи (для текстовых HTML-сообщений) ──
+import re as _re_mtitle
+
+_MODEL_EID_EXTRA = {
+    "edit_gemini": "iband_nano", "edit_grok": "iband_grok",
+    "edit_gpt": "iband_gptimg", "edit_flux": "iband_flux",
+    "anim_veo": "vband_veo", "anim_grok": "vband_grok",
+    "anim_kling": "vband_kling", "anim_wan": "vband_wan",
+}
+
+def _model_eid_key(key: str) -> str:
+    for _brand, _keys in IMAGE_BRAND_MODELS.items():
+        if key in _keys:
+            return f"iband_{_brand}"
+    for _brand, _keys in VIDEO_BRAND_MODELS.items():
+        if key in _keys:
+            return f"vband_{_brand}"
+    return _MODEL_EID_EXTRA.get(key, "")
+
+def model_title(key: str, name: str = None) -> str:
+    """Имя модели с закреплённым кастомным эмодзи (старое эмодзи из названия убирается).
+    Использовать ТОЛЬКО в сообщениях с parse_mode="HTML"."""
+    nm = name
+    if nm is None:
+        for _d in (IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS):
+            if key in _d:
+                nm = _d[key].get("name")
+                break
+    if not nm:
+        return name or key
+    eid = UI_EMOJI_IDS.get(_model_eid_key(key), "")
+    if not eid:
+        return nm
+    _m = _re_mtitle.match(r"^([^\w\s]+)\s*", nm)
+    fb = _m.group(1) if _m else ""
+    clean = nm[_m.end():].strip() if _m else nm.strip()
+    body = f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
+    return f"{body} {clean}" if clean else body
+
+
+def _build_name2eid():
+    _d = {}
+    for _src in (IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS):
+        for _k, _v in _src.items():
+            _nm = _v.get("name", "")
+            _eid = UI_EMOJI_IDS.get(_model_eid_key(_k), "")
+            if _nm and _eid:
+                _d[_nm] = _eid
+                _d[_re_mtitle.sub(r"^[^\w\s]+\s*", "", _nm).strip()] = _eid
+    return _d
+
+_NAME2EID = _build_name2eid()
+
+def model_title_n(name: str) -> str:
+    """Имя модели с закреплённым кастомным эмодзи по ИМЕНИ (без ключа).
+    Старое эмодзи из названия убирается. Только для parse_mode=\"HTML\"."""
+    if not name:
+        return name
+    clean = _re_mtitle.sub(r"^[^\w\s]+\s*", "", name).strip()
+    eid = _NAME2EID.get(name) or _NAME2EID.get(clean)
+    if not eid:
+        return name
+    _m = _re_mtitle.match(r"^([^\w\s]+)\s*", name)
+    fb = _m.group(1) if _m else ""
+    return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji> {clean}' if clean else f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
