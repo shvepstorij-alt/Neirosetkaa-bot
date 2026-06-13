@@ -157,9 +157,13 @@ async def shop_service(cb: CallbackQuery):
     if not s:
         await cb.answer("Сервис не найден", show_alert=True)
         return
+    if not s.get("plans"):
+        logging.warning(f"shop_service: no plans for key={key!r}")
+        await cb.answer("У этого сервиса пока нет тарифов. Напишите Александру.", show_alert=True)
+        return
     plans_text = ""
     for i, p in enumerate(s["plans"]):
-        plans_text += f"  {i+1}. <b>{p['name']} - {p['price']}₽/мес</b>\n     <i>{p['desc']}</i>\n"
+        plans_text += f"  {i+1}. <b>{p.get('name','')} - {p.get('price',0)}₽/мес</b>\n     <i>{p.get('desc','')}</i>\n"
     text = (
         f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
         f"<i>{s['desc']}</i>\n\n"
@@ -169,7 +173,7 @@ async def shop_service(cb: CallbackQuery):
     rows = []
     for i, p in enumerate(s["plans"]):
         rows.append([InlineKeyboardButton(
-            text=f"{p['name']} - {p['price']}₽/мес",
+            text=f"{p.get('name','')} - {p.get('price',0)}₽/мес",
             callback_data=f"shop_confirm:{key}:{i}"
         )])
     back_cat = "menu_shop"
@@ -322,19 +326,25 @@ async def shop_promo_remove(cb: CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(F.data.startswith("shop_pay_sbp:"))
-async def shop_pay_sbp(cb: CallbackQuery):
+async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     """Оплата СБП через FreeKassa."""
     parts = cb.data.split(":")
     key = parts[1]
     plan_idx = int(parts[2])
-    # Если передан final_price (с учётом промокода) — используем его
-    promo_final = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
     s = SHOP_CATALOG.get(key)
-    if not s:
+    if not s or plan_idx >= len(s.get("plans", [])):
         await cb.answer("Ошибка", show_alert=True)
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
+    # SECURITY: цену НЕ берём из callback_data. Промокод — из state, с повторной валидацией.
+    _data = await state.get_data()
+    _promo_code = _data.get(f"shop_promo_{key}_{plan_idx}")
+    promo_final = None
+    if _promo_code:
+        _ok_p, _, _promo = await check_promo_for_user(_promo_code, uid)
+        if _ok_p and _promo and _promo.get("kind") == "percent":
+            promo_final = max(1, int(p["price"] * (100 - _promo["value"]) / 100))
     import time as _time
     order_id = f"shop_{uid}_{int(_time.time())}"
 
@@ -435,14 +445,22 @@ async def shop_pay_sbp(cb: CallbackQuery):
 async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     key = parts[1]
-    rest = int(parts[2])
     p = CREDIT_PACKS.get(key)
     if not p:
         await cb.answer("Ошибка", show_alert=True)
         return
     uid = cb.from_user.id
+    # SECURITY: остаток к доплате считаем на сервере, не из callback_data.
+    _data = await state.get_data()
+    _promo_code = _data.get("promo_code")
+    _price = p["price"]
+    if _promo_code:
+        _ok_p, _, _promo = await check_promo_for_user(_promo_code, uid)
+        if _ok_p and _promo and _promo.get("kind") == "percent":
+            _price = max(1, int(p["price"] * (100 - _promo["value"]) / 100))
     user_coins = await get_coins(uid)
-    coins_used = min(int(user_coins), p["price"])
+    coins_used = min(int(user_coins), _price)
+    rest = max(0, _price - coins_used)
 
     if rest == 0:
         ok = await deduct_coins(uid, coins_used)
@@ -487,15 +505,28 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(F.data.startswith("shop_full_coins:"))
-async def shop_full_coins(cb: CallbackQuery):
+async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
-    key, plan_idx, coins_used = parts[1], int(parts[2]), int(parts[3])
+    key, plan_idx = parts[1], int(parts[2])
     s = SHOP_CATALOG.get(key)
-    if not s:
+    if not s or plan_idx >= len(s.get("plans", [])):
         await cb.answer("Ошибка", show_alert=True)
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
+    # SECURITY: сумму к списанию считаем на сервере, не из callback_data.
+    _data = await state.get_data()
+    _promo_code = _data.get(f"shop_promo_{key}_{plan_idx}")
+    required = p["price"]
+    if _promo_code:
+        _ok_p, _, _promo = await check_promo_for_user(_promo_code, uid)
+        if _ok_p and _promo and _promo.get("kind") == "percent":
+            required = max(1, int(p["price"] * (100 - _promo["value"]) / 100))
+    user_coins = await get_coins(uid)
+    if user_coins < required:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
+    coins_used = int(required)
     ok = await deduct_coins(uid, coins_used)
     if not ok:
         await cb.answer("Недостаточно монеток.", show_alert=True)
@@ -530,16 +561,29 @@ async def shop_full_coins(cb: CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("shop_coins_sbp:"))
-async def shop_coins_sbp(cb: CallbackQuery):
+async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
-    key, plan_idx, coins_used = parts[1], int(parts[2]), int(parts[3])
+    key, plan_idx = parts[1], int(parts[2])
     s = SHOP_CATALOG.get(key)
-    if not s:
+    if not s or plan_idx >= len(s.get("plans", [])):
         await cb.answer("Ошибка", show_alert=True)
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
-    rest = p["price"] - coins_used
+    # SECURITY: монетки и доплату считаем на сервере, не из callback_data.
+    _data = await state.get_data()
+    _promo_code = _data.get(f"shop_promo_{key}_{plan_idx}")
+    price_after_promo = p["price"]
+    if _promo_code:
+        _ok_p, _, _promo = await check_promo_for_user(_promo_code, uid)
+        if _ok_p and _promo and _promo.get("kind") == "percent":
+            price_after_promo = max(1, int(p["price"] * (100 - _promo["value"]) / 100))
+    user_coins = await get_coins(uid)
+    coins_used = int(min(user_coins, price_after_promo))
+    rest = max(0, price_after_promo - coins_used)
+    if coins_used <= 0:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
     ok = await deduct_coins(uid, coins_used)
     if not ok:
         await cb.answer("Недостаточно монеток.", show_alert=True)
