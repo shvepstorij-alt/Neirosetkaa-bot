@@ -619,6 +619,9 @@ async def add_coins(user_id: int, amount: float, reason: str = ""):
     logging.info(f"add_coins uid={user_id} +{amount:.2f} reason={reason}")
 
 async def deduct_coins(user_id: int, amount: float) -> bool:
+    # SECURITY: 0 или отрицательное списание недопустимо (иначе обход оплаты монетками)
+    if amount is None or amount <= 0:
+        return False
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
