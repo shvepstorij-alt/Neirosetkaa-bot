@@ -118,6 +118,42 @@ def _restore_handler_order():
 
 _restore_handler_order()
 
+
+# ── Техобслуживание: блокируем НЕ-админов для ВСЕХ апдейтов, пока включён режим ──
+# Раньше проверка была только в handle_message (консультант) и не трогала кнопки/команды,
+# поэтому режим выглядел «нерабочим». Теперь — единый шлюз на весь бот (кроме админа).
+import time as _maint_time
+_maint_cache = {"val": "0", "ts": 0.0}
+
+async def _maintenance_on() -> bool:
+    if _maint_time.time() - _maint_cache["ts"] > 10:
+        try:
+            _maint_cache["val"] = await get_setting("maintenance", "0")
+        except Exception:
+            pass
+        _maint_cache["ts"] = _maint_time.time()
+    return _maint_cache["val"] == "1"
+
+@dp.update.outer_middleware()
+async def _maintenance_guard(handler, event, data):
+    user = data.get("event_from_user")
+    if user is None:
+        _obj = getattr(event, "message", None) or getattr(event, "callback_query", None)
+        user = getattr(_obj, "from_user", None)
+    if user is not None and user.id != ADMIN_ID and await _maintenance_on():
+        cbq = getattr(event, "callback_query", None)
+        msg = getattr(event, "message", None)
+        try:
+            if cbq is not None:
+                await cbq.answer("⚙️ Идут техработы. Загляни чуть позже 🙏", show_alert=True)
+            elif msg is not None:
+                await msg.answer("⚙️ Бот на техобслуживании. Скоро вернёмся!")
+        except Exception:
+            pass
+        return  # прерываем обработку апдейта
+    return await handler(event, data)
+
+
 async def main():
     await _ensure_playwright_browser()
     await init_db()
