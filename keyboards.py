@@ -86,6 +86,9 @@ def kb_image_models_for_brand(brand: str):
         if key in IMAGE_MODELS and key not in DISABLED_MODELS:
             m = IMAGE_MODELS[key]
             clean_name = _re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            if brand_eid:
+                # есть кастомная иконка → убираем старое эмодзи из названия (без дублей)
+                clean_name = _re.sub(r'^[^\w\s]+\s*', '', clean_name).strip()
             btn_kwargs = {"icon_custom_emoji_id": brand_eid} if brand_eid else {}
             rows.append([InlineKeyboardButton(
                 text=f"{clean_name} - {m['credits']} кр",
@@ -123,6 +126,9 @@ def kb_video_models_for_brand(brand: str):
         if key in VIDEO_MODELS and key not in DISABLED_MODELS:
             m = VIDEO_MODELS[key]
             clean_name = _re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            if brand_eid:
+                # есть кастомная иконка → убираем старое эмодзи из названия (без дублей)
+                clean_name = _re.sub(r'^[^\w\s]+\s*', '', clean_name).strip()
             btn_kwargs = {"icon_custom_emoji_id": brand_eid} if brand_eid else {}
             rows.append([InlineKeyboardButton(
                 text=f"{clean_name} - {m['credits']} кр",
@@ -167,8 +173,9 @@ def kb_pay_method(pack_key: str):
     p = CREDIT_PACKS[pack_key]
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"🏦 СБП - {p['price']}₽",
-            callback_data=f"payfk:{pack_key}:sbp"
+            text=f"СБП - {p['price']}₽",
+            callback_data=f"payfk:{pack_key}:sbp",
+            **pay_btn_kwargs()
         )],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_buy")],
     ])
@@ -336,6 +343,12 @@ def tg_emoji(svc: dict, fallback: str = "") -> str:
 def _btn_emoji_id(key: str, s: dict) -> str:
     """Возвращает emoji_id для icon_custom_emoji_id в InlineKeyboardButton, или ''."""
     return s.get("emoji_id") or CUSTOM_EMOJI_IDS.get(key, "") or CUSTOM_EMOJI_IDS.get(s.get("_key", ""), "")
+
+
+def pay_btn_kwargs() -> dict:
+    """Кастомное эмодзи для кнопок оплаты — то же, что на кнопке «Купить кредиты»."""
+    eid = UI_EMOJI_IDS.get("menu_buy", "")
+    return {"icon_custom_emoji_id": eid} if eid else {}
 
 
 def _shop_back_cat(key: str) -> str:
