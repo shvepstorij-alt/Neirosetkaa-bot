@@ -25,7 +25,7 @@ from config import (
     IMAGE_BRAND_TITLES, IMAGE_MODELS, MOTION_MODEL_ID, MOTION_PRICES, UI_EMOJI_IDS, UPSCALE_CREDIT_COST,
     VIDEO_BRAND_MODELS, VIDEO_BRAND_TITLES, VIDEO_MODELS, _anim_history, _motion_history, _photo_history,
     _record_generation, _veo_semaphore, _video_history, bot, claude_client, dp,
-    friendly_error, user_orig_images, validate_gen_prompt,
+    friendly_error, model_title_n, user_orig_images, validate_gen_prompt,
 )
 from states import (
     AnimState, EditState, ImgState, ImproveState, MotionState, UpscaleState,
@@ -130,7 +130,7 @@ async def choose_img_model(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key)
     await state.set_state(ImgState.waiting_aspect)
     await cb.message.edit_text(
-        f"{m['name']} ✅\n\n"
+        f"{model_title_n(m['name'])} ✅\n\n"
         f"💳 Спишется: <b>{m['credits']} кредитов</b>\n\n"
         f"📐 <b>Выбери формат изображения:</b>",
         reply_markup=kb_aspect_image(key), parse_mode="HTML"
@@ -172,7 +172,7 @@ async def choose_img_aspect(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key, aspect_ratio=ratio)
     await state.set_state(ImgState.waiting_prompt)
     await cb.message.edit_text(
-        f"{m['name']} | 📐 {labels.get(ratio, ratio)}\n\n"
+        f"{model_title_n(m['name'])} | 📐 {labels.get(ratio, ratio)}\n\n"
         f"💳 Спишется: <b>{m['credits']} кредитов</b>\n\n"
         f"💡 <b>Введи промт:</b>\n\n"
         f"<i>Пример: A futuristic city at night, neon lights, cyberpunk, 4k</i>",
@@ -204,7 +204,7 @@ async def img_prompt(message: Message, state: FSMContext):
 
     await message.answer(
         f"📝 <b>Проверь заказ:</b>\n\n"
-        f"🤖 {m['name']}\n"
+        f"{model_title_n(m['name'])}\n"
         f"💳 <b>{m['credits']} кредитов</b>\n"
         f"⏱ {m['speed']}\n\n"
         f"📝 <i>{prompt}</i>",
@@ -232,7 +232,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     await mark_generation_active(uid, "photo")
     await state.clear()
     wait = await cb.message.edit_text(
-        f"⚙️ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>",
+        f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{prompt[:80]}</i>",
         parse_mode="HTML"
     )
 
@@ -262,7 +262,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
                 wait_msg = f"⏳ Временный сбой, повтор через {int(delay)} сек ({attempt}/3)..."
             try:
                 await wait.edit_text(
-                    f"⚙️ Генерирую...\n\n🤖 {m['name']}\n<i>{prompt[:80]}</i>\n\n{wait_msg}",
+                    f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{prompt[:80]}</i>\n\n{wait_msg}",
                     parse_mode="HTML"
                 )
             except Exception:
@@ -295,7 +295,8 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await safe_send_media(
             cb.message.answer_photo,
             BufferedInputFile(img_bytes, "image.png"),
-            caption=f"🎉 Готово! {m['name']}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов",
+            caption=f"🎉 Готово! {model_title_n(m['name'])}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов",
+            parse_mode="HTML",
             reply_markup=kb_after("image", key),
             op_name=f"img_photo_{key}",
         )
@@ -343,7 +344,7 @@ async def change_img_prompt(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key)
     await state.set_state(ImgState.waiting_prompt)
     await cb.message.answer(
-        f"💡 Введи новый промт для <b>{IMAGE_MODELS[key]['name']}</b>:",
+        f"💡 Введи новый промт для <b>{model_title_n(IMAGE_MODELS[key]['name'])}</b>:",
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
     await cb.answer()
@@ -424,7 +425,7 @@ async def after_gen_again(cb: CallbackQuery, state: FSMContext):
         await state.update_data(model_key=key)
         await state.set_state(ImgState.waiting_prompt)
         await cb.message.answer(
-            f"{m['name']} - снова!\n\n"
+            f"{model_title_n(m['name'])} - снова!\n\n"
             f"💳 Спишется: <b>{m['credits']} кредитов</b>\n\n"
             f"💡 Введи промт:",
             reply_markup=kb_cancel(), parse_mode="HTML"
@@ -434,7 +435,7 @@ async def after_gen_again(cb: CallbackQuery, state: FSMContext):
         await state.update_data(model_key=key)
         await state.set_state(VidState.waiting_prompt)
         await cb.message.answer(
-            f"{m['name']} - снова!\n\n"
+            f"{model_title_n(m['name'])} - снова!\n\n"
             f"💳 Спишется: <b>{m['credits']} кредитов</b>\n\n"
             f"💡 Введи промт:",
             reply_markup=kb_cancel(), parse_mode="HTML"
@@ -581,7 +582,7 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
             icon = "🔹" if cr >= credits else "🔸"
             lines.append(f"{icon} <b>{sec} сек</b> - {credits} кр")
         await cb.message.edit_text(
-            f"{m['name']} ✅\n\n"
+            f"{model_title_n(m['name'])} ✅\n\n"
             f"📐 {m['res']}\n"
             f"💵 Баланс: <b>{cr} кр</b>\n\n"
             + "\n".join(lines) +
@@ -598,7 +599,7 @@ async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key)
     await state.set_state(VidState.waiting_aspect)
     await cb.message.edit_text(
-        f"{m['name']} ✅\n\n"
+        f"{model_title_n(m['name'])} ✅\n\n"
         f"💳 Спишется: <b>{m['credits']} кредитов</b>\n"
         f"📐 {m['res']} | 8 сек\n\n"
         f"📐 <b>Выбери формат видео:</b>",
@@ -635,7 +636,7 @@ async def choose_vid_duration(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key, duration_sec=duration, credits_override=credits)
     await state.set_state(VidState.waiting_aspect)
     await cb.message.edit_text(
-        f"{m['name']} ✅\n\n"
+        f"{model_title_n(m['name'])} ✅\n\n"
         f"⏱ <b>{duration} секунд</b>\n"
         f"💳 Спишется: <b>{credits} кредитов</b> ({price})\n"
         f"📐 {m['res']}\n\n"
@@ -677,7 +678,7 @@ async def choose_vid_aspect(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key, aspect_ratio=ratio)
     await state.set_state(VidState.waiting_prompt)
     await cb.message.edit_text(
-        f"{m['name']} | 📐 {labels.get(ratio, ratio)}\n\n"
+        f"{model_title_n(m['name'])} | 📐 {labels.get(ratio, ratio)}\n\n"
         f"💳 Спишется: <b>{m['credits']} кредитов</b>\n"
         f"📐 {m['res']} | 8 сек\n\n"
         f"💡 <b>Введи промт:</b>\n\n"
@@ -724,7 +725,7 @@ async def vid_prompt(message: Message, state: FSMContext):
 
     await message.answer(
         f"📝 <b>Проверь заказ:</b>\n\n"
-        f"🤖 {m['name']}\n"
+        f"{model_title_n(m['name'])}\n"
         f"📐 {m['res']} | {duration_sec} сек\n"
         f"💳 <b>{credits_cost} кредитов</b>\n\n"
         f"📝 <i>{prompt}</i>\n\n"
@@ -770,7 +771,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
     status_msg = await cb.message.edit_text(
         f"🎬 <b>Генерирую видео...</b>\n\n"
-        f"🤖 {m['name']} | {m['res']} | {duration_sec} сек\n"
+        f"{model_title_n(m['name'])} | {m['res']} | {duration_sec} сек\n"
         f"📝 <i>{prompt[:80]}</i>\n\n"
         f"🕐 Обычно {time_estimate}. Пришлю как только готово 👇",
         parse_mode="HTML"
@@ -845,7 +846,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                         text=(
                             f"🎬 <b>Генерирую видео - {progress_pct}%</b> {spinner}\n"
                             f"<code>{bar}</code>\n\n"
-                            f"🤖 {m['name']} | {m['res']}\n"
+                            f"{model_title_n(m['name'])} | {m['res']}\n"
                             f"📝 <i>{prompt[:80]}</i>\n\n"
                             f"⏳ Прошло: <b>{elapsed_text}</b>\n"
                             f"{status_text}"
@@ -893,7 +894,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         _record_generation(uid, _video_history)
         await check_expiring_credits(uid)
         cr = await get_credits(uid)
-        caption = f"🎉 Готово! {m['name']} | {m['res']} | {duration_sec} сек\n💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов"
+        caption = f"🎉 Готово! {model_title_n(m['name'])} | {m['res']} | {duration_sec} сек\n💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов"
         # СНАЧАЛА удаляем сообщение прогресс-бара чтобы юзер не видел "90%" во время отправки
         if not progress_task.done():
             progress_task.cancel()
@@ -913,7 +914,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 upload_url = await upload_large_file(vid_bytes, f"video_original_{key}.mp4")
                 if upload_url:
                     await cb.message.answer(
-                        f"🎉 <b>Готово! {m['name']}</b>\n"
+                        f"🎉 <b>Готово! {model_title_n(m['name'])}</b>\n"
                         f"💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов\n\n"
                         f"📁 Файл {size_mb:.1f} МБ - слишком большой для Telegram.\n"
                         f"Скачай оригинал по ссылке (доступна 24 часа):\n"
@@ -942,6 +943,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 await cb.message.answer_video(
                     BufferedInputFile(vid_bytes, "video.mp4"),
                     caption=caption + "\n\n👇 Ниже - оригинал без сжатия",
+                    parse_mode="HTML",
                     reply_markup=kb_after("video", key),
                     supports_streaming=True,
                 )
@@ -1047,7 +1049,7 @@ async def change_vid_prompt(cb: CallbackQuery, state: FSMContext):
     await state.update_data(model_key=key)
     await state.set_state(VidState.waiting_prompt)
     await cb.message.edit_text(
-        f"💡 Введи новый промт для <b>{VIDEO_MODELS[key]['name']}</b>:",
+        f"💡 Введи новый промт для <b>{model_title_n(VIDEO_MODELS[key]['name'])}</b>:",
         reply_markup=kb_cancel(), parse_mode="HTML"
     )
     await cb.answer()
@@ -1336,7 +1338,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer_photo(
             BufferedInputFile(img_bytes, "generated.jpg"),
             caption=(
-                f"✅ <b>{m['name']}</b>\n"
+                f"✅ <b>{model_title_n(m['name'])}</b>\n"
                 f"✨ Промт улучшен ассистентом\n"
                 f"💸 Списано {m['credits']} кр | Остаток: {new_cr} кр"
             ),
@@ -1459,7 +1461,7 @@ async def edit_model_select(cb: CallbackQuery, state: FSMContext):
     await state.update_data(edit_model_key=model_key)
     await state.set_state(EditState.waiting_photo)
     text = (
-        f"<b>{m['name']}</b> - {m['desc']}\n\n"
+        f"<b>{model_title_n(m['name'])}</b> - {m['desc']}\n\n"
         f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
         f"📷 Отправь фото для редактирования:"
     )
@@ -1519,7 +1521,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
     await state.set_state(EditState.waiting_confirm)
     await message.answer(
         f"🖌️ <b>Подтверди редактирование</b>\n\n"
-        f"Модель: <b>{m['name']}</b>\n"
+        f"Модель: <b>{model_title_n(m['name'])}</b>\n"
         f"💵 Стоимость: <b>{edit_cost} кр</b>\n\n"
         f"📝 <i>{prompt[:150]}</i>",
         parse_mode="HTML",
@@ -1616,7 +1618,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     wait = await cb.message.answer(
         f"🖌️ Редактирую фото...\n\n"
-        f"{m['name']}\n"
+        f"{model_title_n(m['name'])}\n"
         f"<i>{prompt[:80]}</i>",
         parse_mode="HTML"
     )
@@ -1750,7 +1752,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         _record_generation(uid, _photo_history)
         await check_expiring_credits(uid)
         cr_left = await get_credits(uid)
-        caption = f"🎉 Готово! 🖌️ Редактирование - {m['name']}\n💸 Списано {edit_cost} кр | Остаток: {cr_left} кр"
+        caption = f"🎉 Готово! 🖌️ Редактирование - {model_title_n(m['name'])}\n💸 Списано {edit_cost} кр | Остаток: {cr_left} кр"
         await safe_send_media(
             cb.message.answer_document,
             BufferedInputFile(result_bytes, "edited_original.png"),
@@ -1762,6 +1764,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
             cb.message.answer_photo,
             BufferedInputFile(result_bytes, "edited.png"),
             caption=caption,
+            parse_mode="HTML",
             reply_markup=kb_after("edit", "edit"),
             op_name="edit_photo",
         )
@@ -1882,7 +1885,7 @@ async def anim_model_select(cb: CallbackQuery, state: FSMContext):
     # Veo поддерживает два кадра, остальные - только один
     if model_key == "anim_veo":
         text = (
-            f"<b>{m['name']}</b> - {m['desc']}\n\n"
+            f"<b>{model_title_n(m['name'])}</b> - {m['desc']}\n\n"
             f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
             f"Выбери режим:"
         )
@@ -1893,7 +1896,7 @@ async def anim_model_select(cb: CallbackQuery, state: FSMContext):
         ])
     else:
         text = (
-            f"<b>{m['name']}</b> - {m['desc']}\n\n"
+            f"<b>{model_title_n(m['name'])}</b> - {m['desc']}\n\n"
             f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
             f"📷 Отправь фото для анимации:"
         )
@@ -2013,7 +2016,7 @@ async def anim_prompt(message: Message, state: FSMContext):
     await state.set_state(AnimState.waiting_confirm)
     await message.answer(
         f"🏃 <b>Подтверди анимацию</b>\n\n"
-        f"Модель: <b>{m['name']}</b>\n"
+        f"Модель: <b>{model_title_n(m['name'])}</b>\n"
         f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
         f"📝 <i>{prompt[:150]}</i>",
         parse_mode="HTML",
@@ -2114,7 +2117,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
     mode_label = "2️⃣ Два кадра" if mode == "two" else "1️⃣ Один кадр"
     wait = await cb.message.answer(
         f"⏳ Анимирую фото...\n\n"
-        f"{m['name']} | {mode_label} | {aspect}\n"
+        f"{model_title_n(m['name'])} | {mode_label} | {aspect}\n"
         f"<i>{prompt[:80]}</i>\n\n"
         f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
         parse_mode="HTML"
