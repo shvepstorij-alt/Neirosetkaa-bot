@@ -38,6 +38,10 @@ from common import (
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
 )
 
+# Старые дубликаты сервисов из БД, которые надо скрыть из магазина (по названию).
+# Автоматический App Store теперь живёт под ключом 'appstore' (NS Gifts).
+_HIDDEN_SHOP_NAMES = {"iCloud/AppStore", "iCloud / AppStore", "iCloud/App Store", "iCloud / App Store"}
+
 @dp.callback_query(F.data.startswith("shop_renew:"))
 async def shop_renew(cb: CallbackQuery):
     key = cb.data.split(":")[1]
@@ -80,6 +84,9 @@ async def menu_shop(cb: CallbackQuery):
     for key in ordered_keys:
         s = SHOP_CATALOG.get(key)
         if not s:
+            continue
+        # Скрываем старый ручной дубликат App Store (заменён на appstore через NS Gifts)
+        if key != "appstore" and (s.get("name") or "").strip() in _HIDDEN_SHOP_NAMES:
             continue
         # NS Gifts сервисы — кастомный callback, показываем даже без plans
         if s.get("_nsgifts"):
