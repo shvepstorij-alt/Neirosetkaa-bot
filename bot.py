@@ -70,7 +70,7 @@ bot.session.middleware(PremiumEmojiMiddleware())
     ~F.text.startswith("/myip") & ~F.text.startswith("/audit") &
     ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
     ~F.text.startswith("/recover") & ~F.text.startswith("/emoji") & ~F.text.startswith("/shopkeys") &
-    ~F.text.startswith("/nsg_test")
+    ~F.text.startswith("/nsg_")
 )
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
