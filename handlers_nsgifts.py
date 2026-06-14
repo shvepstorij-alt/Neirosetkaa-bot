@@ -282,7 +282,7 @@ async def adm_nsgifts_menu(cb: CallbackQuery):
         f"💰 Баланс кабинета: <b>{balance_str}</b>\n"
         f"💱 Курс USD → ₽: <b>{usd_rate:.0f}</b>\n"
         f"📈 Наценка: <b>{markup_pct:.0f}%</b>\n"
-        f"🔔 Алерт при балансе < <b>${threshold:.0f}</b>"
+        f"🔔 Алерт при балансе &lt; <b>${threshold:.0f}</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💱 Изменить курс USD",      callback_data="adm_nsg_rate")],
