@@ -1799,9 +1799,10 @@ async def _run_activation_job(
                     except Exception as _re:
                         logging.error(f"Retry message failed: {_re}")
                 else:
-                    # Исчерпаны все попытки — удаляем сессию, возвращаем код
-                    await release_gpt_code(code)
-                    await delete_pending_activation(user_id)
+                    # Исчерпаны авто-попытки. ВАЖНО: код и pending НЕ трогаем —
+                    # чтобы клиент не упирался в «Время сессии истекло», а Александр
+                    # мог активировать вручную тем же кодом. Код освободится сам через
+                    # ~2 часа (gpt_codes_cleanup_loop), если активация так и не случится.
                     _gpt_retry_counts.pop(user_id, None)
                     try:
                         await bot.send_message(
@@ -1815,6 +1816,21 @@ async def _run_activation_job(
                                     url=f"https://t.me/{PERSONAL_USERNAME}"
                                 )],
                             ])
+                        )
+                    except Exception:
+                        pass
+                    # Уведомляем Александра С КОДОМ — чтобы активировал вручную
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            "🚨 <b>Авто-активация ChatGPT не удалась</b>\n\n"
+                            f"👤 <code>{user_id}</code>\n"
+                            f"🔑 Код: <code>{code}</code>\n"
+                            f"📦 Тариф: <b>{plan_name}</b>\n"
+                            f"🆔 Заказ: <code>{order_id}</code>\n"
+                            f"⚠️ Ошибка: {error_text}\n\n"
+                            "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
+                            parse_mode="HTML"
                         )
                     except Exception:
                         pass
@@ -2815,19 +2831,12 @@ async def _claude_activation_polling_job(
             logging.error(f"Claude poll #{attempt} bpa={bpa_order_id}: {_e}")
 
     # ── Таймаут ────────────────────────────────────────────────
-    # БАГ 1 FIX: возвращаем код в пул и удаляем pending
+    # Код и pending НЕ трогаем — чтобы клиент мог нажать «активировали вручную»,
+    # а Александр активировал тем же кодом. Освободится сам через ~2ч (cleanup-loop).
     _claude_job_results[bpa_order_id] = {
         "status": "done", "success": False,
         "error": "Активация затянулась. Напиши Александру — он поможет!"
     }
-    try:
-        await release_claude_code(code)
-    except Exception:
-        pass
-    try:
-        await delete_claude_pending_activation(user_id)
-    except Exception:
-        pass
     try:
         await bot.send_message(
             user_id,
@@ -2853,8 +2862,9 @@ async def _claude_activation_polling_job(
             ADMIN_ID,
             f"⏰ <b>Claude TIMEOUT</b>\n"
             f"👤 <code>{user_id}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
+            f"🔑 Код: <code>{code}</code>\n"
             f"10 минут — проверь вручную на bypriceactivate.pro\n"
-            f"Код возвращён в пул.",
+            f"Код зарезервирован за клиентом — активируй вручную им же.",
             parse_mode="HTML"
         )
     except Exception:
