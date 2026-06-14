@@ -31,7 +31,7 @@ from states import (
     AdmNsgState,
 )
 from db import (
-    fk_save_order, get_pool,
+    fk_save_order, get_pool, set_setting,
 )
 from keyboards import (
     _eib,
@@ -491,3 +491,34 @@ async def nsg_test(message: Message):
         await message.answer(
             f"❌ get_stock упал:\n<code>{str(e)[:500]}</code>", parse_mode="HTML"
         )
+
+
+# ── /nsg_set КУРС НАЦЕНКА — задать курс и нацен, цены пересчитаются для всех регионов ──
+@dp.message(F.text.startswith("/nsg_set"), StateFilter("*"))
+async def nsg_set(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "Формат: <code>/nsg_set КУРС НАЦЕНКА</code>\n"
+            "Например: <code>/nsg_set 90 18</code> — курс 90 ₽/$, наценка 18%.\n\n"
+            "<i>Цена клиенту считается автоматически по каждому региону:</i>\n"
+            "<i>закупка_$ × курс × (1 + наценка/100), округление до красивого числа.</i>",
+            parse_mode="HTML"
+        )
+        return
+    try:
+        rate   = float(parts[1].replace(",", "."))
+        markup = float(parts[2].replace(",", "."))
+        assert 50 <= rate <= 500 and 0 <= markup <= 100
+    except Exception:
+        await message.answer("❌ Неверные значения. Курс 50–500, наценка 0–100. Пример: /nsg_set 90 18")
+        return
+    await set_setting("nsgifts_usd_rate", str(rate))
+    await set_setting("nsgifts_markup", str(markup))
+    await message.answer(
+        f"✅ Готово!\nКурс: <b>{rate:.0f} ₽/$</b>\nНаценка: <b>{markup:.0f}%</b>\n\n"
+        f"Цены пересчитались для всех регионов автоматически. Проверь в магазине 🍎",
+        parse_mode="HTML"
+    )
