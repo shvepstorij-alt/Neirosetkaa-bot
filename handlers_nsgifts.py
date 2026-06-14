@@ -262,14 +262,16 @@ async def adm_nsgifts_menu(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
+    await cb.answer()  # сразу убираем «Загрузка…», иначе кнопка кажется нерабочей
 
     balance_str = "—"
     if rt.nsgifts_client:
         try:
-            bal = await rt.nsgifts_client.check_balance()
-            balance_str = f"${bal:.4f}"
+            # короткий таймаут — чтобы меню не подвисало, если API/прокси медленный
+            bal = await asyncio.wait_for(rt.nsgifts_client.check_balance(), timeout=8)
+            balance_str = f"${bal:.2f}"
         except Exception:
-            balance_str = "ошибка запроса"
+            balance_str = "не удалось загрузить"
 
     usd_rate   = await _nsg_usd_rate()
     markup_pct = await _nsg_markup()
@@ -294,7 +296,6 @@ async def adm_nsgifts_menu(cb: CallbackQuery):
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
-    await cb.answer()
 
 
 @dp.callback_query(F.data == "adm_nsg_rate")
