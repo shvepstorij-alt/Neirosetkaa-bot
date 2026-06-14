@@ -1055,7 +1055,7 @@ SHOP_CATALOG = {
         ]
     },
     "grok": {
-        "name": "SuperGrok", "emoji": "𝕏", "emoji_id": "5319288443153445517",
+        "name": "SuperGrok", "emoji": "⚡", "emoji_id": "5319288443153445517",
         "desc": "ИИ от xAI. Grok 4.3 (май 2026) — 1М токенов контекст, видеовход, Custom Skills. Реальное время X/Twitter. Aurora — безлимит изображений.",
         "plans": [
             {"name": "SuperGrok",       "price": 2000, "stars": 800,  "desc": "Grok 4.3, DeepSearch, Aurora (изображения безлимит), Big Brain Mode, Custom Skills, голос, 1М контекст — 30$/мес"},
@@ -1776,4 +1776,8 @@ def model_title_n(name: str) -> str:
         return name
     _m = _re_mtitle.match(r"^([^\w\s]+)\s*", name)
     fb = _m.group(1) if _m else ""
+    # tg-emoji требует РОВНО один настоящий эмодзи внутри — иначе Telegram отклонит сообщение
+    if not fb or not (0x1F000 <= ord(fb[0]) <= 0x1FAFF or 0x2600 <= ord(fb[0]) <= 0x27BF
+                      or 0x2190 <= ord(fb[0]) <= 0x21FF or ord(fb[0]) in (0x2B50, 0x2B55, 0x2705, 0x274C, 0x2764)):
+        return name
     return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji> {clean}' if clean else f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
