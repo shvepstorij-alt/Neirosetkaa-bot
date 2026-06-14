@@ -322,20 +322,33 @@ def _eib(text: str, callback_data: str, eid_key: str = "") -> "InlineKeyboardBut
     return InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
+def _is_emoji_char(ch: str) -> bool:
+    """True если первый символ — настоящий эмодзи. tg-emoji требует внутри РОВНО один
+    эмодзи, иначе Telegram отклоняет всё сообщение (баг с '𝕏' у Grok)."""
+    if not ch:
+        return False
+    o = ord(ch[0])
+    return (
+        0x1F300 <= o <= 0x1FAFF or 0x2600 <= o <= 0x27BF or 0x2190 <= o <= 0x21FF
+        or 0x1F000 <= o <= 0x1F0FF or 0x1F1E6 <= o <= 0x1F1FF
+        or o in (0x2B50, 0x2B55, 0x2705, 0x274C, 0x2764, 0x203C, 0x2049, 0x2122, 0x2139)
+    )
+
+
 def tg_emoji_ui(key: str, fallback: str = "") -> str:
     """Возвращает <tg-emoji> тег для UI-элемента по ключу из UI_EMOJI_IDS."""
     eid = UI_EMOJI_IDS.get(key, "")
-    if eid:
+    if eid and _is_emoji_char(fallback):
         return f'<tg-emoji emoji-id="{eid}">{fallback}</tg-emoji>'
     return fallback
 
 
 def tg_emoji(svc: dict, fallback: str = "") -> str:
-    """Возвращает <tg-emoji> тег если есть emoji_id, иначе обычный эмодзи."""
+    """Возвращает <tg-emoji> тег если есть emoji_id и валидный фолбэк-эмодзи, иначе текст."""
     fb  = fallback or svc.get("emoji", "")
     key = svc.get("_key", "")
     eid = svc.get("emoji_id") or CUSTOM_EMOJI_IDS.get(key, "")
-    if eid:
+    if eid and _is_emoji_char(fb):
         return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
     return fb
 
