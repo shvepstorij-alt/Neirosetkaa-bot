@@ -3035,7 +3035,7 @@ async def api_activate_claude_status_handler(request: web.Request) -> web.Respon
 async def _nsg_usd_rate() -> float:
     v = await get_setting("nsgifts_usd_rate")
     try:    return float(v)
-    except: return 100.0
+    except: return 90.0
 
 async def _nsg_markup() -> float:
     v = await get_setting("nsgifts_markup")
@@ -3108,7 +3108,9 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
     try:
         await bot.send_message(
             user_id,
-            "✅ <b>Оплата получена!</b>\n\nПолучаем код — займёт пару секунд… ⏳",
+            f"✅ <b>Оплата получена!</b>\n"
+            f"🆔 Заказ: <code>{fk_order_id}</code>\n\n"
+            f"Получаем код — займёт пару секунд… ⏳",
             parse_mode="HTML"
         )
     except Exception:
@@ -3155,7 +3157,8 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
         await bot.send_message(
             user_id,
             f"🎉 <b>Вот твой код!</b>\n\n"
-            f"📦 <b>{service_name}</b>\n\n"
+            f"📦 <b>{service_name}</b>\n"
+            f"🆔 Заказ: <code>{fk_order_id}</code>\n\n"
             f"🔑 <b>Код активации:</b>\n{pins_text}\n\n"
             f"<b>Как использовать:</b>\n"
             f"• Открой App Store → нажми на свой аватар → Погасить подарочную карту\n"
