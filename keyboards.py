@@ -388,26 +388,26 @@ def kb_vid_duration(model_key: str):
 
 
 def kb_admin_panel():
+    _gpt = {"icon_custom_emoji_id": CUSTOM_EMOJI_IDS["chatgpt"]} if CUSTOM_EMOJI_IDS.get("chatgpt") else {}
+    _cl  = {"icon_custom_emoji_id": CUSTOM_EMOJI_IDS["claude"]} if CUSTOM_EMOJI_IDS.get("claude") else {}
+    _ap  = {"icon_custom_emoji_id": CUSTOM_EMOJI_IDS["appstore"]} if CUSTOM_EMOJI_IDS.get("appstore") else {}
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Статистика",        callback_data="adm_stat_menu"),
+        [InlineKeyboardButton(text="📊 Статистика",       callback_data="adm_stat_menu"),
          InlineKeyboardButton(text="📁 Аналитика",        callback_data="adm_analytics_menu")],
-        [InlineKeyboardButton(text="👤 Пользователи",      callback_data="adm_users"),
-         InlineKeyboardButton(text="🔎 Найти по ID",       callback_data="adm_find")],
-        [InlineKeyboardButton(text="💰 Начислить кредиты", callback_data="adm_give_credits"),
-         InlineKeyboardButton(text="🧾 История платежей",  callback_data="adm_payments")],
-        [InlineKeyboardButton(text="💳 Управление балансами", callback_data="adm_balance_menu")],
-        [InlineKeyboardButton(text="📉 Расход по юзеру",   callback_data="adm_spend"),
+        [InlineKeyboardButton(text="🔎 Найти по ID",      callback_data="adm_find"),
+         InlineKeyboardButton(text="💳 Балансы",          callback_data="adm_balance_menu")],
+        [InlineKeyboardButton(text="🧾 История платежей",  callback_data="adm_payments"),
          InlineKeyboardButton(text="🔒 Блокировки",        callback_data="adm_blocks")],
-        [InlineKeyboardButton(text="🎟 Промокоды",          callback_data="adm_promos")],
-        [InlineKeyboardButton(text="🤖 Управление моделями", callback_data="adm_models")],
-        [InlineKeyboardButton(text="🛍 Продажи магазина",  callback_data="adm_shop_sales")],
-        [InlineKeyboardButton(text="💵 Редактор цен",      callback_data="adm_prices")],
-        [InlineKeyboardButton(text="📝 Изменить приветствие", callback_data="adm_welcome")],
-        [InlineKeyboardButton(text="📣 Рассылка",          callback_data="adm_broadcast"),
-         InlineKeyboardButton(text="⚙️ Техобслуживание",   callback_data="adm_maintenance")],
-        [InlineKeyboardButton(text="✨ ChatGPT Mini App",  callback_data="adm_gpt_webapp")],
-        [InlineKeyboardButton(text="⚡ Claude Mini App",   callback_data="adm_claude_webapp")],
-        [InlineKeyboardButton(text="🍎 App Store / NS Gifts", callback_data="adm_nsgifts")],
+        [InlineKeyboardButton(text="🎟 Промокоды",         callback_data="adm_promos"),
+         InlineKeyboardButton(text="🤖 Модели",           callback_data="adm_models")],
+        [InlineKeyboardButton(text="🛍 Продажи магазина",  callback_data="adm_shop_sales"),
+         InlineKeyboardButton(text="💵 Редактор цен",      callback_data="adm_prices")],
+        [InlineKeyboardButton(text="📝 Приветствие",       callback_data="adm_welcome"),
+         InlineKeyboardButton(text="📣 Рассылка",          callback_data="adm_broadcast")],
+        [InlineKeyboardButton(text="⚙️ Техобслуживание",   callback_data="adm_maintenance")],
+        [InlineKeyboardButton(text="ChatGPT Mini App",    callback_data="adm_gpt_webapp", **_gpt)],
+        [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
+        [InlineKeyboardButton(text="Настройка App Store", callback_data="adm_nsgifts", **_ap)],
         [_eib("Главное меню", "back_main")],
     ])
 
@@ -431,6 +431,8 @@ def kb_stat_menu():
 
 def kb_balance_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Начислить кредиты", callback_data="adm_give_credits"),
+         InlineKeyboardButton(text="📉 Расход по юзеру",   callback_data="adm_spend")],
         [InlineKeyboardButton(text="🔍 Аудит всех юзеров", callback_data="adm_bal_audit_all")],
         [InlineKeyboardButton(text="👤 Аудит юзера по ID",  callback_data="adm_bal_audit_one")],
         [InlineKeyboardButton(text="✏️ Установить баланс", callback_data="adm_bal_set")],
