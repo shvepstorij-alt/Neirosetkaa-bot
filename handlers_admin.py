@@ -1835,7 +1835,9 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
     await cb.message.answer(
         f"📢 <b>Рассылка</b>\n\n"
         f"Получателей: <b>{total} пользователей</b>\n\n"
-        f"Введи текст сообщения (поддерживается HTML):",
+        f"Отправь сообщение для рассылки — <b>текст, фото или видео</b> с любым "
+        f"форматированием.\nОформляй прямо в Telegram (жирный, курсив, эмодзи, "
+        f"картинка) — бот скопирует его всем как есть:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
         ]),
@@ -1848,7 +1850,6 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
 async def adm_broadcast_send(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
     await state.clear()
-    text = message.text.strip()
     pool = await get_pool()
     async with pool.acquire() as conn:
         users = await conn.fetch("SELECT user_id FROM users WHERE is_blocked=0")
@@ -1858,11 +1859,15 @@ async def adm_broadcast_send(message: Message, state: FSMContext):
     for i, r in enumerate(users):
         uid = r["user_id"]
         try:
-            await bot.send_message(uid, text, parse_mode="HTML")
+            # copy_message копирует ЛЮБОЕ сообщение: текст, фото, видео, документ —
+            # с форматированием, эмодзи и подписью. Рассылка поддерживает любой формат.
+            await bot.copy_message(chat_id=uid, from_chat_id=message.chat.id,
+                                   message_id=message.message_id)
             sent += 1
         except Exception:
             failed += 1
-        if (i + 1) % 20 == 0:
+        await asyncio.sleep(0.05)  # ~20 сообщений/сек — не упереться во флуд-лимит Telegram
+        if (i + 1) % 25 == 0:
             try:
                 await status_msg.edit_text(f"📢 Рассылка... {i+1}/{len(users)}")
             except Exception:
