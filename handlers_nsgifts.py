@@ -21,7 +21,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import (
-    ADMIN_ID, dp, fk_payment_url,
+    ADMIN_ID, NSGIFTS_API_SECRET, NSGIFTS_LOGIN, NSGIFTS_PASSWORD, NSGIFTS_USER_ID,
+    WEBSHARE_PROXY, dp, fk_payment_url,
 )
 from runtime_state import (
     rt,
@@ -434,3 +435,59 @@ async def adm_nsg_sales(cb: CallbackQuery):
 #  Если нет — добавь:
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+
+# ── Диагностика NS Gifts (только админ): /nsg_test ───────────────────────────
+@dp.message(F.text == "/nsg_test", StateFilter("*"))
+async def nsg_test(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    ok = lambda v: "✅" if v else "❌ пусто"
+    lines = [
+        "🔎 <b>NS Gifts — диагностика</b>\n",
+        f"USER_ID: {ok(NSGIFTS_USER_ID)}",
+        f"LOGIN: {ok(NSGIFTS_LOGIN)}",
+        f"PASSWORD: {ok(NSGIFTS_PASSWORD)}",
+        f"API_SECRET: {ok(NSGIFTS_API_SECRET)}",
+        f"PROXY: {'задан' if WEBSHARE_PROXY else 'нет'}",
+        f"client init: {'✅' if rt.nsgifts_client else '❌ НЕ инициализирован'}",
+    ]
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+    if not rt.nsgifts_client:
+        await message.answer(
+            "⚠️ client = None → не заданы env-переменные NSGIFTS_* на Railway "
+            "(нужны USER_ID, LOGIN, PASSWORD, API_SECRET). Добавь и перезапусти сервис."
+        )
+        return
+
+    # Баланс (проверка авторизации/подписи/прокси)
+    try:
+        bal = await rt.nsgifts_client.check_balance()
+        await message.answer(f"💰 Баланс NS Gifts: <b>${bal:.4f}</b>", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(
+            f"❌ check_balance упал (авторизация/подпись/прокси):\n<code>{str(e)[:500]}</code>",
+            parse_mode="HTML"
+        )
+
+    # Каталог (наличие Apple-категорий с товаром)
+    try:
+        from ns_gifts import get_apple_categories
+        stock = await rt.nsgifts_client.get_stock()
+        cats_all = stock.get("categories", [])
+        apple = get_apple_categories(stock)
+        sample = ""
+        if apple:
+            c = apple[0]
+            svcs = [s for s in c.get("services", []) if s.get("in_stock", 0) > 0]
+            sample = f"\nПример: {c.get('category_name')} — товаров в наличии: {len(svcs)}"
+        await message.answer(
+            f"📦 Каталог: всего категорий {len(cats_all)}, "
+            f"Apple-категорий с товаром: <b>{len(apple)}</b>{sample}",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(
+            f"❌ get_stock упал:\n<code>{str(e)[:500]}</code>", parse_mode="HTML"
+        )
