@@ -407,6 +407,7 @@ def kb_admin_panel():
          InlineKeyboardButton(text="⚙️ Техобслуживание",   callback_data="adm_maintenance")],
         [InlineKeyboardButton(text="✨ ChatGPT Mini App",  callback_data="adm_gpt_webapp")],
         [InlineKeyboardButton(text="⚡ Claude Mini App",   callback_data="adm_claude_webapp")],
+        [InlineKeyboardButton(text="🍎 App Store / NS Gifts", callback_data="adm_nsgifts")],
         [_eib("Главное меню", "back_main")],
     ])
 
