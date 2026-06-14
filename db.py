@@ -1161,15 +1161,8 @@ async def count_claude_codes_by_plan() -> dict:
 
 # ─── Отправить WebApp клиенту ─────────────────────────────────────────────────
 
-async def fk_save_order(order_id: str, user_id: int, credits: int,
-                        amount_rub: int, pack: str = ""):
-    """Сохраняет заказ в fk_orders (status=pending)."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, status)
-            VALUES ($1,$2,$3,$4,$5,'pending')
-            ON CONFLICT (order_id) DO NOTHING
-        """, order_id, user_id, credits, amount_rub, pack)
+# fk_save_order — определён ВЫШЕ (с payment_method/promo_code). Дубликат удалён:
+# раньше эта вторая версия перекрывала первую и не принимала payment_method/promo_code,
+# из-за чего pay_fk падал с TypeError и заказ не сохранялся в БД (оплата «терялась").
 
 
