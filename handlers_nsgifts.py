@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, NSGIFTS_API_SECRET, NSGIFTS_LOGIN, NSGIFTS_PASSWORD, NSGIFTS_USER_ID,
-    WEBSHARE_PROXY, dp, fk_payment_url,
+    WEBSHARE_PROXY, bot, dp, fk_payment_url,
 )
 from runtime_state import (
     rt,
@@ -137,7 +137,7 @@ async def nsg_cat(cb: CallbackQuery):
     text = (
         f"🍎 <b>App Store / iCloud — {flag} {short}</b>\n\n"
         f"Выбери сумму пополнения 👇\n\n"
-        f"<i>Курс: 1 USD = {usd_rate:.0f} ₽ · Код придёт сразу после оплаты</i>"
+        f"<i>Код придёт сразу после оплаты</i>"
     )
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -257,26 +257,17 @@ async def nsg_check_payment(cb: CallbackQuery):
 #  Выполнение заказа через NS Gifts API (вызывается после подтверждения оплаты)
 # ──────────────────────────────────────────────────────────────────────────────
 
-@dp.callback_query(F.data == "adm_nsgifts")
-async def adm_nsgifts_menu(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌ Нет доступа", show_alert=True)
-        return
-    await cb.answer()  # сразу убираем «Загрузка…», иначе кнопка кажется нерабочей
-
+async def _nsg_menu_text_kb():
     balance_str = "—"
     if rt.nsgifts_client:
         try:
-            # короткий таймаут — чтобы меню не подвисало, если API/прокси медленный
             bal = await asyncio.wait_for(rt.nsgifts_client.check_balance(), timeout=8)
             balance_str = f"${bal:.2f}"
         except Exception:
             balance_str = "не удалось загрузить"
-
     usd_rate   = await _nsg_usd_rate()
     markup_pct = await _nsg_markup()
     threshold  = await _nsg_threshold()
-
     text = (
         f"🍎 <b>App Store / iCloud — NS Gifts</b>\n\n"
         f"💰 Баланс кабинета: <b>{balance_str}</b>\n"
@@ -292,6 +283,30 @@ async def adm_nsgifts_menu(cb: CallbackQuery):
         [InlineKeyboardButton(text="📊 Последние продажи",      callback_data="adm_nsg_sales")],
         [_eib("Главное меню", "back_main")],
     ])
+    return text, kb
+
+
+async def _nsg_refresh_menu(data: dict):
+    """Обновляет сообщение-меню NS Gifts на месте после смены курса/наценки/порога."""
+    mid  = data.get("nsg_msg_id")
+    chat = data.get("nsg_chat")
+    if not (mid and chat):
+        return
+    try:
+        text, kb = await _nsg_menu_text_kb()
+        await bot.edit_message_text(text, chat_id=chat, message_id=mid,
+                                    reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "adm_nsgifts")
+async def adm_nsgifts_menu(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    text, kb = await _nsg_menu_text_kb()
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -302,6 +317,7 @@ async def adm_nsgifts_menu(cb: CallbackQuery):
 async def adm_nsg_rate_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID: return
     await state.set_state(AdmNsgState.waiting_rate)
+    await state.update_data(nsg_msg_id=cb.message.message_id, nsg_chat=cb.message.chat.id)
     usd_rate = await _nsg_usd_rate()
     await cb.message.answer(
         f"💱 Текущий курс: <b>{usd_rate:.0f} ₽/USD</b>\n\n"
@@ -326,14 +342,17 @@ async def adm_nsg_rate_set(message: Message, state: FSMContext):
             "INSERT INTO settings(key,value) VALUES('nsgifts_usd_rate',$1) "
             "ON CONFLICT(key) DO UPDATE SET value=$1", str(val)
         )
+    data = await state.get_data()
     await state.clear()
     await message.answer(f"✅ Курс обновлён: <b>{val:.0f} ₽/USD</b>", parse_mode="HTML")
+    await _nsg_refresh_menu(data)
 
 
 @dp.callback_query(F.data == "adm_nsg_markup")
 async def adm_nsg_markup_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID: return
     await state.set_state(AdmNsgState.waiting_markup)
+    await state.update_data(nsg_msg_id=cb.message.message_id, nsg_chat=cb.message.chat.id)
     markup = await _nsg_markup()
     await cb.message.answer(
         f"📈 Текущая наценка: <b>{markup:.0f}%</b>\n\n"
@@ -358,14 +377,17 @@ async def adm_nsg_markup_set(message: Message, state: FSMContext):
             "INSERT INTO settings(key,value) VALUES('nsgifts_markup',$1) "
             "ON CONFLICT(key) DO UPDATE SET value=$1", str(val)
         )
+    data = await state.get_data()
     await state.clear()
     await message.answer(f"✅ Наценка обновлена: <b>{val:.0f}%</b>", parse_mode="HTML")
+    await _nsg_refresh_menu(data)
 
 
 @dp.callback_query(F.data == "adm_nsg_threshold")
 async def adm_nsg_threshold_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID: return
     await state.set_state(AdmNsgState.waiting_threshold)
+    await state.update_data(nsg_msg_id=cb.message.message_id, nsg_chat=cb.message.chat.id)
     thr = await _nsg_threshold()
     await cb.message.answer(
         f"🔔 Текущий порог: <b>${thr:.0f}</b>\n\n"
@@ -390,8 +412,10 @@ async def adm_nsg_threshold_set(message: Message, state: FSMContext):
             "INSERT INTO settings(key,value) VALUES('nsgifts_balance_threshold',$1) "
             "ON CONFLICT(key) DO UPDATE SET value=$1", str(val)
         )
+    data = await state.get_data()
     await state.clear()
     await message.answer(f"✅ Порог обновлён: <b>${val:.0f}</b>", parse_mode="HTML")
+    await _nsg_refresh_menu(data)
 
 
 @dp.callback_query(F.data == "adm_nsg_refresh")
