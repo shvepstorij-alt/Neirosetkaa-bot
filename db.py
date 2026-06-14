@@ -547,6 +547,16 @@ async def load_prices_from_db():
                     "desc":  code_plan.get("desc",  r["plan_desc"]),
                 })
 
+            # _nsgifts-сервисы (App Store / NS Gifts) живут только в коде (без тарифов в БД),
+            # поэтому при пересборке каталога из БД их нужно вернуть — иначе кнопка пропадает.
+            for _k, _svc in _code_catalog.items():
+                if _svc.get("_nsgifts"):
+                    if _k not in SHOP_CATALOG:
+                        SHOP_CATALOG[_k] = dict(_svc)
+                        SHOP_CATALOG[_k].setdefault("_key", _k)
+                    else:
+                        SHOP_CATALOG[_k]["_nsgifts"] = True
+
             # Синхронизируем описания из кода обратно в БД (чтобы не устаревали)
             for key, svc in _code_catalog.items():
                 await conn.execute(
