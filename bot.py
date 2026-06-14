@@ -53,6 +53,11 @@ import handlers_gpt
 import handlers_claude
 import handlers_nsgifts
 
+# ── Premium-эмодзи: middleware подменяет обычные эмодзи на custom во всех
+# исходящих сообщениях (HTML-текст → <tg-emoji>, инлайн-кнопки → иконка). ──
+from premium_emoji import PremiumEmojiMiddleware
+bot.session.middleware(PremiumEmojiMiddleware())
+
 # handle_message: the broad catch-all (defined here, order fixed below)
 @dp.message(
     StateFilter(None),  # только вне FSM-состояний — иначе перехватывает admin/edit states
