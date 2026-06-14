@@ -232,9 +232,12 @@ REGION_FLAGS = {
 }
 
 
+_CODE_ALIASES = {"UK": "GB"}  # «UK» — не ISO-код, флаг Британии = GB
+
 def _iso2_to_flag(code: str) -> str:
-    """2-буквенный ISO-код страны → эмодзи-флаг (AE → 🇦🇪)."""
+    """2-буквенный ISO-код страны → эмодзи-флаг (AE → 🇦🇪, UK → 🇬🇧)."""
     code = code.strip().upper()
+    code = _CODE_ALIASES.get(code, code)
     if len(code) == 2 and code.isalpha():
         return chr(0x1F1E6 + ord(code[0]) - 65) + chr(0x1F1E6 + ord(code[1]) - 65)
     return ""
@@ -272,6 +275,9 @@ def get_apple_categories(stock: dict) -> list[dict]:
 
 
 def calc_price_rub(price_usd: float, usd_rate: float, markup_pct: float) -> int:
-    """Цена для клиента в рублях: цена_поставщика × курс × (1 + наценка/100)."""
+    """Цена для клиента в рублях: закупка_$ × курс × (1 + наценка/100),
+    округлённая ВВЕРХ до красивого числа (кратно 10/50/100)."""
+    import math
     rub = price_usd * usd_rate * (1 + markup_pct / 100)
-    return max(1, round(rub))
+    step = 10 if rub < 1000 else (50 if rub < 5000 else 100)
+    return max(step, int(math.ceil(rub / step) * step))
