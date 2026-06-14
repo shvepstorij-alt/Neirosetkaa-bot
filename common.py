@@ -3040,7 +3040,7 @@ async def _nsg_usd_rate() -> float:
 async def _nsg_markup() -> float:
     v = await get_setting("nsgifts_markup")
     try:    return float(v)
-    except: return 15.0
+    except: return 18.0
 
 async def _nsg_threshold() -> float:
     v = await get_setting("nsgifts_balance_threshold")
