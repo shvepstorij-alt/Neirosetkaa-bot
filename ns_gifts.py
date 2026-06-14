@@ -232,7 +232,21 @@ REGION_FLAGS = {
 }
 
 
+def _iso2_to_flag(code: str) -> str:
+    """2-буквенный ISO-код страны → эмодзи-флаг (AE → 🇦🇪)."""
+    code = code.strip().upper()
+    if len(code) == 2 and code.isalpha():
+        return chr(0x1F1E6 + ord(code[0]) - 65) + chr(0x1F1E6 + ord(code[1]) - 65)
+    return ""
+
+
 def region_flag(category_name: str) -> str:
+    # 1) 2-буквенный код страны после "|" (формат "Apple Gift Card | AE")
+    for part in reversed(category_name.split("|")):
+        f = _iso2_to_flag(part)
+        if f:
+            return f
+    # 2) по названию страны (USA, Russia и т.п.)
     lower = category_name.lower()
     for kw, flag in REGION_FLAGS.items():
         if kw in lower:
