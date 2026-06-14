@@ -413,47 +413,84 @@ async def adm_claude_del_confirm(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "adm_claude_pending")
 async def adm_claude_pending_codes(cb: CallbackQuery):
-    """Ждущие активации — клиенты у которых есть pending (ещё не ввели Org ID)."""
+    """Ждущие (зарезервированные) коды Claude — is_used=TRUE, used_by=NULL.
+    Источник тот же, что у счётчика «ждут» в меню (раньше брался из другой таблицы —
+    из-за этого число и список расходились)."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
+    import time as _t_pend
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT p.user_id, p.code, p.plan_name, p.created_at, p.expires_at,
+            """SELECT cc.id, cc.code, cc.plan, cc.created_at,
+                      p.user_id AS p_uid, p.plan_name, p.expires_at,
                       u.username, u.full_name
-               FROM claude_pending_activations p
+               FROM claude_codes cc
+               LEFT JOIN claude_pending_activations p ON p.code = cc.code
                LEFT JOIN users u ON u.user_id = p.user_id
-               WHERE p.expires_at > NOW()
-               ORDER BY p.created_at DESC""")
+               WHERE cc.is_used = TRUE AND cc.used_by IS NULL
+               ORDER BY cc.created_at ASC NULLS LAST
+               LIMIT 20""")
 
     if not rows:
-        await cb.answer("Нет ждущих активаций", show_alert=True)
+        await cb.answer("Нет зарезервированных кодов", show_alert=True)
         return
 
-    lines = [f"⏳ <b>Ждущие активации Claude</b> ({len(rows)}):\n"]
+    lines = [f"⏳ <b>Ждущие (зарезервированные) коды Claude</b> ({len(rows)}):\n"]
+    kb_rows = []
     for r in rows:
-        uname = r["username"] or ""
-        fname = r["full_name"] or ""
-        tg = f"@{uname}" if uname else (fname or f"id{r['user_id']}")
-        created = r["created_at"]
-        created_str = created.strftime("%d.%m %H:%M") if created and hasattr(created, "strftime") else "—"
-        expires = r["expires_at"]
-        exp_str = expires.strftime("%H:%M") if expires and hasattr(expires, "strftime") else "—"
+        if r["p_uid"]:
+            uname = r["username"] or ""
+            fname = r["full_name"] or ""
+            who = f"@{uname}" if uname else (fname or f"id{r['p_uid']}")
+            exp = r["expires_at"]
+            if exp and hasattr(exp, "timestamp") and exp.timestamp() > _t_pend.time():
+                status = f"{who} — ждёт ввод Org ID (истекает {exp.strftime('%H:%M')})"
+            else:
+                status = f"{who} — активация истекла, можно вернуть в пул"
+        else:
+            status = "⚠️ осиротевший резерв (нет активации) — верни в пул"
         lines.append(
-            f"\n• {tg} (<code>{r['user_id']}</code>)"
-            f"\n  {r['plan_name']} | <code>{r['code']}</code>"
-            f"\n  создан: {created_str} | истекает: {exp_str}"
+            f"\n• <code>{r['code']}</code> | {r['plan'] or 'pro'}\n  {status}"
         )
+        kb_rows.append([InlineKeyboardButton(
+            text=f"♻️ Вернуть в пул: {r['code'][:14]}",
+            callback_data=f"adm_claude_release:{r['id']}"
+        )])
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]
-    ])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     try:
         await cb.message.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_claude_release:"))
+async def adm_claude_release_orphan(cb: CallbackQuery):
+    """Вернуть зарезервированный код Claude обратно в пул (по id)."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    try:
+        code_id = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code FROM claude_codes WHERE id=$1", code_id)
+        if not row:
+            await cb.answer("Код не найден", show_alert=True)
+            return
+        await conn.execute(
+            "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
+            "order_id=NULL, org_id=NULL WHERE id=$1", code_id)
+        await conn.execute("DELETE FROM claude_pending_activations WHERE code=$1", row["code"])
+    await cb.answer("♻️ Код возвращён в пул", show_alert=True)
+    await adm_claude_pending_codes(cb)
 
 
 @dp.callback_query(F.data.startswith("adm_claude_add:"))
@@ -561,7 +598,6 @@ async def adm_claude_do_send(message: Message, state: FSMContext):
         await delete_claude_pending_activation(target)
     await state.clear()
 
-
 # ─── Тест-команда (только для тебя) ──────────────────────────────────────────
 
 @dp.message(F.text.startswith("/test_claude_webapp"), StateFilter("*"))
@@ -607,6 +643,5 @@ async def test_claude_webapp(message: Message):
             )],
         ])
     )
-
 
 
