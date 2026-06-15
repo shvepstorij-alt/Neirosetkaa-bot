@@ -2845,7 +2845,8 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
         key = parts[1] if len(parts) > 1 else ""
         idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         svc = SHOP_CATALOG.get(key, {})
-        nm = (f"{svc.get('emoji','')} {svc.get('name', key)}").strip()
+        _pref = tg_emoji({**svc, "_key": key})
+        nm = f"{_pref} {svc.get('name', key)}".strip()
         unit = await _plan_cost(key, idx)
         cost = unit * r["cnt"]
         d = by_svc.setdefault(nm, {"cnt": 0, "rev": 0, "cost": 0, "missing": False})
@@ -2870,7 +2871,8 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
         nsg_cost = round(float(nsg_row["usd"] or 0) * rate)
         total_rev += nsg_rev
         total_cost += nsg_cost
-        lines.append(f"\n<b>🍎 App Store</b>: {nsg_cnt} шт\n  {nsg_rev}₽ − {nsg_cost}₽ = <b>{nsg_rev - nsg_cost:+}₽</b>")
+        _ap = tg_emoji({"_key": "appstore", "emoji": "🍎"})
+        lines.append(f"\n<b>{_ap} App Store (автодоставка)</b>: {nsg_cnt} шт\n  {nsg_rev}₽ − {nsg_cost}₽ = <b>{nsg_rev - nsg_cost:+}₽</b>")
 
     cr_cnt = cr_row["cnt"] or 0
     cr_rev = int(cr_row["rev"] or 0)
@@ -2880,11 +2882,16 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
 
     profit = total_rev - total_cost
     margin = round(profit / total_rev * 100) if total_rev else 0
+    _rate = await _cost_usd_rate()
+    _rev_usd = total_rev / _rate if _rate else 0
+    _cost_usd = total_cost / _rate if _rate else 0
+    _prof_usd = profit / _rate if _rate else 0
     lines.append(
         f"\n━━━━━━━━━━━━━\n"
-        f"💵 Выручка: <b>{total_rev}₽</b>\n"
-        f"📉 Затраты: <b>{total_cost}₽</b>\n"
-        f"💰 <b>Прибыль: {profit:+}₽</b>  (маржа {margin}%)"
+        f"💵 Выручка: <b>{total_rev}₽</b> (≈ ${_rev_usd:,.0f})\n"
+        f"📉 Затраты: <b>{total_cost}₽</b> (≈ ${_cost_usd:,.0f})\n"
+        f"💰 <b>Прибыль: {profit:+}₽</b> (≈ ${_prof_usd:+,.0f}) · маржа {margin}%\n"
+        f"<i>Курс конвертации: {_rate:.0f} ₽/$</i>"
     )
     return "\n".join(lines)
 
