@@ -34,7 +34,7 @@ from db import (
     get_setting, get_user, list_promos, log_event, set_setting, unblock_user,
 )
 from keyboards import (
-    _all_models_map, _section_label, kb_admin_panel, kb_balance_menu, kb_block_actions, kb_stat_menu,
+    _all_models_map, _btn_emoji_id, _section_label, kb_admin_panel, kb_balance_menu, kb_block_actions, kb_stat_menu,
     tg_emoji,
 )
 from common import (
@@ -2935,38 +2935,28 @@ async def adm_profit_period(cb: CallbackQuery):
         await cb.message.answer(text, reply_markup=_kb_profit(), parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "adm_profit_costs")
-async def adm_profit_costs(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌ Нет доступа", show_alert=True)
-        return
-    await cb.answer()
+async def _profit_costs_view(note: str = ""):
     rate = await _cost_usd_rate()
     rows = [[InlineKeyboardButton(text=f"💱 Курс закупа: {rate:.0f} ₽/$ — изменить", callback_data="adm_pcost_rate")]]
     for key, s in SHOP_CATALOG.items():
         if not s.get("plans"):
             continue
+        _eid = _btn_emoji_id(key, s)
         rows.append([InlineKeyboardButton(
-            text=f"{s.get('emoji','')} {s.get('name', key)}".strip(),
-            callback_data=f"adm_pcost_svc:{key}"
+            text=(s.get("name", key) if _eid else f"{s.get('emoji','')} {s.get('name', key)}".strip()),
+            callback_data=f"adm_pcost_svc:{key}",
+            **({"icon_custom_emoji_id": _eid} if _eid else {})
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_profit")])
-    text = ("⚙️ <b>Себестоимость тарифов</b>\n\n"
+    head = (note + "\n\n") if note else ""
+    text = (head +
+            "⚙️ <b>Себестоимость тарифов</b>\n\n"
             "1. Задай <b>курс закупа доллара</b>.\n"
             "2. По каждому тарифу укажи <b>цену закупа в $</b> — рубли посчитаются сами.")
-    try:
-        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
-    except Exception:
-        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@dp.callback_query(F.data.startswith("adm_pcost_svc:"))
-async def adm_profit_cost_svc(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌ Нет доступа", show_alert=True)
-        return
-    await cb.answer()
-    key = cb.data.split(":")[1]
+async def _pcost_svc_view(key: str, note: str = ""):
     s = SHOP_CATALOG.get(key, {})
     rate = await _cost_usd_rate()
     rows = []
@@ -2978,11 +2968,38 @@ async def adm_profit_cost_svc(cb: CallbackQuery):
             callback_data=f"adm_pcost_set:{key}:{i}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_profit_costs")])
-    text = f"⚙️ <b>{s.get('name', key)}</b>\n\nВыбери тариф, чтобы задать себестоимость:"
+    head = (note + "\n\n") if note else ""
+    text = head + f"⚙️ <b>{s.get('name', key)}</b>\n\nВыбери тариф, чтобы задать цену закупа в $:"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data == "adm_profit_costs")
+async def adm_profit_costs(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer()
+    text, kb = await _profit_costs_view()
     try:
-        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
-        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_pcost_svc:"))
+async def adm_profit_cost_svc(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer()
+    key = cb.data.split(":")[1]
+    text, kb = await _pcost_svc_view(key)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("adm_pcost_set:"))
@@ -2996,17 +3013,24 @@ async def adm_profit_cost_set_start(cb: CallbackQuery, state: FSMContext):
     plans = s.get("plans", [])
     p = plans[idx] if idx < len(plans) else {}
     await state.set_state(AdminState.waiting_plan_cost)
-    await state.update_data(pcost_key=key, pcost_idx=idx)
+    await state.update_data(pcost_key=key, pcost_idx=idx,
+                           panel_chat=cb.message.chat.id, panel_mid=cb.message.message_id)
     cur = await _plan_cost_usd(key, idx)
     rate = await _cost_usd_rate()
-    await cb.message.answer(
+    text = (
         f"💵 Цена закупа в <b>долларах</b> для <b>{s.get('name', key)} {p.get('name','')}</b>\n"
         f"Цена клиенту: <b>{p.get('price',0)}₽</b>\n"
         f"Курс закупа: <b>{rate:.0f} ₽/$</b>\n"
         f"Текущий закуп: <b>${cur:g}</b>\n\n"
-        f"Введи цену закупа в долларах (например 20 или 19.99):",
-        parse_mode="HTML"
+        f"Введи цену закупа в долларах (например 20 или 19.99):"
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"adm_pcost_svc:{key}")]
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
 
 
@@ -3023,6 +3047,8 @@ async def adm_profit_cost_save(message: Message, state: FSMContext):
     data = await state.get_data()
     key = data.get("pcost_key")
     idx = data.get("pcost_idx")
+    pchat = data.get("panel_chat")
+    pmid = data.get("panel_mid")
     await state.clear()
     if key is None or idx is None:
         await message.answer("⚠️ Сессия истекла, открой раздел заново.")
@@ -3035,11 +3061,21 @@ async def adm_profit_cost_save(message: Message, state: FSMContext):
     p = plans[idx] if idx < len(plans) else {}
     price = p.get("price", 0)
     prof = price - rub
-    await message.answer(
-        f"✅ Закуп сохранён: <b>${val:g}</b> × {rate:.0f}₽ = <b>{rub}₽</b>\n"
-        f"{s.get('name', key)} {p.get('name','')}: цена {price}₽ − {rub}₽ = прибыль <b>{prof:+}₽</b> с продажи.",
-        parse_mode="HTML"
-    )
+    note = (f"✅ {p.get('name','')}: закуп ${val:g} × {rate:.0f}₽ = {rub}₽, "
+            f"прибыль {prof:+}₽")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    text, kb = await _pcost_svc_view(key, note=note)
+    if pchat and pmid:
+        try:
+            await bot.edit_message_text(text, chat_id=pchat, message_id=pmid,
+                                        reply_markup=kb, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "adm_pcost_rate")
@@ -3048,12 +3084,19 @@ async def adm_profit_rate_start(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     await state.set_state(AdminState.waiting_cost_rate)
+    await state.update_data(panel_chat=cb.message.chat.id, panel_mid=cb.message.message_id)
     rate = await _cost_usd_rate()
-    await cb.message.answer(
+    text = (
         f"💱 Текущий курс закупа доллара: <b>{rate:.0f} ₽/$</b>\n\n"
-        f"Введи новый курс (например 92 или 90.5):",
-        parse_mode="HTML"
+        f"Введи новый курс (например 92 или 90.5):"
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="adm_profit_costs")]
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
 
 
@@ -3067,10 +3110,22 @@ async def adm_profit_rate_save(message: Message, state: FSMContext):
     except Exception:
         await message.answer("❌ Введи курс — число от 1 до 1000:")
         return
+    data = await state.get_data()
+    pchat = data.get("panel_chat")
+    pmid = data.get("panel_mid")
     await set_setting("cost_usd_rate", str(val))
     await state.clear()
-    await message.answer(
-        f"✅ Курс закупа: <b>{val:.0f} ₽/$</b>\n"
-        f"Себестоимость всех тарифов теперь считается по нему.",
-        parse_mode="HTML"
-    )
+    note = f"✅ Курс закупа: {val:.0f} ₽/$"
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    text, kb = await _profit_costs_view(note=note)
+    if pchat and pmid:
+        try:
+            await bot.edit_message_text(text, chat_id=pchat, message_id=pmid,
+                                        reply_markup=kb, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
