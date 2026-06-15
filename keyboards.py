@@ -394,6 +394,7 @@ def kb_admin_panel():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Статистика",          callback_data="adm_stat_menu",      icon_custom_emoji_id="5190481218600189255"),
          InlineKeyboardButton(text="Аналитика",           callback_data="adm_analytics_menu", icon_custom_emoji_id="5296265790654264117")],
+        [InlineKeyboardButton(text="💰 Прибыль / себестоимость", callback_data="adm_profit")],
         [InlineKeyboardButton(text="Найти по ID",         callback_data="adm_find",           icon_custom_emoji_id="5389071547065457874"),
          InlineKeyboardButton(text="💳 Балансы",          callback_data="adm_balance_menu")],
         [InlineKeyboardButton(text="🧾 История платежей",  callback_data="adm_payments"),
