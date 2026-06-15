@@ -1880,6 +1880,12 @@ async def _run_activation_job(
         }
 
 
+# Клиенты, уже предупреждённые о повторной активации (in-memory, сбрасывается при рестарте).
+# Повторное нажатие «Попробовать снова» = принудительная активация (на другой аккаунт).
+_gpt_double_warned: set = set()
+_claude_double_warned: set = set()
+
+
 async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     """POST /api/activate-chatgpt — запускает задачу в фоне, сразу возвращает job_id."""
     import json as _json
@@ -1904,7 +1910,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     if not pending:
         return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
 
-    # Guard: block double activation within 35 days
+    # Guard: повторная активация за 35 дней — НЕ блокируем жёстко.
+    # Первый раз предупреждаем, повторное нажатие «Попробовать снова» = активируем
+    # принудительно (клиент может оформлять подписку на другой аккаунт, напр. другу).
     try:
         _pool_dbl = await get_pool()
         async with _pool_dbl.acquire() as _c_dbl:
@@ -1915,25 +1923,48 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 user_id
             )
         if _recent_act:
-            _us = _recent_act['used_at'].strftime('%d.%m.%Y %H:%M') if _recent_act['used_at'] else '-'
-            logging.warning(f'Double GPT activation blocked user={user_id} code={_recent_act["code"]}')
-            try:
-                _warn_msg = (
-                    "\u26a0\ufe0f <b>\u041f\u043e\u043f\u044b\u0442\u043a\u0430 \u0434\u0432\u043e\u0439\u043d\u043e\u0439 \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u0438 ChatGPT</b>\n\n"
-                    f"\U0001f464 <code>{user_id}</code>\n"
-                    f"\U0001f511 \u0423\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d: <code>{_recent_act['code']}</code>\n"
-                    f"\U0001f4e6 \u0422\u0430\u0440\u0438\u0444: <b>{_recent_act['plan']}</b>\n"
-                    f"\u23f1 \u0414\u0430\u0442\u0430: <b>{_us}</b>\n"
-                    f"\U0001f4e7 Email: {_recent_act.get('email') or '-'}\n\n"
-                    "\u0412\u0442\u043e\u0440\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u0430. \u0412\u043e\u0437\u043c\u043e\u0436\u043d\u043e \u043f\u0435\u0440\u0432\u044b\u0439 \u0440\u0430\u0437 \u0431\u044b\u043b\u0430 \u043b\u043e\u0436\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430."
-                )
-                await bot.send_message(ADMIN_ID, _warn_msg, parse_mode='HTML')
-            except Exception:
-                pass
-            return _resp({"success": False, "error": (
-                "\u041f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 \u0443\u0436\u0435 \u0431\u044b\u043b\u0430 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d\u0430 \u043d\u0430 \u044d\u0442\u043e\u0442 \u0430\u043a\u043a\u0430\u0443\u043d\u0442. "
-                "\u0415\u0441\u043b\u0438 \u0447\u0442\u043e-\u0442\u043e \u043d\u0435 \u0442\u0430\u043a \u2014 \u043d\u0430\u043f\u0438\u0448\u0438 \u0410\u043b\u0435\u043a\u0441\u0430\u043d\u0434\u0440\u0443."
-            )})
+            _us = _recent_act["used_at"].strftime("%d.%m.%Y %H:%M") if _recent_act["used_at"] else "-"
+            _u = await get_user(user_id)
+            if _u and _u.get("username"):
+                _uname = "@" + _u["username"]
+            elif _u and _u.get("full_name"):
+                _uname = _u["full_name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            else:
+                _uname = "\u0431\u0435\u0437 \u043d\u0438\u043a\u0430"
+            if user_id not in _gpt_double_warned:
+                _gpt_double_warned.add(user_id)
+                logging.warning(f'GPT repeat activation: warned user={user_id} code={_recent_act["code"]}')
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "\u26a0\ufe0f <b>\u041f\u043e\u0432\u0442\u043e\u0440\u043d\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f ChatGPT</b> (\u043a\u043b\u0438\u0435\u043d\u0442 \u043f\u0440\u0435\u0434\u0443\u043f\u0440\u0435\u0436\u0434\u0451\u043d)\n\n"
+                        f"\U0001f464 {_uname} (<code>{user_id}</code>)\n"
+                        f"\U0001f511 \u0423\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d: <code>{_recent_act['code']}</code>\n"
+                        f"\U0001f4e6 \u0422\u0430\u0440\u0438\u0444: <b>{_recent_act['plan']}</b>\n"
+                        f"\u23f1 \u0414\u0430\u0442\u0430: <b>{_us}</b>\n"
+                        f"\U0001f4e7 Email: {_recent_act.get('email') or '-'}\n\n"
+                        "\u0415\u0441\u043b\u0438 \u043d\u0430\u0436\u043c\u0451\u0442 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb \u2014 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0442 \u043d\u0430 \u0434\u0440\u0443\u0433\u043e\u0439 \u0430\u043a\u043a\u0430\u0443\u043d\u0442.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+                return _resp({"success": False, "error": (
+                    "\u26a0\ufe0f \u041d\u0430 \u0442\u0432\u043e\u0439 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d\u0430 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 ChatGPT.\n\n"
+                    "\u0415\u0441\u043b\u0438 \u043e\u0444\u043e\u0440\u043c\u043b\u044f\u0435\u0448\u044c \u043d\u0430 \u0414\u0420\u0423\u0413\u041e\u0419 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 (\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440, \u0434\u043b\u044f \u0434\u0440\u0443\u0433\u0430) \u2014 \u043d\u0430\u0436\u043c\u0438 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb, \u0438 \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f \u043f\u0440\u043e\u0439\u0434\u0451\u0442.\n\n"
+                    f"\u0415\u0441\u043b\u0438 \u044d\u0442\u043e \u0441\u043b\u0443\u0447\u0430\u0439\u043d\u043e \u2014 \u043d\u0430\u043f\u0438\u0448\u0438 @{PERSONAL_USERNAME}."
+                )})
+            else:
+                _gpt_double_warned.discard(user_id)
+                logging.info(f"GPT forced re-activation user={user_id}")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "\u2705 <b>\u041f\u043e\u0432\u0442\u043e\u0440\u043d\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f ChatGPT \u2014 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430</b>\n\n"
+                        f"\U0001f464 {_uname} (<code>{user_id}</code>) \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0442 \u0435\u0449\u0451 \u0440\u0430\u0437 (\u0434\u0440\u0443\u0433\u043e\u0439 \u0430\u043a\u043a\u0430\u0443\u043d\u0442).",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
     except Exception as _dbl_e:
         logging.error(f'double-activation check: {_dbl_e}')
 
@@ -2938,6 +2969,63 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
         # Polling job уже работает или завершился — возвращаем клиенту тот же order_id
         logging.info(f"Claude reuse bpa={existing_bpa} user={user_id}")
         return _resp({"order_id": existing_bpa, "status": "queued"})
+
+    # Guard: повторная активация Claude за 35 дней — предупреждаем, повторное
+    # нажатие «Попробовать снова» активирует принудительно (на другой аккаунт).
+    try:
+        _pool_dbl = await get_pool()
+        async with _pool_dbl.acquire() as _c_dbl:
+            _recent = await _c_dbl.fetchrow(
+                "SELECT code, plan, used_at FROM claude_codes"
+                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '35 days'"
+                " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
+                user_id
+            )
+        if _recent:
+            _us = _recent["used_at"].strftime("%d.%m.%Y %H:%M") if _recent["used_at"] else "-"
+            _u = await get_user(user_id)
+            if _u and _u.get("username"):
+                _uname = "@" + _u["username"]
+            elif _u and _u.get("full_name"):
+                _uname = _u["full_name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            else:
+                _uname = "без ника"
+            if user_id not in _claude_double_warned:
+                _claude_double_warned.add(user_id)
+                logging.warning(f'Claude repeat activation: warned user={user_id} code={_recent["code"]}')
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "⚠️ <b>Повторная активация Claude</b> (клиент предупреждён)\n\n"
+                        f"👤 {_uname} (<code>{user_id}</code>)\n"
+                        f"🔑 Уже активирован: <code>{_recent['code']}</code>\n"
+                        f"📦 Тариф: <b>{_recent['plan']}</b>\n"
+                        f"⏱ Дата: <b>{_us}</b>\n\n"
+                        "Если клиент нажмёт «Попробовать снова» — активирует на другой аккаунт.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+                return _resp({"error": (
+                    "⚠️ На твой аккаунт уже активирована подписка Claude.\n\n"
+                    "Если оформляешь на ДРУГОЙ аккаунт (например, для друга) — "
+                    "нажми «Попробовать снова», и активация пройдёт.\n\n"
+                    "Если это случайно — напиши Александру."
+                )})
+            else:
+                _claude_double_warned.discard(user_id)
+                logging.info(f"Claude forced re-activation user={user_id}")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "✅ <b>Повторная активация Claude — подтверждена</b>\n\n"
+                        f"👤 {_uname} (<code>{user_id}</code>) активирует ещё раз (другой аккаунт).",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+    except Exception as _dbl_e:
+        logging.error(f"claude double-activation check: {_dbl_e}")
 
     try:
         async with aiohttp.ClientSession(
