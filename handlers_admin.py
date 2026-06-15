@@ -3025,7 +3025,7 @@ async def adm_profit_cost_set_start(cb: CallbackQuery, state: FSMContext):
         f"Введи цену закупа в долларах (например 20 или 19.99):"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"adm_pcost_svc:{key}")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_pcost_svc:{key}")]
     ])
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -3091,7 +3091,7 @@ async def adm_profit_rate_start(cb: CallbackQuery, state: FSMContext):
         f"Введи новый курс (например 92 или 90.5):"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Отмена", callback_data="adm_profit_costs")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_profit_costs")]
     ])
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
