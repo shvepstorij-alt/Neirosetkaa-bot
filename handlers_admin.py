@@ -2795,12 +2795,28 @@ async def adm_promo_deact_start(cb: CallbackQuery, state: FSMContext):
 #  💰 ПРИБЫЛЬ / СЕБЕСТОИМОСТЬ
 # ══════════════════════════════════════════════════════════
 
-async def _plan_cost(key: str, plan_idx: int) -> int:
-    """Себестоимость тарифа (₽), заданная админом. 0 = не задана."""
+async def _cost_usd_rate() -> float:
+    """Курс доллара для закупа (₽/$), задаётся админом."""
     try:
-        return int(float(await get_setting(f"cost:{key}:{plan_idx}", "0") or "0"))
+        return float(await get_setting("cost_usd_rate", "90") or "90")
     except Exception:
+        return 90.0
+
+
+async def _plan_cost_usd(key: str, plan_idx: int) -> float:
+    """Цена закупа тарифа в долларах (0 = не задана)."""
+    try:
+        return float(await get_setting(f"cost_usd:{key}:{plan_idx}", "0") or "0")
+    except Exception:
+        return 0.0
+
+
+async def _plan_cost(key: str, plan_idx: int) -> int:
+    """Себестоимость тарифа в ₽ = закуп$ × курс закупа. 0 = не задана."""
+    usd = await _plan_cost_usd(key, plan_idx)
+    if usd <= 0:
         return 0
+    return round(usd * await _cost_usd_rate())
 
 
 async def _build_profit_text(since_sql: str, label: str) -> str:
@@ -2925,7 +2941,8 @@ async def adm_profit_costs(cb: CallbackQuery):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     await cb.answer()
-    rows = []
+    rate = await _cost_usd_rate()
+    rows = [[InlineKeyboardButton(text=f"💱 Курс закупа: {rate:.0f} ₽/$ — изменить", callback_data="adm_pcost_rate")]]
     for key, s in SHOP_CATALOG.items():
         if not s.get("plans"):
             continue
@@ -2935,8 +2952,8 @@ async def adm_profit_costs(cb: CallbackQuery):
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_profit")])
     text = ("⚙️ <b>Себестоимость тарифов</b>\n\n"
-            "Выбери сервис, затем тариф — и укажи, сколько он обходится тебе (₽).\n"
-            "Это нужно для расчёта прибыли.")
+            "1. Задай <b>курс закупа доллара</b>.\n"
+            "2. По каждому тарифу укажи <b>цену закупа в $</b> — рубли посчитаются сами.")
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
     except Exception:
@@ -2951,12 +2968,13 @@ async def adm_profit_cost_svc(cb: CallbackQuery):
     await cb.answer()
     key = cb.data.split(":")[1]
     s = SHOP_CATALOG.get(key, {})
+    rate = await _cost_usd_rate()
     rows = []
     for i, p in enumerate(s.get("plans", [])):
-        c = await _plan_cost(key, i)
-        c_txt = f"{c}₽" if c else "не задана"
+        usd = await _plan_cost_usd(key, i)
+        c_txt = f"${usd:g} (≈{round(usd*rate)}₽)" if usd > 0 else "не задана"
         rows.append([InlineKeyboardButton(
-            text=f"{p.get('name','')} · цена {p.get('price',0)}₽ · себест: {c_txt}",
+            text=f"{p.get('name','')} · цена {p.get('price',0)}₽ · закуп: {c_txt}",
             callback_data=f"adm_pcost_set:{key}:{i}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_profit_costs")])
@@ -2979,12 +2997,14 @@ async def adm_profit_cost_set_start(cb: CallbackQuery, state: FSMContext):
     p = plans[idx] if idx < len(plans) else {}
     await state.set_state(AdminState.waiting_plan_cost)
     await state.update_data(pcost_key=key, pcost_idx=idx)
-    cur = await _plan_cost(key, idx)
+    cur = await _plan_cost_usd(key, idx)
+    rate = await _cost_usd_rate()
     await cb.message.answer(
-        f"💵 Себестоимость для <b>{s.get('name', key)} {p.get('name','')}</b>\n"
+        f"💵 Цена закупа в <b>долларах</b> для <b>{s.get('name', key)} {p.get('name','')}</b>\n"
         f"Цена клиенту: <b>{p.get('price',0)}₽</b>\n"
-        f"Текущая себестоимость: <b>{cur}₽</b>\n\n"
-        f"Введи новую себестоимость в ₽ (число):",
+        f"Курс закупа: <b>{rate:.0f} ₽/$</b>\n"
+        f"Текущий закуп: <b>${cur:g}</b>\n\n"
+        f"Введи цену закупа в долларах (например 20 или 19.99):",
         parse_mode="HTML"
     )
     await cb.answer()
@@ -2995,10 +3015,10 @@ async def adm_profit_cost_save(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     try:
-        val = int(float(message.text.strip().replace(",", ".")))
+        val = float(message.text.strip().replace(",", "."))
         assert val >= 0
     except Exception:
-        await message.answer("❌ Введи число ≥ 0:")
+        await message.answer("❌ Введи число ≥ 0 (в долларах):")
         return
     data = await state.get_data()
     key = data.get("pcost_key")
@@ -3007,14 +3027,50 @@ async def adm_profit_cost_save(message: Message, state: FSMContext):
     if key is None or idx is None:
         await message.answer("⚠️ Сессия истекла, открой раздел заново.")
         return
-    await set_setting(f"cost:{key}:{idx}", str(val))
+    await set_setting(f"cost_usd:{key}:{idx}", str(val))
+    rate = await _cost_usd_rate()
+    rub = round(val * rate)
     s = SHOP_CATALOG.get(key, {})
     plans = s.get("plans", [])
     p = plans[idx] if idx < len(plans) else {}
     price = p.get("price", 0)
-    prof = price - val
+    prof = price - rub
     await message.answer(
-        f"✅ Себестоимость сохранена: <b>{val}₽</b>\n"
-        f"{s.get('name', key)} {p.get('name','')}: цена {price}₽ − {val}₽ = прибыль <b>{prof:+}₽</b> с продажи.",
+        f"✅ Закуп сохранён: <b>${val:g}</b> × {rate:.0f}₽ = <b>{rub}₽</b>\n"
+        f"{s.get('name', key)} {p.get('name','')}: цена {price}₽ − {rub}₽ = прибыль <b>{prof:+}₽</b> с продажи.",
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data == "adm_pcost_rate")
+async def adm_profit_rate_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.set_state(AdminState.waiting_cost_rate)
+    rate = await _cost_usd_rate()
+    await cb.message.answer(
+        f"💱 Текущий курс закупа доллара: <b>{rate:.0f} ₽/$</b>\n\n"
+        f"Введи новый курс (например 92 или 90.5):",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_cost_rate, F.text)
+async def adm_profit_rate_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        assert 1 <= val <= 1000
+    except Exception:
+        await message.answer("❌ Введи курс — число от 1 до 1000:")
+        return
+    await set_setting("cost_usd_rate", str(val))
+    await state.clear()
+    await message.answer(
+        f"✅ Курс закупа: <b>{val:.0f} ₽/$</b>\n"
+        f"Себестоимость всех тарифов теперь считается по нему.",
         parse_mode="HTML"
     )
