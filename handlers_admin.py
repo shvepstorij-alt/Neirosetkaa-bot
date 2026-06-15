@@ -38,7 +38,7 @@ from keyboards import (
     tg_emoji,
 )
 from common import (
-    _build_stat_text, _show_activity_page, _show_payments_page, _show_users_page, fk_check_order_status, show_admin_panel,
+    _build_stat_text, _show_activity_page, _show_payments_page, _show_users_page, _nsg_usd_rate, fk_check_order_status, show_admin_panel,
 )
 
 @dp.message(F.text.startswith("/admin"), StateFilter("*"))
@@ -2789,3 +2789,232 @@ async def adm_promo_deact_start(cb: CallbackQuery, state: FSMContext):
 #  РЕДАКТИРОВАНИЕ ФОТО ПО РЕФЕРЕНСУ
 # ══════════════════════════════════════════════════════════
 
+
+
+# ══════════════════════════════════════════════════════════
+#  💰 ПРИБЫЛЬ / СЕБЕСТОИМОСТЬ
+# ══════════════════════════════════════════════════════════
+
+async def _plan_cost(key: str, plan_idx: int) -> int:
+    """Себестоимость тарифа (₽), заданная админом. 0 = не задана."""
+    try:
+        return int(float(await get_setting(f"cost:{key}:{plan_idx}", "0") or "0"))
+    except Exception:
+        return 0
+
+
+async def _build_profit_text(since_sql: str, label: str) -> str:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        shop_rows = await conn.fetch(
+            f"SELECT pack, COUNT(*) AS cnt, COALESCE(SUM(amount_rub),0) AS rev "
+            f"FROM fk_orders WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at >= {since_sql} "
+            f"GROUP BY pack"
+        )
+        nsg_row = await conn.fetchrow(
+            f"SELECT COUNT(*) AS cnt, COALESCE(SUM(price_rub),0) AS rev, COALESCE(SUM(price_usd),0) AS usd "
+            f"FROM nsgifts_orders WHERE status='fulfilled' AND created_at >= {since_sql}"
+        )
+        cr_row = await conn.fetchrow(
+            f"SELECT COUNT(*) AS cnt, COALESCE(SUM(amount_rub),0) AS rev FROM fk_orders "
+            f"WHERE status='paid' AND paid_at >= {since_sql} "
+            f"AND (pack IS NULL OR (pack NOT LIKE 'shop:%' AND pack NOT LIKE 'nsg:%'))"
+        )
+
+    by_svc: dict = {}
+    total_rev = 0
+    total_cost = 0
+    for r in shop_rows:
+        parts = (r["pack"] or "").split(":")
+        key = parts[1] if len(parts) > 1 else ""
+        idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        svc = SHOP_CATALOG.get(key, {})
+        nm = (f"{svc.get('emoji','')} {svc.get('name', key)}").strip()
+        unit = await _plan_cost(key, idx)
+        cost = unit * r["cnt"]
+        d = by_svc.setdefault(nm, {"cnt": 0, "rev": 0, "cost": 0, "missing": False})
+        d["cnt"] += r["cnt"]
+        d["rev"] += int(r["rev"])
+        d["cost"] += cost
+        if unit == 0:
+            d["missing"] = True
+        total_rev += int(r["rev"])
+        total_cost += cost
+
+    lines = [f"💰 <b>Прибыль: {label}</b>\n"]
+    for nm, d in sorted(by_svc.items(), key=lambda x: -x[1]["rev"]):
+        prof = d["rev"] - d["cost"]
+        warn = " ⚠️ себест. не задана" if d["missing"] else ""
+        lines.append(f"\n<b>{nm}</b>: {d['cnt']} шт\n  {d['rev']}₽ − {d['cost']}₽ = <b>{prof:+}₽</b>{warn}")
+
+    nsg_cnt = nsg_row["cnt"] or 0
+    if nsg_cnt:
+        rate = await _nsg_usd_rate()
+        nsg_rev = int(nsg_row["rev"] or 0)
+        nsg_cost = round(float(nsg_row["usd"] or 0) * rate)
+        total_rev += nsg_rev
+        total_cost += nsg_cost
+        lines.append(f"\n<b>🍎 App Store</b>: {nsg_cnt} шт\n  {nsg_rev}₽ − {nsg_cost}₽ = <b>{nsg_rev - nsg_cost:+}₽</b>")
+
+    cr_cnt = cr_row["cnt"] or 0
+    cr_rev = int(cr_row["rev"] or 0)
+    if cr_cnt:
+        total_rev += cr_rev
+        lines.append(f"\n<b>💳 Кредиты</b>: {cr_cnt} шт · {cr_rev}₽\n  <i>(себестоимость AI не учитывается)</i>")
+
+    profit = total_rev - total_cost
+    margin = round(profit / total_rev * 100) if total_rev else 0
+    lines.append(
+        f"\n━━━━━━━━━━━━━\n"
+        f"💵 Выручка: <b>{total_rev}₽</b>\n"
+        f"📉 Затраты: <b>{total_cost}₽</b>\n"
+        f"💰 <b>Прибыль: {profit:+}₽</b>  (маржа {margin}%)"
+    )
+    return "\n".join(lines)
+
+
+def _kb_profit(period: str = ""):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Сегодня", callback_data="adm_profit_p:day"),
+         InlineKeyboardButton(text="7 дней", callback_data="adm_profit_p:week"),
+         InlineKeyboardButton(text="30 дней", callback_data="adm_profit_p:month")],
+        [InlineKeyboardButton(text="⚙️ Задать себестоимость", callback_data="adm_profit_costs")],
+        [InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="adm_back")],
+    ])
+
+
+@dp.callback_query(F.data == "adm_profit")
+async def adm_profit_menu(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    text = (
+        "💰 <b>Прибыль</b>\n\n"
+        "Расчёт: выручка − себестоимость за период.\n"
+        "Выбери период 👇\n\n"
+        "<i>Себестоимость подписок задаётся кнопкой ниже по каждому тарифу. "
+        "App Store считается автоматически из закупки.</i>"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=_kb_profit(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=_kb_profit(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_profit_p:"))
+async def adm_profit_period(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    period = cb.data.split(":")[1]
+    since = {"day": "CURRENT_DATE", "week": "NOW() - INTERVAL '7 days'",
+             "month": "NOW() - INTERVAL '30 days'"}.get(period, "CURRENT_DATE")
+    label = {"day": "сегодня", "week": "7 дней", "month": "30 дней"}.get(period, "период")
+    text = await _build_profit_text(since, label)
+    try:
+        await cb.message.edit_text(text, reply_markup=_kb_profit(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=_kb_profit(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_profit_costs")
+async def adm_profit_costs(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    rows = []
+    for key, s in SHOP_CATALOG.items():
+        if not s.get("plans"):
+            continue
+        rows.append([InlineKeyboardButton(
+            text=f"{s.get('emoji','')} {s.get('name', key)}".strip(),
+            callback_data=f"adm_pcost_svc:{key}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_profit")])
+    text = ("⚙️ <b>Себестоимость тарифов</b>\n\n"
+            "Выбери сервис, затем тариф — и укажи, сколько он обходится тебе (₽).\n"
+            "Это нужно для расчёта прибыли.")
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_pcost_svc:"))
+async def adm_profit_cost_svc(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await cb.answer()
+    key = cb.data.split(":")[1]
+    s = SHOP_CATALOG.get(key, {})
+    rows = []
+    for i, p in enumerate(s.get("plans", [])):
+        c = await _plan_cost(key, i)
+        c_txt = f"{c}₽" if c else "не задана"
+        rows.append([InlineKeyboardButton(
+            text=f"{p.get('name','')} · цена {p.get('price',0)}₽ · себест: {c_txt}",
+            callback_data=f"adm_pcost_set:{key}:{i}"
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_profit_costs")])
+    text = f"⚙️ <b>{s.get('name', key)}</b>\n\nВыбери тариф, чтобы задать себестоимость:"
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_pcost_set:"))
+async def adm_profit_cost_set_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    key, idx = parts[1], int(parts[2])
+    s = SHOP_CATALOG.get(key, {})
+    plans = s.get("plans", [])
+    p = plans[idx] if idx < len(plans) else {}
+    await state.set_state(AdminState.waiting_plan_cost)
+    await state.update_data(pcost_key=key, pcost_idx=idx)
+    cur = await _plan_cost(key, idx)
+    await cb.message.answer(
+        f"💵 Себестоимость для <b>{s.get('name', key)} {p.get('name','')}</b>\n"
+        f"Цена клиенту: <b>{p.get('price',0)}₽</b>\n"
+        f"Текущая себестоимость: <b>{cur}₽</b>\n\n"
+        f"Введи новую себестоимость в ₽ (число):",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_plan_cost, F.text)
+async def adm_profit_cost_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = int(float(message.text.strip().replace(",", ".")))
+        assert val >= 0
+    except Exception:
+        await message.answer("❌ Введи число ≥ 0:")
+        return
+    data = await state.get_data()
+    key = data.get("pcost_key")
+    idx = data.get("pcost_idx")
+    await state.clear()
+    if key is None or idx is None:
+        await message.answer("⚠️ Сессия истекла, открой раздел заново.")
+        return
+    await set_setting(f"cost:{key}:{idx}", str(val))
+    s = SHOP_CATALOG.get(key, {})
+    plans = s.get("plans", [])
+    p = plans[idx] if idx < len(plans) else {}
+    price = p.get("price", 0)
+    prof = price - val
+    await message.answer(
+        f"✅ Себестоимость сохранена: <b>{val}₽</b>\n"
+        f"{s.get('name', key)} {p.get('name','')}: цена {price}₽ − {val}₽ = прибыль <b>{prof:+}₽</b> с продажи.",
+        parse_mode="HTML"
+    )
