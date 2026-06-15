@@ -24,7 +24,7 @@ from config import (
     ACTIVITY_DAYS_PER_PAGE, ADMIN_ID, ANIM_LIMIT_PER_HOUR, CLAUDE_API_KEY, COINS_REF_PERCENT, FK_ALLOWED_IPS,
     FK_API_KEY, FK_IP_CHECK_DISABLED, FK_SECRET2, FK_SHOP_ID, MAX_CONCURRENT_GENS, MOTION_LIMIT_PER_HOUR,
     PAYMENTS_PAGE_SIZE, PERSONAL_USERNAME, PHOTO_LIMIT_PER_HOUR, SHOP_CATALOG, USERS_PAGE_SIZE, VIDEO_LIMIT_PER_HOUR,
-    WEBAPP_BASE_URL, _BOT_TZ, _CLAUDE_WEBAPP_HTML_PATH, _WEBAPP_HTML_PATH, _activation_jobs, _active_generations,
+    UI_EMOJI_IDS, WEBAPP_BASE_URL, _BOT_TZ, _CLAUDE_WEBAPP_HTML_PATH, _WEBAPP_HTML_PATH, _activation_jobs, _active_generations,
     _anim_history, _check_hourly_limit, _classify_query_complexity, _claude_job_results, _get_conv, _gpt_retry_counts,
     _motion_history, _photo_history, _pool, _ref_bonus_for_count, _split_long_message, _strip_all_formatting,
     _verify_tg_init_data, _video_history, activate_chatgpt, bot, build_system_prompt, claude_client,
@@ -1690,6 +1690,30 @@ async def _run_activation_job(
             _email = _extract_email_from_token(access_token)
             await mark_gpt_code_used(code, user_id, order_id, _email)
             await delete_pending_activation(user_id)
+            # Заменяем сообщение клиента на поздравление и убираем кнопку «Нужна помощь»
+            _mid = _gpt_act_msg.pop(user_id, None)
+            if _mid:
+                try:
+                    import datetime as _dt_end
+                    _end = (_dt_end.datetime.now(_BOT_TZ) + _dt_end.timedelta(days=30)).strftime("%d.%m.%Y")
+                    _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]}
+                                if UI_EMOJI_IDS.get("menu_profile") else {})
+                    _email_disp = _email or "\u2014"
+                    await bot.edit_message_text(
+                        "\U0001f389 <b>\u041f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 ChatGPT \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d\u0430!</b>\n\n"
+                        f"\U0001f4e6 \u0422\u0430\u0440\u0438\u0444: <b>{plan_name}</b>\n"
+                        f"\U0001f4e7 \u0410\u043a\u043a\u0430\u0443\u043d\u0442: <b>{_email_disp}</b>\n"
+                        f"\U0001f511 \u041a\u043b\u044e\u0447: <code>{code}</code>\n"
+                        f"\U0001f4c5 \u0414\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0434\u043e: <b>{_end}</b>\n\n"
+                        "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043f\u043e\u043a\u0443\u043f\u043a\u0443! \U0001f64c",
+                        chat_id=user_id, message_id=_mid, parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="\u041c\u043e\u0439 \u043f\u0440\u043e\u0444\u0438\u043b\u044c", callback_data="menu_profile", **_prof_kw)],
+                            [_eib("\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e", "back_main")],
+                        ])
+                    )
+                except Exception as _ee:
+                    logging.warning(f"edit gpt activation msg failed: {_ee}")
             try:
                 import datetime as _dt
                 _used_at = _dt.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
@@ -1884,6 +1908,9 @@ async def _run_activation_job(
 # Повторное нажатие «Попробовать снова» = принудительная активация (на другой аккаунт).
 _gpt_double_warned: set = set()
 _claude_double_warned: set = set()
+# message_id активационного сообщения клиента (чтобы заменить на поздравление после успеха)
+_gpt_act_msg: dict = {}
+_claude_act_msg: dict = {}
 
 
 async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
@@ -2151,7 +2178,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await save_pending_activation(user_id, _code, order_id, _plan_key, _plan_name)
                     _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}&code={_uparse.quote(_code)}"
                     from aiogram.types import WebAppInfo
-                    await bot.send_message(
+                    _m_act_gpt = await bot.send_message(
                         user_id,
                         f"🎉 <b>Оплата прошла!</b>\n\n"
                         f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
@@ -2165,6 +2192,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                                 text="❓ Нужна помощь",
                                 callback_data="gpt_need_help")],
                         ]))
+                    _gpt_act_msg[user_id] = _m_act_gpt.message_id
             elif shop_key == "claude":
                 # ── Авто-активация Claude через bypriceactivate.pro Mini App ──
                 _plan_name_cl = p.get("name", "Pro")
@@ -2651,7 +2679,7 @@ async def _send_claude_webapp_to_user(
         f"?plan={_up.quote(plan_name)}&code={_up.quote(code)}"
     )
     try:
-        await bot.send_message(
+        _m_act_cl = await bot.send_message(
             user_id,
             f"🎉 <b>Оплата прошла!</b>\n\n"
             f"📦 <b>Claude {plan_name}</b>\n\n"
@@ -2671,6 +2699,7 @@ async def _send_claude_webapp_to_user(
                 )],
             ])
         )
+        _claude_act_msg[user_id] = _m_act_cl.message_id
         await log_event(user_id, "claude_webapp_sent",
                         f"code={code} plan={plan_name} order={order_id}")
         return True
@@ -2768,21 +2797,38 @@ async def _claude_activation_polling_job(
                     _un = _fn = ""
                 _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
 
-                # БАГ 2 FIX: уведомляем клиента об успехе (на случай если закрыл WebApp)
-                try:
-                    await bot.send_message(
-                        user_id,
-                        f"✅ <b>Claude {plan_name} активирован!</b>\n\n"
-                        f"Подписка привязана к твоему аккаунту.\n"
-                        f"Обычно появляется в течение 5–10 минут.\n\n"
-                        f"Заходи в Claude и пользуйся 🎉",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
-                        ])
-                    )
-                except Exception:
-                    pass
+                # Заменяем сообщение клиента на поздравление, убираем «Нужна помощь»
+                import datetime as _dt_end_cl
+                _end_cl = (_dt_end_cl.datetime.now(_BOT_TZ) + _dt_end_cl.timedelta(days=30)).strftime("%d.%m.%Y")
+                _prof_kw_cl = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]}
+                               if UI_EMOJI_IDS.get("menu_profile") else {})
+                _congrats_cl = (
+                    "🎉 <b>Подписка Claude активирована!</b>\n\n"
+                    f"📦 Тариф: <b>{plan_name}</b>\n"
+                    f"🏢 Organization ID: <code>{org_id}</code>\n"
+                    f"🔑 Ключ: <code>{code}</code>\n"
+                    f"📅 Действует до: <b>{_end_cl}</b>\n\n"
+                    "Подписка появится в Claude в течение 5–10 минут. Спасибо за покупку! 🙌"
+                )
+                _kb_cl = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
+                    [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", **_prof_kw_cl)],
+                    [_eib("Главное меню", "back_main")],
+                ])
+                _mid_cl = _claude_act_msg.pop(user_id, None)
+                _edited_cl = False
+                if _mid_cl:
+                    try:
+                        await bot.edit_message_text(_congrats_cl, chat_id=user_id, message_id=_mid_cl,
+                                                    parse_mode="HTML", reply_markup=_kb_cl)
+                        _edited_cl = True
+                    except Exception as _ee_cl:
+                        logging.warning(f"edit claude activation msg failed: {_ee_cl}")
+                if not _edited_cl:
+                    try:
+                        await bot.send_message(user_id, _congrats_cl, parse_mode="HTML", reply_markup=_kb_cl)
+                    except Exception:
+                        pass
 
                 try:
                     _caption_ok = (
