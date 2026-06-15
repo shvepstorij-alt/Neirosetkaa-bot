@@ -1695,7 +1695,7 @@ async def _run_activation_job(
             if _mid:
                 try:
                     import datetime as _dt_end
-                    _end = (_dt_end.datetime.now(_BOT_TZ) + _dt_end.timedelta(days=30)).strftime("%d.%m.%Y")
+                    _end = (_dt_end.datetime.now(_BOT_TZ) + _dt_end.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
                     _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]}
                                 if UI_EMOJI_IDS.get("menu_profile") else {})
                     _email_disp = _email or "\u2014"
@@ -1911,6 +1911,14 @@ _claude_double_warned: set = set()
 # message_id активационного сообщения клиента (чтобы заменить на поздравление после успеха)
 _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
+
+
+def _subscription_days(plan_name: str) -> int:
+    """Срок подписки в днях по названию тарифа: годовой → 365, иначе 30."""
+    _n = (plan_name or "").lower()
+    if any(k in _n for k in ("год", "year", "annual", "ежегод", "12 мес", "12мес")):
+        return 365
+    return 30
 
 
 async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
@@ -2799,7 +2807,7 @@ async def _claude_activation_polling_job(
 
                 # Заменяем сообщение клиента на поздравление, убираем «Нужна помощь»
                 import datetime as _dt_end_cl
-                _end_cl = (_dt_end_cl.datetime.now(_BOT_TZ) + _dt_end_cl.timedelta(days=30)).strftime("%d.%m.%Y")
+                _end_cl = (_dt_end_cl.datetime.now(_BOT_TZ) + _dt_end_cl.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
                 _prof_kw_cl = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]}
                                if UI_EMOJI_IDS.get("menu_profile") else {})
                 _congrats_cl = (
