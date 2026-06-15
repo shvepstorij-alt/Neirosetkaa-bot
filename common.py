@@ -3160,11 +3160,20 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
             f"📦 <b>{service_name}</b>\n"
             f"🆔 Заказ: <code>{fk_order_id}</code>\n\n"
             f"🔑 <b>Код активации:</b>\n{pins_text}\n\n"
-            f"<b>Как использовать:</b>\n"
-            f"• Открой App Store → нажми на свой аватар → Погасить подарочную карту\n"
-            f"• Введи код или нажми «Использовать камеру»\n\n"
-            f"Если что-то не так — пиши @{PERSONAL_USERNAME} 🙌",
-            parse_mode="HTML"
+            f"📲 <b>Как активировать:</b>\n"
+            f"1. Открой <b>App Store</b> на iPhone/iPad\n"
+            f"2. Нажми на свой <b>аватар</b> (вверху справа)\n"
+            f"3. Выбери <b>«Погасить подарочную карту или код»</b>\n"
+            f"4. Нажми <b>«Ввести код вручную»</b> и вставь код выше\n"
+            f"5. Готово — баланс пополнится 🎉\n\n"
+            f"⚠️ <b>Важно:</b> код работает только на Apple ID того же региона, "
+            f"что и карта (например, код 🇺🇸 USA — только на американском Apple ID).\n\n"
+            f"Если код не активируется — пиши @{PERSONAL_USERNAME} 🙌",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌍 Как сменить регион Apple ID",
+                                      callback_data="nsg_region_help")]
+            ])
         )
 
         # Алерт администратору
