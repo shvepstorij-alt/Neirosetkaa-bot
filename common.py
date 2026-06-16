@@ -1912,6 +1912,54 @@ _claude_double_warned: set = set()
 _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
 
+# ── Таймер 2 часов на сообщение самостоятельной активации (GPT/Claude) ──
+ACTIVATION_WINDOW_MIN = 120
+
+def _activation_timer_line(deadline) -> str:
+    import datetime as _dtt
+    rem = int((deadline - _dtt.datetime.now(_BOT_TZ)).total_seconds() // 60)
+    if rem <= 0:
+        return ""
+    h, m = divmod(rem, 60)
+    if h and m:
+        r = f"~{h} ч {m} мин"
+    elif h:
+        r = f"~{h} ч"
+    else:
+        r = f"~{max(1, m)} мин"
+    return (f"\n\n⏳ На самостоятельную активацию осталось <b>{r}</b> "
+            f"(до {deadline.strftime('%H:%M')}).")
+
+async def _activation_timer_job(user_id, message_id, base_text, kb_active,
+                                deadline, expired_text, kb_expired, act_store):
+    """Обновляет таймер на сообщении активации; при истечении меняет текст и убирает кнопку активации."""
+    import datetime as _dtt
+    while True:
+        secs = (deadline - _dtt.datetime.now(_BOT_TZ)).total_seconds()
+        if secs <= 0:
+            break
+        await asyncio.sleep(min(1800, secs))
+        if act_store.get(user_id) != message_id:
+            return  # уже активировано / сообщение заменено
+        if (deadline - _dtt.datetime.now(_BOT_TZ)).total_seconds() <= 0:
+            break
+        try:
+            await bot.edit_message_text(
+                base_text + _activation_timer_line(deadline),
+                chat_id=user_id, message_id=message_id,
+                parse_mode="HTML", reply_markup=kb_active)
+        except Exception:
+            pass
+    if act_store.get(user_id) != message_id:
+        return
+    act_store.pop(user_id, None)
+    try:
+        await bot.edit_message_text(
+            expired_text, chat_id=user_id, message_id=message_id,
+            parse_mode="HTML", reply_markup=kb_expired)
+    except Exception:
+        pass
+
 
 def _subscription_days(plan_name: str) -> int:
     """Срок подписки в днях по названию тарифа: годовой → 365, иначе 30."""
@@ -2186,21 +2234,35 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await save_pending_activation(user_id, _code, order_id, _plan_key, _plan_name)
                     _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}&code={_uparse.quote(_code)}"
                     from aiogram.types import WebAppInfo
-                    _m_act_gpt = await bot.send_message(
-                        user_id,
+                    import datetime as _dt_gpt
+                    _base_gpt = (
                         f"🎉 <b>Оплата прошла!</b>\n\n"
                         f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
-                        f"Осталось активировать подписку — нажми кнопку ниже 👇{delayed_note}",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(
-                                text="✨ Активировать подписку",
-                                web_app=WebAppInfo(url=_webapp_url))],
-                            [InlineKeyboardButton(
-                                text="❓ Нужна помощь",
-                                callback_data="gpt_need_help")],
-                        ]))
+                        f"Осталось активировать подписку — нажми кнопку ниже 👇{delayed_note}"
+                    )
+                    _kb_gpt_active = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="✨ Активировать подписку",
+                                              web_app=WebAppInfo(url=_webapp_url))],
+                        [InlineKeyboardButton(text="❓ Нужна помощь",
+                                              callback_data="gpt_need_help")],
+                    ])
+                    _kb_gpt_expired = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="❓ Нужна помощь",
+                                              callback_data="gpt_need_help")],
+                    ])
+                    _dl_gpt = _dt_gpt.datetime.now(_BOT_TZ) + _dt_gpt.timedelta(minutes=ACTIVATION_WINDOW_MIN)
+                    _exp_gpt = (
+                        f"⏰ <b>Время самостоятельной активации истекло</b>\n\n"
+                        f"📦 <b>{service_name}</b> — оплата сохранена.\n"
+                        f"Напиши Александру — активирую вручную 🙌"
+                    )
+                    _m_act_gpt = await bot.send_message(
+                        user_id, _base_gpt + _activation_timer_line(_dl_gpt),
+                        parse_mode="HTML", reply_markup=_kb_gpt_active)
                     _gpt_act_msg[user_id] = _m_act_gpt.message_id
+                    asyncio.create_task(_activation_timer_job(
+                        user_id, _m_act_gpt.message_id, _base_gpt, _kb_gpt_active,
+                        _dl_gpt, _exp_gpt, _kb_gpt_expired, _gpt_act_msg))
             elif shop_key == "claude":
                 # ── Авто-активация Claude через bypriceactivate.pro Mini App ──
                 _plan_name_cl = p.get("name", "Pro")
@@ -2687,27 +2749,35 @@ async def _send_claude_webapp_to_user(
         f"?plan={_up.quote(plan_name)}&code={_up.quote(code)}"
     )
     try:
-        _m_act_cl = await bot.send_message(
-            user_id,
+        import datetime as _dt_cl
+        _base_cl = (
             f"🎉 <b>Оплата прошла!</b>\n\n"
             f"📦 <b>Claude {plan_name}</b>\n\n"
             f"Осталось активировать подписку — нажми кнопку ниже, "
             f"введи Organization ID из настроек Claude, и подписка "
             f"активируется автоматически за 1–2 минуты 👇"
-            f"{delayed_note}",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="⚡ Активировать Claude",
-                    web_app=_WAI(url=webapp_url)
-                )],
-                [InlineKeyboardButton(
-                    text="❓ Нужна помощь",
-                    callback_data="claude_need_help"
-                )],
-            ])
+            f"{delayed_note}"
         )
+        _kb_cl_active = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ Активировать Claude", web_app=_WAI(url=webapp_url))],
+            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="claude_need_help")],
+        ])
+        _kb_cl_expired = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="claude_need_help")],
+        ])
+        _dl_cl = _dt_cl.datetime.now(_BOT_TZ) + _dt_cl.timedelta(minutes=ACTIVATION_WINDOW_MIN)
+        _exp_cl = (
+            f"⏰ <b>Время самостоятельной активации истекло</b>\n\n"
+            f"📦 <b>Claude {plan_name}</b> — оплата сохранена.\n"
+            f"Напиши Александру — активирую вручную 🙌"
+        )
+        _m_act_cl = await bot.send_message(
+            user_id, _base_cl + _activation_timer_line(_dl_cl),
+            parse_mode="HTML", reply_markup=_kb_cl_active)
         _claude_act_msg[user_id] = _m_act_cl.message_id
+        asyncio.create_task(_activation_timer_job(
+            user_id, _m_act_cl.message_id, _base_cl, _kb_cl_active,
+            _dl_cl, _exp_cl, _kb_cl_expired, _claude_act_msg))
         await log_event(user_id, "claude_webapp_sent",
                         f"code={code} plan={plan_name} order={order_id}")
         return True
