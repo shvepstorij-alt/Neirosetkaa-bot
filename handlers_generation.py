@@ -414,6 +414,7 @@ async def improve_prompt_inline(cb: CallbackQuery, state: FSMContext):
         )
 
 
+@dp.callback_query(F.data.startswith("again:") & ~F.data.startswith("again:edit:"))
 async def after_gen_again(cb: CallbackQuery, state: FSMContext):
     """Ещё раз - та же модель, новый промт."""
     parts = cb.data.split(":")
