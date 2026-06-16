@@ -319,10 +319,16 @@ async def noop_handler(cb: CallbackQuery):
 async def back_main(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     credits = await get_credits(cb.from_user.id)
-    await cb.message.edit_text(
-        f"👋 {cb.from_user.first_name}, баланс: <b>{credits} кредитов</b>\n\nВыбери действие 👇",
-        reply_markup=kb_main(), parse_mode="HTML"
-    )
+    _bm_text = f"👋 {cb.from_user.first_name}, баланс: <b>{credits} кредитов</b>\n\nВыбери действие 👇"
+    try:
+        await cb.message.edit_text(_bm_text, reply_markup=kb_main(), parse_mode="HTML")
+    except Exception:
+        # фото/видео-сообщение — edit_text невозможен, отправляем новым
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        await cb.message.answer(_bm_text, reply_markup=kb_main(), parse_mode="HTML")
     await cb.answer()
 
 # ══════════════════════════════════════════════════════════
