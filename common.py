@@ -2942,7 +2942,21 @@ async def _claude_activation_polling_job(
                 # БАГ 8 FIX: проверяем оба варианта написания
                 if "out of stock" in _err.lower() or "out-of-stock" in _err.lower():
                     await release_claude_code(code)
-                await delete_claude_pending_activation(user_id)
+                    await delete_claude_pending_activation(user_id)
+                else:
+                    # Повтор ТЕМ ЖЕ кодом: pending НЕ удаляем, а сбрасываем bpa_order_id,
+                    # чтобы «Попробовать снова» сделал НОВУЮ попытку, а не вернул
+                    # проваленный заказ (guard existing_bpa). Код остаётся за клиентом;
+                    # сам освободится через ~2ч (cleanup-loop), если активации не будет.
+                    try:
+                        _poolf = await get_pool()
+                        async with _poolf.acquire() as _cf:
+                            await _cf.execute(
+                                "UPDATE claude_pending_activations SET bpa_order_id=NULL WHERE user_id=$1",
+                                user_id
+                            )
+                    except Exception as _e_clear:
+                        logging.error(f"claude failed: clear bpa_order_id: {_e_clear}")
                 try:
                     _caption_fail = (
                         f"❌ <b>Claude FAILED</b>\n"
@@ -2963,9 +2977,14 @@ async def _claude_activation_polling_job(
                         user_id,
                         f"😔 <b>Активация Claude не прошла</b>\n\n"
                         f"{_err[:300]}\n\n"
-                        f"Напиши Александру — активирую вручную за 15–30 мин!",
+                        f"Нажми «🔁 Попробовать снова» — повторим тем же кодом. "
+                        f"Если снова не выйдет — напиши Александру, активирую вручную за 15–30 мин!",
                         parse_mode="HTML",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(
+                                text="🔁 Попробовать снова",
+                                callback_data="claude_reopen_webapp"
+                            )],
                             [InlineKeyboardButton(
                                 text="✅ Активировали тариф вручную",
                                 callback_data="claude_manual_activated"
