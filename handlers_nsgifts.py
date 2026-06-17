@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, NSGIFTS_API_SECRET, NSGIFTS_LOGIN, NSGIFTS_PASSWORD, NSGIFTS_USER_ID,
-    WEBSHARE_PROXY, bot, dp, fk_payment_url,
+    WEBSHARE_PROXY, bot, dp, fk_pay_url,
 )
 from runtime_state import (
     rt,
@@ -199,7 +199,7 @@ async def nsg_svc(cb: CallbackQuery):
     await fk_save_order(order_id, uid, 0, price_rub, pack=f"nsg:{service_id}")
 
     # Ссылка на оплату FreeKassa
-    pay_url = fk_payment_url(order_id, price_rub, uid)
+    pay_url = fk_pay_url(price_rub, order_id)
 
     parts_name = service.get("service_name", "").split("|")
     nominal    = parts_name[-1].strip() if parts_name else service.get("service_name", "")
