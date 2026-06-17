@@ -1911,6 +1911,8 @@ _claude_double_warned: set = set()
 # message_id активационного сообщения клиента (чтобы заменить на поздравление после успеха)
 _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
+# Claude: заказы, которым уже выдали авто-замену кода после жёсткого сбоя (кап = 1 раз/заказ)
+_claude_replaced_orders: set = set()
 
 # ── Таймер 2 часов на сообщение самостоятельной активации (GPT/Claude) ──
 ACTIVATION_WINDOW_MIN = 120
@@ -2939,30 +2941,43 @@ async def _claude_activation_polling_job(
                 _claude_job_results[bpa_order_id] = {
                     "status": "done", "success": False, "error": _err
                 }
-                # БАГ 8 FIX: проверяем оба варианта написания
-                if "out of stock" in _err.lower() or "out-of-stock" in _err.lower():
+                _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
+                _replaced_code = None
+                if _is_stock:
+                    # нет стока — код валиден, возвращаем в пул
                     await release_claude_code(code)
                     await delete_claude_pending_activation(user_id)
                 else:
-                    # Повтор ТЕМ ЖЕ кодом: pending НЕ удаляем, а сбрасываем bpa_order_id,
-                    # чтобы «Попробовать снова» сделал НОВУЮ попытку, а не вернул
-                    # проваленный заказ (guard existing_bpa). Код остаётся за клиентом;
-                    # сам освободится через ~2ч (cleanup-loop), если активации не будет.
-                    try:
-                        _poolf = await get_pool()
-                        async with _poolf.acquire() as _cf:
-                            await _cf.execute(
-                                "UPDATE claude_pending_activations SET bpa_order_id=NULL WHERE user_id=$1",
-                                user_id
-                            )
-                    except Exception as _e_clear:
-                        logging.error(f"claude failed: clear bpa_order_id: {_e_clear}")
+                    # Жёсткий сбой: код «сгорел» у провайдера (повторно непригоден).
+                    # ОДИН раз автоматически выдаём свежий код, чтобы клиент активировал сам.
+                    if order_id not in _claude_replaced_orders:
+                        _pend_f = await get_claude_pending_activation(user_id)
+                        _plan_key_f = ((_pend_f or {}).get("plan")) or {
+                            "Pro": "pro", "Max 5×": "max_5x", "Max 20×": "max_20x"
+                        }.get(plan_name, "pro")
+                        _new_code_f = await get_next_claude_code(_plan_key_f)
+                        if _new_code_f:
+                            _claude_replaced_orders.add(order_id)
+                            # старый код оставляем зарезервированным (is_used=TRUE) — он мёртв
+                            await save_claude_pending_activation(
+                                user_id, _new_code_f, order_id, _plan_key_f, plan_name)
+                            _replaced_code = _new_code_f
+                            logging.info(
+                                f"Claude auto-replace user={user_id} order={order_id} "
+                                f"dead={code} new={_new_code_f}")
+                    if not _replaced_code:
+                        # авто-замена недоступна (нет свежих кодов / уже заменяли) → ручная
+                        await delete_claude_pending_activation(user_id)
+
+                # ── алерт админу ──
                 try:
                     _caption_fail = (
                         f"❌ <b>Claude FAILED</b>\n"
                         f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
                         f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
                         f"❌ {_err[:300]}"
+                        + (f"\n♻️ Выдан новый код: <code>{_replaced_code}</code>" if _replaced_code
+                           else "\n⚠️ Авто-замена недоступна — нужна ручная активация")
                     )
                     _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
                     if _ss_fail:
@@ -2973,32 +2988,51 @@ async def _claude_activation_polling_job(
                         )
                     else:
                         await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
-                    await bot.send_message(
-                        user_id,
-                        f"😔 <b>Активация Claude не прошла</b>\n\n"
-                        f"{_err[:300]}\n\n"
-                        f"Нажми «🔁 Попробовать снова» — повторим тем же кодом. "
-                        f"Если снова не выйдет — напиши Александру, активирую вручную за 15–30 мин!",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(
-                                text="🔁 Попробовать снова",
-                                callback_data="claude_reopen_webapp"
-                            )],
-                            [InlineKeyboardButton(
-                                text="✅ Активировали тариф вручную",
-                                callback_data="claude_manual_activated"
-                            )],
-                            [InlineKeyboardButton(
-                                text="❓ Нужна помощь",
-                                callback_data="claude_need_help"
-                            )],
-                        ])
-                    )
+                except Exception:
+                    pass
+
+                # ── сообщение клиенту ──
+                try:
+                    if _replaced_code:
+                        await bot.send_message(
+                            user_id,
+                            "😔 <b>Первый код не сработал</b>\n\n"
+                            "Мы автоматически выдали новый код. "
+                            "Нажми «🔁 Попробовать снова» — активируем заново 👇",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="🔁 Попробовать снова",
+                                    callback_data="claude_reopen_webapp"
+                                )],
+                                [InlineKeyboardButton(
+                                    text="❓ Нужна помощь",
+                                    callback_data="claude_need_help"
+                                )],
+                            ])
+                        )
+                    else:
+                        await bot.send_message(
+                            user_id,
+                            f"😔 <b>Активация Claude не прошла</b>\n\n"
+                            f"{_err[:300]}\n\n"
+                            f"Напиши Александру — активирую вручную за 15–30 мин!",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="✅ Активировали тариф вручную",
+                                    callback_data="claude_manual_activated"
+                                )],
+                                [InlineKeyboardButton(
+                                    text="❓ Нужна помощь",
+                                    callback_data="claude_need_help"
+                                )],
+                            ])
+                        )
                 except Exception:
                     pass
                 await log_event(user_id, "claude_activation_fail",
-                                f"code={code} bpa={bpa_order_id} err={_err[:150]}")
+                                f"code={code} bpa={bpa_order_id} replaced={_replaced_code or '-'} err={_err[:120]}")
                 return
 
         except Exception as _e:
