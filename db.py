@@ -121,6 +121,8 @@ async def init_db():
             ("referred_by",    "BIGINT DEFAULT NULL"),
             ("ref_bonus_paid", "BOOLEAN DEFAULT FALSE"),
             ("coins",          "NUMERIC(10,2) DEFAULT 0"),
+            ("ref_premium",     "BOOLEAN DEFAULT FALSE"),
+            ("ref_premium_pct", "DOUBLE PRECISION DEFAULT NULL"),
         ]:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")
@@ -136,6 +138,22 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Лог премиум-реферальных начислений (для месячного лимита и аудита)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ref_premium_log (
+                id          SERIAL PRIMARY KEY,
+                referrer_id BIGINT NOT NULL,
+                referee_id  BIGINT,
+                order_id    TEXT UNIQUE,
+                amount_rub  NUMERIC(12,2),
+                coins       NUMERIC(12,2),
+                created_at  TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_refprem_referrer_time "
+            "ON ref_premium_log(referrer_id, created_at)"
+        )
         # Избранное
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS favorites (
@@ -1176,3 +1194,65 @@ async def count_claude_codes_by_plan() -> dict:
 # из-за чего pay_fk падал с TypeError и заказ не сохранялся в БД (оплата «терялась").
 
 
+
+
+# ── Премиум-рефералка ─────────────────────────────────────────────────────────
+
+async def set_ref_premium(user_id: int, enabled: bool, pct: float | None = None):
+    """Включает/выключает премиум-рефералку у пользователя и (опц.) индивид. %."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET ref_premium=$1, ref_premium_pct=$2 WHERE user_id=$3",
+            enabled, pct, user_id
+        )
+
+
+async def get_ref_premium(user_id: int) -> dict | None:
+    """Возвращает {ref_premium, ref_premium_pct} или None."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT ref_premium, ref_premium_pct FROM users WHERE user_id=$1", user_id
+        )
+    return dict(row) if row else None
+
+
+async def list_ref_premium() -> list[dict]:
+    """Список премиум-партнёров с их индивид. % и числом рефералов."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT u.user_id, u.username, u.ref_premium_pct,
+                      (SELECT COUNT(*) FROM users r WHERE r.referred_by=u.user_id) AS refs
+               FROM users u WHERE u.ref_premium=TRUE ORDER BY u.user_id"""
+        )
+    return [dict(r) for r in rows]
+
+
+async def premium_ref_earned_this_month(referrer_id: int) -> float:
+    """Сумма начисленных премиум-монеток за текущий календарный месяц."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        v = await conn.fetchval(
+            """SELECT COALESCE(SUM(coins),0) FROM ref_premium_log
+               WHERE referrer_id=$1 AND created_at >= date_trunc('month', NOW())""",
+            referrer_id
+        )
+    return float(v or 0)
+
+
+async def log_premium_ref(referrer_id: int, referee_id: int, order_id: str,
+                          amount_rub: float, coins: float) -> bool:
+    """Пишет начисление в лог. Возвращает False если по order_id уже было (идемпотентность)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            await conn.execute(
+                "INSERT INTO ref_premium_log (referrer_id, referee_id, order_id, amount_rub, coins) "
+                "VALUES ($1,$2,$3,$4,$5)",
+                referrer_id, referee_id, order_id, round(amount_rub, 2), round(coins, 2)
+            )
+            return True
+        except Exception:
+            return False  # UNIQUE(order_id) — уже начисляли
