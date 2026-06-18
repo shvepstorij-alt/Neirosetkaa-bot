@@ -77,6 +77,11 @@ class AdminState(StatesGroup):
     waiting_plan_cost        = State()   # цена закупа тарифа в $
     waiting_cost_rate        = State()   # курс закупа доллара
 
+    # Премиум-рефералка
+    waiting_refp_pct         = State()   # глобальный %
+    waiting_refp_cap         = State()   # месячный лимит, ₽
+    waiting_refp_add         = State()   # добавить партнёра: "UID" или "UID %"
+
 # ══════════════════════════════════════════════════════════
 #  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
 # ══════════════════════════════════════════════════════════
@@ -120,5 +125,3 @@ class AdmNsgState(StatesGroup):
     waiting_rate      = State()
     waiting_markup    = State()
     waiting_threshold = State()
-
-
