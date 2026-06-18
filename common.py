@@ -39,6 +39,7 @@ from db import (
     get_next_gpt_code, get_pending_activation, get_pool, get_setting, get_user, is_blocked,
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
+    get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji_ui,
@@ -542,6 +543,11 @@ async def process_referral_bonus(user_id: int):
         if not row or not row["referred_by"] or row["ref_bonus_paid"]:
             return
         referrer_id = row["referred_by"]
+        # Премиум-партнёрам разовый бонус не начисляем — у них пожизненный %
+        # (начисляется отдельно в process_premium_referral на КАЖДОЙ оплате).
+        _rp_chk = await get_ref_premium(referrer_id)
+        if _rp_chk and _rp_chk.get("ref_premium"):
+            return
         # Если реферер заблокирован - не платим бонус, но помечаем что «обработано»
         # чтобы не дёргать эту функцию каждый раз
         if await is_blocked(referrer_id):
@@ -613,6 +619,75 @@ async def process_referral_bonus(user_id: int):
 # ══════════════════════════════════════════════════════════
 #  ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ
 # ══════════════════════════════════════════════════════════
+
+async def process_premium_referral(referee_id: int, order_id: str, amount_rub: float):
+    """Премиум-рефералка: % монетками с КАЖДОЙ оплаты реферала (только для премиум-партнёров).
+    Идемпотентно по order_id, с месячным лимитом из настроек."""
+    try:
+        if not amount_rub or float(amount_rub) <= 0:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT referred_by FROM users WHERE user_id=$1", referee_id
+            )
+        if not row or not row["referred_by"]:
+            return
+        referrer_id = row["referred_by"]
+        if referrer_id == referee_id:
+            return
+        rp = await get_ref_premium(referrer_id)
+        if not rp or not rp.get("ref_premium"):
+            return
+        if await is_blocked(referrer_id):
+            return
+        # процент: индивидуальный, иначе глобальный из настроек
+        pct = rp.get("ref_premium_pct")
+        if pct is None:
+            try:
+                pct = float(await get_setting("ref_premium_pct", "10") or "10")
+            except Exception:
+                pct = 10.0
+        pct = float(pct)
+        if pct <= 0:
+            return
+        reward = round(float(amount_rub) * pct / 100.0, 2)
+        if reward <= 0:
+            return
+        # месячный лимит (0 = без лимита)
+        try:
+            cap = float(await get_setting("ref_premium_cap", "0") or "0")
+        except Exception:
+            cap = 0.0
+        if cap > 0:
+            earned = await premium_ref_earned_this_month(referrer_id)
+            remaining = cap - earned
+            if remaining <= 0:
+                logging.info(f"premium ref monthly cap reached referrer={referrer_id}")
+                return
+            if reward > remaining:
+                reward = round(remaining, 2)
+        # идемпотентность по order_id (UNIQUE в ref_premium_log)
+        ok = await log_premium_ref(referrer_id, referee_id, order_id, float(amount_rub), reward)
+        if not ok:
+            logging.info(f"premium ref already logged order={order_id}")
+            return
+        await add_coins(referrer_id, reward, reason=f"ref_premium order={order_id}")
+        try:
+            new_coins = await get_coins(referrer_id)
+            await bot.send_message(
+                referrer_id,
+                f"💎 <b>Премиум-реферал</b>\n\n"
+                f"Твой реферал оплатил покупку на {int(round(float(amount_rub)))}₽.\n"
+                f"🪙 Начислено: <b>+{reward:.0f}₽</b> монетками ({pct:.0f}%).\n"
+                f"💰 Баланс монеток: <b>{new_coins:.0f}₽</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        logging.error(f"process_premium_referral error: {e}")
+
 
 async def _send_long_reply(message_or_cb, text: str, reply_markup=None,
                             is_callback: bool = False):
@@ -2111,6 +2186,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
     await add_credits_batch(user_id, credits, source="purchase", days_valid=30)
     await log_payment(user_id, credits, int(amount_rub), "freekassa")
     await process_referral_bonus(user_id)
+    await process_premium_referral(user_id, order_id, amount_rub)
 
     # Если был промокод - инкрементим используемость
     promo_code = payment.get("promo_code") if isinstance(payment, dict) else None
