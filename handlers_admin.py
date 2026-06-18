@@ -32,6 +32,7 @@ from states import (
 from db import (
     add_credits, block_user, create_promo, deactivate_promo, get_credits, get_pool,
     get_setting, get_user, list_promos, log_event, set_setting, unblock_user,
+    set_ref_premium, get_ref_premium, list_ref_premium, premium_ref_earned_this_month,
 )
 from keyboards import (
     _all_models_map, _btn_emoji_id, _section_label, kb_admin_panel, kb_balance_menu, kb_block_actions, kb_stat_menu,
@@ -3136,3 +3137,194 @@ async def adm_profit_rate_save(message: Message, state: FSMContext):
         except Exception:
             pass
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+# ══════════════════════════════════════════════════════════
+#  🤝 ПРЕМИУМ-РЕФЕРАЛКА
+# ══════════════════════════════════════════════════════════
+
+async def _refprem_menu():
+    """Текст + клавиатура меню премиум-рефералки."""
+    try:
+        pct = float(await get_setting("ref_premium_pct", "10") or "10")
+    except Exception:
+        pct = 10.0
+    try:
+        cap = float(await get_setting("ref_premium_cap", "0") or "0")
+    except Exception:
+        cap = 0.0
+    partners = await list_ref_premium()
+
+    cap_txt = f"{cap:.0f}₽ / мес" if cap > 0 else "без лимита"
+    lines = [
+        "🤝 <b>Премиум-рефералка</b>\n",
+        f"Глобальный %: <b>{pct:.0f}%</b>",
+        f"Месячный лимит: <b>{cap_txt}</b>\n",
+        "Партнёр получает % монетками с <b>каждой</b> оплаты своих рефералов.",
+    ]
+    rows = [
+        [InlineKeyboardButton(text=f"✏️ Глобальный % ({pct:.0f}%)", callback_data="adm_refp_pct"),
+         InlineKeyboardButton(text="✏️ Лимит/мес", callback_data="adm_refp_cap")],
+        [InlineKeyboardButton(text="➕ Добавить партнёра", callback_data="adm_refp_add")],
+    ]
+
+    if partners:
+        lines.append("\n<b>Партнёры:</b>")
+        for pr in partners:
+            uid = pr["user_id"]
+            uname = (pr.get("username") or "").lstrip("@")
+            ppct = pr.get("ref_premium_pct")
+            ppct_txt = f"{float(ppct):.0f}%" if ppct is not None else f"{pct:.0f}% (глоб.)"
+            earned = await premium_ref_earned_this_month(uid)
+            refs = pr.get("refs", 0)
+            tag = f"@{uname}" if uname else f"<code>{uid}</code>"
+            lines.append(
+                f"\n• {tag} — <b>{ppct_txt}</b> · рефералов: {refs} · "
+                f"за месяц: {earned:.0f}₽"
+            )
+            rows.append([InlineKeyboardButton(
+                text=f"❌ Убрать {('@'+uname) if uname else uid}",
+                callback_data=f"adm_refp_del:{uid}"
+            )])
+    else:
+        lines.append("\n<i>Партнёров пока нет.</i>")
+
+    rows.append([InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="adm_back")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _refprem_show(cb):
+    text, kb = await _refprem_menu()
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_refprem")
+async def adm_refprem_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer()
+    await _refprem_show(cb)
+
+
+@dp.callback_query(F.data == "adm_refp_pct")
+async def adm_refp_pct_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.set_state(AdminState.waiting_refp_pct)
+    await cb.message.answer(
+        "Введи <b>глобальный %</b> премиум-рефералки (например 10 или 7.5):",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_refp_pct, F.text)
+async def adm_refp_pct_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        assert 0 <= val <= 100
+    except Exception:
+        await message.answer("❌ Введи число от 0 до 100:")
+        return
+    await set_setting("ref_premium_pct", str(val))
+    await state.clear()
+    await message.answer(f"✅ Глобальный % премиум-рефералки: <b>{val:.0f}%</b>", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_refp_cap")
+async def adm_refp_cap_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.set_state(AdminState.waiting_refp_cap)
+    await cb.message.answer(
+        "Введи <b>месячный лимит</b> начислений в ₽ на одного партнёра.\n"
+        "0 = без лимита:",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_refp_cap, F.text)
+async def adm_refp_cap_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        val = float(message.text.strip().replace(",", "."))
+        assert val >= 0
+    except Exception:
+        await message.answer("❌ Введи число ≥ 0:")
+        return
+    await set_setting("ref_premium_cap", str(val))
+    await state.clear()
+    cap_txt = f"{val:.0f}₽ / мес" if val > 0 else "без лимита"
+    await message.answer(f"✅ Месячный лимит: <b>{cap_txt}</b>", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_refp_add")
+async def adm_refp_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.set_state(AdminState.waiting_refp_add)
+    await cb.message.answer(
+        "Введи <b>ID пользователя</b>, которому дать премиум-рефералку.\n\n"
+        "Можно с индивидуальным %: <code>123456789 15</code>\n"
+        "Без % — будет использоваться глобальный.",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_refp_add, F.text)
+async def adm_refp_add_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.strip().split()
+    try:
+        uid = int(parts[0])
+    except Exception:
+        await message.answer("❌ Неверный ID. Пример: <code>123456789</code> или <code>123456789 15</code>", parse_mode="HTML")
+        return
+    pct = None
+    if len(parts) > 1:
+        try:
+            pct = float(parts[1].replace(",", "."))
+            assert 0 <= pct <= 100
+        except Exception:
+            await message.answer("❌ % должен быть числом 0–100. Пример: <code>123456789 15</code>", parse_mode="HTML")
+            return
+    u = await get_user(uid)
+    if not u:
+        await message.answer("⚠️ Пользователь не найден в боте (он должен хотя бы раз запустить бота).")
+        return
+    await set_ref_premium(uid, True, pct)
+    await state.clear()
+    pct_txt = f"{pct:.0f}%" if pct is not None else "глобальный %"
+    await message.answer(
+        f"✅ Премиум-рефералка включена для <code>{uid}</code> ({pct_txt}).",
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data.startswith("adm_refp_del:"))
+async def adm_refp_del(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    try:
+        uid = int(cb.data.split(":")[1])
+    except Exception:
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    await set_ref_premium(uid, False, None)
+    await cb.answer("Премиум-рефералка отключена", show_alert=True)
+    await _refprem_show(cb)
