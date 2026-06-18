@@ -403,6 +403,7 @@ def kb_admin_panel():
          InlineKeyboardButton(text="🤖 Модели",           callback_data="adm_models")],
         [InlineKeyboardButton(text="🛍 Продажи магазина",  callback_data="adm_shop_sales"),
          InlineKeyboardButton(text="💵 Редактор цен",      callback_data="adm_prices")],
+        [InlineKeyboardButton(text="🤝 Премиум-рефералка", callback_data="adm_refprem")],
         [InlineKeyboardButton(text="Приветствие",         callback_data="adm_welcome",        icon_custom_emoji_id="5190859184312167965"),
          InlineKeyboardButton(text="Рассылка",            callback_data="adm_broadcast",      icon_custom_emoji_id="5907027384439148391")],
         [InlineKeyboardButton(text="Техобслуживание",     callback_data="adm_maintenance",    icon_custom_emoji_id="5458865216597012027")],
