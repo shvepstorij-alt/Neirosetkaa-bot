@@ -468,7 +468,16 @@ def strip_surrogates(s: str) -> str:
 
 WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
 def plan_name_to_key(plan_name: str) -> str:
-    return {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max"}.get(plan_name, "plus")
+    """Стабильный ключ тарифа для пула кодов. Существующие имена — фиксированы,
+    новые тарифы получают уникальный slug (коды разных тарифов не смешиваются)."""
+    explicit = {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max"}
+    if plan_name in explicit:
+        return explicit[plan_name]
+    import re as _re, hashlib as _h
+    slug = _re.sub(r"[^a-z0-9]+", "_", (plan_name or "").lower()).strip("_")
+    if not slug:  # не-латиница → стабильный хэш, чтобы не схлопнуть в один ключ
+        slug = "plan_" + _h.md5((plan_name or "").encode()).hexdigest()[:8]
+    return slug
 
 COINS_REF_PERCENT = 0.10  # 10% от суммы первой покупки реферала
 
@@ -1043,11 +1052,12 @@ SHOP_CATALOG = {
             {"name": "Plus",   "price": 2000,  "stars": 800,  "desc": "GPT-5.5 и GPT-5.5 Instant, Deep Research (10 раз/мес), Sora, Codex, Agent Mode, DALL-E — 20$/мес"},
             {"name": "Pro 5×", "price": 9000,  "stars": 3600, "desc": "GPT-5.5 Pro, лимиты в 5× выше Plus, расширенный Codex, фоновые агенты — 100$/мес"},
             {"name": "Pro Max","price": 15000, "stars": 6000, "desc": "GPT-5.5 Pro без лимитов, максимум Deep Research и Agent Mode, 1М контекст — 200$/мес"},
+            {"name": "Go",     "price": 1000,  "stars": 400,  "desc": "Бюджетный вход в ChatGPT: в 10× больше сообщений чем на бесплатном, безлимит GPT-5.5 Instant, загрузка файлов и генерация изображений. Без Sora, Codex, Agent Mode и Deep Research — для этого Plus. 8$/мес"},
         ]
     },
     "claude": {
         "name": "Claude", "emoji": "⚡", "emoji_id": "5321196473784773037",
-        "desc": "Лучший ИИ для текстов, анализа и кода от Anthropic. Opus 4.8 (28 мая 2026) — Dynamic Workflows, сильнее в коде и агентских задачах. 200К токенов.",
+        "desc": "Лучший ИИ для текстов, анализа и кода от Anthropic. Флагман Opus 4.8 (28 мая 2026) — сильнее в коде и агентских задачах, контекст до 1М токенов. Быстрый Sonnet 4.6 для повседневных задач.",
         "plans": [
             {"name": "Pro",    "price": 2000,  "stars": 800,  "desc": "Claude Opus 4.8, Sonnet 4.6, Dynamic Workflows, Projects, Claude Code, Research — 20$/мес"},
             {"name": "Max 5×", "price": 9000,  "stars": 3600, "desc": "В 5× больше сообщений чем Pro (~225 за 5 часов), ранний доступ к новым моделям и фичам — 100$/мес"},
@@ -1056,15 +1066,15 @@ SHOP_CATALOG = {
     },
     "grok": {
         "name": "SuperGrok", "emoji": "⚡", "emoji_id": "5319288443153445517",
-        "desc": "ИИ от xAI. Grok 4.3 (май 2026) — 1М токенов контекст, видеовход, Custom Skills. Реальное время X/Twitter. Aurora — безлимит изображений.",
+        "desc": "ИИ от xAI. Grok 4.3 (2026) — контекст 1М токенов, низкая галлюцинация, видеовход и генерация файлов, Custom Skills. Реальное время X. Aurora — изображения без лимита.",
         "plans": [
-            {"name": "SuperGrok",       "price": 2000, "stars": 800,  "desc": "Grok 4.3, DeepSearch, Aurora (изображения безлимит), Big Brain Mode, Custom Skills, голос, 1М контекст — 30$/мес"},
+            {"name": "SuperGrok",       "price": 2000, "stars": 800,  "desc": "Grok 4.3, DeepSearch, Aurora (изображения безлимит), Big Brain Mode, Custom Skills, голос, контекст 1М — 30$/мес"},
             {"name": "SuperGrok Heavy", "price": 8000, "stars": 3200, "desc": "Grok 4.3 Heavy, 8 параллельных агентов, 256К контекст, Grok Build 0.1 (агентный код), максимальные лимиты — 300$/мес"},
         ]
     },
     "perplexity": {
         "name": "Perplexity Pro", "emoji": "🔍", "emoji_id": "5321199630585732877",
-        "desc": "Лучший AI-поиск + автономный агент. Perplexity Computer выполняет задачи вместо тебя. GPT-5.5, Opus 4.8, Gemini 3.1 Pro на выбор.",
+        "desc": "Лучший AI-поиск + автономный агент. Perplexity Computer выполняет задачи вместо тебя, Model Council — ответы нескольких моделей сразу. GPT-5.5, Opus 4.8, Gemini 3.1 Pro, Grok 4.3 на выбор.",
         "plans": [
             {"name": "Pro", "price": 2000, "stars": 800, "desc": "Безлимит Pro Search, Deep Research, Perplexity Computer, выбор модели (GPT-5.5/Opus 4.8/Gemini 3.1/Grok 4.3), PDF/CSV — 20$/мес"},
         ]
@@ -1079,7 +1089,7 @@ SHOP_CATALOG = {
     },
     "lovable": {
         "name": "Lovable Pro", "emoji": "🚀",
-        "desc": "Создание полноценных веб-приложений из текста без кода. Деплой одной кнопкой. React + Supabase, кастомные домены.",
+        "desc": "Создание веб-приложений из текста без кода. Деплой одной кнопкой, React + Supabase, GitHub, Themes; теперь и аналитика, презентации и маркетинг.",
         "plans": [
             {"name": "Pro", "price": 2300, "stars": 920, "desc": "Безлимит сообщений, деплой, кастомные домены, React + Supabase, GitHub интеграция"},
         ]
@@ -1095,22 +1105,22 @@ SHOP_CATALOG = {
     },
     "canva": {
         "name": "Canva Pro", "emoji": "✏️", "emoji_id": "5229235451541338986",
-        "desc": "Дизайн с AI. Magic Studio, Brand Kit, удаление фона, изменение размера под все соцсети одним кликом. 100М+ шаблонов.",
+        "desc": "Дизайн с AI. Canva AI 2.0 (2026) — собственная Canva Design Model, диалоговый дизайн голосом/текстом, Magic Layers, Dream Lab, удаление фона, Brand Kit. 100М+ шаблонов.",
         "plans": [
-            {"name": "Pro", "price": 1200, "stars": 480, "desc": "Magic Design, Magic Write, Background Remover, Brand Kit, безлимит шаблонов и хранилище 1TB"},
+            {"name": "Pro", "price": 1200, "stars": 480, "desc": "Canva AI 2.0, Magic Design, Magic Write, Dream Lab (~500 картинок/мес), Background Remover, Brand Kit, 1TB — 15$/мес"},
         ]
     },
     "kling": {
         "name": "Kling AI", "emoji": "🎬",
-        "desc": "Генерация видео. Kling 3.0 (Omni One) — мультимодальная архитектура, до 15 сек, 4K 60fps, нативное аудио, 6 связанных сцен.",
+        "desc": "Генерация видео. Kling 3.0 Turbo (июнь 2026) — быстрее и дешевле, нативное аудио и улучшенный лип-синк; Omni — до 15 сек и 4K-редактирование.",
         "plans": [
             {"name": "Standard", "price": 900,  "stars": 360,  "desc": "~660 кредитов/мес, Kling 3.0, видео до 10 сек, 1080p, Standard режим, коммерческие права"},
-            {"name": "Pro",      "price": 2700, "stars": 1080, "desc": "~3000 кредитов/мес, Kling 3.0 Pro, до 15 сек, 4K, нативное аудио, приоритет"},
+            {"name": "Pro",      "price": 2700, "stars": 1080, "desc": "~3000 кредитов/мес, Kling 3.0 Turbo/Omni, до 15 сек, 4K, нативное аудио, приоритет"},
         ]
     },
     "runway": {
         "name": "Runway Gen-4", "emoji": "🎥",
-        "desc": "Кинематографическое AI-видео. Gen-4.5 + Runway Agent (май 2026). 1 подписка: Veo 3.1, Kling, Seedance 2.0, FLUX. Camera Controls, 4K.",
+        "desc": "Кинематографическое AI-видео. Gen-4.5 + Runway Agent + Aleph 2.0 (умное редактирование). 1 подписка: Veo 3.1, Kling, Seedance 2.0, FLUX. Camera Controls, 4K.",
         "plans": [
             {"name": "Standard", "price": 1700, "stars": 680,  "desc": "625 кредитов/мес, Gen-4.5, Veo 3.1, Kling, Seedance 2.0 — все модели в одной подписке"},
             {"name": "Pro",      "price": 3700, "stars": 1480, "desc": "2250 кредитов/мес, Runway Agent, Lip Sync, 4K, приоритет, расширенный доступ ко всем моделям"},
@@ -1118,7 +1128,7 @@ SHOP_CATALOG = {
     },
     "heygen": {
         "name": "HeyGen", "emoji": "🧑‍💼",
-        "desc": "AI-аватары и перевод видео. Avatar V (2026) — студийное качество с 15-сек записи. Video Agent, Sora 2/Veo 3.1 b-roll. 175+ языков.",
+        "desc": "AI-аватары и перевод видео. Avatar V (2026) — студийное качество с 15-сек записи, Seedance 2.0 (кинокамера, до 3 аватаров в кадре). Video Agent. 175+ языков.",
         "plans": [
             {"name": "Creator", "price": 2700, "stars": 1080, "desc": "Avatar V, безлимит видео 1080p, 700+ аватаров, Video Agent, Video Translate (175+ языков), аудио-дублирование — 29$/мес"},
         ]
@@ -1141,10 +1151,10 @@ SHOP_CATALOG = {
     },
     "gamma": {
         "name": "Gamma", "emoji": "📊",
-        "desc": "AI-презентации, документы и лендинги из текста за секунды. Экспорт в PPTX/PDF, аналитика просмотров, кастомные домены.",
+        "desc": "AI-презентации, документы и лендинги из текста за секунды. Gamma 3.0 — Gamma Agent (правки в чате), Gamma Imagine (генерация графики), экспорт PPTX/PDF, аналитика, 20+ AI-моделей.",
         "plans": [
-            {"name": "Plus", "price": 1000, "stars": 400, "desc": "Безлимит генераций, без водяного знака, экспорт PPTX/PDF, аналитика"},
-            {"name": "Pro",  "price": 2300, "stars": 920, "desc": "Премиум AI-модели, API доступ, 10 кастомных доменов, Studio Mode"},
+            {"name": "Plus", "price": 1000, "stars": 400, "desc": "Безлимит генераций, без водяного знака, Gamma Agent, экспорт PPTX/PDF, аналитика"},
+            {"name": "Pro",  "price": 2300, "stars": 920, "desc": "Премиум AI-модели, Gamma Imagine, API, 10 кастомных доменов, Studio Mode"},
         ]
     },
     "appstore": {
