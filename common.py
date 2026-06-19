@@ -3970,7 +3970,7 @@ async def _perplexity_activation_polling_job(
 async def webapp_perplexity_handler(request: web.Request) -> web.Response:
     """GET /webapp/perplexity — отдаёт perplexity_webapp.html"""
     try:
-        with open(_CLAUDE_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
+        with open(_PERPLEXITY_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
             return web.Response(text=_f.read(), content_type="text/html", charset="utf-8")
     except FileNotFoundError:
         return web.Response(text="Perplexity Mini App not found", status=404)
