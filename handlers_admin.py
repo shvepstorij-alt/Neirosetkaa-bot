@@ -2010,7 +2010,16 @@ async def adm_add_pack(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "adm_prices_shop")
 async def adm_prices_shop(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID: return
-    rows = [[InlineKeyboardButton(text=f"{s['emoji']} {s['name']} ({len(s['plans'])} \u0442\u0430\u0440\u0438\u0444\u043e\u0432)", callback_data=f"adm_shop_service:{key}")] for key, s in SHOP_CATALOG.items()]
+    rows = []
+    for key, s in SHOP_CATALOG.items():
+        _eid = _btn_emoji_id(key, s)
+        _cnt = len(s.get('plans', []))
+        rows.append([InlineKeyboardButton(
+            text=(f"{s['name']} ({_cnt} \u0442\u0430\u0440\u0438\u0444\u043e\u0432)" if _eid
+                  else f"{s.get('emoji','')} {s['name']} ({_cnt} \u0442\u0430\u0440\u0438\u0444\u043e\u0432)"),
+            callback_data=f"adm_shop_service:{key}",
+            **({"icon_custom_emoji_id": _eid} if _eid else {})
+        )])
     rows += [[InlineKeyboardButton(text="\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0441\u0435\u0440\u0432\u0438\u0441", callback_data="adm_add_service")],
              [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data="adm_prices")]]
     await cb.message.edit_text("\U0001f6cd <b>\u041c\u0430\u0433\u0430\u0437\u0438\u043d \u043f\u043e\u0434\u043f\u0438\u0441\u043e\u043a</b>",
