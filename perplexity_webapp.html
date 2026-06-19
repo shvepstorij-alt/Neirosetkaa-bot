@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Активация Perplexity — Александр ИИ</title>
+  <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+  <style>
+    :root {
+      --bg:        #f9fafb;
+      --bg2:       #ffffff;
+      --bg3:       #f3f4f6;
+      --border:    #e5e7eb;
+      --text:      #111111;
+      --text2:     #6b7280;
+      --text3:     #9ca3af;
+      --orange:    #E8602C;
+      --orange-bg: #FFF4EF;
+      --orange-brd:#FDCBB0;
+      --orange-txt:#9A3412;
+      --code-bg:   #FFF4EF;
+      --code-brd:  #FDCBB0;
+      --code-txt:  #9A3412;
+    }
+    [data-theme="dark"] {
+      --bg:        #0f0f0f;
+      --bg2:       #1a1a1a;
+      --bg3:       #111111;
+      --border:    #2a2a2a;
+      --text:      #e5e5e5;
+      --text2:     #888888;
+      --text3:     #555555;
+      --orange:    #E8602C;
+      --orange-bg: #2A1508;
+      --orange-brd:#5A2A10;
+      --orange-txt:#FDB98A;
+      --code-bg:   #2A1508;
+      --code-brd:  #5A2A10;
+      --code-txt:  #FDB98A;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+      transition: background .25s, color .25s;
+    }
+
+    /* ── THEME TOGGLE ── */
+    .theme-btn {
+      position: fixed; top: 14px; right: 16px; z-index: 100;
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 20px;
+      padding: 5px 11px; font-size: 13px; cursor: pointer; color: var(--text2);
+      transition: all .2s;
+    }
+    .theme-btn:active { transform: scale(.96); }
+
+    /* ── SCREENS ── */
+    .screen { display: none; animation: fadeUp .3s ease; padding-bottom: 110px; }
+    .screen.active { display: block; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── BRAND HEADER ── */
+    .brand-hdr { display: flex; align-items: center; gap: 12px; padding: 20px 18px 0; }
+    .avatar-wrap {
+      width: 46px; height: 46px; border-radius: 14px; overflow: hidden;
+      flex-shrink: 0; border: 2px solid var(--orange);
+      box-shadow: 0 0 12px rgba(232,96,44,.25);
+    }
+    .avatar-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .brand-name { font-size: 16px; font-weight: 600; color: var(--text); }
+    .brand-sub  { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+    /* ── ACCENT LINE ── */
+    .accent-line {
+      height: 2px; background: linear-gradient(90deg, var(--orange), transparent);
+      margin: 14px 18px 0; border-radius: 2px;
+    }
+
+    /* ── CONTENT ── */
+    .content { padding: 16px 18px 0; }
+
+    /* ── GREETING ── */
+    .greeting {
+      background: var(--orange-bg); border: 1px solid var(--orange-brd);
+      border-radius: 12px; padding: 11px 14px; font-size: 13px;
+      color: var(--orange-txt); line-height: 1.55; margin-bottom: 14px;
+    }
+
+    /* ── PROGRESS ── */
+    .progress { margin-bottom: 16px; }
+    .progress-steps { display: flex; align-items: center; }
+    .pstep {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; gap: 4px; position: relative;
+    }
+    .pstep:not(:last-child)::after {
+      content: ''; position: absolute; top: 11px; left: 60%;
+      width: 80%; height: 2px; background: var(--border); transition: background .3s;
+    }
+    .pstep.done::after { background: var(--orange); }
+    .pstep.curr::after { background: var(--orange); opacity: .4; }
+    .pnum {
+      width: 22px; height: 22px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 600; background: var(--border);
+      color: var(--text3); position: relative; z-index: 1; transition: all .3s;
+    }
+    .pstep.done .pnum { background: var(--orange); color: #fff; }
+    .pstep.curr .pnum { background: var(--bg2); border: 2px solid var(--orange); color: var(--orange); }
+    .plbl { font-size: 9px; color: var(--text3); text-align: center; transition: color .3s; }
+    .pstep.done .plbl, .pstep.curr .plbl { color: var(--orange); }
+
+    /* ── CODE CARD ── */
+    .card {
+      background: var(--bg2); border: 1px solid var(--border);
+      border-radius: 14px; padding: 14px; margin-bottom: 12px;
+    }
+    .card-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .card-icon { font-size: 18px; }
+    .card-title { font-size: 12px; font-weight: 600; color: var(--text); }
+    .code-box {
+      background: var(--code-bg); border: 1px solid var(--code-brd);
+      border-radius: 10px; padding: 11px 14px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 15px; color: var(--code-txt); letter-spacing: 2px;
+      text-align: center; font-weight: 600;
+    }
+    .code-hint { font-size: 10px; color: var(--text3); text-align: center; margin-top: 6px; }
+
+    /* ── WARNING BOX ── */
+    .warn-box {
+      background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.3);
+      border-radius: 10px; padding: 10px 13px; font-size: 12px; color: #92400e;
+      margin-bottom: 14px; line-height: 1.55;
+    }
+    [data-theme="dark"] .warn-box { color: #fcd34d; }
+
+    /* ── STEP ROWS ── */
+    .step-row { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 13px; }
+    .step-ico { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+    .step-body .sh { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+    .step-body .sp { font-size: 11px; color: var(--text2); line-height: 1.5; }
+
+    /* ── LINK CARD ── */
+    .link-card {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-left: 3px solid var(--orange); border-radius: 12px;
+      padding: 11px 14px; margin-bottom: 14px; text-decoration: none;
+      cursor: pointer; transition: opacity .15s;
+    }
+    .link-card:active { opacity: .75; }
+    .lc-text { font-size: 13px; font-weight: 600; color: var(--orange); }
+    .lc-sub  { font-size: 10px; color: var(--text3); margin-top: 2px; }
+    .lc-arrow { color: var(--orange); font-size: 18px; flex-shrink: 0; }
+
+    /* ── FIELDS ── */
+    .field-wrap { margin-bottom: 13px; }
+    .field-lbl  { font-size: 11px; font-weight: 600; color: var(--text2); margin-bottom: 6px; }
+    .field-hint { font-size: 10px; color: var(--text3); margin-top: 5px; line-height: 1.5; }
+    .field-hint code {
+      background: var(--bg3); color: var(--orange);
+      padding: 1px 5px; border-radius: 4px; font-size: 10px;
+    }
+
+    input[type="text"] {
+      width: 100%; background: var(--bg3); border: 1.5px solid var(--border);
+      border-radius: 12px; padding: 12px 14px; font-size: 14px; color: var(--text);
+      font-family: 'SF Mono', 'Fira Code', monospace; letter-spacing: 0.5px;
+      outline: none; transition: border-color .2s, box-shadow .2s;
+      -webkit-appearance: none;
+    }
+    input[type="text"]:focus {
+      border-color: var(--orange);
+      box-shadow: 0 0 0 3px rgba(232,96,44,.15);
+    }
+    input[type="text"]::placeholder { color: var(--text3); font-family: inherit; letter-spacing: 0; }
+
+    /* ── ERROR BOX ── */
+    .err-box {
+      background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.25);
+      border-radius: 10px; padding: 10px 13px; font-size: 12px; color: #ef4444;
+      margin-bottom: 13px; display: none;
+    }
+    .err-box.show { display: block; }
+
+    /* ── BUTTONS ── */
+    .btn-wrap {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 12px 18px 20px; background: var(--bg); border-top: 1px solid var(--border); z-index: 50;
+    }
+    .btn {
+      width: 100%; padding: 15px; border: none; border-radius: 14px;
+      font-size: 15px; font-weight: 700; cursor: pointer;
+      transition: opacity .15s, transform .1s; letter-spacing: -.2px;
+    }
+    .btn:active { opacity: .85; transform: scale(.98); }
+    .btn-orange {
+      background: var(--orange); color: #fff;
+      box-shadow: 0 4px 18px rgba(232,96,44,.35);
+    }
+    .btn-outline {
+      background: transparent; color: var(--text3);
+      border: 1.5px solid var(--border); margin-top: 9px; font-size: 14px;
+    }
+    .btn-orange:disabled {
+      background: var(--border); color: var(--text3); box-shadow: none; cursor: not-allowed;
+    }
+
+    /* ══════════════════════════════════════════
+       LOADING SCREEN
+    ══════════════════════════════════════════ */
+    .loading-screen {
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 40px 20px; gap: 0;
+    }
+    .anim-scene { width: 240px; height: 240px; position: relative; margin-bottom: 28px; }
+
+    .anim-char {
+      position: absolute; width: 80px; height: 80px; border-radius: 22px; overflow: hidden;
+      top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10;
+      border: 3px solid var(--orange); box-shadow: 0 0 20px rgba(232,96,44,.4);
+      animation: char-bob 1.8s ease-in-out infinite;
+    }
+    .anim-char img { width: 100%; height: 100%; object-fit: cover; }
+
+    @keyframes char-bob {
+      0%, 100% { transform: translate(-50%, -50%) rotate(-4deg) scale(1); }
+      50%       { transform: translate(-50%, -50%) rotate(4deg) scale(1.03); }
+    }
+
+    .ring {
+      position: absolute; border-radius: 50%;
+      border: 2px solid transparent; top: 50%; left: 50%;
+    }
+    .ring-1 {
+      width: 110px; height: 110px; margin-top: -55px; margin-left: -55px;
+      border-top-color: var(--orange); border-right-color: var(--orange);
+      animation: spin-cw 1.4s linear infinite;
+    }
+    .ring-2 {
+      width: 150px; height: 150px; margin-top: -75px; margin-left: -75px;
+      border-bottom-color: var(--orange); border-left-color: var(--orange);
+      opacity: .6; animation: spin-ccw 2s linear infinite;
+    }
+    .ring-3 {
+      width: 196px; height: 196px; margin-top: -98px; margin-left: -98px;
+      border-top-color: var(--orange); border-right-color: var(--orange);
+      opacity: .25; animation: spin-cw 3s linear infinite;
+    }
+    @keyframes spin-cw  { to { transform: rotate(360deg); } }
+    @keyframes spin-ccw { to { transform: rotate(-360deg); } }
+
+    .wire-node {
+      position: absolute; width: 18px; height: 18px; background: var(--bg2);
+      border: 2px solid var(--orange); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; font-size: 9px;
+      animation: node-pulse 1.5s ease-in-out infinite; z-index: 5;
+    }
+    .wn-1 { top: 10px; left: 50%; transform: translateX(-50%); animation-delay: 0s; }
+    .wn-2 { bottom: 10px; left: 50%; transform: translateX(-50%); animation-delay: .4s; }
+    .wn-3 { left: 10px; top: 50%; transform: translateY(-50%); animation-delay: .8s; }
+    .wn-4 { right: 10px; top: 50%; transform: translateY(-50%); animation-delay: 1.2s; }
+    @keyframes node-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(232,96,44,.5); }
+      50%       { box-shadow: 0 0 0 5px rgba(232,96,44,0); }
+    }
+
+    .packet {
+      position: absolute; width: 7px; height: 7px;
+      background: var(--orange); border-radius: 50%; z-index: 6;
+      box-shadow: 0 0 6px rgba(232,96,44,.8);
+    }
+    .pkt-v1 { left: calc(50% - 3px); animation: move-down 1.6s ease-in-out infinite; }
+    .pkt-v2 { left: calc(50% - 3px); animation: move-up 1.6s ease-in-out infinite .8s; }
+    .pkt-h1 { top: calc(50% - 3px); animation: move-right 1.6s ease-in-out infinite .3s; }
+    .pkt-h2 { top: calc(50% - 3px); animation: move-left 1.6s ease-in-out infinite 1.1s; }
+    @keyframes move-down  { 0%,100%{opacity:0;top:52px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;top:176px;} }
+    @keyframes move-up    { 0%,100%{opacity:0;top:176px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;top:52px;} }
+    @keyframes move-right { 0%,100%{opacity:0;left:52px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;left:176px;} }
+    @keyframes move-left  { 0%,100%{opacity:0;left:176px;} 10%{opacity:1;} 90%{opacity:1;} 100%{opacity:0;left:52px;} }
+
+    .wire-node::before {
+      content: ''; width: 6px; height: 6px; background: var(--orange);
+      border-radius: 50%; animation: dot-blink 1s ease-in-out infinite;
+    }
+    @keyframes dot-blink { 0%,100%{opacity:.4;} 50%{opacity:1;} }
+
+    .loader-title { font-size: 19px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+    .loader-sub   { font-size: 13px; color: var(--text2); text-align: center; line-height: 1.6; max-width: 240px; }
+    .prog-dots { display: flex; gap: 6px; margin-top: 18px; }
+    .prog-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+    .prog-dot:nth-child(1) { animation: dot-anim 1.2s ease-in-out infinite 0s; }
+    .prog-dot:nth-child(2) { animation: dot-anim 1.2s ease-in-out infinite .2s; }
+    .prog-dot:nth-child(3) { animation: dot-anim 1.2s ease-in-out infinite .4s; }
+    @keyframes dot-anim { 0%,100%{background:var(--border);} 50%{background:var(--orange);} }
+
+    /* ══════════════════════════════════════════
+       RESULT SCREENS
+    ══════════════════════════════════════════ */
+    .result-screen {
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; padding: 40px 24px 110px;
+    }
+    .success-icon {
+      font-size: 80px; margin-bottom: 22px; line-height: 1;
+      animation: success-pop .5s cubic-bezier(.34,1.56,.64,1) both;
+    }
+    @keyframes success-pop {
+      from { transform: scale(.6); opacity: 0; }
+      to   { transform: scale(1);  opacity: 1; }
+    }
+    .success-badge {
+      background: var(--orange-bg); border: 1px solid var(--orange-brd);
+      border-radius: 30px; padding: 5px 16px; font-size: 12px;
+      color: var(--orange-txt); font-weight: 600; margin-bottom: 14px;
+    }
+    .success-title { font-size: 26px; font-weight: 800; color: var(--orange); letter-spacing: -.5px; margin-bottom: 6px; }
+    .success-sub-title { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+    .success-sub {
+      font-size: 13px; color: var(--text2); line-height: 1.65;
+      text-align: center; max-width: 270px; margin-bottom: 24px;
+    }
+    .btn-wrap-inline { width: 100%; }
+
+    .error-emoji { font-size: 72px; margin-bottom: 14px; line-height: 1; animation: shake .5s ease both; }
+    @keyframes shake {
+      0%,100%{transform:rotate(0);} 25%{transform:rotate(-8deg);} 75%{transform:rotate(8deg);}
+    }
+    .error-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+    .error-sub {
+      font-size: 13px; color: var(--text2); line-height: 1.65;
+      text-align: center; max-width: 260px; margin-bottom: 24px;
+    }
+  </style>
+</head>
+<body>
+
+<button class="theme-btn" id="themeBtn" onclick="toggleTheme()">☾</button>
+
+<!-- ═══════════════════════════════════
+     ЭКРАН 1 — Подтверждение кода
+═══════════════════════════════════════ -->
+<div id="s1" class="screen active">
+  <div class="brand-hdr">
+    <div class="avatar-wrap">
+      <img src="https://i.ibb.co.com/fz5qw5MH/IMG-5621.png" alt="Александр ИИ"
+        onerror="this.style.display='none';this.parentElement.style.background='#E8602C';this.parentElement.style.display='flex';this.parentElement.style.alignItems='center';this.parentElement.style.justifyContent='center';this.parentElement.innerHTML='<span style=\'color:#fff;font-size:20px;font-weight:700;\'>А</span>';" />
+    </div>
+    <div>
+      <div class="brand-name">Александр ИИ</div>
+      <div class="brand-sub">Активация Perplexity</div>
+    </div>
+  </div>
+  <div class="accent-line"></div>
+
+  <div class="content">
+    <div class="progress">
+      <div class="progress-steps">
+        <div class="pstep curr"><div class="pnum">1</div><div class="plbl">Код</div></div>
+        <div class="pstep"><div class="pnum">2</div><div class="plbl">User ID</div></div>
+        <div class="pstep"><div class="pnum">3</div><div class="plbl">Готово</div></div>
+      </div>
+    </div>
+
+    <div class="greeting" id="s1-greeting">
+      Привет! 👋 Твой код активации подставлен автоматически. Проверь — и жми «Продолжить».
+    </div>
+
+    <!-- Видимый блок с кодом (показывается если код подставлен) -->
+    <div id="code-display-card" class="card" style="display:none;text-align:center;">
+      <div class="card-row" style="justify-content:center;">
+        <div class="card-icon">🎫</div>
+        <div class="card-title">Твой код активации</div>
+      </div>
+      <div class="code-box" id="code-display-text" style="margin-bottom:10px;cursor:pointer;" onclick="copyCode()">—</div>
+      <button onclick="copyCode()" style="
+        background:var(--orange);color:#fff;border:none;border-radius:10px;
+        padding:9px 22px;font-size:13px;font-weight:600;cursor:pointer;width:100%;
+      ">📋 Скопировать код</button>
+      <div class="code-hint" style="margin-top:6px;">Нажми чтобы скопировать — затем продолжай</div>
+    </div>
+
+    <div class="card">
+      <div class="card-row">
+        <div class="card-icon">🎫</div>
+        <div class="card-title">Твой код активации</div>
+      </div>
+      <input type="text" id="code-input"
+        placeholder="Введи код активации вручную"
+        oninput="validateCode()"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+        style="font-family:'SF Mono','Fira Code',monospace;font-size:15px;letter-spacing:1px;text-align:center;"
+      />
+      <div class="code-hint" id="code-hint">Подставлен из заказа — можно исправить вручную</div>
+    </div>
+
+    <div class="warn-box">
+      ⚠️ <b>Важно:</b> подписка привяжется к твоему аккаунту Perplexity по <b>User ID</b>.<br>
+      Убедись, что вошёл именно в нужный аккаунт на perplexity.ai.
+    </div>
+  </div>
+
+  <div class="btn-wrap">
+    <button class="btn btn-orange" id="s1-continue-btn" onclick="goToStep2()" disabled>Всё верно — продолжить →</button>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════
+     ЭКРАН 2 — Ввод Perplexity User ID
+═══════════════════════════════════════ -->
+<div id="s2" class="screen">
+  <div class="brand-hdr">
+    <div class="avatar-wrap">
+      <img src="https://i.ibb.co.com/fz5qw5MH/IMG-5621.png" alt="Александр ИИ"
+        onerror="this.style.display='none';this.parentElement.style.background='#E8602C';this.parentElement.style.display='flex';this.parentElement.style.alignItems='center';this.parentElement.style.justifyContent='center';this.parentElement.innerHTML='<span style=\'color:#fff;font-size:20px;font-weight:700;\'>А</span>';" />
+    </div>
+    <div>
+      <div class="brand-name">Александр ИИ</div>
+      <div class="brand-sub">Шаг 2 из 3</div>
+    </div>
+  </div>
+  <div class="accent-line"></div>
+
+  <div class="content">
+    <div class="progress">
+      <div class="progress-steps">
+        <div class="pstep done"><div class="pnum">✓</div><div class="plbl">Код</div></div>
+        <div class="pstep curr"><div class="pnum">2</div><div class="plbl">User ID</div></div>
+        <div class="pstep"><div class="pnum">3</div><div class="plbl">Готово</div></div>
+      </div>
+    </div>
+
+    <div class="err-box" id="err-box"></div>
+
+    <div class="step-row">
+      <div class="step-ico">1️⃣</div>
+      <div class="step-body">
+        <div class="sh">Зайди на perplexity.ai и авторизуйся</div>
+        <div class="sp">Открой в Google Chrome или Safari</div>
+      </div>
+    </div>
+
+    <div class="step-row">
+      <div class="step-ico">2️⃣</div>
+      <div class="step-body">
+        <div class="sh">Открой страницу сессии по ссылке</div>
+        <div class="sp">Нажми ниже — откроется JSON со страницы сессии</div>
+      </div>
+    </div>
+
+    <a class="link-card" href="https://www.perplexity.ai/api/auth/session" target="_blank">
+      <div>
+        <div class="lc-text">perplexity.ai/api/auth/session</div>
+        <div class="lc-sub">Нажми — откроется в браузере</div>
+      </div>
+      <span class="lc-arrow">↗</span>
+    </a>
+
+    <div class="step-row">
+      <div class="step-ico">3️⃣</div>
+      <div class="step-body">
+        <div class="sh">Скопируй значение поля «id» (UUID)</div>
+        <div class="sp">Можно вставить хоть весь JSON — UUID найдётся сам</div>
+      </div>
+    </div>
+
+    <div class="field-wrap">
+      <div class="field-lbl">Perplexity User ID</div>
+      <input type="text" id="org-input"
+        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        oninput="validateOrgId()"
+        autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+      />
+      <div class="field-hint">
+        UUID из поля «id» — формат: <code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>
+      </div>
+    </div>
+  </div>
+
+  <div class="btn-wrap">
+    <button class="btn btn-orange" id="activate-btn" onclick="startActivation()" disabled>
+      Активировать подписку
+    </button>
+    <button class="btn btn-outline" onclick="showScreen('s1')">← Назад</button>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════
+     ЭКРАН 3 — Загрузка
+═══════════════════════════════════════ -->
+<div id="s3" class="screen">
+  <div class="loading-screen">
+    <div class="anim-scene">
+      <div class="ring ring-3"></div>
+      <div class="ring ring-2"></div>
+      <div class="ring ring-1"></div>
+      <div class="wire-node wn-1"></div>
+      <div class="wire-node wn-2"></div>
+      <div class="wire-node wn-3"></div>
+      <div class="wire-node wn-4"></div>
+      <div class="packet pkt-v1"></div>
+      <div class="packet pkt-v2"></div>
+      <div class="packet pkt-h1"></div>
+      <div class="packet pkt-h2"></div>
+      <div class="anim-char">
+        <img src="https://i.ibb.co.com/fz5qw5MH/IMG-5621.png" alt="Активация..."
+          onerror="this.style.display='none';this.parentElement.style.background='#E8602C';this.parentElement.style.display='flex';this.parentElement.style.alignItems='center';this.parentElement.style.justifyContent='center';this.parentElement.innerHTML='<span style=\'color:#fff;font-size:28px;font-weight:700;\'>А</span>';" />
+      </div>
+    </div>
+
+    <div class="loader-title">Активируем...</div>
+    <div class="loader-sub">Подключаемся к Perplexity.<br>Не закрывай приложение — займёт несколько секунд.</div>
+    <div class="prog-dots">
+      <div class="prog-dot"></div>
+      <div class="prog-dot"></div>
+      <div class="prog-dot"></div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════
+     ЭКРАН 4 — Успех
+═══════════════════════════════════════ -->
+<div id="s4" class="screen">
+  <div class="result-screen">
+    <video id="success-video"
+      src="https://res.cloudinary.com/dn7bd4mvm/video/upload/IMG_5622_euw73v.mp4"
+      muted playsinline
+      style="width:100%;border-radius:20px;max-height:280px;object-fit:cover;margin-bottom:18px;box-shadow:0 4px 20px rgba(232,96,44,.25);"
+    ></video>
+    <div class="success-badge">✅ Активация завершена</div>
+    <div class="success-title">Готово!</div>
+    <div class="success-sub-title" id="success-plan">Perplexity Pro активирован</div>
+    <div class="success-sub">
+      Подписка привязана к твоему аккаунту. Обычно появляется в течение 5–10 минут. Можешь заходить в Perplexity и пользоваться — я всегда на связи!
+    </div>
+
+    <div class="btn-wrap-inline">
+      <a href="https://perplexity.ai" target="_blank" style="text-decoration:none;display:block;">
+        <button class="btn btn-orange" style="margin-bottom:9px;">Открыть Perplexity ↗</button>
+      </a>
+      <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════
+     ЭКРАН 5 — Ошибка
+═══════════════════════════════════════ -->
+<div id="s5" class="screen">
+  <div class="result-screen">
+    <div class="error-emoji">😔</div>
+    <div class="error-title">Не получилось</div>
+    <div class="error-sub" id="err-detail">
+      Что-то пошло не так. Напиши Александру — помогу в течение 15 минут!
+    </div>
+
+    <div class="btn-wrap-inline">
+      <button class="btn btn-orange" style="margin-bottom:9px;" onclick="retryActivation()">
+        Попробовать снова
+      </button>
+      <a href="https://t.me/neirosetkaalex" target="_blank" style="text-decoration:none;display:block;">
+        <button class="btn btn-outline">Написать Александру ↗</button>
+      </a>
+    </div>
+  </div>
+</div>
+
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//  Глобальное состояние
+// ═══════════════════════════════════════════════════════════════════
+var tg        = null;
+var codeInput = null;
+var s1Btn     = null;
+var UUID_RE   = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ─── Навигация ───────────────────────────────────────────────────
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(function(s) { s.classList.remove('active'); });
+  var el = document.getElementById(id);
+  if (el) el.classList.add('active');
+  window.scrollTo(0, 0);
+  if (id === 's4') {
+    var vid = document.getElementById('success-video');
+    if (vid) { vid.currentTime = 0; vid.play().catch(function(){}); }
+  }
+}
+
+// ─── Тема ────────────────────────────────────────────────────────
+function toggleTheme() {
+  var root    = document.documentElement;
+  var darkNow = root.getAttribute('data-theme') === 'dark';
+  root.setAttribute('data-theme', darkNow ? 'light' : 'dark');
+  var btn = document.getElementById('themeBtn');
+  if (btn) btn.textContent = darkNow ? '☾' : '☀';
+}
+
+// ─── Закрытие ────────────────────────────────────────────────────
+function closeTg() { if (tg) try { tg.close(); } catch(e) {} }
+
+// ─── Шаг 1: валидация кода ──────────────────────────────────────
+function validateCode() {
+  if (!codeInput || !s1Btn) return;
+  s1Btn.disabled = codeInput.value.trim().length < 3;
+}
+
+function goToStep2() {
+  if (!codeInput) return;
+  if (codeInput.value.trim().length < 3) return;
+  showScreen('s2');
+}
+
+// ─── Шаг 2: валидация Perplexity User ID ───────────────────────────
+function _extractUuid(v) {
+  var m = (v || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  return m ? m[0].toLowerCase() : '';
+}
+function validateOrgId() {
+  var el  = document.getElementById('org-input');
+  var btn = document.getElementById('activate-btn');
+  var err = document.getElementById('err-box');
+  if (err) err.classList.remove('show');
+  if (btn && el) btn.disabled = !_extractUuid(el.value);
+}
+
+// ─── Retry после ошибки ──────────────────────────────────────────
+function retryActivation() {
+  var err = document.getElementById('err-box');
+  if (err) err.classList.remove('show');
+  showScreen('s2');
+}
+
+// ─── Вспомогательные ─────────────────────────────────────────────
+var _sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+
+function showError(msg) {
+  if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+  var el = document.getElementById('err-detail');
+  if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
+  showScreen('s5');
+}
+
+// ─── Polling ─────────────────────────────────────────────────────
+async function pollStatus(orderId) {
+  for (var i = 0; i < 120; i++) {
+    await _sleep(5000);
+    try {
+      var r    = await fetch('/api/activate-perplexity-status/' + orderId);
+      var data = await r.json();
+      var st   = data.status;
+      if (st === 'done') {
+        if (data.success !== false) {
+          if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
+          showScreen('s4');
+        } else {
+          showError(data.error || 'Ошибка активации');
+        }
+        return;
+      }
+      if (st === 'failed') { showError(data.error || 'Активация не удалась'); return; }
+    } catch(e) {}
+  }
+  showError('Активация затянулась. Напиши Александру — он поможет!');
+}
+
+// ─── Запуск активации ────────────────────────────────────────────
+async function startActivation() {
+  var el     = document.getElementById('org-input');
+  var orgId  = _extractUuid(el ? el.value : '');
+  var errBox = document.getElementById('err-box');
+
+  if (!UUID_RE.test(orgId)) {
+    if (errBox) {
+      errBox.textContent = 'Неверный формат. Perplexity User ID — UUID вида xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+      errBox.classList.add('show');
+    }
+    return;
+  }
+
+  showScreen('s3');
+
+  try {
+    var resp = await fetch('/api/activate-perplexity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        org_id:    orgId,
+        init_data: tg ? tg.initData : ''
+      })
+    });
+
+    if (!resp.ok) {
+      var errMsg = 'Ошибка сервера. Попробуй снова.';
+      try { var d = await resp.json(); errMsg = d.error || errMsg; } catch(_) {}
+      showError(errMsg);
+      return;
+    }
+
+    var body = await resp.json();
+    if (!body.order_id) { showError(body.error || 'Не удалось запустить активацию.'); return; }
+    await pollStatus(body.order_id);
+  } catch(e) {
+    showError('Нет соединения с сервером. Проверь интернет и попробуй снова.');
+  }
+}
+
+// ─── Копирование кода ────────────────────────────────────────────
+function copyCode() {
+  var code = codeInput ? codeInput.value.trim() : '';
+  if (!code) return;
+  try {
+    navigator.clipboard.writeText(code).then(function() {
+      var btn = document.querySelector('#code-display-card button');
+      if (btn) { btn.textContent = '✅ Скопировано!'; setTimeout(function(){ btn.textContent = '📋 Скопировать код'; }, 2000); }
+    });
+  } catch(e) {
+    var ta = document.createElement('textarea');
+    ta.value = code; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand('copy'); } catch(_) {}
+    document.body.removeChild(ta);
+  }
+  if (tg && tg.HapticFeedback) try { tg.HapticFeedback.impactOccurred('light'); } catch(e) {}
+}
+
+// ─── Принудительная активация полей ─────────────────────────────
+function forceEnableInputs() {
+  document.querySelectorAll('input, textarea').forEach(function(el) {
+    el.removeAttribute('disabled');
+    el.removeAttribute('readonly');
+    el.style.pointerEvents = 'auto';
+    el.style.userSelect    = 'text';
+    el.style.webkitUserSelect = 'text';
+  });
+}
+
+// ─── MutationObserver: следим чтобы поля не заблокировались ─────
+function watchInputs() {
+  var observer = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      if (m.type === 'attributes' && (m.attributeName === 'disabled' || m.attributeName === 'readonly')) {
+        var el = m.target;
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+          el.removeAttribute('disabled');
+          el.removeAttribute('readonly');
+        }
+      }
+    });
+  });
+  document.querySelectorAll('input, textarea').forEach(function(el) {
+    observer.observe(el, { attributes: true });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Инициализация — после загрузки всех defer-скриптов
+// ═══════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', function () {
+
+  tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : {
+    ready: function(){},
+    expand: function(){},
+    close: function(){ try { window.history.back(); } catch(e){} },
+    colorScheme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light',
+    initData: '',
+    HapticFeedback: null,
+    initDataUnsafe: {}
+  };
+
+  try { tg.ready(); } catch(e) {}
+
+  // expand() с задержкой + повторная активация полей после
+  setTimeout(function() {
+    try { tg.expand(); } catch(e) {}
+    setTimeout(forceEnableInputs, 100);
+    setTimeout(forceEnableInputs, 500);
+    setTimeout(forceEnableInputs, 1500);
+  }, 200);
+
+  codeInput = document.getElementById('code-input');
+  s1Btn     = document.getElementById('s1-continue-btn');
+
+  // MutationObserver
+  watchInputs();
+
+  if (tg.colorScheme === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    var tb = document.getElementById('themeBtn');
+    if (tb) tb.textContent = '☀';
+  }
+
+  var params   = new URLSearchParams(window.location.search);
+  var planName = params.get('plan') || 'Pro';
+  var preCode  = params.get('code') || (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+
+  function applyCode(code) {
+    if (!code) return false;
+    if (codeInput) {
+      codeInput.value = code;
+      validateCode();
+    }
+    var dispCard = document.getElementById('code-display-card');
+    var dispText = document.getElementById('code-display-text');
+    if (dispCard) dispCard.style.display = 'block';
+    if (dispText) dispText.textContent = code;
+    return true;
+  }
+
+  if (!applyCode(preCode)) {
+    var retries = 0;
+    var retryInterval = setInterval(function() {
+      retries++;
+      var retryCode = new URLSearchParams(window.location.search).get('code')
+                   || (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+      if (retryCode) {
+        applyCode(retryCode);
+        clearInterval(retryInterval);
+      } else if (retries >= 5) {
+        clearInterval(retryInterval);
+        var gr = document.getElementById('s1-greeting');
+        var ch = document.getElementById('code-hint');
+        if (gr) gr.textContent = '⚠️ Код не подставился автоматически. Введи его вручную — он был в сообщении от Александра.';
+        if (ch) ch.textContent = 'Посмотри код в чате бота';
+      }
+    }, 500);
+  }
+
+  var spEl = document.getElementById('success-plan');
+  if (spEl) spEl.textContent = 'Perplexity ' + planName + ' активирован';
+
+  forceEnableInputs();
+
+  // Фикс для org-input (UUID поле) на iOS
+  var orgInput = document.getElementById('org-input');
+  if (orgInput) {
+    orgInput.addEventListener('touchstart', function() {
+      this.removeAttribute('disabled');
+      this.removeAttribute('readonly');
+      this.focus();
+    }, { passive: true });
+  }
+});
+</script>
+
+</body>
+</html>
