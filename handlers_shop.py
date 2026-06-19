@@ -433,7 +433,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             f"👤 @{username} (<code>{uid}</code>)\n"
             f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"💵 Сумма: <b>{p['price']}₽</b>\n"
-            f"🏦 Способ: СБП\n"
+            f"💳 Способ: СБП\n"
             f"🆔 Заказ: <code>{order_id}</code>\n\n"
             f"⏳ <b>Статус: ожидает оплаты</b>",
             parse_mode="HTML"
@@ -1289,7 +1289,7 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
                 f"\U0001f464 @{username} (<code>{uid}</code>)\n"
                 f"\U0001f4e6 {p['credits']} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432\n"
                 f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount}\u20bd</b>\n"
-                f"\U0001f3e6 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
+                f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
                 f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
                 f"\u23f3 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b</b>",
                 parse_mode="HTML"
