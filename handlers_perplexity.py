@@ -514,9 +514,19 @@ async def adm_perplexity_receive_codes(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("Отменено.")
         return
+    text = message.text or ""
+    if text.startswith("/"):
+        await message.answer("⚠️ Это команда, а не коды. Отправь коды (каждый с новой строки) или /cancel.")
+        return
     data = await state.get_data()
     plan = data.get("perplexity_plan", "pro")
-    codes = [l.strip() for l in (message.text or "").splitlines() if l.strip()]
+    _code_re = re.compile(r"^[A-Za-z][A-Za-z0-9][A-Za-z0-9-]*$")
+    _raw = [l.strip() for l in text.splitlines() if l.strip()]
+    codes = [c for c in _raw if _code_re.match(c)]
+    _skipped = len(_raw) - len(codes)
+    if not codes:
+        await message.answer("⚠️ Не нашёл валидных кодов (код начинается с латинской буквы, без «/»). Отправь ещё раз или /cancel.")
+        return
     added = 0
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -532,8 +542,9 @@ async def adm_perplexity_receive_codes(message: Message, state: FSMContext):
                 pass
     await state.clear()
     LABELS3 = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
+    _sk = f"\n⏭ Пропущено невалидных строк: {_skipped}" if _skipped else ""
     await message.answer(
-        f"✅ Добавлено <b>{added}</b> кодов Perplexity {LABELS3.get(plan, plan)}",
+        f"✅ Добавлено <b>{added}</b> кодов Perplexity {LABELS3.get(plan, plan)}{_sk}",
         parse_mode="HTML"
     )
     await log_event(message.from_user.id, "perplexity_codes_added", f"plan={plan} n={added}")
