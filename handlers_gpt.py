@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, PERSONAL_USERNAME, WEBAPP_BASE_URL, _BOT_TZ, bot, dp,
-    is_admin,
+    is_admin, SHOP_CATALOG, plan_name_to_key,
 )
 from runtime_state import (
     rt,
@@ -93,7 +93,7 @@ async def admin_gpt_codes_status(message: Message):
         await message.answer("📭 Кодов нет. Добавь: /add_gpt_codes")
         return
 
-    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    plan_labels = _gpt_plan_labels()
     # Группируем свободные коды по тарифу
     from collections import defaultdict
     free_by_plan = defaultdict(list)
@@ -121,6 +121,16 @@ async def admin_gpt_codes_status(message: Message):
 
 # ── Mini App handlers ─────────────────────────────────────────────────────────
 
+def _gpt_plan_labels() -> dict:
+    """Имена тарифов ChatGPT по ключу пула кодов (динамически из каталога)."""
+    labels = {plan_name_to_key(_p.get("name", "")): _p.get("name", "")
+              for _p in SHOP_CATALOG.get("chatgpt", {}).get("plans", [])}
+    labels.setdefault("plus", "Plus")
+    labels.setdefault("pro_5x", "Pro 5×")
+    labels.setdefault("pro_max", "Pro Max")
+    return labels
+
+
 @dp.callback_query(F.data == "adm_gpt_webapp")
 async def adm_gpt_webapp_menu(cb: CallbackQuery):
     """Управление ChatGPT Mini App из админки."""
@@ -143,11 +153,26 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
                FROM gpt_codes WHERE is_used=TRUE
                ORDER BY used_at DESC LIMIT 1""")
 
+    by_plan = {r["plan"]: r for r in rows}
+    _cg_plans = sorted(SHOP_CATALOG.get("chatgpt", {}).get("plans", []),
+                       key=lambda pp: pp.get("price", 0))
+    _ordered = []
+    for _p in _cg_plans:
+        _k = plan_name_to_key(_p.get("name", ""))
+        if _k not in [x[0] for x in _ordered]:
+            _ordered.append((_k, _p.get("name", _k)))
+    for _k in by_plan:
+        if _k not in [x[0] for x in _ordered]:
+            _ordered.append((_k, _k))
     codes_text = ""
-    for r in rows:
-        icon = "✅" if r["free"] > 2 else ("⚠️" if r["free"] > 0 else "🚨")
-        reserved_str = f" / ⏳ {r['reserved']} ждут" if r["reserved"] > 0 else ""
-        codes_text += f"\n{icon} <b>{r['plan']}</b>: {r['free']} свободных / {r['activated']} активированных{reserved_str}"
+    for _k, _name in _ordered:
+        r = by_plan.get(_k)
+        free = r["free"] if r else 0
+        activated = r["activated"] if r else 0
+        reserved = r["reserved"] if r else 0
+        icon = "✅" if free > 2 else ("⚠️" if free > 0 else "🚨")
+        reserved_str = f" / ⏳ {reserved} ждут" if reserved > 0 else ""
+        codes_text += f"\n{icon} <b>{_name}</b>: {free} свободных / {activated} активированных{reserved_str}"
     if not codes_text:
         codes_text = "\n📭 Кодов нет — добавь через кнопку ниже"
 
@@ -169,11 +194,18 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
         f"<i>При выключении клиенты получают сообщение о тех. работах</i>"
     )
     toggle_text = "🔴 Выключить (тех. работы)" if rt.chatgpt_webapp_enabled else "✅ Включить"
+    _add_rows, _cur = [], []
+    for _k, _name in _ordered:
+        _cur.append(InlineKeyboardButton(text=f"➕ {_name}", callback_data=f"adm_gpt_add:{_k}"))
+        if len(_cur) == 2:
+            _add_rows.append(_cur); _cur = []
+    if _cur:
+        _add_rows.append(_cur)
+    if not _add_rows:
+        _add_rows = [[InlineKeyboardButton(text="➕ Добавить коды", callback_data="adm_gpt_add:plus")]]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data="adm_gpt_toggle")],
-        [InlineKeyboardButton(text="➕ Добавить plus",       callback_data="adm_gpt_add:plus"),
-         InlineKeyboardButton(text="➕ Pro 5×",              callback_data="adm_gpt_add:pro_5x"),
-         InlineKeyboardButton(text="➕ Pro Max",             callback_data="adm_gpt_add:pro_max")],
+        *_add_rows,
         [InlineKeyboardButton(text="📦 Свободные коды",     callback_data="adm_gpt_free:plus"),
          InlineKeyboardButton(text="⏳ Ждущие коды",         callback_data="adm_gpt_pending:plus")],
         [InlineKeyboardButton(text="📋 История активаций",   callback_data="adm_gpt_history:0")],
@@ -207,7 +239,7 @@ async def adm_gpt_add_start(cb: CallbackQuery, state: FSMContext):
     plan = cb.data.split(":")[1]
     await state.update_data(gpt_add_plan=plan)
     await state.set_state(GptAdminState.waiting_codes)
-    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    plan_labels = _gpt_plan_labels()
     await cb.message.answer(
         f"➕ <b>Добавление кодов — {plan_labels.get(plan, plan)}</b>\n\n"
         f"Отправь коды — каждый с новой строки:\n\n"
@@ -246,7 +278,7 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
         remaining = await conn.fetchval(
             "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
     await state.clear()
-    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    plan_labels = _gpt_plan_labels()
     await message.answer(
         f"✅ <b>Коды добавлены!</b>\n\n"
         f"📦 План: <b>{plan_labels.get(plan, plan)}</b>\n"
@@ -289,7 +321,7 @@ async def adm_gpt_history(cb: CallbackQuery):
         await cb.answer("Нет использованных кодов", show_alert=True)
         return
 
-    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    plan_labels = _gpt_plan_labels()
     lines = [f"📋 <b>История активаций</b> (всего {total}):\n"]
     for idx, r in enumerate(rows, start=offset + 1):
         used_at = r["used_at"]
@@ -340,7 +372,7 @@ async def adm_gpt_free_codes(cb: CallbackQuery):
         return
 
     plan = cb.data.split(":")[1]
-    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    plan_labels = _gpt_plan_labels()
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -470,7 +502,7 @@ async def adm_gpt_pending_codes(cb: CallbackQuery):
         return
 
     plan = cb.data.split(":")[1]
-    plan_labels = {"plus": "Plus", "pro_5x": "Pro 5×", "pro_max": "Pro Max"}
+    plan_labels = _gpt_plan_labels()
 
     pool = await get_pool()
     async with pool.acquire() as conn:
