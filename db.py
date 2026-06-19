@@ -379,6 +379,38 @@ async def init_db():
                 expires_at   TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '2 hours')
             )
         """)
+        # ── Perplexity коды и pending активации ─────────────────────────────────────
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS perplexity_codes (
+                id          SERIAL PRIMARY KEY,
+                code        TEXT NOT NULL UNIQUE,
+                plan        TEXT NOT NULL DEFAULT 'pro',
+                is_used     BOOLEAN NOT NULL DEFAULT FALSE,
+                used_by     BIGINT,
+                used_at     TIMESTAMPTZ,
+                order_id    TEXT,
+                org_id      TEXT,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_perplexity_codes_free "
+            "ON perplexity_codes(plan, is_used) WHERE is_used = FALSE"
+        )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS perplexity_pending_activations (
+                id           SERIAL PRIMARY KEY,
+                user_id      BIGINT NOT NULL UNIQUE,
+                code         TEXT NOT NULL,
+                order_id     TEXT NOT NULL,
+                plan         TEXT NOT NULL DEFAULT 'pro',
+                plan_name    TEXT NOT NULL DEFAULT 'Pro',
+                org_id       TEXT DEFAULT '',
+                bpa_order_id INTEGER,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at   TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '2 hours')
+            )
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS nsgifts_orders (
                 id            SERIAL PRIMARY KEY,
@@ -1256,3 +1288,102 @@ async def log_premium_ref(referrer_id: int, referee_id: int, order_id: str,
             return True
         except Exception:
             return False  # UNIQUE(order_id) — уже начисляли
+
+
+# ── Perplexity коды (копия Claude) ───────────────────────────────────────────
+
+async def get_next_perplexity_code(plan: str = "pro"):
+    """Резервирует и возвращает следующий свободный код нужного плана."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE perplexity_codes SET is_used=TRUE
+               WHERE id=(SELECT id FROM perplexity_codes
+                         WHERE plan=$1 AND is_used=FALSE
+                         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+               RETURNING code""",
+            plan
+        )
+    return row["code"] if row else None
+
+
+async def release_perplexity_code(code: str):
+    """Возвращает код в пул при неудачной активации."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE perplexity_codes SET is_used=FALSE, used_by=NULL, "
+            "used_at=NULL, order_id=NULL, org_id=NULL WHERE code=$1",
+            code
+        )
+
+
+async def mark_perplexity_code_used(code: str, user_id: int, order_id: str, org_id: str = ""):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE perplexity_codes "
+            "SET used_by=$1, order_id=$2, org_id=$3, used_at=NOW() WHERE code=$4",
+            user_id, order_id, org_id, code
+        )
+
+
+async def save_perplexity_pending_activation(
+    user_id: int, code: str, order_id: str, plan: str, plan_name: str
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO perplexity_pending_activations
+               (user_id, code, order_id, plan, plan_name)
+               VALUES ($1,$2,$3,$4,$5)
+               ON CONFLICT (user_id) DO UPDATE
+               SET code=$2, order_id=$3, plan=$4, plan_name=$5,
+                   org_id='', bpa_order_id=NULL,
+                   created_at=NOW(), expires_at=NOW()+INTERVAL '2 hours'""",
+            user_id, code, order_id, plan, plan_name
+        )
+
+
+async def get_perplexity_pending_activation(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM perplexity_pending_activations "
+            "WHERE user_id=$1 AND expires_at > NOW()",
+            user_id
+        )
+    return dict(row) if row else None
+
+
+async def delete_perplexity_pending_activation(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM perplexity_pending_activations WHERE user_id=$1", user_id
+        )
+
+
+async def count_perplexity_codes_by_plan() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT plan,
+                      COUNT(*) FILTER(WHERE NOT is_used)                      AS free,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NOT NULL)  AS activated,
+                      COUNT(*) FILTER(WHERE is_used AND used_by IS NULL)      AS reserved
+               FROM perplexity_codes GROUP BY plan ORDER BY plan"""
+        )
+        total_act = await conn.fetchval(
+            "SELECT COUNT(*) FROM perplexity_codes WHERE is_used=TRUE AND used_by IS NOT NULL"
+        ) or 0
+        last_used = await conn.fetchrow(
+            """SELECT code, plan, used_at, used_by
+               FROM perplexity_codes WHERE is_used=TRUE AND used_by IS NOT NULL
+               ORDER BY used_at DESC LIMIT 1"""
+        )
+    return {
+        "by_plan": {r["plan"]: {"free": r["free"], "activated": r["activated"], "reserved": r["reserved"]} for r in rows},
+        "total_activations": total_act,
+        "last_used": dict(last_used) if last_used else None,
+    }
