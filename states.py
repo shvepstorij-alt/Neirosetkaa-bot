@@ -122,6 +122,11 @@ class ClaudeAdminState(StatesGroup):
     waiting_plan  = State()
 
 
+class PerplexityAdminState(StatesGroup):
+    waiting_codes = State()
+    waiting_plan  = State()
+
+
 class AdmNsgState(StatesGroup):
     waiting_rate      = State()
     waiting_markup    = State()
