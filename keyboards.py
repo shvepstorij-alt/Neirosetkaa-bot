@@ -391,6 +391,7 @@ def kb_admin_panel():
     _gpt = {"icon_custom_emoji_id": CUSTOM_EMOJI_IDS["chatgpt"]} if CUSTOM_EMOJI_IDS.get("chatgpt") else {}
     _cl  = {"icon_custom_emoji_id": CUSTOM_EMOJI_IDS["claude"]} if CUSTOM_EMOJI_IDS.get("claude") else {}
     _ap  = {"icon_custom_emoji_id": CUSTOM_EMOJI_IDS["appstore"]} if CUSTOM_EMOJI_IDS.get("appstore") else {}
+    _px  = {"icon_custom_emoji_id": CUSTOM_EMOJI_IDS["perplexity"]} if CUSTOM_EMOJI_IDS.get("perplexity") else {}
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Статистика",          callback_data="adm_stat_menu",      icon_custom_emoji_id="5190481218600189255"),
          InlineKeyboardButton(text="Аналитика",           callback_data="adm_analytics_menu", icon_custom_emoji_id="5296265790654264117")],
@@ -409,6 +410,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="Техобслуживание",     callback_data="adm_maintenance",    icon_custom_emoji_id="5458865216597012027")],
         [InlineKeyboardButton(text="ChatGPT Mini App",    callback_data="adm_gpt_webapp", **_gpt)],
         [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
+        [InlineKeyboardButton(text="Perplexity Mini App", callback_data="adm_perplexity_webapp", **_px)],
         [InlineKeyboardButton(text="Настройка App Store", callback_data="adm_nsgifts", **_ap)],
         [_eib("Главное меню", "back_main")],
     ])
@@ -449,4 +451,3 @@ def _all_models_map():
 
 def _section_label(s: str) -> str:
     return {"image": "📷 Фото", "video": "🎬 Видео", "edit": "🖌 Редактирование", "anim": "🏃 Анимация"}.get(s, s)
-
