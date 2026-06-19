@@ -81,6 +81,7 @@ class AdminState(StatesGroup):
     waiting_refp_pct         = State()   # глобальный %
     waiting_refp_cap         = State()   # месячный лимит, ₽
     waiting_refp_add         = State()   # добавить партнёра: "UID" или "UID %"
+    waiting_refp_del         = State()   # убрать партнёра: ввод UID
 
 # ══════════════════════════════════════════════════════════
 #  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
