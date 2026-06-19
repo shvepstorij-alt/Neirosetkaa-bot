@@ -168,9 +168,11 @@ async def shop_service(cb: CallbackQuery):
         logging.warning(f"shop_service: no plans for key={key!r}")
         await cb.answer("У этого сервиса пока нет тарифов. Напишите Александру.", show_alert=True)
         return
+    _order = sorted(range(len(s["plans"])), key=lambda i: s["plans"][i].get("price", 0))
     plans_text = ""
-    for i, p in enumerate(s["plans"]):
-        plans_text += f"  {i+1}. <b>{p.get('name','')} - {p.get('price',0)}₽/мес</b>\n     <i>{p.get('desc','')}</i>\n"
+    for _n, i in enumerate(_order, 1):
+        p = s["plans"][i]
+        plans_text += f"  {_n}. <b>{p.get('name','')} - {p.get('price',0)}₽/мес</b>\n     <i>{p.get('desc','')}</i>\n"
     text = (
         f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
         f"<i>{s['desc']}</i>\n\n"
@@ -178,7 +180,8 @@ async def shop_service(cb: CallbackQuery):
         f"<b>👇 Выбери тариф:</b>"
     )
     rows = []
-    for i, p in enumerate(s["plans"]):
+    for i in _order:
+        p = s["plans"][i]
         rows.append([InlineKeyboardButton(
             text=f"{p.get('name','')} - {p.get('price',0)}₽/мес",
             callback_data=f"shop_confirm:{key}:{i}"
