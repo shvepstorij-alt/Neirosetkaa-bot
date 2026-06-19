@@ -40,6 +40,8 @@ from db import (
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
+    get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
+    save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji_ui,
@@ -1988,6 +1990,11 @@ _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
 # Claude: заказы, которым уже выдали авто-замену кода после жёсткого сбоя (кап = 1 раз/заказ)
 _claude_replaced_orders: set = set()
+_perplexity_double_warned: set = set()
+_perplexity_act_msg: dict = {}
+_perplexity_replaced_orders: set = set()
+_perplexity_job_results: dict = {}
+_PERPLEXITY_WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perplexity_webapp.html")
 
 # ── Таймер 2 часов на сообщение самостоятельной активации (GPT/Claude) ──
 ACTIVATION_WINDOW_MIN = 120
@@ -2399,6 +2406,60 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             plan_name=_plan_name_cl,
                             delayed_note=delayed_note,
                         )
+            elif shop_key == "perplexity":
+                # ── Авто-активация Perplexity через bypriceactivate.pro Mini App ──
+                _plan_name_cl = p.get("name", "Pro")
+                _plan_key_cl = "pro"
+                if not rt.perplexity_webapp_enabled:
+                    await bot.send_message(
+                        user_id,
+                        f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"Александр активирует Perplexity вручную в течение часа 🙌"
+                        f"{delayed_note}",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(
+                                text="❓ Написать Александру",
+                                url=f"https://t.me/{PERSONAL_USERNAME}"
+                            )],
+                        ])
+                    )
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🛍 <b>Perplexity (ручная активация)</b>\n"
+                        f"👤 <code>{user_id}</code>  📦 {service_name}\n"
+                        f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
+                        parse_mode="HTML"
+                    )
+                else:
+                    _code_cl = await get_next_perplexity_code(_plan_key_cl)
+                    if _code_cl is None:
+                        await bot.send_message(
+                            user_id,
+                            f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                            f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                            f"⚠️ Коды временно закончились. "
+                            f"Александр активирует вручную в течение часа 🙌"
+                            f"{delayed_note}",
+                            parse_mode="HTML"
+                        )
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🚨 <b>КОДЫ Perplexity {_plan_name_cl} ЗАКОНЧИЛИСЬ!</b>\n"
+                            f"Заказ <code>{order_id}</code> user=<code>{user_id}</code>\n"
+                            f"Пополни коды на bypriceactivate.pro",
+                            parse_mode="HTML"
+                        )
+                    else:
+                        await _send_perplexity_webapp_to_user(
+                            user_id=user_id,
+                            code=_code_cl,
+                            order_id=order_id,
+                            plan=_plan_key_cl,
+                            plan_name=_plan_name_cl,
+                            delayed_note=delayed_note,
+                        )
             else:
                 await bot.send_message(
                     user_id,
@@ -2734,6 +2795,10 @@ async def setup_webhook_server():
     app.router.add_post("/api/activate-claude", api_activate_claude_handler)
     app.router.add_get("/api/activate-claude-status/{order_id}", api_activate_claude_status_handler)
     logging.info("Claude Mini App: /webapp/claude + /api/activate-claude + status")
+    app.router.add_get("/webapp/perplexity", webapp_perplexity_handler)
+    app.router.add_post("/api/activate-perplexity", api_activate_perplexity_handler)
+    app.router.add_get("/api/activate-perplexity-status/{order_id}", api_activate_perplexity_status_handler)
+    logging.info("Perplexity Mini App: /webapp/perplexity + /api/activate-perplexity + status")
 
     app.router.add_post("/api/activate-chatgpt", api_activate_chatgpt_handler)
     app.router.add_get("/api/activate-status/{job_id}", api_activation_status_handler)
@@ -3571,4 +3636,551 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
 # ──────────────────────────────────────────────────────────────────────────────
 #  Фоновый цикл: алерт на низкий баланс NS Gifts
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+# ══════════════════════════════════════════════════════════
+#  PERPLEXITY — авто-активация (копия Claude, идентификатор = Perplexity User ID)
+# ══════════════════════════════════════════════════════════
+
+async def _send_perplexity_webapp_to_user(
+    user_id: int, code: str, order_id: str,
+    plan: str, plan_name: str, delayed_note: str = ""
+) -> bool:
+    """Сохраняет pending и отправляет клиенту кнопку WebApp."""
+    import urllib.parse as _up
+    from aiogram.types import WebAppInfo as _WAI
+
+    await save_perplexity_pending_activation(user_id, code, order_id, plan, plan_name)
+
+    webapp_url = (
+        f"{WEBAPP_BASE_URL}/webapp/perplexity"
+        f"?plan={_up.quote(plan_name)}&code={_up.quote(code)}"
+    )
+    try:
+        import datetime as _dt_cl
+        _base_cl = (
+            f"🎉 <b>Оплата прошла!</b>\n\n"
+            f"📦 <b>Perplexity {plan_name}</b>\n\n"
+            f"Осталось активировать подписку — нажми кнопку ниже, "
+            f"введи Perplexity User ID (perplexity.ai/api/auth/session), и подписка "
+            f"активируется автоматически за 1–2 минуты 👇"
+            f"{delayed_note}"
+        )
+        _kb_cl_active = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ Активировать Perplexity", web_app=_WAI(url=webapp_url))],
+            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="perplexity_need_help")],
+        ])
+        _kb_cl_expired = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="perplexity_need_help")],
+        ])
+        _dl_cl = _dt_cl.datetime.now(_BOT_TZ) + _dt_cl.timedelta(minutes=ACTIVATION_WINDOW_MIN)
+        _exp_cl = (
+            f"⏰ <b>Время самостоятельной активации истекло</b>\n\n"
+            f"📦 <b>Perplexity {plan_name}</b> — оплата сохранена.\n"
+            f"Напиши Александру — активирую вручную 🙌"
+        )
+        _m_act_cl = await bot.send_message(
+            user_id, _base_cl + _activation_timer_line(_dl_cl),
+            parse_mode="HTML", reply_markup=_kb_cl_active)
+        _perplexity_act_msg[user_id] = _m_act_cl.message_id
+        asyncio.create_task(_activation_timer_job(
+            user_id, _m_act_cl.message_id, _base_cl, _kb_cl_active,
+            _dl_cl, _exp_cl, _kb_cl_expired, _perplexity_act_msg))
+        await log_event(user_id, "perplexity_webapp_sent",
+                        f"code={code} plan={plan_name} order={order_id}")
+        return True
+    except Exception as _e:
+        logging.error(f"_send_perplexity_webapp_to_user uid={user_id}: {_e}")
+        return False
+
+
+# ─── Фоновый polling job ──────────────────────────────────────────────────────
+
+
+async def _perplexity_test_activation_job(fake_bpa: int, user_id: int, plan_name: str):
+    """Симулирует успешную активацию для тестового кода TEST-."""
+    await asyncio.sleep(4)  # имитируем задержку как в реальном сценарии
+    _perplexity_job_results[fake_bpa] = {"status": "done", "success": True}
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🧪 <b>Perplexity тест завершён</b>\n"
+            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+            f"Это фейковая активация — реальный код не потрачен.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+async def _perplexity_activation_polling_job(
+    bpa_order_id: int, code: str, user_id: int,
+    order_id: str, plan_name: str, org_id: str
+):
+    """
+    Опрашивает bypriceactivate.pro каждые 5 сек.
+    При done — помечает код, уведомляет тебя и клиента.
+    При failed — возвращает код, пишет обоим.
+    """
+    _perplexity_job_results[bpa_order_id] = {"status": "queued"}
+    logging.info(f"Perplexity polling bpa={bpa_order_id} user={user_id} code={code}")
+
+    for attempt in range(120):          # макс 10 минут (120 × 5 сек)
+        await asyncio.sleep(5)
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as _s:
+                async with _s.get(
+                    f"https://bypriceactivate.pro/api/activate/{bpa_order_id}"
+                ) as _r:
+                    if _r.status != 200:
+                        continue
+                    _d = await _r.json()
+
+            status = _d.get("status")
+            _perplexity_job_results[bpa_order_id] = {"status": status}
+
+            # ── Успех ──────────────────────────────────────────
+            if status == "done":
+                await mark_perplexity_code_used(code, user_id, order_id, org_id)
+                await delete_perplexity_pending_activation(user_id)
+                _perplexity_job_results[bpa_order_id] = {"status": "done", "success": True}
+
+                import datetime as _dt2
+                _ts = _dt2.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
+                try:
+                    _pool2 = await get_pool()
+                    async with _pool2.acquire() as _c2:
+                        _ur = await _c2.fetchrow(
+                            "SELECT username, full_name FROM users WHERE user_id=$1",
+                            user_id
+                        )
+                    _un = (_ur["username"] if _ur else "") or ""
+                    _fn = (_ur["full_name"] if _ur else "") or ""
+                except Exception:
+                    _un = _fn = ""
+                _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+
+                # Заменяем сообщение клиента на поздравление, убираем «Нужна помощь»
+                import datetime as _dt_end_cl
+                _end_cl = (_dt_end_cl.datetime.now(_BOT_TZ) + _dt_end_cl.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
+                _prof_kw_cl = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]}
+                               if UI_EMOJI_IDS.get("menu_profile") else {})
+                _congrats_cl = (
+                    "🎉 <b>Подписка Perplexity активирована!</b>\n\n"
+                    f"📦 Тариф: <b>{plan_name}</b>\n"
+                    f"🏢 Perplexity User ID: <code>{org_id}</code>\n"
+                    f"🔑 Ключ: <code>{code}</code>\n"
+                    f"📅 Действует до: <b>{_end_cl}</b>\n\n"
+                    "Подписка появится в Perplexity в течение 5–10 минут. Спасибо за покупку! 🙌"
+                )
+                _kb_cl = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Открыть Perplexity ↗", url="https://perplexity.ai")],
+                    [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", **_prof_kw_cl)],
+                    [_eib("Главное меню", "back_main")],
+                ])
+                _mid_cl = _perplexity_act_msg.pop(user_id, None)
+                _edited_cl = False
+                if _mid_cl:
+                    try:
+                        await bot.edit_message_text(_congrats_cl, chat_id=user_id, message_id=_mid_cl,
+                                                    parse_mode="HTML", reply_markup=_kb_cl)
+                        _edited_cl = True
+                    except Exception as _ee_cl:
+                        logging.warning(f"edit perplexity activation msg failed: {_ee_cl}")
+                if not _edited_cl:
+                    try:
+                        await bot.send_message(user_id, _congrats_cl, parse_mode="HTML", reply_markup=_kb_cl)
+                    except Exception:
+                        pass
+
+                try:
+                    _caption_ok = (
+                        f"✅ <b>Perplexity авто-активация OK</b>\n\n"
+                        f"👤 <b>{_tg}</b>  (<code>{user_id}</code>)\n"
+                        f"🔑 Код: <code>{code}</code>\n"
+                        f"📦 Тариф: <b>{plan_name}</b>\n"
+                        f"🆔 Org ID: <code>{org_id}</code>\n"
+                        f"🔢 BPA: <code>{bpa_order_id}</code>\n"
+                        f"⏱ {_ts}"
+                    )
+                    _ss_ok = await _take_claude_bpa_screenshot(bpa_order_id)
+                    if _ss_ok:
+                        await bot.send_photo(
+                            ADMIN_ID,
+                            BufferedInputFile(_ss_ok, "perplexity_ok.png"),
+                            caption=_caption_ok, parse_mode="HTML"
+                        )
+                    else:
+                        await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+                except Exception:
+                    pass
+                await log_event(user_id, "perplexity_activation_ok",
+                                f"code={code} bpa={bpa_order_id} plan={plan_name}")
+                return
+
+            # ── Ошибка ─────────────────────────────────────────
+            elif status == "failed":
+                _err = _d.get("error") or "Ошибка активации"
+                _perplexity_job_results[bpa_order_id] = {
+                    "status": "done", "success": False, "error": _err
+                }
+                _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
+                _replaced_code = None
+                if _is_stock:
+                    # нет стока — код валиден, возвращаем в пул
+                    await release_perplexity_code(code)
+                    await delete_perplexity_pending_activation(user_id)
+                else:
+                    # Жёсткий сбой: код «сгорел» у провайдера (повторно непригоден).
+                    # ОДИН раз автоматически выдаём свежий код, чтобы клиент активировал сам.
+                    if order_id not in _perplexity_replaced_orders:
+                        _pend_f = await get_perplexity_pending_activation(user_id)
+                        _plan_key_f = ((_pend_f or {}).get("plan")) or {
+                            "Pro": "pro", "Max 5×": "max_5x", "Max 20×": "max_20x"
+                        }.get(plan_name, "pro")
+                        _new_code_f = await get_next_perplexity_code(_plan_key_f)
+                        if _new_code_f:
+                            _perplexity_replaced_orders.add(order_id)
+                            # старый код оставляем зарезервированным (is_used=TRUE) — он мёртв
+                            await save_perplexity_pending_activation(
+                                user_id, _new_code_f, order_id, _plan_key_f, plan_name)
+                            _replaced_code = _new_code_f
+                            logging.info(
+                                f"Perplexity auto-replace user={user_id} order={order_id} "
+                                f"dead={code} new={_new_code_f}")
+                    if not _replaced_code:
+                        # авто-замена недоступна (нет свежих кодов / уже заменяли) → ручная
+                        await delete_perplexity_pending_activation(user_id)
+
+                # ── алерт админу ──
+                try:
+                    _caption_fail = (
+                        f"❌ <b>Perplexity FAILED</b>\n"
+                        f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                        f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
+                        f"❌ {_err[:300]}"
+                        + (f"\n♻️ Выдан новый код: <code>{_replaced_code}</code>" if _replaced_code
+                           else "\n⚠️ Авто-замена недоступна — нужна ручная активация")
+                    )
+                    _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
+                    if _ss_fail:
+                        await bot.send_photo(
+                            ADMIN_ID,
+                            BufferedInputFile(_ss_fail, "perplexity_fail.png"),
+                            caption=_caption_fail, parse_mode="HTML"
+                        )
+                    else:
+                        await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
+                except Exception:
+                    pass
+
+                # ── сообщение клиенту ──
+                try:
+                    if _replaced_code:
+                        await bot.send_message(
+                            user_id,
+                            "😔 <b>Первый код не сработал</b>\n\n"
+                            "Мы автоматически выдали новый код. "
+                            "Нажми «🔁 Попробовать снова» — активируем заново 👇",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="🔁 Попробовать снова",
+                                    callback_data="perplexity_reopen_webapp"
+                                )],
+                                [InlineKeyboardButton(
+                                    text="❓ Нужна помощь",
+                                    callback_data="perplexity_need_help"
+                                )],
+                            ])
+                        )
+                    else:
+                        await bot.send_message(
+                            user_id,
+                            f"😔 <b>Активация Perplexity не прошла</b>\n\n"
+                            f"{_err[:300]}\n\n"
+                            f"Напиши Александру — активирую вручную за 15–30 мин!",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="✅ Активировали тариф вручную",
+                                    callback_data="perplexity_manual_activated"
+                                )],
+                                [InlineKeyboardButton(
+                                    text="❓ Нужна помощь",
+                                    callback_data="perplexity_need_help"
+                                )],
+                            ])
+                        )
+                except Exception:
+                    pass
+                await log_event(user_id, "perplexity_activation_fail",
+                                f"code={code} bpa={bpa_order_id} replaced={_replaced_code or '-'} err={_err[:120]}")
+                return
+
+        except Exception as _e:
+            logging.error(f"Perplexity poll #{attempt} bpa={bpa_order_id}: {_e}")
+
+    # ── Таймаут ────────────────────────────────────────────────
+    # Код и pending НЕ трогаем — чтобы клиент мог нажать «активировали вручную»,
+    # а Александр активировал тем же кодом. Освободится сам через ~2ч (cleanup-loop).
+    _perplexity_job_results[bpa_order_id] = {
+        "status": "done", "success": False,
+        "error": "Активация затянулась. Напиши Александру — он поможет!"
+    }
+    try:
+        await bot.send_message(
+            user_id,
+            f"⏰ <b>Активация Perplexity затянулась</b>\n\n"
+            f"Мы не получили подтверждение от сервиса активации.\n"
+            f"Напиши Александру — разберёмся и активируем вручную!",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="✅ Активировали тариф вручную",
+                    callback_data="perplexity_manual_activated"
+                )],
+                [InlineKeyboardButton(
+                    text="❓ Нужна помощь",
+                    callback_data="perplexity_need_help"
+                )],
+            ])
+        )
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⏰ <b>Perplexity TIMEOUT</b>\n"
+            f"👤 <code>{user_id}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
+            f"🔑 Код: <code>{code}</code>\n"
+            f"10 минут — проверь вручную на bypriceactivate.pro\n"
+            f"Код зарезервирован за клиентом — активируй вручную им же.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+# ─── Веб-хэндлеры ────────────────────────────────────────────────────────────
+
+
+async def webapp_perplexity_handler(request: web.Request) -> web.Response:
+    """GET /webapp/perplexity — отдаёт perplexity_webapp.html"""
+    try:
+        with open(_CLAUDE_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
+            return web.Response(text=_f.read(), content_type="text/html", charset="utf-8")
+    except FileNotFoundError:
+        return web.Response(text="Perplexity Mini App not found", status=404)
+
+
+async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
+    """POST /api/activate-perplexity"""
+    import json as _j, re as _re
+
+    def _resp(data, status=200):
+        return web.Response(
+            text=_j.dumps(data, ensure_ascii=False),
+            content_type="application/json", status=status
+        )
+
+    if not rt.perplexity_webapp_enabled:
+        return _resp({"error": f"Временно недоступно. Напиши @{PERSONAL_USERNAME}"}, 503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _resp({"error": "Неверный формат запроса"}, 400)
+
+    org_id    = (body.get("org_id") or "").strip().lower()
+    init_data = (body.get("init_data") or "").strip()
+
+    user_id = _verify_tg_init_data(init_data)
+    if not user_id:
+        return _resp({"error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
+
+    if not _re.match(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', org_id
+    ):
+        return _resp({"error": "Неверный формат Perplexity User ID. Должен быть UUID."})
+
+    pending = await get_perplexity_pending_activation(user_id)
+    if not pending:
+        return _resp({
+            "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME} для нового кода."
+        })
+
+    code      = pending["code"]
+    order_id  = pending["order_id"]
+    plan_name = pending["plan_name"]
+
+    # ТЕСТ: если код фейковый (TEST-) — симулируем успех без реального запроса
+    if code.startswith("TEST-"):
+        import random as _rand
+        fake_bpa = _rand.randint(9000000, 9999999)
+        _perplexity_job_results[fake_bpa] = {"status": "queued"}
+        asyncio.create_task(_perplexity_test_activation_job(fake_bpa, user_id, plan_name))
+        await delete_perplexity_pending_activation(user_id)
+        logging.info(f"Perplexity TEST activation: fake_bpa={fake_bpa} user={user_id}")
+        return _resp({"order_id": fake_bpa, "status": "queued"})
+
+    # БАГ 3 FIX: если job уже запущен — не делаем новый POST, просто возвращаем существующий order_id
+    existing_bpa = pending.get("bpa_order_id")
+    if existing_bpa:
+        # Polling job уже работает или завершился — возвращаем клиенту тот же order_id
+        logging.info(f"Perplexity reuse bpa={existing_bpa} user={user_id}")
+        return _resp({"order_id": existing_bpa, "status": "queued"})
+
+    # Guard: повторная активация Perplexity за 35 дней — предупреждаем, повторное
+    # нажатие «Попробовать снова» активирует принудительно (на другой аккаунт).
+    try:
+        _pool_dbl = await get_pool()
+        async with _pool_dbl.acquire() as _c_dbl:
+            _recent = await _c_dbl.fetchrow(
+                "SELECT code, plan, used_at FROM perplexity_codes"
+                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '35 days'"
+                " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
+                user_id
+            )
+        if _recent:
+            _us = _recent["used_at"].strftime("%d.%m.%Y %H:%M") if _recent["used_at"] else "-"
+            _u = await get_user(user_id)
+            if _u and _u.get("username"):
+                _uname = "@" + _u["username"]
+            elif _u and _u.get("full_name"):
+                _uname = _u["full_name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            else:
+                _uname = "без ника"
+            if user_id not in _perplexity_double_warned:
+                _perplexity_double_warned.add(user_id)
+                logging.warning(f'Perplexity repeat activation: warned user={user_id} code={_recent["code"]}')
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "⚠️ <b>Повторная активация Perplexity</b> (клиент предупреждён)\n\n"
+                        f"👤 {_uname} (<code>{user_id}</code>)\n"
+                        f"🔑 Уже активирован: <code>{_recent['code']}</code>\n"
+                        f"📦 Тариф: <b>{_recent['plan']}</b>\n"
+                        f"⏱ Дата: <b>{_us}</b>\n\n"
+                        "Если клиент нажмёт «Попробовать снова» — активирует на другой аккаунт.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+                return _resp({"error": (
+                    "⚠️ На твой аккаунт уже активирована подписка Perplexity.\n\n"
+                    "Если оформляешь на ДРУГОЙ аккаунт (например, для друга) — "
+                    "нажми «Попробовать снова», и активация пройдёт.\n\n"
+                    "Если это случайно — напиши Александру."
+                )})
+            else:
+                _perplexity_double_warned.discard(user_id)
+                logging.info(f"Perplexity forced re-activation user={user_id}")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "✅ <b>Повторная активация Perplexity — подтверждена</b>\n\n"
+                        f"👤 {_uname} (<code>{user_id}</code>) активирует ещё раз (другой аккаунт).",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+    except Exception as _dbl_e:
+        logging.error(f"perplexity double-activation check: {_dbl_e}")
+
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as _s:
+            async with _s.post(
+                "https://bypriceactivate.pro/api/activate",
+                json={"code": code, "org_id": org_id},
+                headers={"Content-Type": "application/json"},
+            ) as _r:
+                try:
+                    _rd = await _r.json()
+                except Exception:
+                    _rd = {}
+
+                if _r.status == 201:
+                    bpa_order_id = _rd.get("order_id")
+                    if not bpa_order_id:
+                        return _resp({"error": "Сервис не вернул order_id."})
+
+                    _pool3 = await get_pool()
+                    async with _pool3.acquire() as _c3:
+                        await _c3.execute(
+                            "UPDATE perplexity_pending_activations "
+                            "SET org_id=$1, bpa_order_id=$2 WHERE user_id=$3",
+                            org_id, bpa_order_id, user_id
+                        )
+                    asyncio.create_task(_perplexity_activation_polling_job(
+                        bpa_order_id, code, user_id, order_id, plan_name, org_id
+                    ))
+                    logging.info(
+                        f"Perplexity activation: bpa={bpa_order_id} user={user_id} code={code}"
+                    )
+                    return _resp({"order_id": bpa_order_id, "status": "queued"})
+
+                elif _r.status == 409:
+                    _detail = _rd.get("detail", "")
+                    if "already claimed" in _detail:
+                        _msg = "Код уже активирован. Напиши Александру."
+                    elif "out of stock" in _detail:
+                        _msg = "Временно нет активаций. Александр активирует вручную."
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🚨 <b>Perplexity — нет стока!</b>\n"
+                                f"👤 <code>{user_id}</code> ({plan_name})\n"
+                                f"Пополни коды на bypriceactivate.pro",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        _msg = _detail or "Ошибка кода."
+                    return _resp({"error": _msg})
+
+                elif _r.status == 404:
+                    return _resp({"error": "Код не найден. Напиши Александру."})
+
+                else:
+                    logging.error(f"bypriceactivate.pro HTTP {_r.status}: {str(_rd)[:200]}")
+                    return _resp({"error": f"Ошибка ({_r.status}). Попробуй ещё раз."})
+
+    except aiohttp.ClientError as _e:
+        logging.error(f"Perplexity activate network: {_e}")
+        return _resp({"error": "Нет связи с сервисом. Попробуй ещё раз."})
+    except Exception as _e:
+        logging.error(f"Perplexity activate error: {_e}", exc_info=True)
+        return _resp({"error": "Внутренняя ошибка. Напиши Александру."})
+
+
+async def api_activate_perplexity_status_handler(request: web.Request) -> web.Response:
+    """GET /api/activate-perplexity-status/{order_id}"""
+    import json as _j2
+    try:
+        bpa_order_id = int(request.match_info.get("order_id", ""))
+    except ValueError:
+        return web.Response(
+            text=_j2.dumps({"status": "not_found"}),
+            content_type="application/json", status=400
+        )
+    result = _perplexity_job_results.get(bpa_order_id)
+    if result is None:
+        return web.Response(
+            text=_j2.dumps({"status": "not_found"}),
+            content_type="application/json", status=404
+        )
+    return web.Response(
+        text=_j2.dumps(result, ensure_ascii=False),
+        content_type="application/json"
+    )
+
+
+# ─── Callback: клиент переоткрывает WebApp сам ───────────────────────────────
+
 
