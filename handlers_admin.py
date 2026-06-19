@@ -3167,6 +3167,8 @@ async def _refprem_menu():
          InlineKeyboardButton(text="✏️ Лимит/мес", callback_data="adm_refp_cap")],
         [InlineKeyboardButton(text="➕ Добавить партнёра", callback_data="adm_refp_add")],
     ]
+    if partners:
+        rows.append([InlineKeyboardButton(text="❌ Убрать партнёра", callback_data="adm_refp_delask")])
 
     if partners:
         lines.append("\n<b>Партнёры:</b>")
@@ -3177,15 +3179,11 @@ async def _refprem_menu():
             ppct_txt = f"{float(ppct):.0f}%" if ppct is not None else f"{pct:.0f}% (глоб.)"
             earned = await premium_ref_earned_this_month(uid)
             refs = pr.get("refs", 0)
-            tag = f"@{uname}" if uname else f"<code>{uid}</code>"
+            tag = f"@{uname} (<code>{uid}</code>)" if uname else f"<code>{uid}</code>"
             lines.append(
                 f"\n• {tag} — <b>{ppct_txt}</b> · рефералов: {refs} · "
                 f"за месяц: {earned:.0f}₽"
             )
-            rows.append([InlineKeyboardButton(
-                text=f"❌ Убрать {('@'+uname) if uname else uid}",
-                callback_data=f"adm_refp_del:{uid}"
-            )])
     else:
         lines.append("\n<i>Партнёров пока нет.</i>")
 
@@ -3315,16 +3313,36 @@ async def adm_refp_add_save(message: Message, state: FSMContext):
     )
 
 
-@dp.callback_query(F.data.startswith("adm_refp_del:"))
-async def adm_refp_del(cb: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "adm_refp_delask")
+async def adm_refp_del_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
+    await state.set_state(AdminState.waiting_refp_del)
+    await cb.message.answer(
+        "Введи <b>ID партнёра</b>, которого убрать из премиум-рефералки:",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_refp_del, F.text)
+async def adm_refp_del_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
     try:
-        uid = int(cb.data.split(":")[1])
+        uid = int(message.text.strip().split()[0])
     except Exception:
-        await cb.answer("Ошибка", show_alert=True)
+        await message.answer("❌ Неверный ID. Введи числовой ID партнёра:")
+        return
+    rp = await get_ref_premium(uid)
+    if not rp or not rp.get("ref_premium"):
+        await state.clear()
+        await message.answer(f"⚠️ <code>{uid}</code> не в списке премиум-партнёров.", parse_mode="HTML")
         return
     await set_ref_premium(uid, False, None)
-    await cb.answer("Премиум-рефералка отключена", show_alert=True)
-    await _refprem_show(cb)
+    await state.clear()
+    await message.answer(
+        f"✅ Партнёр <code>{uid}</code> убран из премиум-рефералки.",
+        parse_mode="HTML"
+    )
