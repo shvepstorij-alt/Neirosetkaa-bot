@@ -8,6 +8,7 @@ import logging
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
+from aiogram.filters import StateFilter
 
 from config import ADMIN_ID, PERSONAL_USERNAME, SHOP_CATALOG, bot, dp
 from states import AdminState
@@ -359,3 +360,36 @@ async def adm_lp_pending(cb: CallbackQuery):
         await cb.message.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     except Exception:
         await cb.message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
+
+# ─── Тест-команда (только админ): прогон флоу без оплаты ──────────────────────
+
+@dp.message(F.text.startswith("/test_linkpay"), StateFilter("*"))
+async def test_linkpay(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    import random, string as _s
+    from common import _send_linkpay_instructions
+    parts = (message.text or "").split()
+    key = parts[1] if len(parts) > 1 else "suno"
+    sv = SHOP_CATALOG.get(key)
+    if not sv:
+        await message.answer(
+            f"❌ Сервис «{key}» не найден.\nПример: <code>/test_linkpay suno</code>",
+            parse_mode="HTML")
+        return
+    plans = sv.get("plans", [])
+    plan = plans[0] if plans else {}
+    plan_name = plan.get("name", "Pro")
+    amount = plan.get("price", 0)
+    service_name = f"{sv.get('emoji','')} {sv.get('name', key)} - {plan_name}".strip()
+    order_id = "TESTLP-" + "".join(random.choices(_s.ascii_uppercase + _s.digits, k=8))
+    await message.answer(
+        f"🧪 <b>Тест link-pay: {sv.get('name', key)}</b>\n"
+        f"Сейчас придёт сообщение, как видит клиент после оплаты 👇\n"
+        f"<i>Заказ тестовый: {order_id}</i>",
+        parse_mode="HTML")
+    await _send_linkpay_instructions(
+        user_id=message.from_user.id, shop_key=key,
+        service_name=service_name, plan_name=plan_name,
+        order_id=order_id, amount_rub=amount)
