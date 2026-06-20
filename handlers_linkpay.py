@@ -219,19 +219,14 @@ async def adm_linkpay_menu(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer(text, reply_markup=await _linkpay_menu_kb(), parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("adm_lp_svc:"))
-async def adm_lp_svc(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
-        await cb.answer("❌ Нет доступа", show_alert=True)
-        return
-    await state.clear()
-    await cb.answer()
-    key = cb.data.split(":", 1)[1]
+async def _lp_svc_view(key, note=""):
     sv = SHOP_CATALOG.get(key, {})
     on = (await get_setting(f"linkpay:enabled:{key}", "0") or "0") == "1"
     instr = await get_setting(f"linkpay:instructions:{key}", "") or "(по умолчанию)"
     domains = await get_setting(f"linkpay:domains:{key}", "") or "(любой)"
+    head = (note + "\n\n") if note else ""
     text = (
+        head +
         f"🔗 <b>{sv.get('name', key)}</b>\n\n"
         f"Статус: <b>{'✅ включено' if on else '🔴 выключено'}</b>\n\n"
         f"<b>Инструкция клиенту:</b>\n{instr}\n\n"
@@ -244,10 +239,22 @@ async def adm_lp_svc(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🌐 Изменить домены", callback_data=f"adm_lp_dom:{key}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_linkpay")],
     ]
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.startswith("adm_lp_svc:"))
+async def adm_lp_svc(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer()
+    key = cb.data.split(":", 1)[1]
+    text, kb = await _lp_svc_view(key)
     try:
-        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
-        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("adm_lp_toggle:"))
@@ -259,8 +266,11 @@ async def adm_lp_toggle(cb: CallbackQuery, state: FSMContext):
     cur = (await get_setting(f"linkpay:enabled:{key}", "0") or "0") == "1"
     await set_setting(f"linkpay:enabled:{key}", "0" if cur else "1")
     await cb.answer("Включено ✅" if not cur else "Выключено 🔴")
-    cb.data = f"adm_lp_svc:{key}"
-    await adm_lp_svc(cb, state)
+    text, kb = await _lp_svc_view(key)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
 
 
 @dp.callback_query(F.data.startswith("adm_lp_instr:"))
@@ -270,7 +280,8 @@ async def adm_lp_instr_start(cb: CallbackQuery, state: FSMContext):
         return
     key = cb.data.split(":", 1)[1]
     await state.set_state(AdminState.waiting_linkpay_instr)
-    await state.update_data(lp_key=key, lp_field="instr")
+    await state.update_data(lp_key=key, lp_field="instr",
+                            lp_menu_chat=cb.message.chat.id, lp_menu_mid=cb.message.message_id)
     await cb.message.answer(
         "✏️ Пришли текст инструкции для клиента (можно несколько строк, по шагам).\n"
         "Не используй символ «<».")
@@ -284,7 +295,8 @@ async def adm_lp_dom_start(cb: CallbackQuery, state: FSMContext):
         return
     key = cb.data.split(":", 1)[1]
     await state.set_state(AdminState.waiting_linkpay_instr)
-    await state.update_data(lp_key=key, lp_field="dom")
+    await state.update_data(lp_key=key, lp_field="dom",
+                            lp_menu_chat=cb.message.chat.id, lp_menu_mid=cb.message.message_id)
     await cb.message.answer(
         "🌐 Пришли разрешённые домены ссылки через запятую (напр. <code>suno.com, suno.ai</code>).\n"
         "Отправь <code>-</code> чтобы разрешить любой домен.", parse_mode="HTML")
@@ -298,6 +310,8 @@ async def adm_lp_field_save(message: Message, state: FSMContext):
     data = await state.get_data()
     key = data.get("lp_key")
     field = data.get("lp_field")
+    menu_chat = data.get("lp_menu_chat")
+    menu_mid = data.get("lp_menu_mid")
     await state.clear()
     if not key:
         await message.answer("⚠️ Сессия истекла.")
@@ -305,10 +319,23 @@ async def adm_lp_field_save(message: Message, state: FSMContext):
     val = message.text.strip()
     if field == "dom":
         await set_setting(f"linkpay:domains:{key}", "" if val == "-" else val)
-        await message.answer("✅ Домены сохранены.")
+        note = "✅ Домены сохранены"
     else:
         await set_setting(f"linkpay:instructions:{key}", val)
-        await message.answer("✅ Инструкция сохранена.")
+        note = "✅ Инструкция сохранена"
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    text, kb = await _lp_svc_view(key, note=note)
+    if menu_chat and menu_mid:
+        try:
+            await bot.edit_message_text(text, chat_id=menu_chat, message_id=menu_mid,
+                                        reply_markup=kb, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "adm_lp_pending")
