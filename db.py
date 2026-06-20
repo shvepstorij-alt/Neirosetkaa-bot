@@ -451,6 +451,11 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_linkpay_uid ON linkpay_orders(user_id, status)"
         )
+        for _lpc, _lpd in [("kind", "TEXT DEFAULT 'linkpay'"), ("account_email", "TEXT DEFAULT ''")]:
+            try:
+                await conn.execute(f"ALTER TABLE linkpay_orders ADD COLUMN IF NOT EXISTS {_lpc} {_lpd}")
+            except Exception:
+                pass
         for _k, _v in [
             ("nsgifts_usd_rate",          "100"),
             ("nsgifts_markup",            "15"),
@@ -1418,16 +1423,26 @@ async def count_perplexity_codes_by_plan() -> dict:
 # ── Link-pay заказы (оплата по ссылке) ───────────────────────────────────────
 
 async def create_linkpay_order(user_id, username, fk_order_id, service_key,
-                               service_name, plan_name, amount_rub):
+                               service_name, plan_name, amount_rub,
+                               kind="linkpay", status="awaiting_link"):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO linkpay_orders
-               (user_id, username, fk_order_id, service_key, service_name, plan_name, amount_rub, status)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,'awaiting_link')
+               (user_id, username, fk_order_id, service_key, service_name, plan_name, amount_rub, status, kind)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                ON CONFLICT (fk_order_id) DO NOTHING""",
             user_id, username or "", fk_order_id, service_key,
-            service_name, plan_name, int(amount_rub or 0)
+            service_name, plan_name, int(amount_rub or 0), status, kind
+        )
+
+
+async def set_linkpay_email(fk_order_id, email):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE linkpay_orders SET account_email=$1, status='awaiting_setup' WHERE fk_order_id=$2",
+            email, fk_order_id
         )
 
 
@@ -1468,7 +1483,8 @@ async def list_linkpay_pending(limit=30):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM linkpay_orders WHERE status IN ('awaiting_link','awaiting_payment') "
+            "SELECT * FROM linkpay_orders "
+            "WHERE status IN ('awaiting_link','awaiting_payment','awaiting_creds','awaiting_setup') "
             "ORDER BY created_at DESC LIMIT $1", limit
         )
     return [dict(r) for r in rows]
