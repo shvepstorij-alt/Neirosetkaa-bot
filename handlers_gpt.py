@@ -706,16 +706,15 @@ async def test_gpt_webapp(message: Message):
     if not is_admin(message.from_user.id):
         return
     uid = message.from_user.id
-    code = await get_next_gpt_code("plus")
-    if code is None:
-        await message.answer("❌ Нет свободных кодов. Добавь: /add_gpt_codes plus\nCODE")
-        return
-    import urllib.parse as _uparse
-    await save_pending_activation(uid, code, "test_order", "plus", "Plus")
+    import random, string as _string, urllib.parse as _uparse
+    suffix = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=12))
+    code = f"TEST-{suffix}"  # фейковый код — реальные из пула НЕ тратятся
+    await save_pending_activation(uid, code, f"TEST-ORD-{suffix[:6]}", "plus", "Plus")
     webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote('Plus')}&code={_uparse.quote(code)}"
     from aiogram.types import WebAppInfo
     await message.answer(
-        f"🧪 <b>Тест Mini App</b>\n\nКод: <code>{code}</code>\nНажми кнопку 👇",
+        f"🧪 <b>Тест Mini App (фейковый код)</b>\n\nКод: <code>{code}</code>\n"
+        f"<i>Реальные коды из пула не тратятся</i>\nНажми кнопку 👇",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
