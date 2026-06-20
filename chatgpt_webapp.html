@@ -663,6 +663,10 @@
         Скопируй <b>весь</b> текст страницы целиком — от начала до конца
       </div>
     </div>
+
+    <div id="acct-box" style="display:none;margin-top:12px;padding:11px 13px;border-radius:11px;background:var(--bg3);font-size:13px;line-height:1.45;">
+      ✅ Подписка активируется на аккаунт:<br><b id="acct-email" style="word-break:break-all;">—</b>
+    </div>
   </div>
 
   <div class="btn-wrap">
@@ -808,12 +812,33 @@ function goToStep2() {
 }
 
 // ─── Шаг 2: валидация токена ─────────────────────────────────────
+function _b64urlDecode(str) {
+  str = (str || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (str.length % 4) str += '=';
+  try { return decodeURIComponent(escape(atob(str))); }
+  catch (e) { try { return atob(str); } catch (e2) { return ''; } }
+}
+function _emailFromToken(token) {
+  try {
+    var parts = (token || '').split('.');
+    if (parts.length < 2) return '';
+    var p = JSON.parse(_b64urlDecode(parts[1]));
+    var prof = p['https://api.openai.com/profile'] || {};
+    return prof.email || p.email || '';
+  } catch (e) { return ''; }
+}
 function validateToken() {
   var el  = document.getElementById('token-input');
   var btn = document.getElementById('activate-btn');
   var err = document.getElementById('err-box');
+  var box = document.getElementById('acct-box');
+  var eml = document.getElementById('acct-email');
   if (err) err.classList.remove('show');
-  if (btn && el) btn.disabled = el.value.trim().length < 50;
+  var ok = !!(el && el.value.trim().length >= 50);
+  if (btn) btn.disabled = !ok;
+  var email = ok ? _emailFromToken(extractToken(el.value)) : '';
+  if (email && box && eml) { eml.textContent = email; box.style.display = 'block'; }
+  else if (box) { box.style.display = 'none'; }
 }
 
 // ─── Вспомогательные ─────────────────────────────────────────────
