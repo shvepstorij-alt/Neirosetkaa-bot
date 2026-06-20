@@ -43,6 +43,7 @@ from db import (
     get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
     save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
     create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
+    set_linkpay_email,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji_ui,
@@ -2467,6 +2468,12 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     service_name=service_name, plan_name=p.get("name", ""),
                     order_id=order_id, amount_rub=amount_rub, delayed_note=delayed_note,
                 )
+            elif await _is_creds(shop_key):
+                await _send_creds_instructions(
+                    user_id=user_id, shop_key=shop_key,
+                    service_name=service_name, plan_name=p.get("name", ""),
+                    order_id=order_id, amount_rub=amount_rub, delayed_note=delayed_note,
+                )
             else:
                 await bot.send_message(
                     user_id,
@@ -4285,6 +4292,7 @@ async def process_linkpay_link(user_id, text) -> bool:
             f"💳 <b>Заказ на оплату по ссылке</b>\n\n"
             f"👤 {tag} (<code>{user_id}</code>)\n"
             f"📦 {order['service_name']}\n"
+            f"🎫 Тариф: <b>{order.get('plan_name') or '—'}</b>\n"
             f"💵 Оплачено клиентом: <b>{order['amount_rub']}₽</b>\n"
             f"🔗 Ссылка: {link}\n"
             f"🆔 <code>{order['fk_order_id']}</code>"
@@ -4305,3 +4313,53 @@ async def process_linkpay_link(user_id, text) -> bool:
     except Exception as e:
         logging.error(f"process_linkpay_link: {e}")
         return False
+
+
+# ── Creds: оформление по логину/паролю (Zoom, Krea, YouTube и т.п.) ──────────
+
+_CREDS_DEFAULT_INSTR = (
+    "Для оформления подписки нужны <b>email и пароль</b> от твоего аккаунта сервиса.\n"
+    "Нажми кнопку ниже и пришли их по очереди. После оформления рекомендуем сменить пароль."
+)
+
+
+async def _is_creds(shop_key: str) -> bool:
+    if not shop_key:
+        return False
+    try:
+        return (await get_setting(f"creds:enabled:{shop_key}", "0") or "0") == "1"
+    except Exception:
+        return False
+
+
+async def _send_creds_instructions(user_id, shop_key, service_name, plan_name,
+                                   order_id, amount_rub, delayed_note=""):
+    """После оплаты: создаём creds-заказ и просим клиента прислать данные аккаунта."""
+    try:
+        try:
+            _pool = await get_pool()
+            async with _pool.acquire() as _c:
+                _u = await _c.fetchrow("SELECT username FROM users WHERE user_id=$1", user_id)
+            _uname = (_u["username"] if _u else "") or ""
+        except Exception:
+            _uname = ""
+        await create_linkpay_order(user_id, _uname, order_id, shop_key,
+                                   service_name, plan_name, amount_rub,
+                                   kind="creds", status="awaiting_creds")
+        try:
+            instr = await get_setting(f"creds:instructions:{shop_key}", "") or _CREDS_DEFAULT_INSTR
+        except Exception:
+            instr = _CREDS_DEFAULT_INSTR
+        text = (
+            f"🎉 <b>Оплата прошла!</b>\n\n"
+            f"📦 <b>{service_name}</b>\n\n"
+            f"{instr}\n{delayed_note}"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔐 Отправить данные аккаунта",
+                                  callback_data=f"creds_send:{order_id}")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="linkpay_help")],
+        ])
+        await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        logging.error(f"_send_creds_instructions uid={user_id}: {e}")

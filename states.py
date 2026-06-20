@@ -139,3 +139,8 @@ class AdmNsgState(StatesGroup):
 
 class LinkPayState(StatesGroup):
     waiting_link = State()   # клиент присылает ссылку на оплату
+
+
+class CredsState(StatesGroup):
+    waiting_email    = State()   # клиент присылает email аккаунта
+    waiting_password = State()   # клиент присылает пароль

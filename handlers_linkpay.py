@@ -4,6 +4,7 @@
 админ оплачивает картой и жмёт «Подписка готова». Приём ссылки — в common.process_linkpay_link.
 """
 import logging
+import html as _html
 
 from aiogram import F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -11,10 +12,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
 
 from config import ADMIN_ID, PERSONAL_USERNAME, SHOP_CATALOG, bot, dp
-from states import AdminState
+from states import AdminState, CredsState
 from db import (
     get_linkpay_order, set_linkpay_status, list_linkpay_pending,
-    get_setting, set_setting,
+    get_setting, set_setting, set_linkpay_email, set_linkpay_admin_msg, log_event,
 )
 from keyboards import _eib, _btn_emoji_id
 
@@ -318,17 +319,23 @@ async def adm_lp_field_save(message: Message, state: FSMContext):
         await message.answer("⚠️ Сессия истекла.")
         return
     val = message.text.strip()
-    if field == "dom":
+    if field == "creds_instr":
+        await set_setting(f"creds:instructions:{key}", val)
+        note = "✅ Инструкция сохранена"
+        _view = await _creds_svc_view(key, note=note)
+    elif field == "dom":
         await set_setting(f"linkpay:domains:{key}", "" if val == "-" else val)
         note = "✅ Домены сохранены"
+        _view = await _lp_svc_view(key, note=note)
     else:
         await set_setting(f"linkpay:instructions:{key}", val)
         note = "✅ Инструкция сохранена"
+        _view = await _lp_svc_view(key, note=note)
     try:
         await message.delete()
     except Exception:
         pass
-    text, kb = await _lp_svc_view(key, note=note)
+    text, kb = _view
     if menu_chat and menu_mid:
         try:
             await bot.edit_message_text(text, chat_id=menu_chat, message_id=menu_mid,
@@ -390,6 +397,206 @@ async def test_linkpay(message: Message, state: FSMContext):
         f"<i>Заказ тестовый: {order_id}</i>",
         parse_mode="HTML")
     await _send_linkpay_instructions(
+        user_id=message.from_user.id, shop_key=key,
+        service_name=service_name, plan_name=plan_name,
+        order_id=order_id, amount_rub=amount)
+
+
+# ══════════════════════════════════════════════════════════
+#  CREDS — оформление по логину/паролю (Zoom, Krea, YouTube)
+# ══════════════════════════════════════════════════════════
+
+@dp.callback_query(F.data.startswith("creds_send:"))
+async def creds_send_start(cb: CallbackQuery, state: FSMContext):
+    order_id = cb.data.split(":", 1)[1]
+    order = await get_linkpay_order(order_id)
+    if not order or order["user_id"] != cb.from_user.id:
+        await cb.answer("Заказ не найден", show_alert=True)
+        return
+    if order["status"] != "awaiting_creds":
+        await cb.answer("Данные уже получены ✅", show_alert=True)
+        return
+    await state.set_state(CredsState.waiting_email)
+    await state.update_data(creds_order=order_id)
+    await cb.message.answer("📧 Пришли <b>email</b> от аккаунта одним сообщением:", parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(CredsState.waiting_email, F.text)
+async def creds_email(message: Message, state: FSMContext):
+    await state.update_data(creds_email=message.text.strip())
+    await state.set_state(CredsState.waiting_password)
+    await message.answer("🔑 Теперь пришли <b>пароль</b> от аккаунта:", parse_mode="HTML")
+
+
+@dp.message(CredsState.waiting_password, F.text)
+async def creds_password(message: Message, state: FSMContext):
+    password = message.text.strip()
+    data = await state.get_data()
+    order_id = data.get("creds_order")
+    email = data.get("creds_email", "")
+    await state.clear()
+    order = await get_linkpay_order(order_id) if order_id else None
+    if not order:
+        await message.answer("⚠️ Сессия истекла. Открой сообщение с заказом и нажми «Отправить данные аккаунта» снова.")
+        return
+    await set_linkpay_email(order_id, email)
+    await message.answer(
+        "✅ <b>Данные получены!</b>\n\nАлександр оформит подписку в ближайшее время. "
+        "После оформления рекомендуем сменить пароль 🔒",
+        parse_mode="HTML")
+    uname = order.get("username") or ""
+    tag = f"@{uname}" if uname else f"id{order['user_id']}"
+    admin_text = (
+        f"🔐 <b>Заказ (вход в аккаунт)</b>\n\n"
+        f"👤 {tag} (<code>{order['user_id']}</code>)\n"
+        f"📦 {order['service_name']}\n"
+        f"🎫 Тариф: <b>{order.get('plan_name') or '—'}</b>\n"
+        f"💵 Оплачено: <b>{order['amount_rub']}₽</b>\n"
+        f"📧 Email: <code>{_html.escape(email)}</code>\n"
+        f"🔑 Пароль: <code>{_html.escape(password)}</code>\n"
+        f"🆔 <code>{order_id}</code>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order_id}")],
+        [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order_id}")],
+        [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order_id}")],
+    ])
+    try:
+        m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
+        await set_linkpay_admin_msg(order_id, m.message_id)
+    except Exception as e:
+        logging.error(f"creds admin notify: {e}")
+    await log_event(message.from_user.id, "creds_received", f"order={order_id}")
+
+
+# ─── Админ: настройка creds ───────────────────────────────────────────────────
+
+async def _creds_menu_kb():
+    rows = []
+    for key, sv in SHOP_CATALOG.items():
+        on = (await get_setting(f"creds:enabled:{key}", "0") or "0") == "1"
+        mark = "✅" if on else "▫️"
+        _eid = _btn_emoji_id(key, sv)
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {sv.get('name', key)}",
+            callback_data=f"adm_creds_svc:{key}",
+            **({"icon_custom_emoji_id": _eid} if _eid else {})
+        )])
+    rows.append([InlineKeyboardButton(text="📋 Заказы в работе", callback_data="adm_lp_pending")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="adm_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _creds_svc_view(key, note=""):
+    sv = SHOP_CATALOG.get(key, {})
+    on = (await get_setting(f"creds:enabled:{key}", "0") or "0") == "1"
+    instr = await get_setting(f"creds:instructions:{key}", "") or "(по умолчанию: попросим email и пароль)"
+    head = (note + "\n\n") if note else ""
+    text = (
+        head +
+        f"🔐 <b>{sv.get('name', key)}</b>\n\n"
+        f"Статус: <b>{'✅ включено' if on else '🔴 выключено'}</b>\n\n"
+        f"<b>Инструкция клиенту:</b>\n{instr}"
+    )
+    rows = [
+        [InlineKeyboardButton(text=("🔴 Выключить" if on else "✅ Включить"),
+                              callback_data=f"adm_creds_toggle:{key}")],
+        [InlineKeyboardButton(text="✏️ Изменить инструкцию", callback_data=f"adm_creds_instr:{key}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_creds")],
+    ]
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data == "adm_creds")
+async def adm_creds_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer()
+    text = (
+        "🔐 <b>Вход в аккаунт (логин/пароль)</b>\n\n"
+        "✅ — включено: после оплаты клиент присылает email и пароль, "
+        "ты оформляешь подписку вручную и жмёшь «Подписка готова».\n\n"
+        "Выбери сервис, чтобы вкл/выкл и задать инструкцию."
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=await _creds_menu_kb(), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=await _creds_menu_kb(), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_creds_svc:"))
+async def adm_creds_svc(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    await state.clear()
+    await cb.answer()
+    key = cb.data.split(":", 1)[1]
+    text, kb = await _creds_svc_view(key)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_creds_toggle:"))
+async def adm_creds_toggle(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    key = cb.data.split(":", 1)[1]
+    cur = (await get_setting(f"creds:enabled:{key}", "0") or "0") == "1"
+    await set_setting(f"creds:enabled:{key}", "0" if cur else "1")
+    await cb.answer("Включено ✅" if not cur else "Выключено 🔴")
+    text, kb = await _creds_svc_view(key)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data.startswith("adm_creds_instr:"))
+async def adm_creds_instr_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    key = cb.data.split(":", 1)[1]
+    await state.set_state(AdminState.waiting_linkpay_instr)
+    await state.update_data(lp_key=key, lp_field="creds_instr",
+                            lp_menu_chat=cb.message.chat.id, lp_menu_mid=cb.message.message_id)
+    await cb.message.answer(
+        "✏️ Пришли текст инструкции для клиента (что прислать, как включить доступ и т.п.).\n"
+        "Не используй символ «<».")
+    await cb.answer()
+
+
+# ─── Тест-команда creds ───────────────────────────────────────────────────────
+
+@dp.message(F.text.startswith("/test_creds"), StateFilter("*"))
+async def test_creds(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    import random, string as _s
+    from common import _send_creds_instructions
+    parts = (message.text or "").split()
+    key = parts[1] if len(parts) > 1 else "krea"
+    sv = SHOP_CATALOG.get(key)
+    if not sv:
+        await message.answer(f"❌ Сервис «{key}» не найден. Пример: <code>/test_creds krea</code>", parse_mode="HTML")
+        return
+    plans = sv.get("plans", [])
+    plan = plans[0] if plans else {}
+    plan_name = plan.get("name", "Pro")
+    amount = plan.get("price", 0)
+    service_name = f"{sv.get('emoji','')} {sv.get('name', key)} - {plan_name}".strip()
+    order_id = "TESTCR-" + "".join(random.choices(_s.ascii_uppercase + _s.digits, k=8))
+    await message.answer(
+        f"🧪 <b>Тест creds: {sv.get('name', key)}</b>\nСейчас придёт сообщение как у клиента 👇\n"
+        f"<i>Заказ тестовый: {order_id}</i>", parse_mode="HTML")
+    await _send_creds_instructions(
         user_id=message.from_user.id, shop_key=key,
         service_name=service_name, plan_name=plan_name,
         order_id=order_id, amount_rub=amount)
