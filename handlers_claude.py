@@ -296,15 +296,22 @@ async def adm_claude_free_codes(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
-    plan = cb.data.split(":")[1]
+    parts = cb.data.split(":")
+    plan = parts[1]
+    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    PER = 20
     PLAN_LABELS = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, code, created_at FROM claude_codes "
-            "WHERE plan=$1 AND is_used=FALSE ORDER BY id ASC LIMIT 20", plan)
         total = await conn.fetchval(
             "SELECT COUNT(*) FROM claude_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
+        pages = max(1, (total + PER - 1) // PER)
+        if page >= pages: page = pages - 1
+        if page < 0: page = 0
+        rows = await conn.fetch(
+            "SELECT id, code, created_at FROM claude_codes "
+            "WHERE plan=$1 AND is_used=FALSE ORDER BY id ASC LIMIT $2 OFFSET $3",
+            plan, PER, page * PER)
 
     plan_nav = [
         InlineKeyboardButton(text="Pro",    callback_data="adm_claude_free:pro"),
@@ -325,7 +332,7 @@ async def adm_claude_free_codes(cb: CallbackQuery):
         await cb.answer()
         return
 
-    lines = [f"📦 <b>Свободные коды — Claude {PLAN_LABELS.get(plan, plan)}</b> (всего {total}):\n"]
+    lines = [f"📦 <b>Свободные коды — Claude {PLAN_LABELS.get(plan, plan)}</b> (всего {total}) · стр. {page+1}/{pages}\n"]
     code_btns = []
     for r in rows:
         created = r["created_at"]
@@ -338,14 +345,15 @@ async def adm_claude_free_codes(cb: CallbackQuery):
             )
         ])
 
-    if total > 20:
-        lines.append(f"\n<i>Показаны первые 20 из {total}</i>")
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        plan_nav,
-        *code_btns,
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")],
-    ])
+    page_nav = []
+    if page > 0:
+        page_nav.append(InlineKeyboardButton(text="‹ Пред", callback_data=f"adm_claude_free:{plan}:{page-1}"))
+    if page < pages - 1:
+        page_nav.append(InlineKeyboardButton(text="След ›", callback_data=f"adm_claude_free:{plan}:{page+1}"))
+    _kbrows = [plan_nav, *code_btns]
+    if page_nav: _kbrows.append(page_nav)
+    _kbrows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")])
+    kb = InlineKeyboardMarkup(inline_keyboard=_kbrows)
     try:
         await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
     except Exception:
