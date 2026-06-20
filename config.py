@@ -1051,7 +1051,6 @@ SHOP_CATALOG = {
         "plans": [
             {"name": "Plus",   "price": 2000,  "stars": 800,  "desc": "GPT-5.5 и GPT-5.5 Instant, Deep Research (10 раз/мес), Sora, Codex, Agent Mode, DALL-E — 20$/мес"},
             {"name": "Pro 5×", "price": 9000,  "stars": 3600, "desc": "GPT-5.5 Pro, лимиты в 5× выше Plus, расширенный Codex, фоновые агенты — 100$/мес"},
-            {"name": "Pro Max","price": 15000, "stars": 6000, "desc": "GPT-5.5 Pro без лимитов, максимум Deep Research и Agent Mode, 1М контекст — 200$/мес"},
             {"name": "Go",     "price": 1000,  "stars": 400,  "desc": "Бюджетный вход в ChatGPT: в 10× больше сообщений чем на бесплатном, безлимит GPT-5.5 Instant, загрузка файлов и генерация изображений. Без Sora, Codex, Agent Mode и Deep Research — для этого Plus. 8$/мес"},
         ]
     },
