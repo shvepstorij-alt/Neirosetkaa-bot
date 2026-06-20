@@ -70,6 +70,7 @@ bot.session.middleware(PremiumEmojiMiddleware())
     ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") &
     ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp") &
     ~F.text.startswith("/test_perplexity_webapp") &
+    ~F.text.startswith("/test_linkpay") &
     ~F.text.startswith("/myip") & ~F.text.startswith("/audit") &
     ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
     ~F.text.startswith("/recover") & ~F.text.startswith("/emoji") & ~F.text.startswith("/shopkeys") &
