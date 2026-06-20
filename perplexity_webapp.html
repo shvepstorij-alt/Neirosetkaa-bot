@@ -485,6 +485,11 @@
         UUID из поля «id» — формат: <code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>
       </div>
     </div>
+
+    <div id="acct-box" style="display:none;margin-top:12px;padding:11px 13px;border-radius:11px;background:var(--bg3);font-size:13px;line-height:1.45;">
+      ✅ Подписка активируется на аккаунт:<br><b id="acct-email" style="word-break:break-all;">—</b>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">видно, если вставить весь JSON сессии</div>
+    </div>
   </div>
 
   <div class="btn-wrap">
@@ -630,12 +635,23 @@ function _extractUuid(v) {
   var m = (v || '').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
   return m ? m[0].toLowerCase() : '';
 }
+function _emailFromText(v) {
+  var m = (v || '').match(/"email"\s*:\s*"([^"]+)"/i);
+  if (m) return m[1];
+  m = (v || '').match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/);
+  return m ? m[0] : '';
+}
 function validateOrgId() {
   var el  = document.getElementById('org-input');
   var btn = document.getElementById('activate-btn');
   var err = document.getElementById('err-box');
+  var box = document.getElementById('acct-box');
+  var eml = document.getElementById('acct-email');
   if (err) err.classList.remove('show');
   if (btn && el) btn.disabled = !_extractUuid(el.value);
+  var email = el ? _emailFromText(el.value) : '';
+  if (email && box && eml) { eml.textContent = email; box.style.display = 'block'; }
+  else if (box) { box.style.display = 'none'; }
 }
 
 // ─── Retry после ошибки ──────────────────────────────────────────
