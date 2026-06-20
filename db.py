@@ -589,7 +589,13 @@ async def load_prices_from_db():
                     continue  # placeholder-строка без тарифа
                 # Описание плана берём из кода по индексу (если есть), иначе из БД
                 code_plans = code_svc.get("plans", [])
-                code_plan = code_plans[plan_idx] if plan_idx < len(code_plans) else {}
+                # Сопоставляем тариф из кода с тарифом из БД ПО НАЗВАНИЮ, а не по индексу —
+                # иначе добавленный/переставленный тариф (напр. Go) подхватывает чужое имя/описание.
+                _dbname = (r["plan_name"] or "").strip()
+                code_plan = next(
+                    (cp for cp in code_plans if (cp.get("name", "") or "").strip() == _dbname),
+                    {}
+                )
                 SHOP_CATALOG[k]["plans"].append({
                     "name":  code_plan.get("name",  r["plan_name"]),
                     "price": r["price"],   # цена — из БД (сохраняет правки через /admin)
