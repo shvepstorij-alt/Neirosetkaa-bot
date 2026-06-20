@@ -83,6 +83,10 @@ class AdminState(StatesGroup):
     waiting_refp_add         = State()   # добавить партнёра: "UID" или "UID %"
     waiting_refp_del         = State()   # убрать партнёра: ввод UID
 
+    # Оплата по ссылке (link-pay)
+    waiting_linkpay_clarify  = State()   # текст уточнения клиенту
+    waiting_linkpay_instr    = State()   # ввод инструкции по сервису
+
 # ══════════════════════════════════════════════════════════
 #  СИСТЕМНЫЙ ПРОМТ + ВЕБ-ПОИСК
 # ══════════════════════════════════════════════════════════
@@ -131,3 +135,7 @@ class AdmNsgState(StatesGroup):
     waiting_rate      = State()
     waiting_markup    = State()
     waiting_threshold = State()
+
+
+class LinkPayState(StatesGroup):
+    waiting_link = State()   # клиент присылает ссылку на оплату

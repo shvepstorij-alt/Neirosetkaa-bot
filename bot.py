@@ -34,7 +34,7 @@ from keyboards import (
     kb_after_consultant_reply,
 )
 from common import (
-    _ensure_playwright_browser, claude_with_search, setup_webhook_server,
+    _ensure_playwright_browser, claude_with_search, setup_webhook_server, process_linkpay_link,
 )
 from background import (
     _activation_jobs_cleanup_loop, _claude_job_results_cleanup_loop, _memory_cleanup_loop, auto_recover_lost_videos_loop, claude_codes_cleanup_loop, cleanup_stale_generations_loop,
@@ -52,6 +52,7 @@ import handlers_admin
 import handlers_gpt
 import handlers_claude
 import handlers_perplexity
+import handlers_linkpay
 import handlers_nsgifts
 
 # ── Premium-эмодзи: middleware подменяет обычные эмодзи на custom во всех
@@ -85,6 +86,13 @@ async def handle_message(message: Message, state: FSMContext):
     if await is_blocked(uid):
         await message.answer("🚫 Ваш доступ к боту ограничен.")
         return
+
+    # Link-pay: клиент прислал ссылку на оплату по ожидающему заказу
+    try:
+        if await process_linkpay_link(uid, message.text):
+            return
+    except Exception:
+        pass
 
     # Валидация сообщения для консультанта
     ok_v, err = validate_chat_prompt(message.text)

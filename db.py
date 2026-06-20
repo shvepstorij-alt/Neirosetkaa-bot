@@ -431,6 +431,26 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_nsgifts_uid ON nsgifts_orders(user_id)"
         )
+        # ── Заказы «оплата по ссылке» (HeyGen, Suno, Kling, Higgsfield и т.п.) ──
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS linkpay_orders (
+                id            SERIAL PRIMARY KEY,
+                user_id       BIGINT NOT NULL,
+                username      TEXT DEFAULT '',
+                fk_order_id   TEXT NOT NULL UNIQUE,
+                service_key   TEXT NOT NULL DEFAULT '',
+                service_name  TEXT NOT NULL DEFAULT '',
+                plan_name     TEXT NOT NULL DEFAULT '',
+                amount_rub    INTEGER DEFAULT 0,
+                status        TEXT DEFAULT 'awaiting_link',
+                payment_link  TEXT DEFAULT '',
+                admin_msg_id  BIGINT,
+                created_at    TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_linkpay_uid ON linkpay_orders(user_id, status)"
+        )
         for _k, _v in [
             ("nsgifts_usd_rate",          "100"),
             ("nsgifts_markup",            "15"),
@@ -1393,3 +1413,62 @@ async def count_perplexity_codes_by_plan() -> dict:
         "total_activations": total_act,
         "last_used": dict(last_used) if last_used else None,
     }
+
+
+# ── Link-pay заказы (оплата по ссылке) ───────────────────────────────────────
+
+async def create_linkpay_order(user_id, username, fk_order_id, service_key,
+                               service_name, plan_name, amount_rub):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO linkpay_orders
+               (user_id, username, fk_order_id, service_key, service_name, plan_name, amount_rub, status)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,'awaiting_link')
+               ON CONFLICT (fk_order_id) DO NOTHING""",
+            user_id, username or "", fk_order_id, service_key,
+            service_name, plan_name, int(amount_rub or 0)
+        )
+
+
+async def get_linkpay_order(fk_order_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM linkpay_orders WHERE fk_order_id=$1", fk_order_id)
+    return dict(row) if row else None
+
+
+async def set_linkpay_link(fk_order_id, link):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE linkpay_orders SET payment_link=$1, status='awaiting_payment' WHERE fk_order_id=$2",
+            link, fk_order_id
+        )
+
+
+async def set_linkpay_status(fk_order_id, status):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE linkpay_orders SET status=$1 WHERE fk_order_id=$2", status, fk_order_id
+        )
+
+
+async def set_linkpay_admin_msg(fk_order_id, admin_msg_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE linkpay_orders SET admin_msg_id=$1 WHERE fk_order_id=$2",
+            admin_msg_id, fk_order_id
+        )
+
+
+async def list_linkpay_pending(limit=30):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM linkpay_orders WHERE status IN ('awaiting_link','awaiting_payment') "
+            "ORDER BY created_at DESC LIMIT $1", limit
+        )
+    return [dict(r) for r in rows]

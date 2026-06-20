@@ -42,6 +42,7 @@ from db import (
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
     get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
     save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
+    create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji_ui,
@@ -2460,6 +2461,12 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             plan_name=_plan_name_cl,
                             delayed_note=delayed_note,
                         )
+            elif await _is_linkpay(shop_key):
+                await _send_linkpay_instructions(
+                    user_id=user_id, shop_key=shop_key,
+                    service_name=service_name, plan_name=p.get("name", ""),
+                    order_id=order_id, amount_rub=amount_rub, delayed_note=delayed_note,
+                )
             else:
                 await bot.send_message(
                     user_id,
@@ -4184,3 +4191,117 @@ async def api_activate_perplexity_status_handler(request: web.Request) -> web.Re
 # ─── Callback: клиент переоткрывает WebApp сам ───────────────────────────────
 
 
+# ── Link-pay: инструкции после оплаты (оплата по ссылке) ─────────────────────
+
+_LINKPAY_DEFAULT_INSTR = (
+    "1. Зайди на сайт сервиса и авторизуйся в СВОЙ аккаунт.\n"
+    "2. Открой раздел тарифов / подписки.\n"
+    "3. Выбери нужный тариф (и регион, если требуется).\n"
+    "4. Дойди до страницы оплаты и СКОПИРУЙ ссылку на оплату.\n"
+    "5. Нажми кнопку ниже и пришли эту ссылку."
+)
+
+
+async def _is_linkpay(shop_key: str) -> bool:
+    if not shop_key:
+        return False
+    try:
+        return (await get_setting(f"linkpay:enabled:{shop_key}", "0") or "0") == "1"
+    except Exception:
+        return False
+
+
+async def _send_linkpay_instructions(user_id, shop_key, service_name, plan_name,
+                                     order_id, amount_rub, delayed_note=""):
+    """После оплаты: создаём link-pay заказ и шлём клиенту инструкцию + кнопку отправки ссылки."""
+    try:
+        try:
+            _pool = await get_pool()
+            async with _pool.acquire() as _c:
+                _u = await _c.fetchrow("SELECT username FROM users WHERE user_id=$1", user_id)
+            _uname = (_u["username"] if _u else "") or ""
+        except Exception:
+            _uname = ""
+        await create_linkpay_order(user_id, _uname, order_id, shop_key,
+                                   service_name, plan_name, amount_rub)
+        try:
+            instr = await get_setting(f"linkpay:instructions:{shop_key}", "") or _LINKPAY_DEFAULT_INSTR
+        except Exception:
+            instr = _LINKPAY_DEFAULT_INSTR
+        text = (
+            f"🎉 <b>Оплата прошла!</b>\n\n"
+            f"📦 <b>{service_name}</b>\n\n"
+            f"Чтобы оформить подписку, получи ссылку на оплату по инструкции "
+            f"и пришли её сюда 👇\n\n"
+            f"<b>📋 Инструкция:</b>\n{instr}\n"
+            f"{delayed_note}"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📎 Отправить ссылку на оплату",
+                                  callback_data=f"linkpay_send:{order_id}")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="linkpay_help")],
+        ])
+        await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        logging.error(f"_send_linkpay_instructions uid={user_id}: {e}")
+
+
+async def process_linkpay_link(user_id, text) -> bool:
+    """Если у юзера есть link-pay заказ (awaiting_link) и в тексте есть ссылка —
+    фиксируем её, уведомляем админа. Возвращает True если обработали."""
+    try:
+        import re as _re
+        txt = (text or "").strip()
+        _pool = await get_pool()
+        async with _pool.acquire() as _c:
+            row = await _c.fetchrow(
+                "SELECT * FROM linkpay_orders WHERE user_id=$1 AND status='awaiting_link' "
+                "ORDER BY created_at DESC LIMIT 1", user_id)
+        if not row:
+            return False
+        order = dict(row)
+        m = _re.search(r"https?://\S+", txt)
+        if not m:
+            return False  # нет ссылки — пусть обработает консультант
+        link = m.group(0)
+        domains = (await get_setting(f"linkpay:domains:{order['service_key']}", "") or "").strip()
+        if domains:
+            allowed = [d.strip().lower() for d in domains.split(",") if d.strip()]
+            host = _re.sub(r"^https?://", "", link).split("/")[0].lower()
+            if not any(host == d or host.endswith("." + d) for d in allowed):
+                await bot.send_message(
+                    user_id,
+                    f"⚠️ Ссылка должна быть с сайта сервиса ({', '.join(allowed)}). Проверь и пришли снова.")
+                return True
+        await set_linkpay_link(order["fk_order_id"], link)
+        await bot.send_message(
+            user_id,
+            "✅ <b>Ссылка получена!</b>\n\nАлександр оплатит её в ближайшее время — "
+            "подписка придёт сюда. Спасибо за покупку! 🙌",
+            parse_mode="HTML")
+        uname = order.get("username") or ""
+        tag = f"@{uname}" if uname else f"id{user_id}"
+        admin_text = (
+            f"💳 <b>Заказ на оплату по ссылке</b>\n\n"
+            f"👤 {tag} (<code>{user_id}</code>)\n"
+            f"📦 {order['service_name']}\n"
+            f"💵 Оплачено клиентом: <b>{order['amount_rub']}₽</b>\n"
+            f"🔗 Ссылка: {link}\n"
+            f"🆔 <code>{order['fk_order_id']}</code>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order['fk_order_id']}")],
+            [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order['fk_order_id']}")],
+            [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order['fk_order_id']}")],
+        ])
+        try:
+            _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML",
+                                        reply_markup=kb, disable_web_page_preview=True)
+            await set_linkpay_admin_msg(order["fk_order_id"], _m.message_id)
+        except Exception as _e:
+            logging.error(f"linkpay admin notify: {_e}")
+        await log_event(user_id, "linkpay_link", f"order={order['fk_order_id']} svc={order['service_key']}")
+        return True
+    except Exception as e:
+        logging.error(f"process_linkpay_link: {e}")
+        return False
