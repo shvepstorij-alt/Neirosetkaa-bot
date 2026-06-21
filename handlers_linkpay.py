@@ -82,11 +82,15 @@ async def lp_done(cb: CallbackQuery):
     except Exception as e:
         logging.error(f"lp_done notify: {e}")
     try:
-        await cb.message.edit_reply_markup(reply_markup=None)
+        await cb.message.edit_text(
+            (cb.message.html_text or "") + "\n\n✅ <b>ВЫПОЛНЕН</b>",
+            parse_mode="HTML", disable_web_page_preview=True, reply_markup=None)
     except Exception:
-        pass
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
     await cb.answer("✅ Клиент уведомлён", show_alert=True)
-    await cb.message.answer(f"✅ Заказ <code>{order_id}</code> выполнен.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("lp_clarify:"))
