@@ -1661,6 +1661,7 @@ def _verify_tg_init_data(init_data: str) -> int | None:
         import json as _json
         params = dict(parse_qsl(init_data, keep_blank_values=True))
         recv_hash = params.pop("hash", None)
+        params.pop("signature", None)  # новые клиенты TG шлют signature — в data-check он НЕ участвует
         if not recv_hash:
             return None
         data_check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
