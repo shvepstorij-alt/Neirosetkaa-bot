@@ -3268,6 +3268,15 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
 
     user_id = _verify_tg_init_data(init_data)
     if not user_id:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ <b>Mini-app: не прошла авторизация</b>\n"
+                f"initData len=<b>{len(init_data)}</b> · "
+                f"hash={'hash=' in init_data} · signature={'signature=' in init_data}",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return _resp({"error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
 
     if not _re.match(
@@ -4022,6 +4031,15 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
 
     user_id = _verify_tg_init_data(init_data)
     if not user_id:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ <b>Mini-app: не прошла авторизация</b>\n"
+                f"initData len=<b>{len(init_data)}</b> · "
+                f"hash={'hash=' in init_data} · signature={'signature=' in init_data}",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return _resp({"error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
 
     if not _re.match(
