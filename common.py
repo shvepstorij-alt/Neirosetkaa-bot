@@ -3425,6 +3425,15 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
         return _resp({"error": "Нет связи с сервисом. Попробуй ещё раз."})
     except Exception as _e:
         logging.error(f"Claude activate error: {_e}", exc_info=True)
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ <b>Claude activate exception</b>\n"
+                f"user=<code>{user_id}</code> code=<code>{code}</code>\n"
+                f"{type(_e).__name__}: {str(_e)[:300]}",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return _resp({"error": "Внутренняя ошибка. Напиши Александру."})
 
 
@@ -4170,6 +4179,15 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
         return _resp({"error": "Нет связи с сервисом. Попробуй ещё раз."})
     except Exception as _e:
         logging.error(f"Perplexity activate error: {_e}", exc_info=True)
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ <b>Perplexity activate exception</b>\n"
+                f"user=<code>{user_id}</code> code=<code>{code}</code>\n"
+                f"{type(_e).__name__}: {str(_e)[:300]}",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return _resp({"error": "Внутренняя ошибка. Напиши Александру."})
 
 
