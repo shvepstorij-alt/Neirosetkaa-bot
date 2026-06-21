@@ -1661,13 +1661,20 @@ def _verify_tg_init_data(init_data: str) -> int | None:
         import json as _json
         params = dict(parse_qsl(init_data, keep_blank_values=True))
         recv_hash = params.pop("hash", None)
-        params.pop("signature", None)  # новые клиенты TG шлют signature — в data-check он НЕ участвует
         if not recv_hash:
+            logging.warning("initData verify: no hash (len=%s)" % len(init_data or ""))
             return None
-        data_check = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
         secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-        expected = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, recv_hash):
+        def _matches(pp):
+            dc = "\n".join(f"{k}={v}" for k, v in sorted(pp.items()))
+            exp = hmac.new(secret, dc.encode(), hashlib.sha256).hexdigest()
+            return hmac.compare_digest(exp, recv_hash)
+        # Пробуем с signature (старое поведение) и без (новые клиенты TG) — берём что сойдётся
+        ok = _matches(params)
+        if not ok and "signature" in params:
+            ok = _matches({k: v for k, v in params.items() if k != "signature"})
+        if not ok:
+            logging.warning("initData verify: hash mismatch")
             return None
         user_data = _json.loads(unquote(params.get("user", "{}")))
         return user_data.get("id")
