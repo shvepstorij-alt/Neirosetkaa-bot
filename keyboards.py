@@ -251,7 +251,7 @@ def kb_after_consultant_reply(intent: str | None = None, model_hint: str | None 
             text="🏃 Анимировать фото в боте",
             callback_data="menu_anim"
         )])
-    rows.append([InlineKeyboardButton(text="📋 Пресеты", callback_data="chat_presets_again"),
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_chat"),
                  _eib("Главное меню", "back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
