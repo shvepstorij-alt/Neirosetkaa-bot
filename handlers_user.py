@@ -591,34 +591,22 @@ async def profile_history(cb: CallbackQuery):
         await cb.message.answer("⚠️ Не удалось загрузить историю покупок.")
 
 
-@dp.callback_query(F.data == "menu_favorites")
-async def menu_favorites(cb: CallbackQuery):
-    uid = cb.from_user.id
+FAV_PAGE = 20  # сколько избранных показывать за раз (2 альбома по 10)
+
+
+async def _send_favorites_page(message: Message, uid: int, offset: int):
+    """Отправляет одну «страницу» избранного (до FAV_PAGE медиа) альбомами по 10
+    + итоговое сообщение с кнопкой «Показать ещё», если осталось больше."""
+    from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         count = await conn.fetchval("SELECT COUNT(*) FROM favorites WHERE user_id=$1", uid) or 0
         items = await conn.fetch(
             "SELECT file_id, media_type, prompt, model, created_at FROM favorites "
-            "WHERE user_id=$1 ORDER BY created_at DESC",
-            uid
+            "WHERE user_id=$1 ORDER BY created_at DESC OFFSET $2 LIMIT $3",
+            uid, offset, FAV_PAGE
         )
-
-    if count == 0:
-        try:
-            await cb.message.edit_text(
-                "❤️ <b>Избранное</b>\n\nПока пусто. Нажми ❤️ после генерации чтобы сохранить.",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [_eib("Главное меню", "back_main")],
-                ])
-            )
-        except Exception:
-            pass
-        await cb.answer()
-        return
-
-    await cb.answer()
-    from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 
     def _fav_caption(it):
         return f"❤️ {it['model'] or 'Генерация'} · {it['created_at'].strftime('%d.%m.%Y')}"
@@ -636,7 +624,6 @@ async def menu_favorites(cb: CallbackQuery):
     doc_items   = [it for it in items if it["media_type"] not in ("photo", "video")]
 
     async def _send_albums(group):
-        # Альбомами максимум по 10; одиночный элемент шлём обычным сообщением
         for i in range(0, len(group), 10):
             chunk = group[i:i + 10]
             try:
@@ -644,26 +631,75 @@ async def menu_favorites(cb: CallbackQuery):
                     it = chunk[0]
                     cap = _fav_caption(it)
                     if it["media_type"] == "photo":
-                        await cb.message.answer_photo(it["file_id"], caption=cap)
+                        await message.answer_photo(it["file_id"], caption=cap)
                     elif it["media_type"] == "video":
-                        await cb.message.answer_video(it["file_id"], caption=cap)
+                        await message.answer_video(it["file_id"], caption=cap)
                     else:
-                        await cb.message.answer_document(it["file_id"], caption=cap)
+                        await message.answer_document(it["file_id"], caption=cap)
                 else:
-                    await cb.message.answer_media_group([_fav_media(it) for it in chunk])
+                    await message.answer_media_group([_fav_media(it) for it in chunk])
             except Exception as e:
                 logging.warning(f"fav album send failed: {e}")
 
     await _send_albums(media_items)
     await _send_albums(doc_items)
 
-    await cb.message.answer(
-        f"❤️ <b>Избранное</b> - {count} сохранений",
+    shown_to = offset + len(items)
+    rows = []
+    if shown_to < count:
+        rows.append([InlineKeyboardButton(text="⬇️ Показать ещё",
+                                          callback_data=f"fav_more:{shown_to}")])
+    rows.append([_eib("Главное меню", "back_main")])
+    await message.answer(
+        f"❤️ <b>Избранное</b> - {count} сохранений\n\n"
+        f"Показано {offset + 1}–{shown_to} из {count}",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [_eib("Главное меню", "back_main")],
-        ])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
     )
+
+
+@dp.callback_query(F.data == "menu_favorites")
+async def menu_favorites(cb: CallbackQuery):
+    uid = cb.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        count = await conn.fetchval("SELECT COUNT(*) FROM favorites WHERE user_id=$1", uid) or 0
+
+    if count == 0:
+        try:
+            await cb.message.edit_text(
+                "❤️ <b>Избранное</b>\n\nПока пусто. Нажми ❤️ после генерации чтобы сохранить.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [_eib("Главное меню", "back_main")],
+                ])
+            )
+        except Exception:
+            pass
+        await cb.answer()
+        return
+
+    await cb.answer()
+    await _send_favorites_page(cb.message, uid, 0)
+
+
+@dp.callback_query(F.data.startswith("fav_more:"))
+async def fav_more(cb: CallbackQuery):
+    await cb.answer()
+    try:
+        offset = int(cb.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    # Убираем кнопку «Показать ещё» у предыдущего сообщения, чтобы не дублировать
+    try:
+        await cb.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [_eib("Главное меню", "back_main")],
+            ])
+        )
+    except Exception:
+        pass
+    await _send_favorites_page(cb.message, cb.from_user.id, offset)
 
 
 @dp.message(F.text == "/help", StateFilter("*"))
