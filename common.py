@@ -2266,7 +2266,13 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             except Exception as sub_err:
                 logging.error(f"Ошибка создания подписки: {sub_err}")
 
-            if shop_key == "chatgpt":
+            if await _is_manual_plan(shop_key, plan_idx):
+                await _send_manual_order(
+                    user_id=user_id, shop_key=shop_key,
+                    service_name=service_name, plan_name=p.get("name", ""),
+                    order_id=order_id, amount_rub=amount_rub, delayed_note=delayed_note,
+                )
+            elif shop_key == "chatgpt":
                 import urllib.parse as _uparse
                 _plan_name = p.get("name", "Plus")
                 if not rt.chatgpt_webapp_enabled:
@@ -4399,3 +4405,57 @@ async def _send_creds_instructions(user_id, shop_key, service_name, plan_name,
         await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
     except Exception as e:
         logging.error(f"_send_creds_instructions uid={user_id}: {e}")
+
+
+# ── Ручная выдача по тарифу (manual): заказ админу, без авто-активации ────────
+
+async def _is_manual_plan(shop_key, plan_idx) -> bool:
+    try:
+        return (await get_setting(f"manual:{shop_key}:{plan_idx}", "0") or "0") == "1"
+    except Exception:
+        return False
+
+
+async def _send_manual_order(user_id, shop_key, service_name, plan_name,
+                             order_id, amount_rub, delayed_note=""):
+    """Тариф с ручной выдачей: создаём заказ, уведомляем клиента и админа (с кнопками)."""
+    try:
+        try:
+            _pool = await get_pool()
+            async with _pool.acquire() as _c:
+                _u = await _c.fetchrow("SELECT username FROM users WHERE user_id=$1", user_id)
+            _uname = (_u["username"] if _u else "") or ""
+        except Exception:
+            _uname = ""
+        await create_linkpay_order(user_id, _uname, order_id, shop_key,
+                                   service_name, plan_name, amount_rub,
+                                   kind="manual", status="awaiting_payment")
+        await bot.send_message(
+            user_id,
+            f"🎉 <b>Оплата прошла!</b>\n\n📦 <b>{service_name}</b>\n\n"
+            f"Александр оформит заказ и пришлёт всё необходимое сюда в ближайшее время 🙌"
+            f"{delayed_note}",
+            parse_mode="HTML")
+        tag = f"@{_uname}" if _uname else f"id{user_id}"
+        admin_text = (
+            f"🧾 <b>Ручной заказ</b>\n\n"
+            f"👤 {tag} (<code>{user_id}</code>)\n"
+            f"📦 {service_name}\n"
+            f"🎫 Тариф: <b>{plan_name or '—'}</b>\n"
+            f"💵 Оплачено: <b>{amount_rub}₽</b>\n"
+            f"🆔 <code>{order_id}</code>\n\n"
+            f"<i>Выдай вручную. Данные клиенту можно отправить кнопкой «✍️ Уточнение».</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order_id}")],
+            [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order_id}")],
+            [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order_id}")],
+        ])
+        try:
+            _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
+            await set_linkpay_admin_msg(order_id, _m.message_id)
+        except Exception as _e:
+            logging.error(f"manual admin notify: {_e}")
+        await log_event(user_id, "manual_order", f"order={order_id} svc={shop_key}")
+    except Exception as e:
+        logging.error(f"_send_manual_order uid={user_id}: {e}")
