@@ -2088,17 +2088,34 @@ async def adm_shop_plan(cb: CallbackQuery, state: FSMContext):
     if plan_idx >= len(plans):
         await cb.answer("\u0422\u0430\u0440\u0438\u0444 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d", show_alert=True); return
     p = plans[plan_idx]
+    _manual = (await get_setting(f"manual:{key}:{plan_idx}", "0") or "0") == "1"
+    _mline = ("🧾 Ручная выдача: <b>ВКЛ</b> (заказ тебе, без авто-активации)"
+              if _manual else "🧾 Ручная выдача: <b>выкл</b> (авто-флоу сервиса)")
     await cb.message.edit_text(
-        f"\u270f\ufe0f <b>{s.get('name', key)} \u2014 {p['name']}</b>\n\n\u0426\u0435\u043d\u0430: <b>{p['price']}\u20bd</b>\n{p.get('desc', '')}",
+        f"✏️ <b>{s.get('name', key)} — {p['name']}</b>\n\nЦена: <b>{p['price']}₽</b>\n{p.get('desc', '')}\n\n{_mline}",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="\U0001f4b0 \u0426\u0435\u043d\u0430", callback_data=f"adm_plan_field:{key}:{plan_idx}:price"),
-             InlineKeyboardButton(text="\U0001f4dd \u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435", callback_data=f"adm_plan_field:{key}:{plan_idx}:name")],
-            [InlineKeyboardButton(text="\U0001f4c4 \u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", callback_data=f"adm_plan_field:{key}:{plan_idx}:desc")],
-            [InlineKeyboardButton(text="\U0001f5d1 \u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0442\u0430\u0440\u0438\u0444", callback_data=f"adm_del_plan:{key}:{plan_idx}")],
-            [InlineKeyboardButton(text="\u2b05\ufe0f \u041d\u0430\u0437\u0430\u0434", callback_data=f"adm_shop_service:{key}")],
+            [InlineKeyboardButton(text="💰 Цена", callback_data=f"adm_plan_field:{key}:{plan_idx}:price"),
+             InlineKeyboardButton(text="📝 Название", callback_data=f"adm_plan_field:{key}:{plan_idx}:name")],
+            [InlineKeyboardButton(text="📄 Описание", callback_data=f"adm_plan_field:{key}:{plan_idx}:desc")],
+            [InlineKeyboardButton(text=("🧾 Ручная выдача: ВЫКЛ" if _manual else "🧾 Ручная выдача: ВКЛ"),
+                                  callback_data=f"adm_plan_manual:{key}:{plan_idx}")],
+            [InlineKeyboardButton(text="🗑 Удалить тариф", callback_data=f"adm_del_plan:{key}:{plan_idx}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm_shop_service:{key}")],
         ]))
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_plan_manual:"))
+async def adm_plan_manual(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    parts = cb.data.split(":")
+    key, plan_idx = parts[1], int(parts[2])
+    cur = (await get_setting(f"manual:{key}:{plan_idx}", "0") or "0") == "1"
+    await set_setting(f"manual:{key}:{plan_idx}", "0" if cur else "1")
+    cb.data = f"adm_shop_plan:{key}:{plan_idx}"
+    await adm_shop_plan(cb, state)
 
 
 @dp.callback_query(F.data.startswith("adm_plan_field:"))
