@@ -378,7 +378,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             ON CONFLICT (order_id) DO NOTHING
         """, order_id, uid, 0, final_shop_price if final_shop_price > 0 else p["price"],
             f"shop:{key}:{plan_idx}",
-            f"promo_applied" if promo_final and promo_final < p["price"] else None)
+            (_promo_code.strip().upper() if (promo_final and promo_final < p["price"] and _promo_code) else None))
 
     pay_url = fk_pay_url(final_shop_price, order_id) if final_shop_price > 0 else None
 
