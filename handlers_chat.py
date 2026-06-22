@@ -37,7 +37,7 @@ from common import (
 async def menu_chat(cb: CallbackQuery, state: FSMContext):
     await state.set_state(ChatState.chatting)
     await cb.message.edit_text(
-        "🤖 <b>AI-Консультант</b>\n\n"
+        "💬 <b>AI-Консультант</b>\n\n"
         "Я эксперт по нейросетям, VPN и промптингу.\n"
         "Помогу составить промт, настроить VPN, выбрать подходящую нейросеть.\n\n"
         "Это <b>бесплатно</b> 🎁\n\n"
@@ -51,11 +51,18 @@ async def menu_chat(cb: CallbackQuery, state: FSMContext):
 async def chat_presets_again(cb: CallbackQuery, state: FSMContext):
     """Показать пресеты снова во время диалога."""
     await state.set_state(ChatState.chatting)
-    await cb.message.answer(
-        "📋 <b>Быстрые пресеты</b>\n\n"
-        "Или просто напиши вопрос своими словами 👇",
-        reply_markup=kb_chat_presets(), parse_mode="HTML"
-    )
+    try:
+        await cb.message.edit_text(
+            "📋 <b>Быстрые пресеты</b>\n\n"
+            "Или просто напиши вопрос своими словами 👇",
+            reply_markup=kb_chat_presets(), parse_mode="HTML"
+        )
+    except Exception:
+        await cb.message.answer(
+            "📋 <b>Быстрые пресеты</b>\n\n"
+            "Или просто напиши вопрос своими словами 👇",
+            reply_markup=kb_chat_presets(), parse_mode="HTML"
+        )
     await cb.answer()
 
 
@@ -137,8 +144,11 @@ async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
     # Детект намерения для умной кнопки под ответом
     intent, model_hint = detect_consultant_intent(preset_message, reply)
     kb = kb_after_consultant_reply(intent, model_hint)
-    # Отправляем с разбивкой на части - клавиатура всегда на последнем куске
-    await _send_long_reply(cb.message, reply, reply_markup=kb)
+    # Обновляем ЭТО сообщение ответом (а не шлём новое); длинно/ошибка — фолбэк
+    try:
+        await cb.message.edit_text(reply, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await _send_long_reply(cb.message, reply, reply_markup=kb)
 
 
 @dp.callback_query(F.data == "help_choose")

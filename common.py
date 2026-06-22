@@ -2198,8 +2198,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
     await process_premium_referral(user_id, order_id, amount_rub)
 
     # Если был промокод - инкрементим используемость
-    promo_code = payment.get("promo_code") if isinstance(payment, dict) else None
-    if promo_code:
+    promo_code = (payment.get("promo_code") if isinstance(payment, dict) else None)
+    promo_code = (promo_code or "").strip().upper() or None
+    if promo_code and promo_code != "PROMO_APPLIED":
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:

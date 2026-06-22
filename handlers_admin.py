@@ -562,7 +562,7 @@ async def cmd_recover(message: Message):
         await status_msg.edit_text(f"⚠️ Видео скачал ({size_mb:.1f} MB), но отправить не смог: {str(send_err)[:200]}")
 
 
-@dp.message(F.text == "🛠️ Админ панель", StateFilter("*"))
+@dp.message(F.text.contains("Админ панель"), StateFilter("*"))
 async def reply_admin(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Нет доступа")
