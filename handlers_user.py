@@ -599,7 +599,7 @@ async def menu_favorites(cb: CallbackQuery):
         count = await conn.fetchval("SELECT COUNT(*) FROM favorites WHERE user_id=$1", uid) or 0
         items = await conn.fetch(
             "SELECT file_id, media_type, prompt, model, created_at FROM favorites "
-            "WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
+            "WHERE user_id=$1 ORDER BY created_at DESC",
             uid
         )
 
@@ -618,22 +618,47 @@ async def menu_favorites(cb: CallbackQuery):
         return
 
     await cb.answer()
-    # Отправляем последние 10 избранных
-    for item in items:
-        try:
-            caption = f"❤️ {item['model'] or 'Генерация'} · {item['created_at'].strftime('%d.%m.%Y')}"
-            if item["media_type"] == "photo":
-                await cb.message.answer_photo(item["file_id"], caption=caption)
-            elif item["media_type"] == "video":
-                await cb.message.answer_video(item["file_id"], caption=caption)
-            else:
-                await cb.message.answer_document(item["file_id"], caption=caption)
-        except Exception as e:
-            logging.warning(f"fav send failed: {e}")
+    from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+
+    def _fav_caption(it):
+        return f"❤️ {it['model'] or 'Генерация'} · {it['created_at'].strftime('%d.%m.%Y')}"
+
+    def _fav_media(it):
+        mt = it["media_type"]
+        if mt == "photo":
+            return InputMediaPhoto(media=it["file_id"], caption=_fav_caption(it))
+        if mt == "video":
+            return InputMediaVideo(media=it["file_id"], caption=_fav_caption(it))
+        return InputMediaDocument(media=it["file_id"], caption=_fav_caption(it))
+
+    # Документы нельзя смешивать с фото/видео в одном альбоме — отправляем раздельно
+    media_items = [it for it in items if it["media_type"] in ("photo", "video")]
+    doc_items   = [it for it in items if it["media_type"] not in ("photo", "video")]
+
+    async def _send_albums(group):
+        # Альбомами максимум по 10; одиночный элемент шлём обычным сообщением
+        for i in range(0, len(group), 10):
+            chunk = group[i:i + 10]
+            try:
+                if len(chunk) == 1:
+                    it = chunk[0]
+                    cap = _fav_caption(it)
+                    if it["media_type"] == "photo":
+                        await cb.message.answer_photo(it["file_id"], caption=cap)
+                    elif it["media_type"] == "video":
+                        await cb.message.answer_video(it["file_id"], caption=cap)
+                    else:
+                        await cb.message.answer_document(it["file_id"], caption=cap)
+                else:
+                    await cb.message.answer_media_group([_fav_media(it) for it in chunk])
+            except Exception as e:
+                logging.warning(f"fav album send failed: {e}")
+
+    await _send_albums(media_items)
+    await _send_albums(doc_items)
 
     await cb.message.answer(
-        f"❤️ <b>Избранное</b> - {count} сохранений\n\n"
-        f"Показаны последние {len(items)}",
+        f"❤️ <b>Избранное</b> - {count} сохранений",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [_eib("Главное меню", "back_main")],
