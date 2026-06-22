@@ -2874,12 +2874,15 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
         svc = SHOP_CATALOG.get(key, {})
         _pref = tg_emoji({**svc, "_key": key})
         nm = f"{_pref} {svc.get('name', key)}".strip()
+        _plans = svc.get("plans", [])
+        plan_nm = _plans[idx]["name"] if 0 <= idx < len(_plans) else f"#{idx}"
         unit = await _plan_cost(key, idx)
         cost = unit * r["cnt"]
-        d = by_svc.setdefault(nm, {"cnt": 0, "rev": 0, "cost": 0, "missing": False})
+        d = by_svc.setdefault(nm, {"cnt": 0, "rev": 0, "cost": 0, "missing": False, "plans": {}})
         d["cnt"] += r["cnt"]
         d["rev"] += int(r["rev"])
         d["cost"] += cost
+        d["plans"][plan_nm] = d["plans"].get(plan_nm, 0) + r["cnt"]
         if unit == 0:
             d["missing"] = True
         total_rev += int(r["rev"])
@@ -2889,7 +2892,11 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
     for nm, d in sorted(by_svc.items(), key=lambda x: -x[1]["rev"]):
         prof = d["rev"] - d["cost"]
         warn = " ⚠️ себест. не задана" if d["missing"] else ""
-        lines.append(f"\n<b>{nm}</b>: {d['cnt']} шт\n  {d['rev']}₽ − {d['cost']}₽ = <b>{prof:+}₽</b>{warn}")
+        plan_lines = "".join(
+            f"\n  • {pn} — {pc} шт"
+            for pn, pc in sorted(d.get("plans", {}).items(), key=lambda x: -x[1])
+        )
+        lines.append(f"\n<b>{nm}</b>: {d['cnt']} шт{plan_lines}\n  {d['rev']}₽ − {d['cost']}₽ = <b>{prof:+}₽</b>{warn}")
 
     nsg_cnt = nsg_row["cnt"] or 0
     if nsg_cnt:
@@ -2907,15 +2914,18 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
         total_rev += cr_rev
         lines.append(f"\n<b>💳 Кредиты</b>: {cr_cnt} шт · {cr_rev}₽\n  <i>(себестоимость AI не учитывается)</i>")
 
-    profit = total_rev - total_cost
+    commission = round(total_rev * 0.02)  # комиссия FreeKassa 2% на приёме оплат
+    profit = total_rev - total_cost - commission
     margin = round(profit / total_rev * 100) if total_rev else 0
     _rate = await _cost_usd_rate()
     _rev_usd = total_rev / _rate if _rate else 0
     _cost_usd = total_cost / _rate if _rate else 0
+    _com_usd = commission / _rate if _rate else 0
     _prof_usd = profit / _rate if _rate else 0
     lines.append(
         f"\n━━━━━━━━━━━━━\n"
         f"💵 Выручка: <b>{total_rev}₽</b> (≈ ${_rev_usd:,.0f})\n"
+        f"🏦 Комиссия FreeKassa 2%: <b>−{commission}₽</b> (≈ −${_com_usd:,.0f})\n"
         f"📉 Затраты: <b>{total_cost}₽</b> (≈ ${_cost_usd:,.0f})\n"
         f"💰 <b>Прибыль: {profit:+}₽</b> (≈ ${_prof_usd:+,.0f}) · маржа {margin}%\n"
         f"<i>Курс конвертации: {_rate:.0f} ₽/$</i>"
