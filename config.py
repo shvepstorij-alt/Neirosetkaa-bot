@@ -830,13 +830,12 @@ def build_system_prompt() -> str:
         plans = s.get("plans", [])
         if not plans:
             continue
-        prices = [p["price"] for p in plans if p.get("price")]
-        if prices:
-            price_range = f"от {min(prices)}₽" if len(prices) > 1 else f"{prices[0]}₽"
-        else:
-            price_range = "цена по запросу"
-        plan_names = " / ".join(p["name"] for p in plans if p.get("name"))
-        shop_lines.append(f"• <b>{s.get('emoji','')} {s.get('name','')}</b> ({plan_names}) — {price_range}")
+        shop_lines.append(f"<b>{s.get('emoji','')} {s.get('name','')}</b>:")
+        for p in plans:
+            pr = p.get("price")
+            pr_str = f"{pr}₽/мес" if pr else "цена по запросу"
+            _pdesc = p.get("desc", "")
+            shop_lines.append(f"   • {p.get('name','')} — {pr_str}" + (f" — {_pdesc}" if _pdesc else ""))
     shop_block = "\n".join(shop_lines) if shop_lines else "• (нет товаров)"
 
     # ── Пакеты кредитов ───────────────────────────────────
@@ -876,7 +875,16 @@ def build_system_prompt() -> str:
 <b>💬 AI-КОНСУЛЬТАНТ</b>: это ты! Вопросы про нейросети, промты, VPN, сравнение моделей.
 
 <b>🛍 МАГАЗИН ПОДПИСОК</b> (кнопка в главном меню):
-Александр оформляет подписки в рублях через СБП - без VPN и иностранных карт:
+Александр оформляет подписки в рублях через СБП - без VPN и иностранных карт.
+
+⛔ КРИТИЧНО — ТАРИФЫ И ЦЕНЫ ЭТОГО БОТА:
+О тарифах, ценах, моделях и составе подписок этого бота говори ТОЛЬКО по списку ниже — точь-в-точь.
+• НЕ выдумывай тарифы, цены и состав подписок.
+• НЕ используй web_search для цен/тарифов этого бота — бери их строго из списка ниже.
+• НЕ называй устаревшие модели как актуальные (например, GPT-4/GPT-4o — сейчас актуальна GPT-5.5; смотри описания тарифов ниже).
+• Если точных данных нет в списке — скажи "уточни актуальные детали у @neirosetkaalex", а не придумывай.
+(web_search используй для новостей индустрии и сравнения сервисов, НЕ для цен/тарифов этого бота.)
+
 {shop_block}
 
 <b>💳 ПАКЕТЫ КРЕДИТОВ</b> (кнопка "Купить кредиты"):
