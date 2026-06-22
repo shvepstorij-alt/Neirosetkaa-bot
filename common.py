@@ -46,7 +46,7 @@ from db import (
     set_linkpay_email,
 )
 from keyboards import (
-    _eib, kb_admin_panel, tg_emoji_ui,
+    _eib, kb_admin_panel, tg_emoji, tg_emoji_ui,
 )
 
 async def check_not_blocked(cb_or_msg, uid: int) -> bool:
@@ -2247,7 +2247,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             s = SHOP_CATALOG.get(shop_key, {})
             plans = s.get("plans", [])
             p = plans[plan_idx] if plan_idx < len(plans) else {}
-            service_name = f"{s.get('emoji', '')} {s.get('name', '')} - {p.get('name', '')}" if s else "Товар из магазина"
+            _svc_em = tg_emoji({**s, "_key": shop_key}) if s else ""
+            service_name = f"{_svc_em} {s.get('name', '')} - {p.get('name', '')}".strip() if s else "Товар из магазина"
 
             # Автоматически создаём подписку на 1 месяц
             import datetime as _dt2
@@ -2547,7 +2548,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             s_cat = SHOP_CATALOG.get(shop_key, {})
             plans = s_cat.get("plans", [])
             p_cat = plans[plan_idx] if plan_idx < len(plans) else {}
-            service_name = f"{s_cat.get('emoji', '')} {s_cat.get('name', '')} {p_cat.get('name', '')}" if s_cat else "Товар из магазина"
+            _svc_em = tg_emoji({**s_cat, "_key": shop_key}) if s_cat else ""
+            service_name = f"{_svc_em} {s_cat.get('name', '')} {p_cat.get('name', '')}".strip() if s_cat else "Товар из магазина"
 
             admin_msg = (
                 f"\u2705 <b>Заказ оплачен!</b>\n\n"
