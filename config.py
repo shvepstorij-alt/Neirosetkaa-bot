@@ -470,14 +470,15 @@ WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
 def plan_name_to_key(plan_name: str) -> str:
     """Стабильный ключ тарифа для пула кодов. Существующие имена — фиксированы,
     новые тарифы получают уникальный slug (коды разных тарифов не смешиваются)."""
-    explicit = {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max"}
+    explicit = {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max", "Go": "go"}
     if plan_name in explicit:
         return explicit[plan_name]
     import re as _re, hashlib as _h
+    # Новые тарифы: slug + хэш полного имени → у РАЗНЫХ названий всегда РАЗНЫЕ ключи
+    # (иначе «Plus (новый аккаунт)» после отбрасывания кириллицы схлопывался в "plus").
     slug = _re.sub(r"[^a-z0-9]+", "_", (plan_name or "").lower()).strip("_")
-    if not slug:  # не-латиница → стабильный хэш, чтобы не схлопнуть в один ключ
-        slug = "plan_" + _h.md5((plan_name or "").encode()).hexdigest()[:8]
-    return slug
+    h = _h.md5((plan_name or "").encode()).hexdigest()[:6]
+    return f"{slug}_{h}" if slug else f"plan_{h}"
 
 COINS_REF_PERCENT = 0.10  # 10% от суммы первой покупки реферала
 
