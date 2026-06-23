@@ -2268,13 +2268,25 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             except Exception as sub_err:
                 logging.error(f"Ошибка создания подписки: {sub_err}")
 
+            _sk_low = (shop_key or "").lower()
+            _sn_low = (s.get("name", "").lower() if isinstance(s, dict) else "")
+            if ("chatgpt" in _sk_low) or ("chatgpt" in _sn_low) or _sk_low == "gpt":
+                _svc_kind = "chatgpt"
+            elif ("claude" in _sk_low) or ("claude" in _sn_low):
+                _svc_kind = "claude"
+            elif ("perplex" in _sk_low) or ("perplex" in _sn_low):
+                _svc_kind = "perplexity"
+            else:
+                _svc_kind = None
+            logging.info(f"[shop-pay] order={order_id} shop_key={shop_key!r} name={s.get('name','') if isinstance(s,dict) else ''!r} -> kind={_svc_kind}")
+
             if await _is_manual_plan(shop_key, plan_idx):
                 await _send_manual_order(
                     user_id=user_id, shop_key=shop_key,
                     service_name=service_name, plan_name=p.get("name", ""),
                     order_id=order_id, amount_rub=amount_rub, delayed_note=delayed_note,
                 )
-            elif shop_key == "chatgpt":
+            elif _svc_kind == "chatgpt":
                 import urllib.parse as _uparse
                 _plan_name = p.get("name", "Plus")
                 if not rt.chatgpt_webapp_enabled:
@@ -2358,7 +2370,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     asyncio.create_task(_activation_timer_job(
                         user_id, _m_act_gpt.message_id, _base_gpt, _kb_gpt_active,
                         _dl_gpt, _exp_gpt, _kb_gpt_expired, _gpt_act_msg))
-            elif shop_key == "claude":
+            elif _svc_kind == "claude":
                 # ── Авто-активация Claude через bypriceactivate.pro Mini App ──
                 _plan_name_cl = p.get("name", "Pro")
                 _plan_key_cl = {
@@ -2416,10 +2428,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             plan_name=_plan_name_cl,
                             delayed_note=delayed_note,
                         )
-            elif shop_key == "perplexity":
+            elif _svc_kind == "perplexity":
                 # ── Авто-активация Perplexity через bypriceactivate.pro Mini App ──
                 _plan_name_cl = p.get("name", "Pro")
                 _plan_key_cl = "pro"
+                logging.info(f"[perplexity-pay] order={order_id} uid={user_id} enabled={rt.perplexity_webapp_enabled} plan_idx={plan_idx}")
                 if not rt.perplexity_webapp_enabled:
                     await bot.send_message(
                         user_id,
@@ -2452,7 +2465,10 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             f"⚠️ Коды временно закончились. "
                             f"Александр активирует вручную в течение часа 🙌"
                             f"{delayed_note}",
-                            parse_mode="HTML"
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text="❓ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
+                            ])
                         )
                         await bot.send_message(
                             ADMIN_ID,
@@ -2462,7 +2478,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             parse_mode="HTML"
                         )
                     else:
-                        await _send_perplexity_webapp_to_user(
+                        _ok_px = await _send_perplexity_webapp_to_user(
                             user_id=user_id,
                             code=_code_cl,
                             order_id=order_id,
@@ -2470,6 +2486,28 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             plan_name=_plan_name_cl,
                             delayed_note=delayed_note,
                         )
+                        if not _ok_px:
+                            try:
+                                await release_perplexity_code(_code_cl)
+                            except Exception:
+                                pass
+                            await bot.send_message(
+                                user_id,
+                                f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                                f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                                f"Александр активирует Perplexity вручную в течение часа 🙌{delayed_note}",
+                                parse_mode="HTML",
+                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                    [InlineKeyboardButton(text="❓ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
+                                ])
+                            )
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🚨 <b>Perplexity: не удалось отправить кнопку активации</b>\n"
+                                f"👤 <code>{user_id}</code>  🆔 <code>{order_id}</code>\n"
+                                f"Код возвращён в пул. Проверь логи Railway.",
+                                parse_mode="HTML"
+                            )
             elif await _is_linkpay(shop_key):
                 await _send_linkpay_instructions(
                     user_id=user_id, shop_key=shop_key,
@@ -3691,13 +3729,12 @@ async def _send_perplexity_webapp_to_user(
     import urllib.parse as _up
     from aiogram.types import WebAppInfo as _WAI
 
-    await save_perplexity_pending_activation(user_id, code, order_id, plan, plan_name)
-
     webapp_url = (
         f"{WEBAPP_BASE_URL}/webapp/perplexity"
         f"?plan={_up.quote(plan_name)}&code={_up.quote(code)}"
     )
     try:
+        await save_perplexity_pending_activation(user_id, code, order_id, plan, plan_name)
         import datetime as _dt_cl
         _base_cl = (
             f"🎉 <b>Оплата прошла!</b>\n\n"
