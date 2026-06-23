@@ -36,7 +36,7 @@ from runtime_state import (
 from db import (
     _extract_email_from_token, add_coins, add_credits_batch, delete_claude_pending_activation, delete_pending_activation, ensure_user,
     fk_get_order, fk_mark_paid, get_claude_pending_activation, get_coins, get_credits, get_next_claude_code,
-    get_next_gpt_code, get_pending_activation, get_pool, get_setting, get_user, is_blocked,
+    get_next_gpt_code, get_pending_activation, get_pool, get_setting, set_setting, get_user, is_blocked,
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
@@ -1764,6 +1764,147 @@ async def api_admin_overview_handler(request: web.Request) -> web.Response:
         logging.error(f"api_admin_overview: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
+
+def _admin_uid_from_body(body) -> "int | None":
+    init_data = (body.get("initData") if isinstance(body, dict) else None) or ""
+    return _verify_tg_init_data(init_data)
+
+
+async def api_admin_profit_handler(request: web.Request) -> web.Response:
+    """Реальный отчёт прибыли по сервисам/тарифам + комиссия 2%. Admin-only."""
+    import datetime as _dt_pf
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        period = (body.get("period") or "day")
+        day_off = int(body.get("dayOffset") or 0)
+        today = _dt_pf.date.today()
+        if period == "week":
+            since, until = today - _dt_pf.timedelta(days=6), today + _dt_pf.timedelta(days=1)
+        elif period == "month":
+            since, until = today - _dt_pf.timedelta(days=29), today + _dt_pf.timedelta(days=1)
+        else:
+            since = today - _dt_pf.timedelta(days=day_off); until = since + _dt_pf.timedelta(days=1)
+        rate = float(await get_setting("cost_usd_rate", "90") or "90")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            shop_rows = await conn.fetch(
+                "SELECT pack, COUNT(*) AS cnt, COALESCE(SUM(amount_rub),0) AS rev FROM fk_orders "
+                "WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at>=$1 AND paid_at<$2 GROUP BY pack",
+                since, until)
+            nsg = await conn.fetchrow(
+                "SELECT COUNT(*) AS cnt, COALESCE(SUM(price_rub),0) AS rev, COALESCE(SUM(price_usd),0) AS usd "
+                "FROM nsgifts_orders WHERE status='fulfilled' AND created_at>=$1 AND created_at<$2", since, until)
+            cr = await conn.fetchrow(
+                "SELECT COUNT(*) AS cnt, COALESCE(SUM(amount_rub),0) AS rev FROM fk_orders "
+                "WHERE status='paid' AND paid_at>=$1 AND paid_at<$2 "
+                "AND (pack IS NULL OR (pack NOT LIKE 'shop:%' AND pack NOT LIKE 'nsg:%'))", since, until)
+        by = {}; total_rev = 0; total_cost = 0
+        for r in shop_rows:
+            parts = (r["pack"] or "").split(":")
+            k = parts[1] if len(parts) > 1 else ""
+            idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+            scat = SHOP_CATALOG.get(k, {}) or {}; nm = scat.get("name", k)
+            plans = scat.get("plans", []); pname = plans[idx]["name"] if 0 <= idx < len(plans) else f"#{idx}"
+            usd = float(await get_setting(f"cost_usd:{k}:{idx}", "0") or "0")
+            unit = round(usd * rate) if usd > 0 else 0
+            cost = unit * r["cnt"]
+            d = by.setdefault(nm, {"name": nm, "cnt": 0, "rev": 0, "cost": 0, "missing": False, "plans": {}})
+            d["cnt"] += r["cnt"]; d["rev"] += int(r["rev"]); d["cost"] += cost
+            d["plans"][pname] = d["plans"].get(pname, 0) + r["cnt"]
+            if unit == 0: d["missing"] = True
+            total_rev += int(r["rev"]); total_cost += cost
+        services = []
+        for nm, d in sorted(by.items(), key=lambda x: -x[1]["rev"]):
+            services.append({"name": nm, "cnt": d["cnt"], "rev": d["rev"], "cost": d["cost"],
+                             "profit": d["rev"] - d["cost"], "missing": d["missing"],
+                             "plans": [{"name": pn, "cnt": pc} for pn, pc in sorted(d["plans"].items(), key=lambda x: -x[1])]})
+        if (nsg["cnt"] or 0):
+            nrev = int(nsg["rev"] or 0); ncost = round(float(nsg["usd"] or 0) * rate)
+            total_rev += nrev; total_cost += ncost
+            services.append({"name": "App Store", "cnt": nsg["cnt"], "rev": nrev, "cost": ncost,
+                             "profit": nrev - ncost, "missing": False, "plans": []})
+        credits = {"cnt": int(cr["cnt"] or 0), "rev": int(cr["rev"] or 0)}
+        total_rev += credits["rev"]
+        com = round(total_rev * 0.02); profit = total_rev - total_cost - com
+        margin = round(profit / total_rev * 100) if total_rev else 0
+        return web.json_response({"ok": True, "services": services, "credits": credits,
+                                  "totals": {"rev": total_rev, "cost": total_cost, "commission": com,
+                                             "profit": profit, "margin": margin}, "rate": rate})
+    except Exception as _e:
+        logging.error(f"api_admin_profit: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_prices_handler(request: web.Request) -> web.Response:
+    """Текущие цены ₽ и закуп $ по всем сервисам/тарифам. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        rate = float(await get_setting("cost_usd_rate", "90") or "90")
+        services = []
+        for k, scat in SHOP_CATALOG.items():
+            plans = scat.get("plans", [])
+            if not plans:
+                continue
+            pl = []
+            for i, p in enumerate(plans):
+                usd = float(await get_setting(f"cost_usd:{k}:{i}", "0") or "0")
+                price = int(p.get("price") or 0)
+                marg = round((price - usd * rate) / price * 100) if price > 0 else 0
+                pl.append({"idx": i, "name": p.get("name", ""), "price": price, "costUsd": usd, "margin": marg})
+            services.append({"key": k, "name": scat.get("name", k), "emoji": scat.get("emoji", ""), "plans": pl})
+        return web.json_response({"ok": True, "rate": rate, "services": services})
+    except Exception as _e:
+        logging.error(f"api_admin_prices: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
+    """Сохранение цен ₽, закупа $ и курса. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        if body.get("rate") is not None:
+            try:
+                await set_setting("cost_usd_rate", str(int(float(body["rate"]))))
+            except Exception:
+                pass
+        items = body.get("items") or []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            for it in items:
+                try:
+                    k = str(it.get("key", "")); idx = int(it.get("idx", 0))
+                    if not k:
+                        continue
+                    if it.get("costUsd") is not None:
+                        await set_setting(f"cost_usd:{k}:{idx}", str(float(it["costUsd"])))
+                    if it.get("price") is not None:
+                        pr = int(float(it["price"]))
+                        await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_idx=$3", pr, k, idx)
+                        scat = SHOP_CATALOG.get(k)
+                        if scat and 0 <= idx < len(scat.get("plans", [])):
+                            scat["plans"][idx]["price"] = pr
+                except Exception as _ie:
+                    logging.warning(f"prices_save item: {_ie}")
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_prices_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str
@@ -2927,6 +3068,9 @@ async def setup_webhook_server():
     app.router.add_get("/webapp/chatgpt", webapp_chatgpt_handler)
     app.router.add_get("/webapp/admin", webapp_admin_handler)
     app.router.add_post("/api/admin/overview", api_admin_overview_handler)
+    app.router.add_post("/api/admin/profit", api_admin_profit_handler)
+    app.router.add_post("/api/admin/prices", api_admin_prices_handler)
+    app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     logging.info("Admin Mini App: /webapp/admin + /api/admin/overview")
     app.router.add_get("/webapp/claude", webapp_claude_handler)
     app.router.add_post("/api/activate-claude", api_activate_claude_handler)

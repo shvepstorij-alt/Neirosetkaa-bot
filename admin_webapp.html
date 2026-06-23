@@ -191,58 +191,60 @@ function anActivity(){return hdr("Активность","действия за 9
 function anUsers(){return hdr("Пользователи")+'<div class="wrap"><div class="block"><h4><i class="ti ti-filter"></i> Воронка</h4>'+hbars([{label:"Всего",val:3482,color:C.blue},{label:"Активные (30д)",val:1196,color:C.purple},{label:"С покупками",val:612,color:C.pink},{label:"Постоянные",val:208,color:C.green}])+'</div></div>'}
 
 /* Прибыль */
+function api(path,body){var tg=window.Telegram&&window.Telegram.WebApp;body=body||{};body.initData=tg?tg.initData:"";return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});}
+
 SCREENS["Прибыль"]=function(){
-  var per=window._pPer||"day", day=window._pDay||"Сегодня";
-  var svc=[["✨ ChatGPT",[["Plus",15,1890],["Pro 5×",5,8490],["Go",2,1000]],39650,33033,C.pink],
-    ["⚡ Claude",[["Pro",9,1990],["Max 5×",2,9000]],34512,28567,C.purple],
-    ["🔍 Perplexity",[["Pro",1,1990]],1990,1610,C.amber]];
-  var rev=0,cost=0,h='',share=[];
-  svc.forEach(function(s){rev+=s[2];cost+=s[3];share.push({label:s[0].replace(/[^A-Za-zА-Яа-я ]/g,'').trim(),val:s[2]-s[3],color:s[4]});
-    var pl=s[1].map(function(pp){return '<div class="kv"><span class="k">'+pp[0]+' × '+pp[1]+'</span><span>'+nf(pp[1]*pp[2])+' ₽</span></div>'}).join('');
-    h+='<div class="block"><h4>'+s[0]+' · '+s[1].reduce(function(a,b){return a+b[1]},0)+' шт</h4>'+pl+'<div class="kv"><span class="k">выручка − закуп</span><span class="pos">+'+nf(s[2]-s[3])+' ₽</span></div></div>'});
-  var com=Math.round(rev*0.02),profit=rev-cost-com,margin=Math.round(profit/rev*100);
-  var seg='<div class="seg">'+[["day","Сегодня"],["week","7 дней"],["month","30 дней"]].map(function(x){return '<button class="'+(x[0]===per?'on':'')+'" onclick="window._pPer=\''+x[0]+'\';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>';
-  var dayPick = per==="day" ? '<div class="seg" style="margin-top:-8px">'+["Сегодня","Вчера","Позавчера"].map(function(dd){return '<button class="'+(dd===day?'on':'')+'" style="font-size:11.5px" onclick="window._pDay=\''+dd+'\';open2(\'Прибыль\')">'+dd+'</button>'}).join('')+'<button style="font-size:11.5px;flex:0 0 38px" onclick="leaf(profitPickDate)"><i class="ti ti-calendar"></i></button></div>' : '';
-  var sub = per==="day" ? day : (per==="week"?"7 дней":"30 дней");
-  return hdr("Прибыль / себестоимость",sub)+'<div class="wrap">'+seg+dayPick+
-    '<div class="block"><h4><i class="ti ti-gauge"></i> Маржа и структура прибыли</h4><div style="display:flex;align-items:center;gap:18px">'+ring(margin,C.green,"маржа")+'<div class="legend">'+share.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+s.label+'<b>+'+nf(s.val)+'₽</b></div>'}).join('')+'</div></div></div>'+
-    h+
-    '<div class="block"><div class="kv"><span class="k">Выручка</span><span>'+nf(rev)+' ₽</span></div><div class="kv"><span class="k">Комиссия FreeKassa 2%</span><span class="neg">−'+nf(com)+' ₽</span></div><div class="kv"><span class="k">Затраты (закуп)</span><span>'+nf(cost)+' ₽</span></div><div class="kv"><span class="k">Прибыль · маржа '+margin+'%</span><span class="pos">+'+nf(profit)+' ₽</span></div></div>'+
-    '<button class="btn sec" onclick="leaf(profitCosts)"><i class="ti ti-settings"></i> Себестоимость и цены всех сервисов</button></div>';
+  var per=window._pPer||"day", off=window._pOff||0;
+  var seg='<div class="seg">'+[["day","Сегодня"],["week","7 дней"],["month","30 дней"]].map(function(x){return '<button class="'+(x[0]===per?'on':'')+'" onclick="window._pPer=\''+x[0]+'\';window._pOff=0;open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>';
+  var dayPick = per==="day" ? '<div class="seg" style="margin-top:-8px">'+[["0","Сегодня"],["1","Вчера"],["2","Позавчера"]].map(function(x){return '<button class="'+(+x[0]===off?'on':'')+'" style="font-size:11.5px" onclick="window._pOff='+x[0]+';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>' : '';
+  var sub = per==="day" ? ["Сегодня","Вчера","Позавчера"][off] : (per==="week"?"7 дней":"30 дней");
+  setTimeout(function(){loadProfit(per,off)},0);
+  return hdr("Прибыль / себестоимость",sub)+'<div class="wrap">'+seg+dayPick+'<div id="pbody"><div class="note">Загружаю данные…</div></div><button class="btn sec" onclick="leaf(profitCosts)" style="margin-top:16px">⚙️ Себестоимость и цены</button></div>';
 };
-function profitPickDate(){return hdr("Прибыль за день")+'<div class="wrap"><label class="fl">Выбери дату</label><input class="f" type="text" value="22.06.2026"/><div class="btns2"><button class="btn row2 sec" onclick="window._pDay=\'Вчера\';back()">Вчера</button><button class="btn row2 sec" onclick="window._pDay=\'Позавчера\';back()">Позавчера</button></div><button class="btn" onclick="window._pDay=\'22.06.2026\';back()">Показать отчёт</button></div>'}
-function profitCosts(){
-  var CAT=[
-   ["ChatGPT","ti-sparkles",[["Plus",1890,20],["Pro 5×",8490,100],["Go",1000,8],["Новый аккаунт Plus",1500,20]]],
-   ["Claude","ti-bolt",[["Pro",1990,20],["Max 5×",9000,100],["Max 20×",15000,200]]],
-   ["Perplexity","ti-world-search",[["Pro",1990,20]]],
-   ["SuperGrok","ti-ghost-2",[["SuperGrok",2000,30],["Heavy",8000,300]]],
-   ["Cursor","ti-code",[["Pro",2300,20],["Pro+",5500,60]]],
-   ["Lovable","ti-rocket",[["Pro",2300,25]]],
-   ["Midjourney","ti-photo",[["Basic",1000,10],["Standard",3000,30],["Pro",5500,60]]],
-   ["Canva","ti-palette",[["Pro",1200,13]]],
-   ["Suno","ti-music",[["Pro",1000,10],["Premier",3000,30]]],
-   ["ElevenLabs","ti-microphone-2",[["Starter",600,5],["Creator",2300,22]]],
-   ["Gamma","ti-presentation",[["Plus",1000,10],["Pro",2300,20]]],
-   ["HeyGen","ti-video",[["Creator",2700,29]]],
-   ["Runway","ti-movie",[["Standard",1700,15],["Pro",3700,35]]],
-   ["Kling","ti-movie",[["Standard",900,8],["Pro",2700,25]]]
-  ];
-  var RATE=77;
-  var h=hdr("Себестоимость и цены","Все сервисы и тарифы")+'<div class="wrap">';
-  h+='<div class="block"><label class="fl" style="margin-top:0">Курс закупа доллара (₽)</label><input class="f" value="'+RATE+'" inputmode="numeric"/></div>';
-  CAT.forEach(function(s){
-    h+='<div class="block"><h4><i class="ti '+s[1]+'"></i> '+s[0]+'</h4>';
-    s[2].forEach(function(pl){
-      var marg=pl[1]?Math.round((pl[1]-pl[2]*RATE)/pl[1]*100):0;
-      h+='<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px"><span>'+pl[0]+'</span><span class="'+(marg>=20?'pos':'neg')+'" style="font-size:11px">маржа '+marg+'%</span></div>'+
-         '<div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f" value="'+pl[1]+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f" value="'+pl[2]+'" inputmode="decimal"/></div></div></div>';
+function loadProfit(per,off){
+  api('/api/admin/profit',{period:per,dayOffset:off}).then(function(d){
+    var el=document.getElementById('pbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка загрузки.</div>';return;}
+    var t=d.totals,h='';
+    var share=d.services.filter(function(s){return s.profit>0}).map(function(s,i){return {label:s.name,val:s.profit,color:[C.pink,C.purple,C.teal,C.amber,C.blue,C.green][i%6]}});
+    h+='<div class="block"><h4>📊 Маржа и структура</h4><div style="display:flex;align-items:center;gap:18px">'+ring(t.margin,C.green,"маржа")+'<div class="legend">'+(share.length?share.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+s.label+'<b>+'+nf(s.val)+'₽</b></div>'}).join(''):'<span class="muted" style="font-size:12px">нет продаж за период</span>')+'</div></div></div>';
+    d.services.forEach(function(s){
+      var pls=s.plans.map(function(pp){return '<div class="kv"><span class="k">'+pp.name+' × '+pp.cnt+'</span></div>'}).join('');
+      h+='<div class="block"><h4>'+s.name+' · '+s.cnt+' шт'+(s.missing?' <span class="tag a">себест. не задана</span>':'')+'</h4>'+pls+'<div class="kv"><span class="k">'+nf(s.rev)+' ₽ − '+nf(s.cost)+' ₽</span><span class="pos">+'+nf(s.profit)+' ₽</span></div></div>';
     });
-    h+='</div>';
+    if(d.credits&&d.credits.cnt){h+='<div class="block"><h4>💳 Кредиты · '+d.credits.cnt+' шт</h4><div class="kv"><span class="k">'+nf(d.credits.rev)+' ₽</span><span class="muted">себест. AI не учит.</span></div></div>';}
+    h+='<div class="block"><div class="kv"><span class="k">Выручка</span><span>'+nf(t.rev)+' ₽</span></div><div class="kv"><span class="k">Комиссия FreeKassa 2%</span><span class="neg">−'+nf(t.commission)+' ₽</span></div><div class="kv"><span class="k">Затраты (закуп)</span><span>'+nf(t.cost)+' ₽</span></div><div class="kv"><span class="k">Прибыль · маржа '+t.margin+'%</span><span class="pos">+'+nf(t.profit)+' ₽</span></div></div>';
+    el.innerHTML=h;
   });
-  h+='<div class="block"><h4><i class="ti ti-device-mobile"></i> App Store / iCloud</h4><div class="note" style="margin-top:0">Себестоимость считается автоматически: $-цена NS Gifts × курс. Настраивается в разделе «Настройка App Store».</div></div>';
-  h+='<button class="btn" onclick="toast(\'Цены и себестоимость сохранены\')">Сохранить всё</button></div>';
-  return h;
+}
+function profitCosts(){
+  setTimeout(loadPrices,0);
+  return hdr("Себестоимость и цены","Все сервисы и тарифы")+'<div class="wrap"><div id="cbody"><div class="note">Загружаю…</div></div></div>';
+}
+function loadPrices(){
+  api('/api/admin/prices',{}).then(function(d){
+    var el=document.getElementById('cbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка загрузки.</div>';return;}
+    var h='<div class="block"><label class="fl" style="margin-top:0">Курс закупа доллара (₽)</label><input class="f" id="costrate" value="'+d.rate+'" inputmode="numeric"/></div>';
+    d.services.forEach(function(s){
+      h+='<div class="block"><h4>'+(s.emoji?s.emoji+' ':'')+s.name+'</h4>';
+      s.plans.forEach(function(pp){
+        h+='<div style="margin-bottom:12px" data-key="'+s.key+'" data-idx="'+pp.idx+'"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px"><span>'+pp.name+'</span><span class="'+(pp.margin>=20?'pos':'neg')+'" style="font-size:11px">маржа '+pp.margin+'%</span></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pc-price" value="'+pp.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pc-cost" value="'+pp.costUsd+'" inputmode="decimal"/></div></div></div>';
+      });
+      h+='</div>';
+    });
+    h+='<button class="btn" onclick="savePrices()">💾 Сохранить всё</button>';
+    el.innerHTML=h;
+  });
+}
+function savePrices(){
+  var items=[];
+  document.querySelectorAll('#cbody [data-key]').forEach(function(div){
+    items.push({key:div.getAttribute('data-key'),idx:+div.getAttribute('data-idx'),price:div.querySelector('.pc-price').value,costUsd:div.querySelector('.pc-cost').value});
+  });
+  var rate=(document.getElementById('costrate')||{}).value;
+  toast('Сохраняю…');
+  api('/api/admin/prices-save',{rate:rate,items:items}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка сохранения');});
 }
 
 /* Продажи */
