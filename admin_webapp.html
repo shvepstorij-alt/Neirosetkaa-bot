@@ -168,30 +168,41 @@ var SCREENS={};
 
 /* Статистика */
 SCREENS["Статистика"]=function(){
-  var per=window._stP||"day",D={day:{o:22,r:"78 140₽",n:9,c:"1 240",bars:[3,2,4,1,5,4,3],labs:["00","04","08","12","16","20","24"],od:12,rd:8,nd:20},
-    week:{o:140,r:"512 300₽",n:63,c:"8 900",bars:[18,22,16,25,21,30,24],labs:["Пн","Вт","Ср","Чт","Пт","Сб","Вс"],od:9,rd:6,nd:14},
-    month:{o:602,r:"2,18М₽",n:248,c:"39 500",bars:[120,140,160,182],labs:["1н","2н","3н","4н"],od:5,rd:11,nd:7}},d=D[per];
-  return hdr("Статистика","Сводка по периодам")+'<div class="wrap">'+
-    '<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per?'on':'')+'" onclick="window._stP=\''+k+'\';open2(\'Статистика\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>'+
-    '<div class="mgrid">'+kpi("Заказы",d.o,d.od)+kpi("Выручка",d.r,d.rd)+kpi("Новые юзеры",d.n,d.nd)+'<div class="mcard"><div class="mlab">Расход кредитов</div><div class="mval">'+d.c+'</div></div></div>'+
-    '<div class="block"><h4><i class="ti ti-chart-bar"></i> Заказы по времени</h4>'+colbars(d.bars,d.labs)+'</div>'+
-    '<div class="block"><h4><i class="ti ti-chart-pie"></i> Заказы по статусам</h4>'+donut([{label:"Оплачены",val:18,color:C.green},{label:"В работе",val:3,color:C.amber},{label:"Возвраты",val:1,color:C.red}])+'</div>'+
-    '<button class="btn sec" onclick="leaf(statPick)"><i class="ti ti-calendar"></i> Выбрать конкретный день</button></div>';
+  var per=window._stP||"day";
+  setTimeout(function(){loadStats(per)},0);
+  var seg='<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per?'on':'')+'" onclick="window._stP=\''+k+'\';open2(\'Статистика\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>';
+  return hdr("Статистика","Сводка по периодам")+'<div class="wrap">'+seg+'<div id="stbody"><div class="note">Загружаю…</div></div></div>';
 };
-function statPick(){return hdr("Статистика за день")+'<div class="wrap"><label class="fl">Дата</label><input class="f" value="22.06.2026"/><button class="btn" onclick="toast(\'Отчёт за день\')">Показать</button></div>'}
+function loadStats(per){
+  api('/api/admin/stats',{period:per}).then(function(d){
+    var el=document.getElementById('stbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    var h='<div class="mgrid"><div class="mcard"><div class="mlab">Заказы</div><div class="mval">'+d.orders+'</div></div><div class="mcard"><div class="mlab">Выручка</div><div class="mval">'+nf(d.revenue)+'₽</div></div><div class="mcard"><div class="mlab">Новые юзеры</div><div class="mval">'+d.newUsers+'</div></div><div class="mcard"><div class="mlab">Расход кредитов</div><div class="mval">'+nf(d.creditsSpent)+'</div></div></div>';
+    var vals=d.series.map(function(x){return x.value}), labs=d.series.map(function(x){return x.label});
+    h+='<div class="block"><h4>📊 Заказы за 7 дней</h4>'+colbars(vals,labs)+'</div>';
+    if(d.byType&&d.byType.length){h+='<div class="block"><h4>🧩 Генерации по типам</h4>'+hbars(d.byType.map(function(x,i){return {label:x.label,val:x.val,color:[C.pink,C.purple,C.teal,C.amber,C.blue][i%5]}}))+'</div>';}
+    el.innerHTML=h;
+  });
+}
 
-/* Аналитика */
-SCREENS["Аналитика"]=function(){return hdr("Аналитика")+'<div class="wrap">'+
-  rowItem("ti-flame","Топ моделей","самые популярные","",'leaf(anTopModels)')+
-  rowItem("ti-crown","Топ юзеров","кто больше тратит","",'leaf(anTopUsers)')+
-  rowItem("ti-activity","Активность","график по дням","",'leaf(anActivity)')+
-  rowItem("ti-users","Пользователи","всего/активные/новые","",'leaf(anUsers)')+'</div>'};
-function anTopModels(){return hdr("Топ моделей","за 30 дней")+'<div class="wrap"><div class="block">'+hbars([{label:"Nano Banana",val:412,color:C.pink},{label:"GPT Image 2",val:301,color:C.purple},{label:"Veo 3.1",val:188,color:C.teal},{label:"Kling Turbo",val:142,color:C.amber},{label:"Flux Pro",val:97,color:C.blue}])+'</div></div>'}
-function anTopUsers(){return hdr("Топ юзеров","по тратам, кр")+'<div class="wrap"><div class="block">'+hbars([{label:"@vlasovasonyaa",val:18420},{label:"@TarAnton",val:14200,color:C.purple},{label:"@Y_Winch",val:9870,color:C.teal},{label:"@maxpower",val:7600,color:C.amber}])+'</div></div>'}
-function anActivity(){return hdr("Активность","действия за 9 дней")+'<div class="wrap"><div class="block">'+spark([30,45,60,52,80,90,70,95,88],C.purple)+'</div><div class="mgrid"><div class="mcard"><div class="mlab">Пик в день</div><div class="mval">95</div></div><div class="mcard"><div class="mlab">Среднее</div><div class="mval">68</div></div></div></div>'}
-function anUsers(){return hdr("Пользователи")+'<div class="wrap"><div class="block"><h4><i class="ti ti-filter"></i> Воронка</h4>'+hbars([{label:"Всего",val:3482,color:C.blue},{label:"Активные (30д)",val:1196,color:C.purple},{label:"С покупками",val:612,color:C.pink},{label:"Постоянные",val:208,color:C.green}])+'</div></div>'}
+SCREENS["Аналитика"]=function(){
+  setTimeout(loadAnalytics,0);
+  return hdr("Аналитика")+'<div class="wrap"><div id="anbody"><div class="note">Загружаю…</div></div></div>';
+};
+function loadAnalytics(){
+  api('/api/admin/analytics',{}).then(function(d){
+    var el=document.getElementById('anbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    var pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
+    var h='<div class="block"><h4>🔥 Топ моделей</h4>'+(d.topModels.length?hbars(d.topModels.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%6]}})):'<span class="muted" style="font-size:12px">нет данных</span>')+'</div>';
+    h+='<div class="block"><h4>👑 Топ юзеров</h4>'+(d.topUsers.length?hbars(d.topUsers.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%6]}}),' ген'):'<span class="muted" style="font-size:12px">нет данных</span>')+'</div>';
+    h+='<div class="block"><h4>📈 Активность (9 дней)</h4>'+spark(d.activity,C.purple)+'</div>';
+    var u=d.users;
+    h+='<div class="mgrid"><div class="mcard"><div class="mlab">Всего</div><div class="mval">'+nf(u.total)+'</div></div><div class="mcard"><div class="mlab">Активные 30д</div><div class="mval">'+nf(u.active30)+'</div></div><div class="mcard"><div class="mlab">Новые сегодня</div><div class="mval">'+u.newToday+'</div></div><div class="mcard"><div class="mlab">С покупками</div><div class="mval">'+nf(u.withBuy)+'</div></div></div>';
+    el.innerHTML=h;
+  });
+}
 
-/* Прибыль */
 function api(path,body){var tg=window.Telegram&&window.Telegram.WebApp;body=body||{};body.initData=tg?tg.initData:"";return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});}
 
 SCREENS["Прибыль"]=function(){
