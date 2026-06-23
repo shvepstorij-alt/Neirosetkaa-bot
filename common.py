@@ -3943,32 +3943,15 @@ async def _claude_activation_polling_job(
                     "status": "done", "success": False, "error": _err
                 }
                 _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
-                _replaced_code = None
                 if _is_stock:
                     # нет стока — код валиден, возвращаем в пул
                     await release_claude_code(code)
                     await delete_claude_pending_activation(user_id)
+                    _fail_note = "Нет стока — код возвращён в пул."
                 else:
-                    # Жёсткий сбой: код «сгорел» у провайдера (повторно непригоден).
-                    # ОДИН раз автоматически выдаём свежий код, чтобы клиент активировал сам.
-                    if order_id not in _claude_replaced_orders:
-                        _pend_f = await get_claude_pending_activation(user_id)
-                        _plan_key_f = ((_pend_f or {}).get("plan")) or {
-                            "Pro": "pro", "Max 5×": "max_5x", "Max 20×": "max_20x"
-                        }.get(plan_name, "pro")
-                        _new_code_f = await get_next_claude_code(_plan_key_f)
-                        if _new_code_f:
-                            _claude_replaced_orders.add(order_id)
-                            # старый код оставляем зарезервированным (is_used=TRUE) — он мёртв
-                            await save_claude_pending_activation(
-                                user_id, _new_code_f, order_id, _plan_key_f, plan_name)
-                            _replaced_code = _new_code_f
-                            logging.info(
-                                f"Claude auto-replace user={user_id} order={order_id} "
-                                f"dead={code} new={_new_code_f}")
-                    if not _replaced_code:
-                        # авто-замена недоступна (нет свежих кодов / уже заменяли) → ручная
-                        await delete_claude_pending_activation(user_id)
+                    # Сбой обычно временный (провайдер: payment/timeout). Код НЕ сжигаем и НЕ ротируем —
+                    # оставляем закреплённым за клиентом: можно повторить тем же кодом или активировать вручную.
+                    _fail_note = "Код сохранён — повтори тем же кодом позже или активируй вручную."
 
                 # ── алерт админу ──
                 try:
@@ -3977,8 +3960,7 @@ async def _claude_activation_polling_job(
                         f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
                         f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
                         f"❌ {_err[:300]}"
-                        + (f"\n♻️ Выдан новый код: <code>{_replaced_code}</code>" if _replaced_code
-                           else "\n⚠️ Авто-замена недоступна — нужна ручная активация")
+                        + f"\n♻️ {_fail_note}"
                     )
                     _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
                     if _ss_fail:
@@ -4704,32 +4686,15 @@ async def _perplexity_activation_polling_job(
                     "status": "done", "success": False, "error": _err
                 }
                 _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
-                _replaced_code = None
                 if _is_stock:
                     # нет стока — код валиден, возвращаем в пул
                     await release_perplexity_code(code)
                     await delete_perplexity_pending_activation(user_id)
+                    _fail_note = "Нет стока — код возвращён в пул."
                 else:
-                    # Жёсткий сбой: код «сгорел» у провайдера (повторно непригоден).
-                    # ОДИН раз автоматически выдаём свежий код, чтобы клиент активировал сам.
-                    if order_id not in _perplexity_replaced_orders:
-                        _pend_f = await get_perplexity_pending_activation(user_id)
-                        _plan_key_f = ((_pend_f or {}).get("plan")) or {
-                            "Pro": "pro", "Max 5×": "max_5x", "Max 20×": "max_20x"
-                        }.get(plan_name, "pro")
-                        _new_code_f = await get_next_perplexity_code(_plan_key_f)
-                        if _new_code_f:
-                            _perplexity_replaced_orders.add(order_id)
-                            # старый код оставляем зарезервированным (is_used=TRUE) — он мёртв
-                            await save_perplexity_pending_activation(
-                                user_id, _new_code_f, order_id, _plan_key_f, plan_name)
-                            _replaced_code = _new_code_f
-                            logging.info(
-                                f"Perplexity auto-replace user={user_id} order={order_id} "
-                                f"dead={code} new={_new_code_f}")
-                    if not _replaced_code:
-                        # авто-замена недоступна (нет свежих кодов / уже заменяли) → ручная
-                        await delete_perplexity_pending_activation(user_id)
+                    # Сбой обычно временный (провайдер: payment/timeout). Код НЕ сжигаем и НЕ ротируем —
+                    # оставляем закреплённым за клиентом: можно повторить тем же кодом или активировать вручную.
+                    _fail_note = "Код сохранён — повтори тем же кодом позже или активируй вручную."
 
                 # ── алерт админу ──
                 try:
@@ -4738,8 +4703,7 @@ async def _perplexity_activation_polling_job(
                         f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
                         f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
                         f"❌ {_err[:300]}"
-                        + (f"\n♻️ Выдан новый код: <code>{_replaced_code}</code>" if _replaced_code
-                           else "\n⚠️ Авто-замена недоступна — нужна ручная активация")
+                        + f"\n♻️ {_fail_note}"
                     )
                     _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
                     if _ss_fail:
