@@ -113,8 +113,9 @@ var C={pink:"#e24a82",purple:"#8b7be0",teal:"#2dd4bf",amber:"#f0b429",blue:"#4a9
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('show')},1400)}
 function esc(s){return(''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function nf(n){return n.toLocaleString('ru')}
-function go(fn,push){if(push!==false)stack.push(fn);window.scrollTo(0,0);app.innerHTML=fn()}
-function back(){stack.pop();var fn=stack[stack.length-1]||home;window.scrollTo(0,0);app.innerHTML=fn()}
+function go(fn,push){if(push!==false)stack.push(fn);window._cur=fn;window.scrollTo(0,0);app.innerHTML=fn();syncBack()}
+function back(){stack.pop();var fn=stack[stack.length-1]||home;window._cur=fn;window.scrollTo(0,0);app.innerHTML=fn();syncBack()}
+function syncBack(){var b=window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.BackButton;if(!b)return;try{if(window._cur&&window._cur!==home){b.show()}else{b.hide()}}catch(e){}}
 function leaf(fn){go(fn)}
 function open2(n){go(function(){return SCREENS[n]?SCREENS[n]():stub(n)})}
 function hdr(t,s){return '<div class="hdr"><div class="back" onclick="back()"><i class="ti ti-chevron-left"></i></div><div><div class="htitle">'+esc(t)+'</div>'+(s?'<div class="hsub">'+esc(s)+'</div>':'')+'</div></div>'}
@@ -207,13 +208,13 @@ function loadProfit(per,off){
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка загрузки.</div>';return;}
     var t=d.totals,h='';
     var share=d.services.filter(function(s){return s.profit>0}).map(function(s,i){return {label:s.name,val:s.profit,color:[C.pink,C.purple,C.teal,C.amber,C.blue,C.green][i%6]}});
+    h+='<div class="block"><div class="mgrid" style="margin:0"><div class="mcard"><div class="mlab">Выручка</div><div class="mval">'+nf(t.rev)+' ₽</div></div><div class="mcard"><div class="mlab">Прибыль · '+t.margin+'%</div><div class="mval pos">+'+nf(t.profit)+' ₽</div></div><div class="mcard"><div class="mlab">Затраты (закуп)</div><div class="mval">'+nf(t.cost)+' ₽</div></div><div class="mcard"><div class="mlab">Комиссия 2%</div><div class="mval neg">−'+nf(t.commission)+' ₽</div></div></div></div>';
     h+='<div class="block"><h4>📊 Маржа и структура</h4><div style="display:flex;align-items:center;gap:18px">'+ring(t.margin,C.green,"маржа")+'<div class="legend">'+(share.length?share.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+s.label+'<b>+'+nf(s.val)+'₽</b></div>'}).join(''):'<span class="muted" style="font-size:12px">нет продаж за период</span>')+'</div></div></div>';
     d.services.forEach(function(s){
       var pls=s.plans.map(function(pp){return '<div class="kv"><span class="k">'+pp.name+' × '+pp.cnt+'</span></div>'}).join('');
       h+='<div class="block"><h4>'+s.name+' · '+s.cnt+' шт'+(s.missing?' <span class="tag a">себест. не задана</span>':'')+'</h4>'+pls+'<div class="kv"><span class="k">'+nf(s.rev)+' ₽ − '+nf(s.cost)+' ₽</span><span class="pos">+'+nf(s.profit)+' ₽</span></div></div>';
     });
     if(d.credits&&d.credits.cnt){h+='<div class="block"><h4>💳 Кредиты · '+d.credits.cnt+' шт</h4><div class="kv"><span class="k">'+nf(d.credits.rev)+' ₽</span><span class="muted">себест. AI не учит.</span></div></div>';}
-    h+='<div class="block"><div class="kv"><span class="k">Выручка</span><span>'+nf(t.rev)+' ₽</span></div><div class="kv"><span class="k">Комиссия FreeKassa 2%</span><span class="neg">−'+nf(t.commission)+' ₽</span></div><div class="kv"><span class="k">Затраты (закуп)</span><span>'+nf(t.cost)+' ₽</span></div><div class="kv"><span class="k">Прибыль · маржа '+t.margin+'%</span><span class="pos">+'+nf(t.profit)+' ₽</span></div></div>';
     el.innerHTML=h;
   });
 }
@@ -372,6 +373,7 @@ function denied(){app.innerHTML='<div style="padding:70px 24px;text-align:center
 function boot(){
   var tg=window.Telegram&&window.Telegram.WebApp;
   if(tg){try{tg.ready();tg.expand();tg.setHeaderColor&&tg.setHeaderColor('#0d0e12');}catch(e){}}
+  if(tg&&tg.BackButton){try{tg.BackButton.onClick(function(){back()});}catch(e){}}
   var initData=tg?tg.initData:"";
   go(home);
   fetch('/api/admin/overview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initData:initData})})
