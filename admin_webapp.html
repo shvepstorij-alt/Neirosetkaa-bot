@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Neirosetka — Админ-панель</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.7.0/tabler-icons.min.css"/>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:#0d0e12; --surface:#14161c; --card:#1a1d25; --card2:#23262f;
+  --txt:#eceef2; --txt2:#9aa0ad; --txt3:#6b6f7a;
+  --acc:#e24a82; --acc2:#8b7be0; --acc-soft:rgba(226,74,130,.15);
+  --green:#37c98a; --red:#f0617a; --amber:#f0b429; --blue:#4a9be2; --teal:#2dd4bf;
+  --line:rgba(255,255,255,.08); --r:14px; --r2:10px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:#000;color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.phone{max-width:430px;margin:0 auto;min-height:100vh;background:var(--bg);position:relative;overflow-x:hidden}
+.wrap{padding:14px 14px 96px}
+.brandbar{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 6px}
+.brand{font-size:18px;font-weight:600;letter-spacing:.4px}.brand span{color:var(--acc)}
+.av{width:30px;height:30px;border-radius:50%;background:var(--acc-soft);color:var(--acc);display:flex;align-items:center;justify-content:center;font-size:15px}
+.hero{text-align:center;margin:6px 0 4px}
+.hero .hi{width:58px;height:58px;border-radius:18px;background:var(--acc-soft);color:var(--acc);display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 8px}
+.hero h1{font-size:19px;font-weight:600;margin:0}.hero p{font-size:12.5px;color:var(--txt2);margin:4px 0 0}
+.chips{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:14px 0 4px}
+.chip{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:10px 8px;text-align:center}
+.chip .v{font-size:15px;font-weight:600}.chip .l{font-size:10px;color:var(--txt2);margin-top:2px}
+.chip .d{font-size:10px;margin-top:2px}
+.glabel{font-size:12.5px;font-weight:600;color:var(--acc);margin:20px 4px 10px;display:flex;align-items:center;gap:7px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px 12px;display:flex;align-items:center;gap:11px;cursor:pointer;transition:.12s}
+.card:active{transform:scale(.97);border-color:var(--acc)}.card.full{grid-column:1/-1}
+.ic{width:36px;height:36px;border-radius:11px;background:var(--acc-soft);color:var(--acc);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.lbl{font-size:13px;line-height:1.25}
+.hdr{display:flex;align-items:center;gap:10px;padding:14px 14px 8px;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--line)}
+.back{width:34px;height:34px;border-radius:10px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--txt);cursor:pointer;font-size:18px;flex-shrink:0}
+.back:active{transform:scale(.94)}.htitle{font-size:16px;font-weight:600}.hsub{font-size:11.5px;color:var(--txt2);margin-top:1px}
+.row{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px;display:flex;align-items:center;gap:12px;margin-bottom:9px;cursor:pointer;transition:.12s}
+.row:active{transform:scale(.985);border-color:var(--acc)}.row .lbl2{font-size:13.5px}.row .sub{font-size:11.5px;color:var(--txt2);margin-top:2px}
+.chev{margin-left:auto;color:var(--txt3);font-size:18px}
+.tag{font-size:10.5px;padding:2px 8px;border-radius:20px;font-weight:600}
+.tag.g{background:rgba(55,201,138,.16);color:var(--green)}.tag.r{background:rgba(240,97,122,.16);color:var(--red)}
+.tag.a{background:rgba(240,180,41,.16);color:var(--amber)}.tag.n{background:var(--card2);color:var(--txt2)}.tag.b{background:rgba(74,155,226,.16);color:var(--blue)}
+.mgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+.mcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:12px}
+.mlab{font-size:11.5px;color:var(--txt2)}.mval{font-size:20px;font-weight:700;margin-top:3px}
+.delta{font-size:11px;margin-top:3px}.pos{color:var(--green)}.neg{color:var(--red)}
+.seg{display:flex;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:3px;margin-bottom:14px;gap:2px}
+.seg button{flex:1;border:0;background:transparent;color:var(--txt2);font-size:12.5px;padding:8px 4px;border-radius:8px;cursor:pointer;font-weight:600}
+.seg button.on{background:var(--acc);color:#fff}
+label.fl{display:block;font-size:12px;color:var(--txt2);margin:12px 2px 6px}
+input.f,textarea.f,select.f{width:100%;background:var(--card);border:1px solid var(--line);border-radius:var(--r2);color:var(--txt);font-size:14px;padding:11px 12px;outline:none}
+input.f:focus,textarea.f:focus{border-color:var(--acc)}textarea.f{min-height:96px;resize:vertical;font-family:inherit}
+.btn{width:100%;background:var(--acc);color:#fff;border:0;border-radius:var(--r2);padding:13px;font-size:14px;font-weight:600;cursor:pointer;margin-top:14px}
+.btn:active{transform:scale(.99)}.btn.sec{background:var(--card);color:var(--txt);border:1px solid var(--line)}
+.btn.danger{background:rgba(240,97,122,.16);color:var(--red)}.btn.row2{margin-top:0}
+.btns2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}.btns3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}
+.sw{width:46px;height:27px;border-radius:14px;background:#3a3d47;position:relative;flex-shrink:0;cursor:pointer;transition:.15s;margin-left:auto}
+.sw.on{background:var(--acc)}.sw b{position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;background:#fff;transition:.15s}.sw.on b{left:22px}
+.note{font-size:12px;color:var(--txt2);background:var(--card2);border-radius:var(--r2);padding:11px 12px;line-height:1.55;margin-top:12px}
+.block{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px}
+.block h4{margin:0 0 10px;font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:8px}
+.kv{display:flex;justify-content:space-between;font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)}
+.kv:first-of-type{border-top:0}.kv .k{color:var(--txt2)}.muted{color:var(--txt2)}
+.bars{display:flex;align-items:flex-end;gap:6px;height:120px;margin:8px 2px 22px}
+.bars .b{flex:1;background:rgba(226,74,130,.18);border-radius:6px 6px 0 0;position:relative;min-height:3px}
+.bars .b i{position:absolute;bottom:-18px;left:0;right:0;text-align:center;font-size:9.5px;color:var(--txt3);font-style:normal}
+.bars .b span{position:absolute;top:-15px;left:0;right:0;text-align:center;font-size:9px;color:var(--txt2)}
+.bars .b.hi{background:var(--acc)}
+/* donut */
+.donutwrap{display:flex;align-items:center;gap:18px}
+.donut{width:118px;height:118px;border-radius:50%;flex-shrink:0;position:relative}
+.dhole{position:absolute;inset:17px;background:var(--card);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.dhole span{font-size:15px;font-weight:700;line-height:1}.dhole i{font-size:9.5px;color:var(--txt2);font-style:normal;margin-top:2px}
+.legend{flex:1;min-width:0}.lg{font-size:12px;display:flex;align-items:center;gap:7px;padding:3px 0;color:var(--txt2)}
+.lg b{margin-left:auto;color:var(--txt);font-weight:600}.dot{width:9px;height:9px;border-radius:3px;flex-shrink:0}
+/* hbars */
+.hb{margin-bottom:12px}.hb-l{display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px}.hb-l span{color:var(--txt2)}
+.hb-t{height:9px;background:var(--card2);border-radius:6px;overflow:hidden}.hb-f{height:100%;border-radius:6px;background:var(--acc)}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#fff;color:#111;font-size:13px;font-weight:600;padding:10px 18px;border-radius:24px;opacity:0;transition:.25s;pointer-events:none;z-index:50}
+.toast.show{opacity:1;bottom:34px}
+.tabbar{position:fixed;left:0;right:0;bottom:0;max-width:430px;margin:0 auto;display:flex;background:var(--surface);border-top:1px solid var(--line);padding:8px 0 calc(8px + env(safe-area-inset-bottom))}
+.tabbar a{flex:1;text-align:center;color:var(--txt3);font-size:10px;text-decoration:none;cursor:pointer}
+.tabbar a i{display:block;font-size:20px;margin-bottom:3px}.tabbar a.on{color:var(--acc)}
+.search{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:9px 12px;margin-bottom:12px}
+.search input{flex:1;background:transparent;border:0;outline:none;color:var(--txt);font-size:13.5px}
+</style>
+</head>
+<body>
+<div class="phone">
+  <div id="app"></div>
+  <div class="tabbar">
+    <a class="on" onclick="go(home)"><i class="ti ti-layout-grid"></i>Разделы</a>
+    <a onclick="open2('Статистика')"><i class="ti ti-chart-bar"></i>Статистика</a>
+    <a onclick="open2('История платежей')"><i class="ti ti-receipt"></i>Заказы</a>
+    <a onclick="open2('Прибыль')"><i class="ti ti-coin"></i>Прибыль</a>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+/* ===== mock state ===== */
+var S={toggles:{Suno:1,Kling:1,HeyGen:0,Higgsfield:1,Zoom:1,Krea:1,YouTube:0,
+  "ChatGPT Mini App":1,"Claude Mini App":1,"Perplexity Mini App":1,Техработы:0,"Авто-исправление":1,
+  "Plus ручная выдача":0,"Новый аккаунт ручная выдача":1},
+  models:{"GPT Image 2":1,"Nano Banana":1,"Flux Pro":1,"Ideogram V3":1,"Recraft V3":0,
+   "Veo 3.1":1,"Kling Turbo":1,"Seedance 1.5 Pro":1,"Kling Pro":0,"Nano Banana edit":1,"Flux Kontext":1,"Kling Motion":1,"Higgsfield Anim":0}};
+var stack=[],app=document.getElementById('app');
+var OVERVIEW=null;
+var C={pink:"#e24a82",purple:"#8b7be0",teal:"#2dd4bf",amber:"#f0b429",blue:"#4a9be2",green:"#37c98a",red:"#f0617a",gray:"#5a5e6b"};
+
+function toast(t){var e=document.getElementById('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('show')},1400)}
+function esc(s){return(''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function nf(n){return n.toLocaleString('ru')}
+function go(fn,push){if(push!==false)stack.push(fn);window.scrollTo(0,0);app.innerHTML=fn()}
+function back(){stack.pop();var fn=stack[stack.length-1]||home;window.scrollTo(0,0);app.innerHTML=fn()}
+function leaf(fn){go(fn)}
+function open2(n){go(function(){return SCREENS[n]?SCREENS[n]():stub(n)})}
+function hdr(t,s){return '<div class="hdr"><div class="back" onclick="back()"><i class="ti ti-chevron-left"></i></div><div><div class="htitle">'+esc(t)+'</div>'+(s?'<div class="hsub">'+esc(s)+'</div>':'')+'</div></div>'}
+function sw(name){var k=name.replace(/'/g,"");return '<span class="sw'+(S.toggles[name]?' on':'')+'" onclick="S.toggles[\''+k+'\']=S.toggles[\''+k+'\']?0:1;this.classList.toggle(\'on\')"><b></b></span>'}
+function rowItem(icon,label,sub,right,onclick){return '<div class="row" onclick="'+(onclick||'')+'"><span class="ic"><i class="ti '+icon+'"></i></span><div><div class="lbl2">'+esc(label)+'</div>'+(sub?'<div class="sub">'+esc(sub)+'</div>':'')+'</div>'+(right||'<span class="chev"><i class="ti ti-chevron-right"></i></span>')+'</div>'}
+function stub(n){return hdr(n)+'<div class="wrap"><div class="note">Экран «'+esc(n)+'» — превью.</div></div>'}
+
+/* ===== infographic helpers ===== */
+function donut(segs,centerLab){var tot=segs.reduce(function(a,b){return a+b.val},0),acc=0;
+  var stops=segs.map(function(s){var a=acc/tot*100;acc+=s.val;return s.color+' '+a.toFixed(1)+'% '+(acc/tot*100).toFixed(1)+'%'}).join(',');
+  var leg=segs.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+esc(s.label)+'<b>'+Math.round(s.val/tot*100)+'%</b></div>'}).join('');
+  return '<div class="donutwrap"><div class="donut" style="background:conic-gradient('+stops+')"><div class="dhole"><span>'+(centerLab||nf(tot))+'</span><i>'+(centerLab?'':'всего')+'</i></div></div><div class="legend">'+leg+'</div></div>'}
+function ring(pct,color,lab){return '<div class="donut" style="width:104px;height:104px;background:conic-gradient('+color+' 0 '+pct+'%,var(--card2) '+pct+'% 100%)"><div class="dhole"><span>'+pct+'%</span><i>'+esc(lab)+'</i></div></div>'}
+function hbars(items,unit){var mx=Math.max.apply(0,items.map(function(i){return i.val}));return items.map(function(i){return '<div class="hb"><div class="hb-l">'+esc(i.label)+'<span>'+nf(i.val)+(unit||'')+'</span></div><div class="hb-t"><div class="hb-f" style="width:'+Math.max(4,Math.round(i.val/mx*100))+'%;background:'+(i.color||'var(--acc)')+'"></div></div></div>'}).join('')}
+function prog(pct,color){return '<div class="hb-t"><div class="hb-f" style="width:'+Math.min(100,pct)+'%;background:'+(color||'var(--acc)')+'"></div></div>'}
+function colbars(vals,labs,fmt){var mx=Math.max.apply(0,vals);return '<div class="bars">'+vals.map(function(v,i){return '<div class="b'+(v===mx?' hi':'')+'" style="height:'+Math.max(3,Math.round(v/mx*100))+'%"><span>'+(fmt?fmt(v):v)+'</span><i>'+labs[i]+'</i></div>'}).join('')+'</div>'}
+function spark(vals,color){var w=320,h=64,mx=Math.max.apply(0,vals),mn=Math.min.apply(0,vals),rng=(mx-mn)||1;
+  var pts=vals.map(function(v,i){return [(i/(vals.length-1)*w),(h-((v-mn)/rng)*(h-10)-5)]});
+  var d='M'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1)}).join(' L');
+  return '<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" preserveAspectRatio="none"><path d="'+d+' L'+w+','+h+' L0,'+h+' Z" fill="'+color+'22"/><path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="2.5" stroke-linejoin="round"/></svg>'}
+function kpi(lab,val,delta){var up=delta>=0;return '<div class="mcard"><div class="mlab">'+esc(lab)+'</div><div class="mval">'+val+'</div><div class="delta '+(up?'pos':'neg')+'">'+(up?'▲':'▼')+' '+Math.abs(delta)+'% к вчера</div></div>'}
+
+/* ===== HOME ===== */
+function home(){
+  var ov=OVERVIEW||{};
+  var _ord=(ov.orders!=null?ov.orders:22),_rev=(ov.revenue!=null?ov.revenue:78140),_nu=(ov.newUsers!=null?ov.newUsers:9);
+  var _week=ov.week||[52,61,48,73,69,90,78];
+  var _pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
+  var _bysvc=(ov.byService&&ov.byService.length?ov.byService:[{label:"ChatGPT",val:39650},{label:"Claude",val:34512},{label:"App Store",val:5200},{label:"Perplexity",val:1990}]).map(function(x,i){return {label:x.label,val:x.val,color:_pal[i%_pal.length]}});
+  var _wksum=_week.reduce(function(a,b){return a+b},0);
+  var groups=[
+   ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
+   ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
+   ["🛒","Каталог и цены",[["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
+   ["📦","Выдача заказов",[["🔗","Оплата по ссылке","Оплата по ссылке"],["🔐","Вход в аккаунт","Вход в аккаунт"]]],
+   ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
+   ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
+  ];
+  var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
+  h+='<div class="hero"><div class="hi">🎛️</div><h1>Панель управления</h1><p>Сегодня · '+(new Date()).toLocaleDateString('ru')+'</p></div>';
+  h+='<div class="chips"><div class="chip"><div class="v">'+_ord+'</div><div class="l">заказов</div></div><div class="chip"><div class="v">'+nf(_rev)+'₽</div><div class="l">выручка</div></div><div class="chip"><div class="v">'+_nu+'</div><div class="l">новых юзеров</div></div></div>';
+  h+='<div class="block"><h4>📈 Выручка за 7 дней</h4>'+spark(_week,C.pink)+'<div class="kv" style="margin-top:8px"><span class="k">Итого за неделю</span><span>'+nf(_wksum)+' ₽</span></div></div>';
+  h+='<div class="block"><h4>🥧 Выручка по сервисам (сегодня)</h4>'+donut(_bysvc)+'</div>';
+  groups.forEach(function(g){h+='<div class="glabel">'+g[0]+' '+g[1]+'</div><div class="grid">';g[2].forEach(function(c){h+='<div class="card'+(c[3]?' full':'')+'" onclick="open2(\''+c[2]+'\')"><span class="ic">'+c[0]+'</span><span class="lbl">'+c[1]+'</span></div>'});h+='</div>'});
+  return h+'</div>';
+}
+
+
+var SCREENS={};
+
+/* Статистика */
+SCREENS["Статистика"]=function(){
+  var per=window._stP||"day",D={day:{o:22,r:"78 140₽",n:9,c:"1 240",bars:[3,2,4,1,5,4,3],labs:["00","04","08","12","16","20","24"],od:12,rd:8,nd:20},
+    week:{o:140,r:"512 300₽",n:63,c:"8 900",bars:[18,22,16,25,21,30,24],labs:["Пн","Вт","Ср","Чт","Пт","Сб","Вс"],od:9,rd:6,nd:14},
+    month:{o:602,r:"2,18М₽",n:248,c:"39 500",bars:[120,140,160,182],labs:["1н","2н","3н","4н"],od:5,rd:11,nd:7}},d=D[per];
+  return hdr("Статистика","Сводка по периодам")+'<div class="wrap">'+
+    '<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per?'on':'')+'" onclick="window._stP=\''+k+'\';open2(\'Статистика\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>'+
+    '<div class="mgrid">'+kpi("Заказы",d.o,d.od)+kpi("Выручка",d.r,d.rd)+kpi("Новые юзеры",d.n,d.nd)+'<div class="mcard"><div class="mlab">Расход кредитов</div><div class="mval">'+d.c+'</div></div></div>'+
+    '<div class="block"><h4><i class="ti ti-chart-bar"></i> Заказы по времени</h4>'+colbars(d.bars,d.labs)+'</div>'+
+    '<div class="block"><h4><i class="ti ti-chart-pie"></i> Заказы по статусам</h4>'+donut([{label:"Оплачены",val:18,color:C.green},{label:"В работе",val:3,color:C.amber},{label:"Возвраты",val:1,color:C.red}])+'</div>'+
+    '<button class="btn sec" onclick="leaf(statPick)"><i class="ti ti-calendar"></i> Выбрать конкретный день</button></div>';
+};
+function statPick(){return hdr("Статистика за день")+'<div class="wrap"><label class="fl">Дата</label><input class="f" value="22.06.2026"/><button class="btn" onclick="toast(\'Отчёт за день\')">Показать</button></div>'}
+
+/* Аналитика */
+SCREENS["Аналитика"]=function(){return hdr("Аналитика")+'<div class="wrap">'+
+  rowItem("ti-flame","Топ моделей","самые популярные","",'leaf(anTopModels)')+
+  rowItem("ti-crown","Топ юзеров","кто больше тратит","",'leaf(anTopUsers)')+
+  rowItem("ti-activity","Активность","график по дням","",'leaf(anActivity)')+
+  rowItem("ti-users","Пользователи","всего/активные/новые","",'leaf(anUsers)')+'</div>'};
+function anTopModels(){return hdr("Топ моделей","за 30 дней")+'<div class="wrap"><div class="block">'+hbars([{label:"Nano Banana",val:412,color:C.pink},{label:"GPT Image 2",val:301,color:C.purple},{label:"Veo 3.1",val:188,color:C.teal},{label:"Kling Turbo",val:142,color:C.amber},{label:"Flux Pro",val:97,color:C.blue}])+'</div></div>'}
+function anTopUsers(){return hdr("Топ юзеров","по тратам, кр")+'<div class="wrap"><div class="block">'+hbars([{label:"@vlasovasonyaa",val:18420},{label:"@TarAnton",val:14200,color:C.purple},{label:"@Y_Winch",val:9870,color:C.teal},{label:"@maxpower",val:7600,color:C.amber}])+'</div></div>'}
+function anActivity(){return hdr("Активность","действия за 9 дней")+'<div class="wrap"><div class="block">'+spark([30,45,60,52,80,90,70,95,88],C.purple)+'</div><div class="mgrid"><div class="mcard"><div class="mlab">Пик в день</div><div class="mval">95</div></div><div class="mcard"><div class="mlab">Среднее</div><div class="mval">68</div></div></div></div>'}
+function anUsers(){return hdr("Пользователи")+'<div class="wrap"><div class="block"><h4><i class="ti ti-filter"></i> Воронка</h4>'+hbars([{label:"Всего",val:3482,color:C.blue},{label:"Активные (30д)",val:1196,color:C.purple},{label:"С покупками",val:612,color:C.pink},{label:"Постоянные",val:208,color:C.green}])+'</div></div>'}
+
+/* Прибыль */
+SCREENS["Прибыль"]=function(){
+  var per=window._pPer||"day", day=window._pDay||"Сегодня";
+  var svc=[["✨ ChatGPT",[["Plus",15,1890],["Pro 5×",5,8490],["Go",2,1000]],39650,33033,C.pink],
+    ["⚡ Claude",[["Pro",9,1990],["Max 5×",2,9000]],34512,28567,C.purple],
+    ["🔍 Perplexity",[["Pro",1,1990]],1990,1610,C.amber]];
+  var rev=0,cost=0,h='',share=[];
+  svc.forEach(function(s){rev+=s[2];cost+=s[3];share.push({label:s[0].replace(/[^A-Za-zА-Яа-я ]/g,'').trim(),val:s[2]-s[3],color:s[4]});
+    var pl=s[1].map(function(pp){return '<div class="kv"><span class="k">'+pp[0]+' × '+pp[1]+'</span><span>'+nf(pp[1]*pp[2])+' ₽</span></div>'}).join('');
+    h+='<div class="block"><h4>'+s[0]+' · '+s[1].reduce(function(a,b){return a+b[1]},0)+' шт</h4>'+pl+'<div class="kv"><span class="k">выручка − закуп</span><span class="pos">+'+nf(s[2]-s[3])+' ₽</span></div></div>'});
+  var com=Math.round(rev*0.02),profit=rev-cost-com,margin=Math.round(profit/rev*100);
+  var seg='<div class="seg">'+[["day","Сегодня"],["week","7 дней"],["month","30 дней"]].map(function(x){return '<button class="'+(x[0]===per?'on':'')+'" onclick="window._pPer=\''+x[0]+'\';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>';
+  var dayPick = per==="day" ? '<div class="seg" style="margin-top:-8px">'+["Сегодня","Вчера","Позавчера"].map(function(dd){return '<button class="'+(dd===day?'on':'')+'" style="font-size:11.5px" onclick="window._pDay=\''+dd+'\';open2(\'Прибыль\')">'+dd+'</button>'}).join('')+'<button style="font-size:11.5px;flex:0 0 38px" onclick="leaf(profitPickDate)"><i class="ti ti-calendar"></i></button></div>' : '';
+  var sub = per==="day" ? day : (per==="week"?"7 дней":"30 дней");
+  return hdr("Прибыль / себестоимость",sub)+'<div class="wrap">'+seg+dayPick+
+    '<div class="block"><h4><i class="ti ti-gauge"></i> Маржа и структура прибыли</h4><div style="display:flex;align-items:center;gap:18px">'+ring(margin,C.green,"маржа")+'<div class="legend">'+share.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+s.label+'<b>+'+nf(s.val)+'₽</b></div>'}).join('')+'</div></div></div>'+
+    h+
+    '<div class="block"><div class="kv"><span class="k">Выручка</span><span>'+nf(rev)+' ₽</span></div><div class="kv"><span class="k">Комиссия FreeKassa 2%</span><span class="neg">−'+nf(com)+' ₽</span></div><div class="kv"><span class="k">Затраты (закуп)</span><span>'+nf(cost)+' ₽</span></div><div class="kv"><span class="k">Прибыль · маржа '+margin+'%</span><span class="pos">+'+nf(profit)+' ₽</span></div></div>'+
+    '<button class="btn sec" onclick="leaf(profitCosts)"><i class="ti ti-settings"></i> Себестоимость и цены всех сервисов</button></div>';
+};
+function profitPickDate(){return hdr("Прибыль за день")+'<div class="wrap"><label class="fl">Выбери дату</label><input class="f" type="text" value="22.06.2026"/><div class="btns2"><button class="btn row2 sec" onclick="window._pDay=\'Вчера\';back()">Вчера</button><button class="btn row2 sec" onclick="window._pDay=\'Позавчера\';back()">Позавчера</button></div><button class="btn" onclick="window._pDay=\'22.06.2026\';back()">Показать отчёт</button></div>'}
+function profitCosts(){
+  var CAT=[
+   ["ChatGPT","ti-sparkles",[["Plus",1890,20],["Pro 5×",8490,100],["Go",1000,8],["Новый аккаунт Plus",1500,20]]],
+   ["Claude","ti-bolt",[["Pro",1990,20],["Max 5×",9000,100],["Max 20×",15000,200]]],
+   ["Perplexity","ti-world-search",[["Pro",1990,20]]],
+   ["SuperGrok","ti-ghost-2",[["SuperGrok",2000,30],["Heavy",8000,300]]],
+   ["Cursor","ti-code",[["Pro",2300,20],["Pro+",5500,60]]],
+   ["Lovable","ti-rocket",[["Pro",2300,25]]],
+   ["Midjourney","ti-photo",[["Basic",1000,10],["Standard",3000,30],["Pro",5500,60]]],
+   ["Canva","ti-palette",[["Pro",1200,13]]],
+   ["Suno","ti-music",[["Pro",1000,10],["Premier",3000,30]]],
+   ["ElevenLabs","ti-microphone-2",[["Starter",600,5],["Creator",2300,22]]],
+   ["Gamma","ti-presentation",[["Plus",1000,10],["Pro",2300,20]]],
+   ["HeyGen","ti-video",[["Creator",2700,29]]],
+   ["Runway","ti-movie",[["Standard",1700,15],["Pro",3700,35]]],
+   ["Kling","ti-movie",[["Standard",900,8],["Pro",2700,25]]]
+  ];
+  var RATE=77;
+  var h=hdr("Себестоимость и цены","Все сервисы и тарифы")+'<div class="wrap">';
+  h+='<div class="block"><label class="fl" style="margin-top:0">Курс закупа доллара (₽)</label><input class="f" value="'+RATE+'" inputmode="numeric"/></div>';
+  CAT.forEach(function(s){
+    h+='<div class="block"><h4><i class="ti '+s[1]+'"></i> '+s[0]+'</h4>';
+    s[2].forEach(function(pl){
+      var marg=pl[1]?Math.round((pl[1]-pl[2]*RATE)/pl[1]*100):0;
+      h+='<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px"><span>'+pl[0]+'</span><span class="'+(marg>=20?'pos':'neg')+'" style="font-size:11px">маржа '+marg+'%</span></div>'+
+         '<div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f" value="'+pl[1]+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f" value="'+pl[2]+'" inputmode="decimal"/></div></div></div>';
+    });
+    h+='</div>';
+  });
+  h+='<div class="block"><h4><i class="ti ti-device-mobile"></i> App Store / iCloud</h4><div class="note" style="margin-top:0">Себестоимость считается автоматически: $-цена NS Gifts × курс. Настраивается в разделе «Настройка App Store».</div></div>';
+  h+='<button class="btn" onclick="toast(\'Цены и себестоимость сохранены\')">Сохранить всё</button></div>';
+  return h;
+}
+
+/* Продажи */
+SCREENS["Продажи магазина"]=function(){
+  var per=window._sP||"day";
+  return hdr("Продажи магазина")+'<div class="wrap">'+
+    '<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per?'on':'')+'" onclick="window._sP=\''+k+'\';open2(\'Продажи магазина\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>'+
+    '<div class="block"><h4><i class="ti ti-chart-pie"></i> Доля выручки</h4>'+donut([{label:"ChatGPT",val:39650,color:C.pink},{label:"Claude",val:34512,color:C.purple},{label:"App Store",val:5200,color:C.teal},{label:"Perplexity",val:1990,color:C.amber}])+'</div>'+
+    rowItem("ti-sparkles","ChatGPT","22 шт · 39 650 ₽",'<span class="chev"><i class="ti ti-chevron-right"></i></span>','leaf(function(){return salesPlans(\"ChatGPT\",[[\"Plus\",15],[\"Pro 5×\",5],[\"Go\",2]])})')+
+    rowItem("ti-bolt","Claude","11 шт · 34 512 ₽",'<span class="chev"><i class="ti ti-chevron-right"></i></span>','leaf(function(){return salesPlans(\"Claude\",[[\"Pro\",9],[\"Max 5×\",2]])})')+
+    rowItem("ti-device-mobile","App Store","4 шт · 5 200 ₽","",'')+
+    rowItem("ti-world-search","Perplexity","1 шт · 1 990 ₽","",'')+'</div>';
+};
+function salesPlans(svc,plans){return hdr(svc,"продажи по тарифам")+'<div class="wrap"><div class="block">'+hbars(plans.map(function(p,i){return {label:p[0],val:p[1],color:[C.pink,C.purple,C.teal][i%3]}}),' шт')+'</div></div>'}
+
+/* История платежей */
+SCREENS["История платежей"]=function(){
+  var d=[["@TarAnton","ChatGPT Plus","1 890 ₽","g","оплачен"],["@vlasovasonyaa","Claude Pro","1 990 ₽","g","оплачен"],["@maxpower","Kling (ссылка)","2 400 ₽","a","в работе"],["@nik","Zoom Pro","1 500 ₽","b","выполнен"],["@olya","Промокод SUMMER","−300 ₽","n","скидка"]];
+  return hdr("История платежей")+'<div class="wrap"><div class="block"><h4><i class="ti ti-chart-pie"></i> Статусы</h4>'+donut([{label:"Оплачены",val:18,color:C.green},{label:"Выполнены",val:9,color:C.blue},{label:"В работе",val:3,color:C.amber},{label:"Возвраты",val:1,color:C.red}])+'</div>'+
+    '<div class="search"><i class="ti ti-search muted"></i><input placeholder="Поиск по ID или @нику" oninput="toast(\'Фильтр: \'+(this.value||\'все\'))"/></div>'+
+    d.map(function(x){return '<div class="row" onclick="toast(\'Заказ '+x[0]+'\')"><div><div class="lbl2">'+x[0]+'</div><div class="sub">'+x[1]+'</div></div><div style="margin-left:auto;text-align:right"><div style="font-size:13px;font-weight:600">'+x[2]+'</div><span class="tag '+x[3]+'">'+x[4]+'</span></div></div>'}).join('')+'</div>';
+};
+
+/* Найти по ID */
+SCREENS["Найти по ID"]=function(){return hdr("Найти пользователя")+'<div class="wrap"><label class="fl">Telegram ID или @ник</label><input class="f" placeholder="431818619"/><button class="btn" onclick="leaf(userCard)">Найти</button></div>'};
+function userCard(){return hdr("Карточка пользователя")+'<div class="wrap"><div class="block"><div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><div class="ic" style="width:44px;height:44px;font-size:20px"><i class="ti ti-user"></i></div><div><div style="font-size:15px;font-weight:600">@TarAnton</div><div class="sub">ID 431818619 · с нами 4 мес</div></div></div><div class="kv"><span class="k">Баланс</span><span>1 240 кр</span></div><div class="kv"><span class="k">Покупок</span><span>7 на 12 130 ₽</span></div><div class="kv"><span class="k">Статус</span><span class="tag g">активен</span></div></div>'+
+  '<div class="block"><h4><i class="ti ti-history"></i> Траты по месяцам</h4>'+colbars([1200,3400,2100,5430],["Мар","Апр","Май","Июн"],function(v){return Math.round(v/1000)+"к"})+'</div>'+
+  '<div class="btns2"><button class="btn row2 sec" onclick="toast(\'Начисление\')">Начислить</button><button class="btn row2 danger" onclick="toast(\'Заблокирован\')">Заблокировать</button></div></div>'}
+
+/* Балансы */
+SCREENS["Балансы"]=function(){
+  var ops=[["ti-coin","Начислить кредиты","balForm"],["ti-trending-down","Расход по юзеру","balForm"],["ti-list-check","Аудит всех юзеров","balAudit"],["ti-user-search","Аудит юзера по ID","balForm"],["ti-edit","Установить баланс","balForm"],["ti-minus","Снять кредиты","balForm"]];
+  var h=hdr("Балансы")+'<div class="wrap">';
+  h+='<div class="block"><h4><i class="ti ti-coins"></i> Кредиты в системе</h4><div class="kv"><span class="k">Выдано всего</span><span>1 240 000 кр</span></div><div class="kv"><span class="k">Потрачено</span><span>980 400 кр</span></div>'+prog(79,C.pink)+'<div class="sub" style="margin-top:6px">79% выданных кредитов израсходовано</div></div>';
+  ops.forEach(function(o){h+=rowItem(o[0],o[1],"","",'leaf('+o[2]+')')});
+  h+='<div class="row" style="cursor:default"><span class="ic"><i class="ti ti-tool"></i></span><div><div class="lbl2">Авто-исправление баланса</div><div class="sub">фоновая сверка</div></div>'+sw("Авто-исправление")+'</div>';
+  return h+'</div>';
+};
+function balForm(){return hdr("Операция с балансом")+'<div class="wrap"><label class="fl">Telegram ID</label><input class="f" placeholder="431818619"/><label class="fl">Кредиты</label><input class="f" inputmode="numeric" placeholder="100"/><button class="btn" onclick="toast(\'Готово\')">Применить</button></div>'}
+function balAudit(){var d=[["@user1","ок","g"],["@user2","−50 расхожд.","a"],["@user3","ок","g"],["@user4","+20 расхожд.","a"]];return hdr("Аудит балансов")+'<div class="wrap">'+d.map(function(x){return rowItem("ti-user",x[0],x[1],'<span class="tag '+x[2]+'">'+(x[2]==='g'?'ок':'!')+'</span>','')}).join('')+'<button class="btn" onclick="toast(\'Пересчитано\')">Исправить все автоматом</button></div>'}
+
+/* Блокировки */
+SCREENS["Блокировки"]=function(){var d=[["@spammer1","спам"],["@fraud2","возвраты"]];
+  return hdr("Блокировки")+'<div class="wrap"><label class="fl">Заблокировать по ID</label><div class="search"><input placeholder="Telegram ID"/><button class="btn row2 danger" style="width:auto;margin:0;padding:8px 14px" onclick="toast(\'Бан\')">Бан</button></div><div class="glabel" style="margin-top:14px"><i class="ti ti-ban"></i> Заблокированные ('+d.length+')</div>'+d.map(function(x){return rowItem("ti-user-off",x[0],x[1],'<button class="btn row2 sec" style="width:auto;margin:0;padding:7px 12px;font-size:12px" onclick="event.stopPropagation();toast(\'Разбан\')">Разбан</button>','')}).join('')+'</div>'};
+
+/* Промокоды */
+SCREENS["Промокоды"]=function(){
+  var d=[["SUMMER","−300 ₽",12,50,"до 31.07"],["WELCOME","+100 кр",340,0,"бессрочно"],["VIP10","−10%",3,3,"исчерпан"]];
+  var h=hdr("Промокоды")+'<div class="wrap"><button class="btn" onclick="leaf(promoCreate)"><i class="ti ti-plus"></i> Создать промокод</button><div class="glabel" style="margin-top:16px"><i class="ti ti-ticket"></i> Промокоды</div>';
+  d.forEach(function(x){var pct=x[3]?Math.round(x[2]/x[3]*100):0,col=pct>=100?C.red:C.pink;
+    h+='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+x[0]+' · '+x[1]+'</span><span class="tag '+(pct>=100?'r':'g')+'">'+(pct>=100?'стоп':'актив')+'</span></div><div class="sub" style="margin-bottom:6px">Использований: '+x[2]+(x[3]?' / '+x[3]:' (∞)')+' · '+x[4]+'</div>'+(x[3]?prog(pct,col):prog(100,C.blue))+'</div>'});
+  return h+'<button class="btn sec" onclick="toast(\'Показаны все, включая неактивные\')">Показать все</button></div>';
+};
+function promoCreate(){return hdr("Новый промокод")+'<div class="wrap"><label class="fl">Код</label><input class="f" placeholder="SUMMER"/><label class="fl">Тип</label><select class="f"><option>Скидка ₽</option><option>Скидка %</option><option>Кредиты</option></select><label class="fl">Значение</label><input class="f" placeholder="300"/><label class="fl">Макс. использований</label><input class="f" placeholder="50"/><label class="fl">Срок (дней)</label><input class="f" placeholder="30"/><button class="btn" onclick="toast(\'Создан\')">Создать</button></div>'}
+
+/* Модели */
+SCREENS["Модели"]=function(){
+  var secs=[["Фото-модели","ti-photo",["GPT Image 2","Nano Banana","Flux Pro","Ideogram V3","Recraft V3"]],["Видео-модели","ti-movie",["Veo 3.1","Kling Turbo","Seedance 1.5 Pro","Kling Pro"]],["Редактирование","ti-edit",["Nano Banana edit","Flux Kontext"]],["Анимация","ti-run",["Kling Motion","Higgsfield Anim"]]];
+  var h=hdr("Модели")+'<div class="wrap">';
+  secs.forEach(function(s){var on=s[2].filter(function(m){return S.models[m]}).length;
+    h+=rowItem(s[1],s[0],on+" из "+s[2].length+" включено",'<div style="width:54px;margin-left:auto">'+prog(Math.round(on/s[2].length*100),C.green)+'</div>','leaf(function(){return mdlList(\''+s[0]+'\','+JSON.stringify(s[2]).replace(/"/g,"&quot;")+')})')});
+  return h+'</div>';
+};
+function mdlList(title,arr){return hdr(title,"вкл/выкл и цена в кредитах")+'<div class="wrap">'+arr.map(function(m){var cr=[10,15,20,25,30][m.length%5];return '<div class="row" style="cursor:default"><div><div class="lbl2">'+m+'</div><div class="sub">'+cr+' кр · нажми ✎ для цены</div></div><span class="chev" onclick="toast(\'Изменить цену\')" style="cursor:pointer"><i class="ti ti-pencil"></i></span>'+swModel(m)+'</div>'}).join('')+'</div>'}
+function swModel(name){var k=name.replace(/'/g,"");return '<span class="sw'+(S.models[name]?' on':'')+'" style="margin-left:10px" onclick="S.models[\''+k+'\']=S.models[\''+k+'\']?0:1;this.classList.toggle(\'on\')"><b></b></span>'}
+
+/* Редактор цен */
+SCREENS["Редактор цен"]=function(){return hdr("Редактор цен")+'<div class="wrap">'+
+  rowItem("ti-tag","Тарифы магазина","сервисы, тарифы, ручная выдача","",'leaf(priceShop)')+
+  rowItem("ti-coins","Пакеты кредитов","6 пакетов","",'leaf(pricePacks)')+
+  rowItem("ti-photo","Настройки генерации","стоимость фото/видео/правок","",'leaf(priceGen)')+'</div>'};
+function priceShop(){var d=["ChatGPT","Claude","Perplexity","Cursor","Midjourney","Suno"];
+  return hdr("Тарифы магазина")+'<div class="wrap"><button class="btn" onclick="toast(\'Добавить сервис\')"><i class="ti ti-plus"></i> Добавить сервис</button><div class="glabel" style="margin-top:14px"><i class="ti ti-building-store"></i> Сервисы</div>'+d.map(function(s){return rowItem("ti-tag",s,"тарифы и цены","",'leaf(function(){return planEdit(\''+s+'\')})')}).join('')+'</div>'}
+function planEdit(svc){var plans=svc==="ChatGPT"?[["Plus",1890],["Pro 5×",8490],["Go",1000],["Новый аккаунт",1500]]:[["Pro",1990],["Max 5×",9000]];
+  var h=hdr(svc,"тарифы сервиса")+'<div class="wrap">';
+  plans.forEach(function(p){h+='<div class="block"><div class="kv" style="border:0;padding-bottom:6px"><span style="font-weight:600">'+p[0]+'</span><button class="btn row2 danger" style="width:auto;margin:0;padding:5px 10px;font-size:11px" onclick="toast(\'Удалить тариф\')">Удалить</button></div><label class="fl">Цена для клиента, ₽</label><input class="f" value="'+p[1]+'"/><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div>'+sw(p[0]+" ручная выдача")+'</div></div>'});
+  return h+'<button class="btn sec" onclick="toast(\'Добавить тариф\')"><i class="ti ti-plus"></i> Добавить тариф</button><button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
+function pricePacks(){var d=[["100 кр",129],["300 кр",349],["700 кр",715],["1500 кр",1329],["3000 кр",2490],["7000 кр",5290]];
+  return hdr("Пакеты кредитов")+'<div class="wrap"><button class="btn" onclick="toast(\'Добавить пакет\')"><i class="ti ti-plus"></i> Добавить пакет</button>'+d.map(function(x){return '<label class="fl">'+x[0]+'</label><div class="search"><input value="'+x[1]+'" style="font-size:14px"/><span class="muted">₽</span><button class="btn row2 danger" style="width:auto;margin:0;padding:6px 10px;font-size:11px" onclick="toast(\'Удалить\')">✕</button></div>'}).join('')+'<button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
+function priceGen(){var d=[["Фото (за генерацию)","10"],["Видео (за генерацию)","45"],["Редактирование фото","12"],["Анимация фото","40"],["Улучшение 4x (upscale)","8"],["Улучшение промта","0"]];
+  return hdr("Настройки генерации","стоимость в кредитах")+'<div class="wrap">'+d.map(function(x){return '<label class="fl">'+x[0]+'</label><input class="f" value="'+x[1]+'" inputmode="numeric"/>'}).join('')+'<button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
+
+/* Рефералка */
+SCREENS["Премиум-рефералка"]=function(){
+  var used=31200,cap=50000,pct=Math.round(used/cap*100);
+  var d=[["@blogger1",15,4200],["@blogger2",10,1800],["@influ3",12,2100]];
+  return hdr("Премиум-рефералка")+'<div class="wrap">'+
+    '<div class="block"><h4><i class="ti ti-target"></i> Лимит начислений за месяц</h4><div class="kv" style="border:0;padding-bottom:6px"><span class="k">Начислено</span><span>'+nf(used)+' / '+nf(cap)+' ₽</span></div>'+prog(pct,pct>85?C.red:C.pink)+'<div class="sub" style="margin-top:6px">'+pct+'% месячного лимита</div></div>'+
+    '<div class="mgrid"><div class="mcard"><div class="mlab">Глобальный %</div><div class="mval">10%</div></div><div class="mcard"><div class="mlab">Партнёров</div><div class="mval">'+d.length+'</div></div></div>'+
+    '<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return simpleForm(\'Глобальный %\',\'Процент\',\'10\')})">Изменить %</button><button class="btn row2 sec" onclick="leaf(function(){return simpleForm(\'Лимит в месяц\',\'₽\',\'50000\')})">Лимит</button></div>'+
+    '<div class="glabel" style="margin-top:16px"><i class="ti ti-users-group"></i> Партнёры</div><div class="block">'+hbars(d.map(function(x){return {label:x[0]+" ("+x[1]+"%)",val:x[2],color:C.purple}}),' ₽')+'</div>'+
+    '<button class="btn" onclick="leaf(function(){return simpleForm(\'Добавить партнёра\',\'UID и %\',\'\')})"><i class="ti ti-plus"></i> Добавить партнёра</button>'+
+    '<button class="btn danger" onclick="leaf(function(){return simpleForm(\'Убрать партнёра\',\'UID\',\'\')})">Убрать партнёра</button></div>';
+};
+function simpleForm(t,lab,val){return hdr(t)+'<div class="wrap"><label class="fl">'+lab+'</label><input class="f" value="'+val+'"/><button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
+
+/* Оплата по ссылке */
+SCREENS["Оплата по ссылке"]=function(){var svc=["Suno","Kling","HeyGen","Higgsfield"];
+  return hdr("Оплата по ссылке","сервисы и заказы")+'<div class="wrap">'+svc.map(function(s){return '<div class="row" onclick="leaf(function(){return lpEdit(\''+s+'\')})"><span class="ic"><i class="ti ti-link"></i></span><div><div class="lbl2">'+s+'</div><div class="sub">инструкция · домен · вкл/выкл</div></div>'+sw(s)+'</div>'}).join('')+'<button class="btn sec" onclick="leaf(function(){return ordersWork(\'Оплата по ссылке\')})"><i class="ti ti-clipboard-list"></i> Заказы в работе (2)</button></div>'};
+function lpEdit(s){return hdr(s,"настройка сервиса")+'<div class="wrap"><label class="fl">Инструкция для клиента</label><textarea class="f">Пришлите ссылку на оплату '+s+' — оплачу в течение 1-6 часов.</textarea><label class="fl">Разрешённый домен</label><input class="f" value="'+s.toLowerCase()+'.com"/><button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
+SCREENS["Вход в аккаунт"]=function(){var svc=["Zoom","Krea","YouTube"];
+  return hdr("Вход в аккаунт","логин/пароль клиента")+'<div class="wrap">'+svc.map(function(s){return '<div class="row" onclick="leaf(function(){return credEdit(\''+s+'\')})"><span class="ic"><i class="ti ti-key"></i></span><div><div class="lbl2">'+s+'</div><div class="sub">инструкция · вкл/выкл</div></div>'+sw(s)+'</div>'}).join('')+'<button class="btn sec" onclick="leaf(function(){return ordersWork(\'Вход в аккаунт\')})"><i class="ti ti-clipboard-list"></i> Заказы в работе (1)</button></div>'};
+function credEdit(s){return hdr(s,"инструкция")+'<div class="wrap"><textarea class="f">Пришлите почту и пароль от аккаунта '+s+' — оформим подписку в течение 1-6 часов.</textarea><button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
+function ordersWork(t){var d=[["@maxpower","Kling Pro","ждёт ссылку"],["@lena","HeyGen Creator","ждёт оплаты"]];
+  return hdr("Заказы в работе",t)+'<div class="wrap">'+d.map(function(x){return '<div class="block"><h4><i class="ti ti-package"></i> '+x[0]+' · '+x[1]+'</h4><div class="kv"><span class="k">Статус</span><span class="tag a">'+x[2]+'</span></div><div class="btns3"><button class="btn row2" style="font-size:12px;padding:9px" onclick="toast(\'Выполнен\')">Выполнен</button><button class="btn row2 sec" style="font-size:12px;padding:9px" onclick="toast(\'Уточнить\')">Уточнить</button><button class="btn row2 danger" style="font-size:12px;padding:9px" onclick="toast(\'Отмена\')">Отмена</button></div></div>'}).join('')+'</div>'}
+
+/* Управление */
+SCREENS["Приветствие"]=function(){return hdr("Приветствие")+'<div class="wrap"><label class="fl">Текст приветствия (HTML)</label><textarea class="f">👋 Привет! Я бот Neirosetka — нейросети, подписки и консультант в одном месте. Жми кнопки ниже 👇</textarea><button class="btn" onclick="toast(\'Обновлено\')">Сохранить</button><div class="note">Так увидят новые пользователи при /start.</div></div>'};
+SCREENS["Рассылка"]=function(){return hdr("Рассылка")+'<div class="wrap"><label class="fl">Текст сообщения</label><textarea class="f" placeholder="Текст рассылки…"></textarea><button class="btn sec" onclick="toast(\'Выбор фото\')"><i class="ti ti-photo"></i> Прикрепить фото</button><div class="block" style="margin-top:14px"><div class="kv" style="border:0"><span class="k">Получателей</span><span>3 482</span></div><div class="kv"><span class="k">Активных (30д)</span><span>1 196</span></div></div><button class="btn" onclick="toast(\'Рассылка запущена\')">Отправить всем</button></div>'};
+SCREENS["Техобслуживание"]=function(){return hdr("Техобслуживание")+'<div class="wrap"><div class="row" style="cursor:default"><span class="ic"><i class="ti ti-tool"></i></span><div><div class="lbl2">Режим техработ</div><div class="sub">бот отвечает заглушкой</div></div>'+sw("Техработы")+'</div><label class="fl">Текст заглушки</label><textarea class="f">🛠 Ведём технические работы. Скоро вернёмся!</textarea><button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'};
+
+/* Mini Apps */
+function miniApp(name,icon){return function(){var stock=[37,29,18][name.length%3];
+  return hdr(name)+'<div class="wrap"><div class="row" style="cursor:default"><span class="ic"><i class="ti '+icon+'"></i></span><div><div class="lbl2">Приложение включено</div><div class="sub">клиенты видят активацию</div></div>'+sw(name)+'</div>'+
+  '<div class="block"><h4><i class="ti ti-key"></i> Запас кодов</h4><div class="kv" style="border:0;padding-bottom:6px"><span class="k">В пуле</span><span>'+stock+' шт</span></div>'+prog(Math.min(100,stock*2),stock<10?C.red:C.green)+'<div class="sub" style="margin-top:6px">'+(stock<10?'⚠ Заканчиваются — добавь коды':'Достаточно')+'</div></div>'+
+  '<div class="block"><h4><i class="ti ti-chart-line"></i> Активации за 7 дней</h4>'+spark([4,7,5,9,11,8,11],C.pink)+'</div>'+
+  '<button class="btn" onclick="toast(\'Открытие Mini App\')"><i class="ti ti-external-link"></i> Открыть приложение</button><button class="btn sec" onclick="leaf(function(){return addCodes(\''+name+'\')})"><i class="ti ti-plus"></i> Добавить коды</button></div>'}}
+SCREENS["ChatGPT Mini App"]=miniApp("ChatGPT Mini App","ti-sparkles");
+SCREENS["Claude Mini App"]=miniApp("Claude Mini App","ti-bolt");
+SCREENS["Perplexity Mini App"]=miniApp("Perplexity Mini App","ti-world-search");
+function addCodes(n){return hdr("Добавить коды",n)+'<div class="wrap"><label class="fl">Коды (по одному в строке)</label><textarea class="f" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="toast(\'Добавлены в пул\')">Добавить</button></div>'}
+SCREENS["Настройка App Store"]=function(){return hdr("Настройка App Store")+'<div class="wrap"><div class="block"><h4><i class="ti ti-package"></i> Остаток на NS Gifts</h4><div class="kv" style="border:0;padding-bottom:6px"><span class="k">Позиций в наличии</span><span>23</span></div>'+prog(46,C.amber)+'</div><label class="fl">Курс закупа доллара (₽)</label><input class="f" value="77"/><label class="fl">Наценка (%)</label><input class="f" value="35"/><label class="fl">Порог остатка для алерта</label><input class="f" value="5"/><button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'};
+
+function denied(){app.innerHTML='<div style="padding:70px 24px;text-align:center"><div style="font-size:48px">🔒</div><h1 style="font-size:18px;margin:10px 0 4px">Доступ только для администратора</h1><p style="color:var(--txt2);font-size:13px">Открой панель из своего аккаунта в боте.</p></div>';}
+function boot(){
+  var tg=window.Telegram&&window.Telegram.WebApp;
+  if(tg){try{tg.ready();tg.expand();tg.setHeaderColor&&tg.setHeaderColor('#0d0e12');}catch(e){}}
+  var initData=tg?tg.initData:"";
+  go(home);
+  fetch('/api/admin/overview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initData:initData})})
+   .then(function(r){return r.json().then(function(d){return {s:r.status,d:d}})})
+   .then(function(x){ if(x.s===403||!x.d||!x.d.ok){ denied(); return;} OVERVIEW=x.d; if(stack.length<=1){ go(home,false);} })
+   .catch(function(){});
+}
+boot();
+</script>
+</body>
+</html>

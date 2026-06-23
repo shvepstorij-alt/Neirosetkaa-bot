@@ -1692,6 +1692,78 @@ async def webapp_chatgpt_handler(request: web.Request) -> web.Response:
     except FileNotFoundError:
         return web.Response(text="Mini App not found", status=404)
 
+
+async def webapp_admin_handler(request: web.Request) -> web.Response:
+    """Отдаёт HTML админ-панели (Mini App)."""
+    try:
+        with open(_ADMIN_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
+            _html = _f.read()
+        return web.Response(text=_html, content_type="text/html", charset="utf-8")
+    except FileNotFoundError:
+        return web.Response(text="Admin Mini App not found", status=404)
+
+
+async def api_admin_overview_handler(request: web.Request) -> web.Response:
+    """Данные дашборда админки. Доступ только админу (по initData)."""
+    import json as _json
+    try:
+        try:
+            _body = await request.json()
+        except Exception:
+            _body = {}
+        init_data = (_body.get("initData") if isinstance(_body, dict) else None) or request.query.get("initData", "")
+        uid = _verify_tg_init_data(init_data)
+        if uid != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(amount_rub),0) AS r FROM fk_orders "
+                "WHERE status='paid' AND paid_at >= CURRENT_DATE"
+            )
+            new_users = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE created_at >= CURRENT_DATE"
+            ) or 0
+            wk = await conn.fetch(
+                "SELECT date_trunc('day', paid_at) AS d, COALESCE(SUM(amount_rub),0) AS s "
+                "FROM fk_orders WHERE status='paid' AND paid_at >= CURRENT_DATE - INTERVAL '6 days' "
+                "GROUP BY d ORDER BY d"
+            )
+            svc = await conn.fetch(
+                "SELECT pack, COALESCE(SUM(amount_rub),0) AS r FROM fk_orders "
+                "WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at >= CURRENT_DATE GROUP BY pack"
+            )
+
+        import datetime as _dt_ov
+        today = _dt_ov.date.today()
+        wkmap = {}
+        for r in wk:
+            dd = r["d"]
+            dd = dd.date() if hasattr(dd, "date") else dd
+            wkmap[dd] = int(r["s"] or 0)
+        week = [wkmap.get(today - _dt_ov.timedelta(days=6 - i), 0) for i in range(7)]
+
+        agg = {}
+        for r in svc:
+            parts = (r["pack"] or "").split(":")
+            k = parts[1] if len(parts) > 1 else "?"
+            nm = (SHOP_CATALOG.get(k, {}) or {}).get("name", k)
+            agg[nm] = agg.get(nm, 0) + int(r["r"] or 0)
+        by_service = [{"label": n, "val": v} for n, v in sorted(agg.items(), key=lambda x: -x[1])][:6]
+
+        return web.json_response({
+            "ok": True,
+            "orders": int(row["c"] or 0),
+            "revenue": int(row["r"] or 0),
+            "newUsers": int(new_users),
+            "week": week,
+            "byService": by_service,
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_overview: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str
@@ -1997,6 +2069,7 @@ _perplexity_act_msg: dict = {}
 _perplexity_replaced_orders: set = set()
 _perplexity_job_results: dict = {}
 _PERPLEXITY_WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perplexity_webapp.html")
+_ADMIN_WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admin_webapp.html")
 
 # ── Таймер 2 часов на сообщение самостоятельной активации (GPT/Claude) ──
 ACTIVATION_WINDOW_MIN = 120
@@ -2852,6 +2925,9 @@ async def setup_webhook_server():
     # /getip — временный эндпоинт для получения исходящего IP
     app.router.add_get("/getip", getip_handler)
     app.router.add_get("/webapp/chatgpt", webapp_chatgpt_handler)
+    app.router.add_get("/webapp/admin", webapp_admin_handler)
+    app.router.add_post("/api/admin/overview", api_admin_overview_handler)
+    logging.info("Admin Mini App: /webapp/admin + /api/admin/overview")
     app.router.add_get("/webapp/claude", webapp_claude_handler)
     app.router.add_post("/api/activate-claude", api_activate_claude_handler)
     app.router.add_get("/api/activate-claude-status/{order_id}", api_activate_claude_status_handler)

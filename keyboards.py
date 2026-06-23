@@ -13,7 +13,7 @@ from aiogram.types import (
     Message, ChatMemberUpdated, InlineKeyboardMarkup,
     InlineKeyboardButton, CallbackQuery,
     LabeledPrice, PreCheckoutQuery, BufferedInputFile,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 )
 from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, StateFilter
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -23,7 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import (
     ALTERNATIVE_MODELS, ANIM_MODELS, CREDIT_PACKS, CUSTOM_EMOJI_IDS, DISABLED_MODELS, EDIT_MODELS,
     IMAGE_BRAND_MODELS, IMAGE_MODELS, PERSONAL_USERNAME, SHOP_CATEGORIES, UI_EMOJI_IDS, VIDEO_BRAND_MODELS,
-    VIDEO_MODELS, is_admin,
+    VIDEO_MODELS, WEBAPP_BASE_URL, is_admin,
 )
 
 def kb_error_with_alt(menu: str, model_key: str):
@@ -414,6 +414,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
         [InlineKeyboardButton(text="Perplexity Mini App", callback_data="adm_perplexity_webapp", **_px)],
         [InlineKeyboardButton(text="Настройка App Store", callback_data="adm_nsgifts", **_ap)],
+        *([[InlineKeyboardButton(text="🎛️ Mini App (бета)", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/admin"))]] if WEBAPP_BASE_URL else []),
         [_eib("Главное меню", "back_main")],
     ])
 
