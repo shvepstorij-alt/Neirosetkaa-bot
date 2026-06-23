@@ -1860,7 +1860,8 @@ async def api_admin_prices_handler(request: web.Request) -> web.Response:
                 usd = float(await get_setting(f"cost_usd:{k}:{i}", "0") or "0")
                 price = int(p.get("price") or 0)
                 marg = round((price - usd * rate) / price * 100) if price > 0 else 0
-                pl.append({"idx": i, "name": p.get("name", ""), "price": price, "costUsd": usd, "margin": marg})
+                man = (await get_setting(f"manual:{k}:{i}", "0") or "0") == "1"
+                pl.append({"idx": i, "name": p.get("name", ""), "price": price, "costUsd": usd, "margin": marg, "manual": man})
             services.append({"key": k, "name": scat.get("name", k), "emoji": scat.get("emoji", ""), "plans": pl})
         return web.json_response({"ok": True, "rate": rate, "services": services})
     except Exception as _e:
@@ -1898,6 +1899,8 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
                         scat = SHOP_CATALOG.get(k)
                         if scat and 0 <= idx < len(scat.get("plans", [])):
                             scat["plans"][idx]["price"] = pr
+                    if it.get("manual") is not None:
+                        await set_setting(f"manual:{k}:{idx}", "1" if it.get("manual") else "0")
                 except Exception as _ie:
                     logging.warning(f"prices_save item: {_ie}")
         return web.json_response({"ok": True})
@@ -1918,13 +1921,19 @@ async def api_admin_stats_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False}, status=403)
         period = body.get("period") or "day"
         today = _dt_st.date.today()
+        anchor = today
+        _ds = body.get("date")
+        if _ds:
+            try:
+                anchor = _dt_st.date.fromisoformat(str(_ds)); period = "day"
+            except Exception:
+                anchor = today
         if period == "week":
-            since = today - _dt_st.timedelta(days=6)
+            since = anchor - _dt_st.timedelta(days=6); until = anchor + _dt_st.timedelta(days=1)
         elif period == "month":
-            since = today - _dt_st.timedelta(days=29)
+            since = anchor - _dt_st.timedelta(days=29); until = anchor + _dt_st.timedelta(days=1)
         else:
-            since = today
-        until = today + _dt_st.timedelta(days=1)
+            since = anchor; until = anchor + _dt_st.timedelta(days=1)
         pool = await get_pool()
         async with pool.acquire() as conn:
             o = await conn.fetchrow(
@@ -1940,8 +1949,8 @@ async def api_admin_stats_handler(request: web.Request) -> web.Response:
                 "GROUP BY type ORDER BY c DESC", since, until)
             ser = await conn.fetch(
                 "SELECT date_trunc('day', paid_at) AS d, COUNT(*) AS c FROM fk_orders "
-                "WHERE status='paid' AND paid_at>=$1 GROUP BY d ORDER BY d",
-                today - _dt_st.timedelta(days=6))
+                "WHERE status='paid' AND paid_at>=$1 AND paid_at<$2 GROUP BY d ORDER BY d",
+                anchor - _dt_st.timedelta(days=6), anchor + _dt_st.timedelta(days=1))
         wd = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
         smap = {}
         for r in ser:
@@ -1949,11 +1958,12 @@ async def api_admin_stats_handler(request: web.Request) -> web.Response:
             smap[dd] = int(r["c"] or 0)
         series = []
         for i in range(7):
-            day = today - _dt_st.timedelta(days=6 - i)
-            series.append({"label": wd[day.weekday()], "value": smap.get(day, 0)})
+            day = anchor - _dt_st.timedelta(days=6 - i)
+            series.append({"label": wd[day.weekday()], "value": smap.get(day, 0), "date": day.isoformat()})
         return web.json_response({
             "ok": True, "orders": int(o["c"] or 0), "revenue": int(o["r"] or 0),
             "newUsers": int(new_users), "gens": int(g["c"] or 0), "creditsSpent": int(g["cr"] or 0),
+            "anchor": anchor.isoformat(), "period": period,
             "series": series,
             "byType": [{"label": (r["type"] or "?"), "val": int(r["c"] or 0)} for r in by_type],
         })
@@ -2315,6 +2325,103 @@ async def api_admin_referral_set_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_referral_set: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_svc_list_handler(request: web.Request) -> web.Response:
+    """Список сервисов оплата-по-ссылке и вход-в-аккаунт с инструкциями/доменом. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        linkpay = []; creds = []
+        for k, scat in SHOP_CATALOG.items():
+            nm = scat.get("name", k)
+            if (await get_setting(f"linkpay:enabled:{k}", "0") or "0") == "1":
+                linkpay.append({"key": k, "name": nm,
+                                "instructions": await get_setting(f"linkpay:instructions:{k}", ""),
+                                "domain": await get_setting(f"linkpay:domains:{k}", "")})
+            if (await get_setting(f"creds:enabled:{k}", "0") or "0") == "1":
+                creds.append({"key": k, "name": nm,
+                              "instructions": await get_setting(f"creds:instructions:{k}", "")})
+        return web.json_response({"ok": True, "linkpay": linkpay, "creds": creds})
+    except Exception as _e:
+        logging.error(f"api_admin_svc_list: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_svc_save_handler(request: web.Request) -> web.Response:
+    """Сохранить инструкцию/домен сервиса. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        kind = str(body.get("kind", "")); key = str(body.get("key", ""))
+        if not key or kind not in ("linkpay", "creds"):
+            return web.json_response({"ok": False})
+        if body.get("instructions") is not None:
+            await set_setting(f"{kind}:instructions:{key}", str(body.get("instructions")))
+        if kind == "linkpay" and body.get("domain") is not None:
+            await set_setting(f"linkpay:domains:{key}", str(body.get("domain")))
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_svc_save: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response:
+    """Детали Mini App: последние активации + свободные коды. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        svc = str(body.get("service", ""))
+        tbl = {"chatgpt": "gpt_codes", "claude": "claude_codes", "perplexity": "perplexity_codes"}.get(svc)
+        if not tbl:
+            return web.json_response({"ok": False})
+        idcol = "email" if svc == "chatgpt" else "org_id"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            recent = await conn.fetch(
+                f"SELECT c.code, c.used_by, c.used_at, c.order_id, c.{idcol} AS acc, u.username "
+                f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
+                f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL ORDER BY c.used_at DESC LIMIT 15")
+            free = await conn.fetch(f"SELECT code, plan FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 100")
+        rec = []
+        for r in recent:
+            ua = r["used_at"]
+            rec.append({"code": r["code"],
+                        "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["used_by"]) if r["used_by"] else "—"),
+                        "date": ua.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ua else "",
+                        "order": r["order_id"] or "", "acc": r["acc"] or ""})
+        freec = [{"code": r["code"], "plan": r["plan"]} for r in free]
+        return web.json_response({"ok": True, "recent": rec, "free": freec, "freeCount": len(freec)})
+    except Exception as _e:
+        logging.error(f"api_admin_miniapp_detail: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_code_delete_handler(request: web.Request) -> web.Response:
+    """Удалить свободный код из пула. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        svc = str(body.get("service", "")); code = str(body.get("code", ""))
+        tbl = {"chatgpt": "gpt_codes", "claude": "claude_codes", "perplexity": "perplexity_codes"}.get(svc)
+        if not tbl or not code:
+            return web.json_response({"ok": False})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.execute(f"DELETE FROM {tbl} WHERE code=$1 AND is_used=FALSE", code)
+        deleted = r.split()[-1] if isinstance(r, str) else "0"
+        return web.json_response({"ok": True, "deleted": int(deleted) if str(deleted).isdigit() else 0})
+    except Exception as _e:
+        logging.error(f"api_admin_code_delete: {_e}")
         return web.json_response({"ok": False}, status=500)
 
 
@@ -2970,8 +3077,13 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
     await process_referral_bonus(user_id)
     await process_premium_referral(user_id, order_id, amount_rub)
 
-    # Если был промокод - инкрементим используемость
-    promo_code = (payment.get("promo_code") if isinstance(payment, dict) else None)
+    # Если был промокод - инкрементим используемость.
+    # Промокод хранится в заказе БД (в payload вебхука FreeKassa его нет!).
+    try:
+        _dbo_promo = await fk_get_order(order_id)
+    except Exception:
+        _dbo_promo = None
+    promo_code = ((_dbo_promo or {}).get("promo_code")) or (payment.get("promo_code") if isinstance(payment, dict) else None)
     promo_code = (promo_code or "").strip().upper() or None
     if promo_code and promo_code != "PROMO_APPLIED":
         try:
@@ -3645,6 +3757,10 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/block", api_admin_block_handler)
     app.router.add_post("/api/admin/referral", api_admin_referral_handler)
     app.router.add_post("/api/admin/referral-set", api_admin_referral_set_handler)
+    app.router.add_post("/api/admin/svc-list", api_admin_svc_list_handler)
+    app.router.add_post("/api/admin/svc-save", api_admin_svc_save_handler)
+    app.router.add_post("/api/admin/miniapp-detail", api_admin_miniapp_detail_handler)
+    app.router.add_post("/api/admin/code-delete", api_admin_code_delete_handler)
     app.router.add_post("/api/admin/settings", api_admin_settings_handler)
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
