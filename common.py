@@ -1905,6 +1905,107 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
         logging.error(f"api_admin_prices_save: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
+
+async def api_admin_stats_handler(request: web.Request) -> web.Response:
+    """Статистика за период. Admin-only."""
+    import datetime as _dt_st
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        period = body.get("period") or "day"
+        today = _dt_st.date.today()
+        if period == "week":
+            since = today - _dt_st.timedelta(days=6)
+        elif period == "month":
+            since = today - _dt_st.timedelta(days=29)
+        else:
+            since = today
+        until = today + _dt_st.timedelta(days=1)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            o = await conn.fetchrow(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(amount_rub),0) AS r FROM fk_orders "
+                "WHERE status='paid' AND paid_at>=$1 AND paid_at<$2", since, until)
+            new_users = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE created_at>=$1 AND created_at<$2", since, until) or 0
+            g = await conn.fetchrow(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(credits),0) AS cr FROM generations "
+                "WHERE created_at>=$1 AND created_at<$2", since, until)
+            by_type = await conn.fetch(
+                "SELECT type, COUNT(*) AS c FROM generations WHERE created_at>=$1 AND created_at<$2 "
+                "GROUP BY type ORDER BY c DESC", since, until)
+            ser = await conn.fetch(
+                "SELECT date_trunc('day', paid_at) AS d, COUNT(*) AS c FROM fk_orders "
+                "WHERE status='paid' AND paid_at>=$1 GROUP BY d ORDER BY d",
+                today - _dt_st.timedelta(days=6))
+        wd = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+        smap = {}
+        for r in ser:
+            dd = r["d"]; dd = dd.date() if hasattr(dd, "date") else dd
+            smap[dd] = int(r["c"] or 0)
+        series = []
+        for i in range(7):
+            day = today - _dt_st.timedelta(days=6 - i)
+            series.append({"label": wd[day.weekday()], "value": smap.get(day, 0)})
+        return web.json_response({
+            "ok": True, "orders": int(o["c"] or 0), "revenue": int(o["r"] or 0),
+            "newUsers": int(new_users), "gens": int(g["c"] or 0), "creditsSpent": int(g["cr"] or 0),
+            "series": series,
+            "byType": [{"label": (r["type"] or "?"), "val": int(r["c"] or 0)} for r in by_type],
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_stats: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_analytics_handler(request: web.Request) -> web.Response:
+    """Аналитика: топ моделей/юзеров, активность, пользователи. Admin-only."""
+    import datetime as _dt_an
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        today = _dt_an.date.today()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            tm = await conn.fetch(
+                "SELECT model, COUNT(*) AS c FROM generations GROUP BY model ORDER BY c DESC LIMIT 6")
+            tu = await conn.fetch(
+                "SELECT g.user_id, u.username, COUNT(*) AS c FROM generations g "
+                "LEFT JOIN users u ON g.user_id=u.user_id GROUP BY g.user_id, u.username "
+                "ORDER BY c DESC LIMIT 6")
+            act = await conn.fetch(
+                "SELECT date_trunc('day', created_at) AS d, COUNT(*) AS c FROM generations "
+                "WHERE created_at>=$1 GROUP BY d ORDER BY d", today - _dt_an.timedelta(days=8))
+            total = await conn.fetchval("SELECT COUNT(*) FROM users") or 0
+            active30 = await conn.fetchval(
+                "SELECT COUNT(DISTINCT user_id) FROM generations WHERE created_at>=$1",
+                today - _dt_an.timedelta(days=30)) or 0
+            new_today = await conn.fetchval("SELECT COUNT(*) FROM users WHERE created_at>=CURRENT_DATE") or 0
+            with_buy = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM fk_orders WHERE status='paid'") or 0
+        amap = {}
+        for r in act:
+            dd = r["d"]; dd = dd.date() if hasattr(dd, "date") else dd
+            amap[dd] = int(r["c"] or 0)
+        activity = [amap.get(today - _dt_an.timedelta(days=8 - i), 0) for i in range(9)]
+        return web.json_response({
+            "ok": True,
+            "topModels": [{"label": (r["model"] or "?"), "val": int(r["c"] or 0)} for r in tm],
+            "topUsers": [{"label": ("@" + r["username"]) if r["username"] else ("ID " + str(r["user_id"])), "val": int(r["c"] or 0)} for r in tu],
+            "activity": activity,
+            "users": {"total": int(total), "active30": int(active30), "newToday": int(new_today), "withBuy": int(with_buy)},
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_analytics: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str
@@ -3071,6 +3172,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
+    app.router.add_post("/api/admin/stats", api_admin_stats_handler)
+    app.router.add_post("/api/admin/analytics", api_admin_analytics_handler)
     logging.info("Admin Mini App: /webapp/admin + /api/admin/overview")
     app.router.add_get("/webapp/claude", webapp_claude_handler)
     app.router.add_post("/api/activate-claude", api_activate_claude_handler)
