@@ -2169,6 +2169,301 @@ async def api_admin_order_action_handler(request: web.Request) -> web.Response:
         logging.error(f"api_admin_order_action: {_e}")
         return web.json_response({"ok": False}, status=500)
 
+
+async def api_admin_user_find_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        q = str(body.get("q", "")).strip()
+        if not q:
+            return web.json_response({"ok": False, "msg": "Введите ID или @ник"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if q.startswith("@"):
+                row = await conn.fetchrow("SELECT * FROM users WHERE lower(username)=lower($1)", q[1:])
+            else:
+                try:
+                    _uid = int(q)
+                except Exception:
+                    return web.json_response({"ok": False, "msg": "Введите ID или @ник"})
+                row = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", _uid)
+            if not row:
+                return web.json_response({"ok": False, "msg": "Пользователь не найден"})
+            u = dict(row); uid = u["user_id"]
+            pur = await conn.fetchrow(
+                "SELECT COUNT(*) AS c, COALESCE(SUM(amount_rub),0) AS s FROM fk_orders "
+                "WHERE user_id=$1 AND status='paid'", uid)
+        rp = await get_ref_premium(uid)
+        cr = u.get("created_at")
+        return web.json_response({"ok": True, "user": {
+            "id": uid, "username": u.get("username") or "", "name": u.get("full_name") or "",
+            "credits": int(u.get("credits") or 0), "blocked": bool(u.get("is_blocked")),
+            "created": cr.strftime("%d.%m.%Y") if cr else "",
+            "purchases": int(pur["c"] or 0), "spent": int(pur["s"] or 0),
+            "refPremium": bool(rp and rp.get("ref_premium")),
+            "refPct": (rp.get("ref_premium_pct") if rp else None)}})
+    except Exception as _e:
+        logging.error(f"api_admin_user_find: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_balance_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import add_credits
+        uid = int(body.get("id")); op = str(body.get("op", "")); amount = int(float(body.get("amount") or 0))
+        pool = await get_pool()
+        if op == "set":
+            async with pool.acquire() as conn:
+                await conn.execute("UPDATE users SET credits=$1 WHERE user_id=$2", max(0, amount), uid)
+        elif op == "add":
+            await add_credits(uid, amount)
+        elif op == "deduct":
+            await add_credits(uid, -amount)
+        else:
+            return web.json_response({"ok": False, "msg": "Неизвестная операция"})
+        async with pool.acquire() as conn:
+            bal = await conn.fetchval("SELECT credits FROM users WHERE user_id=$1", uid)
+        return web.json_response({"ok": True, "balance": int(bal or 0)})
+    except Exception as _e:
+        logging.error(f"api_admin_balance: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_blocks_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id, username FROM users WHERE is_blocked=1 ORDER BY user_id LIMIT 100")
+        return web.json_response({"ok": True, "blocked": [
+            {"id": r["user_id"], "username": r["username"] or ""} for r in rows]})
+    except Exception as _e:
+        logging.error(f"api_admin_blocks: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_block_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import block_user, unblock_user
+        uid = int(body.get("id")); blk = bool(body.get("block"))
+        if blk:
+            await block_user(uid)
+        else:
+            await unblock_user(uid)
+        return web.json_response({"ok": True, "blocked": blk})
+    except Exception as _e:
+        logging.error(f"api_admin_block: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_referral_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        pct = float(await get_setting("ref_premium_pct", "10") or "10")
+        cap = float(await get_setting("ref_premium_cap", "0") or "0")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            parts = await conn.fetch("SELECT user_id, username, ref_premium_pct FROM users WHERE ref_premium=TRUE")
+            earned = await conn.fetch("SELECT referrer_id, COALESCE(SUM(amount_rub),0) AS s FROM ref_premium_log GROUP BY referrer_id")
+        emap = {r["referrer_id"]: float(r["s"] or 0) for r in earned}
+        partners = [{"id": r["user_id"], "username": r["username"] or "",
+                     "pct": (r["ref_premium_pct"] if r["ref_premium_pct"] is not None else pct),
+                     "earned": round(emap.get(r["user_id"], 0))} for r in parts]
+        return web.json_response({"ok": True, "globalPct": pct, "cap": cap, "partners": partners})
+    except Exception as _e:
+        logging.error(f"api_admin_referral: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_referral_set_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import set_ref_premium
+        action = str(body.get("action", ""))
+        if action == "global_pct":
+            await set_setting("ref_premium_pct", str(float(body.get("value") or 0)))
+        elif action == "cap":
+            await set_setting("ref_premium_cap", str(int(float(body.get("value") or 0))))
+        elif action == "add":
+            uid = int(body.get("uid"))
+            pv = body.get("pct")
+            pctf = float(pv) if pv not in (None, "") else None
+            await set_ref_premium(uid, True, pctf)
+        elif action == "remove":
+            await set_ref_premium(int(body.get("uid")), False, None)
+        else:
+            return web.json_response({"ok": False})
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_referral_set: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_settings_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        welcome = await get_setting("welcome_extra", "")
+        maint = (await get_setting("maintenance", "0")) == "1"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            gpt = await conn.fetchval("SELECT COUNT(*) FROM gpt_codes WHERE is_used=FALSE") or 0
+            cl = await conn.fetchval("SELECT COUNT(*) FROM claude_codes WHERE is_used=FALSE") or 0
+            px = await conn.fetchval("SELECT COUNT(*) FROM perplexity_codes WHERE is_used=FALSE") or 0
+        rate = await get_setting("nsgifts_usd_rate", "100")
+        markup = await get_setting("nsgifts_markup", "15")
+        thr = await get_setting("nsgifts_balance_threshold", "30")
+        miniapps = [
+            {"key": "chatgpt", "name": "ChatGPT", "enabled": bool(rt.chatgpt_webapp_enabled), "codes": int(gpt)},
+            {"key": "claude", "name": "Claude", "enabled": bool(rt.claude_webapp_enabled), "codes": int(cl)},
+            {"key": "perplexity", "name": "Perplexity", "enabled": bool(rt.perplexity_webapp_enabled), "codes": int(px)},
+        ]
+        return web.json_response({"ok": True, "welcome": welcome, "maintenance": maint,
+                                  "miniapps": miniapps,
+                                  "appstore": {"rate": rate, "markup": markup, "threshold": thr}})
+    except Exception as _e:
+        logging.error(f"api_admin_settings: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_setting_save_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        kind = str(body.get("kind", ""))
+        if kind == "welcome":
+            await set_setting("welcome_extra", str(body.get("text", "")))
+        elif kind == "maintenance":
+            await set_setting("maintenance", "1" if body.get("on") else "0")
+        elif kind == "appstore":
+            if body.get("rate") is not None:
+                await set_setting("nsgifts_usd_rate", str(int(float(body["rate"]))))
+            if body.get("markup") is not None:
+                await set_setting("nsgifts_markup", str(int(float(body["markup"]))))
+            if body.get("threshold") is not None:
+                await set_setting("nsgifts_balance_threshold", str(int(float(body["threshold"]))))
+        else:
+            return web.json_response({"ok": False})
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_setting_save: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_miniapp_toggle_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        key = str(body.get("key", "")); en = bool(body.get("enabled"))
+        if key == "chatgpt":
+            rt.chatgpt_webapp_enabled = en
+        elif key == "claude":
+            rt.claude_webapp_enabled = en
+        elif key == "perplexity":
+            rt.perplexity_webapp_enabled = en
+        else:
+            return web.json_response({"ok": False})
+        return web.json_response({"ok": True, "enabled": en})
+    except Exception as _e:
+        logging.error(f"api_admin_miniapp_toggle: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        import re as _re_c
+        service = str(body.get("service", ""))
+        plan = str(body.get("plan", "") or ("plus" if service == "chatgpt" else "pro"))
+        raw = str(body.get("codes", ""))
+        rx = _re_c.compile(r"^[A-Za-z][A-Za-z0-9][A-Za-z0-9-]*$")
+        lines = [c.strip() for c in raw.splitlines() if c.strip()]
+        valid = [c for c in lines if rx.match(c)]
+        if service not in ("chatgpt", "claude", "perplexity"):
+            return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
+        if not valid:
+            return web.json_response({"ok": False, "msg": "Нет валидных кодов"})
+        pool = await get_pool()
+        added = 0
+        async with pool.acquire() as conn:
+            for c in valid:
+                try:
+                    if service == "chatgpt":
+                        await conn.execute("INSERT INTO gpt_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
+                    elif service == "claude":
+                        await conn.execute("INSERT INTO claude_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
+                    else:
+                        await conn.execute("INSERT INTO perplexity_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
+                    added += 1
+                except Exception:
+                    pass
+        return web.json_response({"ok": True, "added": added, "skipped": len(lines) - len(valid)})
+    except Exception as _e:
+        logging.error(f"api_admin_add_codes: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        text = str(body.get("text", "")).strip()
+        if not text:
+            return web.json_response({"ok": False, "msg": "Пустой текст"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            users = await conn.fetch("SELECT user_id FROM users WHERE is_blocked=0")
+        ids = [r["user_id"] for r in users]
+
+        async def _bcast():
+            ok = 0
+            for u in ids:
+                try:
+                    await bot.send_message(u, text, parse_mode="HTML")
+                    ok += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+            try:
+                await bot.send_message(ADMIN_ID, f"✅ Рассылка завершена: доставлено {ok}/{len(ids)}")
+            except Exception:
+                pass
+        asyncio.create_task(_bcast())
+        return web.json_response({"ok": True, "count": len(ids)})
+    except Exception as _e:
+        logging.error(f"api_admin_broadcast: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str
@@ -3344,6 +3639,17 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/model-toggle", api_admin_model_toggle_handler)
     app.router.add_post("/api/admin/orders", api_admin_orders_handler)
     app.router.add_post("/api/admin/order-action", api_admin_order_action_handler)
+    app.router.add_post("/api/admin/user-find", api_admin_user_find_handler)
+    app.router.add_post("/api/admin/balance", api_admin_balance_handler)
+    app.router.add_post("/api/admin/blocks", api_admin_blocks_handler)
+    app.router.add_post("/api/admin/block", api_admin_block_handler)
+    app.router.add_post("/api/admin/referral", api_admin_referral_handler)
+    app.router.add_post("/api/admin/referral-set", api_admin_referral_set_handler)
+    app.router.add_post("/api/admin/settings", api_admin_settings_handler)
+    app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
+    app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
+    app.router.add_post("/api/admin/add-codes", api_admin_add_codes_handler)
+    app.router.add_post("/api/admin/broadcast", api_admin_broadcast_handler)
     logging.info("Admin Mini App: /webapp/admin + /api/admin/overview")
     app.router.add_get("/webapp/claude", webapp_claude_handler)
     app.router.add_post("/api/activate-claude", api_activate_claude_handler)
