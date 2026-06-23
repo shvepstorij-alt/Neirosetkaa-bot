@@ -2006,6 +2006,169 @@ async def api_admin_analytics_handler(request: web.Request) -> web.Response:
         logging.error(f"api_admin_analytics: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
+
+async def api_admin_promos_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import list_promos
+        rows = await list_promos(only_active=False, limit=100)
+        out = []
+        for r in rows:
+            exp = r.get("expires_at")
+            out.append({"code": r.get("code"), "kind": r.get("kind"), "value": r.get("value"),
+                        "maxUses": r.get("max_uses") or 0, "used": r.get("used_count") or 0,
+                        "active": bool(r.get("active")),
+                        "expires": exp.strftime("%d.%m.%Y") if exp else None})
+        return web.json_response({"ok": True, "promos": out})
+    except Exception as _e:
+        logging.error(f"api_admin_promos: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_promo_create_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import create_promo
+        code = str(body.get("code", "")).strip().upper()
+        kind = str(body.get("kind", "percent"))
+        if kind not in ("percent", "credits"):
+            kind = "percent"
+        value = int(float(body.get("value") or 0))
+        uses = int(float(body.get("uses") or 1))
+        days = int(float(body.get("days") or 0))
+        if not code or value <= 0:
+            return web.json_response({"ok": False, "msg": "Код и значение обязательны"})
+        ok, msg = await create_promo(code, kind, value, uses, days)
+        return web.json_response({"ok": bool(ok), "msg": msg})
+    except Exception as _e:
+        logging.error(f"api_admin_promo_create: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+
+
+async def api_admin_promo_deactivate_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import deactivate_promo
+        ok = await deactivate_promo(str(body.get("code", "")).strip().upper())
+        return web.json_response({"ok": bool(ok)})
+    except Exception as _e:
+        logging.error(f"api_admin_promo_deactivate: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_models_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from config import IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS, DISABLED_MODELS
+        secs = [("image", "Фото", IMAGE_MODELS), ("video", "Видео", VIDEO_MODELS),
+                ("edit", "Редактирование", EDIT_MODELS), ("anim", "Анимация", ANIM_MODELS)]
+        out = []
+        for sec, title, d in secs:
+            ms = [{"key": k, "name": m.get("name", k), "credits": m.get("credits", 0),
+                   "enabled": k not in DISABLED_MODELS} for k, m in d.items()]
+            out.append({"section": sec, "title": title, "models": ms})
+        return web.json_response({"ok": True, "sections": out})
+    except Exception as _e:
+        logging.error(f"api_admin_models: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_model_toggle_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from config import IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS, DISABLED_MODELS
+        key = str(body.get("key", "")); section = str(body.get("section", ""))
+        enabled = bool(body.get("enabled"))
+        dmap = {"image": IMAGE_MODELS, "video": VIDEO_MODELS, "edit": EDIT_MODELS, "anim": ANIM_MODELS}
+        models = dmap.get(section, {})
+        if key not in models:
+            return web.json_response({"ok": False})
+        if enabled:
+            DISABLED_MODELS.discard(key)
+        else:
+            DISABLED_MODELS.add(key)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_gen_prices (model_key, section, credits, enabled) VALUES ($1,$2,$3,$4) "
+                "ON CONFLICT (model_key) DO UPDATE SET enabled=$4",
+                key, section, models[key].get("credits", 10), enabled)
+        return web.json_response({"ok": True, "enabled": enabled})
+    except Exception as _e:
+        logging.error(f"api_admin_model_toggle: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_orders_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import list_linkpay_pending
+        rows = await list_linkpay_pending(50)
+        st = {"awaiting_link": "ждёт ссылку", "awaiting_payment": "ждёт оплаты",
+              "awaiting_creds": "ждёт данные", "awaiting_setup": "оформляется"}
+        out = []
+        for r in rows:
+            out.append({"id": r.get("fk_order_id"), "service": r.get("service_name"),
+                        "plan": r.get("plan_name"), "kind": r.get("kind"),
+                        "user": ("@" + r["username"]) if r.get("username") else ("id" + str(r.get("user_id"))),
+                        "status": st.get(r.get("status"), r.get("status")), "link": r.get("payment_link")})
+        return web.json_response({"ok": True, "orders": out})
+    except Exception as _e:
+        logging.error(f"api_admin_orders: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_order_action_handler(request: web.Request) -> web.Response:
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        oid = str(body.get("id", "")); action = str(body.get("action", ""))
+        order = await get_linkpay_order(oid)
+        if not order:
+            return web.json_response({"ok": False, "msg": "Заказ не найден"})
+        uid = order.get("user_id"); svc = order.get("service_name", "")
+        if action == "done":
+            await set_linkpay_status(oid, "done")
+            try:
+                await bot.send_message(uid, f"🎉 <b>Подписка оформлена!</b>\n\n📦 {svc}\n\nСпасибо за покупку! 🙌", parse_mode="HTML")
+            except Exception: pass
+        elif action == "cancel":
+            await set_linkpay_status(oid, "cancelled")
+            try:
+                await bot.send_message(uid, f"❌ <b>Заказ отменён</b>\n\n📦 {svc}\n\nЕсли это ошибка — напиши @{PERSONAL_USERNAME}.", parse_mode="HTML")
+            except Exception: pass
+        elif action == "clarify":
+            txt = str(body.get("text") or "Уточните, пожалуйста, детали заказа.")
+            try:
+                await bot.send_message(uid, f"✍️ <b>По заказу {svc}:</b>\n\n{txt}", parse_mode="HTML")
+            except Exception: pass
+        else:
+            return web.json_response({"ok": False, "msg": "Неизвестное действие"})
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_order_action: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str
@@ -3174,6 +3337,13 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/stats", api_admin_stats_handler)
     app.router.add_post("/api/admin/analytics", api_admin_analytics_handler)
+    app.router.add_post("/api/admin/promos", api_admin_promos_handler)
+    app.router.add_post("/api/admin/promo-create", api_admin_promo_create_handler)
+    app.router.add_post("/api/admin/promo-deactivate", api_admin_promo_deactivate_handler)
+    app.router.add_post("/api/admin/models", api_admin_models_handler)
+    app.router.add_post("/api/admin/model-toggle", api_admin_model_toggle_handler)
+    app.router.add_post("/api/admin/orders", api_admin_orders_handler)
+    app.router.add_post("/api/admin/order-action", api_admin_order_action_handler)
     logging.info("Admin Mini App: /webapp/admin + /api/admin/overview")
     app.router.add_get("/webapp/claude", webapp_claude_handler)
     app.router.add_post("/api/activate-claude", api_activate_claude_handler)
