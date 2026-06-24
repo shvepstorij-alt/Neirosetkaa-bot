@@ -202,6 +202,13 @@ async def init_db():
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_user ON credit_batches(user_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_exp ON credit_batches(expires_at)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS consultant_conv (
+                user_id    BIGINT PRIMARY KEY,
+                messages   TEXT,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
         # Напоминания - чтобы не слать дважды
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reminders_sent (
@@ -930,6 +937,32 @@ async def expire_old_batches() -> int:
                 total_expired += r["credits_left"]
                 await log_event(r["user_id"], "batch_expired", f"credits={r['credits_left']}")
     return total_expired
+
+
+async def save_consultant_conv(user_id: int, messages: list):
+    """Сохраняет историю диалога с консультантом (переживает рестарт)."""
+    import json as _j
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO consultant_conv (user_id, messages, updated_at) VALUES ($1,$2,NOW()) "
+            "ON CONFLICT (user_id) DO UPDATE SET messages=$2, updated_at=NOW()",
+            user_id, _j.dumps(messages, ensure_ascii=False))
+
+
+async def load_consultant_conv(user_id: int) -> list:
+    """Загружает историю диалога с консультантом."""
+    import json as _j
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT messages FROM consultant_conv WHERE user_id=$1", user_id)
+    if not row or not row["messages"]:
+        return []
+    try:
+        v = row["messages"]
+        return _j.loads(v) if isinstance(v, str) else (v or [])
+    except Exception:
+        return []
 
 
 async def ensure_user(user_id: int, username: str = "", full_name: str = "", referred_by: int = None):

@@ -724,8 +724,21 @@ async def _send_long_reply(message_or_cb, text: str, reply_markup=None,
                 logging.error(f"Plain text also failed (part {i+1}): {e2}")
 
 
+_conv_loaded: set = set()
+
+
 async def claude_with_search(uid: int, user_text: str) -> str:
     conv = _get_conv(uid)
+    # Подтягиваем историю из БД один раз за процесс (переживает рестарт/деплой)
+    if uid not in _conv_loaded:
+        _conv_loaded.add(uid)
+        try:
+            from db import load_consultant_conv
+            _saved = await load_consultant_conv(uid)
+            if _saved and not conv:
+                conv.extend(_saved)
+        except Exception as _le:
+            logging.warning(f"load conv {uid}: {_le}")
 
     # Нормализация истории: убираем подряд идущие сообщения с одинаковой ролью
     # (может случиться если предыдущий API-вызов упал посередине)
@@ -821,6 +834,11 @@ async def claude_with_search(uid: int, user_text: str) -> str:
                 reply = "Попробуй переформулировать вопрос 🙏"
             reply = clean_reply(reply)
             conv.append({"role": "assistant", "content": reply})
+            try:
+                from db import save_consultant_conv
+                await save_consultant_conv(uid, conv[-20:])
+            except Exception:
+                pass
             return reply
         except Exception as e:
             last_error = e
@@ -847,6 +865,11 @@ async def claude_with_search(uid: int, user_text: str) -> str:
                     reply += getattr(block, "text", "")
             reply = clean_reply(reply.strip() or "Попробуй переформулировать 🙏")
             conv.append({"role": "assistant", "content": reply})
+            try:
+                from db import save_consultant_conv
+                await save_consultant_conv(uid, conv[-20:])
+            except Exception:
+                pass
             logging.info(f"Claude API: fallback без search сработал на {model_name}")
             return reply
         except Exception as e:
@@ -2425,6 +2448,61 @@ async def api_admin_code_delete_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_service_add_handler(request: web.Request) -> web.Response:
+    """Добавить новый сервис в магазин (с первым тарифом). Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        import re as _re_s, hashlib as _h_s
+        name = str(body.get("name", "")).strip()
+        emoji = str(body.get("emoji", "")).strip()
+        plan_name = str(body.get("planName", "")).strip() or "Pro"
+        try:
+            price = int(float(body.get("price") or 0))
+        except Exception:
+            price = 0
+        if not name or price <= 0:
+            return web.json_response({"ok": False, "msg": "Нужно название и цена"})
+        slug = _re_s.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "svc"
+        key = f"{slug}_{_h_s.md5(name.encode()).hexdigest()[:5]}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_shop_items (key, plan_idx, service_name, emoji, service_desc, plan_name, price, stars, plan_desc, sort_order) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (key, plan_idx) DO NOTHING",
+                key, 0, name, emoji, "", plan_name, price, 0, "", 999)
+        SHOP_CATALOG[key] = {"_key": key, "name": name, "emoji": emoji, "desc": "",
+                             "plans": [{"name": plan_name, "price": price, "stars": 0, "desc": ""}]}
+        return web.json_response({"ok": True, "key": key})
+    except Exception as _e:
+        logging.error(f"api_admin_service_add: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+
+
+async def api_admin_service_delete_handler(request: web.Request) -> web.Response:
+    """Удалить сервис из магазина. Admin-only. Базовые сервисы защищены."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        key = str(body.get("key", ""))
+        if not key:
+            return web.json_response({"ok": False})
+        if key in ("chatgpt", "claude", "perplexity", "appstore"):
+            return web.json_response({"ok": False, "msg": "Базовый сервис нельзя удалить (активация по коду)"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM bot_shop_items WHERE key=$1", key)
+        SHOP_CATALOG.pop(key, None)
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_service_delete: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+
+
 async def api_admin_settings_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -3761,6 +3839,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/svc-save", api_admin_svc_save_handler)
     app.router.add_post("/api/admin/miniapp-detail", api_admin_miniapp_detail_handler)
     app.router.add_post("/api/admin/code-delete", api_admin_code_delete_handler)
+    app.router.add_post("/api/admin/service-add", api_admin_service_add_handler)
+    app.router.add_post("/api/admin/service-delete", api_admin_service_delete_handler)
     app.router.add_post("/api/admin/settings", api_admin_settings_handler)
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
