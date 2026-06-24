@@ -1884,8 +1884,8 @@ async def api_admin_prices_handler(request: web.Request) -> web.Response:
                 price = int(p.get("price") or 0)
                 marg = round((price - usd * rate) / price * 100) if price > 0 else 0
                 man = (await get_setting(f"manual:{k}:{i}", "0") or "0") == "1"
-                pl.append({"idx": i, "name": p.get("name", ""), "price": price, "costUsd": usd, "margin": marg, "manual": man})
-            services.append({"key": k, "name": scat.get("name", k), "emoji": scat.get("emoji", ""), "plans": pl})
+                pl.append({"idx": i, "name": p.get("name", ""), "price": price, "costUsd": usd, "margin": marg, "manual": man, "desc": p.get("desc", "")})
+            services.append({"key": k, "name": scat.get("name", k), "emoji": scat.get("emoji", ""), "desc": scat.get("desc", ""), "plans": pl})
         return web.json_response({"ok": True, "rate": rate, "services": services})
     except Exception as _e:
         logging.error(f"api_admin_prices: {_e}")
@@ -1912,20 +1912,37 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
             for it in items:
                 try:
                     k = str(it.get("key", "")); idx = int(it.get("idx", 0))
+                    pname = str(it.get("name", ""))
                     if not k:
                         continue
                     if it.get("costUsd") is not None:
                         await set_setting(f"cost_usd:{k}:{idx}", str(float(it["costUsd"])))
+                    scat = SHOP_CATALOG.get(k)
                     if it.get("price") is not None:
                         pr = int(float(it["price"]))
-                        await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_idx=$3", pr, k, idx)
-                        scat = SHOP_CATALOG.get(k)
+                        # Пишем по ИМЕНИ тарифа (надёжно: позиционный idx мог не совпадать с plan_idx в БД)
+                        if pname:
+                            await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_name=$3", pr, k, pname)
+                        else:
+                            await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_idx=$3", pr, k, idx)
                         if scat and 0 <= idx < len(scat.get("plans", [])):
                             scat["plans"][idx]["price"] = pr
+                    if it.get("desc") is not None and pname:
+                        _pd = str(it["desc"])
+                        await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3", _pd, k, pname)
+                        if scat and 0 <= idx < len(scat.get("plans", [])):
+                            scat["plans"][idx]["desc"] = _pd
                     if it.get("manual") is not None:
                         await set_setting(f"manual:{k}:{idx}", "1" if it.get("manual") else "0")
                 except Exception as _ie:
                     logging.warning(f"prices_save item: {_ie}")
+            # описание сервиса
+            svc_key = str(body.get("svcKey", "")); svc_desc = body.get("svcDesc")
+            if svc_key and svc_desc is not None:
+                await conn.execute("UPDATE bot_shop_items SET service_desc=$1 WHERE key=$2", str(svc_desc), svc_key)
+                _sc = SHOP_CATALOG.get(svc_key)
+                if _sc:
+                    _sc["desc"] = str(svc_desc)
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_prices_save: {_e}")

@@ -430,19 +430,21 @@ function planEdit(key){
   var d=window._pricesData||{services:[]};
   var s=d.services.filter(function(x){return x.key===key})[0];
   if(!s)return hdr("Тариф")+'<div class="wrap"><div class="note">Открой раздел заново.</div></div>';
-  var h=hdr(s.name,"тарифы сервиса")+'<div class="wrap">';
+  var h=hdr(s.name,"цены и описания")+'<div class="wrap">';
+  h+='<label class="fl" style="margin-top:0">Описание сервиса</label><textarea class="f" id="pe_svcdesc" style="min-height:80px">'+(s.desc||'')+'</textarea>';
   s.plans.forEach(function(p){
-    h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'"><div style="font-weight:600;margin-bottom:6px">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
+    h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-name="'+(p.name||'').replace(/"/g,'&quot;')+'"><div style="font-weight:600;margin-bottom:6px">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" style="min-height:70px">'+(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
   });
   return h+'<button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
 }
 function savePlanEdit(key){
   var items=[];
   document.querySelectorAll('#app [data-key="'+key+'"]').forEach(function(b){
-    items.push({key:key,idx:+b.getAttribute('data-idx'),price:b.querySelector('.pe-price').value,costUsd:b.querySelector('.pe-cost').value,manual:b.querySelector('.pe-man').classList.contains('on')});
+    items.push({key:key,idx:+b.getAttribute('data-idx'),name:b.getAttribute('data-name'),price:b.querySelector('.pe-price').value,costUsd:b.querySelector('.pe-cost').value,desc:b.querySelector('.pe-desc').value,manual:b.querySelector('.pe-man').classList.contains('on')});
   });
+  var sd=(document.getElementById('pe_svcdesc')||{}).value;
   toast('Сохраняю…');
-  api('/api/admin/prices-save',{items:items}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});
+  api('/api/admin/prices-save',{items:items,svcKey:key,svcDesc:sd}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});
 }
 function serviceAdd(){return hdr("Новый сервис")+'<div class="wrap"><label class="fl">Название</label><input class="f" id="sv_name" placeholder="Например: Notion"/><label class="fl">Эмодзи (необязательно)</label><input class="f" id="sv_em" placeholder="📝"/><label class="fl">Первый тариф — название</label><input class="f" id="sv_plan" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="sv_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doServiceAdd()">Создать</button><div class="note">Тарифы и закуп можно изменить после создания.</div></div>';}
 function doServiceAdd(){var name=fv('sv_name'),price=fv('sv_price');if(!name||!price){toast('Название и цена обязательны');return;}toast('Создаю…');api('/api/admin/service-add',{name:name,emoji:fv('sv_em'),planName:fv('sv_plan'),price:price}).then(function(d){toast(d.ok?'Сервис добавлен ✓':(d.msg||'Ошибка'));if(d.ok)back();});}

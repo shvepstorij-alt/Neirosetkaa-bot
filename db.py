@@ -648,12 +648,16 @@ async def load_prices_from_db():
             # Синхронизируем описания из кода обратно в БД (чтобы не устаревали)
             for key, svc in _code_catalog.items():
                 await conn.execute(
-                    "UPDATE bot_shop_items SET service_name=$1, emoji=$2, service_desc=$3 WHERE key=$4",
+                    "UPDATE bot_shop_items SET service_name=$1, emoji=$2, "
+                    "service_desc=CASE WHEN service_desc IS NULL OR service_desc='' THEN $3 ELSE service_desc END "
+                    "WHERE key=$4",
                     svc["name"], svc.get("emoji", ""), svc.get("desc", ""), key
                 )
                 for i, plan in enumerate(svc.get("plans", [])):
                     await conn.execute(
-                        "UPDATE bot_shop_items SET plan_name=$1, plan_desc=$2 WHERE key=$3 AND plan_idx=$4",
+                        "UPDATE bot_shop_items SET plan_name=$1, "
+                        "plan_desc=CASE WHEN plan_desc IS NULL OR plan_desc='' THEN $2 ELSE plan_desc END "
+                        "WHERE key=$3 AND plan_idx=$4",
                         plan["name"], plan.get("desc", ""), key, i
                     )
         else:
