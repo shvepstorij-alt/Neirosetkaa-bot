@@ -653,12 +653,14 @@ async def load_prices_from_db():
                     "WHERE key=$4",
                     svc["name"], svc.get("emoji", ""), svc.get("desc", ""), key
                 )
-                for i, plan in enumerate(svc.get("plans", [])):
+                # ВАЖНО: НЕ переименовываем тарифы по позиции (plan_idx) — иначе после деплоя
+                # имя и цена разъезжаются. Сопоставляем по ИМЕНИ и только дозаполняем пустые описания.
+                for plan in svc.get("plans", []):
                     await conn.execute(
-                        "UPDATE bot_shop_items SET plan_name=$1, "
-                        "plan_desc=CASE WHEN plan_desc IS NULL OR plan_desc='' THEN $2 ELSE plan_desc END "
-                        "WHERE key=$3 AND plan_idx=$4",
-                        plan["name"], plan.get("desc", ""), key, i
+                        "UPDATE bot_shop_items SET "
+                        "plan_desc=CASE WHEN plan_desc IS NULL OR plan_desc='' THEN $1 ELSE plan_desc END "
+                        "WHERE key=$2 AND plan_name=$3",
+                        plan.get("desc", ""), key, plan["name"]
                     )
         else:
             # БД пуста — записываем всё из кода

@@ -1765,7 +1765,11 @@ async def api_admin_overview_handler(request: web.Request) -> web.Response:
             dd = r["d"]
             dd = dd.date() if hasattr(dd, "date") else dd
             wkmap[dd] = int(r["s"] or 0)
-        week = [wkmap.get(today - _dt_ov.timedelta(days=6 - i), 0) for i in range(7)]
+        _wd_ov = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
+        week = []
+        for i in range(7):
+            _dq = today - _dt_ov.timedelta(days=6 - i)
+            week.append({"value": wkmap.get(_dq, 0), "date": _dq.isoformat(), "label": _wd_ov[_dq.weekday()]})
 
         agg = {}
         for r in svc:
@@ -2010,6 +2014,109 @@ async def api_admin_stats_handler(request: web.Request) -> web.Response:
     except Exception as _e:
         logging.error(f"api_admin_stats: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_sales_handler(request: web.Request) -> web.Response:
+    """Продажи магазина по сервисам/тарифам за период или дату. Admin-only."""
+    import datetime as _dt_sa
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        period = body.get("period") or "day"
+        today = _dt_sa.date.today()
+        _pd = body.get("date")
+        if _pd:
+            try:
+                _a = _dt_sa.date.fromisoformat(str(_pd)); since, until = _a, _a + _dt_sa.timedelta(days=1)
+            except Exception:
+                since, until = today, today + _dt_sa.timedelta(days=1)
+        elif period == "week":
+            since, until = today - _dt_sa.timedelta(days=6), today + _dt_sa.timedelta(days=1)
+        elif period == "month":
+            since, until = today - _dt_sa.timedelta(days=29), today + _dt_sa.timedelta(days=1)
+        else:
+            since, until = today, today + _dt_sa.timedelta(days=1)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT pack, COUNT(*) AS cnt, COALESCE(SUM(amount_rub),0) AS rev FROM fk_orders "
+                "WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at>=$1 AND paid_at<$2 GROUP BY pack",
+                since, until)
+            nsg = await conn.fetchrow(
+                "SELECT COUNT(*) AS cnt, COALESCE(SUM(price_rub),0) AS rev FROM nsgifts_orders "
+                "WHERE status='fulfilled' AND created_at>=$1 AND created_at<$2", since, until)
+        by = {}; total = 0
+        for r in rows:
+            parts = (r["pack"] or "").split(":")
+            k = parts[1] if len(parts) > 1 else ""
+            idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+            scat = SHOP_CATALOG.get(k, {}) or {}; nm = scat.get("name", k)
+            plans = scat.get("plans", []); pname = plans[idx]["name"] if 0 <= idx < len(plans) else f"#{idx}"
+            d = by.setdefault(nm, {"name": nm, "emoji": scat.get("emoji", ""), "cnt": 0, "rev": 0, "plans": {}})
+            d["cnt"] += r["cnt"]; d["rev"] += int(r["rev"]); d["plans"][pname] = d["plans"].get(pname, 0) + r["cnt"]
+            total += int(r["rev"])
+        services = []
+        for nm, d in sorted(by.items(), key=lambda x: -x[1]["rev"]):
+            services.append({"name": nm, "emoji": d["emoji"], "cnt": d["cnt"], "rev": d["rev"],
+                             "plans": [{"name": pn, "cnt": pc} for pn, pc in sorted(d["plans"].items(), key=lambda x: -x[1])]})
+        if (nsg["cnt"] or 0):
+            nrev = int(nsg["rev"] or 0); total += nrev
+            services.append({"name": "App Store", "emoji": "🍎", "cnt": int(nsg["cnt"]), "rev": nrev, "plans": []})
+        return web.json_response({"ok": True, "services": services, "total": total})
+    except Exception as _e:
+        logging.error(f"api_admin_sales: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_plan_add_handler(request: web.Request) -> web.Response:
+    """Добавить тариф в сервис. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        k = str(body.get("key", "")); name = str(body.get("name", "")).strip()
+        try: price = int(float(body.get("price") or 0))
+        except Exception: price = 0
+        scat = SHOP_CATALOG.get(k)
+        if not k or not scat or not name or price <= 0:
+            return web.json_response({"ok": False, "msg": "Нужно название и цена"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            mx = await conn.fetchval("SELECT COALESCE(MAX(plan_idx),-1) FROM bot_shop_items WHERE key=$1", k)
+            new_idx = int(mx) + 1
+            await conn.execute(
+                "INSERT INTO bot_shop_items (key, plan_idx, service_name, emoji, service_desc, plan_name, price, stars, plan_desc, sort_order) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (key, plan_idx) DO NOTHING",
+                k, new_idx, scat.get("name", k), scat.get("emoji", ""), scat.get("desc", ""), name, price, 0, "", new_idx)
+        scat.setdefault("plans", []).append({"name": name, "price": price, "stars": 0, "desc": ""})
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_plan_add: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+
+
+async def api_admin_plan_delete_handler(request: web.Request) -> web.Response:
+    """Удалить тариф из сервиса. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        k = str(body.get("key", "")); name = str(body.get("name", ""))
+        scat = SHOP_CATALOG.get(k)
+        if not k or not scat or not name:
+            return web.json_response({"ok": False})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM bot_shop_items WHERE key=$1 AND plan_name=$2", k, name)
+        scat["plans"] = [p for p in scat.get("plans", []) if p.get("name") != name]
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_plan_delete: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
 
 
 async def api_admin_analytics_handler(request: web.Request) -> web.Response:
@@ -3838,6 +3945,9 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/stats", api_admin_stats_handler)
+    app.router.add_post("/api/admin/sales", api_admin_sales_handler)
+    app.router.add_post("/api/admin/plan-add", api_admin_plan_add_handler)
+    app.router.add_post("/api/admin/plan-delete", api_admin_plan_delete_handler)
     app.router.add_post("/api/admin/analytics", api_admin_analytics_handler)
     app.router.add_post("/api/admin/promos", api_admin_promos_handler)
     app.router.add_post("/api/admin/promo-create", api_admin_promo_create_handler)

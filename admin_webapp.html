@@ -143,10 +143,10 @@ function kpi(lab,val,delta){var up=delta>=0;return '<div class="mcard"><div clas
 function home(){
   var ov=OVERVIEW||{};
   var _ord=(ov.orders!=null?ov.orders:22),_rev=(ov.revenue!=null?ov.revenue:78140),_nu=(ov.newUsers!=null?ov.newUsers:9);
-  var _week=ov.week||[52,61,48,73,69,90,78];
+  var _week=(ov.week&&ov.week.length)?ov.week:[{value:52,label:"Пн",date:""},{value:61,label:"Вт",date:""},{value:48,label:"Ср",date:""},{value:73,label:"Чт",date:""},{value:69,label:"Пт",date:""},{value:90,label:"Сб",date:""},{value:78,label:"Вс",date:""}];
   var _pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
   var _bysvc=(ov.byService&&ov.byService.length?ov.byService:[{label:"ChatGPT",val:39650},{label:"Claude",val:34512},{label:"App Store",val:5200},{label:"Perplexity",val:1990}]).map(function(x,i){return {label:x.label,val:x.val,color:_pal[i%_pal.length]}});
-  var _wksum=_week.reduce(function(a,b){return a+b},0);
+  var _wvals=_week.map(function(x){return (x&&x.value!=null)?x.value:x});var _wmx=Math.max.apply(0,_wvals)||1;var _wksum=_wvals.reduce(function(a,b){return a+(b||0)},0);
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
@@ -158,7 +158,8 @@ function home(){
   var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
   h+='<div class="hero"><div class="hi">🎛️</div><h1>Панель управления</h1><p>Сегодня · '+(new Date()).toLocaleDateString('ru')+'</p></div>';
   h+='<div class="chips"><div class="chip"><div class="v">'+_ord+'</div><div class="l">заказов</div></div><div class="chip"><div class="v">'+nf(_rev)+'₽</div><div class="l">выручка</div></div><div class="chip"><div class="v">'+_nu+'</div><div class="l">новых юзеров</div></div></div>';
-  h+='<div class="block"><h4>📈 Выручка за 7 дней</h4>'+spark(_week,C.pink)+'<div class="kv" style="margin-top:8px"><span class="k">Итого за неделю</span><span>'+nf(_wksum)+' ₽</span></div></div>';
+  var _wbh='<div class="bars">'+_week.map(function(x){var v=(x&&x.value!=null)?x.value:x,dt=(x&&x.date)?x.date:'',lb=(x&&x.label)?x.label:'';return '<div class="b" style="height:'+Math.max(3,Math.round(v/_wmx*100))+'%;cursor:pointer" onclick="window._stDate=\''+dt+'\';open2(\'Статистика\')"><span>'+nf(v)+'</span><i>'+lb+'</i></div>'}).join('')+'</div>';
+  h+='<div class="block"><h4>📈 Выручка за 7 дней <span class="muted" style="font-size:11px;font-weight:400">— нажми на день</span></h4>'+_wbh+'<div class="kv" style="margin-top:14px"><span class="k">Итого за неделю</span><span>'+nf(_wksum)+' ₽</span></div></div>';
   h+='<div class="block"><h4>🥧 Выручка по сервисам (сегодня)</h4>'+donut(_bysvc)+'</div>';
   groups.forEach(function(g){h+='<div class="glabel">'+g[0]+' '+g[1]+'</div><div class="grid">';g[2].forEach(function(c){h+='<div class="card'+(c[3]?' full':'')+'" onclick="open2(\''+c[2]+'\')"><span class="ic">'+c[0]+'</span><span class="lbl">'+c[1]+'</span></div>'});h+='</div>'});
   return h+'</div>';
@@ -210,15 +211,16 @@ function loadAnalytics(){
 function api(path,body){var tg=window.Telegram&&window.Telegram.WebApp;body=body||{};body.initData=tg?tg.initData:"";return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});}
 
 SCREENS["Прибыль"]=function(){
-  var per=window._pPer||"day", off=window._pOff||0;
-  var seg='<div class="seg">'+[["day","Сегодня"],["week","7 дней"],["month","30 дней"]].map(function(x){return '<button class="'+(x[0]===per?'on':'')+'" onclick="window._pPer=\''+x[0]+'\';window._pOff=0;open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>';
-  var dayPick = per==="day" ? '<div class="seg" style="margin-top:-8px">'+[["0","Сегодня"],["1","Вчера"],["2","Позавчера"]].map(function(x){return '<button class="'+(+x[0]===off?'on':'')+'" style="font-size:11.5px" onclick="window._pOff='+x[0]+';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>' : '';
-  var sub = per==="day" ? ["Сегодня","Вчера","Позавчера"][off] : (per==="week"?"7 дней":"30 дней");
-  setTimeout(function(){loadProfit(per,off)},0);
-  return hdr("Прибыль / себестоимость",sub)+'<div class="wrap">'+seg+dayPick+'<div id="pbody"><div class="note">Загружаю данные…</div></div><button class="btn sec" onclick="leaf(profitCosts)" style="margin-top:16px">⚙️ Себестоимость и цены</button></div>';
+  var per=window._pPer||"day", off=window._pOff||0, dts=window._pDate||"";
+  var seg='<div class="seg">'+[["day","Сегодня"],["week","7 дней"],["month","30 дней"]].map(function(x){return '<button class="'+(x[0]===per&&!dts?'on':'')+'" onclick="window._pPer=\''+x[0]+'\';window._pOff=0;window._pDate=\'\';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>';
+  var dayPick = (per==="day"&&!dts) ? '<div class="seg" style="margin-top:-8px">'+[["0","Сегодня"],["1","Вчера"],["2","Позавчера"]].map(function(x){return '<button class="'+(+x[0]===off?'on':'')+'" style="font-size:11.5px" onclick="window._pOff='+x[0]+';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>' : '';
+  var dp='<input class="f" type="date" value="'+dts+'" onchange="window._pDate=this.value;open2(\'Прибыль\')" style="margin-bottom:12px"/>';
+  var sub = dts?dts:(per==="day"?["Сегодня","Вчера","Позавчера"][off]:(per==="week"?"7 дней":"30 дней"));
+  setTimeout(function(){loadProfit(per,off,dts)},0);
+  return hdr("Прибыль / себестоимость",sub)+'<div class="wrap">'+seg+dayPick+dp+'<div id="pbody"><div class="note">Загружаю данные…</div></div><button class="btn sec" onclick="leaf(profitCosts)" style="margin-top:16px">⚙️ Себестоимость и цены</button></div>';
 };
-function loadProfit(per,off){
-  api('/api/admin/profit',{period:per,dayOffset:off}).then(function(d){
+function loadProfit(per,off,date){
+  api('/api/admin/profit',{period:per,dayOffset:off,date:date||null}).then(function(d){
     var el=document.getElementById('pbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка загрузки.</div>';return;}
     var t=d.totals,h='';
@@ -265,16 +267,29 @@ function savePrices(){
 
 /* Продажи */
 SCREENS["Продажи магазина"]=function(){
-  var per=window._sP||"day";
-  return hdr("Продажи магазина")+'<div class="wrap">'+
-    '<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per?'on':'')+'" onclick="window._sP=\''+k+'\';open2(\'Продажи магазина\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>'+
-    '<div class="block"><h4><i class="ti ti-chart-pie"></i> Доля выручки</h4>'+donut([{label:"ChatGPT",val:39650,color:C.pink},{label:"Claude",val:34512,color:C.purple},{label:"App Store",val:5200,color:C.teal},{label:"Perplexity",val:1990,color:C.amber}])+'</div>'+
-    rowItem("ti-sparkles","ChatGPT","22 шт · 39 650 ₽",'<span class="chev"><i class="ti ti-chevron-right"></i></span>','leaf(function(){return salesPlans(\"ChatGPT\",[[\"Plus\",15],[\"Pro 5×\",5],[\"Go\",2]])})')+
-    rowItem("ti-bolt","Claude","11 шт · 34 512 ₽",'<span class="chev"><i class="ti ti-chevron-right"></i></span>','leaf(function(){return salesPlans(\"Claude\",[[\"Pro\",9],[\"Max 5×\",2]])})')+
-    rowItem("ti-device-mobile","App Store","4 шт · 5 200 ₽","",'')+
-    rowItem("ti-world-search","Perplexity","1 шт · 1 990 ₽","",'')+'</div>';
+  var per=window._sP||"day", dts=window._sDate||"";
+  setTimeout(function(){loadSales(per,dts)},0);
+  var seg='<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per&&!dts?'on':'')+'" onclick="window._sP=\''+k+'\';window._sDate=\'\';open2(\'Продажи магазина\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>';
+  var dp='<input class="f" type="date" value="'+dts+'" onchange="window._sDate=this.value;open2(\'Продажи магазина\')" style="margin-bottom:12px"/>';
+  var sub=dts?dts:(per==="week"?"7 дней":per==="month"?"30 дней":"Сегодня");
+  return hdr("Продажи магазина",sub)+'<div class="wrap">'+seg+dp+'<div id="sbody"><div class="note">Загружаю…</div></div></div>';
 };
-function salesPlans(svc,plans){return hdr(svc,"продажи по тарифам")+'<div class="wrap"><div class="block">'+hbars(plans.map(function(p,i){return {label:p[0],val:p[1],color:[C.pink,C.purple,C.teal][i%3]}}),' шт')+'</div></div>'}
+function loadSales(per,date){
+  api('/api/admin/sales',{period:per,date:date||null}).then(function(d){
+    var el=document.getElementById('sbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    if(!d.services.length){el.innerHTML='<div class="note">Продаж за период нет.</div>';return;}
+    window._salesData=d.services;
+    var pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
+    var h='<div class="block"><h4>🥧 Доля выручки · '+nf(d.total)+' ₽</h4>'+donut(d.services.map(function(x,i){return {label:x.name,val:x.rev||1,color:pal[i%6]}}))+'</div>';
+    d.services.forEach(function(s,i){
+      var has=s.plans&&s.plans.length;
+      h+='<div class="row" '+(has?'onclick="leaf(function(){return salesPlans('+i+')})"':'style="cursor:default"')+'><span class="ic">'+(s.emoji||"🛍️")+'</span><div><div class="lbl2">'+s.name+'</div><div class="sub">'+s.cnt+' шт · '+nf(s.rev)+' ₽</div></div>'+(has?'<span class="chev">›</span>':'')+'</div>';
+    });
+    el.innerHTML=h;
+  });
+}
+function salesPlans(i){var s=(window._salesData||[])[i]||{name:'',plans:[]};return hdr(s.name,"продажи по тарифам")+'<div class="wrap"><div class="block">'+hbars((s.plans||[]).map(function(p,j){return {label:p.name,val:p.cnt,color:[C.pink,C.purple,C.teal,C.amber][j%4]}}),' шт')+'</div></div>'}
 
 /* История платежей */
 SCREENS["История платежей"]=function(){
@@ -433,9 +448,9 @@ function planEdit(key){
   var h=hdr(s.name,"цены и описания")+'<div class="wrap">';
   h+='<label class="fl" style="margin-top:0">Описание сервиса</label><textarea class="f" id="pe_svcdesc" style="min-height:80px">'+(s.desc||'')+'</textarea>';
   s.plans.forEach(function(p){
-    h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-name="'+(p.name||'').replace(/"/g,'&quot;')+'"><div style="font-weight:600;margin-bottom:6px">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" style="min-height:70px">'+(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
+    h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-name="'+(p.name||'').replace(/"/g,'&quot;')+'"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></span><button class="btn row2 danger" style="width:auto;margin:0;padding:5px 10px;font-size:11px" onclick="delPlan(\''+key+'\',\''+(p.name||'').replace(/\x27/g,'')+'\')">Удалить</button></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" style="min-height:70px">'+(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
   });
-  return h+'<button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
+  return h+'<button class="btn sec" onclick="leaf(function(){return planAdd(\''+key+'\')})">➕ Добавить тариф</button><button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
 }
 function savePlanEdit(key){
   var items=[];
@@ -446,6 +461,9 @@ function savePlanEdit(key){
   toast('Сохраняю…');
   api('/api/admin/prices-save',{items:items,svcKey:key,svcDesc:sd}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});
 }
+function planAdd(key){return hdr("Новый тариф")+'<div class="wrap"><label class="fl">Название тарифа</label><input class="f" id="pa_name" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="pa_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doPlanAdd(\''+key+'\')">Создать</button></div>';}
+function doPlanAdd(key){var name=fv('pa_name'),price=fv('pa_price');if(!name||!price){toast('Название и цена');return;}toast('Создаю…');api('/api/admin/plan-add',{key:key,name:name,price:price}).then(function(d){toast(d.ok?'Тариф добавлен ✓':(d.msg||'Ошибка'));if(d.ok)api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;back();});});}
+function delPlan(key,name){if(window.confirm&&!window.confirm('Удалить тариф '+name+'?'))return;api('/api/admin/plan-delete',{key:key,name:name}).then(function(d){if(d.ok){api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;app.innerHTML=planEdit(key);});}else toast('Ошибка');});}
 function serviceAdd(){return hdr("Новый сервис")+'<div class="wrap"><label class="fl">Название</label><input class="f" id="sv_name" placeholder="Например: Notion"/><label class="fl">Эмодзи (необязательно)</label><input class="f" id="sv_em" placeholder="📝"/><label class="fl">Первый тариф — название</label><input class="f" id="sv_plan" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="sv_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doServiceAdd()">Создать</button><div class="note">Тарифы и закуп можно изменить после создания.</div></div>';}
 function doServiceAdd(){var name=fv('sv_name'),price=fv('sv_price');if(!name||!price){toast('Название и цена обязательны');return;}toast('Создаю…');api('/api/admin/service-add',{name:name,emoji:fv('sv_em'),planName:fv('sv_plan'),price:price}).then(function(d){toast(d.ok?'Сервис добавлен ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
 function delService(key){if(window.confirm&&!window.confirm('Удалить сервис целиком?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/service-delete',{key:key}).then(function(d){toast(d.ok?'Удалён':(d.msg||'Ошибка'));if(d.ok)back();});}
