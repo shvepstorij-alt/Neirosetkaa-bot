@@ -629,6 +629,8 @@ function loadShopOrders(){
 function shopOrderView(id){
   var o=(window._shopOrders||{})[id]||{};
   var svc=window._soSvc, accLbl=(svc==='chatgpt')?'Email':(svc==='appstore'?'Выдано':'Org/ID');
+  // Ручной заказ в процессе → полноценный экран с перепиской (отправить сообщение + заказ готов)
+  if(o.manual && !o.activated && svc!=='appstore'){ return orderView(id); }
   var h=hdr("Заказ",o.plan||svc)+'<div class="wrap"><div class="block">'+
     '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag '+(o.activated?'g':'a')+'">'+(o.activated?'активирован':(o.status||'оплачен'))+'</span></div>'+
     '<div class="kv"><span class="k">Тариф</span><span>'+(o.plan||'')+'</span></div>'+
@@ -637,12 +639,18 @@ function shopOrderView(id){
     (o.acc?'<div class="kv"><span class="k">'+accLbl+'</span><span style="word-break:break-all">'+o.acc+'</span></div>':'')+
     (o.code?'<div class="kv"><span class="k">'+(svc==='appstore'?'Выдано':'Код')+'</span><span style="word-break:break-all">'+o.code+'</span></div>':'')+
     '<div class="kv"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+id+'</span></div></div>';
-  if(svc!=='appstore'){
+  if(o.activated){
+    // Успешно активирован клиентом — без кнопок
+    h+='<div class="note">✅ Заказ успешно активирован — действия не требуются.</div>';
+  } else if(svc==='appstore'){
+    h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button>';
+  } else {
+    // Авто-сервис, ещё не активирован клиентом — инструменты ручной активации
     h+='<label class="fl">Активировать вручную — код, которым активировал</label><input class="f" id="so_code" placeholder="ALEXANDRAI..."/><button class="btn" onclick="soManual(\''+id+'\')">✅ Активировали вручную</button>';
     h+='<button class="btn sec" onclick="soRelease(\''+id+'\')">♻️ Вернуть код в пул</button>';
+    h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button>';
   }
-  h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button></div>';
-  return h;
+  return h+'</div>';
 }
 function soManual(id){var code=fv('so_code');if(!code){toast('Укажи код');return;}toast('Сохраняю…');api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'manual',code:code}).then(function(d){toast(d.ok?'Отмечено активированным ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
 function soRelease(id){if(window.confirm&&!window.confirm('Вернуть код заказа в пул?'))return;api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'release'}).then(function(d){toast(d.ok?'Код возвращён в пул ✓':'Ошибка');if(d.ok)back();});}
