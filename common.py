@@ -2960,10 +2960,17 @@ async def _run_activation_job(
                     f"⏱ Время: <b>{_used_at}</b>\n"
                     f"🆔 Order: <code>{order_id}</code>"
                 )
-                _screenshot = result.get("screenshot")
-                if _screenshot:
-                    await bot.send_photo(ADMIN_ID, BufferedInputFile(_screenshot, "ok.png"),
-                                         caption=_caption, parse_mode="HTML")
+                # Обновляем ТО ЖЕ сообщение заказа (создан → оплачен → активирован), без скрина
+                try:
+                    _ord_ok = await fk_get_order(order_id)
+                    _amid_ok = (_ord_ok or {}).get("admin_msg_id")
+                except Exception:
+                    _amid_ok = None
+                if _amid_ok:
+                    try:
+                        await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+                    except Exception:
+                        await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
                 else:
                     await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
             except Exception:
@@ -4308,13 +4315,16 @@ async def _claude_activation_polling_job(
                         f"🔢 BPA: <code>{bpa_order_id}</code>\n"
                         f"⏱ {_ts}"
                     )
-                    _ss_ok = await _take_claude_bpa_screenshot(bpa_order_id)
-                    if _ss_ok:
-                        await bot.send_photo(
-                            ADMIN_ID,
-                            BufferedInputFile(_ss_ok, "claude_ok.png"),
-                            caption=_caption_ok, parse_mode="HTML"
-                        )
+                    try:
+                        _ord_ok = await fk_get_order(order_id)
+                        _amid_ok = (_ord_ok or {}).get("admin_msg_id")
+                    except Exception:
+                        _amid_ok = None
+                    if _amid_ok:
+                        try:
+                            await bot.edit_message_text(_caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+                        except Exception:
+                            await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
                     else:
                         await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
                 except Exception:
@@ -5051,13 +5061,16 @@ async def _perplexity_activation_polling_job(
                         f"🔢 BPA: <code>{bpa_order_id}</code>\n"
                         f"⏱ {_ts}"
                     )
-                    _ss_ok = await _take_claude_bpa_screenshot(bpa_order_id)
-                    if _ss_ok:
-                        await bot.send_photo(
-                            ADMIN_ID,
-                            BufferedInputFile(_ss_ok, "perplexity_ok.png"),
-                            caption=_caption_ok, parse_mode="HTML"
-                        )
+                    try:
+                        _ord_ok = await fk_get_order(order_id)
+                        _amid_ok = (_ord_ok or {}).get("admin_msg_id")
+                    except Exception:
+                        _amid_ok = None
+                    if _amid_ok:
+                        try:
+                            await bot.edit_message_text(_caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+                        except Exception:
+                            await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
                     else:
                         await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
                 except Exception:
