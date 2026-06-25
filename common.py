@@ -2444,6 +2444,55 @@ async def api_admin_shop_orders_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_shop_order_action_handler(request: web.Request) -> web.Response:
+    """Действия по заказу авто-активации: ручная активация (другим кодом), возврат кода в пул, удаление. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        svc = str(body.get("svc", "")); oid = str(body.get("id", ""))
+        action = str(body.get("action", "")); code = str(body.get("code", "")).strip()
+        tblmap = {"chatgpt": "gpt_codes", "claude": "claude_codes", "perplexity": "perplexity_codes"}
+        pool = await get_pool()
+        if action == "delete":
+            async with pool.acquire() as conn:
+                if svc == "appstore":
+                    await conn.execute("DELETE FROM nsgifts_orders WHERE fk_order_id=$1", oid)
+                else:
+                    await conn.execute("DELETE FROM fk_orders WHERE order_id=$1", oid)
+            return web.json_response({"ok": True})
+        tbl = tblmap.get(svc)
+        if not tbl:
+            return web.json_response({"ok": False, "msg": "Для этого сервиса доступно только удаление"})
+        acccol = "email" if svc == "chatgpt" else "org_id"
+        if action == "release":
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    f"UPDATE {tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, used_at=NULL, {acccol}=NULL WHERE order_id=$1",
+                    oid)
+            return web.json_response({"ok": True})
+        if action == "manual":
+            if not code:
+                return web.json_response({"ok": False, "msg": "Укажи код, которым активировал"})
+            async with pool.acquire() as conn:
+                o = await conn.fetchrow("SELECT user_id FROM fk_orders WHERE order_id=$1", oid)
+                uid = o["user_id"] if o else None
+                await conn.execute(
+                    f"UPDATE {tbl} SET is_used=TRUE, used_by=$1, order_id=$2, used_at=NOW() WHERE code=$3",
+                    uid, oid, code)
+            if uid:
+                try:
+                    await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌", parse_mode="HTML")
+                except Exception:
+                    pass
+            return web.json_response({"ok": True})
+        return web.json_response({"ok": False})
+    except Exception as _e:
+        logging.error(f"api_admin_shop_order_action: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
 async def api_admin_user_find_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -4083,6 +4132,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/order-thread", api_admin_order_thread_handler)
     app.router.add_post("/api/admin/order-delete", api_admin_order_delete_handler)
     app.router.add_post("/api/admin/shop-orders", api_admin_shop_orders_handler)
+    app.router.add_post("/api/admin/shop-order-action", api_admin_shop_order_action_handler)
     app.router.add_post("/api/admin/user-find", api_admin_user_find_handler)
     app.router.add_post("/api/admin/balance", api_admin_balance_handler)
     app.router.add_post("/api/admin/blocks", api_admin_blocks_handler)
