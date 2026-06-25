@@ -2435,9 +2435,21 @@ async def api_admin_shop_orders_handler(request: web.Request) -> web.Response:
                 _man = (await get_setting(f"manual:{svc}:{idx}", "0") or "0") == "1"
                 _done = (await get_setting(f"order_done:{r['order_id']}", "0") or "0") == "1"
                 ts = r["paid_at"]
+                import datetime as _dt_so
+                _act = bool(cr and cr["used_at"]) or _done
+                if _act:
+                    _state = "done"
+                elif _man:
+                    _state = "work"
+                elif ts and (_dt_so.datetime.now(_BOT_TZ) - ts.astimezone(_BOT_TZ)).total_seconds() > ACTIVATION_WINDOW_MIN * 60:
+                    _state = "expired"
+                else:
+                    _state = "process"
+                _stlabel = {"done": "активирован", "work": "в работе",
+                            "process": "в процессе", "expired": "сессия истекла"}[_state]
                 out.append({"id": r["order_id"], "plan": pname, "amount": int(r["amount_rub"] or 0),
-                            "status": "оплачен", "manual": _man,
-                            "activated": bool(cr and cr["used_at"]) or _done,
+                            "status": _stlabel, "state": _state, "manual": _man,
+                            "activated": _act,
                             "date": ts.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ts else "",
                             "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
                             "acc": (cr["acc"] if cr else "") or "", "code": (cr["code"] if cr else "") or ""})
