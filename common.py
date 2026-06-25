@@ -2277,10 +2277,20 @@ async def api_admin_orders_handler(request: web.Request) -> web.Response:
         except Exception: body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
-        from db import list_linkpay_pending
-        rows = await list_linkpay_pending(50)
+        kinds = body.get("kinds")
+        status = str(body.get("status") or "work")
+        work_st = ["awaiting_link", "awaiting_payment", "awaiting_creds", "awaiting_setup"]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if status == "done":
+                rows = await conn.fetch("SELECT * FROM linkpay_orders WHERE status IN ('done') ORDER BY created_at DESC LIMIT 100")
+            else:
+                rows = await conn.fetch("SELECT * FROM linkpay_orders WHERE status = ANY($1::text[]) ORDER BY created_at DESC LIMIT 100", work_st)
+        if kinds:
+            rows = [r for r in rows if r.get("kind") in kinds]
         st = {"awaiting_link": "ждёт ссылку", "awaiting_payment": "ждёт оплаты",
-              "awaiting_creds": "ждёт данные", "awaiting_setup": "оформляется"}
+              "awaiting_creds": "ждёт данные", "awaiting_setup": "оформляется",
+              "done": "выполнен", "cancelled": "отменён"}
         out = []
         for r in rows:
             out.append({"id": r.get("fk_order_id"), "service": r.get("service_name"),
@@ -2356,6 +2366,26 @@ async def api_admin_order_thread_handler(request: web.Request) -> web.Response:
             "messages": out})
     except Exception as _e:
         logging.error(f"api_admin_order_thread: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_order_delete_handler(request: web.Request) -> web.Response:
+    """Удалить заказ и его переписку (для теста/чистки). Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        oid = str(body.get("id", ""))
+        if not oid:
+            return web.json_response({"ok": False})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM linkpay_orders WHERE fk_order_id=$1", oid)
+            await conn.execute("DELETE FROM order_thread WHERE order_id=$1", oid)
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_order_delete: {_e}")
         return web.json_response({"ok": False}, status=500)
 
 
@@ -3989,6 +4019,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/orders", api_admin_orders_handler)
     app.router.add_post("/api/admin/order-action", api_admin_order_action_handler)
     app.router.add_post("/api/admin/order-thread", api_admin_order_thread_handler)
+    app.router.add_post("/api/admin/order-delete", api_admin_order_delete_handler)
     app.router.add_post("/api/admin/user-find", api_admin_user_find_handler)
     app.router.add_post("/api/admin/balance", api_admin_balance_handler)
     app.router.add_post("/api/admin/blocks", api_admin_blocks_handler)

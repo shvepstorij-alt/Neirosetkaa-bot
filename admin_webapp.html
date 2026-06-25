@@ -544,16 +544,21 @@ function credEdit(key){
   return hdr(s.name,"инструкция")+'<div class="wrap"><label class="fl">Пошаговая инструкция для клиента</label><textarea class="f" id="cr_instr" style="min-height:180px">'+instr+'</textarea><button class="btn" onclick="saveCr(\''+key+'\')">Сохранить</button></div>';
 }
 function saveCr(key){toast('Сохраняю…');api('/api/admin/svc-save',{kind:'creds',key:key,instructions:fv('cr_instr')}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
-function ordersWork(t){
+function ordersWork(kind){
+  if(kind)window._owKind=kind;
+  var st=window._owStatus||'work';
   setTimeout(loadOrders,0);
-  return hdr("Заказы в работе",t||"")+'<div class="wrap"><div id="owbody"><div class="note">Загружаю…</div></div></div>';
+  var title=(window._owKind==='creds')?'Вход в аккаунт':'Оплата по ссылке';
+  var seg='<div class="seg">'+[["work","В работе"],["done","Выполненные"]].map(function(x){return '<button class="'+(x[0]===st?'on':'')+'" onclick="window._owStatus=\''+x[0]+'\';go(function(){return ordersWork()},false)">'+x[1]+'</button>'}).join('')+'</div>';
+  return hdr("Заказы",title)+'<div class="wrap">'+seg+'<div id="owbody"><div class="note">Загружаю…</div></div></div>';
 }
 function loadOrders(){
-  api('/api/admin/orders',{}).then(function(d){
+  var kinds=(window._owKind==='creds')?['creds']:['linkpay','manual'];
+  api('/api/admin/orders',{kinds:kinds,status:window._owStatus||'work'}).then(function(d){
     var el=document.getElementById('owbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    if(!d.orders.length){el.innerHTML='<div class="note">Заказов в работе нет.</div>';return;}
-    window._ordersData={};
+    if(!d.orders.length){el.innerHTML='<div class="note">'+((window._owStatus==='done')?'Выполненных заказов нет.':'Заказов в работе нет.')+'</div>';return;}
+    window._ordersData=window._ordersData||{};
     var h='';
     d.orders.forEach(function(o){
       window._ordersData[o.id]=o;
@@ -569,7 +574,7 @@ function orderView(id){
   var tt=(o.service||'')+(o.plan?' '+o.plan:'');
   return hdr("Заказ",tt||id)+'<div class="wrap"><div id="thbody"><div class="note">Загружаю переписку…</div></div>'+
     '<label class="fl">Написать клиенту (уточнение)</label><textarea class="f" id="ow_msg" placeholder="Текст или код…"></textarea><button class="btn" onclick="orderClarify(\''+id+'\')">Отправить клиенту</button>'+
-    '<div class="btns2"><button class="btn row2" onclick="orderAction(\''+id+'\',\'done\')">✅ Выполнен</button><button class="btn row2 danger" onclick="orderAction(\''+id+'\',\'cancel\')">🗑 Отмена</button></div></div>';
+    '<div class="btns2"><button class="btn row2" onclick="orderAction(\''+id+'\',\'done\')">✅ Выполнен</button><button class="btn row2 danger" onclick="orderAction(\''+id+'\',\'cancel\')">🚫 Отмена</button></div><button class="btn danger" onclick="delOrder(\''+id+'\')">🗑 Удалить заказ из истории</button></div>';
 }
 function loadThread(id){
   api('/api/admin/order-thread',{id:id}).then(function(d){
@@ -588,6 +593,7 @@ function loadThread(id){
 }
 function orderAction(id,action){toast('…');api('/api/admin/order-action',{id:id,action:action}).then(function(d){toast(d.ok?'Готово ✓':'Ошибка');if(d.ok)back();});}
 function orderClarify(id){var t=(document.getElementById('ow_msg')||{}).value;if(!t){toast('Введи текст');return;}toast('Отправляю…');api('/api/admin/order-action',{id:id,action:'clarify',text:t}).then(function(d){toast(d.ok?'Отправлено ✓':'Ошибка');if(d.ok){var m=document.getElementById('ow_msg');if(m)m.value='';loadThread(id);}});}
+function delOrder(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/order-delete',{id:id}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}
 
 /* Управление */
 SCREENS["Приветствие"]=function(){
