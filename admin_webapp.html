@@ -645,14 +645,14 @@ function shopOrderView(id){
   } else if(svc==='appstore'){
     h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button>';
   } else {
-    // Авто-сервис, ещё не активирован клиентом — инструменты ручной активации
-    h+='<label class="fl">Активировать вручную — код, которым активировал</label><input class="f" id="so_code" placeholder="ALEXANDRAI..."/><button class="btn" onclick="soManual(\''+id+'\')">✅ Активировали вручную</button>';
-    h+='<button class="btn sec" onclick="soRelease(\''+id+'\')">♻️ Вернуть код в пул</button>';
+    // Авто-сервис, ещё не активирован клиентом
+    h+='<button class="btn" onclick="soManual(\''+id+'\')">✅ Активировали вручную</button>';
+    h+='<div class="note">Код заказа вернётся в пул автоматически.</div>';
     h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button>';
   }
   return h+'</div>';
 }
-function soManual(id){var code=fv('so_code');if(!code){toast('Укажи код');return;}toast('Сохраняю…');api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'manual',code:code}).then(function(d){toast(d.ok?'Отмечено активированным ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
+function soManual(id){if(window.confirm&&!window.confirm('Отметить активированным вручную? Код вернётся в пул.'))return;toast('Сохраняю…');api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'manual'}).then(function(d){toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
 function soRelease(id){if(window.confirm&&!window.confirm('Вернуть код заказа в пул?'))return;api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'release'}).then(function(d){toast(d.ok?'Код возвращён в пул ✓':'Ошибка');if(d.ok)back();});}
 function soDelete(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'delete'}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}
 
