@@ -606,6 +606,8 @@ function loadThread(id){
 function orderAction(id,action){toast('…');api('/api/admin/order-action',{id:id,action:action}).then(function(d){toast(d.ok?'Готово ✓':'Ошибка');if(d.ok)back();});}
 function orderClarify(id){var t=(document.getElementById('ow_msg')||{}).value;if(!t){toast('Введи текст');return;}toast('Отправляю…');api('/api/admin/order-action',{id:id,action:'clarify',text:t}).then(function(d){toast(d.ok?'Отправлено ✓':'Ошибка');if(d.ok){var m=document.getElementById('ow_msg');if(m)m.value='';loadThread(id);}});}
 function delOrder(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/order-delete',{id:id}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}
+function planLabel(svc,plan){var m={chatgpt:{plus:'Plus',pro_5x:'Pro 5×',go:'Go'},claude:{pro:'Pro',max_5x:'Max 5×',max_20x:'Max 20×'},perplexity:{pro:'Pro'}};return (m[svc]||{})[plan]||plan;}
+function soTag(o){return o.state==='done'?'g':(o.state==='expired'?'r':'a');}
 function shopOrders(svc){
   window._soSvc=svc;
   setTimeout(loadShopOrders,0);
@@ -621,7 +623,7 @@ function loadShopOrders(){
     var h='';
     d.orders.forEach(function(o){
       window._shopOrders[o.id]=o;
-      h+='<div class="row" onclick="leaf(function(){return shopOrderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div></div><span class="tag '+(o.activated?'g':'a')+'">'+(o.activated?'актив.':(o.status||'оплачен'))+'</span></div>';
+      h+='<div class="row" onclick="leaf(function(){return shopOrderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div></div><span class="tag '+soTag(o)+'">'+(o.status||'оплачен')+'</span></div>';
     });
     el.innerHTML=h;
   });
@@ -632,7 +634,7 @@ function shopOrderView(id){
   // Ручной заказ в процессе → полноценный экран с перепиской (отправить сообщение + заказ готов)
   if(o.manual && !o.activated && svc!=='appstore'){ return orderView(id); }
   var h=hdr("Заказ",o.plan||svc)+'<div class="wrap"><div class="block">'+
-    '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag '+(o.activated?'g':'a')+'">'+(o.activated?'активирован':(o.status||'оплачен'))+'</span></div>'+
+    '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag '+soTag(o)+'">'+(o.status||'оплачен')+'</span></div>'+
     '<div class="kv"><span class="k">Тариф</span><span>'+(o.plan||'')+'</span></div>'+
     '<div class="kv"><span class="k">Сумма</span><span>'+nf(o.amount)+' ₽</span></div>'+
     '<div class="kv"><span class="k">Дата</span><span>'+(o.date||'')+'</span></div>'+
@@ -687,13 +689,19 @@ function loadMiniApp(svc){
     var m=(d.miniapps||[]).filter(function(x){return x.key===svc})[0]||{enabled:false,codes:0};
     var em={chatgpt:'✨',claude:'⚡',perplexity:'🔍'}[svc]||'📱';
     var h='<div class="row" style="cursor:default"><span class="ic">'+em+'</span><div><div class="lbl2">Приложение '+(m.enabled?'включено':'выключено')+'</div><div class="sub">активация у клиентов</div></div><span class="sw'+(m.enabled?' on':'')+'" onclick="toggleMiniApp(this,\''+svc+'\')"><b></b></span></div>';
-    h+='<div class="block"><h4>🔑 Запас кодов</h4><div class="kv" style="border:0;padding-bottom:6px"><span class="k">В пуле</span><span>'+m.codes+' шт</span></div>'+prog(Math.min(100,m.codes*2),m.codes<10?C.red:C.green)+'</div>';
+    h+='<div class="block"><h4>🔑 Запас кодов</h4><div id="codesbk_'+svc+'"><div class="kv" style="border:0;padding-bottom:6px"><span class="k">В пуле</span><span>'+m.codes+' шт</span></div>'+prog(Math.min(100,m.codes*2),m.codes<10?C.red:C.green)+'</div></div>';
     h+='<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return addCodes(\''+svc+'\')})">➕ Коды</button><button class="btn row2 sec" onclick="leaf(function(){return codesPool(\''+svc+'\')})">🗂 Пул</button></div>';
     h+='<div id="madet_'+svc+'"><div class="note">Загружаю активации…</div></div>';
     el.innerHTML=h;
     api('/api/admin/miniapp-detail',{service:svc}).then(function(dd){
       var de=document.getElementById('madet_'+svc); if(!de)return;
       if(!dd.ok){de.innerHTML='';return;}
+      var byp={};(dd.free||[]).forEach(function(c){byp[c.plan]=(byp[c.plan]||0)+1});
+      var cb=document.getElementById('codesbk_'+svc);
+      if(cb){var tot=(dd.free?dd.free.length:0);
+        var bh='<div class="kv" style="border:0;padding-bottom:6px"><span class="k">Всего в пуле</span><span>'+tot+' шт</span></div>'+prog(Math.min(100,tot*2),tot<10?C.red:C.green);
+        Object.keys(byp).sort().forEach(function(pl){bh+='<div class="kv"><span class="k">'+planLabel(svc,pl)+'</span><span>'+byp[pl]+' шт</span></div>'});
+        cb.innerHTML=bh;}
       var hh='<div class="glabel" style="margin-top:16px">🧾 Последние активации</div>';
       if(!dd.recent.length){hh+='<div class="note">Пока нет активаций.</div>';}
       dd.recent.forEach(function(r){
@@ -712,9 +720,13 @@ function loadPool(svc){
     var el=document.getElementById('poolbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     if(!d.free.length){el.innerHTML='<div class="note">Свободных кодов нет.</div>';return;}
-    var h='<div class="glabel">🟢 Свободные ('+d.free.length+')</div>';
-    d.free.forEach(function(c){
-      h+='<div class="row" style="cursor:default"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+c.plan+'</div></div><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
+    var byp={};d.free.forEach(function(c){(byp[c.plan]=byp[c.plan]||[]).push(c)});
+    var h='';
+    Object.keys(byp).sort().forEach(function(pl){
+      h+='<div class="glabel">🟢 '+planLabel(svc,pl)+' ('+byp[pl].length+')</div>';
+      byp[pl].forEach(function(c){
+        h+='<div class="row" style="cursor:default"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+'</div></div><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
+      });
     });
     el.innerHTML=h;
   });
