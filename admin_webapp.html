@@ -151,7 +151,7 @@ function home(){
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
-   ["📦","Выдача заказов",[["📦","Заказы","Заказы",1],["🔗","Оплата по ссылке (настройка)","Оплата по ссылке"],["🔐","Вход в аккаунт (настройка)","Вход в аккаунт"]]],
+   ["📦","Выдача заказов",[["📦","Заказы","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
   ];
@@ -548,6 +548,9 @@ SCREENS["Заказы"]=function(){
   return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
     '<div class="row" onclick="leaf(function(){return ordersWork(\'link\')})"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">заказы по ссылке</div></div><span class="chev">›</span></div>'+
     '<div class="row" onclick="leaf(function(){return ordersWork(\'creds\')})"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">заказы логин/пароль</div></div><span class="chev">›</span></div>'+
+    '<div class="glabel">⚙️ Настройка сервисов</div>'+
+    '<div class="row" onclick="open2(\'Оплата по ссылке\')"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">инструкция · домен · вкл/выкл</div></div><span class="chev">›</span></div>'+
+    '<div class="row" onclick="open2(\'Вход в аккаунт\')"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">инструкция · вкл/выкл</div></div><span class="chev">›</span></div>'+
     '</div>';
 };
 function ordersWork(kind){
