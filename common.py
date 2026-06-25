@@ -2389,6 +2389,61 @@ async def api_admin_order_delete_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_shop_orders_handler(request: web.Request) -> web.Response:
+    """Заказы по авто-активации (chatgpt/claude/perplexity) и App Store с полной инфой. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        svc = str(body.get("svc", ""))
+        pool = await get_pool()
+        out = []
+        if svc == "appstore":
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT n.fk_order_id, n.service_name, n.price_rub, n.status, n.created_at, n.pins_json, u.username, n.user_id "
+                    "FROM nsgifts_orders n LEFT JOIN users u ON u.user_id=n.user_id "
+                    "ORDER BY n.created_at DESC LIMIT 60")
+            for r in rows:
+                ts = r["created_at"]
+                out.append({"id": r["fk_order_id"], "plan": r["service_name"] or "App Store",
+                            "amount": int(r["price_rub"] or 0), "status": r["status"] or "",
+                            "activated": (r["status"] == "fulfilled"),
+                            "date": ts.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ts else "",
+                            "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
+                            "acc": "", "code": (r["pins_json"] or "")[:120]})
+            return web.json_response({"ok": True, "orders": out})
+        if svc not in ("chatgpt", "claude", "perplexity"):
+            return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
+        tbl = {"chatgpt": "gpt_codes", "claude": "claude_codes", "perplexity": "perplexity_codes"}[svc]
+        acccol = "email" if svc == "chatgpt" else "org_id"
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT o.order_id, o.amount_rub, o.pack, o.paid_at, u.username, o.user_id "
+                "FROM fk_orders o LEFT JOIN users u ON u.user_id=o.user_id "
+                "WHERE o.status='paid' AND o.pack LIKE $1 ORDER BY o.paid_at DESC LIMIT 60",
+                f"shop:{svc}:%")
+            for r in rows:
+                parts = (r["pack"] or "").split(":")
+                idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+                scat = SHOP_CATALOG.get(svc, {}) or {}; plans = scat.get("plans", [])
+                pname = plans[idx]["name"] if 0 <= idx < len(plans) else f"#{idx}"
+                cr = await conn.fetchrow(
+                    f"SELECT code, {acccol} AS acc, used_at FROM {tbl} WHERE order_id=$1 LIMIT 1", r["order_id"])
+                ts = r["paid_at"]
+                out.append({"id": r["order_id"], "plan": pname, "amount": int(r["amount_rub"] or 0),
+                            "status": "оплачен",
+                            "activated": bool(cr and cr["used_at"]),
+                            "date": ts.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ts else "",
+                            "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
+                            "acc": (cr["acc"] if cr else "") or "", "code": (cr["code"] if cr else "") or ""})
+        return web.json_response({"ok": True, "orders": out})
+    except Exception as _e:
+        logging.error(f"api_admin_shop_orders: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
 async def api_admin_user_find_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -4027,6 +4082,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/order-action", api_admin_order_action_handler)
     app.router.add_post("/api/admin/order-thread", api_admin_order_thread_handler)
     app.router.add_post("/api/admin/order-delete", api_admin_order_delete_handler)
+    app.router.add_post("/api/admin/shop-orders", api_admin_shop_orders_handler)
     app.router.add_post("/api/admin/user-find", api_admin_user_find_handler)
     app.router.add_post("/api/admin/balance", api_admin_balance_handler)
     app.router.add_post("/api/admin/blocks", api_admin_blocks_handler)

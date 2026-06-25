@@ -548,6 +548,11 @@ SCREENS["Заказы"]=function(){
   return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
     '<div class="row" onclick="leaf(function(){return ordersWork(\'link\')})"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">заказы по ссылке</div></div><span class="chev">›</span></div>'+
     '<div class="row" onclick="leaf(function(){return ordersWork(\'creds\')})"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">заказы логин/пароль</div></div><span class="chev">›</span></div>'+
+    '<div class="glabel">🤖 Авто-активация</div>'+
+    '<div class="row" onclick="leaf(function(){return shopOrders(\'chatgpt\')})"><span class="ic">✨</span><div><div class="lbl2">ChatGPT</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
+    '<div class="row" onclick="leaf(function(){return shopOrders(\'claude\')})"><span class="ic">⚡</span><div><div class="lbl2">Claude</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
+    '<div class="row" onclick="leaf(function(){return shopOrders(\'perplexity\')})"><span class="ic">🔍</span><div><div class="lbl2">Perplexity</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
+    '<div class="row" onclick="leaf(function(){return shopOrders(\'appstore\')})"><span class="ic">🍎</span><div><div class="lbl2">App Store</div><div class="sub">заказы NS Gifts</div></div><span class="chev">›</span></div>'+
     '<div class="glabel">⚙️ Настройка сервисов</div>'+
     '<div class="row" onclick="open2(\'Оплата по ссылке\')"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">инструкция · домен · вкл/выкл</div></div><span class="chev">›</span></div>'+
     '<div class="row" onclick="open2(\'Вход в аккаунт\')"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">инструкция · вкл/выкл</div></div><span class="chev">›</span></div>'+
@@ -603,6 +608,29 @@ function loadThread(id){
 function orderAction(id,action){toast('…');api('/api/admin/order-action',{id:id,action:action}).then(function(d){toast(d.ok?'Готово ✓':'Ошибка');if(d.ok)back();});}
 function orderClarify(id){var t=(document.getElementById('ow_msg')||{}).value;if(!t){toast('Введи текст');return;}toast('Отправляю…');api('/api/admin/order-action',{id:id,action:'clarify',text:t}).then(function(d){toast(d.ok?'Отправлено ✓':'Ошибка');if(d.ok){var m=document.getElementById('ow_msg');if(m)m.value='';loadThread(id);}});}
 function delOrder(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/order-delete',{id:id}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}
+function shopOrders(svc){
+  window._soSvc=svc;
+  setTimeout(loadShopOrders,0);
+  var t={chatgpt:'ChatGPT',claude:'Claude',perplexity:'Perplexity',appstore:'App Store'}[svc]||svc;
+  return hdr(t,"заказы")+'<div class="wrap"><div id="sobody"><div class="note">Загружаю…</div></div></div>';
+}
+function loadShopOrders(){
+  api('/api/admin/shop-orders',{svc:window._soSvc}).then(function(d){
+    var el=document.getElementById('sobody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    if(!d.orders.length){el.innerHTML='<div class="note">Заказов нет.</div>';return;}
+    var accLbl=(window._soSvc==='chatgpt')?'Email':(window._soSvc==='appstore'?'Выдано':'Org/ID');
+    var h='';
+    d.orders.forEach(function(o){
+      h+='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+o.user+'</span><span class="tag '+(o.activated?'g':'a')+'">'+(o.activated?'активирован':(o.status||'оплачен'))+'</span></div>'+
+         '<div class="sub" style="margin-bottom:6px">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div>'+
+         (o.acc?'<div class="kv"><span class="k">'+accLbl+'</span><span style="word-break:break-all">'+o.acc+'</span></div>':'')+
+         (o.code?'<div class="kv"><span class="k">'+(window._soSvc==='appstore'?'Выдано':'Код')+'</span><span style="word-break:break-all">'+o.code+'</span></div>':'')+
+         '<div class="kv"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+o.id+'</span></div></div>';
+    });
+    el.innerHTML=h;
+  });
+}
 
 /* Управление */
 SCREENS["Приветствие"]=function(){
