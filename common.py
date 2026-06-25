@@ -2431,9 +2431,10 @@ async def api_admin_shop_orders_handler(request: web.Request) -> web.Response:
                 pname = plans[idx]["name"] if 0 <= idx < len(plans) else f"#{idx}"
                 cr = await conn.fetchrow(
                     f"SELECT code, {acccol} AS acc, used_at FROM {tbl} WHERE order_id=$1 LIMIT 1", r["order_id"])
+                _man = (await get_setting(f"manual:{svc}:{idx}", "0") or "0") == "1"
                 ts = r["paid_at"]
                 out.append({"id": r["order_id"], "plan": pname, "amount": int(r["amount_rub"] or 0),
-                            "status": "оплачен",
+                            "status": "оплачен", "manual": _man,
                             "activated": bool(cr and cr["used_at"]),
                             "date": ts.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ts else "",
                             "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
