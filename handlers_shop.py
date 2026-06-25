@@ -157,6 +157,61 @@ async def shop_category(cb: CallbackQuery):
     await menu_shop(cb)
 
 
+@dp.callback_query(F.data == "menu_subs")
+async def menu_subs(cb: CallbackQuery):
+    uid = cb.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT service_key, service_name, plan_name, expires_at FROM user_subscriptions "
+            "WHERE user_id=$1 AND is_active=TRUE AND expires_at>NOW() ORDER BY expires_at", uid)
+    if not rows:
+        try:
+            await cb.message.edit_text(
+                "📋 <b>Мои подписки</b>\n\nУ тебя пока нет активных подписок.\nОформи в разделе 🛍 Магазин.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [_eib("Магазин", "menu_shop")],
+                    [_eib("Главное меню", "back_main")],
+                ]))
+        except Exception:
+            pass
+        await cb.answer()
+        return
+    import datetime as _dt_s
+    lines = ["📋 <b>Мои подписки</b>\n"]
+    kb_rows = []
+    for r in rows:
+        try:
+            days = max(0, (r["expires_at"] - _dt_s.datetime.now()).days)
+        except Exception:
+            days = 0
+        nm = r["service_name"]; pl = r["plan_name"] or ""
+        lines.append(f"\n• <b>{nm}{(' ' + pl) if pl else ''}</b>\n  ещё {days} дн. (до {r['expires_at'].strftime('%d.%m.%Y')})")
+        scat = SHOP_CATALOG.get(r["service_key"], {}) or {}
+        plans = scat.get("plans", [])
+        idx = next((i for i, p in enumerate(plans) if (p.get("name") or "") == pl), 0)
+        if r["service_key"] in SHOP_CATALOG:
+            kb_rows.append([InlineKeyboardButton(text=f"🔄 Продлить {nm}", callback_data=f"sub_renew:{r['service_key']}:{idx}")])
+    kb_rows.append([_eib("Главное меню", "back_main")])
+    try:
+        await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    except Exception:
+        await cb.message.answer("\n".join(lines), parse_mode="HTML",
+                                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("sub_renew:"))
+async def sub_renew(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    key = parts[1] if len(parts) > 1 else ""
+    idx = parts[2] if len(parts) > 2 else "0"
+    cb.data = f"shop_confirm:{key}:{idx}"
+    await shop_confirm(cb, state)
+
+
 @dp.callback_query(F.data.startswith("shop_svc:"))
 async def shop_service(cb: CallbackQuery):
     key = cb.data.split(":")[1]

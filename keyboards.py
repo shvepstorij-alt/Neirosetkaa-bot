@@ -58,7 +58,7 @@ def kb_main():
         [_eib("Редактировать...","menu_edit"),    _eib("Анимировать...","menu_anim")],
         [_eib("Консультант AI", "menu_chat"),     _eib("Избранное", "menu_favorites")],
         [_eib("Купить кредиты","menu_buy"),       _eib("Магазин",   "menu_shop")],
-        [_eib("Мой профиль",   "menu_profile")],
+        [_eib("Мои подписки",  "menu_subs"),      _eib("Мой профиль","menu_profile")],
     ])
 
 def kb_image_brands():
