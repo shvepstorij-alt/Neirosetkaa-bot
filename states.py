@@ -144,3 +144,7 @@ class LinkPayState(StatesGroup):
 class CredsState(StatesGroup):
     waiting_email    = State()   # клиент присылает email аккаунта
     waiting_password = State()   # клиент присылает пароль
+
+
+class OrderReplyState(StatesGroup):
+    waiting = State()            # клиент пишет ответ по заказу (тред)

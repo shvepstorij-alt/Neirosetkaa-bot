@@ -553,16 +553,41 @@ function loadOrders(){
     var el=document.getElementById('owbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     if(!d.orders.length){el.innerHTML='<div class="note">Заказов в работе нет.</div>';return;}
+    window._ordersData={};
     var h='';
     d.orders.forEach(function(o){
+      window._ordersData[o.id]=o;
       var tt=(o.service||'')+(o.plan?' '+o.plan:'');
-      h+='<div class="block"><h4>📦 '+o.user+' · '+tt+'</h4><div class="kv"><span class="k">Статус</span><span class="tag a">'+o.status+'</span></div>'+(o.link?'<div class="sub" style="word-break:break-all;margin-top:6px">🔗 '+o.link+'</div>':'')+'<div class="btns3"><button class="btn row2" style="font-size:12px;padding:9px" onclick="orderAction(\''+o.id+'\',\'done\')">Выполнен</button><button class="btn row2 sec" style="font-size:12px;padding:9px" onclick="orderClarify(\''+o.id+'\')">Уточнить</button><button class="btn row2 danger" style="font-size:12px;padding:9px" onclick="orderAction(\''+o.id+'\',\'cancel\')">Отмена</button></div></div>';
+      h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+tt+' · '+o.status+'</div></div><span class="chev">›</span></div>';
     });
     el.innerHTML=h;
   });
 }
-function orderAction(id,action){toast('…');api('/api/admin/order-action',{id:id,action:action}).then(function(d){toast(d.ok?'Готово ✓':'Ошибка');if(d.ok)loadOrders();});}
-function orderClarify(id){var t=(window.prompt?window.prompt('Текст уточнения клиенту:'):'');if(!t)return;api('/api/admin/order-action',{id:id,action:'clarify',text:t}).then(function(d){toast(d.ok?'Отправлено ✓':'Ошибка');});}
+function orderView(id){
+  setTimeout(function(){loadThread(id)},0);
+  var o=(window._ordersData||{})[id]||{};
+  var tt=(o.service||'')+(o.plan?' '+o.plan:'');
+  return hdr("Заказ",tt||id)+'<div class="wrap"><div id="thbody"><div class="note">Загружаю переписку…</div></div>'+
+    '<label class="fl">Написать клиенту (уточнение)</label><textarea class="f" id="ow_msg" placeholder="Текст или код…"></textarea><button class="btn" onclick="orderClarify(\''+id+'\')">Отправить клиенту</button>'+
+    '<div class="btns2"><button class="btn row2" onclick="orderAction(\''+id+'\',\'done\')">✅ Выполнен</button><button class="btn row2 danger" onclick="orderAction(\''+id+'\',\'cancel\')">🗑 Отмена</button></div></div>';
+}
+function loadThread(id){
+  api('/api/admin/order-thread',{id:id}).then(function(d){
+    var el=document.getElementById('thbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    var o=d.order||{};
+    var h='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag a">'+(o.status||'')+'</span></div><div class="sub">'+(o.service||'')+(o.plan?' · '+o.plan:'')+(o.amount?' · '+nf(o.amount)+' ₽':'')+'</div></div>';
+    h+='<div class="glabel">💬 Переписка</div>';
+    if(!d.messages.length){h+='<div class="note">Сообщений пока нет.</div>';}
+    d.messages.forEach(function(m){
+      var me=m.sender==='admin';
+      h+='<div class="block" style="margin-bottom:8px;'+(me?'border-color:rgba(226,74,130,.4)':'')+'"><div style="font-size:11.5px;color:var(--txt2);margin-bottom:4px">'+(me?'🛠 Ты':'👤 Клиент')+' · '+m.date+'</div><div style="font-size:13px;white-space:pre-wrap">'+(m.text||'').replace(/</g,'&lt;')+'</div></div>';
+    });
+    el.innerHTML=h;
+  });
+}
+function orderAction(id,action){toast('…');api('/api/admin/order-action',{id:id,action:action}).then(function(d){toast(d.ok?'Готово ✓':'Ошибка');if(d.ok)back();});}
+function orderClarify(id){var t=(document.getElementById('ow_msg')||{}).value;if(!t){toast('Введи текст');return;}toast('Отправляю…');api('/api/admin/order-action',{id:id,action:'clarify',text:t}).then(function(d){toast(d.ok?'Отправлено ✓':'Ошибка');if(d.ok){var m=document.getElementById('ow_msg');if(m)m.value='';loadThread(id);}});}
 
 /* Управление */
 SCREENS["Приветствие"]=function(){

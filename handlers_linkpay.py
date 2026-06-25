@@ -12,10 +12,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
 
 from config import ADMIN_ID, PERSONAL_USERNAME, SHOP_CATALOG, bot, dp
-from states import AdminState, CredsState
+from states import AdminState, CredsState, OrderReplyState
 from db import (
     get_linkpay_order, set_linkpay_status, list_linkpay_pending,
     get_setting, set_setting, set_linkpay_email, set_linkpay_admin_msg, log_event,
+    add_order_msg, get_order_thread, get_user,
 )
 from keyboards import _eib, _btn_emoji_id
 
@@ -119,16 +120,99 @@ async def lp_clarify_send(message: Message, state: FSMContext):
     if not uid:
         await message.answer("⚠️ Сессия истекла.")
         return
+    order_id = data.get("lp_order")
     try:
+        if order_id:
+            await add_order_msg(order_id, "admin", message.text)
+        _kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Ответить", callback_data=f"cl_reply:{order_id}")],
+        ]) if order_id else None
         await bot.send_message(
             uid,
             f"✍️ <b>Сообщение от Александра по твоему заказу:</b>\n\n{message.text}\n\n"
-            f"Ответить можно здесь или написать @{PERSONAL_USERNAME}.",
-            parse_mode="HTML"
+            f"Нажми «Ответить», чтобы написать в ответ (например, прислать код).",
+            parse_mode="HTML", reply_markup=_kb
         )
         await message.answer("✅ Отправлено клиенту.")
     except Exception as e:
         await message.answer(f"❌ Не удалось отправить: {e}")
+
+
+@dp.callback_query(F.data.startswith("cl_reply:"))
+async def cl_reply_start(cb: CallbackQuery, state: FSMContext):
+    order_id = cb.data.split(":", 1)[1]
+    order = await get_linkpay_order(order_id)
+    if not order or order.get("user_id") != cb.from_user.id:
+        await cb.answer("Заказ не найден", show_alert=True)
+        return
+    await state.set_state(OrderReplyState.waiting)
+    await state.update_data(reply_order=order_id)
+    await cb.message.answer("✍️ Напиши сообщение Александру по заказу (текст, код и т.п.):")
+    await cb.answer()
+
+
+@dp.message(OrderReplyState.waiting, F.text)
+async def cl_reply_send(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("reply_order")
+    await state.clear()
+    if not order_id:
+        return
+    order = await get_linkpay_order(order_id)
+    if not order:
+        await message.answer("⚠️ Заказ не найден.")
+        return
+    await add_order_msg(order_id, "client", message.text)
+    _u = await get_user(message.from_user.id)
+    _tag = ("@" + _u["username"]) if (_u and _u.get("username")) else (f"id{message.from_user.id}")
+    _kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order_id}")],
+        [InlineKeyboardButton(text="✍️ Уточнение", callback_data=f"lp_clarify:{order_id}"),
+         InlineKeyboardButton(text="📜 История", callback_data=f"lp_thread:{order_id}")],
+        [InlineKeyboardButton(text="🗑 Отменить заказ", callback_data=f"lp_cancel:{order_id}")],
+    ])
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"📨 <b>Ответ клиента по заказу</b>\n\n"
+            f"👤 {_tag} (<code>{message.from_user.id}</code>)\n"
+            f"📦 {order.get('service_name','')} · {order.get('plan_name') or '—'}\n"
+            f"🆔 <code>{order_id}</code>\n\n"
+            f"💬 {_html.escape(message.text)}",
+            parse_mode="HTML", reply_markup=_kb)
+    except Exception as e:
+        logging.error(f"cl_reply forward: {e}")
+    await message.answer("✅ Отправлено Александру. Он ответит здесь же.")
+
+
+@dp.callback_query(F.data.startswith("lp_thread:"))
+async def lp_thread_view(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    order_id = cb.data.split(":", 1)[1]
+    order = await get_linkpay_order(order_id)
+    msgs = await get_order_thread(order_id)
+    from config import _BOT_TZ
+    head = (f"📜 <b>История заказа</b>\n<code>{order_id}</code>\n"
+            f"{(order or {}).get('service_name','')} · {(order or {}).get('plan_name') or '—'}\n\n")
+    if not msgs:
+        body = "<i>Переписки пока нет.</i>"
+    else:
+        lines = []
+        for m in msgs:
+            who = "🛠 Ты" if m["sender"] == "admin" else "👤 Клиент"
+            ts = m["created_at"].astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if m.get("created_at") else ""
+            lines.append(f"<b>{who}</b> <i>{ts}</i>\n{_html.escape(m['text'] or '')}")
+        body = "\n\n".join(lines)
+    _kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Уточнение", callback_data=f"lp_clarify:{order_id}")],
+    ])
+    try:
+        await cb.message.answer(head + body, parse_mode="HTML", reply_markup=_kb)
+    except Exception:
+        await cb.message.answer(head + "(история слишком длинная)")
+    await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("lp_cancel:"))
@@ -463,7 +547,8 @@ async def creds_password(message: Message, state: FSMContext):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order_id}")],
-        [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order_id}")],
+        [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order_id}"),
+         InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order_id}")],
         [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order_id}")],
     ])
     try:

@@ -2317,13 +2317,45 @@ async def api_admin_order_action_handler(request: web.Request) -> web.Response:
         elif action == "clarify":
             txt = str(body.get("text") or "Уточните, пожалуйста, детали заказа.")
             try:
-                await bot.send_message(uid, f"✍️ <b>По заказу {svc}:</b>\n\n{txt}", parse_mode="HTML")
+                from db import add_order_msg
+                await add_order_msg(oid, "admin", txt)
+            except Exception: pass
+            try:
+                _rkb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✍️ Ответить", callback_data=f"cl_reply:{oid}")]])
+                await bot.send_message(uid, f"✍️ <b>Сообщение от Александра по заказу:</b>\n\n{txt}\n\nНажми «Ответить», чтобы написать в ответ (например, прислать код).", parse_mode="HTML", reply_markup=_rkb)
             except Exception: pass
         else:
             return web.json_response({"ok": False, "msg": "Неизвестное действие"})
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_order_action: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_order_thread_handler(request: web.Request) -> web.Response:
+    """История заказа (переписка) для Mini App. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        oid = str(body.get("id", ""))
+        order = await get_linkpay_order(oid) or {}
+        from db import get_order_thread
+        msgs = await get_order_thread(oid)
+        out = []
+        for m in msgs:
+            ts = m.get("created_at")
+            out.append({"sender": m["sender"], "text": m.get("text") or "",
+                        "date": ts.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ts else ""})
+        u = await get_user(order.get("user_id")) if order.get("user_id") else None
+        tag = ("@" + u["username"]) if (u and u.get("username")) else (("id" + str(order.get("user_id"))) if order.get("user_id") else "—")
+        return web.json_response({"ok": True, "order": {
+            "service": order.get("service_name", ""), "plan": order.get("plan_name") or "",
+            "status": order.get("status", ""), "user": tag, "amount": int(order.get("amount_rub") or 0)},
+            "messages": out})
+    except Exception as _e:
+        logging.error(f"api_admin_order_thread: {_e}")
         return web.json_response({"ok": False}, status=500)
 
 
@@ -3956,6 +3988,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/model-toggle", api_admin_model_toggle_handler)
     app.router.add_post("/api/admin/orders", api_admin_orders_handler)
     app.router.add_post("/api/admin/order-action", api_admin_order_action_handler)
+    app.router.add_post("/api/admin/order-thread", api_admin_order_thread_handler)
     app.router.add_post("/api/admin/user-find", api_admin_user_find_handler)
     app.router.add_post("/api/admin/balance", api_admin_balance_handler)
     app.router.add_post("/api/admin/blocks", api_admin_blocks_handler)
@@ -5467,7 +5500,8 @@ async def process_linkpay_link(user_id, text) -> bool:
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order['fk_order_id']}")],
-            [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order['fk_order_id']}")],
+            [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order['fk_order_id']}"),
+             InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order['fk_order_id']}")],
             [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order['fk_order_id']}")],
         ])
         try:
@@ -5574,7 +5608,8 @@ async def _send_manual_order(user_id, shop_key, service_name, plan_name,
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order_id}")],
-            [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order_id}")],
+            [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order_id}"),
+             InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order_id}")],
             [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order_id}")],
         ])
         try:
