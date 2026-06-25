@@ -151,7 +151,7 @@ function home(){
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
-   ["📦","Выдача заказов",[["🔗","Оплата по ссылке","Оплата по ссылке"],["🔐","Вход в аккаунт","Вход в аккаунт"]]],
+   ["📦","Выдача заказов",[["📦","Заказы","Заказы",1],["🔗","Оплата по ссылке (настройка)","Оплата по ссылке"],["🔐","Вход в аккаунт (настройка)","Вход в аккаунт"]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
   ];
@@ -501,7 +501,7 @@ function doRefAdd(){var uid=fv('rp_uid');if(!uid){toast('Введи ID');return;
 /* Оплата по ссылке */
 SCREENS["Оплата по ссылке"]=function(){
   setTimeout(loadLinkpay,0);
-  return hdr("Оплата по ссылке","сервисы и заказы")+'<div class="wrap"><div id="lpbody"><div class="note">Загружаю…</div></div><button class="btn sec" onclick="leaf(function(){return ordersWork(\'Оплата по ссылке\')})">📋 Заказы в работе</button></div>';
+  return hdr("Оплата по ссылке","сервисы и заказы")+'<div class="wrap"><div id="lpbody"><div class="note">Загружаю…</div></div></div>';
 };
 function loadLinkpay(){
   api('/api/admin/svc-list',{}).then(function(d){
@@ -522,7 +522,7 @@ function lpEdit(key){
 function saveLp(key){toast('Сохраняю…');api('/api/admin/svc-save',{kind:'linkpay',key:key,instructions:fv('lp_instr'),domain:fv('lp_dom')}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 SCREENS["Вход в аккаунт"]=function(){
   setTimeout(loadCreds,0);
-  return hdr("Вход в аккаунт","логин/пароль клиента")+'<div class="wrap"><div id="crbody"><div class="note">Загружаю…</div></div><button class="btn sec" onclick="leaf(function(){return ordersWork(\'Вход в аккаунт\')})">📋 Заказы в работе</button></div>';
+  return hdr("Вход в аккаунт","логин/пароль клиента")+'<div class="wrap"><div id="crbody"><div class="note">Загружаю…</div></div></div>';
 };
 function loadCreds(){
   api('/api/admin/svc-list',{}).then(function(d){
@@ -544,13 +544,19 @@ function credEdit(key){
   return hdr(s.name,"инструкция")+'<div class="wrap"><label class="fl">Пошаговая инструкция для клиента</label><textarea class="f" id="cr_instr" style="min-height:180px">'+instr+'</textarea><button class="btn" onclick="saveCr(\''+key+'\')">Сохранить</button></div>';
 }
 function saveCr(key){toast('Сохраняю…');api('/api/admin/svc-save',{kind:'creds',key:key,instructions:fv('cr_instr')}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
+SCREENS["Заказы"]=function(){
+  return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
+    '<div class="row" onclick="leaf(function(){return ordersWork(\'link\')})"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">заказы по ссылке</div></div><span class="chev">›</span></div>'+
+    '<div class="row" onclick="leaf(function(){return ordersWork(\'creds\')})"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">заказы логин/пароль</div></div><span class="chev">›</span></div>'+
+    '</div>';
+};
 function ordersWork(kind){
-  if(kind)window._owKind=kind;
-  var st=window._owStatus||'work';
+  if(kind)window._owKind=(kind==='creds')?'creds':'link';
+  var k=window._owKind||'link', st=window._owStatus||'work';
   setTimeout(loadOrders,0);
-  var title=(window._owKind==='creds')?'Вход в аккаунт':'Оплата по ссылке';
+  var title=(k==='creds')?'Вход в аккаунт':'Оплата по ссылке';
   var seg='<div class="seg">'+[["work","В работе"],["done","Выполненные"]].map(function(x){return '<button class="'+(x[0]===st?'on':'')+'" onclick="window._owStatus=\''+x[0]+'\';go(function(){return ordersWork()},false)">'+x[1]+'</button>'}).join('')+'</div>';
-  return hdr("Заказы",title)+'<div class="wrap">'+seg+'<div id="owbody"><div class="note">Загружаю…</div></div></div>';
+  return hdr(title,"заказы")+'<div class="wrap">'+seg+'<div id="owbody"><div class="note">Загружаю…</div></div></div>';
 }
 function loadOrders(){
   var kinds=(window._owKind==='creds')?['creds']:['linkpay','manual'];
