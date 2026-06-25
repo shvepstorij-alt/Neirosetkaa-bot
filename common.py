@@ -1135,8 +1135,9 @@ async def _show_profile(message: Message, user):
     kb_profile = InlineKeyboardMarkup(inline_keyboard=[
         *_claude_pending_btn,
         [_eib("Пригласить друга", "menu_ref")],
-        [_eib("Покупки", "profile_history"),
-         _eib("Главное меню", "back_main")],
+        [_eib("Мои подписки", "menu_subs"),
+         _eib("Покупки", "profile_history")],
+        [_eib("Главное меню", "back_main")],
         [_eib("Купить кредиты", "menu_buy"),
          _eib("Избранное", "menu_favorites")],
     ])
@@ -2432,10 +2433,11 @@ async def api_admin_shop_orders_handler(request: web.Request) -> web.Response:
                 cr = await conn.fetchrow(
                     f"SELECT code, {acccol} AS acc, used_at FROM {tbl} WHERE order_id=$1 LIMIT 1", r["order_id"])
                 _man = (await get_setting(f"manual:{svc}:{idx}", "0") or "0") == "1"
+                _done = (await get_setting(f"order_done:{r['order_id']}", "0") or "0") == "1"
                 ts = r["paid_at"]
                 out.append({"id": r["order_id"], "plan": pname, "amount": int(r["amount_rub"] or 0),
                             "status": "оплачен", "manual": _man,
-                            "activated": bool(cr and cr["used_at"]),
+                            "activated": bool(cr and cr["used_at"]) or _done,
                             "date": ts.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ts else "",
                             "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
                             "acc": (cr["acc"] if cr else "") or "", "code": (cr["code"] if cr else "") or ""})
@@ -2474,14 +2476,14 @@ async def api_admin_shop_order_action_handler(request: web.Request) -> web.Respo
                     oid)
             return web.json_response({"ok": True})
         if action == "manual":
-            if not code:
-                return web.json_response({"ok": False, "msg": "Укажи код, которым активировал"})
+            # Ручная активация: возвращаем закреплённый за заказом код в пул + помечаем заказ выполненным
             async with pool.acquire() as conn:
+                await conn.execute(
+                    f"UPDATE {tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, used_at=NULL, {acccol}=NULL WHERE order_id=$1",
+                    oid)
                 o = await conn.fetchrow("SELECT user_id FROM fk_orders WHERE order_id=$1", oid)
                 uid = o["user_id"] if o else None
-                await conn.execute(
-                    f"UPDATE {tbl} SET is_used=TRUE, used_by=$1, order_id=$2, used_at=NOW() WHERE code=$3",
-                    uid, oid, code)
+            await set_setting(f"order_done:{oid}", "1")
             if uid:
                 try:
                     await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌", parse_mode="HTML")
