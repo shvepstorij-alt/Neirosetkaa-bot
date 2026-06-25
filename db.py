@@ -209,6 +209,16 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS order_thread (
+                id         SERIAL PRIMARY KEY,
+                order_id   TEXT NOT NULL,
+                sender     TEXT NOT NULL,
+                text       TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_order_thread ON order_thread(order_id, id)")
         # Напоминания - чтобы не слать дважды
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS reminders_sent (
@@ -969,6 +979,25 @@ async def load_consultant_conv(user_id: int) -> list:
         return _j.loads(v) if isinstance(v, str) else (v or [])
     except Exception:
         return []
+
+
+async def add_order_msg(order_id: str, sender: str, text: str):
+    """Добавляет сообщение в тред заказа (sender: 'admin'|'client')."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO order_thread (order_id, sender, text) VALUES ($1,$2,$3)",
+            order_id, sender, text)
+
+
+async def get_order_thread(order_id: str, limit: int = 60) -> list:
+    """Возвращает всю переписку по заказу."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT sender, text, created_at FROM order_thread WHERE order_id=$1 ORDER BY id LIMIT $2",
+            order_id, limit)
+    return [dict(r) for r in rows]
 
 
 async def ensure_user(user_id: int, username: str = "", full_name: str = "", referred_by: int = None):
