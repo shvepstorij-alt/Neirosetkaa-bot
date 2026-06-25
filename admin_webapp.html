@@ -553,9 +553,6 @@ SCREENS["Заказы"]=function(){
     '<div class="row" onclick="leaf(function(){return shopOrders(\'claude\')})"><span class="ic">⚡</span><div><div class="lbl2">Claude</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
     '<div class="row" onclick="leaf(function(){return shopOrders(\'perplexity\')})"><span class="ic">🔍</span><div><div class="lbl2">Perplexity</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
     '<div class="row" onclick="leaf(function(){return shopOrders(\'appstore\')})"><span class="ic">🍎</span><div><div class="lbl2">App Store</div><div class="sub">заказы NS Gifts</div></div><span class="chev">›</span></div>'+
-    '<div class="glabel">⚙️ Настройка сервисов</div>'+
-    '<div class="row" onclick="open2(\'Оплата по ссылке\')"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">инструкция · домен · вкл/выкл</div></div><span class="chev">›</span></div>'+
-    '<div class="row" onclick="open2(\'Вход в аккаунт\')"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">инструкция · вкл/выкл</div></div><span class="chev">›</span></div>'+
     '</div>';
 };
 function ordersWork(kind){
@@ -564,7 +561,8 @@ function ordersWork(kind){
   setTimeout(loadOrders,0);
   var title=(k==='creds')?'Вход в аккаунт':'Оплата по ссылке';
   var seg='<div class="seg">'+[["work","В работе"],["done","Выполненные"]].map(function(x){return '<button class="'+(x[0]===st?'on':'')+'" onclick="window._owStatus=\''+x[0]+'\';go(function(){return ordersWork()},false)">'+x[1]+'</button>'}).join('')+'</div>';
-  return hdr(title,"заказы")+'<div class="wrap">'+seg+'<div id="owbody"><div class="note">Загружаю…</div></div></div>';
+  var setName=(k==='creds')?'Вход в аккаунт':'Оплата по ссылке';
+  return hdr(title,"заказы")+'<div class="wrap">'+seg+'<div id="owbody"><div class="note">Загружаю…</div></div><button class="btn sec" onclick="open2(\''+setName+'\')">⚙️ Настройка сервиса</button></div>';
 }
 function loadOrders(){
   var kinds=(window._owKind==='creds')?['creds']:['linkpay','manual'];
@@ -619,18 +617,36 @@ function loadShopOrders(){
     var el=document.getElementById('sobody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     if(!d.orders.length){el.innerHTML='<div class="note">Заказов нет.</div>';return;}
-    var accLbl=(window._soSvc==='chatgpt')?'Email':(window._soSvc==='appstore'?'Выдано':'Org/ID');
+    window._shopOrders={};
     var h='';
     d.orders.forEach(function(o){
-      h+='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+o.user+'</span><span class="tag '+(o.activated?'g':'a')+'">'+(o.activated?'активирован':(o.status||'оплачен'))+'</span></div>'+
-         '<div class="sub" style="margin-bottom:6px">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div>'+
-         (o.acc?'<div class="kv"><span class="k">'+accLbl+'</span><span style="word-break:break-all">'+o.acc+'</span></div>':'')+
-         (o.code?'<div class="kv"><span class="k">'+(window._soSvc==='appstore'?'Выдано':'Код')+'</span><span style="word-break:break-all">'+o.code+'</span></div>':'')+
-         '<div class="kv"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+o.id+'</span></div></div>';
+      window._shopOrders[o.id]=o;
+      h+='<div class="row" onclick="leaf(function(){return shopOrderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div></div><span class="tag '+(o.activated?'g':'a')+'">'+(o.activated?'актив.':(o.status||'оплачен'))+'</span></div>';
     });
     el.innerHTML=h;
   });
 }
+function shopOrderView(id){
+  var o=(window._shopOrders||{})[id]||{};
+  var svc=window._soSvc, accLbl=(svc==='chatgpt')?'Email':(svc==='appstore'?'Выдано':'Org/ID');
+  var h=hdr("Заказ",o.plan||svc)+'<div class="wrap"><div class="block">'+
+    '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag '+(o.activated?'g':'a')+'">'+(o.activated?'активирован':(o.status||'оплачен'))+'</span></div>'+
+    '<div class="kv"><span class="k">Тариф</span><span>'+(o.plan||'')+'</span></div>'+
+    '<div class="kv"><span class="k">Сумма</span><span>'+nf(o.amount)+' ₽</span></div>'+
+    '<div class="kv"><span class="k">Дата</span><span>'+(o.date||'')+'</span></div>'+
+    (o.acc?'<div class="kv"><span class="k">'+accLbl+'</span><span style="word-break:break-all">'+o.acc+'</span></div>':'')+
+    (o.code?'<div class="kv"><span class="k">'+(svc==='appstore'?'Выдано':'Код')+'</span><span style="word-break:break-all">'+o.code+'</span></div>':'')+
+    '<div class="kv"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+id+'</span></div></div>';
+  if(svc!=='appstore'){
+    h+='<label class="fl">Активировать вручную — код, которым активировал</label><input class="f" id="so_code" placeholder="ALEXANDRAI..."/><button class="btn" onclick="soManual(\''+id+'\')">✅ Активировали вручную</button>';
+    h+='<button class="btn sec" onclick="soRelease(\''+id+'\')">♻️ Вернуть код в пул</button>';
+  }
+  h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button></div>';
+  return h;
+}
+function soManual(id){var code=fv('so_code');if(!code){toast('Укажи код');return;}toast('Сохраняю…');api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'manual',code:code}).then(function(d){toast(d.ok?'Отмечено активированным ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
+function soRelease(id){if(window.confirm&&!window.confirm('Вернуть код заказа в пул?'))return;api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'release'}).then(function(d){toast(d.ok?'Код возвращён в пул ✓':'Ошибка');if(d.ok)back();});}
+function soDelete(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'delete'}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}
 
 /* Управление */
 SCREENS["Приветствие"]=function(){
