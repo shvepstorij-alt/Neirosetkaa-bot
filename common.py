@@ -2363,7 +2363,10 @@ async def api_admin_order_thread_handler(request: web.Request) -> web.Response:
         tag = ("@" + u["username"]) if (u and u.get("username")) else (("id" + str(order.get("user_id"))) if order.get("user_id") else "—")
         return web.json_response({"ok": True, "order": {
             "service": order.get("service_name", ""), "plan": order.get("plan_name") or "",
-            "status": order.get("status", ""), "user": tag, "amount": int(order.get("amount_rub") or 0)},
+            "status": order.get("status", ""), "user": tag, "amount": int(order.get("amount_rub") or 0),
+            "kind": order.get("kind") or "", "uid": order.get("user_id"),
+            "email": order.get("account_email") or "", "passw": order.get("account_pass") or "",
+            "link": order.get("payment_link") or ""},
             "messages": out})
     except Exception as _e:
         logging.error(f"api_admin_order_thread: {_e}")
@@ -3886,17 +3889,41 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         if promo_code:
             admin_msg += f"\n\U0001f39f \u041f\u0440\u043e\u043c\u043e\u043a\u043e\u0434: <code>{promo_code}</code>"
 
+        # Тип заказа (ручной/вход/ссылка) — добавляем футер и кнопки → единое сообщение
+        _lp_admin_kb = None
+        try:
+            _lp = await get_linkpay_order(order_id)
+        except Exception:
+            _lp = None
+        if _lp:
+            _knd = _lp.get("kind")
+            if _knd == "manual":
+                admin_msg += "\n\n🧾 <b>Ручной заказ</b> — оформи и нажми «Подписка готова»."
+                _lp_admin_kb = _lp_kb(order_id, full=True)
+            elif _knd == "creds":
+                admin_msg += "\n\n🔐 <b>Вход в аккаунт</b> — ждём данные аккаунта от клиента."
+                _lp_admin_kb = _lp_kb(order_id, full=False)
+            elif _knd == "linkpay":
+                admin_msg += "\n\n🔗 <b>Оплата по ссылке</b> — ждём ссылку от клиента."
+                _lp_admin_kb = _lp_kb(order_id, full=False)
+            if admin_msg_id:
+                try:
+                    await set_linkpay_admin_msg(order_id, admin_msg_id)
+                except Exception:
+                    pass
+
         if admin_msg_id:
             # Редактируем существующее сообщение
             try:
                 await bot.edit_message_text(
                     admin_msg, chat_id=ADMIN_ID,
-                    message_id=admin_msg_id, parse_mode="HTML"
+                    message_id=admin_msg_id, parse_mode="HTML",
+                    reply_markup=_lp_admin_kb,
                 )
             except Exception:
-                await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+                await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=_lp_admin_kb)
         else:
-            await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML")
+            await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=_lp_admin_kb)
     except Exception as e:
         logging.error(f"FK admin notify error: {e}")
 
@@ -5669,12 +5696,23 @@ async def process_linkpay_link(user_id, text) -> bool:
              InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order['fk_order_id']}")],
             [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order['fk_order_id']}")],
         ])
+        _amid = order.get("admin_msg_id")
         try:
-            _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML",
-                                        reply_markup=kb, disable_web_page_preview=True)
-            await set_linkpay_admin_msg(order["fk_order_id"], _m.message_id)
+            if _amid:
+                await bot.edit_message_text(admin_text, chat_id=ADMIN_ID, message_id=_amid,
+                                            parse_mode="HTML", reply_markup=kb)
+            else:
+                _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML",
+                                            reply_markup=kb, disable_web_page_preview=True)
+                await set_linkpay_admin_msg(order["fk_order_id"], _m.message_id)
         except Exception as _e:
             logging.error(f"linkpay admin notify: {_e}")
+            try:
+                _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML",
+                                            reply_markup=kb, disable_web_page_preview=True)
+                await set_linkpay_admin_msg(order["fk_order_id"], _m.message_id)
+            except Exception:
+                pass
         await log_event(user_id, "linkpay_link", f"order={order['fk_order_id']} svc={order['service_key']}")
         return True
     except Exception as e:
@@ -5734,6 +5772,21 @@ async def _send_creds_instructions(user_id, shop_key, service_name, plan_name,
 
 # ── Ручная выдача по тарифу (manual): заказ админу, без авто-активации ────────
 
+def _lp_kb(order_id, full=True):
+    """Кнопки заказа (вход/ссылка/ручной). full=True — полный набор с «Подписка готова»."""
+    if full:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order_id}")],
+            [InlineKeyboardButton(text="✍️ Уточнение", callback_data=f"lp_clarify:{order_id}"),
+             InlineKeyboardButton(text="📜 История", callback_data=f"lp_thread:{order_id}")],
+            [InlineKeyboardButton(text="🗑 Отменить заказ", callback_data=f"lp_cancel:{order_id}")],
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📜 История", callback_data=f"lp_thread:{order_id}"),
+         InlineKeyboardButton(text="🗑 Отменить", callback_data=f"lp_cancel:{order_id}")],
+    ])
+
+
 async def _is_manual_plan(shop_key, plan_idx) -> bool:
     try:
         return (await get_setting(f"manual:{shop_key}:{plan_idx}", "0") or "0") == "1"
@@ -5761,27 +5814,7 @@ async def _send_manual_order(user_id, shop_key, service_name, plan_name,
             f"Александр оформит заказ и пришлёт всё необходимое сюда в ближайшее время 🙌"
             f"{delayed_note}",
             parse_mode="HTML")
-        tag = f"@{_uname}" if _uname else f"id{user_id}"
-        admin_text = (
-            f"🧾 <b>Ручной заказ</b>\n\n"
-            f"👤 {tag} (<code>{user_id}</code>)\n"
-            f"📦 {service_name}\n"
-            f"🎫 Тариф: <b>{plan_name or '—'}</b>\n"
-            f"💵 Оплачено: <b>{amount_rub}₽</b>\n"
-            f"🆔 <code>{order_id}</code>\n\n"
-            f"<i>Выдай вручную. Данные клиенту можно отправить кнопкой «✍️ Уточнение».</i>"
-        )
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order_id}")],
-            [InlineKeyboardButton(text="✍️ Уточнение",       callback_data=f"lp_clarify:{order_id}"),
-             InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order_id}")],
-            [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order_id}")],
-        ])
-        try:
-            _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
-            await set_linkpay_admin_msg(order_id, _m.message_id)
-        except Exception as _e:
-            logging.error(f"manual admin notify: {_e}")
+        # Сообщение админу формирует section 4 (единое изменяющееся сообщение заказа)
         await log_event(user_id, "manual_order", f"order={order_id} svc={shop_key}")
     except Exception as e:
         logging.error(f"_send_manual_order uid={user_id}: {e}")

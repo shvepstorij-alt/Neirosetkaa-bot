@@ -15,7 +15,7 @@ from config import ADMIN_ID, PERSONAL_USERNAME, SHOP_CATALOG, bot, dp
 from states import AdminState, CredsState, OrderReplyState
 from db import (
     get_linkpay_order, set_linkpay_status, list_linkpay_pending,
-    get_setting, set_setting, set_linkpay_email, set_linkpay_admin_msg, log_event,
+    get_setting, set_setting, set_linkpay_email, set_linkpay_creds, set_linkpay_admin_msg, log_event,
     add_order_msg, get_order_thread, get_user,
 )
 from keyboards import _eib, _btn_emoji_id
@@ -528,7 +528,7 @@ async def creds_password(message: Message, state: FSMContext):
     if not order:
         await message.answer("⚠️ Сессия истекла. Открой сообщение с заказом и нажми «Отправить данные аккаунта» снова.")
         return
-    await set_linkpay_email(order_id, email)
+    await set_linkpay_creds(order_id, email, password)
     await message.answer(
         "✅ <b>Данные получены!</b>\n\nАлександр оформит подписку в ближайшее время. "
         "После оформления рекомендуем сменить пароль 🔒",
@@ -551,11 +551,21 @@ async def creds_password(message: Message, state: FSMContext):
          InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order_id}")],
         [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order_id}")],
     ])
+    _amid = order.get("admin_msg_id")
     try:
-        m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
-        await set_linkpay_admin_msg(order_id, m.message_id)
+        if _amid:
+            await bot.edit_message_text(admin_text, chat_id=ADMIN_ID, message_id=_amid,
+                                        parse_mode="HTML", reply_markup=kb)
+        else:
+            m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
+            await set_linkpay_admin_msg(order_id, m.message_id)
     except Exception as e:
         logging.error(f"creds admin notify: {e}")
+        try:
+            m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
+            await set_linkpay_admin_msg(order_id, m.message_id)
+        except Exception:
+            pass
     await log_event(message.from_user.id, "creds_received", f"order={order_id}")
 
 

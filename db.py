@@ -468,7 +468,7 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_linkpay_uid ON linkpay_orders(user_id, status)"
         )
-        for _lpc, _lpd in [("kind", "TEXT DEFAULT 'linkpay'"), ("account_email", "TEXT DEFAULT ''")]:
+        for _lpc, _lpd in [("kind", "TEXT DEFAULT 'linkpay'"), ("account_email", "TEXT DEFAULT ''"), ("account_pass", "TEXT DEFAULT ''")]:
             try:
                 await conn.execute(f"ALTER TABLE linkpay_orders ADD COLUMN IF NOT EXISTS {_lpc} {_lpd}")
             except Exception:
@@ -1512,6 +1512,25 @@ async def set_linkpay_email(fk_order_id, email):
             "UPDATE linkpay_orders SET account_email=$1, status='awaiting_setup' WHERE fk_order_id=$2",
             email, fk_order_id
         )
+
+
+async def set_linkpay_creds(fk_order_id, email, password):
+    """Сохраняет email и пароль аккаунта клиента (вход в аккаунт)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE linkpay_orders SET account_email=$1, account_pass=$2, status='awaiting_setup' "
+            "WHERE fk_order_id=$3",
+            email, password, fk_order_id
+        )
+
+
+async def get_fk_order_admin_msg(order_id):
+    """ID канонического сообщения заказа админу (fk_orders.admin_msg_id)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT admin_msg_id FROM fk_orders WHERE order_id=$1", order_id)
 
 
 async def get_linkpay_order(fk_order_id):

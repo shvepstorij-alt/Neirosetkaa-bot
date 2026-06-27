@@ -151,7 +151,7 @@ function home(){
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
-   ["📦","Выдача заказов",[["📦","Заказы","Заказы",1]]],
+   ["📦","Выдача заказов",[["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
   ];
@@ -544,8 +544,40 @@ function credEdit(key){
   return hdr(s.name,"инструкция")+'<div class="wrap"><label class="fl">Пошаговая инструкция для клиента</label><textarea class="f" id="cr_instr" style="min-height:180px">'+instr+'</textarea><button class="btn" onclick="saveCr(\''+key+'\')">Сохранить</button></div>';
 }
 function saveCr(key){toast('Сохраняю…');api('/api/admin/svc-save',{kind:'creds',key:key,instructions:fv('cr_instr')}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
+function ordersBoard(status){
+  if(status)window._obStatus=status;
+  var st=window._obStatus||'work';
+  setTimeout(loadBoard,0);
+  var seg='<div class="seg">'+[["work","В работе"],["done","Выполненные"]].map(function(x){return '<button class="'+(x[0]===st?'on':'')+'" onclick="window._obStatus=\''+x[0]+'\';go(function(){return ordersBoard()},false)">'+x[1]+'</button>'}).join('')+'</div>';
+  return hdr("Все заказы","очередь")+'<div class="wrap">'+seg+'<div id="obbody"><div class="note">Загружаю…</div></div></div>';
+}
+function loadBoard(){
+  api('/api/admin/orders',{status:window._obStatus||'work'}).then(function(d){
+    var el=document.getElementById('obbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    if(!d.orders.length){el.innerHTML='<div class="note">'+((window._obStatus==='done')?'Выполненных заказов нет.':'Заказов в работе нет.')+'</div>';return;}
+    window._ordersData=window._ordersData||{};
+    var grp={creds:[],linkpay:[],manual:[]};
+    d.orders.forEach(function(o){window._ordersData[o.id]=o;(grp[o.kind]=grp[o.kind]||[]).push(o);});
+    var lab={creds:'🔐 Вход в аккаунт',linkpay:'🔗 Оплата по ссылке',manual:'🧾 Ручные'};
+    var done=(window._obStatus==='done');
+    var h='';
+    Object.keys(grp).forEach(function(k){
+      if(!grp[k]||!grp[k].length)return;
+      h+='<div class="glabel">'+(lab[k]||k)+' ('+grp[k].length+')</div>';
+      grp[k].forEach(function(o){
+        var tt=(o.service||'')+(o.plan?' '+o.plan:'');
+        h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+tt+'</div></div><span class="tag '+(done?'g':'a')+'">'+o.status+'</span></div>';
+      });
+    });
+    el.innerHTML=h;
+  });
+}
+SCREENS["Все заказы"]=function(){return ordersBoard();};
 SCREENS["Заказы"]=function(){
   return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
+    '<div class="row" onclick="open2(\'Все заказы\')"><span class="ic">📋</span><div><div class="lbl2">Очередь заказов</div><div class="sub">все активные — что нужно сделать</div></div><span class="chev">›</span></div>'+
+    '<div class="glabel">📂 По типу</div>'+
     '<div class="row" onclick="leaf(function(){return ordersWork(\'link\')})"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">заказы по ссылке</div></div><span class="chev">›</span></div>'+
     '<div class="row" onclick="leaf(function(){return ordersWork(\'creds\')})"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">заказы логин/пароль</div></div><span class="chev">›</span></div>'+
     '<div class="glabel">🤖 Авто-активация</div>'+
@@ -593,7 +625,14 @@ function loadThread(id){
     var el=document.getElementById('thbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     var o=d.order||{};
-    var h='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag a">'+(o.status||'')+'</span></div><div class="sub">'+(o.service||'')+(o.plan?' · '+o.plan:'')+(o.amount?' · '+nf(o.amount)+' ₽':'')+'</div></div>';
+    var h='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag a">'+(o.status||'')+'</span></div><div class="sub">'+(o.service||'')+(o.plan?' · '+o.plan:'')+(o.amount?' · '+nf(o.amount)+' ₽':'')+'</div>';
+    var cd='';
+    if(o.uid)cd+='<div class="kv"><span class="k">ID клиента</span><span style="word-break:break-all">'+o.uid+'</span></div>';
+    if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+o.email+'</span></div>';
+    if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+o.passw+'</span></div>';
+    if(o.link)cd+='<div class="kv"><span class="k">🔗 Ссылка</span><span style="word-break:break-all">'+o.link+'</span></div>';
+    if(cd)h+='<div style="margin-top:8px">'+cd+'</div>';
+    h+='</div>';
     h+='<div class="glabel">💬 Переписка</div>';
     if(!d.messages.length){h+='<div class="note">Сообщений пока нет.</div>';}
     d.messages.forEach(function(m){
