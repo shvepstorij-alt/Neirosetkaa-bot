@@ -31,7 +31,7 @@ from states import (
     AdmNsgState,
 )
 from db import (
-    fk_save_order, get_pool, set_setting,
+    fk_save_order, get_pool, set_setting, get_coins, deduct_coins,
 )
 from keyboards import (
     _eib,
@@ -204,24 +204,43 @@ async def nsg_svc(cb: CallbackQuery):
     parts_name = service.get("service_name", "").split("|")
     nominal    = parts_name[-1].strip() if parts_name else service.get("service_name", "")
 
+    # Монетки (бонусный баланс) — можно применить к любой оплате
+    user_coins = await get_coins(uid)
+    coins_used = int(min(user_coins, price_rub)) if user_coins >= 1 else 0
+    rest = max(0, price_rub - coins_used)
+
+    coins_line = ""
+    if coins_used > 0:
+        coins_line = f"🪙 Монетки: <b>−{coins_used} ₽</b> (баланс {int(user_coins)} ₽)\n"
+
     text = (
         f"🍎 <b>App Store / iCloud</b>\n\n"
         f"📦 <b>{service.get('service_name', nominal)}</b>\n"
-        f"💵 Цена: <b>{price_rub:,} ₽</b>\n\n".replace(",", " ") +
+        f"💵 Цена: <b>{price_rub:,} ₽</b>\n".replace(",", " ") +
+        coins_line + "\n" +
         f"После оплаты код придёт <b>автоматически</b> в этот чат.\n"
         f"🆔 Заказ: <code>{order_id}</code>"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
+
+    rows = []
+    if coins_used > 0 and rest == 0:
+        rows.append([InlineKeyboardButton(
+            text=f"🪙 Оплатить монетками ({coins_used} ₽)",
+            callback_data=f"nsg_full_coins:{order_id}")])
+    elif coins_used > 0:
+        rows.append([InlineKeyboardButton(
+            text=f"🪙 {coins_used} ₽ монетками + СБП {rest:,} ₽".replace(",", " "),
+            callback_data=f"nsg_coins_sbp:{order_id}")])
+        rows.append([InlineKeyboardButton(
+            text=f"💳 Оплатить всё СБП ({price_rub:,} ₽)".replace(",", " "),
+            url=pay_url)])
+    else:
+        rows.append([InlineKeyboardButton(
             text=f"💳 Оплатить {price_rub:,} ₽".replace(",", " "),
-            url=pay_url
-        )],
-        [InlineKeyboardButton(
-            text="🔄 Проверить оплату",
-            callback_data=f"nsg_check:{order_id}"
-        )],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"nsg_cat:{cat_id}")],
-    ])
+            url=pay_url)])
+    rows.append([InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"nsg_check:{order_id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"nsg_cat:{cat_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -257,6 +276,109 @@ async def nsg_check_payment(cb: CallbackQuery):
 # ──────────────────────────────────────────────────────────────────────────────
 #  Выполнение заказа через NS Gifts API (вызывается после подтверждения оплаты)
 # ──────────────────────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data.startswith("nsg_full_coins:"))
+async def nsg_full_coins(cb: CallbackQuery):
+    """Оплата App Store-заказа полностью монетками."""
+    await cb.answer()
+    order_id = cb.data.split(":", 1)[1]
+    uid = cb.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1 AND user_id=$2", order_id, uid)
+    if not row or row["status"] != "pending":
+        await cb.answer("Заказ не найден или уже оплачен.", show_alert=True)
+        return
+    required = int(row["price_rub"])
+    if await get_coins(uid) < required:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
+    if not await deduct_coins(uid, required):
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
+    new_coins = await get_coins(uid)
+    try:
+        await cb.message.edit_text(
+            f"🪙 <b>Оплачено монетками!</b>\n\n"
+            f"📦 <b>{row['service_name']}</b>\n"
+            f"🪙 Списано: <b>{required} ₽</b>\n"
+            f"🪙 Остаток монеток: <b>{new_coins:.0f} ₽</b>\n\n"
+            f"Получаем код — займёт пару секунд… ⏳",
+            parse_mode="HTML")
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🪙 <b>App Store: оплачено монетками</b>\n"
+            f"👤 <code>{uid}</code>\n📦 {row['service_name']}\n"
+            f"🪙 {required} ₽  💳 СБП 0 ₽\n🆔 <code>{order_id}</code>",
+            parse_mode="HTML")
+    except Exception:
+        pass
+    await nsgifts_fulfill_after_payment(order_id, uid)
+
+
+@dp.callback_query(F.data.startswith("nsg_coins_sbp:"))
+async def nsg_coins_sbp(cb: CallbackQuery):
+    """Частичная оплата App Store-заказа: монетки + остаток СБП."""
+    await cb.answer()
+    order_id = cb.data.split(":", 1)[1]
+    uid = cb.from_user.id
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1 AND user_id=$2", order_id, uid)
+    if not row or row["status"] != "pending":
+        await cb.answer("Заказ не найден или уже оплачен.", show_alert=True)
+        return
+    full = int(row["price_rub"])
+    user_coins = await get_coins(uid)
+    coins_used = int(min(user_coins, full))
+    rest = max(0, full - coins_used)
+    if coins_used <= 0:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
+    if rest <= 0:
+        if not await deduct_coins(uid, full):
+            await cb.answer("Недостаточно монеток.", show_alert=True)
+            return
+        await nsgifts_fulfill_after_payment(order_id, uid)
+        return
+    if not await deduct_coins(uid, coins_used):
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
+    # Остаток к оплате через FK: фиксируем ожидаемую сумму = rest (валидация вебхука)
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE fk_orders SET amount_rub=$1 WHERE order_id=$2", rest, order_id)
+    pay_url = fk_pay_url(rest, order_id)
+    new_coins = await get_coins(uid)
+    try:
+        await cb.message.edit_text(
+            f"🪙 <b>Монетки применены!</b>\n\n"
+            f"📦 <b>{row['service_name']}</b>\n"
+            f"🪙 Монетками: <b>{coins_used} ₽</b> (остаток {new_coins:.0f} ₽)\n"
+            f"💳 Доплата СБП: <b>{rest:,} ₽</b>\n\n".replace(",", " ") +
+            f"После оплаты код придёт <b>автоматически</b> в этот чат.\n"
+            f"🆔 Заказ: <code>{order_id}</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"💳 Доплатить {rest:,} ₽ через СБП".replace(",", " "), url=pay_url)],
+                [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"nsg_check:{order_id}")],
+            ]))
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🪙 <b>App Store: монетки + СБП</b>\n"
+            f"👤 <code>{uid}</code>\n📦 {row['service_name']}\n"
+            f"🪙 {coins_used} ₽  💳 СБП {rest} ₽\n🆔 <code>{order_id}</code>",
+            parse_mode="HTML")
+    except Exception:
+        pass
+
 
 async def _nsg_menu_text_kb():
     balance_str = "—"
