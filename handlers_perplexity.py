@@ -148,11 +148,11 @@ async def perplexity_reopen_webapp(cb: CallbackQuery):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text=f"⚡ Активировать Perplexity {pending['plan_name']}",
+                text=f"🟢 Активировать Perplexity {pending['plan_name']}",
                 web_app=_WAI3(url=webapp_url)
             )],
             [InlineKeyboardButton(
-                text="❓ Нужна помощь",
+                text="🔵 Нужна помощь",
                 callback_data="perplexity_need_help"
             )],
         ])
@@ -647,11 +647,11 @@ async def test_perplexity_webapp(message: Message):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text="⚡ Активировать Perplexity",
+                text="🟢 Активировать Perplexity",
                 web_app=_WAI4(url=webapp_url)
             )],
             [InlineKeyboardButton(
-                text="❓ Нужна помощь",
+                text="🔵 Нужна помощь",
                 callback_data="perplexity_need_help"
             )],
         ])

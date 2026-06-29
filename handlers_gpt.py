@@ -718,7 +718,7 @@ async def test_gpt_webapp(message: Message):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text="✨ Активировать подписку",
+                text="🟢 Активировать подписку",
                 web_app=WebAppInfo(url=webapp_url)
             )],
         ])
@@ -774,11 +774,11 @@ async def test_chatgpt_full(message: Message):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text="✨ Активировать подписку",
+                text="🟢 Активировать подписку",
                 web_app=WebAppInfo(url=webapp_url)
             )],
             [InlineKeyboardButton(
-                text="❓ Нужна помощь",
+                text="🔵 Нужна помощь",
                 callback_data="gpt_need_help"
             )],
         ])

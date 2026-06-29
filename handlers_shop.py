@@ -465,7 +465,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
         )])
         shop_buttons.append([InlineKeyboardButton(text=f"Оплатить без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id), **pay_btn_kwargs())])
     else:
-        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить {p['price']}₽", url=pay_url, **pay_btn_kwargs())])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить {final_shop_price}₽", url=pay_url, **pay_btn_kwargs())])
 
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
@@ -487,7 +487,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             f"🛍 <b>Новый заказ из магазина</b>\n\n"
             f"👤 @{username} (<code>{uid}</code>)\n"
             f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
-            f"💵 Сумма: <b>{p['price']}₽</b>\n"
+            f"💵 Сумма: <b>{final_shop_price if final_shop_price > 0 else p['price']}₽</b>\n"
             f"💳 Способ: СБП\n"
             f"🆔 Заказ: <code>{order_id}</code>\n\n"
             f"⏳ <b>Статус: ожидает оплаты</b>",

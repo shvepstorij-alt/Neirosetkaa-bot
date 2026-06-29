@@ -148,11 +148,11 @@ async def claude_reopen_webapp(cb: CallbackQuery):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text=f"⚡ Активировать Claude {pending['plan_name']}",
+                text=f"🟢 Активировать Claude {pending['plan_name']}",
                 web_app=_WAI3(url=webapp_url)
             )],
             [InlineKeyboardButton(
-                text="❓ Нужна помощь",
+                text="🔵 Нужна помощь",
                 callback_data="claude_need_help"
             )],
         ])
@@ -642,11 +642,11 @@ async def test_claude_webapp(message: Message):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text="⚡ Активировать Claude",
+                text="🟢 Активировать Claude",
                 web_app=_WAI4(url=webapp_url)
             )],
             [InlineKeyboardButton(
-                text="❓ Нужна помощь",
+                text="🔵 Нужна помощь",
                 callback_data="claude_need_help"
             )],
         ])

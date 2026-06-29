@@ -379,11 +379,12 @@ function loadPromos(){
     d.promos.forEach(function(x){
       var unlim=!x.maxUses, pct=unlim?0:Math.round(x.used/x.maxUses*100), stop=!x.active||(!unlim&&x.used>=x.maxUses);
       var v=x.kind==='percent'?('−'+x.value+'%'):('+'+x.value+' кр');
-      h+='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+x.code+' · '+v+'</span><span class="tag '+(stop?'r':'g')+'">'+(stop?'стоп':'актив')+'</span></div><div class="sub" style="margin-bottom:6px">Использований: '+x.used+(unlim?' (∞)':' / '+x.maxUses)+(x.expires?' · до '+x.expires:' · бессрочно')+'</div>'+(unlim?prog(100,C.blue):prog(pct,pct>=100?C.red:C.pink))+(x.active?'<button class="btn row2 danger" style="margin-top:10px;padding:8px;font-size:12px" onclick="deactPromo(\''+x.code+'\')">Деактивировать</button>':'')+'</div>';
+      h+='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+x.code+' · '+v+'</span><span class="tag '+(stop?'r':'g')+'">'+(stop?'стоп':'актив')+'</span></div><div class="sub" style="margin-bottom:6px">Использований: '+x.used+(unlim?' (∞)':' / '+x.maxUses)+(x.expires?' · до '+x.expires:' · бессрочно')+'</div>'+(unlim?prog(100,C.blue):prog(pct,pct>=100?C.red:C.pink))+'<div class="btns2" style="margin-top:10px"><button class="btn row2 sec" style="padding:8px;font-size:12px" onclick="copyText(\''+x.code+'\')">📋 Копировать</button>'+(x.active?'<button class="btn row2 danger" style="padding:8px;font-size:12px" onclick="deactPromo(\''+x.code+'\')">Деактивировать</button>':'<span></span>')+'</div></div>';
     });
     el.innerHTML=h;
   });
 }
+function copyText(t){try{navigator.clipboard.writeText(t).then(function(){toast('Скопировано ✓')});}catch(e){var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand('copy');toast('Скопировано ✓')}catch(_){}document.body.removeChild(ta);}}
 function deactPromo(code){toast('…');api('/api/admin/promo-deactivate',{code:code}).then(function(d){toast(d.ok?'Деактивирован':'Ошибка');open2('Промокоды')});}
 function fv(id){var e=document.getElementById(id);return e?e.value:'';}
 function promoCreate(){
