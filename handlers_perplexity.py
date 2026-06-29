@@ -656,5 +656,16 @@ async def test_perplexity_webapp(message: Message):
             )],
         ])
     )
+    await message.answer(
+        "📋 <b>Инструкция по активации Perplexity</b>\n\n"
+        "1️⃣ Зайди на <b>perplexity.ai</b> и авторизуйся (в Chrome или Safari).\n"
+        "2️⃣ Открой страницу сессии:\n"
+        "<code>perplexity.ai/api/auth/session</code>\n"
+        "3️⃣ Скопируй значение поля «id» (UUID).\n"
+        "4️⃣ Вернись в мини-приложение (кнопка «Активировать Perplexity»), "
+        "вставь User ID — подписка активируется автоматически за 1–2 минуты.\n\n"
+        f"🎟 Код активации: <code>{fake_code}</code>\n"
+        "⚠️ Убедись, что вошёл именно в нужный аккаунт Perplexity.",
+        parse_mode="HTML")
 
 

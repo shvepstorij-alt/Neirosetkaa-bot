@@ -651,5 +651,17 @@ async def test_claude_webapp(message: Message):
             )],
         ])
     )
+    await message.answer(
+        "📋 <b>Инструкция по активации Claude</b>\n\n"
+        "1️⃣ Зайди на <b>claude.ai</b> и авторизуйся (в Chrome или Safari).\n"
+        "2️⃣ Открой настройки аккаунта:\n"
+        "<code>claude.ai/settings/account</code>\n"
+        "3️⃣ Прокрути до «Organization ID» и скопируй UUID.\n"
+        "4️⃣ Вернись в мини-приложение (кнопка «Активировать Claude»), "
+        "вставь Organization ID — подписка активируется автоматически за 1–2 минуты.\n\n"
+        f"🎟 Код активации: <code>{fake_code}</code>\n"
+        "⚠️ Аккаунт Claude должен быть на Free-плане. "
+        "Если есть платная подписка — сначала отмени её на claude.ai/settings/billing.",
+        parse_mode="HTML")
 
 

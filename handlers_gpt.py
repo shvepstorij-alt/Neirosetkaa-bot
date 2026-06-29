@@ -723,66 +723,17 @@ async def test_gpt_webapp(message: Message):
             )],
         ])
     )
-
-
-@dp.message(F.text.startswith("/test_chatgpt"), StateFilter("*"))
-async def test_chatgpt_full(message: Message):
-    """
-    Полный тест потока ChatGPT с ФЕЙКОВЫМ кодом.
-    Только для админа. Код нигде не записывается в gpt_codes.
-    Использование: /test_chatgpt       → Plus
-                   /test_chatgpt pro   → Pro 5×
-    """
-    if not is_admin(message.from_user.id):
-        return
-
-    import random, string as _string, urllib.parse as _uparse
-    from aiogram.types import WebAppInfo
-
-    # Определяем тариф из аргумента команды
-    parts = message.text.strip().split()
-    arg = parts[1].lower() if len(parts) > 1 else ""
-    if arg == "pro":
-        plan_key, plan_name = "pro_5x", "Pro 5×"
-    elif arg == "max":
-        plan_key, plan_name = "pro_max", "Pro Max"
-    else:
-        plan_key, plan_name = "plus", "Plus"
-
-    # Генерируем фейковый код — похож на реальный, помечен TEST-
-    suffix = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=12))
-    fake_code = f"TEST-{suffix}"
-    fake_order = f"TEST-ORD-{suffix[:6]}"
-
-    uid = message.from_user.id
-
-    # Сохраняем pending activation (код не входит в gpt_codes)
-    await save_pending_activation(uid, fake_code, fake_order, plan_key, plan_name)
-
-    webapp_url = (
-        f"{WEBAPP_BASE_URL}/webapp/chatgpt"
-        f"?plan={_uparse.quote(plan_name)}&code={_uparse.quote(fake_code)}"
-    )
-
-    # Отправляем сообщение — точная копия того что видит реальный клиент
     await message.answer(
-        f"🎉 <b>Оплата прошла!</b>\n\n"
-        f"📦 <b>ChatGPT {plan_name}</b>\n\n"
-        f"Осталось активировать подписку — нажми кнопку ниже 👇\n\n"
-        f"<i>⚠️ ТЕСТ — это фейковый код, нигде не записан</i>\n"
-        f"<i>🔑 Код: <code>{fake_code}</code></i>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="✨ Активировать подписку", style="success",
-                web_app=WebAppInfo(url=webapp_url)
-            )],
-            [InlineKeyboardButton(
-                text="❓ Нужна помощь", style="primary",
-                callback_data="gpt_need_help"
-            )],
-        ])
-    )
+        "📋 <b>Инструкция по активации ChatGPT</b>\n\n"
+        "1️⃣ Зайди на <b>chatgpt.com</b> и авторизуйся (в Chrome или Safari).\n"
+        "2️⃣ В том же браузере открой страницу с токеном:\n"
+        "<code>chatgpt.com/api/auth/session</code>\n"
+        "3️⃣ Скопируй <b>весь</b> текст страницы целиком.\n"
+        "4️⃣ Вернись в мини-приложение (кнопка «Активировать подписку»), "
+        "вставь токен — подписка активируется автоматически за 1–2 минуты.\n\n"
+        f"🎟 Код активации: <code>{code}</code>\n"
+        "⚠️ Аккаунт должен быть на бесплатном плане.",
+        parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "gpt_need_help")
