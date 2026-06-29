@@ -559,6 +559,17 @@ async def get_pending_activation(user_id: int):
             "SELECT * FROM gpt_pending_activations WHERE user_id=$1 AND expires_at>NOW()", user_id)
     return dict(row) if row else None
 
+async def get_pending_activation_by_code(code: str):
+    """Фолбэк-идентификация: найти pending по коду активации (когда initData не прошёл)."""
+    if not code:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM gpt_pending_activations WHERE code=$1 AND expires_at>NOW() "
+            "ORDER BY created_at DESC LIMIT 1", code)
+    return dict(row) if row else None
+
 async def delete_pending_activation(user_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1285,6 +1296,18 @@ async def get_claude_pending_activation(user_id: int):
     return dict(row) if row else None
 
 
+async def get_claude_pending_activation_by_code(code: str):
+    """Фолбэк-идентификация по коду активации (когда initData не прошёл)."""
+    if not code:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM claude_pending_activations WHERE code=$1 AND expires_at > NOW() "
+            "ORDER BY created_at DESC LIMIT 1", code)
+    return dict(row) if row else None
+
+
 async def delete_claude_pending_activation(user_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1452,6 +1475,18 @@ async def get_perplexity_pending_activation(user_id: int):
             "WHERE user_id=$1 AND expires_at > NOW()",
             user_id
         )
+    return dict(row) if row else None
+
+
+async def get_perplexity_pending_activation_by_code(code: str):
+    """Фолбэк-идентификация по коду активации (когда initData не прошёл)."""
+    if not code:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM perplexity_pending_activations WHERE code=$1 AND expires_at > NOW() "
+            "ORDER BY created_at DESC LIMIT 1", code)
     return dict(row) if row else None
 
 

@@ -44,6 +44,8 @@ from db import (
     save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
     create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
     set_linkpay_email,
+    get_pending_activation_by_code, get_claude_pending_activation_by_code,
+    get_perplexity_pending_activation_by_code,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji, tg_emoji_ui,
@@ -3341,8 +3343,15 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
 
     access_token = (body.get("token") or "").strip()
     init_data    = (body.get("init_data") or "").strip()
+    _fb_code     = (body.get("code") or "").strip()
 
     user_id = _verify_tg_init_data(init_data)
+    if not user_id and _fb_code:
+        # Фолбэк: initData не прошёл (открыто в браузере / старый клиент) —
+        # опознаём клиента по коду активации (секрет, выдан только покупателю).
+        _fb = await get_pending_activation_by_code(_fb_code)
+        if _fb:
+            user_id = _fb.get("user_id")
     if not user_id:
         return _resp({"success": False, "error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
     if not access_token.startswith("eyJ") or len(access_token) < 100:
@@ -3649,6 +3658,21 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     asyncio.create_task(_activation_timer_job(
                         user_id, _m_act_gpt.message_id, _base_gpt, _kb_gpt_active,
                         _dl_gpt, _exp_gpt, _kb_gpt_expired, _gpt_act_msg))
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            "📋 <b>Инструкция по активации ChatGPT</b>\n\n"
+                            "1️⃣ Зайди на <b>chatgpt.com</b> и авторизуйся (в Chrome или Safari).\n"
+                            "2️⃣ В том же браузере открой страницу с токеном:\n"
+                            "<code>chatgpt.com/api/auth/session</code>\n"
+                            "3️⃣ Скопируй <b>весь</b> текст страницы целиком.\n"
+                            "4️⃣ Вернись в мини-приложение (кнопка «Активировать подписку»), "
+                            "вставь токен — подписка активируется автоматически за 1–2 минуты.\n\n"
+                            f"🎟 Код активации: <code>{_code}</code>\n"
+                            "⚠️ Аккаунт должен быть на бесплатном плане.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
             elif _svc_kind == "claude":
                 # ── Авто-активация Claude через bypriceactivate.pro Mini App ──
                 _plan_name_cl = p.get("name", "Pro")
@@ -4325,6 +4349,22 @@ async def _send_claude_webapp_to_user(
         asyncio.create_task(_activation_timer_job(
             user_id, _m_act_cl.message_id, _base_cl, _kb_cl_active,
             _dl_cl, _exp_cl, _kb_cl_expired, _claude_act_msg))
+        try:
+            await bot.send_message(
+                user_id,
+                "📋 <b>Инструкция по активации Claude</b>\n\n"
+                "1️⃣ Зайди на <b>claude.ai</b> и авторизуйся (в Chrome или Safari).\n"
+                "2️⃣ Открой настройки аккаунта:\n"
+                "<code>claude.ai/settings/account</code>\n"
+                "3️⃣ Прокрути до «Organization ID» и скопируй UUID.\n"
+                "4️⃣ Вернись в мини-приложение (кнопка «Активировать Claude»), "
+                "вставь Organization ID — подписка активируется автоматически за 1–2 минуты.\n\n"
+                f"🎟 Код активации: <code>{code}</code>\n"
+                "⚠️ Аккаунт Claude должен быть на Free-плане. "
+                "Если есть платная подписка — сначала отмени её на claude.ai/settings/billing.",
+                parse_mode="HTML")
+        except Exception:
+            pass
         await log_event(user_id, "claude_webapp_sent",
                         f"code={code} plan={plan_name} order={order_id}")
         return True
@@ -4640,8 +4680,13 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
 
     org_id    = (body.get("org_id") or "").strip().lower()
     init_data = (body.get("init_data") or "").strip()
+    _fb_code  = (body.get("code") or "").strip()
 
     user_id = _verify_tg_init_data(init_data)
+    if not user_id and _fb_code:
+        _fb = await get_claude_pending_activation_by_code(_fb_code)
+        if _fb:
+            user_id = _fb.get("user_id")
     if not user_id:
         try:
             await bot.send_message(
@@ -5093,6 +5138,21 @@ async def _send_perplexity_webapp_to_user(
         asyncio.create_task(_activation_timer_job(
             user_id, _m_act_cl.message_id, _base_cl, _kb_cl_active,
             _dl_cl, _exp_cl, _kb_cl_expired, _perplexity_act_msg))
+        try:
+            await bot.send_message(
+                user_id,
+                "📋 <b>Инструкция по активации Perplexity</b>\n\n"
+                "1️⃣ Зайди на <b>perplexity.ai</b> и авторизуйся (в Chrome или Safari).\n"
+                "2️⃣ Открой страницу сессии:\n"
+                "<code>perplexity.ai/api/auth/session</code>\n"
+                "3️⃣ Скопируй значение поля «id» (UUID).\n"
+                "4️⃣ Вернись в мини-приложение (кнопка «Активировать Perplexity»), "
+                "вставь User ID — подписка активируется автоматически за 1–2 минуты.\n\n"
+                f"🎟 Код активации: <code>{code}</code>\n"
+                "⚠️ Убедись, что вошёл именно в нужный аккаунт Perplexity.",
+                parse_mode="HTML")
+        except Exception:
+            pass
         await log_event(user_id, "perplexity_webapp_sent",
                         f"code={code} plan={plan_name} order={order_id}")
         return True
@@ -5388,8 +5448,13 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
 
     org_id    = (body.get("org_id") or "").strip().lower()
     init_data = (body.get("init_data") or "").strip()
+    _fb_code  = (body.get("code") or "").strip()
 
     user_id = _verify_tg_init_data(init_data)
+    if not user_id and _fb_code:
+        _fb = await get_perplexity_pending_activation_by_code(_fb_code)
+        if _fb:
+            user_id = _fb.get("user_id")
     if not user_id:
         try:
             await bot.send_message(

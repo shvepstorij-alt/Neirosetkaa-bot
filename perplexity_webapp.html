@@ -543,6 +543,9 @@
       <a href="https://perplexity.ai" target="_blank" style="text-decoration:none;display:block;">
         <button class="btn btn-orange" style="margin-bottom:9px;">Открыть Perplexity ↗</button>
       </a>
+      <a href="https://t.me/AleksandrOii" target="_blank" style="text-decoration:none;display:block;">
+        <button class="btn btn-outline" style="margin-bottom:9px;">📣 Телеграм канал ↗</button>
+      </a>
       <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
     </div>
   </div>
@@ -703,6 +706,7 @@ async function startActivation() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         org_id:    orgId,
+        code:      codeInput ? codeInput.value.trim() : '',
         init_data: tg ? tg.initData : ''
       })
     });
