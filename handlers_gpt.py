@@ -713,13 +713,20 @@ async def test_gpt_webapp(message: Message):
     webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote('Plus')}&code={_uparse.quote(code)}"
     from aiogram.types import WebAppInfo
     await message.answer(
-        f"🧪 <b>Тест Mini App (фейковый код)</b>\n\nКод: <code>{code}</code>\n"
-        f"<i>Реальные коды из пула не тратятся</i>\nНажми кнопку 👇",
+        f"🎉 <b>Оплата прошла!</b>\n\n"
+        f"📦 <b>ChatGPT Plus</b>\n\n"
+        f"Осталось активировать подписку — нажми кнопку ниже 👇\n\n"
+        f"<i>⚠️ ТЕСТ — фейковый код, реальной активации нет</i>\n"
+        f"<i>🔑 Код: <code>{code}</code></i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="✨ Активировать подписку", style="success",
                 web_app=WebAppInfo(url=webapp_url)
+            )],
+            [InlineKeyboardButton(
+                text="❓ Нужна помощь", style="primary",
+                callback_data="gpt_need_help"
             )],
         ])
     )
