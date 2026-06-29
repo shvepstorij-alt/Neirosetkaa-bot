@@ -1126,7 +1126,7 @@ async def _show_profile(message: Message, user):
         _cp = await get_claude_pending_activation(uid)
         if _cp:
             _claude_pending_btn = [[InlineKeyboardButton(
-                text=f"🟢 Активировать Claude {_cp.get('plan_name', '')}",
+                text=f"⚡ Активировать Claude {_cp.get('plan_name', '')}", style="success",
                 callback_data="claude_reopen_webapp"
             )]]
     except Exception:
@@ -3131,7 +3131,7 @@ async def _run_activation_job(
                                 web_app=_WebAppInfo(url=_same_url)
                             )],
                             [InlineKeyboardButton(
-                                text="🔵 Нужна помощь",
+                                text="❓ Нужна помощь", style="primary",
                                 callback_data="gpt_need_help"
                             )],
                         ])
@@ -3166,7 +3166,7 @@ async def _run_activation_job(
                                     web_app=_WebAppInfo(url=_same_url)
                                 )],
                                 [InlineKeyboardButton(
-                                    text="🔵 Нужна помощь",
+                                    text="❓ Нужна помощь", style="primary",
                                     callback_data="gpt_need_help"
                                 )],
                             ])
@@ -3627,13 +3627,13 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"🎟 Код активации: <code>{_code}</code>{delayed_note}"
                     )
                     _kb_gpt_active = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🟢 Активировать подписку",
+                        [InlineKeyboardButton(text="✨ Активировать подписку", style="success",
                                               web_app=WebAppInfo(url=_webapp_url))],
-                        [InlineKeyboardButton(text="🔵 Нужна помощь",
+                        [InlineKeyboardButton(text="❓ Нужна помощь", style="primary",
                                               callback_data="gpt_need_help")],
                     ])
                     _kb_gpt_expired = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="🔵 Нужна помощь",
+                        [InlineKeyboardButton(text="❓ Нужна помощь", style="primary",
                                               callback_data="gpt_need_help")],
                     ])
                     _dl_gpt = _dt_gpt.datetime.now(_BOT_TZ) + _dt_gpt.timedelta(minutes=ACTIVATION_WINDOW_MIN)
@@ -4306,11 +4306,11 @@ async def _send_claude_webapp_to_user(
             f"{delayed_note}"
         )
         _kb_cl_active = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🟢 Активировать Claude", web_app=_WAI(url=webapp_url))],
-            [InlineKeyboardButton(text="🔵 Нужна помощь", callback_data="claude_need_help")],
+            [InlineKeyboardButton(text="⚡ Активировать Claude", style="success", web_app=_WAI(url=webapp_url))],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="claude_need_help")],
         ])
         _kb_cl_expired = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔵 Нужна помощь", callback_data="claude_need_help")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="claude_need_help")],
         ])
         _dl_cl = _dt_cl.datetime.now(_BOT_TZ) + _dt_cl.timedelta(minutes=ACTIVATION_WINDOW_MIN)
         _exp_cl = (
@@ -4536,7 +4536,7 @@ async def _claude_activation_polling_job(
                                     callback_data="claude_reopen_webapp"
                                 )],
                                 [InlineKeyboardButton(
-                                    text="🔵 Нужна помощь",
+                                    text="❓ Нужна помощь", style="primary",
                                     callback_data="claude_need_help"
                                 )],
                             ])
@@ -4554,7 +4554,7 @@ async def _claude_activation_polling_job(
                                     callback_data="claude_manual_activated"
                                 )],
                                 [InlineKeyboardButton(
-                                    text="🔵 Нужна помощь",
+                                    text="❓ Нужна помощь", style="primary",
                                     callback_data="claude_need_help"
                                 )],
                             ])
@@ -4588,7 +4588,7 @@ async def _claude_activation_polling_job(
                     callback_data="claude_manual_activated"
                 )],
                 [InlineKeyboardButton(
-                    text="🔵 Нужна помощь",
+                    text="❓ Нужна помощь", style="primary",
                     callback_data="claude_need_help"
                 )],
             ])
@@ -5074,11 +5074,11 @@ async def _send_perplexity_webapp_to_user(
             f"{delayed_note}"
         )
         _kb_cl_active = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🟢 Активировать Perplexity", web_app=_WAI(url=webapp_url))],
-            [InlineKeyboardButton(text="🔵 Нужна помощь", callback_data="perplexity_need_help")],
+            [InlineKeyboardButton(text="⚡ Активировать Perplexity", style="success", web_app=_WAI(url=webapp_url))],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="perplexity_need_help")],
         ])
         _kb_cl_expired = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔵 Нужна помощь", callback_data="perplexity_need_help")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="perplexity_need_help")],
         ])
         _dl_cl = _dt_cl.datetime.now(_BOT_TZ) + _dt_cl.timedelta(minutes=ACTIVATION_WINDOW_MIN)
         _exp_cl = (
@@ -5283,7 +5283,7 @@ async def _perplexity_activation_polling_job(
                                     callback_data="perplexity_reopen_webapp"
                                 )],
                                 [InlineKeyboardButton(
-                                    text="🔵 Нужна помощь",
+                                    text="❓ Нужна помощь", style="primary",
                                     callback_data="perplexity_need_help"
                                 )],
                             ])
@@ -5301,7 +5301,7 @@ async def _perplexity_activation_polling_job(
                                     callback_data="perplexity_manual_activated"
                                 )],
                                 [InlineKeyboardButton(
-                                    text="🔵 Нужна помощь",
+                                    text="❓ Нужна помощь", style="primary",
                                     callback_data="perplexity_need_help"
                                 )],
                             ])
@@ -5335,7 +5335,7 @@ async def _perplexity_activation_polling_job(
                     callback_data="perplexity_manual_activated"
                 )],
                 [InlineKeyboardButton(
-                    text="🔵 Нужна помощь",
+                    text="❓ Нужна помощь", style="primary",
                     callback_data="perplexity_need_help"
                 )],
             ])
@@ -5642,7 +5642,7 @@ async def _send_linkpay_instructions(user_id, shop_key, service_name, plan_name,
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📎 Отправить ссылку на оплату",
                                   callback_data=f"linkpay_send:{order_id}")],
-            [InlineKeyboardButton(text="🔵 Нужна помощь", callback_data="linkpay_help")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="linkpay_help")],
         ])
         await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
     except Exception as e:
@@ -5766,7 +5766,7 @@ async def _send_creds_instructions(user_id, shop_key, service_name, plan_name,
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔐 Отправить данные аккаунта",
                                   callback_data=f"creds_send:{order_id}")],
-            [InlineKeyboardButton(text="🔵 Нужна помощь", callback_data="linkpay_help")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="linkpay_help")],
         ])
         await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb)
     except Exception as e:
