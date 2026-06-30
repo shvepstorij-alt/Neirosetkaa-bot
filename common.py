@@ -4531,10 +4531,9 @@ async def _claude_activation_polling_job(
                 }
                 _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
                 if _is_stock:
-                    # нет стока — код валиден, возвращаем в пул
-                    await release_claude_code(code)
-                    await delete_claude_pending_activation(user_id)
-                    _fail_note = "Нет стока — код возвращён в пул."
+                    # провайдер временно без стока — код клиента ОСТАЁТСЯ валидным.
+                    # НЕ возвращаем в пул и НЕ удаляем pending: клиент сам повторит, когда пополнят.
+                    _fail_note = "Временно нет мест у провайдера — код сохранён за клиентом, можно повторить."
                 else:
                     # Сбой обычно временный (провайдер: payment/timeout). Код НЕ сжигаем и НЕ ротируем —
                     # оставляем закреплённым за клиентом: можно повторить тем же кодом или активировать вручную.
@@ -4563,7 +4562,25 @@ async def _claude_activation_polling_job(
 
                 # ── сообщение клиенту ──
                 try:
-                    if _replaced_code:
+                    if _is_stock:
+                        await bot.send_message(
+                            user_id,
+                            "⏳ <b>Временно нет мест у провайдера</b>\n\n"
+                            "Твой код сохранён и остаётся действительным. Провайдер пополняет запас — "
+                            "попробуй активировать снова через 5–10 минут 👇",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="🔁 Попробовать снова",
+                                    callback_data="claude_reopen_webapp"
+                                )],
+                                [InlineKeyboardButton(
+                                    text="❓ Нужна помощь", style="primary",
+                                    callback_data="claude_need_help"
+                                )],
+                            ])
+                        )
+                    elif _replaced_code:
                         await bot.send_message(
                             user_id,
                             "😔 <b>Первый код не сработал</b>\n\n"
@@ -5298,10 +5315,9 @@ async def _perplexity_activation_polling_job(
                 }
                 _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
                 if _is_stock:
-                    # нет стока — код валиден, возвращаем в пул
-                    await release_perplexity_code(code)
-                    await delete_perplexity_pending_activation(user_id)
-                    _fail_note = "Нет стока — код возвращён в пул."
+                    # провайдер временно без стока — код клиента ОСТАЁТСЯ валидным.
+                    # НЕ возвращаем в пул и НЕ удаляем pending: клиент сам повторит, когда пополнят.
+                    _fail_note = "Временно нет мест у провайдера — код сохранён за клиентом, можно повторить."
                 else:
                     # Сбой обычно временный (провайдер: payment/timeout). Код НЕ сжигаем и НЕ ротируем —
                     # оставляем закреплённым за клиентом: можно повторить тем же кодом или активировать вручную.
@@ -5330,7 +5346,25 @@ async def _perplexity_activation_polling_job(
 
                 # ── сообщение клиенту ──
                 try:
-                    if _replaced_code:
+                    if _is_stock:
+                        await bot.send_message(
+                            user_id,
+                            "⏳ <b>Временно нет мест у провайдера</b>\n\n"
+                            "Твой код сохранён и остаётся действительным. Провайдер пополняет запас — "
+                            "попробуй активировать снова через 5–10 минут 👇",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(
+                                    text="🔁 Попробовать снова",
+                                    callback_data="perplexity_reopen_webapp"
+                                )],
+                                [InlineKeyboardButton(
+                                    text="❓ Нужна помощь", style="primary",
+                                    callback_data="perplexity_need_help"
+                                )],
+                            ])
+                        )
+                    elif _replaced_code:
                         await bot.send_message(
                             user_id,
                             "😔 <b>Первый код не сработал</b>\n\n"

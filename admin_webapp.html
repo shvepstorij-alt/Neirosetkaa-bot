@@ -631,7 +631,7 @@ function loadThread(id){
     if(o.uid)cd+='<div class="kv"><span class="k">ID клиента</span><span style="word-break:break-all">'+o.uid+'</span></div>';
     if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+o.email+'</span></div>';
     if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+o.passw+'</span></div>';
-    if(o.link)cd+='<div class="kv"><span class="k">🔗 Ссылка</span><span style="word-break:break-all">'+o.link+'</span></div>';
+    if(o.link)cd+='<div class="kv"><span class="k">🔗 Ссылка</span><span style="word-break:break-all"><a href="'+o.link+'" target="_blank" style="color:var(--acc);text-decoration:underline">Открыть ссылку ↗</a></span></div>';
     if(cd)h+='<div style="margin-top:8px">'+cd+'</div>';
     h+='</div>';
     h+='<div class="glabel">💬 Переписка</div>';
@@ -679,7 +679,7 @@ function shopOrderView(id){
     '<div class="kv"><span class="k">Сумма</span><span>'+nf(o.amount)+' ₽</span></div>'+
     '<div class="kv"><span class="k">Дата</span><span>'+(o.date||'')+'</span></div>'+
     (o.acc?'<div class="kv"><span class="k">'+accLbl+'</span><span style="word-break:break-all">'+o.acc+'</span></div>':'')+
-    (o.code?'<div class="kv"><span class="k">'+(svc==='appstore'?'Выдано':'Код')+'</span><span style="word-break:break-all">'+o.code+'</span></div>':'')+
+    (o.code?'<div class="kv" style="cursor:pointer" onclick="copyText(\''+o.code+'\')"><span class="k">'+(svc==='appstore'?'Выдано':'Код')+'</span><span style="word-break:break-all">'+o.code+' 📋</span></div>':'')+
     '<div class="kv"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+id+'</span></div></div>';
   if(o.activated){
     // Успешно активирован клиентом — без кнопок
@@ -745,7 +745,7 @@ function loadMiniApp(svc){
       var hh='<div class="glabel" style="margin-top:16px">🧾 Последние активации</div>';
       if(!dd.recent.length){hh+='<div class="note">Пока нет активаций.</div>';}
       dd.recent.forEach(function(r){
-        hh+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+r.user+' · '+r.date+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
+        hh+='<div class="block" style="cursor:pointer" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+r.user+' · '+r.date+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
       });
       de.innerHTML=hh;
     });
@@ -765,7 +765,7 @@ function loadPool(svc){
     Object.keys(byp).sort().forEach(function(pl){
       h+='<div class="glabel">🟢 '+planLabel(svc,pl)+' ('+byp[pl].length+')</div>';
       byp[pl].forEach(function(c){
-        h+='<div class="row" style="cursor:default"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+'</div></div><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
+        h+='<div class="row" style="cursor:pointer" onclick="copyText(\''+c.code+'\')"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+' · нажми, чтобы скопировать</div></div><button class="btn row2 sec" style="width:auto;margin:0 6px 0 auto;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();copyText(\''+c.code+'\')">📋</button><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
       });
     });
     el.innerHTML=h;
