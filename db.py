@@ -100,6 +100,7 @@ async def init_db():
             ("promo_code",     "TEXT"),     # применённый промокод
             ("paid_at",        "TIMESTAMP"), # когда пришёл webhook об оплате
             ("admin_msg_id",   "BIGINT"),   # ID сообщения админу для редактирования
+            ("num",            "BIGSERIAL"), # человекочитаемый номер заказа (#N)
         ]:
             try:
                 await conn.execute(f"ALTER TABLE fk_orders ADD COLUMN {col} {dfn}")
@@ -1566,6 +1567,16 @@ async def get_fk_order_admin_msg(order_id):
     async with pool.acquire() as conn:
         return await conn.fetchval(
             "SELECT admin_msg_id FROM fk_orders WHERE order_id=$1", order_id)
+
+
+async def get_order_num(order_id):
+    """Человекочитаемый номер заказа (#N). Возвращает int или None."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            return await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+        except Exception:
+            return None
 
 
 async def get_linkpay_order(fk_order_id):

@@ -29,7 +29,7 @@ from states import (
 )
 from db import (
     add_credits_batch, check_promo_for_user, deduct_coins, fk_get_order, fk_save_order, get_coins,
-    get_credits, get_pool, get_user, log_payment, redeem_promo,
+    get_credits, get_pool, get_user, log_payment, redeem_promo, get_order_num,
 )
 from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
@@ -434,6 +434,11 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
         """, order_id, uid, 0, final_shop_price if final_shop_price > 0 else p["price"],
             f"shop:{key}:{plan_idx}",
             (_promo_code.strip().upper() if (promo_final and promo_final < p["price"] and _promo_code) else None))
+        try:
+            _onum = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+        except Exception:
+            _onum = None
+    _onum_str = f"#{_onum}" if _onum else order_id
 
     pay_url = fk_pay_url(final_shop_price, order_id) if final_shop_price > 0 else None
 
@@ -470,7 +475,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
             text="✅ Я оплатил - написать Александру",
-            url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил заказ с номером {order_id}\nСервис: {s["name"]}\nТариф: {p["name"]}')
+            url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил заказ {_onum_str}\nСервис: {s["name"]}\nТариф: {p["name"]}\nID: {order_id}')
         )],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
     ])
@@ -484,7 +489,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     try:
         admin_msg = await bot.send_message(
             ADMIN_ID,
-            f"🛍 <b>Новый заказ из магазина</b>\n\n"
+            f"🛍 <b>Новый заказ {_onum_str}</b>\n\n"
             f"👤 @{username} (<code>{uid}</code>)\n"
             f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"💵 Сумма: <b>{final_shop_price if final_shop_price > 0 else p['price']}₽</b>\n"
@@ -929,7 +934,9 @@ async def menu_ref(cb: CallbackQuery):
         f"❓ <b>Как работает:</b>\n"
         f"1\u20e3 Поделись своей ссылкой\n"
         f"2\u20e3 Друг регистрируется и получает +200 кр\n"
-        f"3\u20e3 Друг делает первую покупку → ты получаешь бонус\n\n"
+        f"3\u20e3 Друг делает первую покупку → тебе кредиты по уровню\n"
+        f"    <b>+ кешбэк 10% монетками</b> 🪙 с его покупки\n"
+        f"<i>Монетки можно тратить на любые покупки в боте</i>\n\n"
         f"\U0001f4ca <b>Твоя статистика:</b>\n"
         f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
         f"\U0001f4b0 Купили: <b>{paid_refs}</b>\n"

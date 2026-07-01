@@ -469,7 +469,7 @@ async def reply_create_video(message: Message, state: FSMContext):
 async def menu_profile_cb(cb: CallbackQuery):
     """Открыть профиль через inline-кнопку в главном меню."""
     await cb.answer()
-    await _show_profile(cb.message, cb.from_user)
+    await _show_profile(cb.message, cb.from_user, edit=True)
 
 
 @dp.message(F.text.contains("Мой профиль"), StateFilter("*"))
@@ -548,8 +548,20 @@ async def profile_history(cb: CallbackQuery):
                    LIMIT 20""",
                 uid
             )
+        _kb_back = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Мой профиль", callback_data="menu_profile")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+        ])
         if not rows:
-            await cb.message.answer("🧾 <b>История покупок</b>\n\nПокупок пока нет.", parse_mode="HTML")
+            _t0 = "🧾 <b>История покупок</b>\n\nПокупок пока нет."
+            try:
+                await cb.message.edit_text(_t0, reply_markup=_kb_back, parse_mode="HTML")
+            except Exception:
+                try:
+                    await cb.message.delete()
+                except Exception:
+                    pass
+                await cb.message.answer(_t0, reply_markup=_kb_back, parse_mode="HTML")
             return
 
         PACK_NAMES = {
@@ -582,10 +594,15 @@ async def profile_history(cb: CallbackQuery):
             f"<i>Последние {len(rows)} операций · итого {total}₽</i>\n\n"
             + "\n".join(lines)
         )
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👤 Профиль", callback_data="noop"),
-        ]])
-        await cb.message.answer(strip_surrogates(text), parse_mode="HTML")
+        _txt = strip_surrogates(text)
+        try:
+            await cb.message.edit_text(_txt, reply_markup=_kb_back, parse_mode="HTML")
+        except Exception:
+            try:
+                await cb.message.delete()
+            except Exception:
+                pass
+            await cb.message.answer(_txt, reply_markup=_kb_back, parse_mode="HTML")
     except Exception as e:
         logging.error(f"profile_history error uid={uid}: {e}")
         await cb.message.answer("⚠️ Не удалось загрузить историю покупок.")

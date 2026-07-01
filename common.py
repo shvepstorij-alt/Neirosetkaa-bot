@@ -942,7 +942,7 @@ async def claude_with_search(uid: int, user_text: str) -> str:
 #  REPLY KEYBOARD HANDLERS
 # ══════════════════════════════════════════════════════════
 
-async def _show_profile(message: Message, user):
+async def _show_profile(message: Message, user, edit: bool = False):
     uid = user.id
     try:
         await ensure_user(uid)
@@ -1143,8 +1143,19 @@ async def _show_profile(message: Message, user):
         [_eib("Купить кредиты", "menu_buy"),
          _eib("Избранное", "menu_favorites")],
     ])
+    _txt = strip_surrogates(text)
+    if edit:
+        try:
+            await message.edit_text(_txt, reply_markup=kb_profile, parse_mode="HTML")
+            return
+        except Exception:
+            # сообщение с медиа/уже удалено — заменяем новым
+            try:
+                await message.delete()
+            except Exception:
+                pass
     try:
-        await message.answer(strip_surrogates(text), reply_markup=kb_profile, parse_mode="HTML")
+        await message.answer(_txt, reply_markup=kb_profile, parse_mode="HTML")
     except Exception as e:
         import logging
         logging.error(f"reply_profile send error uid={uid}: {e}")
@@ -3099,6 +3110,7 @@ async def _run_activation_job(
                     await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
             except Exception:
                 pass
+            _fail_clear("gpt", user_id)
             _activation_jobs[job_id] = {"status": "done", "success": True}
         else:
             error_text = result.get("error", "Ошибка активации")
@@ -3196,21 +3208,22 @@ async def _run_activation_job(
                         )
                     except Exception:
                         pass
-                    # Уведомляем Александра С КОДОМ — чтобы активировал вручную
-                    try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            "🚨 <b>Авто-активация ChatGPT не удалась</b>\n\n"
-                            f"👤 <code>{user_id}</code>\n"
-                            f"🔑 Код: <code>{code}</code>\n"
-                            f"📦 Тариф: <b>{plan_name}</b>\n"
-                            f"🆔 Заказ: <code>{order_id}</code>\n"
-                            f"⚠️ Ошибка: {error_text}\n\n"
-                            "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
+                    # Уведомляем Александра С КОДОМ — чтобы активировал вручную (не чаще 1/15 мин на клиента)
+                    if _fail_should_alert("gpt", user_id):
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                "🚨 <b>Авто-активация ChatGPT не удалась</b>\n\n"
+                                f"👤 <code>{user_id}</code>\n"
+                                f"🔑 Код: <code>{code}</code>\n"
+                                f"📦 Тариф: <b>{plan_name}</b>\n"
+                                f"🆔 Заказ: <code>{order_id}</code>\n"
+                                f"⚠️ Ошибка: {error_text}\n\n"
+                                "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
                         "error": f"Не удалось после {MAX_RETRIES} попыток. Напиши @{PERSONAL_USERNAME}"
@@ -3218,7 +3231,8 @@ async def _run_activation_job(
                     return  # выходим, не перезаписываем job ниже
 
             _activation_jobs[job_id] = {"status": "done", "success": False, "error": error_text}
-            try:
+            if _fail_should_alert("gpt", user_id):
+              try:
                 import datetime as _dt
                 _fail_at = _dt.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
                 try:
@@ -3247,7 +3261,7 @@ async def _run_activation_job(
                                          caption=txt, parse_mode="HTML")
                 else:
                     await bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
-            except Exception:
+              except Exception:
                 pass
     except Exception as e:
         logging.error(f"_run_activation_job {job_id}: {e}", exc_info=True)
@@ -3261,6 +3275,21 @@ async def _run_activation_job(
 # Повторное нажатие «Попробовать снова» = принудительная активация (на другой аккаунт).
 _gpt_double_warned: set = set()
 _claude_double_warned: set = set()
+
+# Антиспам алертов о НЕУДАЧНОЙ активации: не чаще 1 раза в 15 мин на (сервис, клиент).
+# Успех сбрасывает троттл (следующий сбой снова уведомит сразу).
+_fail_alert_at: dict = {}
+def _fail_should_alert(service: str, user_id: int, window: int = 900) -> bool:
+    import time as _t
+    _k = (service, user_id)
+    _now = _t.time()
+    if _now - _fail_alert_at.get(_k, 0.0) >= window:
+        _fail_alert_at[_k] = _now
+        return True
+    return False
+def _fail_clear(service: str, user_id: int):
+    _fail_alert_at.pop((service, user_id), None)
+
 # message_id активационного сообщения клиента (чтобы заменить на поздравление после успеха)
 _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
@@ -4519,6 +4548,7 @@ async def _claude_activation_polling_job(
                         await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
                 except Exception:
                     pass
+                _fail_clear("claude", user_id)
                 await log_event(user_id, "claude_activation_ok",
                                 f"code={code} bpa={bpa_order_id} plan={plan_name}")
                 return
@@ -4539,26 +4569,27 @@ async def _claude_activation_polling_job(
                     # оставляем закреплённым за клиентом: можно повторить тем же кодом или активировать вручную.
                     _fail_note = "Код сохранён — повтори тем же кодом позже или активируй вручную."
 
-                # ── алерт админу ──
-                try:
-                    _caption_fail = (
-                        f"❌ <b>Claude FAILED</b>\n"
-                        f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
-                        f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
-                        f"❌ {_err[:300]}"
-                        + f"\n♻️ {_fail_note}"
-                    )
-                    _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
-                    if _ss_fail:
-                        await bot.send_photo(
-                            ADMIN_ID,
-                            BufferedInputFile(_ss_fail, "claude_fail.png"),
-                            caption=_caption_fail, parse_mode="HTML"
+                # ── алерт админу (не чаще 1 раза в 15 мин на клиента) ──
+                if _fail_should_alert("claude", user_id):
+                    try:
+                        _caption_fail = (
+                            f"❌ <b>Claude FAILED</b>\n"
+                            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                            f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
+                            f"❌ {_err[:300]}"
+                            + f"\n♻️ {_fail_note}"
                         )
-                    else:
-                        await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
-                except Exception:
-                    pass
+                        _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
+                        if _ss_fail:
+                            await bot.send_photo(
+                                ADMIN_ID,
+                                BufferedInputFile(_ss_fail, "claude_fail.png"),
+                                caption=_caption_fail, parse_mode="HTML"
+                            )
+                        else:
+                            await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
+                    except Exception:
+                        pass
 
                 # ── сообщение клиенту ──
                 try:
@@ -5303,6 +5334,7 @@ async def _perplexity_activation_polling_job(
                         await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
                 except Exception:
                     pass
+                _fail_clear("perplexity", user_id)
                 await log_event(user_id, "perplexity_activation_ok",
                                 f"code={code} bpa={bpa_order_id} plan={plan_name}")
                 return
@@ -5323,26 +5355,27 @@ async def _perplexity_activation_polling_job(
                     # оставляем закреплённым за клиентом: можно повторить тем же кодом или активировать вручную.
                     _fail_note = "Код сохранён — повтори тем же кодом позже или активируй вручную."
 
-                # ── алерт админу ──
-                try:
-                    _caption_fail = (
-                        f"❌ <b>Perplexity FAILED</b>\n"
-                        f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
-                        f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
-                        f"❌ {_err[:300]}"
-                        + f"\n♻️ {_fail_note}"
-                    )
-                    _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
-                    if _ss_fail:
-                        await bot.send_photo(
-                            ADMIN_ID,
-                            BufferedInputFile(_ss_fail, "perplexity_fail.png"),
-                            caption=_caption_fail, parse_mode="HTML"
+                # ── алерт админу (не чаще 1 раза в 15 мин на клиента) ──
+                if _fail_should_alert("perplexity", user_id):
+                    try:
+                        _caption_fail = (
+                            f"❌ <b>Perplexity FAILED</b>\n"
+                            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                            f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
+                            f"❌ {_err[:300]}"
+                            + f"\n♻️ {_fail_note}"
                         )
-                    else:
-                        await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
-                except Exception:
-                    pass
+                        _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
+                        if _ss_fail:
+                            await bot.send_photo(
+                                ADMIN_ID,
+                                BufferedInputFile(_ss_fail, "perplexity_fail.png"),
+                                caption=_caption_fail, parse_mode="HTML"
+                            )
+                        else:
+                            await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
+                    except Exception:
+                        pass
 
                 # ── сообщение клиенту ──
                 try:
