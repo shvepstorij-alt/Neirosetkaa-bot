@@ -695,6 +695,34 @@ async def vid_aspect_text(message: Message):
     await message.answer("👆 Выбери формат кнопкой выше")
 
 
+@dp.message(VidState.waiting_prompt, F.photo)
+async def vid_prompt_photo(message: Message, state: FSMContext):
+    """Клиент прислал фото в текстовом видео-флоу — он хочет видео ИЗ фото.
+    Кнопка «Видео» = текст→видео; для фото→видео нужна анимация. Плавно переводим туда."""
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    fb = await bot.download_file(file.file_path)
+    await state.update_data(
+        first_photo=list(fb.read()),
+        anim_model_key="anim_veo",
+        anim_mode="one",
+    )
+    await state.set_state(AnimState.waiting_aspect)
+    await message.answer(
+        "📷 <b>Вижу фото!</b>\n\n"
+        "Кнопка «🎬 Видео» делает ролик по <b>текстовому описанию</b> (без фото).\n"
+        "А из твоего фото я сделаю <b>анимацию</b> — видео прямо из картинки 👇\n\n"
+        "Выбери формат видео:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
+            [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
+            [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
+            [_eib("Главное меню", "back_main")],
+        ]),
+        parse_mode="HTML"
+    )
+
+
 @dp.message(VidState.waiting_prompt)
 async def vid_prompt(message: Message, state: FSMContext):
     data = await state.get_data()
