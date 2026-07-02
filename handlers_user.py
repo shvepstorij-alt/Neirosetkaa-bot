@@ -82,29 +82,18 @@ async def cmd_start(message: Message, state: FSMContext):
             )
         except Exception:
             pass
-        text = (
-            f"👋 Привет, {message.from_user.first_name}!\n"
-            f"Я - бот Neirosetka 🎨 Помогу создавать фото и видео с помощью ИИ прямо в Telegram.\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎁 Тебя пригласил друг!\n"
-            f"Получи <b>+{REF_BONUS} бонусных кредитов</b> 🎉\n"
-            f"💵 Баланс: <b>{credits} кредитов</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎨 Что можно сделать:\n"
-            f"📷 Генерация изображений\n"
-            f"🎬 Генерация видео\n"
-            f"🖌 Редактирование фото по описанию\n"
-            f"🏃 Анимация фото в видео\n"
-            f"🎭 Motion Control - перенос движений с видео на фото\n"
-            f"🤖 AI-консультант по нейросетям и подключению VPN - бесплатно\n"
-            f"🛍 Магазин подписок - ChatGPT, Claude, Midjourney, Grok и многие другие!\n\n"
-            f"⏳ Кредиты действуют 30 дней\n"
-            f"📢 Гайды и новости у нас в канале @{ADMIN_USERNAME}\n\n"
-            f"Выбери действие 👇"
+
+    if is_new:
+        ref_line = "🤝 Тебя пригласил друг — бонус уже на балансе!\n" if referred_by else ""
+        text = WELCOME_NEW.format(
+            name=message.from_user.first_name,
+            credits=credits,
+            channel=ADMIN_USERNAME,
+            ref_line=ref_line,
         )
     else:
-        gen_count = await get_gen_count(uid) if not is_new else 0
-        text = (WELCOME_NEW if is_new else WELCOME_BACK).format(
+        gen_count = await get_gen_count(uid)
+        text = WELCOME_BACK.format(
             name=message.from_user.first_name,
             credits=credits,
             gen_count=gen_count,
