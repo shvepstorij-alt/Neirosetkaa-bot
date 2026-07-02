@@ -322,10 +322,13 @@ async def subscription_reminder_loop():
                             f"⏰ <b>Подписка заканчивается!</b>\n\n"
                             f"📦 <b>{s['service_name']}{plan}</b>\n"
                             f"📅 Действует ещё <b>{days_left} дн.</b> - до {exp}\n\n"
+                            f"💡 <b>Оплачивай продление в последний день</b> (когда останется 0–1 дн.).\n"
+                            f"Новая подписка оформляется на месяц <b>с даты оплаты</b> и <b>не суммируется</b> с остатком — "
+                            f"если оплатить сейчас, оставшиеся дни сгорят.\n\n"
                             f"Продлить подписку → 🛍 Магазин",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text=f"🔄 Продлить {s['service_name']}", callback_data=f"shop_renew:{s['service_key']}")],
+                                [InlineKeyboardButton(text=f"Продлить {s['service_name']}", callback_data=f"shop_renew:{s['service_key']}", icon_custom_emoji_id="5262479378880673679")],
                                 [InlineKeyboardButton(text="👤 Мой профиль", callback_data="show_profile")],
                             ])
                         )
@@ -349,10 +352,12 @@ async def subscription_reminder_loop():
                             f"⚠️ <b>Подписка истекает завтра!</b>\n\n"
                             f"📦 <b>{s['service_name']}{plan}</b>\n"
                             f"📅 Дата окончания: <b>{exp}</b>\n\n"
-                            f"Закажи продление сейчас!",
+                            f"💡 Лучше оплатить <b>завтра, в день окончания</b>: новая подписка идёт месяц "
+                            f"с даты оплаты и <b>не суммируется</b> с остатком.\n\n"
+                            f"Закажи продление 👇",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text=f"🔄 Продлить {s['service_name']}", callback_data=f"shop_renew:{s['service_key']}")],
+                                [InlineKeyboardButton(text=f"Продлить {s['service_name']}", callback_data=f"shop_renew:{s['service_key']}", icon_custom_emoji_id="5262479378880673679")],
                             ])
                         )
                         await conn.execute("UPDATE user_subscriptions SET notified_1d=TRUE WHERE id=$1", s["id"])

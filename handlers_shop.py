@@ -46,8 +46,17 @@ _HIDDEN_SHOP_NAMES = {"iCloud/AppStore", "iCloud / AppStore", "iCloud/App Store"
 async def shop_renew(cb: CallbackQuery):
     key = cb.data.split(":")[1]
     s = SHOP_CATALOG.get(key)
-    if not s:
-        await cb.answer("Сервис не найден", show_alert=True)
+    # Ключ мог не совпасть (регистр/сменился) — пробуем найти по имени
+    if not s and key:
+        _kl = key.lower()
+        for _k, _v in SHOP_CATALOG.items():
+            if isinstance(_v, dict) and (_k.lower() == _kl or _kl in _v.get("name", "").lower()):
+                key, s = _k, _v
+                break
+    # Сервис не найден или без тарифов — не тупик, открываем общий магазин
+    if not s or not s.get("plans"):
+        cb.data = "menu_shop"
+        await menu_shop(cb)
         return
     await cb.answer()
     # Перенаправляем в магазин на этот сервис
