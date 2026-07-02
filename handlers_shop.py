@@ -569,6 +569,12 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
         import time as _t
         order_id = f"cr_{uid}_{int(_t.time())}"
         await fk_save_order(order_id, uid, p["credits"], rest, key)
+        try:
+            _pool_cs = await get_pool()
+            async with _pool_cs.acquire() as _c_cs:
+                await _c_cs.execute("UPDATE fk_orders SET coins_spent=$1 WHERE order_id=$2", coins_used, order_id)
+        except Exception:
+            pass
         pay_url = fk_pay_url(rest, order_id)
         await cb.message.edit_text(
             "\U0001fa99 <b>\u041c\u043e\u043d\u0435\u0442\u043a\u0438 \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u044b!</b>\n\n"
@@ -673,9 +679,9 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack) "
-            "VALUES ($1, $2, $3, $4, $5) ON CONFLICT (order_id) DO NOTHING",
-            order_id, uid, 0, rest, f"shop:{key}:{plan_idx}"
+            "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, coins_spent) "
+            "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (order_id) DO NOTHING",
+            order_id, uid, 0, rest, f"shop:{key}:{plan_idx}", coins_used
         )
     pay_url = fk_pay_url(rest, order_id)
     username = cb.from_user.username or cb.from_user.full_name
@@ -821,13 +827,13 @@ async def on_successful_payment(message: Message):
             pass
         return
 
-    # === 2. Пакеты кредитов (pack:KEY) ===
-    if payload.startswith("pack:"):
+    # === 2. Пакеты кредитов (pack:KEY и stars:KEY:UID — оба ведут на пакет кредитов) ===
+    if payload.startswith("pack:") or payload.startswith("stars:"):
         parts = payload.split(":")
         key = parts[1]
         p = CREDIT_PACKS.get(key)
         if not p:
-            logging.warning(f"Unknown pack key in payment: {key}")
+            logging.warning(f"Unknown pack key in payment: {key} (payload={payload})")
             return
 
         await add_credits_batch(uid, p["credits"], source="purchase", days_valid=30)

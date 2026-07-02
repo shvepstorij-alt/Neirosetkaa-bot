@@ -451,10 +451,6 @@ async def notify_admin_error(context: str, e: Exception):
         )
     except Exception:
         pass
-    try:
-        await track_error_for_alert()
-    except Exception:
-        pass
 
 
 # ══════════════════════════════════════════════════════════
@@ -556,20 +552,22 @@ async def process_referral_bonus(user_id: int):
             return
         # Если реферер заблокирован - не платим бонус, но помечаем что «обработано»
         # чтобы не дёргать эту функцию каждый раз
+        # Атомарно захватываем «бонус ещё не выплачен» — защита от гонки двух параллельных платежей
+        _claim = await conn.execute(
+            "UPDATE users SET ref_bonus_paid=TRUE WHERE user_id=$1 AND ref_bonus_paid=FALSE", user_id
+        )
+        if _claim.split()[-1] == "0":
+            # уже обработано другим платежом/потоком — выходим без повторного начисления
+            return
+        # Если реферер заблокирован - бонус не платим (флаг уже установлен выше)
         if await is_blocked(referrer_id):
             logging.info(f"Ref bonus SKIPPED: referrer {referrer_id} is blocked")
-            await conn.execute(
-                "UPDATE users SET ref_bonus_paid=TRUE WHERE user_id=$1", user_id
-            )
             return
-        # Считаем сколько у реферера уже было платящих
-        paid_count = await conn.fetchval(
+        # Считаем сколько у реферера уже было платящих (без текущего, который мы только что пометили)
+        paid_count = (await conn.fetchval(
             "SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE",
             referrer_id
-        ) or 0
-        await conn.execute(
-            "UPDATE users SET ref_bonus_paid=TRUE WHERE user_id=$1", user_id
-        )
+        ) or 1) - 1
 
     bonus_amount = _ref_bonus_for_count(paid_count)
     await add_credits_batch(referrer_id, bonus_amount, source="referral", days_valid=30)
@@ -2346,7 +2344,7 @@ async def api_admin_order_action_handler(request: web.Request) -> web.Response:
             except Exception: pass
             try:
                 _rkb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✍️ Ответить", callback_data=f"cl_reply:{oid}")]])
-                await bot.send_message(uid, f"✍️ <b>Сообщение от Александра по заказу:</b>\n\n{txt}\n\nНажми «Ответить», чтобы написать в ответ (например, прислать код).", parse_mode="HTML", reply_markup=_rkb)
+                await bot.send_message(uid, f"✍️ <b>Сообщение от Александра по заказу:</b>\n\n{__import__('html').escape(txt)}\n\nНажми «Ответить», чтобы написать в ответ (например, прислать код).", parse_mode="HTML", reply_markup=_rkb)
             except Exception: pass
         else:
             return web.json_response({"ok": False, "msg": "Неизвестное действие"})
@@ -2894,10 +2892,28 @@ async def api_admin_miniapp_toggle_handler(request: web.Request) -> web.Response
             rt.perplexity_webapp_enabled = en
         else:
             return web.json_response({"ok": False})
+        # Персистим, чтобы тумблер пережил деплой/рестарт
+        try:
+            await set_setting(f"miniapp_enabled:{key}", "1" if en else "0")
+        except Exception:
+            pass
         return web.json_response({"ok": True, "enabled": en})
     except Exception as _e:
         logging.error(f"api_admin_miniapp_toggle: {_e}")
         return web.json_response({"ok": False}, status=500)
+
+
+async def load_miniapp_toggles():
+    """Загружает сохранённые тумблеры mini-app из settings (переживают деплой)."""
+    try:
+        for _k, _attr in (("chatgpt", "chatgpt_webapp_enabled"),
+                          ("claude", "claude_webapp_enabled"),
+                          ("perplexity", "perplexity_webapp_enabled")):
+            _v = await get_setting(f"miniapp_enabled:{_k}", None)
+            if _v is not None:
+                setattr(rt, _attr, _v == "1")
+    except Exception as _e:
+        logging.warning(f"load_miniapp_toggles: {_e}")
 
 
 async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
@@ -3254,7 +3270,7 @@ async def _run_activation_job(
                     f"📦 Тариф: <b>{plan_name}</b>\n"
                     f"⏱ Время: <b>{_fail_at}</b>\n"
                     f"❗ {error_text}\n"
-                    f"🔄 Код возвращён в пул."
+                    f"🔒 Код закреплён за клиентом — активируй вручную ИМ ЖЕ."
                 )
                 if screenshot:
                     await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
@@ -3495,6 +3511,30 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
     credits    = payment["credits"]
     amount_rub = payment["amount"]
 
+    # 0. Валидация суммы для НЕ-webhook путей (webhook валидирует ДО вызова).
+    # Кредитные заказы: пришло меньше ожидаемого = блок (анти-фрод, как в вебхуке).
+    # shop_/nsg_ пропускаем: там своя (мягкая) логика и отдельные проверки.
+    if source != "webhook" and not order_id.startswith("shop_") and not order_id.startswith("nsg_"):
+        try:
+            _fkchk = await fk_check_order_status(order_id)
+            _recv = float((_fkchk or {}).get("amount") or 0)
+            _exp = float(amount_rub or 0)
+            if _recv and _exp and _recv < _exp - 1.0:
+                logging.error(f"FK AMOUNT MISMATCH ({source}) order={order_id} exp={_exp} recv={_recv}")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"\U0001f6a8 <b>Несовпадение суммы ({source})</b>\n"
+                        f"Заказ <code>{order_id}</code>\n"
+                        f"Ожидали <b>{_exp:.0f}₽</b>, пришло <b>{_recv:.0f}₽</b>\n"
+                        f"Начисление ЗАБЛОКИРОВАНО. Разберись вручную.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                return False
+        except Exception:
+            pass
+
     # 1. Атомарно помечаем заказ как paid - если уже было paid, mark_paid вернёт False
     was_marked = await fk_mark_paid(order_id)
     if not was_marked:
@@ -3502,11 +3542,31 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         logging.info(f"FK order {order_id} already paid (source={source})")
         return False
 
-    # 2. Зачисляем кредиты партией (на 30 дней) и логируем
-    await add_credits_batch(user_id, credits, source="purchase", days_valid=30)
-    await log_payment(user_id, credits, int(amount_rub), "freekassa")
-    await process_referral_bonus(user_id)
-    await process_premium_referral(user_id, order_id, amount_rub)
+    # 2. Зачисляем кредиты партией (на 30 дней) и логируем.
+    # Если начисление упало ПОСЛЕ mark_paid — деньги приняты, услуга не выдана:
+    # громко алертим админа (иначе сбой был бы «тихим» и невосстановимым).
+    try:
+        await add_credits_batch(user_id, credits, source="purchase", days_valid=30)
+        await log_payment(user_id, credits, int(amount_rub), "freekassa")
+    except Exception as _grant_err:
+        logging.error(f"FK GRANT FAILED after mark_paid order={order_id}: {_grant_err}", exc_info=True)
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"\U0001f6a8 <b>СБОЙ ЗАЧИСЛЕНИЯ ПОСЛЕ ОПЛАТЫ</b>\n\n"
+                f"Заказ помечен оплаченным, но кредиты/лог не зачислились.\n"
+                f"\U0001f464 <code>{user_id}</code>\n\U0001f48e Кредитов: <b>{credits}</b>\n"
+                f"\U0001f4b5 Сумма: <b>{amount_rub}₽</b>\n\U0001f194 <code>{order_id}</code>\n\n"
+                f"Проверь и начисли вручную: <code>/credit {order_id}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return False
+    try:
+        await process_referral_bonus(user_id)
+        await process_premium_referral(user_id, order_id, amount_rub)
+    except Exception as _ref_err:
+        logging.error(f"FK referral post-processing error order={order_id}: {_ref_err}")
 
     # Если был промокод - инкрементим используемость.
     # Промокод хранится в заказе БД (в payload вебхука FreeKassa его нет!).
@@ -3554,7 +3614,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             return True
 
         is_shop_order = order_id.startswith("shop_")
-        pack_info = (db_order_for_msg or {}).get("pack", "") if db_order_for_msg else pack
+        pack_info = (db_order_for_msg or {}).get("pack", "") if db_order_for_msg else ""
 
         if is_shop_order:
             # Заказ из магазина - показываем информацию о товаре
@@ -3574,6 +3634,12 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 plan_display = p.get("name", "")
                 pool_sub = await get_pool()
                 async with pool_sub.acquire() as conn_sub:
+                    # Продление: гасим прежние активные подписки того же сервиса,
+                    # чтобы не было двух активных и повторных напоминаний «заканчивается».
+                    await conn_sub.execute(
+                        "UPDATE user_subscriptions SET is_active=FALSE "
+                        "WHERE user_id=$1 AND service_key=$2 AND is_active=TRUE",
+                        user_id, shop_key)
                     await conn_sub.execute("""
                         INSERT INTO user_subscriptions
                         (user_id, service_key, service_name, plan_name, expires_at, created_by)
@@ -3605,19 +3671,6 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             elif _svc_kind == "chatgpt":
                 import urllib.parse as _uparse
                 _plan_name = p.get("name", "Plus")
-                if not rt.chatgpt_webapp_enabled:
-                    await bot.send_message(
-                        user_id,
-                        f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
-                        f"🔧 Сейчас ведутся технические работы. "
-                        f"Александр активирует подписку вручную в течение часа 🙌{delayed_note}",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="❓ Написать Александру",
-                                url=f"https://t.me/{PERSONAL_USERNAME}")],
-                        ])
-                    )
                 if not rt.chatgpt_webapp_enabled:
                     await bot.send_message(
                         user_id,
@@ -4452,6 +4505,7 @@ async def _claude_activation_polling_job(
     При failed — возвращает код, пишет обоим.
     """
     _claude_job_results[bpa_order_id] = {"status": "queued"}
+    _replaced_code = None  # авто-замена кода отключена; ветка elif оставлена мёртвой
     logging.info(f"Claude polling bpa={bpa_order_id} user={user_id} code={code}")
 
     for attempt in range(120):          # макс 10 минут (120 × 5 сек)
@@ -4559,6 +4613,14 @@ async def _claude_activation_polling_job(
                 _claude_job_results[bpa_order_id] = {
                     "status": "done", "success": False, "error": _err
                 }
+                # Сбрасываем bpa_order_id в pending, чтобы «Попробовать снова» создал НОВЫЙ BPA-заказ
+                try:
+                    _pool_rb = await get_pool()
+                    async with _pool_rb.acquire() as _c_rb:
+                        await _c_rb.execute(
+                            "UPDATE claude_pending_activations SET bpa_order_id=NULL WHERE user_id=$1", user_id)
+                except Exception:
+                    pass
                 _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
                 if _is_stock:
                     # провайдер временно без стока — код клиента ОСТАЁТСЯ валидным.
@@ -4775,9 +4837,13 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     # БАГ 3 FIX: если job уже запущен — не делаем новый POST, просто возвращаем существующий order_id
     existing_bpa = pending.get("bpa_order_id")
     if existing_bpa:
-        # Polling job уже работает или завершился — возвращаем клиенту тот же order_id
-        logging.info(f"Claude reuse bpa={existing_bpa} user={user_id}")
-        return _resp({"order_id": existing_bpa, "status": "queued"})
+        _prev = _claude_job_results.get(existing_bpa)
+        _prev_failed = bool(_prev and _prev.get("status") == "done" and _prev.get("success") is False)
+        if not _prev_failed:
+            # Polling job уже работает/завершился успехом — возвращаем тот же order_id
+            logging.info(f"Claude reuse bpa={existing_bpa} user={user_id}")
+            return _resp({"order_id": existing_bpa, "status": "queued"})
+        logging.info(f"Claude prev bpa={existing_bpa} failed — делаем новый POST")
 
     # Guard: повторная активация Claude за 35 дней — предупреждаем, повторное
     # нажатие «Попробовать снова» активирует принудительно (на другой аккаунт).
@@ -5238,6 +5304,7 @@ async def _perplexity_activation_polling_job(
     При failed — возвращает код, пишет обоим.
     """
     _perplexity_job_results[bpa_order_id] = {"status": "queued"}
+    _replaced_code = None  # авто-замена кода отключена; ветка elif оставлена мёртвой
     logging.info(f"Perplexity polling bpa={bpa_order_id} user={user_id} code={code}")
 
     for attempt in range(120):          # макс 10 минут (120 × 5 сек)
@@ -5345,6 +5412,14 @@ async def _perplexity_activation_polling_job(
                 _perplexity_job_results[bpa_order_id] = {
                     "status": "done", "success": False, "error": _err
                 }
+                # Сбрасываем bpa_order_id в pending, чтобы «Попробовать снова» создал НОВЫЙ BPA-заказ
+                try:
+                    _pool_rb = await get_pool()
+                    async with _pool_rb.acquire() as _c_rb:
+                        await _c_rb.execute(
+                            "UPDATE perplexity_pending_activations SET bpa_order_id=NULL WHERE user_id=$1", user_id)
+                except Exception:
+                    pass
                 _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
                 if _is_stock:
                     # провайдер временно без стока — код клиента ОСТАЁТСЯ валидным.
@@ -5562,9 +5637,13 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     # БАГ 3 FIX: если job уже запущен — не делаем новый POST, просто возвращаем существующий order_id
     existing_bpa = pending.get("bpa_order_id")
     if existing_bpa:
-        # Polling job уже работает или завершился — возвращаем клиенту тот же order_id
-        logging.info(f"Perplexity reuse bpa={existing_bpa} user={user_id}")
-        return _resp({"order_id": existing_bpa, "status": "queued"})
+        _prev = _perplexity_job_results.get(existing_bpa)
+        _prev_failed = bool(_prev and _prev.get("status") == "done" and _prev.get("success") is False)
+        if not _prev_failed:
+            # Polling job уже работает/завершился успехом — возвращаем тот же order_id
+            logging.info(f"Perplexity reuse bpa={existing_bpa} user={user_id}")
+            return _resp({"order_id": existing_bpa, "status": "queued"})
+        logging.info(f"Perplexity prev bpa={existing_bpa} failed — делаем новый POST")
 
     # Guard: повторная активация Perplexity за 35 дней — предупреждаем, повторное
     # нажатие «Попробовать снова» активирует принудительно (на другой аккаунт).

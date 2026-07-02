@@ -35,10 +35,11 @@ from keyboards import (
 )
 from common import (
     _ensure_playwright_browser, claude_with_search, setup_webhook_server, process_linkpay_link,
+    load_miniapp_toggles,
 )
 from background import (
     _activation_jobs_cleanup_loop, _claude_job_results_cleanup_loop, _memory_cleanup_loop, auto_recover_lost_videos_loop, claude_codes_cleanup_loop, cleanup_stale_generations_loop,
-    credit_batches_loop, db_cleanup_loop, fk_auto_check_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, nsgifts_balance_alert_loop,
+    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
     reminders_loop, subscription_reminder_loop,
 )
 from _registration_order import ORIG_ORDER as _ORIG_ORDER
@@ -176,6 +177,7 @@ async def main():
     await _ensure_playwright_browser()
     await init_db()
     await load_prices_from_db()
+    await load_miniapp_toggles()
     asyncio.create_task(setup_webhook_server())
     asyncio.create_task(cleanup_stale_generations_loop())
     asyncio.create_task(auto_recover_lost_videos_loop())
@@ -189,6 +191,8 @@ async def main():
     asyncio.create_task(gpt_code_rechecker_loop())
     asyncio.create_task(_activation_jobs_cleanup_loop())
     asyncio.create_task(claude_codes_cleanup_loop())
+    asyncio.create_task(perplexity_codes_cleanup_loop())
+    asyncio.create_task(coins_refund_loop())
     asyncio.create_task(_claude_job_results_cleanup_loop())
     # NS Gifts: инициализируем клиент и фоновые задачи
 

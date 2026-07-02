@@ -1685,6 +1685,15 @@ def _verify_tg_init_data(init_data: str) -> int | None:
         if not ok:
             logging.warning("initData verify: hash mismatch")
             return None
+        # Защита от replay: отклоняем initData старше 24ч
+        try:
+            import time as _t_iv
+            _ad = int(params.get("auth_date", "0") or "0")
+            if _ad and (_t_iv.time() - _ad) > 86400:
+                logging.warning("initData verify: auth_date too old (replay?)")
+                return None
+        except Exception:
+            pass
         user_data = _json.loads(unquote(params.get("user", "{}")))
         return user_data.get("id")
     except Exception as _e:

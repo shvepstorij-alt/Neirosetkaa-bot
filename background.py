@@ -28,7 +28,7 @@ from runtime_state import (
     rt,
 )
 from db import (
-    expire_old_batches, get_pool, log_event,
+    expire_old_batches, get_pool, log_event, add_coins,
 )
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
@@ -213,7 +213,7 @@ async def fk_auto_check_loop():
                     "SELECT order_id, user_id, credits, amount_rub, payment_method, promo_code "
                     "FROM fk_orders "
                     "WHERE status = 'pending' "
-                    "  AND created_at > NOW() - INTERVAL '1 hour' "
+                    "  AND created_at > NOW() - INTERVAL '24 hours' "
                     "  AND created_at < NOW() - INTERVAL '2 minutes' "
                     "ORDER BY created_at DESC "
                     "LIMIT 50"
@@ -669,6 +669,83 @@ async def claude_codes_cleanup_loop():
                         pass
         except Exception as e:
             logging.error(f"claude_codes_cleanup_loop: {e}")
+
+
+async def perplexity_codes_cleanup_loop():
+    """Каждые 30 минут возвращает в пул коды Perplexity, которые зарезервированы,
+    но не активированы > 2 часов (клиент получил код, но не открыл WebApp)."""
+    while True:
+        try:
+            await asyncio.sleep(1800)  # 30 минут
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                released = await conn.execute(
+                    """UPDATE perplexity_codes
+                       SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
+                       WHERE is_used=TRUE
+                         AND used_by IS NULL
+                         AND NOT EXISTS (
+                             SELECT 1 FROM perplexity_pending_activations p
+                             WHERE p.code = perplexity_codes.code
+                               AND p.expires_at > NOW()
+                         )"""
+                )
+                if released and released != "UPDATE 0":
+                    logging.info(f"\U0001f511 perplexity_codes cleanup: {released}")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"\U0001f511 <b>Коды Perplexity возвращены в пул</b>\n"
+                            f"Клиенты оплатили но не активировали в течение 2 часов.\n"
+                            f"<i>{released}</i>",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"perplexity_codes_cleanup_loop: {e}")
+
+
+async def coins_refund_loop():
+    """Раз в час возвращает монетки по НЕоплаченным заказам старше 24ч
+    (клиент применил монетки + СБП, но доплату так и не внёс)."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # 1 час
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                cands = await conn.fetch(
+                    "SELECT order_id, user_id, coins_spent FROM fk_orders "
+                    "WHERE status != 'paid' AND coins_spent > 0 "
+                    "AND created_at < NOW() - INTERVAL '24 hours'")
+                for r in cands:
+                    # атомарно «забираем» возврат, чтобы не вернуть дважды
+                    claim = await conn.execute(
+                        "UPDATE fk_orders SET coins_spent=0 "
+                        "WHERE order_id=$1 AND coins_spent=$2 AND status != 'paid'",
+                        r["order_id"], r["coins_spent"])
+                    if claim.split()[-1] != "1":
+                        continue
+                    _amt = int(r["coins_spent"] or 0)
+                    if _amt <= 0:
+                        continue
+                    try:
+                        await add_coins(r["user_id"], float(_amt),
+                                        reason=f"refund unpaid {r['order_id']}")
+                    except Exception as _ce:
+                        logging.error(f"coins_refund add_coins fail {r['order_id']}: {_ce}")
+                        continue
+                    logging.info(f"\U0001fa99 coins refund {_amt} uid={r['user_id']} order={r['order_id']}")
+                    try:
+                        await bot.send_message(
+                            r["user_id"],
+                            f"\U0001fa99 <b>Монетки возвращены</b>\n\n"
+                            f"Заказ не был оплачен в течение суток — вернули <b>{_amt}\u20bd</b> монетками на баланс.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"coins_refund_loop: {e}")
 
 
 async def _claude_job_results_cleanup_loop():

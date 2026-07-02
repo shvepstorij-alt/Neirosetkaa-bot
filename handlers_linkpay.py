@@ -129,7 +129,7 @@ async def lp_clarify_send(message: Message, state: FSMContext):
         ]) if order_id else None
         await bot.send_message(
             uid,
-            f"✍️ <b>Сообщение от Александра по твоему заказу:</b>\n\n{message.text}\n\n"
+            f"✍️ <b>Сообщение от Александра по твоему заказу:</b>\n\n{_html.escape(message.text)}\n\n"
             f"Нажми «Ответить», чтобы написать в ответ (например, прислать код).",
             parse_mode="HTML", reply_markup=_kb
         )

@@ -1136,6 +1136,7 @@ async def do_upscale(message: Message, state: FSMContext):
         return
 
     wait = await message.answer("⏳ Улучшаю фото... обычно 20–40 сек")
+    _deducted = False
     try:
         # Скачиваем фото
         photo = message.photo[-1]
@@ -1190,6 +1191,7 @@ async def do_upscale(message: Message, state: FSMContext):
             await message.answer("💸 Недостаточно кредитов.")
             await state.clear()
             return
+        _deducted = True
 
         new_cr = await get_credits(uid)
         await wait.delete()
@@ -1217,12 +1219,17 @@ async def do_upscale(message: Message, state: FSMContext):
 
     except Exception as e:
         logging.error(f"Upscale error uid={uid}: {e}")
+        if _deducted:
+            try:
+                await add_credits(uid, UPSCALE_CREDIT_COST)
+            except Exception:
+                pass
         try:
             await wait.delete()
         except Exception:
             pass
         await message.answer(
-            f"⚠️ Ошибка апскейла. Попробуй ещё раз или напиши @neirosetkaalex.",
+            f"⚠️ Ошибка апскейла. Кредиты возвращены. Попробуй ещё раз или напиши @neirosetkaalex.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔍 Попробовать снова", callback_data="menu_upscale")],
                 [_eib("Главное меню", "back_main")],
@@ -1349,12 +1356,9 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         # Генерируем изображение
         cb.data = f"imodel:{model_key}"
         # Используем общую функцию генерации через FSM-стейт
-        if m["api"] == "imagen":
-            img_bytes = await api_generate_imagen(improved_prompt, m["model_id"])
-        elif m["api"] == "gemini":
-            img_bytes = await api_generate_gemini_image(improved_prompt, m["model_id"])
-        else:
-            img_bytes = await api_generate_fal_image(improved_prompt, m["model_id"])
+        img_bytes = await api_generate_image(
+            improved_prompt, m["model_id"], "1:1", m["api"],
+            quality=m.get("quality", "medium"))
 
         success = await deduct(uid, m["credits"])
         if not success:

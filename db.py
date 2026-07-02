@@ -101,6 +101,7 @@ async def init_db():
             ("paid_at",        "TIMESTAMP"), # когда пришёл webhook об оплате
             ("admin_msg_id",   "BIGINT"),   # ID сообщения админу для редактирования
             ("num",            "BIGSERIAL"), # человекочитаемый номер заказа (#N)
+            ("coins_spent",    "INTEGER DEFAULT 0"), # монетки, списанные под доплату СБП (для возврата)
         ]:
             try:
                 await conn.execute(f"ALTER TABLE fk_orders ADD COLUMN {col} {dfn}")
@@ -925,22 +926,24 @@ async def add_credits_batch(user_id: int, credits: int, source: str = "purchase"
     Также обновляет основной баланс пользователя для совместимости."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        if days_valid > 0:
+        # Партия и баланс — в одной транзакции (чтобы не разъехались при сбое между ними)
+        async with conn.transaction():
+            if days_valid > 0:
+                await conn.execute(
+                    f"INSERT INTO credit_batches (user_id, credits_init, credits_left, source, expires_at) "
+                    f"VALUES ($1, $2, $2, $3, NOW() + ($4 || ' days')::INTERVAL)",
+                    user_id, credits, source, str(days_valid)
+                )
+            else:
+                await conn.execute(
+                    "INSERT INTO credit_batches (user_id, credits_init, credits_left, source) "
+                    "VALUES ($1, $2, $2, $3)",
+                    user_id, credits, source
+                )
             await conn.execute(
-                f"INSERT INTO credit_batches (user_id, credits_init, credits_left, source, expires_at) "
-                f"VALUES ($1, $2, $2, $3, NOW() + ($4 || ' days')::INTERVAL)",
-                user_id, credits, source, str(days_valid)
+                "UPDATE users SET credits = credits + $1 WHERE user_id=$2",
+                credits, user_id
             )
-        else:
-            await conn.execute(
-                "INSERT INTO credit_batches (user_id, credits_init, credits_left, source) "
-                "VALUES ($1, $2, $2, $3)",
-                user_id, credits, source
-            )
-        await conn.execute(
-            "UPDATE users SET credits = credits + $1 WHERE user_id=$2",
-            credits, user_id
-        )
     await log_event(user_id, f"batch_add_{source}", f"credits={credits} days={days_valid}")
 
 

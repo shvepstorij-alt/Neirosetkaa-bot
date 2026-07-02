@@ -284,17 +284,29 @@ async def nsg_full_coins(cb: CallbackQuery):
     order_id = cb.data.split(":", 1)[1]
     uid = cb.from_user.id
     pool = await get_pool()
+    # Атомарно захватываем заказ (защита от двойного клика → двойного списания/закупки)
     async with pool.acquire() as conn:
+        _claim = await conn.execute(
+            "UPDATE nsgifts_orders SET status='paying' "
+            "WHERE fk_order_id=$1 AND user_id=$2 AND status='pending'", order_id, uid)
         row = await conn.fetchrow(
             "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1 AND user_id=$2", order_id, uid)
-    if not row or row["status"] != "pending":
+    if not row or _claim.split()[-1] == "0":
         await cb.answer("Заказ не найден или уже оплачен.", show_alert=True)
         return
     required = int(row["price_rub"])
+    async def _rollback():
+        try:
+            async with pool.acquire() as _c:
+                await _c.execute("UPDATE nsgifts_orders SET status='pending' WHERE fk_order_id=$1 AND status='paying'", order_id)
+        except Exception:
+            pass
     if await get_coins(uid) < required:
+        await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
     if not await deduct_coins(uid, required):
+        await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
     new_coins = await get_coins(uid)
@@ -327,31 +339,46 @@ async def nsg_coins_sbp(cb: CallbackQuery):
     order_id = cb.data.split(":", 1)[1]
     uid = cb.from_user.id
     pool = await get_pool()
+    # Атомарно захватываем заказ (защита от двойного клика)
     async with pool.acquire() as conn:
+        _claim = await conn.execute(
+            "UPDATE nsgifts_orders SET status='paying' "
+            "WHERE fk_order_id=$1 AND user_id=$2 AND status='pending'", order_id, uid)
         row = await conn.fetchrow(
             "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1 AND user_id=$2", order_id, uid)
-    if not row or row["status"] != "pending":
+    if not row or _claim.split()[-1] == "0":
         await cb.answer("Заказ не найден или уже оплачен.", show_alert=True)
         return
     full = int(row["price_rub"])
+    async def _rollback():
+        try:
+            async with pool.acquire() as _c:
+                await _c.execute("UPDATE nsgifts_orders SET status='pending' WHERE fk_order_id=$1 AND status='paying'", order_id)
+        except Exception:
+            pass
     user_coins = await get_coins(uid)
     coins_used = int(min(user_coins, full))
     rest = max(0, full - coins_used)
     if coins_used <= 0:
+        await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
     if rest <= 0:
         if not await deduct_coins(uid, full):
+            await _rollback()
             await cb.answer("Недостаточно монеток.", show_alert=True)
             return
         await nsgifts_fulfill_after_payment(order_id, uid)
         return
     if not await deduct_coins(uid, coins_used):
+        await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
     # Остаток к оплате через FK: фиксируем ожидаемую сумму = rest (валидация вебхука)
+    # и записываем списанные монетки для авто-возврата, если клиент не доплатит.
     async with pool.acquire() as conn:
-        await conn.execute("UPDATE fk_orders SET amount_rub=$1 WHERE order_id=$2", rest, order_id)
+        await conn.execute("UPDATE fk_orders SET amount_rub=$1, coins_spent=$2 WHERE order_id=$3",
+                           rest, coins_used, order_id)
     pay_url = fk_pay_url(rest, order_id)
     new_coins = await get_coins(uid)
     try:
