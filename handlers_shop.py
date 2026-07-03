@@ -44,31 +44,35 @@ _HIDDEN_SHOP_NAMES = {"iCloud/AppStore", "iCloud / AppStore", "iCloud/App Store"
 
 @dp.callback_query(F.data.startswith("shop_renew:"))
 async def shop_renew(cb: CallbackQuery):
-    key = cb.data.split(":")[1]
+    # Надёжно: делегируем в рабочий обработчик витрины сервиса (shop_service).
+    # Он сам делает edit/answer с фолбэком и cb.answer() — кнопка не «замолкает».
+    key = cb.data.split(":")[1] if ":" in cb.data else ""
     s = SHOP_CATALOG.get(key)
-    # Ключ мог не совпасть (регистр/сменился) — пробуем найти по имени
     if not s and key:
         _kl = key.lower()
         for _k, _v in SHOP_CATALOG.items():
             if isinstance(_v, dict) and (_k.lower() == _kl or _kl in _v.get("name", "").lower()):
                 key, s = _k, _v
                 break
-    # Сервис не найден или без тарифов — не тупик, открываем общий магазин
-    if not s or not s.get("plans"):
-        cb.data = "menu_shop"
-        await menu_shop(cb)
-        return
-    await cb.answer()
-    # Перенаправляем в магазин на этот сервис
-    cb.data = f"adm_shop_service:{key}"
-    await cb.message.answer(
-        f"{tg_emoji(s)} <b>\u041f\u0440\u043e\u0434\u043b\u0438\u0442\u044c {s['name']}</b>\n\n{s['desc']}",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"{p['name']} - {p['price']}₽", callback_data=f"shop_confirm:{key}:{i}")]
-            for i, p in enumerate(s.get("plans", []))
-        ] + [[_eib("Главное меню", "back_main")]])
-    )
+    try:
+        if s and s.get("plans"):
+            cb.data = f"shop_svc:{key}"
+            await shop_service(cb)
+        else:
+            cb.data = "menu_shop"
+            await menu_shop(cb)
+    except Exception as _e:
+        logging.error(f"shop_renew failed key={key!r}: {_e}")
+        try:
+            await cb.answer("Открываю магазин…", show_alert=False)
+        except Exception:
+            pass
+        try:
+            cb.data = "menu_shop"
+            await menu_shop(cb)
+        except Exception:
+            pass
+
 
 @dp.callback_query(F.data == "menu_shop")
 async def menu_shop(cb: CallbackQuery):
