@@ -205,6 +205,29 @@ async def _extract_prompt(message) -> str:
     return ""
 
 
+@dp.message(ImgState.waiting_prompt, F.photo)
+async def img_prompt_photo(message: Message, state: FSMContext):
+    """Клиент прислал ФОТО в текстовой генерации — значит хочет работу ПО ФОТО
+    (вставить объект, сменить фон/стиль). Это режим редактирования (Nano Banana/Gemini).
+    Плавно переводим туда с уже подставленным фото."""
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    fb = await bot.download_file(file.file_path)
+    img_data = fb.read()
+    await state.clear()
+    _mk = "edit_gemini" if "edit_gemini" in EDIT_MODELS else next(iter(EDIT_MODELS))
+    await state.update_data(photo_bytes=list(img_data), edit_model_key=_mk)
+    await state.set_state(EditState.waiting_prompt)
+    await message.answer(
+        "📷 <b>Вижу фото!</b>\n\n"
+        "Кнопка «📷 Изображение» рисует картинку по <b>тексту</b> и твоё фото не использует.\n"
+        "Чтобы работать <b>по твоему фото</b> (вставить объект, сменить фон или стиль) — это "
+        "<b>🖌 Редактирование</b> (Nano Banana). Фото я уже подставил 👇\n\n"
+        "✏️ Напиши, что сделать с фото:",
+        parse_mode="HTML", reply_markup=kb_cancel()
+    )
+
+
 @dp.message(ImgState.waiting_prompt)
 async def img_prompt(message: Message, state: FSMContext):
     data = await state.get_data()
