@@ -398,6 +398,20 @@ async def init_db():
                 expires_at   TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '2 hours')
             )
         """)
+        # ── Мультипровайдер Claude: у каждого сайта свой пул кодов ───────────────────
+        # provider: 'bpa' (bypriceactivate.pro) | 'root' (rootchatgptplus.com) | ...
+        await conn.execute(
+            "ALTER TABLE claude_codes "
+            "ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'bpa'"
+        )
+        await conn.execute(
+            "ALTER TABLE claude_pending_activations "
+            "ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'bpa'"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_claude_codes_free_prov "
+            "ON claude_codes(provider, plan, is_used) WHERE is_used = FALSE"
+        )
         # ── Perplexity коды и pending активации ─────────────────────────────────────
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS perplexity_codes (
@@ -1236,19 +1250,31 @@ async def fk_mark_paid(order_id: str) -> bool:
 # ─── Альтернативы при перегрузке моделей ──────────────────
 # Если модель перегружена (503), предлагаем клиенту альтернативу с похожим качеством
 
-async def get_next_claude_code(plan: str = "pro"):
-    """Резервирует и возвращает следующий свободный код нужного плана."""
+async def get_next_claude_code(plan: str = "pro", provider: str = "bpa"):
+    """Резервирует и возвращает следующий свободный код нужного плана
+    ИЗ ПУЛА КОНКРЕТНОГО ПРОВАЙДЕРА (у каждого сайта свои коды)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """UPDATE claude_codes SET is_used=TRUE
                WHERE id=(SELECT id FROM claude_codes
-                         WHERE plan=$1 AND is_used=FALSE
+                         WHERE plan=$1 AND provider=$2 AND is_used=FALSE
                          ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
                RETURNING code""",
-            plan
+            plan, provider
         )
     return row["code"] if row else None
+
+
+async def count_claude_free_by_provider() -> dict:
+    """Свободные (неиспользованные) коды Claude по провайдерам: {provider: count}."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT provider, COUNT(*) AS free FROM claude_codes "
+            "WHERE is_used=FALSE GROUP BY provider"
+        )
+    return {r["provider"]: int(r["free"]) for r in rows}
 
 
 async def release_claude_code(code: str):
@@ -1273,19 +1299,20 @@ async def mark_claude_code_used(code: str, user_id: int, order_id: str, org_id: 
 
 
 async def save_claude_pending_activation(
-    user_id: int, code: str, order_id: str, plan: str, plan_name: str
+    user_id: int, code: str, order_id: str, plan: str, plan_name: str,
+    provider: str = "bpa"
 ):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO claude_pending_activations
-               (user_id, code, order_id, plan, plan_name)
-               VALUES ($1,$2,$3,$4,$5)
+               (user_id, code, order_id, plan, plan_name, provider)
+               VALUES ($1,$2,$3,$4,$5,$6)
                ON CONFLICT (user_id) DO UPDATE
-               SET code=$2, order_id=$3, plan=$4, plan_name=$5,
+               SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6,
                    org_id='', bpa_order_id=NULL,
                    created_at=NOW(), expires_at=NOW()+INTERVAL '2 hours'""",
-            user_id, code, order_id, plan, plan_name
+            user_id, code, order_id, plan, plan_name, provider
         )
 
 

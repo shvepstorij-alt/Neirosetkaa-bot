@@ -37,7 +37,7 @@ from keyboards import (
     _eib,
 )
 from common import (
-    _send_claude_webapp_to_user,
+    _send_claude_webapp_to_user, _claude_pick_code,
 )
 
 @dp.callback_query(F.data == "claude_need_help")
@@ -586,18 +586,18 @@ async def adm_claude_do_send(message: Message, state: FSMContext):
         return
     plan = parts[1]
     plan_name = LABELS4[plan]
-    code = await get_next_claude_code(plan)
+    code, prov = await _claude_pick_code(plan)
     if not code:
-        await message.answer(f"🚨 Нет кодов для {plan_name}! Добавь через меню.")
+        await message.answer(f"🚨 Нет кодов для {plan_name} ни на одном сайте! Пополни коды.")
         await state.clear()
         return
     import time as _t2
     order_id = f"claude_{target}_{int(_t2.time())}"
-    ok = await _send_claude_webapp_to_user(target, code, order_id, plan, plan_name)
+    ok = await _send_claude_webapp_to_user(target, code, order_id, plan, plan_name, provider=prov)
     if ok:
         await message.answer(
             f"✅ WebApp отправлен <code>{target}</code>\n"
-            f"Код: <code>{code}</code>  Тариф: {plan_name}",
+            f"Код: <code>{code}</code>  Тариф: {plan_name}  Сайт: {prov}",
             parse_mode="HTML"
         )
     else:

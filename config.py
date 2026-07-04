@@ -31,6 +31,30 @@ NSGIFTS_LOGIN      = os.getenv("NSGIFTS_LOGIN", "")
 NSGIFTS_PASSWORD   = os.getenv("NSGIFTS_PASSWORD", "")
 NSGIFTS_API_SECRET = os.getenv("NSGIFTS_API_SECRET", "")
 WEBSHARE_PROXY     = os.getenv("WEBSHARE_PROXY", "")   # http://user:pass@host:port
+
+# ─── Провайдеры авто-активации Claude ─────────────────────────────
+# Все сайты работают на одной платформе (OpenChatGPTPlus): одинаковый
+# REST API  POST /api/activate {code, org_id}  и  GET /api/activate/{id}.
+# У КАЖДОГО сайта свои коды (свой пул). Активный провайдер и фолбэк
+# выбираются в админ-панели (настройки claude_provider / claude_failover).
+CLAUDE_PROVIDERS = {
+    "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro"},
+    "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com"},
+}
+CLAUDE_PROVIDER_ORDER   = ["bpa", "root"]   # порядок авто-фолбэка
+CLAUDE_DEFAULT_PROVIDER = "bpa"
+
+def claude_provider_base(provider: str) -> str:
+    """База URL провайдера (с безопасным дефолтом)."""
+    return CLAUDE_PROVIDERS.get(
+        provider, CLAUDE_PROVIDERS[CLAUDE_DEFAULT_PROVIDER]
+    )["base"]
+
+def claude_provider_name(provider: str) -> str:
+    return CLAUDE_PROVIDERS.get(
+        provider, CLAUDE_PROVIDERS[CLAUDE_DEFAULT_PROVIDER]
+    )["name"]
+
 import datetime as _dt_tz
 _BOT_TZ = _dt_tz.timezone(_dt_tz.timedelta(hours=5))
 

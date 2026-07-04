@@ -25,6 +25,7 @@ from config import (
     FAL_API_KEY, FK_ALLOWED_IPS, FK_API_KEY, FK_IP_CHECK_DISABLED, FK_SECRET1, FK_SECRET2,
     FK_SHOP_ID, FK_WEBHOOK_URL, IMAGE_MODELS, SHOP_CATALOG, VIDEO_MODELS, _BOT_TZ,
     bot, dp,
+    CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER, claude_provider_name,
 )
 from states import (
     AdmPromoState, AdminEditState, AdminState,
@@ -33,6 +34,7 @@ from db import (
     add_credits, block_user, create_promo, deactivate_promo, get_credits, get_pool,
     get_setting, get_user, list_promos, log_event, set_setting, unblock_user,
     set_ref_premium, get_ref_premium, list_ref_premium, premium_ref_earned_this_month,
+    count_claude_free_by_provider,
 )
 from keyboards import (
     _all_models_map, _btn_emoji_id, _section_label, kb_admin_panel, kb_balance_menu, kb_block_actions, kb_stat_menu,
@@ -1821,6 +1823,74 @@ async def adm_welcome_save(message: Message, state: FSMContext):
         f"<i>{text or 'пусто'}</i>",
         parse_mode="HTML"
     )
+
+
+# ─── Провайдер авто-активации Claude ──────────────────────
+async def _render_claude_provider(target_msg):
+    active = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
+    if active not in CLAUDE_PROVIDERS:
+        active = CLAUDE_DEFAULT_PROVIDER
+    failover = (await get_setting("claude_failover", "1") or "1") == "1"
+    free = await count_claude_free_by_provider()
+    lines = [
+        "🔀 <b>Провайдер авто-активации Claude</b>\n",
+        f"Активный сайт: <b>{claude_provider_name(active)}</b>",
+        f"Авто-фолбэк при нуле стока: <b>{'вкл ✅' if failover else 'выкл ❌'}</b>\n",
+        "<b>Свободные коды по сайтам:</b>",
+    ]
+    for p in CLAUDE_PROVIDER_ORDER:
+        mark = " ⬅️ активный" if p == active else ""
+        lines.append(f"• {claude_provider_name(p)}: <b>{free.get(p, 0)}</b>{mark}")
+    lines.append(
+        "\n<i>Коды добавляются в мини-панели и тегируются активным сайтом. "
+        "Чтобы залить коды другого сайта — сначала выбери его здесь.</i>"
+    )
+    rows = []
+    for p in CLAUDE_PROVIDER_ORDER:
+        _sel = "🟢 " if p == active else "⚪️ "
+        rows.append([InlineKeyboardButton(
+            text=f"{_sel}{claude_provider_name(p)}",
+            callback_data=f"adm_clprov_set:{p}")])
+    rows.append([InlineKeyboardButton(
+        text=("🔁 Фолбэк: ВКЛ (нажми чтобы выключить)" if failover
+              else "🔁 Фолбэк: ВЫКЛ (нажми чтобы включить)"),
+        callback_data=f"adm_clprov_fo:{'0' if failover else '1'}")])
+    rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await target_msg.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await target_msg.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_claude_provider")
+async def adm_claude_provider(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await _render_claude_provider(cb.message)
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_clprov_set:"))
+async def adm_clprov_set(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    prov = cb.data.split(":", 1)[1]
+    if prov not in CLAUDE_PROVIDERS:
+        await cb.answer("Неизвестный сайт", show_alert=True); return
+    await set_setting("claude_provider", prov)
+    await cb.answer(f"Активный сайт: {claude_provider_name(prov)}")
+    await _render_claude_provider(cb.message)
+
+
+@dp.callback_query(F.data.startswith("adm_clprov_fo:"))
+async def adm_clprov_fo(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    val = cb.data.split(":", 1)[1]
+    await set_setting("claude_failover", "1" if val == "1" else "0")
+    await cb.answer("Фолбэк " + ("включён" if val == "1" else "выключен"))
+    await _render_claude_provider(cb.message)
 
 
 # ─── Рассылка ─────────────────────────────────────────────

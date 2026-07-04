@@ -29,6 +29,8 @@ from config import (
     _motion_history, _photo_history, _pool, _ref_bonus_for_count, _split_long_message, _strip_all_formatting,
     _verify_tg_init_data, _video_history, activate_chatgpt, bot, build_system_prompt, claude_client,
     clean_reply, pending_fk_payments, plan_name_to_key, strip_surrogates,
+    CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER,
+    claude_provider_base, claude_provider_name,
 )
 from runtime_state import (
     rt,
@@ -37,6 +39,7 @@ from db import (
     _extract_email_from_token, add_coins, add_credits_batch, delete_claude_pending_activation, delete_pending_activation, ensure_user,
     fk_get_order, fk_mark_paid, get_claude_pending_activation, get_coins, get_credits, get_next_claude_code,
     get_next_gpt_code, get_pending_activation, get_pool, get_setting, set_setting, get_user, is_blocked,
+    count_claude_free_by_provider,
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
@@ -2943,6 +2946,14 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
         if not valid:
             return web.json_response({"ok": False, "msg": "Нет валидных кодов"})
+        # Claude: коды тегируются провайдером (у каждого сайта свой пул).
+        # Берём provider из запроса, иначе — текущий активный сайт из настроек.
+        _cl_provider = str(body.get("provider", "") or "").strip()
+        if _cl_provider not in CLAUDE_PROVIDERS:
+            _cl_provider = (await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER)
+                            or CLAUDE_DEFAULT_PROVIDER)
+            if _cl_provider not in CLAUDE_PROVIDERS:
+                _cl_provider = CLAUDE_DEFAULT_PROVIDER
         pool = await get_pool()
         added = 0
         async with pool.acquire() as conn:
@@ -2951,13 +2962,16 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
                     if service == "chatgpt":
                         await conn.execute("INSERT INTO gpt_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
                     elif service == "claude":
-                        await conn.execute("INSERT INTO claude_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
+                        await conn.execute("INSERT INTO claude_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _cl_provider)
                     else:
                         await conn.execute("INSERT INTO perplexity_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
                     added += 1
                 except Exception:
                     pass
-        return web.json_response({"ok": True, "added": added, "skipped": len(lines) - len(valid)})
+        _msg = {"ok": True, "added": added, "skipped": len(lines) - len(valid)}
+        if service == "claude":
+            _msg["provider"] = _cl_provider
+        return web.json_response(_msg)
     except Exception as _e:
         logging.error(f"api_admin_add_codes: {_e}")
         return web.json_response({"ok": False}, status=500)
@@ -3796,7 +3810,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         parse_mode="HTML"
                     )
                 else:
-                    _code_cl = await get_next_claude_code(_plan_key_cl)
+                    _code_cl, _prov_cl = await _claude_pick_code(_plan_key_cl)
                     if _code_cl is None:
                         await bot.send_message(
                             user_id,
@@ -3809,9 +3823,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         )
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🚨 <b>КОДЫ Claude {_plan_name_cl} ЗАКОНЧИЛИСЬ!</b>\n"
+                            f"🚨 <b>КОДЫ Claude {_plan_name_cl} ЗАКОНЧИЛИСЬ НА ВСЕХ САЙТАХ!</b>\n"
                             f"Заказ <code>{order_id}</code> user=<code>{user_id}</code>\n"
-                            f"Пополни коды на bypriceactivate.pro",
+                            f"Пополни коды на любом из сайтов Claude.",
                             parse_mode="HTML"
                         )
                     else:
@@ -3822,6 +3836,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             plan=_plan_key_cl,
                             plan_name=_plan_name_cl,
                             delayed_note=delayed_note,
+                            provider=_prov_cl,
                         )
             elif _svc_kind == "perplexity":
                 # ── Авто-активация Perplexity через bypriceactivate.pro Mini App ──
@@ -4396,15 +4411,60 @@ async def _check_one_gpt_code(code_row: dict) -> str:
         return "error", ""
 
 
+# ─── Мультипровайдер Claude: выбор активного сайта + авто-фолбэк ──────────────
+async def _claude_active_provider() -> str:
+    p = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
+    return p if p in CLAUDE_PROVIDERS else CLAUDE_DEFAULT_PROVIDER
+
+
+async def _claude_failover_on() -> bool:
+    return (await get_setting("claude_failover", "1") or "1") == "1"
+
+
+async def _claude_provider_order() -> list:
+    """Активный провайдер первым; при включённом фолбэке — остальные следом."""
+    active = await _claude_active_provider()
+    order = [active]
+    if await _claude_failover_on():
+        for p in CLAUDE_PROVIDER_ORDER:
+            if p in CLAUDE_PROVIDERS and p not in order:
+                order.append(p)
+    return order
+
+
+async def _claude_pick_code(plan: str):
+    """Берёт код из пула активного провайдера. Если пусто и включён фолбэк —
+    пробует остальные сайты. Возвращает (code, provider) либо (None, None).
+    При уходе на запасной сайт уведомляет админа."""
+    order = await _claude_provider_order()
+    active = order[0]
+    for prov in order:
+        code = await get_next_claude_code(plan, prov)
+        if code:
+            if prov != active:
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔀 <b>Claude — авто-переключение сайта</b>\n"
+                        f"У <b>{claude_provider_name(active)}</b> закончились коды ({plan}).\n"
+                        f"Активация ушла на <b>{claude_provider_name(prov)}</b>.\n"
+                        f"Пополни коды на {claude_provider_name(active)}.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+            return code, prov
+    return None, None
+
+
 async def _send_claude_webapp_to_user(
     user_id: int, code: str, order_id: str,
-    plan: str, plan_name: str, delayed_note: str = ""
+    plan: str, plan_name: str, delayed_note: str = "", provider: str = "bpa"
 ) -> bool:
     """Сохраняет pending и отправляет клиенту кнопку WebApp."""
     import urllib.parse as _up
     from aiogram.types import WebAppInfo as _WAI
 
-    await save_claude_pending_activation(user_id, code, order_id, plan, plan_name)
+    await save_claude_pending_activation(user_id, code, order_id, plan, plan_name, provider)
 
     webapp_url = (
         f"{WEBAPP_BASE_URL}/webapp/claude"
@@ -4483,10 +4543,11 @@ async def _claude_test_activation_job(fake_bpa: int, user_id: int, plan_name: st
         pass
 
 
-async def _take_claude_bpa_screenshot(bpa_order_id: int) -> bytes | None:
-    """Делает скриншот статуса активации на bypriceactivate.pro."""
+async def _take_claude_bpa_screenshot(bpa_order_id: int, provider: str = "bpa") -> bytes | None:
+    """Делает скриншот статуса активации на сайте-провайдере."""
     try:
         from playwright.async_api import async_playwright
+        _base = claude_provider_base(provider)
         async with async_playwright() as _p:
             _br = await _p.chromium.launch(
                 headless=True,
@@ -4494,7 +4555,7 @@ async def _take_claude_bpa_screenshot(bpa_order_id: int) -> bytes | None:
             )
             _pg = await _br.new_page(viewport={"width": 900, "height": 500})
             await _pg.goto(
-                f"https://bypriceactivate.pro/api/activate/{bpa_order_id}",
+                f"{_base}/api/activate/{bpa_order_id}",
                 timeout=20000, wait_until="networkidle"
             )
             _ss = await _pg.screenshot(full_page=True)
@@ -4507,16 +4568,17 @@ async def _take_claude_bpa_screenshot(bpa_order_id: int) -> bytes | None:
 
 async def _claude_activation_polling_job(
     bpa_order_id: int, code: str, user_id: int,
-    order_id: str, plan_name: str, org_id: str
+    order_id: str, plan_name: str, org_id: str, provider: str = "bpa"
 ):
     """
-    Опрашивает bypriceactivate.pro каждые 5 сек.
+    Опрашивает сайт-провайдер каждые 5 сек.
     При done — помечает код, уведомляет тебя и клиента.
     При failed — возвращает код, пишет обоим.
     """
     _claude_job_results[bpa_order_id] = {"status": "queued"}
     _replaced_code = None  # авто-замена кода отключена; ветка elif оставлена мёртвой
-    logging.info(f"Claude polling bpa={bpa_order_id} user={user_id} code={code}")
+    _base = claude_provider_base(provider)
+    logging.info(f"Claude polling bpa={bpa_order_id} user={user_id} code={code} via={provider}")
 
     for attempt in range(120):          # макс 10 минут (120 × 5 сек)
         await asyncio.sleep(5)
@@ -4525,7 +4587,7 @@ async def _claude_activation_polling_job(
                 timeout=aiohttp.ClientTimeout(total=15)
             ) as _s:
                 async with _s.get(
-                    f"https://bypriceactivate.pro/api/activate/{bpa_order_id}"
+                    f"{_base}/api/activate/{bpa_order_id}"
                 ) as _r:
                     if _r.status != 200:
                         continue
@@ -4651,7 +4713,7 @@ async def _claude_activation_polling_job(
                             f"❌ {_err[:300]}"
                             + f"\n♻️ {_fail_note}"
                         )
-                        _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
+                        _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id, provider)
                         if _ss_fail:
                             await bot.send_photo(
                                 ADMIN_ID,
@@ -4833,6 +4895,8 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     code      = pending["code"]
     order_id  = pending["order_id"]
     plan_name = pending["plan_name"]
+    provider  = pending.get("provider", "bpa")
+    plan_key  = pending.get("plan", "pro")
 
     # ТЕСТ: если код фейковый (TEST-) — симулируем успех без реального запроса
     if code.startswith("TEST-"):
@@ -4913,65 +4977,112 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
         logging.error(f"claude double-activation check: {_dbl_e}")
 
     try:
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        ) as _s:
-            async with _s.post(
-                "https://bypriceactivate.pro/api/activate",
-                json={"code": code, "org_id": org_id},
-                headers={"Content-Type": "application/json"},
-            ) as _r:
+        _order_all = await _claude_provider_order()
+        if await _claude_failover_on():
+            _try_order = [provider] + [p for p in _order_all if p != provider]
+        else:
+            _try_order = [provider]
+
+        _last = None
+        for _prov in _try_order:
+            # для запасного сайта берём код из ЕГО пула (у каждого сайта свои коды)
+            if _prov != provider:
+                _newcode = await get_next_claude_code(plan_key, _prov)
+                if not _newcode:
+                    continue
                 try:
-                    _rd = await _r.json()
+                    await release_claude_code(code)   # вернём неиспользованный код прежнего сайта
                 except Exception:
-                    _rd = {}
+                    pass
+                code = _newcode
+                provider = _prov
+                _pool_sw = await get_pool()
+                async with _pool_sw.acquire() as _csw:
+                    await _csw.execute(
+                        "UPDATE claude_pending_activations SET code=$1, provider=$2 WHERE user_id=$3",
+                        code, provider, user_id)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔀 <b>Claude — фолбэк при активации</b>\n"
+                        f"Ушли на <b>{claude_provider_name(_prov)}</b> (на прежнем сайте нет стока).",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
 
-                if _r.status == 201:
-                    bpa_order_id = _rd.get("order_id")
-                    if not bpa_order_id:
-                        return _resp({"error": "Сервис не вернул order_id."})
-
-                    _pool3 = await get_pool()
-                    async with _pool3.acquire() as _c3:
-                        await _c3.execute(
-                            "UPDATE claude_pending_activations "
-                            "SET org_id=$1, bpa_order_id=$2 WHERE user_id=$3",
-                            org_id, bpa_order_id, user_id
-                        )
-                    asyncio.create_task(_claude_activation_polling_job(
-                        bpa_order_id, code, user_id, order_id, plan_name, org_id
-                    ))
-                    logging.info(
-                        f"Claude activation: bpa={bpa_order_id} user={user_id} code={code}"
-                    )
-                    return _resp({"order_id": bpa_order_id, "status": "queued"})
-
-                elif _r.status == 409:
-                    _detail = _rd.get("detail", "")
-                    if "already claimed" in _detail:
-                        _msg = "Код уже активирован. Напиши Александру."
-                    elif "out of stock" in _detail:
-                        _msg = "Временно нет активаций. Александр активирует вручную."
+            _base = claude_provider_base(_prov)
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as _s:
+                    async with _s.post(
+                        f"{_base}/api/activate",
+                        json={"code": code, "org_id": org_id},
+                        headers={"Content-Type": "application/json"},
+                    ) as _r:
                         try:
-                            await bot.send_message(
-                                ADMIN_ID,
-                                f"🚨 <b>Claude — нет стока!</b>\n"
-                                f"👤 <code>{user_id}</code> ({plan_name})\n"
-                                f"Пополни коды на bypriceactivate.pro",
-                                parse_mode="HTML"
-                            )
+                            _rd = await _r.json()
                         except Exception:
-                            pass
-                    else:
-                        _msg = _detail or "Ошибка кода."
-                    return _resp({"error": _msg})
+                            _rd = {}
 
-                elif _r.status == 404:
-                    return _resp({"error": "Код не найден. Напиши Александру."})
+                        if _r.status == 201:
+                            bpa_order_id = _rd.get("order_id")
+                            if not bpa_order_id:
+                                return _resp({"error": "Сервис не вернул order_id."})
 
-                else:
-                    logging.error(f"bypriceactivate.pro HTTP {_r.status}: {str(_rd)[:200]}")
-                    return _resp({"error": f"Ошибка ({_r.status}). Попробуй ещё раз."})
+                            _pool3 = await get_pool()
+                            async with _pool3.acquire() as _c3:
+                                await _c3.execute(
+                                    "UPDATE claude_pending_activations "
+                                    "SET org_id=$1, bpa_order_id=$2, provider=$3 WHERE user_id=$4",
+                                    org_id, bpa_order_id, provider, user_id
+                                )
+                            asyncio.create_task(_claude_activation_polling_job(
+                                bpa_order_id, code, user_id, order_id, plan_name, org_id, provider
+                            ))
+                            logging.info(
+                                f"Claude activation via {provider}: bpa={bpa_order_id} "
+                                f"user={user_id} code={code}"
+                            )
+                            return _resp({"order_id": bpa_order_id, "status": "queued"})
+
+                        elif _r.status == 409:
+                            _detail = _rd.get("detail", "")
+                            if "already claimed" in _detail:
+                                return _resp({"error": "Код уже активирован. Напиши Александру."})
+                            elif "out of stock" in _detail:
+                                _last = "out_of_stock"
+                                continue   # пробуем следующий сайт (если фолбэк вкл)
+                            else:
+                                return _resp({"error": _detail or "Ошибка кода."})
+
+                        elif _r.status == 404:
+                            return _resp({"error": "Код не найден. Напиши Александру."})
+
+                        else:
+                            logging.error(
+                                f"{claude_provider_name(_prov)} HTTP {_r.status}: {str(_rd)[:200]}")
+                            _last = f"http_{_r.status}"
+                            continue
+            except aiohttp.ClientError as _e_prov:
+                logging.error(f"Claude activate network ({_prov}): {_e_prov}")
+                _last = "network"
+                continue
+
+        # все доступные сайты исчерпаны
+        if _last == "out_of_stock":
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>Claude — нет стока НА ВСЕХ сайтах!</b>\n"
+                    f"👤 <code>{user_id}</code> ({plan_name})\n"
+                    f"Пополни коды/сток на сайтах Claude.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            return _resp({"error": "Временно нет активаций. Александр активирует вручную."})
+        return _resp({"error": "Не удалось активировать. Попробуй ещё раз или напиши Александру."})
 
     except aiohttp.ClientError as _e:
         logging.error(f"Claude activate network: {_e}")
