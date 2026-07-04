@@ -412,7 +412,6 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="Техобслуживание",     callback_data="adm_maintenance",    icon_custom_emoji_id="5458865216597012027")],
         [InlineKeyboardButton(text="ChatGPT Mini App",    callback_data="adm_gpt_webapp", **_gpt)],
         [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
-        [InlineKeyboardButton(text="🔀 Провайдер Claude",  callback_data="adm_claude_provider")],
         [InlineKeyboardButton(text="Perplexity Mini App", callback_data="adm_perplexity_webapp", **_px)],
         [InlineKeyboardButton(text="Настройка App Store", callback_data="adm_nsgifts", **_ap)],
         *([[InlineKeyboardButton(text="🎛️ Mini App (бета)", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/admin"))]] if WEBAPP_BASE_URL else []),

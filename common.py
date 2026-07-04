@@ -2738,13 +2738,26 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
         if not tbl:
             return web.json_response({"ok": False})
         idcol = "email" if svc == "chatgpt" else "org_id"
+        is_cl = (svc == "claude")
+        _pcol = ", c.provider" if is_cl else ""
         pool = await get_pool()
         async with pool.acquire() as conn:
             recent = await conn.fetch(
                 f"SELECT c.code, c.used_by, c.used_at, c.order_id, c.{idcol} AS acc, u.username "
                 f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
                 f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL ORDER BY c.used_at DESC LIMIT 15")
-            free = await conn.fetch(f"SELECT code, plan FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 100")
+            free = await conn.fetch(f"SELECT code, plan{_pcol} FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 100")
+            pending = []
+            if is_cl:
+                # «Ждущие» коды: выданы клиенту (is_used), но активация ещё не завершена (used_by IS NULL)
+                pending = await conn.fetch(
+                    "SELECT c.code, c.plan, c.provider, p.user_id, p.org_id, p.created_at, "
+                    "       p.plan_name, u.username "
+                    "FROM claude_codes c "
+                    "LEFT JOIN claude_pending_activations p ON p.code=c.code "
+                    "LEFT JOIN users u ON u.user_id=p.user_id "
+                    "WHERE c.is_used=TRUE AND c.used_by IS NULL "
+                    "ORDER BY c.id DESC LIMIT 100")
         rec = []
         for r in recent:
             ua = r["used_at"]
@@ -2752,8 +2765,34 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                         "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["used_by"]) if r["used_by"] else "—"),
                         "date": ua.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ua else "",
                         "order": r["order_id"] or "", "acc": r["acc"] or ""})
-        freec = [{"code": r["code"], "plan": r["plan"]} for r in free]
-        return web.json_response({"ok": True, "recent": rec, "free": freec, "freeCount": len(freec)})
+        freec = [dict({"code": r["code"], "plan": r["plan"]},
+                      **({"provider": r["provider"]} if is_cl else {})) for r in free]
+        resp = {"ok": True, "recent": rec, "free": freec, "freeCount": len(freec)}
+        if is_cl:
+            active = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
+            if active not in CLAUDE_PROVIDERS:
+                active = CLAUDE_DEFAULT_PROVIDER
+            failover = (await get_setting("claude_failover", "1") or "1") == "1"
+            freeby = await count_claude_free_by_provider()
+            resp["providers"] = [
+                {"key": p, "name": claude_provider_name(p), "free": int(freeby.get(p, 0))}
+                for p in CLAUDE_PROVIDER_ORDER
+            ]
+            resp["activeProvider"] = active
+            resp["failover"] = failover
+            pend = []
+            for r in pending:
+                ca = r["created_at"]
+                pend.append({
+                    "code": r["code"], "plan": r["plan"],
+                    "provider": r["provider"], "providerName": claude_provider_name(r["provider"]),
+                    "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"]) if r["user_id"] else "—"),
+                    "org": r["org_id"] or "",
+                    "date": ca.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ca else "",
+                })
+            resp["pending"] = pend
+            resp["pendingCount"] = len(pend)
+        return web.json_response(resp)
     except Exception as _e:
         logging.error(f"api_admin_miniapp_detail: {_e}")
         return web.json_response({"ok": False}, status=500)
@@ -2777,6 +2816,57 @@ async def api_admin_code_delete_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "deleted": int(deleted) if str(deleted).isdigit() else 0})
     except Exception as _e:
         logging.error(f"api_admin_code_delete: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_claude_provider_handler(request: web.Request) -> web.Response:
+    """Выбор активного сайта авто-активации Claude / тумблер авто-фолбэка. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        kind = str(body.get("kind", ""))
+        if kind == "set":
+            prov = str(body.get("provider", ""))
+            if prov not in CLAUDE_PROVIDERS:
+                return web.json_response({"ok": False, "msg": "Неизвестный сайт"})
+            await set_setting("claude_provider", prov)
+        elif kind == "failover":
+            await set_setting("claude_failover", "1" if body.get("on") else "0")
+        else:
+            return web.json_response({"ok": False})
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_claude_provider: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_claude_code_action_handler(request: web.Request) -> web.Response:
+    """Действие над «ждущим» кодом Claude: release (вернуть в пул) или delete. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        code = str(body.get("code", "")); action = str(body.get("action", ""))
+        if not code:
+            return web.json_response({"ok": False})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            # снимаем pending-привязку в любом случае (клиент потеряет старую сессию)
+            await conn.execute("DELETE FROM claude_pending_activations WHERE code=$1", code)
+            if action == "release":
+                await conn.execute(
+                    "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
+                    "order_id=NULL, org_id=NULL WHERE code=$1", code)
+            elif action == "delete":
+                await conn.execute("DELETE FROM claude_codes WHERE code=$1", code)
+            else:
+                return web.json_response({"ok": False, "msg": "Неизвестное действие"})
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_claude_code_action: {_e}")
         return web.json_response({"ok": False}, status=500)
 
 
@@ -4323,6 +4413,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
     app.router.add_post("/api/admin/add-codes", api_admin_add_codes_handler)
+    app.router.add_post("/api/admin/claude-provider", api_admin_claude_provider_handler)
+    app.router.add_post("/api/admin/claude-code-action", api_admin_claude_code_action_handler)
     app.router.add_post("/api/admin/broadcast", api_admin_broadcast_handler)
     logging.info("Admin Mini App: /webapp/admin + /api/admin/overview")
     app.router.add_get("/webapp/claude", webapp_claude_handler)

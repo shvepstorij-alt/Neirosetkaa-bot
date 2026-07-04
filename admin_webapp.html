@@ -731,7 +731,9 @@ function loadMiniApp(svc){
     var h='<div class="row" style="cursor:default"><span class="ic">'+em+'</span><div><div class="lbl2">Приложение '+(m.enabled?'включено':'выключено')+'</div><div class="sub">активация у клиентов</div></div><span class="sw'+(m.enabled?' on':'')+'" onclick="toggleMiniApp(this,\''+svc+'\')"><b></b></span></div>';
     h+='<div class="block"><h4>🔑 Запас кодов</h4><div id="codesbk_'+svc+'"><div class="kv" style="border:0;padding-bottom:6px"><span class="k">В пуле</span><span>'+m.codes+' шт</span></div>'+prog(Math.min(100,m.codes*2),m.codes<10?C.red:C.green)+'</div></div>';
     h+='<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return addCodes(\''+svc+'\')})">➕ Коды</button><button class="btn row2 sec" onclick="leaf(function(){return codesPool(\''+svc+'\')})">🗂 Пул</button></div>';
+    if(svc==='claude'){h+='<div id="clprov_claude" style="margin-top:14px"></div>';}
     h+='<div id="madet_'+svc+'"><div class="note">Загружаю активации…</div></div>';
+    if(svc==='claude'){h+='<div id="clpend_claude"></div>';}
     el.innerHTML=h;
     api('/api/admin/miniapp-detail',{service:svc}).then(function(dd){
       var de=document.getElementById('madet_'+svc); if(!de)return;
@@ -748,8 +750,51 @@ function loadMiniApp(svc){
         hh+='<div class="block" style="cursor:pointer" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+r.user+' · '+r.date+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
       });
       de.innerHTML=hh;
+      if(svc==='claude'){if(dd.activeProvider)window._clActive=dd.activeProvider;renderClProv(dd);renderClPend(dd);}
     });
   });
+}
+/* ── Claude: провайдер активации ── */
+var CLPROV=[["bpa","bypriceactivate.pro"],["root","rootchatgptplus.com"]];
+function renderClProv(dd){
+  var el=document.getElementById('clprov_claude'); if(!el)return;
+  if(!dd.providers){el.innerHTML='';return;}
+  var h='<div class="block"><h4>🔀 Провайдер активации</h4>';
+  h+='<div class="sub" style="margin:0 0 8px">Активный сайт: через него идут активации и берутся коды. При нуле стока и включённом фолбэке — авто-переход на другой сайт.</div>';
+  dd.providers.forEach(function(p){
+    var on=(p.key===dd.activeProvider);
+    h+='<div class="row" style="cursor:pointer" onclick="setClaudeProvider(\''+p.key+'\')"><span class="ic">'+(on?'🟢':'⚪️')+'</span><div><div class="lbl2" style="font-size:13px">'+p.name+'</div><div class="sub">'+(on?'активный · ':'')+'свободно: '+p.free+' шт</div></div>'+(on?'<span class="sub" style="margin-left:auto">✓</span>':'')+'</div>';
+  });
+  h+='<div class="row" style="cursor:default"><span class="ic">🔁</span><div><div class="lbl2" style="font-size:13px">Авто-фолбэк</div><div class="sub">переключаться при нуле стока</div></div><span class="sw'+(dd.failover?' on':'')+'" onclick="toggleClaudeFailover(this)"><b></b></span></div>';
+  h+='</div>';
+  el.innerHTML=h;
+}
+function setClaudeProvider(prov){
+  api('/api/admin/claude-provider',{kind:'set',provider:prov}).then(function(d){toast(d.ok?'Активный сайт изменён':(d.msg||'Ошибка'));if(d.ok)loadMiniApp('claude');});
+}
+function toggleClaudeFailover(elm){
+  var on=!elm.classList.contains('on');elm.classList.toggle('on');
+  api('/api/admin/claude-provider',{kind:'failover',on:on}).then(function(d){if(!d.ok){elm.classList.toggle('on');toast('Ошибка');}else{toast(on?'Фолбэк включён':'Фолбэк выключен');}});
+}
+/* ── Claude: ждущие коды ── */
+function renderClPend(dd){
+  var el=document.getElementById('clpend_claude'); if(!el)return;
+  var p=dd.pending||[];
+  var h='<div class="glabel" style="margin-top:16px">⏳ Ждущие коды ('+p.length+')</div>';
+  if(!p.length){h+='<div class="note">Нет кодов в ожидании активации.</div>';el.innerHTML=h;return;}
+  h+='<div class="sub" style="margin:0 0 8px">Выданы клиенту, но активация не завершена. Можно вернуть в пул или удалить.</div>';
+  p.forEach(function(c){
+    h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+c.user+' · '+c.date+' · '+c.providerName+'</div>'+
+       '<div class="sub" style="margin-top:4px">🔑 '+c.code+(c.org?'<br>🆔 '+c.org:'')+'</div>'+
+       '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+c.code+'\',\'release\')">↩️ В пул</button>'+
+       '<button class="btn row2 danger" onclick="claudeCodeAction(\''+c.code+'\',\'delete\')">🗑 Удалить</button></div></div>';
+  });
+  el.innerHTML=h;
+}
+function claudeCodeAction(code,action){
+  var msg=action==='release'?('Вернуть код '+code+' в пул? Клиентская сессия слетит.'):('Удалить код '+code+' безвозвратно?');
+  if(window.confirm&&!window.confirm(msg))return;
+  api('/api/admin/claude-code-action',{code:code,action:action}).then(function(d){toast(d.ok?(action==='release'?'Возвращён в пул':'Удалён'):'Ошибка');if(d.ok)loadMiniApp('claude');});
 }
 function codesPool(svc){
   setTimeout(function(){loadPool(svc)},0);
@@ -765,7 +810,7 @@ function loadPool(svc){
     Object.keys(byp).sort().forEach(function(pl){
       h+='<div class="glabel">🟢 '+planLabel(svc,pl)+' ('+byp[pl].length+')</div>';
       byp[pl].forEach(function(c){
-        h+='<div class="row" style="cursor:pointer" onclick="copyText(\''+c.code+'\')"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+' · нажми, чтобы скопировать</div></div><button class="btn row2 sec" style="width:auto;margin:0 6px 0 auto;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();copyText(\''+c.code+'\')">📋</button><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
+        h+='<div class="row" style="cursor:pointer" onclick="copyText(\''+c.code+'\')"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+(c.provider?(' · '+c.provider):'')+' · нажми, чтобы скопировать</div></div><button class="btn row2 sec" style="width:auto;margin:0 6px 0 auto;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();copyText(\''+c.code+'\')">📋</button><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
       });
     });
     el.innerHTML=h;
@@ -783,9 +828,15 @@ SCREENS["Perplexity Mini App"]=miniApp("Perplexity Mini App","perplexity");
 function addCodes(svc){
   var plans={chatgpt:[["plus","Plus"],["pro_5x","Pro 5×"],["go","Go"]],claude:[["pro","Pro"],["max_5x","Max 5×"],["max_20x","Max 20×"]],perplexity:[["pro","Pro"]]}[svc]||[["pro","Pro"]];
   var opts=plans.map(function(pp){return '<option value="'+pp[0]+'">'+pp[1]+'</option>'}).join('');
-  return hdr("Добавить коды",svc)+'<div class="wrap"><label class="fl">Тариф</label><select class="f" id="ac_plan">'+opts+'</select><label class="fl">Коды (по одному в строке)</label><textarea class="f" id="ac_codes" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="doAddCodes(\''+svc+'\')">Добавить</button></div>';
+  var provSel='';
+  if(svc==='claude'){
+    var cur=window._clActive||'bpa';
+    var po=CLPROV.map(function(pp){return '<option value="'+pp[0]+'"'+(pp[0]===cur?' selected':'')+'>'+pp[1]+'</option>'}).join('');
+    provSel='<label class="fl" style="margin-top:0">Сайт (провайдер) — куда добавить коды</label><select class="f" id="ac_provider">'+po+'</select>';
+  }
+  return hdr("Добавить коды",svc)+'<div class="wrap">'+provSel+'<label class="fl"'+(svc==='claude'?'':' style="margin-top:0"')+'>Тариф</label><select class="f" id="ac_plan">'+opts+'</select><label class="fl">Коды (по одному в строке)</label><textarea class="f" id="ac_codes" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="doAddCodes(\''+svc+'\')">Добавить</button></div>';
 }
-function doAddCodes(svc){var codes=fv('ac_codes');if(!codes){toast('Вставь коды');return;}toast('Добавляю…');api('/api/admin/add-codes',{service:svc,plan:fv('ac_plan'),codes:codes}).then(function(d){toast(d.ok?('Добавлено '+d.added):(d.msg||'Ошибка'));if(d.ok)back();});}
+function doAddCodes(svc){var codes=fv('ac_codes');if(!codes){toast('Вставь коды');return;}var pl={service:svc,plan:fv('ac_plan'),codes:codes};if(svc==='claude'){pl.provider=fv('ac_provider');}toast('Добавляю…');api('/api/admin/add-codes',pl).then(function(d){toast(d.ok?('Добавлено '+d.added+(d.provider?(' → '+d.provider):'')):(d.msg||'Ошибка'));if(d.ok)back();});}
 
 SCREENS["Настройка App Store"]=function(){
   setTimeout(loadAppstore,0);
