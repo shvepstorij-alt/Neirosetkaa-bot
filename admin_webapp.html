@@ -742,7 +742,11 @@ function loadMiniApp(svc){
       var cb=document.getElementById('codesbk_'+svc);
       if(cb){var tot=(dd.free?dd.free.length:0);
         var bh='<div class="kv" style="border:0;padding-bottom:6px"><span class="k">Всего в пуле</span><span>'+tot+' шт</span></div>'+prog(Math.min(100,tot*2),tot<10?C.red:C.green);
-        Object.keys(byp).sort().forEach(function(pl){bh+='<div class="kv"><span class="k">'+planLabel(svc,pl)+'</span><span>'+byp[pl]+' шт</span></div>'});
+        if(svc==='claude'&&dd.providers){
+          dd.providers.forEach(function(p){bh+='<div class="kv"><span class="k">'+p.name+(p.key===dd.activeProvider?' ⬅️':'')+'</span><span>'+p.free+' шт</span></div>'});
+        } else {
+          Object.keys(byp).sort().forEach(function(pl){bh+='<div class="kv"><span class="k">'+planLabel(svc,pl)+'</span><span>'+byp[pl]+' шт</span></div>'});
+        }
         cb.innerHTML=bh;}
       var hh='<div class="glabel" style="margin-top:16px">🧾 Последние активации</div>';
       if(!dd.recent.length){hh+='<div class="note">Пока нет активаций.</div>';}
@@ -805,14 +809,29 @@ function loadPool(svc){
     var el=document.getElementById('poolbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     if(!d.free.length){el.innerHTML='<div class="note">Свободных кодов нет.</div>';return;}
-    var byp={};d.free.forEach(function(c){(byp[c.plan]=byp[c.plan]||[]).push(c)});
+    function poolRow(c){
+      return '<div class="row" style="cursor:pointer" onclick="copyText(\''+c.code+'\')"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+' · нажми, чтобы скопировать</div></div><button class="btn row2 sec" style="width:auto;margin:0 6px 0 auto;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();copyText(\''+c.code+'\')">📋</button><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
+    }
     var h='';
-    Object.keys(byp).sort().forEach(function(pl){
-      h+='<div class="glabel">🟢 '+planLabel(svc,pl)+' ('+byp[pl].length+')</div>';
-      byp[pl].forEach(function(c){
-        h+='<div class="row" style="cursor:pointer" onclick="copyText(\''+c.code+'\')"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+(c.provider?(' · '+c.provider):'')+' · нажми, чтобы скопировать</div></div><button class="btn row2 sec" style="width:auto;margin:0 6px 0 auto;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();copyText(\''+c.code+'\')">📋</button><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
+    if(svc==='claude'){
+      var CLNAME={bpa:'bypriceactivate.pro',root:'rootchatgptplus.com'};
+      var bys={};d.free.forEach(function(c){var s=c.provider||'bpa';(bys[s]=bys[s]||[]).push(c);});
+      Object.keys(bys).sort().forEach(function(s){
+        var arr=bys[s];
+        h+='<div class="glabel">🌐 '+(CLNAME[s]||s)+' ('+arr.length+')</div>';
+        var byp={};arr.forEach(function(c){(byp[c.plan]=byp[c.plan]||[]).push(c)});
+        Object.keys(byp).sort().forEach(function(pl){
+          h+='<div class="sub" style="margin:6px 0 4px 2px">'+planLabel(svc,pl)+' · '+byp[pl].length+' шт</div>';
+          byp[pl].forEach(function(c){h+=poolRow(c);});
+        });
       });
-    });
+    } else {
+      var byp2={};d.free.forEach(function(c){(byp2[c.plan]=byp2[c.plan]||[]).push(c)});
+      Object.keys(byp2).sort().forEach(function(pl){
+        h+='<div class="glabel">🟢 '+planLabel(svc,pl)+' ('+byp2[pl].length+')</div>';
+        byp2[pl].forEach(function(c){h+=poolRow(c);});
+      });
+    }
     el.innerHTML=h;
   });
 }
