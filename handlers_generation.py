@@ -187,12 +187,34 @@ async def img_aspect_text(message: Message):
     await message.answer("👆 Выбери формат кнопкой выше")
 
 
+async def _extract_prompt(message) -> str:
+    """Текст промта: message.text, либо caption, либо содержимое .txt-файла
+    (очень длинные промты >4096 симв. Telegram отправляет файлом)."""
+    t = (message.text or message.caption or "").strip()
+    if t:
+        return t
+    doc = getattr(message, "document", None)
+    if doc and (doc.file_size or 0) < 30000 and (
+        (doc.mime_type or "").startswith("text") or (doc.file_name or "").lower().endswith(".txt")):
+        try:
+            f = await bot.get_file(doc.file_id)
+            buf = await bot.download_file(f.file_path)
+            return buf.read().decode("utf-8", errors="ignore").strip()
+        except Exception:
+            return ""
+    return ""
+
+
 @dp.message(ImgState.waiting_prompt)
 async def img_prompt(message: Message, state: FSMContext):
     data = await state.get_data()
-    key = data["model_key"]
+    key = data.get("model_key")
+    if not key or key not in IMAGE_MODELS:
+        await state.clear()
+        await message.answer("⚠️ Сессия сброшена. Начни заново: нажми 📷 Изображение.")
+        return
     m = IMAGE_MODELS[key]
-    prompt = (message.text or "").strip()
+    prompt = await _extract_prompt(message)
 
     # Валидация
     ok, err = validate_gen_prompt(prompt)
@@ -726,9 +748,13 @@ async def vid_prompt_photo(message: Message, state: FSMContext):
 @dp.message(VidState.waiting_prompt)
 async def vid_prompt(message: Message, state: FSMContext):
     data = await state.get_data()
-    key = data["model_key"]
+    key = data.get("model_key")
+    if not key or key not in VIDEO_MODELS:
+        await state.clear()
+        await message.answer("⚠️ Сессия сброшена. Начни заново: нажми 🎬 Видео.")
+        return
     m = VIDEO_MODELS[key]
-    prompt = (message.text or "").strip()
+    prompt = await _extract_prompt(message)
 
     # Валидация
     ok, err = validate_gen_prompt(prompt)
@@ -1352,6 +1378,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
 
     await state.clear()
     wait = await cb.message.answer(f"🎨 Генерирую с улучшенным промтом...\n<i>{improved_prompt[:80]}...</i>", parse_mode="HTML")
+    _charged = False
     try:
         # Генерируем изображение
         cb.data = f"imodel:{model_key}"
@@ -1365,6 +1392,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
             await wait.delete()
             await cb.message.answer("💸 Недостаточно кредитов.")
             return
+        _charged = True
 
         new_cr = await get_credits(uid)
         await wait.delete()
@@ -1388,12 +1416,17 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
 
     except Exception as e:
         logging.error(f"improve_gen error uid={uid} model={model_key}: {e}")
+        if _charged:
+            try:
+                await add_credits(uid, m["credits"])
+            except Exception:
+                pass
         try:
             await wait.delete()
         except Exception:
             pass
         await cb.message.answer(
-            "⚠️ Ошибка генерации. Попробуй другую модель.",
+            "⚠️ Ошибка генерации. Кредиты возвращены, если были списаны. Попробуй другую модель.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✨ Попробовать снова", callback_data="menu_improve")],
                 [_eib("Главное меню", "back_main")],
@@ -1538,7 +1571,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    prompt = message.text.strip()
+    prompt = await _extract_prompt(message)
     model_key = data.get("edit_model_key", "edit_gemini")
     m = EDIT_MODELS.get(model_key, EDIT_MODELS["edit_gemini"])
     edit_cost = m["credits"]
@@ -2036,7 +2069,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    prompt = message.text.strip()
+    prompt = await _extract_prompt(message)
     model_key = data.get("anim_model_key", "anim_veo")
     m = ANIM_MODELS.get(model_key, ANIM_MODELS["anim_veo"])
 
@@ -2362,7 +2395,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
             try:
                 await safe_send_media(
                     bot.send_document,
-                    chat_id=message.chat.id,
+                    chat_id=cb.message.chat.id,
                     document=BufferedInputFile(vid_bytes, "animation_original.mp4"),
                     caption="📁 <b>Оригинал без сжатия</b> - скачай для максимального качества",
                     parse_mode="HTML",
@@ -2630,7 +2663,7 @@ async def mot_skip_prompt(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(MotionState.waiting_prompt)
 async def mot_got_prompt(message: Message, state: FSMContext):
-    prompt = (message.text or "").strip()
+    prompt = await _extract_prompt(message)
     ok_v, err = validate_gen_prompt(prompt) if prompt else (True, "")
     if not ok_v:
         await message.answer(err)

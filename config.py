@@ -76,7 +76,7 @@ claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 # ─── Лимиты и фильтрация промтов ──────────────────────────
 MAX_PROMPT_LEN_CHAT = 3000     # Для AI-консультанта
-MAX_PROMPT_LEN_GEN = 2000      # Для генерации фото/видео/редактирования/анимации
+MAX_PROMPT_LEN_GEN = 4000      # Для генерации фото/видео/редактирования/анимации
 
 # Чёрный список для генерации контента (Google API часто блокирует, но мы сэкономим деньги)
 # Список коротких, явных маркеров. Полная фильтрация - на стороне Google.
@@ -97,7 +97,8 @@ GEN_BLOCKLIST = [
 def validate_gen_prompt(text: str) -> tuple[bool, str]:
     """Проверяет промт для генерации. Возвращает (ok, error_message)."""
     if not text or len(text.strip()) < 2:
-        return False, "⚠️ Промт слишком короткий. Опиши что хочешь создать."
+        return False, ("⚠️ Не вижу текста промта. Пришли описание одним текстовым сообщением "
+                       "(не файлом и не картинкой), до 4000 символов.")
     if len(text) > MAX_PROMPT_LEN_GEN:
         return False, f"⚠️ Слишком длинный промт ({len(text)} символов).\nМаксимум: {MAX_PROMPT_LEN_GEN} символов."
     text_lower = text.lower()
