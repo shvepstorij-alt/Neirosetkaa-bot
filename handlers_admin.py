@@ -2368,7 +2368,16 @@ async def adm_edit_value(message: Message, state: FSMContext):
             SHOP_CATALOG[shop_key]["plans"][shop_plan][shop_field] = val
             col = {"price": "price", "name": "plan_name", "desc": "plan_desc"}[shop_field]
             async with pool.acquire() as conn:
-                await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2 AND plan_idx=$3", val, shop_key, shop_plan)
+                # shop_plan — ПОЗИЦИОННЫЙ индекс тарифа (как в SHOP_CATALOG). Он не всегда
+                # равен колонке plan_idx в БД, поэтому обновление могло не найти строку и
+                # правка «слетала» после деплоя. Обновляем по позиции (тот же порядок сборки).
+                _row = await conn.fetchrow(
+                    "SELECT id FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
+                    "ORDER BY sort_order, plan_idx OFFSET $2 LIMIT 1", shop_key, shop_plan)
+                if _row:
+                    await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE id=$2", val, _row["id"])
+                else:
+                    await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2 AND plan_idx=$3", val, shop_key, shop_plan)
             await state.clear()
             await message.answer(f"\u2705 \u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e!", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))

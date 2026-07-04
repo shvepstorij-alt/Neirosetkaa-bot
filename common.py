@@ -1949,16 +1949,30 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
                     scat = SHOP_CATALOG.get(k)
                     if it.get("price") is not None:
                         pr = int(float(it["price"]))
-                        # Пишем по ИМЕНИ тарифа (надёжно: позиционный idx мог не совпадать с plan_idx в БД)
+                        # 1) пробуем по ИМЕНИ тарифа
+                        _res = None
                         if pname:
-                            await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_name=$3", pr, k, pname)
-                        else:
-                            await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_idx=$3", pr, k, idx)
+                            _res = await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_name=$3", pr, k, pname)
+                        # 2) ФОЛБЭК: если по имени 0 строк (в БД другое имя — иной символ «×»,
+                        #    пробелы и т.п.) — обновляем по ПОЗИЦИИ в том же порядке, что и форма цен.
+                        #    Так цена гарантированно сохраняется и не «слетает» после деплоя.
+                        if (not pname) or (isinstance(_res, str) and _res.strip().endswith(" 0")):
+                            _row = await conn.fetchrow(
+                                "SELECT id FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
+                                "ORDER BY sort_order, plan_idx OFFSET $2 LIMIT 1", k, idx)
+                            if _row:
+                                await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE id=$2", pr, _row["id"])
                         if scat and 0 <= idx < len(scat.get("plans", [])):
                             scat["plans"][idx]["price"] = pr
                     if it.get("desc") is not None and pname:
                         _pd = str(it["desc"])
-                        await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3", _pd, k, pname)
+                        _resd = await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3", _pd, k, pname)
+                        if isinstance(_resd, str) and _resd.strip().endswith(" 0"):
+                            _rowd = await conn.fetchrow(
+                                "SELECT id FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
+                                "ORDER BY sort_order, plan_idx OFFSET $2 LIMIT 1", k, idx)
+                            if _rowd:
+                                await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE id=$2", _pd, _rowd["id"])
                         if scat and 0 <= idx < len(scat.get("plans", [])):
                             scat["plans"][idx]["desc"] = _pd
                     if it.get("manual") is not None:
