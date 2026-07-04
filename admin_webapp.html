@@ -731,9 +731,9 @@ function loadMiniApp(svc){
     var h='<div class="row" style="cursor:default"><span class="ic">'+em+'</span><div><div class="lbl2">Приложение '+(m.enabled?'включено':'выключено')+'</div><div class="sub">активация у клиентов</div></div><span class="sw'+(m.enabled?' on':'')+'" onclick="toggleMiniApp(this,\''+svc+'\')"><b></b></span></div>';
     h+='<div class="block"><h4>🔑 Запас кодов</h4><div id="codesbk_'+svc+'"><div class="kv" style="border:0;padding-bottom:6px"><span class="k">В пуле</span><span>'+m.codes+' шт</span></div>'+prog(Math.min(100,m.codes*2),m.codes<10?C.red:C.green)+'</div></div>';
     h+='<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return addCodes(\''+svc+'\')})">➕ Коды</button><button class="btn row2 sec" onclick="leaf(function(){return codesPool(\''+svc+'\')})">🗂 Пул</button></div>';
+    if(svc==='claude'){h+='<button class="btn sec" style="margin-top:10px" onclick="leaf(function(){return pendingScreen(\'claude\')})">⏳ Ждущие коды</button>';}
     if(svc==='claude'){h+='<div id="clprov_claude" style="margin-top:14px"></div>';}
     h+='<div id="madet_'+svc+'"><div class="note">Загружаю активации…</div></div>';
-    if(svc==='claude'){h+='<div id="clpend_claude"></div>';}
     el.innerHTML=h;
     api('/api/admin/miniapp-detail',{service:svc}).then(function(dd){
       var de=document.getElementById('madet_'+svc); if(!de)return;
@@ -754,7 +754,7 @@ function loadMiniApp(svc){
         hh+='<div class="block" style="cursor:pointer" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+r.user+' · '+r.date+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
       });
       de.innerHTML=hh;
-      if(svc==='claude'){if(dd.activeProvider)window._clActive=dd.activeProvider;renderClProv(dd);renderClPend(dd);}
+      if(svc==='claude'){if(dd.activeProvider)window._clActive=dd.activeProvider;renderClProv(dd);}
     });
   });
 }
@@ -780,25 +780,36 @@ function toggleClaudeFailover(elm){
   var on=!elm.classList.contains('on');elm.classList.toggle('on');
   api('/api/admin/claude-provider',{kind:'failover',on:on}).then(function(d){if(!d.ok){elm.classList.toggle('on');toast('Ошибка');}else{toast(on?'Фолбэк включён':'Фолбэк выключен');}});
 }
-/* ── Claude: ждущие коды ── */
-function renderClPend(dd){
-  var el=document.getElementById('clpend_claude'); if(!el)return;
-  var p=dd.pending||[];
-  var h='<div class="glabel" style="margin-top:16px">⏳ Ждущие коды ('+p.length+')</div>';
-  if(!p.length){h+='<div class="note">Нет кодов в ожидании активации.</div>';el.innerHTML=h;return;}
-  h+='<div class="sub" style="margin:0 0 8px">Выданы клиенту, но активация не завершена. Можно вернуть в пул или удалить.</div>';
-  p.forEach(function(c){
-    h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+c.user+' · '+c.date+' · '+c.providerName+'</div>'+
-       '<div class="sub" style="margin-top:4px">🔑 '+c.code+(c.org?'<br>🆔 '+c.org:'')+'</div>'+
-       '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+c.code+'\',\'release\')">↩️ В пул</button>'+
-       '<button class="btn row2 danger" onclick="claudeCodeAction(\''+c.code+'\',\'delete\')">🗑 Удалить</button></div></div>';
+/* ── Claude: ждущие коды (отдельный экран) ── */
+function pendingScreen(svc){
+  setTimeout(function(){loadPending(svc)},0);
+  return hdr("Ждущие коды",svc)+'<div class="wrap"><div id="pendbody"><div class="note">Загружаю…</div></div></div>';
+}
+function loadPending(svc){
+  api('/api/admin/miniapp-detail',{service:svc}).then(function(d){
+    var el=document.getElementById('pendbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    var p=d.pending||[];
+    if(!p.length){el.innerHTML='<div class="note">Нет кодов в ожидании активации.</div>';return;}
+    var CLNAME={bpa:'bypriceactivate.pro',root:'rootchatgptplus.com'};
+    var bys={};p.forEach(function(c){var s=c.provider||'bpa';(bys[s]=bys[s]||[]).push(c);});
+    var h='<div class="sub" style="margin:0 0 10px">Выданы клиенту, но активация не завершена. Верни в пул или удали.</div>';
+    Object.keys(bys).sort().forEach(function(s){
+      h+='<div class="glabel">🌐 '+(CLNAME[s]||s)+' ('+bys[s].length+')</div>';
+      bys[s].forEach(function(c){
+        h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+c.user+' · '+c.date+'</div>'+
+           '<div class="sub" style="margin-top:4px">🔑 '+c.code+' · '+planLabel('claude',c.plan)+(c.org?'<br>🆔 '+c.org:'')+'</div>'+
+           '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+c.code+'\',\'release\')">↩️ В пул</button>'+
+           '<button class="btn row2 danger" onclick="claudeCodeAction(\''+c.code+'\',\'delete\')">🗑 Удалить</button></div></div>';
+      });
+    });
+    el.innerHTML=h;
   });
-  el.innerHTML=h;
 }
 function claudeCodeAction(code,action){
   var msg=action==='release'?('Вернуть код '+code+' в пул? Клиентская сессия слетит.'):('Удалить код '+code+' безвозвратно?');
   if(window.confirm&&!window.confirm(msg))return;
-  api('/api/admin/claude-code-action',{code:code,action:action}).then(function(d){toast(d.ok?(action==='release'?'Возвращён в пул':'Удалён'):'Ошибка');if(d.ok)loadMiniApp('claude');});
+  api('/api/admin/claude-code-action',{code:code,action:action}).then(function(d){toast(d.ok?(action==='release'?'Возвращён в пул':'Удалён'):'Ошибка');if(d.ok)loadPending('claude');});
 }
 function codesPool(svc){
   setTimeout(function(){loadPool(svc)},0);
