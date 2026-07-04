@@ -2739,7 +2739,7 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
             return web.json_response({"ok": False})
         idcol = "email" if svc == "chatgpt" else "org_id"
         is_cl = (svc == "claude")
-        _pcol = ", c.provider" if is_cl else ""
+        _pcol = ", provider" if is_cl else ""
         pool = await get_pool()
         async with pool.acquire() as conn:
             recent = await conn.fetch(

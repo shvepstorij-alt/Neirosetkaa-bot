@@ -22,6 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, PERSONAL_USERNAME, WEBAPP_BASE_URL, bot, dp,
+    CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER, claude_provider_name,
 )
 from runtime_state import (
     rt,
@@ -32,6 +33,7 @@ from states import (
 from db import (
     count_claude_codes_by_plan, delete_claude_pending_activation, ensure_user, get_claude_pending_activation, get_next_claude_code, get_pool,
     log_event, mark_claude_code_used, release_claude_code, save_claude_pending_activation,
+    get_setting, set_setting, count_claude_free_by_provider,
 )
 from keyboards import (
     _eib,
@@ -189,18 +191,36 @@ async def adm_claude_webapp_menu(cb: CallbackQuery):
             used_str = used_at.strftime("%d.%m %H:%M") if hasattr(used_at, "strftime") else str(used_at)[:16]
             last_txt = f"\n\n⏱ Последняя: <code>{last_used['code']}</code> ({used_str})"
 
+    # ── Провайдер активации (сайт) ──
+    active_prov = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
+    if active_prov not in CLAUDE_PROVIDERS:
+        active_prov = CLAUDE_DEFAULT_PROVIDER
+    failover_on = (await get_setting("claude_failover", "1") or "1") == "1"
+    free_by_prov = await count_claude_free_by_provider()
+    prov_lines = ""
+    for _p in CLAUDE_PROVIDER_ORDER:
+        _mark = " ⬅️ активный" if _p == active_prov else ""
+        prov_lines += f"\n• {claude_provider_name(_p)}: {free_by_prov.get(_p, 0)} своб.{_mark}"
+    prov_text = (
+        f"\n\n🔀 <b>Сайт активации:</b> {claude_provider_name(active_prov)}"
+        f"  ·  фолбэк: {'вкл' if failover_on else 'выкл'}"
+        f"{prov_lines}"
+    )
+
     status_str = "✅ ВКЛЮЧЁН" if rt.claude_webapp_enabled else "🔴 ВЫКЛЮЧЕН (тех. работы)"
     text = (
         f"⚡ <b>Claude Mini App</b>\n\n"
         f"Статус: <b>{status_str}</b>\n\n"
         f"<b>Коды активации:</b>{codes_text}\n"
         f"📊 Всего активаций: <b>{total_act}</b>"
-        f"{last_txt}\n\n"
-        f"<i>При выключении клиенты получают сообщение о тех. работах</i>"
+        f"{last_txt}"
+        f"{prov_text}\n\n"
+        f"<i>Коды добавляются в активный сайт. Смени сайт кнопкой ниже.</i>"
     )
     toggle_txt = "🔴 Выключить (тех. работы)" if rt.claude_webapp_enabled else "✅ Включить"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_txt,              callback_data="adm_claude_toggle")],
+        [InlineKeyboardButton(text=f"🔀 Сайт: {claude_provider_name(active_prov)}", callback_data="adm_claude_provider")],
         [InlineKeyboardButton(text="➕ Pro",                 callback_data="adm_claude_add:pro"),
          InlineKeyboardButton(text="➕ Max 5×",             callback_data="adm_claude_add:max_5x"),
          InlineKeyboardButton(text="➕ Max 20×",            callback_data="adm_claude_add:max_20x")],
@@ -431,7 +451,7 @@ async def adm_claude_pending_codes(cb: CallbackQuery):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT cc.id, cc.code, cc.plan, cc.created_at,
+            """SELECT cc.id, cc.code, cc.plan, cc.provider, cc.created_at,
                       p.user_id AS p_uid, p.plan_name, p.expires_at,
                       u.username, u.full_name
                FROM claude_codes cc
@@ -459,13 +479,16 @@ async def adm_claude_pending_codes(cb: CallbackQuery):
                 status = f"{who} — активация истекла, можно вернуть в пул"
         else:
             status = "⚠️ осиротевший резерв (нет активации) — верни в пул"
+        _sitename = claude_provider_name(r["provider"] or "bpa")
         lines.append(
-            f"\n• <code>{r['code']}</code> | {r['plan'] or 'pro'}\n  {status}"
+            f"\n• <code>{r['code']}</code> | {r['plan'] or 'pro'} | {_sitename}\n  {status}"
         )
-        kb_rows.append([InlineKeyboardButton(
-            text=f"♻️ Вернуть в пул: {r['code'][:14]}",
-            callback_data=f"adm_claude_release:{r['id']}"
-        )])
+        kb_rows.append([
+            InlineKeyboardButton(text=f"♻️ В пул: {r['code'][:12]}",
+                                 callback_data=f"adm_claude_release:{r['id']}"),
+            InlineKeyboardButton(text="🗑 Удалить",
+                                 callback_data=f"adm_claude_pdel:{r['id']}"),
+        ])
 
     kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
@@ -501,18 +524,46 @@ async def adm_claude_release_orphan(cb: CallbackQuery):
     await adm_claude_pending_codes(cb)
 
 
+@dp.callback_query(F.data.startswith("adm_claude_pdel:"))
+async def adm_claude_pending_delete(cb: CallbackQuery):
+    """Удалить зарезервированный («ждущий») код Claude безвозвратно (по id)."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    try:
+        code_id = int(cb.data.split(":")[1])
+    except (ValueError, IndexError):
+        await cb.answer("Ошибка", show_alert=True)
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT code FROM claude_codes WHERE id=$1", code_id)
+        if not row:
+            await cb.answer("Код не найден", show_alert=True)
+            return
+        await conn.execute("DELETE FROM claude_pending_activations WHERE code=$1", row["code"])
+        await conn.execute("DELETE FROM claude_codes WHERE id=$1", code_id)
+    await cb.answer(f"🗑 Код {row['code']} удалён", show_alert=True)
+    await adm_claude_pending_codes(cb)
+
+
 @dp.callback_query(F.data.startswith("adm_claude_add:"))
 async def adm_claude_add_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
         return
     plan = cb.data.split(":")[1]
     LABELS2 = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
+    prov = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
+    if prov not in CLAUDE_PROVIDERS:
+        prov = CLAUDE_DEFAULT_PROVIDER
     await state.set_state(ClaudeAdminState.waiting_codes)
     await state.update_data(claude_plan=plan)
     await cb.message.answer(
-        f"📥 <b>Коды Claude {LABELS2.get(plan, plan)}</b>\n\n"
+        f"📥 <b>Коды Claude {LABELS2.get(plan, plan)}</b>\n"
+        f"Сайт: <b>{claude_provider_name(prov)}</b> (активный)\n\n"
         f"Отправь коды — каждый с новой строки.\n"
-        f"Пример: <code>XXXX-XXXX-XXXX-XXXX</code>\n\n/cancel — отмена",
+        f"Пример: <code>XXXX-XXXX-XXXX-XXXX</code>\n\n"
+        f"<i>Чтобы добавить коды другого сайта — сначала смени активный сайт кнопкой «🔀 Сайт».</i>\n\n/cancel — отмена",
         parse_mode="HTML"
     )
     await cb.answer()
@@ -528,6 +579,9 @@ async def adm_claude_receive_codes(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     plan = data.get("claude_plan", "pro")
+    prov = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
+    if prov not in CLAUDE_PROVIDERS:
+        prov = CLAUDE_DEFAULT_PROVIDER
     codes = [l.strip() for l in (message.text or "").splitlines() if l.strip()]
     added = 0
     pool = await get_pool()
@@ -535,9 +589,9 @@ async def adm_claude_receive_codes(message: Message, state: FSMContext):
         for code in codes:
             try:
                 await conn.execute(
-                    "INSERT INTO claude_codes (code, plan) VALUES ($1,$2) "
+                    "INSERT INTO claude_codes (code, plan, provider) VALUES ($1,$2,$3) "
                     "ON CONFLICT (code) DO NOTHING",
-                    code, plan
+                    code, plan, prov
                 )
                 added += 1
             except Exception:
@@ -545,10 +599,11 @@ async def adm_claude_receive_codes(message: Message, state: FSMContext):
     await state.clear()
     LABELS3 = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
     await message.answer(
-        f"✅ Добавлено <b>{added}</b> кодов Claude {LABELS3.get(plan, plan)}",
+        f"✅ Добавлено <b>{added}</b> кодов Claude {LABELS3.get(plan, plan)}\n"
+        f"Сайт: <b>{claude_provider_name(prov)}</b>",
         parse_mode="HTML"
     )
-    await log_event(message.from_user.id, "claude_codes_added", f"plan={plan} n={added}")
+    await log_event(message.from_user.id, "claude_codes_added", f"plan={plan} n={added} prov={prov}")
 
 
 @dp.callback_query(F.data == "adm_claude_send")

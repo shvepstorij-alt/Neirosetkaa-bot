@@ -1855,7 +1855,7 @@ async def _render_claude_provider(target_msg):
         text=("🔁 Фолбэк: ВКЛ (нажми чтобы выключить)" if failover
               else "🔁 Фолбэк: ВЫКЛ (нажми чтобы включить)"),
         callback_data=f"adm_clprov_fo:{'0' if failover else '1'}")])
-    rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к Claude", callback_data="adm_claude_webapp")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         await target_msg.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML")
