@@ -393,6 +393,9 @@ async def safe_send_media(
         raise last_err
 
 
+# Антиспам админ-алертов: одинаковый контекст (клиент+операция) — не чаще 1 раза в 10 мин
+_admin_err_at: dict = {}
+
 async def notify_admin_error(context: str, e: Exception):
     """Отправляет реальную ошибку админу с деталями + трекинг для алертов.
     Safety-блокировки - отдельный тип алерта (🟡 вместо 🔴), не считаются как инфра-ошибки."""
@@ -426,6 +429,13 @@ async def notify_admin_error(context: str, e: Exception):
         await log_event(None, event_kind, f"{context} | {err_msg[:500]}")
     except Exception:
         pass
+
+    # Троттлинг: одинаковый контекст не чаще раза в 10 мин (клиент, тыкающий подряд, не спамит)
+    import time as _t_ae
+    _now_ae = _t_ae.time()
+    if _now_ae - _admin_err_at.get(context, 0.0) < 600:
+        return
+    _admin_err_at[context] = _now_ae
 
     # Safety - жёлтый алерт, не идёт в счётчик критических ошибок
     if is_safety:
