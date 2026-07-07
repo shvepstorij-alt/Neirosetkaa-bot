@@ -590,29 +590,40 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                     break
                 await asyncio.sleep(0.5)
 
-            # Кнопка «开始充值 (Fast)».
+            # Клик по кнопке «开始充值 (Fast)».
             # ВНИМАНИЕ: НЕ искать по 'Fast' (это вкладка «Fast Session JSON») и не по одному
-            # '充值' (это верхние вкладки «GPT 充值» и т.п.). Уникально только «开始充值 / 开始».
-            pay_btn = None
-            for sel in ["button:has-text('开始充值')", "button:has-text('开始')"]:
+            # '充值' (это верхние вкладки «GPT 充值» и т.п.). Уникально только «开始充值».
+            # Кнопка может быть НЕ <button>, а <div>/<a> (React) — ищем тег-агностично,
+            # и в крайнем случае жмём через JS по самому маленькому элементу с этим текстом.
+            clicked = False
+            for sel in ["button:has-text('开始充值')", "[role=button]:has-text('开始充值')",
+                        "a:has-text('开始充值')", "button:has-text('开始')"]:
                 try:
                     b = page.locator(sel).last
-                    if await b.is_visible():
-                        pay_btn = b
+                    if await b.count() > 0 and await b.is_visible():
+                        await b.click(timeout=8000)
+                        clicked = True
                         break
                 except Exception:
                     pass
-            if not pay_btn:
-                return {"success": False, "error": "Кнопка активации не найдена.", "screenshot": await _aipro_ss(page)}
-            try:
-                await pay_btn.click(timeout=8000)
-            except Exception:
-                if not recognized:
-                    return {"success": False, "error": "Кнопка неактивна — Session JSON не распознан.", "screenshot": await _aipro_ss(page)}
+            if not clicked:
                 try:
-                    await page.evaluate("(el)=>el.click()", await pay_btn.element_handle())
+                    clicked = await page.evaluate("""() => {
+                        const els = Array.from(document.querySelectorAll('button, a, [role=button], div, span'));
+                        let best = null;
+                        for (const e of els) {
+                            const t = (e.textContent || '');
+                            if (t.includes('开始充值') && t.length < 40) {
+                                if (!best || t.length < (best.textContent || '').length) best = e;
+                            }
+                        }
+                        if (best) { best.click(); return true; }
+                        return false;
+                    }""")
                 except Exception:
-                    return {"success": False, "error": "Не удалось нажать кнопку активации.", "screenshot": await _aipro_ss(page)}
+                    clicked = False
+            if not clicked:
+                return {"success": False, "error": "Кнопка активации не найдена.", "screenshot": await _aipro_ss(page)}
 
             # Ждём итог
             for _ in range(32):  # ~80 сек
