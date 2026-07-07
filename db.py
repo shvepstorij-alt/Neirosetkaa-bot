@@ -381,6 +381,15 @@ async def init_db():
                 "ON gpt_codes(provider, plan, is_used) WHERE is_used = FALSE")
         except Exception:
             pass
+        # Фикс: речекер (987ai) ошибочно метил invalid коды ДРУГИХ сайтов.
+        # Возвращаем такие свободные коды в строй (снимаем ложный статус).
+        try:
+            await conn.execute(
+                "UPDATE gpt_codes SET check_status='unchecked', flagged_reason=NULL "
+                "WHERE provider <> '987ai' AND is_used=FALSE "
+                "AND COALESCE(check_status,'unchecked') IN ('invalid','error')")
+        except Exception:
+            pass
 
         # ── Claude коды и pending активации ─────────────────────────────────────
         await conn.execute("""

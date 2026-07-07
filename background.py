@@ -552,10 +552,14 @@ async def gpt_code_rechecker_loop():
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                # Берём до 20 непроверенных свободных кодов (приоритет — без статуса)
+                # Берём до 20 непроверенных свободных кодов (приоритет — без статуса).
+                # ВАЖНО: речекер работает через 987ai.vip, поэтому проверяет ТОЛЬКО коды
+                # сайта 987ai. Коды других сайтов (напр. 6661231.xyz) он не трогает —
+                # иначе они ошибочно метятся invalid и пропадают из выдачи.
                 rows = await conn.fetch(
                     """SELECT id, code, plan FROM gpt_codes
                        WHERE is_used = FALSE
+                         AND provider = '987ai'
                          AND COALESCE(check_status, 'unchecked') NOT IN ('ok', 'used', 'invalid')
                        ORDER BY
                          CASE COALESCE(check_status,'unchecked')
@@ -610,7 +614,7 @@ async def gpt_code_rechecker_loop():
                 try:
                     _lines_str = "\n".join(lines)
                     _msg = (
-                        f"🔍 <b>Речекер кодов: найдены проблемные</b>\n\n"
+                        f"🔍 <b>Речекер кодов ChatGPT (987ai.vip): найдены проблемные</b>\n\n"
                         f"{_lines_str}\n\n"
                         f"✅ Проверено рабочих: <b>{ok_count}</b>\n"
                         f"⚠️ Помечено: <b>{len(flagged)}</b>\n\n"
