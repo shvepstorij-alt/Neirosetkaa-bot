@@ -31,6 +31,8 @@ from config import (
     clean_reply, pending_fk_payments, plan_name_to_key, strip_surrogates,
     CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER,
     claude_provider_base, claude_provider_name,
+    GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER,
+    gpt_provider_base, gpt_provider_name,
 )
 from runtime_state import (
     rt,
@@ -39,7 +41,7 @@ from db import (
     _extract_email_from_token, add_coins, add_credits_batch, delete_claude_pending_activation, delete_pending_activation, ensure_user,
     fk_get_order, fk_mark_paid, get_claude_pending_activation, get_coins, get_credits, get_next_claude_code,
     get_next_gpt_code, get_pending_activation, get_pool, get_setting, set_setting, get_user, is_blocked,
-    count_claude_free_by_provider,
+    count_claude_free_by_provider, count_gpt_free_by_provider,
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
@@ -3116,9 +3118,16 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
 
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
-    user_id: int, order_id: str, plan_name: str
+    user_id: int, order_id: str, plan_name: str,
+    provider: str = "987ai", session_raw: str = ""
 ):
-    """Фоновая задача: Playwright-активация. Не держит HTTP-соединение."""
+    """Фоновая задача: Playwright-активация. Не держит HTTP-соединение.
+    provider: '987ai' (текущий, по access_token) | 'aipro' (6661231.xyz, по Session JSON)."""
+    async def _do_activate(_code):
+        if provider == "aipro":
+            from chatgpt_activation import activate_chatgpt_aipro
+            return await activate_chatgpt_aipro(_code, session_raw or access_token)
+        return await activate_chatgpt(_code, access_token)
     try:
         # ── Тестовый режим: код начинается с TEST → пропускаем Playwright ────
         if code.startswith("TEST-"):
@@ -3136,13 +3145,13 @@ async def _run_activation_job(
                 pass
             return
         # ─────────────────────────────────────────────────────────────────────
-        result = await activate_chatgpt(code, access_token)
+        result = await _do_activate(code)
 
-        # Если код уже использован на 987ai.vip — берём следующий свободный и повторяем
+        # Если код уже использован на сайте — берём следующий свободный ЭТОГО ЖЕ сайта и повторяем
         if not result.get("success") and result.get("code_already_used"):
             _bad_code = code
             _plan_key = plan_name_to_key(plan_name)
-            logging.warning(f"Код {_bad_code} уже использован, ищем следующий (plan={_plan_key})")
+            logging.warning(f"Код {_bad_code} уже использован, ищем следующий (plan={_plan_key}, site={provider})")
 
             # Помечаем плохой код как постоянно использованный (не возвращаем в пул)
             try:
@@ -3156,10 +3165,10 @@ async def _run_activation_job(
             except Exception as _e:
                 logging.error(f"Не удалось пометить плохой код {_bad_code}: {_e}")
 
-            new_code = await get_next_gpt_code(_plan_key)
+            new_code = await get_next_gpt_code(_plan_key, provider)
             if new_code:
-                logging.info(f"Новый код для {user_id}: {new_code}")
-                await save_pending_activation(user_id, new_code, order_id, _plan_key, plan_name)
+                logging.info(f"Новый код для {user_id}: {new_code} (site={provider})")
+                await save_pending_activation(user_id, new_code, order_id, _plan_key, plan_name, provider)
                 code = new_code
                 try:
                     await bot.send_message(
@@ -3169,7 +3178,7 @@ async def _run_activation_job(
                     )
                 except Exception:
                     pass
-                result = await activate_chatgpt(code, access_token)
+                result = await _do_activate(code)
             else:
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False,
@@ -3188,7 +3197,7 @@ async def _run_activation_job(
                 return
 
         if result.get("success"):
-            _email = _extract_email_from_token(access_token)
+            _email = result.get("email") or _extract_email_from_token(access_token)
             await mark_gpt_code_used(code, user_id, order_id, _email)
             await delete_pending_activation(user_id)
             # Заменяем сообщение клиента на поздравление и убираем кнопку «Нужна помощь»
@@ -3515,6 +3524,8 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         return _resp({"success": False, "error": "Неверный формат запроса"}, 400)
 
     access_token = (body.get("token") or "").strip()
+    # Полный Session JSON — мини-апп уже шлёт его как raw_token (весь вставленный текст).
+    session_raw  = (body.get("session") or body.get("raw_token") or "").strip()
     init_data    = (body.get("init_data") or "").strip()
     _fb_code     = (body.get("code") or "").strip()
 
@@ -3598,13 +3609,19 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     code = pending["code"]
     order_id  = pending["order_id"]
     plan_name = pending["plan_name"]
+    provider  = pending.get("provider", "987ai")
+
+    # Для сайта aipro нужен полный Session JSON. Если клиент прислал сырой session — берём его,
+    # иначе (старый клиент прислал только токен) для aipro активация невозможна.
+    if provider == "aipro" and not session_raw:
+        return _resp({"success": False, "error": "Обнови мини-приложение и вставь весь текст со страницы сессии заново."})
 
     job_id = str(uuid.uuid4())[:12]
     _activation_jobs[job_id] = {"status": "pending"}
     asyncio.create_task(
-        _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name)
+        _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name, provider, session_raw)
     )
-    logging.info(f"ChatGPT activation started: job={job_id} user={user_id} code={code}")
+    logging.info(f"ChatGPT activation started: job={job_id} user={user_id} code={code} site={provider}")
     return _resp({"job_id": job_id, "status": "started"})
 
 
@@ -3821,7 +3838,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     )
                     return
                 _plan_key  = plan_name_to_key(_plan_name)
-                _code      = await get_next_gpt_code(_plan_key)
+                _code, _gpt_prov = await _gpt_pick_code(_plan_key)
                 if _code is None:
                     await bot.send_message(
                         user_id,
@@ -3831,11 +3848,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"{delayed_note}", parse_mode="HTML")
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🚨 <b>КОДЫ ChatGPT ЗАКОНЧИЛИСЬ!</b>\n"
+                        f"🚨 <b>КОДЫ ChatGPT ЗАКОНЧИЛИСЬ НА ВСЕХ САЙТАХ!</b>\n"
                         f"Заказ <code>{order_id}</code> — активируй вручную!\n"
-                        f"Добавь коды: /add_gpt_codes", parse_mode="HTML")
+                        f"Пополни коды на любом сайте ChatGPT.", parse_mode="HTML")
                 else:
-                    await save_pending_activation(user_id, _code, order_id, _plan_key, _plan_name)
+                    await save_pending_activation(user_id, _code, order_id, _plan_key, _plan_name, _gpt_prov)
                     _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}&code={_uparse.quote(_code)}"
                     from aiogram.types import WebAppInfo
                     import datetime as _dt_gpt
@@ -4555,6 +4572,49 @@ async def _claude_pick_code(plan: str):
                         f"У <b>{claude_provider_name(active)}</b> закончились коды ({plan}).\n"
                         f"Активация ушла на <b>{claude_provider_name(prov)}</b>.\n"
                         f"Пополни коды на {claude_provider_name(active)}.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+            return code, prov
+    return None, None
+
+
+# ─── Мультипровайдер ChatGPT: выбор активного сайта + авто-фолбэк ─────────────
+async def _gpt_active_provider() -> str:
+    p = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    return p if p in GPT_PROVIDERS else GPT_DEFAULT_PROVIDER
+
+
+async def _gpt_failover_on() -> bool:
+    return (await get_setting("gpt_failover", "1") or "1") == "1"
+
+
+async def _gpt_provider_order() -> list:
+    active = await _gpt_active_provider()
+    order = [active]
+    if await _gpt_failover_on():
+        for p in GPT_PROVIDER_ORDER:
+            if p in GPT_PROVIDERS and p not in order:
+                order.append(p)
+    return order
+
+
+async def _gpt_pick_code(plan: str):
+    """Берёт CDK-код из пула активного сайта ChatGPT; при пустом пуле и включённом
+    фолбэке пробует остальные. Возвращает (code, provider) либо (None, None)."""
+    order = await _gpt_provider_order()
+    active = order[0]
+    for prov in order:
+        code = await get_next_gpt_code(plan, prov)
+        if code:
+            if prov != active:
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔀 <b>ChatGPT — авто-переключение сайта</b>\n"
+                        f"У <b>{gpt_provider_name(active)}</b> закончились коды ({plan}).\n"
+                        f"Активация ушла на <b>{gpt_provider_name(prov)}</b>.\n"
+                        f"Пополни коды на {gpt_provider_name(active)}.",
                         parse_mode="HTML")
                 except Exception:
                     pass

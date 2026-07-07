@@ -44,6 +44,25 @@ CLAUDE_PROVIDERS = {
 CLAUDE_PROVIDER_ORDER   = ["bpa", "root"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"
 
+# ─── Провайдеры авто-активации ChatGPT ────────────────────────────
+# ВНИМАНИЕ: сайты РАЗНЫЕ по механике (не как у Claude).
+#   987ai  — текущий (Playwright, ввод access-token клиента).
+#   aipro  — 6661231.xyz «AI Pro 充值中心» (Playwright: CDK + полный Session JSON).
+# У каждого сайта свои CDK-коды (отдельные пулы). Активный сайт и фолбэк
+# выбираются в админке (настройки gpt_provider / gpt_failover). Дефолт — 987ai.
+GPT_PROVIDERS = {
+    "987ai": {"name": "987ai.vip",   "base": "https://www.987ai.vip"},
+    "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz"},
+}
+GPT_PROVIDER_ORDER   = ["987ai", "aipro"]
+GPT_DEFAULT_PROVIDER = "987ai"
+
+def gpt_provider_name(provider: str) -> str:
+    return GPT_PROVIDERS.get(provider, GPT_PROVIDERS[GPT_DEFAULT_PROVIDER])["name"]
+
+def gpt_provider_base(provider: str) -> str:
+    return GPT_PROVIDERS.get(provider, GPT_PROVIDERS[GPT_DEFAULT_PROVIDER])["base"]
+
 def claude_provider_base(provider: str) -> str:
     """База URL провайдера (с безопасным дефолтом)."""
     return CLAUDE_PROVIDERS.get(

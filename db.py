@@ -348,6 +348,7 @@ async def init_db():
             ("check_status",     "TEXT DEFAULT 'unchecked'"),  # 'unchecked'|'ok'|'used'|'invalid'|'error'
             ("last_checked_at",  "TIMESTAMPTZ"),
             ("flagged_reason",   "TEXT"),
+            ("provider",         "TEXT NOT NULL DEFAULT '987ai'"),  # сайт активации (987ai|aipro)
         ]:
             try:
                 await conn.execute(f"ALTER TABLE gpt_codes ADD COLUMN {_col} {_def}")
@@ -365,6 +366,21 @@ async def init_db():
                 expires_at  TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '2 hours')
             )
         """)
+        # Мультипровайдер ChatGPT: сайт активации + сырой Session JSON клиента
+        for _col2, _def2 in [
+            ("provider",    "TEXT NOT NULL DEFAULT '987ai'"),
+            ("session_raw", "TEXT"),
+        ]:
+            try:
+                await conn.execute(f"ALTER TABLE gpt_pending_activations ADD COLUMN {_col2} {_def2}")
+            except Exception:
+                pass
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gpt_codes_free_prov "
+                "ON gpt_codes(provider, plan, is_used) WHERE is_used = FALSE")
+        except Exception:
+            pass
 
         # ── Claude коды и pending активации ─────────────────────────────────────
         await conn.execute("""
@@ -503,29 +519,40 @@ async def init_db():
 
 # ── GPT АКТИВАЦИЯ — вспомогательные функции ─────────────────────────────────
 
-async def get_next_gpt_code(plan: str = "plus"):
-    """Выдаёт следующий свободный код. Приоритет: check_status='ok' > 'unchecked'.
-    Коды со статусом 'used'/'invalid' не выдаются."""
+async def get_next_gpt_code(plan: str = "plus", provider: str = "987ai"):
+    """Выдаёт следующий свободный код ИЗ ПУЛА КОНКРЕТНОГО САЙТА.
+    Приоритет: check_status='ok' > 'unchecked'. 'used'/'invalid' не выдаются."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Сначала пробуем 'ok' (проверенные речекером)
         row = await conn.fetchrow(
             """UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
                WHERE id=(SELECT id FROM gpt_codes
-                         WHERE plan=$1 AND is_used=FALSE
+                         WHERE plan=$1 AND provider=$2 AND is_used=FALSE
                            AND COALESCE(check_status,'unchecked') = 'ok'
                          ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-               RETURNING code""", plan)
+               RETURNING code""", plan, provider)
         if not row:
             # Fallback: любые непроверенные (не помеченные как плохие)
             row = await conn.fetchrow(
                 """UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
                    WHERE id=(SELECT id FROM gpt_codes
-                             WHERE plan=$1 AND is_used=FALSE
+                             WHERE plan=$1 AND provider=$2 AND is_used=FALSE
                                AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid')
                              ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-                   RETURNING code""", plan)
+                   RETURNING code""", plan, provider)
     return row["code"] if row else None
+
+
+async def count_gpt_free_by_provider() -> dict:
+    """Свободные коды ChatGPT по сайтам: {provider: count}."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT provider, COUNT(*) AS free FROM gpt_codes "
+            "WHERE is_used=FALSE AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid') "
+            "GROUP BY provider")
+    return {r["provider"]: int(r["free"]) for r in rows}
 
 async def release_gpt_code(code: str):
     pool = await get_pool()
@@ -557,16 +584,17 @@ async def mark_gpt_code_used(code: str, user_id: int, order_id: str, email: str 
             "UPDATE gpt_codes SET used_by=$1, order_id=$2, email=$3, used_at=NOW() WHERE code=$4",
             user_id, order_id, email, code)
 
-async def save_pending_activation(user_id: int, code: str, order_id: str, plan: str, plan_name: str):
+async def save_pending_activation(user_id: int, code: str, order_id: str, plan: str, plan_name: str,
+                                  provider: str = "987ai"):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO gpt_pending_activations (user_id, code, order_id, plan, plan_name)
-               VALUES ($1,$2,$3,$4,$5)
+            """INSERT INTO gpt_pending_activations (user_id, code, order_id, plan, plan_name, provider)
+               VALUES ($1,$2,$3,$4,$5,$6)
                ON CONFLICT (user_id) DO UPDATE
-               SET code=$2, order_id=$3, plan=$4, plan_name=$5,
+               SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6, session_raw=NULL,
                    created_at=NOW(), expires_at=NOW()+INTERVAL '2 hours'""",
-            user_id, code, order_id, plan, plan_name)
+            user_id, code, order_id, plan, plan_name, provider)
 
 async def get_pending_activation(user_id: int):
     pool = await get_pool()

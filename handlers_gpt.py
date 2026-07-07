@@ -23,6 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import (
     ADMIN_ID, PERSONAL_USERNAME, WEBAPP_BASE_URL, _BOT_TZ, bot, dp,
     is_admin, SHOP_CATALOG, plan_name_to_key,
+    GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER, gpt_provider_name,
 )
 from runtime_state import (
     rt,
@@ -33,6 +34,7 @@ from states import (
 from db import (
     delete_pending_activation, ensure_user, get_next_gpt_code, get_pending_activation, get_pool, log_event,
     release_gpt_code, save_pending_activation,
+    get_setting, set_setting, count_gpt_free_by_provider,
 )
 from keyboards import (
     _eib,
@@ -55,18 +57,21 @@ async def admin_add_gpt_codes(message: Message):
     if not codes:
         await message.answer("❌ Нет кодов.\n<code>/add_gpt_codes plus\nCODE1</code>", parse_mode="HTML")
         return
+    prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    if prov not in GPT_PROVIDERS:
+        prov = GPT_DEFAULT_PROVIDER
     pool = await get_pool()
     added = skipped = 0
     async with pool.acquire() as conn:
         for code in codes:
             try:
-                await conn.execute("INSERT INTO gpt_codes (code, plan) VALUES ($1, $2)", code, plan)
+                await conn.execute("INSERT INTO gpt_codes (code, plan, provider) VALUES ($1, $2, $3)", code, plan, prov)
                 added += 1
             except Exception:
                 skipped += 1
     async with pool.acquire() as conn:
         remaining = await conn.fetchval(
-            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
+            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND provider=$2 AND is_used=FALSE", plan, prov) or 0
     await message.answer(
         f"✅ <b>Коды добавлены</b>\n\n📦 {plan}\n➕ {added} добавлено  ⏭ {skipped} дублей\n"
         f"📊 Свободных: <b>{remaining}</b>", parse_mode="HTML")
@@ -184,14 +189,31 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
             used_str = used_at.strftime("%d.%m %H:%M") if hasattr(used_at, 'strftime') else str(used_at)[:16]
             last_txt = f"\n\n⏱ Последняя активация: <code>{last_used['code']}</code> ({used_str})"
 
+    # ── Провайдер активации (сайт) ──
+    active_prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    if active_prov not in GPT_PROVIDERS:
+        active_prov = GPT_DEFAULT_PROVIDER
+    failover_on = (await get_setting("gpt_failover", "1") or "1") == "1"
+    free_by_prov = await count_gpt_free_by_provider()
+    prov_lines = ""
+    for _p in GPT_PROVIDER_ORDER:
+        _mark = " ⬅️ активный" if _p == active_prov else ""
+        prov_lines += f"\n• {gpt_provider_name(_p)}: {free_by_prov.get(_p, 0)} своб.{_mark}"
+    prov_text = (
+        f"\n\n🔀 <b>Сайт активации:</b> {gpt_provider_name(active_prov)}"
+        f"  ·  фолбэк: {'вкл' if failover_on else 'выкл'}"
+        f"{prov_lines}"
+    )
+
     status = "✅ ВКЛЮЧЁН" if rt.chatgpt_webapp_enabled else "🔴 ВЫКЛЮЧЕН (тех. работы)"
     text = (
         f"✨ <b>ChatGPT Mini App</b>\n\n"
         f"Статус: <b>{status}</b>\n\n"
         f"<b>Коды активации:</b>{codes_text}\n"
         f"📊 Всего активаций: <b>{total_activations}</b>"
-        f"{last_txt}\n\n"
-        f"<i>При выключении клиенты получают сообщение о тех. работах</i>"
+        f"{last_txt}"
+        f"{prov_text}\n\n"
+        f"<i>Коды добавляются в активный сайт. Смени сайт кнопкой «🔀 Сайт».</i>"
     )
     toggle_text = "🔴 Выключить (тех. работы)" if rt.chatgpt_webapp_enabled else "✅ Включить"
     _add_rows, _cur = [], []
@@ -205,6 +227,7 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
         _add_rows = [[InlineKeyboardButton(text="➕ Добавить коды", callback_data="adm_gpt_add:plus")]]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=toggle_text, callback_data="adm_gpt_toggle")],
+        [InlineKeyboardButton(text=f"🔀 Сайт: {gpt_provider_name(active_prov)}", callback_data="adm_gpt_provider")],
         *_add_rows,
         [InlineKeyboardButton(text="📦 Свободные коды",     callback_data="adm_gpt_free:plus"),
          InlineKeyboardButton(text="⏳ Ждущие коды",         callback_data="adm_gpt_pending:plus")],
@@ -230,6 +253,73 @@ async def adm_gpt_toggle(cb: CallbackQuery):
     await adm_gpt_webapp_menu(cb)
 
 
+# ─── Провайдер (сайт) активации ChatGPT ───────────────────────────
+async def _render_gpt_provider(target_msg):
+    active = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    if active not in GPT_PROVIDERS:
+        active = GPT_DEFAULT_PROVIDER
+    failover = (await get_setting("gpt_failover", "1") or "1") == "1"
+    free = await count_gpt_free_by_provider()
+    lines = [
+        "🔀 <b>Сайт активации ChatGPT</b>\n",
+        f"Активный: <b>{gpt_provider_name(active)}</b>",
+        f"Авто-фолбэк при нуле стока: <b>{'вкл ✅' if failover else 'выкл ❌'}</b>\n",
+        "<b>Свободные коды по сайтам:</b>",
+    ]
+    for p in GPT_PROVIDER_ORDER:
+        mark = " ⬅️ активный" if p == active else ""
+        lines.append(f"• {gpt_provider_name(p)}: <b>{free.get(p, 0)}</b>{mark}")
+    lines.append(
+        "\n<i>Коды добавляются в активный сайт. Чтобы залить коды другого сайта — "
+        "сначала выбери его здесь.</i>"
+    )
+    rows = []
+    for p in GPT_PROVIDER_ORDER:
+        _sel = "🟢 " if p == active else "⚪️ "
+        rows.append([InlineKeyboardButton(text=f"{_sel}{gpt_provider_name(p)}",
+                                          callback_data=f"adm_gptprov_set:{p}")])
+    rows.append([InlineKeyboardButton(
+        text=("🔁 Фолбэк: ВКЛ (нажми чтобы выключить)" if failover
+              else "🔁 Фолбэк: ВЫКЛ (нажми чтобы включить)"),
+        callback_data=f"adm_gptprov_fo:{'0' if failover else '1'}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к ChatGPT", callback_data="adm_gpt_webapp")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    try:
+        await target_msg.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await target_msg.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_gpt_provider")
+async def adm_gpt_provider(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await _render_gpt_provider(cb.message)
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_gptprov_set:"))
+async def adm_gptprov_set(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    prov = cb.data.split(":", 1)[1]
+    if prov not in GPT_PROVIDERS:
+        await cb.answer("Неизвестный сайт", show_alert=True); return
+    await set_setting("gpt_provider", prov)
+    await cb.answer(f"Активный сайт: {gpt_provider_name(prov)}")
+    await _render_gpt_provider(cb.message)
+
+
+@dp.callback_query(F.data.startswith("adm_gptprov_fo:"))
+async def adm_gptprov_fo(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    val = cb.data.split(":", 1)[1]
+    await set_setting("gpt_failover", "1" if val == "1" else "0")
+    await cb.answer("Фолбэк " + ("включён" if val == "1" else "выключен"))
+    await _render_gpt_provider(cb.message)
+
+
 @dp.callback_query(F.data.startswith("adm_gpt_add:"))
 async def adm_gpt_add_start(cb: CallbackQuery, state: FSMContext):
     """Начало добавления кодов — запрашиваем список."""
@@ -237,13 +327,18 @@ async def adm_gpt_add_start(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     plan = cb.data.split(":")[1]
+    prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    if prov not in GPT_PROVIDERS:
+        prov = GPT_DEFAULT_PROVIDER
     await state.update_data(gpt_add_plan=plan)
     await state.set_state(GptAdminState.waiting_codes)
     plan_labels = _gpt_plan_labels()
     await cb.message.answer(
-        f"➕ <b>Добавление кодов — {plan_labels.get(plan, plan)}</b>\n\n"
+        f"➕ <b>Добавление кодов — {plan_labels.get(plan, plan)}</b>\n"
+        f"Сайт: <b>{gpt_provider_name(prov)}</b> (активный)\n\n"
         f"Отправь коды — каждый с новой строки:\n\n"
         f"<code>CODE1\nCODE2\nCODE3</code>\n\n"
+        f"<i>Чтобы добавить коды другого сайта — сначала смени активный сайт «🔀 Сайт».</i>\n"
         f"Или отправь /cancel чтобы отменить",
         parse_mode="HTML"
     )
@@ -261,6 +356,9 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     plan = data.get("gpt_add_plan", "plus")
+    prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    if prov not in GPT_PROVIDERS:
+        prov = GPT_DEFAULT_PROVIDER
     codes = [l.strip() for l in (message.text or "").split("\n") if l.strip()]
     if not codes:
         await message.answer("❌ Нет кодов. Отправь каждый код с новой строки.")
@@ -270,18 +368,19 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
     async with pool.acquire() as conn:
         for code in codes:
             try:
-                await conn.execute("INSERT INTO gpt_codes (code, plan) VALUES ($1, $2)", code, plan)
+                await conn.execute("INSERT INTO gpt_codes (code, plan, provider) VALUES ($1, $2, $3)", code, plan, prov)
                 added += 1
             except Exception:
                 skipped += 1
     async with pool.acquire() as conn:
         remaining = await conn.fetchval(
-            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND is_used=FALSE", plan) or 0
+            "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND provider=$2 AND is_used=FALSE", plan, prov) or 0
     await state.clear()
     plan_labels = _gpt_plan_labels()
     await message.answer(
         f"✅ <b>Коды добавлены!</b>\n\n"
         f"📦 План: <b>{plan_labels.get(plan, plan)}</b>\n"
+        f"🔀 Сайт: <b>{gpt_provider_name(prov)}</b>\n"
         f"➕ Добавлено: <b>{added}</b>\n"
         f"⏭ Дублей: <b>{skipped}</b>\n"
         f"📊 Свободных теперь: <b>{remaining}</b>",
@@ -514,7 +613,7 @@ async def adm_gpt_pending_codes(cb: CallbackQuery):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT gc.id, gc.code, gc.reserved_at,
+            """SELECT gc.id, gc.code, gc.reserved_at, gc.provider,
                       pa.user_id AS pa_uid, u.username, u.full_name
                FROM gpt_codes gc
                LEFT JOIN gpt_pending_activations pa ON pa.code = gc.code
@@ -555,7 +654,8 @@ async def adm_gpt_pending_codes(cb: CallbackQuery):
         date_str = reserved.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if reserved and hasattr(reserved, "strftime") else "—"
         uname = r["username"] or r["full_name"] or (f"id{r['pa_uid']}" if r["pa_uid"] else "—")
         tg_str = f"@{uname}" if r["username"] else uname
-        lines.append(f"• <code>{r['code']}</code>  👤 {tg_str}  ⏱ {date_str}")
+        _site = gpt_provider_name(r["provider"] or "987ai")
+        lines.append(f"• <code>{r['code']}</code>  👤 {tg_str}  ⏱ {date_str}  🌐 {_site}")
         code_btns.append([
             InlineKeyboardButton(
                 text=f"🔓 В пул",

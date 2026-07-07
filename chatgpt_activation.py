@@ -485,6 +485,160 @@ async def check_gpt_code(card_code: str) -> dict:
             await browser.close()
 
 
+async def _aipro_body_text(page) -> str:
+    try:
+        return await page.inner_text("body")
+    except Exception:
+        return ""
+
+
+async def _aipro_ss(page):
+    try:
+        return await page.screenshot(full_page=True)
+    except Exception:
+        return None
+
+
+def _email_from_session(session_json: str) -> str:
+    """Достаёт email из полного Session JSON (или из accessToken внутри него)."""
+    try:
+        import json as _json, base64 as _b64
+        obj = _json.loads(session_json)
+        u = obj.get("user") or {}
+        if u.get("email"):
+            return u["email"]
+        tok = obj.get("accessToken") or ""
+        if tok:
+            payload_b64 = tok.split(".")[1]
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += "=" * padding
+            payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
+            prof = payload.get("https://api.openai.com/profile", {})
+            return prof.get("email", "") or payload.get("email", "")
+    except Exception:
+        pass
+    return ""
+
+
+async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
+    """Активация ChatGPT через 6661231.xyz (AI Pro 充值中心).
+    Вводит CDK + полный Session JSON, жмёт «开始充值 (Fast)», ждёт результат.
+    Статусы приходят на КИТАЙСКОМ даже при English UI:
+      успех=充值成功/已激活 · использован=已被使用 · битый JSON=解析失败/格式错误 · распознан=已识别
+    Формат ответа как у activate_chatgpt:
+      {success, error, code_already_used, out_of_stock, email, screenshot}
+    """
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    url = "https://6661231.xyz/"
+    logger.info(f"activate_chatgpt_aipro: cdk={cdk_code} session_len={len(session_json or '')}")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--disable-setuid-sandbox","--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-US")
+        page = await context.new_page()
+        try:
+            await page.goto(url, timeout=45_000, wait_until="networkidle")
+            await asyncio.sleep(1.5)
+
+            # Выбрать вкладку GPT (на всякий случай)
+            try:
+                gpt_tab = page.locator("button:has-text('GPT')").first
+                if await gpt_tab.is_visible():
+                    await gpt_tab.click()
+                    await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+            # Поле 1: CDK
+            cdk_input = page.locator("input[placeholder*='CDK'], input[placeholder*='bbt']").first
+            try:
+                await cdk_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле CDK не найдено на сайте.", "screenshot": await _aipro_ss(page)}
+            await cdk_input.fill("")
+            await cdk_input.fill(cdk_code)
+            await asyncio.sleep(0.6)
+
+            # Поле 2: Session JSON
+            sess_area = page.locator("textarea").first
+            await sess_area.wait_for(state="visible", timeout=10_000)
+            await sess_area.fill("")
+            await sess_area.fill(session_json)
+            await asyncio.sleep(1.2)
+
+            # Ждём распознавания аккаунта (已识别) или ошибки формата
+            recognized = False
+            for _ in range(20):  # ~10 сек
+                txt = await _aipro_body_text(page)
+                if "解析失败" in txt or "格式错误" in txt or "not valid JSON" in txt:
+                    return {"success": False, "error": "Сайт не принял Session JSON (просрочен/битый). Обнови сессию.", "screenshot": await _aipro_ss(page)}
+                if "已识别" in txt:
+                    recognized = True
+                    break
+                await asyncio.sleep(0.5)
+
+            # Кнопка «开始充值 (Fast)»
+            pay_btn = None
+            for sel in ["button:has-text('Fast')", "button:has-text('充值')", "button:has-text('开始')"]:
+                try:
+                    b = page.locator(sel).first
+                    if await b.is_visible():
+                        pay_btn = b
+                        break
+                except Exception:
+                    pass
+            if not pay_btn:
+                return {"success": False, "error": "Кнопка активации не найдена.", "screenshot": await _aipro_ss(page)}
+            try:
+                await pay_btn.click(timeout=8000)
+            except Exception:
+                if not recognized:
+                    return {"success": False, "error": "Кнопка неактивна — Session JSON не распознан.", "screenshot": await _aipro_ss(page)}
+                try:
+                    await page.evaluate("(el)=>el.click()", await pay_btn.element_handle())
+                except Exception:
+                    return {"success": False, "error": "Не удалось нажать кнопку активации.", "screenshot": await _aipro_ss(page)}
+
+            # Ждём итог
+            for _ in range(48):  # ~2 минуты
+                await asyncio.sleep(2.5)
+                txt = await _aipro_body_text(page)
+                tl = txt.lower()
+                if "充值成功" in txt or "已激活" in txt or "激活成功" in txt:
+                    email = _email_from_session(session_json)
+                    logger.info(f"aipro успех: cdk={cdk_code} email={email}")
+                    return {"success": True, "email": email}
+                if "已被使用" in txt or "已使用" in txt:
+                    return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован."}
+                if "解析失败" in txt or "格式错误" in txt:
+                    return {"success": False, "error": "Сайт отклонил Session JSON.", "screenshot": await _aipro_ss(page)}
+                if ("库存不足" in txt or "无可用" in txt or "暂无库存" in txt
+                        or "out of stock" in tl or "no stock" in tl):
+                    return {"success": False, "out_of_stock": True, "error": "Нет стока на сайте."}
+            return {"success": False, "error": "Активация не завершилась за 2 минуты — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_chatgpt_aipro error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
