@@ -590,11 +590,13 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                     break
                 await asyncio.sleep(0.5)
 
-            # Кнопка «开始充值 (Fast)»
+            # Кнопка «开始充值 (Fast)».
+            # ВНИМАНИЕ: НЕ искать по 'Fast' (это вкладка «Fast Session JSON») и не по одному
+            # '充值' (это верхние вкладки «GPT 充值» и т.п.). Уникально только «开始充值 / 开始».
             pay_btn = None
-            for sel in ["button:has-text('Fast')", "button:has-text('充值')", "button:has-text('开始')"]:
+            for sel in ["button:has-text('开始充值')", "button:has-text('开始')"]:
                 try:
-                    b = page.locator(sel).first
+                    b = page.locator(sel).last
                     if await b.is_visible():
                         pay_btn = b
                         break
@@ -613,7 +615,7 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                     return {"success": False, "error": "Не удалось нажать кнопку активации.", "screenshot": await _aipro_ss(page)}
 
             # Ждём итог
-            for _ in range(48):  # ~2 минуты
+            for _ in range(32):  # ~80 сек
                 await asyncio.sleep(2.5)
                 txt = await _aipro_body_text(page)
                 tl = txt.lower()
@@ -625,10 +627,11 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                     return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован."}
                 if "解析失败" in txt or "格式错误" in txt:
                     return {"success": False, "error": "Сайт отклонил Session JSON.", "screenshot": await _aipro_ss(page)}
-                if ("库存不足" in txt or "无可用" in txt or "暂无库存" in txt
-                        or "out of stock" in tl or "no stock" in tl):
-                    return {"success": False, "out_of_stock": True, "error": "Нет стока на сайте."}
-            return {"success": False, "error": "Активация не завершилась за 2 минуты — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
+                if ("库存不足" in txt or "无可用" in txt or "暂无库存" in txt or "无库存" in txt
+                        or "已售罄" in txt or "售罄" in txt or "缺货" in txt or "无货" in txt
+                        or "out of stock" in tl or "no stock" in tl or "sold out" in tl):
+                    return {"success": False, "out_of_stock": True, "error": "Нет стока на сайте (сайт не выдал сертификат)."}
+            return {"success": False, "error": "Активация не завершилась — проверь вручную на 6661231.xyz (возможно, нет стока тарифа).", "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_chatgpt_aipro error: {e}", exc_info=True)
             return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}

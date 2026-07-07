@@ -3230,6 +3230,44 @@ async def _run_activation_job(
                     pass
                 return
 
+        # ── Авто-фолбэк при «нет стока» на сайте: заказ уходит на другой сайт ──
+        # (сработает, только если фолбэк включён и у другого сайта есть коды)
+        if not result.get("success") and result.get("out_of_stock"):
+            _plan_key_oos = plan_name_to_key(plan_name)
+            for _np in await _gpt_provider_order():
+                if _np == provider:
+                    continue
+                _nc = await get_next_gpt_code(_plan_key_oos, _np)
+                if not _nc:
+                    continue
+                try:
+                    await release_gpt_code(code)   # прежний код валиден — вернём в пул его сайта
+                except Exception:
+                    pass
+                provider = _np
+                code = _nc
+                await save_pending_activation(user_id, code, order_id, _plan_key_oos, plan_name, provider)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🔀 <b>ChatGPT — авто-переключение сайта</b>\n"
+                        f"У прежнего сайта нет стока ({plan_name}). Ушли на <b>{gpt_provider_name(_np)}</b>.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                result = await _do_activate(code)
+                if result.get("success") or not result.get("out_of_stock"):
+                    break
+            if not result.get("success") and result.get("out_of_stock"):
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 <b>ChatGPT — нет стока НИ НА ОДНОМ сайте</b> ({plan_name})\n"
+                        f"👤 <code>{user_id}</code> — активируй вручную.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+
         if result.get("success"):
             _email = result.get("email") or _extract_email_from_token(access_token)
             await mark_gpt_code_used(code, user_id, order_id, _email)
