@@ -2754,8 +2754,8 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
         if not tbl:
             return web.json_response({"ok": False})
         idcol = "email" if svc == "chatgpt" else "org_id"
-        is_cl = (svc == "claude")
-        _pcol = ", provider" if is_cl else ""
+        has_prov = svc in ("claude", "chatgpt")
+        _pcol = ", provider" if has_prov else ""
         pool = await get_pool()
         async with pool.acquire() as conn:
             recent = await conn.fetch(
@@ -2763,14 +2763,23 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                 f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
                 f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL ORDER BY c.used_at DESC LIMIT 15")
             free = await conn.fetch(f"SELECT code, plan{_pcol} FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 100")
+            # «Ждущие» коды: выданы клиенту (is_used), но активация ещё не завершена (used_by IS NULL)
             pending = []
-            if is_cl:
-                # «Ждущие» коды: выданы клиенту (is_used), но активация ещё не завершена (used_by IS NULL)
+            if svc == "claude":
                 pending = await conn.fetch(
                     "SELECT c.code, c.plan, c.provider, p.user_id, p.org_id, p.created_at, "
                     "       p.plan_name, u.username "
                     "FROM claude_codes c "
                     "LEFT JOIN claude_pending_activations p ON p.code=c.code "
+                    "LEFT JOIN users u ON u.user_id=p.user_id "
+                    "WHERE c.is_used=TRUE AND c.used_by IS NULL "
+                    "ORDER BY c.id DESC LIMIT 100")
+            elif svc == "chatgpt":
+                pending = await conn.fetch(
+                    "SELECT c.code, c.plan, c.provider, p.user_id, c.reserved_at AS created_at, "
+                    "       p.plan_name, u.username "
+                    "FROM gpt_codes c "
+                    "LEFT JOIN gpt_pending_activations p ON p.code=c.code "
                     "LEFT JOIN users u ON u.user_id=p.user_id "
                     "WHERE c.is_used=TRUE AND c.used_by IS NULL "
                     "ORDER BY c.id DESC LIMIT 100")
@@ -2782,18 +2791,24 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                         "date": ua.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ua else "",
                         "order": r["order_id"] or "", "acc": r["acc"] or ""})
         freec = [dict({"code": r["code"], "plan": r["plan"]},
-                      **({"provider": r["provider"]} if is_cl else {})) for r in free]
+                      **({"provider": r["provider"]} if has_prov else {})) for r in free]
         resp = {"ok": True, "recent": rec, "free": freec, "freeCount": len(freec)}
-        if is_cl:
-            active = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
-            if active not in CLAUDE_PROVIDERS:
-                active = CLAUDE_DEFAULT_PROVIDER
-            failover = (await get_setting("claude_failover", "1") or "1") == "1"
-            freeby = await count_claude_free_by_provider()
+        if has_prov:
+            if svc == "claude":
+                _pset, _reg, _order, _def, _pname, _countfn = (
+                    "claude", CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER,
+                    claude_provider_name, count_claude_free_by_provider)
+            else:
+                _pset, _reg, _order, _def, _pname, _countfn = (
+                    "gpt", GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER,
+                    gpt_provider_name, count_gpt_free_by_provider)
+            active = await get_setting(f"{_pset}_provider", _def) or _def
+            if active not in _reg:
+                active = _def
+            failover = (await get_setting(f"{_pset}_failover", "1") or "1") == "1"
+            freeby = await _countfn()
             resp["providers"] = [
-                {"key": p, "name": claude_provider_name(p), "free": int(freeby.get(p, 0))}
-                for p in CLAUDE_PROVIDER_ORDER
-            ]
+                {"key": p, "name": _pname(p), "free": int(freeby.get(p, 0))} for p in _order]
             resp["activeProvider"] = active
             resp["failover"] = failover
             pend = []
@@ -2801,9 +2816,9 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                 ca = r["created_at"]
                 pend.append({
                     "code": r["code"], "plan": r["plan"],
-                    "provider": r["provider"], "providerName": claude_provider_name(r["provider"]),
+                    "provider": r["provider"], "providerName": _pname(r["provider"]),
                     "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"]) if r["user_id"] else "—"),
-                    "org": r["org_id"] or "",
+                    "org": (r["org_id"] if svc == "claude" else "") or "",
                     "date": ca.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ca else "",
                 })
             resp["pending"] = pend
@@ -2836,20 +2851,26 @@ async def api_admin_code_delete_handler(request: web.Request) -> web.Response:
 
 
 async def api_admin_claude_provider_handler(request: web.Request) -> web.Response:
-    """Выбор активного сайта авто-активации Claude / тумблер авто-фолбэка. Admin-only."""
+    """Выбор активного сайта авто-активации / тумблер фолбэка. Admin-only.
+    service: 'claude' (по умолчанию) | 'chatgpt'."""
     try:
         try: body = await request.json()
         except Exception: body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
+        svc = str(body.get("service", "claude"))
+        if svc == "chatgpt":
+            _reg, _set = GPT_PROVIDERS, "gpt"
+        else:
+            _reg, _set = CLAUDE_PROVIDERS, "claude"
         kind = str(body.get("kind", ""))
         if kind == "set":
             prov = str(body.get("provider", ""))
-            if prov not in CLAUDE_PROVIDERS:
+            if prov not in _reg:
                 return web.json_response({"ok": False, "msg": "Неизвестный сайт"})
-            await set_setting("claude_provider", prov)
+            await set_setting(f"{_set}_provider", prov)
         elif kind == "failover":
-            await set_setting("claude_failover", "1" if body.get("on") else "0")
+            await set_setting(f"{_set}_failover", "1" if body.get("on") else "0")
         else:
             return web.json_response({"ok": False})
         return web.json_response({"ok": True})
@@ -2859,25 +2880,33 @@ async def api_admin_claude_provider_handler(request: web.Request) -> web.Respons
 
 
 async def api_admin_claude_code_action_handler(request: web.Request) -> web.Response:
-    """Действие над «ждущим» кодом Claude: release (вернуть в пул) или delete. Admin-only."""
+    """Действие над «ждущим» кодом: release (вернуть в пул) или delete. Admin-only.
+    service: 'claude' (по умолчанию) | 'chatgpt'."""
     try:
         try: body = await request.json()
         except Exception: body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
         code = str(body.get("code", "")); action = str(body.get("action", ""))
+        svc = str(body.get("service", "claude"))
         if not code:
             return web.json_response({"ok": False})
+        if svc == "chatgpt":
+            _codes_tbl, _pend_tbl = "gpt_codes", "gpt_pending_activations"
+            _release = ("UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
+                        "order_id=NULL, reserved_at=NULL WHERE code=$1")
+        else:
+            _codes_tbl, _pend_tbl = "claude_codes", "claude_pending_activations"
+            _release = ("UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
+                        "order_id=NULL, org_id=NULL WHERE code=$1")
         pool = await get_pool()
         async with pool.acquire() as conn:
             # снимаем pending-привязку в любом случае (клиент потеряет старую сессию)
-            await conn.execute("DELETE FROM claude_pending_activations WHERE code=$1", code)
+            await conn.execute(f"DELETE FROM {_pend_tbl} WHERE code=$1", code)
             if action == "release":
-                await conn.execute(
-                    "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
-                    "order_id=NULL, org_id=NULL WHERE code=$1", code)
+                await conn.execute(_release, code)
             elif action == "delete":
-                await conn.execute("DELETE FROM claude_codes WHERE code=$1", code)
+                await conn.execute(f"DELETE FROM {_codes_tbl} WHERE code=$1", code)
             else:
                 return web.json_response({"ok": False, "msg": "Неизвестное действие"})
         return web.json_response({"ok": True})
@@ -3052,31 +3081,36 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
         if not valid:
             return web.json_response({"ok": False, "msg": "Нет валидных кодов"})
-        # Claude: коды тегируются провайдером (у каждого сайта свой пул).
+        # Claude и ChatGPT: коды тегируются сайтом-провайдером (у каждого свой пул).
         # Берём provider из запроса, иначе — текущий активный сайт из настроек.
-        _cl_provider = str(body.get("provider", "") or "").strip()
-        if _cl_provider not in CLAUDE_PROVIDERS:
-            _cl_provider = (await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER)
-                            or CLAUDE_DEFAULT_PROVIDER)
-            if _cl_provider not in CLAUDE_PROVIDERS:
-                _cl_provider = CLAUDE_DEFAULT_PROVIDER
+        if service == "claude":
+            _reg, _set, _def = CLAUDE_PROVIDERS, "claude", CLAUDE_DEFAULT_PROVIDER
+        elif service == "chatgpt":
+            _reg, _set, _def = GPT_PROVIDERS, "gpt", GPT_DEFAULT_PROVIDER
+        else:
+            _reg, _set, _def = None, None, None
+        _provider = str(body.get("provider", "") or "").strip()
+        if _reg is not None and _provider not in _reg:
+            _provider = (await get_setting(f"{_set}_provider", _def) or _def)
+            if _provider not in _reg:
+                _provider = _def
         pool = await get_pool()
         added = 0
         async with pool.acquire() as conn:
             for c in valid:
                 try:
                     if service == "chatgpt":
-                        await conn.execute("INSERT INTO gpt_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
+                        await conn.execute("INSERT INTO gpt_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _provider)
                     elif service == "claude":
-                        await conn.execute("INSERT INTO claude_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _cl_provider)
+                        await conn.execute("INSERT INTO claude_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _provider)
                     else:
                         await conn.execute("INSERT INTO perplexity_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
                     added += 1
                 except Exception:
                     pass
         _msg = {"ok": True, "added": added, "skipped": len(lines) - len(valid)}
-        if service == "claude":
-            _msg["provider"] = _cl_provider
+        if service in ("claude", "chatgpt"):
+            _msg["provider"] = _provider
         return web.json_response(_msg)
     except Exception as _e:
         logging.error(f"api_admin_add_codes: {_e}")
