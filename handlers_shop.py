@@ -44,8 +44,14 @@ _HIDDEN_SHOP_NAMES = {"iCloud/AppStore", "iCloud / AppStore", "iCloud/App Store"
 
 @dp.callback_query(F.data.startswith("shop_renew:"))
 async def shop_renew(cb: CallbackQuery):
-    # Надёжно: делегируем в рабочий обработчик витрины сервиса (shop_service).
-    # Он сам делает edit/answer с фолбэком и cb.answer() — кнопка не «замолкает».
+    # Кнопка «Продлить» из напоминания об истечении. Напоминание могло прийти
+    # несколько дней назад — редактировать старое сообщение (>48ч) Telegram НЕ даёт,
+    # поэтому шлём ВСЕГДА СВЕЖИМ сообщением витрину тарифов сервиса. Так кнопка
+    # не «замолкает» независимо от возраста напоминания.
+    try:
+        await cb.answer()          # сразу гасим «часики» на кнопке
+    except Exception:
+        pass
     key = cb.data.split(":")[1] if ":" in cb.data else ""
     s = SHOP_CATALOG.get(key)
     if not s and key:
@@ -54,22 +60,43 @@ async def shop_renew(cb: CallbackQuery):
             if isinstance(_v, dict) and (_k.lower() == _kl or _kl in _v.get("name", "").lower()):
                 key, s = _k, _v
                 break
+    _shop_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛍 Магазин", callback_data="menu_shop")]])
     try:
         if s and s.get("plans"):
-            cb.data = f"shop_svc:{key}"
-            await shop_service(cb)
+            _order = sorted(range(len(s["plans"])), key=lambda i: s["plans"][i].get("price", 0))
+            plans_text = ""
+            for _n, i in enumerate(_order, 1):
+                p = s["plans"][i]
+                plans_text += (f"  {_n}. <b>{p.get('name','')} - {p.get('price',0)}₽/мес</b>\n"
+                               f"     <i>{p.get('desc','')}</i>\n")
+            text = (
+                f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
+                f"<i>{s['desc']}</i>\n\n"
+                f"Доступные тарифы:\n{plans_text}\n"
+                f"<b>👇 Выбери тариф для продления:</b>"
+            )
+            rows = []
+            for i in _order:
+                p = s["plans"][i]
+                rows.append([InlineKeyboardButton(
+                    text=f"{p.get('name','')} - {p.get('price',0)}₽/мес",
+                    callback_data=f"shop_confirm:{key}:{i}")])
+            rows.append([InlineKeyboardButton(text="⬅️ В магазин", callback_data="menu_shop")])
+            await bot.send_message(cb.from_user.id, text, parse_mode="HTML",
+                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         else:
-            cb.data = "menu_shop"
-            await menu_shop(cb)
+            await bot.send_message(
+                cb.from_user.id,
+                "🛍 Открой магазин и выбери сервис для продления 👇",
+                reply_markup=_shop_kb)
     except Exception as _e:
         logging.error(f"shop_renew failed key={key!r}: {_e}")
         try:
-            await cb.answer("Открываю магазин…", show_alert=False)
-        except Exception:
-            pass
-        try:
-            cb.data = "menu_shop"
-            await menu_shop(cb)
+            await bot.send_message(
+                cb.from_user.id,
+                "🛍 Открой магазин для продления подписки 👇",
+                reply_markup=_shop_kb)
         except Exception:
             pass
 
@@ -196,7 +223,9 @@ async def menu_subs(cb: CallbackQuery):
     kb_rows = []
     for r in rows:
         try:
-            days = max(0, (r["expires_at"] - _dt_s.datetime.now()).days)
+            # expires_at — aware (TIMESTAMPTZ). Берём aware-now, иначе вычитание падает и дни=0.
+            _now_aw = _dt_s.datetime.now(r["expires_at"].tzinfo or _dt_s.timezone.utc)
+            days = max(0, (r["expires_at"] - _now_aw).days)
         except Exception:
             days = 0
         nm = r["service_name"]; pl = r["plan_name"] or ""
@@ -221,8 +250,21 @@ async def sub_renew(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     key = parts[1] if len(parts) > 1 else ""
     idx = parts[2] if len(parts) > 2 else "0"
-    cb.data = f"shop_confirm:{key}:{idx}"
-    await shop_confirm(cb, state)
+    try:
+        cb.data = f"shop_confirm:{key}:{idx}"
+        await shop_confirm(cb, state)
+    except Exception as _e:
+        logging.error(f"sub_renew failed key={key!r} idx={idx!r}: {_e}")
+        try:
+            await cb.answer()
+        except Exception:
+            pass
+        # Фолбэк: открываем витрину сервиса свежим сообщением
+        try:
+            cb.data = f"shop_renew:{key}"
+            await shop_renew(cb)
+        except Exception:
+            pass
 
 
 @dp.callback_query(F.data.startswith("shop_svc:"))
