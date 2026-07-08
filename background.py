@@ -505,6 +505,8 @@ async def gpt_codes_cleanup_loop():
             await asyncio.sleep(1800)  # 30 минут
             pool = await get_pool()
             async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM gpt_pending_activations WHERE expires_at < NOW()")
                 released = await conn.execute(
                     """UPDATE gpt_codes
                        SET is_used=FALSE, reserved_at=NULL
@@ -646,8 +648,12 @@ async def claude_codes_cleanup_loop():
             await asyncio.sleep(1800)  # 30 минут
             pool = await get_pool()
             async with pool.acquire() as conn:
-                # Коды: is_used=TRUE (зарезервированы), но used_by=NULL (не активированы)
-                # И при этом pending_activation для них истёкла или не существует
+                # 1) Удаляем ПРОСРОЧЕННЫЕ резервы (pending истёк — клиент не активировал за 2ч).
+                #    Иначе мёртвая запись «висит» в «Ждущих» и код при JOIN двоится.
+                await conn.execute(
+                    "DELETE FROM claude_pending_activations WHERE expires_at < NOW()")
+                # 2) Возвращаем в пул коды, что зарезервированы (is_used, used_by=NULL),
+                #    но больше не привязаны ни к одному ЖИВОМУ резерву.
                 released = await conn.execute(
                     """UPDATE claude_codes
                        SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
@@ -656,7 +662,6 @@ async def claude_codes_cleanup_loop():
                          AND NOT EXISTS (
                              SELECT 1 FROM claude_pending_activations p
                              WHERE p.code = claude_codes.code
-                               AND p.expires_at > NOW()
                          )"""
                 )
                 if released and released != "UPDATE 0":
@@ -683,6 +688,8 @@ async def perplexity_codes_cleanup_loop():
             await asyncio.sleep(1800)  # 30 минут
             pool = await get_pool()
             async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM perplexity_pending_activations WHERE expires_at < NOW()")
                 released = await conn.execute(
                     """UPDATE perplexity_codes
                        SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
@@ -691,7 +698,6 @@ async def perplexity_codes_cleanup_loop():
                          AND NOT EXISTS (
                              SELECT 1 FROM perplexity_pending_activations p
                              WHERE p.code = perplexity_codes.code
-                               AND p.expires_at > NOW()
                          )"""
                 )
                 if released and released != "UPDATE 0":
