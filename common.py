@@ -4651,6 +4651,94 @@ async def _claude_pick_code(plan: str):
     return None, None
 
 
+# ─── Активация Claude через разные API сайтов (bpa | partner) ─────────────────
+async def _claude_bpa_redeem(base: str, code: str, org_id: str) -> dict:
+    """Первый сайт (bypriceactivate.pro): POST /api/activate {code, org_id}.
+    Возвращает нормализованный dict: {ok, ref, err_kind, err_msg}."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as _s:
+            async with _s.post(f"{base}/api/activate",
+                               json={"code": code, "org_id": org_id},
+                               headers={"Content-Type": "application/json"}) as _r:
+                try: _d = await _r.json()
+                except Exception: _d = {}
+                if _r.status == 201:
+                    _oid = _d.get("order_id")
+                    if not _oid:
+                        return {"ok": False, "err_kind": "other", "err_msg": "Сервис не вернул order_id."}
+                    return {"ok": True, "ref": str(_oid)}
+                if _r.status == 409:
+                    _det = _d.get("detail", "")
+                    if "already claimed" in _det:
+                        return {"ok": False, "err_kind": "already_claimed", "err_msg": _det}
+                    if "out of stock" in _det:
+                        return {"ok": False, "err_kind": "out_of_stock", "err_msg": _det}
+                    return {"ok": False, "err_kind": "other", "err_msg": _det or "Ошибка кода."}
+                if _r.status == 404:
+                    return {"ok": False, "err_kind": "not_found", "err_msg": "Код не найден."}
+                return {"ok": False, "err_kind": "other", "err_msg": f"HTTP {_r.status}"}
+    except aiohttp.ClientError as _e:
+        return {"ok": False, "err_kind": "network", "err_msg": str(_e)}
+
+
+async def _claude_partner_redeem(cfg: dict, code: str, org_id: str, order_id: str) -> dict:
+    """Второй сайт (rootchatgptplus.com): partner-API.
+    POST /api/partner/v1/redemptions  (Bearer + Idempotency-Key)
+    body {card_code, organization_id, confirm_overwrite:true}."""
+    import json as _json
+    base = cfg.get("base", ""); key = cfg.get("key", "")
+    if not key:
+        return {"ok": False, "err_kind": "other",
+                "err_msg": "Ключ второго сайта не задан (переменная ROOT_CLAUDE_API_KEY)."}
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        # стабильный ключ идемпотентности по заказу — защита от дублей при ретраях
+        "Idempotency-Key": f"GPT11-{order_id}",
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as _s:
+            async with _s.post(f"{base}/api/partner/v1/redemptions",
+                               json={"card_code": code, "organization_id": org_id,
+                                     "confirm_overwrite": True},
+                               headers=headers) as _r:
+                try: _d = await _r.json()
+                except Exception: _d = {}
+        if _d.get("code") == 0:
+            _data = _d.get("data") or {}
+            _ref = str(_data.get("order_no") or "")
+            if not _ref:
+                return {"ok": False, "err_kind": "other", "err_msg": "Сайт не вернул order_no."}
+            return {"ok": True, "ref": _ref}
+        # ошибка: маппим по ключевым словам в ответе
+        _blob = _json.dumps(_d, ensure_ascii=False).lower()
+        if "card_used" in _blob or "已使用" in _blob:
+            return {"ok": False, "err_kind": "already_claimed", "err_msg": "card_used"}
+        if "no_stock" in _blob or "库存" in _blob:
+            return {"ok": False, "err_kind": "out_of_stock", "err_msg": "no_stock"}
+        if "invalid_card" in _blob:
+            return {"ok": False, "err_kind": "not_found", "err_msg": "invalid_card"}
+        if "invalid_organization_id" in _blob:
+            return {"ok": False, "err_kind": "bad_org", "err_msg": "invalid_organization_id"}
+        if "ip_not_allowed" in _blob:
+            return {"ok": False, "err_kind": "other",
+                    "err_msg": "IP сервера не в белом списке rootchatgptplus.com."}
+        if "invalid_api_key" in _blob:
+            return {"ok": False, "err_kind": "other", "err_msg": "Неверный API-ключ второго сайта."}
+        _msg = str(_d.get("message") or _d.get("error") or "Ошибка сайта.")
+        return {"ok": False, "err_kind": "other", "err_msg": _msg}
+    except aiohttp.ClientError as _e:
+        return {"ok": False, "err_kind": "network", "err_msg": str(_e)}
+
+
+async def _claude_redeem_via(provider: str, code: str, org_id: str, order_id: str) -> dict:
+    """Единый вызов активации Claude под любой сайт (по типу api)."""
+    cfg = CLAUDE_PROVIDERS.get(provider, {})
+    if cfg.get("api") == "partner":
+        return await _claude_partner_redeem(cfg, code, org_id, order_id)
+    return await _claude_bpa_redeem(cfg.get("base", ""), code, org_id)
+
+
 # ─── Мультипровайдер ChatGPT: выбор активного сайта + авто-фолбэк ─────────────
 async def _gpt_active_provider() -> str:
     p = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
@@ -4782,7 +4870,9 @@ async def _claude_test_activation_job(fake_bpa: int, user_id: int, plan_name: st
 
 
 async def _take_claude_bpa_screenshot(bpa_order_id: int, provider: str = "bpa") -> bytes | None:
-    """Делает скриншот статуса активации на сайте-провайдере."""
+    """Делает скриншот статуса активации на сайте-провайдере (только для bpa-типа)."""
+    if CLAUDE_PROVIDERS.get(provider, {}).get("api", "bpa") != "bpa":
+        return None  # у partner-API нет публичной страницы статуса
     try:
         from playwright.async_api import async_playwright
         _base = claude_provider_base(provider)
@@ -4815,23 +4905,47 @@ async def _claude_activation_polling_job(
     """
     _claude_job_results[bpa_order_id] = {"status": "queued"}
     _replaced_code = None  # авто-замена кода отключена; ветка elif оставлена мёртвой
-    _base = claude_provider_base(provider)
-    logging.info(f"Claude polling bpa={bpa_order_id} user={user_id} code={code} via={provider}")
+    _cfg = CLAUDE_PROVIDERS.get(provider, {})
+    _api = _cfg.get("api", "bpa")
+    _base = _cfg.get("base", "")
+    logging.info(f"Claude polling ref={bpa_order_id} user={user_id} code={code} via={provider} api={_api}")
 
     for attempt in range(120):          # макс 10 минут (120 × 5 сек)
         await asyncio.sleep(5)
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as _s:
-                async with _s.get(
-                    f"{_base}/api/activate/{bpa_order_id}"
-                ) as _r:
-                    if _r.status != 200:
-                        continue
-                    _d = await _r.json()
+            if _api == "partner":
+                # partner-API: GET /api/partner/v1/redemptions/{order_no} (Bearer)
+                _hdr = {"Authorization": f"Bearer {_cfg.get('key','')}"}
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as _s:
+                    async with _s.get(
+                        f"{_base}/api/partner/v1/redemptions/{bpa_order_id}", headers=_hdr
+                    ) as _r:
+                        if _r.status != 200:
+                            continue
+                        _d = await _r.json()
+                _pst = str((_d.get("data") or {}).get("status") or "")
+                # нормализуем статусы partner в словарь первого сайта
+                if _pst == "succeeded":
+                    status = "done"
+                elif _pst in ("failed", "review"):
+                    status = "failed"
+                    _d = {"status": "failed", "error": _pst}
+                else:
+                    status = _pst   # pending / processing — просто ждём дальше
+            else:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as _s:
+                    async with _s.get(
+                        f"{_base}/api/activate/{bpa_order_id}"
+                    ) as _r:
+                        if _r.status != 200:
+                            continue
+                        _d = await _r.json()
+                status = _d.get("status")
 
-            status = _d.get("status")
             _claude_job_results[bpa_order_id] = {"status": status}
 
             # ── Успех ──────────────────────────────────────────
@@ -5139,22 +5253,22 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     # ТЕСТ: если код фейковый (TEST-) — симулируем успех без реального запроса
     if code.startswith("TEST-"):
         import random as _rand
-        fake_bpa = _rand.randint(9000000, 9999999)
+        fake_bpa = str(_rand.randint(9000000, 9999999))
         _claude_job_results[fake_bpa] = {"status": "queued"}
         asyncio.create_task(_claude_test_activation_job(fake_bpa, user_id, plan_name))
         await delete_claude_pending_activation(user_id)
         logging.info(f"Claude TEST activation: fake_bpa={fake_bpa} user={user_id}")
         return _resp({"order_id": fake_bpa, "status": "queued"})
 
-    # БАГ 3 FIX: если job уже запущен — не делаем новый POST, просто возвращаем существующий order_id
+    # БАГ 3 FIX: если job уже запущен — не делаем новый POST, возвращаем тот же order_id.
+    # (только для bpa: bpa_order_id хранится в БД; у partner дедуп на стороне сайта по Idempotency-Key)
     existing_bpa = pending.get("bpa_order_id")
     if existing_bpa:
-        _prev = _claude_job_results.get(existing_bpa)
+        _prev = _claude_job_results.get(str(existing_bpa)) or _claude_job_results.get(existing_bpa)
         _prev_failed = bool(_prev and _prev.get("status") == "done" and _prev.get("success") is False)
         if not _prev_failed:
-            # Polling job уже работает/завершился успехом — возвращаем тот же order_id
             logging.info(f"Claude reuse bpa={existing_bpa} user={user_id}")
-            return _resp({"order_id": existing_bpa, "status": "queued"})
+            return _resp({"order_id": str(existing_bpa), "status": "queued"})
         logging.info(f"Claude prev bpa={existing_bpa} failed — делаем новый POST")
 
     # Guard: повторная активация Claude за 29 дней — предупреждаем, повторное
@@ -5248,64 +5362,42 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 except Exception:
                     pass
 
-            _base = claude_provider_base(_prov)
-            try:
-                async with aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as _s:
-                    async with _s.post(
-                        f"{_base}/api/activate",
-                        json={"code": code, "org_id": org_id},
-                        headers={"Content-Type": "application/json"},
-                    ) as _r:
-                        try:
-                            _rd = await _r.json()
-                        except Exception:
-                            _rd = {}
+            _res = await _claude_redeem_via(provider, code, org_id, order_id)
+            if _res.get("ok"):
+                _ref = _res["ref"]
+                _is_bpa = CLAUDE_PROVIDERS.get(provider, {}).get("api", "bpa") == "bpa"
+                _pool3 = await get_pool()
+                async with _pool3.acquire() as _c3:
+                    if _is_bpa:
+                        await _c3.execute(
+                            "UPDATE claude_pending_activations "
+                            "SET org_id=$1, bpa_order_id=$2, provider=$3 WHERE user_id=$4",
+                            org_id, int(_ref), provider, user_id)
+                    else:
+                        # partner: order_no — строка, в INTEGER-колонку не пишем
+                        await _c3.execute(
+                            "UPDATE claude_pending_activations "
+                            "SET org_id=$1, bpa_order_id=NULL, provider=$2 WHERE user_id=$3",
+                            org_id, provider, user_id)
+                asyncio.create_task(_claude_activation_polling_job(
+                    _ref, code, user_id, order_id, plan_name, org_id, provider))
+                logging.info(f"Claude activation via {provider}: ref={_ref} user={user_id} code={code}")
+                return _resp({"order_id": _ref, "status": "queued"})
 
-                        if _r.status == 201:
-                            bpa_order_id = _rd.get("order_id")
-                            if not bpa_order_id:
-                                return _resp({"error": "Сервис не вернул order_id."})
-
-                            _pool3 = await get_pool()
-                            async with _pool3.acquire() as _c3:
-                                await _c3.execute(
-                                    "UPDATE claude_pending_activations "
-                                    "SET org_id=$1, bpa_order_id=$2, provider=$3 WHERE user_id=$4",
-                                    org_id, bpa_order_id, provider, user_id
-                                )
-                            asyncio.create_task(_claude_activation_polling_job(
-                                bpa_order_id, code, user_id, order_id, plan_name, org_id, provider
-                            ))
-                            logging.info(
-                                f"Claude activation via {provider}: bpa={bpa_order_id} "
-                                f"user={user_id} code={code}"
-                            )
-                            return _resp({"order_id": bpa_order_id, "status": "queued"})
-
-                        elif _r.status == 409:
-                            _detail = _rd.get("detail", "")
-                            if "already claimed" in _detail:
-                                return _resp({"error": "Код уже активирован. Напиши Александру."})
-                            elif "out of stock" in _detail:
-                                _last = "out_of_stock"
-                                continue   # пробуем следующий сайт (если фолбэк вкл)
-                            else:
-                                return _resp({"error": _detail or "Ошибка кода."})
-
-                        elif _r.status == 404:
-                            return _resp({"error": "Код не найден. Напиши Александру."})
-
-                        else:
-                            logging.error(
-                                f"{claude_provider_name(_prov)} HTTP {_r.status}: {str(_rd)[:200]}")
-                            _last = f"http_{_r.status}"
-                            continue
-            except aiohttp.ClientError as _e_prov:
-                logging.error(f"Claude activate network ({_prov}): {_e_prov}")
-                _last = "network"
-                continue
+            _kind = _res.get("err_kind", "other")
+            if _kind == "already_claimed":
+                return _resp({"error": "Код уже активирован. Напиши Александру."})
+            if _kind == "not_found":
+                return _resp({"error": "Код не найден. Напиши Александру."})
+            if _kind == "bad_org":
+                return _resp({"error": "Неверный Organization ID — проверь и попробуй снова."})
+            if _kind == "out_of_stock":
+                _last = "out_of_stock"
+                continue   # пробуем следующий сайт (если фолбэк вкл)
+            # network / other — пробуем следующий сайт
+            logging.error(f"Claude redeem {provider}: {_res.get('err_msg')}")
+            _last = _kind
+            continue
 
         # все доступные сайты исчерпаны
         if _last == "out_of_stock":
@@ -5340,16 +5432,16 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
 
 
 async def api_activate_claude_status_handler(request: web.Request) -> web.Response:
-    """GET /api/activate-claude-status/{order_id}"""
+    """GET /api/activate-claude-status/{order_id}. order_id может быть строкой
+    (partner-API «R…») или числом (bpa) — ищем по обоим вариантам ключа."""
     import json as _j2
-    try:
-        bpa_order_id = int(request.match_info.get("order_id", ""))
-    except ValueError:
-        return web.Response(
-            text=_j2.dumps({"status": "not_found"}),
-            content_type="application/json", status=400
-        )
-    result = _claude_job_results.get(bpa_order_id)
+    _raw = (request.match_info.get("order_id", "") or "").strip()
+    result = _claude_job_results.get(_raw)
+    if result is None:
+        try:
+            result = _claude_job_results.get(int(_raw))
+        except (ValueError, TypeError):
+            result = None
     if result is None:
         return web.Response(
             text=_j2.dumps({"status": "not_found"}),

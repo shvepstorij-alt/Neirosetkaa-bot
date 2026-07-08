@@ -37,9 +37,13 @@ WEBSHARE_PROXY     = os.getenv("WEBSHARE_PROXY", "")   # http://user:pass@host:p
 # REST API  POST /api/activate {code, org_id}  и  GET /api/activate/{id}.
 # У КАЖДОГО сайта свои коды (свой пул). Активный провайдер и фолбэк
 # выбираются в админ-панели (настройки claude_provider / claude_failover).
+# Второй сайт rootchatgptplus.com работает через partner-API (Bearer + /api/partner/v1).
+# Ключ держим в переменной окружения (не в коде/репозитории!).
+ROOT_CLAUDE_API_KEY = os.getenv("ROOT_CLAUDE_API_KEY", "")
 CLAUDE_PROVIDERS = {
-    "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro"},
-    "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com"},
+    "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
+    "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com",
+             "api": "partner", "key": ROOT_CLAUDE_API_KEY},
 }
 CLAUDE_PROVIDER_ORDER   = ["bpa", "root"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"
