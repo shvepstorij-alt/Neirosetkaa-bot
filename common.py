@@ -3617,7 +3617,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     if not pending:
         return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
 
-    # Guard: повторная активация за 35 дней — НЕ блокируем жёстко.
+    # Guard: повторная активация за 30 дней — НЕ блокируем жёстко.
     # Первый раз предупреждаем, повторное нажатие «Попробовать снова» = активируем
     # принудительно (клиент может оформлять подписку на другой аккаунт, напр. другу).
     try:
@@ -3625,7 +3625,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         async with _pool_dbl.acquire() as _c_dbl:
             _recent_act = await _c_dbl.fetchrow(
                 "SELECT code, plan, used_at, email FROM gpt_codes"
-                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '35 days'"
+                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '30 days'"
                 " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
                 user_id
             )
@@ -5157,14 +5157,14 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             return _resp({"order_id": existing_bpa, "status": "queued"})
         logging.info(f"Claude prev bpa={existing_bpa} failed — делаем новый POST")
 
-    # Guard: повторная активация Claude за 35 дней — предупреждаем, повторное
+    # Guard: повторная активация Claude за 30 дней — предупреждаем, повторное
     # нажатие «Попробовать снова» активирует принудительно (на другой аккаунт).
     try:
         _pool_dbl = await get_pool()
         async with _pool_dbl.acquire() as _c_dbl:
             _recent = await _c_dbl.fetchrow(
                 "SELECT code, plan, used_at FROM claude_codes"
-                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '35 days'"
+                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '30 days'"
                 " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
                 user_id
             )
@@ -6004,14 +6004,14 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
             return _resp({"order_id": existing_bpa, "status": "queued"})
         logging.info(f"Perplexity prev bpa={existing_bpa} failed — делаем новый POST")
 
-    # Guard: повторная активация Perplexity за 35 дней — предупреждаем, повторное
+    # Guard: повторная активация Perplexity за 30 дней — предупреждаем, повторное
     # нажатие «Попробовать снова» активирует принудительно (на другой аккаунт).
     try:
         _pool_dbl = await get_pool()
         async with _pool_dbl.acquire() as _c_dbl:
             _recent = await _c_dbl.fetchrow(
                 "SELECT code, plan, used_at FROM perplexity_codes"
-                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '35 days'"
+                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '30 days'"
                 " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
                 user_id
             )
