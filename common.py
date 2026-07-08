@@ -6361,23 +6361,15 @@ async def process_linkpay_link(user_id, text) -> bool:
              InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order['fk_order_id']}")],
             [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order['fk_order_id']}")],
         ])
-        _amid = order.get("admin_msg_id")
+        # ВСЕГДА шлём НОВОЕ сообщение (не редактируем старое «оплачен»), чтобы
+        # заказ со ссылкой всплыл внизу чата и не потерялся. admin_msg_id обновляем
+        # на новое сообщение — статус-кнопки (Готово/Уточнение) будут править именно его.
         try:
-            if _amid:
-                await bot.edit_message_text(admin_text, chat_id=ADMIN_ID, message_id=_amid,
-                                            parse_mode="HTML", reply_markup=kb)
-            else:
-                _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML",
-                                            reply_markup=kb, disable_web_page_preview=True)
-                await set_linkpay_admin_msg(order["fk_order_id"], _m.message_id)
+            _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML",
+                                        reply_markup=kb, disable_web_page_preview=True)
+            await set_linkpay_admin_msg(order["fk_order_id"], _m.message_id)
         except Exception as _e:
             logging.error(f"linkpay admin notify: {_e}")
-            try:
-                _m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML",
-                                            reply_markup=kb, disable_web_page_preview=True)
-                await set_linkpay_admin_msg(order["fk_order_id"], _m.message_id)
-            except Exception:
-                pass
         await log_event(user_id, "linkpay_link", f"order={order['fk_order_id']} svc={order['service_key']}")
         return True
     except Exception as e:

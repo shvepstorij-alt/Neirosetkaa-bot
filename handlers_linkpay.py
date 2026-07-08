@@ -551,21 +551,13 @@ async def creds_password(message: Message, state: FSMContext):
          InlineKeyboardButton(text="📜 История",          callback_data=f"lp_thread:{order_id}")],
         [InlineKeyboardButton(text="🗑 Отменить заказ",   callback_data=f"lp_cancel:{order_id}")],
     ])
-    _amid = order.get("admin_msg_id")
+    # ВСЕГДА новое сообщение (не редактируем старое «оплачен») — чтобы заказ с логином/паролем
+    # всплыл внизу чата и не потерялся. admin_msg_id обновляем на него.
     try:
-        if _amid:
-            await bot.edit_message_text(admin_text, chat_id=ADMIN_ID, message_id=_amid,
-                                        parse_mode="HTML", reply_markup=kb)
-        else:
-            m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
-            await set_linkpay_admin_msg(order_id, m.message_id)
+        m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
+        await set_linkpay_admin_msg(order_id, m.message_id)
     except Exception as e:
         logging.error(f"creds admin notify: {e}")
-        try:
-            m = await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=kb)
-            await set_linkpay_admin_msg(order_id, m.message_id)
-        except Exception:
-            pass
     await log_event(message.from_user.id, "creds_received", f"order={order_id}")
 
 
