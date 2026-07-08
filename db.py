@@ -1677,6 +1677,34 @@ async def set_linkpay_admin_msg(fk_order_id, admin_msg_id):
             "UPDATE linkpay_orders SET admin_msg_id=$1 WHERE fk_order_id=$2",
             admin_msg_id, fk_order_id
         )
+        # Ведём ЦЕПОЧКУ всех админских сообщений заказа, чтобы при «Выполнен»/«Отменён»
+        # пометить их ВСЕ (а не только последнее).
+        try:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS linkpay_admin_msgs (
+                    fk_order_id TEXT NOT NULL,
+                    msg_id      BIGINT NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (fk_order_id, msg_id)
+                )""")
+            await conn.execute(
+                "INSERT INTO linkpay_admin_msgs (fk_order_id, msg_id) VALUES ($1,$2) "
+                "ON CONFLICT DO NOTHING", fk_order_id, admin_msg_id)
+        except Exception:
+            pass
+
+
+async def get_linkpay_admin_msgs(fk_order_id):
+    """Все id админских сообщений по заказу (для массовой пометки статуса)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(
+                "SELECT msg_id FROM linkpay_admin_msgs WHERE fk_order_id=$1 ORDER BY msg_id",
+                fk_order_id)
+            return [r["msg_id"] for r in rows]
+        except Exception:
+            return []
 
 
 async def list_linkpay_pending(limit=30):

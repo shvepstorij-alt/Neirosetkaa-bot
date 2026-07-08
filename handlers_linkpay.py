@@ -16,7 +16,7 @@ from states import AdminState, CredsState, OrderReplyState
 from db import (
     get_linkpay_order, set_linkpay_status, list_linkpay_pending,
     get_setting, set_setting, set_linkpay_email, set_linkpay_creds, set_linkpay_admin_msg, log_event,
-    add_order_msg, get_order_thread, get_user,
+    add_order_msg, get_order_thread, get_user, get_linkpay_admin_msgs,
 )
 from keyboards import _eib, _btn_emoji_id
 
@@ -58,6 +58,32 @@ async def linkpay_send_prompt(cb: CallbackQuery):
 #  АДМИН — действия по заказу
 # ══════════════════════════════════════════════════════════
 
+async def _finalize_order_chain(order_id: str, label: str, exclude_mid=None):
+    """Помечает ВСЕ админские сообщения заказа одной кнопкой-статусом (label),
+    убирая рабочие кнопки — чтобы один заказ не висел с разными статусами."""
+    _marker = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data="lp_noop")]])
+    try:
+        _ids = await get_linkpay_admin_msgs(order_id)
+    except Exception:
+        _ids = []
+    for _mid in _ids:
+        if exclude_mid and _mid == exclude_mid:
+            continue
+        try:
+            await bot.edit_message_reply_markup(chat_id=ADMIN_ID, message_id=_mid, reply_markup=_marker)
+        except Exception:
+            pass
+
+
+@dp.callback_query(F.data == "lp_noop")
+async def lp_noop(cb: CallbackQuery):
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
 @dp.callback_query(F.data.startswith("lp_done:"))
 async def lp_done(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
@@ -91,6 +117,8 @@ async def lp_done(cb: CallbackQuery):
             await cb.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
+    # Помечаем ВСЕ остальные сообщения этого заказа как выполненные
+    await _finalize_order_chain(order_id, "✅ ВЫПОЛНЕН", cb.message.message_id)
     await cb.answer("✅ Клиент уведомлён", show_alert=True)
 
 
@@ -172,7 +200,7 @@ async def cl_reply_send(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🗑 Отменить заказ", callback_data=f"lp_cancel:{order_id}")],
     ])
     try:
-        await bot.send_message(
+        _m_reply = await bot.send_message(
             ADMIN_ID,
             f"📨 <b>Ответ клиента по заказу</b>\n\n"
             f"👤 {_tag} (<code>{message.from_user.id}</code>)\n"
@@ -180,6 +208,7 @@ async def cl_reply_send(message: Message, state: FSMContext):
             f"🆔 <code>{order_id}</code>\n\n"
             f"💬 {_html.escape(message.text)}",
             parse_mode="HTML", reply_markup=_kb)
+        await set_linkpay_admin_msg(order_id, _m_reply.message_id)
     except Exception as e:
         logging.error(f"cl_reply forward: {e}")
     await message.answer("✅ Отправлено Александру. Он ответит здесь же.")
@@ -267,6 +296,8 @@ async def lp_cancel_yes(cb: CallbackQuery):
             f"🗑 Заказ <code>{order_id}</code> отменён, клиент уведомлён.", parse_mode="HTML")
     except Exception:
         pass
+    # Помечаем ВСЕ остальные сообщения этого заказа как отменённые
+    await _finalize_order_chain(order_id, "🗑 ОТМЕНЁН", cb.message.message_id)
     await cb.answer("Отменён", show_alert=True)
 
 
