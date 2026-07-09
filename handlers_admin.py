@@ -2372,10 +2372,10 @@ async def adm_edit_value(message: Message, state: FSMContext):
                 # равен колонке plan_idx в БД, поэтому обновление могло не найти строку и
                 # правка «слетала» после деплоя. Обновляем по позиции (тот же порядок сборки).
                 _row = await conn.fetchrow(
-                    "SELECT id FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
+                    "SELECT plan_idx FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
                     "ORDER BY sort_order, plan_idx OFFSET $2 LIMIT 1", shop_key, shop_plan)
                 if _row:
-                    await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE id=$2", val, _row["id"])
+                    await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2 AND plan_idx=$3", val, shop_key, _row["plan_idx"])
                 else:
                     await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2 AND plan_idx=$3", val, shop_key, shop_plan)
             await state.clear()
