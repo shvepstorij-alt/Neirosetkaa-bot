@@ -223,8 +223,34 @@ async def lp_thread_view(cb: CallbackQuery):
     order = await get_linkpay_order(order_id)
     msgs = await get_order_thread(order_id)
     from config import _BOT_TZ
-    head = (f"📜 <b>История заказа</b>\n<code>{order_id}</code>\n"
-            f"{(order or {}).get('service_name','')} · {(order or {}).get('plan_name') or '—'}\n\n")
+    o = order or {}
+    _uname = o.get("username") or ""
+    _tag = f"@{_uname}" if _uname else (f"id{o.get('user_id')}" if o.get("user_id") else "—")
+    _created = ""
+    try:
+        if o.get("created_at"):
+            _created = o["created_at"].astimezone(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        _created = ""
+    head = (
+        f"📜 <b>История заказа</b>\n"
+        f"🆔 <code>{order_id}</code>\n"
+        f"👤 {_tag}" + (f" (<code>{o.get('user_id')}</code>)" if o.get("user_id") else "") + "\n"
+        f"📦 {o.get('service_name','')}" + (f" · {o.get('plan_name')}" if o.get('plan_name') else "") + "\n"
+        f"💵 {o.get('amount_rub', 0)}₽ · статус: <b>{o.get('status','')}</b>\n"
+    )
+    if _created:
+        head += f"🗓 Создан: {_created}\n"
+    _email = o.get("account_email") or ""
+    _passw = o.get("account_pass") or ""
+    if _email:
+        head += f"📧 Email: <code>{_html.escape(_email)}</code>\n"
+    if _passw:
+        head += f"🔑 Пароль: <code>{_html.escape(_passw)}</code>\n"
+    _link = o.get("payment_link") or ""
+    if _link:
+        head += f"🔗 Ссылка: {_html.escape(_link)}\n"
+    head += "\n"
     if not msgs:
         body = "<i>Переписки пока нет.</i>"
     else:

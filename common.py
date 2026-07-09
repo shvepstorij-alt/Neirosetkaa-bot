@@ -2401,10 +2401,13 @@ async def api_admin_order_thread_handler(request: web.Request) -> web.Response:
                         "date": ts.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ts else ""})
         u = await get_user(order.get("user_id")) if order.get("user_id") else None
         tag = ("@" + u["username"]) if (u and u.get("username")) else (("id" + str(order.get("user_id"))) if order.get("user_id") else "—")
+        _cr = order.get("created_at")
+        _cr_s = _cr.astimezone(_BOT_TZ).strftime("%d.%m.%Y %H:%M") if _cr else ""
         return web.json_response({"ok": True, "order": {
+            "id": oid,
             "service": order.get("service_name", ""), "plan": order.get("plan_name") or "",
             "status": order.get("status", ""), "user": tag, "amount": int(order.get("amount_rub") or 0),
-            "kind": order.get("kind") or "", "uid": order.get("user_id"),
+            "kind": order.get("kind") or "", "uid": order.get("user_id"), "date": _cr_s,
             "email": order.get("account_email") or "", "passw": order.get("account_pass") or "",
             "link": order.get("payment_link") or ""},
             "messages": out})

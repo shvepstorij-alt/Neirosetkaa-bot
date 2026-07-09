@@ -628,6 +628,8 @@ function loadThread(id){
     var o=d.order||{};
     var h='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag a">'+(o.status||'')+'</span></div><div class="sub">'+(o.service||'')+(o.plan?' · '+o.plan:'')+(o.amount?' · '+nf(o.amount)+' ₽':'')+'</div>';
     var cd='';
+    if(o.id)cd+='<div class="kv"><span class="k">🆔 Заказ</span><span style="word-break:break-all">'+o.id+'</span></div>';
+    if(o.date)cd+='<div class="kv"><span class="k">🗓 Создан</span><span>'+o.date+'</span></div>';
     if(o.uid)cd+='<div class="kv"><span class="k">ID клиента</span><span style="word-break:break-all">'+o.uid+'</span></div>';
     if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+o.email+'</span></div>';
     if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+o.passw+'</span></div>';
