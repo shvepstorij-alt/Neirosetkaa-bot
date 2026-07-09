@@ -41,7 +41,7 @@ from db import (
     _extract_email_from_token, add_coins, add_credits_batch, delete_claude_pending_activation, delete_pending_activation, ensure_user,
     fk_get_order, fk_mark_paid, get_claude_pending_activation, get_coins, get_credits, get_next_claude_code,
     get_next_gpt_code, get_pending_activation, get_pool, get_setting, set_setting, get_user, is_blocked,
-    count_claude_free_by_provider, count_gpt_free_by_provider,
+    count_claude_free_by_provider, count_claude_free_by_provider_plan, count_gpt_free_by_provider,
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
@@ -3518,6 +3518,8 @@ def _fail_clear(service: str, user_id: int):
 # message_id активационного сообщения клиента (чтобы заменить на поздравление после успеха)
 _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
+# Claude: активная цепочка активации по user_id (dedupe двойных кликов «Активировать»)
+_claude_chain_active: dict = {}
 # Claude: заказы, которым уже выдали авто-замену кода после жёсткого сбоя (кап = 1 раз/заказ)
 _claude_replaced_orders: set = set()
 _perplexity_double_warned: set = set()
@@ -5468,6 +5470,241 @@ async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_nam
                                     "error": "Ошибка активации. Напиши Александру."}
 
 
+async def _claude_wait_result(provider: str, ref) -> str:
+    """Опрашивает статус активации на API-сайте: 'success' | 'failed' | 'timeout'.
+    Без уведомлений и фолбэка — только результат ОДНОГО сайта (фолбэком рулит цепочка)."""
+    cfg = CLAUDE_PROVIDERS.get(provider, {})
+    api = cfg.get("api", "bpa")
+    base = cfg.get("base", "")
+    for _ in range(36):  # ~3 мин на сайт: не успел — переключаемся на следующий (фолбэк)
+        await asyncio.sleep(5)
+        try:
+            if api == "partner":
+                _hdr = {"Authorization": f"Bearer {cfg.get('key','')}"}
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as _s:
+                    async with _s.get(f"{base}/api/partner/v1/redemptions/{ref}", headers=_hdr) as _r:
+                        if _r.status != 200:
+                            continue
+                        _d = await _r.json()
+                _st = str((_d.get("data") or {}).get("status") or "")
+                if _st == "succeeded":
+                    return "success"
+                if _st in ("failed", "review"):
+                    return "failed"
+            elif api == "order":
+                _q = await _claude_order_query(cfg, str(ref))
+                if _q["status"] == "success":
+                    return "success"
+                if _q["status"] == "failed":
+                    return "failed"
+            else:  # bpa
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as _s:
+                    async with _s.get(f"{base}/api/activate/{ref}") as _r:
+                        if _r.status != 200:
+                            continue
+                        _d = await _r.json()
+                _st = _d.get("status")
+                if _st == "done":
+                    return "success"
+                if _st == "failed":
+                    return "failed"
+        except Exception:
+            continue
+    return "timeout"
+
+
+async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id, site_name=""):
+    """Помечает код, чистит pending, уведомляет клиента и админа (общий блок успеха)."""
+    await mark_claude_code_used(code, user_id, order_id, org_id)
+    await delete_claude_pending_activation(user_id)
+    _claude_job_results[ref] = {"status": "done", "success": True}
+
+    import datetime as _dt2
+    _ts = _dt2.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
+    try:
+        _pool2 = await get_pool()
+        async with _pool2.acquire() as _c2:
+            _ur = await _c2.fetchrow("SELECT username, full_name FROM users WHERE user_id=$1", user_id)
+        _un = (_ur["username"] if _ur else "") or ""
+        _fn = (_ur["full_name"] if _ur else "") or ""
+    except Exception:
+        _un = _fn = ""
+    _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+
+    _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
+    _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
+    _congrats = (
+        "🎉 <b>Подписка Claude активирована!</b>\n\n"
+        f"📦 Тариф: <b>{plan_name}</b>\n"
+        f"🏢 Organization ID: <code>{org_id}</code>\n"
+        f"🔑 Ключ: <code>{code}</code>\n"
+        f"📅 Действует до: <b>{_end_cl}</b>\n\n"
+        "Подписка появится в Claude в течение 5–10 минут. Спасибо за покупку! 🙌"
+    )
+    _kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
+        [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", **_prof_kw)],
+        [_eib("Главное меню", "back_main")],
+    ])
+    _mid = _claude_act_msg.pop(user_id, None)
+    _edited = False
+    if _mid:
+        try:
+            await bot.edit_message_text(_congrats, chat_id=user_id, message_id=_mid, parse_mode="HTML", reply_markup=_kb)
+            _edited = True
+        except Exception:
+            pass
+    if not _edited:
+        try:
+            await bot.send_message(user_id, _congrats, parse_mode="HTML", reply_markup=_kb)
+        except Exception:
+            pass
+
+    try:
+        _caption = (
+            f"✅ <b>Claude авто-активация OK</b>" + (f" ({site_name})" if site_name else "") + "\n\n"
+            f"👤 <b>{_tg}</b>  (<code>{user_id}</code>)\n"
+            f"🔑 Код: <code>{code}</code>\n"
+            f"📦 Тариф: <b>{plan_name}</b>\n"
+            f"🆔 Org ID: <code>{org_id}</code>\n"
+            f"⏱ {_ts}"
+        )
+        try:
+            _ord_ok = await fk_get_order(order_id)
+            _amid = (_ord_ok or {}).get("admin_msg_id")
+        except Exception:
+            _amid = None
+        if _amid:
+            try:
+                await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
+            except Exception:
+                await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+        else:
+            await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+    except Exception:
+        pass
+    _fail_clear("claude", user_id)
+    await log_event(user_id, "claude_activation_ok", f"code={code} site={site_name} plan={plan_name}")
+
+
+async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name, plan_key):
+    """Единая цепочка активации Claude по всем сайтам с непрерывной загрузкой у клиента.
+    Порядок сайтов — по числу свободных кодов ЭТОГО тарифа (убыв.); 6661231.xyz наравне.
+    Переключаемся ТОЛЬКО при сбое сайта / отсутствии стока; ошибка клиента (bad org) — стоп.
+    При переходе на следующий сайт ставим retrying=True → клиент видит «пробую повторную активацию»."""
+    _claude_job_results[ref] = {"status": "queued"}
+    try:
+        # предварительно зарезервированный при покупке код вернём в пул — выбор честный по стоку
+        try:
+            _pend0 = await get_claude_pending_activation(user_id)
+            if _pend0 and _pend0.get("code"):
+                await release_claude_code(_pend0["code"])
+        except Exception:
+            pass
+
+        # порядок сайтов по числу свободных кодов этого тарифа
+        try:
+            _counts = await count_claude_free_by_provider_plan(plan_key)
+        except Exception:
+            _counts = {}
+        _order = [p for p in CLAUDE_PROVIDER_ORDER
+                  if p in CLAUDE_PROVIDERS and _counts.get(p, 0) > 0]
+        _order.sort(key=lambda p: _counts.get(p, 0), reverse=True)
+
+        if not _order:
+            _claude_job_results[ref] = {"status": "done", "success": False,
+                "error": "Временно нет кодов ни на одном сайте. Александр активирует вручную."}
+            try:
+                await bot.send_message(ADMIN_ID,
+                    f"🚨 <b>Claude — нет кодов НИ НА ОДНОМ сайте</b> ({plan_name})\n"
+                    f"👤 <code>{user_id}</code> — активируй вручную.", parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        _attempt = 0
+        for _prov in _order:
+            _cfg = CLAUDE_PROVIDERS.get(_prov, {})
+            _api = _cfg.get("api", "bpa")
+            _site = _cfg.get("name", _prov)
+            _code = await get_next_claude_code(plan_key, _prov)
+            if not _code:
+                continue
+            _attempt += 1
+            try:
+                await save_claude_pending_activation(user_id, _code, order_id, plan_key, plan_name, _prov)
+                _pool_u = await get_pool()
+                async with _pool_u.acquire() as _cu:
+                    await _cu.execute("UPDATE claude_pending_activations SET org_id=$1 WHERE user_id=$2", org_id, user_id)
+            except Exception:
+                pass
+            # со второй попытки показываем клиенту «пробую повторную активацию»
+            _claude_job_results[ref] = {"status": "processing", "retrying": _attempt > 1}
+            logging.info(f"Claude chain ref={ref} attempt={_attempt} site={_prov} code={_code} api={_api}")
+
+            if _api == "browser":
+                from chatgpt_activation import activate_claude_aipro
+                _r = await activate_claude_aipro(_code, org_id, plan_key)
+                if _r.get("success"):
+                    await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site)
+                    return
+                if _r.get("bad_org"):
+                    try: await release_claude_code(_code)
+                    except Exception: pass
+                    _claude_job_results[ref] = {"status": "done", "success": False,
+                        "error": "Неверный Organization ID — проверь и попробуй снова."}
+                    return
+                if not _r.get("code_already_used"):
+                    try: await release_claude_code(_code)   # код цел — вернём в пул
+                    except Exception: pass
+                continue
+            else:
+                _res = await _claude_redeem_via(_prov, _code, org_id, order_id)
+                if _res.get("ok"):
+                    _wait = await _claude_wait_result(_prov, _res["ref"])
+                    if _wait == "success":
+                        await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site)
+                        return
+                    logging.warning(f"Claude chain {ref}: {_prov} activation {_wait} — фолбэк")
+                    continue   # код израсходован сайтом — в пул не возвращаем
+                _kind = _res.get("err_kind", "other")
+                if _kind == "bad_org":
+                    try: await release_claude_code(_code)
+                    except Exception: pass
+                    _claude_job_results[ref] = {"status": "done", "success": False,
+                        "error": "Неверный Organization ID — проверь и попробуй снова."}
+                    return
+                if _kind in ("already_claimed", "not_found"):
+                    logging.warning(f"Claude chain {ref}: {_prov} код битый ({_kind}) — следующий")
+                    continue   # битый код — оставляем помеченным использованным
+                try: await release_claude_code(_code)   # out_of_stock/network/other — код цел
+                except Exception: pass
+                logging.error(f"Claude chain {ref}: {_prov} redeem fail {_kind}: {_res.get('err_msg')}")
+                continue
+
+        # все сайты исчерпаны
+        _claude_job_results[ref] = {"status": "done", "success": False,
+            "error": "Не удалось активировать. Попробуй ещё раз или напиши Александру."}
+        try:
+            await bot.send_message(ADMIN_ID,
+                f"❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>\n"
+                f"👤 <code>{user_id}</code> · {plan_name}\n"
+                f"🧩 Org ID: <code>{org_id}</code>\n"
+                f"Проверь стоки/сайты, активируй вручную.", parse_mode="HTML")
+        except Exception:
+            pass
+    except Exception as _e:
+        logging.error(f"claude chain {ref}: {_e}", exc_info=True)
+        _claude_job_results[ref] = {"status": "done", "success": False,
+            "error": "Внутренняя ошибка активации. Напиши Александру."}
+    finally:
+        try:
+            if _claude_chain_active.get(user_id) == ref:
+                _claude_chain_active.pop(user_id, None)
+        except Exception:
+            pass
+
+
 async def api_activate_claude_handler(request: web.Request) -> web.Response:
     """POST /api/activate-claude"""
     import json as _j, re as _re
@@ -5602,23 +5839,22 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     except Exception as _dbl_e:
         logging.error(f"claude double-activation check: {_dbl_e}")
 
-    # ── Браузерный сайт (6661231.xyz): активация Playwright-задачей в фоне ──
-    if CLAUDE_PROVIDERS.get(provider, {}).get("api") == "browser":
-        _bref = "cb_" + str(uuid.uuid4())[:12]
-        _claude_job_results[_bref] = {"status": "queued"}
-        try:
-            _pool_bw = await get_pool()
-            async with _pool_bw.acquire() as _c_bw:
-                await _c_bw.execute(
-                    "UPDATE claude_pending_activations SET org_id=$1, bpa_order_id=NULL, provider=$2 WHERE user_id=$3",
-                    org_id, provider, user_id)
-        except Exception:
-            pass
-        asyncio.create_task(_run_claude_browser_job(
-            _bref, code, org_id, user_id, order_id, plan_name, plan_key, provider))
-        logging.info(f"Claude browser activation started: ref={_bref} user={user_id} code={code} site={provider}")
-        return _resp({"order_id": _bref, "status": "queued"})
+    # ── Единая цепочка активации: непрерывная загрузка у клиента, а авто-фолбэк
+    #    по всем сайтам (по числу свободных кодов тарифа) — под капотом. ──
+    _prev_ref = _claude_chain_active.get(user_id)
+    if _prev_ref:
+        _pr = _claude_job_results.get(_prev_ref)
+        if _pr and _pr.get("status") != "done":
+            return _resp({"order_id": _prev_ref, "status": "queued"})
+    _ref = "cl_" + str(uuid.uuid4())[:12]
+    _claude_chain_active[user_id] = _ref
+    _claude_job_results[_ref] = {"status": "queued"}
+    asyncio.create_task(_run_claude_activation_chain(
+        _ref, user_id, order_id, org_id, plan_name, plan_key))
+    logging.info(f"Claude activation chain started: ref={_ref} user={user_id} plan={plan_key}")
+    return _resp({"order_id": _ref, "status": "queued"})
 
+    # ── (устар.) прежний пофайловый redeem-цикл ниже больше НЕ выполняется ──
     try:
         _order_all = await _claude_provider_order()
         if await _claude_failover_on():

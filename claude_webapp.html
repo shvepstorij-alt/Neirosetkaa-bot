@@ -508,6 +508,7 @@
 
     <div class="loader-title">Активируем...</div>
     <div class="loader-sub">Подключаемся к Claude.<br>Не закрывай приложение — займёт 1–2 мин.</div>
+    <div id="retry-note" style="display:none;margin-top:10px;font-size:12px;color:#9a9a9a;opacity:.9;">пробую повторную активацию…</div>
     <div class="prog-dots">
       <div class="prog-dot"></div>
       <div class="prog-dot"></div>
@@ -643,12 +644,14 @@ function showError(msg) {
 
 // ─── Polling ─────────────────────────────────────────────────────
 async function pollStatus(orderId) {
-  for (var i = 0; i < 120; i++) {
+  for (var i = 0; i < 200; i++) {
     await _sleep(5000);
     try {
       var r    = await fetch('/api/activate-claude-status/' + orderId);
       var data = await r.json();
       var st   = data.status;
+      var note = document.getElementById('retry-note');
+      if (note) note.style.display = data.retrying ? 'block' : 'none';
       if (st === 'done') {
         if (data.success !== false) {
           if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}

@@ -1314,6 +1314,19 @@ async def count_claude_free_by_provider() -> dict:
     return {r["provider"]: int(r["free"]) for r in rows}
 
 
+async def count_claude_free_by_provider_plan(plan: str) -> dict:
+    """Свободные коды Claude ПО ТАРИФУ, разбитые по провайдерам: {provider: count}.
+    Используется для выбора сайта с наибольшим стоком именно этого тарифа."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT provider, COUNT(*) AS free FROM claude_codes "
+            "WHERE is_used=FALSE AND plan=$1 GROUP BY provider",
+            plan
+        )
+    return {r["provider"]: int(r["free"]) for r in rows}
+
+
 async def release_claude_code(code: str):
     """Возвращает код в пул при неудачной активации."""
     pool = await get_pool()
