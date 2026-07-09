@@ -134,11 +134,11 @@ async def lp_clarify_start(cb: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminState.waiting_linkpay_clarify)
     await state.update_data(lp_uid=order["user_id"], lp_order=order_id)
-    await cb.message.answer("✍️ Напиши текст уточнения для клиента (он получит его сообщением):")
+    await cb.message.answer("✍️ Отправь <b>текст, фото или файл</b> для клиента — он получит это сообщением:", parse_mode="HTML")
     await cb.answer()
 
 
-@dp.message(AdminState.waiting_linkpay_clarify, F.text)
+@dp.message(AdminState.waiting_linkpay_clarify)
 async def lp_clarify_send(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
@@ -149,18 +149,30 @@ async def lp_clarify_send(message: Message, state: FSMContext):
         await message.answer("⚠️ Сессия истекла.")
         return
     order_id = data.get("lp_order")
+    _txt = message.text or message.caption or ""
     try:
         if order_id:
-            await add_order_msg(order_id, "admin", message.text)
+            await add_order_msg(order_id, "admin", _txt or "[вложение]")
         _kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✍️ Ответить", callback_data=f"cl_reply:{order_id}")],
         ]) if order_id else None
-        await bot.send_message(
-            uid,
-            f"✍️ <b>Сообщение от Александра по твоему заказу:</b>\n\n{_html.escape(message.text)}\n\n"
-            f"Нажми «Ответить», чтобы написать в ответ (например, прислать код).",
-            parse_mode="HTML", reply_markup=_kb
-        )
+        if message.text:
+            # обычный текст — одним сообщением с заголовком
+            await bot.send_message(
+                uid,
+                f"✍️ <b>Сообщение от Александра по твоему заказу:</b>\n\n{_html.escape(message.text)}\n\n"
+                f"Нажми «Ответить», чтобы написать в ответ (например, прислать код).",
+                parse_mode="HTML", reply_markup=_kb
+            )
+        else:
+            # фото / документ / видео / любой файл — заголовок + копия вложения
+            await bot.send_message(
+                uid,
+                "✍️ <b>Сообщение от Александра по твоему заказу</b> (см. вложение ниже).\n"
+                "Нажми «Ответить», чтобы написать в ответ (например, прислать код).",
+                parse_mode="HTML"
+            )
+            await message.copy_to(chat_id=uid, reply_markup=_kb)
         await message.answer("✅ Отправлено клиенту.")
     except Exception as e:
         await message.answer(f"❌ Не удалось отправить: {e}")
@@ -179,7 +191,7 @@ async def cl_reply_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.message(OrderReplyState.waiting, F.text)
+@dp.message(OrderReplyState.waiting)
 async def cl_reply_send(message: Message, state: FSMContext):
     data = await state.get_data()
     order_id = data.get("reply_order")
@@ -190,7 +202,8 @@ async def cl_reply_send(message: Message, state: FSMContext):
     if not order:
         await message.answer("⚠️ Заказ не найден.")
         return
-    await add_order_msg(order_id, "client", message.text)
+    _txt = message.text or message.caption or ""
+    await add_order_msg(order_id, "client", _txt or "[вложение]")
     _u = await get_user(message.from_user.id)
     _tag = ("@" + _u["username"]) if (_u and _u.get("username")) else (f"id{message.from_user.id}")
     _kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -199,15 +212,21 @@ async def cl_reply_send(message: Message, state: FSMContext):
          InlineKeyboardButton(text="📜 История", callback_data=f"lp_thread:{order_id}")],
         [InlineKeyboardButton(text="🗑 Отменить заказ", callback_data=f"lp_cancel:{order_id}")],
     ])
+    _head = (
+        f"📨 <b>Ответ клиента по заказу</b>\n\n"
+        f"👤 {_tag} (<code>{message.from_user.id}</code>)\n"
+        f"📦 {order.get('service_name','')} · {order.get('plan_name') or '—'}\n"
+        f"🆔 <code>{order_id}</code>"
+    )
     try:
-        _m_reply = await bot.send_message(
-            ADMIN_ID,
-            f"📨 <b>Ответ клиента по заказу</b>\n\n"
-            f"👤 {_tag} (<code>{message.from_user.id}</code>)\n"
-            f"📦 {order.get('service_name','')} · {order.get('plan_name') or '—'}\n"
-            f"🆔 <code>{order_id}</code>\n\n"
-            f"💬 {_html.escape(message.text)}",
-            parse_mode="HTML", reply_markup=_kb)
+        if message.text:
+            _m_reply = await bot.send_message(
+                ADMIN_ID, _head + f"\n\n💬 {_html.escape(message.text)}",
+                parse_mode="HTML", reply_markup=_kb)
+        else:
+            # фото / файл / скрин от клиента — заголовок + копия вложения
+            await bot.send_message(ADMIN_ID, _head + "\n\n💬 <i>вложение ниже</i>", parse_mode="HTML")
+            _m_reply = await message.copy_to(chat_id=ADMIN_ID, reply_markup=_kb)
         await set_linkpay_admin_msg(order_id, _m_reply.message_id)
     except Exception as e:
         logging.error(f"cl_reply forward: {e}")
