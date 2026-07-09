@@ -40,12 +40,17 @@ WEBSHARE_PROXY     = os.getenv("WEBSHARE_PROXY", "")   # http://user:pass@host:p
 # Второй сайт rootchatgptplus.com работает через partner-API (Bearer + /api/partner/v1).
 # Ключ держим в переменной окружения (не в коде/репозитории!).
 ROOT_CLAUDE_API_KEY = os.getenv("ROOT_CLAUDE_API_KEY", "")
+# Третий сайт ipiap.com — тот же partner-API. Если это зеркало того же аккаунта,
+# ключ общий с rootchatgptplus (дефолт). Если ключ отдельный — задать IPIAP_CLAUDE_API_KEY.
+IPIAP_CLAUDE_API_KEY = os.getenv("IPIAP_CLAUDE_API_KEY", "") or ROOT_CLAUDE_API_KEY
 CLAUDE_PROVIDERS = {
     "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
     "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com",
              "api": "partner", "key": ROOT_CLAUDE_API_KEY},
+    "ipiap": {"name": "ipiap.com", "base": "https://ipiap.com",
+              "api": "partner", "key": IPIAP_CLAUDE_API_KEY},
 }
-CLAUDE_PROVIDER_ORDER   = ["bpa", "root"]   # порядок авто-фолбэка
+CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "ipiap"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"
 
 # ─── Провайдеры авто-активации ChatGPT ────────────────────────────
