@@ -504,13 +504,17 @@ async def adm_perplexity_add_start(cb: CallbackQuery, state: FSMContext):
     plan = cb.data.split(":")[1]
     LABELS2 = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
     await state.set_state(PerplexityAdminState.waiting_codes)
-    await state.update_data(perplexity_plan=plan)
-    await cb.message.answer(
+    await state.update_data(perplexity_plan=plan, _adm_pmid=cb.message.message_id, _adm_pchat=cb.message.chat.id)
+    _txt = (
         f"📥 <b>Коды Perplexity {LABELS2.get(plan, plan)}</b>\n\n"
         f"Отправь коды — каждый с новой строки.\n"
-        f"Пример: <code>XXXX-XXXX-XXXX-XXXX</code>\n\n/cancel — отмена",
-        parse_mode="HTML"
+        f"Пример: <code>XXXX-XXXX-XXXX-XXXX</code>\n\n/cancel — отмена"
     )
+    try:
+        await cb.message.edit_text(_txt, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_perplexity_webapp")]]))
+    except Exception:
+        await cb.message.answer(_txt, parse_mode="HTML")
     await cb.answer()
 
 
@@ -518,22 +522,40 @@ async def adm_perplexity_add_start(cb: CallbackQuery, state: FSMContext):
 async def adm_perplexity_receive_codes(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    data = await state.get_data()
+    _pmid = data.get("_adm_pmid"); _pchat = data.get("_adm_pchat", message.chat.id)
+
+    async def _res(text, kb=None):
+        try:
+            await message.bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        if _pmid:
+            try:
+                await message.bot.edit_message_text(text, chat_id=_pchat, message_id=_pmid,
+                                                    reply_markup=kb, parse_mode="HTML")
+                return
+            except Exception:
+                pass
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+    _back_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_perplexity_webapp")]])
+    _cancel_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_perplexity_webapp")]])
     if message.text == "/cancel":
         await state.clear()
-        await message.answer("Отменено.")
+        await _res("Отменено.", _back_kb)
         return
     text = message.text or ""
     if text.startswith("/"):
-        await message.answer("⚠️ Это команда, а не коды. Отправь коды (каждый с новой строки) или /cancel.")
+        await _res("⚠️ Это команда, а не коды. Отправь коды (каждый с новой строки) или /cancel.", _cancel_kb)
         return
-    data = await state.get_data()
     plan = data.get("perplexity_plan", "pro")
     _code_re = re.compile(r"^[A-Za-z][A-Za-z0-9][A-Za-z0-9-]*$")
     _raw = [l.strip() for l in text.splitlines() if l.strip()]
     codes = [c for c in _raw if _code_re.match(c)]
     _skipped = len(_raw) - len(codes)
     if not codes:
-        await message.answer("⚠️ Не нашёл валидных кодов (код начинается с латинской буквы, без «/»). Отправь ещё раз или /cancel.")
+        await _res("⚠️ Не нашёл валидных кодов (код начинается с латинской буквы, без «/»). Отправь ещё раз или /cancel.", _cancel_kb)
         return
     added = 0
     pool = await get_pool()
@@ -551,9 +573,9 @@ async def adm_perplexity_receive_codes(message: Message, state: FSMContext):
     await state.clear()
     LABELS3 = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
     _sk = f"\n⏭ Пропущено невалидных строк: {_skipped}" if _skipped else ""
-    await message.answer(
+    await _res(
         f"✅ Добавлено <b>{added}</b> кодов Perplexity {LABELS3.get(plan, plan)}{_sk}",
-        parse_mode="HTML"
+        _back_kb
     )
     await log_event(message.from_user.id, "perplexity_codes_added", f"plan={plan} n={added}")
 

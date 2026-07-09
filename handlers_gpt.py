@@ -330,17 +330,18 @@ async def adm_gpt_add_start(cb: CallbackQuery, state: FSMContext):
     prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
     if prov not in GPT_PROVIDERS:
         prov = GPT_DEFAULT_PROVIDER
-    await state.update_data(gpt_add_plan=plan)
+    await state.update_data(gpt_add_plan=plan, _adm_pmid=cb.message.message_id, _adm_pchat=cb.message.chat.id)
     await state.set_state(GptAdminState.waiting_codes)
     plan_labels = _gpt_plan_labels()
-    await cb.message.answer(
+    await cb.message.edit_text(
         f"➕ <b>Добавление кодов — {plan_labels.get(plan, plan)}</b>\n"
         f"Сайт: <b>{gpt_provider_name(prov)}</b> (активный)\n\n"
         f"Отправь коды — каждый с новой строки:\n\n"
         f"<code>CODE1\nCODE2\nCODE3</code>\n\n"
         f"<i>Чтобы добавить коды другого сайта — сначала смени активный сайт «🔀 Сайт».</i>\n"
         f"Или отправь /cancel чтобы отменить",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_gpt_webapp")]])
     )
     await cb.answer()
 
@@ -350,18 +351,36 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
     """Получаем коды и сохраняем в БД."""
     if message.from_user.id != ADMIN_ID:
         return
+    data = await state.get_data()
+    _pmid = data.get("_adm_pmid"); _pchat = data.get("_adm_pchat", message.chat.id)
+
+    async def _res(text, kb=None):
+        try:
+            await message.bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        if _pmid:
+            try:
+                await message.bot.edit_message_text(text, chat_id=_pchat, message_id=_pmid,
+                                                    reply_markup=kb, parse_mode="HTML")
+                return
+            except Exception:
+                pass
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
     if message.text and message.text.strip() == "/cancel":
         await state.clear()
-        await message.answer("❌ Отменено")
+        await _res("❌ Отменено",
+                   InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")]]))
         return
-    data = await state.get_data()
     plan = data.get("gpt_add_plan", "plus")
     prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
     if prov not in GPT_PROVIDERS:
         prov = GPT_DEFAULT_PROVIDER
     codes = [l.strip() for l in (message.text or "").split("\n") if l.strip()]
     if not codes:
-        await message.answer("❌ Нет кодов. Отправь каждый код с новой строки.")
+        await _res("❌ Нет кодов. Отправь каждый код с новой строки.",
+                   InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_gpt_webapp")]]))
         return
     pool = await get_pool()
     added = skipped = 0
@@ -377,15 +396,14 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
             "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND provider=$2 AND is_used=FALSE", plan, prov) or 0
     await state.clear()
     plan_labels = _gpt_plan_labels()
-    await message.answer(
+    await _res(
         f"✅ <b>Коды добавлены!</b>\n\n"
         f"📦 План: <b>{plan_labels.get(plan, plan)}</b>\n"
         f"🔀 Сайт: <b>{gpt_provider_name(prov)}</b>\n"
         f"➕ Добавлено: <b>{added}</b>\n"
         f"⏭ Дублей: <b>{skipped}</b>\n"
         f"📊 Свободных теперь: <b>{remaining}</b>",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад к Mini App", callback_data="adm_gpt_webapp")],
         ])
     )

@@ -4896,14 +4896,16 @@ async def _take_claude_bpa_screenshot(bpa_order_id: int, provider: str = "bpa") 
 
 async def _claude_activation_polling_job(
     bpa_order_id: int, code: str, user_id: int,
-    order_id: str, plan_name: str, org_id: str, provider: str = "bpa"
+    order_id: str, plan_name: str, org_id: str, provider: str = "bpa", _tried=None
 ):
     """
     Опрашивает сайт-провайдер каждые 5 сек.
     При done — помечает код, уведомляет тебя и клиента.
-    При failed — возвращает код, пишет обоим.
+    При failed — АВТО-переключает активацию на код другого сайта (если есть), иначе пишет обоим.
+    _tried — множество уже пробованных сайтов (для авто-фолбэка без зацикливания).
     """
     _claude_job_results[bpa_order_id] = {"status": "queued"}
+    _tried_set = set(_tried or ()) | {provider}
     _replaced_code = None  # авто-замена кода отключена; ветка elif оставлена мёртвой
     _cfg = CLAUDE_PROVIDERS.get(provider, {})
     _api = _cfg.get("api", "bpa")
@@ -5045,6 +5047,49 @@ async def _claude_activation_polling_job(
                             "UPDATE claude_pending_activations SET bpa_order_id=NULL WHERE user_id=$1", user_id)
                 except Exception:
                     pass
+
+                # ── АВТО-ФОЛБЭК: активация провалилась → пробуем код ДРУГОГО сайта ──
+                # (у каждого сайта свои коды; берём код ещё не пробованного сайта и повторяем там)
+                try:
+                    _pk_oos = plan_name_to_key(plan_name)
+                    for _np in await _claude_provider_order():
+                        if _np in _tried_set:
+                            continue
+                        _nc = await get_next_claude_code(_pk_oos, _np)
+                        if not _nc:
+                            continue
+                        _res2 = await _claude_redeem_via(_np, _nc, org_id, order_id)
+                        if not _res2.get("ok"):
+                            continue   # код этого сайта не принят — пробуем следующий
+                        _ref2 = _res2["ref"]
+                        _is_bpa2 = CLAUDE_PROVIDERS.get(_np, {}).get("api", "bpa") == "bpa"
+                        _pool_fo = await get_pool()
+                        async with _pool_fo.acquire() as _c_fo:
+                            if _is_bpa2:
+                                await _c_fo.execute(
+                                    "UPDATE claude_pending_activations SET code=$1, provider=$2, bpa_order_id=$3 WHERE user_id=$4",
+                                    _nc, _np, int(_ref2), user_id)
+                            else:
+                                await _c_fo.execute(
+                                    "UPDATE claude_pending_activations SET code=$1, provider=$2, bpa_order_id=NULL WHERE user_id=$3",
+                                    _nc, _np, user_id)
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🔀 <b>Claude — авто-переключение сайта после неудачи</b>\n"
+                                f"👤 <code>{user_id}</code> ({plan_name})\n"
+                                f"Прежний сайт не активировал — ушли на <b>{claude_provider_name(_np)}</b>.",
+                                parse_mode="HTML")
+                        except Exception:
+                            pass
+                        _claude_job_results[_ref2] = {"status": "queued"}
+                        asyncio.create_task(_claude_activation_polling_job(
+                            _ref2, _nc, user_id, order_id, plan_name, org_id, _np, _tried_set))
+                        logging.info(f"Claude auto-failover after fail: user={user_id} -> {_np} ref={_ref2}")
+                        return   # активация переехала на другой сайт — клиента не тревожим
+                except Exception as _fo_e:
+                    logging.error(f"Claude failover after fail: {_fo_e}")
+
                 _is_stock = ("out of stock" in _err.lower() or "out-of-stock" in _err.lower())
                 if _is_stock:
                     # провайдер временно без стока — код клиента ОСТАЁТСЯ валидным.

@@ -1199,19 +1199,56 @@ async def adm_bal_fix_all_do(cb: CallbackQuery):
 # ══════════════════════════════════════════════════════════
 
 
+# ─── Антиспам: результат ввода редактирует сообщение-подсказку ──
+async def _adm_remember(cb, state):
+    """Запомнить сообщение-панель, чтобы ответ на ввод редактировал его, а не слал новое."""
+    try:
+        await state.update_data(_adm_pmid=cb.message.message_id, _adm_pchat=cb.message.chat.id)
+    except Exception:
+        pass
+
+
+async def _adm_reply(message, state, text, reply_markup=None, parse_mode="HTML"):
+    """Удаляет введённое админом сообщение и заменяет сообщение-подсказку результатом."""
+    data = await state.get_data()
+    pmid = data.get("_adm_pmid")
+    pchat = data.get("_adm_pchat", message.chat.id)
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    if pmid:
+        try:
+            await bot.edit_message_text(text, chat_id=pchat, message_id=pmid,
+                                        reply_markup=reply_markup, parse_mode=parse_mode)
+            return
+        except Exception:
+            pass
+    m = await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    try:
+        await state.update_data(_adm_pmid=m.message_id, _adm_pchat=m.chat.id)
+    except Exception:
+        pass
+
+
 @dp.callback_query(F.data == "adm_give_credits")
 async def adm_give_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     await state.set_state(AdminState.waiting_user_id)
-    await cb.message.answer(
-        "➕ <b>Начислить кредиты</b>\n\nВведи Telegram ID пользователя:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
-        ]),
-        parse_mode="HTML"
-    )
+    _kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
+    ])
+    try:
+        await cb.message.edit_text(
+            "➕ <b>Начислить кредиты</b>\n\nВведи Telegram ID пользователя:",
+            reply_markup=_kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(
+            "➕ <b>Начислить кредиты</b>\n\nВведи Telegram ID пользователя:",
+            reply_markup=_kb, parse_mode="HTML")
+    await _adm_remember(cb, state)
     await cb.answer()
 
 
@@ -1219,18 +1256,22 @@ async def adm_give_start(cb: CallbackQuery, state: FSMContext):
 async def adm_get_user_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    _cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
+    ])
     if not message.text:
-        await message.answer("❌ Отправь Telegram ID текстом")
+        await _adm_reply(message, state, "❌ Отправь Telegram ID текстом", _cancel_kb)
         return
     txt = message.text.strip()
     logging.info(f"ADMIN give_credits input: '{txt}'")
     try:
         target_id = int(txt)
     except (ValueError, TypeError):
-        await message.answer(
+        await _adm_reply(
+            message, state,
             f"⛔ <code>{txt}</code> - не числовой ID\n"
             f"Введи только цифры, например: <code>123456789</code>",
-            parse_mode="HTML"
+            _cancel_kb
         )
         return
     try:
@@ -1239,19 +1280,17 @@ async def adm_get_user_id(message: Message, state: FSMContext):
         status = "✅ Зарегистрирован" if user else "⚠️ Не в базе (создам при начислении)"
         await state.update_data(target_id=target_id)
         await state.set_state(AdminState.waiting_credits)
-        await message.answer(
+        await _adm_reply(
+            message, state,
             f"👤 ID: <code>{target_id}</code>\n"
             f"Статус: {status}\n"
             f"Баланс: <b>{credits_balance} кредитов</b>\n\n"
             f"Сколько кредитов начислить?",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
-            ]),
-            parse_mode="HTML"
+            _cancel_kb
         )
     except Exception as e:
         logging.error(f"adm_get_user_id error: {e}")
-        await message.answer(f"⛔ Ошибка: {e}")
+        await _adm_reply(message, state, f"⛔ Ошибка: {e}")
         await state.clear()
 
 
@@ -1259,17 +1298,20 @@ async def adm_get_user_id(message: Message, state: FSMContext):
 async def adm_give_credits_confirm(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    _cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
+    ])
     txt = message.text.strip() if message.text else ""
     try:
         amount = int(txt)
         if amount <= 0:
-            await message.answer("❌ Введи положительное число:")
+            await _adm_reply(message, state, "❌ Введи положительное число:", _cancel_kb)
             return
     except (ValueError, TypeError):
-        await message.answer("❌ Введи число, например: <code>50</code>", parse_mode="HTML")
+        await _adm_reply(message, state, "❌ Введи число, например: <code>50</code>", _cancel_kb)
         return
     data = await state.get_data()
-    target_id = data["target_id"]
+    target_id = data.get("target_id") or data.get("target_user_id")
     # Создаём пользователя если его нет
     user = await get_user(target_id)
     if not user:
@@ -1282,16 +1324,16 @@ async def adm_give_credits_confirm(message: Message, state: FSMContext):
     await add_credits(target_id, amount)
     new_balance = await get_credits(target_id)
     await state.clear()
-    await message.answer(
+    await _adm_reply(
+        message, state,
         f"✨ <b>Кредиты начислены!</b>\n\n"
         f"👤 ID: <code>{target_id}</code>\n"
         f"✨ Начислено: <b>{amount} кредитов</b>\n"
         f"💳 Новый баланс: <b>{new_balance} кредитов</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Ещё начислить", callback_data="adm_give_credits")],
             [InlineKeyboardButton(text="◀️ Панель",        callback_data="adm_back")],
-        ]),
-        parse_mode="HTML"
+        ])
     )
     try:
         await bot.send_message(
@@ -1598,13 +1640,22 @@ async def adm_find_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     await state.set_state(AdminState.waiting_find_user)
-    await cb.message.answer(
-        "🔍 <b>Найти пользователя</b>\n\nВведи Telegram ID:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
-        ]),
-        parse_mode="HTML"
-    )
+    _kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
+    ])
+    try:
+        await cb.message.edit_text(
+            "🔍 <b>Найти пользователя</b>\n\nВведи Telegram ID:",
+            reply_markup=_kb, parse_mode="HTML"
+        )
+        _pid = cb.message.message_id
+    except Exception:
+        _m = await cb.message.answer(
+            "🔍 <b>Найти пользователя</b>\n\nВведи Telegram ID:",
+            reply_markup=_kb, parse_mode="HTML"
+        )
+        _pid = _m.message_id
+    await state.update_data(find_prompt_mid=_pid, find_prompt_chat=cb.message.chat.id)
     await cb.answer()
 
 
@@ -1612,25 +1663,47 @@ async def adm_find_start(cb: CallbackQuery, state: FSMContext):
 async def adm_find_user(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    _sd = await state.get_data()
+    _pchat = _sd.get("find_prompt_chat", message.chat.id)
+    _pmid = _sd.get("find_prompt_mid")
+
+    async def _show(text, kb):
+        # редактируем сообщение-подсказку вместо отправки нового
+        if _pmid:
+            try:
+                await bot.edit_message_text(text, chat_id=_pchat, message_id=_pmid,
+                                            reply_markup=kb, parse_mode="HTML")
+                return
+            except Exception:
+                pass
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+    # убираем введённый админом ID, чтобы не копился спам
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+
     txt = message.text.strip() if message.text else ""
     try:
         uid = int(txt)
     except (ValueError, TypeError):
-        await message.answer(
-            "❌ Введи числовой Telegram ID\n<i>Пример: 123456789</i>",
-            parse_mode="HTML"
+        await _show(
+            "🔍 <b>Найти пользователя</b>\n\n❌ Введи числовой Telegram ID\n<i>Пример: 123456789</i>",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
+            ])
         )
         return
     await state.clear()
     user = await get_user(uid)
     if not user:
-        await message.answer(
+        await _show(
             f"🔍 Пользователь <code>{uid}</code> не найден.\n"
             f"Он ещё не запускал бота.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")]
-            ]),
-            parse_mode="HTML"
+            ])
         )
         return
     pool = await get_pool()
@@ -1667,7 +1740,7 @@ async def adm_find_user(message: Message, state: FSMContext):
         )],
         [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
     ]
-    await message.answer(
+    await _show(
         f"🪪 <b>Пользователь</b>\n\n"
         f"🆔 ID: <code>{uid}</code>\n"
         f"📋 Имя: {full_name or '-'}\n"
@@ -1679,8 +1752,7 @@ async def adm_find_user(message: Message, state: FSMContext):
         f"🎯 Последняя генерация: {last_gen_text}\n"
         f"🚫 Заблокирован: {blocked}\n"
         f"📅 Регистрация: {created_at}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
-        parse_mode="HTML"
+        InlineKeyboardMarkup(inline_keyboard=kb_rows)
     )
 
 
@@ -1693,13 +1765,15 @@ async def adm_give_to(cb: CallbackQuery, state: FSMContext):
     uid = int(cb.data.split(":")[1])
     await state.update_data(target_user_id=uid)
     await state.set_state(AdminState.waiting_credits)
-    await cb.message.answer(
-        f"\U0001f4b3 Начислить кредиты пользователю <code>{uid}</code>\n\nВведи количество кредитов:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
-        ]),
-        parse_mode="HTML"
-    )
+    _kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
+    ])
+    _txt = f"\U0001f4b3 Начислить кредиты пользователю <code>{uid}</code>\n\nВведи количество кредитов:"
+    try:
+        await cb.message.edit_text(_txt, reply_markup=_kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(_txt, reply_markup=_kb, parse_mode="HTML")
+    await _adm_remember(cb, state)
     await cb.answer()
 
 
@@ -2046,6 +2120,7 @@ async def adm_pack_field(cb: CallbackQuery, state: FSMContext):
     field_names = {"price": "\u0446\u0435\u043d\u0443 (\u20bd)", "credits": "\u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432", "name": "\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435"}
     await state.update_data(edit_pack_key=key, edit_pack_field=field)
     await state.set_state(AdminEditState.waiting_value)
+    await _adm_remember(cb, state)
     await cb.message.edit_text(
         f"\u270f\ufe0f \u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f <b>{field_names.get(field, field)}</b>\n\n\u0422\u0435\u043a\u0443\u0449\u0435\u0435: <code>{p.get(field, '')}</code>",
         parse_mode="HTML",
@@ -2070,6 +2145,7 @@ async def adm_add_pack(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID: return
     await state.update_data(edit_pack_key=None, edit_pack_field="new_pack")
     await state.set_state(AdminEditState.waiting_value)
+    await _adm_remember(cb, state)
     await cb.message.edit_text(
         "\u2795 <b>\u041d\u043e\u0432\u044b\u0439 \u043f\u0430\u043a\u0435\u0442</b>\n\n\u0424\u043e\u0440\u043c\u0430\u0442:\n<code>\u043a\u043b\u044e\u0447|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043a\u0440\u0435\u0434\u0438\u0442\u044b|\u0446\u0435\u043d\u0430</code>\n\n\u041f\u0440\u0438\u043c\u0435\u0440: <code>p300|\U0001f3c6 \u041c\u0430\u043a\u0441\u0438\u043c\u0443\u043c|3000|1490</code>",
         parse_mode="HTML",
@@ -2137,6 +2213,7 @@ async def adm_svc_field(cb: CallbackQuery, state: FSMContext):
     current = s.get(field, "")
     await state.update_data(edit_shop_key=key, edit_shop_plan=None, edit_shop_field=f"svc_{field}")
     await state.set_state(AdminEditState.waiting_value)
+    await _adm_remember(cb, state)
     await cb.message.edit_text(
         f"\u270f\ufe0f \u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 <b>{field_labels.get(field, field)}</b> \u0434\u043b\u044f <b>{s.get('emoji','')} {s.get('name', key)}</b>\n\n"
         f"\u0422\u0435\u043a\u0443\u0449\u0435\u0435: <code>{current}</code>",
@@ -2198,6 +2275,7 @@ async def adm_plan_field(cb: CallbackQuery, state: FSMContext):
     field_names = {"price": "\u0446\u0435\u043d\u0443 (\u20bd)", "name": "\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435", "desc": "\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435"}
     await state.update_data(edit_shop_key=key, edit_shop_plan=plan_idx, edit_shop_field=field)
     await state.set_state(AdminEditState.waiting_value)
+    await _adm_remember(cb, state)
     await cb.message.edit_text(
         f"\u270f\ufe0f \u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043b\u044f <b>{field_names.get(field, field)}</b>\n\n\u0422\u0435\u043a\u0443\u0449\u0435\u0435: <code>{p.get(field, '')}</code>",
         parse_mode="HTML",
@@ -2256,6 +2334,7 @@ async def adm_add_service(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID: return
     await state.update_data(edit_shop_key=None, edit_shop_field="new_service")
     await state.set_state(AdminEditState.waiting_value)
+    await _adm_remember(cb, state)
     await cb.message.edit_text(
         "➕ <b>Новый сервис</b>\n\n"
         "Отправь 4 строки подряд:\n\n"
@@ -2279,6 +2358,7 @@ async def adm_add_plan(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[1]
     await state.update_data(edit_shop_key=key, edit_shop_field="new_plan")
     await state.set_state(AdminEditState.waiting_value)
+    await _adm_remember(cb, state)
     sname = SHOP_CATALOG.get(key, {}).get("name", key)
     await cb.message.edit_text(
         f"\u2795 <b>\u041d\u043e\u0432\u044b\u0439 \u0442\u0430\u0440\u0438\u0444 \u0434\u043b\u044f {sname}</b>\n\n\u0424\u043e\u0440\u043c\u0430\u0442:\n<code>\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u0446\u0435\u043d\u0430|\u043e\u043f\u0438\u0441\u0430\u043d\u0438\u0435</code>\n\n\u041f\u0440\u0438\u043c\u0435\u0440: <code>Business|5000|\u0414\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434</code>",
@@ -2324,6 +2404,7 @@ async def adm_edit_gen(cb: CallbackQuery, state: FSMContext):
     m = {"image": IMAGE_MODELS, "video": VIDEO_MODELS, "edit": EDIT_MODELS, "anim": ANIM_MODELS}.get(section, {}).get(key, {})
     await state.update_data(edit_gen_key=key, edit_gen_section=section, edit_pack_field="gen_credits")
     await state.set_state(AdminEditState.waiting_value)
+    await _adm_remember(cb, state)
     await cb.message.edit_text(
         f"\u270f\ufe0f <b>{m.get('name', key)}</b>\n\n\u0422\u0435\u043a\u0443\u0449\u0430\u044f \u0446\u0435\u043d\u0430: <b>{m.get('credits', 0)} \u043a\u0440</b>\n\n\u0412\u0432\u0435\u0434\u0438 \u043d\u043e\u0432\u043e\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432:",
         parse_mode="HTML",
@@ -2351,17 +2432,17 @@ async def adm_edit_value(message: Message, state: FSMContext):
             async with pool.acquire() as conn:
                 await conn.execute(f"UPDATE bot_credit_packs SET {field}=$1 WHERE key=$2", val, pack_key)
             await state.clear()
-            await message.answer(f"\u2705 {CREDIT_PACKS[pack_key]['name']} \u2192 {field} = <code>{val}</code>", parse_mode="HTML",
+            await _adm_reply(message, state, f"\u2705 {CREDIT_PACKS[pack_key]['name']} \u2192 {field} = <code>{val}</code>", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f4e6 \u041a \u043f\u0430\u043a\u0435\u0442\u0430\u043c", callback_data="adm_prices_packs")]]))
         elif field == "new_pack":
             parts = [x.strip() for x in value.split("|")]
-            if len(parts) < 4: await message.answer("\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043a\u043b\u044e\u0447|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043a\u0440\u0435\u0434\u0438\u0442\u044b|\u0446\u0435\u043d\u0430"); return
+            if len(parts) < 4: await _adm_reply(message, state, "\u274c \u0424\u043e\u0440\u043c\u0430\u0442: \u043a\u043b\u044e\u0447|\u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435|\u043a\u0440\u0435\u0434\u0438\u0442\u044b|\u0446\u0435\u043d\u0430"); return
             nk, nm, nc, np_ = parts[0], parts[1], int(parts[2]), int(parts[3])
             CREDIT_PACKS[nk] = {"name": nm, "credits": nc, "price": np_, "stars": 0, "desc": "", "badge": ""}
             async with pool.acquire() as conn:
                 await conn.execute("INSERT INTO bot_credit_packs (key,name,credits,price,sort_order) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (key) DO UPDATE SET name=$2,credits=$3,price=$4,enabled=TRUE", nk, nm, nc, np_, len(CREDIT_PACKS))
             await state.clear()
-            await message.answer(f"\u2705 \u041f\u0430\u043a\u0435\u0442 <b>{nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
+            await _adm_reply(message, state, f"\u2705 \u041f\u0430\u043a\u0435\u0442 <b>{nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f4e6 \u041a \u043f\u0430\u043a\u0435\u0442\u0430\u043c", callback_data="adm_prices_packs")]]))
         elif shop_field in ("price", "name", "desc") and shop_key and shop_plan is not None:
             val = int(value) if shop_field == "price" else value
@@ -2379,7 +2460,7 @@ async def adm_edit_value(message: Message, state: FSMContext):
                 else:
                     await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2 AND plan_idx=$3", val, shop_key, shop_plan)
             await state.clear()
-            await message.answer(f"\u2705 \u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e!", parse_mode="HTML",
+            await _adm_reply(message, state, f"\u2705 \u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e!", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
         elif shop_field in ("svc_name", "svc_emoji", "svc_desc") and shop_key:
             field_map = {"svc_name": "name", "svc_emoji": "emoji", "svc_desc": "desc"}
@@ -2393,7 +2474,8 @@ async def adm_edit_value(message: Message, state: FSMContext):
                 await conn.execute(f"UPDATE bot_shop_items SET {col}=$1 WHERE key=$2", value, shop_key)
             await state.clear()
             svc = SHOP_CATALOG.get(shop_key, {})
-            await message.answer(
+            await _adm_reply(
+                message, state,
                 f"\u2705 {svc.get('emoji','')} <b>{svc.get('name', shop_key)}</b> \u2014 \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e!",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -2403,9 +2485,10 @@ async def adm_edit_value(message: Message, state: FSMContext):
         elif shop_field == "new_service":
             parts = [x.strip() for x in value.split("\n") if x.strip()]
             if len(parts) < 4:
-                await message.answer(
+                await _adm_reply(
+                    message, state,
                     "❌ Нужно 4 строки:\n\n<code>ключ\nэмодзи\nназвание\nописание</code>",
-                    parse_mode="HTML"
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="adm_prices_shop")]])
                 )
                 return
             nk, em, nm, desc = parts[0], parts[1], parts[2], parts[3]
@@ -2422,14 +2505,15 @@ async def adm_edit_value(message: Message, state: FSMContext):
                     SET service_name=$2, emoji=$3, service_desc=$4
                 """, nk, nm, em, desc)
             await state.clear()
-            await message.answer(f"\u2705 \u0421\u0435\u0440\u0432\u0438\u0441 <b>{em} {nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!\n\n\u0422\u0435\u043f\u0435\u0440\u044c \u0434\u043e\u0431\u0430\u0432\u044c \u0442\u0430\u0440\u0438\u0444\u044b \u0447\u0435\u0440\u0435\u0437 \u0440\u0435\u0434\u0430\u043a\u0442\u043e\u0440.", parse_mode="HTML",
+            await _adm_reply(message, state, f"\u2705 \u0421\u0435\u0440\u0432\u0438\u0441 <b>{em} {nm}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!\n\n\u0422\u0435\u043f\u0435\u0440\u044c \u0434\u043e\u0431\u0430\u0432\u044c \u0442\u0430\u0440\u0438\u0444\u044b \u0447\u0435\u0440\u0435\u0437 \u0440\u0435\u0434\u0430\u043a\u0442\u043e\u0440.", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\ud83d\udecd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
         elif shop_field == "new_plan" and shop_key:
             parts = [x.strip() for x in value.split("\n") if x.strip()]
             if len(parts) < 3:
-                await message.answer(
+                await _adm_reply(
+                    message, state,
                     "❌ Нужно 3 строки:\n\n<code>название\nцена (число)\nописание</code>",
-                    parse_mode="HTML"
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data=f"adm_shop_service:{shop_key}")]])
                 )
                 return
             pn, pr, pd = parts[0], int(parts[1]), parts[2]
@@ -2440,7 +2524,7 @@ async def adm_edit_value(message: Message, state: FSMContext):
                 await conn.execute("INSERT INTO bot_shop_items (key,plan_idx,service_name,emoji,service_desc,plan_name,price,plan_desc) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (key,plan_idx) DO UPDATE SET plan_name=$6,price=$7,plan_desc=$8,enabled=TRUE",
                     shop_key, ni, s["name"], s.get("emoji",""), s.get("desc",""), pn, pr, pd)
             await state.clear()
-            await message.answer(f"\u2705 \u0422\u0430\u0440\u0438\u0444 <b>{pn}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
+            await _adm_reply(message, state, f"\u2705 \u0422\u0430\u0440\u0438\u0444 <b>{pn}</b> \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d!", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f6cd \u041c\u0430\u0433\u0430\u0437\u0438\u043d", callback_data="adm_prices_shop")]]))
         elif field == "gen_credits" and gen_key:
             nc = int(value)
@@ -2450,16 +2534,16 @@ async def adm_edit_value(message: Message, state: FSMContext):
                 await conn.execute("INSERT INTO bot_gen_prices (model_key,section,credits) VALUES ($1,$2,$3) ON CONFLICT (model_key) DO UPDATE SET credits=$3", gen_key, gen_section, nc)
             mn = models.get(gen_key, {}).get("name", gen_key)
             await state.clear()
-            await message.answer(f"\u2705 <b>{mn}</b> \u2192 <b>{nc} \u043a\u0440</b>", parse_mode="HTML",
+            await _adm_reply(message, state, f"\u2705 <b>{mn}</b> \u2192 <b>{nc} \u043a\u0440</b>", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\U0001f3a8 \u041a \u0433\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044f\u043c", callback_data="adm_prices_gen")]]))
         else:
-            await message.answer("\u274c \u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u043e\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435.")
+            await _adm_reply(message, state, "\u274c \u041d\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043d\u043e\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435.")
             await state.clear()
     except ValueError:
-        await message.answer("\u274c \u0412\u0432\u0435\u0434\u0438 \u0447\u0438\u0441\u043b\u043e.")
+        await _adm_reply(message, state, "\u274c \u0412\u0432\u0435\u0434\u0438 \u0447\u0438\u0441\u043b\u043e.")
     except Exception as e:
         logging.error(f"adm_edit_value: {e}")
-        await message.answer(f"\u274c \u041e\u0448\u0438\u0431\u043a\u0430: {e}")
+        await _adm_reply(message, state, f"\u274c \u041e\u0448\u0438\u0431\u043a\u0430: {e}")
         await state.clear()
 
 

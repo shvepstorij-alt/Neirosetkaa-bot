@@ -557,15 +557,19 @@ async def adm_claude_add_start(cb: CallbackQuery, state: FSMContext):
     if prov not in CLAUDE_PROVIDERS:
         prov = CLAUDE_DEFAULT_PROVIDER
     await state.set_state(ClaudeAdminState.waiting_codes)
-    await state.update_data(claude_plan=plan)
-    await cb.message.answer(
+    await state.update_data(claude_plan=plan, _adm_pmid=cb.message.message_id, _adm_pchat=cb.message.chat.id)
+    _txt = (
         f"📥 <b>Коды Claude {LABELS2.get(plan, plan)}</b>\n"
         f"Сайт: <b>{claude_provider_name(prov)}</b> (активный)\n\n"
         f"Отправь коды — каждый с новой строки.\n"
         f"Пример: <code>XXXX-XXXX-XXXX-XXXX</code>\n\n"
-        f"<i>Чтобы добавить коды другого сайта — сначала смени активный сайт кнопкой «🔀 Сайт».</i>\n\n/cancel — отмена",
-        parse_mode="HTML"
+        f"<i>Чтобы добавить коды другого сайта — сначала смени активный сайт кнопкой «🔀 Сайт».</i>\n\n/cancel — отмена"
     )
+    try:
+        await cb.message.edit_text(_txt, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_claude_webapp")]]))
+    except Exception:
+        await cb.message.answer(_txt, parse_mode="HTML")
     await cb.answer()
 
 
@@ -573,11 +577,28 @@ async def adm_claude_add_start(cb: CallbackQuery, state: FSMContext):
 async def adm_claude_receive_codes(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
+    data = await state.get_data()
+    _pmid = data.get("_adm_pmid"); _pchat = data.get("_adm_pchat", message.chat.id)
+
+    async def _res(text, kb=None):
+        try:
+            await message.bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        if _pmid:
+            try:
+                await message.bot.edit_message_text(text, chat_id=_pchat, message_id=_pmid,
+                                                    reply_markup=kb, parse_mode="HTML")
+                return
+            except Exception:
+                pass
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
     if message.text == "/cancel":
         await state.clear()
-        await message.answer("Отменено.")
+        await _res("Отменено.",
+                   InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]]))
         return
-    data = await state.get_data()
     plan = data.get("claude_plan", "pro")
     prov = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
     if prov not in CLAUDE_PROVIDERS:
@@ -598,10 +619,10 @@ async def adm_claude_receive_codes(message: Message, state: FSMContext):
                 pass
     await state.clear()
     LABELS3 = {"pro": "Pro", "max_5x": "Max 5×", "max_20x": "Max 20×"}
-    await message.answer(
+    await _res(
         f"✅ Добавлено <b>{added}</b> кодов Claude {LABELS3.get(plan, plan)}\n"
         f"Сайт: <b>{claude_provider_name(prov)}</b>",
-        parse_mode="HTML"
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]])
     )
     await log_event(message.from_user.id, "claude_codes_added", f"plan={plan} n={added} prov={prov}")
 
