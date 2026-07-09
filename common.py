@@ -4828,6 +4828,11 @@ async def _claude_redeem_via(provider: str, code: str, org_id: str, order_id: st
         return await _claude_partner_redeem(cfg, code, org_id, order_id)
     if cfg.get("api") == "order":
         return await _claude_order_redeem(cfg, code, org_id, order_id)
+    if cfg.get("api") == "browser":
+        # Браузерные сайты (6661231.xyz) активируются отдельной фоновой задачей,
+        # синхронный redeem для них не поддерживается (защита от блокировки HTTP).
+        return {"ok": False, "err_kind": "other",
+                "err_msg": f"{cfg.get('name', provider)} — браузерная активация, не через redeem."}
     return await _claude_bpa_redeem(cfg.get("base", ""), code, org_id)
 
 
@@ -5341,6 +5346,128 @@ async def webapp_claude_handler(request: web.Request) -> web.Response:
         return web.Response(text="Claude Mini App not found", status=404)
 
 
+async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_name, plan_key, provider):
+    """Фоновая активация Claude через браузерный сайт (6661231.xyz, Playwright).
+    Обновляет _claude_job_results[ref]; клиент опрашивает /api/activate-claude-status/{ref}."""
+    _claude_job_results[ref] = {"status": "queued"}
+    try:
+        from chatgpt_activation import activate_claude_aipro
+        result = await activate_claude_aipro(code, org_id, plan_key)
+
+        # код уже использован на сайте → следующий код этого же сайта, один ретрай
+        if not result.get("success") and result.get("code_already_used"):
+            try:
+                _pool2 = await get_pool()
+                async with _pool2.acquire() as _c2:
+                    await _c2.execute(
+                        "UPDATE claude_codes SET is_used=TRUE, used_by=$1, used_at=NOW() WHERE code=$2",
+                        user_id, code)
+            except Exception:
+                pass
+            _nc = await get_next_claude_code(plan_key, provider)
+            if _nc:
+                code = _nc
+                await save_claude_pending_activation(user_id, code, order_id, plan_key, plan_name, provider)
+                try:
+                    await bot.send_message(user_id, "🔄 Первый код занят — выдаю следующий, подожди немного...", parse_mode="HTML")
+                except Exception:
+                    pass
+                result = await activate_claude_aipro(code, org_id, plan_key)
+
+        # ── Успех ──
+        if result.get("success"):
+            await mark_claude_code_used(code, user_id, order_id, org_id)
+            await delete_claude_pending_activation(user_id)
+            _claude_job_results[ref] = {"status": "done", "success": True}
+
+            import datetime as _dt2
+            _ts = _dt2.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
+            try:
+                _pool2 = await get_pool()
+                async with _pool2.acquire() as _c2:
+                    _ur = await _c2.fetchrow("SELECT username, full_name FROM users WHERE user_id=$1", user_id)
+                _un = (_ur["username"] if _ur else "") or ""
+                _fn = (_ur["full_name"] if _ur else "") or ""
+            except Exception:
+                _un = _fn = ""
+            _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+
+            _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
+            _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
+            _congrats = (
+                "🎉 <b>Подписка Claude активирована!</b>\n\n"
+                f"📦 Тариф: <b>{plan_name}</b>\n"
+                f"🏢 Organization ID: <code>{org_id}</code>\n"
+                f"🔑 Ключ: <code>{code}</code>\n"
+                f"📅 Действует до: <b>{_end_cl}</b>\n\n"
+                "Подписка появится в Claude в течение 5–10 минут. Спасибо за покупку! 🙌"
+            )
+            _kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
+                [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", **_prof_kw)],
+                [_eib("Главное меню", "back_main")],
+            ])
+            _mid = _claude_act_msg.pop(user_id, None)
+            _edited = False
+            if _mid:
+                try:
+                    await bot.edit_message_text(_congrats, chat_id=user_id, message_id=_mid, parse_mode="HTML", reply_markup=_kb)
+                    _edited = True
+                except Exception:
+                    pass
+            if not _edited:
+                try:
+                    await bot.send_message(user_id, _congrats, parse_mode="HTML", reply_markup=_kb)
+                except Exception:
+                    pass
+
+            try:
+                _caption = (
+                    f"✅ <b>Claude авто-активация OK</b> (6661231.xyz)\n\n"
+                    f"👤 <b>{_tg}</b>  (<code>{user_id}</code>)\n"
+                    f"🔑 Код: <code>{code}</code>\n"
+                    f"📦 Тариф: <b>{plan_name}</b>\n"
+                    f"🆔 Org ID: <code>{org_id}</code>\n"
+                    f"⏱ {_ts}"
+                )
+                try:
+                    _ord_ok = await fk_get_order(order_id)
+                    _amid = (_ord_ok or {}).get("admin_msg_id")
+                except Exception:
+                    _amid = None
+                if _amid:
+                    try:
+                        await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
+                    except Exception:
+                        await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+                else:
+                    await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+            except Exception:
+                pass
+            _fail_clear("claude", user_id)
+            await log_event(user_id, "claude_activation_ok", f"code={code} browser={provider} plan={plan_name}")
+            return
+
+        # ── Неуспех ──
+        _err = result.get("error") or "Не удалось активировать."
+        _claude_job_results[ref] = {"status": "done", "success": False, "error": _err}
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ <b>Claude (6661231.xyz) — активация не прошла</b>\n"
+                f"👤 <code>{user_id}</code> · {plan_name}\n"
+                f"🔑 <code>{code}</code>\n"
+                f"🧩 <code>{org_id}</code>\n"
+                f"⚠️ {(_err)[:300]}",
+                parse_mode="HTML")
+        except Exception:
+            pass
+    except Exception as _e:
+        logging.error(f"claude browser job {ref}: {_e}", exc_info=True)
+        _claude_job_results[ref] = {"status": "done", "success": False,
+                                    "error": "Ошибка активации. Напиши Александру."}
+
+
 async def api_activate_claude_handler(request: web.Request) -> web.Response:
     """POST /api/activate-claude"""
     import json as _j, re as _re
@@ -5475,6 +5602,23 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     except Exception as _dbl_e:
         logging.error(f"claude double-activation check: {_dbl_e}")
 
+    # ── Браузерный сайт (6661231.xyz): активация Playwright-задачей в фоне ──
+    if CLAUDE_PROVIDERS.get(provider, {}).get("api") == "browser":
+        _bref = "cb_" + str(uuid.uuid4())[:12]
+        _claude_job_results[_bref] = {"status": "queued"}
+        try:
+            _pool_bw = await get_pool()
+            async with _pool_bw.acquire() as _c_bw:
+                await _c_bw.execute(
+                    "UPDATE claude_pending_activations SET org_id=$1, bpa_order_id=NULL, provider=$2 WHERE user_id=$3",
+                    org_id, provider, user_id)
+        except Exception:
+            pass
+        asyncio.create_task(_run_claude_browser_job(
+            _bref, code, org_id, user_id, order_id, plan_name, plan_key, provider))
+        logging.info(f"Claude browser activation started: ref={_bref} user={user_id} code={code} site={provider}")
+        return _resp({"order_id": _bref, "status": "queued"})
+
     try:
         _order_all = await _claude_provider_order()
         if await _claude_failover_on():
@@ -5486,6 +5630,9 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
         _last_msg = ""
         _last_prov = provider
         for _prov in _try_order:
+            # браузерные сайты (6661231.xyz) не участвуют в синхронном redeem-фолбэке
+            if CLAUDE_PROVIDERS.get(_prov, {}).get("api") == "browser":
+                continue
             # для запасного сайта берём код из ЕГО пула (у каждого сайта свои коды)
             if _prov != provider:
                 _newcode = await get_next_claude_code(plan_key, _prov)

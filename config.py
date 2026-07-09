@@ -52,8 +52,11 @@ CLAUDE_PROVIDERS = {
              "api": "partner", "key": ROOT_CLAUDE_API_KEY},
     "ipiap": {"name": "ipiap.com", "base": "https://a002api.ipiap.com",
               "api": "order", "api_id": IPIAP_CLAUDE_API_ID, "api_secret": IPIAP_CLAUDE_API_SECRET},
+    # Четвёртый сайт 6661231.xyz — API нет, активация через браузер (Playwright),
+    # как у ChatGPT-провайдера aipro. Вводит CDK + Organization ID на странице #/claude.
+    "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz", "api": "browser"},
 }
-CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "ipiap"]   # порядок авто-фолбэка
+CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "ipiap", "aipro"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"
 
 # ─── Провайдеры авто-активации ChatGPT ────────────────────────────

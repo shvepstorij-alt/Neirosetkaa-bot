@@ -653,6 +653,156 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                 pass
 
 
+async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -> dict:
+    """Активация Claude через 6661231.xyz (#/claude).
+    Вводит CDK + Organization ID, выбирает тариф, жмёт «激活 / Activate the claude code», ждёт результат.
+    Статусы приходят на КИТАЙСКОМ даже при English UI:
+      успех=充值成功/激活成功/已激活 · использован=已被使用/已使用 · нет стока=库存不足/售罄
+      битый org=组织/organization invalid/格式错误
+    Формат ответа как у activate_chatgpt_aipro:
+      {success, error, code_already_used, out_of_stock, bad_org}
+    """
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    url = "https://6661231.xyz/#/claude"
+    logger.info(f"activate_claude_aipro: cdk={cdk_code} org={org_id} plan={plan}")
+
+    # какой тариф выбрать на странице
+    _plan_labels = {"pro": "Pro", "max_5x": "Max 5x", "max_20x": "Max 20x"}
+    plan_label = _plan_labels.get(plan, "Pro")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox","--disable-dev-shm-usage","--disable-gpu","--disable-setuid-sandbox","--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-US")
+        page = await context.new_page()
+        try:
+            await page.goto(url, timeout=45_000, wait_until="networkidle")
+            await asyncio.sleep(1.5)
+
+            # На всякий случай кликаем вкладку Claude (верхний переключатель GPT/Claude/…)
+            try:
+                cl_tab = page.locator("button:has-text('Claude'), [role=button]:has-text('Claude')").first
+                if await cl_tab.count() and await cl_tab.is_visible():
+                    await cl_tab.click()
+                    await asyncio.sleep(0.6)
+            except Exception:
+                pass
+
+            # Выбираем тариф (Pro / Max 5x / Max 20x). Pro обычно выбран по умолчанию.
+            try:
+                _pl = page.locator(f"text={plan_label}").first
+                if await _pl.count() and await _pl.is_visible():
+                    await _pl.click()
+                    await asyncio.sleep(0.4)
+            except Exception:
+                pass
+
+            # Поле 1: CDK (THE FULL VALUE CODE)
+            cdk_input = page.locator(
+                "input[placeholder*='CDK'], input[placeholder*='bbc'], input[placeholder*='bbt'], "
+                "input[placeholder*='value'], input[placeholder*='code']").first
+            try:
+                await cdk_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                # запасной путь: первый input на странице
+                cdk_input = page.locator("input").first
+                try:
+                    await cdk_input.wait_for(state="visible", timeout=8_000)
+                except PlaywrightTimeout:
+                    return {"success": False, "error": "Поле CDK не найдено на сайте.", "screenshot": await _aipro_ss(page)}
+            await cdk_input.fill("")
+            await cdk_input.fill(cdk_code)
+            await asyncio.sleep(0.6)
+
+            # Поле 2: Organization ID
+            org_input = page.locator(
+                "input[placeholder*='rganization'], input[placeholder*='rg ID'], "
+                "input[placeholder*='2d5'], input[placeholder*='8-4-4']").first
+            if not (await org_input.count() and await org_input.is_visible()):
+                # запасной путь: второй input
+                _all_inp = page.locator("input")
+                if await _all_inp.count() >= 2:
+                    org_input = _all_inp.nth(1)
+            try:
+                await org_input.wait_for(state="visible", timeout=10_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле Organization ID не найдено.", "screenshot": await _aipro_ss(page)}
+            await org_input.fill("")
+            await org_input.fill(org_id)
+            await asyncio.sleep(0.8)
+
+            # Кнопка «Activate the claude code» / «激活». НЕ жать верхние вкладки.
+            clicked = False
+            for sel in ["button:has-text('激活')", "button:has-text('Activate')",
+                        "[role=button]:has-text('Activate the claude')", "[role=button]:has-text('激活')",
+                        "a:has-text('激活')"]:
+                try:
+                    b = page.locator(sel).last
+                    if await b.count() > 0 and await b.is_visible():
+                        await b.click(timeout=8000)
+                        clicked = True
+                        break
+                except Exception:
+                    pass
+            if not clicked:
+                try:
+                    clicked = await page.evaluate("""() => {
+                        const els = Array.from(document.querySelectorAll('button, a, [role=button], div, span'));
+                        let best = null;
+                        for (const e of els) {
+                            const t = (e.textContent || '');
+                            if ((t.includes('激活') || t.toLowerCase().includes('activate the claude')) && t.length < 60) {
+                                if (!best || t.length < (best.textContent || '').length) best = e;
+                            }
+                        }
+                        if (best) { best.click(); return true; }
+                        return false;
+                    }""")
+                except Exception:
+                    clicked = False
+            if not clicked:
+                return {"success": False, "error": "Кнопка активации Claude не найдена.", "screenshot": await _aipro_ss(page)}
+
+            # Ждём итог (充值处理中 → 充值成功 / 已激活). До ~2 минут (сайт обещает 2–5 мин, но обычно быстро).
+            for _ in range(48):  # ~120 сек
+                await asyncio.sleep(2.5)
+                txt = await _aipro_body_text(page)
+                tl = txt.lower()
+                if ("充值成功" in txt or "激活成功" in txt or "已激活" in txt
+                        or "is a success" in tl or "has been upgraded" in tl or "success" in tl):
+                    logger.info(f"claude aipro успех: cdk={cdk_code} org={org_id}")
+                    return {"success": True}
+                if "已被使用" in txt or "已使用" in txt or "used" in tl:
+                    return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован."}
+                if ("库存不足" in txt or "无可用" in txt or "暂无库存" in txt or "无库存" in txt
+                        or "已售罄" in txt or "售罄" in txt or "缺货" in txt or "无货" in txt
+                        or "sold" in tl or "out of stock" in tl or "no stock" in tl):
+                    return {"success": False, "out_of_stock": True, "error": "Нет стока тарифа на 6661231.xyz."}
+                if ("组织" in txt or "organization" in tl and ("invalid" in tl or "错误" in txt or "not found" in tl)
+                        or "格式错误" in txt):
+                    return {"success": False, "bad_org": True, "error": "Сайт отклонил Organization ID — проверь и попробуй снова."}
+            return {"success": False, "error": "Активация Claude не завершилась — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_claude_aipro error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
