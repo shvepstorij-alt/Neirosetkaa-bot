@@ -40,15 +40,18 @@ WEBSHARE_PROXY     = os.getenv("WEBSHARE_PROXY", "")   # http://user:pass@host:p
 # Второй сайт rootchatgptplus.com работает через partner-API (Bearer + /api/partner/v1).
 # Ключ держим в переменной окружения (не в коде/репозитории!).
 ROOT_CLAUDE_API_KEY = os.getenv("ROOT_CLAUDE_API_KEY", "")
-# Третий сайт ipiap.com — тот же partner-API. Если это зеркало того же аккаунта,
-# ключ общий с rootchatgptplus (дефолт). Если ключ отдельный — задать IPIAP_CLAUDE_API_KEY.
-IPIAP_CLAUDE_API_KEY = os.getenv("IPIAP_CLAUDE_API_KEY", "") or ROOT_CLAUDE_API_KEY
+# Третий сайт ipiap.com — ДРУГОЙ API («order-API», подпись MD5).
+# Эндпоинты: POST /api/order/create и /api/order/query.
+# Авторизация: заголовок sign = MD5(тело_запроса + apiSecret), поле apiId в теле.
+# Нужны ОТДЕЛЬНЫЕ apiId + apiSecret (выдаёт платформа ipiap). Держим в env.
+IPIAP_CLAUDE_API_ID     = os.getenv("IPIAP_CLAUDE_API_ID", "")
+IPIAP_CLAUDE_API_SECRET = os.getenv("IPIAP_CLAUDE_API_SECRET", "")
 CLAUDE_PROVIDERS = {
     "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
     "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com",
              "api": "partner", "key": ROOT_CLAUDE_API_KEY},
-    "ipiap": {"name": "ipiap.com", "base": "https://ipiap.com",
-              "api": "partner", "key": IPIAP_CLAUDE_API_KEY},
+    "ipiap": {"name": "ipiap.com", "base": "https://a002api.ipiap.com",
+              "api": "order", "api_id": IPIAP_CLAUDE_API_ID, "api_secret": IPIAP_CLAUDE_API_SECRET},
 }
 CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "ipiap"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"

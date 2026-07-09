@@ -4686,10 +4686,10 @@ async def _claude_partner_redeem(cfg: dict, code: str, org_id: str, order_id: st
     POST /api/partner/v1/redemptions  (Bearer + Idempotency-Key)
     body {card_code, organization_id, confirm_overwrite:true}."""
     import json as _json
-    base = cfg.get("base", ""); key = cfg.get("key", "")
+    base = cfg.get("base", ""); key = cfg.get("key", ""); _pn = cfg.get("name", base)
     if not key:
         return {"ok": False, "err_kind": "other",
-                "err_msg": "Ключ второго сайта не задан (переменная ROOT_CLAUDE_API_KEY)."}
+                "err_msg": f"Ключ сайта {_pn} не задан (переменная окружения с API-ключом)."}
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -4702,7 +4702,9 @@ async def _claude_partner_redeem(cfg: dict, code: str, org_id: str, order_id: st
                                json={"card_code": code, "organization_id": org_id,
                                      "confirm_overwrite": True},
                                headers=headers) as _r:
-                try: _d = await _r.json()
+                _http = _r.status
+                _txt = await _r.text()
+                try: _d = _json.loads(_txt)
                 except Exception: _d = {}
         if _d.get("code") == 0:
             _data = _d.get("data") or {}
@@ -4710,8 +4712,10 @@ async def _claude_partner_redeem(cfg: dict, code: str, org_id: str, order_id: st
             if not _ref:
                 return {"ok": False, "err_kind": "other", "err_msg": "Сайт не вернул order_no."}
             return {"ok": True, "ref": _ref}
+        # логируем сырой ответ сайта для диагностики
+        logging.error(f"partner redeem {_pn} HTTP {_http}: {_txt[:600]}")
         # ошибка: маппим по ключевым словам в ответе
-        _blob = _json.dumps(_d, ensure_ascii=False).lower()
+        _blob = _json.dumps(_d, ensure_ascii=False).lower() if _d else (_txt or "").lower()
         if "card_used" in _blob or "已使用" in _blob:
             return {"ok": False, "err_kind": "already_claimed", "err_msg": "card_used"}
         if "no_stock" in _blob or "库存" in _blob:
@@ -4722,13 +4726,99 @@ async def _claude_partner_redeem(cfg: dict, code: str, org_id: str, order_id: st
             return {"ok": False, "err_kind": "bad_org", "err_msg": "invalid_organization_id"}
         if "ip_not_allowed" in _blob:
             return {"ok": False, "err_kind": "other",
-                    "err_msg": "IP сервера не в белом списке rootchatgptplus.com."}
+                    "err_msg": f"IP сервера (152.55.176.64) не в белом списке {_pn}."}
         if "invalid_api_key" in _blob:
-            return {"ok": False, "err_kind": "other", "err_msg": "Неверный API-ключ второго сайта."}
-        _msg = str(_d.get("message") or _d.get("error") or "Ошибка сайта.")
+            return {"ok": False, "err_kind": "other", "err_msg": f"Неверный API-ключ сайта {_pn}."}
+        if "not found" in _blob or _http == 404:
+            return {"ok": False, "err_kind": "other",
+                    "err_msg": f"У {_pn} нет partner-API по этому адресу (HTTP {_http}). Нужен свой API/ключ."}
+        _msg = str(_d.get("message") or _d.get("error") or f"Ошибка сайта {_pn} (HTTP {_http}).")
         return {"ok": False, "err_kind": "other", "err_msg": _msg}
     except aiohttp.ClientError as _e:
         return {"ok": False, "err_kind": "network", "err_msg": str(_e)}
+
+
+def _ipiap_order_no(order_id: str) -> str:
+    """orderNo для ipiap обязан быть ровно 32 символа — берём md5 от нашего order_id
+    (детерминированно ⇒ идемпотентно при ретраях)."""
+    import hashlib as _hl
+    return _hl.md5(f"GPT11-{order_id}".encode("utf-8")).hexdigest()
+
+
+def _ipiap_sign(body_str: str, secret: str) -> str:
+    import hashlib as _hl
+    return _hl.md5((body_str + secret).encode("utf-8")).hexdigest()
+
+
+async def _claude_order_redeem(cfg: dict, code: str, org_id: str, order_id: str) -> dict:
+    """Сайт ipiap.com: order-API с подписью MD5.
+    POST /api/order/create  header sign=MD5(body+apiSecret),
+    body {apiId, orderNo(32), serialNumber, organizationId}."""
+    import json as _json
+    base = cfg.get("base", ""); api_id = cfg.get("api_id", ""); secret = cfg.get("api_secret", "")
+    _pn = cfg.get("name", base)
+    if not api_id or not secret:
+        return {"ok": False, "err_kind": "other",
+                "err_msg": f"Не заданы apiId/apiSecret сайта {_pn} "
+                           f"(переменные IPIAP_CLAUDE_API_ID / IPIAP_CLAUDE_API_SECRET)."}
+    order_no = _ipiap_order_no(order_id)
+    body = {"apiId": api_id, "orderNo": order_no, "serialNumber": code}
+    if org_id:
+        body["organizationId"] = org_id
+    body_str = _json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    headers = {"sign": _ipiap_sign(body_str, secret), "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as _s:
+            async with _s.post(f"{base}/api/order/create",
+                               data=body_str.encode("utf-8"), headers=headers) as _r:
+                _http = _r.status
+                _txt = await _r.text()
+                try: _d = _json.loads(_txt)
+                except Exception: _d = {}
+        if _d.get("code") == 0:
+            _ref = str((_d.get("data") or {}).get("orderNo") or order_no)
+            return {"ok": True, "ref": _ref}
+        logging.error(f"order redeem {_pn} HTTP {_http}: {_txt[:600]}")
+        _blob = (_txt or "").lower()
+        _msg = str(_d.get("msg") or _d.get("message") or f"Ошибка сайта {_pn} (HTTP {_http}).")
+        if _d.get("code") == 500 or "sign" in _blob:
+            return {"ok": False, "err_kind": "other",
+                    "err_msg": f"Ошибка подписи/секрета {_pn} (проверь apiSecret/whitelist IP). {_msg}"}
+        if "已使用" in _blob or "already" in _blob or "used" in _blob:
+            return {"ok": False, "err_kind": "already_claimed", "err_msg": _msg}
+        if "库存" in _blob or "stock" in _blob:
+            return {"ok": False, "err_kind": "out_of_stock", "err_msg": _msg}
+        if "不存在" in _blob or "not found" in _blob or "invalid" in _blob:
+            return {"ok": False, "err_kind": "not_found", "err_msg": _msg}
+        return {"ok": False, "err_kind": "other", "err_msg": _msg}
+    except aiohttp.ClientError as _e:
+        return {"ok": False, "err_kind": "network", "err_msg": str(_e)}
+
+
+async def _claude_order_query(cfg: dict, order_no: str) -> dict:
+    """Опрос статуса заказа ipiap: POST /api/order/query.
+    Возвращает {status: 'success'|'failed'|'pending', reason}."""
+    import json as _json
+    base = cfg.get("base", ""); api_id = cfg.get("api_id", ""); secret = cfg.get("api_secret", "")
+    body = {"apiId": api_id, "orderNo": order_no}
+    body_str = _json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    headers = {"sign": _ipiap_sign(body_str, secret), "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as _s:
+            async with _s.post(f"{base}/api/order/query",
+                               data=body_str.encode("utf-8"), headers=headers) as _r:
+                _txt = await _r.text()
+                try: _d = _json.loads(_txt)
+                except Exception: _d = {}
+        _data = _d.get("data") or {}
+        _st = _data.get("orderStatus")
+        if _st == 2:
+            return {"status": "success", "reason": ""}
+        if _st == 3:
+            return {"status": "failed", "reason": str(_data.get("reason") or "")}
+        return {"status": "pending", "reason": ""}
+    except Exception as _e:
+        return {"status": "pending", "reason": str(_e)}
 
 
 async def _claude_redeem_via(provider: str, code: str, org_id: str, order_id: str) -> dict:
@@ -4736,6 +4826,8 @@ async def _claude_redeem_via(provider: str, code: str, org_id: str, order_id: st
     cfg = CLAUDE_PROVIDERS.get(provider, {})
     if cfg.get("api") == "partner":
         return await _claude_partner_redeem(cfg, code, org_id, order_id)
+    if cfg.get("api") == "order":
+        return await _claude_order_redeem(cfg, code, org_id, order_id)
     return await _claude_bpa_redeem(cfg.get("base", ""), code, org_id)
 
 
@@ -4936,6 +5028,16 @@ async def _claude_activation_polling_job(
                     _d = {"status": "failed", "error": _pst}
                 else:
                     status = _pst   # pending / processing — просто ждём дальше
+            elif _api == "order":
+                # ipiap order-API: POST /api/order/query (подпись MD5), orderStatus 0/1/2/3
+                _q = await _claude_order_query(_cfg, str(bpa_order_id))
+                if _q["status"] == "success":
+                    status = "done"
+                elif _q["status"] == "failed":
+                    status = "failed"
+                    _d = {"status": "failed", "error": _q.get("reason") or "failed"}
+                else:
+                    status = "pending"   # 0/1 — ждём дальше
             else:
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=15)
@@ -5381,6 +5483,8 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             _try_order = [provider]
 
         _last = None
+        _last_msg = ""
+        _last_prov = provider
         for _prov in _try_order:
             # для запасного сайта берём код из ЕГО пула (у каждого сайта свои коды)
             if _prov != provider:
@@ -5442,6 +5546,8 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             # network / other — пробуем следующий сайт
             logging.error(f"Claude redeem {provider}: {_res.get('err_msg')}")
             _last = _kind
+            _last_msg = _res.get("err_msg") or _kind
+            _last_prov = provider
             continue
 
         # все доступные сайты исчерпаны
@@ -5457,6 +5563,19 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             except Exception:
                 pass
             return _resp({"error": "Временно нет активаций. Александр активирует вручную."})
+        # диагностика: сообщаем админу ТОЧНУЮ причину отказа сайта
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"❌ <b>Claude — активация не прошла</b>\n"
+                f"👤 <code>{user_id}</code> · {plan_name}\n"
+                f"🔧 Сайт: <b>{claude_provider_name(_last_prov)}</b>\n"
+                f"📄 Код: <code>{code}</code>\n"
+                f"🧩 Org ID: <code>{org_id}</code>\n"
+                f"⚠️ Причина: <code>{(_last_msg or _last or 'unknown')}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
         return _resp({"error": "Не удалось активировать. Попробуй ещё раз или напиши Александру."})
 
     except aiohttp.ClientError as _e:
