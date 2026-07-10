@@ -3153,6 +3153,26 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
         logging.error(f"api_admin_broadcast: {_e}")
         return web.json_response({"ok": False}, status=500)
 
+async def _admin_fail_shot(text, screenshot=None):
+    """Отправляет админу текст о сбое и, если есть, скриншот сайта активации отдельным фото."""
+    try:
+        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+    except Exception:
+        try:
+            await bot.send_message(ADMIN_ID, text)
+        except Exception:
+            pass
+    if screenshot:
+        try:
+            from aiogram.types import BufferedInputFile
+            await bot.send_photo(
+                ADMIN_ID,
+                BufferedInputFile(screenshot, filename="activation.png"),
+                caption="📸 Экран сайта активации")
+        except Exception as _se:
+            logging.warning(f"send fail screenshot: {_se}")
+
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str,
@@ -3450,20 +3470,16 @@ async def _run_activation_job(
                         pass
                     # Уведомляем Александра С КОДОМ — чтобы активировал вручную (не чаще 1/15 мин на клиента)
                     if _fail_should_alert("gpt", user_id):
-                        try:
-                            await bot.send_message(
-                                ADMIN_ID,
-                                "🚨 <b>Авто-активация ChatGPT не удалась</b>\n\n"
-                                f"👤 <code>{user_id}</code>\n"
-                                f"🔑 Код: <code>{code}</code>\n"
-                                f"📦 Тариф: <b>{plan_name}</b>\n"
-                                f"🆔 Заказ: <code>{order_id}</code>\n"
-                                f"⚠️ Ошибка: {error_text}\n\n"
-                                "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
-                                parse_mode="HTML"
-                            )
-                        except Exception:
-                            pass
+                        await _admin_fail_shot(
+                            "🚨 <b>Авто-активация ChatGPT не удалась</b>\n\n"
+                            f"👤 <code>{user_id}</code>\n"
+                            f"🔑 Код: <code>{code}</code>\n"
+                            f"📦 Тариф: <b>{plan_name}</b>\n"
+                            f"🆔 Заказ: <code>{order_id}</code>\n"
+                            f"⚠️ Ошибка: {error_text}\n\n"
+                            "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
+                            result.get("screenshot")
+                        )
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
                         "error": f"Не удалось после {MAX_RETRIES} попыток. Напиши @{PERSONAL_USERNAME}"
@@ -5618,6 +5634,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
     _claude_job_results[ref] = {"status": "queued"}
     _report = []       # диагностика: что пробовали и почему упало
     _used_codes = []   # коды, пропущенные как «уже использованные» (для отчёта админу)
+    _last_shot = None  # последний скриншот сайта активации (для отправки админу при сбое)
     try:
         # предварительно зарезервированный при покупке код вернём в пул — выбор честный по стоку
         try:
@@ -5689,7 +5706,21 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         _claude_job_results[ref] = {"status": "done", "success": False,
                             "error": "Неверный Organization ID — проверь и попробуй снова."}
                         return
+                    if _r.get("needs_check"):
+                        # активация вероятно прошла, но не подтверждена — НЕ фолбэсим (риск двойной),
+                        # код НЕ возвращаем (вероятно израсходован), просим админа проверить
+                        _claude_job_results[ref] = {"status": "done", "success": False,
+                            "error": "Активация обрабатывается. Подписка появится в течение 5–10 минут. Если нет — напиши Александру."}
+                        await _admin_fail_shot(
+                            f"⚠️ <b>Claude 6661231.xyz — нужна проверка</b>\n"
+                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n"
+                            f"Активация, вероятно, прошла, но бот не поймал подтверждение. "
+                            f"Проверь код по Org ID на сайте (Card Query).",
+                            _r.get("screenshot"))
+                        return
                     if _r.get("code_already_used"):
+                        _last_shot = _r.get("screenshot") or _last_shot
                         _used_codes.append(_code)
                         _report.append(f"{_site}: код использован — беру следующий")
                         logging.warning(f"Claude chain {ref}: browser {_prov} код использован — следующий код")
@@ -5697,6 +5728,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                     # прочий сбой браузера/сайта — код цел, вернём в пул, СМЕНА сайта
                     try: await release_claude_code(_code)
                     except Exception: pass
+                    _last_shot = _r.get("screenshot") or _last_shot
                     _report.append(f"{_site}: {_r.get('error') or 'сбой браузера'}")
                     logging.warning(f"Claude chain {ref}: browser {_prov} fail: {_r.get('error')}")
                     break
@@ -5736,16 +5768,14 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
         _claude_job_results[ref] = {"status": "done", "success": False,
             "error": "Не удалось активировать. Попробуй ещё раз или напиши Александру."}
         _rep_txt = "\n".join(f"• {r}" for r in _report) if _report else "• (ни одна попытка не выполнилась)"
-        try:
-            await bot.send_message(ADMIN_ID,
-                f"❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>\n"
-                f"👤 <code>{user_id}</code> · {plan_name}\n"
-                f"🧩 Org ID: <code>{org_id}</code>\n"
-                f"📦 Свободно по сайтам: {_counts_txt}\n\n"
-                f"<b>Что пробовали:</b>\n{_rep_txt}\n\n"
-                f"Проверь и активируй вручную.", parse_mode="HTML")
-        except Exception:
-            pass
+        await _admin_fail_shot(
+            f"❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>\n"
+            f"👤 <code>{user_id}</code> · {plan_name}\n"
+            f"🧩 Org ID: <code>{org_id}</code>\n"
+            f"📦 Свободно по сайтам: {_counts_txt}\n\n"
+            f"<b>Что пробовали:</b>\n{_rep_txt}\n\n"
+            f"Проверь и активируй вручную.",
+            _last_shot)
     except Exception as _e:
         logging.error(f"claude chain {ref}: {_e}", exc_info=True)
         _claude_job_results[ref] = {"status": "done", "success": False,

@@ -635,13 +635,13 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                     logger.info(f"aipro успех: cdk={cdk_code} email={email}")
                     return {"success": True, "email": email}
                 if "已被使用" in txt or "已使用" in txt:
-                    return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован."}
+                    return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
                 if "解析失败" in txt or "格式错误" in txt:
                     return {"success": False, "token_invalid": True, "error": "Сайт отклонил Session JSON.", "screenshot": await _aipro_ss(page)}
                 if ("库存不足" in txt or "无可用" in txt or "暂无库存" in txt or "无库存" in txt
                         or "已售罄" in txt or "售罄" in txt or "缺货" in txt or "无货" in txt
                         or "out of stock" in tl or "no stock" in tl or "sold out" in tl):
-                    return {"success": False, "out_of_stock": True, "error": "Нет стока на сайте (сайт не выдал сертификат)."}
+                    return {"success": False, "out_of_stock": True, "error": "Нет стока на сайте (сайт не выдал сертификат).", "screenshot": await _aipro_ss(page)}
                 # код принят сайтом, но активация не удаётся из-за сессии/токена клиента
                 if ("重新登录" in txt or "登录失效" in txt or "会话" in txt or "账号异常" in txt
                         or "认证失败" in txt or "充值失败" in txt
@@ -786,34 +786,58 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
             if not clicked:
                 return {"success": False, "error": "Кнопка активации Claude не найдена.", "screenshot": await _aipro_ss(page)}
 
-            # Ждём итог: 充值处理中 → 充值成功 / 已激活. До ~2 минут.
+            # Ждём итог: 充值处理中 → 充值成功 / 已激活. Опрос ЧАЩЕ, чтобы не пропустить баннер успеха.
             # ВАЖНО: на странице ВСЕГДА есть статичные метки тарифов «Sold by» (Max 5x) и
             # «Prepare for line» (Max 20x) — по ним НЕЛЬЗЯ определять «нет стока», иначе ложное oos.
-            for _ in range(48):  # ~120 сек
-                await asyncio.sleep(2.5)
+            _saw_processing = False
+            _org_l = (org_id or "").lower()
+            for _ in range(80):  # ~120 сек при 1.5с
+                await asyncio.sleep(1.5)
                 txt = await _aipro_body_text(page)
                 tl = txt.lower()
-                # успех
+                # ЯВНЫЙ успех (баннер)
                 if ("充值成功" in txt or "激活成功" in txt or "已激活" in txt
                         or "is a success" in tl or "has been upgraded" in tl
-                        or "recharge successful" in tl or "activated successfully" in tl):
+                        or "recharge successful" in tl or "recharged successfully" in tl
+                        or "activated successfully" in tl):
                     logger.info(f"claude aipro успех: cdk={cdk_code} org={org_id}")
                     return {"success": True}
-                # код уже использован
-                if "已被使用" in txt or "已使用" in txt or "already used" in tl or "already redeemed" in tl:
-                    return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован."}
-                # идёт обработка — продолжаем ждать
+                # успех по инфо о зачислении: код зачислен НА ORG клиента
+                # (метки «recharged account_id / 充值账号 / redeemed at» бывают ТОЛЬКО после зачисления,
+                #  в отличие от поля ввода «Organization ID»)
+                if _org_l and _org_l in tl and any(
+                        k in tl for k in ["recharged account", "account_id", "充值账号", "已充值",
+                                          "redeemed at", "recharged"]):
+                    logger.info(f"claude aipro успех (зачислено на org): cdk={cdk_code} org={org_id}")
+                    return {"success": True}
+                # идёт обработка — запоминаем и ждём
                 if ("充值处理中" in txt or "处理中" in txt or "请耐心等待" in txt
                         or "processing" in tl or "please wait" in tl or "do not leave" in tl):
+                    _saw_processing = True
                     continue
                 # неверный Organization ID
                 if (("组织" in txt and ("错误" in txt or "无效" in txt)) or "格式错误" in txt
                         or ("organization" in tl and ("invalid" in tl or "not found" in tl))):
-                    return {"success": False, "bad_org": True, "error": "Сайт отклонил Organization ID — проверь и попробуй снова."}
+                    return {"success": False, "bad_org": True, "error": "Сайт отклонил Organization ID — проверь и попробуй снова.", "screenshot": await _aipro_ss(page)}
+                # код помечен «Used/已使用»
+                if "已被使用" in txt or "已使用" in txt or "already used" in tl or "already redeemed" in tl:
+                    # если ДО этого была «обработка» — код зачислили МЫ (баннер успеха пропустили) → УСПЕХ
+                    if _saw_processing:
+                        logger.info(f"claude aipro: код стал Used после обработки — считаем успехом cdk={cdk_code}")
+                        return {"success": True}
+                    # иначе код был занят ЕЩЁ ДО нашей попытки → берём следующий
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
                 # нет стока — ТОЛЬКО явные фразы дефицита (не метки тарифов «Sold by»/«售罄»)
                 if "库存不足" in txt or "暂无库存" in txt or "无库存" in txt or "无可用" in txt:
-                    return {"success": False, "out_of_stock": True, "error": "Нет стока тарифа на 6661231.xyz."}
+                    return {"success": False, "out_of_stock": True, "error": "Нет стока тарифа на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
                 # иначе — продолжаем ждать результата
+            # Таймаут. Если была обработка — активация СКОРЕЕ ВСЕГО прошла, но баннер не пойман:
+            # не жжём следующий код и не врём «не прошла» — просим админа проверить по Org ID (со скрином).
+            if _saw_processing:
+                return {"success": False, "needs_check": True,
+                        "error": "Активация, вероятно, прошла (была обработка), но подтверждение не поймано. Проверь на 6661231.xyz по Org ID.",
+                        "screenshot": await _aipro_ss(page)}
             return {"success": False, "error": "Активация Claude не завершилась за 2 мин — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_claude_aipro error: {e}", exc_info=True)
