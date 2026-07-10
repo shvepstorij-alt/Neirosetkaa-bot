@@ -3184,39 +3184,28 @@ async def _run_activation_job(
         # ─────────────────────────────────────────────────────────────────────
         result = await _do_activate(code)
 
-        # Если код уже использован на сайте — берём следующий свободный ЭТОГО ЖЕ сайта и повторяем
-        if not result.get("success") and result.get("code_already_used"):
+        # Если код уже использован на сайте — перебираем следующие коды ЭТОГО ЖЕ сайта,
+        # пока не найдём рабочий или коды не кончатся (собираем пропущенные для отчёта).
+        _gpt_used_codes = []
+        while not result.get("success") and result.get("code_already_used") and len(_gpt_used_codes) < 10:
             _bad_code = code
             _plan_key = plan_name_to_key(plan_name)
-            logging.warning(f"Код {_bad_code} уже использован, ищем следующий (plan={_plan_key}, site={provider})")
+            _gpt_used_codes.append(_bad_code)
+            logging.warning(f"Код {_bad_code} уже использован, беру следующий (plan={_plan_key}, site={provider})")
 
             # Помечаем плохой код как постоянно использованный (не возвращаем в пул)
             try:
                 _pool2 = await get_pool()
                 async with _pool2.acquire() as _conn2:
                     await _conn2.execute(
-                        "UPDATE gpt_codes SET is_used=TRUE, used_by=$1, used_at=NOW() "
-                        "WHERE code=$2",
+                        "UPDATE gpt_codes SET is_used=TRUE, used_by=$1, used_at=NOW() WHERE code=$2",
                         user_id, _bad_code
                     )
             except Exception as _e:
                 logging.error(f"Не удалось пометить плохой код {_bad_code}: {_e}")
 
             new_code = await get_next_gpt_code(_plan_key, provider)
-            if new_code:
-                logging.info(f"Новый код для {user_id}: {new_code} (site={provider})")
-                await save_pending_activation(user_id, new_code, order_id, _plan_key, plan_name, provider)
-                code = new_code
-                try:
-                    await bot.send_message(
-                        user_id,
-                        "🔄 Первый код занят — автоматически выдаю следующий, подожди немного...",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-                result = await _do_activate(code)
-            else:
+            if not new_code:
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False,
                     "error": "Коды временно закончились. Александр активирует вручную в течение часа 🙌"
@@ -3226,12 +3215,27 @@ async def _run_activation_job(
                         ADMIN_ID,
                         f"🚨 <b>Коды {_plan_key} закончились!</b>\n\n"
                         f"👤 <code>{user_id}</code> ({plan_name}) ждёт активации.\n"
+                        f"♻️ Пропущены использованные ({len(_gpt_used_codes)}): "
+                        f"{', '.join(_gpt_used_codes)}\n"
                         f"Добавь коды: /add_gpt_codes",
                         parse_mode="HTML"
                     )
                 except Exception:
                     pass
                 return
+            logging.info(f"Новый код для {user_id}: {new_code} (site={provider})")
+            await save_pending_activation(user_id, new_code, order_id, _plan_key, plan_name, provider)
+            code = new_code
+            if len(_gpt_used_codes) == 1:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "🔄 Первый код занят — автоматически выдаю следующий, подожди немного...",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+            result = await _do_activate(code)
 
         # ── Авто-фолбэк при «нет стока» на сайте: заказ уходит на другой сайт ──
         # (сработает, только если фолбэк включён и у другого сайта есть коды)
@@ -3318,24 +3322,32 @@ async def _run_activation_job(
                     f"✅ <b>ChatGPT авто-активация OK</b>\n\n"
                     f"👤 Клиент: <b>{_tg_name}</b>  (<code>{user_id}</code>)\n"
                     f"📧 Email: <b>{_email or '—'}</b>\n"
-                    f"🔑 Код: <code>{code}</code>\n"
+                    f"🔑 Итоговый код: <code>{code}</code>\n"
                     f"📦 Тариф: <b>{plan_name}</b>\n"
                     f"⏱ Время: <b>{_used_at}</b>\n"
                     f"🆔 Order: <code>{order_id}</code>"
                 )
-                # Обновляем ТО ЖЕ сообщение заказа (создан → оплачен → активирован), без скрина
-                try:
-                    _ord_ok = await fk_get_order(order_id)
-                    _amid_ok = (_ord_ok or {}).get("admin_msg_id")
-                except Exception:
-                    _amid_ok = None
-                if _amid_ok:
-                    try:
-                        await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
-                    except Exception:
-                        await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
-                else:
+                _gu = _gpt_used_codes if "_gpt_used_codes" in dir() else []
+                if _gu:
+                    _uc = "\n".join(f"   • <code>{c}</code>" for c in _gu)
+                    _caption += f"\n\n♻️ <b>Пропущены уже использованные коды</b> ({len(_gu)}):\n{_uc}"
+                if _gu:
+                    # были пропущены использованные коды → отдельное НОВОЕ сообщение об успехе
                     await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+                else:
+                    # Обновляем ТО ЖЕ сообщение заказа (создан → оплачен → активирован), без скрина
+                    try:
+                        _ord_ok = await fk_get_order(order_id)
+                        _amid_ok = (_ord_ok or {}).get("admin_msg_id")
+                    except Exception:
+                        _amid_ok = None
+                    if _amid_ok:
+                        try:
+                            await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+                        except Exception:
+                            await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+                    else:
+                        await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
             except Exception:
                 pass
             _fail_clear("gpt", user_id)
@@ -5516,8 +5528,9 @@ async def _claude_wait_result(provider: str, ref) -> str:
     return "timeout"
 
 
-async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id, site_name=""):
-    """Помечает код, чистит pending, уведомляет клиента и админа (общий блок успеха)."""
+async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id, site_name="", used_codes=None):
+    """Помечает код, чистит pending, уведомляет клиента и админа (общий блок успеха).
+    used_codes — список кодов, пропущенных как «уже использованные» (для отчёта админу)."""
     await mark_claude_code_used(code, user_id, order_id, org_id)
     await delete_claude_pending_activation(user_id)
     _claude_job_results[ref] = {"status": "done", "success": True}
@@ -5567,23 +5580,30 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
         _caption = (
             f"✅ <b>Claude авто-активация OK</b>" + (f" ({site_name})" if site_name else "") + "\n\n"
             f"👤 <b>{_tg}</b>  (<code>{user_id}</code>)\n"
-            f"🔑 Код: <code>{code}</code>\n"
+            f"🔑 Итоговый код: <code>{code}</code>\n"
             f"📦 Тариф: <b>{plan_name}</b>\n"
             f"🆔 Org ID: <code>{org_id}</code>\n"
             f"⏱ {_ts}"
         )
-        try:
-            _ord_ok = await fk_get_order(order_id)
-            _amid = (_ord_ok or {}).get("admin_msg_id")
-        except Exception:
-            _amid = None
-        if _amid:
-            try:
-                await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
-            except Exception:
-                await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
-        else:
+        if used_codes:
+            _uc = "\n".join(f"   • <code>{c}</code>" for c in used_codes)
+            _caption += f"\n\n♻️ <b>Пропущены уже использованные коды</b> ({len(used_codes)}):\n{_uc}"
+        if used_codes:
+            # были пропущены использованные коды → отдельное НОВОЕ сообщение об успехе
             await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+        else:
+            try:
+                _ord_ok = await fk_get_order(order_id)
+                _amid = (_ord_ok or {}).get("admin_msg_id")
+            except Exception:
+                _amid = None
+            if _amid:
+                try:
+                    await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
+                except Exception:
+                    await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+            else:
+                await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
     except Exception:
         pass
     _fail_clear("claude", user_id)
@@ -5596,7 +5616,8 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
     Переключаемся ТОЛЬКО при сбое сайта / отсутствии стока; ошибка клиента (bad org) — стоп.
     При переходе на следующий сайт ставим retrying=True → клиент видит «пробую повторную активацию»."""
     _claude_job_results[ref] = {"status": "queued"}
-    _report = []   # диагностика: что пробовали и почему упало
+    _report = []       # диагностика: что пробовали и почему упало
+    _used_codes = []   # коды, пропущенные как «уже использованные» (для отчёта админу)
     try:
         # предварительно зарезервированный при покупке код вернём в пул — выбор честный по стоку
         try:
@@ -5634,69 +5655,82 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             return
 
         _attempt = 0
+        _MAX = 12   # предохранитель: не жечь весь пул и не держать клиента вечно
         for _prov in _order:
             _cfg = CLAUDE_PROVIDERS.get(_prov, {})
             _api = _cfg.get("api", "bpa")
             _site = _cfg.get("name", _prov)
-            _code = await get_next_claude_code(plan_key, _prov)
-            if not _code:
-                continue
-            _attempt += 1
-            try:
-                await save_claude_pending_activation(user_id, _code, order_id, plan_key, plan_name, _prov)
-                _pool_u = await get_pool()
-                async with _pool_u.acquire() as _cu:
-                    await _cu.execute("UPDATE claude_pending_activations SET org_id=$1 WHERE user_id=$2", org_id, user_id)
-            except Exception:
-                pass
-            # со второй попытки показываем клиенту «пробую повторную активацию»
-            _claude_job_results[ref] = {"status": "processing", "retrying": _attempt > 1}
-            logging.info(f"Claude chain ref={ref} attempt={_attempt} site={_prov} code={_code} api={_api}")
+            # перебираем коды ЭТОГО сайта, пока не найдём рабочий (при «код использован/битый»)
+            while _attempt < _MAX:
+                _code = await get_next_claude_code(plan_key, _prov)
+                if not _code:
+                    break   # коды этого сайта кончились → следующий сайт
+                _attempt += 1
+                try:
+                    await save_claude_pending_activation(user_id, _code, order_id, plan_key, plan_name, _prov)
+                    _pool_u = await get_pool()
+                    async with _pool_u.acquire() as _cu:
+                        await _cu.execute("UPDATE claude_pending_activations SET org_id=$1 WHERE user_id=$2", org_id, user_id)
+                except Exception:
+                    pass
+                # со второй попытки показываем клиенту «пробую повторную активацию»
+                _claude_job_results[ref] = {"status": "processing", "retrying": _attempt > 1}
+                logging.info(f"Claude chain ref={ref} attempt={_attempt} site={_prov} code={_code} api={_api}")
 
-            if _api == "browser":
-                from chatgpt_activation import activate_claude_aipro
-                _r = await activate_claude_aipro(_code, org_id, plan_key)
-                if _r.get("success"):
-                    await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site)
-                    return
-                if _r.get("bad_org"):
-                    try: await release_claude_code(_code)
-                    except Exception: pass
-                    _claude_job_results[ref] = {"status": "done", "success": False,
-                        "error": "Неверный Organization ID — проверь и попробуй снова."}
-                    return
-                if not _r.get("code_already_used"):
-                    try: await release_claude_code(_code)   # код цел — вернём в пул
-                    except Exception: pass
-                _report.append(f"{_site}: {('код использован' if _r.get('code_already_used') else (_r.get('error') or 'сбой браузера'))}")
-                logging.warning(f"Claude chain {ref}: browser {_prov} fail: {_r.get('error')}")
-                continue
-            else:
-                _res = await _claude_redeem_via(_prov, _code, org_id, order_id)
-                if _res.get("ok"):
-                    _wait = await _claude_wait_result(_prov, _res["ref"])
-                    if _wait == "success":
-                        await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site)
+                if _api == "browser":
+                    from chatgpt_activation import activate_claude_aipro
+                    _r = await activate_claude_aipro(_code, org_id, plan_key)
+                    if _r.get("success"):
+                        await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site, _used_codes)
                         return
-                    logging.warning(f"Claude chain {ref}: {_prov} activation {_wait} — фолбэк")
-                    _report.append(f"{_site}: активация {_wait} (сайт принял код, но не завершил за 3 мин)")
-                    continue   # код израсходован сайтом — в пул не возвращаем
-                _kind = _res.get("err_kind", "other")
-                if _kind == "bad_org":
+                    if _r.get("bad_org"):
+                        try: await release_claude_code(_code)
+                        except Exception: pass
+                        _claude_job_results[ref] = {"status": "done", "success": False,
+                            "error": "Неверный Organization ID — проверь и попробуй снова."}
+                        return
+                    if _r.get("code_already_used"):
+                        _used_codes.append(_code)
+                        _report.append(f"{_site}: код использован — беру следующий")
+                        logging.warning(f"Claude chain {ref}: browser {_prov} код использован — следующий код")
+                        continue   # СЛЕДУЮЩИЙ код того же сайта (код НЕ возвращаем — он реально занят)
+                    # прочий сбой браузера/сайта — код цел, вернём в пул, СМЕНА сайта
                     try: await release_claude_code(_code)
                     except Exception: pass
-                    _claude_job_results[ref] = {"status": "done", "success": False,
-                        "error": "Неверный Organization ID — проверь и попробуй снова."}
-                    return
-                if _kind in ("already_claimed", "not_found"):
-                    logging.warning(f"Claude chain {ref}: {_prov} код битый ({_kind}) — следующий")
-                    _report.append(f"{_site}: код битый ({_kind})")
-                    continue   # битый код — оставляем помеченным использованным
-                try: await release_claude_code(_code)   # out_of_stock/network/other — код цел
-                except Exception: pass
-                logging.error(f"Claude chain {ref}: {_prov} redeem fail {_kind}: {_res.get('err_msg')}")
-                _report.append(f"{_site}: {_kind} — {_res.get('err_msg') or ''}"[:160])
-                continue
+                    _report.append(f"{_site}: {_r.get('error') or 'сбой браузера'}")
+                    logging.warning(f"Claude chain {ref}: browser {_prov} fail: {_r.get('error')}")
+                    break
+                else:
+                    _res = await _claude_redeem_via(_prov, _code, org_id, order_id)
+                    if _res.get("ok"):
+                        _wait = await _claude_wait_result(_prov, _res["ref"])
+                        if _wait == "success":
+                            await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site, _used_codes)
+                            return
+                        # сайт принял код, но не завершил — код израсходован; СМЕНА сайта
+                        logging.warning(f"Claude chain {ref}: {_prov} activation {_wait} — фолбэк")
+                        _report.append(f"{_site}: активация {_wait} (сайт принял код, но не завершил за 3 мин)")
+                        break
+                    _kind = _res.get("err_kind", "other")
+                    if _kind == "bad_org":
+                        try: await release_claude_code(_code)
+                        except Exception: pass
+                        _claude_job_results[ref] = {"status": "done", "success": False,
+                            "error": "Неверный Organization ID — проверь и попробуй снова."}
+                        return
+                    if _kind in ("already_claimed", "not_found"):
+                        _used_codes.append(_code)
+                        _report.append(f"{_site}: код битый/использован ({_kind}) — беру следующий")
+                        logging.warning(f"Claude chain {ref}: {_prov} код битый ({_kind}) — следующий код")
+                        continue   # СЛЕДУЮЩИЙ код того же сайта (код помечен использованным)
+                    # out_of_stock / network / other (403) — код цел, вернём; СМЕНА сайта
+                    try: await release_claude_code(_code)
+                    except Exception: pass
+                    logging.error(f"Claude chain {ref}: {_prov} redeem fail {_kind}: {_res.get('err_msg')}")
+                    _report.append(f"{_site}: {_kind} — {_res.get('err_msg') or ''}"[:160])
+                    break
+            if _attempt >= _MAX:
+                break
 
         # все сайты исчерпаны
         _claude_job_results[ref] = {"status": "done", "success": False,
