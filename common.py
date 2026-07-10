@@ -5596,6 +5596,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
     Переключаемся ТОЛЬКО при сбое сайта / отсутствии стока; ошибка клиента (bad org) — стоп.
     При переходе на следующий сайт ставим retrying=True → клиент видит «пробую повторную активацию»."""
     _claude_job_results[ref] = {"status": "queued"}
+    _report = []   # диагностика: что пробовали и почему упало
     try:
         # предварительно зарезервированный при покупке код вернём в пул — выбор честный по стоку
         try:
@@ -5614,13 +5615,20 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                   if p in CLAUDE_PROVIDERS and _counts.get(p, 0) > 0]
         _order.sort(key=lambda p: _counts.get(p, 0), reverse=True)
 
+        _counts_txt = ", ".join(
+            f"{CLAUDE_PROVIDERS.get(p,{}).get('name',p)}={_counts.get(p,0)}"
+            for p in CLAUDE_PROVIDER_ORDER if p in CLAUDE_PROVIDERS) or "—"
+
         if not _order:
             _claude_job_results[ref] = {"status": "done", "success": False,
                 "error": "Временно нет кодов ни на одном сайте. Александр активирует вручную."}
             try:
                 await bot.send_message(ADMIN_ID,
-                    f"🚨 <b>Claude — нет кодов НИ НА ОДНОМ сайте</b> ({plan_name})\n"
-                    f"👤 <code>{user_id}</code> — активируй вручную.", parse_mode="HTML")
+                    f"🚨 <b>Claude — нет свободных кодов В ПУЛЕ бота</b> ({plan_name})\n"
+                    f"👤 <code>{user_id}</code>\n"
+                    f"📦 Свободно по сайтам: {_counts_txt}\n"
+                    f"<i>Похоже, коды на сайт не добавлены в пул бота (через админку). "
+                    f"Сток на самом сайте бот не видит.</i>", parse_mode="HTML")
             except Exception:
                 pass
             return
@@ -5660,6 +5668,8 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                 if not _r.get("code_already_used"):
                     try: await release_claude_code(_code)   # код цел — вернём в пул
                     except Exception: pass
+                _report.append(f"{_site}: {('код использован' if _r.get('code_already_used') else (_r.get('error') or 'сбой браузера'))}")
+                logging.warning(f"Claude chain {ref}: browser {_prov} fail: {_r.get('error')}")
                 continue
             else:
                 _res = await _claude_redeem_via(_prov, _code, org_id, order_id)
@@ -5669,6 +5679,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site)
                         return
                     logging.warning(f"Claude chain {ref}: {_prov} activation {_wait} — фолбэк")
+                    _report.append(f"{_site}: активация {_wait} (сайт принял код, но не завершил за 3 мин)")
                     continue   # код израсходован сайтом — в пул не возвращаем
                 _kind = _res.get("err_kind", "other")
                 if _kind == "bad_org":
@@ -5679,21 +5690,26 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                     return
                 if _kind in ("already_claimed", "not_found"):
                     logging.warning(f"Claude chain {ref}: {_prov} код битый ({_kind}) — следующий")
+                    _report.append(f"{_site}: код битый ({_kind})")
                     continue   # битый код — оставляем помеченным использованным
                 try: await release_claude_code(_code)   # out_of_stock/network/other — код цел
                 except Exception: pass
                 logging.error(f"Claude chain {ref}: {_prov} redeem fail {_kind}: {_res.get('err_msg')}")
+                _report.append(f"{_site}: {_kind} — {_res.get('err_msg') or ''}"[:160])
                 continue
 
         # все сайты исчерпаны
         _claude_job_results[ref] = {"status": "done", "success": False,
             "error": "Не удалось активировать. Попробуй ещё раз или напиши Александру."}
+        _rep_txt = "\n".join(f"• {r}" for r in _report) if _report else "• (ни одна попытка не выполнилась)"
         try:
             await bot.send_message(ADMIN_ID,
                 f"❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>\n"
                 f"👤 <code>{user_id}</code> · {plan_name}\n"
                 f"🧩 Org ID: <code>{org_id}</code>\n"
-                f"Проверь стоки/сайты, активируй вручную.", parse_mode="HTML")
+                f"📦 Свободно по сайтам: {_counts_txt}\n\n"
+                f"<b>Что пробовали:</b>\n{_rep_txt}\n\n"
+                f"Проверь и активируй вручную.", parse_mode="HTML")
         except Exception:
             pass
     except Exception as _e:
