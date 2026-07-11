@@ -571,11 +571,44 @@ async def adm_nsg_threshold_set(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "adm_nsg_refresh")
 async def adm_nsg_refresh_cache(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID: return
-    from ns_gifts import invalidate_stock_cache, get_stock_cached, get_apple_categories
+    from ns_gifts import invalidate_stock_cache, get_apple_categories
     invalidate_stock_cache()
-    stock = await get_stock_cached(rt.nsgifts_client) if rt.nsgifts_client else {}
-    cats  = get_apple_categories(stock)
-    await cb.answer(f"✅ Кеш сброшен. Категорий Apple: {len(cats)}", show_alert=True)
+    if not rt.nsgifts_client:
+        await cb.answer("⚠️ NS Gifts не инициализирован (проверь переменные NSGIFTS_*).", show_alert=True)
+        return
+    await cb.answer("Проверяю NS Gifts…")
+    _lines = ["🔎 <b>NS Gifts — диагностика</b>"]
+    # Прямой запрос без «глушилки» кеша — чтобы увидеть реальную причину
+    try:
+        _stock = await rt.nsgifts_client.get_stock()
+        _all = (_stock or {}).get("categories", []) or []
+        _apple_named = [c for c in _all if any(
+            k in (c.get("category_name", "").lower())
+            for k in ("apple", "appstore", "app store", "itunes"))]
+        _apple_instock = get_apple_categories(_stock)
+        _lines.append(f"✅ get_stock OK · всего категорий: <b>{len(_all)}</b>")
+        _lines.append(f"🍎 Apple-категорий: <b>{len(_apple_named)}</b>, в наличии: <b>{len(_apple_instock)}</b>")
+        if _apple_named and not _apple_instock:
+            _lines.append("⚠️ Apple-категории есть, но <b>все товары out of stock</b> (in_stock=0).")
+        elif not _apple_named and _all:
+            _names = ", ".join((c.get("category_name", "?")) for c in _all[:10])
+            _lines.append(f"⚠️ Apple-категорий не найдено. Категории в каталоге: {_names}")
+        elif not _all:
+            _lines.append("⚠️ Каталог пуст (0 категорий) — вероятно, доступ/аккаунт.")
+    except Exception as _e:
+        _lines.append(f"❌ <b>get_stock ошибка:</b> {type(_e).__name__}: {str(_e)[:300]}")
+        _lines.append("Похоже на отказ доступа (IP whitelist) или auth. "
+                      "Проверь, что ВСЕ 3 статических IP в whitelist NS Gifts.")
+    # баланс кабинета
+    try:
+        _bal = await rt.nsgifts_client.check_balance()
+        _lines.append(f"💰 Баланс кабинета: <b>{_bal}$</b>")
+    except Exception as _e:
+        _lines.append(f"❌ check_balance: {str(_e)[:200]}")
+    try:
+        await cb.message.answer("\n".join(_lines), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer("\n".join(_lines))
 
 
 @dp.callback_query(F.data == "adm_nsg_sales")
