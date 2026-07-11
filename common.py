@@ -1054,7 +1054,7 @@ async def _show_profile(message: Message, user, edit: bool = False):
     try:
         async with pool.acquire() as conn:
             subs = await conn.fetch("""
-                SELECT service_name, plan_name, expires_at
+                SELECT service_key, service_name, plan_name, expires_at
                 FROM user_subscriptions
                 WHERE user_id=$1 AND is_active=TRUE AND expires_at > NOW()
                 ORDER BY expires_at ASC
@@ -1081,7 +1081,39 @@ async def _show_profile(message: Message, user, edit: bool = False):
             else:
                 icon = "\u2705"  # зелёный
             plan = f" {s['plan_name']}" if s['plan_name'] else ""
-            sub_lines.append(f"{icon} <b>{s['service_name']}{plan}</b> - до {exp} ({days_left} дн.)")
+            _line = f"{icon} <b>{s['service_name']}{plan}</b> - до {exp} ({days_left} дн.)"
+            # детали аккаунта под подпиской: GPT → почта, Claude → Org ID + код,
+            # creds → почта+пароль. Заказ по ссылке оплаты → деталей нет, только тариф.
+            _sk = (s["service_key"] or "").lower()
+            _sn = (s["service_name"] or "").lower()
+            _det = []
+            try:
+                if "claude" in _sk or "claude" in _sn:
+                    _r = await pool.fetchrow(
+                        "SELECT code, org_id FROM claude_codes WHERE used_by=$1 "
+                        "AND org_id IS NOT NULL AND org_id<>'' ORDER BY used_at DESC LIMIT 1", uid)
+                    if _r:
+                        if _r["org_id"]: _det.append(f"   🏢 Org ID: <code>{_r['org_id']}</code>")
+                        if _r["code"]:   _det.append(f"   🎟 Код: <code>{_r['code']}</code>")
+                elif "gpt" in _sk or "chatgpt" in _sn or "gpt" in _sn:
+                    _r = await pool.fetchrow(
+                        "SELECT code, email FROM gpt_codes WHERE used_by=$1 ORDER BY used_at DESC LIMIT 1", uid)
+                    if _r:
+                        if _r["email"]: _det.append(f"   📧 Email: <code>{_r['email']}</code>")
+                        if _r["code"]:  _det.append(f"   🎟 Код: <code>{_r['code']}</code>")
+                else:
+                    _r = await pool.fetchrow(
+                        "SELECT account_email, account_pass FROM linkpay_orders "
+                        "WHERE user_id=$1 AND service_name=$2 AND (account_email<>'' OR account_pass<>'') "
+                        "ORDER BY created_at DESC LIMIT 1", uid, s["service_name"])
+                    if _r:
+                        if _r["account_email"]: _det.append(f"   📧 Почта: <code>{_r['account_email']}</code>")
+                        if _r["account_pass"]:  _det.append(f"   🔑 Пароль: <code>{_r['account_pass']}</code>")
+            except Exception:
+                pass
+            if _det:
+                _line += "\n" + "\n".join(_det)
+            sub_lines.append(_line)
         subs_block = "\n\n\U0001f4e6 <b>\u041c\u043e\u0438 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0438:</b>\n" + "\n".join(sub_lines)
 
     coins_block = f"\n\U0001fa99 \u041c\u043e\u043d\u0435\u0442\u043a\u0438: <b>{coins:.0f}\u20bd</b>" if coins > 0 else ""
@@ -3983,13 +4015,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"📦 <b>{service_name}</b> — оплата сохранена.\n"
                         f"Напиши Александру — активирую вручную 🙌"
                     )
-                    _m_act_gpt = await bot.send_message(
-                        user_id, _base_gpt + _activation_timer_line(_dl_gpt),
-                        parse_mode="HTML", reply_markup=_kb_gpt_active)
-                    _gpt_act_msg[user_id] = _m_act_gpt.message_id
-                    asyncio.create_task(_activation_timer_job(
-                        user_id, _m_act_gpt.message_id, _base_gpt, _kb_gpt_active,
-                        _dl_gpt, _exp_gpt, _kb_gpt_expired, _gpt_act_msg))
+                    # СНАЧАЛА инструкция…
                     try:
                         await bot.send_message(
                             user_id,
@@ -4005,6 +4031,14 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             parse_mode="HTML")
                     except Exception:
                         pass
+                    # …ПОТОМ сообщение с кнопкой активации (его id отслеживаем для таймера/успеха)
+                    _m_act_gpt = await bot.send_message(
+                        user_id, _base_gpt + _activation_timer_line(_dl_gpt),
+                        parse_mode="HTML", reply_markup=_kb_gpt_active)
+                    _gpt_act_msg[user_id] = _m_act_gpt.message_id
+                    asyncio.create_task(_activation_timer_job(
+                        user_id, _m_act_gpt.message_id, _base_gpt, _kb_gpt_active,
+                        _dl_gpt, _exp_gpt, _kb_gpt_expired, _gpt_act_msg))
             elif _svc_kind == "claude":
                 # ── Авто-активация Claude через bypriceactivate.pro Mini App ──
                 _plan_name_cl = p.get("name", "Pro")
@@ -4933,7 +4967,7 @@ async def _send_claude_webapp_to_user(
             f"📦 <b>Claude {plan_name}</b>\n\n"
             f"Осталось активировать подписку — нажми кнопку ниже, "
             f"введи Organization ID из настроек Claude, и подписка "
-            f"активируется автоматически за 1–2 минуты 👇\n\n"
+            f"активируется автоматически (обычно за 1–2 минуты, иногда до 5) 👇\n\n"
             f"🎟 Код активации: <code>{code}</code>"
             f"{delayed_note}"
         )
@@ -4950,13 +4984,7 @@ async def _send_claude_webapp_to_user(
             f"📦 <b>Claude {plan_name}</b> — оплата сохранена.\n"
             f"Напиши Александру — активирую вручную 🙌"
         )
-        _m_act_cl = await bot.send_message(
-            user_id, _base_cl + _activation_timer_line(_dl_cl),
-            parse_mode="HTML", reply_markup=_kb_cl_active)
-        _claude_act_msg[user_id] = _m_act_cl.message_id
-        asyncio.create_task(_activation_timer_job(
-            user_id, _m_act_cl.message_id, _base_cl, _kb_cl_active,
-            _dl_cl, _exp_cl, _kb_cl_expired, _claude_act_msg))
+        # СНАЧАЛА инструкция…
         try:
             await bot.send_message(
                 user_id,
@@ -4966,13 +4994,21 @@ async def _send_claude_webapp_to_user(
                 "<code>claude.ai/settings/account</code>\n"
                 "3️⃣ Прокрути до «Organization ID» и скопируй UUID.\n"
                 "4️⃣ Вернись в мини-приложение (кнопка «Активировать Claude»), "
-                "вставь Organization ID — подписка активируется автоматически за 1–2 минуты.\n\n"
+                "вставь Organization ID — подписка активируется автоматически за 1–5 минут.\n\n"
                 f"🎟 Код активации: <code>{code}</code>\n"
                 "⚠️ Аккаунт Claude должен быть на Free-плане. "
                 "Если есть платная подписка — сначала отмени её на claude.ai/settings/billing.",
                 parse_mode="HTML")
         except Exception:
             pass
+        # …ПОТОМ сообщение с кнопкой активации (его id отслеживаем для таймера/успеха)
+        _m_act_cl = await bot.send_message(
+            user_id, _base_cl + _activation_timer_line(_dl_cl),
+            parse_mode="HTML", reply_markup=_kb_cl_active)
+        _claude_act_msg[user_id] = _m_act_cl.message_id
+        asyncio.create_task(_activation_timer_job(
+            user_id, _m_act_cl.message_id, _base_cl, _kb_cl_active,
+            _dl_cl, _exp_cl, _kb_cl_expired, _claude_act_msg))
         await log_event(user_id, "claude_webapp_sent",
                         f"code={code} plan={plan_name} order={order_id}")
         return True

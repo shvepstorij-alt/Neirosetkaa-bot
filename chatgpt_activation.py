@@ -791,7 +791,7 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
             # «Prepare for line» (Max 20x) — по ним НЕЛЬЗЯ определять «нет стока», иначе ложное oos.
             _saw_processing = False
             _org_l = (org_id or "").lower()
-            for _ in range(80):  # ~120 сек при 1.5с
+            for _ in range(200):  # ~5 минут при 1.5с (сайт бывает медленным)
                 await asyncio.sleep(1.5)
                 txt = await _aipro_body_text(page)
                 tl = txt.lower()
@@ -836,9 +836,9 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
             # не жжём следующий код и не врём «не прошла» — просим админа проверить по Org ID (со скрином).
             if _saw_processing:
                 return {"success": False, "needs_check": True,
-                        "error": "Активация, вероятно, прошла (была обработка), но подтверждение не поймано. Проверь на 6661231.xyz по Org ID.",
+                        "error": "Активация, вероятно, прошла (была обработка), но подтверждение не поймано за 5 мин. Проверь на 6661231.xyz по Org ID.",
                         "screenshot": await _aipro_ss(page)}
-            return {"success": False, "error": "Активация Claude не завершилась за 2 мин — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
+            return {"success": False, "error": "Активация Claude не завершилась за 5 мин — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_claude_aipro error: {e}", exc_info=True)
             return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
