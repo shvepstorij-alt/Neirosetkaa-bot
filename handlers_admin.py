@@ -1199,6 +1199,21 @@ async def adm_bal_fix_all_do(cb: CallbackQuery):
 # ══════════════════════════════════════════════════════════
 
 
+@dp.message(F.text.startswith("/refresh_desc"), StateFilter("*"))
+async def cmd_refresh_desc(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "♻️ Запускаю обновление описаний тарифов (веб-поиск актуальных моделей).\n"
+        "Займёт ~1–2 минуты, пришлю сводку…")
+    try:
+        from models_refresh import refresh_all_descriptions
+        summary = await refresh_all_descriptions(notify=False)
+        await message.answer(summary, parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка обновления описаний: {str(e)[:300]}")
+
+
 # ─── Антиспам: результат ввода редактирует сообщение-подсказку ──
 async def _adm_remember(cb, state):
     """Запомнить сообщение-панель, чтобы ответ на ввод редактировал его, а не слал новое."""

@@ -643,6 +643,122 @@ async def get_gen_count(user_id: int) -> int:
 
 # ── ДИНАМИЧЕСКИЕ ЦЕНЫ ─────────────────────────────────────────────────────────
 
+def _apply_desc_override_to_memory(key: str, plan_name: str, descr: str):
+    """Применяет один оверрайд описания к SHOP_CATALOG в памяти.
+    plan_name='' → описание сервиса; иначе — описание конкретного тарифа (по имени)."""
+    if not descr or key not in SHOP_CATALOG:
+        return
+    if not plan_name:
+        SHOP_CATALOG[key]["desc"] = descr
+    else:
+        for _pl in SHOP_CATALOG[key].get("plans", []):
+            if (_pl.get("name", "") or "").strip() == plan_name.strip():
+                _pl["desc"] = descr
+                return
+
+
+async def save_shop_desc_override(key: str, plan_name: str, descr: str):
+    """Сохраняет авто-обновлённое описание в БД (переживает рестарт, применяется на загрузке)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS shop_desc_overrides (
+                key        TEXT NOT NULL,
+                plan_name  TEXT NOT NULL DEFAULT '',
+                descr      TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (key, plan_name)
+            )
+        """)
+        await conn.execute("""
+            INSERT INTO shop_desc_overrides (key, plan_name, descr, updated_at)
+            VALUES ($1,$2,$3,NOW())
+            ON CONFLICT (key, plan_name) DO UPDATE SET descr=$3, updated_at=NOW()
+        """, key, plan_name or "", descr or "")
+
+
+async def get_shop_desc_overrides() -> dict:
+    """Возвращает {key: {'': service_desc, '<план>': desc, ...}}."""
+    pool = await get_pool()
+    out: dict = {}
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch("SELECT key, plan_name, descr FROM shop_desc_overrides")
+        except Exception:
+            return out
+    for r in rows:
+        out.setdefault(r["key"], {})[r["plan_name"] or ""] = r["descr"] or ""
+    return out
+
+
+# ─── Черновики описаний (ждут подтверждения админа перед публикацией) ──────────
+async def _ensure_desc_drafts_table(conn):
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS shop_desc_drafts (
+            key        TEXT NOT NULL,
+            plan_name  TEXT NOT NULL DEFAULT '',
+            old_descr  TEXT DEFAULT '',
+            new_descr  TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (key, plan_name)
+        )
+    """)
+
+
+async def save_desc_drafts(items):
+    """items: список (key, plan_name, old_descr, new_descr). Полностью заменяет черновики."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await _ensure_desc_drafts_table(conn)
+        await conn.execute("DELETE FROM shop_desc_drafts")
+        for k, pn, old, new in items:
+            await conn.execute(
+                "INSERT INTO shop_desc_drafts (key,plan_name,old_descr,new_descr) "
+                "VALUES ($1,$2,$3,$4) ON CONFLICT (key,plan_name) "
+                "DO UPDATE SET old_descr=$3, new_descr=$4, created_at=NOW()",
+                k, pn or "", old or "", new or "")
+
+
+async def get_desc_drafts() -> list:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(
+                "SELECT key, plan_name, old_descr, new_descr FROM shop_desc_drafts "
+                "ORDER BY key, plan_name")
+        except Exception:
+            return []
+    return [dict(r) for r in rows]
+
+
+async def update_desc_draft(key: str, plan_name: str, new_descr: str):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await _ensure_desc_drafts_table(conn)
+        await conn.execute(
+            "UPDATE shop_desc_drafts SET new_descr=$1 WHERE key=$2 AND plan_name=$3",
+            new_descr, key, plan_name or "")
+
+
+async def clear_desc_drafts():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            await conn.execute("DELETE FROM shop_desc_drafts")
+        except Exception:
+            pass
+
+
+async def apply_desc_drafts() -> int:
+    """Публикует все черновики: переносит в оверрайды + применяет к SHOP_CATALOG. Возвращает кол-во."""
+    rows = await get_desc_drafts()
+    for r in rows:
+        await save_shop_desc_override(r["key"], r["plan_name"] or "", r["new_descr"] or "")
+        _apply_desc_override_to_memory(r["key"], r["plan_name"] or "", r["new_descr"] or "")
+    await clear_desc_drafts()
+    return len(rows)
+
+
 async def load_prices_from_db():
     """Загружает цены из БД и обновляет глобальные словари. 
     Если БД пуста - записывает дефолтные значения из кода."""
@@ -746,6 +862,23 @@ async def load_prices_from_db():
                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (key, plan_idx) DO NOTHING
                     """, key, i, s["name"], s.get("emoji",""), s.get("desc",""),
                         p["name"], p["price"], p.get("stars",0), p.get("desc",""), i)
+
+        # ── Оверрайды описаний (авто-обновление моделей) поверх кода ──
+        try:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS shop_desc_overrides (
+                    key        TEXT NOT NULL,
+                    plan_name  TEXT NOT NULL DEFAULT '',
+                    descr      TEXT NOT NULL DEFAULT '',
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (key, plan_name)
+                )
+            """)
+            _ovr = await conn.fetch("SELECT key, plan_name, descr FROM shop_desc_overrides")
+            for _o in _ovr:
+                _apply_desc_override_to_memory(_o["key"], _o["plan_name"] or "", _o["descr"] or "")
+        except Exception as _e:
+            logging.error(f"apply shop_desc_overrides: {_e}")
 
         # Цены на генерации + список отключённых моделей
         rows_gen = await conn.fetch("SELECT * FROM bot_gen_prices")

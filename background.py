@@ -815,3 +815,16 @@ async def nsgifts_balance_alert_loop():
 #  Админка NS Gifts — кнопка «🍎 App Store» в разделе настроек
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+# ─── Авто-обновление описаний тарифов (актуальные модели) ──────────────────────
+async def models_desc_refresh_loop():
+    """Раз в неделю переписывает описания тарифов актуальными моделями (web_search)."""
+    await asyncio.sleep(180)  # дать боту прогрузиться после старта
+    while True:
+        try:
+            from models_refresh import refresh_all_descriptions
+            await refresh_all_descriptions(notify=True)
+        except Exception as e:
+            logging.error(f"models_desc_refresh_loop: {e}")
+        await asyncio.sleep(7 * 24 * 3600)  # раз в неделю
+

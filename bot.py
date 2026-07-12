@@ -39,7 +39,7 @@ from common import (
 )
 from background import (
     _activation_jobs_cleanup_loop, _claude_job_results_cleanup_loop, _memory_cleanup_loop, auto_recover_lost_videos_loop, claude_codes_cleanup_loop, cleanup_stale_generations_loop,
-    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
+    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, models_desc_refresh_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
     reminders_loop, subscription_reminder_loop,
 )
 from _registration_order import ORIG_ORDER as _ORIG_ORDER
@@ -55,6 +55,7 @@ import handlers_claude
 import handlers_perplexity
 import handlers_linkpay
 import handlers_nsgifts
+import handlers_desc
 
 # ── Premium-эмодзи: middleware подменяет обычные эмодзи на custom во всех
 # исходящих сообщениях (HTML-текст → <tg-emoji>, инлайн-кнопки → иконка). ──
@@ -76,7 +77,7 @@ bot.session.middleware(PremiumEmojiMiddleware())
     ~F.text.startswith("/myip") & ~F.text.startswith("/audit") &
     ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
     ~F.text.startswith("/recover") & ~F.text.startswith("/emoji") & ~F.text.startswith("/shopkeys") &
-    ~F.text.startswith("/nsg_")
+    ~F.text.startswith("/nsg_") & ~F.text.startswith("/refresh_desc")
 )
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
@@ -193,6 +194,7 @@ async def main():
     asyncio.create_task(claude_codes_cleanup_loop())
     asyncio.create_task(perplexity_codes_cleanup_loop())
     asyncio.create_task(coins_refund_loop())
+    asyncio.create_task(models_desc_refresh_loop())
     asyncio.create_task(_claude_job_results_cleanup_loop())
     # NS Gifts: инициализируем клиент и фоновые задачи
 
