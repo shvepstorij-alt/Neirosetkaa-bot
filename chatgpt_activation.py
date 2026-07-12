@@ -815,6 +815,12 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
                         or "processing" in tl or "please wait" in tl or "do not leave" in tl):
                     _saw_processing = True
                     continue
+                # у аккаунта уже есть активная подписка (клиент может отменить сам)
+                if ("已订阅" in txt or "已是会员" in txt or "已有订阅" in txt or "当前已订阅" in txt
+                        or "already subscribed" in tl or "active subscription" in tl
+                        or "existing subscription" in tl):
+                    return {"success": False, "has_plan": True,
+                            "error": "У аккаунта уже есть активная подписка Claude.", "screenshot": await _aipro_ss(page)}
                 # неверный Organization ID
                 if (("组织" in txt and ("错误" in txt or "无效" in txt)) or "格式错误" in txt
                         or ("organization" in tl and ("invalid" in tl or "not found" in tl))):

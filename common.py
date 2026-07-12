@@ -4740,12 +4740,25 @@ async def _claude_bpa_redeem(base: str, code: str, org_id: str) -> dict:
                         return {"ok": False, "err_kind": "already_claimed", "err_msg": _det}
                     if "out of stock" in _det:
                         return {"ok": False, "err_kind": "out_of_stock", "err_msg": _det}
+                    if _blob_has_plan(_det):
+                        return {"ok": False, "err_kind": "has_plan", "err_msg": _det}
                     return {"ok": False, "err_kind": "other", "err_msg": _det or "Ошибка кода."}
                 if _r.status == 404:
                     return {"ok": False, "err_kind": "not_found", "err_msg": "Код не найден."}
                 return {"ok": False, "err_kind": "other", "err_msg": f"HTTP {_r.status}"}
     except aiohttp.ClientError as _e:
         return {"ok": False, "err_kind": "network", "err_msg": str(_e)}
+
+
+def _blob_has_plan(s: str) -> bool:
+    """Признаки того, что у аккаунта клиента УЖЕ есть активная подписка Claude
+    (клиент может исправить сам — отменить текущую подписку)."""
+    s = (s or "").lower()
+    return any(k in s for k in [
+        "already subscribed", "active subscription", "existing subscription",
+        "already has a subscription", "already a member", "already have",
+        "已订阅", "订阅中", "已是会员", "已有订阅", "当前已订阅",
+    ])
 
 
 async def _claude_partner_redeem(cfg: dict, code: str, org_id: str, order_id: str) -> dict:
@@ -4791,6 +4804,8 @@ async def _claude_partner_redeem(cfg: dict, code: str, org_id: str, order_id: st
             return {"ok": False, "err_kind": "not_found", "err_msg": "invalid_card"}
         if "invalid_organization_id" in _blob:
             return {"ok": False, "err_kind": "bad_org", "err_msg": "invalid_organization_id"}
+        if _blob_has_plan(_blob):
+            return {"ok": False, "err_kind": "has_plan", "err_msg": "already_subscribed"}
         if "ip_not_allowed" in _blob:
             return {"ok": False, "err_kind": "other",
                     "err_msg": f"IP сервера (152.55.176.64) не в белом списке {_pn}."}
@@ -4851,6 +4866,8 @@ async def _claude_order_redeem(cfg: dict, code: str, org_id: str, order_id: str)
         if _d.get("code") == 500 or "sign" in _blob:
             return {"ok": False, "err_kind": "other",
                     "err_msg": f"Ошибка подписи/секрета {_pn} (проверь apiSecret/whitelist IP). {_msg}"}
+        if _blob_has_plan(_blob):
+            return {"ok": False, "err_kind": "has_plan", "err_msg": _msg}
         if "已使用" in _blob or "already" in _blob or "used" in _blob:
             return {"ok": False, "err_kind": "already_claimed", "err_msg": _msg}
         if "库存" in _blob or "stock" in _blob:
@@ -5740,13 +5757,23 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         try: await release_claude_code(_code)
                         except Exception: pass
                         _claude_job_results[ref] = {"status": "done", "success": False,
-                            "error": "Неверный Organization ID — проверь и попробуй снова."}
+                            "error": ("❗ Organization ID не подошёл. Проверь: "
+                                      "• это Organization ID (не User ID) со страницы claude.ai/settings/account, формат 8-4-4-4-12; "
+                                      "• аккаунт должен быть на Free-плане — если есть платная подписка, сначала отмени её на claude.ai/settings/billing. "
+                                      "Затем попробуй снова.")}
+                        return
+                    if _r.get("has_plan"):
+                        try: await release_claude_code(_code)
+                        except Exception: pass
+                        _claude_job_results[ref] = {"status": "done", "success": False,
+                            "error": ("У этого аккаунта уже есть активная подписка Claude. "
+                                      "Отмени текущую подписку на claude.ai/settings/billing и попробуй снова.")}
                         return
                     if _r.get("needs_check"):
                         # активация вероятно прошла, но не подтверждена — НЕ фолбэсим (риск двойной),
-                        # код НЕ возвращаем (вероятно израсходован), просим админа проверить
-                        _claude_job_results[ref] = {"status": "done", "success": False,
-                            "error": "Активация обрабатывается. Подписка появится в течение 5–10 минут. Если нет — напиши Александру."}
+                        # код НЕ возвращаем (вероятно израсходован). Клиенту — нейтральный экран «обрабатывается».
+                        _claude_job_results[ref] = {"status": "done", "success": False, "pending": True,
+                            "error": "Активация обрабатывается. Подписка появится в течение 5–10 минут. Если не появится — напиши Александру."}
                         await _admin_fail_shot(
                             f"⚠️ <b>Claude 6661231.xyz — нужна проверка</b>\n"
                             f"👤 <code>{user_id}</code> · {plan_name}\n"
@@ -5784,7 +5811,18 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         try: await release_claude_code(_code)
                         except Exception: pass
                         _claude_job_results[ref] = {"status": "done", "success": False,
-                            "error": "Неверный Organization ID — проверь и попробуй снова."}
+                            "error": ("❗ Organization ID не подошёл. Проверь: "
+                                      "• это Organization ID (не User ID) со страницы claude.ai/settings/account, формат 8-4-4-4-12; "
+                                      "• аккаунт должен быть на Free-плане — если есть платная подписка, сначала отмени её на claude.ai/settings/billing. "
+                                      "Затем попробуй снова.")}
+                        return
+                    if _kind == "has_plan":
+                        # ошибка клиента: у аккаунта уже есть подписка → не фолбэсим, код цел вернём
+                        try: await release_claude_code(_code)
+                        except Exception: pass
+                        _claude_job_results[ref] = {"status": "done", "success": False,
+                            "error": ("У этого аккаунта уже есть активная подписка Claude. "
+                                      "Отмени текущую подписку на claude.ai/settings/billing и попробуй снова.")}
                         return
                     if _kind in ("already_claimed", "not_found"):
                         _used_codes.append(_code)
@@ -5802,7 +5840,10 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
 
         # все сайты исчерпаны
         _claude_job_results[ref] = {"status": "done", "success": False,
-            "error": "Не удалось активировать. Попробуй ещё раз или напиши Александру."}
+            "error": ("Не удалось активировать автоматически. Частые причины: "
+                      "у аккаунта уже есть платная подписка Claude (отмени её на claude.ai/settings/billing) "
+                      "или аккаунт не на Free-плане. Проверь это и попробуй снова — "
+                      "либо напиши Александру, активирует вручную.")}
         _rep_txt = "\n".join(f"• {r}" for r in _report) if _report else "• (ни одна попытка не выполнилась)"
         await _admin_fail_shot(
             f"❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>\n"
