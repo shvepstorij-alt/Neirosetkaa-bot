@@ -12,8 +12,6 @@ import json
 import logging
 import re
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 from config import SHOP_CATALOG, ADMIN_ID
 from db import save_desc_drafts
 
@@ -97,10 +95,6 @@ async def _rewrite_one(key: str, svc: dict):
     return data if isinstance(data, dict) else None
 
 
-def _label(svc_name, plan_name):
-    return f"{svc_name} — описание сервиса" if not plan_name else f"{svc_name} — тариф «{plan_name}»"
-
-
 async def refresh_all_descriptions(notify: bool = True) -> str:
     """Генерирует ЧЕРНОВИКИ обновлённых описаний (web_search), сохраняет их и
     присылает админу превью с кнопками (Применить / Редактировать / Отклонить).
@@ -137,32 +131,18 @@ async def refresh_all_descriptions(notify: bool = True) -> str:
 
     await save_desc_drafts(drafts)
 
-    # превью: имя + новое описание (компактно), с ограничением по длине сообщения
-    _name_by_key = {k: s.get("name", k) for k, s in _refreshable_services()}
-    _head = (f"📝 <b>Черновик обновления описаний</b>\n"
-             f"Предложено изменений: <b>{len(drafts)}</b>\n"
-             f"Проверь и применяй, либо поправь по пунктам 👇\n\n")
-    _body = ""
-    for i, (k, pn, old, new) in enumerate(drafts, 1):
-        _lbl = _label(_name_by_key.get(k, k), pn)
-        _chunk = f"<b>{i}. {_lbl}</b>\n{new[:300]}{'…' if len(new) > 300 else ''}\n\n"
-        if len(_head) + len(_body) + len(_chunk) > 3600:
-            _body += f"…и ещё {len(drafts) - i + 1}. Открой «Редактировать» для остальных.\n"
-            break
-        _body += _chunk
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Применить всё", callback_data="descdraft_apply")],
-        [InlineKeyboardButton(text="✏️ Редактировать по пунктам", callback_data="descdraft_edit")],
-        [InlineKeyboardButton(text="🚫 Отклонить", callback_data="descdraft_reject")],
-    ])
+    # первое сообщение — постраничная сводка с навигацией (рендер из handlers_desc)
     try:
-        await bot.send_message(ADMIN_ID, _head + _body, parse_mode="HTML", reply_markup=kb)
-    except Exception:
+        from handlers_desc import render_page
+        _text, _kb = await render_page(0)
+        await bot.send_message(ADMIN_ID, _text, parse_mode="HTML",
+                               reply_markup=_kb, disable_web_page_preview=True)
+    except Exception as _e:
+        logger.error(f"models_refresh preview: {_e}")
         try:
-            await bot.send_message(ADMIN_ID, _head + f"Изменений: {len(drafts)}. Открой /refresh_desc заново.", reply_markup=kb)
+            await bot.send_message(
+                ADMIN_ID, f"📝 Черновик описаний готов: {len(drafts)} изменений. Открой /refresh_desc.")
         except Exception:
             pass
     logger.info(f"models_refresh: черновиков {len(drafts)}")
-    return (f"📝 Черновик готов: предложено изменений — {len(drafts)}. "
-            f"Отправил превью с кнопками (Применить / Редактировать / Отклонить).")
+    return f"📝 Черновик готов: {len(drafts)} изменений. Отправил превью с навигацией."
