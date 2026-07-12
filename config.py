@@ -1031,12 +1031,13 @@ CUSTOM_EMOJI_IDS: dict[str, str] = {
     "claude":        "5321196473784773037",
     "grok":          "5319288443153445517",
     "perplexity":    "5321199630585732877",
-    "cursor":        "5399826553196527022",
+    "cursor":        "6273793612715138423",
     "midjourney":    "5310161156613110960",
     "canva":         "5229235451541338986",
     "appstore":      "5366400016732666411",
     "suno":          "5429372861586359061",
-    "krea":          "5346284438617604231",
+    "krea":          "6321094100430905243",
+    "Krea":          "6321094100430905243",
     "runway":        "5208771474269162249",
     "gamma":         "4994527695111979868",
     "kimi":          "5944974421226687973",
@@ -1048,12 +1049,16 @@ CUSTOM_EMOJI_IDS: dict[str, str] = {
     "YouTube":       "5427158904729513162",
     "Zoom":          "5881799193219043268",
     "GitHub":        "5417836094098007862",
-    "Higgsfield AI": "5197646705813634076",
+    "Higgsfield AI": "6201889194390855235",
+    "higgsfield":    "6201889194390855235",
     "Perplexity":    "5321199630585732877",
     "Icloud":        "5366400016732666411",
     "Freepik":       "5442943781420687477",
     "Manus":         "5327991760587083576",
     "Kling AI":      "5294300937605633051",
+    "Telegram premium": "5935933437759198435",
+    "Telegram Premium": "5935933437759198435",
+    "telegram":         "5935933437759198435",
     # Добавляй сюда: "точный_ключ_из_БД": "emoji_id",
 }
 
@@ -1141,7 +1146,7 @@ SHOP_CATALOG = {
         ]
     },
     "cursor": {
-        "name": "Cursor", "emoji": "💻", "emoji_id": "5399826553196527022",
+        "name": "Cursor", "emoji": "💻", "emoji_id": "6273793612715138423",
         "desc": "Лучший AI-редактор кода. Composer 2.5, Opus 4.8 + GPT-5.5 в IDE. Jira/Teams интеграция, Loop-агенты, Shared Canvases. Как VS Code.",
         "plans": [
             {"name": "Pro",  "price": 2300, "stars": 920,  "desc": "Безлимит Tab-автодополнений, Composer 2.5, $20 кредитов/мес на агентов, Jira/Teams интеграция — 20$/мес"},
@@ -1149,7 +1154,7 @@ SHOP_CATALOG = {
         ]
     },
     "lovable": {
-        "name": "Lovable Pro", "emoji": "🚀",
+        "name": "Lovable Pro", "emoji": "🚀", "emoji_id": "6104729848675050039",
         "desc": "Создание веб-приложений из текста без кода. Деплой одной кнопкой, React + Supabase, GitHub, Themes; теперь и аналитика, презентации и маркетинг.",
         "plans": [
             {"name": "Pro", "price": 2300, "stars": 920, "desc": "Безлимит сообщений, деплой, кастомные домены, React + Supabase, GitHub интеграция"},
@@ -1188,14 +1193,14 @@ SHOP_CATALOG = {
         ]
     },
     "heygen": {
-        "name": "HeyGen", "emoji": "🧑‍💼",
+        "name": "HeyGen", "emoji": "🧑‍💼", "emoji_id": "6318628415540829579",
         "desc": "AI-аватары и перевод видео. Avatar V (2026) — студийное качество с 15-сек записи, Seedance 2.0 (кинокамера, до 3 аватаров в кадре). Video Agent. 175+ языков.",
         "plans": [
             {"name": "Creator", "price": 2700, "stars": 1080, "desc": "Avatar V, безлимит видео 1080p, 700+ аватаров, Video Agent, Video Translate (175+ языков), аудио-дублирование — 29$/мес"},
         ]
     },
     "elevenlabs": {
-        "name": "ElevenLabs", "emoji": "🎙",
+        "name": "ElevenLabs", "emoji": "🎙", "emoji_id": "6219689196722854904",
         "desc": "Лучший синтез и клонирование голоса. Eleven v3 — вздыхает, шепчет, смеётся. Music v2 (май 2026) — смена жанров в треке. 70+ языков.",
         "plans": [
             {"name": "Starter",  "price": 600,  "stars": 240, "desc": "Мгновенное клонирование голоса (1–5 мин аудио), Eleven v3, Music v2, коммерческие права — 5$/мес"},
@@ -1203,7 +1208,7 @@ SHOP_CATALOG = {
         ]
     },
     "suno": {
-        "name": "Suno", "emoji": "🎵", "emoji_id": "5429372861586359061",
+        "name": "Suno", "emoji": "🎵", "emoji_id": "6174584936238947057",
         "desc": "Генерация музыки с вокалом из текста. v5.5 — студийное качество, клонирование своего голоса (Voices), My Taste, любой жанр.",
         "plans": [
             {"name": "Pro",     "price": 1000, "stars": 400,  "desc": "2500 кредитов/мес, коммерческие права, Voices (клон голоса), My Taste, без водяного знака"},
@@ -1234,6 +1239,17 @@ SHOP_CATEGORIES = [
     ("🎬", "Видео",            ["kling", "runway", "heygen"]),
     ("🎵", "Аудио и голос",    ["elevenlabs", "suno"]),
     ("📊", "Другое",           ["gamma"]),
+]
+
+# Явный порядок кнопок сервисов в магазине (сопоставление регистронезависимо
+# по ключу ИЛИ по имени сервиса — устойчиво к DB-ключам разного регистра).
+# Чтобы переставить сервисы — просто меняй порядок токенов здесь.
+SHOP_ORDER = [
+    "chatgpt", "claude", "grok", "perplexity", "zoom", "midjourney", "canva",
+    "kling", "suno", "spotify", "elevenlabs", "runway", "gamma", "capcut",
+    "freepik", "genspark", "github", "higgsfield", "kimi", "krea", "make",
+    "manus", "cursor", "openrouter", "heygen", "telegram", "youtube", "z.ai",
+    "lovable", "appstore",
 ]
 
 

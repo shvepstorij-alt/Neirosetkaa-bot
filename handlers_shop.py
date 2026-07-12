@@ -109,15 +109,25 @@ async def menu_shop(cb: CallbackQuery):
         "Активация в течение 5-30 минут после оплаты.</i>\n\n"
         "<b>👇 Выбери сервис:</b>"
     )
-    # Все сервисы из SHOP_CATALOG у которых есть хотя бы один тариф, по 2 кнопки в ряд
-    # Сначала показываем в порядке SHOP_CATEGORIES, затем всё остальное из SHOP_CATALOG
-    ordered_keys = []
-    for _, _, keys in SHOP_CATEGORIES:
-        ordered_keys.extend(keys)
-    # Добавляем ключи из SHOP_CATALOG которых нет в SHOP_CATEGORIES
-    for key in SHOP_CATALOG:
-        if key not in ordered_keys:
-            ordered_keys.append(key)
+    # Порядок кнопок задаётся SHOP_ORDER (по ключу ИЛИ имени, регистронезависимо).
+    # Всё, что не попало в SHOP_ORDER — в конец (в порядке словаря), чтобы ничего не пропало.
+    try:
+        from config import SHOP_ORDER as _SHOP_ORDER
+    except Exception:
+        _SHOP_ORDER = []
+
+    def _shop_rank(_k, _s):
+        _kl = (_k or "").lower()
+        _nl = ((_s or {}).get("name", "") or "").lower()
+        for _i, _tok in enumerate(_SHOP_ORDER):
+            if _tok == _kl or (_tok and _tok in _nl):
+                return _i
+        return 10_000
+
+    ordered_keys = [
+        _k for _k, _ in sorted(SHOP_CATALOG.items(),
+                               key=lambda _kv: _shop_rank(_kv[0], _kv[1]))
+    ]
 
     rows = []
     row = []
