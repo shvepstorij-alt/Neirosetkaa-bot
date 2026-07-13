@@ -602,7 +602,7 @@ async def save_pending_activation(user_id: int, code: str, order_id: str, plan: 
                VALUES ($1,$2,$3,$4,$5,$6)
                ON CONFLICT (user_id) DO UPDATE
                SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6, session_raw=NULL,
-                   created_at=NOW(), expires_at=NOW()+INTERVAL '2 hours'""",
+                   created_at=NOW(), expires_at=NOW()+INTERVAL '12 hours'""",
             user_id, code, order_id, plan, plan_name, provider)
 
 async def get_pending_activation(user_id: int):
@@ -1012,14 +1012,18 @@ async def check_promo_for_user(code: str, user_id: int) -> tuple[bool, str, dict
             return False, "Срок действия промокода истёк", None
     if p["max_uses"] and p["used_count"] >= p["max_uses"]:
         return False, "Промокод уже использован максимальное число раз", None
-    # Проверка что юзер не применял
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        used = await conn.fetchval(
-            "SELECT 1 FROM promo_uses WHERE code=$1 AND user_id=$2", code.strip().upper(), user_id
-        )
-    if used:
-        return False, "Ты уже применял этот промокод", None
+    # Безлимитный СКИДОЧНЫЙ промокод (kind='percent', max_uses=0) можно применять
+    # одному и тому же юзеру многократно (это скидка на покупку, а не начисление
+    # кредитов — фарма нет). Для кредитных и лимитированных — проверка «раз на юзера».
+    _unlimited_discount = (p.get("kind") == "percent" and not p.get("max_uses"))
+    if not _unlimited_discount:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            used = await conn.fetchval(
+                "SELECT 1 FROM promo_uses WHERE code=$1 AND user_id=$2", code.strip().upper(), user_id
+            )
+        if used:
+            return False, "Ты уже применял этот промокод", None
     return True, "OK", p
 
 
@@ -1494,7 +1498,7 @@ async def save_claude_pending_activation(
                ON CONFLICT (user_id) DO UPDATE
                SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6,
                    org_id='', bpa_order_id=NULL,
-                   created_at=NOW(), expires_at=NOW()+INTERVAL '2 hours'""",
+                   created_at=NOW(), expires_at=NOW()+INTERVAL '12 hours'""",
             user_id, code, order_id, plan, plan_name, provider
         )
 
@@ -1676,7 +1680,7 @@ async def save_perplexity_pending_activation(
                ON CONFLICT (user_id) DO UPDATE
                SET code=$2, order_id=$3, plan=$4, plan_name=$5,
                    org_id='', bpa_order_id=NULL,
-                   created_at=NOW(), expires_at=NOW()+INTERVAL '2 hours'""",
+                   created_at=NOW(), expires_at=NOW()+INTERVAL '12 hours'""",
             user_id, code, order_id, plan, plan_name
         )
 

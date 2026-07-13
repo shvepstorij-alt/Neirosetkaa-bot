@@ -3464,6 +3464,9 @@ async def _run_activation_job(
                             user_id,
                             f"⚠️ <b>Попытка {attempt} из {MAX_RETRIES} не удалась</b>\n\n"
                             f"{error_text}\n\n"
+                            f"💡 Частая причина — устаревший токен/сессия: открой "
+                            f"<b>chatgpt.com/api/auth/session</b>, скопируй ВЕСЬ текст заново и вставь. "
+                            f"И проверь, что аккаунт на бесплатном плане.\n\n"
                             f"Попробуй ещё раз 👇",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -3489,7 +3492,10 @@ async def _run_activation_job(
                         await bot.send_message(
                             user_id,
                             f"😔 <b>Не удалось активировать после {MAX_RETRIES} попыток</b>\n\n"
-                            f"Напиши Александру — активирую вручную в течение 15–30 минут!",
+                            f"💡 Чаще всего помогает: заново скопировать токен со страницы "
+                            f"chatgpt.com/api/auth/session (он обновляется после каждого входа) "
+                            f"и убедиться, что аккаунт на бесплатном плане.\n\n"
+                            f"Если не выходит — напиши Александру, активирую вручную в течение 15–30 минут!",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                 [InlineKeyboardButton(
@@ -4005,15 +4011,19 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         [InlineKeyboardButton(text="❓ Нужна помощь", style="primary",
                                               callback_data="gpt_need_help")],
                     ])
+                    # После окна кнопка активации ОСТАЁТСЯ — код живёт до 12 ч
                     _kb_gpt_expired = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="✨ Активировать подписку", style="success",
+                                              web_app=WebAppInfo(url=_webapp_url))],
                         [InlineKeyboardButton(text="❓ Нужна помощь", style="primary",
                                               callback_data="gpt_need_help")],
                     ])
                     _dl_gpt = _dt_gpt.datetime.now(_BOT_TZ) + _dt_gpt.timedelta(minutes=ACTIVATION_WINDOW_MIN)
                     _exp_gpt = (
-                        f"⏰ <b>Время самостоятельной активации истекло</b>\n\n"
-                        f"📦 <b>{service_name}</b> — оплата сохранена.\n"
-                        f"Напиши Александру — активирую вручную 🙌"
+                        f"📦 <b>{service_name}</b> — оплата сохранена ✅\n\n"
+                        f"Если ещё не активировал — можно сделать это <b>сейчас</b>: нажми кнопку ниже.\n"
+                        f"🎟 Код: <code>{_code}</code>\n\n"
+                        f"Не получается — напиши Александру, активирует вручную 🙌"
                     )
                     # СНАЧАЛА инструкция…
                     try:
@@ -4863,6 +4873,11 @@ async def _claude_order_redeem(cfg: dict, code: str, org_id: str, order_id: str)
         logging.error(f"order redeem {_pn} HTTP {_http}: {_txt[:600]}")
         _blob = (_txt or "").lower()
         _msg = str(_d.get("msg") or _d.get("message") or f"Ошибка сайта {_pn} (HTTP {_http}).")
+        # код не принадлежит этому продавцу (коды из другого источника) — НЕ про подпись/IP
+        if ("不是本商户" in _blob or "本商户" in _blob or "not the merchant" in _blob
+                or "not your" in _blob or "wrong merchant" in _blob):
+            return {"ok": False, "err_kind": "other",
+                    "err_msg": f"{_pn}: код не принадлежит этому продавцу (коды из другого источника). {_msg}"}
         if _d.get("code") == 500 or "sign" in _blob:
             return {"ok": False, "err_kind": "other",
                     "err_msg": f"Ошибка подписи/секрета {_pn} (проверь apiSecret/whitelist IP). {_msg}"}
@@ -4992,14 +5007,18 @@ async def _send_claude_webapp_to_user(
             [InlineKeyboardButton(text="⚡ Активировать Claude", style="success", web_app=_WAI(url=webapp_url))],
             [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="claude_need_help")],
         ])
+        # После окна кнопка активации ОСТАЁТСЯ — код живёт до 12 ч, клиент может активировать сам
         _kb_cl_expired = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚡ Активировать Claude", style="success", web_app=_WAI(url=webapp_url))],
             [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="claude_need_help")],
         ])
         _dl_cl = _dt_cl.datetime.now(_BOT_TZ) + _dt_cl.timedelta(minutes=ACTIVATION_WINDOW_MIN)
         _exp_cl = (
-            f"⏰ <b>Время самостоятельной активации истекло</b>\n\n"
-            f"📦 <b>Claude {plan_name}</b> — оплата сохранена.\n"
-            f"Напиши Александру — активирую вручную 🙌"
+            f"📦 <b>Claude {plan_name}</b> — оплата сохранена ✅\n\n"
+            f"Если ещё не активировал — можно сделать это <b>сейчас</b>: нажми кнопку ниже, "
+            f"введи Organization ID.\n"
+            f"🎟 Код: <code>{code}</code>\n\n"
+            f"Не получается — напиши Александру, активирует вручную 🙌"
         )
         # СНАЧАЛА инструкция…
         try:

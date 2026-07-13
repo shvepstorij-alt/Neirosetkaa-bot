@@ -6,6 +6,7 @@
 • Редактирование по сервисам: сервис → его пункты (описание сервиса + тарифы) → пункт.
 • Правка текста: присылаешь новый текст, он заменяет черновик пункта.
 """
+import html
 import logging
 from aiogram import F
 from aiogram.types import (
@@ -40,7 +41,8 @@ def _item_label(d):
 
 def _trim(s, n):
     s = s or ""
-    return s[:n] + ("…" if len(s) > n else "")
+    s = s[:n] + ("…" if len(s) > n else "")
+    return html.escape(s)   # текст описаний может содержать < & > — экранируем для parse_mode=HTML
 
 
 # ─── Рендер экранов: возвращают (text, keyboard) ──────────────────────────────

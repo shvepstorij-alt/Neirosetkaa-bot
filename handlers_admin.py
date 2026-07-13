@@ -3060,7 +3060,12 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
         d["cnt"] += r["cnt"]
         d["rev"] += int(r["rev"])
         d["cost"] += cost
-        d["plans"][plan_nm] = d["plans"].get(plan_nm, 0) + r["cnt"]
+        _pl = d["plans"].setdefault(plan_nm, {"cnt": 0, "rev": 0, "cost": 0, "missing": False})
+        _pl["cnt"] += r["cnt"]
+        _pl["rev"] += int(r["rev"])
+        _pl["cost"] += cost
+        if unit == 0:
+            _pl["missing"] = True
         if unit == 0:
             d["missing"] = True
         total_rev += int(r["rev"])
@@ -3071,8 +3076,9 @@ async def _build_profit_text(since_sql: str, label: str) -> str:
         prof = d["rev"] - d["cost"]
         warn = " ⚠️ себест. не задана" if d["missing"] else ""
         plan_lines = "".join(
-            f"\n  • {pn} — {pc} шт"
-            for pn, pc in sorted(d.get("plans", {}).items(), key=lambda x: -x[1])
+            f"\n  • {pn} — {pv['cnt']} шт · {pv['rev']}₽ − {pv['cost']}₽ = "
+            f"<b>{pv['rev'] - pv['cost']:+}₽</b>{' ⚠️' if pv.get('missing') else ''}"
+            for pn, pv in sorted(d.get("plans", {}).items(), key=lambda x: -x[1]["rev"])
         )
         lines.append(f"\n<b>{nm}</b>: {d['cnt']} шт{plan_lines}\n  {d['rev']}₽ − {d['cost']}₽ = <b>{prof:+}₽</b>{warn}")
 
