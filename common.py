@@ -4869,6 +4869,29 @@ def _ipiap_sign(body_str: str, secret: str) -> str:
     return _hl.md5((body_str + secret).encode("utf-8")).hexdigest()
 
 
+async def _http_ip_retry(method, url, *, headers=None, data=None, total=30, retries=5):
+    """HTTP-запрос с повтором при IP-отказе (403) и сетевой ошибке.
+    Railway HA даёт 3 общих egress-IP; часть запросов уходит с не-белого IP и упирается
+    в whitelist поставщика (403). Новое соединение может уйти с белого IP — повторяем.
+    Безопасно для идемпотентных вызовов: ipiap orderNo и vip666 idempotency_key
+    детерминированы, поэтому сервер дедуплицирует повтор, а 403 приходит ДО обработки.
+    Возвращает (status, text); status=0 при полном провале сети."""
+    _st, _tx = 0, ""
+    for _i in range(retries):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=total)) as _s:
+                async with _s.request(method, url, headers=headers, data=data) as _r:
+                    _st = _r.status
+                    _tx = await _r.text()
+                    if _r.status != 403:
+                        return _st, _tx
+                    logging.warning(f"_http_ip_retry 403 (попытка {_i+1}) {url}")
+        except aiohttp.ClientError as _e:
+            _st, _tx = 0, str(_e)
+        await asyncio.sleep(0.6)
+    return _st, _tx
+
+
 async def _claude_order_redeem(cfg: dict, code: str, org_id: str, order_id: str) -> dict:
     """Сайт ipiap.com: order-API с подписью MD5.
     POST /api/order/create  header sign=MD5(body+apiSecret),
@@ -4887,13 +4910,12 @@ async def _claude_order_redeem(cfg: dict, code: str, org_id: str, order_id: str)
     body_str = _json.dumps(body, ensure_ascii=False, separators=(",", ":"))
     headers = {"sign": _ipiap_sign(body_str, secret), "Content-Type": "application/json"}
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as _s:
-            async with _s.post(f"{base}/api/order/create",
-                               data=body_str.encode("utf-8"), headers=headers) as _r:
-                _http = _r.status
-                _txt = await _r.text()
-                try: _d = _json.loads(_txt)
-                except Exception: _d = {}
+        _http, _txt = await _http_ip_retry("POST", f"{base}/api/order/create",
+                                           headers=headers, data=body_str.encode("utf-8"))
+        if _http == 0:
+            return {"ok": False, "err_kind": "network", "err_msg": _txt}
+        try: _d = _json.loads(_txt)
+        except Exception: _d = {}
         if _d.get("code") == 0:
             _ref = str((_d.get("data") or {}).get("orderNo") or order_no)
             return {"ok": True, "ref": _ref}
@@ -4930,12 +4952,10 @@ async def _claude_order_query(cfg: dict, order_no: str) -> dict:
     body_str = _json.dumps(body, ensure_ascii=False, separators=(",", ":"))
     headers = {"sign": _ipiap_sign(body_str, secret), "Content-Type": "application/json"}
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as _s:
-            async with _s.post(f"{base}/api/order/query",
-                               data=body_str.encode("utf-8"), headers=headers) as _r:
-                _txt = await _r.text()
-                try: _d = _json.loads(_txt)
-                except Exception: _d = {}
+        _hs, _txt = await _http_ip_retry("POST", f"{base}/api/order/query",
+                                         headers=headers, data=body_str.encode("utf-8"), total=20)
+        try: _d = _json.loads(_txt)
+        except Exception: _d = {}
         _data = _d.get("data") or {}
         _st = _data.get("orderStatus")
         if _st == 2:
@@ -4984,13 +5004,12 @@ async def _claude_agent_redeem(cfg: dict, code: str, org_id: str, order_id: str)
     body_str = _json.dumps(body, ensure_ascii=False, separators=(",", ":"))
     headers = {"X-Agent-API-Key": key, "Content-Type": "application/json"}
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as _s:
-            async with _s.post(f"{base}/api/agent/v1/cards/redeem",
-                               data=body_str.encode("utf-8"), headers=headers) as _r:
-                _http = _r.status
-                _txt = await _r.text()
-                try: _d = _json.loads(_txt)
-                except Exception: _d = {}
+        _http, _txt = await _http_ip_retry("POST", f"{base}/api/agent/v1/cards/redeem",
+                                           headers=headers, data=body_str.encode("utf-8"))
+        if _http == 0:
+            return {"ok": False, "err_kind": "network", "err_msg": _txt}
+        try: _d = _json.loads(_txt)
+        except Exception: _d = {}
         _code = _d.get("code")
         if _code == 0:
             # ref = idempotency_key: по нему опрашиваем статус (GET /redeem/{idem})
@@ -5033,11 +5052,10 @@ async def _claude_agent_query(cfg: dict, idem: str) -> dict:
     base = _agent_base(cfg); key = cfg.get("key", "")
     headers = {"X-Agent-API-Key": key}
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as _s:
-            async with _s.get(f"{base}/api/agent/v1/redeem/{idem}", headers=headers) as _r:
-                _txt = await _r.text()
-                try: _d = _json.loads(_txt)
-                except Exception: _d = {}
+        _hs, _txt = await _http_ip_retry("GET", f"{base}/api/agent/v1/redeem/{idem}",
+                                         headers=headers, total=20)
+        try: _d = _json.loads(_txt)
+        except Exception: _d = {}
         _st = str(((_d.get("data") or {}).get("status")) or "").lower()
         if _st == "success":
             return {"status": "success", "reason": ""}

@@ -81,19 +81,32 @@ class NSGiftsClient:
             separators=(",", ":")
         ).encode()
         path = "/api/v2/get_token"
-        headers = self._make_headers("POST", path, "", body, token=None)
-        async with aiohttp.ClientSession() as s:
-            async with s.post(
-                BASE_URL + path, headers=headers, data=body,
-                proxy=self.proxy,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as r:
-                data = await r.json()
-                if r.status != 200:
-                    raise RuntimeError(f"NSGifts login failed {r.status}: {data}")
-                self._token         = data["token"]
-                self._token_expires = time.time() + data.get("expires_in", 7200)
-                logger.info("NSGifts token refreshed")
+        # Railway HA-static-IP: исходящий egress-IP варьируется по соединению (3 общих IP).
+        # NS Gifts на не-белый IP отвечает 403 «Invalid login details». Креды верные →
+        # повторяем логин с НОВЫМ соединением: другое соединение может уйти с белого IP.
+        _last = "unknown"
+        for _i in range(6):
+            headers = self._make_headers("POST", path, "", body, token=None)  # ts обновляем каждый раз
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        BASE_URL + path, headers=headers, data=body,
+                        proxy=self.proxy,
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    ) as r:
+                        data = await r.json()
+                        if r.status == 200:
+                            self._token         = data["token"]
+                            self._token_expires = time.time() + data.get("expires_in", 7200)
+                            logger.info(f"NSGifts token refreshed (попытка {_i + 1})")
+                            return
+                        _last = f"{r.status}: {data}"
+                        if r.status != 403:
+                            break   # не IP-проблема (напр. 400/500) — нет смысла повторять
+            except Exception as _e:
+                _last = str(_e)
+            await asyncio.sleep(0.7)
+        raise RuntimeError(f"NSGifts login failed {_last}")
 
     # ── Базовый запрос ─────────────────────────────────────────────────────────
 

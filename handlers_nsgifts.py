@@ -616,12 +616,29 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
         pass
     try:
         import aiohttp as _ah
-        async with _ah.ClientSession(timeout=_ah.ClientTimeout(total=15)) as _s:
-            async with _s.get("https://api.ipify.org?format=json", proxy=_px or None) as _ipr:
-                _ip = (await _ipr.json()).get("ip", "?")
         _wl = {"162.220.232.250", "162.220.232.251", "152.55.176.240"}
-        _ok = "✅ в whitelist" if _ip in _wl else "❌ НЕ в whitelist"
-        _lines.append(f"🌐 Наш outbound IP (что видит NS Gifts): <b>{_ip}</b> — {_ok}")
+        _seen = {}
+        # пробуем НЕСКОЛЬКО раз: egress-IP на Railway HA варьируется по соединению
+        for _ in range(8):
+            try:
+                async with _ah.ClientSession(timeout=_ah.ClientTimeout(total=10)) as _s:
+                    async with _s.get("https://api.ipify.org?format=json", proxy=_px or None) as _ipr:
+                        _ip = (await _ipr.json()).get("ip", "?")
+                _seen[_ip] = _seen.get(_ip, 0) + 1
+            except Exception:
+                pass
+        if _seen:
+            _bad = [ip for ip in _seen if ip not in _wl]
+            for _ip, _n in sorted(_seen.items(), key=lambda x: -x[1]):
+                _mark = "✅" if _ip in _wl else "❌ НЕ в whitelist"
+                _lines.append(f"🌐 egress IP: <b>{_ip}</b> ×{_n} — {_mark}")
+            if _bad:
+                _lines.append("⚠️ <b>Есть egress-IP вне whitelist</b> — из-за него и рвётся вход. "
+                              "Добавь эти IP в whitelist NS Gifts (либо это новый IP Railway).")
+            else:
+                _lines.append("Все egress-IP в whitelist. Если вход всё равно 403 — вопрос к NS Gifts (креды/whitelist на их стороне).")
+        else:
+            _lines.append("🌐 egress IP: не удалось определить")
     except Exception as _e:
         _lines.append(f"🌐 outbound IP: не удалось определить ({str(_e)[:80]})")
     try:
