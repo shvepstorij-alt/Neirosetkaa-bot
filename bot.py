@@ -205,7 +205,10 @@ async def main():
             login      = NSGIFTS_LOGIN,
             password   = NSGIFTS_PASSWORD,
             api_secret = NSGIFTS_API_SECRET,
-            proxy      = WEBSHARE_PROXY,
+            # БЕЗ прокси: ходим напрямую, чтобы NS Gifts видел наши статические
+            # outbound-IP Railway (они в whitelist). Через прокси IP чужой → 403
+            # «Invalid login details». WEBSHARE_PROXY здесь намеренно НЕ используем.
+            proxy      = "",
         )
         logging.info("✅ NS Gifts client initialized")
         asyncio.create_task(nsgifts_balance_alert_loop())
