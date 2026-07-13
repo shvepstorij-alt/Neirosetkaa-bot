@@ -625,8 +625,9 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
             if not clicked:
                 return {"success": False, "error": "Кнопка активации не найдена.", "screenshot": await _aipro_ss(page)}
 
-            # Ждём итог
-            for _ in range(32):  # ~80 сек
+            # Ждём итог. По заметке сайта Fast-充值 занимает ~30 сек – 2 мин → ждём до ~2.5 мин.
+            _saw_processing = False
+            for _ in range(60):  # ~150 сек
                 await asyncio.sleep(2.5)
                 txt = await _aipro_body_text(page)
                 tl = txt.lower()
@@ -642,17 +643,35 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                         or "已售罄" in txt or "售罄" in txt or "缺货" in txt or "无货" in txt
                         or "out of stock" in tl or "no stock" in tl or "sold out" in tl):
                     return {"success": False, "out_of_stock": True, "error": "Нет стока на сайте (сайт не выдал сертификат).", "screenshot": await _aipro_ss(page)}
-                # код принят сайтом, но активация не удаётся из-за сессии/токена клиента
-                if ("重新登录" in txt or "登录失效" in txt or "会话" in txt or "账号异常" in txt
-                        or "认证失败" in txt or "充值失败" in txt
-                        or "session" in tl or "token" in tl or "expired" in tl or "unauthorized" in tl):
+                # сайт ещё В ПРОЦЕССЕ (提交中 / 正在提交充值请求 / …) — это НЕ ошибка, ждём дальше
+                if ("提交中" in txt or "正在提交" in txt or "正在充值" in txt or "处理中" in txt
+                        or "请稍候" in txt or "请稍後" in txt or "submitting" in tl or "processing" in tl):
+                    _saw_processing = True
+                    continue
+                # КОНКРЕТНЫЕ признаки протухшей сессии клиента.
+                # ВАЖНО: не ловим общие слова "session"/"token"/"login" — они есть в СТАТИЧНОМ
+                # интерфейсе сайта (заголовки «ChatGPT Session JSON», ссылка /api/auth/session,
+                # шаг «Sign in / login»), иначе получаем ложное «токен истёк».
+                if ("重新登录" in txt or "登录失效" in txt or "登录已失效" in txt or "会话已过期" in txt
+                        or "会话失效" in txt or "账号异常" in txt or "认证失败" in txt or "授权失败" in txt
+                        or "未授权" in txt or "token已失效" in tl or "token 已失效" in txt
+                        or "session expired" in tl or "session invalid" in tl or "session has expired" in tl
+                        or "token expired" in tl or "token invalid" in tl or "token has expired" in tl
+                        or "please log in" in tl or "please login" in tl or "re-login" in tl
+                        or "unauthorized" in tl):
                     return {"success": False, "token_invalid": True,
                             "error": "Сайт принял код, но не смог активировать — вероятно, сессия/токен клиента устарели. Нужно вставить свежий Session JSON.",
                             "screenshot": await _aipro_ss(page)}
-            # таймаут без явного результата: если аккаунт был распознан (код принят) — это почти всегда токен
-            if recognized:
-                return {"success": False, "token_invalid": True,
-                        "error": "Активация не подтвердилась — вероятно, сессия/токен устарели. Проверь и вставь Session JSON заново.",
+                # явный сбой пополнения (специфичная фраза)
+                if "充值失败" in txt:
+                    return {"success": False, "token_invalid": False,
+                            "error": "Сайт сообщил о неудаче пополнения (充值失败). Проверь вручную.",
+                            "screenshot": await _aipro_ss(page)}
+            # Таймаут. Сайт был в процессе или аккаунт распознан → активация МОГЛА пройти:
+            # НЕ блэймим токен и НЕ даём авто-повтор (риск двойной), просим админа проверить.
+            if _saw_processing or recognized:
+                return {"success": False, "needs_check": True,
+                        "error": "Активация не подтвердилась за 2.5 мин, но сайт был в процессе. Возможно, уже прошла — проверь вручную на 6661231.xyz перед повторной активацией.",
                         "screenshot": await _aipro_ss(page)}
             return {"success": False, "error": "Активация не завершилась — проверь вручную на 6661231.xyz (возможно, нет стока тарифа).", "screenshot": await _aipro_ss(page)}
         except Exception as e:

@@ -3411,6 +3411,29 @@ async def _run_activation_job(
             from aiogram.types import WebAppInfo as _WebAppInfo
 
             # ── Тип ошибки определяет что делать дальше ──────────────────────
+            # needs_check: активация МОГЛА пройти (сайт был в процессе). НЕ блэймим токен,
+            # НЕ даём авто-повтор (риск двойной активации), код не трогаем; клиенту —
+            # нейтральный экран, админу — скриншот на ручную проверку.
+            if result.get("needs_check"):
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⏳ <b>Активация обрабатывается</b>\n\n"
+                        "Сайт принял запрос — подписка может появиться в течение 5–10 минут. "
+                        "Если не появится, напиши Александру, он проверит.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                await _admin_fail_shot(
+                    "⚠️ <b>ChatGPT — нужна ручная проверка</b>\n\n"
+                    f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    f"🔑 <code>{code}</code>\n"
+                    f"{error_text}\n\n"
+                    "Проверь на 6661231.xyz по email клиента ПЕРЕД повторной активацией (риск двойной).",
+                    result.get("screenshot"))
+                _activation_jobs[job_id] = {"status": "done", "success": False, "pending": True}
+                return
+
             _token_invalid = result.get("token_invalid", False)
 
             if _token_invalid:
@@ -4982,8 +5005,15 @@ async def _claude_agent_redeem(cfg: dict, code: str, org_id: str, order_id: str)
         if _blob_has_plan((_txt or "").lower()):
             return {"ok": False, "err_kind": "has_plan", "err_msg": _msg}
         if _code == 40300 or _http == 403:      # ключ/scope/источник → это про КОНФИГ, не про код
+            _b403 = (_txt or "").lower()
+            if "来源" in _b403 or "域名" in _b403 or "origin" in _b403 or "source" in _b403:
+                # ключ ограничен по домену-источнику (允许来源). Сервер-к-серверу мы без Origin —
+                # админ сайта должен снять ограничение (允许来源 = 未限制) для этого ключа.
+                return {"ok": False, "err_kind": "other",
+                        "err_msg": f"{_pn}: ключ ограничен по домену-источнику (允许来源). "
+                                   f"Попроси админа снять ограничение источника для ключа (未限制). {_msg}"}
             return {"ok": False, "err_kind": "other",
-                    "err_msg": f"{_pn}: доступ запрещён (проверь VIP666_AGENT_KEY/scope/whitelist). {_msg}"}
+                    "err_msg": f"{_pn}: доступ запрещён (проверь VIP666_AGENT_KEY/scope). {_msg}"}
         if _code == 40900 or _http == 409:      # ещё обрабатывается — уходим в опрос статуса
             return {"ok": True, "ref": _idem}
         # 100301 充值失败 / 40000 / прочее → считаем сбоем сайта, пробуем следующий

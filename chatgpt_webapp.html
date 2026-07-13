@@ -848,6 +848,20 @@ function showError(msg) {
   showScreen('s5');
 }
 
+// Нейтральный экран «обрабатывается»: активация могла пройти (сайт был в процессе),
+// не пугаем клиента красной ошибкой и не предлагаем повтор (риск двойной активации).
+function showProcessing(msg) {
+  var em = document.querySelector('#s5 .error-emoji');
+  if (em) em.textContent = '⏳';
+  var tt = document.querySelector('#s5 .error-title');
+  if (tt) { tt.textContent = 'Активация обрабатывается'; tt.style.color = 'var(--text)'; }
+  var el = document.getElementById('err-detail');
+  if (el) el.textContent = msg || 'Сайт принял запрос — подписка появится в течение 5–10 минут. Если не появится, напиши Александру.';
+  var again = document.querySelector('#s5 .btn-green');
+  if (again) again.style.display = 'none';   // без «Попробовать снова» — чтобы не активировать дважды
+  showScreen('s5');
+}
+
 // ─── Polling ─────────────────────────────────────────────────────
 async function pollResult(jobId) {
   for (var i = 0; i < 120; i++) {
@@ -859,6 +873,8 @@ async function pollResult(jobId) {
         if (data.success) {
           if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
           showScreen('s4');
+        } else if (data.pending) {
+          showProcessing(data.error);
         } else {
           showError(data.error);
         }
