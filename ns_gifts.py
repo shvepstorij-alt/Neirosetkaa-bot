@@ -26,9 +26,11 @@ class NSGiftsClient:
     def __init__(self, user_id: int, login: str, password: str, api_secret: str,
                  proxy: str = ""):
         self.user_id    = user_id
-        self.login      = login
-        self.password   = password
-        self.api_secret = api_secret
+        # .strip(): переменные Railway/окружения часто содержат хвостовой \n или пробел
+        # при копипасте — глазами не видно, а сервер отвечает 403 «Invalid login details».
+        self.login      = (login or "").strip()
+        self.password   = (password or "").strip()
+        self.api_secret = (api_secret or "").strip()
         self.proxy      = proxy or None     # None → без прокси
 
         self._token: Optional[str] = None

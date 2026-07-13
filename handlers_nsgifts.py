@@ -614,6 +614,21 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
         _lines.append(f"👤 Логин: <b>{_lmask}</b> · User-Id: <b>{getattr(rt.nsgifts_client,'user_id','?')}</b>")
     except Exception:
         pass
+    # длины кредов из ПЕРЕМЕННЫХ + флаг скрытых пробелов/переносов + валидность base64
+    try:
+        from config import NSGIFTS_LOGIN as _RL, NSGIFTS_PASSWORD as _RP, NSGIFTS_API_SECRET as _RS
+        def _ws(v):
+            v = v or ""
+            return " ⚠️лишний пробел/перенос" if v != v.strip() else ""
+        _lines.append(f"🔑 Переменные: login len={len(_RL or '')}{_ws(_RL)}, "
+                      f"pass len={len(_RP or '')}{_ws(_RP)}, secret len={len(_RS or '')}{_ws(_RS)}")
+        import base64 as _b64
+        try:
+            _b64.b64decode((_RS or '').strip()); _lines.append("🔐 api_secret — валидный base64 ✅")
+        except Exception:
+            _lines.append("🔐 api_secret — НЕ валидный base64 ❌ (проверь значение переменной)")
+    except Exception:
+        pass
     try:
         import aiohttp as _ah
         _wl = {"162.220.232.250", "162.220.232.251", "152.55.176.240"}
