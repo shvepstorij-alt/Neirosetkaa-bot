@@ -605,6 +605,25 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
         _lines.append(f"💰 Баланс кабинета: <b>{_bal}$</b>")
     except Exception as _e:
         _lines.append(f"❌ check_balance: {str(_e)[:200]}")
+    # диагностика доступа: какой IP видит NS Gifts + идём ли через прокси + маска логина
+    _px = getattr(rt.nsgifts_client, "proxy", None)
+    _lines.append(f"🔌 Прокси: <b>{'ДА → ' + str(_px) if _px else 'нет (прямое)'}</b>")
+    try:
+        _login = getattr(rt.nsgifts_client, "login", "") or ""
+        _lmask = (_login[:3] + "***" + _login[-2:]) if len(_login) > 5 else "(задан)"
+        _lines.append(f"👤 Логин: <b>{_lmask}</b> · User-Id: <b>{getattr(rt.nsgifts_client,'user_id','?')}</b>")
+    except Exception:
+        pass
+    try:
+        import aiohttp as _ah
+        async with _ah.ClientSession(timeout=_ah.ClientTimeout(total=15)) as _s:
+            async with _s.get("https://api.ipify.org?format=json", proxy=_px or None) as _ipr:
+                _ip = (await _ipr.json()).get("ip", "?")
+        _wl = {"162.220.232.250", "162.220.232.251", "152.55.176.240"}
+        _ok = "✅ в whitelist" if _ip in _wl else "❌ НЕ в whitelist"
+        _lines.append(f"🌐 Наш outbound IP (что видит NS Gifts): <b>{_ip}</b> — {_ok}")
+    except Exception as _e:
+        _lines.append(f"🌐 outbound IP: не удалось определить ({str(_e)[:80]})")
     try:
         await cb.message.answer("\n".join(_lines), parse_mode="HTML")
     except Exception:
