@@ -46,17 +46,26 @@ ROOT_CLAUDE_API_KEY = os.getenv("ROOT_CLAUDE_API_KEY", "")
 # Нужны ОТДЕЛЬНЫЕ apiId + apiSecret (выдаёт платформа ipiap). Держим в env.
 IPIAP_CLAUDE_API_ID     = os.getenv("IPIAP_CLAUDE_API_ID", "")
 IPIAP_CLAUDE_API_SECRET = os.getenv("IPIAP_CLAUDE_API_SECRET", "")
+# Пятый сайт vip666ai.com — «代理 API v1» (Agent API). Авторизация заголовком
+# X-Agent-API-Key (без MD5-подписи). Redeem: POST /api/agent/v1/cards/redeem,
+# query: GET /api/agent/v1/redeem/{idempotency_key}. Ключ (тип redeem, scope
+# cards:redeem) и base держим в env; base — реальный домен агент-API (не плейсхолдер).
+VIP666_AGENT_KEY  = os.getenv("VIP666_AGENT_KEY", "")
+VIP666_AGENT_BASE = os.getenv("VIP666_AGENT_BASE", "https://vip666ai.com")
 CLAUDE_PROVIDERS = {
     "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
     "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com",
              "api": "partner", "key": ROOT_CLAUDE_API_KEY},
+    "vip666": {"name": "vip666ai.com", "base": VIP666_AGENT_BASE,
+               "api": "agent", "key": VIP666_AGENT_KEY},
     "ipiap": {"name": "ipiap.com", "base": "https://a002api.ipiap.com",
               "api": "order", "api_id": IPIAP_CLAUDE_API_ID, "api_secret": IPIAP_CLAUDE_API_SECRET},
-    # Четвёртый сайт 6661231.xyz — API нет, активация через браузер (Playwright),
+    # Сайт 6661231.xyz — API нет, активация через браузер (Playwright),
     # как у ChatGPT-провайдера aipro. Вводит CDK + Organization ID на странице #/claude.
     "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz", "api": "browser"},
 }
-CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "ipiap", "aipro"]   # порядок авто-фолбэка
+# vip666 ПЕРЕД ipiap: у ipiap API сейчас работает нестабильно (по словам админа сайта).
+CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "vip666", "ipiap", "aipro"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"
 
 # ─── Провайдеры авто-активации ChatGPT ────────────────────────────

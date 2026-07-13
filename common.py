@@ -4920,11 +4920,107 @@ async def _claude_order_query(cfg: dict, order_no: str) -> dict:
         return {"status": "pending", "reason": str(_e)}
 
 
+def _agent_idem(order_id, code) -> str:
+    """Идемпотентный ключ для agent-API (vip666): один и тот же для повторов
+    одной и той же попытки (order+code). Формат подходит под ^[A-Za-z0-9][...]{7,127}$."""
+    import hashlib as _h
+    _raw = f"{order_id}:{code}".encode("utf-8")
+    return "redeem-" + _h.md5(_raw).hexdigest()   # 7 + 32 = 39 симв.
+
+
+def _agent_base(cfg: dict) -> str:
+    """Нормализует base agent-API: убирает хвостовой /api/agent/v1, если он уже
+    включён в VIP666_AGENT_BASE (чтобы не задвоить префикс при сборке URL)."""
+    b = (cfg.get("base", "") or "").rstrip("/")
+    if b.endswith("/api/agent/v1"):
+        b = b[:-len("/api/agent/v1")]
+    return b
+
+
+async def _claude_agent_redeem(cfg: dict, code: str, org_id: str, order_id: str) -> dict:
+    """Сайт vip666ai.com: «代理 API v1» (Agent API).
+    POST /api/agent/v1/cards/redeem, заголовок X-Agent-API-Key,
+    body {card_code, redeem_type:'claude_org_id', target_value/target_confirm=orgId,
+    idempotency_key}. Возвращает {ok, ref=idempotency_key} либо err_kind."""
+    import json as _json
+    base = _agent_base(cfg); key = cfg.get("key", "")
+    _pn = cfg.get("name", base)
+    if not key:
+        return {"ok": False, "err_kind": "other",
+                "err_msg": f"Не задан API-ключ сайта {_pn} (переменная VIP666_AGENT_KEY)."}
+    if not org_id:
+        return {"ok": False, "err_kind": "bad_org",
+                "err_msg": f"{_pn}: не передан Organization ID."}
+    _idem = _agent_idem(order_id, code)
+    body = {"card_code": code, "redeem_type": "claude_org_id",
+            "target_value": org_id, "target_confirm": org_id, "idempotency_key": _idem}
+    body_str = _json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    headers = {"X-Agent-API-Key": key, "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as _s:
+            async with _s.post(f"{base}/api/agent/v1/cards/redeem",
+                               data=body_str.encode("utf-8"), headers=headers) as _r:
+                _http = _r.status
+                _txt = await _r.text()
+                try: _d = _json.loads(_txt)
+                except Exception: _d = {}
+        _code = _d.get("code")
+        if _code == 0:
+            # ref = idempotency_key: по нему опрашиваем статус (GET /redeem/{idem})
+            return {"ok": True, "ref": _idem}
+        logging.error(f"agent redeem {_pn} HTTP {_http} code={_code}: {_txt[:600]}")
+        _msg = str(_d.get("message") or f"Ошибка сайта {_pn} (HTTP {_http}).")
+        # Бизнес-коды (HTTP 200): карта/остаток/подтверждение
+        if _code == 100102:                     # уже использована → следующий код
+            return {"ok": False, "err_kind": "already_claimed", "err_msg": _msg}
+        if _code in (100101, 100103):           # невалидна / просрочена → следующий код
+            return {"ok": False, "err_kind": "not_found", "err_msg": _msg}
+        if _code == 100501 or _http in (500, 503):  # нет остатка / сервис недоступен → следующий сайт
+            return {"ok": False, "err_kind": "out_of_stock", "err_msg": _msg}
+        if _code == 100401:                     # нужно подтверждение перезаписи = уже есть подписка
+            return {"ok": False, "err_kind": "has_plan", "err_msg": _msg}
+        if _blob_has_plan((_txt or "").lower()):
+            return {"ok": False, "err_kind": "has_plan", "err_msg": _msg}
+        if _code == 40300 or _http == 403:      # ключ/scope/источник → это про КОНФИГ, не про код
+            return {"ok": False, "err_kind": "other",
+                    "err_msg": f"{_pn}: доступ запрещён (проверь VIP666_AGENT_KEY/scope/whitelist). {_msg}"}
+        if _code == 40900 or _http == 409:      # ещё обрабатывается — уходим в опрос статуса
+            return {"ok": True, "ref": _idem}
+        # 100301 充值失败 / 40000 / прочее → считаем сбоем сайта, пробуем следующий
+        return {"ok": False, "err_kind": "other", "err_msg": _msg}
+    except aiohttp.ClientError as _e:
+        return {"ok": False, "err_kind": "network", "err_msg": str(_e)}
+
+
+async def _claude_agent_query(cfg: dict, idem: str) -> dict:
+    """Опрос статуса agent-API vip666: GET /api/agent/v1/redeem/{idempotency_key}.
+    status: pending|processing|success|failed|review|unknown."""
+    import json as _json
+    base = _agent_base(cfg); key = cfg.get("key", "")
+    headers = {"X-Agent-API-Key": key}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as _s:
+            async with _s.get(f"{base}/api/agent/v1/redeem/{idem}", headers=headers) as _r:
+                _txt = await _r.text()
+                try: _d = _json.loads(_txt)
+                except Exception: _d = {}
+        _st = str(((_d.get("data") or {}).get("status")) or "").lower()
+        if _st == "success":
+            return {"status": "success", "reason": ""}
+        if _st in ("failed", "review"):
+            return {"status": "failed", "reason": str((_d.get("data") or {}).get("message") or "")}
+        return {"status": "pending", "reason": ""}
+    except Exception as _e:
+        return {"status": "pending", "reason": str(_e)}
+
+
 async def _claude_redeem_via(provider: str, code: str, org_id: str, order_id: str) -> dict:
     """Единый вызов активации Claude под любой сайт (по типу api)."""
     cfg = CLAUDE_PROVIDERS.get(provider, {})
     if cfg.get("api") == "partner":
         return await _claude_partner_redeem(cfg, code, org_id, order_id)
+    if cfg.get("api") == "agent":
+        return await _claude_agent_redeem(cfg, code, org_id, order_id)
     if cfg.get("api") == "order":
         return await _claude_order_redeem(cfg, code, org_id, order_id)
     if cfg.get("api") == "browser":
@@ -5148,6 +5244,16 @@ async def _claude_activation_polling_job(
                     _d = {"status": "failed", "error": _q.get("reason") or "failed"}
                 else:
                     status = "pending"   # 0/1 — ждём дальше
+            elif _api == "agent":
+                # vip666 agent-API: GET /api/agent/v1/redeem/{idempotency_key}
+                _q = await _claude_agent_query(_cfg, str(bpa_order_id))
+                if _q["status"] == "success":
+                    status = "done"
+                elif _q["status"] == "failed":
+                    status = "failed"
+                    _d = {"status": "failed", "error": _q.get("reason") or "failed"}
+                else:
+                    status = "pending"
             else:
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=15)
@@ -5596,6 +5702,12 @@ async def _claude_wait_result(provider: str, ref) -> str:
                     return "failed"
             elif api == "order":
                 _q = await _claude_order_query(cfg, str(ref))
+                if _q["status"] == "success":
+                    return "success"
+                if _q["status"] == "failed":
+                    return "failed"
+            elif api == "agent":
+                _q = await _claude_agent_query(cfg, str(ref))
                 if _q["status"] == "success":
                     return "success"
                 if _q["status"] == "failed":
