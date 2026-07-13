@@ -1901,14 +1901,18 @@ async def api_admin_profit_handler(request: web.Request) -> web.Response:
             cost = unit * r["cnt"]
             d = by.setdefault(nm, {"name": nm, "cnt": 0, "rev": 0, "cost": 0, "missing": False, "plans": {}})
             d["cnt"] += r["cnt"]; d["rev"] += int(r["rev"]); d["cost"] += cost
-            d["plans"][pname] = d["plans"].get(pname, 0) + r["cnt"]
-            if unit == 0: d["missing"] = True
+            _pl = d["plans"].setdefault(pname, {"cnt": 0, "rev": 0, "cost": 0, "missing": False})
+            _pl["cnt"] += r["cnt"]; _pl["rev"] += int(r["rev"]); _pl["cost"] += cost
+            if unit == 0:
+                d["missing"] = True; _pl["missing"] = True
             total_rev += int(r["rev"]); total_cost += cost
         services = []
         for nm, d in sorted(by.items(), key=lambda x: -x[1]["rev"]):
             services.append({"name": nm, "cnt": d["cnt"], "rev": d["rev"], "cost": d["cost"],
                              "profit": d["rev"] - d["cost"], "missing": d["missing"],
-                             "plans": [{"name": pn, "cnt": pc} for pn, pc in sorted(d["plans"].items(), key=lambda x: -x[1])]})
+                             "plans": [{"name": pn, "cnt": pv["cnt"], "rev": pv["rev"], "cost": pv["cost"],
+                                        "profit": pv["rev"] - pv["cost"], "missing": pv["missing"]}
+                                       for pn, pv in sorted(d["plans"].items(), key=lambda x: -x[1]["rev"])]})
         if (nsg["cnt"] or 0):
             nrev = int(nsg["rev"] or 0); ncost = round(float(nsg["usd"] or 0) * rate)
             total_rev += nrev; total_cost += ncost

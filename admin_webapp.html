@@ -228,7 +228,12 @@ function loadProfit(per,off,date){
     h+='<div class="block"><div class="mgrid" style="margin:0"><div class="mcard"><div class="mlab">Выручка</div><div class="mval">'+nf(t.rev)+' ₽</div></div><div class="mcard"><div class="mlab">Прибыль · '+t.margin+'%</div><div class="mval pos">+'+nf(t.profit)+' ₽</div></div><div class="mcard"><div class="mlab">Затраты (закуп)</div><div class="mval">'+nf(t.cost)+' ₽</div></div><div class="mcard"><div class="mlab">Комиссия 2%</div><div class="mval neg">−'+nf(t.commission)+' ₽</div></div></div></div>';
     h+='<div class="block"><h4>📊 Маржа и структура</h4><div style="display:flex;align-items:center;gap:18px">'+ring(t.margin,C.green,"маржа")+'<div class="legend">'+(share.length?share.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+s.label+'<b>+'+nf(s.val)+'₽</b></div>'}).join(''):'<span class="muted" style="font-size:12px">нет продаж за период</span>')+'</div></div></div>';
     d.services.forEach(function(s){
-      var pls=s.plans.map(function(pp){return '<div class="kv"><span class="k">'+pp.name+' × '+pp.cnt+'</span></div>'}).join('');
+      var pls=s.plans.map(function(pp){
+        var hasFin=(pp.rev!=null);
+        if(!hasFin){return '<div class="kv"><span class="k">'+pp.name+' × '+pp.cnt+'</span></div>';}
+        var prof=(pp.profit!=null?pp.profit:(pp.rev-(pp.cost||0)));
+        return '<div class="kv"><span class="k">'+pp.name+' × '+pp.cnt+' · '+nf(pp.rev)+' ₽ − '+nf(pp.cost||0)+' ₽'+(pp.missing?' ⚠️':'')+'</span><span class="'+(prof>=0?'pos':'muted')+'">'+(prof>=0?'+':'')+nf(prof)+' ₽</span></div>';
+      }).join('');
       h+='<div class="block"><h4>'+s.name+' · '+s.cnt+' шт'+(s.missing?' <span class="tag a">себест. не задана</span>':'')+'</h4>'+pls+'<div class="kv"><span class="k">'+nf(s.rev)+' ₽ − '+nf(s.cost)+' ₽</span><span class="pos">+'+nf(s.profit)+' ₽</span></div></div>';
     });
     if(d.credits&&d.credits.cnt){h+='<div class="block"><h4>💳 Кредиты · '+d.credits.cnt+' шт</h4><div class="kv"><span class="k">'+nf(d.credits.rev)+' ₽</span><span class="muted">себест. AI не учит.</span></div></div>';}

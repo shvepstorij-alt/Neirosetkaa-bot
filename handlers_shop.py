@@ -101,8 +101,8 @@ async def shop_renew(cb: CallbackQuery):
             pass
 
 
-@dp.callback_query(F.data == "menu_shop")
-async def menu_shop(cb: CallbackQuery):
+def _build_shop_menu():
+    """Строит (text, kb) магазина. Используется и inline-кнопкой, и нижней reply-кнопкой."""
     text = (
         "🛍 <b>Магазин подписок Neirosetka</b>\n\n"
         "<i>Оплата в рублях - по СБП, без иностранных карт.\n"
@@ -169,11 +169,25 @@ async def menu_shop(cb: CallbackQuery):
     )])
     rows.append([_eib("Главное меню", "back_main")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    return text, kb
+
+
+@dp.callback_query(F.data == "menu_shop")
+async def menu_shop(cb: CallbackQuery):
+    text, kb = _build_shop_menu()
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
+
+
+@dp.message(F.text.contains("Магазин"), StateFilter("*"))
+async def reply_shop(message: Message, state: FSMContext):
+    """Нижняя reply-кнопка «🛍️ Магазин» — открывает каталог новым сообщением."""
+    await state.clear()
+    text, kb = _build_shop_menu()
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "shop_other")

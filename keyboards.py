@@ -303,6 +303,7 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
+        [KeyboardButton(text="🛍️ Магазин")],
         [KeyboardButton(text="📷 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
     ]
