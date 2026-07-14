@@ -634,7 +634,7 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
         pass
     try:
         import aiohttp as _ah
-        _wl = {"162.220.232.250", "162.220.232.251", "152.55.176.240"}
+        _wl = {"162.220.232.250", "162.220.232.251", "152.55.177.181"}
         _seen = {}
         # пробуем НЕСКОЛЬКО раз: egress-IP на Railway HA варьируется по соединению
         for _ in range(8):
@@ -645,7 +645,21 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
                 _seen[_ip] = _seen.get(_ip, 0) + 1
             except Exception:
                 pass
-        if _seen:
+        if _seen and _px:
+            # Режим ПРОКСИ: весь трафик NS Gifts идёт через прокси, egress = IP прокси.
+            # Именно этот IP и должен быть в whitelist NS Gifts (не Railway-адреса).
+            _only_ip = next(iter(_seen)) if len(_seen) == 1 else None
+            for _ip, _n in sorted(_seen.items(), key=lambda x: -x[1]):
+                _lines.append(f"🌐 egress IP (через прокси): <b>{_ip}</b> ×{_n}")
+            if _stock_ok:
+                _lines.append("✅ Прокси работает и NS Gifts принял запрос. Этот IP и должен быть в whitelist.")
+            elif _stock_403:
+                _lines.append(
+                    f"🚨 <b>403 через прокси</b> — IP прокси <code>{_only_ip or '?'}</code> "
+                    f"НЕ в whitelist NS Gifts. Добавь именно <b>{_only_ip or 'этот IP'}</b> в whitelist NS Gifts.")
+            else:
+                _lines.append("Прокси активен. Если get_stock даёт ошибку — смотри её выше.")
+        elif _seen:
             _bad = [ip for ip in _seen if ip not in _wl]
             for _ip, _n in sorted(_seen.items(), key=lambda x: -x[1]):
                 _mark = "✅ ожидается в whitelist" if _ip in _wl else "❌ НЕ в нашем списке"
@@ -661,7 +675,7 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
                     f"Добавь <b>{_only_ip}</b> в whitelist на стороне NS Gifts. "
                     f"Раньше работало, когда egress был другим IP из тройки — значит из 3 адресов "
                     f"реально добавлен не весь набор. Добавь ВСЕ три: "
-                    f"162.220.232.250, 162.220.232.251, 152.55.176.240."
+                    f"162.220.232.250, 162.220.232.251, 152.55.177.181."
                 )
             elif _bad:
                 _lines.append("⚠️ <b>Есть egress-IP вне нашего списка</b> — вероятно, новый IP Railway. "

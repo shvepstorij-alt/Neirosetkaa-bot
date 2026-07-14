@@ -31,6 +31,11 @@ NSGIFTS_LOGIN      = os.getenv("NSGIFTS_LOGIN", "")
 NSGIFTS_PASSWORD   = os.getenv("NSGIFTS_PASSWORD", "")
 NSGIFTS_API_SECRET = os.getenv("NSGIFTS_API_SECRET", "")
 WEBSHARE_PROXY     = os.getenv("WEBSHARE_PROXY", "")   # http://user:pass@host:port
+# Прокси с ФИКСИРОВАННЫМ IP только для NS Gifts. Если задан — весь трафик NS Gifts
+# идёт через него, сайт видит один постоянный IP (адрес прокси) независимо от того,
+# на какой из 3 общих Railway-IP сел контейнер. Whitelist-им один IP прокси у NS Gifts.
+# Формат: http://user:pass@host:port  (пусто = ходим напрямую, как сейчас).
+NSGIFTS_PROXY      = os.getenv("NSGIFTS_PROXY", "")
 
 # ─── Провайдеры авто-активации Claude ─────────────────────────────
 # Все сайты работают на одной платформе (OpenChatGPTPlus): одинаковый

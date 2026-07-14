@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, NSGIFTS_API_SECRET, NSGIFTS_LOGIN, NSGIFTS_PASSWORD, NSGIFTS_USER_ID, WEBSHARE_PROXY,
-    bot, dp, validate_chat_prompt,
+    NSGIFTS_PROXY, bot, dp, validate_chat_prompt,
 )
 from runtime_state import (
     rt,
@@ -205,10 +205,10 @@ async def main():
             login      = NSGIFTS_LOGIN,
             password   = NSGIFTS_PASSWORD,
             api_secret = NSGIFTS_API_SECRET,
-            # БЕЗ прокси: ходим напрямую, чтобы NS Gifts видел наши статические
-            # outbound-IP Railway (они в whitelist). Через прокси IP чужой → 403
-            # «Invalid login details». WEBSHARE_PROXY здесь намеренно НЕ используем.
-            proxy      = "",
+            # NSGIFTS_PROXY задан → весь трафик NS Gifts через прокси с фиксированным IP
+            # (его один вносим в whitelist NS Gifts): не важно, на какой из 3 общих
+            # Railway-IP сел контейнер — сайт всегда видит один адрес. Пусто → напрямую.
+            proxy      = NSGIFTS_PROXY,
         )
         logging.info("✅ NS Gifts client initialized")
         asyncio.create_task(nsgifts_balance_alert_loop())
