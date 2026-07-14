@@ -3212,14 +3212,15 @@ async def _admin_fail_shot(text, screenshot=None):
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str,
-    provider: str = "987ai", session_raw: str = ""
+    provider: str = "987ai", session_raw: str = "", force: bool = False
 ):
     """Фоновая задача: Playwright-активация. Не держит HTTP-соединение.
-    provider: '987ai' (текущий, по access_token) | 'aipro' (6661231.xyz, по Session JSON)."""
+    provider: '987ai' (текущий, по access_token) | 'aipro' (6661231.xyz, по Session JSON).
+    force=True — клиент подтвердил принудительную активацию поверх уже активной подписки."""
     async def _do_activate(_code):
         if provider == "aipro":
             from chatgpt_activation import activate_chatgpt_aipro
-            return await activate_chatgpt_aipro(_code, session_raw or access_token)
+            return await activate_chatgpt_aipro(_code, session_raw or access_token, force=force)
         return await activate_chatgpt(_code, access_token)
     try:
         # ── Тестовый режим: код начинается с TEST → пропускаем Playwright ────
@@ -3413,6 +3414,45 @@ async def _run_activation_job(
             _plan_key = plan_name_to_key(plan_name)
             import urllib.parse as _uparse2
             from aiogram.types import WebAppInfo as _WebAppInfo
+
+            # ── needs_force_confirm: у аккаунта уже есть активная подписка. Спрашиваем
+            #    клиента и, если подтвердит, активируем принудительно (force=1). Код НЕ трогаем.
+            if result.get("needs_force_confirm"):
+                import urllib.parse as _uparse_f
+                from aiogram.types import WebAppInfo as _WebAppInfoF
+                _acc = result.get("already_account") or ""
+                _until = result.get("already_until") or ""
+                _force_url = (
+                    f"{WEBAPP_BASE_URL}/webapp/chatgpt"
+                    f"?plan={_uparse_f.quote(plan_name)}&code={_uparse_f.quote(code)}&force=1"
+                )
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⚠️ <b>На аккаунте уже есть активная подписка ChatGPT Plus</b>"
+                        + (f"\n📧 Аккаунт: <code>{_acc}</code>" if _acc else "")
+                        + (f"\n📅 Действует до: <b>{_until}</b>" if _until else "")
+                        + "\n\nМожно активировать <b>принудительно</b> — но это начнёт новый месяц, "
+                          "и остаток текущей подписки может <b>не суммироваться</b> (сгореть).\n\n"
+                          "Если согласен — нажми кнопку ниже и подтверди активацию заново.",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="⚡ Активировать принудительно",
+                                                  web_app=_WebAppInfoF(url=_force_url))],
+                            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="gpt_need_help")],
+                        ])
+                    )
+                except Exception as _fe:
+                    logging.error(f"needs_force_confirm msg: {_fe}")
+                await _admin_fail_shot(
+                    "⚠️ <b>ChatGPT — у аккаунта уже есть Plus</b> (клиенту предложено активировать принудительно)\n\n"
+                    f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    f"🔑 <code>{code}</code>\n"
+                    f"📧 {_acc or '—'}" + (f" · до {_until}" if _until else ""),
+                    result.get("screenshot"))
+                _activation_jobs[job_id] = {"status": "done", "success": False, "pending": True,
+                                            "error": "Требуется подтверждение принудительной активации (см. сообщение бота)."}
+                return
 
             # ── Тип ошибки определяет что делать дальше ──────────────────────
             # needs_check: активация МОГЛА пройти (сайт был в процессе). НЕ блэймим токен,
@@ -3698,6 +3738,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     session_raw  = (body.get("session") or body.get("raw_token") or "").strip()
     init_data    = (body.get("init_data") or "").strip()
     _fb_code     = (body.get("code") or "").strip()
+    _force       = bool(body.get("force"))   # клиент подтвердил принудительную активацию (уже есть Plus)
 
     user_id = _verify_tg_init_data(init_data)
     if not user_id and _fb_code:
@@ -3789,9 +3830,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     job_id = str(uuid.uuid4())[:12]
     _activation_jobs[job_id] = {"status": "pending"}
     asyncio.create_task(
-        _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name, provider, session_raw)
+        _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name, provider, session_raw, _force)
     )
-    logging.info(f"ChatGPT activation started: job={job_id} user={user_id} code={code} site={provider}")
+    logging.info(f"ChatGPT activation started: job={job_id} user={user_id} code={code} site={provider} force={_force}")
     return _resp({"job_id": job_id, "status": "started"})
 
 

@@ -521,7 +521,47 @@ def _email_from_session(session_json: str) -> str:
     return ""
 
 
-async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
+def _parse_member_modal(txt: str):
+    """Из текста модалки «аккаунт уже Plus» достаём email и срок действия (если есть)."""
+    import re as _re
+    _acc = ""
+    _m = _re.search(r'[\w.\-+]+@[\w.\-]+\.\w+', txt or "")
+    if _m:
+        _acc = _m.group(0)
+    _until = ""
+    _m2 = _re.search(r'\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:\s*UTC)?', txt or "")
+    if _m2:
+        _until = _m2.group(0)
+    return _acc, _until
+
+
+async def _aipro_click(page, texts):
+    """Кликает кнопку/элемент, содержащий один из texts (для модалок Confirmed/Cancelled)."""
+    for _t in texts:
+        for _sel in [f"button:has-text('{_t}')", f"[role=button]:has-text('{_t}')", f"a:has-text('{_t}')"]:
+            try:
+                _b = page.locator(_sel).last
+                if await _b.count() > 0 and await _b.is_visible():
+                    await _b.click(timeout=6000)
+                    return True
+            except Exception:
+                pass
+    try:
+        return await page.evaluate("""(texts) => {
+            const els = Array.from(document.querySelectorAll('button,a,[role=button],div,span'));
+            for (const t of texts) {
+                for (const e of els) {
+                    const s = (e.textContent||'').trim();
+                    if (s.includes(t) && s.length < 40) { e.click(); return true; }
+                }
+            }
+            return false;
+        }""", texts)
+    except Exception:
+        return False
+
+
+async def activate_chatgpt_aipro(cdk_code: str, session_json: str, force: bool = False) -> dict:
     """Активация ChatGPT через 6661231.xyz (AI Pro 充值中心).
     Вводит CDK + полный Session JSON, жмёт «开始充值 (Fast)», ждёт результат.
     Статусы приходят на КИТАЙСКОМ даже при English UI:
@@ -646,6 +686,35 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str) -> dict:
                 # сайт ещё В ПРОЦЕССЕ (提交中 / 正在提交充值请求 / …) — это НЕ ошибка, ждём дальше
                 if ("提交中" in txt or "正在提交" in txt or "正在充值" in txt or "处理中" in txt
                         or "请稍候" in txt or "请稍後" in txt or "submitting" in tl or "processing" in tl):
+                    _saw_processing = True
+                    continue
+                # МОДАЛКА «аккаунт уже Plus» (This account is already a member / 已订阅) с выбором
+                # Confirmed Value / Cancelled Value. Без согласия клиента НЕ подтверждаем.
+                if (("already a member" in tl or "already a plus" in tl or "already subscribed" in tl
+                        or "已订阅" in txt or "已是会员" in txt or "already have a" in tl)
+                        and ("confirmed value" in tl or "确认" in txt or "cancelled value" in tl
+                             or "confirm" in tl or "取消" in txt)):
+                    _acc = _email_from_session(session_json) or _parse_member_modal(txt)[0]
+                    _until = _parse_member_modal(txt)[1]
+                    if not force:
+                        _shot = await _aipro_ss(page)
+                        # безопасно отменяем — аккаунт клиента не трогаем
+                        try:
+                            await _aipro_click(page, ["取消", "Cancelled Value", "Cancel"])
+                        except Exception:
+                            pass
+                        return {"success": False, "needs_force_confirm": True,
+                                "already_account": _acc, "already_until": _until,
+                                "error": (f"У аккаунта {_acc} уже есть активная подписка ChatGPT Plus"
+                                          + (f" до {_until}" if _until else "")
+                                          + ". Принудительная активация начнёт новый месяц (остаток может не суммироваться)."),
+                                "screenshot": _shot}
+                    # force=True → клиент подтвердил принудительное пополнение
+                    logger.warning(f"aipro force-recharge подтверждён клиентом: cdk={cdk_code} acc={_acc}")
+                    try:
+                        await _aipro_click(page, ["确认", "Confirmed Value", "Confirm", "确定"])
+                    except Exception:
+                        pass
                     _saw_processing = True
                     continue
                 # КОНКРЕТНЫЕ признаки протухшей сессии клиента.
