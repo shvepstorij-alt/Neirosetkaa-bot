@@ -578,9 +578,11 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
         return
     await cb.answer("Проверяю NS Gifts…")
     _lines = ["🔎 <b>NS Gifts — диагностика</b>"]
+    _stock_ok = False; _stock_403 = False
     # Прямой запрос без «глушилки» кеша — чтобы увидеть реальную причину
     try:
         _stock = await rt.nsgifts_client.get_stock()
+        _stock_ok = True
         _all = (_stock or {}).get("categories", []) or []
         _apple_named = [c for c in _all if any(
             k in (c.get("category_name", "").lower())
@@ -596,6 +598,7 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
         elif not _all:
             _lines.append("⚠️ Каталог пуст (0 категорий) — вероятно, доступ/аккаунт.")
     except Exception as _e:
+        _stock_403 = "403" in str(_e)
         _lines.append(f"❌ <b>get_stock ошибка:</b> {type(_e).__name__}: {str(_e)[:300]}")
         _lines.append("Похоже на отказ доступа (IP whitelist) или auth. "
                       "Проверь, что ВСЕ 3 статических IP в whitelist NS Gifts.")
@@ -645,13 +648,26 @@ async def adm_nsg_refresh_cache(cb: CallbackQuery):
         if _seen:
             _bad = [ip for ip in _seen if ip not in _wl]
             for _ip, _n in sorted(_seen.items(), key=lambda x: -x[1]):
-                _mark = "✅" if _ip in _wl else "❌ НЕ в whitelist"
+                _mark = "✅ ожидается в whitelist" if _ip in _wl else "❌ НЕ в нашем списке"
                 _lines.append(f"🌐 egress IP: <b>{_ip}</b> ×{_n} — {_mark}")
-            if _bad:
-                _lines.append("⚠️ <b>Есть egress-IP вне whitelist</b> — из-за него и рвётся вход. "
-                              "Добавь эти IP в whitelist NS Gifts (либо это новый IP Railway).")
-            else:
-                _lines.append("Все egress-IP в whitelist. Если вход всё равно 403 — вопрос к NS Gifts (креды/whitelist на их стороне).")
+            # КЛЮЧЕВОЕ: значок ✅ означает лишь «этот IP МЫ считаем белым», а не что NS Gifts
+            # реально его принял. Если get_stock упал с 403, а запрос ушёл с «нашего» IP —
+            # значит именно ЭТОТ IP по факту НЕ добавлен в whitelist на стороне NS Gifts.
+            if _stock_403 and not _bad and len(_seen) == 1:
+                _only_ip = next(iter(_seen))
+                _lines.append(
+                    f"🚨 <b>Вход упал с 403, а весь трафик уходит с {_only_ip}</b> — значит "
+                    f"именно <code>{_only_ip}</code> по факту НЕ в whitelist NS Gifts (несмотря на ✅). "
+                    f"Добавь <b>{_only_ip}</b> в whitelist на стороне NS Gifts. "
+                    f"Раньше работало, когда egress был другим IP из тройки — значит из 3 адресов "
+                    f"реально добавлен не весь набор. Добавь ВСЕ три: "
+                    f"162.220.232.250, 162.220.232.251, 152.55.176.240."
+                )
+            elif _bad:
+                _lines.append("⚠️ <b>Есть egress-IP вне нашего списка</b> — вероятно, новый IP Railway. "
+                              "Добавь его в whitelist NS Gifts.")
+            elif _stock_ok:
+                _lines.append("Доступ есть, всё ок.")
         else:
             _lines.append("🌐 egress IP: не удалось определить")
     except Exception as _e:
