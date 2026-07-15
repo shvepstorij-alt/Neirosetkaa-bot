@@ -677,6 +677,13 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str, force: bool =
                     logger.info(f"aipro успех: cdk={cdk_code} email={email}")
                     return {"success": True, "email": email, **_forced_info}
                 if "已被使用" in txt or "已使用" in txt:
+                    # Код стал Used ПОСЛЕ обработки/подтверждения force → это МЫ его активировали
+                    # (баннер «充值成功» мог не пойматься). Считаем УСПЕХОМ, а не «код занят».
+                    if _saw_processing:
+                        email = _email_from_session(session_json)
+                        logger.info(f"aipro: код Used после обработки — считаем успехом cdk={cdk_code}")
+                        return {"success": True, "email": email, **_forced_info}
+                    # иначе код был занят ЕЩЁ ДО нашей попытки → берём следующий
                     return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
                 if "解析失败" in txt or "格式错误" in txt:
                     return {"success": False, "token_invalid": True, "error": "Сайт отклонил Session JSON.", "screenshot": await _aipro_ss(page)}

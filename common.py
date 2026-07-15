@@ -3360,6 +3360,27 @@ async def _run_activation_job(
                     )
                 except Exception as _ee:
                     logging.warning(f"edit gpt activation msg failed: {_ee}")
+            else:
+                # _gpt_act_msg не было (напр. force-повтор через новый веб-апп) — шлём НОВОЕ
+                # сообщение, иначе клиент не получит подтверждение в чате (жаловался клиент).
+                try:
+                    import datetime as _dt_e2
+                    _end2 = (_dt_e2.datetime.now(_BOT_TZ) + _dt_e2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
+                    await bot.send_message(
+                        user_id,
+                        "🎉 <b>Подписка ChatGPT активирована!</b>\n\n"
+                        f"📦 Тариф: <b>{plan_name}</b>\n"
+                        f"📧 Аккаунт: <b>{_email or '—'}</b>\n"
+                        f"🔑 Ключ: <code>{code}</code>\n"
+                        f"📅 Действует до: <b>{_end2}</b>\n\n"
+                        "Спасибо за покупку! 🙌",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile")],
+                            [_eib("Главное меню", "back_main")],
+                        ]))
+                except Exception as _e2:
+                    logging.error(f"gpt success new msg: {_e2}")
             try:
                 import datetime as _dt
                 _used_at = _dt.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
@@ -3458,8 +3479,9 @@ async def _run_activation_job(
                     f"🔑 <code>{code}</code>\n"
                     f"📧 {_acc or '—'}" + (f" · до {_until}" if _until else ""),
                     result.get("screenshot"))
-                _activation_jobs[job_id] = {"status": "done", "success": False, "pending": True,
-                                            "error": "Требуется подтверждение принудительной активации (см. сообщение бота)."}
+                _activation_jobs[job_id] = {"status": "done", "success": False, "need_force": True,
+                                            "account": _acc, "until": _until,
+                                            "error": "На аккаунте уже есть активная подписка Plus."}
                 return
 
             # ── Тип ошибки определяет что делать дальше ──────────────────────
