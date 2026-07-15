@@ -667,6 +667,7 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str, force: bool =
 
             # Ждём итог. По заметке сайта Fast-充值 занимает ~30 сек – 2 мин → ждём до ~2.5 мин.
             _saw_processing = False
+            _forced_info = {}   # заполняется при принудительном пополнении (force поверх активной подписки)
             for _ in range(60):  # ~150 сек
                 await asyncio.sleep(2.5)
                 txt = await _aipro_body_text(page)
@@ -674,7 +675,7 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str, force: bool =
                 if "充值成功" in txt or "已激活" in txt or "激活成功" in txt:
                     email = _email_from_session(session_json)
                     logger.info(f"aipro успех: cdk={cdk_code} email={email}")
-                    return {"success": True, "email": email}
+                    return {"success": True, "email": email, **_forced_info}
                 if "已被使用" in txt or "已使用" in txt:
                     return {"success": False, "code_already_used": True, "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
                 if "解析失败" in txt or "格式错误" in txt:
@@ -683,15 +684,13 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str, force: bool =
                         or "已售罄" in txt or "售罄" in txt or "缺货" in txt or "无货" in txt
                         or "out of stock" in tl or "no stock" in tl or "sold out" in tl):
                     return {"success": False, "out_of_stock": True, "error": "Нет стока на сайте (сайт не выдал сертификат).", "screenshot": await _aipro_ss(page)}
-                # сайт ещё В ПРОЦЕССЕ (提交中 / 正在提交充值请求 / …) — это НЕ ошибка, ждём дальше
-                if ("提交中" in txt or "正在提交" in txt or "正在充值" in txt or "处理中" in txt
-                        or "请稍候" in txt or "请稍後" in txt or "submitting" in tl or "processing" in tl):
-                    _saw_processing = True
-                    continue
-                # МОДАЛКА «аккаунт уже Plus» (This account is already a member / 已订阅) с выбором
-                # Confirmed Value / Cancelled Value. Без согласия клиента НЕ подтверждаем.
+                # МОДАЛКА «аккаунт уже Plus» (This account is already a member / 已是会员 / 已订阅)
+                # с выбором Confirmed Value / Cancelled Value. Проверяем РАНЬШЕ «в процессе»:
+                # на экране одновременно висит и «正在提交…», и модалка — если проверять процесс
+                # первым, до модалки дело не дойдёт и уйдём в ложный needs_check.
                 if (("already a member" in tl or "already a plus" in tl or "already subscribed" in tl
-                        or "已订阅" in txt or "已是会员" in txt or "already have a" in tl)
+                        or "已订阅" in txt or "已是会员" in txt or "已是plus" in tl or "已是 plus" in tl
+                        or "already have a" in tl or "account is already" in tl)
                         and ("confirmed value" in tl or "确认" in txt or "cancelled value" in tl
                              or "confirm" in tl or "取消" in txt)):
                     _acc = _email_from_session(session_json) or _parse_member_modal(txt)[0]
@@ -711,10 +710,16 @@ async def activate_chatgpt_aipro(cdk_code: str, session_json: str, force: bool =
                                 "screenshot": _shot}
                     # force=True → клиент подтвердил принудительное пополнение
                     logger.warning(f"aipro force-recharge подтверждён клиентом: cdk={cdk_code} acc={_acc}")
+                    _forced_info = {"forced": True, "prev_until": _until, "prev_account": _acc}
                     try:
                         await _aipro_click(page, ["确认", "Confirmed Value", "Confirm", "确定"])
                     except Exception:
                         pass
+                    _saw_processing = True
+                    continue
+                # сайт ещё В ПРОЦЕССЕ (提交中 / 正在提交充值请求 / …) — это НЕ ошибка, ждём дальше
+                if ("提交中" in txt or "正在提交" in txt or "正在充值" in txt or "处理中" in txt
+                        or "请稍候" in txt or "请稍後" in txt or "submitting" in tl or "processing" in tl):
                     _saw_processing = True
                     continue
                 # КОНКРЕТНЫЕ признаки протухшей сессии клиента.

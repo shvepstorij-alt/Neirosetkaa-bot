@@ -3384,6 +3384,14 @@ async def _run_activation_job(
                     f"⏱ Время: <b>{_used_at}</b>\n"
                     f"🆔 Order: <code>{order_id}</code>"
                 )
+                # принудительное продление поверх уже активной подписки
+                if result.get("forced"):
+                    _pu = result.get("prev_until") or "—"
+                    _caption += (
+                        f"\n\n♻️ <b>Принудительное продление</b> (клиент подтвердил поверх активной подписки)\n"
+                        f"📅 Прошлая подписка действовала до: <b>{_pu}</b>\n"
+                        f"⏱ Последняя активация: <b>{_used_at}</b>"
+                    )
                 _gu = _gpt_used_codes if "_gpt_used_codes" in dir() else []
                 if _gu:
                     _uc = "\n".join(f"   • <code>{c}</code>" for c in _gu)
