@@ -789,12 +789,16 @@ function toggleTheme() {
 function closeTg() { if (tg) try { tg.close(); } catch(e) {} }
 
 // ─── Шаг 1: валидация кода ──────────────────────────────────────
+// Сами находим элементы, если глобалы ещё не привязались (страховка от гонки инициализации).
 function validateCode() {
+  if (!codeInput) codeInput = document.getElementById('code-input');
+  if (!s1Btn)     s1Btn     = document.getElementById('s1-continue-btn');
   if (!codeInput || !s1Btn) return;
   s1Btn.disabled = codeInput.value.trim().length < 3;
 }
 
 function goToStep2() {
+  if (!codeInput) codeInput = document.getElementById('code-input');
   if (!codeInput) return;
   if (codeInput.value.trim().length < 3) return;
   showScreen('s2');
@@ -844,8 +848,31 @@ var _sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); 
 
 function showError(msg) {
   if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+  // сброс к дефолту (на случай, если до этого показывали processing/force-экран)
+  var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '😔';
+  var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'Не получилось'; tt.style.color = ''; }
+  var again = document.querySelector('#s5 .btn-green');
+  if (again) { again.style.display = ''; again.textContent = 'Попробовать снова'; again.onclick = function(){ showScreen('s2'); }; }
   var el = document.getElementById('err-detail');
   if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
+  showScreen('s5');
+}
+
+// Экран «аккаунт уже Plus» с кнопкой ПРИНУДИТЕЛЬНОЙ активации прямо в мини-приложении.
+function showForceConfirm(account, until) {
+  if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('warning'); } catch(e) {}
+  var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '⚠️';
+  var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'Аккаунт уже Plus'; tt.style.color = ''; }
+  var el = document.getElementById('err-detail');
+  if (el) el.innerHTML = 'На аккаунте' + (account ? ' <b>' + account + '</b>' : '')
+    + ' уже есть активная подписка Plus' + (until ? ' (до <b>' + until + '</b>)' : '') + '.<br><br>'
+    + 'Принудительная активация начнёт <b>новый месяц</b> — остаток текущей подписки может <b>сгореть</b>. Продолжить?';
+  var again = document.querySelector('#s5 .btn-green');
+  if (again) {
+    again.style.display = '';
+    again.textContent = '⚡ Активировать принудительно';
+    again.onclick = function(){ forceMode = true; showScreen('s2'); };  // назад к вставке Session JSON, но уже в режиме force
+  }
   showScreen('s5');
 }
 
@@ -874,6 +901,8 @@ async function pollResult(jobId) {
         if (data.success) {
           if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
           showScreen('s4');
+        } else if (data.need_force) {
+          showForceConfirm(data.account, data.until);
         } else if (data.pending) {
           showProcessing(data.error);
         } else {
@@ -983,7 +1012,7 @@ function watchInputs() {
 // ═══════════════════════════════════════════════════════════════════
 //  Инициализация — запускается после загрузки всех defer-скриптов
 // ═══════════════════════════════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', function () {
+function _initChatgptWebApp() {
 
   // Безопасный доступ к Telegram WebApp (fallback если скрипт не загрузился)
   tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : {
@@ -1080,7 +1109,16 @@ document.addEventListener('DOMContentLoaded', function () {
       this.focus();
     }, { passive: true });
   }
-});
+}
+
+// ВАЖНО: если DOM уже загружен к моменту выполнения скрипта, событие DOMContentLoaded
+// уже НЕ сработает → инициализация (привязка codeInput/s1Btn, автоподстановка кода) не
+// запустится, и кнопка «Продолжить» останется неактивной. Поэтому запускаем сразу.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initChatgptWebApp);
+} else {
+  _initChatgptWebApp();
+}
 </script>
 
 </body>
