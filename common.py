@@ -1056,7 +1056,7 @@ async def _show_profile(message: Message, user, edit: bool = False):
             subs = await conn.fetch("""
                 SELECT service_key, service_name, plan_name, expires_at
                 FROM user_subscriptions
-                WHERE user_id=$1 AND is_active=TRUE AND expires_at > NOW()
+                WHERE user_id=$1 AND is_active=TRUE
                 ORDER BY expires_at ASC
             """, uid)
     except Exception:
@@ -1069,7 +1069,7 @@ async def _show_profile(message: Message, user, edit: bool = False):
 
     subs_block = ""
     if subs:
-        sub_lines = []
+        active_lines, expired_lines = [], []
         now = _dt.datetime.now()
         for s in subs:
             days_left = (s["expires_at"] - now).days + 1
@@ -1113,8 +1113,20 @@ async def _show_profile(message: Message, user, edit: bool = False):
                 pass
             if _det:
                 _line += "\n" + "\n".join(_det)
-            sub_lines.append(_line)
-        subs_block = "\n\n\U0001f4e6 <b>\u041c\u043e\u0438 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0438:</b>\n" + "\n".join(sub_lines)
+            if s["expires_at"] <= now:
+                # \u0438\u0441\u0442\u0451\u043a\u0448\u0430\u044f: \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u043c \u00ab\u0438\u0441\u0442\u0435\u043a\u043b\u0430 DATE\u00bb, \u0431\u0435\u0437 \u0441\u0447\u0451\u0442\u0447\u0438\u043a\u0430 \u0434\u043d\u0435\u0439
+                _el = f"\u26d4 <b>{s['service_name']}{plan}</b> - \u0438\u0441\u0442\u0435\u043a\u043b\u0430 {exp}"
+                if _det:
+                    _el += "\n" + "\n".join(_det)
+                expired_lines.append(_el)
+            else:
+                active_lines.append(_line)
+        _parts = []
+        _parts.append(("\u2705 <b>\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0435:</b>\n" + "\n".join(active_lines))
+                      if active_lines else "<i>\u0410\u043a\u0442\u0438\u0432\u043d\u044b\u0445 \u043f\u043e\u0434\u043f\u0438\u0441\u043e\u043a \u043d\u0435\u0442.</i>")
+        if expired_lines:
+            _parts.append("\u26d4 <b>\u0418\u0441\u0442\u0451\u043a\u0448\u0438\u0435:</b>\n" + "\n".join(expired_lines))
+        subs_block = "\n\n\U0001f4e6 <b>\u041c\u043e\u0438 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0438:</b>\n" + "\n\n".join(_parts)
 
     coins_block = f"\n\U0001fa99 \u041c\u043e\u043d\u0435\u0442\u043a\u0438: <b>{coins:.0f}\u20bd</b>" if coins > 0 else ""
 
@@ -4020,12 +4032,15 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 plan_display = p.get("name", "")
                 pool_sub = await get_pool()
                 async with pool_sub.acquire() as conn_sub:
-                    # Продление: гасим прежние активные подписки того же сервиса,
-                    # чтобы не было двух активных и повторных напоминаний «заканчивается».
+                    # Продление: гасим прежнюю активную подписку ТОГО ЖЕ ТАРИФА (реальное
+                    # продление), но НЕ трогаем другие тарифы того же сервиса — клиент мог
+                    # купить и Claude Pro, и Claude Max 5× (или для разных аккаунтов), они
+                    # должны показываться отдельно. Раньше гасили по service_key → в профиле
+                    # оставался только последний тариф сервиса.
                     await conn_sub.execute(
                         "UPDATE user_subscriptions SET is_active=FALSE "
-                        "WHERE user_id=$1 AND service_key=$2 AND is_active=TRUE",
-                        user_id, shop_key)
+                        "WHERE user_id=$1 AND service_key=$2 AND plan_name=$3 AND is_active=TRUE",
+                        user_id, shop_key, plan_display)
                     await conn_sub.execute("""
                         INSERT INTO user_subscriptions
                         (user_id, service_key, service_name, plan_name, expires_at, created_by)

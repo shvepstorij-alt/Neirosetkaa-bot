@@ -442,6 +442,38 @@ async def cmd_set_credits(message: Message):
     )
 
 
+@dp.message(F.text.startswith("/subs_restore"), StateFilter("*"))
+async def cmd_subs_restore(message: Message):
+    """Восстанавливает (делает активными) все НЕистёкшие подписки клиента.
+    Нужна, если старая дедупликация погасила разные тарифы того же сервиса
+    (клиент активировал на разные аккаунты). Использование: /subs_restore <user_id>"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await message.answer(
+            "♻️ <b>Восстановление подписок клиента</b>\n\n"
+            "Использование: <code>/subs_restore &lt;user_id&gt;</code>\n"
+            "Делает активными все ещё не истёкшие подписки (которые были погашены).",
+            parse_mode="HTML")
+        return
+    _uid = int(parts[1])
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            _res = await conn.execute(
+                "UPDATE user_subscriptions SET is_active=TRUE "
+                "WHERE user_id=$1 AND expires_at > NOW() AND is_active=FALSE",
+                _uid)
+        _cnt = _res.split()[-1] if _res else "0"
+        await message.answer(
+            f"✅ Восстановлено подписок: <b>{_cnt}</b> для клиента <code>{_uid}</code>.\n"
+            "Пусть откроет «Мой профиль» — теперь видны все активные.",
+            parse_mode="HTML")
+    except Exception as _e:
+        await message.answer(f"❌ Ошибка: {str(_e)[:200]}")
+
+
 @dp.message(F.text.startswith("/recover"), StateFilter("*"))
 async def cmd_recover(message: Message):
     """Админская команда для ручного восстановления потерянного видео из fal.ai.
