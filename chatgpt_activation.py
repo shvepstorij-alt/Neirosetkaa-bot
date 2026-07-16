@@ -955,6 +955,141 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
                 pass
 
 
+async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -> dict:
+    """Активация Claude через САЙТ ipiap.com (браузер, НЕ API — их API часто сбоит).
+    Шаги: ввод CDK → «Verify Activation Code» → ввод Organization ID → «Confirm Recharge»
+    → ожидание (до ~2 мин, «Processing…») → «Recharge Successful».
+    Формат ответа как у activate_claude_aipro:
+      {success, error, code_already_used, out_of_stock, bad_org, has_plan, needs_check, screenshot}."""
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    url = "https://ipiap.com/#/home/index"
+    logger.info(f"activate_claude_ipiap: cdk={cdk_code} org={org_id} plan={plan}")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-setuid-sandbox", "--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-US")
+        page = await context.new_page()
+        try:
+            await page.goto(url, timeout=45_000, wait_until="networkidle")
+            await asyncio.sleep(1.5)
+
+            # ── Шаг 1: код активации ──────────────────────────────────────────
+            code_input = page.locator(
+                "input[placeholder*='activation code'], input[placeholder*='AI-DEMO'], "
+                "input[placeholder*='ctivation'], input").first
+            try:
+                await code_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле кода не найдено на ipiap.com.", "screenshot": await _aipro_ss(page)}
+            await code_input.fill("")
+            await code_input.fill(cdk_code)
+            await asyncio.sleep(0.5)
+
+            if not await _aipro_click(page, ["Verify Activation Code", "Verify", "验证激活码", "验证"]):
+                return {"success": False, "error": "Кнопка «Verify Activation Code» не найдена.", "screenshot": await _aipro_ss(page)}
+
+            # ждём шаг 2 (появится «Confirm Recharge» / «Organization ID») либо ошибку кода
+            _step2 = False
+            for _ in range(24):  # ~12 сек
+                await asyncio.sleep(0.5)
+                _t = await _aipro_body_text(page); _tl = _t.lower()
+                if "已被使用" in _t or "已使用" in _t or "already used" in _tl or "already redeemed" in _tl:
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                if ("invalid" in _tl and ("code" in _tl or "activation" in _tl)) or "not found" in _tl \
+                        or "无效" in _t or "不存在" in _t or "已过期" in _t or "expired" in _tl:
+                    # код невалиден/просрочен → берём следующий (как not_found)
+                    return {"success": False, "code_already_used": True,
+                            "error": "Код не принят сайтом (invalid/expired).", "screenshot": await _aipro_ss(page)}
+                if "confirm recharge" in _tl or "organization id" in _tl:
+                    _step2 = True
+                    break
+            if not _step2:
+                return {"success": False, "error": "Сайт не перешёл к шагу Organization ID после Verify.", "screenshot": await _aipro_ss(page)}
+
+            # ── Шаг 2: Organization ID ────────────────────────────────────────
+            # поле org id — видимый input на шаге Recharge (обычно единственный/последний видимый)
+            try:
+                org_input = page.locator("input:visible").last
+                await org_input.wait_for(state="visible", timeout=8_000)
+                await org_input.fill("")
+                await org_input.fill(org_id)
+            except Exception:
+                return {"success": False, "error": "Поле Organization ID не найдено.", "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(0.5)
+
+            if not await _aipro_click(page, ["Confirm Recharge", "确认充值", "Confirm"]):
+                return {"success": False, "error": "Кнопка «Confirm Recharge» не найдена.", "screenshot": await _aipro_ss(page)}
+
+            # ── Ожидание результата (до ~3 мин) ───────────────────────────────
+            _saw_processing = False
+            _org_l = (org_id or "").lower()
+            for _ in range(100):  # 100 × 2с = 200 сек
+                await asyncio.sleep(2.0)
+                txt = await _aipro_body_text(page); tl = txt.lower()
+                # успех
+                if ("recharge successful" in tl or "has been activated" in tl
+                        or "activated successfully" in tl or "充值成功" in txt or "激活成功" in txt
+                        or "已激活" in txt or ("successful" in tl and "recharge" in tl)):
+                    logger.info(f"ipiap успех: cdk={cdk_code} org={org_id}")
+                    return {"success": True}
+                # идёт обработка — ждём
+                if ("processing" in tl or "please wait" in tl or "do not close" in tl
+                        or "充值处理中" in txt or "处理中" in txt or "请耐心等待" in txt):
+                    _saw_processing = True
+                    continue
+                # уже есть подписка
+                if ("already a member" in tl or "already subscribed" in tl or "已订阅" in txt
+                        or "已是会员" in txt or "active subscription" in tl):
+                    return {"success": False, "has_plan": True,
+                            "error": "У аккаунта уже есть активная подписка Claude.", "screenshot": await _aipro_ss(page)}
+                # неверный Organization ID
+                if (("organization" in tl and ("invalid" in tl or "not found" in tl or "incorrect" in tl))
+                        or ("组织" in txt and ("错误" in txt or "无效" in txt)) or "格式错误" in txt):
+                    return {"success": False, "bad_org": True,
+                            "error": "Сайт отклонил Organization ID — проверь и попробуй снова.", "screenshot": await _aipro_ss(page)}
+                # код стал Used после обработки → это наш успех
+                if "已被使用" in txt or "已使用" in txt or "already used" in tl:
+                    if _saw_processing:
+                        logger.info(f"ipiap: код Used после обработки — успех cdk={cdk_code}")
+                        return {"success": True}
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                # явный сбой
+                if "failed" in tl or "充值失败" in txt or "激活失败" in txt or "错误" in txt and "系统" in txt:
+                    return {"success": False, "error": "Сайт сообщил об ошибке пополнения (проверь вручную).",
+                            "screenshot": await _aipro_ss(page)}
+            # таймаут: был процесс → вероятно прошла, просим проверить
+            if _saw_processing:
+                return {"success": False, "needs_check": True,
+                        "error": "Активация не подтвердилась за 3 мин, но сайт был в процессе. Проверь на ipiap.com по Org ID.",
+                        "screenshot": await _aipro_ss(page)}
+            return {"success": False, "error": "Активация Claude на ipiap.com не завершилась — проверь вручную.",
+                    "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_claude_ipiap error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)

@@ -63,11 +63,15 @@ CLAUDE_PROVIDERS = {
              "api": "partner", "key": ROOT_CLAUDE_API_KEY},
     "vip666": {"name": "vip666ai.com", "base": VIP666_AGENT_BASE,
                "api": "agent", "key": VIP666_AGENT_KEY},
-    "ipiap": {"name": "ipiap.com", "base": "https://a002api.ipiap.com",
-              "api": "order", "api_id": IPIAP_CLAUDE_API_ID, "api_secret": IPIAP_CLAUDE_API_SECRET},
+    # ipiap.com — АКТИВАЦИЯ ЧЕРЕЗ БРАУЗЕР (их order-API часто сбоит). Playwright проходит
+    # шаги на самом сайте: CDK → Verify → Organization ID → Confirm Recharge.
+    # (api_id/secret оставлены на случай возврата к order-API, сейчас не используются.)
+    "ipiap": {"name": "ipiap.com", "base": "https://ipiap.com",
+              "api": "browser", "browser_site": "ipiap",
+              "api_id": IPIAP_CLAUDE_API_ID, "api_secret": IPIAP_CLAUDE_API_SECRET},
     # Сайт 6661231.xyz — API нет, активация через браузер (Playwright),
     # как у ChatGPT-провайдера aipro. Вводит CDK + Organization ID на странице #/claude.
-    "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz", "api": "browser"},
+    "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz", "api": "browser", "browser_site": "aipro"},
 }
 # vip666 ПЕРЕД ipiap: у ipiap API сейчас работает нестабильно (по словам админа сайта).
 CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "vip666", "ipiap", "aipro"]   # порядок авто-фолбэка

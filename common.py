@@ -6017,8 +6017,13 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                 logging.info(f"Claude chain ref={ref} attempt={_attempt} site={_prov} code={_code} api={_api}")
 
                 if _api == "browser":
-                    from chatgpt_activation import activate_claude_aipro
-                    _r = await activate_claude_aipro(_code, org_id, plan_key)
+                    _bsite = _cfg.get("browser_site", "aipro")
+                    if _bsite == "ipiap":
+                        from chatgpt_activation import activate_claude_ipiap
+                        _r = await activate_claude_ipiap(_code, org_id, plan_key)
+                    else:
+                        from chatgpt_activation import activate_claude_aipro
+                        _r = await activate_claude_aipro(_code, org_id, plan_key)
                     if _r.get("success"):
                         await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site, _used_codes)
                         return
