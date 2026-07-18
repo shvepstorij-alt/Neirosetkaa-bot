@@ -61,8 +61,11 @@ CLAUDE_PROVIDERS = {
     "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
     "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com",
              "api": "partner", "key": ROOT_CLAUDE_API_KEY},
-    "vip666": {"name": "vip666ai.com", "base": VIP666_AGENT_BASE,
-               "api": "agent", "key": VIP666_AGENT_KEY},
+    # vip666ai.com — АКТИВАЦИЯ ЧЕРЕЗ БРАУЗЕР (их agent-API часто сбоит). Playwright:
+    # Card code → Verify & Continue → Organization ID (×2) → Confirm & Activate.
+    # (key оставлен на случай возврата к agent-API, сейчас не используется.)
+    "vip666": {"name": "vip666ai.com", "base": "https://vip666ai.com",
+               "api": "browser", "browser_site": "vip666", "key": VIP666_AGENT_KEY},
     # ipiap.com — АКТИВАЦИЯ ЧЕРЕЗ БРАУЗЕР (их order-API часто сбоит). Playwright проходит
     # шаги на самом сайте: CDK → Verify → Organization ID → Confirm Recharge.
     # (api_id/secret оставлены на случай возврата к order-API, сейчас не используются.)

@@ -1090,6 +1090,142 @@ async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -
                 pass
 
 
+async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") -> dict:
+    """Активация Claude через САЙТ vip666ai.com (браузер, НЕ agent-API — их API часто сбоит).
+    Шаги: Card code → «Verify & Continue» → ДВА поля Organization ID (Claude + Confirm) →
+    «Confirm Organization ID & Activate» → ожидание («Activation in progress») →
+    «Activation successful».
+    Формат ответа как у activate_claude_aipro."""
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    url = "https://vip666ai.com"
+    logger.info(f"activate_claude_vip666: cdk={cdk_code} org={org_id} plan={plan}")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-setuid-sandbox", "--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-US")
+        page = await context.new_page()
+        try:
+            await page.goto(url, timeout=45_000, wait_until="networkidle")
+            await asyncio.sleep(1.5)
+
+            # ── Шаг 1: Card code ──────────────────────────────────────────────
+            card_input = page.locator(
+                "input[placeholder*='card'], input[placeholder*='Card'], "
+                "input[placeholder*='code'], input:visible").first
+            try:
+                await card_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле Card code не найдено на vip666ai.com.", "screenshot": await _aipro_ss(page)}
+            await card_input.fill("")
+            await card_input.fill(cdk_code)
+            await asyncio.sleep(0.5)
+
+            if not await _aipro_click(page, ["Verify & Continue", "Verify", "验证并继续", "验证"]):
+                return {"success": False, "error": "Кнопка «Verify & Continue» не найдена.", "screenshot": await _aipro_ss(page)}
+
+            # ждём шаг 2 (Card verified / Organization ID) либо ошибку карты
+            _step2 = False
+            for _ in range(24):  # ~12 сек
+                await asyncio.sleep(0.5)
+                _t = await _aipro_body_text(page); _tl = _t.lower()
+                if "已被使用" in _t or "已使用" in _t or "already used" in _tl or "already redeemed" in _tl:
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                if ("invalid" in _tl and ("card" in _tl or "code" in _tl)) or "not found" in _tl \
+                        or "无效" in _t or "不存在" in _t or "已过期" in _t or "expired" in _tl:
+                    return {"success": False, "code_already_used": True,
+                            "error": "Карта не принята сайтом (invalid/expired).", "screenshot": await _aipro_ss(page)}
+                if "card verified" in _tl or "organization id" in _tl or "target account" in _tl:
+                    _step2 = True
+                    break
+            if not _step2:
+                return {"success": False, "error": "Сайт не перешёл к шагу Organization ID после Verify.", "screenshot": await _aipro_ss(page)}
+
+            # ── Шаг 2: два поля Organization ID (Claude + Confirm) ─────────────
+            try:
+                _inputs = page.locator("input:visible")
+                _cnt = await _inputs.count()
+                _filled = 0
+                for _i in range(_cnt):
+                    _el = _inputs.nth(_i)
+                    try:
+                        if await _el.is_visible():
+                            await _el.fill("")
+                            await _el.fill(org_id)
+                            _filled += 1
+                    except Exception:
+                        pass
+                if _filled == 0:
+                    return {"success": False, "error": "Поля Organization ID не найдены.", "screenshot": await _aipro_ss(page)}
+            except Exception:
+                return {"success": False, "error": "Не удалось заполнить Organization ID.", "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(0.5)
+
+            if not await _aipro_click(page, ["Confirm Organization ID & Activate", "Confirm Organization ID",
+                                             "Confirm & Activate", "确认组织ID并激活", "确认"]):
+                return {"success": False, "error": "Кнопка «Confirm Organization ID & Activate» не найдена.", "screenshot": await _aipro_ss(page)}
+
+            # ── Ожидание результата (до ~3 мин) ───────────────────────────────
+            _saw_processing = False
+            for _ in range(100):  # 100 × 2с = 200 сек
+                await asyncio.sleep(2.0)
+                txt = await _aipro_body_text(page); tl = txt.lower()
+                if ("activation successful" in tl or "recharge successful" in tl
+                        or "has been activated" in tl or "activated successfully" in tl
+                        or "充值成功" in txt or "激活成功" in txt or "已激活" in txt):
+                    logger.info(f"vip666 успех: cdk={cdk_code} org={org_id}")
+                    return {"success": True}
+                if ("activation in progress" in tl or "in progress" in tl or "processing" in tl
+                        or "please wait" in tl or "submitted" in tl or "please stay on this page" in tl
+                        or "充值处理中" in txt or "处理中" in txt):
+                    _saw_processing = True
+                    continue
+                if ("already a member" in tl or "already subscribed" in tl or "已订阅" in txt
+                        or "已是会员" in txt or "active subscription" in tl):
+                    return {"success": False, "has_plan": True,
+                            "error": "У аккаунта уже есть активная подписка Claude.", "screenshot": await _aipro_ss(page)}
+                if (("organization" in tl and ("invalid" in tl or "not found" in tl or "incorrect" in tl))
+                        or ("组织" in txt and ("错误" in txt or "无效" in txt)) or "格式错误" in txt):
+                    return {"success": False, "bad_org": True,
+                            "error": "Сайт отклонил Organization ID — проверь и попробуй снова.", "screenshot": await _aipro_ss(page)}
+                if "已被使用" in txt or "已使用" in txt or "already used" in tl:
+                    if _saw_processing:
+                        return {"success": True}
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                if "activation failed" in tl or "failed" in tl or "充值失败" in txt or "激活失败" in txt:
+                    return {"success": False, "error": "Сайт сообщил об ошибке активации (проверь вручную).",
+                            "screenshot": await _aipro_ss(page)}
+            if _saw_processing:
+                return {"success": False, "needs_check": True,
+                        "error": "Активация не подтвердилась за 3 мин, но сайт был в процессе. Проверь на vip666ai.com по Org ID.",
+                        "screenshot": await _aipro_ss(page)}
+            return {"success": False, "error": "Активация Claude на vip666ai.com не завершилась — проверь вручную.",
+                    "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_claude_vip666 error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
