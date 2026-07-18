@@ -3892,6 +3892,31 @@ async def api_activation_status_handler(request: web.Request) -> web.Response:
 
 
 
+async def _disable_client_pay_msg(order_id: str):
+    """После успешной оплаты гасит кнопки в сообщении оплаты у КЛИЕНТА, чтобы он не
+    оплачивал повторно тот же заказ. Сообщение меняем на «Оплата получена»."""
+    try:
+        _pool = await get_pool()
+        async with _pool.acquire() as _c:
+            _row = await _c.fetchrow(
+                "SELECT user_id, client_msg_id FROM fk_orders WHERE order_id=$1", order_id)
+        if not _row or not _row["client_msg_id"]:
+            return
+        try:
+            await bot.edit_message_text(
+                "✅ <b>Оплата получена.</b> Заказ обрабатывается.",
+                chat_id=_row["user_id"], message_id=_row["client_msg_id"], parse_mode="HTML")
+        except Exception:
+            # текст мог не поменяться (тот же контент) — тогда просто убираем кнопки
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=_row["user_id"], message_id=_row["client_msg_id"], reply_markup=None)
+            except Exception:
+                pass
+    except Exception as _e:
+        logging.error(f"disable client pay msg {order_id}: {_e}")
+
+
 async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webhook") -> bool:
     """Зачисляет кредиты по оплаченному заказу.
 
@@ -3939,6 +3964,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         # Уже зачислено другим путём
         logging.info(f"FK order {order_id} already paid (source={source})")
         return False
+
+    # Гасим кнопки оплаты в сообщении у клиента (первое подтверждение оплаты)
+    await _disable_client_pay_msg(order_id)
 
     # 2. Зачисляем кредиты партией (на 30 дней) и логируем.
     # Если начисление упало ПОСЛЕ mark_paid — деньги приняты, услуга не выдана:
@@ -7449,12 +7477,19 @@ async def _send_manual_order(user_id, shop_key, service_name, plan_name,
         await create_linkpay_order(user_id, _uname, order_id, shop_key,
                                    service_name, plan_name, amount_rub,
                                    kind="manual", status="awaiting_payment")
+        import urllib.parse as _uq_manual
+        _msg_to_alex = _uq_manual.quote(
+            f"Приветствую! Оплатил заказ.\nСервис: {service_name}\nID: {order_id}")
         await bot.send_message(
             user_id,
             f"🎉 <b>Оплата прошла!</b>\n\n📦 <b>{service_name}</b>\n\n"
-            f"Александр оформит заказ и пришлёт всё необходимое сюда в ближайшее время 🙌"
+            f"❗️ <b>Отправьте Александру чек об оплате и номер вашего заказа</b> 👇"
             f"{delayed_note}",
-            parse_mode="HTML")
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✍️ Написать Александру",
+                                      url=f"https://t.me/{PERSONAL_USERNAME}?text={_msg_to_alex}")],
+            ]))
         # Сообщение админу формирует section 4 (единое изменяющееся сообщение заказа)
         await log_event(user_id, "manual_order", f"order={order_id} svc={shop_key}")
     except Exception as e:

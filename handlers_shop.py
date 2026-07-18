@@ -558,10 +558,26 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
         )],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
     ])
+    _client_pay_msg_id = None
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        _client_pay_msg_id = cb.message.message_id
     except Exception:
-        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        try:
+            _m = await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+            _client_pay_msg_id = _m.message_id
+        except Exception:
+            pass
+    # Сохраняем id сообщения оплаты у клиента — чтобы погасить кнопки после успешной оплаты
+    if _client_pay_msg_id:
+        try:
+            pool_cm = await get_pool()
+            async with pool_cm.acquire() as conn_cm:
+                await conn_cm.execute(
+                    "UPDATE fk_orders SET client_msg_id=$1 WHERE order_id=$2",
+                    _client_pay_msg_id, order_id)
+        except Exception:
+            pass
 
     # Уведомить Александра - одно сообщение, которое обновится при оплате
     username = cb.from_user.username or cb.from_user.full_name
