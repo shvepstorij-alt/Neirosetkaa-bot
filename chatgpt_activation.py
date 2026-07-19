@@ -934,9 +934,16 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
                     # иначе код был занят ЕЩЁ ДО нашей попытки → берём следующий
                     return {"success": False, "code_already_used": True,
                             "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
-                # нет стока — ТОЛЬКО явные фразы дефицита (не метки тарифов «Sold by»/«售罄»)
-                if "库存不足" in txt or "暂无库存" in txt or "无库存" in txt or "无可用" in txt:
-                    return {"success": False, "out_of_stock": True, "error": "Нет стока тарифа на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
+                # нет стока / сбой пополнения — сайт не выдал сертификат → СМЕНА сайта.
+                # Ловим и китайские, и английские фразы («No available resources», «充值失败»).
+                # (НЕ трогаем статичные метки тарифов «Sold by»/«售罄».)
+                if ("库存不足" in txt or "暂无库存" in txt or "无库存" in txt or "无可用" in txt
+                        or "无可用资源" in txt or "无资源" in txt or "充值失败" in txt or "激活失败" in txt
+                        or "no available resource" in tl or "no resource" in tl or "no stock" in tl
+                        or "out of stock" in tl or "recharge failed" in tl or "insufficient" in tl):
+                    return {"success": False, "out_of_stock": True,
+                            "error": "6661231.xyz: нет ресурсов/сбой пополнения — переключаюсь на другой сайт.",
+                            "screenshot": await _aipro_ss(page)}
                 # иначе — продолжаем ждать результата
             # Таймаут. Если была обработка — активация СКОРЕЕ ВСЕГО прошла, но баннер не пойман:
             # не жжём следующий код и не врём «не прошла» — просим админа проверить по Org ID (со скрином).
@@ -1070,8 +1077,12 @@ async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -
                     return {"success": False, "code_already_used": True,
                             "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
                 # явный сбой
-                if "failed" in tl or "充值失败" in txt or "激活失败" in txt or "错误" in txt and "系统" in txt:
-                    return {"success": False, "error": "Сайт сообщил об ошибке пополнения (проверь вручную).",
+                if ("failed" in tl or "充值失败" in txt or "激活失败" in txt
+                        or "no available resource" in tl or "no resource" in tl or "no stock" in tl
+                        or "out of stock" in tl or "无可用" in txt or "库存不足" in txt or "insufficient" in tl
+                        or ("错误" in txt and "系统" in txt)):
+                    return {"success": False, "out_of_stock": True,
+                            "error": "ipiap.com: нет ресурсов/сбой пополнения — переключаюсь на другой сайт.",
                             "screenshot": await _aipro_ss(page)}
             # таймаут: был процесс → вероятно прошла, просим проверить
             if _saw_processing:
@@ -1207,8 +1218,11 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
                         return {"success": True}
                     return {"success": False, "code_already_used": True,
                             "error": f"CDK {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
-                if "activation failed" in tl or "failed" in tl or "充值失败" in txt or "激活失败" in txt:
-                    return {"success": False, "error": "Сайт сообщил об ошибке активации (проверь вручную).",
+                if ("activation failed" in tl or "failed" in tl or "充值失败" in txt or "激活失败" in txt
+                        or "no available resource" in tl or "no resource" in tl or "no stock" in tl
+                        or "out of stock" in tl or "无可用" in txt or "库存不足" in txt or "insufficient" in tl):
+                    return {"success": False, "out_of_stock": True,
+                            "error": "vip666ai.com: нет ресурсов/сбой активации — переключаюсь на другой сайт.",
                             "screenshot": await _aipro_ss(page)}
             if _saw_processing:
                 return {"success": False, "needs_check": True,

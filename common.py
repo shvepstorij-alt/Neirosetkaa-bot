@@ -3698,6 +3698,8 @@ _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
 # Claude: активная цепочка активации по user_id (dedupe двойных кликов «Активировать»)
 _claude_chain_active: dict = {}
+# Claude: контекст «нужна проверка» по короткому токену (для кнопок админа: успех / другой сайт)
+_claude_needcheck: dict = {}
 # Claude: заказы, которым уже выдали авто-замену кода после жёсткого сбоя (кап = 1 раз/заказ)
 _claude_replaced_orders: set = set()
 _perplexity_double_warned: set = set()
@@ -5976,11 +5978,14 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
     await log_event(user_id, "claude_activation_ok", f"code={code} site={site_name} plan={plan_name}")
 
 
-async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name, plan_key):
+async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name, plan_key,
+                                       skip_providers=None):
     """Единая цепочка активации Claude по всем сайтам с непрерывной загрузкой у клиента.
     Порядок сайтов — по числу свободных кодов ЭТОГО тарифа (убыв.); 6661231.xyz наравне.
     Переключаемся ТОЛЬКО при сбое сайта / отсутствии стока; ошибка клиента (bad org) — стоп.
-    При переходе на следующий сайт ставим retrying=True → клиент видит «пробую повторную активацию»."""
+    При переходе на следующий сайт ставим retrying=True → клиент видит «пробую повторную активацию».
+    skip_providers — сайты, которые пропустить (напр. после ручного «не активировалась — другой сайт»)."""
+    _skip = set(skip_providers or ())
     _claude_job_results[ref] = {"status": "queued"}
     _report = []       # диагностика: что пробовали и почему упало
     _used_codes = []   # коды, пропущенные как «уже использованные» (для отчёта админу)
@@ -6000,7 +6005,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
         except Exception:
             _counts = {}
         _order = [p for p in CLAUDE_PROVIDER_ORDER
-                  if p in CLAUDE_PROVIDERS and _counts.get(p, 0) > 0]
+                  if p in CLAUDE_PROVIDERS and _counts.get(p, 0) > 0 and p not in _skip]
         _order.sort(key=lambda p: _counts.get(p, 0), reverse=True)
 
         _counts_txt = ", ".join(
@@ -6075,17 +6080,38 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                                       "Отмени текущую подписку на claude.ai/settings/billing и попробуй снова.")}
                         return
                     if _r.get("needs_check"):
-                        # активация вероятно прошла, но не подтверждена — НЕ фолбэсим (риск двойной),
-                        # код НЕ возвращаем (вероятно израсходован). Клиенту — нейтральный экран «обрабатывается».
+                        # активация вероятно прошла, но не подтверждена — НЕ фолбэсим авто (риск двойной),
+                        # код НЕ возвращаем. Клиенту — нейтральный экран; АДМИНУ — кнопки решения.
                         _claude_job_results[ref] = {"status": "done", "success": False, "pending": True,
                             "error": "Активация обрабатывается. Подписка появится в течение 5–10 минут. Если не появится — напиши Александру."}
-                        await _admin_fail_shot(
-                            f"⚠️ <b>Claude 6661231.xyz — нужна проверка</b>\n"
-                            f"👤 <code>{user_id}</code> · {plan_name}\n"
-                            f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n"
-                            f"Активация, вероятно, прошла, но бот не поймал подтверждение. "
-                            f"Проверь код по Org ID на сайте (Card Query).",
-                            _r.get("screenshot"))
+                        import uuid as _uuid_nc
+                        _tok = _uuid_nc.uuid4().hex[:12]
+                        _claude_needcheck[_tok] = {
+                            "user_id": user_id, "order_id": order_id, "code": _code, "org_id": org_id,
+                            "plan_name": plan_name, "plan_key": plan_key, "provider": _prov,
+                            "site": _site, "ref": ref}
+                        _cap = (f"⚠️ <b>Claude {_site} — нужна проверка</b>\n"
+                                f"👤 <code>{user_id}</code> · {plan_name}\n"
+                                f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n\n"
+                                f"Активация, вероятно, прошла, но бот не поймал подтверждение. "
+                                f"Проверь код по Org ID на сайте (Card Query), затем выбери:")
+                        _kb_nc = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="✅ Подписка активирована", callback_data=f"clnc_ok:{_tok}")],
+                            [InlineKeyboardButton(text="🔄 Не активировалась — другой сайт", callback_data=f"clnc_next:{_tok}")],
+                        ])
+                        try:
+                            _shot_nc = _r.get("screenshot")
+                            if _shot_nc:
+                                from aiogram.types import BufferedInputFile as _BIF_nc
+                                await bot.send_photo(ADMIN_ID, _BIF_nc(_shot_nc, filename="claude_check.png"),
+                                                     caption=_cap, parse_mode="HTML", reply_markup=_kb_nc)
+                            else:
+                                await bot.send_message(ADMIN_ID, _cap, parse_mode="HTML", reply_markup=_kb_nc)
+                        except Exception:
+                            try:
+                                await bot.send_message(ADMIN_ID, _cap, parse_mode="HTML", reply_markup=_kb_nc)
+                            except Exception:
+                                pass
                         return
                     if _r.get("code_already_used"):
                         _last_shot = _r.get("screenshot") or _last_shot
@@ -6168,6 +6194,65 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                 _claude_chain_active.pop(user_id, None)
         except Exception:
             pass
+
+
+@dp.callback_query(F.data.startswith("clnc_ok:"))
+async def clnc_ok_handler(cb: CallbackQuery):
+    """Админ подтвердил: подписка на сайте активирована → помечаем код, уведомляем клиента."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    _tok = cb.data.split(":", 1)[1]
+    _ctx = _claude_needcheck.pop(_tok, None)
+    if not _ctx:
+        await cb.answer("Контекст устарел (бот перезапускался). Помети код вручную.", show_alert=True); return
+    try:
+        await _claude_notify_success(_ctx["ref"], _ctx["code"], _ctx["user_id"], _ctx["order_id"],
+                                     _ctx["plan_name"], _ctx["org_id"], _ctx["site"], used_codes=None)
+    except Exception as _e:
+        logging.error(f"clnc_ok: {_e}")
+        await cb.answer("Ошибка при подтверждении, см. лог.", show_alert=True); return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтверждено — активирована", callback_data="noop")]]))
+    except Exception:
+        pass
+    await cb.answer("Готово: код помечен, клиент уведомлён ✅")
+
+
+@dp.callback_query(F.data.startswith("clnc_next:"))
+async def clnc_next_handler(cb: CallbackQuery):
+    """Админ подтвердил: на этом сайте НЕ активировалась → жжём код (во избежание двойной)
+    и переносим активацию на ДРУГОЙ сайт (пропуская текущий провайдер)."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    _tok = cb.data.split(":", 1)[1]
+    _ctx = _claude_needcheck.pop(_tok, None)
+    if not _ctx:
+        await cb.answer("Контекст устарел (бот перезапускался). Активируй вручную.", show_alert=True); return
+    await cb.answer("Переношу на другой сайт…")
+    # Активация НЕ прошла → возвращаем старый код в пул (он не израсходован), чтобы он
+    # достался другому клиенту. Новый код возьмётся из пула ДРУГОГО сайта (текущий пропускаем).
+    try:
+        await release_claude_code(_ctx["code"])
+    except Exception as _e:
+        logging.error(f"clnc_next release: {_e}")
+    # клиенту — снова «идёт активация», запускаем цепочку по ОСТАЛЬНЫМ сайтам
+    import uuid as _uuid_nx
+    _new_ref = _uuid_nx.uuid4().hex[:16]
+    _claude_chain_active[_ctx["user_id"]] = _new_ref
+    try:
+        await bot.send_message(_ctx["user_id"],
+            "⏳ Активация продолжается на другом сайте — подписка появится в течение нескольких минут.")
+    except Exception:
+        pass
+    asyncio.create_task(_run_claude_activation_chain(
+        _new_ref, _ctx["user_id"], _ctx["order_id"], _ctx["org_id"],
+        _ctx["plan_name"], _ctx["plan_key"], skip_providers={_ctx["provider"]}))
+    try:
+        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"🔄 Перенесено с {_ctx.get('site','')} на другой сайт", callback_data="noop")]]))
+    except Exception:
+        pass
 
 
 async def api_activate_claude_handler(request: web.Request) -> web.Response:
