@@ -27,7 +27,7 @@ from config import (
     UI_EMOJI_IDS, WEBAPP_BASE_URL, _BOT_TZ, _CLAUDE_WEBAPP_HTML_PATH, _WEBAPP_HTML_PATH, _activation_jobs, _active_generations,
     _anim_history, _check_hourly_limit, _classify_query_complexity, _claude_job_results, _get_conv, _gpt_retry_counts,
     _motion_history, _photo_history, _pool, _ref_bonus_for_count, _split_long_message, _strip_all_formatting,
-    _verify_tg_init_data, _video_history, activate_chatgpt, bot, build_system_prompt, claude_client,
+    _verify_tg_init_data, _video_history, activate_chatgpt, bot, dp, build_system_prompt, claude_client,
     clean_reply, pending_fk_payments, plan_name_to_key, strip_surrogates,
     CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER,
     claude_provider_base, claude_provider_name,
