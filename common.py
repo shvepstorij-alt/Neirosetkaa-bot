@@ -3716,6 +3716,11 @@ _claude_act_msg: dict = {}
 _claude_chain_active: dict = {}
 # Claude: контекст «нужна проверка» по короткому токену (для кнопок админа: успех / другой сайт)
 _claude_needcheck: dict = {}
+# Claude: счётчик АВТОПОВТОРОВ при «нет стока» по заказу (сток у провайдера «мигает»,
+# коды при этом остаются валидными — есть смысл подождать и попробовать снова).
+_claude_oos_retry: dict = {}
+_CLAUDE_OOS_RETRY_MAX = 3      # сколько раз пробуем автоматически
+_CLAUDE_OOS_RETRY_DELAY = 240  # пауза между автоповторами, сек (4 мин)
 # Claude: заказы, которым уже выдали авто-замену кода после жёсткого сбоя (кап = 1 раз/заказ)
 _claude_replaced_orders: set = set()
 _perplexity_double_warned: set = set()
@@ -6059,6 +6064,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
     # Держим их зарезервированными до конца прогона и освобождаем в finally.
     _oos_release = []
     _bpa_stock_cache = {}   # {product: available} — чтобы не дёргать /api/stock на каждый код
+    _oos_total = 0          # сколько раз получили «нет стока» (для решения об автоповторе)
     try:
         # предварительно зарезервированный при покупке код вернём в пул — выбор честный по стоку
         try:
@@ -6083,6 +6089,8 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                   if p in CLAUDE_PROVIDERS and _counts.get(p, 0) > 0
                   and p not in _skip and p not in _disabled]
         _order.sort(key=lambda p: _counts.get(p, 0), reverse=True)
+        logging.info(f"Claude chain {ref}: order={_order} counts={_counts} "
+                     f"disabled={sorted(_disabled)} skip={sorted(_skip)} plan_key={plan_key!r}")
 
         _counts_txt = ", ".join(
             f"{CLAUDE_PROVIDERS.get(p,{}).get('name',p)}={_counts.get(p,0)}"
@@ -6120,11 +6128,19 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             _dead_prods = set()   # продукты-регионы этого сайта, где сток = 0
             _skips = 0            # дешёвые пропуски по стоку (не считаются попытками активации)
             # перебираем коды ЭТОГО сайта, пока не найдём рабочий (при «код использован/битый»)
+            _got_code_here = False
             while _attempt < _MAX:
                 _code = await get_next_claude_code(plan_key, _prov)
-                if not _code or _code in _tried_codes:
-                    break   # коды этого сайта кончились (или пошли по кругу) → следующий сайт
+                if not _code:
+                    if not _got_code_here:
+                        _report.append(f"{_site}: свободных кодов в пуле не оказалось (план {plan_key})")
+                        logging.warning(f"Claude chain {ref}: {_prov} get_next вернул None (plan={plan_key})")
+                    break   # коды этого сайта кончились → следующий сайт
+                if _code in _tried_codes:
+                    _report.append(f"{_site}: коды закончились (повтор уже пробованного)")
+                    break
                 _tried_codes.add(_code)
+                _got_code_here = True
                 # ВНИМАНИЕ: предпроверку стока по /api/stock НЕ делаем. Проверено на практике:
                 # эндпоинт отдаёт available=0 по claude_pro_australia, а активация ЭТИМ ЖЕ кодом
                 # проходит успешно (сайт докупает по ходу и сам ретраит внутри заказа).
@@ -6149,6 +6165,9 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                     elif _bsite == "vip666":
                         from chatgpt_activation import activate_claude_vip666
                         _r = await activate_claude_vip666(_code, org_id, plan_key)
+                    elif _bsite == "bpa":
+                        from chatgpt_activation import activate_claude_bpa
+                        _r = await activate_claude_bpa(_code, org_id, plan_key)
                     else:
                         from chatgpt_activation import activate_claude_aipro
                         _r = await activate_claude_aipro(_code, org_id, plan_key)
@@ -6260,6 +6279,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         # а пока пробуем СЛЕДУЮЩИЙ код этого же сайта — но не больше _OOS_MAX раз.
                         _oos_release.append(_code)
                         _oos_count += 1
+                        _oos_total += 1
                         logging.warning(f"Claude chain {ref}: {_prov} нет стока под код {_code} ({_oos_count}/{_OOS_MAX})")
                         _report.append(
                             f"{_site}: код <code>{_code}</code> — нет стока под него "
@@ -6279,6 +6299,48 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                     break
             if _attempt >= _MAX:
                 break
+
+        # ── Все сайты исчерпаны. Если причина — «нет стока» (коды ЦЕЛЫ и валидны),
+        # не сдаёмся: сток у провайдера «мигает», планируем автоповтор через паузу.
+        if _oos_total > 0:
+            _r_done = _claude_oos_retry.get(order_id, 0)
+            if _r_done < _CLAUDE_OOS_RETRY_MAX:
+                _claude_oos_retry[order_id] = _r_done + 1
+                _mins = _CLAUDE_OOS_RETRY_DELAY // 60
+                _claude_job_results[ref] = {"status": "done", "success": False, "pending": True,
+                    "error": (f"У провайдера сейчас нет свободных мест. Твой код сохранён и остаётся "
+                              f"действительным — пробуем автоматически ещё раз через {_mins} мин.")}
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"⏳ <b>Временно нет свободных мест у провайдера</b>\n\n"
+                        f"Твой код сохранён и остаётся действительным. "
+                        f"Пробуем автоматически ещё раз через {_mins} мин — ничего делать не нужно.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⏳ <b>Claude — нет стока, запланирован автоповтор</b>\n"
+                        f"👤 <code>{user_id}</code> · {plan_name}\n"
+                        f"🧩 Org: <code>{org_id}</code>\n"
+                        f"Попытка <b>{_r_done + 1}/{_CLAUDE_OOS_RETRY_MAX}</b> через {_mins} мин. "
+                        f"Коды не сожжены — вернулись в пул.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+
+                async def _retry_later(_d=_CLAUDE_OOS_RETRY_DELAY):
+                    await asyncio.sleep(_d)
+                    import uuid as _uuid_rt
+                    _rref = _uuid_rt.uuid4().hex[:16]
+                    _claude_chain_active[user_id] = _rref
+                    await _run_claude_activation_chain(
+                        _rref, user_id, order_id, org_id, plan_name, plan_key)
+
+                asyncio.create_task(_retry_later())
+                return
 
         # все сайты исчерпаны
         _claude_job_results[ref] = {"status": "done", "success": False,
@@ -6302,12 +6364,17 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             [InlineKeyboardButton(text="🔄 Повторить автоактивацию", callback_data=f"clfail_retry:{_ftok}")],
             [InlineKeyboardButton(text="✅ Активировал вручную", callback_data=f"clfail_manual:{_ftok}")],
         ])
+        _plan_line = " → ".join(CLAUDE_PROVIDERS.get(p, {}).get("name", p) for p in _order) or "—"
+        _dis_line = (", ".join(CLAUDE_PROVIDERS.get(p, {}).get("name", p) for p in sorted(_disabled))
+                     if _disabled else "")
         _fail_txt = (
             f"❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>\n"
             f"👤 <code>{user_id}</code> · {plan_name}\n"
             f"🧩 Org ID: <code>{org_id}</code>\n\n"
-            f"📦 <b>Свободно по сайтам:</b>\n{_counts_lines}\n\n"
-            f"<b>Что пробовали:</b>\n{_rep_txt}\n\n"
+            f"📦 <b>Кодов в пуле бота</b> (не сток сайта):\n{_counts_lines}\n\n"
+            f"🧭 <b>Планировали обойти:</b> {_plan_line}\n"
+            + (f"⏸ <b>На паузе:</b> {_dis_line}\n" if _dis_line else "")
+            + f"\n<b>Что пробовали:</b>\n{_rep_txt}\n\n"
             f"Проверь и активируй вручную либо нажми кнопку 👇")
         try:
             if _last_shot:

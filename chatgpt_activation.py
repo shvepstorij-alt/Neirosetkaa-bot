@@ -1265,6 +1265,130 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
                 pass
 
 
+async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro") -> dict:
+    """Активация Claude через ФОРМУ bypriceactivate.pro (браузер, не API).
+    Зачем: их API строго проверяет пул региона кода (out of stock for claude_pro_australia),
+    а веб-форма активирует те же коды успешно — идём тем же путём, что и вручную.
+    Шаги: «Код активации» + «Organization ID» → «Активировать» → страница статуса
+    (running → done, «Активация завершена»)."""
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    url = "https://bypriceactivate.pro/"
+    logger.info(f"activate_claude_bpa(browser): cdk={cdk_code} org={org_id} plan={plan}")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-setuid-sandbox", "--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="ru-RU")
+        page = await context.new_page()
+        try:
+            await page.goto(url, timeout=45_000, wait_until="networkidle")
+            await asyncio.sleep(1.5)
+
+            # ── Поле 1: код активации ─────────────────────────────────────────
+            code_input = page.locator(
+                "input[placeholder*='XXXX'], input[placeholder*='код'], "
+                "input[placeholder*='Код'], input:visible").first
+            try:
+                await code_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле кода не найдено на bypriceactivate.pro.",
+                        "screenshot": await _aipro_ss(page)}
+            await code_input.fill("")
+            await code_input.fill(cdk_code)
+            await asyncio.sleep(0.4)
+
+            # ── Поле 2: Organization ID (второй видимый input) ────────────────
+            _org_filled = False
+            try:
+                _inps = page.locator("input:visible")
+                _n = await _inps.count()
+                for _i in range(_n):
+                    _el = _inps.nth(_i)
+                    _ph = ((await _el.get_attribute("placeholder")) or "").lower()
+                    if ("organization" in _ph or "org" in _ph or "-" in _ph and len(_ph) > 20):
+                        await _el.fill(""); await _el.fill(org_id); _org_filled = True; break
+                if not _org_filled and _n >= 2:
+                    _el = _inps.nth(1)
+                    await _el.fill(""); await _el.fill(org_id); _org_filled = True
+            except Exception:
+                pass
+            if not _org_filled:
+                return {"success": False, "error": "Поле Organization ID не найдено.",
+                        "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(0.4)
+
+            if not await _aipro_click(page, ["Активировать", "Activate", "激活"]):
+                return {"success": False, "error": "Кнопка «Активировать» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ── Ждём результат: running → done (сайт сам ретраит, до ~8 мин) ──
+            _saw_processing = False
+            for _ in range(160):   # 160 × 3с = 8 мин
+                await asyncio.sleep(3.0)
+                txt = await _aipro_body_text(page); tl = txt.lower()
+                if ("активация завершена" in tl or "подписка claude" in tl and "привязана" in tl
+                        or ">done<" in tl or "status: done" in tl or "успешно" in tl):
+                    logger.info(f"bpa(browser) успех: cdk={cdk_code} org={org_id}")
+                    return {"success": True}
+                if ("идёт активация" in tl or "идет активация" in tl or "running" in tl
+                        or "queued" in tl or "в очереди" in tl or "обычно занимает" in tl):
+                    _saw_processing = True
+                    continue
+                if ("уже использован" in tl or "already claimed" in tl or "already fulfilled" in tl
+                        or "код использован" in tl):
+                    return {"success": False, "code_already_used": True,
+                            "error": f"Код {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                if ("нет стока" in tl or "out of stock" in tl or "нет мест" in tl
+                        or "try later" in tl or "нет свободных" in tl):
+                    return {"success": False, "out_of_stock": True,
+                            "error": "bypriceactivate.pro: нет мест под этот код (форма).",
+                            "screenshot": await _aipro_ss(page)}
+                if ("currently subscribed" in tl or "уже есть подписка" in tl
+                        or "already subscribed" in tl):
+                    return {"success": False, "has_plan": True,
+                            "error": "У аккаунта уже есть активная подписка Claude.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("не найден" in tl and "код" in tl) or "code not found" in tl:
+                    return {"success": False, "code_already_used": True,
+                            "error": "Код не найден на сайте.", "screenshot": await _aipro_ss(page)}
+                if "organization id" in tl and ("неверн" in tl or "invalid" in tl or "8-4-4-4-12" in tl):
+                    return {"success": False, "bad_org": True,
+                            "error": "Сайт отклонил Organization ID — проверь и попробуй снова.",
+                            "screenshot": await _aipro_ss(page)}
+                if "failed" in tl or "не удалось" in tl or "ошибка активации" in tl:
+                    return {"success": False, "error": "Сайт сообщил об ошибке активации.",
+                            "screenshot": await _aipro_ss(page)}
+            if _saw_processing:
+                return {"success": False, "needs_check": True,
+                        "error": "Активация не подтвердилась за 8 мин, но сайт был в процессе. "
+                                 "Проверь на bypriceactivate.pro (Проверить код).",
+                        "screenshot": await _aipro_ss(page)}
+            return {"success": False, "error": "Активация на bypriceactivate.pro не завершилась.",
+                    "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_claude_bpa error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}",
+                    "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)

@@ -58,7 +58,12 @@ IPIAP_CLAUDE_API_SECRET = os.getenv("IPIAP_CLAUDE_API_SECRET", "")
 VIP666_AGENT_KEY  = os.getenv("VIP666_AGENT_KEY", "")
 VIP666_AGENT_BASE = os.getenv("VIP666_AGENT_BASE", "https://vip666ai.com")
 CLAUDE_PROVIDERS = {
-    "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
+    # bypriceactivate.pro — активация через ФОРМУ САЙТА (браузер). Их API строго проверяет
+    # пул региона кода и отдаёт «out of stock for claude_pro_australia», хотя та же форма
+    # активирует этот код успешно. Ходим тем же путём, что и вручную.
+    # Чтобы вернуться на API — поменяй "api" на "bpa" и убери "browser_site".
+    "bpa":  {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro",
+             "api": "browser", "browser_site": "bpa"},
     "root": {"name": "rootchatgptplus.com", "base": "https://rootchatgptplus.com",
              "api": "partner", "key": ROOT_CLAUDE_API_KEY},
     # vip666ai.com — АКТИВАЦИЯ ЧЕРЕЗ БРАУЗЕР (их agent-API часто сбоит). Playwright:
