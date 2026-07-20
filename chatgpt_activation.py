@@ -1418,6 +1418,175 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
                 pass
 
 
+async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") -> dict:
+    """Активация Claude на ios.891014.best (браузер). Тот же движок, что у 987ai.vip —
+    зеркала с ОБЩИМ стоком, поэтому домены перебираем как запасные, а пул кодов один.
+    Шаги: «Ключ карты» → «Проверить карту» → «ID пользователя» → «Далее»
+    → «Подтвердить пополнение» → «Обработка…» → «Пополнение успешно!»."""
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    _MIRRORS = ["https://ios.891014.best/", "https://www.987ai.vip/"]
+    logger.info(f"activate_claude_ios891: cdk={cdk_code} org={org_id} plan={plan}")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-setuid-sandbox", "--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="ru-RU")
+        page = await context.new_page()
+        try:
+            # ── Открываем сайт (при недоступности — зеркало) ──────────────────
+            _opened = False
+            for _u in _MIRRORS:
+                try:
+                    await page.goto(_u, timeout=40_000, wait_until="networkidle")
+                    await asyncio.sleep(1.5)
+                    _t0 = await _aipro_body_text(page)
+                    if "карт" in _t0.lower() or "卡" in _t0 or "claude" in _t0.lower():
+                        _opened = True
+                        logger.info(f"ios891: работаем на {_u}")
+                        break
+                except Exception as _e_open:
+                    logger.warning(f"ios891: {_u} не открылся: {_e_open}")
+            if not _opened:
+                return {"success": False, "error": "Ни одно зеркало сайта не открылось.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ── Шаг 1: ключ карты ─────────────────────────────────────────────
+            card_input = page.locator("input:visible").first
+            try:
+                await card_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле «Ключ карты» не найдено.",
+                        "screenshot": await _aipro_ss(page)}
+            await card_input.fill("")
+            await card_input.fill(cdk_code)
+            await asyncio.sleep(0.4)
+
+            if not await _aipro_click(page, ["Проверить карту", "验证卡密", "Verify"]):
+                return {"success": False, "error": "Кнопка «Проверить карту» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ждём «Карта проверена» либо ошибку карты
+            _step2 = False
+            for _ in range(24):
+                await asyncio.sleep(0.5)
+                _t = await _aipro_body_text(page); _tl = _t.lower()
+                if ("已被使用" in _t or "已使用" in _t or "использован" in _tl
+                        or "already used" in _tl):
+                    return {"success": False, "code_already_used": True,
+                            "error": f"Карта {cdk_code} уже использована.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("не найден" in _tl or "неверн" in _tl or "недействит" in _tl
+                        or "无效" in _t or "不存在" in _t or "invalid" in _tl):
+                    return {"success": False, "code_already_used": True,
+                            "error": "Сайт не принял карту (неверна/просрочена).",
+                            "screenshot": await _aipro_ss(page)}
+                if ("карта проверена" in _tl or "id пользователя" in _tl
+                        or "парсинг токена" in _tl or "卡密已验证" in _t):
+                    _step2 = True
+                    break
+            if not _step2:
+                return {"success": False, "error": "Сайт не перешёл к вводу ID пользователя.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ── Шаг 2: ID пользователя (тот же UUID, что Organization ID) ─────
+            _filled = False
+            try:
+                _inps = page.locator("input:visible")
+                _n = await _inps.count()
+                for _i in range(_n):
+                    _el = _inps.nth(_i)
+                    _ph = ((await _el.get_attribute("placeholder")) or "")
+                    _val = (await _el.input_value()) or ""
+                    # поле ID — пустое и НЕ то, где уже лежит код карты
+                    if _val.strip() != cdk_code and ("-" in _ph or _val.strip() == ""):
+                        await _el.fill(""); await _el.fill(org_id); _filled = True; break
+                if not _filled and _n >= 2:
+                    _el = _inps.nth(_n - 1)
+                    await _el.fill(""); await _el.fill(org_id); _filled = True
+            except Exception:
+                pass
+            if not _filled:
+                return {"success": False, "error": "Поле «ID пользователя» не найдено.",
+                        "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(0.4)
+
+            if not await _aipro_click(page, ["Далее", "Next", "下一步"]):
+                return {"success": False, "error": "Кнопка «Далее» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(1.5)
+
+            # ── Шаг 3: подтверждение пополнения ──────────────────────────────
+            if not await _aipro_click(page, ["Подтвердить пополнение", "确认充值", "Confirm"]):
+                return {"success": False, "error": "Кнопка «Подтвердить пополнение» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ── Ждём результат (до ~4 мин) ───────────────────────────────────
+            _saw_processing = False
+            for _ in range(80):   # 80 × 3с = 4 мин
+                await asyncio.sleep(3.0)
+                txt = await _aipro_body_text(page); tl = txt.lower()
+                if ("пополнение успешно" in tl or "успешно пополнен" in tl
+                        or "充值成功" in txt or "激活成功" in txt or "已激活" in txt):
+                    logger.info(f"ios891 успех: cdk={cdk_code} org={org_id}")
+                    return {"success": True}
+                if ("обработка" in tl or "处理中" in txt or "не пополняйте" in tl
+                        or "processing" in tl):
+                    _saw_processing = True
+                    continue
+                if ("已被使用" in txt or "已使用" in txt or "уже использован" in tl):
+                    if _saw_processing:
+                        return {"success": True}
+                    return {"success": False, "code_already_used": True,
+                            "error": f"Карта {cdk_code} уже использована.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("нет запасов" in tl or "запасы закончились" in tl or "库存不足" in txt
+                        or "无库存" in txt or "out of stock" in tl or "нет в наличии" in tl):
+                    return {"success": False, "out_of_stock": True,
+                            "error": "ios.891014.best: нет запасов — переключаюсь на другой сайт.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("уже есть подписка" in tl or "已订阅" in txt or "already subscribed" in tl
+                        or "участник" in tl and "не могут" in tl):
+                    return {"success": False, "has_plan": True,
+                            "error": "У аккаунта уже есть активная подписка Claude.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("id команды" in tl and "ошибк" in tl) or "неверный id" in tl or "格式错误" in txt:
+                    return {"success": False, "bad_org": True,
+                            "error": "Сайт отклонил ID пользователя — проверь, что это ID аккаунта, а не команды.",
+                            "screenshot": await _aipro_ss(page)}
+                if "не удалось" in tl or "ошибка" in tl or "失败" in txt:
+                    return {"success": False, "error": "Сайт сообщил об ошибке пополнения.",
+                            "screenshot": await _aipro_ss(page)}
+            if _saw_processing:
+                return {"success": False, "needs_check": True,
+                        "error": "Пополнение не подтвердилось за 4 мин, но сайт был в обработке. "
+                                 "Проверь на ios.891014.best.",
+                        "screenshot": await _aipro_ss(page)}
+            return {"success": False, "error": "Активация на ios.891014.best не завершилась.",
+                    "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_claude_ios891 error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}",
+                    "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)

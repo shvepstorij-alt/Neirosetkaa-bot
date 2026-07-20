@@ -80,9 +80,14 @@ CLAUDE_PROVIDERS = {
     # Сайт 6661231.xyz — API нет, активация через браузер (Playwright),
     # как у ChatGPT-провайдера aipro. Вводит CDK + Organization ID на странице #/claude.
     "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz", "api": "browser", "browser_site": "aipro"},
+    # ios.891014.best — тот же движок, что у 987ai.vip (зеркала с ОБЩИМ стоком, коды
+    # работают на обоих). Поэтому это ОДИН провайдер с одним пулом кодов; второй домен
+    # используется как запасной внутри активации. API нет — только браузер.
+    "ios891": {"name": "ios.891014.best", "base": "https://ios.891014.best",
+               "api": "browser", "browser_site": "ios891"},
 }
 # vip666 ПЕРЕД ipiap: у ipiap API сейчас работает нестабильно (по словам админа сайта).
-CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "vip666", "ipiap", "aipro"]   # порядок авто-фолбэка
+CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "vip666", "ipiap", "aipro", "ios891"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"
 
 # ─── Провайдеры авто-активации ChatGPT ────────────────────────────

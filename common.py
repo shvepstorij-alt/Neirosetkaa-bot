@@ -6180,6 +6180,9 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                     elif _bsite == "bpa":
                         from chatgpt_activation import activate_claude_bpa
                         _r = await activate_claude_bpa(_code, org_id, plan_key, force=force)
+                    elif _bsite == "ios891":
+                        from chatgpt_activation import activate_claude_ios891
+                        _r = await activate_claude_ios891(_code, org_id, plan_key)
                     else:
                         from chatgpt_activation import activate_claude_aipro
                         _r = await activate_claude_aipro(_code, org_id, plan_key)
