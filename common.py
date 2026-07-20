@@ -5914,7 +5914,10 @@ async def _claude_wait_result(provider: str, ref) -> str:
     cfg = CLAUDE_PROVIDERS.get(provider, {})
     api = cfg.get("api", "bpa")
     base = cfg.get("base", "")
-    for _ in range(36):  # ~3 мин на сайт: не успел — переключаемся на следующий (фолбэк)
+    # bpa сам ретраит внутри заказа (status=running, пока идут повторы; failed — только когда
+    # попытки исчерпаны). Ему даём больше времени — иначе обрываем активацию, которая бы прошла.
+    _iters = 84 if api == "bpa" else 36      # bpa ≈7 мин, остальные ≈3 мин
+    for _ in range(_iters):
         await asyncio.sleep(5)
         try:
             if api == "partner":
@@ -6122,26 +6125,10 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                 if not _code or _code in _tried_codes:
                     break   # коды этого сайта кончились (или пошли по кругу) → следующий сайт
                 _tried_codes.add(_code)
-                # bpa: регион зашит в префикс кода (AU-…/TR-…). Заранее проверяем сток именно
-                # этого региона — мёртвые пропускаем МГНОВЕННО, не тратя попытку активации.
-                if _api == "bpa":
-                    _prod = _bpa_product_for_code(plan_key, _code)
-                    if _prod:
-                        if _prod not in _dead_prods:
-                            _av = _bpa_stock_cache.get(_prod)
-                            if _av is None:
-                                _av = await _claude_bpa_stock_product(_cfg.get("base", ""), _prod)
-                                _bpa_stock_cache[_prod] = _av
-                            if _av == 0:
-                                _dead_prods.add(_prod)
-                                _report.append(f"{_site}: <b>{_prod}</b> — стока нет, пропускаю коды этого региона")
-                                logging.warning(f"Claude chain {ref}: {_prov} {_prod} stock=0 — пропуск региона")
-                        if _prod in _dead_prods:
-                            _oos_release.append(_code)   # код цел — вернём в пул в конце
-                            _skips += 1
-                            if _skips > 20:
-                                break   # слишком много мёртвых кодов → следующий сайт
-                            continue
+                # ВНИМАНИЕ: предпроверку стока по /api/stock НЕ делаем. Проверено на практике:
+                # эндпоинт отдаёт available=0 по claude_pro_australia, а активация ЭТИМ ЖЕ кодом
+                # проходит успешно (сайт докупает по ходу и сам ретраит внутри заказа).
+                # Единственная правда — ответ на конкретную попытку активации.
                 _attempt += 1
                 try:
                     await save_claude_pending_activation(user_id, _code, order_id, plan_key, plan_name, _prov)
@@ -6280,7 +6267,10 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         if _oos_count >= _OOS_MAX:
                             _report.append(f"{_site}: стока нет и по другим кодам — перехожу на следующий сайт")
                             break   # сайт пуст → следующий сайт
-                        continue   # СЛЕДУЮЩИЙ код того же сайта (код возвращён в пул)
+                        # Гейт стока у сайта моментальный (сток «мигает»): даём паузу,
+                        # чтобы следующая попытка попала в момент, когда место освободилось.
+                        await asyncio.sleep(6)
+                        continue   # СЛЕДУЮЩИЙ код того же сайта (код вернём в пул в конце)
                     # network / other (403 и т.п.) — код цел, вернём; СМЕНА сайта
                     try: await release_claude_code(_code)
                     except Exception: pass
