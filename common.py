@@ -3365,12 +3365,24 @@ async def _run_activation_job(
                     pass
             result = await _do_activate(code)
 
-        # ── Авто-фолбэк при «нет стока» на сайте: заказ уходит на другой сайт ──
-        # (сработает, только если фолбэк включён и у другого сайта есть коды)
-        if not result.get("success") and result.get("out_of_stock"):
+        # ── Авто-фолбэк при СБОЕ САЙТА: нет стока, таймаут, сайт лежит (Cloudflare 522),
+        # браузер не поднялся и т.п. → уходим на другой сайт с его кодом.
+        # НЕ фолбэсим ошибки КЛИЕНТА (протухшая сессия, «нужна проверка», подтверждение) —
+        # там смена сайта не поможет, а «код использован» обрабатывается циклом выше.
+        def _gpt_site_failure(_res):
+            if _res.get("success"):
+                return False
+            if (_res.get("token_invalid") or _res.get("needs_check")
+                    or _res.get("needs_force_confirm") or _res.get("code_already_used")):
+                return False
+            return True
+
+        if _gpt_site_failure(result):
             _plan_key_oos = plan_name_to_key(plan_name)
+            _fail_reason = (result.get("error") or "сбой сайта")[:140]
+            _tried_sites = [provider]
             for _np in await _gpt_provider_order():
-                if _np == provider:
+                if _np in _tried_sites:
                     continue
                 _nc = await get_next_gpt_code(_plan_key_oos, _np)
                 if not _nc:
@@ -3379,26 +3391,34 @@ async def _run_activation_job(
                     await release_gpt_code(code)   # прежний код валиден — вернём в пул его сайта
                 except Exception:
                     pass
+                _tried_sites.append(_np)
                 provider = _np
                 code = _nc
                 await save_pending_activation(user_id, code, order_id, _plan_key_oos, plan_name, provider)
+                # клиенту показываем непрерывную загрузку с пометкой «пробую ещё раз»
+                _activation_jobs[job_id] = {"status": "pending", "retrying": True}
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🔀 <b>ChatGPT — авто-переключение сайта</b>\n"
-                        f"У прежнего сайта нет стока ({plan_name}). Ушли на <b>{gpt_provider_name(_np)}</b>.",
+                        f"🔀 <b>ChatGPT — авто-переключение сайта</b> ({plan_name})\n"
+                        f"Прежний сайт не сработал: {_fail_reason}\n"
+                        f"Ушли на <b>{gpt_provider_name(_np)}</b>.",
                         parse_mode="HTML")
                 except Exception:
                     pass
                 result = await _do_activate(code)
-                if result.get("success") or not result.get("out_of_stock"):
+                if not _gpt_site_failure(result):
                     break
-            if not result.get("success") and result.get("out_of_stock"):
+                _fail_reason = (result.get("error") or "сбой сайта")[:140]
+            if _gpt_site_failure(result):
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🚨 <b>ChatGPT — нет стока НИ НА ОДНОМ сайте</b> ({plan_name})\n"
-                        f"👤 <code>{user_id}</code> — активируй вручную.",
+                        f"🚨 <b>ChatGPT — не удалось НИ НА ОДНОМ сайте</b> ({plan_name})\n"
+                        f"👤 <code>{user_id}</code>\n"
+                        f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
+                        f"❗️ Последняя ошибка: {_fail_reason}\n"
+                        f"Активируй вручную.",
                         parse_mode="HTML")
                 except Exception:
                     pass
