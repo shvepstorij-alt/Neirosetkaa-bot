@@ -4889,9 +4889,15 @@ async def _claude_bpa_redeem(base: str, code: str, org_id: str) -> dict:
                     return {"ok": True, "ref": str(_oid)}
                 if _r.status == 409:
                     _det = _d.get("detail", "")
-                    if "already claimed" in _det:
+                    _detl = (_det or "").lower()
+                    # ЭТОТ код уже израсходован → берём СЛЕДУЮЩИЙ код того же сайта
+                    # (сайт отдаёт разные формулировки: already claimed / already fulfilled / used)
+                    if ("already claimed" in _detl or "already fulfilled" in _detl
+                            or "fulfilled" in _detl or "already used" in _detl
+                            or "already redeemed" in _detl or "code used" in _detl):
                         return {"ok": False, "err_kind": "already_claimed", "err_msg": _det}
-                    if "out of stock" in _det:
+                    if ("out of stock" in _detl or "no stock" in _detl
+                            or "no available" in _detl or "insufficient" in _detl):
                         return {"ok": False, "err_kind": "out_of_stock", "err_msg": _det}
                     if _blob_has_plan(_det):
                         return {"ok": False, "err_kind": "has_plan", "err_msg": _det}

@@ -994,6 +994,16 @@ async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -
             await page.goto(url, timeout=45_000, wait_until="networkidle")
             await asyncio.sleep(1.5)
 
+            # Переключаем интерфейс в English (иначе при китайском UI английские маркеры шагов
+            # не сработают и бот «не увидит» переход к Organization ID).
+            try:
+                _en = page.locator("text=/^\\s*EN\\s*$/i").first
+                if await _en.count() and await _en.is_visible():
+                    await _en.click(timeout=5000)
+                    await asyncio.sleep(1.2)
+            except Exception:
+                pass
+
             # ── Шаг 1: код активации ──────────────────────────────────────────
             code_input = page.locator(
                 "input[placeholder*='activation code'], input[placeholder*='AI-DEMO'], "
@@ -1022,7 +1032,9 @@ async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -
                     # код невалиден/просрочен → берём следующий (как not_found)
                     return {"success": False, "code_already_used": True,
                             "error": "Код не принят сайтом (invalid/expired).", "screenshot": await _aipro_ss(page)}
-                if "confirm recharge" in _tl or "organization id" in _tl:
+                # маркеры шага 2 — и английские, и КИТАЙСКИЕ (сайт может остаться на 中文)
+                if ("confirm recharge" in _tl or "organization id" in _tl
+                        or "确认充值" in _t or "组织" in _t or "充值账号" in _t or "已验证" in _t):
                     _step2 = True
                     break
             if not _step2:
@@ -1133,6 +1145,16 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
             await page.goto(url, timeout=45_000, wait_until="networkidle")
             await asyncio.sleep(1.5)
 
+            # Переключаем интерфейс в English (сайт по умолчанию может открыться на китайском,
+            # тогда английские маркеры шагов не сработают и бот «не увидит» шаг 2).
+            try:
+                _en = page.locator("text=/^\\s*EN\\s*$/i").first
+                if await _en.count() and await _en.is_visible():
+                    await _en.click(timeout=5000)
+                    await asyncio.sleep(1.2)
+            except Exception:
+                pass
+
             # ── Шаг 1: Card code ──────────────────────────────────────────────
             card_input = page.locator(
                 "input[placeholder*='card'], input[placeholder*='Card'], "
@@ -1160,7 +1182,10 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
                         or "无效" in _t or "不存在" in _t or "已过期" in _t or "expired" in _tl:
                     return {"success": False, "code_already_used": True,
                             "error": "Карта не принята сайтом (invalid/expired).", "screenshot": await _aipro_ss(page)}
-                if "card verified" in _tl or "organization id" in _tl or "target account" in _tl:
+                # маркеры шага 2 — и английские, и КИТАЙСКИЕ (сайт может остаться на 中文)
+                if ("card verified" in _tl or "organization id" in _tl or "target account" in _tl
+                        or "充值账号" in _t or "组织" in _t or "已验证" in _t or "卡密已验证" in _t
+                        or "确认组织" in _t):
                     _step2 = True
                     break
             if not _step2:
