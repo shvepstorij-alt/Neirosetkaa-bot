@@ -775,7 +775,16 @@ function renderClProv(dd,svc){
   h+='<div class="sub" style="margin:0 0 8px">Активный сайт: через него идут активации и берутся коды. При нуле стока и включённом фолбэке — авто-переход на другой сайт.</div>';
   dd.providers.forEach(function(p){
     var on=(p.key===dd.activeProvider);
-    h+='<div class="row" style="cursor:pointer" onclick="setClaudeProvider(\''+p.key+'\',\''+svc+'\')"><span class="ic">'+(on?'🟢':'⚪️')+'</span><div><div class="lbl2" style="font-size:13px">'+p.name+'</div><div class="sub">'+(on?'активный · ':'')+'свободно: '+p.free+' шт</div></div>'+(on?'<span class="sub" style="margin-left:auto">✓</span>':'')+'</div>';
+    var off=!!p.disabled;
+    var ic=off?'⏸':(on?'🟢':'⚪️');
+    var sub=(off?'НА ПАУЗЕ · ':(on?'активный · ':''))+'свободно: '+p.free+' шт';
+    h+='<div class="row" style="cursor:pointer'+(off?';opacity:.55':'')+'">'
+      +'<span class="ic" onclick="setClaudeProvider(\''+p.key+'\',\''+svc+'\')">'+ic+'</span>'
+      +'<div style="flex:1" onclick="setClaudeProvider(\''+p.key+'\',\''+svc+'\')">'
+      +'<div class="lbl2" style="font-size:13px">'+p.name+'</div><div class="sub">'+sub+'</div></div>'
+      +'<button class="btn sec" style="margin:0;padding:4px 10px;font-size:12px;width:auto" '
+      +'onclick="event.stopPropagation();toggleClaudeProvOff(\''+p.key+'\',\''+svc+'\','+(off?'false':'true')+')">'
+      +(off?'▶️ Вернуть':'⏸ Пауза')+'</button></div>';
   });
   h+='<div class="row" style="cursor:default"><span class="ic">🔁</span><div><div class="lbl2" style="font-size:13px">Авто-фолбэк</div><div class="sub">переключаться при нуле стока</div></div><span class="sw'+(dd.failover?' on':'')+'" onclick="toggleClaudeFailover(this,\''+svc+'\')"><b></b></span></div>';
   h+='</div>';
@@ -783,6 +792,14 @@ function renderClProv(dd,svc){
 }
 function setClaudeProvider(prov,svc){
   api('/api/admin/claude-provider',{kind:'set',provider:prov,service:svc}).then(function(d){toast(d.ok?'Активный сайт изменён':(d.msg||'Ошибка'));if(d.ok)loadMiniApp(svc);});
+}
+function toggleClaudeProvOff(prov,svc,off){
+  /* Пауза сайта: выключенный сайт полностью исключается из цепочки активации */
+  api('/api/admin/claude-provider',{kind:'toggle',provider:prov,off:off,service:svc}).then(function(d){
+    if(!d.ok){toast(d.msg||'Ошибка');return;}
+    toast(off?'Сайт поставлен на паузу':'Сайт возвращён в цепочку');
+    loadMiniApp(svc);
+  });
 }
 function toggleClaudeFailover(elm,svc){
   var on=!elm.classList.contains('on');elm.classList.toggle('on');

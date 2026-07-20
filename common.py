@@ -2858,8 +2858,11 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                 active = _def
             failover = (await get_setting(f"{_pset}_failover", "1") or "1") == "1"
             freeby = await _countfn()
+            _dis_raw = await get_setting(f"{_pset}_disabled", "") or ""
+            _dis_set = {x for x in _dis_raw.split(",") if x}
             resp["providers"] = [
-                {"key": p, "name": _pname(p), "free": int(freeby.get(p, 0))} for p in _order]
+                {"key": p, "name": _pname(p), "free": int(freeby.get(p, 0)),
+                 "disabled": (p in _dis_set)} for p in _order]
             resp["activeProvider"] = active
             resp["failover"] = failover
             pend = []
@@ -2922,6 +2925,19 @@ async def api_admin_claude_provider_handler(request: web.Request) -> web.Respons
             await set_setting(f"{_set}_provider", prov)
         elif kind == "failover":
             await set_setting(f"{_set}_failover", "1" if body.get("on") else "0")
+        elif kind == "toggle":
+            # Пауза/возврат сайта в цепочку активации (когда нет кодов или сайт сломан).
+            prov = str(body.get("provider", ""))
+            if prov not in _reg:
+                return web.json_response({"ok": False, "msg": "Неизвестный сайт"})
+            _cur = await get_setting(f"{_set}_disabled", "") or ""
+            _dis = {p for p in _cur.split(",") if p}
+            if body.get("off"):          # off=true → выключить (пауза)
+                _dis.add(prov)
+            else:                        # иначе → включить обратно
+                _dis.discard(prov)
+            await set_setting(f"{_set}_disabled", ",".join(sorted(_dis)))
+            return web.json_response({"ok": True, "disabled": sorted(_dis)})
         else:
             return web.json_response({"ok": False})
         return web.json_response({"ok": True})
@@ -6034,8 +6050,15 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             _counts = await count_claude_free_by_provider_plan(plan_key)
         except Exception:
             _counts = {}
+        # сайты, поставленные админом на паузу в админке (claude_disabled)
+        try:
+            _dis_raw = await get_setting("claude_disabled", "") or ""
+            _disabled = {p for p in _dis_raw.split(",") if p}
+        except Exception:
+            _disabled = set()
         _order = [p for p in CLAUDE_PROVIDER_ORDER
-                  if p in CLAUDE_PROVIDERS and _counts.get(p, 0) > 0 and p not in _skip]
+                  if p in CLAUDE_PROVIDERS and _counts.get(p, 0) > 0
+                  and p not in _skip and p not in _disabled]
         _order.sort(key=lambda p: _counts.get(p, 0), reverse=True)
 
         _counts_txt = ", ".join(
@@ -6064,15 +6087,13 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             _api = _cfg.get("api", "bpa")
             _site = _cfg.get("name", _prov)
             _oos_count = 0      # сколько кодов подряд дали «нет стока» на этом сайте
-            _OOS_MAX = 3        # больше 3 не пробуем — сток у сайта реально пуст, идём дальше
-            # bypriceactivate.pro умеет отдавать сток заранее (GET /api/stock/{product}) —
-            # если 0, не тратим попытки на перебор кодов, сразу следующий сайт.
-            if _api == "bpa":
-                _av = await _claude_bpa_stock(_cfg.get("base", ""), plan_key)
-                if _av == 0:
-                    _report.append(f"{_site}: по данным сайта стока нет (available=0) — пропускаю сайт")
-                    logging.warning(f"Claude chain {ref}: {_prov} stock=0 — пропуск сайта")
-                    continue
+            _OOS_MAX = 5        # коды bpa бывают на РАЗНЫЕ регионы (turkey/australia/egypt),
+                                # поэтому даём несколько попыток: под один регион стока нет,
+                                # под другой — есть. Больше 5 не пробуем, идём на следующий сайт.
+            # ВАЖНО: предпроверку стока по /api/stock/{product} НЕ делаем — коды bpa
+            # резолвятся в РЕГИОНАЛЬНЫЕ продукты (claude_pro_turkey и т.п.), а не в базовый
+            # claude_pro. Проверка базового продукта врала (0 при 493 у turkey) и зря
+            # пропускала сайт. Реальную доступность узнаём по ответу на конкретный код.
             # перебираем коды ЭТОГО сайта, пока не найдём рабочий (при «код использован/битый»)
             while _attempt < _MAX:
                 _code = await get_next_claude_code(plan_key, _prov)
