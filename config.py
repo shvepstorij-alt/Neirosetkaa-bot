@@ -99,8 +99,10 @@ CLAUDE_DEFAULT_PROVIDER = "bpa"
 GPT_PROVIDERS = {
     "987ai": {"name": "987ai.vip",   "base": "https://www.987ai.vip"},
     "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz"},
+    # kkqqai.com — CDK + ChatGPT Session, шаги 验证 CDK → 校验 AuthSession → 确认充值.
+    "kkqq":  {"name": "kkqqai.com",  "base": "https://kkqqai.com"},
 }
-GPT_PROVIDER_ORDER   = ["987ai", "aipro"]
+GPT_PROVIDER_ORDER   = ["987ai", "aipro", "kkqq"]
 GPT_DEFAULT_PROVIDER = "987ai"
 
 def gpt_provider_name(provider: str) -> str:

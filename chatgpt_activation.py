@@ -1418,6 +1418,177 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
                 pass
 
 
+async def activate_chatgpt_kkqq(cdk_code: str, session_json: str) -> dict:
+    """Активация ChatGPT Plus на kkqqai.com (браузер).
+    Шаги: CDK → «验证 CDK» → вставка ChatGPT Session → «下一步»
+    → «确认充值» → «充值成功» (订阅有效期至 …).
+    Формат ответа как у activate_chatgpt_aipro:
+      {success, email, error, code_already_used, out_of_stock, token_invalid, needs_check, screenshot}."""
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    url = "https://kkqqai.com/"
+    logger.info(f"activate_chatgpt_kkqq: cdk={cdk_code}")
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-setuid-sandbox", "--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="en-US")
+        page = await context.new_page()
+        try:
+            await page.goto(url, timeout=45_000, wait_until="networkidle")
+            await asyncio.sleep(1.5)
+
+            # ── Шаг 1: CDK ────────────────────────────────────────────────────
+            cdk_input = page.locator("input:visible").first
+            try:
+                await cdk_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле CDK не найдено на kkqqai.com.",
+                        "screenshot": await _aipro_ss(page)}
+            await cdk_input.fill("")
+            await cdk_input.fill(cdk_code)
+            await asyncio.sleep(0.4)
+
+            if not await _aipro_click(page, ["验证 CDK", "验证CDK", "验证", "Verify CDK", "Verify"]):
+                return {"success": False, "error": "Кнопка «验证 CDK» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ждём «激活码验证通过» либо ошибку кода
+            _step2 = False
+            for _ in range(24):   # ~12 сек
+                await asyncio.sleep(0.5)
+                _t = await _aipro_body_text(page); _tl = _t.lower()
+                if "已被使用" in _t or "已使用" in _t or "already used" in _tl:
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDK {cdk_code} уже использован.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("无效" in _t or "不存在" in _t or "已过期" in _t
+                        or "invalid" in _tl or "not found" in _tl or "expired" in _tl):
+                    return {"success": False, "code_already_used": True,
+                            "error": "Код не принят сайтом (неверен/просрочен).",
+                            "screenshot": await _aipro_ss(page)}
+                if ("验证通过" in _t or "校验 authsession" in _tl or "authsession" in _tl):
+                    _step2 = True
+                    break
+            if not _step2:
+                return {"success": False, "error": "Сайт не перешёл к шагу Session после проверки CDK.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ── Шаг 2: ChatGPT Session (textarea) ─────────────────────────────
+            try:
+                sess_area = page.locator("textarea:visible").first
+                await sess_area.wait_for(state="visible", timeout=10_000)
+                await sess_area.fill("")
+                await sess_area.fill(session_json)
+            except Exception:
+                return {"success": False, "error": "Поле ChatGPT Session не найдено.",
+                        "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(0.6)
+
+            if not await _aipro_click(page, ["下一步", "Next", "Далее"]):
+                return {"success": False, "error": "Кнопка «下一步» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ждём шаг подтверждения (确认充值) либо отказ по сессии
+            _step3 = False
+            for _ in range(30):   # ~15 сек
+                await asyncio.sleep(0.5)
+                _t = await _aipro_body_text(page); _tl = _t.lower()
+                # ВАЖНО: не ловим слово «session» — оно есть в статичной подписи «ChatGPT Session»
+                if ("解析失败" in _t or "格式错误" in _t or "登录失效" in _t or "会话已过期" in _t
+                        or "认证失败" in _t or "session expired" in _tl or "session invalid" in _tl
+                        or "token expired" in _tl or "unauthorized" in _tl):
+                    return {"success": False, "token_invalid": True,
+                            "error": "Сайт отклонил Session JSON (просрочен/битый). Нужен свежий.",
+                            "screenshot": await _aipro_ss(page)}
+                if "确认充值信息" in _t or "当前套餐" in _t or "账号" in _t:
+                    _step3 = True
+                    break
+            if not _step3:
+                return {"success": False, "error": "Сайт не перешёл к подтверждению пополнения.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # аккаунт клиента (для отчёта) — со страницы либо из session
+            _email = _email_from_session(session_json)
+            try:
+                import re as _re_k
+                _m = _re_k.search(r'[\w.\-+]+@[\w.\-]+\.\w+', await _aipro_body_text(page))
+                if _m:
+                    _email = _m.group(0)
+            except Exception:
+                pass
+
+            if not await _aipro_click(page, ["确认充值", "Confirm", "Подтвердить"]):
+                return {"success": False, "error": "Кнопка «确认充值» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ── Ждём результат (до ~3 мин) ───────────────────────────────────
+            _saw_processing = False
+            for _ in range(60):   # 60 × 3с = 3 мин
+                await asyncio.sleep(3.0)
+                txt = await _aipro_body_text(page); tl = txt.lower()
+                if "充值成功" in txt or "激活成功" in txt or "已激活" in txt or "订阅有效期至" in txt:
+                    logger.info(f"kkqq успех: cdk={cdk_code} email={_email}")
+                    return {"success": True, "email": _email}
+                if ("处理中" in txt or "充值中" in txt or "提交中" in txt or "请稍候" in txt
+                        or "processing" in tl or "please wait" in tl):
+                    _saw_processing = True
+                    continue
+                if "已被使用" in txt or "已使用" in txt or "already used" in tl:
+                    if _saw_processing:
+                        return {"success": True, "email": _email}
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDK {cdk_code} уже использован.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("库存不足" in txt or "暂无库存" in txt or "无库存" in txt or "无可用" in txt
+                        or "out of stock" in tl or "no stock" in tl):
+                    return {"success": False, "out_of_stock": True,
+                            "error": "kkqqai.com: нет стока — переключаюсь на другой сайт.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("已是会员" in txt or "已订阅" in txt or "already subscribed" in tl
+                        or "already a member" in tl):
+                    return {"success": False, "token_invalid": False,
+                            "error": "У аккаунта уже есть активная подписка ChatGPT Plus.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("登录失效" in txt or "会话已过期" in txt or "认证失败" in txt
+                        or "session expired" in tl or "unauthorized" in tl):
+                    return {"success": False, "token_invalid": True,
+                            "error": "Сессия клиента устарела — нужен свежий Session JSON.",
+                            "screenshot": await _aipro_ss(page)}
+                if "充值失败" in txt or "激活失败" in txt or "failed" in tl:
+                    return {"success": False,
+                            "error": "Сайт сообщил о неудаче пополнения (充值失败).",
+                            "screenshot": await _aipro_ss(page)}
+            if _saw_processing:
+                return {"success": False, "needs_check": True,
+                        "error": "Активация не подтвердилась за 3 мин, но сайт был в обработке. "
+                                 "Проверь на kkqqai.com перед повторной активацией.",
+                        "screenshot": await _aipro_ss(page)}
+            return {"success": False, "error": "Активация на kkqqai.com не завершилась.",
+                    "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_chatgpt_kkqq error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}",
+                    "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") -> dict:
     """Активация Claude на ios.891014.best (браузер). Тот же движок, что у 987ai.vip —
     зеркала с ОБЩИМ стоком, поэтому домены перебираем как запасные, а пул кодов один.
