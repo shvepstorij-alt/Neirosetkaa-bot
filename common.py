@@ -3381,6 +3381,9 @@ async def _run_activation_job(
             _plan_key_oos = plan_name_to_key(plan_name)
             _fail_reason = (result.get("error") or "сбой сайта")[:140]
             _tried_sites = [provider]
+            # запоминаем сообщение о переключении — в него допишем ИТОГ активации
+            _switch_msg_id = None
+            _switch_text = ""
             for _np in await _gpt_provider_order():
                 if _np in _tried_sites:
                     continue
@@ -3397,31 +3400,29 @@ async def _run_activation_job(
                 await save_pending_activation(user_id, code, order_id, _plan_key_oos, plan_name, provider)
                 # клиенту показываем непрерывную загрузку с пометкой «пробую ещё раз»
                 _activation_jobs[job_id] = {"status": "pending", "retrying": True}
+                _switch_text = (
+                    f"🔀 <b>ChatGPT — авто-переключение сайта</b> ({plan_name})\n"
+                    f"Прежний сайт не сработал: {_fail_reason}\n"
+                    f"Ушли на <b>{gpt_provider_name(_np)}</b>.")
                 try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🔀 <b>ChatGPT — авто-переключение сайта</b> ({plan_name})\n"
-                        f"Прежний сайт не сработал: {_fail_reason}\n"
-                        f"Ушли на <b>{gpt_provider_name(_np)}</b>.",
-                        parse_mode="HTML")
+                    _sw_msg = await bot.send_message(ADMIN_ID, _switch_text, parse_mode="HTML")
+                    _switch_msg_id = _sw_msg.message_id
                 except Exception:
-                    pass
+                    _switch_msg_id = None
                 result = await _do_activate(code)
                 if not _gpt_site_failure(result):
                     break
                 _fail_reason = (result.get("error") or "сбой сайта")[:140]
             if _gpt_site_failure(result):
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🚨 <b>ChatGPT — не удалось НИ НА ОДНОМ сайте</b> ({plan_name})\n"
-                        f"👤 <code>{user_id}</code>\n"
-                        f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
-                        f"❗️ Последняя ошибка: {_fail_reason}\n"
-                        f"Активируй вручную.",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
+                # НОВОЕ сообщение о неудаче + скриншот последнего сайта
+                await _admin_fail_shot(
+                    f"🚨 <b>ChatGPT — не удалось НИ НА ОДНОМ сайте</b> ({plan_name})\n"
+                    f"👤 <code>{user_id}</code>\n"
+                    f"🔑 Код: <code>{code}</code>\n"
+                    f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
+                    f"❗️ Последняя ошибка: {_fail_reason}\n"
+                    f"Активируй вручную.",
+                    result.get("screenshot"))
 
         if result.get("success"):
             _email = result.get("email") or _extract_email_from_token(access_token)
@@ -3504,6 +3505,21 @@ async def _run_activation_job(
                         f"📅 Прошлая подписка действовала до: <b>{_pu}</b>\n"
                         f"⏱ Последняя активация: <b>{_used_at}</b>"
                     )
+                # Если было авто-переключение сайта — дописываем ИТОГ в то самое сообщение,
+                # чтобы в одном месте было видно: куда ушли и чем закончилось.
+                try:
+                    if locals().get("_switch_msg_id"):
+                        await bot.edit_message_text(
+                            _switch_text
+                            + "\n\n✅ <b>Активация успешна</b>\n"
+                              f"👤 Клиент: <b>{_tg_name}</b> (<code>{user_id}</code>)\n"
+                              f"📧 Почта: <b>{_email or '—'}</b>\n"
+                              f"🔑 Ключ: <code>{code}</code>\n"
+                              f"🌐 Сайт активации: <b>{gpt_provider_name(provider)}</b>\n"
+                              f"⏱ {_used_at}",
+                            chat_id=ADMIN_ID, message_id=_switch_msg_id, parse_mode="HTML")
+                except Exception as _e_sw:
+                    logging.warning(f"edit switch msg: {_e_sw}")
                 _gu = _gpt_used_codes if "_gpt_used_codes" in dir() else []
                 if _gu:
                     _uc = "\n".join(f"   • <code>{c}</code>" for c in _gu)
