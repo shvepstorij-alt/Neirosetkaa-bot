@@ -1265,7 +1265,7 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
                 pass
 
 
-async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro") -> dict:
+async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", force: bool = False) -> dict:
     """Активация Claude через ФОРМУ bypriceactivate.pro (браузер, не API).
     Зачем: их API строго проверяет пул региона кода (out of stock for claude_pro_australia),
     а веб-форма активирует те же коды успешно — идём тем же путём, что и вручную.
@@ -1343,6 +1343,35 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro") -> 
                         or ">done<" in tl or "status: done" in tl or "успешно" in tl):
                     logger.info(f"bpa(browser) успех: cdk={cdk_code} org={org_id}")
                     return {"success": True}
+                # ЭКРАН ПОДТВЕРЖДЕНИЯ: на этот Org ID уже были активации, сайт спрашивает,
+                # пополнять ли. Проверяем РАНЬШЕ «идёт активация» — иначе зависнем до таймаута.
+                if ("подтвердите активацию" in tl or "это мой аккаунт" in tl
+                        or "уже было успешных активаций" in tl or "confirm activation" in tl):
+                    _prev = ""
+                    try:
+                        import re as _re_p
+                        _m = _re_p.search(r"(claude_[a-z0-9_]+)\s*([\d.]{8,10},?\s*[\d:]{5,8})?", txt)
+                        if _m:
+                            _prev = (_m.group(0) or "").strip()
+                    except Exception:
+                        pass
+                    if not force:
+                        _shot = await _aipro_ss(page)
+                        try:
+                            await _aipro_click(page, ["Отмена, проверю ID", "Отмена", "Cancel"])
+                        except Exception:
+                            pass
+                        return {"success": False, "needs_force_confirm": True,
+                                "already_account": org_id, "already_until": _prev,
+                                "error": ("На этот Organization ID уже была активация"
+                                          + (f" ({_prev})" if _prev else "")
+                                          + ". Нужно подтверждение, что аккаунт твой — тогда подписка пополнится."),
+                                "screenshot": _shot}
+                    logger.warning(f"bpa(browser) подтверждение пополнения (force): org={org_id}")
+                    await _aipro_click(page, ["Да, это мой аккаунт", "Да, это мой", "пополнить", "Продолжить"])
+                    _saw_processing = True
+                    await asyncio.sleep(2.0)
+                    continue
                 if ("идёт активация" in tl or "идет активация" in tl or "running" in tl
                         or "queued" in tl or "в очереди" in tl or "обычно занимает" in tl):
                     _saw_processing = True

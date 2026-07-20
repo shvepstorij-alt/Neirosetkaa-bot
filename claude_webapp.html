@@ -601,6 +601,7 @@ var tg        = null;
 var codeInput = null;
 var s1Btn     = null;
 var UUID_RE   = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var forceMode = false;   // ?force=1 — клиент подтвердил пополнение поверх прежней активации
 
 // ─── Навигация ───────────────────────────────────────────────────
 function showScreen(id) {
@@ -670,6 +671,27 @@ function showProcessing(msg) {
   showScreen('s6');
 }
 
+/* Сайт просит подтвердить пополнение: на этот Org ID уже была активация.
+   Показываем предупреждение и кнопку — по ней активация продолжается с force=1. */
+function showForceConfirm(org, prev) {
+  if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('warning'); } catch(e) {}
+  var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '⚠️';
+  var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'Подтвердите активацию'; tt.style.color = ''; }
+  var el = document.getElementById('err-detail');
+  if (el) el.innerHTML = 'На этот аккаунт'
+    + (org ? ' (<code>' + org + '</code>)' : '')
+    + ' уже была активация' + (prev ? ' — <b>' + prev + '</b>' : '') + '.<br><br>'
+    + 'Если это <b>твой</b> аккаунт — подтверди, подписка пополнится.<br>'
+    + 'Если Organization ID указан по ошибке — <b>не подтверждай</b>: подписка уйдёт чужому аккаунту, вернуть её будет нельзя.';
+  var btn = document.querySelector('#s5 .btn-green');
+  if (btn) {
+    btn.style.display = '';
+    btn.textContent = '✅ Это мой аккаунт — активировать';
+    btn.onclick = function(){ forceMode = true; startActivation(); };
+  }
+  showScreen('s5');
+}
+
 // ─── Polling ─────────────────────────────────────────────────────
 async function pollStatus(orderId) {
   for (var i = 0; i < 200; i++) {
@@ -681,6 +703,7 @@ async function pollStatus(orderId) {
       var note = document.getElementById('retry-note');
       if (note) note.style.display = data.retrying ? 'block' : 'none';
       if (st === 'done') {
+        if (data.need_force) { showForceConfirm(data.org || '', data.prev || ''); return; }
         if (data.pending) { showProcessing(data.error || ''); return; }
         if (data.success !== false) {
           if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
@@ -719,7 +742,8 @@ async function startActivation() {
       body: JSON.stringify({
         org_id:    orgId,
         code:      codeInput ? codeInput.value.trim() : '',
-        init_data: tg ? tg.initData : ''
+        init_data: tg ? tg.initData : '',
+        force:     forceMode ? 1 : 0
       })
     });
 
@@ -826,6 +850,7 @@ document.addEventListener('DOMContentLoaded', function () {
   var params   = new URLSearchParams(window.location.search);
   var planName = params.get('plan') || 'Pro';
   var preCode  = params.get('code') || (tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+  forceMode    = params.get('force') === '1';   // пришли по кнопке «Это мой аккаунт»
 
   function applyCode(code) {
     if (!code) return false;

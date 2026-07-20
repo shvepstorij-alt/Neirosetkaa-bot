@@ -6048,7 +6048,7 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
 
 
 async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name, plan_key,
-                                       skip_providers=None):
+                                       skip_providers=None, force=False):
     """Единая цепочка активации Claude по всем сайтам с непрерывной загрузкой у клиента.
     Порядок сайтов — по числу свободных кодов ЭТОГО тарифа (убыв.); 6661231.xyz наравне.
     Переключаемся ТОЛЬКО при сбое сайта / отсутствии стока; ошибка клиента (bad org) — стоп.
@@ -6167,7 +6167,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         _r = await activate_claude_vip666(_code, org_id, plan_key)
                     elif _bsite == "bpa":
                         from chatgpt_activation import activate_claude_bpa
-                        _r = await activate_claude_bpa(_code, org_id, plan_key)
+                        _r = await activate_claude_bpa(_code, org_id, plan_key, force=force)
                     else:
                         from chatgpt_activation import activate_claude_aipro
                         _r = await activate_claude_aipro(_code, org_id, plan_key)
@@ -6189,6 +6189,48 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         _claude_job_results[ref] = {"status": "done", "success": False,
                             "error": ("У этого аккаунта уже есть активная подписка Claude. "
                                       "Отмени текущую подписку на claude.ai/settings/billing и попробуй снова.")}
+                        return
+                    if _r.get("needs_force_confirm"):
+                        # Сайт просит подтвердить пополнение (на Org ID уже была активация).
+                        # Спрашиваем КЛИЕНТА: кнопка ведёт в мини-приложение с force=1,
+                        # там он подтверждает и активация продолжается без потери кода.
+                        try: await release_claude_code(_code)
+                        except Exception: pass
+                        import urllib.parse as _uq_cf
+                        from aiogram.types import WebAppInfo as _WAI_cf
+                        _prev_txt = _r.get("already_until") or ""
+                        _force_url = (f"{WEBAPP_BASE_URL}/webapp/claude"
+                                      f"?plan={_uq_cf.quote(plan_name)}&force=1")
+                        _claude_job_results[ref] = {
+                            "status": "done", "success": False, "need_force": True,
+                            "org": org_id, "prev": _prev_txt,
+                            "error": "На этот аккаунт уже была активация — нужно подтверждение."}
+                        try:
+                            await bot.send_message(
+                                user_id,
+                                "⚠️ <b>Нужно твоё подтверждение</b>\n\n"
+                                f"На этот аккаунт (Org ID <code>{org_id}</code>) уже была активация"
+                                + (f" — <b>{_prev_txt}</b>" if _prev_txt else "") + ".\n\n"
+                                "Если это <b>твой</b> аккаунт — подтверди, и подписка пополнится. "
+                                "Если Org ID указан по ошибке — не подтверждай, подписка уйдёт чужому "
+                                "аккаунту и вернуть её будет нельзя.\n\n"
+                                "Нажми кнопку и подтверди активацию 👇",
+                                parse_mode="HTML",
+                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                    [InlineKeyboardButton(text="✅ Это мой аккаунт — активировать",
+                                                          web_app=_WAI_cf(url=_force_url))],
+                                    [InlineKeyboardButton(text="❓ Нужна помощь",
+                                                          callback_data="claude_need_help")],
+                                ]))
+                        except Exception as _e_cf:
+                            logging.error(f"claude needs_force_confirm msg: {_e_cf}")
+                        await _admin_fail_shot(
+                            f"⚠️ <b>Claude {_site} — нужно подтверждение клиента</b>\n"
+                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n"
+                            + (f"📋 Прежняя активация: {_prev_txt}\n" if _prev_txt else "")
+                            + "Клиенту отправлена кнопка подтверждения. Код возвращён в пул.",
+                            _r.get("screenshot"))
                         return
                     if _r.get("needs_check"):
                         # активация вероятно прошла, но не подтверждена — НЕ фолбэсим авто (риск двойной),
@@ -6667,9 +6709,10 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     _ref = "cl_" + str(uuid.uuid4())[:12]
     _claude_chain_active[user_id] = _ref
     _claude_job_results[_ref] = {"status": "queued"}
+    _force_cl = bool(body.get("force"))   # клиент подтвердил пополнение поверх прежней активации
     asyncio.create_task(_run_claude_activation_chain(
-        _ref, user_id, order_id, org_id, plan_name, plan_key))
-    logging.info(f"Claude activation chain started: ref={_ref} user={user_id} plan={plan_key}")
+        _ref, user_id, order_id, org_id, plan_name, plan_key, force=_force_cl))
+    logging.info(f"Claude activation chain started: ref={_ref} user={user_id} plan={plan_key} force={_force_cl}")
     return _resp({"order_id": _ref, "status": "queued"})
 
     # ── (устар.) прежний пофайловый redeem-цикл ниже больше НЕ выполняется ──
