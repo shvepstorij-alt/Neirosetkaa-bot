@@ -3152,9 +3152,24 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
         service = str(body.get("service", ""))
         plan = str(body.get("plan", "") or ("plus" if service == "chatgpt" else "pro"))
         raw = str(body.get("codes", ""))
-        rx = _re_c.compile(r"^[A-Za-z][A-Za-z0-9][A-Za-z0-9-]*$")
-        lines = [c.strip() for c in raw.splitlines() if c.strip()]
-        valid = [c for c in lines if rx.match(c)]
+        # Разбираем ввод максимально терпимо:
+        #  • разделители — перенос строки, пробел, запятая, точка с запятой, таб;
+        #  • код может быть прислан ССЫЛКОЙ вида https://site/?code=XXXX — достаём code;
+        #  • код может начинаться с цифры и содержать _ (старое правило требовало букву
+        #    в начале и роняло часть кодов «в никуда»);
+        #  • дубликаты внутри одной вставки схлопываем.
+        _tokens = [t for t in _re_c.split(r"[\s,;]+", raw.strip()) if t]
+        lines = []
+        for _t in _tokens:
+            _m_url = _re_c.search(r"[?&]code=([A-Za-z0-9\-_]+)", _t)
+            lines.append(_m_url.group(1) if _m_url else _t)
+        rx = _re_c.compile(r"^[A-Za-z0-9][A-Za-z0-9\-_]{5,}$")
+        _seen_batch = set(); _uniq = []
+        for _c in lines:
+            if _c not in _seen_batch:
+                _seen_batch.add(_c); _uniq.append(_c)
+        _dupe_in_batch = len(lines) - len(_uniq)
+        valid = [c for c in _uniq if rx.match(c)]
         if service not in ("chatgpt", "claude", "perplexity"):
             return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
         if not valid:
@@ -3174,19 +3189,33 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
                 _provider = _def
         pool = await get_pool()
         added = 0
+        dupes = 0            # уже были в базе (ON CONFLICT DO NOTHING) — раньше молча считались добавленными
+        _dupe_list = []      # примеры дублей, чтобы админ мог сверить
+        _bad_list = [c for c in _uniq if c not in valid][:10]
         async with pool.acquire() as conn:
             for c in valid:
                 try:
                     if service == "chatgpt":
-                        await conn.execute("INSERT INTO gpt_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _provider)
+                        _res = await conn.execute("INSERT INTO gpt_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _provider)
                     elif service == "claude":
-                        await conn.execute("INSERT INTO claude_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _provider)
+                        _res = await conn.execute("INSERT INTO claude_codes (code, plan, provider) VALUES ($1,$2,$3) ON CONFLICT (code) DO NOTHING", c, plan, _provider)
                     else:
-                        await conn.execute("INSERT INTO perplexity_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
-                    added += 1
-                except Exception:
-                    pass
-        _msg = {"ok": True, "added": added, "skipped": len(lines) - len(valid)}
+                        _res = await conn.execute("INSERT INTO perplexity_codes (code, plan) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING", c, plan)
+                    # asyncpg возвращает 'INSERT 0 1' при вставке и 'INSERT 0 0' при конфликте
+                    if isinstance(_res, str) and _res.strip().endswith(" 0"):
+                        dupes += 1
+                        if len(_dupe_list) < 10:
+                            _dupe_list.append(c)
+                    else:
+                        added += 1
+                except Exception as _e_ins:
+                    dupes += 1
+                    if len(_dupe_list) < 10:
+                        _dupe_list.append(c)
+                    logging.warning(f"add-codes insert {c}: {_e_ins}")
+        _msg = {"ok": True, "added": added, "dupes": dupes,
+                "skipped": len(_uniq) - len(valid), "dupInBatch": _dupe_in_batch,
+                "dupeList": _dupe_list, "badList": _bad_list, "total": len(lines)}
         if service in ("claude", "chatgpt"):
             _msg["provider"] = _provider
         return web.json_response(_msg)

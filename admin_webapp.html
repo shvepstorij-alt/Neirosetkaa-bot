@@ -893,7 +893,27 @@ function addCodes(svc){
   var hasProv=!!provSel;
   return hdr("Добавить коды",svc)+'<div class="wrap">'+provSel+'<label class="fl"'+(hasProv?'':' style="margin-top:0"')+'>Тариф</label><select class="f" id="ac_plan">'+opts+'</select><label class="fl">Коды (по одному в строке)</label><textarea class="f" id="ac_codes" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="doAddCodes(\''+svc+'\')">Добавить</button></div>';
 }
-function doAddCodes(svc){var codes=fv('ac_codes');if(!codes){toast('Вставь коды');return;}var pl={service:svc,plan:fv('ac_plan'),codes:codes};if(svc==='claude'||svc==='chatgpt'){pl.provider=fv('ac_provider');}toast('Добавляю…');api('/api/admin/add-codes',pl).then(function(d){toast(d.ok?('Добавлено '+d.added+(d.provider?(' → '+d.provider):'')):(d.msg||'Ошибка'));if(d.ok)back();});}
+function doAddCodes(svc){
+  var codes=fv('ac_codes');if(!codes){toast('Вставь коды');return;}
+  var pl={service:svc,plan:fv('ac_plan'),codes:codes};
+  if(svc==='claude'||svc==='chatgpt'){pl.provider=fv('ac_provider');}
+  toast('Добавляю…');
+  api('/api/admin/add-codes',pl).then(function(d){
+    if(!d.ok){toast(d.msg||'Ошибка');return;}
+    /* Показываем ПОЛНЫЙ разбор: куда делись коды, если добавилось меньше присланного */
+    var h='<div class="block"><h4>✅ Коды добавлены'+(d.provider?(' → '+d.provider):'')+'</h4>'
+      +'<div class="kv"><span class="k">Прислано строк/кодов</span><span>'+(d.total||0)+'</span></div>'
+      +'<div class="kv"><span class="k">✅ Добавлено новых</span><span class="pos">'+(d.added||0)+'</span></div>';
+    if(d.dupes)      h+='<div class="kv"><span class="k">⏭ Уже были в базе</span><span>'+d.dupes+'</span></div>';
+    if(d.dupInBatch) h+='<div class="kv"><span class="k">🔁 Повторы внутри вставки</span><span>'+d.dupInBatch+'</span></div>';
+    if(d.skipped)    h+='<div class="kv"><span class="k">⚠️ Не похоже на код</span><span>'+d.skipped+'</span></div>';
+    if(d.dupeList&&d.dupeList.length) h+='<div class="sub" style="margin-top:8px">Дубли: '+d.dupeList.join(', ')+'</div>';
+    if(d.badList&&d.badList.length)   h+='<div class="sub" style="margin-top:6px">Отсеяно: '+d.badList.join(', ')+'</div>';
+    h+='</div>';
+    leaf(function(){return hdr("Результат добавления",svc)+'<div class="wrap">'+h
+      +'<button class="btn sec" onclick="back()">Готово</button></div>';});
+  });
+}
 
 SCREENS["Настройка App Store"]=function(){
   setTimeout(loadAppstore,0);
