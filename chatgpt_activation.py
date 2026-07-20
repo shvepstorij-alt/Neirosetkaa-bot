@@ -1463,6 +1463,37 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
                 return {"success": False, "error": "Ни одно зеркало сайта не открылось.",
                         "screenshot": await _aipro_ss(page)}
 
+            # ── Лендинг «система самообслуживания»: жмём «Запустить службу» ────
+            try:
+                _t_land = (await _aipro_body_text(page)).lower()
+                if "запустить службу" in _t_land or "самообслуживания" in _t_land or "启动服务" in _t_land:
+                    if await _aipro_click(page, ["Запустить службу", "启动服务", "Start service", "Start"]):
+                        await asyncio.sleep(2.5)
+            except Exception:
+                pass
+
+            # ── Режим Claude: по умолчанию сайт открывает GPT ─────────────────
+            # Кнопка показывает, КУДА переключиться:
+            #   «Переключиться на Claude» → сейчас GPT   → жмём
+            #   «Переключиться на GPT»    → сейчас Claude → уже на месте
+            for _ in range(4):
+                _t_mode = (await _aipro_body_text(page)).lower()
+                if ("переключиться на claude" in _t_mode or "切换到claude" in _t_mode
+                        or "switch to claude" in _t_mode):
+                    await _aipro_click(page, ["Переключиться на Claude", "切换到Claude",
+                                              "切换到 Claude", "Switch to Claude"])
+                    await asyncio.sleep(2.5)
+                    continue
+                break
+            # Подтверждаем, что мы В РЕЖИМЕ CLAUDE: в нём кнопка предлагает уйти на GPT.
+            # Иначе не активируем — иначе Claude-карта уйдёт в GPT-форму.
+            _t_ok = (await _aipro_body_text(page)).lower()
+            if not ("переключиться на gpt" in _t_ok or "切换到gpt" in _t_ok
+                    or "switch to gpt" in _t_ok):
+                return {"success": False,
+                        "error": "Не удалось переключить сайт в раздел Claude (остался GPT).",
+                        "screenshot": await _aipro_ss(page)}
+
             # ── Шаг 1: ключ карты ─────────────────────────────────────────────
             card_input = page.locator("input:visible").first
             try:
