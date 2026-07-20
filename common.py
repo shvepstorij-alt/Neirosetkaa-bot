@@ -4931,16 +4931,31 @@ async def _claude_bpa_redeem(base: str, code: str, org_id: str) -> dict:
         return {"ok": False, "err_kind": "network", "err_msg": str(_e)}
 
 
-async def _claude_bpa_stock(base: str, plan_key: str) -> int:
-    """Сток bypriceactivate.pro по продукту (GET /api/stock/{product}).
-    Возвращает available (сколько активаций можно принять сейчас) или -1 если неизвестно."""
-    _prod = {"pro": "claude_pro", "max_5x": "claude_max_5x", "max_20x": "claude_max_20x"}.get(
-        (plan_key or "").lower())
-    if not _prod:
+# bypriceactivate.pro: регион зашит в ПРЕФИКС кода (AU-… = Австралия, TR-… = Турция).
+# Продукт на сайте называется «{база}_{регион}», напр. claude_pro_australia / claude_pro_turkey.
+_BPA_REGIONS = {"AU": "australia", "TR": "turkey", "EG": "egypt", "US": "usa",
+                "IN": "india", "NG": "nigeria", "BR": "brazil", "ID": "indonesia"}
+
+
+def _bpa_product_for_code(plan_key: str, code: str) -> str:
+    """Определяет продукт bpa по тарифу и префиксу кода. '' — если не удалось."""
+    _base = {"pro": "claude_pro", "max_5x": "claude_max_5x",
+             "max_20x": "claude_max_20x"}.get((plan_key or "").lower())
+    if not _base:
+        return ""
+    _pref = (code or "").split("-")[0].upper() if "-" in (code or "") else ""
+    _reg = _BPA_REGIONS.get(_pref)
+    return f"{_base}_{_reg}" if _reg else _base
+
+
+async def _claude_bpa_stock_product(base: str, product: str) -> int:
+    """Сток bypriceactivate.pro по КОНКРЕТНОМУ продукту (GET /api/stock/{product}).
+    Возвращает available или -1, если неизвестно (тогда просто пробуем код)."""
+    if not product:
         return -1
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as _s:
-            async with _s.get(f"{base}/api/stock/{_prod}") as _r:
+            async with _s.get(f"{base}/api/stock/{product}") as _r:
                 if _r.status != 200:
                     return -1
                 _d = await _r.json()
@@ -6036,6 +6051,11 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
     _report = []       # диагностика: что пробовали и почему упало
     _used_codes = []   # коды, пропущенные как «уже использованные» (для отчёта админу)
     _last_shot = None  # последний скриншот сайта активации (для отправки админу при сбое)
+    # Коды, под которые не оказалось стока: они ЦЕЛЫ и должны вернуться в пул, но НЕ сразу —
+    # иначе get_next_claude_code (берёт первый свободный по id) отдаст тот же код по кругу.
+    # Держим их зарезервированными до конца прогона и освобождаем в finally.
+    _oos_release = []
+    _bpa_stock_cache = {}   # {product: available} — чтобы не дёргать /api/stock на каждый код
     try:
         # предварительно зарезервированный при покупке код вернём в пул — выбор честный по стоку
         try:
@@ -6094,12 +6114,34 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             # резолвятся в РЕГИОНАЛЬНЫЕ продукты (claude_pro_turkey и т.п.), а не в базовый
             # claude_pro. Проверка базового продукта врала (0 при 493 у turkey) и зря
             # пропускала сайт. Реальную доступность узнаём по ответу на конкретный код.
+            _dead_prods = set()   # продукты-регионы этого сайта, где сток = 0
+            _skips = 0            # дешёвые пропуски по стоку (не считаются попытками активации)
             # перебираем коды ЭТОГО сайта, пока не найдём рабочий (при «код использован/битый»)
             while _attempt < _MAX:
                 _code = await get_next_claude_code(plan_key, _prov)
                 if not _code or _code in _tried_codes:
                     break   # коды этого сайта кончились (или пошли по кругу) → следующий сайт
                 _tried_codes.add(_code)
+                # bpa: регион зашит в префикс кода (AU-…/TR-…). Заранее проверяем сток именно
+                # этого региона — мёртвые пропускаем МГНОВЕННО, не тратя попытку активации.
+                if _api == "bpa":
+                    _prod = _bpa_product_for_code(plan_key, _code)
+                    if _prod:
+                        if _prod not in _dead_prods:
+                            _av = _bpa_stock_cache.get(_prod)
+                            if _av is None:
+                                _av = await _claude_bpa_stock_product(_cfg.get("base", ""), _prod)
+                                _bpa_stock_cache[_prod] = _av
+                            if _av == 0:
+                                _dead_prods.add(_prod)
+                                _report.append(f"{_site}: <b>{_prod}</b> — стока нет, пропускаю коды этого региона")
+                                logging.warning(f"Claude chain {ref}: {_prov} {_prod} stock=0 — пропуск региона")
+                        if _prod in _dead_prods:
+                            _oos_release.append(_code)   # код цел — вернём в пул в конце
+                            _skips += 1
+                            if _skips > 20:
+                                break   # слишком много мёртвых кодов → следующий сайт
+                            continue
                 _attempt += 1
                 try:
                     await save_claude_pending_activation(user_id, _code, order_id, plan_key, plan_name, _prov)
@@ -6226,10 +6268,10 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                     if _kind == "out_of_stock":
                         # Нет стока именно под ЭТОТ код: у сайта коды бывают на разные товары/регионы
                         # (напр. «out of stock for claude_pro_australia — your code stays valid»).
-                        # Код ЦЕЛ → возвращаем в пул и пробуем СЛЕДУЮЩИЙ код этого же сайта,
-                        # но не больше _OOS_MAX раз — иначе сожжём весь лимит попыток на пустом сайте.
-                        try: await release_claude_code(_code)
-                        except Exception: pass
+                        # Код ЦЕЛ → вернём его в пул В КОНЦЕ прогона (не сейчас: иначе он снова
+                        # станет «первым свободным» и бот получит тот же код по кругу),
+                        # а пока пробуем СЛЕДУЮЩИЙ код этого же сайта — но не больше _OOS_MAX раз.
+                        _oos_release.append(_code)
                         _oos_count += 1
                         logging.warning(f"Claude chain {ref}: {_prov} нет стока под код {_code} ({_oos_count}/{_OOS_MAX})")
                         _report.append(
@@ -6294,6 +6336,12 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
         _claude_job_results[ref] = {"status": "done", "success": False,
             "error": "Внутренняя ошибка активации. Напиши Александру."}
     finally:
+        # Возвращаем в пул коды, под которые не было стока (они целы и валидны).
+        for _c_oos in _oos_release:
+            try:
+                await release_claude_code(_c_oos)
+            except Exception as _e_oos:
+                logging.error(f"release oos code {_c_oos}: {_e_oos}")
         try:
             if _claude_chain_active.get(user_id) == ref:
                 _claude_chain_active.pop(user_id, None)
