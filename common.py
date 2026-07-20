@@ -1778,11 +1778,21 @@ async def check_expiring_credits(user_id: int):
 
 # ─── АПСКЕЙЛ ФОТО ──────────────────────────────────────────────────────────────
 
+# Заголовки «не кэшировать» для всех WebApp-страниц: иначе после деплоя у клиента
+# остаётся старый JS и новые экраны/логика не работают.
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 async def webapp_chatgpt_handler(request: web.Request) -> web.Response:
     try:
         with open(_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
             _html = _f.read()
-        return web.Response(text=_html, content_type="text/html", charset="utf-8")
+        return web.Response(text=_html, content_type="text/html", charset="utf-8",
+                            headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
         return web.Response(text="Mini App not found", status=404)
 
@@ -1792,7 +1802,8 @@ async def webapp_admin_handler(request: web.Request) -> web.Response:
     try:
         with open(_ADMIN_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
             _html = _f.read()
-        return web.Response(text=_html, content_type="text/html", charset="utf-8")
+        return web.Response(text=_html, content_type="text/html", charset="utf-8",
+                            headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
         return web.Response(text="Admin Mini App not found", status=404)
 
@@ -5783,10 +5794,13 @@ async def _claude_activation_polling_job(
 # ─── Веб-хэндлеры ────────────────────────────────────────────────────────────
 
 async def webapp_claude_handler(request: web.Request) -> web.Response:
-    """GET /webapp/claude — отдаёт claude_webapp.html"""
+    """GET /webapp/claude — отдаёт claude_webapp.html.
+    БЕЗ КЭША: Telegram агрессивно кэширует WebApp, из-за чего после деплоя у клиента
+    оставался старый JS (напр. не отрабатывал экран подтверждения активации)."""
     try:
         with open(_CLAUDE_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
-            return web.Response(text=_f.read(), content_type="text/html", charset="utf-8")
+            return web.Response(text=_f.read(), content_type="text/html", charset="utf-8",
+                                headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
         return web.Response(text="Claude Mini App not found", status=404)
 
