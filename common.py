@@ -3729,9 +3729,7 @@ _claude_chain_active: dict = {}
 _claude_needcheck: dict = {}
 # Claude: счётчик АВТОПОВТОРОВ при «нет стока» по заказу (сток у провайдера «мигает»,
 # коды при этом остаются валидными — есть смысл подождать и попробовать снова).
-_claude_oos_retry: dict = {}
-_CLAUDE_OOS_RETRY_MAX = 3      # сколько раз пробуем автоматически
-_CLAUDE_OOS_RETRY_DELAY = 240  # пауза между автоповторами, сек (4 мин)
+_claude_oos_retry: dict = {}   # (оставлено на будущее; автоповторы при «нет стока» отключены)
 # Claude: заказы, которым уже выдали авто-замену кода после жёсткого сбоя (кап = 1 раз/заказ)
 _claude_replaced_orders: set = set()
 _perplexity_double_warned: set = set()
@@ -6356,47 +6354,9 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             if _attempt >= _MAX:
                 break
 
-        # ── Все сайты исчерпаны. Если причина — «нет стока» (коды ЦЕЛЫ и валидны),
-        # не сдаёмся: сток у провайдера «мигает», планируем автоповтор через паузу.
-        if _oos_total > 0:
-            _r_done = _claude_oos_retry.get(order_id, 0)
-            if _r_done < _CLAUDE_OOS_RETRY_MAX:
-                _claude_oos_retry[order_id] = _r_done + 1
-                _mins = _CLAUDE_OOS_RETRY_DELAY // 60
-                _claude_job_results[ref] = {"status": "done", "success": False, "pending": True,
-                    "error": (f"У провайдера сейчас нет свободных мест. Твой код сохранён и остаётся "
-                              f"действительным — пробуем автоматически ещё раз через {_mins} мин.")}
-                try:
-                    await bot.send_message(
-                        user_id,
-                        f"⏳ <b>Временно нет свободных мест у провайдера</b>\n\n"
-                        f"Твой код сохранён и остаётся действительным. "
-                        f"Пробуем автоматически ещё раз через {_mins} мин — ничего делать не нужно.",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"⏳ <b>Claude — нет стока, запланирован автоповтор</b>\n"
-                        f"👤 <code>{user_id}</code> · {plan_name}\n"
-                        f"🧩 Org: <code>{org_id}</code>\n"
-                        f"Попытка <b>{_r_done + 1}/{_CLAUDE_OOS_RETRY_MAX}</b> через {_mins} мин. "
-                        f"Коды не сожжены — вернулись в пул.",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
-
-                async def _retry_later(_d=_CLAUDE_OOS_RETRY_DELAY):
-                    await asyncio.sleep(_d)
-                    import uuid as _uuid_rt
-                    _rref = _uuid_rt.uuid4().hex[:16]
-                    _claude_chain_active[user_id] = _rref
-                    await _run_claude_activation_chain(
-                        _rref, user_id, order_id, org_id, plan_name, plan_key)
-
-                asyncio.create_task(_retry_later())
-                return
+        # Автоповторов при «нет стока» НЕ делаем: если региона нет прямо сейчас, повтор через
+        # несколько минут не поможет. Вместо этого цепочка уже перебирает ОСТАЛЬНЫЕ сайты
+        # (кроме поставленных на паузу в админке) — см. цикл выше.
 
         # все сайты исчерпаны
         _claude_job_results[ref] = {"status": "done", "success": False,
