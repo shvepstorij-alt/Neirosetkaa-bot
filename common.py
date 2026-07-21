@@ -3291,7 +3291,7 @@ async def _run_activation_job(
             return await activate_chatgpt_aipro(_code, session_raw or access_token, force=force)
         if provider == "kkqq":
             from chatgpt_activation import activate_chatgpt_kkqq
-            return await activate_chatgpt_kkqq(_code, session_raw or access_token)
+            return await activate_chatgpt_kkqq(_code, session_raw or access_token, force=force)
         return await activate_chatgpt(_code, access_token)
     try:
         # ── Тестовый режим: код начинается с TEST → пропускаем Playwright ────
@@ -3767,6 +3767,13 @@ async def _run_activation_job(
             "status": "done", "success": False,
             "error": "Внутренняя ошибка сервера. Напиши Александру."
         }
+    finally:
+        # снимаем метку активной активации клиента (защита от двойного запуска)
+        try:
+            if _gpt_job_active.get(user_id) == job_id:
+                _gpt_job_active.pop(user_id, None)
+        except Exception:
+            pass
 
 
 # Клиенты, уже предупреждённые о повторной активации (in-memory, сбрасывается при рестарте).
@@ -3791,6 +3798,9 @@ def _fail_clear(service: str, user_id: int):
 # message_id активационного сообщения клиента (чтобы заменить на поздравление после успеха)
 _gpt_act_msg: dict = {}
 _claude_act_msg: dict = {}
+# GPT: активная задача активации по user_id — защита от двойного запуска
+# (клиент дважды нажал «Активировать» → два job'а тянут по коду из пула).
+_gpt_job_active: dict = {}
 # Claude: активная цепочка активации по user_id (dedupe двойных кликов «Активировать»)
 _claude_chain_active: dict = {}
 # Claude: контекст «нужна проверка» по короткому токену (для кнопок админа: успех / другой сайт)
@@ -3969,8 +3979,19 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     if provider in ("aipro", "kkqq") and not session_raw:
         return _resp({"success": False, "error": "Обнови мини-приложение и вставь весь текст со страницы сессии заново."})
 
+    # ЗАЩИТА ОТ ДВОЙНОЙ АКТИВАЦИИ: если у клиента уже крутится активация — возвращаем
+    # ТОТ ЖЕ job вместо запуска второго. Иначе два параллельных запуска берут по коду
+    # из пула, первый активирует Plus, а второй видит «на аккаунте уже есть подписка».
+    _prev_job = _gpt_job_active.get(user_id)
+    if _prev_job:
+        _pj = _activation_jobs.get(_prev_job)
+        if _pj and _pj.get("status") != "done":
+            logging.info(f"GPT activation dedupe: user={user_id} уже выполняется job={_prev_job}")
+            return _resp({"job_id": _prev_job, "status": "started"})
+
     job_id = str(uuid.uuid4())[:12]
     _activation_jobs[job_id] = {"status": "pending"}
+    _gpt_job_active[user_id] = job_id
     asyncio.create_task(
         _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name, provider, session_raw, _force)
     )

@@ -1418,7 +1418,7 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
                 pass
 
 
-async def activate_chatgpt_kkqq(cdk_code: str, session_json: str) -> dict:
+async def activate_chatgpt_kkqq(cdk_code: str, session_json: str, force: bool = False) -> dict:
     """Активация ChatGPT Plus на kkqqai.com (браузер).
     Шаги: CDK → «验证 CDK» → вставка ChatGPT Session → «下一步»
     → «确认充值» → «充值成功» (订阅有效期至 …).
@@ -1529,6 +1529,42 @@ async def activate_chatgpt_kkqq(cdk_code: str, session_json: str) -> dict:
                     _email = _m.group(0)
             except Exception:
                 pass
+
+            # ── У аккаунта УЖЕ есть Plus: сайт требует галочку «确认覆盖现有订阅»,
+            # и до неё кнопка «确认充值» неактивна. Без согласия клиента не перезаписываем.
+            _t_conf = await _aipro_body_text(page)
+            if ("已有 plus 订阅" in _t_conf or "已有plus订阅" in _t_conf
+                    or "确认覆盖现有订阅" in _t_conf or "覆盖现有订阅" in _t_conf
+                    or ("已有" in _t_conf and "订阅" in _t_conf)):
+                _cur_plan = "plus"
+                try:
+                    import re as _re_p
+                    _mp = _re_p.search(r"当前套餐\s*([A-Za-z0-9+ ]{2,20})", _t_conf)
+                    if _mp:
+                        _cur_plan = _mp.group(1).strip()
+                except Exception:
+                    pass
+                if not force:
+                    return {"success": False, "needs_force_confirm": True,
+                            "already_account": _email, "already_until": f"текущий тариф: {_cur_plan}",
+                            "error": (f"На аккаунте {_email or ''} уже активна подписка "
+                                      f"({_cur_plan}). Нужно подтверждение: новая активация "
+                                      f"перезапишет текущую подписку."),
+                            "screenshot": await _aipro_ss(page)}
+                # force → клиент подтвердил: ставим галочку перезаписи
+                logger.warning(f"kkqq: перезапись существующей подписки (force) cdk={cdk_code}")
+                try:
+                    _cb = page.locator("input[type=checkbox]").first
+                    if await _cb.count():
+                        await _cb.check(timeout=5000)
+                    else:
+                        await _aipro_click(page, ["确认覆盖现有订阅", "覆盖现有订阅"])
+                except Exception:
+                    try:
+                        await _aipro_click(page, ["确认覆盖现有订阅", "覆盖现有订阅"])
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.8)
 
             if not await _aipro_click(page, ["确认充值", "Confirm", "Подтвердить"]):
                 return {"success": False, "error": "Кнопка «确认充值» не найдена.",
