@@ -103,6 +103,7 @@ async def init_db():
             ("num",            "BIGSERIAL"), # человекочитаемый номер заказа (#N)
             ("coins_spent",    "INTEGER DEFAULT 0"), # монетки, списанные под доплату СБП (для возврата)
             ("client_msg_id",  "BIGINT"),   # ID сообщения оплаты у КЛИЕНТА (гасим кнопки после оплаты)
+            ("fk_intid",       "TEXT"),     # номер платежа В САМОЙ FreeKassa (intid) — по нему ищется платёж
         ]:
             try:
                 await conn.execute(f"ALTER TABLE fk_orders ADD COLUMN {col} {dfn}")

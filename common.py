@@ -4521,6 +4521,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
 
         is_shop = order_id.startswith("shop_")
         pack_info = (db_order_admin or {}).get("pack", "") if db_order_admin else ""
+        # Номер платежа В FreeKassa (колонка «Номер» в ЛК) — по нему ищется платёж
+        _fk_no = ((db_order_admin or {}).get("fk_intid") or "") if db_order_admin else ""
+        _fk_line = f"\U0001f9fe FreeKassa: <code>{_fk_no}</code>\n" if _fk_no else ""
 
         if is_shop and pack_info:
             shop_key = pack_info.split(":")[1] if ":" in pack_info else ""
@@ -4537,7 +4540,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 f"\U0001f4e6 {service_name}\n"
                 f"\U0001f4b5 Сумма: <b>{amount_rub}\u20bd</b>\n"
                 f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
-                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
+                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n"
+                f"{_fk_line}\n"
                 f"\u2705 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u043f\u043b\u0430\u0447\u0435\u043d</b>"
             )
         else:
@@ -4547,7 +4551,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount_rub}\u20bd</b>\n"
                 f"\U0001f48e \u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432: <b>{credits}</b>\n"
                 f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
-                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
+                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n"
+                f"{_fk_line}\n"
                 f"\u2705 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u043f\u043b\u0430\u0447\u0435\u043d</b>"
             )
         if promo_code:
@@ -4680,6 +4685,10 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
         amount      = data.get("AMOUNT", "")
         order_id    = data.get("MERCHANT_ORDER_ID", "")
         recv_sign   = data.get("SIGN", "")
+        # Номер платежа В САМОЙ FreeKassa (в ЛК он в колонке «Номер», по нему идёт поиск).
+        # FreeKassa шлёт его как intid (встречается и в разном регистре).
+        fk_intid    = str(data.get("intid") or data.get("INTID")
+                          or data.get("int_id") or "").strip()
 
         # 1. Проверяем ID магазина
         if str(merchant_id) != str(FK_SHOP_ID):
@@ -4693,6 +4702,16 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
         if recv_sign != expected_sign:
             logging.warning(f"FK wrong sign. Got: {recv_sign}, expected: {expected_sign}")
             return web.Response(text="WRONG SIGN")
+
+        # Сохраняем номер FreeKassa в заказ — чтобы показывать его в сообщениях админу
+        if fk_intid:
+            try:
+                _pool_fk = await get_pool()
+                async with _pool_fk.acquire() as _c_fk:
+                    await _c_fk.execute(
+                        "UPDATE fk_orders SET fk_intid=$1 WHERE order_id=$2", fk_intid, order_id)
+            except Exception as _e_fk:
+                logging.warning(f"save fk_intid {order_id}: {_e_fk}")
 
         # 3. Ищем заказ - сначала в памяти, потом в БД
         payment = pending_fk_payments.get(order_id)
@@ -7939,12 +7958,23 @@ async def _send_manual_order(user_id, shop_key, service_name, plan_name,
         await create_linkpay_order(user_id, _uname, order_id, shop_key,
                                    service_name, plan_name, amount_rub,
                                    kind="manual", status="awaiting_payment")
+        # Номер платежа в FreeKassa — чтобы клиент и админ сверялись по ОДНОМУ номеру
+        _fk_no_cl = ""
+        try:
+            _dbo_cl = await fk_get_order(order_id)
+            _fk_no_cl = (_dbo_cl or {}).get("fk_intid") or ""
+        except Exception:
+            pass
+        _num_line = (f"\U0001f9fe Номер заказа: <code>{_fk_no_cl}</code>\n\n"
+                     if _fk_no_cl else f"\U0001f194 Номер заказа: <code>{order_id}</code>\n\n")
         import urllib.parse as _uq_manual
         _msg_to_alex = _uq_manual.quote(
-            f"Приветствую! Оплатил заказ.\nСервис: {service_name}\nID: {order_id}")
+            f"Приветствую! Оплатил заказ.\nСервис: {service_name}\n"
+            f"Номер заказа: {_fk_no_cl or order_id}")
         await bot.send_message(
             user_id,
             f"🎉 <b>Оплата прошла!</b>\n\n📦 <b>{service_name}</b>\n\n"
+            f"{_num_line}"
             f"❗️ <b>Отправьте Александру чек об оплате и номер вашего заказа</b> 👇"
             f"{delayed_note}",
             parse_mode="HTML",
