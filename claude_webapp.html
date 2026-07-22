@@ -660,6 +660,12 @@ var _sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); 
 
 function showError(msg) {
   if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+  /* сброс к дефолту: экран s5 общий с showForceConfirm, иначе «залипает» его кнопка/заголовок */
+  var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '😔';
+  var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'Не получилось'; tt.style.color = ''; }
+  var btn = document.querySelector('#s5 .btn-orange') || document.querySelector('#s5 .btn-wrap-inline button');
+  if (btn) { btn.style.display = ''; btn.textContent = 'Попробовать снова';
+             btn.onclick = function(){ retryActivation(); return false; }; }
   var el = document.getElementById('err-detail');
   if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
   showScreen('s5');
@@ -683,11 +689,16 @@ function showForceConfirm(org, prev) {
     + ' уже была активация' + (prev ? ' — <b>' + prev + '</b>' : '') + '.<br><br>'
     + 'Если это <b>твой</b> аккаунт — подтверди, подписка пополнится.<br>'
     + 'Если Organization ID указан по ошибке — <b>не подтверждай</b>: подписка уйдёт чужому аккаунту, вернуть её будет нельзя.';
-  var btn = document.querySelector('#s5 .btn-green');
+  /* ВАЖНО: в этом вебаппе кнопка имеет класс btn-orange (не btn-green, как в GPT).
+     Ищем максимально терпимо — первую кнопку экрана s5, какой бы класс ни был. */
+  var btn = document.querySelector('#s5 .btn-orange')
+         || document.querySelector('#s5 .btn-green')
+         || document.querySelector('#s5 .btn-wrap-inline button')
+         || document.querySelector('#s5 button');
   if (btn) {
     btn.style.display = '';
     btn.textContent = '✅ Это мой аккаунт — активировать';
-    btn.onclick = function(){ forceMode = true; startActivation(); };
+    btn.onclick = function(){ forceMode = true; startActivation(); return false; };
   }
   showScreen('s5');
 }
