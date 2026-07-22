@@ -3948,11 +3948,36 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                     )
                 except Exception:
                     pass
-                return _resp({"success": False, "error": (
-                    "\u26a0\ufe0f \u041d\u0430 \u0442\u0432\u043e\u0439 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d\u0430 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 ChatGPT.\n\n"
-                    "\u0415\u0441\u043b\u0438 \u043e\u0444\u043e\u0440\u043c\u043b\u044f\u0435\u0448\u044c \u043d\u0430 \u0414\u0420\u0423\u0413\u041e\u0419 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 (\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440, \u0434\u043b\u044f \u0434\u0440\u0443\u0433\u0430) \u2014 \u043d\u0430\u0436\u043c\u0438 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb, \u0438 \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f \u043f\u0440\u043e\u0439\u0434\u0451\u0442.\n\n"
-                    f"\u0415\u0441\u043b\u0438 \u044d\u0442\u043e \u0441\u043b\u0443\u0447\u0430\u0439\u043d\u043e \u2014 \u043d\u0430\u043f\u0438\u0448\u0438 @{PERSONAL_USERNAME}."
-                )})
+                # \u041a\u043b\u0438\u0435\u043d\u0442\u0443 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u043c \u041e\u0411\u0415 \u043f\u043e\u0447\u0442\u044b: \u043a\u0443\u0434\u0430 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043b\u0438 \u0440\u0430\u043d\u044c\u0448\u0435 \u0438 \u043a\u0443\u0434\u0430 \u0438\u0434\u0451\u0442 \u0441\u0435\u0439\u0447\u0430\u0441,
+                # \u0438\u043d\u0430\u0447\u0435 \u043d\u0435\u043f\u043e\u043d\u044f\u0442\u043d\u043e \u2014 \u0442\u043e\u0442 \u0436\u0435 \u044d\u0442\u043e \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0438\u043b\u0438 \u0434\u0440\u0443\u0433\u043e\u0439.
+                _prev_email = (_recent_act.get("email") or "").strip()
+                _now_email = ""
+                try:
+                    _now_email = (_extract_email_from_token(access_token) or "").strip()
+                except Exception:
+                    _now_email = ""
+                _same = bool(_prev_email and _now_email and
+                             _prev_email.lower() == _now_email.lower())
+                _lines_dbl = ["\u26a0\ufe0f \u041d\u0430 \u044d\u0442\u043e\u0442 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043b\u0438 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0443 ChatGPT.\n"]
+                if _prev_email:
+                    _lines_dbl.append(f"\ud83d\udce7 \u041f\u0440\u043e\u0448\u043b\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f: {_prev_email} ({_us})")
+                else:
+                    _lines_dbl.append(f"\ud83d\udcc5 \u041f\u0440\u043e\u0448\u043b\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f: {_us}")
+                if _now_email:
+                    _lines_dbl.append(f"\ud83d\udce7 \u0421\u0435\u0439\u0447\u0430\u0441 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0448\u044c: {_now_email}")
+                if _same:
+                    _lines_dbl.append(
+                        "\n\u041d\u0430 \u044d\u0442\u043e\u0442 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0431\u044b\u043b\u0430 \u043e\u0444\u043e\u0440\u043c\u043b\u0435\u043d\u0430 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 \u043c\u0435\u043d\u0435\u0435 \u043c\u0435\u0441\u044f\u0446\u0430 \u043d\u0430\u0437\u0430\u0434 "
+                        "\u0438 \u043e\u043d\u0430 \u0435\u0449\u0451 \u0430\u043a\u0442\u0438\u0432\u043d\u0430. \u041c\u043e\u0436\u0435\u0442\u0435 \u043f\u0440\u043e\u0434\u043b\u0438\u0442\u044c \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0443 \u043d\u0430\u0447\u0438\u043d\u0430\u044f \u0441 \u0441\u0435\u0433\u043e\u0434\u043d\u044f\u0448\u043d\u0435\u0433\u043e \u0434\u043d\u044f "
+                        "\u043f\u043e \u043a\u043d\u043e\u043f\u043a\u0435 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb.")
+                elif _now_email:
+                    _lines_dbl.append(
+                        "\n\u042d\u0442\u043e \u0414\u0420\u0423\u0413\u041e\u0419 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u2014 \u0432\u0441\u0451 \u0432 \u043f\u043e\u0440\u044f\u0434\u043a\u0435. \u041d\u0430\u0436\u043c\u0438 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb, \u0438 \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f \u043f\u0440\u043e\u0439\u0434\u0451\u0442.")
+                else:
+                    _lines_dbl.append(
+                        "\n\u0415\u0441\u043b\u0438 \u043e\u0444\u043e\u0440\u043c\u043b\u044f\u0435\u0448\u044c \u043d\u0430 \u0414\u0420\u0423\u0413\u041e\u0419 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 (\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440, \u0434\u043b\u044f \u0434\u0440\u0443\u0433\u0430) \u2014 \u043d\u0430\u0436\u043c\u0438 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb.")
+                _lines_dbl.append(f"\n\u0415\u0441\u043b\u0438 \u044d\u0442\u043e \u0441\u043b\u0443\u0447\u0430\u0439\u043d\u043e \u2014 \u043d\u0430\u043f\u0438\u0448\u0438 @{PERSONAL_USERNAME}.")
+                return _resp({"success": False, "error": "\n".join(_lines_dbl)})
             else:
                 _gpt_double_warned.discard(user_id)
                 logging.info(f"GPT forced re-activation user={user_id}")
@@ -6750,7 +6775,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
         _pool_dbl = await get_pool()
         async with _pool_dbl.acquire() as _c_dbl:
             _recent = await _c_dbl.fetchrow(
-                "SELECT code, plan, used_at FROM claude_codes"
+                "SELECT code, plan, used_at, org_id FROM claude_codes"
                 " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '29 days'"
                 " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
                 user_id
@@ -6774,18 +6799,39 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                         f"👤 {_uname} (<code>{user_id}</code>)\n"
                         f"🔑 Уже активирован: <code>{_recent['code']}</code>\n"
                         f"📦 Тариф: <b>{_recent['plan']}</b>\n"
-                        f"⏱ Дата: <b>{_us}</b>\n\n"
+                        f"⏱ Дата: <b>{_us}</b>\n"
+                        f"🧩 Прошлый Org: <code>{_recent.get('org_id') or '—'}</code>\n"
+                        f"🧩 Сейчас Org: <code>{org_id or '—'}</code>\n\n"
                         "Если клиент нажмёт «Попробовать снова» — активирует на другой аккаунт.",
                         parse_mode="HTML"
                     )
                 except Exception:
                     pass
-                return _resp({"error": (
-                    "⚠️ На твой аккаунт уже активирована подписка Claude.\n\n"
-                    "Если оформляешь на ДРУГОЙ аккаунт (например, для друга) — "
-                    "нажми «Попробовать снова», и активация пройдёт.\n\n"
-                    "Если это случайно — напиши Александру."
-                )})
+                # Показываем клиенту ОБА Organization ID: прошлый и текущий,
+                # чтобы он сам понял — тот же это аккаунт или другой.
+                _prev_org = (_recent.get("org_id") or "").strip()
+                _same_org = bool(_prev_org and org_id and
+                                 _prev_org.lower() == (org_id or "").lower())
+                _l_cl = ["⚠️ На этот аккаунт уже активировали подписку Claude.\n"]
+                if _prev_org:
+                    _l_cl.append(f"🧩 Прошлая активация: {_prev_org} ({_us})")
+                else:
+                    _l_cl.append(f"📅 Прошлая активация: {_us}")
+                if org_id:
+                    _l_cl.append(f"🧩 Сейчас активируешь: {org_id}")
+                if _same_org:
+                    _l_cl.append(
+                        "\nНа этот аккаунт была оформлена подписка менее месяца назад "
+                        "и она ещё активна. Можете продлить подписку начиная с сегодняшнего дня "
+                        "по кнопке «Попробовать снова».")
+                elif org_id:
+                    _l_cl.append(
+                        "\nЭто ДРУГОЙ аккаунт — всё в порядке. Нажми «Попробовать снова», и активация пройдёт.")
+                else:
+                    _l_cl.append(
+                        "\nЕсли оформляешь на ДРУГОЙ аккаунт (например, для друга) — нажми «Попробовать снова».")
+                _l_cl.append("\nЕсли это случайно — напиши Александру.")
+                return _resp({"error": "\n".join(_l_cl)})
             else:
                 _claude_double_warned.discard(user_id)
                 logging.info(f"Claude forced re-activation user={user_id}")
