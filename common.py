@@ -3495,7 +3495,8 @@ async def _run_activation_job(
                     f"🔑 Итоговый код: <code>{code}</code>\n"
                     f"📦 Тариф: <b>{plan_name}</b>\n"
                     f"⏱ Время: <b>{_used_at}</b>\n"
-                    f"🆔 Order: <code>{order_id}</code>"
+                    f"🆔 Order: <code>{order_id}</code>\n"
+                    + await _fk_num_line(order_id)
                 )
                 # принудительное продление поверх уже активной подписки
                 if result.get("forced"):
@@ -3718,7 +3719,8 @@ async def _run_activation_job(
                             f"🔑 Код: <code>{code}</code>\n"
                             f"📦 Тариф: <b>{plan_name}</b>\n"
                             f"🆔 Заказ: <code>{order_id}</code>\n"
-                            f"⚠️ Ошибка: {error_text}\n\n"
+                            + await _fk_num_line(order_id)
+                            + f"⚠️ Ошибка: {error_text}\n\n"
                             "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
                             result.get("screenshot")
                         )
@@ -4011,6 +4013,17 @@ async def api_activation_status_handler(request: web.Request) -> web.Response:
         )
     return web.Response(text=_json.dumps(job, ensure_ascii=False), content_type="application/json")
 
+
+
+async def _fk_num_line(order_id: str) -> str:
+    """Готовая HTML-строка с номером платежа FreeKassa для сообщений по заказу.
+    Возвращает '🧾 FreeKassa: <code>NNN</code>\\n' либо '' (Stripe/вебхук без intid)."""
+    try:
+        _o = await fk_get_order(order_id)
+        _n = (_o or {}).get("fk_intid") or ""
+        return f"\U0001f9fe FreeKassa: <code>{_n}</code>\n" if _n else ""
+    except Exception:
+        return ""
 
 
 async def _disable_client_pay_msg(order_id: str):
@@ -4471,8 +4484,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     f"💵 <b>Сумма:</b> {amount_rub}₽\n"
                     f"💳 <b>Способ оплаты:</b> СБП\n"
                     f"━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"🆔 Заказ: <code>{order_id}</code>\n\n"
-                    f"Александр свяжется с тобой и активирует подписку в течение часа 🙌\n"
+                    f"🆔 Заказ: <code>{order_id}</code>\n"
+                    + await _fk_num_line(order_id) + "\n"
+                    + f"Александр свяжется с тобой и активирует подписку в течение часа 🙌\n"
                     f"{delayed_note}\n\n"
                     f"<i>Пока ждёшь - попробуй генерацию фото и видео прямо в боте! 🎨</i>",
                     parse_mode="HTML",
@@ -4492,8 +4506,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 f"💵 <b>Баланс:</b> {old_balance} → <b>{new_balance} кр</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n\n"
                 f"💳 Способ оплаты: СБП · {amount_rub}₽\n"
-                f"🆔 Заказ: <code>{order_id}</code>\n\n"
-                f"<i>⏳ Кредиты действуют 30 дней с момента покупки</i>"
+                f"🆔 Заказ: <code>{order_id}</code>\n"
+                + await _fk_num_line(order_id) + "\n"
+                + f"<i>⏳ Кредиты действуют 30 дней с момента покупки</i>"
                 f"{delayed_note}\n\n"
                 f"<b>Готов творить? 🚀</b>",
                 parse_mode="HTML",
@@ -6140,7 +6155,9 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
             f"🔑 Итоговый код: <code>{code}</code>\n"
             f"📦 Тариф: <b>{plan_name}</b>\n"
             f"🆔 Org ID: <code>{org_id}</code>\n"
-            f"⏱ {_ts}"
+            f"🆔 Заказ: <code>{order_id}</code>\n"
+            + await _fk_num_line(order_id)
+            + f"⏱ {_ts}"
         )
         if used_codes:
             _uc = "\n".join(f"   • <code>{c}</code>" for c in used_codes)
@@ -7846,7 +7863,8 @@ async def process_linkpay_link(user_id, text) -> bool:
             f"🎫 Тариф: <b>{order.get('plan_name') or '—'}</b>\n"
             f"💵 Оплачено клиентом: <b>{order['amount_rub']}₽</b>\n"
             f"🔗 Ссылка: {link}\n"
-            f"🆔 <code>{order['fk_order_id']}</code>"
+            f"🆔 Заказ: <code>{order['fk_order_id']}</code>\n"
+            + await _fk_num_line(order['fk_order_id'])
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Подписка готова", callback_data=f"lp_done:{order['fk_order_id']}")],
