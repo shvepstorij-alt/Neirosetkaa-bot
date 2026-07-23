@@ -1513,18 +1513,23 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
             for _ in range(24):
                 await asyncio.sleep(0.5)
                 _t = await _aipro_body_text(page); _tl = _t.lower()
-                if "已被使用" in _t or "already used" in _tl or "использован" in _tl and "ключ" in _tl:
-                    return {"success": False, "code_already_used": True,
-                            "error": f"CDKEY {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
-                if ("не найден" in _tl or "неверн" in _tl or "недействит" in _tl or "invalid" in _tl
-                        or "无效" in _t or "not found" in _tl or "expired" in _tl):
-                    return {"success": False, "code_already_used": True,
-                            "error": "Ключ не принят сайтом (неверен/просрочен).", "screenshot": await _aipro_ss(page)}
-                if ("отправьте session" in _tl or "данные session" in _tl or "ready to submit" in _tl
-                        or "отправить пополнение" in _tl or "submit" in _tl and "session" in _tl
-                        or "step 2" in _tl or "session data" in _tl or "发送session" in _t or "提交充值" in _t):
+                # СНАЧАЛА проверяем УСПЕХ (переход к шагу 2). Иначе слова из гайда слева
+                # («ключ не использован», «продукт верный») ложно срабатывают как ошибки.
+                if ("ready to submit" in _tl or "заполните данные session" in _tl
+                        or "отправьте session" in _tl or "данные session" in _tl
+                        or "запрос выполнен" in _tl or "gpt plus" in _tl or "1month" in _tl
+                        or "отправить пополнение" in _tl or "提交充值" in _t):
                     _step2 = True
                     break
+                # Реальная ошибка «код использован» — СТРОГИЕ фразы (НЕ «ключ не использован» из гайда)
+                if ("已被使用" in _t or "已使用" in _t or "already used" in _tl or "already redeemed" in _tl
+                        or "уже использован" in _tl or "код использован" in _tl):
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDKEY {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                if ("не найден" in _tl or "недействит" in _tl or "无效" in _t or "not found" in _tl
+                        or "已过期" in _t or "expired" in _tl or ("неверн" in _tl and "cdkey" in _tl)):
+                    return {"success": False, "code_already_used": True,
+                            "error": "Ключ не принят сайтом (неверен/просрочен).", "screenshot": await _aipro_ss(page)}
             if not _step2:
                 return {"success": False, "error": "Сайт не перешёл к шагу Session после проверки CDKEY.",
                         "screenshot": await _aipro_ss(page)}
@@ -1953,20 +1958,23 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
             for _ in range(24):
                 await asyncio.sleep(0.5)
                 _t = await _aipro_body_text(page); _tl = _t.lower()
-                if ("已被使用" in _t or "已使用" in _t or "использован" in _tl
-                        or "already used" in _tl):
-                    return {"success": False, "code_already_used": True,
-                            "error": f"Карта {cdk_code} уже использована.",
-                            "screenshot": await _aipro_ss(page)}
-                if ("не найден" in _tl or "неверн" in _tl or "недействит" in _tl
-                        or "无效" in _t or "不存在" in _t or "invalid" in _tl):
-                    return {"success": False, "code_already_used": True,
-                            "error": "Сайт не принял карту (неверна/просрочена).",
-                            "screenshot": await _aipro_ss(page)}
+                # СНАЧАЛА успех (шаг 2), потом ошибки — иначе текст гайда «карта не использована»
+                # ложно срабатывает как «уже использована».
                 if ("карта проверена" in _tl or "id пользователя" in _tl
                         or "парсинг токена" in _tl or "卡密已验证" in _t):
                     _step2 = True
                     break
+                # строгие фразы ошибок (НЕ «карта не использована» из гайда)
+                if ("已被使用" in _t or "已使用" in _t or "already used" in _tl
+                        or "уже использован" in _tl or "карта использован" in _tl):
+                    return {"success": False, "code_already_used": True,
+                            "error": f"Карта {cdk_code} уже использована.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("не найден" in _tl or "недействит" in _tl or "无效" in _t or "不存在" in _t
+                        or "已过期" in _t or "expired" in _tl or ("неверн" in _tl and "карт" in _tl)):
+                    return {"success": False, "code_already_used": True,
+                            "error": "Сайт не принял карту (неверна/просрочена).",
+                            "screenshot": await _aipro_ss(page)}
             if not _step2:
                 return {"success": False, "error": "Сайт не перешёл к вводу ID пользователя.",
                         "screenshot": await _aipro_ss(page)}
