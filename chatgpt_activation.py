@@ -1535,37 +1535,81 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
                         "screenshot": await _aipro_ss(page)}
 
             # ── Детектор «пополнение уже завершено» ───────────────────────────
-            # Сайт помнит состояние по коду/аккаунту: если пополнение уже прошло,
-            # поле Session становится readonly и показывает результат
-            # («Пополнение завершено. Проверьте аккаунт.»), кнопка отправки гаснет.
-            # В этом случае fill() падает — но это НЕ ошибка, активация успешна.
-            def _redeem_done(_t: str) -> bool:
+            # Сайт помнит состояние по коду: если пополнение уже прошло, поле Session
+            # становится readonly и показывает результат («Recharge completed /
+            # Пополнение завершено»), кнопка отправки гаснет («Submission is disabled»).
+            # ВАЖНО: такой экран выглядит ОДИНАКОВО в двух случаях —
+            #   (а) код только что активирован для НАШЕГО клиента → это успех;
+            #   (б) код уже был использован РАНЬШЕ (может, чужим аккаунтом) → новая
+            #       активация не пройдёт → это code_already_used, берём следующий код.
+            # Различаем ТОЛЬКО по почте на экране: совпала с session → успех,
+            # отличается → код занят чужим аккаунтом.
+            import re as _re_mod
+            _sess_email = (_email_from_session(session_json) or "").strip().lower()
+
+            def _done_marker(_t: str) -> bool:
                 _tl = _t.lower()
                 return ("пополнение успешно" in _tl or "пополнение завершено" in _tl
                         or "充值成功" in _t or "успешно отправлено" in _tl
                         or "проверьте аккаунт" in _tl or "recharge success" in _tl
                         or "recharge completed" in _tl or "submitted successfully" in _tl
                         or "completion time" in _tl or "время завершения" in _tl
+                        or "submission is currently disabled" in _tl
                         or ("success" in _tl and "recharge" in _tl) or "已激活" in _t
                         or ("результат пополнения" in _tl and "завершено" in _tl))
 
+            def _page_email(_t: str) -> str:
+                """Почта аккаунта, показанная на экране завершения (после Account/Аккаунт)."""
+                _m = _re_mod.search(r"(?:account|аккаунт)[^\w@]{0,20}([\w.+-]+@[\w.-]+\.\w+)",
+                                    _t, _re_mod.IGNORECASE)
+                if _m:
+                    return _m.group(1).strip().lower()
+                _m2 = _re_mod.search(r"[\w.+-]+@[\w.-]+\.\w+", _t)
+                return _m2.group(0).strip().lower() if _m2 else ""
+
+            def _done_verdict(_t: str) -> str:
+                """→ 'ours' (наш успех) | 'other' (чужой использованный код) | 'no'."""
+                if not _done_marker(_t):
+                    return "no"
+                _pe = _page_email(_t)
+                # почта совпала (или на экране не нашли почту, а свою знаем — считаем нашей
+                # только при совпадении; если почты на экране нет — не рискуем, 'other')
+                if _sess_email and _pe and _pe == _sess_email:
+                    return "ours"
+                if _pe and _sess_email and _pe != _sess_email:
+                    return "other"
+                # почту на экране не распознали — трактуем как чужой использованный код
+                return "other"
+
             # ── Шаг 2: вставка Session ────────────────────────────────────────
-            # Сначала — если страница уже в состоянии «завершено», считаем успехом.
-            if _redeem_done(await _aipro_body_text(page)):
-                _email_d = _email_from_session(session_json)
-                logger.info(f"redeemgpt: уже завершено (шаг 2) cdk={cdk_code} email={_email_d}")
-                return {"success": True, "email": _email_d, **({"forced": True} if force else {})}
+            _bt = await _aipro_body_text(page)
+            _v = _done_verdict(_bt)
+            if _v == "ours":
+                logger.info(f"redeemgpt: уже завершено для нашего клиента (шаг 2) "
+                            f"cdk={cdk_code} email={_sess_email}")
+                return {"success": True, "email": _sess_email, **({"forced": True} if force else {})}
+            if _v == "other":
+                logger.info(f"redeemgpt: код уже использован чужим аккаунтом "
+                            f"cdk={cdk_code} page_email={_page_email(_bt)} our={_sess_email}")
+                return {"success": False, "code_already_used": True,
+                        "error": f"CDKEY {cdk_code} уже использован (закреплён за другим аккаунтом).",
+                        "screenshot": await _aipro_ss(page)}
             try:
                 sess_area = page.locator("textarea:visible").first
                 await sess_area.wait_for(state="visible", timeout=10_000)
                 await sess_area.fill("")
                 await sess_area.fill(session_json)
             except Exception:
-                # поле не заполнилось — но, возможно, потому что уже завершено
-                if _redeem_done(await _aipro_body_text(page)):
-                    _email_d = _email_from_session(session_json)
-                    logger.info(f"redeemgpt: уже завершено (readonly) cdk={cdk_code} email={_email_d}")
-                    return {"success": True, "email": _email_d, **({"forced": True} if force else {})}
+                # поле не заполнилось — проверяем, не завершилось ли уже
+                _bt2 = await _aipro_body_text(page)
+                _v2 = _done_verdict(_bt2)
+                if _v2 == "ours":
+                    logger.info(f"redeemgpt: уже завершено (readonly, наш) cdk={cdk_code} email={_sess_email}")
+                    return {"success": True, "email": _sess_email, **({"forced": True} if force else {})}
+                if _v2 == "other":
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDKEY {cdk_code} уже использован (закреплён за другим аккаунтом).",
+                            "screenshot": await _aipro_ss(page)}
                 return {"success": False, "error": "Поле «Данные Session» не найдено.",
                         "screenshot": await _aipro_ss(page)}
             await asyncio.sleep(0.5)
