@@ -265,7 +265,7 @@ async def cmd_credit(message: Message):
         return
 
     try:
-        await add_credits_batch(target_uid, credits_to_add, source="admin_manual", days_valid=30)
+        await add_credits_batch(target_uid, credits_to_add, source="admin_manual", days_valid=0)
         new_balance = await get_credits(target_uid)
 
         # Уведомляем юзера
@@ -277,7 +277,6 @@ async def cmd_credit(message: Message):
                 f"💎 <b>Зачислено:</b> +{credits_to_add} кредитов\n"
                 f"💵 <b>Баланс:</b> <b>{new_balance} кр</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n\n"
-                f"<i>⏳ Кредиты действуют 30 дней</i>\n\n"
                 f"Можешь начинать генерацию! 🚀",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[

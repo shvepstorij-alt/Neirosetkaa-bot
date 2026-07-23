@@ -4175,11 +4175,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
     # Гасим кнопки оплаты в сообщении у клиента (первое подтверждение оплаты)
     await _disable_client_pay_msg(order_id)
 
-    # 2. Зачисляем кредиты партией (на 30 дней) и логируем.
+    # 2. Зачисляем кредиты партией (БЕЗ срока — купленные кредиты не сгорают) и логируем.
     # Если начисление упало ПОСЛЕ mark_paid — деньги приняты, услуга не выдана:
     # громко алертим админа (иначе сбой был бы «тихим» и невосстановимым).
     try:
-        await add_credits_batch(user_id, credits, source="purchase", days_valid=30)
+        await add_credits_batch(user_id, credits, source="purchase", days_valid=0)
         await log_payment(user_id, credits, int(amount_rub), "freekassa")
     except Exception as _grant_err:
         logging.error(f"FK GRANT FAILED after mark_paid order={order_id}: {_grant_err}", exc_info=True)
@@ -4580,9 +4580,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 f"━━━━━━━━━━━━━━━━━━━\n\n"
                 f"💳 Способ оплаты: СБП · {amount_rub}₽\n"
                 f"🆔 Заказ: <code>{order_id}</code>\n"
-                + await _fk_num_line(order_id) + "\n"
-                + f"<i>⏳ Кредиты действуют 30 дней с момента покупки</i>"
-                f"{delayed_note}\n\n"
+                + await _fk_num_line(order_id)
+                + f"{delayed_note}\n\n"
                 f"<b>Готов творить? 🚀</b>",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[

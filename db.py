@@ -206,6 +206,14 @@ async def init_db():
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_user ON credit_batches(user_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_batches_exp ON credit_batches(expires_at)")
+        # Миграция: купленные и начисленные админом кредиты не должны сгорать.
+        # Снимаем срок с уже существующих таких партий (чтобы прежние покупки
+        # тоже перестали гаснуть). Бонусные (promo/referral/free) не трогаем.
+        await conn.execute(
+            "UPDATE credit_batches SET expires_at = NULL "
+            "WHERE expires_at IS NOT NULL AND credits_left > 0 "
+            "AND COALESCE(source,'') IN ('purchase','admin_manual')"
+        )
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS consultant_conv (
                 user_id    BIGINT PRIMARY KEY,
@@ -1138,14 +1146,18 @@ async def add_credits_batch(user_id: int, credits: int, source: str = "purchase"
 
 
 async def expire_old_batches() -> int:
-    """Списывает истёкшие партии. Возвращает сумму сгоревших кредитов."""
+    """Списывает истёкшие партии. Возвращает сумму сгоревших кредитов.
+    ВАЖНО: купленные и начисленные админом кредиты НЕ сгорают никогда —
+    они принадлежат клиенту и должны быть потрачены им самим. Сгорать могут
+    только бонусные партии (promo/referral/free)."""
     pool = await get_pool()
     total_expired = 0
     async with pool.acquire() as conn:
         async with conn.transaction():
             rows = await conn.fetch(
                 "SELECT id, user_id, credits_left FROM credit_batches "
-                "WHERE credits_left > 0 AND expires_at IS NOT NULL AND expires_at <= NOW()"
+                "WHERE credits_left > 0 AND expires_at IS NOT NULL AND expires_at <= NOW() "
+                "AND COALESCE(source,'') NOT IN ('purchase','admin_manual')"
             )
             for r in rows:
                 await conn.execute(

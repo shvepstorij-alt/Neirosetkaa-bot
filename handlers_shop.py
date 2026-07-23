@@ -633,7 +633,7 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
         if not ok:
             await cb.answer("Недостаточно монеток.", show_alert=True)
             return
-        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=30)
+        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=0)
         new_cr = await get_credits(uid)
         new_coins = await get_coins(uid)
         await cb.message.edit_text(
@@ -922,7 +922,7 @@ async def on_successful_payment(message: Message):
             logging.warning(f"Unknown pack key in payment: {key} (payload={payload})")
             return
 
-        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=30)
+        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=0)
         await log_payment(uid, p["credits"], p["stars"], "stars")
         await process_referral_bonus(uid)
         cr = await get_credits(uid)
@@ -930,7 +930,6 @@ async def on_successful_payment(message: Message):
             f"🎉 <b>Оплата прошла успешно!</b>\n\n"
             f"➕ Начислено: <b>{p['credits']} кредитов</b>\n"
             f"💵 Баланс: <b>{cr} кредитов</b>\n\n"
-            f"<i>⏳ Кредиты действуют 30 дней</i>\n\n"
             f"Можешь начинать генерацию! 🚀",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1227,7 +1226,7 @@ async def menu_buy(cb: CallbackQuery):
             f"{ename} <b>{raw_name} - {p['credits']} кредитов - {p['price']}₽</b>\n"
             f"<i>{p['desc']}</i>"
         )
-    text = "\n\n".join(lines) + "\n\n<i>⏳ Кредиты действуют 30 дней после покупки</i>"
+    text = "\n\n".join(lines)
     try:
         await cb.message.edit_text(text, reply_markup=kb_buy(), parse_mode="HTML")
     except Exception:
@@ -1272,8 +1271,7 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
     else:
         msg += f"💰 Цена: <b>{final_price}₽</b>\n\n"
     msg += (
-        f"📦 <i>{p['desc']}</i>\n"
-        f"⏳ <i>Кредиты действуют 30 дней</i>\n\n"
+        f"📦 <i>{p['desc']}</i>\n\n"
         f"Выбери способ оплаты:"
     )
 

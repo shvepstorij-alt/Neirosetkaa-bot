@@ -427,37 +427,9 @@ async def reminders_loop():
                     sent_count += 1
                 await asyncio.sleep(0.1)
 
-            # Напоминание о неиспользованных кредитах (7+ дней, баланс > 20 кр)
-            async with pool.acquire() as conn:
-                rows_credits = await conn.fetch("""
-                    SELECT u.user_id,
-                           COALESCE(SUM(b.credits_left), 0) AS total_credits
-                    FROM users u
-                    JOIN credit_batches b ON b.user_id = u.user_id
-                    WHERE b.credits_left > 20
-                      AND (b.expires_at IS NULL OR b.expires_at > NOW())
-                      AND u.last_active < NOW() - INTERVAL '7 days'
-                      AND u.last_active > NOW() - INTERVAL '30 days'
-                      AND COALESCE(u.is_blocked, 0) = 0
-                      AND NOT EXISTS (
-                          SELECT 1 FROM reminders_sent r
-                          WHERE r.user_id = u.user_id AND r.kind = 'unused_credits'
-                          AND r.sent_at > NOW() - INTERVAL '14 days'
-                      )
-                    GROUP BY u.user_id
-                    HAVING SUM(b.credits_left) > 20
-                    LIMIT 30
-                """)
-
-            for r in rows_credits:
-                credits = int(r["total_credits"])
-                text = (
-                    f"💎 У тебя на балансе <b>{credits} кредитов</b> - и они ждут!\n\n"
-                    f"Не дай им пропасть зря. Сгенерируй фото или видео прямо сейчас 👇"
-                )
-                if await send_reminder(r["user_id"], "unused_credits", text):
-                    sent_count += 1
-                await asyncio.sleep(0.1)
+            # Напоминание о неиспользованных кредитах ОТКЛЮЧЕНО.
+            # Купленные кредиты не сгорают — рассылка «не дай им пропасть зря»
+            # вводила клиентов в заблуждение, убрана по требованию.
 
             if sent_count > 0:
                 logging.info(f"📬 Отправлено напоминаний: {sent_count}")
