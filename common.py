@@ -3224,6 +3224,51 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_release_codes_handler(request: web.Request) -> web.Response:
+    """Возврат кодов в пул: снимает пометку «использован» у перечисленных кодов.
+    Нужно, если код ошибочно сожжён (напр. ложное «уже использован»). Admin-only.
+    Разбор ввода такой же терпимый, как в add-codes (ссылки/пробелы/цифры)."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        import re as _re_r
+        service = str(body.get("service", ""))
+        _tbl = {"chatgpt": "gpt_codes", "claude": "claude_codes",
+                "perplexity": "perplexity_codes"}.get(service)
+        if not _tbl:
+            return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
+        raw = str(body.get("codes", ""))
+        _tokens = [t for t in _re_r.split(r"[\s,;]+", raw.strip()) if t]
+        codes = []
+        for _t in _tokens:
+            _m = _re_r.search(r"[?&]code=([A-Za-z0-9\-_]+)", _t)
+            codes.append(_m.group(1) if _m else _t)
+        codes = list(dict.fromkeys([c for c in codes if c]))   # уникальные, порядок сохранён
+        if not codes:
+            return web.json_response({"ok": False, "msg": "Нет кодов"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if _tbl == "gpt_codes":
+                _res = await conn.execute(
+                    "UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL "
+                    "WHERE code = ANY($1::text[])", codes)
+            elif _tbl == "claude_codes":
+                _res = await conn.execute(
+                    "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL "
+                    "WHERE code = ANY($1::text[])", codes)
+            else:
+                _res = await conn.execute(
+                    "UPDATE perplexity_codes SET is_used=FALSE, used_by=NULL, used_at=NULL "
+                    "WHERE code = ANY($1::text[])", codes)
+        _released = int(_res.split()[-1]) if isinstance(_res, str) and _res.split()[-1].isdigit() else 0
+        return web.json_response({"ok": True, "released": _released, "total": len(codes)})
+    except Exception as _e:
+        logging.error(f"api_admin_release_codes: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
 async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -4917,6 +4962,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
     app.router.add_post("/api/admin/add-codes", api_admin_add_codes_handler)
+    app.router.add_post("/api/admin/release-codes", api_admin_release_codes_handler)
     app.router.add_post("/api/admin/claude-provider", api_admin_claude_provider_handler)
     app.router.add_post("/api/admin/claude-code-action", api_admin_claude_code_action_handler)
     app.router.add_post("/api/admin/broadcast", api_admin_broadcast_handler)
