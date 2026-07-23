@@ -1584,21 +1584,72 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
             await asyncio.sleep(0.5)
 
             # ── Если у аккаунта уже есть подписка (не free) — галочка force ──
-            # Проверяем и ДО отправки (баннер «This account plan is not free»), и после.
-            async def _tick_force_if_needed():
-                _tt = (await _aipro_body_text(page)).lower()
-                if ("not free" in _tt or "not eligible" in _tt or "已有" in _tt and "订阅" in _tt
-                        or "оставшейся подписки" in _tt):
-                    if not force:
-                        return "need_force"
+            # Признак — КРАСНАЯ плашка «This account plan is not free, not eligible
+            # for recharge» (или её RU/CN-вариант). ВНИМАНИЕ: НЕЛЬЗЯ искать
+            # «оставшейся подписки»/«подписк» — это текст всегда присутствующего
+            # необязательного чекбокса «Отказаться от оставшейся подписки и
+            # принудительно пополнить», он есть и у обычного free-аккаунта → давал
+            # ложное срабатывание «уже есть Plus».
+            def _not_free(_tt: str) -> bool:
+                _tl = _tt.lower()
+                return ("not free" in _tl or "not eligible" in _tl
+                        or "not eligible for recharge" in _tl
+                        or ("已有" in _tt and "订阅" in _tt) or "非免费" in _tt
+                        or "не бесплат" in _tl or "не подлежит пополнению" in _tl
+                        or "недоступно для пополнения" in _tl or "не подлежит" in _tl)
+
+            async def _do_tick_force() -> bool:
+                """Ставит галочку «Отказаться от оставшейся подписки и принудительно
+                пополнить». Пробует несколько способов, т.к. чекбокс может быть
+                кастомным (реальный input скрыт). Возвращает True, если галочка встала."""
+                _cb = page.locator("input[type=checkbox]").first
+                # 1) штатный .check() (сработает для обычного видимого input)
+                try:
+                    if await _cb.count():
+                        if await _cb.is_checked():
+                            return True
+                        await _cb.check(timeout=4000)
+                        await asyncio.sleep(0.4)
+                        if await _cb.is_checked():
+                            return True
+                except Exception:
+                    pass
+                # 2) force-клик прямо по input (обходит перекрытие стилизованным элементом)
+                try:
+                    if await _cb.count():
+                        await _cb.click(timeout=3000, force=True)
+                        await asyncio.sleep(0.4)
+                        if await _cb.is_checked():
+                            return True
+                except Exception:
+                    pass
+                # 3) клик по тексту-подписи чекбокса (label оборачивает input)
+                for _lbl in ("Отказаться от оставшейся подписки", "принудительно пополнить",
+                             "Отказаться от", "оставшейся подписки", "放弃", "强制"):
                     try:
-                        _cb = page.locator("input[type=checkbox]").first
-                        if await _cb.count() and not await _cb.is_checked():
-                            await _cb.check(timeout=5000)
-                            await asyncio.sleep(0.5)
-                            return "forced"
+                        _l = page.locator(f"text={_lbl}").first
+                        if await _l.count() and await _l.is_visible():
+                            await _l.click(timeout=3000)
+                            await asyncio.sleep(0.4)
+                            if await _cb.count() and await _cb.is_checked():
+                                return True
                     except Exception:
                         pass
+                # 4) как крайний случай — считаем поставленной, если input вообще есть
+                try:
+                    return bool(await _cb.count()) and await _cb.is_checked()
+                except Exception:
+                    return False
+
+            async def _tick_force_if_needed():
+                _tt = (await _aipro_body_text(page)).lower()
+                if _not_free(_tt):
+                    if not force:
+                        return "need_force"
+                    if await _do_tick_force():
+                        return "forced"
+                    # чекбокс не удалось поставить — сообщаем, чтобы не сжечь код впустую
+                    return "force_failed"
                 return "ok"
 
             _fr = await _tick_force_if_needed()
@@ -1609,6 +1660,11 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
                         "error": (f"На аккаунте {_email_nf or ''} уже активна подписка. "
                                   f"Нужно подтверждение: пополнение отменит остаток текущей подписки "
                                   f"и начнёт новый период."),
+                        "screenshot": await _aipro_ss(page)}
+            if _fr == "force_failed":
+                return {"success": False, "needs_check": True,
+                        "error": "Нужна принудительная активация, но не удалось поставить галочку "
+                                 "«Отказаться от оставшейся подписки» — проверь вручную на redeemgpt.com.",
                         "screenshot": await _aipro_ss(page)}
 
             # отправляем пополнение
@@ -1633,6 +1689,11 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
                         "already_account": _email_nf, "already_until": "",
                         "error": (f"На аккаунте {_email_nf or ''} уже активна подписка. "
                                   f"Нужно подтверждение принудительного пополнения."),
+                        "screenshot": await _aipro_ss(page)}
+            if _fr2 == "force_failed":
+                return {"success": False, "needs_check": True,
+                        "error": "Нужна принудительная активация, но не удалось поставить галочку "
+                                 "«Отказаться от оставшейся подписки» — проверь вручную на redeemgpt.com.",
                         "screenshot": await _aipro_ss(page)}
             if _fr2 == "forced":
                 await _aipro_click(page, ["Отправить пополнение", "提交充值", "Submit"])
