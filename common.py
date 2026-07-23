@@ -3292,6 +3292,9 @@ async def _run_activation_job(
         if provider == "kkqq":
             from chatgpt_activation import activate_chatgpt_kkqq
             return await activate_chatgpt_kkqq(_code, session_raw or access_token, force=force)
+        if provider == "redeem":
+            from chatgpt_activation import activate_chatgpt_redeemgpt
+            return await activate_chatgpt_redeemgpt(_code, session_raw or access_token, force=force)
         return await activate_chatgpt(_code, access_token)
     try:
         # ── Тестовый режим: код начинается с TEST → пропускаем Playwright ────
@@ -4003,7 +4006,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
 
     # Для сайта aipro нужен полный Session JSON. Если клиент прислал сырой session — берём его,
     # иначе (старый клиент прислал только токен) для aipro активация невозможна.
-    if provider in ("aipro", "kkqq") and not session_raw:
+    if provider in ("aipro", "kkqq", "redeem") and not session_raw:
         return _resp({"success": False, "error": "Обнови мини-приложение и вставь весь текст со страницы сессии заново."})
 
     # ЗАЩИТА ОТ ДВОЙНОЙ АКТИВАЦИИ: если у клиента уже крутится активация — возвращаем

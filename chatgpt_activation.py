@@ -1418,6 +1418,200 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
                 pass
 
 
+async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bool = False) -> dict:
+    """Активация ChatGPT на redeemgpt.com (браузер).
+    Шаги: CDKEY → «Проверить CDKEY» → вставка Session → «Отправить пополнение»
+    → модалка «Подтвердите аккаунт пополнения» (确认 email) → «Подтвердить пополнение».
+    Если у аккаунта уже активна подписка («This account plan is not free»),
+    и клиент подтвердил force — ставим галочку «Отказаться от оставшейся подписки
+    и принудительно пополнить» и снова жмём «Отправить пополнение».
+    Финал: «Пополнение успешно отправлено / завершено»."""
+    try:
+        from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        return {"success": False, "error": "Playwright не установлен на сервере."}
+
+    url = "https://redeemgpt.com/"
+    logger.info(f"activate_chatgpt_redeemgpt: cdk={cdk_code} force={force}")
+
+    async def _accept_dialog(_page):
+        """Ставит хендлер на JS confirm/alert (модалка подтверждения почты) — принимаем."""
+        _page.on("dialog", lambda d: asyncio.create_task(d.accept()))
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-setuid-sandbox", "--single-process"])
+        except Exception as launch_err:
+            return {"success": False, "error": f"Браузер не запустился: {launch_err}"}
+
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="ru-RU")
+        page = await context.new_page()
+        # на случай, если подтверждение почты — нативный confirm()
+        await _accept_dialog(page)
+        try:
+            await page.goto(url, timeout=45_000, wait_until="networkidle")
+            await asyncio.sleep(1.5)
+
+            # ── Шаг 1: CDKEY ──────────────────────────────────────────────────
+            cdk_input = page.locator("input:visible").first
+            try:
+                await cdk_input.wait_for(state="visible", timeout=15_000)
+            except PlaywrightTimeout:
+                return {"success": False, "error": "Поле CDKEY не найдено на redeemgpt.com.",
+                        "screenshot": await _aipro_ss(page)}
+            await cdk_input.fill("")
+            await cdk_input.fill(cdk_code)
+            await asyncio.sleep(0.4)
+
+            if not await _aipro_click(page, ["Проверить CDKEY", "Проверить CDKEY", "验证CDKEY",
+                                             "验证", "Проверить", "Verify"]):
+                return {"success": False, "error": "Кнопка «Проверить CDKEY» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ждём шаг 2 (появится поле Session / «Отправить пополнение») или ошибку ключа
+            _step2 = False
+            for _ in range(24):
+                await asyncio.sleep(0.5)
+                _t = await _aipro_body_text(page); _tl = _t.lower()
+                if "已被使用" in _t or "already used" in _tl or "использован" in _tl and "ключ" in _tl:
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDKEY {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                if ("не найден" in _tl or "неверн" in _tl or "недействит" in _tl or "invalid" in _tl
+                        or "无效" in _t or "not found" in _tl or "expired" in _tl):
+                    return {"success": False, "code_already_used": True,
+                            "error": "Ключ не принят сайтом (неверен/просрочен).", "screenshot": await _aipro_ss(page)}
+                if ("отправьте session" in _tl or "данные session" in _tl or "ready to submit" in _tl
+                        or "отправить пополнение" in _tl):
+                    _step2 = True
+                    break
+            if not _step2:
+                return {"success": False, "error": "Сайт не перешёл к шагу Session после проверки CDKEY.",
+                        "screenshot": await _aipro_ss(page)}
+
+            # ── Шаг 2: вставка Session ────────────────────────────────────────
+            try:
+                sess_area = page.locator("textarea:visible").first
+                await sess_area.wait_for(state="visible", timeout=10_000)
+                await sess_area.fill("")
+                await sess_area.fill(session_json)
+            except Exception:
+                return {"success": False, "error": "Поле «Данные Session» не найдено.",
+                        "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(0.5)
+
+            # ── Если у аккаунта уже есть подписка (не free) — галочка force ──
+            # Проверяем и ДО отправки (баннер «This account plan is not free»), и после.
+            async def _tick_force_if_needed():
+                _tt = (await _aipro_body_text(page)).lower()
+                if ("not free" in _tt or "not eligible" in _tt or "已有" in _tt and "订阅" in _tt
+                        or "оставшейся подписки" in _tt):
+                    if not force:
+                        return "need_force"
+                    try:
+                        _cb = page.locator("input[type=checkbox]").first
+                        if await _cb.count() and not await _cb.is_checked():
+                            await _cb.check(timeout=5000)
+                            await asyncio.sleep(0.5)
+                            return "forced"
+                    except Exception:
+                        pass
+                return "ok"
+
+            _fr = await _tick_force_if_needed()
+            if _fr == "need_force":
+                _email_nf = _email_from_session(session_json)
+                return {"success": False, "needs_force_confirm": True,
+                        "already_account": _email_nf, "already_until": "",
+                        "error": (f"На аккаунте {_email_nf or ''} уже активна подписка. "
+                                  f"Нужно подтверждение: пополнение отменит остаток текущей подписки "
+                                  f"и начнёт новый период."),
+                        "screenshot": await _aipro_ss(page)}
+
+            # отправляем пополнение
+            if not await _aipro_click(page, ["Отправить пополнение", "提交充值", "Submit", "Отправить"]):
+                return {"success": False, "error": "Кнопка «Отправить пополнение» не найдена.",
+                        "screenshot": await _aipro_ss(page)}
+            await asyncio.sleep(1.5)
+
+            # модалка «Подтвердите аккаунт пополнения» → «Подтвердить пополнение»
+            for _ in range(3):
+                await _aipro_click(page, ["Подтвердить пополнение", "确认充值", "Подтвердить", "Confirm"])
+                await asyncio.sleep(1.0)
+                _tm = (await _aipro_body_text(page)).lower()
+                if "подтвердите аккаунт" not in _tm and "确认" not in await _aipro_body_text(page):
+                    break
+
+            # если сайт ответил «not free» уже ПОСЛЕ отправки — ставим force и повторяем
+            _fr2 = await _tick_force_if_needed()
+            if _fr2 == "need_force":
+                _email_nf = _email_from_session(session_json)
+                return {"success": False, "needs_force_confirm": True,
+                        "already_account": _email_nf, "already_until": "",
+                        "error": (f"На аккаунте {_email_nf or ''} уже активна подписка. "
+                                  f"Нужно подтверждение принудительного пополнения."),
+                        "screenshot": await _aipro_ss(page)}
+            if _fr2 == "forced":
+                await _aipro_click(page, ["Отправить пополнение", "提交充值", "Submit"])
+                await asyncio.sleep(1.0)
+                for _ in range(3):
+                    await _aipro_click(page, ["Подтвердить пополнение", "确认充值", "Подтвердить"])
+                    await asyncio.sleep(1.0)
+
+            # ── Ждём результат (до ~3 мин) ───────────────────────────────────
+            _email = _email_from_session(session_json)
+            _saw_processing = False
+            for _ in range(60):
+                await asyncio.sleep(3.0)
+                txt = await _aipro_body_text(page); tl = txt.lower()
+                if ("пополнение успешно" in tl or "пополнение завершено" in tl
+                        or "充值成功" in txt or "успешно отправлено" in tl or "проверьте аккаунт" in tl):
+                    logger.info(f"redeemgpt успех: cdk={cdk_code} email={_email}")
+                    return {"success": True, "email": _email, **({"forced": True} if force else {})}
+                if ("обработ" in tl or "processing" in tl or "подождите" in tl or "处理中" in txt):
+                    _saw_processing = True
+                    continue
+                if "已被使用" in txt or "уже использован" in tl or "already used" in tl:
+                    if _saw_processing:
+                        return {"success": True, "email": _email}
+                    return {"success": False, "code_already_used": True,
+                            "error": f"CDKEY {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
+                if ("нет запасов" in tl or "库存不足" in txt or "out of stock" in tl
+                        or "нет в наличии" in tl):
+                    return {"success": False, "out_of_stock": True,
+                            "error": "redeemgpt.com: нет запасов — переключаюсь на другой сайт.",
+                            "screenshot": await _aipro_ss(page)}
+                if ("登录失效" in txt or "session expired" in tl or "认证失败" in txt
+                        or "недействительн" in tl and "session" in tl or "unauthorized" in tl):
+                    return {"success": False, "token_invalid": True,
+                            "error": "Сессия клиента устарела — нужен свежий Session JSON.",
+                            "screenshot": await _aipro_ss(page)}
+                if "充值失败" in txt or "не удалось" in tl or "failed" in tl or "ошибка" in tl and "пополн" in tl:
+                    return {"success": False, "error": "Сайт сообщил о неудаче пополнения.",
+                            "screenshot": await _aipro_ss(page)}
+            if _saw_processing:
+                return {"success": False, "needs_check": True,
+                        "error": "Пополнение не подтвердилось за 3 мин, но сайт был в обработке. "
+                                 "Проверь на redeemgpt.com.",
+                        "screenshot": await _aipro_ss(page)}
+            return {"success": False, "error": "Активация на redeemgpt.com не завершилась.",
+                    "screenshot": await _aipro_ss(page)}
+        except Exception as e:
+            logger.error(f"activate_chatgpt_redeemgpt error: {e}", exc_info=True)
+            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}",
+                    "screenshot": await _aipro_ss(page)}
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
 async def activate_chatgpt_kkqq(cdk_code: str, session_json: str, force: bool = False) -> dict:
     """Активация ChatGPT Plus на kkqqai.com (браузер).
     Шаги: CDK → «验证 CDK» → вставка ChatGPT Session → «下一步»

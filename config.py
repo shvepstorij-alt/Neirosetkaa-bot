@@ -101,8 +101,11 @@ GPT_PROVIDERS = {
     "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz"},
     # kkqqai.com — CDK + ChatGPT Session, шаги 验证 CDK → 校验 AuthSession → 确认充值.
     "kkqq":  {"name": "kkqqai.com",  "base": "https://kkqqai.com"},
+    # redeemgpt.com — CDKEY + Session, шаги: Проверить CDKEY → Отправить пополнение →
+    # подтверждение почты → (при активной подписке) галочка force → успех.
+    "redeem": {"name": "redeemgpt.com", "base": "https://redeemgpt.com"},
 }
-GPT_PROVIDER_ORDER   = ["987ai", "aipro", "kkqq"]
+GPT_PROVIDER_ORDER   = ["987ai", "aipro", "kkqq", "redeem"]
 GPT_DEFAULT_PROVIDER = "987ai"
 
 def gpt_provider_name(provider: str) -> str:
