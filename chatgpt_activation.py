@@ -1458,6 +1458,40 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
             await page.goto(url, timeout=45_000, wait_until="networkidle")
             await asyncio.sleep(1.5)
 
+            # ── Принудительно переключаем сайт в РУССКИЙ ───────────────────────
+            # Наши проверки шагов/успеха — русскоязычные; если сайт откроется на
+            # английском/китайском, шаги не распознаются. Селектор языка справа вверху.
+            try:
+                _need_ru = "проверить" not in (await _aipro_body_text(page)).lower()
+                if _need_ru:
+                    # вариант 1: нативный <select>
+                    _sel = page.locator("select").first
+                    if await _sel.count():
+                        for _opt in ("Русский", "Russian", "ru", "RU"):
+                            try:
+                                await _sel.select_option(label=_opt); break
+                            except Exception:
+                                try:
+                                    await _sel.select_option(value=_opt.lower()); break
+                                except Exception:
+                                    pass
+                        await asyncio.sleep(1.2)
+                    # вариант 2: кастомный дропдаун (кнопка «RU/Русский» → пункт «Русский»)
+                    if "проверить" not in (await _aipro_body_text(page)).lower():
+                        for _lbl in ("Русский", "RU Русский", "RU", "Language", "语言", "English"):
+                            try:
+                                _b = page.locator(f"text={_lbl}").last
+                                if await _b.count() and await _b.is_visible():
+                                    await _b.click(timeout=4000); await asyncio.sleep(0.6)
+                                    _ru = page.locator("text=Русский").last
+                                    if await _ru.count() and await _ru.is_visible():
+                                        await _ru.click(timeout=4000); await asyncio.sleep(1.0)
+                                    break
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
             # ── Шаг 1: CDKEY ──────────────────────────────────────────────────
             cdk_input = page.locator("input:visible").first
             try:
@@ -1487,7 +1521,8 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
                     return {"success": False, "code_already_used": True,
                             "error": "Ключ не принят сайтом (неверен/просрочен).", "screenshot": await _aipro_ss(page)}
                 if ("отправьте session" in _tl or "данные session" in _tl or "ready to submit" in _tl
-                        or "отправить пополнение" in _tl):
+                        or "отправить пополнение" in _tl or "submit" in _tl and "session" in _tl
+                        or "step 2" in _tl or "session data" in _tl or "发送session" in _t or "提交充值" in _t):
                     _step2 = True
                     break
             if not _step2:
@@ -1570,7 +1605,10 @@ async def activate_chatgpt_redeemgpt(cdk_code: str, session_json: str, force: bo
                 await asyncio.sleep(3.0)
                 txt = await _aipro_body_text(page); tl = txt.lower()
                 if ("пополнение успешно" in tl or "пополнение завершено" in tl
-                        or "充值成功" in txt or "успешно отправлено" in tl or "проверьте аккаунт" in tl):
+                        or "充值成功" in txt or "успешно отправлено" in tl or "проверьте аккаунт" in tl
+                        or "recharge success" in tl or "recharge completed" in tl
+                        or "submitted successfully" in tl or "completion time" in tl
+                        or ("success" in tl and "recharge" in tl) or "已激活" in txt):
                     logger.info(f"redeemgpt успех: cdk={cdk_code} email={_email}")
                     return {"success": True, "email": _email, **({"forced": True} if force else {})}
                 if ("обработ" in tl or "processing" in tl or "подождите" in tl or "处理中" in txt):
