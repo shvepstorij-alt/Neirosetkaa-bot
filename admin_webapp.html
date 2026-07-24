@@ -747,7 +747,7 @@ function loadMiniApp(svc){
       if(!dd.ok){de.innerHTML='';return;}
       var byp={};(dd.free||[]).forEach(function(c){byp[c.plan]=(byp[c.plan]||0)+1});
       var cb=document.getElementById('codesbk_'+svc);
-      if(cb){var tot=(dd.free?dd.free.length:0);
+      if(cb){var tot=(typeof dd.freeCount==='number'?dd.freeCount:(dd.free?dd.free.length:0));
         var bh='<div class="kv" style="border:0;padding-bottom:6px"><span class="k">Всего в пуле</span><span>'+tot+' шт</span></div>'+prog(Math.min(100,tot*2),tot<10?C.red:C.green);
         if(dd.providers){
           dd.providers.forEach(function(p){bh+='<div class="kv"><span class="k">'+p.name+(p.key===dd.activeProvider?' ⬅️':'')+'</span><span>'+p.free+' шт</span></div>'});

@@ -257,6 +257,27 @@ async def init_db():
         await conn.execute(
             "INSERT INTO settings (key, value) VALUES ('maintenance', '0') ON CONFLICT DO NOTHING"
         )
+        # Разовая миграция: возвращаем в пул свободные коды ChatGPT, которые речекер
+        # мог ошибочно пометить check_status='used'/'invalid' (старые слишком широкие
+        # маркеры на 987ai.vip). Сбрасываем статус в 'unchecked' — исправленный речекер
+        # перепроверит и по-настоящему плохие пометит корректно. Выполняется один раз.
+        try:
+            _already = await conn.fetchval(
+                "SELECT value FROM settings WHERE key='migr_gpt_recheck_reset_v1'")
+            if _already != "1":
+                _has_cs = await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name='gpt_codes' AND column_name='check_status')")
+                if _has_cs:
+                    _rr = await conn.execute(
+                        "UPDATE gpt_codes SET check_status='unchecked', flagged_reason=NULL "
+                        "WHERE is_used=FALSE AND check_status IN ('used','invalid')")
+                    logging.info(f"migr_gpt_recheck_reset_v1: вернул в пул коды → {_rr}")
+                await conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('migr_gpt_recheck_reset_v1','1') "
+                    "ON CONFLICT (key) DO UPDATE SET value='1'")
+        except Exception as _mig_e:
+            logging.warning(f"migr_gpt_recheck_reset_v1 skipped: {_mig_e}")
         # Миграция: active_generations - если старая таблица с user_id PRIMARY KEY, пересоздаём
         try:
             has_id = await conn.fetchval(

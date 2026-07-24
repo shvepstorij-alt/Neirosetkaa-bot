@@ -2824,7 +2824,10 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                 f"SELECT c.code, c.used_by, c.used_at, c.order_id, c.{idcol} AS acc, u.username "
                 f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
                 f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL ORDER BY c.used_at DESC LIMIT 15")
-            free = await conn.fetch(f"SELECT code, plan{_pcol} FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 100")
+            free = await conn.fetch(f"SELECT code, plan{_pcol} FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 1000")
+            # Точный итог свободных кодов (не длина обрезанного списка) — иначе
+            # «Всего в пуле» упирался в лимит и выглядел как пропажа кодов.
+            free_total = await conn.fetchval(f"SELECT COUNT(*) FROM {tbl} WHERE is_used=FALSE") or 0
             # «Ждущие» коды: выданы клиенту (is_used), но активация ещё не завершена (used_by IS NULL)
             pending = []
             if svc == "claude":
@@ -2854,7 +2857,8 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                         "order": r["order_id"] or "", "acc": r["acc"] or ""})
         freec = [dict({"code": r["code"], "plan": r["plan"]},
                       **({"provider": r["provider"]} if has_prov else {})) for r in free]
-        resp = {"ok": True, "recent": rec, "free": freec, "freeCount": len(freec)}
+        resp = {"ok": True, "recent": rec, "free": freec,
+                "freeCount": int(free_total), "freeShown": len(freec)}
         if has_prov:
             if svc == "claude":
                 _pset, _reg, _order, _def, _pname, _countfn = (

@@ -447,35 +447,56 @@ async def check_gpt_code(card_code: str) -> dict:
             ).first
             await verify_btn.wait_for(state="visible", timeout=8_000)
             await verify_btn.click()
-            await asyncio.sleep(2.0)
 
-            try:
-                page_text = await page.inner_text("body")
-            except Exception:
-                page_text = ""
-            pt_lower = page_text.lower()
+            # Ждём определённого исхода (до ~10 c), проверяя на каждой итерации.
+            # ПОРЯДОК ВАЖЕН и правила СТРОГИЕ, иначе годные коды ошибочно метятся
+            # «used» и выпадают из пула (реальная потеря денег):
+            #   1) СНАЧАЛА успех — валидный неиспользованный код проходит на шаг 2
+            #      (появляется textarea для Session / маркеры шага 2). На шаге 2 много
+            #      текста про «аккаунт пополнения» — раньше это давало ложный «used».
+            #   2) Только СТРОГИЕ, однозначные фразы «использован»/«неверен».
+            #      Убраны широкие «аккаунт пополнения», «пополнить с существующей»,
+            #      «已激活» — они встречаются и у валидных кодов.
+            #   3) Всё неоднозначное → "error" (код ОСТАЁТСЯ в пуле, перепроверится),
+            #      НИКОГДА не "used".
+            import re as _re
+            page_text = ""
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                try:
+                    page_text = await page.inner_text("body")
+                except Exception:
+                    page_text = ""
+                pt_lower = page_text.lower()
 
-            used_markers = ["уже использован","already used","已使用","已激活","пополнить с существующей","аккаунт пополнения"]
-            if any(m in pt_lower for m in used_markers):
-                import re as _re
-                email = ""
-                m = _re.search(r'[\w.+-]+@[\w.-]+\.\w+', page_text)
-                if m:
-                    email = m.group(0)
-                return {"status": "used", "email": email}
+                # 1) УСПЕХ: появилось поле Session (шаг 2) или явные маркеры шага 2
+                try:
+                    if await page.locator("textarea").last.is_visible():
+                        return {"status": "ok"}
+                except Exception:
+                    pass
+                if ("данные session" in pt_lower or "заполните данные session" in pt_lower
+                        or "ready to submit" in pt_lower or "отправьте session" in pt_lower
+                        or "submit session" in pt_lower):
+                    return {"status": "ok"}
 
-            invalid_markers = ["не существует","does not exist","不存在","invalid card","ключ не найден","card not found"]
-            if any(m in pt_lower for m in invalid_markers):
-                return {"status": "invalid"}
+                # 2a) СТРОГО «использован»
+                if ("уже использован" in pt_lower or "already used" in pt_lower
+                        or "已使用" in page_text or "已被使用" in page_text
+                        or "已充值" in page_text or "card used" in pt_lower
+                        or "code has been used" in pt_lower):
+                    m = _re.search(r'[\w.+-]+@[\w.-]+\.\w+', page_text)
+                    return {"status": "used", "email": m.group(0) if m else ""}
 
-            try:
-                textarea = page.locator("textarea").last
-                await textarea.wait_for(state="visible", timeout=10_000)
-                return {"status": "ok"}
-            except PlaywrightTimeout:
-                pass
+                # 2b) СТРОГО «неверный/не существует»
+                if ("не существует" in pt_lower or "does not exist" in pt_lower
+                        or "不存在" in page_text or "invalid card" in pt_lower
+                        or "ключ не найден" in pt_lower or "card not found" in pt_lower
+                        or "недействительн" in pt_lower):
+                    return {"status": "invalid"}
 
-            return {"status": "error", "error": f"Неизвестный ответ: {page_text[:100]}"}
+            # 3) Ничего однозначного — НЕ метим used/invalid, отдаём error
+            return {"status": "error", "error": f"неоднозначно: {page_text[:80]}"}
 
         except PlaywrightTimeout as e:
             return {"status": "error", "error": "timeout"}
