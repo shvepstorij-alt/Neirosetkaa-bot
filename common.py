@@ -3364,117 +3364,127 @@ async def _run_activation_job(
         # ─────────────────────────────────────────────────────────────────────
         result = await _do_activate(code)
 
-        # Если код уже использован на сайте — перебираем следующие коды ЭТОГО ЖЕ сайта,
-        # пока не найдём рабочий или коды не кончатся (собираем пропущенные для отчёта).
-        _gpt_used_codes = []
-        while not result.get("success") and result.get("code_already_used") and len(_gpt_used_codes) < 10:
-            _bad_code = code
-            _plan_key = plan_name_to_key(plan_name)
-            _gpt_used_codes.append(_bad_code)
-            logging.warning(f"Код {_bad_code} уже использован, беру следующий (plan={_plan_key}, site={provider})")
+        _plan_key = plan_name_to_key(plan_name)
+        _gpt_used_codes = []        # все сожжённые использованные коды (для отчёта)
+        _tried_sites = [provider]   # сайты, где уже пробовали
+        _switch_msg_id = None
+        _switch_text = ""
 
-            # Помечаем плохой код как постоянно использованный (не возвращаем в пул)
+        async def _burn_code(_c):
+            """Помечаем использованный код навсегда — в пул не возвращаем."""
             try:
-                _pool2 = await get_pool()
-                async with _pool2.acquire() as _conn2:
-                    await _conn2.execute(
+                _p = await get_pool()
+                async with _p.acquire() as _cn:
+                    await _cn.execute(
                         "UPDATE gpt_codes SET is_used=TRUE, used_by=$1, used_at=NOW() WHERE code=$2",
-                        user_id, _bad_code
-                    )
+                        user_id, _c)
             except Exception as _e:
-                logging.error(f"Не удалось пометить плохой код {_bad_code}: {_e}")
+                logging.error(f"Не удалось пометить плохой код {_c}: {_e}")
 
-            new_code = await get_next_gpt_code(_plan_key, provider)
-            if not new_code:
-                _activation_jobs[job_id] = {
-                    "status": "done", "success": False,
-                    "error": "Коды временно закончились. Александр активирует вручную в течение часа 🙌"
-                }
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🚨 <b>Коды {_plan_key} закончились!</b>\n\n"
-                        f"👤 <code>{user_id}</code> ({plan_name}) ждёт активации.\n"
-                        f"♻️ Пропущены использованные ({len(_gpt_used_codes)}): "
-                        f"{', '.join(_gpt_used_codes)}\n"
-                        f"Добавь коды: /add_gpt_codes",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-                return
-            logging.info(f"Новый код для {user_id}: {new_code} (site={provider})")
-            await save_pending_activation(user_id, new_code, order_id, _plan_key, plan_name, provider)
-            code = new_code
-            if len(_gpt_used_codes) == 1:
-                try:
-                    await bot.send_message(
-                        user_id,
-                        "🔄 Первый код занят — автоматически выдаю следующий, подожди немного...",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-            result = await _do_activate(code)
+        async def _cycle_used_current_site() -> bool:
+            """Перебирает коды ТЕКУЩЕГО сайта, пока приходит code_already_used.
+            Обновляет code/result. Возвращает True, если сайт исчерпан
+            использованными кодами (пора уходить на другой сайт)."""
+            nonlocal code, result
+            while (not result.get("success") and result.get("code_already_used")
+                   and len(_gpt_used_codes) < 30):
+                _gpt_used_codes.append(code)
+                await _burn_code(code)
+                logging.warning(f"Код {code} уже использован (site={provider}), беру следующий")
+                _nc = await get_next_gpt_code(_plan_key, provider)
+                if not _nc:
+                    return True   # на этом сайте кодов больше нет
+                await save_pending_activation(user_id, _nc, order_id, _plan_key, plan_name, provider)
+                code = _nc
+                if len(_gpt_used_codes) == 1:
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            "🔄 Первый код занят — автоматически выдаю следующий, подожди немного...",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                result = await _do_activate(code)
+            return False
 
-        # ── Авто-фолбэк при СБОЕ САЙТА: нет стока, таймаут, сайт лежит (Cloudflare 522),
-        # браузер не поднялся и т.п. → уходим на другой сайт с его кодом.
-        # НЕ фолбэсим ошибки КЛИЕНТА (протухшая сессия, «нужна проверка», подтверждение) —
-        # там смена сайта не поможет, а «код использован» обрабатывается циклом выше.
-        def _gpt_site_failure(_res):
-            if _res.get("success"):
-                return False
-            if (_res.get("token_invalid") or _res.get("needs_check")
-                    or _res.get("needs_force_confirm") or _res.get("code_already_used")):
-                return False
-            return True
+        # Ошибки КЛИЕНТА — сменой сайта не лечатся (протухшая сессия, «нужна проверка»,
+        # подтверждение принудительной активации). Их НЕ фолбэсим по сайтам.
+        def _client_stop(_res):
+            return bool(_res.get("token_invalid") or _res.get("needs_check")
+                        or _res.get("needs_force_confirm"))
 
-        if _gpt_site_failure(result):
-            _plan_key_oos = plan_name_to_key(plan_name)
-            _fail_reason = (result.get("error") or "сбой сайта")[:140]
-            _tried_sites = [provider]
-            # запоминаем сообщение о переключении — в него допишем ИТОГ активации
-            _switch_msg_id = None
-            _switch_text = ""
+        # 1) текущий сайт: сперва перебор использованных кодов
+        await _cycle_used_current_site()
+
+        # 2) единый авто-фолбэк по сайтам: пока нет успеха и это не ошибка клиента —
+        #    уходим на следующий сайт, где ЕСТЬ коды, и там снова перебираем
+        #    использованные. Причина ухода: сбой сайта (таймаут/522/нет стока) ИЛИ
+        #    на этом сайте кончились коды (все использованы).
+        while (not result.get("success")) and (not _client_stop(result)):
+            _next = None
             for _np in await _gpt_provider_order():
                 if _np in _tried_sites:
                     continue
-                _nc = await get_next_gpt_code(_plan_key_oos, _np)
-                if not _nc:
-                    continue
+                _nc = await get_next_gpt_code(_plan_key, _np)
+                if _nc:
+                    _next = (_np, _nc)
+                    break
+            if not _next:
+                break  # сайтов с кодами больше нет
+            _was_used = bool(result.get("code_already_used"))
+            _fail_reason = (result.get("error")
+                            or ("код уже использован" if _was_used else "сбой сайта"))[:140]
+            # прежний код валиден (сбой сайта, не «использован») → вернём его в пул
+            if not _was_used:
                 try:
-                    await release_gpt_code(code)   # прежний код валиден — вернём в пул его сайта
+                    await release_gpt_code(code)
                 except Exception:
                     pass
-                _tried_sites.append(_np)
-                provider = _np
-                code = _nc
-                await save_pending_activation(user_id, code, order_id, _plan_key_oos, plan_name, provider)
-                # клиенту показываем непрерывную загрузку с пометкой «пробую ещё раз»
-                _activation_jobs[job_id] = {"status": "pending", "retrying": True}
-                _switch_text = (
-                    f"🔀 <b>ChatGPT — авто-переключение сайта</b> ({plan_name})\n"
-                    f"Прежний сайт не сработал: {_fail_reason}\n"
-                    f"Ушли на <b>{gpt_provider_name(_np)}</b>.")
-                try:
-                    _sw_msg = await bot.send_message(ADMIN_ID, _switch_text, parse_mode="HTML")
-                    _switch_msg_id = _sw_msg.message_id
-                except Exception:
-                    _switch_msg_id = None
-                result = await _do_activate(code)
-                if not _gpt_site_failure(result):
-                    break
-                _fail_reason = (result.get("error") or "сбой сайта")[:140]
-            if _gpt_site_failure(result):
-                # НОВОЕ сообщение о неудаче + скриншот последнего сайта
-                await _admin_fail_shot(
-                    f"🚨 <b>ChatGPT — не удалось НИ НА ОДНОМ сайте</b> ({plan_name})\n"
-                    f"👤 <code>{user_id}</code>\n"
-                    f"🔑 Код: <code>{code}</code>\n"
-                    f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
-                    f"❗️ Последняя ошибка: {_fail_reason}\n"
-                    f"Активируй вручную.",
-                    result.get("screenshot"))
+            provider, code = _next
+            _tried_sites.append(provider)
+            await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, provider)
+            _activation_jobs[job_id] = {"status": "pending", "retrying": True}
+            _switch_text = (
+                f"🔀 <b>ChatGPT — авто-переключение сайта</b> ({plan_name})\n"
+                f"Прежний сайт не сработал: {_fail_reason}\n"
+                f"Ушли на <b>{gpt_provider_name(provider)}</b>.")
+            try:
+                _sw_msg = await bot.send_message(ADMIN_ID, _switch_text, parse_mode="HTML")
+                _switch_msg_id = _sw_msg.message_id
+            except Exception:
+                _switch_msg_id = None
+            result = await _do_activate(code)
+            await _cycle_used_current_site()  # на новом сайте тоже перебираем использованные
+
+        # 3) КОДЫ КОНЧИЛИСЬ ВЕЗДЕ: результат — «код использован», а свободных кодов больше
+        #    нет ни на одном сайте. Это терминальный случай → ручная активация.
+        if (not result.get("success")) and result.get("code_already_used"):
+            _skipped = (f"♻️ Пропущены использованные ({len(_gpt_used_codes)}): "
+                        f"{', '.join(_gpt_used_codes)}\n" if _gpt_used_codes else "")
+            await _admin_fail_shot(
+                f"🚨 <b>ChatGPT — коды {_plan_key} закончились на ВСЕХ сайтах</b> ({plan_name})\n"
+                f"👤 <code>{user_id}</code> ждёт активации.\n"
+                f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
+                f"{_skipped}"
+                f"Добавь коды: /add_gpt_codes",
+                result.get("screenshot"))
+            _activation_jobs[job_id] = {
+                "status": "done", "success": False,
+                "error": "Коды временно закончились. Александр активирует вручную в течение часа 🙌"}
+            return
+
+        # 4) СБОЙ САЙТА и других сайтов с кодами нет → сообщаем и уходим в общую
+        #    обработку ошибок (ретраи/токен) ниже.
+        if (not result.get("success")) and (not _client_stop(result)):
+            _fail_reason = (result.get("error") or "сбой сайта")[:140]
+            await _admin_fail_shot(
+                f"🚨 <b>ChatGPT — не удалось НИ НА ОДНОМ сайте</b> ({plan_name})\n"
+                f"👤 <code>{user_id}</code>\n"
+                f"🔑 Код: <code>{code}</code>\n"
+                f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
+                f"❗️ Последняя ошибка: {_fail_reason}\n"
+                f"Активируй вручную.",
+                result.get("screenshot"))
 
         if result.get("success"):
             _email = result.get("email") or _extract_email_from_token(access_token)
@@ -5485,11 +5495,20 @@ async def _gpt_failover_on() -> bool:
 
 
 async def _gpt_provider_order() -> list:
+    # сайты, поставленные админом на паузу (gpt_disabled) — исключаем из цепочки,
+    # чтобы ни активация, ни фолбэк не уходили на приостановленный сайт.
+    try:
+        _dis_raw = await get_setting("gpt_disabled", "") or ""
+        _disabled = {p for p in _dis_raw.split(",") if p}
+    except Exception:
+        _disabled = set()
     active = await _gpt_active_provider()
-    order = [active]
+    order = []
+    if active in GPT_PROVIDERS and active not in _disabled:
+        order.append(active)
     if await _gpt_failover_on():
         for p in GPT_PROVIDER_ORDER:
-            if p in GPT_PROVIDERS and p not in order:
+            if p in GPT_PROVIDERS and p not in order and p not in _disabled:
                 order.append(p)
     return order
 
