@@ -4063,6 +4063,43 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     plan_name = pending["plan_name"]
     provider  = pending.get("provider", "987ai")
 
+    # ── Сайт из pending мог быть выбран РАНЬШЕ и с тех пор поставлен на ПАУЗУ.
+    #    provider хранится в pending, поэтому активация уходила на приостановленный
+    #    сайт мимо текущих настроек. Если сайт на паузе — перевыбираем код с
+    #    активного/непаузного сайта (по текущему порядку) и обновляем pending.
+    try:
+        _dis_raw = await get_setting("gpt_disabled", "") or ""
+        _paused = {p for p in _dis_raw.split(",") if p}
+    except Exception:
+        _paused = set()
+    if provider in _paused:
+        _pk_rp = plan_name_to_key(plan_name)
+        _new_code = _new_prov = None
+        for _p in await _gpt_provider_order():   # _gpt_provider_order уже без паузных
+            _c = await get_next_gpt_code(_pk_rp, _p)
+            if _c:
+                _new_code, _new_prov = _c, _p
+                break
+        if _new_code:
+            try:
+                await release_gpt_code(code)   # старый код валиден — вернём в пул его сайта
+            except Exception:
+                pass
+            code, provider = _new_code, _new_prov
+            await save_pending_activation(user_id, code, order_id, _pk_rp, plan_name, provider)
+            logging.info(f"GPT repick off paused site: user={user_id} → {provider} code={code}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🔀 <b>ChatGPT — сайт на паузе, перевыбор</b>\n"
+                    f"Заказ <code>{order_id}</code> уходил на приостановленный сайт — "
+                    f"переключил на <b>{gpt_provider_name(provider)}</b>.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+        # если ни на одном непаузном сайте нет кодов — оставляем pending как есть
+        # (лучше попытаться активировать, чем отказать клиенту).
+
     # Для сайта aipro нужен полный Session JSON. Если клиент прислал сырой session — берём его,
     # иначе (старый клиент прислал только токен) для aipro активация невозможна.
     if provider in ("aipro", "kkqq", "redeem") and not session_raw:
