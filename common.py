@@ -3059,6 +3059,7 @@ async def api_admin_settings_handler(request: web.Request) -> web.Response:
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
         welcome = await get_setting("welcome_extra", "")
+        gpt_install = await get_setting("gpt_install_text", "")
         maint = (await get_setting("maintenance", "0")) == "1"
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -3073,7 +3074,8 @@ async def api_admin_settings_handler(request: web.Request) -> web.Response:
             {"key": "claude", "name": "Claude", "enabled": bool(rt.claude_webapp_enabled), "codes": int(cl)},
             {"key": "perplexity", "name": "Perplexity", "enabled": bool(rt.perplexity_webapp_enabled), "codes": int(px)},
         ]
-        return web.json_response({"ok": True, "welcome": welcome, "maintenance": maint,
+        return web.json_response({"ok": True, "welcome": welcome, "gptInstall": gpt_install,
+                                  "maintenance": maint,
                                   "miniapps": miniapps,
                                   "appstore": {"rate": rate, "markup": markup, "threshold": thr}})
     except Exception as _e:
@@ -3090,6 +3092,8 @@ async def api_admin_setting_save_handler(request: web.Request) -> web.Response:
         kind = str(body.get("kind", ""))
         if kind == "welcome":
             await set_setting("welcome_extra", str(body.get("text", "")))
+        elif kind == "gpt_install":
+            await set_setting("gpt_install_text", str(body.get("text", "")))
         elif kind == "maintenance":
             await set_setting("maintenance", "1" if body.get("on") else "0")
         elif kind == "appstore":

@@ -29,7 +29,7 @@ from states import (
 )
 from db import (
     add_credits_batch, check_promo_for_user, deduct_coins, fk_get_order, fk_save_order, get_coins,
-    get_credits, get_pool, get_user, log_payment, redeem_promo, get_order_num,
+    get_credits, get_pool, get_user, log_payment, redeem_promo, get_order_num, get_setting,
 )
 from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
@@ -320,6 +320,17 @@ async def shop_service(cb: CallbackQuery):
             text=f"{p.get('name','')} - {p.get('price',0)}₽/мес",
             callback_data=f"shop_confirm:{key}:{i}"
         )])
+    # Только для ChatGPT: кнопка «Установить Приложение» с премиум-эмодзи —
+    # по клику меняет сообщение на инструкцию из админки (setting gpt_install_text).
+    if key == "chatgpt":
+        try:
+            _inst_btn = InlineKeyboardButton(
+                text="Установить Приложение", callback_data="gpt_install_app",
+                icon_custom_emoji_id="5796185041717433060")
+        except Exception:
+            _inst_btn = InlineKeyboardButton(
+                text="📲 Установить Приложение", callback_data="gpt_install_app")
+        rows.append([_inst_btn])
     back_cat = "menu_shop"
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_shop")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
@@ -327,6 +338,32 @@ async def shop_service(cb: CallbackQuery):
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "gpt_install_app")
+async def gpt_install_app(cb: CallbackQuery):
+    """Кнопка «Установить Приложение» в меню ChatGPT — показывает инструкцию,
+    заданную админом в панели (setting gpt_install_text)."""
+    txt = (await get_setting("gpt_install_text", "") or "").strip()
+    if not txt:
+        txt = (
+            "📲 <b>Установка приложения ChatGPT</b>\n\n"
+            "Инструкция скоро появится. "
+            f"Если нужна помощь с установкой — напиши @{PERSONAL_USERNAME}."
+        )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="shop_svc:chatgpt")]
+    ])
+    try:
+        await cb.message.edit_text(txt, reply_markup=kb, parse_mode="HTML",
+                                   disable_web_page_preview=True)
+    except Exception:
+        try:
+            await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML",
+                                    disable_web_page_preview=True)
+        except Exception:
+            await cb.message.answer(txt, reply_markup=kb)
     await cb.answer()
 
 

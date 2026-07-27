@@ -708,10 +708,12 @@ function soDelete(id){if(window.confirm&&!window.confirm('Удалить зак�
 /* Управление */
 SCREENS["Приветствие"]=function(){
   setTimeout(loadSettings,0);
-  return hdr("Приветствие")+'<div class="wrap"><label class="fl">Доп. текст приветствия (HTML)</label><textarea class="f" id="wel_txt" placeholder="Загружаю…"></textarea><button class="btn" onclick="saveWelcome()">Сохранить</button><div class="note">Добавляется к приветствию при /start.</div></div>';
+  return hdr("Приветствие")+'<div class="wrap"><label class="fl">Доп. текст приветствия (HTML)</label><textarea class="f" id="wel_txt" placeholder="Загружаю…"></textarea><button class="btn" onclick="saveWelcome()">Сохранить</button><div class="note">Добавляется к приветствию при /start.</div></div>'
+    +'<div class="wrap" style="margin-top:14px"><label class="fl">📲 Текст «Установить приложение» ChatGPT (HTML)</label><textarea class="f" id="inst_txt" placeholder="Загружаю…" style="min-height:180px"></textarea><button class="btn" onclick="saveInstall()">Сохранить</button><div class="note">Показывается клиенту по кнопке «Установить Приложение» в меню ChatGPT. Можно HTML: &lt;b&gt;, &lt;a href&gt;, эмодзи.</div></div>';
 };
-function loadSettings(cb){api('/api/admin/settings',{}).then(function(d){window._settings=d;var w=document.getElementById('wel_txt');if(w&&d.ok)w.value=d.welcome||'';if(cb)cb(d);});}
+function loadSettings(cb){api('/api/admin/settings',{}).then(function(d){window._settings=d;var w=document.getElementById('wel_txt');if(w&&d.ok)w.value=d.welcome||'';var iw=document.getElementById('inst_txt');if(iw&&d.ok)iw.value=d.gptInstall||'';if(cb)cb(d);});}
 function saveWelcome(){var t=fv('wel_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'welcome',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
+function saveInstall(){var t=fv('inst_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'gpt_install',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 
 SCREENS["Рассылка"]=function(){
   return hdr("Рассылка")+'<div class="wrap"><label class="fl">Текст сообщения (HTML)</label><textarea class="f" id="bc_txt" placeholder="Текст рассылки…"></textarea><button class="btn" onclick="sendBroadcast()">Отправить всем</button><div class="note">Отправится всем незаблокированным. По завершении придёт отчёт.</div></div>';
