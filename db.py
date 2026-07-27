@@ -628,9 +628,13 @@ async def save_pending_activation(user_id: int, code: str, order_id: str, plan: 
                                   provider: str = "987ai"):
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Срок активации — 12 часов и при СОЗДАНИИ, и при обновлении. Раньше при
+        # первом INSERT срабатывал дефолт таблицы (2 часа), из-за чего клиент видел
+        # «время сессии истекло» задолго до реальных 12 ч.
         await conn.execute(
-            """INSERT INTO gpt_pending_activations (user_id, code, order_id, plan, plan_name, provider)
-               VALUES ($1,$2,$3,$4,$5,$6)
+            """INSERT INTO gpt_pending_activations
+                   (user_id, code, order_id, plan, plan_name, provider, expires_at)
+               VALUES ($1,$2,$3,$4,$5,$6, NOW()+INTERVAL '12 hours')
                ON CONFLICT (user_id) DO UPDATE
                SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6, session_raw=NULL,
                    created_at=NOW(), expires_at=NOW()+INTERVAL '12 hours'""",

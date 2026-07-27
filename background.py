@@ -470,8 +470,10 @@ async def db_cleanup_loop():
             logging.error(f"DB cleanup error: {e}")
 
 async def gpt_codes_cleanup_loop():
-    """Раз в 30 минут освобождает коды которые зарезервированы > 2 часов но не активированы.
-    Это происходит если клиент оплатил но так и не открыл Mini App."""
+    """Раз в 30 минут освобождает коды которые зарезервированы > 12 часов но не активированы.
+    Это происходит если клиент оплатил но так и не открыл Mini App.
+    Срок = 12 ч, как и окно активации (pending): иначе код клиента возвращался в пул
+    и мог уйти другому, пока у первого ещё открыта активация."""
     while True:
         try:
             await asyncio.sleep(1800)  # 30 минут
@@ -484,7 +486,7 @@ async def gpt_codes_cleanup_loop():
                        SET is_used=FALSE, reserved_at=NULL
                        WHERE is_used=TRUE
                          AND used_by IS NULL
-                         AND reserved_at < NOW() - INTERVAL '2 hours'"""
+                         AND reserved_at < NOW() - INTERVAL '12 hours'"""
                 )
                 if released and released != "UPDATE 0":
                     logging.info(f"🔑 gpt_codes cleanup: {released}")
@@ -492,7 +494,7 @@ async def gpt_codes_cleanup_loop():
                         await bot.send_message(
                             ADMIN_ID,
                             f"🔑 <b>Коды ChatGPT возвращены в пул</b>\n"
-                            f"Клиенты оплатили но не активировали в течение 2 часов.\n"
+                            f"Клиенты оплатили но не активировали в течение 12 часов.\n"
                             f"<i>{released}</i>",
                             parse_mode="HTML"
                         )
