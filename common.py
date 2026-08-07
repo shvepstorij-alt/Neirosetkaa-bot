@@ -5042,58 +5042,71 @@ async def setup_webhook_server():
 
 
 
+async def _playwright_launch_ok() -> bool:
+    """Единственная НАДЁЖНАЯ проверка — реально запустить браузер. glob по папкам
+    не ловит рассинхрон версий playwright ↔ скачанной сборки браузера (после апгрейда
+    playwright папка chromium-* остаётся старой и launch падает 'Failed to launch')."""
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            b = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--disable-setuid-sandbox", "--single-process"])
+            await b.close()
+        return True
+    except Exception as e:
+        logging.warning(f"playwright launch-test failed: {str(e)[:220]}")
+        return False
+
+
+async def _pw_install(browsers_path: str, with_deps: bool) -> int:
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
+    env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": browsers_path}
+    args = ["python", "-m", "playwright", "install"] + (["--with-deps"] if with_deps else []) + ["chromium"]
+    logging.warning(f"⚠️ Ставим Playwright chromium в {browsers_path} (with_deps={with_deps}, ~2-3 мин)...")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logging.error(f"playwright install rc={proc.returncode}: {stderr.decode()[:300]}")
+        return proc.returncode
+    except Exception as e:
+        logging.error(f"playwright install error: {e}")
+        return 1
+
+
 async def _ensure_playwright_browser():
     """
-    Проверяет наличие Playwright Chromium.
+    Гарантирует РАБОТОСПОСОБНЫЙ Playwright Chromium (а не просто наличие папки).
 
-    В идеале браузер уже скачан при сборке (nixpacks.toml) в /app/pw-browsers/.
-    Если нет — скачивает с --with-deps (apt-get ставит системные либы, браузер качается).
-    Это fallback для первого деплоя или если сборка не выполнила playwright install.
+    В идеале браузер скачан при сборке (Nixpacks) в /app/pw-browsers/. Но если
+    playwright обновился, а браузер остался старой сборки — launch падает. Поэтому
+    проверяем именно запуском и при неудаче переустанавливаем под текущую версию.
     """
     import glob
 
-    # Приоритет путей: сборочный /app (персистентный) → /tmp (эфемерный)
+    # 1) Пробуем уже имеющийся браузер в известных путях — проверяя ЗАПУСКОМ.
     for browsers_path in ["/app/pw-browsers", "/tmp/pw-browsers"]:
-        pattern = f"{browsers_path}/chromium*/chrome-headless-shell-linux64/chrome-headless-shell"
-        found = glob.glob(pattern)
-        if found:
+        if glob.glob(f"{browsers_path}/chromium*"):
             os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
-            logging.info(f"✅ Playwright browser найден: {found[0]}")
+            if await _playwright_launch_ok():
+                logging.info(f"✅ Playwright OK: {browsers_path}")
+                return
+
+    # 2) Не запускается — (пере)устанавливаем браузер под ТЕКУЩУЮ версию playwright.
+    #    Сначала в персистентный /app с системными зависимостями, затем /tmp как запас.
+    for browsers_path, with_deps in [("/app/pw-browsers", True), ("/tmp/pw-browsers", False)]:
+        await _pw_install(browsers_path, with_deps)
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
+        if await _playwright_launch_ok():
+            logging.info(f"✅ Playwright установлен и запускается: {browsers_path}")
             return
 
-    # Браузер не найден нигде — скачиваем в /app/pw-browsers с системными зависимостями
-    browsers_path = "/app/pw-browsers"
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
-    logging.warning(
-        f"⚠️ Playwright browser не найден. "
-        f"Скачиваем с --with-deps в {browsers_path} (~2-3 мин)..."
-    )
-    env = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": browsers_path}
-    proc = await asyncio.create_subprocess_exec(
-        "python", "-m", "playwright", "install", "--with-deps", "chromium",
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode == 0:
-        found = glob.glob(f"{browsers_path}/chromium*/chrome-headless-shell-linux64/chrome-headless-shell")
-        logging.info(f"✅ Playwright browser установлен: {found[0] if found else 'проверь путь'}")
-    else:
-        # --with-deps не сработал (нет apt-get) — пробуем /tmp без deps как последний шанс
-        logging.error(f"❌ --with-deps failed (code {proc.returncode}): {stderr.decode()[:300]}")
-        logging.warning("Пробуем /tmp/pw-browsers без --with-deps как последний вариант...")
-        browsers_path = "/tmp/pw-browsers"
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
-        env["PLAYWRIGHT_BROWSERS_PATH"] = browsers_path
-        proc2 = await asyncio.create_subprocess_exec(
-            "python", "-m", "playwright", "install", "chromium",
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await proc2.communicate()
-        logging.info(f"Browser fallback install complete (код: {proc2.returncode})")
+    logging.error("❌ Playwright браузер не удалось подготовить — браузерные активации будут падать. "
+                  "Проверь системные библиотеки/деплой.")
 
 
 async def _check_one_gpt_code(code_row: dict) -> str:
