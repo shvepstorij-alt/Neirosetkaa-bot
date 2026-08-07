@@ -556,6 +556,17 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             _onum = None
     _onum_str = f"#{_onum}" if _onum else order_id
 
+    # Номер для сверки в FreeKassa: до оплаты у платежа ещё нет внутреннего номера
+    # FreeKassa (intid) — он присваивается при оплате. Поэтому показываем order_id
+    # (это и есть номер заказа, который мы передаём в FreeKassa, и по нему заказ
+    # ищется в ЛК). После оплаты в остальных сообщениях будет и intid.
+    try:
+        _dbo = await fk_get_order(order_id)
+        _fk_no = (_dbo or {}).get("fk_intid") or ""
+    except Exception:
+        _fk_no = ""
+    _num_disp = _fk_no or order_id
+
     pay_url = fk_pay_url(final_shop_price, order_id) if final_shop_price > 0 else None
 
     coins_line = f"\n🪙 Монетки: <b>−{coins_used}₽</b>" if coins_used > 0 else ""
@@ -568,7 +579,8 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     text = (
         f"🏦 <b>Оплата через СБП</b>\n\n"
         f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
-        f"💵 Сумма: {price_line}{coins_line}\n\n"
+        f"💵 Сумма: {price_line}{coins_line}\n"
+        f"🧾 Номер заказа: <code>{_num_disp}</code>\n\n"
         f"После оплаты отправьте чек и номер заказа Александру - он активирует подписку 👇"
     )
     shop_buttons = []
@@ -591,7 +603,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
             text="✅ Я оплатил - написать Александру",
-            url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил заказ {_onum_str}\nСервис: {s["name"]}\nТариф: {p["name"]}\nID: {order_id}')
+            url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил заказ {_onum_str}\nСервис: {s["name"]}\nТариф: {p["name"]}\nНомер заказа: {_num_disp}\nID: {order_id}')
         )],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
     ])
@@ -626,8 +638,10 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"💵 Сумма: <b>{final_shop_price if final_shop_price > 0 else p['price']}₽</b>\n"
             f"💳 Способ: СБП\n"
+            f"🧾 Номер заказа: <code>{_num_disp}</code>\n"
             f"🆔 Заказ: <code>{order_id}</code>\n\n"
-            f"⏳ <b>Статус: ожидает оплаты</b>",
+            f"⏳ <b>Статус: ожидает оплаты</b>\n"
+            f"<i>Номер FreeKassa (intid) появится после оплаты.</i>",
             parse_mode="HTML"
         )
         # Сохраняем message_id в БД для последующего редактирования

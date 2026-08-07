@@ -135,8 +135,18 @@ BOT_TOKEN      = os.getenv("BOT_TOKEN")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CHANNEL_ID     = os.getenv("CHANNEL_ID")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "AleksandrOii")      # канал
-PERSONAL_USERNAME = os.getenv("PERSONAL_USERNAME", "neirosetkaalex")  # личка Александра
+def _clean_username(_u: str) -> str:
+    """Чистим username для ссылок t.me: убираем пробелы, ведущий @, случайно
+    вставленный префикс ссылки. Иначе t.me/@name или t.me/ https://… даёт
+    «Похоже, такого пользователя не существует»."""
+    _u = (_u or "").strip()
+    for _p in ("https://t.me/", "http://t.me/", "t.me/", "@"):
+        if _u.startswith(_p):
+            _u = _u[len(_p):]
+    return _u.strip().strip("/")
+
+ADMIN_USERNAME = _clean_username(os.getenv("ADMIN_USERNAME", "AleksandrOii"))      # канал
+PERSONAL_USERNAME = _clean_username(os.getenv("PERSONAL_USERNAME", "neirosetkaalex"))  # личка Александра
 ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
 FK_SHOP_ID     = os.getenv("FK_SHOP_ID", "72106")
 FK_API_KEY     = os.getenv("FK_API_KEY", "")
