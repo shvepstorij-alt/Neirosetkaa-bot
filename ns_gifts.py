@@ -337,31 +337,55 @@ def _strip_region_suffix(name: str) -> str:
     return n or (name or "").strip()
 
 
+# Базовое имя франшизы: обрезаем версию/издание/подзаголовок, чтобы разные части
+# одной серии (Dead Rising 2/3/4/Remaster, Dark Souls II/Remastered, Dishonored 2…)
+# складывались в одну папку.
+_ROMAN = {"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "xiii", "xiv"}
+_EDITION_KW = {"edition", "remaster", "remastered", "deluxe", "definitive", "goty",
+               "complete", "redux", "anniversary", "collection"}
+_TM_RE = _re.compile(r"[™®©]")
+
+
+def _clean_title(s: str) -> str:
+    return _re.sub(r"\s+", " ", _TM_RE.sub("", s or "")).strip()
+
+
+def _franchise_base(name: str) -> str:
+    n = _clean_title(name).split(":")[0].strip()
+    out = []
+    for t in n.split():
+        tl = t.strip(".,").lower()
+        if tl.isdigit() or tl in _ROMAN or tl in _EDITION_KW:
+            break
+        out.append(t)
+    base = " ".join(out).strip()
+    return base or n or _clean_title(name)
+
+
 def brand_of(category_name: str) -> str:
-    """Продукт/папка: часть до '|', минус региональный хвост, плюс слияние
-    раздробленных брендов (Amazon). Так все варианты одной игры/сервиса
-    складываются в одну папку."""
+    """Базовое имя продукта/франшизы: до '|', минус регион-хвост, слияние
+    раздробленных брендов (Amazon), минус версия/издание."""
     name = (category_name or "").split("|")[0].strip()
     name = name or (category_name or "").strip()
-    return _canon_brand(_strip_region_suffix(name))
+    name = _canon_brand(_strip_region_suffix(name))
+    return _franchise_base(name)
 
 
-def variant_label(category_name: str) -> str:
-    """Метка варианта внутри папки продукта: регион после '|' или сорезанный хвост."""
-    n = (category_name or "").strip()
-    if "|" in n:
-        return n.split("|", 1)[1].strip() or n
-    base = brand_of(n)
-    if base and base.lower() != n.lower() and n.lower().startswith(base.lower()):
-        suf = n[len(base):].strip(" -/|")
-        if suf:
-            return suf
-    return "Стандарт"
+def variant_label(folder_brand: str, category_name: str) -> str:
+    """Метка варианта внутри папки: регион после '|' или версия/издание/подзаголовок."""
+    if "|" in (category_name or ""):
+        return category_name.split("|", 1)[1].strip() or _clean_title(category_name)
+    n = _clean_title(category_name)
+    fb = (folder_brand or "").strip()
+    if fb and n.lower().startswith(fb.lower()):
+        suf = n[len(fb):].strip(" -:/|")
+        return suf or "Оригинал"
+    return n or "Оригинал"
 
 
 def brand_token(name: str) -> str:
-    """Короткий стабильный токен бренда для callback_data (имя может быть длинным)."""
-    return hashlib.md5((name or "").encode("utf-8")).hexdigest()[:10]
+    """Стабильный токен папки для callback_data (по нормализованному ключу)."""
+    return hashlib.md5((name or "").strip().casefold().encode("utf-8")).hexdigest()[:10]
 
 
 def is_apple_brand(brand: str) -> bool:
@@ -408,50 +432,106 @@ BUCKETS = [
 BUCKET_TITLES = dict(BUCKETS)
 
 
-def get_all_brands(stock: dict) -> list[dict]:
-    """Все бренды каталога (имя до '|') с товарами в наличии.
-    → [{brand, token, cats, min_usd, bucket}], отсортировано по имени бренда."""
-    by: dict = {}
-    for cat in stock.get("categories", []):
-        if not _cat_in_stock(cat):
-            continue
-        b = brand_of(cat.get("category_name", ""))
-        if not b:
-            continue
-        d = by.setdefault(b, {"brand": b, "token": brand_token(b), "cats": 0,
-                              "min_usd": None, "_names": []})
-        d["cats"] += 1
-        d["_names"].append(cat.get("category_name", ""))
-        for s in cat.get("services", []):
+def _best_display(displays: dict) -> str:
+    """Из вариантов написания выбираем самое «нормальное» (меньше ЗАГЛАВНЫХ), затем частое."""
+    if not displays:
+        return ""
+    return sorted(displays, key=lambda s: (sum(ch.isupper() for ch in s), -displays[s]))[0]
+
+
+_catalog_cache = {"key": None, "data": None}
+
+
+def build_catalog(stock: dict) -> dict:
+    """Единая кластеризация каталога в папки-продукты (с кэшем).
+    Пасс 1: базовое имя франшизы. Пасс 2: слияние по общему префиксу
+    (DOOM Eternal + DOOM: The Dark Ages → DOOM).
+    → {'folders':[{brand,token,key,bucket,cats,min_usd,_cat_objs}], 'by_token', 'by_cat'}."""
+    cats = stock.get("categories", []) if isinstance(stock, dict) else []
+    ck = (id(stock), len(cats))
+    if _catalog_cache["key"] == ck and _catalog_cache["data"] is not None:
+        return _catalog_cache["data"]
+    incat = [c for c in cats if _cat_in_stock(c)]
+    base_by_cat = {c["category_id"]: brand_of(c.get("category_name", "")) for c in incat}
+    base_lower = {}
+    for b in base_by_cat.values():
+        base_lower.setdefault(b.casefold(), b)
+
+    def _product(base: str) -> str:
+        words = base.split()
+        for k in range(1, len(words)):
+            pref = " ".join(words[:k]).casefold()
+            if pref in base_lower:
+                return base_lower[pref]
+        return base
+
+    groups: dict = {}
+    for c in incat:
+        disp = _product(base_by_cat[c["category_id"]])
+        key = disp.casefold()
+        g = groups.setdefault(key, {"displays": {}, "cats": [], "names": [], "min_usd": None})
+        g["displays"][disp] = g["displays"].get(disp, 0) + 1
+        g["cats"].append(c)
+        g["names"].append(c.get("category_name", ""))
+        for s in c.get("services", []):
             if s.get("in_stock", 0) > 0:
                 p = s.get("price")
-                if p is not None and (d["min_usd"] is None or p < d["min_usd"]):
-                    d["min_usd"] = p
-    out = []
-    for d in by.values():
-        d["bucket"] = classify_bucket(d["brand"], " ".join(d.pop("_names", [])))
-        out.append(d)
-    return sorted(out, key=lambda x: x["brand"].lower())
+                if p is not None and (g["min_usd"] is None or p < g["min_usd"]):
+                    g["min_usd"] = p
+    folders = []
+    for key, g in groups.items():
+        disp = _best_display(g["displays"])
+        objs = sorted(g["cats"], key=lambda c: c.get("category_name", ""))
+        # Папка из одной игры без регионов ('|') — показываем ПОЛНОЕ название
+        # (иначе 'Destiny 2' → 'Destiny', 'Directive 8020' → 'Directive').
+        if len(objs) == 1 and "|" not in objs[0].get("category_name", ""):
+            disp = _clean_title(objs[0].get("category_name", "")) or disp
+        folders.append({
+            "brand": disp, "token": brand_token(key), "key": key,
+            "bucket": classify_bucket(disp, " ".join(g["names"])),
+            "cats": len(objs), "min_usd": g["min_usd"], "_cat_objs": objs,
+        })
+    folders.sort(key=lambda x: x["brand"].lower())
+    data = {"folders": folders,
+            "by_token": {f["token"]: f for f in folders},
+            "by_cat": {c["category_id"]: f for f in folders for c in f["_cat_objs"]}}
+    _catalog_cache["key"] = ck
+    _catalog_cache["data"] = data
+    return data
+
+
+def get_all_brands(stock: dict) -> list[dict]:
+    return build_catalog(stock)["folders"]
 
 
 def get_brands_by_bucket(stock: dict, bucket: str) -> list[dict]:
-    return [b for b in get_all_brands(stock) if b["bucket"] == bucket]
+    return [f for f in get_all_brands(stock) if f["bucket"] == bucket]
 
 
 def get_buckets_present(stock: dict) -> list[tuple]:
     """Типы, реально присутствующие в каталоге (в порядке BUCKETS), с количеством."""
-    brands = get_all_brands(stock)
     cnt: dict = {}
-    for b in brands:
-        cnt[b["bucket"]] = cnt.get(b["bucket"], 0) + 1
+    for f in get_all_brands(stock):
+        cnt[f["bucket"]] = cnt.get(f["bucket"], 0) + 1
     return [(k, title, cnt[k]) for k, title in BUCKETS if cnt.get(k)]
 
 
-def get_brand_categories(stock: dict, brand: str) -> list[dict]:
-    """Категории бренда с товарами в наличии (второй уровень)."""
-    out = [c for c in stock.get("categories", [])
-           if brand_of(c.get("category_name", "")) == brand and _cat_in_stock(c)]
-    return sorted(out, key=lambda c: c.get("category_name", ""))
+def get_folder_by_token(stock: dict, token: str):
+    return build_catalog(stock)["by_token"].get(token)
+
+
+def get_folder_by_category(stock: dict, cat_id: int):
+    return build_catalog(stock)["by_cat"].get(cat_id)
+
+
+def get_brand_categories(stock: dict, token_or_brand: str) -> list[dict]:
+    """Категории папки (по token или по имени)."""
+    cat = build_catalog(stock)
+    f = cat["by_token"].get(token_or_brand)
+    if not f:
+        low = (token_or_brand or "").casefold()
+        f = next((x for x in cat["folders"] if x["key"] == low or x["brand"].casefold() == low), None)
+    return list(f["_cat_objs"]) if f else []
 
 
 def find_category(stock: dict, cat_id: int) -> Optional[dict]:
@@ -462,17 +542,17 @@ def find_category(stock: dict, cat_id: int) -> Optional[dict]:
 
 
 def get_brand_by_token(stock: dict, token: str) -> str:
-    for b in get_all_brands(stock):
-        if b["token"] == token:
-            return b["brand"]
-    return ""
+    f = get_folder_by_token(stock, token)
+    return f["brand"] if f else ""
 
 
-def brand_bucket(stock: dict, brand: str) -> str:
-    for b in get_all_brands(stock):
-        if b["brand"] == brand:
-            return b["bucket"]
-    return "game"
+def brand_bucket(stock: dict, brand_or_token: str) -> str:
+    cat = build_catalog(stock)
+    f = cat["by_token"].get(brand_or_token)
+    if not f:
+        low = (brand_or_token or "").casefold()
+        f = next((x for x in cat["folders"] if x["key"] == low or x["brand"].casefold() == low), None)
+    return f["bucket"] if f else "game"
 
 
 def brand_first_letter(brand: str) -> str:

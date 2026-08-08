@@ -240,31 +240,30 @@ async def nsg_brand(cb: CallbackQuery):
         await cb.message.answer("⚠️ Сервис временно недоступен.")
         return
     token = cb.data.split(":", 1)[1]
-    from ns_gifts import (get_stock_cached, get_brand_by_token,
-                          get_brand_categories, region_flag, variant_label)
-    stock = await get_stock_cached(rt.nsgifts_client)
-    brand = get_brand_by_token(stock, token)
-    if not brand:
+    from ns_gifts import get_stock_cached, get_folder_by_token, region_flag, variant_label
+    stock  = await get_stock_cached(rt.nsgifts_client)
+    folder = get_folder_by_token(stock, token)
+    if not folder:
         await cb.answer()
         await cb.message.answer("⚠️ Сервис не найден. Открой каталог заново.")
         return
-    cats = get_brand_categories(stock, brand)
+    brand = folder["brand"]
+    cats  = folder["_cat_objs"]
     if not cats:
         await cb.answer()
         await cb.message.answer("⚠️ Товары этого сервиса закончились. Попробуй позже.")
         return
-    # Если у бренда одна категория — сразу к номиналам (cb.answer() сделает nsg_cat).
+    # Если у папки одна категория — сразу к номиналам (cb.answer() сделает nsg_cat).
     if len(cats) == 1:
         return await nsg_cat(cb, cat_id=cats[0]["category_id"])
     await cb.answer()
     rows = []
     for c in cats:
         cname = c.get("category_name", "")
-        flag  = region_flag(cname)
         rows.append([InlineKeyboardButton(
-            text=f"{flag} {variant_label(cname)}",
+            text=f"{region_flag(cname)} {variant_label(brand, cname)}",
             callback_data=f"nsg_cat:{c['category_id']}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=_nsg_brand_parent_cb(stock, brand))])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"nsg_type:{folder['bucket']}")])
     text = f"🎁 <b>{brand}</b>\n\nВыбери вариант 👇"
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
@@ -328,17 +327,17 @@ async def nsg_cat(cb: CallbackQuery, cat_id: int = None):
         cat_id = int(cb.data.split(":")[1])
 
     from ns_gifts import (get_stock_cached, find_category, region_flag,
-                          calc_price_rub, brand_of, brand_token, is_apple_brand,
-                          get_brand_categories, brand_first_letter)
-    stock = await get_stock_cached(rt.nsgifts_client)
-    cat   = find_category(stock, cat_id)
+                          calc_price_rub, brand_of, is_apple_brand, get_folder_by_category)
+    stock  = await get_stock_cached(rt.nsgifts_client)
+    cat    = find_category(stock, cat_id)
 
     if not cat:
         await cb.message.answer("⚠️ Категория не найдена. Попробуй снова.")
         return
 
-    brand = brand_of(cat.get("category_name", ""))
-    apple = is_apple_brand(brand)
+    folder = get_folder_by_category(stock, cat_id)
+    brand  = folder["brand"] if folder else brand_of(cat.get("category_name", ""))
+    apple  = is_apple_brand(brand)
     usd_rate   = await _nsg_usd_rate()
     markup_pct = await _nsg_markup_for(brand)
 
@@ -375,14 +374,15 @@ async def nsg_cat(cb: CallbackQuery, cat_id: int = None):
         )
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_start")])
     else:
-        cname = cat["category_name"]
-        region = cname.split("|", 1)[1].strip() if "|" in cname else ""
-        _hdr = f"🎁 <b>{brand}</b>" + (f" — {flag} {region}" if region else "")
+        from ns_gifts import variant_label
+        _var = variant_label(brand, cat["category_name"])
+        _hdr = f"🎁 <b>{brand}</b>" + (f" — {flag} {_var}" if _var and _var != "Оригинал" else "")
         text = f"{_hdr}\n\nВыбери номинал 👇\n\n<i>Код придёт сразу после оплаты</i>"
-        # Бренд с одной категорией: nsgb сразу форвардит сюда → «Назад» ведём на
-        # родительский экран (тип/буква), чтобы не зациклиться. Иначе — к категориям.
-        _single = len(get_brand_categories(stock, brand)) <= 1
-        _back = _nsg_brand_parent_cb(stock, brand) if _single else f"nsgb:{brand_token(brand)}"
+        # Папка с одной категорией: nsgb форвардит сюда → «Назад» ведём на список типа,
+        # чтобы не зациклиться. Иначе — к вариантам папки.
+        _single = bool(folder) and len(folder["_cat_objs"]) <= 1
+        _back = f"nsg_type:{folder['bucket']}" if (_single and folder) else \
+                (f"nsgb:{folder['token']}" if folder else "nsg_shop")
         rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=_back)])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
