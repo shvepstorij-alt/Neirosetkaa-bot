@@ -176,27 +176,12 @@ async def nsg_shop(cb: CallbackQuery):
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 
-@dp.callback_query(F.data.startswith("nsg_type:"))
-async def nsg_type(cb: CallbackQuery):
-    """Список сервисов типа — сразу названиями, постранично (без поиска по буквам)."""
-    bucket = cb.data.split(":", 1)[1]
-    cb.data = f"nsgp:{bucket}:0"
-    return await nsg_page(cb)
-
-
-@dp.callback_query(F.data.startswith("nsgp:"))
-async def nsg_page(cb: CallbackQuery):
-    """Страница списка сервисов выбранного типа (конкретные названия)."""
+async def _render_type_page(cb: CallbackQuery, bucket: str, page: int):
+    """Рендер страницы списка сервисов типа (конкретные названия, постранично)."""
     await cb.answer()
     if not rt.nsgifts_client:
         await cb.message.answer("⚠️ Сервис временно недоступен.")
         return
-    _p = cb.data.split(":")
-    bucket = _p[1] if len(_p) > 2 else ""
-    try:
-        page = int(_p[-1])
-    except Exception:
-        page = 0
     from ns_gifts import get_stock_cached, get_brands_by_bucket, BUCKET_TITLES
     stock  = await get_stock_cached(rt.nsgifts_client)
     brands = get_brands_by_bucket(stock, bucket)
@@ -228,6 +213,25 @@ async def nsg_page(cb: CallbackQuery):
         await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
 
 
+@dp.callback_query(F.data.startswith("nsg_type:"))
+async def nsg_type(cb: CallbackQuery):
+    """Список сервисов типа — сразу названиями, постранично (без поиска по буквам)."""
+    bucket = cb.data.split(":", 1)[1]
+    await _render_type_page(cb, bucket, 0)
+
+
+@dp.callback_query(F.data.startswith("nsgp:"))
+async def nsg_page(cb: CallbackQuery):
+    """Страница списка сервисов выбранного типа."""
+    _p = cb.data.split(":")
+    bucket = _p[1] if len(_p) > 2 else ""
+    try:
+        page = int(_p[-1])
+    except Exception:
+        page = 0
+    await _render_type_page(cb, bucket, page)
+
+
 @dp.callback_query(F.data.startswith("nsgb:"))
 async def nsg_brand(cb: CallbackQuery):
     """Категории выбранного бренда (четвёртый уровень)."""
@@ -251,8 +255,7 @@ async def nsg_brand(cb: CallbackQuery):
         return
     # Если у бренда одна категория — сразу к номиналам (cb.answer() сделает nsg_cat).
     if len(cats) == 1:
-        cb.data = f"nsg_cat:{cats[0]['category_id']}"
-        return await nsg_cat(cb)
+        return await nsg_cat(cb, cat_id=cats[0]["category_id"])
     await cb.answer()
     rows = []
     for c in cats:
@@ -314,14 +317,15 @@ async def nsg_start(cb: CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("nsg_cat:"))
-async def nsg_cat(cb: CallbackQuery):
-    """Экран выбора суммы пополнения."""
+async def nsg_cat(cb: CallbackQuery, cat_id: int = None):
+    """Экран выбора суммы пополнения. cat_id можно передать явно (форвард из nsgb)."""
     await cb.answer()
     if not rt.nsgifts_client:
         await cb.message.answer("⚠️ Сервис временно недоступен.")
         return
 
-    cat_id = int(cb.data.split(":")[1])
+    if cat_id is None:
+        cat_id = int(cb.data.split(":")[1])
 
     from ns_gifts import (get_stock_cached, find_category, region_flag,
                           calc_price_rub, brand_of, brand_token, is_apple_brand,

@@ -392,6 +392,9 @@ def classify_bucket(brand: str, names_blob: str = "") -> str:
         return "topup"
     if any(k in text for k in _GIFT_KW):
         return "gift"
+    # «… Games» (Steam Games, Xbox Games) — это игры, даже если бренд игровой.
+    if "games" in b:
+        return "game"
     if any(k in b for k in _GIFT_BRAND_KW):
         return "gift"
     return "game"
