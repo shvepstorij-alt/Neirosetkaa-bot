@@ -98,29 +98,61 @@ async def _nsg_markup_for(brand: str) -> float:
 
 @dp.callback_query(F.data == "nsg_shop")
 async def nsg_shop(cb: CallbackQuery):
-    """Каталог «Гифт-карты и игры» — список брендов (первый уровень)."""
+    """Каталог «Гифт-карты и игры» — алфавитный указатель (первый уровень).
+    Каталог огромный (сотни позиций), поэтому сначала выбор буквы, а не весь список."""
     await cb.answer()
     if not rt.nsgifts_client:
         await cb.message.answer("⚠️ Сервис временно недоступен. Напиши @neirosetkaalex")
         return
-    from ns_gifts import get_stock_cached, get_all_brands
-    stock  = await get_stock_cached(rt.nsgifts_client)
-    brands = get_all_brands(stock)
-    if not brands:
+    from ns_gifts import get_stock_cached, get_brand_letters, get_all_brands
+    stock   = await get_stock_cached(rt.nsgifts_client)
+    letters = get_brand_letters(stock)
+    if not letters:
         await cb.message.answer("⚠️ Каталог временно пуст. Попробуй позже.")
         return
-    rows = []
-    for b in brands:
-        rows.append([InlineKeyboardButton(
-            text=f"{b['brand']} · {b['cats']} катег.",
-            callback_data=f"nsgb:{b['token']}")])
+    total = len(get_all_brands(stock))
+    rows, row = [], []
+    for L in letters:
+        row.append(InlineKeyboardButton(text=L, callback_data=f"nsgl:{L}"))
+        if len(row) == 5:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
     rows.append([InlineKeyboardButton(text="⬅️ В магазин", callback_data="menu_shop")])
     text = (
         "🎁 <b>Гифт-карты и игры</b>\n\n"
-        "Пополнение игровых и сервисных аккаунтов. "
-        "Код приходит <b>автоматически</b> сразу после оплаты.\n\n"
-        "<b>Выбери сервис:</b>"
+        f"В каталоге <b>{total}</b> сервисов и игр. Код приходит <b>автоматически</b> "
+        "сразу после оплаты.\n\n"
+        "<b>Выбери букву</b> — покажу сервисы на неё 👇"
     )
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("nsgl:"))
+async def nsg_letter(cb: CallbackQuery):
+    """Бренды на выбранную букву (второй уровень)."""
+    await cb.answer()
+    if not rt.nsgifts_client:
+        await cb.message.answer("⚠️ Сервис временно недоступен.")
+        return
+    letter = cb.data.split(":", 1)[1]
+    from ns_gifts import get_stock_cached, get_brands_by_letter
+    stock  = await get_stock_cached(rt.nsgifts_client)
+    brands = get_brands_by_letter(stock, letter)
+    if not brands:
+        await cb.message.answer("⚠️ На эту букву пусто. Открой каталог заново.")
+        return
+    rows = []
+    for b in brands:
+        _c = f" · {b['cats']} катег." if b["cats"] > 1 else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{b['brand']}{_c}",
+            callback_data=f"nsgb:{b['token']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ К буквам", callback_data="nsg_shop")])
+    text = f"🎁 <b>Гифт-карты и игры — «{letter}»</b>\n\nВыбери сервис 👇"
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
     except Exception:
@@ -129,23 +161,31 @@ async def nsg_shop(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("nsgb:"))
 async def nsg_brand(cb: CallbackQuery):
-    """Категории выбранного бренда (второй уровень)."""
-    await cb.answer()
+    """Категории выбранного бренда (третий уровень)."""
     if not rt.nsgifts_client:
+        await cb.answer()
         await cb.message.answer("⚠️ Сервис временно недоступен.")
         return
     token = cb.data.split(":", 1)[1]
     from ns_gifts import (get_stock_cached, get_brand_by_token,
-                          get_brand_categories, region_flag)
+                          get_brand_categories, region_flag, brand_first_letter)
     stock = await get_stock_cached(rt.nsgifts_client)
     brand = get_brand_by_token(stock, token)
     if not brand:
+        await cb.answer()
         await cb.message.answer("⚠️ Сервис не найден. Открой каталог заново.")
         return
     cats = get_brand_categories(stock, brand)
     if not cats:
+        await cb.answer()
         await cb.message.answer("⚠️ Товары этого сервиса закончились. Попробуй позже.")
         return
+    # Если у бренда одна категория — не заставляем делать лишний тап: сразу к номиналам.
+    # cb.answer() НЕ вызываем здесь — его сделает nsg_cat (иначе двойной answer падает).
+    if len(cats) == 1:
+        cb.data = f"nsg_cat:{cats[0]['category_id']}"
+        return await nsg_cat(cb)
+    await cb.answer()
     rows = []
     for c in cats:
         cname = c.get("category_name", "")
@@ -154,7 +194,7 @@ async def nsg_brand(cb: CallbackQuery):
         rows.append([InlineKeyboardButton(
             text=f"{flag} {region}",
             callback_data=f"nsg_cat:{c['category_id']}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_shop")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"nsgl:{brand_first_letter(brand)}")])
     text = f"🎁 <b>{brand}</b>\n\nВыбери вариант 👇"
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
@@ -217,7 +257,8 @@ async def nsg_cat(cb: CallbackQuery):
     cat_id = int(cb.data.split(":")[1])
 
     from ns_gifts import (get_stock_cached, find_category, region_flag,
-                          calc_price_rub, brand_of, brand_token, is_apple_brand)
+                          calc_price_rub, brand_of, brand_token, is_apple_brand,
+                          get_brand_categories, brand_first_letter)
     stock = await get_stock_cached(rt.nsgifts_client)
     cat   = find_category(stock, cat_id)
 
@@ -267,7 +308,11 @@ async def nsg_cat(cb: CallbackQuery):
         region = cname.split("|", 1)[1].strip() if "|" in cname else ""
         _hdr = f"🎁 <b>{brand}</b>" + (f" — {flag} {region}" if region else "")
         text = f"{_hdr}\n\nВыбери номинал 👇\n\n<i>Код придёт сразу после оплаты</i>"
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"nsgb:{brand_token(brand)}")])
+        # Бренд с одной категорией: nsgb сразу форвардит сюда → «Назад» ведём на букву,
+        # чтобы не зациклиться. Иначе — на список категорий бренда.
+        _single = len(get_brand_categories(stock, brand)) <= 1
+        _back = f"nsgl:{brand_first_letter(brand)}" if _single else f"nsgb:{brand_token(brand)}"
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=_back)])
 
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:

@@ -350,6 +350,29 @@ def get_brand_by_token(stock: dict, token: str) -> str:
     return ""
 
 
+def brand_first_letter(brand: str) -> str:
+    """Буква-раздел для алфавитного указателя: 'Battle.net'→'B', '7 Days'→'0-9'."""
+    ch = (brand or "").strip()[:1].upper()
+    if ch.isdigit():
+        return "0-9"
+    if ch.isalpha():
+        return ch
+    return "#"
+
+
+def get_brand_letters(stock: dict) -> list[str]:
+    """Список букв-разделов, присутствующих в каталоге (отсортирован)."""
+    letters = {brand_first_letter(b["brand"]) for b in get_all_brands(stock)}
+    def _key(x):
+        # буквы по алфавиту, затем цифры, затем прочее
+        return (0, x) if x.isalpha() and len(x) == 1 else ((1, x) if x == "0-9" else (2, x))
+    return sorted(letters, key=_key)
+
+
+def get_brands_by_letter(stock: dict, letter: str) -> list[dict]:
+    return [b for b in get_all_brands(stock) if brand_first_letter(b["brand"]) == letter]
+
+
 def calc_price_rub(price_usd: float, usd_rate: float, markup_pct: float) -> int:
     """Цена для клиента в рублях: закупка_$ × курс × (1 + наценка/100),
     округлённая ВВЕРХ до красивого числа (кратно 10/50/100)."""
