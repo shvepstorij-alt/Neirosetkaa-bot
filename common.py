@@ -3502,6 +3502,44 @@ async def api_admin_nsg_product_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
 
 
+async def api_admin_nsg_bulk_handler(request: web.Request) -> web.Response:
+    """Массовое действие по нескольким товарам NS Gifts: hide/show/feature/unfeature. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        import json as _j
+        ov = await _nsg_admin_overrides()
+        action = str(body.get("action", ""))
+        keys = [str(k) for k in (body.get("keys") or []) if k]
+        if not keys:
+            return web.json_response({"ok": False, "msg": "ничего не выбрано"})
+
+        async def _save(name, obj):
+            await set_setting(name, _j.dumps(obj, ensure_ascii=False))
+
+        if action == "hide":
+            s = set(ov["hidden"]); s.update(keys); await _save("nsg_hidden", sorted(s))
+        elif action == "show":
+            s = set(ov["hidden"])
+            for k in keys:
+                s.discard(k)
+            await _save("nsg_hidden", sorted(s))
+        elif action == "feature":
+            l = [x for x in ov["featured"] if x not in keys] + keys
+            await _save("nsg_featured", l)
+        elif action == "unfeature":
+            await _save("nsg_featured", [x for x in ov["featured"] if x not in keys])
+        else:
+            return web.json_response({"ok": False, "msg": "неизвестное действие"})
+        await _nsg_admin_overrides()
+        return web.json_response({"ok": True, "count": len(keys)})
+    except Exception as _e:
+        logging.error(f"api_admin_nsg_bulk: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+
+
 async def api_admin_miniapp_toggle_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -5409,6 +5447,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/feed-order-action", api_admin_feed_order_action_handler)
     app.router.add_post("/api/admin/nsg-catalog", api_admin_nsg_catalog_handler)
     app.router.add_post("/api/admin/nsg-product", api_admin_nsg_product_handler)
+    app.router.add_post("/api/admin/nsg-bulk", api_admin_nsg_bulk_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
     app.router.add_post("/api/admin/add-codes", api_admin_add_codes_handler)
     app.router.add_post("/api/admin/release-codes", api_admin_release_codes_handler)
