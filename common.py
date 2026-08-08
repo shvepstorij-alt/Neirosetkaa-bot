@@ -2421,35 +2421,228 @@ async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
                 "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
                 "WHERE f.status='paid' AND f.paid_at IS NOT NULL "
                 "ORDER BY f.paid_at DESC LIMIT $1", limit)
+            ids = [r["order_id"] for r in rows]
+            gpt_used, cl_used, px_used = set(), set(), set()
+            lp_map, nsg_map, done_set = {}, {}, set()
+            if ids:
+                for _tbl, _acc in (("gpt_codes", gpt_used), ("claude_codes", cl_used),
+                                   ("perplexity_codes", px_used)):
+                    try:
+                        _rr = await conn.fetch(
+                            f"SELECT DISTINCT order_id FROM {_tbl} "
+                            f"WHERE order_id = ANY($1::text[]) AND used_at IS NOT NULL", ids)
+                        for x in _rr:
+                            _acc.add(x["order_id"])
+                    except Exception:
+                        pass
+                try:
+                    for x in await conn.fetch(
+                        "SELECT fk_order_id, status FROM linkpay_orders WHERE fk_order_id = ANY($1::text[])", ids):
+                        lp_map[x["fk_order_id"]] = x["status"]
+                except Exception:
+                    pass
+                try:
+                    for x in await conn.fetch(
+                        "SELECT fk_order_id, status FROM nsgifts_orders WHERE fk_order_id = ANY($1::text[])", ids):
+                        nsg_map[x["fk_order_id"]] = x["status"]
+                except Exception:
+                    pass
+                try:
+                    _dk = [f"order_done:{i}" for i in ids]
+                    for x in await conn.fetch(
+                        "SELECT key FROM settings WHERE key = ANY($1::text[]) AND value='1'", _dk):
+                        done_set.add(x["key"].split(":", 1)[1])
+                except Exception:
+                    pass
+            man_set = set()
+            try:
+                async with pool.acquire() as conn2:
+                    for x in await conn2.fetch("SELECT key FROM settings WHERE key LIKE 'manual:%' AND value='1'"):
+                        man_set.add(x["key"])
+            except Exception:
+                pass
         out = []
         for r in rows:
-            pack = r["pack"] or ""
+            oid = r["order_id"]; pack = r["pack"] or ""
+            svc_key = ""; svc = ""; plan = ""; idx = 0
             if pack.startswith("shop:"):
                 parts = pack.split(":")
-                k = parts[1] if len(parts) > 1 else ""
+                svc_key = parts[1] if len(parts) > 1 else ""
                 idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-                scat = SHOP_CATALOG.get(k, {}) or {}
-                svc = scat.get("name", k or "Заказ")
+                scat = SHOP_CATALOG.get(svc_key, {}) or {}
+                svc = scat.get("name", svc_key or "Заказ")
                 plans = scat.get("plans", [])
                 plan = plans[idx]["name"] if 0 <= idx < len(plans) else ""
             elif pack.startswith("nsg:"):
-                svc, plan = "App Store", ""
+                svc_key, svc, plan = "appstore", "App Store", ""
             else:
-                svc = "Кредиты"
+                svc_key, svc = "credits", "Кредиты"
                 plan = (f"{int(r['credits'])} кр" if r["credits"] else "")
+            activated = False; stage = "Оплачено"; stageKey = "paid"
+            if svc_key in ("chatgpt", "claude", "perplexity"):
+                used = (oid in gpt_used) if svc_key == "chatgpt" else \
+                       (oid in cl_used) if svc_key == "claude" else (oid in px_used)
+                if used or oid in done_set:
+                    activated, stage, stageKey = True, "Активировано", "done"
+                elif f"manual:{svc_key}:{idx}" in man_set:
+                    stage, stageKey = "В работе", "work"
+            elif svc_key == "appstore":
+                if nsg_map.get(oid) == "fulfilled":
+                    activated, stage, stageKey = True, "Выдано", "done"
+                else:
+                    stage, stageKey = "В работе", "work"
+            elif svc_key == "credits":
+                activated, stage, stageKey = True, "Выдано", "done"
+            # ручные (linkpay) заказы: статус переопределяет
+            _lst = lp_map.get(oid)
+            if _lst == "done":
+                activated, stage, stageKey = True, "Активировано", "done"
+            elif _lst in ("awaiting_link", "awaiting_payment", "awaiting_creds", "awaiting_setup"):
+                if stageKey != "done":
+                    stage, stageKey = "В работе", "work"
             _pa = r["paid_at"]
             out.append({
-                "id": r["order_id"],
-                "num": r["num"],
+                "id": oid, "num": r["num"],
                 "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
-                "service": svc, "plan": plan,
+                "userId": r["user_id"], "username": r["username"] or "",
+                "service": svc, "svc": svc_key, "plan": plan, "idx": idx,
                 "amount": int(r["amount_rub"] or 0),
                 "date": _pa.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if _pa else "",
                 "fk": r["fk_intid"] or "",
+                "stage": stage, "stageKey": stageKey, "activated": activated,
+                "isAuto": svc_key in ("chatgpt", "claude", "perplexity"),
             })
         return web.json_response({"ok": True, "orders": out})
     except Exception as _e:
         logging.error(f"api_admin_all_orders: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_feed_order_action_handler(request: web.Request) -> web.Response:
+    """Действия по заказу из ленты: cancel | manual | resend. Работает для ЛЮБОГО
+    оплаченного заказа (в т.ч. авто-сервисов, которых нет в linkpay). Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        oid = str(body.get("id", "")); action = str(body.get("action", ""))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            o = await conn.fetchrow("SELECT user_id, pack FROM fk_orders WHERE order_id=$1", oid)
+        if not o:
+            return web.json_response({"ok": False, "msg": "Заказ не найден"})
+        uid = o["user_id"]; pack = o["pack"] or ""
+        svc_key = ""; idx = 0
+        if pack.startswith("shop:"):
+            parts = pack.split(":")
+            svc_key = parts[1] if len(parts) > 1 else ""
+            idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        elif pack.startswith("nsg:"):
+            svc_key = "appstore"
+
+        if action == "cancel":
+            async with pool.acquire() as conn:
+                await conn.execute("UPDATE fk_orders SET status='cancelled' WHERE order_id=$1", oid)
+            try:
+                await set_linkpay_status(oid, "cancelled")  # если есть ручной заказ
+            except Exception:
+                pass
+            if uid:
+                try:
+                    await bot.send_message(
+                        uid, f"❌ <b>Заказ отменён</b>\n\n"
+                             f"Если деньги были списаны — напиши по возврату: @{PERSONAL_USERNAME}",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+            return web.json_response({"ok": True})
+
+        if action == "manual":
+            _tblmap = {"chatgpt": "gpt_codes", "claude": "claude_codes", "perplexity": "perplexity_codes"}
+            _tbl = _tblmap.get(svc_key)
+            if _tbl:
+                _acc = "email" if svc_key == "chatgpt" else "org_id"
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        f"UPDATE {_tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, "
+                        f"used_at=NULL, {_acc}=NULL WHERE order_id=$1", oid)
+            else:
+                try:
+                    await set_linkpay_status(oid, "done")
+                except Exception:
+                    pass
+            await set_setting(f"order_done:{oid}", "1")
+            if uid:
+                try:
+                    await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌",
+                                           parse_mode="HTML")
+                except Exception:
+                    pass
+            return web.json_response({"ok": True})
+
+        if action == "resend":
+            if svc_key not in ("chatgpt", "claude", "perplexity"):
+                return web.json_response({"ok": False, "msg": "Повторная выдача — только для ChatGPT/Claude/Perplexity"})
+            scat = SHOP_CATALOG.get(svc_key, {}) or {}
+            plans = scat.get("plans", [])
+            plan_name = plans[idx]["name"] if 0 <= idx < len(plans) else "Plus"
+            plan_key = plan_name_to_key(plan_name)
+            if svc_key == "chatgpt":
+                # ВАЖНО: переиспользуем УЖЕ закреплённый за этим заказом код (из pending),
+                # чтобы не потратить на один заказ второй код. Новый берём только если
+                # прежнего нет (pending истёк и код вернулся в пул).
+                _pend = await get_pending_activation(uid)
+                if _pend and _pend.get("code") and str(_pend.get("order_id")) == str(oid):
+                    _code = _pend["code"]; _prov = _pend.get("provider") or "987ai"
+                else:
+                    _code, _prov = await _gpt_pick_code(plan_key)
+                    if not _code:
+                        return web.json_response({"ok": False, "msg": "Нет свободных кодов ChatGPT"})
+                await save_pending_activation(uid, _code, oid, plan_key, plan_name, _prov)
+                import urllib.parse as _uq
+                from aiogram.types import WebAppInfo as _WAI
+                _url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uq.quote(plan_name)}&code={_uq.quote(_code)}"
+                try:
+                    await bot.send_message(
+                        uid,
+                        f"🔔 <b>Активация подписки ChatGPT</b>\n\n"
+                        f"📦 {scat.get('name','ChatGPT')} {plan_name}\n"
+                        f"🎟 Код: <code>{_code}</code>\n\n"
+                        f"Нажми кнопку ниже, чтобы активировать 👇",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="✨ Активировать подписку", web_app=_WAI(url=_url))],
+                            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="gpt_need_help")],
+                        ]))
+                except Exception as _se:
+                    return web.json_response({"ok": False, "msg": f"Не удалось отправить: {_se}"})
+            elif svc_key == "claude":
+                _pend = await get_claude_pending_activation(uid)
+                if _pend and _pend.get("code") and str(_pend.get("order_id")) == str(oid):
+                    _code = _pend["code"]; _prov = _pend.get("provider") or "bpa"
+                else:
+                    _code, _prov = await _claude_pick_code(plan_key)
+                    if not _code:
+                        return web.json_response({"ok": False, "msg": "Нет свободных кодов Claude"})
+                if not await _send_claude_webapp_to_user(uid, _code, oid, plan_key, plan_name, provider=_prov):
+                    return web.json_response({"ok": False, "msg": "Не удалось отправить кнопку Claude"})
+            else:
+                _pend = await get_perplexity_pending_activation(uid)
+                if _pend and _pend.get("code") and str(_pend.get("order_id")) == str(oid):
+                    _code = _pend["code"]
+                else:
+                    _code = await get_next_perplexity_code(plan_key)
+                    if not _code:
+                        return web.json_response({"ok": False, "msg": "Нет свободных кодов Perplexity"})
+                if not await _send_perplexity_webapp_to_user(uid, _code, oid, plan_key, plan_name):
+                    return web.json_response({"ok": False, "msg": "Не удалось отправить кнопку Perplexity"})
+            await set_setting(f"order_done:{oid}", "0")
+            return web.json_response({"ok": True})
+
+        return web.json_response({"ok": False, "msg": "Неизвестное действие"})
+    except Exception as _e:
+        logging.error(f"api_admin_feed_order_action: {_e}")
         return web.json_response({"ok": False}, status=500)
 
 
@@ -5065,6 +5258,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/settings", api_admin_settings_handler)
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
     app.router.add_post("/api/admin/all-orders", api_admin_all_orders_handler)
+    app.router.add_post("/api/admin/feed-order-action", api_admin_feed_order_action_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
     app.router.add_post("/api/admin/add-codes", api_admin_add_codes_handler)
     app.router.add_post("/api/admin/release-codes", api_admin_release_codes_handler)

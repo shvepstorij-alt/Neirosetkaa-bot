@@ -589,17 +589,57 @@ function loadAllOrders(){
     var el=document.getElementById('aobody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     if(!d.orders||!d.orders.length){el.innerHTML='<div class="note">Оплаченных заказов пока нет.</div>';return;}
+    window._feedOrders={};
     var h='';
     d.orders.forEach(function(o){
+      window._feedOrders[o.id]=o;
+      var col=(o.stageKey==='done')?'g':'a';
       var num=o.num?('#'+o.num+' · '):'';
       var svcline=(o.service||'')+(o.plan?(' · '+o.plan):'');
-      var fk=o.fk?('FK '+o.fk):o.id;
-      h+='<div class="block" style="margin-bottom:8px"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+svcline+'</span><span class="tag g">'+nf(o.amount)+' ₽</span></div>'+
+      h+='<div class="block" style="margin-bottom:8px;cursor:pointer" onclick="leaf(function(){return feedOrderView(\''+o.id+'\')})">'+
+         '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+svcline+'</span><span class="tag '+col+'">'+(o.stage||'')+'</span></div>'+
          '<div class="sub">'+num+(o.user||'')+' · '+(o.date||'')+'</div>'+
-         '<div class="sub" style="margin-top:2px;cursor:pointer;word-break:break-all" onclick="copyText(\''+fk+'\')">🧾 '+fk+' 📋</div></div>';
+         '<div class="sub" style="margin-top:2px">'+nf(o.amount)+' ₽'+(o.fk?(' · 🧾 FK '+o.fk):'')+'</div></div>';
     });
     el.innerHTML=h;
   });
+}
+function feedOrderView(id){
+  var o=(window._feedOrders||{})[id]||{};
+  var col=(o.stageKey==='done')?'g':'a';
+  var h=hdr("Заказ",(o.service||'')+(o.plan?(' · '+o.plan):''))+'<div class="wrap"><div class="block">'+
+    '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag '+col+'">'+(o.stage||'')+'</span></div>'+
+    '<div class="kv"><span class="k">Сервис</span><span>'+(o.service||'')+(o.plan?(' · '+o.plan):'')+'</span></div>'+
+    '<div class="kv"><span class="k">Сумма</span><span>'+nf(o.amount)+' ₽</span></div>'+
+    '<div class="kv"><span class="k">Дата оплаты</span><span>'+(o.date||'')+'</span></div>'+
+    (o.num?'<div class="kv"><span class="k">Номер</span><span>#'+o.num+'</span></div>':'')+
+    (o.fk?'<div class="kv" style="cursor:pointer" onclick="copyText(\''+o.fk+'\')"><span class="k">FreeKassa</span><span>'+o.fk+' 📋</span></div>':'')+
+    '<div class="kv" style="cursor:pointer" onclick="copyText(\''+id+'\')"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+id+' 📋</span></div></div>';
+  if(o.isAuto && !o.activated){
+    h+='<button class="btn" onclick="feedAct(\''+id+'\',\'manual\')">✅ Активировали вручную</button>';
+    h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
+  }
+  if(o.username){
+    h+='<button class="btn sec" onclick="tgLink(\''+o.username+'\')" style="margin-top:8px">✍️ Написать клиенту</button>';
+  }else{
+    h+='<div class="note" style="margin-top:8px">У клиента нет @username — ID: <code>'+(o.userId||'')+'</code></div>';
+  }
+  h+='<button class="btn danger" onclick="feedAct(\''+id+'\',\'cancel\')" style="margin-top:8px">🗑 Отменить заказ</button>';
+  return h+'</div>';
+}
+function feedAct(id,action){
+  if(action==='cancel'&&window.confirm&&!window.confirm('Отменить заказ? Клиент получит уведомление.'))return;
+  if(action==='resend'&&window.confirm&&!window.confirm('Отправить клиенту новую кнопку активации? Будет выдан свежий код.'))return;
+  toast('…');
+  api('/api/admin/feed-order-action',{id:id,action:action}).then(function(d){
+    toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));
+    if(d.ok)back();
+  });
+}
+function tgLink(username){
+  var url='https://t.me/'+username;
+  try{ if(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.openTelegramLink){Telegram.WebApp.openTelegramLink(url);return;} }catch(e){}
+  try{window.open(url,'_blank');}catch(e){}
 }
 SCREENS["Заказы"]=function(){
   return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
