@@ -40,6 +40,41 @@ from common import (
     _nsg_markup, _nsg_threshold, _nsg_usd_rate, check_not_blocked, fk_check_order_status, nsgifts_fulfill_after_payment,
 )
 
+@dp.message(F.text == "/nsg_dump")
+async def cmd_nsg_dump(message: Message):
+    """Диагностика структуры каталога NS Gifts — чтобы построить группировку по продуктам."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    import json as _json, html as _html
+    if not rt.nsgifts_client:
+        await message.answer("NS Gifts клиент не инициализирован.")
+        return
+    from ns_gifts import get_stock_cached
+    stock = await get_stock_cached(rt.nsgifts_client)
+    cats  = stock.get("categories", []) if isinstance(stock, dict) else []
+    sample = cats[0] if cats else {}
+    sample_svc = (sample.get("services") or [{}])[0] if isinstance(sample, dict) else {}
+    report = {
+        "top_keys": list(stock.keys()) if isinstance(stock, dict) else str(type(stock)),
+        "num_categories": len(cats),
+        "category_keys": list(sample.keys()),
+        "service_keys": list(sample_svc.keys()),
+        "sample_category": {k: v for k, v in sample.items() if k != "services"},
+        "sample_service": sample_svc,
+    }
+    txt = _json.dumps(report, ensure_ascii=False, indent=1)[:3500]
+    await message.answer(f"<pre>{_html.escape(txt)}</pre>", parse_mode="HTML")
+    # Кандидаты на поле «продукт» — покажем распределение значений
+    for f in ("product_name", "product", "group", "group_name", "parent",
+              "parent_name", "platform", "type", "brand", "product_id", "group_id"):
+        vals = [c.get(f) for c in cats if isinstance(c, dict) and c.get(f) is not None]
+        if vals:
+            uniq = sorted({str(v) for v in vals})
+            await message.answer(
+                f"<b>{f}</b>: {len(uniq)} уникальных\n" +
+                _html.escape(", ".join(uniq[:60])), parse_mode="HTML")
+
+
 @dp.message(F.text.startswith("/nsg_markup_brand"))
 async def cmd_nsg_markup_brand(message: Message):
     """Наценка по бренду для каталога NS Gifts (admin).
