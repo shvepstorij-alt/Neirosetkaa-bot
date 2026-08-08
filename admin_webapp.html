@@ -714,16 +714,28 @@ function loadThread(id){
 }
 function nsgEsc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 SCREENS["NS Gifts каталог"]=function(){
-  if(window._nsgB===undefined)window._nsgB='';if(window._nsgPage===undefined)window._nsgPage=0;if(window._nsgQ===undefined)window._nsgQ='';
+  if(window._nsgB===undefined)window._nsgB='';if(window._nsgPage===undefined)window._nsgPage=0;if(window._nsgQ===undefined)window._nsgQ='';if(window._nsgHidden===undefined)window._nsgHidden=false;
   setTimeout(loadNsg,0);
-  var seg='<div class="seg">'+[['','Все'],['gift','Гифт'],['game','Игры'],['topup','Топ Up']].map(function(x){return '<button class="'+(x[0]===window._nsgB?'on':'')+'" onclick="window._nsgB=\''+x[0]+'\';window._nsgPage=0;loadNsg()">'+x[1]+'</button>'}).join('')+'</div>';
-  return hdr("NS Gifts каталог","скрытие · топ · наценка")+'<div class="wrap"><div id="nsgglob"></div>'+seg+
+  return hdr("NS Gifts каталог","скрытие · топ · наценка")+'<div class="wrap"><div id="nsgglob"></div><div class="seg" id="nsgseg">'+nsgSegInner()+'</div>'+
     '<input class="f" id="nsgq" placeholder="Поиск по названию…" value="'+nsgEsc(window._nsgQ||'')+'" style="margin:8px 0"/>'+
     '<button class="btn sec" onclick="window._nsgQ=(document.getElementById(\'nsgq\')||{}).value||\'\';window._nsgPage=0;loadNsg()">🔍 Найти</button>'+
     '<div id="nsgbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
 };
+function nsgSegInner(){
+  var chips=[['bucket','','Все'],['bucket','gift','Гифт'],['bucket','game','Игры'],['bucket','topup','Топ Up'],['hidden','','🙈 Скрытые']];
+  return chips.map(function(c){
+    var on = (c[0]==='hidden') ? window._nsgHidden : (!window._nsgHidden && window._nsgB===c[1]);
+    return '<button class="'+(on?'on':'')+'" onclick="nsgFilter(\''+c[0]+'\',\''+c[1]+'\')">'+c[2]+'</button>';
+  }).join('');
+}
+function nsgFilter(kind,val){
+  if(kind==='hidden'){window._nsgHidden=true;} else {window._nsgHidden=false;window._nsgB=val;}
+  window._nsgPage=0;
+  var s=document.getElementById('nsgseg'); if(s)s.innerHTML=nsgSegInner();
+  loadNsg();
+}
 function loadNsg(){
-  api('/api/admin/nsg-catalog',{q:window._nsgQ||'',bucket:window._nsgB||'',page:window._nsgPage||0}).then(function(d){
+  api('/api/admin/nsg-catalog',{q:window._nsgQ||'',bucket:(window._nsgHidden?'':(window._nsgB||'')),page:window._nsgPage||0,onlyHidden:(window._nsgHidden?1:0)}).then(function(d){
     var g=document.getElementById('nsgglob');
     if(g){g.innerHTML=d.ok?('<div class="block"><div class="kv" style="border:0"><span class="k">Курс USD</span><input class="f" id="nsgrate" value="'+d.rate+'" style="width:90px;text-align:right"/></div><div class="kv"><span class="k">Наценка %</span><input class="f" id="nsgmk" value="'+d.markup+'" style="width:90px;text-align:right"/></div><button class="btn" onclick="nsgSaveGlobal()" style="margin-top:8px">💾 Сохранить курс/наценку</button><div class="note">Скрыто: '+(d.hiddenCount||0)+' · В топе: '+(d.featuredCount||0)+'</div></div>'):'';}
     var el=document.getElementById('nsgbody'); if(!el)return;

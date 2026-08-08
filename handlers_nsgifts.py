@@ -166,8 +166,8 @@ async def _nsg_prep():
     })
 
 
-# Сколько названий сервисов показываем на одной странице.
-_NSG_PAGE = 10
+# Сколько названий сервисов на странице (2 столбика × 10 = 20 на страницу).
+_NSG_PAGE = 20
 
 
 def _nsg_brand_parent_cb(stock, brand: str) -> str:
@@ -223,16 +223,23 @@ async def _render_type_page(cb: CallbackQuery, bucket: str, page: int):
     page  = max(0, min(page, pages - 1))
     chunk = brands[page * _NSG_PAGE:(page + 1) * _NSG_PAGE]
     rows = []
+    _row = []
     for b in chunk:
         _c = f" · {b['cats']}" if b["cats"] > 1 else ""
         _fire = "🔥 " if b.get("featured") else ""
-        rows.append([InlineKeyboardButton(text=f"{_fire}{b['brand']}{_c}",
-                                          callback_data=f"nsgb:{b['token']}")])
+        _row.append(InlineKeyboardButton(text=f"{_fire}{b['brand']}{_c}",
+                                         callback_data=f"nsgb:{b['token']}"))
+        if len(_row) == 2:            # 2 столбика
+            rows.append(_row); _row = []
+    if _row:
+        rows.append(_row)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="‹ Назад", callback_data=f"nsgp:{bucket}:{page-1}"))
+        nav.append(InlineKeyboardButton(text="‹ Назад", style="primary",
+                                        callback_data=f"nsgp:{bucket}:{page-1}"))
     if page < pages - 1:
-        nav.append(InlineKeyboardButton(text="Далее ›", callback_data=f"nsgp:{bucket}:{page+1}"))
+        nav.append(InlineKeyboardButton(text="Далее ›", style="success",
+                                        callback_data=f"nsgp:{bucket}:{page+1}"))
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="⬅️ К разделам", callback_data="nsg_shop")])

@@ -3396,6 +3396,8 @@ async def api_admin_nsg_catalog_handler(request: web.Request) -> web.Response:
         page = int(body.get("page") or 0)
         PAGE = 12
         folders = build_catalog(stock)["folders"]  # включая скрытые
+        if body.get("onlyHidden"):
+            folders = [f for f in folders if f["hidden"]]
         if bucket:
             folders = [f for f in folders if f["bucket"] == bucket]
         if q:
