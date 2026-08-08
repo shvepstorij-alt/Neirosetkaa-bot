@@ -137,18 +137,14 @@ async def _nsg_markup_for(brand: str) -> float:
     return await _nsg_markup()
 
 
-# Если брендов в типе больше — показываем буквы, иначе сразу список продуктов.
-_NSG_LETTER_THRESHOLD = 40
+# Сколько названий сервисов показываем на одной странице (в Telegram лимит ~100 кнопок).
+_NSG_PAGE = 40
 
 
 def _nsg_brand_parent_cb(stock, brand: str) -> str:
-    """Куда вести «Назад» из экранов конкретного бренда: к списку типа или к букве."""
-    from ns_gifts import brand_bucket, get_brands_by_bucket, brand_first_letter
-    bucket = brand_bucket(stock, brand)
-    n = len(get_brands_by_bucket(stock, bucket))
-    if n <= _NSG_LETTER_THRESHOLD:
-        return f"nsg_type:{bucket}"
-    return f"nsgl:{bucket}:{brand_first_letter(brand)}"
+    """Куда вести «Назад» из экранов бренда — к списку его типа (первая страница)."""
+    from ns_gifts import brand_bucket
+    return f"nsg_type:{brand_bucket(stock, brand)}"
 
 
 @dp.callback_query(F.data == "nsg_shop")
@@ -182,69 +178,50 @@ async def nsg_shop(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("nsg_type:"))
 async def nsg_type(cb: CallbackQuery):
-    """Внутри типа: если сервисов много — буквы, иначе сразу список (второй уровень)."""
-    await cb.answer()
-    if not rt.nsgifts_client:
-        await cb.message.answer("⚠️ Сервис временно недоступен.")
-        return
+    """Список сервисов типа — сразу названиями, постранично (без поиска по буквам)."""
     bucket = cb.data.split(":", 1)[1]
-    from ns_gifts import (get_stock_cached, get_brands_by_bucket,
-                          get_brand_letters, BUCKET_TITLES)
-    stock  = await get_stock_cached(rt.nsgifts_client)
-    brands = get_brands_by_bucket(stock, bucket)
-    if not brands:
-        await cb.message.answer("⚠️ Раздел пуст. Открой каталог заново.")
-        return
-    title = BUCKET_TITLES.get(bucket, "Каталог")
-    if len(brands) <= _NSG_LETTER_THRESHOLD:
-        rows = []
-        for b in brands:
-            _c = f" · {b['cats']} катег." if b["cats"] > 1 else ""
-            rows.append([InlineKeyboardButton(text=f"{b['brand']}{_c}",
-                                              callback_data=f"nsgb:{b['token']}")])
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_shop")])
-        text = f"<b>{title}</b>\n\nВыбери сервис 👇"
-    else:
-        letters = get_brand_letters(stock, bucket)
-        rows, row = [], []
-        for L in letters:
-            row.append(InlineKeyboardButton(text=L, callback_data=f"nsgl:{bucket}:{L}"))
-            if len(row) == 5:
-                rows.append(row); row = []
-        if row:
-            rows.append(row)
-        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_shop")])
-        text = f"<b>{title}</b> · {len(brands)}\n\n<b>Выбери букву</b> — покажу сервисы на неё 👇"
-    try:
-        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
-    except Exception:
-        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    cb.data = f"nsgp:{bucket}:0"
+    return await nsg_page(cb)
 
 
-@dp.callback_query(F.data.startswith("nsgl:"))
-async def nsg_letter(cb: CallbackQuery):
-    """Сервисы типа на выбранную букву (третий уровень для больших типов)."""
+@dp.callback_query(F.data.startswith("nsgp:"))
+async def nsg_page(cb: CallbackQuery):
+    """Страница списка сервисов выбранного типа (конкретные названия)."""
     await cb.answer()
     if not rt.nsgifts_client:
         await cb.message.answer("⚠️ Сервис временно недоступен.")
         return
     _p = cb.data.split(":")
     bucket = _p[1] if len(_p) > 2 else ""
-    letter = _p[-1]
-    from ns_gifts import get_stock_cached, get_brands_by_letter, BUCKET_TITLES
+    try:
+        page = int(_p[-1])
+    except Exception:
+        page = 0
+    from ns_gifts import get_stock_cached, get_brands_by_bucket, BUCKET_TITLES
     stock  = await get_stock_cached(rt.nsgifts_client)
-    brands = get_brands_by_letter(stock, letter, bucket)
+    brands = get_brands_by_bucket(stock, bucket)
     if not brands:
-        await cb.message.answer("⚠️ На эту букву пусто. Открой каталог заново.")
+        await cb.message.answer("⚠️ Раздел пуст. Открой каталог заново.")
         return
+    pages = max(1, (len(brands) + _NSG_PAGE - 1) // _NSG_PAGE)
+    page  = max(0, min(page, pages - 1))
+    chunk = brands[page * _NSG_PAGE:(page + 1) * _NSG_PAGE]
     rows = []
-    for b in brands:
-        _c = f" · {b['cats']} катег." if b["cats"] > 1 else ""
+    for b in chunk:
+        _c = f" · {b['cats']}" if b["cats"] > 1 else ""
         rows.append([InlineKeyboardButton(text=f"{b['brand']}{_c}",
                                           callback_data=f"nsgb:{b['token']}")])
-    rows.append([InlineKeyboardButton(text="⬅️ К буквам", callback_data=f"nsg_type:{bucket}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="‹ Назад", callback_data=f"nsgp:{bucket}:{page-1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton(text="Ещё ›", callback_data=f"nsgp:{bucket}:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="⬅️ К разделам", callback_data="nsg_shop")])
     title = BUCKET_TITLES.get(bucket, "Каталог")
-    text = f"<b>{title} — «{letter}»</b>\n\nВыбери сервис 👇"
+    _pg = f"  (стр. {page+1}/{pages})" if pages > 1 else ""
+    text = f"<b>{title}</b> · {len(brands)}{_pg}\n\nВыбери сервис 👇"
     try:
         await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
     except Exception:
@@ -260,7 +237,7 @@ async def nsg_brand(cb: CallbackQuery):
         return
     token = cb.data.split(":", 1)[1]
     from ns_gifts import (get_stock_cached, get_brand_by_token,
-                          get_brand_categories, region_flag)
+                          get_brand_categories, region_flag, variant_label)
     stock = await get_stock_cached(rt.nsgifts_client)
     brand = get_brand_by_token(stock, token)
     if not brand:
@@ -281,9 +258,8 @@ async def nsg_brand(cb: CallbackQuery):
     for c in cats:
         cname = c.get("category_name", "")
         flag  = region_flag(cname)
-        region = cname.split("|", 1)[1].strip() if "|" in cname else cname
         rows.append([InlineKeyboardButton(
-            text=f"{flag} {region}",
+            text=f"{flag} {variant_label(cname)}",
             callback_data=f"nsg_cat:{c['category_id']}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=_nsg_brand_parent_cb(stock, brand))])
     text = f"🎁 <b>{brand}</b>\n\nВыбери вариант 👇"

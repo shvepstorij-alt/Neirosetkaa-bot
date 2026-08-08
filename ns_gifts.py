@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re as _re
 import time
 import uuid
 from typing import Optional
@@ -289,10 +290,73 @@ def get_apple_categories(stock: dict) -> list[dict]:
     return sorted(result, key=lambda c: c["category_name"])
 
 
+# Слияние «раздробленных» брендов в один продукт. Каждое правило: набор подстрок
+# (все должны встретиться в имени, в нижнем регистре) → каноничное имя бренда.
+# Напр. 'amazon.ae Gift Card', 'amazon.au Gift Card' → один 'Amazon Gift Card'.
+# Список легко расширять новыми слияниями.
+_CANON_RULES = [
+    (("amazon", "gift"), "Amazon Gift Card"),
+]
+
+
+def _canon_brand(name: str) -> str:
+    low = (name or "").lower()
+    for kws, canon in _CANON_RULES:
+        if all(k in low for k in kws):
+            return canon
+    return name
+
+
+# Региональные/локализационные хвосты в НАЗВАНИИ товара (без '|'): напр.
+# 'Mobile Legends: Bang Bang Top Up BR', 'Free Fire Top Up CIS',
+# 'Delta Force Mobile Top Up MENA (Garena)'. Срезаем их, чтобы варианты одной
+# игры складывались в одну папку.
+_REGION_TOKENS = {
+    "cis", "mena", "sea", "latam", "asia", "eu", "eur", "us", "usa", "uk", "global",
+    "gl", "glob", "row", "na", "emea", "apac", "ww", "intl", "int",
+    "br", "id", "my", "ph", "ru", "tr", "in", "jp", "kr", "th", "vn", "sa", "ae",
+    "eg", "hk", "tw", "de", "fr", "it", "es", "nl", "pl", "pt", "be", "ca", "au",
+    "mx", "ar", "cl", "co", "pe", "ua", "kz", "by", "ge", "az", "am", "garena",
+}
+
+
+def _strip_region_suffix(name: str) -> str:
+    n = (name or "").strip()
+    while True:
+        before = n
+        # хвостовая скобочная группа "(...)" (напр. "(Garena)")
+        n = _re.sub(r"\s*\([^)]*\)\s*$", "", n).strip()
+        # хвостовой регион-токен после разделителя (пробел/-/|//)
+        m = _re.search(r"[\s|/\-]+([A-Za-z]{2,6})$", n)
+        if m and m.group(1).lower() in _REGION_TOKENS:
+            cand = n[:m.start()].strip()
+            if cand:
+                n = cand
+        if n == before:
+            break
+    return n or (name or "").strip()
+
+
 def brand_of(category_name: str) -> str:
-    """Бренд = часть названия категории до первого '|' (формат 'Battle.net | US')."""
+    """Продукт/папка: часть до '|', минус региональный хвост, плюс слияние
+    раздробленных брендов (Amazon). Так все варианты одной игры/сервиса
+    складываются в одну папку."""
     name = (category_name or "").split("|")[0].strip()
-    return name or (category_name or "").strip()
+    name = name or (category_name or "").strip()
+    return _canon_brand(_strip_region_suffix(name))
+
+
+def variant_label(category_name: str) -> str:
+    """Метка варианта внутри папки продукта: регион после '|' или сорезанный хвост."""
+    n = (category_name or "").strip()
+    if "|" in n:
+        return n.split("|", 1)[1].strip() or n
+    base = brand_of(n)
+    if base and base.lower() != n.lower() and n.lower().startswith(base.lower()):
+        suf = n[len(base):].strip(" -/|")
+        if suf:
+            return suf
+    return "Стандарт"
 
 
 def brand_token(name: str) -> str:
