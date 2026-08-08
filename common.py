@@ -2403,6 +2403,56 @@ async def api_admin_orders_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
+    """Единая ЛЕНТА всех оплаченных заказов (ChatGPT, Claude, App Store, кредиты и
+    т.д.) — новейшие сверху, как оплачивают клиенты. Отменённые не показываем
+    (у них статус fk_orders='cancelled'). Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        limit = int(body.get("limit") or 80)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT f.order_id, f.user_id, f.amount_rub, f.pack, f.credits, "
+                "       f.paid_at, f.num, f.fk_intid, u.username "
+                "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+                "WHERE f.status='paid' AND f.paid_at IS NOT NULL "
+                "ORDER BY f.paid_at DESC LIMIT $1", limit)
+        out = []
+        for r in rows:
+            pack = r["pack"] or ""
+            if pack.startswith("shop:"):
+                parts = pack.split(":")
+                k = parts[1] if len(parts) > 1 else ""
+                idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+                scat = SHOP_CATALOG.get(k, {}) or {}
+                svc = scat.get("name", k or "Заказ")
+                plans = scat.get("plans", [])
+                plan = plans[idx]["name"] if 0 <= idx < len(plans) else ""
+            elif pack.startswith("nsg:"):
+                svc, plan = "App Store", ""
+            else:
+                svc = "Кредиты"
+                plan = (f"{int(r['credits'])} кр" if r["credits"] else "")
+            _pa = r["paid_at"]
+            out.append({
+                "id": r["order_id"],
+                "num": r["num"],
+                "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
+                "service": svc, "plan": plan,
+                "amount": int(r["amount_rub"] or 0),
+                "date": _pa.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if _pa else "",
+                "fk": r["fk_intid"] or "",
+            })
+        return web.json_response({"ok": True, "orders": out})
+    except Exception as _e:
+        logging.error(f"api_admin_all_orders: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
 async def api_admin_order_action_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -5014,6 +5064,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/service-delete", api_admin_service_delete_handler)
     app.router.add_post("/api/admin/settings", api_admin_settings_handler)
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
+    app.router.add_post("/api/admin/all-orders", api_admin_all_orders_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
     app.router.add_post("/api/admin/add-codes", api_admin_add_codes_handler)
     app.router.add_post("/api/admin/release-codes", api_admin_release_codes_handler)

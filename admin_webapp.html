@@ -151,7 +151,7 @@ function home(){
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
-   ["📦","Выдача заказов",[["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
+   ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
   ];
@@ -580,6 +580,27 @@ function loadBoard(){
   });
 }
 SCREENS["Все заказы"]=function(){return ordersBoard();};
+SCREENS["Лента заказов"]=function(){
+  setTimeout(loadAllOrders,0);
+  return hdr("Лента заказов","все оплаты — новые сверху")+'<div class="wrap"><div id="aobody"><div class="note">Загружаю…</div></div></div>';
+};
+function loadAllOrders(){
+  api('/api/admin/all-orders',{}).then(function(d){
+    var el=document.getElementById('aobody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    if(!d.orders||!d.orders.length){el.innerHTML='<div class="note">Оплаченных заказов пока нет.</div>';return;}
+    var h='';
+    d.orders.forEach(function(o){
+      var num=o.num?('#'+o.num+' · '):'';
+      var svcline=(o.service||'')+(o.plan?(' · '+o.plan):'');
+      var fk=o.fk?('FK '+o.fk):o.id;
+      h+='<div class="block" style="margin-bottom:8px"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+svcline+'</span><span class="tag g">'+nf(o.amount)+' ₽</span></div>'+
+         '<div class="sub">'+num+(o.user||'')+' · '+(o.date||'')+'</div>'+
+         '<div class="sub" style="margin-top:2px;cursor:pointer;word-break:break-all" onclick="copyText(\''+fk+'\')">🧾 '+fk+' 📋</div></div>';
+    });
+    el.innerHTML=h;
+  });
+}
 SCREENS["Заказы"]=function(){
   return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
     '<div class="row" onclick="open2(\'Все заказы\')"><span class="ic">📋</span><div><div class="lbl2">Очередь заказов</div><div class="sub">все активные — что нужно сделать</div></div><span class="chev">›</span></div>'+

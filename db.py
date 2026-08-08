@@ -278,6 +278,15 @@ async def init_db():
                     "ON CONFLICT (key) DO UPDATE SET value='1'")
         except Exception as _mig_e:
             logging.warning(f"migr_gpt_recheck_reset_v1 skipped: {_mig_e}")
+        # Синхронизация статусов: если заказ отменён в linkpay_orders, но в fk_orders
+        # остался 'paid' — приводим в соответствие (иначе отменённые заказы всё ещё
+        # учитывались в прибыли/статистике). Идемпотентно, выполняется при каждом старте.
+        try:
+            await conn.execute(
+                "UPDATE fk_orders SET status='cancelled' WHERE status='paid' AND order_id IN "
+                "(SELECT fk_order_id FROM linkpay_orders WHERE status='cancelled')")
+        except Exception as _mig_c:
+            logging.warning(f"cancel-sync migration skipped: {_mig_c}")
         # Миграция: active_generations - если старая таблица с user_id PRIMARY KEY, пересоздаём
         try:
             has_id = await conn.fetchval(
@@ -1857,6 +1866,12 @@ async def set_linkpay_status(fk_order_id, status):
         await conn.execute(
             "UPDATE linkpay_orders SET status=$1 WHERE fk_order_id=$2", status, fk_order_id
         )
+        # Синхронизация с fk_orders: отменённый заказ должен уйти из прибыли/статистики
+        # (они читают fk_orders WHERE status='paid'). Иначе отмена в чате не отражалась
+        # в админ-панели. order_id в fk_orders == fk_order_id.
+        if status == "cancelled":
+            await conn.execute(
+                "UPDATE fk_orders SET status='cancelled' WHERE order_id=$1", fk_order_id)
 
 
 async def set_linkpay_admin_msg(fk_order_id, admin_msg_id):
