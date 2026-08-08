@@ -31,7 +31,7 @@ from states import (
     AdmNsgState,
 )
 from db import (
-    fk_save_order, get_pool, set_setting, get_coins, deduct_coins,
+    fk_save_order, get_pool, set_setting, get_setting, get_coins, deduct_coins,
 )
 from keyboards import (
     _eib,
@@ -39,6 +39,128 @@ from keyboards import (
 from common import (
     _nsg_markup, _nsg_threshold, _nsg_usd_rate, check_not_blocked, fk_check_order_status, nsgifts_fulfill_after_payment,
 )
+
+@dp.message(F.text.startswith("/nsg_markup_brand"))
+async def cmd_nsg_markup_brand(message: Message):
+    """Наценка по бренду для каталога NS Gifts (admin).
+    /nsg_markup_brand — показать все переопределения
+    /nsg_markup_brand <Бренд> <%> — задать
+    /nsg_markup_brand <Бренд> - — убрать (вернуть общую)"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    _parts = (message.text or "").split()
+    if len(_parts) < 3:
+        # показать текущие переопределения + общую
+        _glob = await _nsg_markup()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key, value FROM settings WHERE key LIKE 'nsg_markup_brand:%' ORDER BY key")
+        _lines = [f"• <b>{r['key'].split(':',1)[1]}</b> — {r['value']}%" for r in rows]
+        await message.answer(
+            f"📈 <b>Наценка NS Gifts по брендам</b>\n\n"
+            f"Общая наценка: <b>{_glob:g}%</b>\n\n"
+            + ("Переопределения:\n" + "\n".join(_lines) if _lines else "Переопределений нет.")
+            + "\n\n<i>Задать:</i> <code>/nsg_markup_brand Battle.net 20</code>\n"
+              "<i>Убрать:</i> <code>/nsg_markup_brand Battle.net -</code>",
+            parse_mode="HTML")
+        return
+    _pct_raw = _parts[-1]
+    _brand = " ".join(_parts[1:-1]).strip()
+    if not _brand:
+        await message.answer("Укажи бренд: <code>/nsg_markup_brand Battle.net 20</code>", parse_mode="HTML")
+        return
+    if _pct_raw == "-":
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM settings WHERE key=$1", f"nsg_markup_brand:{_brand}")
+        await message.answer(f"✅ Наценка для <b>{_brand}</b> сброшена на общую.", parse_mode="HTML")
+        return
+    try:
+        _pct = float(_pct_raw.replace(",", "."))
+    except Exception:
+        await message.answer("Наценка должна быть числом: <code>/nsg_markup_brand Battle.net 20</code>", parse_mode="HTML")
+        return
+    await set_setting(f"nsg_markup_brand:{_brand}", str(_pct))
+    await message.answer(f"✅ Наценка для <b>{_brand}</b>: <b>{_pct:g}%</b>", parse_mode="HTML")
+
+
+async def _nsg_markup_for(brand: str) -> float:
+    """Наценка % для бренда: настройка nsg_markup_brand:{brand} → иначе общая."""
+    try:
+        v = await get_setting(f"nsg_markup_brand:{brand}", "")
+        if v not in (None, ""):
+            return float(v)
+    except Exception:
+        pass
+    return await _nsg_markup()
+
+
+@dp.callback_query(F.data == "nsg_shop")
+async def nsg_shop(cb: CallbackQuery):
+    """Каталог «Гифт-карты и игры» — список брендов (первый уровень)."""
+    await cb.answer()
+    if not rt.nsgifts_client:
+        await cb.message.answer("⚠️ Сервис временно недоступен. Напиши @neirosetkaalex")
+        return
+    from ns_gifts import get_stock_cached, get_all_brands
+    stock  = await get_stock_cached(rt.nsgifts_client)
+    brands = get_all_brands(stock)
+    if not brands:
+        await cb.message.answer("⚠️ Каталог временно пуст. Попробуй позже.")
+        return
+    rows = []
+    for b in brands:
+        rows.append([InlineKeyboardButton(
+            text=f"{b['brand']} · {b['cats']} катег.",
+            callback_data=f"nsgb:{b['token']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ В магазин", callback_data="menu_shop")])
+    text = (
+        "🎁 <b>Гифт-карты и игры</b>\n\n"
+        "Пополнение игровых и сервисных аккаунтов. "
+        "Код приходит <b>автоматически</b> сразу после оплаты.\n\n"
+        "<b>Выбери сервис:</b>"
+    )
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("nsgb:"))
+async def nsg_brand(cb: CallbackQuery):
+    """Категории выбранного бренда (второй уровень)."""
+    await cb.answer()
+    if not rt.nsgifts_client:
+        await cb.message.answer("⚠️ Сервис временно недоступен.")
+        return
+    token = cb.data.split(":", 1)[1]
+    from ns_gifts import (get_stock_cached, get_brand_by_token,
+                          get_brand_categories, region_flag)
+    stock = await get_stock_cached(rt.nsgifts_client)
+    brand = get_brand_by_token(stock, token)
+    if not brand:
+        await cb.message.answer("⚠️ Сервис не найден. Открой каталог заново.")
+        return
+    cats = get_brand_categories(stock, brand)
+    if not cats:
+        await cb.message.answer("⚠️ Товары этого сервиса закончились. Попробуй позже.")
+        return
+    rows = []
+    for c in cats:
+        cname = c.get("category_name", "")
+        flag  = region_flag(cname)
+        region = cname.split("|", 1)[1].strip() if "|" in cname else cname
+        rows.append([InlineKeyboardButton(
+            text=f"{flag} {region}",
+            callback_data=f"nsg_cat:{c['category_id']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_shop")])
+    text = f"🎁 <b>{brand}</b>\n\nВыбери вариант 👇"
+    try:
+        await cb.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+
 
 @dp.callback_query(F.data == "nsg_start")
 async def nsg_start(cb: CallbackQuery):
@@ -94,17 +216,19 @@ async def nsg_cat(cb: CallbackQuery):
 
     cat_id = int(cb.data.split(":")[1])
 
-    from ns_gifts import get_stock_cached, get_apple_categories, region_flag, calc_price_rub
-    stock    = await get_stock_cached(rt.nsgifts_client)
-    cats     = get_apple_categories(stock)
-    cat      = next((c for c in cats if c["category_id"] == cat_id), None)
+    from ns_gifts import (get_stock_cached, find_category, region_flag,
+                          calc_price_rub, brand_of, brand_token, is_apple_brand)
+    stock = await get_stock_cached(rt.nsgifts_client)
+    cat   = find_category(stock, cat_id)
 
     if not cat:
         await cb.message.answer("⚠️ Категория не найдена. Попробуй снова.")
         return
 
+    brand = brand_of(cat.get("category_name", ""))
+    apple = is_apple_brand(brand)
     usd_rate   = await _nsg_usd_rate()
-    markup_pct = await _nsg_markup()
+    markup_pct = await _nsg_markup_for(brand)
 
     # Фильтруем только товары в наличии, сортируем по цене
     services = sorted(
@@ -116,15 +240,11 @@ async def nsg_cat(cb: CallbackQuery):
         await cb.message.answer("⚠️ Товары в этой категории закончились. Попробуй позже.")
         return
 
-    flag  = region_flag(cat["category_name"])
-    short = cat["category_name"]
-    for strip in ("Apple Gift Card", "App Store", "iTunes", "Gift Card"):
-        short = short.replace(strip, "").strip()
-
+    flag = region_flag(cat["category_name"])
     rows = []
     for svc in services:
         price_rub = calc_price_rub(svc["price"], usd_rate, markup_pct)
-        # Извлекаем номинал из названия: "Apple Gift Card | USA | 5 USD" → "5 USD"
+        # Номинал из названия: "Battle.net | US | 10 USD" → "10 USD"
         parts    = svc["service_name"].split("|")
         nominal  = parts[-1].strip() if parts else svc["service_name"]
         rows.append([InlineKeyboardButton(
@@ -132,14 +252,24 @@ async def nsg_cat(cb: CallbackQuery):
             callback_data=f"nsg_svc:{svc['service_id']}:{cat_id}"
         )])
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_start")])
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    if apple:
+        short = cat["category_name"]
+        for strip in ("Apple Gift Card", "App Store", "iTunes", "Gift Card"):
+            short = short.replace(strip, "").strip()
+        text = (
+            f"🍎 <b>App Store / iCloud — {flag} {short}</b>\n\n"
+            f"Выбери сумму пополнения 👇\n\n"
+            f"<i>Код придёт сразу после оплаты</i>"
+        )
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nsg_start")])
+    else:
+        cname = cat["category_name"]
+        region = cname.split("|", 1)[1].strip() if "|" in cname else ""
+        _hdr = f"🎁 <b>{brand}</b>" + (f" — {flag} {region}" if region else "")
+        text = f"{_hdr}\n\nВыбери номинал 👇\n\n<i>Код придёт сразу после оплаты</i>"
+        rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"nsgb:{brand_token(brand)}")])
 
-    text = (
-        f"🍎 <b>App Store / iCloud — {flag} {short}</b>\n\n"
-        f"Выбери сумму пополнения 👇\n\n"
-        f"<i>Код придёт сразу после оплаты</i>"
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -162,10 +292,9 @@ async def nsg_svc(cb: CallbackQuery):
     if not await check_not_blocked(cb, uid):
         return
 
-    from ns_gifts import get_stock_cached, get_apple_categories, calc_price_rub
+    from ns_gifts import get_stock_cached, find_category, calc_price_rub, brand_of, is_apple_brand
     stock      = await get_stock_cached(rt.nsgifts_client)
-    cats       = get_apple_categories(stock)
-    cat        = next((c for c in cats if c["category_id"] == cat_id), None)
+    cat        = find_category(stock, cat_id)
     service    = None
     if cat:
         service = next((s for s in cat.get("services", [])
@@ -175,8 +304,10 @@ async def nsg_svc(cb: CallbackQuery):
         await cb.message.answer("⚠️ Товар не найден. Попробуй выбрать снова.")
         return
 
+    brand      = brand_of(cat.get("category_name", ""))
+    apple      = is_apple_brand(brand)
     usd_rate   = await _nsg_usd_rate()
-    markup_pct = await _nsg_markup()
+    markup_pct = await _nsg_markup_for(brand)
     price_rub  = calc_price_rub(service["price"], usd_rate, markup_pct)
 
     # Формируем order_id для FreeKassa
@@ -213,8 +344,9 @@ async def nsg_svc(cb: CallbackQuery):
     if coins_used > 0:
         coins_line = f"🪙 Монетки: <b>−{coins_used} ₽</b> (баланс {int(user_coins)} ₽)\n"
 
+    _hdr_svc = "🍎 <b>App Store / iCloud</b>" if apple else f"🎁 <b>{brand}</b>"
     text = (
-        f"🍎 <b>App Store / iCloud</b>\n\n"
+        f"{_hdr_svc}\n\n"
         f"📦 <b>{service.get('service_name', nominal)}</b>\n"
         f"💵 Цена: <b>{price_rub:,} ₽</b>\n".replace(",", " ") +
         coins_line + "\n" +

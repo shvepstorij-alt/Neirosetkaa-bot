@@ -163,6 +163,11 @@ def _build_shop_menu():
             row = []
     if row:
         rows.append(row)
+    # Каталог NS Gifts: гифт-карты игр и сервисов (Battle.net, EA, Nintendo, PS, Roblox…)
+    rows.append([InlineKeyboardButton(
+        text="🎁 Гифт-карты и игры",
+        callback_data="nsg_shop"
+    )])
     rows.append([InlineKeyboardButton(
         text="💬 Другой сервис - написать Александру",
         callback_data="shop_other"

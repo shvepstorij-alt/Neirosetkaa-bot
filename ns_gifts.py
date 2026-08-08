@@ -289,6 +289,67 @@ def get_apple_categories(stock: dict) -> list[dict]:
     return sorted(result, key=lambda c: c["category_name"])
 
 
+def brand_of(category_name: str) -> str:
+    """Бренд = часть названия категории до первого '|' (формат 'Battle.net | US')."""
+    name = (category_name or "").split("|")[0].strip()
+    return name or (category_name or "").strip()
+
+
+def brand_token(name: str) -> str:
+    """Короткий стабильный токен бренда для callback_data (имя может быть длинным)."""
+    return hashlib.md5((name or "").encode("utf-8")).hexdigest()[:10]
+
+
+def is_apple_brand(brand: str) -> bool:
+    b = (brand or "").lower()
+    return ("apple" in b or "app store" in b or "itunes" in b)
+
+
+def _cat_in_stock(cat: dict) -> bool:
+    return any(s.get("in_stock", 0) > 0 for s in cat.get("services", []))
+
+
+def get_all_brands(stock: dict) -> list[dict]:
+    """Все бренды каталога (имя до '|') с товарами в наличии.
+    → [{brand, token, cats, min_usd}], отсортировано по имени бренда."""
+    by: dict = {}
+    for cat in stock.get("categories", []):
+        if not _cat_in_stock(cat):
+            continue
+        b = brand_of(cat.get("category_name", ""))
+        if not b:
+            continue
+        d = by.setdefault(b, {"brand": b, "token": brand_token(b), "cats": 0, "min_usd": None})
+        d["cats"] += 1
+        for s in cat.get("services", []):
+            if s.get("in_stock", 0) > 0:
+                p = s.get("price")
+                if p is not None and (d["min_usd"] is None or p < d["min_usd"]):
+                    d["min_usd"] = p
+    return sorted(by.values(), key=lambda x: x["brand"].lower())
+
+
+def get_brand_categories(stock: dict, brand: str) -> list[dict]:
+    """Категории бренда с товарами в наличии (второй уровень)."""
+    out = [c for c in stock.get("categories", [])
+           if brand_of(c.get("category_name", "")) == brand and _cat_in_stock(c)]
+    return sorted(out, key=lambda c: c.get("category_name", ""))
+
+
+def find_category(stock: dict, cat_id: int) -> Optional[dict]:
+    for c in stock.get("categories", []):
+        if c.get("category_id") == cat_id:
+            return c
+    return None
+
+
+def get_brand_by_token(stock: dict, token: str) -> str:
+    for b in get_all_brands(stock):
+        if b["token"] == token:
+            return b["brand"]
+    return ""
+
+
 def calc_price_rub(price_usd: float, usd_rate: float, markup_pct: float) -> int:
     """Цена для клиента в рублях: закупка_$ × курс × (1 + наценка/100),
     округлённая ВВЕРХ до красивого числа (кратно 10/50/100)."""
