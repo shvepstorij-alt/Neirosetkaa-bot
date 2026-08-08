@@ -309,9 +309,41 @@ def _cat_in_stock(cat: dict) -> bool:
     return any(s.get("in_stock", 0) > 0 for s in cat.get("services", []))
 
 
+# Классификация продукта по типу (в каталоге нет поля продукта — определяем эвристикой)
+_TOPUP_KW = ("top up", "topup", "top-up", "recharge", "donation", "donate", "пополн")
+_GIFT_KW  = ("gift card", "giftcard", "wallet", "cash card", "gift  card")
+_GIFT_BRAND_KW = (
+    "apple", "amazon", "netflix", "spotify", "google play", "razer", "playstation",
+    "xbox", "nintendo", "battle.net", "battlenet", "origin", "roblox", "riot",
+    "steam wallet", "twitch", "telegram", "gift card", "music", "streaming",
+    "social network",
+)
+
+
+def classify_bucket(brand: str, names_blob: str = "") -> str:
+    """Тип продукта: 'topup' | 'gift' | 'game'."""
+    b = (brand or "").lower()
+    text = b + " " + (names_blob or "").lower()
+    if any(k in text for k in _TOPUP_KW):
+        return "topup"
+    if any(k in text for k in _GIFT_KW):
+        return "gift"
+    if any(k in b for k in _GIFT_BRAND_KW):
+        return "gift"
+    return "game"
+
+
+BUCKETS = [
+    ("gift",  "💳 Гифт-карты и подписки"),
+    ("game",  "🎮 Игры"),
+    ("topup", "🔝 Пополнения (Top Up)"),
+]
+BUCKET_TITLES = dict(BUCKETS)
+
+
 def get_all_brands(stock: dict) -> list[dict]:
     """Все бренды каталога (имя до '|') с товарами в наличии.
-    → [{brand, token, cats, min_usd}], отсортировано по имени бренда."""
+    → [{brand, token, cats, min_usd, bucket}], отсортировано по имени бренда."""
     by: dict = {}
     for cat in stock.get("categories", []):
         if not _cat_in_stock(cat):
@@ -319,14 +351,33 @@ def get_all_brands(stock: dict) -> list[dict]:
         b = brand_of(cat.get("category_name", ""))
         if not b:
             continue
-        d = by.setdefault(b, {"brand": b, "token": brand_token(b), "cats": 0, "min_usd": None})
+        d = by.setdefault(b, {"brand": b, "token": brand_token(b), "cats": 0,
+                              "min_usd": None, "_names": []})
         d["cats"] += 1
+        d["_names"].append(cat.get("category_name", ""))
         for s in cat.get("services", []):
             if s.get("in_stock", 0) > 0:
                 p = s.get("price")
                 if p is not None and (d["min_usd"] is None or p < d["min_usd"]):
                     d["min_usd"] = p
-    return sorted(by.values(), key=lambda x: x["brand"].lower())
+    out = []
+    for d in by.values():
+        d["bucket"] = classify_bucket(d["brand"], " ".join(d.pop("_names", [])))
+        out.append(d)
+    return sorted(out, key=lambda x: x["brand"].lower())
+
+
+def get_brands_by_bucket(stock: dict, bucket: str) -> list[dict]:
+    return [b for b in get_all_brands(stock) if b["bucket"] == bucket]
+
+
+def get_buckets_present(stock: dict) -> list[tuple]:
+    """Типы, реально присутствующие в каталоге (в порядке BUCKETS), с количеством."""
+    brands = get_all_brands(stock)
+    cnt: dict = {}
+    for b in brands:
+        cnt[b["bucket"]] = cnt.get(b["bucket"], 0) + 1
+    return [(k, title, cnt[k]) for k, title in BUCKETS if cnt.get(k)]
 
 
 def get_brand_categories(stock: dict, brand: str) -> list[dict]:
@@ -350,6 +401,13 @@ def get_brand_by_token(stock: dict, token: str) -> str:
     return ""
 
 
+def brand_bucket(stock: dict, brand: str) -> str:
+    for b in get_all_brands(stock):
+        if b["brand"] == brand:
+            return b["bucket"]
+    return "game"
+
+
 def brand_first_letter(brand: str) -> str:
     """Буква-раздел для алфавитного указателя: 'Battle.net'→'B', '7 Days'→'0-9'."""
     ch = (brand or "").strip()[:1].upper()
@@ -360,17 +418,18 @@ def brand_first_letter(brand: str) -> str:
     return "#"
 
 
-def get_brand_letters(stock: dict) -> list[str]:
-    """Список букв-разделов, присутствующих в каталоге (отсортирован)."""
-    letters = {brand_first_letter(b["brand"]) for b in get_all_brands(stock)}
+def get_brand_letters(stock: dict, bucket: str = "") -> list[str]:
+    """Список букв-разделов (опц. внутри типа), отсортирован."""
+    src = get_brands_by_bucket(stock, bucket) if bucket else get_all_brands(stock)
+    letters = {brand_first_letter(b["brand"]) for b in src}
     def _key(x):
-        # буквы по алфавиту, затем цифры, затем прочее
         return (0, x) if x.isalpha() and len(x) == 1 else ((1, x) if x == "0-9" else (2, x))
     return sorted(letters, key=_key)
 
 
-def get_brands_by_letter(stock: dict, letter: str) -> list[dict]:
-    return [b for b in get_all_brands(stock) if brand_first_letter(b["brand"]) == letter]
+def get_brands_by_letter(stock: dict, letter: str, bucket: str = "") -> list[dict]:
+    src = get_brands_by_bucket(stock, bucket) if bucket else get_all_brands(stock)
+    return [b for b in src if brand_first_letter(b["brand"]) == letter]
 
 
 def calc_price_rub(price_usd: float, usd_rate: float, markup_pct: float) -> int:
