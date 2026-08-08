@@ -64,15 +64,21 @@ async def cmd_nsg_dump(message: Message):
     }
     txt = _json.dumps(report, ensure_ascii=False, indent=1)[:3500]
     await message.answer(f"<pre>{_html.escape(txt)}</pre>", parse_mode="HTML")
-    # Кандидаты на поле «продукт» — покажем распределение значений
-    for f in ("product_name", "product", "group", "group_name", "parent",
-              "parent_name", "platform", "type", "brand", "product_id", "group_id"):
-        vals = [c.get(f) for c in cats if isinstance(c, dict) and c.get(f) is not None]
-        if vals:
-            uniq = sorted({str(v) for v in vals})
-            await message.answer(
-                f"<b>{f}</b>: {len(uniq)} уникальных\n" +
-                _html.escape(", ".join(uniq[:60])), parse_mode="HTML")
+
+    # Группировка по префиксу картинки: /static/images/categories/nintendo_eur.png → 'nintendo'
+    import os as _os
+    from collections import Counter as _Counter
+    def _img_prefix(url, parts=1):
+        base = _os.path.splitext((url or "").split("/")[-1])[0]  # nintendo_eur
+        toks = base.split("_")
+        return "_".join(toks[:parts]) if toks and toks[0] else "(нет)"
+    for _p in (1, 2):
+        cnt = _Counter(_img_prefix(c.get("image_url", ""), _p) for c in cats if isinstance(c, dict))
+        lines = [f"{k} — {v}" for k, v in sorted(cnt.items(), key=lambda x: -x[1])]
+        _chunk = "\n".join(lines)
+        await message.answer(
+            f"<b>Префикс картинки (первые {_p} токен(а)): {len(cnt)} групп</b>\n"
+            f"<pre>{_html.escape(_chunk[:3500])}</pre>", parse_mode="HTML")
 
 
 @dp.message(F.text.startswith("/nsg_markup_brand"))
