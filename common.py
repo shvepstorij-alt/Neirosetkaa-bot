@@ -3357,6 +3357,149 @@ async def api_admin_setting_save_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def _nsg_admin_overrides() -> dict:
+    """Читает оверрайды NS Gifts из настроек и применяет к ns_gifts. Возвращает их."""
+    import json as _j
+    import ns_gifts as _ng
+    def _p(v, d):
+        try:
+            return _j.loads(v) if v else d
+        except Exception:
+            return d
+    ov = {
+        "hidden":   _p(await get_setting("nsg_hidden", ""), []),
+        "featured": _p(await get_setting("nsg_featured", ""), []),
+        "markup":   _p(await get_setting("nsg_markup_map", ""), {}),
+        "rename":   _p(await get_setting("nsg_rename_map", ""), {}),
+        "merge":    _p(await get_setting("nsg_merge_map", ""), {}),
+    }
+    _ng.set_overrides(ov)
+    return ov
+
+
+async def api_admin_nsg_catalog_handler(request: web.Request) -> web.Response:
+    """Список товаров NS Gifts для админ-каталога (поиск, пагинация, флаги). Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        if not rt.nsgifts_client:
+            return web.json_response({"ok": False, "msg": "NS Gifts не подключён"})
+        from ns_gifts import get_stock_cached, calc_price_rub, build_catalog
+        ov = await _nsg_admin_overrides()
+        stock = await get_stock_cached(rt.nsgifts_client)
+        rate = float(await get_setting("nsgifts_usd_rate", "100") or "100")
+        gmk  = float(await get_setting("nsgifts_markup", "15") or "15")
+        q = str(body.get("q", "")).strip().lower()
+        bucket = str(body.get("bucket", "")).strip()
+        page = int(body.get("page") or 0)
+        PAGE = 12
+        folders = build_catalog(stock)["folders"]  # включая скрытые
+        if bucket:
+            folders = [f for f in folders if f["bucket"] == bucket]
+        if q:
+            folders = [f for f in folders if q in f["brand"].lower()]
+        total = len(folders)
+        pages = max(1, (total + PAGE - 1) // PAGE)
+        page = max(0, min(page, pages - 1))
+        chunk = folders[page * PAGE:(page + 1) * PAGE]
+        prods = []
+        for f in chunk:
+            if f["markup"] is not None:
+                eff = f["markup"]
+            else:
+                _bmk = await get_setting(f"nsg_markup_brand:{f['brand']}", "")
+                try:
+                    eff = float(_bmk) if _bmk not in (None, "") else gmk
+                except Exception:
+                    eff = gmk
+            minrub = calc_price_rub(f["min_usd"], rate, eff) if f["min_usd"] else 0
+            prods.append({
+                "key": f["key"], "token": f["token"], "name": f["brand"],
+                "bucket": f["bucket"], "cats": f["cats"],
+                "hidden": f["hidden"], "featured": f["featured"],
+                "markup": f["markup"], "minRub": minrub,
+            })
+        return web.json_response({
+            "ok": True, "rate": rate, "markup": gmk,
+            "products": prods, "page": page, "pages": pages, "total": total,
+            "hiddenCount": len(ov["hidden"]), "featuredCount": len(ov["featured"]),
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_nsg_catalog: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+
+
+async def api_admin_nsg_product_handler(request: web.Request) -> web.Response:
+    """Действие по товару NS Gifts: hide/show/feature/unfeature/markup/rename/merge. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        import json as _j
+        ov = await _nsg_admin_overrides()
+        action = str(body.get("action", ""))
+        key = str(body.get("key", "")).strip()
+        if not key and body.get("token") and rt.nsgifts_client:
+            from ns_gifts import get_stock_cached, get_folder_by_token
+            _st = await get_stock_cached(rt.nsgifts_client)
+            _f = get_folder_by_token(_st, str(body.get("token")))
+            key = _f["key"] if _f else ""
+        if not key:
+            return web.json_response({"ok": False, "msg": "нет товара"})
+
+        async def _save(name, obj):
+            await set_setting(name, _j.dumps(obj, ensure_ascii=False))
+
+        if action == "hide":
+            s = set(ov["hidden"]); s.add(key); await _save("nsg_hidden", sorted(s))
+        elif action == "show":
+            s = set(ov["hidden"]); s.discard(key); await _save("nsg_hidden", sorted(s))
+        elif action == "feature":
+            l = [x for x in ov["featured"] if x != key]; l.append(key)
+            await _save("nsg_featured", l)
+        elif action == "unfeature":
+            await _save("nsg_featured", [x for x in ov["featured"] if x != key])
+        elif action == "markup":
+            v = body.get("value")
+            mm = dict(ov["markup"])
+            if v in (None, "", "-"):
+                mm.pop(key, None)
+            else:
+                try:
+                    mm[key] = float(str(v).replace(",", "."))
+                except Exception:
+                    return web.json_response({"ok": False, "msg": "наценка числом"})
+            await _save("nsg_markup_map", mm)
+        elif action == "rename":
+            v = str(body.get("value", "")).strip()
+            rn = dict(ov["rename"])
+            if v:
+                rn[key] = v
+            else:
+                rn.pop(key, None)
+            await _save("nsg_rename_map", rn)
+        elif action == "merge":
+            tgt = str(body.get("value", "")).strip().casefold()
+            mg = dict(ov["merge"])
+            if tgt and tgt != key:
+                mg[key] = tgt
+            else:
+                mg.pop(key, None)
+            await _save("nsg_merge_map", mg)
+        elif action == "unmerge":
+            mg = dict(ov["merge"]); mg.pop(key, None); await _save("nsg_merge_map", mg)
+        else:
+            return web.json_response({"ok": False, "msg": "неизвестное действие"})
+        await _nsg_admin_overrides()
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_nsg_product: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+
+
 async def api_admin_miniapp_toggle_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -5262,6 +5405,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
     app.router.add_post("/api/admin/all-orders", api_admin_all_orders_handler)
     app.router.add_post("/api/admin/feed-order-action", api_admin_feed_order_action_handler)
+    app.router.add_post("/api/admin/nsg-catalog", api_admin_nsg_catalog_handler)
+    app.router.add_post("/api/admin/nsg-product", api_admin_nsg_product_handler)
     app.router.add_post("/api/admin/miniapp-toggle", api_admin_miniapp_toggle_handler)
     app.router.add_post("/api/admin/add-codes", api_admin_add_codes_handler)
     app.router.add_post("/api/admin/release-codes", api_admin_release_codes_handler)

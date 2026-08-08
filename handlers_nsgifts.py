@@ -137,8 +137,37 @@ async def _nsg_markup_for(brand: str) -> float:
     return await _nsg_markup()
 
 
-# Сколько названий сервисов показываем на одной странице (в Telegram лимит ~100 кнопок).
-_NSG_PAGE = 40
+async def _nsg_markup_folder(folder: dict, brand: str) -> float:
+    """Наценка: на конкретный товар (folder['markup']) → по бренду → общая."""
+    if folder and folder.get("markup") is not None:
+        try:
+            return float(folder["markup"])
+        except Exception:
+            pass
+    return await _nsg_markup_for(brand)
+
+
+async def _nsg_prep():
+    """Загружает админ-оверрайды каталога (скрытие/топ/наценка/переименование/слияние)
+    из настроек и применяет к ns_gifts перед рендером."""
+    import json as _j
+    import ns_gifts as _ng
+    def _p(v, d):
+        try:
+            return _j.loads(v) if v else d
+        except Exception:
+            return d
+    _ng.set_overrides({
+        "hidden":   _p(await get_setting("nsg_hidden", ""), []),
+        "featured": _p(await get_setting("nsg_featured", ""), []),
+        "markup":   _p(await get_setting("nsg_markup_map", ""), {}),
+        "rename":   _p(await get_setting("nsg_rename_map", ""), {}),
+        "merge":    _p(await get_setting("nsg_merge_map", ""), {}),
+    })
+
+
+# Сколько названий сервисов показываем на одной странице.
+_NSG_PAGE = 10
 
 
 def _nsg_brand_parent_cb(stock, brand: str) -> str:
@@ -154,6 +183,7 @@ async def nsg_shop(cb: CallbackQuery):
     if not rt.nsgifts_client:
         await cb.message.answer("⚠️ Сервис временно недоступен. Напиши @neirosetkaalex")
         return
+    await _nsg_prep()
     from ns_gifts import get_stock_cached, get_buckets_present, get_all_brands
     stock   = await get_stock_cached(rt.nsgifts_client)
     buckets = get_buckets_present(stock)
@@ -182,6 +212,7 @@ async def _render_type_page(cb: CallbackQuery, bucket: str, page: int):
     if not rt.nsgifts_client:
         await cb.message.answer("⚠️ Сервис временно недоступен.")
         return
+    await _nsg_prep()
     from ns_gifts import get_stock_cached, get_brands_by_bucket, BUCKET_TITLES
     stock  = await get_stock_cached(rt.nsgifts_client)
     brands = get_brands_by_bucket(stock, bucket)
@@ -194,13 +225,14 @@ async def _render_type_page(cb: CallbackQuery, bucket: str, page: int):
     rows = []
     for b in chunk:
         _c = f" · {b['cats']}" if b["cats"] > 1 else ""
-        rows.append([InlineKeyboardButton(text=f"{b['brand']}{_c}",
+        _fire = "🔥 " if b.get("featured") else ""
+        rows.append([InlineKeyboardButton(text=f"{_fire}{b['brand']}{_c}",
                                           callback_data=f"nsgb:{b['token']}")])
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="‹ Назад", callback_data=f"nsgp:{bucket}:{page-1}"))
     if page < pages - 1:
-        nav.append(InlineKeyboardButton(text="Ещё ›", callback_data=f"nsgp:{bucket}:{page+1}"))
+        nav.append(InlineKeyboardButton(text="Далее ›", callback_data=f"nsgp:{bucket}:{page+1}"))
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="⬅️ К разделам", callback_data="nsg_shop")])
@@ -240,6 +272,7 @@ async def nsg_brand(cb: CallbackQuery):
         await cb.message.answer("⚠️ Сервис временно недоступен.")
         return
     token = cb.data.split(":", 1)[1]
+    await _nsg_prep()
     from ns_gifts import get_stock_cached, get_folder_by_token, region_flag, variant_label
     stock  = await get_stock_cached(rt.nsgifts_client)
     folder = get_folder_by_token(stock, token)
@@ -326,6 +359,7 @@ async def nsg_cat(cb: CallbackQuery, cat_id: int = None):
     if cat_id is None:
         cat_id = int(cb.data.split(":")[1])
 
+    await _nsg_prep()
     from ns_gifts import (get_stock_cached, find_category, region_flag,
                           calc_price_rub, brand_of, is_apple_brand, get_folder_by_category)
     stock  = await get_stock_cached(rt.nsgifts_client)
@@ -339,7 +373,7 @@ async def nsg_cat(cb: CallbackQuery, cat_id: int = None):
     brand  = folder["brand"] if folder else brand_of(cat.get("category_name", ""))
     apple  = is_apple_brand(brand)
     usd_rate   = await _nsg_usd_rate()
-    markup_pct = await _nsg_markup_for(brand)
+    markup_pct = await _nsg_markup_folder(folder, brand)
 
     # Фильтруем только товары в наличии, сортируем по цене
     services = sorted(
@@ -408,7 +442,9 @@ async def nsg_svc(cb: CallbackQuery):
     if not await check_not_blocked(cb, uid):
         return
 
-    from ns_gifts import get_stock_cached, find_category, calc_price_rub, brand_of, is_apple_brand
+    await _nsg_prep()
+    from ns_gifts import (get_stock_cached, find_category, calc_price_rub,
+                          brand_of, is_apple_brand, get_folder_by_category)
     stock      = await get_stock_cached(rt.nsgifts_client)
     cat        = find_category(stock, cat_id)
     service    = None
@@ -420,10 +456,11 @@ async def nsg_svc(cb: CallbackQuery):
         await cb.message.answer("⚠️ Товар не найден. Попробуй выбрать снова.")
         return
 
-    brand      = brand_of(cat.get("category_name", ""))
+    folder     = get_folder_by_category(stock, cat_id)
+    brand      = folder["brand"] if folder else brand_of(cat.get("category_name", ""))
     apple      = is_apple_brand(brand)
     usd_rate   = await _nsg_usd_rate()
-    markup_pct = await _nsg_markup_for(brand)
+    markup_pct = await _nsg_markup_folder(folder, brand)
     price_rub  = calc_price_rub(service["price"], usd_rate, markup_pct)
 
     # Формируем order_id для FreeKassa

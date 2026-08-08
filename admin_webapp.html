@@ -150,7 +150,7 @@ function home(){
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
-   ["🛒","Каталог и цены",[["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
+   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
@@ -712,6 +712,49 @@ function loadThread(id){
     el.innerHTML=h;
   });
 }
+function nsgEsc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+SCREENS["NS Gifts каталог"]=function(){
+  if(window._nsgB===undefined)window._nsgB='';if(window._nsgPage===undefined)window._nsgPage=0;if(window._nsgQ===undefined)window._nsgQ='';
+  setTimeout(loadNsg,0);
+  var seg='<div class="seg">'+[['','Все'],['gift','Гифт'],['game','Игры'],['topup','Топ Up']].map(function(x){return '<button class="'+(x[0]===window._nsgB?'on':'')+'" onclick="window._nsgB=\''+x[0]+'\';window._nsgPage=0;loadNsg()">'+x[1]+'</button>'}).join('')+'</div>';
+  return hdr("NS Gifts каталог","скрытие · топ · наценка")+'<div class="wrap"><div id="nsgglob"></div>'+seg+
+    '<input class="f" id="nsgq" placeholder="Поиск по названию…" value="'+nsgEsc(window._nsgQ||'')+'" style="margin:8px 0"/>'+
+    '<button class="btn sec" onclick="window._nsgQ=(document.getElementById(\'nsgq\')||{}).value||\'\';window._nsgPage=0;loadNsg()">🔍 Найти</button>'+
+    '<div id="nsgbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
+};
+function loadNsg(){
+  api('/api/admin/nsg-catalog',{q:window._nsgQ||'',bucket:window._nsgB||'',page:window._nsgPage||0}).then(function(d){
+    var g=document.getElementById('nsgglob');
+    if(g){g.innerHTML=d.ok?('<div class="block"><div class="kv" style="border:0"><span class="k">Курс USD</span><input class="f" id="nsgrate" value="'+d.rate+'" style="width:90px;text-align:right"/></div><div class="kv"><span class="k">Наценка %</span><input class="f" id="nsgmk" value="'+d.markup+'" style="width:90px;text-align:right"/></div><button class="btn" onclick="nsgSaveGlobal()" style="margin-top:8px">💾 Сохранить курс/наценку</button><div class="note">Скрыто: '+(d.hiddenCount||0)+' · В топе: '+(d.featuredCount||0)+'</div></div>'):'';}
+    var el=document.getElementById('nsgbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">'+(d.msg||'Ошибка')+'</div>';return;}
+    window._nsgProds=window._nsgProds||{};
+    var h='';
+    (d.products||[]).forEach(function(p){
+      window._nsgProds[p.key]=p;
+      var b=(p.featured?'🔥 ':'')+(p.hidden?'🙈 ':'');
+      h+='<div class="row" onclick="leaf(function(){return nsgProd(\''+encodeURIComponent(p.key)+'\')})"><span class="ic">🎁</span><div><div class="lbl2">'+b+nsgEsc(p.name)+'</div><div class="sub">'+p.bucket+' · '+p.cats+' поз · от '+nf(p.minRub)+' ₽'+(p.markup!=null?(' · нац '+p.markup+'%'):'')+'</div></div><span class="chev">›</span></div>';
+    });
+    var nav='';
+    if(d.pages>1){nav='<div class="seg" style="margin-top:10px">'+(d.page>0?'<button onclick="window._nsgPage='+(d.page-1)+';loadNsg()">‹</button>':'')+'<button class="on">'+(d.page+1)+'/'+d.pages+'</button>'+(d.page<d.pages-1?'<button onclick="window._nsgPage='+(d.page+1)+';loadNsg()">›</button>':'')+'</div>';}
+    el.innerHTML=(h||'<div class="note">Ничего не найдено.</div>')+nav;
+  });
+}
+function nsgSaveGlobal(){var r=(document.getElementById('nsgrate')||{}).value,m=(document.getElementById('nsgmk')||{}).value;toast('…');api('/api/admin/setting-save',{kind:'appstore',rate:r,markup:m}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
+function nsgProd(k){k=decodeURIComponent(k);var p=(window._nsgProds||{})[k]||{};var ek=encodeURIComponent(k);
+  var h=hdr("Товар",nsgEsc(p.name||''))+'<div class="wrap"><div class="block">'+
+    '<div class="kv" style="border:0"><span class="k">Тип</span><span>'+(p.bucket||'')+'</span></div>'+
+    '<div class="kv"><span class="k">Позиций</span><span>'+(p.cats||0)+'</span></div>'+
+    '<div class="kv"><span class="k">Мин. цена</span><span>от '+nf(p.minRub||0)+' ₽</span></div></div>';
+  h+='<button class="btn" onclick="nsgAct(\''+ek+'\',\''+(p.hidden?'show':'hide')+'\')">'+(p.hidden?'👁 Показать товар':'🙈 Скрыть товар')+'</button>';
+  h+='<button class="btn sec" style="margin-top:8px" onclick="nsgAct(\''+ek+'\',\''+(p.featured?'unfeature':'feature')+'\')">'+(p.featured?'⭐️ Убрать из топа':'🔥 В топ (наверх)')+'</button>';
+  h+='<div class="block" style="margin-top:12px"><label class="fl">Наценка % на этот товар (пусто = общая/по бренду)</label><input class="f" id="nsgpm" value="'+(p.markup!=null?p.markup:'')+'"/><button class="btn" onclick="nsgActV(\''+ek+'\',\'markup\',(document.getElementById(\'nsgpm\')||{}).value)">Сохранить наценку</button></div>';
+  h+='<div class="block"><label class="fl">Переименовать папку (пусто = авто)</label><input class="f" id="nsgrn" value="'+nsgEsc(p.name||'')+'"/><button class="btn" onclick="nsgActV(\''+ek+'\',\'rename\',(document.getElementById(\'nsgrn\')||{}).value)">Сохранить название</button></div>';
+  h+='<div class="block"><label class="fl">Слить с другим товаром (точное название целевой папки)</label><input class="f" id="nsgmg" placeholder="напр. Metro"/><button class="btn sec" onclick="nsgActV(\''+ek+'\',\'merge\',(document.getElementById(\'nsgmg\')||{}).value)">Слить</button><button class="btn sec" style="margin-top:6px" onclick="nsgAct(\''+ek+'\',\'unmerge\')">Отменить слияние</button></div>';
+  return h+'</div>';
+}
+function nsgAct(k,a){k=decodeURIComponent(k);toast('…');api('/api/admin/nsg-product',{key:k,action:a}).then(function(d){toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));if(d.ok){window._nsgProds={};back();setTimeout(loadNsg,60);}});}
+function nsgActV(k,a,v){k=decodeURIComponent(k);toast('…');api('/api/admin/nsg-product',{key:k,action:a,value:v}).then(function(d){toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));if(d.ok){window._nsgProds={};back();setTimeout(loadNsg,60);}});}
 function orderAction(id,action){toast('…');api('/api/admin/order-action',{id:id,action:action}).then(function(d){toast(d.ok?'Готово ✓':'Ошибка');if(d.ok)back();});}
 function orderClarify(id){var t=(document.getElementById('ow_msg')||{}).value;if(!t){toast('Введи текст');return;}toast('Отправляю…');api('/api/admin/order-action',{id:id,action:'clarify',text:t}).then(function(d){toast(d.ok?'Отправлено ✓':'Ошибка');if(d.ok){var m=document.getElementById('ow_msg');if(m)m.value='';loadThread(id);}});}
 function delOrder(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/order-delete',{id:id}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}

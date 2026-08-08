@@ -439,18 +439,45 @@ def _best_display(displays: dict) -> str:
     return sorted(displays, key=lambda s: (sum(ch.isupper() for ch in s), -displays[s]))[0]
 
 
+# ── Админские оверрайды каталога (скрытие/топ/наценка/переименование/слияние) ──
+# Держим на уровне модуля; хендлеры обновляют перед рендером из настроек БД.
+_OVERRIDES = {"hidden": set(), "featured": [], "markup": {}, "rename": {}, "merge": {}}
+
+
+def set_overrides(ov: dict):
+    """Обновить админские оверрайды; кэш сбрасываем только если что-то изменилось."""
+    old = _ov_sig()
+    _OVERRIDES["hidden"]   = set(ov.get("hidden") or [])
+    _OVERRIDES["featured"] = list(ov.get("featured") or [])
+    _OVERRIDES["markup"]   = dict(ov.get("markup") or {})
+    _OVERRIDES["rename"]   = dict(ov.get("rename") or {})
+    _OVERRIDES["merge"]    = dict(ov.get("merge") or {})
+    if _ov_sig() != old:
+        _catalog_cache["key"] = None
+        _catalog_cache["data"] = None
+
+
+def _ov_sig() -> tuple:
+    return (frozenset(_OVERRIDES["hidden"]), tuple(_OVERRIDES["featured"]),
+            tuple(sorted(_OVERRIDES["markup"].items())),
+            tuple(sorted(_OVERRIDES["rename"].items())),
+            tuple(sorted(_OVERRIDES["merge"].items())))
+
+
 _catalog_cache = {"key": None, "data": None}
 
 
 def build_catalog(stock: dict) -> dict:
-    """Единая кластеризация каталога в папки-продукты (с кэшем).
-    Пасс 1: базовое имя франшизы. Пасс 2: слияние по общему префиксу
-    (DOOM Eternal + DOOM: The Dark Ages → DOOM).
-    → {'folders':[{brand,token,key,bucket,cats,min_usd,_cat_objs}], 'by_token', 'by_cat'}."""
+    """Единая кластеризация каталога в папки-продукты + админ-оверрайды (с кэшем).
+    → {'folders':[{brand,token,key,bucket,cats,min_usd,_cat_objs,hidden,featured,rank,markup}],
+       'by_token', 'by_cat'}. folders включают СКРЫТЫЕ (флаг hidden) — фильтрует читатель."""
     cats = stock.get("categories", []) if isinstance(stock, dict) else []
-    ck = (id(stock), len(cats))
+    ck = (id(stock), len(cats), _ov_sig())
     if _catalog_cache["key"] == ck and _catalog_cache["data"] is not None:
         return _catalog_cache["data"]
+    merge = _OVERRIDES["merge"]; rename = _OVERRIDES["rename"]
+    hidden = _OVERRIDES["hidden"]; markup = _OVERRIDES["markup"]
+    featured = _OVERRIDES["featured"]
     incat = [c for c in cats if _cat_in_stock(c)]
     base_by_cat = {c["category_id"]: brand_of(c.get("category_name", "")) for c in incat}
     base_lower = {}
@@ -465,10 +492,16 @@ def build_catalog(stock: dict) -> dict:
                 return base_lower[pref]
         return base
 
+    def _apply_merge(key: str) -> str:
+        seen = set()
+        while key in merge and key not in seen:
+            seen.add(key); key = merge[key]
+        return key
+
     groups: dict = {}
     for c in incat:
         disp = _product(base_by_cat[c["category_id"]])
-        key = disp.casefold()
+        key = _apply_merge(disp.casefold())
         g = groups.setdefault(key, {"displays": {}, "cats": [], "names": [], "min_usd": None})
         g["displays"][disp] = g["displays"].get(disp, 0) + 1
         g["cats"].append(c)
@@ -482,16 +515,25 @@ def build_catalog(stock: dict) -> dict:
     for key, g in groups.items():
         disp = _best_display(g["displays"])
         objs = sorted(g["cats"], key=lambda c: c.get("category_name", ""))
-        # Папка из одной игры без регионов ('|') — показываем ПОЛНОЕ название
-        # (иначе 'Destiny 2' → 'Destiny', 'Directive 8020' → 'Directive').
         if len(objs) == 1 and "|" not in objs[0].get("category_name", ""):
             disp = _clean_title(objs[0].get("category_name", "")) or disp
+        if key in rename and rename[key]:
+            disp = rename[key]
+        rank = featured.index(key) if key in featured else None
         folders.append({
             "brand": disp, "token": brand_token(key), "key": key,
             "bucket": classify_bucket(disp, " ".join(g["names"])),
             "cats": len(objs), "min_usd": g["min_usd"], "_cat_objs": objs,
+            "hidden": key in hidden, "featured": key in featured, "rank": rank,
+            "markup": markup.get(key),
         })
-    folders.sort(key=lambda x: x["brand"].lower())
+    # топовые вперёд (по rank), затем по имени
+    folders.sort(key=lambda x: (0, x["rank"]) if x["rank"] is not None else (1, 0))
+    folders_by_name = sorted(folders, key=lambda x: x["brand"].lower())
+    _feat = [f for f in folders_by_name if f["rank"] is not None]
+    _feat.sort(key=lambda x: x["rank"])
+    _rest = [f for f in folders_by_name if f["rank"] is None]
+    folders = _feat + _rest
     data = {"folders": folders,
             "by_token": {f["token"]: f for f in folders},
             "by_cat": {c["category_id"]: f for f in folders for c in f["_cat_objs"]}}
@@ -500,12 +542,13 @@ def build_catalog(stock: dict) -> dict:
     return data
 
 
-def get_all_brands(stock: dict) -> list[dict]:
-    return build_catalog(stock)["folders"]
+def get_all_brands(stock: dict, include_hidden: bool = False) -> list[dict]:
+    fs = build_catalog(stock)["folders"]
+    return fs if include_hidden else [f for f in fs if not f["hidden"]]
 
 
-def get_brands_by_bucket(stock: dict, bucket: str) -> list[dict]:
-    return [f for f in get_all_brands(stock) if f["bucket"] == bucket]
+def get_brands_by_bucket(stock: dict, bucket: str, include_hidden: bool = False) -> list[dict]:
+    return [f for f in get_all_brands(stock, include_hidden) if f["bucket"] == bucket]
 
 
 def get_buckets_present(stock: dict) -> list[tuple]:
