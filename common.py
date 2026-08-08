@@ -2500,6 +2500,9 @@ async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
             elif _lst in ("awaiting_link", "awaiting_payment", "awaiting_creds", "awaiting_setup"):
                 if stageKey != "done":
                     stage, stageKey = "В работе", "work"
+            # «Активировали вручную» (order_done) — для ЛЮБОГО сервиса, если ещё не done
+            if (not activated) and (oid in done_set):
+                activated, stage, stageKey = True, "Активировано", "done"
             _pa = r["paid_at"]
             out.append({
                 "id": oid, "num": r["num"],
