@@ -6990,6 +6990,21 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                             except Exception:
                                 pass
                         return
+                    if _r.get("out_of_stock"):
+                        # Нет стока под ЭТОТ код (свободно 0). Код ЦЕЛ → вернём в пул в конце,
+                        # а пока пробуем следующий код того же сайта (до _OOS_MAX), затем сайт.
+                        _last_shot = _r.get("screenshot") or _last_shot
+                        _oos_release.append(_code)
+                        _oos_count += 1
+                        _oos_total += 1
+                        _report.append((f"{_site}: код <code>{_code}</code> — нет стока (свободно 0)"
+                                        + (f" · {_r.get('error')}" if _r.get('error') else ""))[:220])
+                        logging.warning(f"Claude chain {ref}: browser {_prov} нет стока под {_code} ({_oos_count}/{_OOS_MAX})")
+                        if _oos_count >= _OOS_MAX:
+                            _report.append(f"{_site}: стока нет и по другим кодам — следующий сайт")
+                            break
+                        await asyncio.sleep(6)
+                        continue   # следующий код этого сайта (вернём в пул в конце)
                     if _r.get("code_already_used"):
                         _last_shot = _r.get("screenshot") or _last_shot
                         _used_codes.append(_code)
@@ -7071,11 +7086,17 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
         # (кроме поставленных на паузу в админке) — см. цикл выше.
 
         # все сайты исчерпаны
-        _claude_job_results[ref] = {"status": "done", "success": False,
-            "error": ("Не удалось активировать автоматически. Частые причины: "
-                      "у аккаунта уже есть платная подписка Claude (отмени её на claude.ai/settings/billing) "
-                      "или аккаунт не на Free-плане. Проверь это и попробуй снова — "
-                      "либо напиши Александру, активирует вручную.")}
+        _stock_out = _oos_total > 0   # причина отказа — нет стока (свободно 0)
+        if _stock_out:
+            _claude_job_results[ref] = {"status": "done", "success": False,
+                "error": ("⏳ Запасы временно закончились. Пополним в течение 15–30 минут — "
+                          "попробуй активировать снова чуть позже. Твой код остаётся действительным.")}
+        else:
+            _claude_job_results[ref] = {"status": "done", "success": False,
+                "error": ("Не удалось активировать автоматически. Частые причины: "
+                          "у аккаунта уже есть платная подписка Claude (отмени её на claude.ai/settings/billing) "
+                          "или аккаунт не на Free-плане. Проверь это и попробуй снова — "
+                          "либо напиши Александру, активирует вручную.")}
         # каждый сайт — отдельным абзацем (пустая строка между), чтобы отчёт читался
         _rep_txt = "\n\n".join(f"• {r}" for r in _report) if _report else "• (ни одна попытка не выполнилась)"
         _counts_lines = "\n".join(
@@ -7095,8 +7116,12 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
         _plan_line = " → ".join(CLAUDE_PROVIDERS.get(p, {}).get("name", p) for p in _order) or "—"
         _dis_line = (", ".join(CLAUDE_PROVIDERS.get(p, {}).get("name", p) for p in sorted(_disabled))
                      if _disabled else "")
+        _fail_head = ("🚨 <b>Claude — НЕТ СТОКА (свободно 0) на всех сайтах</b>\n"
+                      "Клиенту сказано попробовать через 15–30 мин. Пополни сток."
+                      if _stock_out else
+                      "❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>")
         _fail_txt = (
-            f"❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>\n"
+            f"{_fail_head}\n"
             f"👤 <code>{user_id}</code> · {plan_name}\n"
             f"🧩 Org ID: <code>{org_id}</code>\n\n"
             f"📦 <b>Кодов в пуле бота</b> (не сток сайта):\n{_counts_lines}\n\n"

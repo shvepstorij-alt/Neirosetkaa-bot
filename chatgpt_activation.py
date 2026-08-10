@@ -1402,9 +1402,12 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
                     return {"success": False, "code_already_used": True,
                             "error": f"Код {cdk_code} уже использован.", "screenshot": await _aipro_ss(page)}
                 if ("нет стока" in tl or "out of stock" in tl or "нет мест" in tl
-                        or "try later" in tl or "нет свободных" in tl):
+                        or "try later" in tl or "нет свободных" in tl
+                        or "нет stock" in tl or "no stock" in tl or "свободно 0" in tl
+                        or "пополним" in tl or ("stock" in tl and "свободно" in tl)):
                     return {"success": False, "out_of_stock": True,
-                            "error": "bypriceactivate.pro: нет мест под этот код (форма).",
+                            "error": ("bypriceactivate.pro: временно нет стока под этот код "
+                                      "(свободно 0)."),
                             "screenshot": await _aipro_ss(page)}
                 if ("currently subscribed" in tl or "уже есть подписка" in tl
                         or "already subscribed" in tl):
