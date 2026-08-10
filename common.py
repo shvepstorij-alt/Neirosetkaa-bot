@@ -2596,7 +2596,7 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                 # чтобы не потратить на один заказ второй код. Новый берём только если
                 # прежнего нет (pending истёк и код вернулся в пул).
                 _pend = await get_pending_activation(uid)
-                if _pend and _pend.get("code") and str(_pend.get("order_id")) == str(oid):
+                if _pend and _pend.get("code"):  # тот же выданный код, новый НЕ берём
                     _code = _pend["code"]; _prov = _pend.get("provider") or "987ai"
                 else:
                     _code, _prov = await _gpt_pick_code(plan_key)
@@ -2622,7 +2622,7 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                     return web.json_response({"ok": False, "msg": f"Не удалось отправить: {_se}"})
             elif svc_key == "claude":
                 _pend = await get_claude_pending_activation(uid)
-                if _pend and _pend.get("code") and str(_pend.get("order_id")) == str(oid):
+                if _pend and _pend.get("code"):  # тот же выданный код, новый НЕ берём
                     _code = _pend["code"]; _prov = _pend.get("provider") or "bpa"
                 else:
                     _code, _prov = await _claude_pick_code(plan_key)
@@ -2632,7 +2632,7 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                     return web.json_response({"ok": False, "msg": "Не удалось отправить кнопку Claude"})
             else:
                 _pend = await get_perplexity_pending_activation(uid)
-                if _pend and _pend.get("code") and str(_pend.get("order_id")) == str(oid):
+                if _pend and _pend.get("code"):  # тот же выданный код, новый НЕ берём
                     _code = _pend["code"]
                 else:
                     _code = await get_next_perplexity_code(plan_key)

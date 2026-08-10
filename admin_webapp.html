@@ -630,7 +630,7 @@ function feedOrderView(id){
 }
 function feedAct(id,action){
   if(action==='cancel'&&window.confirm&&!window.confirm('Отменить заказ? Клиент получит уведомление.'))return;
-  if(action==='resend'&&window.confirm&&!window.confirm('Отправить клиенту новую кнопку активации? Будет выдан свежий код.'))return;
+  if(action==='resend'&&window.confirm&&!window.confirm('Отправить клиенту кнопку активации ещё раз? Будет ТОТ ЖЕ код (новый берётся только если прежний уже недоступен).'))return;
   toast('…');
   api('/api/admin/feed-order-action',{id:id,action:action}).then(function(d){
     toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));
