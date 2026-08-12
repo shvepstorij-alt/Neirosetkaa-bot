@@ -433,7 +433,7 @@ SCREENS["Редактор цен"]=function(){return hdr("Редактор це�
   rowItem("ti-photo","Настройки генерации","стоимость фото/видео/правок","",'leaf(priceGen)')+'</div>'};
 function priceShop(){
   setTimeout(loadPriceShop,0);
-  return hdr("Тарифы магазина")+'<div class="wrap"><button class="btn" onclick="leaf(serviceAdd)">➕ Добавить сервис</button><div id="psbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
+  return hdr("Тарифы магазина")+'<div class="wrap"><button class="btn" onclick="leaf(serviceAdd)">➕ Добавить сервис</button><button class="btn sec" style="margin-top:8px" onclick="leaf(priceBulk)">🧮 Массовая наценка (несколько сервисов)</button><div id="psbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
 }
 function loadPriceShop(){
   api('/api/admin/prices',{}).then(function(d){
@@ -447,20 +447,74 @@ function loadPriceShop(){
     el.innerHTML=h;
   });
 }
+function priceBulk(){
+  var d=window._pricesData||{services:[]};
+  if(!d.services.length){setTimeout(function(){api('/api/admin/prices',{}).then(function(pd){if(pd.ok){window._pricesData=pd;app.innerHTML=priceBulk();}});},0);return hdr("Массовая наценка")+'<div class="wrap"><div class="note">Загружаю…</div></div>';}
+  if(window._bulkMode===undefined)window._bulkMode='round';window._bulkSel=window._bulkSel||{};
+  var rate=(window._bulkRate!==undefined?window._bulkRate:(d.rate||''));
+  var mk=(window._bulkMk!==undefined?window._bulkMk:'');
+  var h=hdr("Массовая наценка","несколько сервисов сразу")+'<div class="wrap">';
+  h+='<div class="block"><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Курс ₽/$</div><input class="f" id="bulk_rate" inputmode="decimal" value="'+rate+'" oninput="window._bulkRate=this.value;bulkPrev()"/></div><div style="flex:1"><div class="mlab">Наценка %</div><input class="f" id="bulk_mk" inputmode="numeric" placeholder="30" value="'+mk+'" oninput="window._bulkMk=this.value;bulkPrev()"/></div></div><div class="mlab" style="margin-top:8px">Округление</div><div class="seg" id="bulk_round">'+roundSegInner(window._bulkMode,'bulkRound')+'</div><div id="bulk_prev" class="note" style="margin-top:8px"></div></div>';
+  h+='<div class="row" style="cursor:pointer" onclick="bulkAll()"><span class="ic">☑️</span><div><div class="lbl2">Выбрать все / снять</div></div></div>';
+  d.services.forEach(function(s){
+    var box=window._bulkSel[s.key]?'✅':'⬜️';
+    h+='<div class="row" style="cursor:pointer" onclick="bulkToggle(\''+s.key+'\')"><span class="ic">'+box+'</span><div><div class="lbl2">'+(s.emoji||'🏷️')+' '+s.name+'</div><div class="sub">'+s.plans.length+' тариф(ов)</div></div></div>';
+  });
+  h+='<button class="btn" onclick="bulkApply()">💾 Применить к выбранным</button>';
+  h+='<div class="note">Заполнит и сохранит цены у выбранных сервисов по их «Закуп $». Тарифы без закупа пропускаются.</div>';
+  setTimeout(bulkPrev,0);
+  return h+'</div>';
+}
+function bulkRound(m){window._bulkMode=m;var el=document.getElementById('bulk_round');if(el)el.innerHTML=roundSegInner(m,'bulkRound');bulkPrev();}
+function bulkToggle(k){window._bulkSel=window._bulkSel||{};window._bulkSel[k]=!window._bulkSel[k];app.innerHTML=priceBulk();}
+function bulkAll(){var d=window._pricesData||{services:[]};var keys=d.services.map(function(s){return s.key});var allOn=keys.length&&keys.every(function(k){return window._bulkSel[k]});window._bulkSel={};if(!allOn)keys.forEach(function(k){window._bulkSel[k]=true;});app.innerHTML=priceBulk();}
+function bulkStats(){
+  var d=window._pricesData||{services:[]};
+  var rate=parseFloat(window._bulkRate!==undefined?window._bulkRate:d.rate)||0;
+  var mk=parseFloat((''+(window._bulkMk||'')).replace(',','.'));
+  var svc=0,tar=0;
+  d.services.forEach(function(s){if(window._bulkSel[s.key]){svc++;s.plans.forEach(function(p){if((p.costUsd||0)>0)tar++;});}});
+  return {svc:svc,tar:tar,rate:rate,mk:mk};
+}
+function bulkPrev(){var el=document.getElementById('bulk_prev');if(!el)return;var st=bulkStats();if(isNaN(st.mk)||!(st.rate>0)){el.innerHTML='Выбрано сервисов: '+st.svc+' · впиши курс и наценку';return;}el.innerHTML='Будет пересчитано: <b>'+st.svc+'</b> сервис(ов), <b>'+st.tar+'</b> тариф(ов) — наценка '+st.mk+'%, курс '+st.rate;}
+function bulkApply(){
+  var d=window._pricesData||{services:[]};var st=bulkStats();
+  if(!st.svc){toast('Выбери сервисы');return;}
+  if(isNaN(st.mk)||!(st.rate>0)){toast('Впиши курс и наценку');return;}
+  if(window.confirm&&!window.confirm('Применить наценку '+st.mk+'% к '+st.tar+' тариф(ам) в '+st.svc+' сервис(ах)? Цены сохранятся сразу.'))return;
+  var items=[];
+  d.services.forEach(function(s){if(!window._bulkSel[s.key])return;s.plans.forEach(function(p){var cost=p.costUsd||0;if(cost>0){items.push({key:s.key,idx:p.idx,name:p.name,price:nicePrice(cost,st.rate,st.mk,window._bulkMode||'round')});}});});
+  toast('Применяю…');
+  api('/api/admin/prices-save',{rate:st.rate,items:items}).then(function(r){toast(r.ok?('Готово ✓ ('+items.length+' тариф.)'):'Ошибка');if(r.ok){api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;});}});
+}
 function planEdit(key){
   var d=window._pricesData||{services:[]};
   var s=d.services.filter(function(x){return x.key===key})[0];
   if(!s)return hdr("Тариф")+'<div class="wrap"><div class="note">Открой раздел заново.</div></div>';
   var h=hdr(s.name,"цены и описания")+'<div class="wrap">';
   h+='<label class="fl" style="margin-top:0">Описание сервиса</label><textarea class="f" id="pe_svcdesc" style="min-height:80px">'+(s.desc||'')+'</textarea>';
-  h+='<div class="block"><div class="mlab">🧮 Онлайн-калькулятор цен</div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Курс ₽/$</div><input class="f" id="pe_rate_'+key+'" inputmode="decimal" value="'+(d.rate||'')+'" oninput="mkPreview(\''+key+'\')"/></div><div style="flex:1"><div class="mlab">Наценка %</div><input class="f" id="pe_mk_'+key+'" inputmode="numeric" placeholder="30" oninput="mkPreview(\''+key+'\')"/></div></div><div id="pe_prev_'+key+'" style="margin-top:10px"></div><button class="btn sec" style="margin-top:10px" onclick="applyMarkup(\''+key+'\')">↻ Применить к тарифам</button><div class="note">Считает вживую. «Применить» подставит цены в поля — потом «💾 Сохранить».</div></div>';
+  window._peKey=key; if(window._niceMode===undefined)window._niceMode='round';
+  h+='<div class="block"><div class="mlab">🧮 Онлайн-калькулятор цен</div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Курс ₽/$</div><input class="f" id="pe_rate_'+key+'" inputmode="decimal" value="'+(d.rate||'')+'" oninput="mkPreview(\''+key+'\')"/></div><div style="flex:1"><div class="mlab">Наценка %</div><input class="f" id="pe_mk_'+key+'" inputmode="numeric" placeholder="30" oninput="mkPreview(\''+key+'\')"/></div></div><div class="mlab" style="margin-top:8px">Округление</div><div class="seg" id="pe_round_'+key+'">'+roundSegInner(window._niceMode,'peRound')+'</div><div id="pe_prev_'+key+'" style="margin-top:10px"></div><button class="btn sec" style="margin-top:10px" onclick="applyMarkup(\''+key+'\')">↻ Применить к тарифам</button><div class="note">Считает вживую. «Применить» подставит цены в поля — потом «💾 Сохранить».</div></div>';
   setTimeout(function(){mkPreview(key)},0);
   s.plans.forEach(function(p){
     h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-name="'+(p.name||'').replace(/"/g,'&quot;')+'"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></span><button class="btn row2 danger" style="width:auto;margin:0;padding:5px 10px;font-size:11px" onclick="delPlan(\''+key+'\',\''+(p.name||'').replace(/\x27/g,'')+'\')">Удалить</button></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" style="min-height:70px">'+(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
   });
   return h+'<button class="btn sec" onclick="leaf(function(){return planAdd(\''+key+'\')})">➕ Добавить тариф</button><button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
 }
-function nicePrice(usd,rate,mk){var rub=usd*rate*(1+mk/100);var step=rub<1000?10:(rub<5000?50:100);return Math.max(step,Math.ceil(rub/step)*step);}
+function nicePrice(usd,rate,mk,mode){
+  var rub=usd*rate*(1+mk/100);
+  if((mode==='90'||mode==='99')&&rub>=90){
+    var end=mode==='90'?90:99;var c=Math.floor(rub/100)*100+end;if(c<rub)c+=100;return c;
+  }
+  var step=rub<1000?10:(rub<5000?50:100);
+  return Math.max(step,Math.ceil(rub/step)*step);
+}
+function roundSegInner(cur,fn){
+  return [['round','Ровно'],['90','…90'],['99','…99']].map(function(x){
+    return '<button class="'+(x[0]===cur?'on':'')+'" onclick="'+fn+'(\''+x[0]+'\')">'+x[1]+'</button>';
+  }).join('');
+}
+function peRound(m){window._niceMode=m;var k=window._peKey;var el=document.getElementById('pe_round_'+k);if(el)el.innerHTML=roundSegInner(m,'peRound');mkPreview(k);}
 function mkPreview(key){
   var d=window._pricesData||{services:[]};var s=d.services.filter(function(x){return x.key===key})[0];
   var el=document.getElementById('pe_prev_'+key); if(!s||!el)return;
@@ -471,7 +525,7 @@ function mkPreview(key){
   s.plans.forEach(function(p){
     var cost=p.costUsd||0;
     if(!(cost>0)){h+='<div class="kv"><span class="k">'+p.name+'</span><span class="muted" style="font-size:11px">нет закупа $</span></div>';return;}
-    var np=nicePrice(cost,rate,mk),cur=p.price||0;
+    var np=nicePrice(cost,rate,mk,window._niceMode||'round'),cur=p.price||0;
     var marg=np>0?Math.round((np-cost*rate)/np*100):0;
     var arrow=np>cur?'▲':(np<cur?'▼':'=');var col=np>cur?'pos':(np<cur?'neg':'muted');
     h+='<div class="kv"><span class="k">'+p.name+'</span><span>'+nf(cur)+' → <b>'+nf(np)+' ₽</b> <span class="'+col+'" style="font-size:11px">'+arrow+'</span> <span class="muted" style="font-size:11px">маржа '+marg+'%</span></span></div>';
@@ -486,7 +540,7 @@ function applyMarkup(key){
   var n=0,miss=0;
   document.querySelectorAll('#app [data-key="'+key+'"]').forEach(function(b){
     var cost=parseFloat((b.querySelector('.pe-cost').value||'').replace(',','.'))||0;
-    if(cost>0){b.querySelector('.pe-price').value=nicePrice(cost,rate,mk);n++;}else{miss++;}
+    if(cost>0){b.querySelector('.pe-price').value=nicePrice(cost,rate,mk,window._niceMode||'round');n++;}else{miss++;}
   });
   api('/api/admin/prices-save',{rate:rate,items:[]});
   toast(n?('Пересчитано: '+n+(miss?(' · без закупа: '+miss):'')+' — проверь и «Сохрани»'):'Заполни «Закуп $» у тарифов');
