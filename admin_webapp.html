@@ -453,10 +453,25 @@ function planEdit(key){
   if(!s)return hdr("Тариф")+'<div class="wrap"><div class="note">Открой раздел заново.</div></div>';
   var h=hdr(s.name,"цены и описания")+'<div class="wrap">';
   h+='<label class="fl" style="margin-top:0">Описание сервиса</label><textarea class="f" id="pe_svcdesc" style="min-height:80px">'+(s.desc||'')+'</textarea>';
+  h+='<div class="block"><div class="mlab">Авто-цена по наценке</div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Курс ₽/$</div><input class="f" id="pe_rate_'+key+'" inputmode="decimal" value="'+(d.rate||'')+'"/></div><div style="flex:1"><div class="mlab">Наценка %</div><input class="f" id="pe_mk_'+key+'" inputmode="numeric" placeholder="30"/></div></div><button class="btn sec" style="margin-top:8px" onclick="applyMarkup(\''+key+'\')">↻ Посчитать цены из закупа</button><div class="note">Цена = Закуп $ × Курс × (1 + наценка). Заполнит «Цена ₽» у всех тарифов — потом «Сохранить».</div></div>';
   s.plans.forEach(function(p){
     h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-name="'+(p.name||'').replace(/"/g,'&quot;')+'"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></span><button class="btn row2 danger" style="width:auto;margin:0;padding:5px 10px;font-size:11px" onclick="delPlan(\''+key+'\',\''+(p.name||'').replace(/\x27/g,'')+'\')">Удалить</button></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" style="min-height:70px">'+(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
   });
   return h+'<button class="btn sec" onclick="leaf(function(){return planAdd(\''+key+'\')})">➕ Добавить тариф</button><button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
+}
+function nicePrice(usd,rate,mk){var rub=usd*rate*(1+mk/100);var step=rub<1000?10:(rub<5000?50:100);return Math.max(step,Math.ceil(rub/step)*step);}
+function applyMarkup(key){
+  var rate=parseFloat((document.getElementById('pe_rate_'+key)||{}).value)||((window._pricesData||{}).rate||0);
+  var mk=parseFloat(((document.getElementById('pe_mk_'+key)||{}).value||'').replace(',','.'));
+  if(isNaN(mk)){toast('Введи наценку %');return;}
+  if(!(rate>0)){toast('Введи курс');return;}
+  var n=0,miss=0;
+  document.querySelectorAll('#app [data-key="'+key+'"]').forEach(function(b){
+    var cost=parseFloat((b.querySelector('.pe-cost').value||'').replace(',','.'))||0;
+    if(cost>0){b.querySelector('.pe-price').value=nicePrice(cost,rate,mk);n++;}else{miss++;}
+  });
+  api('/api/admin/prices-save',{rate:rate,items:[]});
+  toast(n?('Пересчитано: '+n+(miss?(' · без закупа: '+miss):'')+' — проверь и «Сохрани»'):'Заполни «Закуп $» у тарифов');
 }
 function savePlanEdit(key){
   var items=[];
