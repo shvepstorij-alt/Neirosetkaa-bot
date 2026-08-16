@@ -442,6 +442,51 @@ async def cmd_set_credits(message: Message):
     )
 
 
+@dp.message(F.text.startswith("/release_codes"), StateFilter("*"))
+async def cmd_release_codes(message: Message):
+    """Возвращает коды в пул (снимает пометку «использован»). Нужно, если бот ошибочно
+    сжёг коды. Использование: /release_codes <gpt|claude|perplexity> <код1> <код2> ..."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3:
+        await message.answer(
+            "♻️ <b>Возврат кодов в пул</b>\n\n"
+            "Использование: <code>/release_codes &lt;gpt|claude|perplexity&gt; &lt;код1&gt; &lt;код2&gt; ...</code>\n"
+            "Снимает пометку «использован», код снова свободен для активации.",
+            parse_mode="HTML")
+        return
+    _svc = parts[1].lower()
+    _tbl = {"gpt": "gpt_codes", "chatgpt": "gpt_codes",
+            "claude": "claude_codes", "perplexity": "perplexity_codes"}.get(_svc)
+    if not _tbl:
+        await message.answer("Сервис: gpt / claude / perplexity")
+        return
+    _codes = [c.strip() for c in parts[2:] if c.strip()]
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if _tbl == "gpt_codes":
+                _res = await conn.execute(
+                    "UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL "
+                    "WHERE code = ANY($1::text[])", _codes)
+            elif _tbl == "claude_codes":
+                _res = await conn.execute(
+                    "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL "
+                    "WHERE code = ANY($1::text[])", _codes)
+            else:
+                _res = await conn.execute(
+                    "UPDATE perplexity_codes SET is_used=FALSE, used_by=NULL, used_at=NULL "
+                    "WHERE code = ANY($1::text[])", _codes)
+        _cnt = _res.split()[-1] if isinstance(_res, str) else "0"
+        await message.answer(
+            f"✅ Возвращено в пул: <b>{_cnt}</b> из {len(_codes)} код(ов) ({_svc}).\n"
+            f"Теперь они снова свободны для активации.",
+            parse_mode="HTML")
+    except Exception as _e:
+        await message.answer(f"❌ Ошибка: {str(_e)[:200]}")
+
+
 @dp.message(F.text.startswith("/subs_restore"), StateFilter("*"))
 async def cmd_subs_restore(message: Message):
     """Восстанавливает (делает активными) все НЕистёкшие подписки клиента.
@@ -2795,7 +2840,9 @@ async def adm_promos(cb: CallbackQuery):
             exp = ""
             if p.get('expires_at'):
                 exp = f" · до {p['expires_at'].strftime('%d.%m')}"
-            text += f"<code>{p['code']}</code> {kind_label} · {uses}{exp}\n"
+            _sv = p.get('service_key')
+            svc = (" · " + (SHOP_CATALOG.get(_sv, {}) or {}).get('name', _sv)) if _sv else ""
+            text += f"<code>{p['code']}</code> {kind_label}{svc} · {uses}{exp}\n"
         if len(promos) > 15:
             text += f"\n...и ещё {len(promos)-15}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -2973,23 +3020,57 @@ async def adm_promo_days(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     days = int(cb.data.split(":")[1])
+    await state.update_data(days=days)
     data = await state.get_data()
+    # Скидка (%) — спрашиваем, на какой сервис действует. Кредиты — на сервис не влияют.
+    if data.get("kind") == "percent":
+        rows = [[InlineKeyboardButton(text="🌍 Все сервисы", callback_data="admp_svc:all")]]
+        _row = []
+        for _k, _s in SHOP_CATALOG.items():
+            if not _s.get("plans"):
+                continue
+            _row.append(InlineKeyboardButton(text=_s.get("name", _k), callback_data=f"admp_svc:{_k}"))
+            if len(_row) == 2:
+                rows.append(_row); _row = []
+        if _row:
+            rows.append(_row)
+        rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="adm_promos")])
+        await cb.message.answer(
+            "На какой сервис действует скидка?\n"
+            "<i>«Все сервисы» — промокод сработает на любую покупку.</i>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        await cb.answer()
+        return
+    await _adm_finish_promo(cb, state, service_key=None)
+
+
+@dp.callback_query(F.data.startswith("admp_svc:"))
+async def adm_promo_svc(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    _svc = cb.data.split(":", 1)[1]
+    await _adm_finish_promo(cb, state, service_key=(None if _svc == "all" else _svc))
+
+
+async def _adm_finish_promo(cb, state, service_key=None):
+    data = await state.get_data()
+    days = int(data.get("days") or 0)
     ok, msg = await create_promo(
-        code=data["code"],
-        kind=data["kind"],
-        value=data["value"],
-        max_uses=data["uses"],
-        days_valid=days,
+        code=data["code"], kind=data["kind"], value=data["value"],
+        max_uses=data["uses"], days_valid=days, service_key=service_key,
     )
     await state.clear()
     if ok:
         kind_label = f"-{data['value']}%" if data['kind'] == 'percent' else f"+{data['value']} кредитов"
         uses_label = f"{data['uses']} раз" if data['uses'] else "без лимита"
         days_label = f"{days} дней" if days else "бессрочно"
+        _svc_label = (SHOP_CATALOG.get(service_key, {}) or {}).get("name", service_key) if service_key else "Все сервисы"
         await cb.message.answer(
             f"✅ <b>Промокод создан!</b>\n\n"
             f"<code>{data['code']}</code>\n"
             f"Тип: <b>{kind_label}</b>\n"
+            f"Сервис: <b>{_svc_label}</b>\n"
             f"Использований: <b>{uses_label}</b>\n"
             f"Срок: <b>{days_label}</b>",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[

@@ -183,6 +183,11 @@ async def init_db():
                 created_at   TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Привязка промокода к сервису магазина (NULL = для всех сервисов)
+        try:
+            await conn.execute("ALTER TABLE promocodes ADD COLUMN service_key TEXT")
+        except Exception:
+            pass
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS promo_uses (
                 id          SERIAL PRIMARY KEY,
@@ -1001,8 +1006,10 @@ async def log_event(user_id: int | None, kind: str, data: str = ""):
 
 # ─── Промокоды ─────────────────────────────────────────────
 
-async def create_promo(code: str, kind: str, value: int, max_uses: int = 1, days_valid: int = 0) -> tuple[bool, str]:
-    """Создаёт промокод. kind: 'percent' или 'credits'. days_valid=0 - бессрочный."""
+async def create_promo(code: str, kind: str, value: int, max_uses: int = 1, days_valid: int = 0,
+                       service_key: str = None) -> tuple[bool, str]:
+    """Создаёт промокод. kind: 'percent' или 'credits'. days_valid=0 - бессрочный.
+    service_key: сервис магазина, на который действует скидка (None = на все)."""
     code = code.strip().upper()
     if not code or not code.replace("_", "").replace("-", "").isalnum():
         return False, "Код должен содержать только буквы, цифры, _ и -"
@@ -1017,16 +1024,17 @@ async def create_promo(code: str, kind: str, value: int, max_uses: int = 1, days
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
+            _svc = service_key or None
             if days_valid > 0:
                 await conn.execute(
-                    f"INSERT INTO promocodes (code, kind, value, max_uses, expires_at) "
-                    f"VALUES ($1, $2, $3, $4, NOW() + ($5 || ' days')::INTERVAL)",
-                    code, kind, value, max_uses, str(days_valid)
+                    "INSERT INTO promocodes (code, kind, value, max_uses, expires_at, service_key) "
+                    "VALUES ($1, $2, $3, $4, NOW() + ($5 || ' days')::INTERVAL, $6)",
+                    code, kind, value, max_uses, str(days_valid), _svc
                 )
             else:
                 await conn.execute(
-                    "INSERT INTO promocodes (code, kind, value, max_uses) VALUES ($1, $2, $3, $4)",
-                    code, kind, value, max_uses
+                    "INSERT INTO promocodes (code, kind, value, max_uses, service_key) VALUES ($1, $2, $3, $4, $5)",
+                    code, kind, value, max_uses, _svc
                 )
         return True, f"Промокод {code} создан"
     except Exception as e:

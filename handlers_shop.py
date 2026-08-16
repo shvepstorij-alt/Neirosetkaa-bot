@@ -394,7 +394,9 @@ async def shop_confirm(cb: CallbackQuery, state: FSMContext):
 
     if promo_code:
         ok_p, _, promo = await check_promo_for_user(promo_code, uid)
-        if ok_p and promo and promo["kind"] == "percent":
+        # Промокод действует только на свой сервис (service_key), если он задан.
+        _psvc = (promo or {}).get("service_key")
+        if ok_p and promo and promo["kind"] == "percent" and (not _psvc or _psvc == key):
             promo_discount = promo["value"]
             promo_text = f"\n🎟 Промокод <b>{promo_code}</b>: -{promo_discount}%"
 
@@ -475,6 +477,19 @@ async def shop_promo_receive(message: Message, state: FSMContext):
         await message.answer(
             "⚠️ Этот промокод даёт кредиты, а не скидку на подписку.\n"
             "Для оплаты подписок работают только промокоды со скидкой (%).",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")]
+            ])
+        )
+        await state.set_state(None)
+        return
+
+    _psvc = promo.get("service_key")
+    if _psvc and _psvc != key:
+        _svcname = (SHOP_CATALOG.get(_psvc, {}) or {}).get("name", _psvc)
+        await message.answer(
+            f"⚠️ Этот промокод действует только на <b>{_svcname}</b> и не применяется к этому сервису.",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")]
             ])
@@ -608,8 +623,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
             text="✅ Я оплатил - написать Александру",
-            url="https://t.me/" + PERSONAL_USERNAME + "?text=" + __import__('urllib.parse', fromlist=['quote']).quote(f'Приветствую! Оплатил заказ {_onum_str}\nСервис: {s["name"]}\nТариф: {p["name"]}\nНомер заказа: {_num_disp}\nID: {order_id}')
-        )],
+            callback_data=f"shop_paid:{order_id}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
     ])
     _client_pay_msg_id = None
@@ -656,6 +670,44 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
                 "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
                 admin_msg.message_id, order_id
             )
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("shop_paid:"))
+async def shop_paid_forward(cb: CallbackQuery):
+    """Клиент нажал «Я оплатил». В момент клика оплата обычно уже прошла — достаём
+    номер FreeKassa (intid) и даём готовое сообщение Александру с этим номером."""
+    order_id = cb.data.split(":", 1)[1]
+    o = await fk_get_order(order_id) or {}
+    _num = o.get("num")
+    _fk = o.get("fk_intid") or ""
+    pack = o.get("pack") or ""
+    svc = ""; plan = ""
+    if pack.startswith("shop:"):
+        _pp = pack.split(":")
+        _k = _pp[1] if len(_pp) > 1 else ""
+        _idx = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+        _sc = SHOP_CATALOG.get(_k, {}) or {}
+        svc = _sc.get("name", _k)
+        _pl = _sc.get("plans", [])
+        plan = _pl[_idx]["name"] if 0 <= _idx < len(_pl) else ""
+    _onum = f"#{_num}" if _num else order_id
+    _fk_line = f"\nНомер FreeKassa: {_fk}" if _fk else ""
+    _txt = (f"Приветствую! Оплатил заказ {_onum}\n"
+            f"Сервис: {svc}\nТариф: {plan}{_fk_line}\nID: {order_id}")
+    import urllib.parse as _uq
+    _url = f"https://t.me/{PERSONAL_USERNAME}?text={_uq.quote(_txt)}"
+    _hint = ("Готово! Нажми кнопку — отправишь Александру подтверждение с номером платежа 👇"
+             if _fk else
+             "Нажми кнопку — отправишь Александру подтверждение оплаты 👇\n"
+             "<i>(если оплата только что прошла, номер FreeKassa подтянется чуть позже)</i>")
+    try:
+        await cb.message.answer(
+            _hint, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✍️ Отправить Александру", url=_url)]]))
     except Exception:
         pass
     await cb.answer()

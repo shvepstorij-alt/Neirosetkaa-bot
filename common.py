@@ -2412,15 +2412,32 @@ async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
         except Exception: body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
-        limit = int(body.get("limit") or 80)
+        page = int(body.get("page") or 0)
+        date_s = str(body.get("date") or "").strip()   # 'YYYY-MM-DD' — конкретный день
+        q = str(body.get("q") or "").strip()           # поиск по FreeKassa/№/order_id
+        PAGE = 30
+        where = ["f.status='paid'", "f.paid_at IS NOT NULL"]
+        args = []
+        if date_s:
+            args.append(date_s); _di = len(args)
+            where.append(f"f.paid_at >= ${_di}::date AND f.paid_at < (${_di}::date + INTERVAL '1 day')")
+        if q:
+            _qq = q.lstrip("#")
+            args.append(q); _i1 = len(args)
+            args.append(_qq); _i2 = len(args)
+            args.append(f"%{q}%"); _i3 = len(args)
+            where.append(f"(f.fk_intid = ${_i1} OR CAST(f.num AS TEXT) = ${_i2} OR f.order_id ILIKE ${_i3})")
+        where_sql = " AND ".join(where)
         pool = await get_pool()
         async with pool.acquire() as conn:
+            total = await conn.fetchval(f"SELECT COUNT(*) FROM fk_orders f WHERE {where_sql}", *args) or 0
+            pages = max(1, (total + PAGE - 1) // PAGE)
+            page = max(0, min(page, pages - 1))
             rows = await conn.fetch(
                 "SELECT f.order_id, f.user_id, f.amount_rub, f.pack, f.credits, "
                 "       f.paid_at, f.num, f.fk_intid, u.username "
                 "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
-                "WHERE f.status='paid' AND f.paid_at IS NOT NULL "
-                "ORDER BY f.paid_at DESC LIMIT $1", limit)
+                f"WHERE {where_sql} ORDER BY f.paid_at DESC LIMIT {PAGE} OFFSET {page * PAGE}", *args)
             ids = [r["order_id"] for r in rows]
             gpt_used, cl_used, px_used = set(), set(), set()
             lp_map, nsg_map, done_set = {}, {}, set()
@@ -2515,7 +2532,8 @@ async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
                 "stage": stage, "stageKey": stageKey, "activated": activated,
                 "isAuto": svc_key in ("chatgpt", "claude", "perplexity"),
             })
-        return web.json_response({"ok": True, "orders": out})
+        return web.json_response({"ok": True, "orders": out,
+                                  "page": page, "pages": pages, "total": total})
     except Exception as _e:
         logging.error(f"api_admin_all_orders: {_e}")
         return web.json_response({"ok": False}, status=500)

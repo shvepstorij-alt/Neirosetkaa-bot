@@ -668,17 +668,22 @@ function loadBoard(){
 }
 SCREENS["Все заказы"]=function(){return ordersBoard();};
 SCREENS["Лента заказов"]=function(){
+  if(window._aoPage===undefined)window._aoPage=0;if(window._aoQ===undefined)window._aoQ='';if(window._aoDate===undefined)window._aoDate='';
   setTimeout(loadAllOrders,0);
-  return hdr("Лента заказов","все оплаты — новые сверху")+'<div class="wrap"><div id="aobody"><div class="note">Загружаю…</div></div></div>';
+  return hdr("Лента заказов","все оплаты · поиск · по дням")+'<div class="wrap">'+
+    '<input class="f" id="ao_q" placeholder="Поиск: № FreeKassa / № заказа / order_id" value="'+(window._aoQ||'')+'" style="margin-bottom:6px"/>'+
+    '<div style="display:flex;gap:8px"><button class="btn sec" style="flex:1" onclick="window._aoQ=(document.getElementById(\'ao_q\')||{}).value||\'\';window._aoPage=0;loadAllOrders()">🔍 Найти</button><button class="btn sec" style="flex:1" onclick="aoReset()">Сброс</button></div>'+
+    '<div class="mlab" style="margin-top:8px">Показать за день (необязательно)</div><input class="f" type="date" id="ao_date" value="'+(window._aoDate||'')+'" onchange="window._aoDate=this.value;window._aoPage=0;loadAllOrders()"/>'+
+    '<div id="aobody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
 };
+function aoReset(){window._aoQ='';window._aoDate='';window._aoPage=0;var q=document.getElementById('ao_q');if(q)q.value='';var dt=document.getElementById('ao_date');if(dt)dt.value='';loadAllOrders();}
 function loadAllOrders(){
-  api('/api/admin/all-orders',{}).then(function(d){
+  api('/api/admin/all-orders',{page:window._aoPage||0,q:window._aoQ||'',date:window._aoDate||''}).then(function(d){
     var el=document.getElementById('aobody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    if(!d.orders||!d.orders.length){el.innerHTML='<div class="note">Оплаченных заказов пока нет.</div>';return;}
-    window._feedOrders={};
+    window._feedOrders=window._feedOrders||{};
     var h='';
-    d.orders.forEach(function(o){
+    (d.orders||[]).forEach(function(o){
       window._feedOrders[o.id]=o;
       var col=(o.stageKey==='done')?'g':'a';
       var num=o.num?('#'+o.num+' · '):'';
@@ -688,7 +693,10 @@ function loadAllOrders(){
          '<div class="sub">'+num+(o.user||'')+' · '+(o.date||'')+'</div>'+
          '<div class="sub" style="margin-top:2px">'+nf(o.amount)+' ₽'+(o.fk?(' · 🧾 FK '+o.fk):'')+'</div></div>';
     });
-    el.innerHTML=h;
+    if(!h)h='<div class="note">Ничего не найдено.</div>';
+    var nav='';
+    if(d.pages>1){nav='<div class="seg" style="margin-top:6px">'+(d.page>0?'<button onclick="window._aoPage='+(d.page-1)+';loadAllOrders()">‹</button>':'')+'<button class="on">'+(d.page+1)+'/'+d.pages+'</button>'+(d.page<d.pages-1?'<button onclick="window._aoPage='+(d.page+1)+';loadAllOrders()">›</button>':'')+'</div>';}
+    el.innerHTML='<div class="note">Всего заказов: '+(d.total||0)+'</div>'+h+nav;
   });
 }
 function feedOrderView(id){
