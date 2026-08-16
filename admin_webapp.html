@@ -379,12 +379,14 @@ function loadPromos(){
   api('/api/admin/promos',{}).then(function(d){
     var el=document.getElementById('prbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    window._promoSvcs=d.services||[];
     if(!d.promos.length){el.innerHTML='<div class="note">Промокодов пока нет.</div>';return;}
     var h='';
     d.promos.forEach(function(x){
       var unlim=!x.maxUses, pct=unlim?0:Math.round(x.used/x.maxUses*100), stop=!x.active||(!unlim&&x.used>=x.maxUses);
       var v=x.kind==='percent'?('−'+x.value+'%'):('+'+x.value+' кр');
-      h+='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+x.code+' · '+v+'</span><span class="tag '+(stop?'r':'g')+'">'+(stop?'стоп':'актив')+'</span></div><div class="sub" style="margin-bottom:6px">Использований: '+x.used+(unlim?' (∞)':' / '+x.maxUses)+(x.expires?' · до '+x.expires:' · бессрочно')+'</div>'+(unlim?prog(100,C.blue):prog(pct,pct>=100?C.red:C.pink))+'<div class="btns2" style="margin-top:10px"><button class="btn row2 sec" style="padding:8px;font-size:12px" onclick="copyText(\''+x.code+'\')">📋 Копировать</button>'+(x.active?'<button class="btn row2 danger" style="padding:8px;font-size:12px" onclick="deactPromo(\''+x.code+'\')">Деактивировать</button>':'<span></span>')+'</div></div>';
+      var svc=x.serviceName?(' · '+x.serviceName):' · все сервисы';
+      h+='<div class="block"><div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+x.code+' · '+v+'</span><span class="tag '+(stop?'r':'g')+'">'+(stop?'стоп':'актив')+'</span></div><div class="sub" style="margin-bottom:6px">'+(x.kind==='percent'?('🎯'+svc+'<br>'):'')+'Использований: '+x.used+(unlim?' (∞)':' / '+x.maxUses)+(x.expires?' · до '+x.expires:' · бессрочно')+'</div>'+(unlim?prog(100,C.blue):prog(pct,pct>=100?C.red:C.pink))+'<div class="btns2" style="margin-top:10px"><button class="btn row2 sec" style="padding:8px;font-size:12px" onclick="copyText(\''+x.code+'\')">📋 Копировать</button>'+(x.active?'<button class="btn row2 danger" style="padding:8px;font-size:12px" onclick="deactPromo(\''+x.code+'\')">Деактивировать</button>':'<span></span>')+'</div></div>';
     });
     el.innerHTML=h;
   });
@@ -393,10 +395,12 @@ function copyText(t){try{navigator.clipboard.writeText(t).then(function(){toast(
 function deactPromo(code){toast('…');api('/api/admin/promo-deactivate',{code:code}).then(function(d){toast(d.ok?'Деактивирован':'Ошибка');open2('Промокоды')});}
 function fv(id){var e=document.getElementById(id);return e?e.value:'';}
 function promoCreate(){
-  return hdr("Новый промокод")+'<div class="wrap"><label class="fl">Код</label><input class="f" id="pc_code" placeholder="SUMMER"/><label class="fl">Тип</label><select class="f" id="pc_kind"><option value="percent">Скидка %</option><option value="credits">Кредиты</option></select><label class="fl">Значение (% или кредиты)</label><input class="f" id="pc_val" inputmode="numeric" placeholder="10"/><label class="fl">Макс. использований (0 = ∞)</label><input class="f" id="pc_uses" inputmode="numeric" placeholder="50"/><label class="fl">Срок, дней (0 = бессрочно)</label><input class="f" id="pc_days" inputmode="numeric" placeholder="30"/><button class="btn" onclick="createPromo()">Создать</button></div>';
+  var svcs=window._promoSvcs||[];
+  var opts='<option value="">🌍 Все сервисы</option>'+svcs.map(function(s){return '<option value="'+s.key+'">'+s.name+'</option>';}).join('');
+  return hdr("Новый промокод")+'<div class="wrap"><label class="fl">Код</label><input class="f" id="pc_code" placeholder="SUMMER"/><label class="fl">Тип</label><select class="f" id="pc_kind"><option value="percent">Скидка %</option><option value="credits">Кредиты</option></select><label class="fl">Значение (% или кредиты)</label><input class="f" id="pc_val" inputmode="numeric" placeholder="10"/><label class="fl">Сервис (для скидки %)</label><select class="f" id="pc_svc">'+opts+'</select><div class="note" style="margin-top:2px">Скидка сработает только на выбранный сервис. «Все сервисы» — на любую покупку. Для кредитов не важно.</div><label class="fl">Макс. использований (0 = ∞)</label><input class="f" id="pc_uses" inputmode="numeric" placeholder="50"/><label class="fl">Срок, дней (0 = бессрочно)</label><input class="f" id="pc_days" inputmode="numeric" placeholder="30"/><button class="btn" onclick="createPromo()">Создать</button></div>';
 }
 function createPromo(){
-  var b={code:fv('pc_code'),kind:fv('pc_kind'),value:fv('pc_val'),uses:fv('pc_uses')||0,days:fv('pc_days')||0};
+  var b={code:fv('pc_code'),kind:fv('pc_kind'),value:fv('pc_val'),uses:fv('pc_uses')||0,days:fv('pc_days')||0,service:fv('pc_svc')||''};
   toast('Создаю…');
   api('/api/admin/promo-create',b).then(function(d){toast(d.ok?'Создан ✓':(d.msg||'Ошибка'));if(d.ok)back();});
 }

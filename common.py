@@ -2275,11 +2275,15 @@ async def api_admin_promos_handler(request: web.Request) -> web.Response:
         out = []
         for r in rows:
             exp = r.get("expires_at")
+            _sv = r.get("service_key")
             out.append({"code": r.get("code"), "kind": r.get("kind"), "value": r.get("value"),
                         "maxUses": r.get("max_uses") or 0, "used": r.get("used_count") or 0,
                         "active": bool(r.get("active")),
+                        "service": _sv or "", "serviceName": ((SHOP_CATALOG.get(_sv, {}) or {}).get("name", _sv) if _sv else ""),
                         "expires": exp.strftime("%d.%m.%Y") if exp else None})
-        return web.json_response({"ok": True, "promos": out})
+        _svcs = [{"key": _k, "name": (_s.get("name", _k))}
+                 for _k, _s in SHOP_CATALOG.items() if _s.get("plans")]
+        return web.json_response({"ok": True, "promos": out, "services": _svcs})
     except Exception as _e:
         logging.error(f"api_admin_promos: {_e}")
         return web.json_response({"ok": False}, status=500)
@@ -2299,9 +2303,10 @@ async def api_admin_promo_create_handler(request: web.Request) -> web.Response:
         value = int(float(body.get("value") or 0))
         uses = int(float(body.get("uses") or 1))
         days = int(float(body.get("days") or 0))
+        _svc = str(body.get("service", "")).strip() or None   # None = на все сервисы
         if not code or value <= 0:
             return web.json_response({"ok": False, "msg": "Код и значение обязательны"})
-        ok, msg = await create_promo(code, kind, value, uses, days)
+        ok, msg = await create_promo(code, kind, value, uses, days, service_key=_svc)
         return web.json_response({"ok": bool(ok), "msg": msg})
     except Exception as _e:
         logging.error(f"api_admin_promo_create: {_e}")
