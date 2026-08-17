@@ -3946,6 +3946,12 @@ async def _run_activation_job(
             _email = result.get("email") or _extract_email_from_token(access_token)
             await mark_gpt_code_used(code, user_id, order_id, _email)
             await delete_pending_activation(user_id)
+            # Номер заказа + FreeKassa для сообщений клиенту
+            _ord_ok = await fk_get_order(order_id)
+            _fkno_ok = (_ord_ok or {}).get("fk_intid") or ""
+            _num_ok = (_ord_ok or {}).get("num")
+            _onum_ok = f"#{_num_ok}" if _num_ok else order_id
+            _ordline_ok = f"🧾 Заказ {_onum_ok}" + (f" · FreeKassa {_fkno_ok}" if _fkno_ok else "")
             # Заменяем сообщение клиента на поздравление и убираем кнопку «Нужна помощь»
             _mid = _gpt_act_msg.pop(user_id, None)
             if _mid:
@@ -3960,6 +3966,7 @@ async def _run_activation_job(
                         f"\U0001f4e6 \u0422\u0430\u0440\u0438\u0444: <b>{plan_name}</b>\n"
                         f"\U0001f4e7 \u0410\u043a\u043a\u0430\u0443\u043d\u0442: <b>{_email_disp}</b>\n"
                         f"\U0001f511 \u041a\u043b\u044e\u0447: <code>{code}</code>\n"
+                        f"{_ordline_ok}\n"
                         f"\U0001f4c5 \u0414\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0434\u043e: <b>{_end}</b>\n\n"
                         "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043f\u043e\u043a\u0443\u043f\u043a\u0443! \U0001f64c",
                         chat_id=user_id, message_id=_mid, parse_mode="HTML",
@@ -3982,6 +3989,7 @@ async def _run_activation_job(
                         f"📦 Тариф: <b>{plan_name}</b>\n"
                         f"📧 Аккаунт: <b>{_email or '—'}</b>\n"
                         f"🔑 Ключ: <code>{code}</code>\n"
+                        f"{_ordline_ok}\n"
                         f"📅 Действует до: <b>{_end2}</b>\n\n"
                         "Спасибо за покупку! 🙌",
                         parse_mode="HTML",
@@ -4606,6 +4614,19 @@ async def _fk_num_line(order_id: str) -> str:
         return ""
 
 
+async def _order_ref_line(order_id: str) -> str:
+    """Строка «🧾 Заказ #N · FreeKassa NNN» для КЛИЕНТСКИХ сообщений по заказу.
+    Номер FreeKassa (intid) добавляется, когда оплата прошла; иначе — только № заказа."""
+    try:
+        _o = await fk_get_order(order_id) or {}
+        _fk = _o.get("fk_intid") or ""
+        _num = _o.get("num")
+        _onum = f"#{_num}" if _num else order_id
+        return f"\U0001f9fe Заказ {_onum}" + (f" · FreeKassa {_fk}" if _fk else "")
+    except Exception:
+        return f"\U0001f9fe Заказ {order_id}"
+
+
 async def _disable_client_pay_msg(order_id: str):
     """После успешной оплаты гасит кнопки в сообщении оплаты у КЛИЕНТА, чтобы он не
     оплачивал повторно тот же заказ. Сообщение меняем на «Оплата получена»."""
@@ -4854,9 +4875,16 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}&code={_uparse.quote(_code)}"
                     from aiogram.types import WebAppInfo
                     import datetime as _dt_gpt
+                    _ord_g = await fk_get_order(order_id)
+                    _fkno_g = (_ord_g or {}).get("fk_intid") or ""
+                    _num_g = (_ord_g or {}).get("num")
+                    _onum_g = f"#{_num_g}" if _num_g else order_id
+                    _ordline_g = (f"🧾 Заказ {_onum_g}"
+                                  + (f" · FreeKassa {_fkno_g}" if _fkno_g else "") + "\n")
                     _base_gpt = (
                         f"🎉 <b>Оплата прошла!</b>\n\n"
-                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_ordline_g}\n"
                         f"Осталось активировать подписку — нажми кнопку ниже 👇\n\n"
                         f"🎟 Код активации: <code>{_code}</code>{delayed_note}"
                     )
@@ -4875,7 +4903,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     ])
                     _dl_gpt = _dt_gpt.datetime.now(_BOT_TZ) + _dt_gpt.timedelta(minutes=ACTIVATION_WINDOW_MIN)
                     _exp_gpt = (
-                        f"📦 <b>{service_name}</b> — оплата сохранена ✅\n\n"
+                        f"📦 <b>{service_name}</b> — оплата сохранена ✅\n"
+                        f"{_ordline_g}\n"
                         f"Если ещё не активировал — можно сделать это <b>сейчас</b>: нажми кнопку ниже.\n"
                         f"🎟 Код: <code>{_code}</code>\n\n"
                         f"Не получается — напиши Александру, активирует вручную 🙌"
@@ -6063,9 +6092,11 @@ async def _send_claude_webapp_to_user(
     )
     try:
         import datetime as _dt_cl
+        _oref_cl = await _order_ref_line(order_id)
         _base_cl = (
             f"🎉 <b>Оплата прошла!</b>\n\n"
-            f"📦 <b>Claude {plan_name}</b>\n\n"
+            f"📦 <b>Claude {plan_name}</b>\n"
+            f"{_oref_cl}\n\n"
             f"Осталось активировать подписку — нажми кнопку ниже, "
             f"введи Organization ID из настроек Claude, и подписка "
             f"активируется автоматически (обычно за 1–2 минуты, иногда до 5) 👇\n\n"
@@ -6083,7 +6114,8 @@ async def _send_claude_webapp_to_user(
         ])
         _dl_cl = _dt_cl.datetime.now(_BOT_TZ) + _dt_cl.timedelta(minutes=ACTIVATION_WINDOW_MIN)
         _exp_cl = (
-            f"📦 <b>Claude {plan_name}</b> — оплата сохранена ✅\n\n"
+            f"📦 <b>Claude {plan_name}</b> — оплата сохранена ✅\n"
+            f"{_oref_cl}\n\n"
             f"Если ещё не активировал — можно сделать это <b>сейчас</b>: нажми кнопку ниже, "
             f"введи Organization ID.\n"
             f"🎟 Код: <code>{code}</code>\n\n"
@@ -6728,11 +6760,13 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
 
     _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
     _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
+    _oref_cl2 = await _order_ref_line(order_id)
     _congrats = (
         "🎉 <b>Подписка Claude активирована!</b>\n\n"
         f"📦 Тариф: <b>{plan_name}</b>\n"
         f"🏢 Organization ID: <code>{org_id}</code>\n"
         f"🔑 Ключ: <code>{code}</code>\n"
+        f"{_oref_cl2}\n"
         f"📅 Действует до: <b>{_end_cl}</b>\n\n"
         "Подписка появится в Claude в течение 5–10 минут. Спасибо за покупку! 🙌"
     )
@@ -7740,11 +7774,12 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
 
         # Формируем красивое сообщение с кодом
         pins_text = "\n".join(f"<code>{p}</code>" for p in pins)
+        _oref_ns = await _order_ref_line(fk_order_id)
         await bot.send_message(
             user_id,
             f"🎉 <b>Вот твой код!</b>\n\n"
             f"📦 <b>{service_name}</b>\n"
-            f"🆔 Заказ: <code>{fk_order_id}</code>\n\n"
+            f"{_oref_ns}\n\n"
             f"🔑 <b>Код активации:</b>\n{pins_text}\n\n"
             f"📲 <b>Как активировать:</b>\n"
             f"1. Открой <b>App Store</b> на iPhone/iPad\n"
@@ -7837,9 +7872,11 @@ async def _send_perplexity_webapp_to_user(
     try:
         await save_perplexity_pending_activation(user_id, code, order_id, plan, plan_name)
         import datetime as _dt_cl
+        _oref_px = await _order_ref_line(order_id)
         _base_cl = (
             f"🎉 <b>Оплата прошла!</b>\n\n"
-            f"📦 <b>Perplexity {plan_name}</b>\n\n"
+            f"📦 <b>Perplexity {plan_name}</b>\n"
+            f"{_oref_px}\n\n"
             f"Осталось активировать подписку — нажми кнопку ниже, "
             f"введи Perplexity User ID (perplexity.ai/api/auth/session), и подписка "
             f"активируется автоматически за 1–2 минуты 👇\n\n"
@@ -7857,6 +7894,7 @@ async def _send_perplexity_webapp_to_user(
         _exp_cl = (
             f"⏰ <b>Время самостоятельной активации истекло</b>\n\n"
             f"📦 <b>Perplexity {plan_name}</b> — оплата сохранена.\n"
+            f"{_oref_px}\n"
             f"Напиши Александру — активирую вручную 🙌"
         )
         _m_act_cl = await bot.send_message(
@@ -7963,11 +8001,13 @@ async def _perplexity_activation_polling_job(
                 _end_cl = (_dt_end_cl.datetime.now(_BOT_TZ) + _dt_end_cl.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
                 _prof_kw_cl = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]}
                                if UI_EMOJI_IDS.get("menu_profile") else {})
+                _oref_px2 = await _order_ref_line(order_id)
                 _congrats_cl = (
                     "🎉 <b>Подписка Perplexity активирована!</b>\n\n"
                     f"📦 Тариф: <b>{plan_name}</b>\n"
                     f"🏢 Perplexity User ID: <code>{org_id}</code>\n"
                     f"🔑 Ключ: <code>{code}</code>\n"
+                    f"{_oref_px2}\n"
                     f"📅 Действует до: <b>{_end_cl}</b>\n\n"
                     "Подписка появится в Perplexity в течение 5–10 минут. Спасибо за покупку! 🙌"
                 )
