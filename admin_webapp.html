@@ -672,24 +672,31 @@ function loadBoard(){
 }
 SCREENS["Все заказы"]=function(){return ordersBoard();};
 SCREENS["Лента заказов"]=function(){
-  if(window._aoPage===undefined)window._aoPage=0;if(window._aoQ===undefined)window._aoQ='';if(window._aoDate===undefined)window._aoDate='';
+  if(window._aoPage===undefined)window._aoPage=0;if(window._aoQ===undefined)window._aoQ='';if(window._aoDate===undefined)window._aoDate='';if(window._aoFilter===undefined)window._aoFilter='all';
   setTimeout(loadAllOrders,0);
   return hdr("Лента заказов","все оплаты · поиск · по дням")+'<div class="wrap">'+
-    '<input class="f" id="ao_q" placeholder="Поиск: № FreeKassa / № заказа / order_id" value="'+(window._aoQ||'')+'" style="margin-bottom:6px"/>'+
+    '<div class="seg" id="ao_seg">'+aoSegInner()+'</div>'+
+    '<input class="f" id="ao_q" placeholder="Поиск: № FreeKassa / № заказа / order_id" value="'+(window._aoQ||'')+'" style="margin:8px 0 6px"/>'+
     '<div style="display:flex;gap:8px"><button class="btn sec" style="flex:1" onclick="window._aoQ=(document.getElementById(\'ao_q\')||{}).value||\'\';window._aoPage=0;loadAllOrders()">🔍 Найти</button><button class="btn sec" style="flex:1" onclick="aoReset()">Сброс</button></div>'+
     '<div class="mlab" style="margin-top:8px">Показать за день (необязательно)</div><input class="f" type="date" id="ao_date" value="'+(window._aoDate||'')+'" onchange="window._aoDate=this.value;window._aoPage=0;loadAllOrders()"/>'+
     '<div id="aobody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
 };
+function aoSegInner(){
+  return [['all','Все'],['done','Активированы'],['work','В процессе'],['cancelled','Отменённые']].map(function(x){
+    return '<button class="'+(x[0]===window._aoFilter?'on':'')+'" onclick="aoSetFilter(\''+x[0]+'\')">'+x[1]+'</button>';
+  }).join('');
+}
+function aoSetFilter(f){window._aoFilter=f;window._aoPage=0;var s=document.getElementById('ao_seg');if(s)s.innerHTML=aoSegInner();loadAllOrders();}
 function aoReset(){window._aoQ='';window._aoDate='';window._aoPage=0;var q=document.getElementById('ao_q');if(q)q.value='';var dt=document.getElementById('ao_date');if(dt)dt.value='';loadAllOrders();}
 function loadAllOrders(){
-  api('/api/admin/all-orders',{page:window._aoPage||0,q:window._aoQ||'',date:window._aoDate||''}).then(function(d){
+  api('/api/admin/all-orders',{page:window._aoPage||0,q:window._aoQ||'',date:window._aoDate||'',filter:window._aoFilter||'all'}).then(function(d){
     var el=document.getElementById('aobody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     window._feedOrders=window._feedOrders||{};
     var h='';
     (d.orders||[]).forEach(function(o){
       window._feedOrders[o.id]=o;
-      var col=(o.stageKey==='done')?'g':'a';
+      var col=(o.stageKey==='done')?'g':(o.stageKey==='cancelled'?'r':'a');
       var num=o.num?('#'+o.num+' · '):'';
       var svcline=(o.service||'')+(o.plan?(' · '+o.plan):'');
       h+='<div class="block" style="margin-bottom:8px;cursor:pointer" onclick="leaf(function(){return feedOrderView(\''+o.id+'\')})">'+

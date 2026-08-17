@@ -2420,8 +2420,23 @@ async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
         page = int(body.get("page") or 0)
         date_s = str(body.get("date") or "").strip()   # 'YYYY-MM-DD' — конкретный день
         q = str(body.get("q") or "").strip()           # поиск по FreeKassa/№/order_id
+        flt = str(body.get("filter") or "all")         # all | done | work | cancelled
         PAGE = 30
-        where = ["f.status='paid'", "f.paid_at IS NOT NULL"]
+        _status = "cancelled" if flt == "cancelled" else "paid"
+        # «Активирован» вычисляем в SQL, чтобы работали фильтр + пагинация.
+        _act_sql = (
+            "((f.pack NOT LIKE 'shop:%' AND f.pack NOT LIKE 'nsg:%') "
+            "OR EXISTS(SELECT 1 FROM gpt_codes g WHERE g.order_id=f.order_id AND g.used_at IS NOT NULL) "
+            "OR EXISTS(SELECT 1 FROM claude_codes c WHERE c.order_id=f.order_id AND c.used_at IS NOT NULL) "
+            "OR EXISTS(SELECT 1 FROM perplexity_codes p WHERE p.order_id=f.order_id AND p.used_at IS NOT NULL) "
+            "OR EXISTS(SELECT 1 FROM nsgifts_orders n WHERE n.fk_order_id=f.order_id AND n.status='fulfilled') "
+            "OR EXISTS(SELECT 1 FROM linkpay_orders l WHERE l.fk_order_id=f.order_id AND l.status='done') "
+            "OR EXISTS(SELECT 1 FROM settings st WHERE st.key=('order_done:'||f.order_id) AND st.value='1'))")
+        where = [f"f.status='{_status}'", "f.paid_at IS NOT NULL"]
+        if flt == "done":
+            where.append(_act_sql)
+        elif flt == "work":
+            where.append("NOT " + _act_sql)
         args = []
         if date_s:
             args.append(date_s); _di = len(args)
@@ -2525,6 +2540,8 @@ async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
             # «Активировали вручную» (order_done) — для ЛЮБОГО сервиса, если ещё не done
             if (not activated) and (oid in done_set):
                 activated, stage, stageKey = True, "Активировано", "done"
+            if flt == "cancelled":
+                activated, stage, stageKey = False, "Отменён", "cancelled"
             _pa = r["paid_at"]
             out.append({
                 "id": oid, "num": r["num"],
