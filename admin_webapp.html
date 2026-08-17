@@ -727,9 +727,7 @@ function feedOrderView(id){
   if(o.isAuto && !o.activated){
     h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
   }
-  if(o.username){
-    h+='<button class="btn sec" onclick="tgLink(\''+o.username+'\')" style="margin-top:8px">✍️ Написать клиенту</button>';
-  }
+  h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+o.username+'\')'):('tgLinkId(\''+(o.userId||'')+'\')'))+'">✍️ Написать клиенту</button>';
   h+='<button class="btn sec" onclick="copyText(\''+(o.userId||'')+'\')" style="margin-top:8px">🆔 Копировать ID клиента ('+(o.userId||'')+')</button>';
   h+='<button class="btn danger" onclick="feedAct(\''+id+'\',\'cancel\')" style="margin-top:8px">🗑 Отменить заказ</button>';
   return h+'</div>';
@@ -747,6 +745,13 @@ function tgLink(username){
   var url='https://t.me/'+username;
   try{ if(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.openTelegramLink){Telegram.WebApp.openTelegramLink(url);return;} }catch(e){}
   try{window.open(url,'_blank');}catch(e){}
+}
+function tgLinkId(uid){
+  if(!uid){toast('Нет ID клиента');return;}
+  var url='tg://user?id='+uid;
+  try{ if(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.openTelegramLink){Telegram.WebApp.openTelegramLink(url);} }catch(e){}
+  try{window.location.href=url;}catch(e){}
+  setTimeout(function(){copyText(''+uid);toast('Если чат не открылся — ID скопирован, найди по нему');},300);
 }
 SCREENS["Заказы"]=function(){
   return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
