@@ -837,6 +837,9 @@ document.addEventListener('DOMContentLoaded', function () {
   };
 
   try { tg.ready(); } catch(e) {}
+  // Клиент может СВЕРНУТЬ приложение (свайп вниз — сходить за Org ID и вернуться),
+  // а при попытке ЗАКРЫТЬ Telegram спросит подтверждение (не потерять прогресс).
+  try { if (tg.enableClosingConfirmation) tg.enableClosingConfirmation(); } catch(e) {}
 
   // expand() с задержкой + повторная активация полей после
   setTimeout(function() {
