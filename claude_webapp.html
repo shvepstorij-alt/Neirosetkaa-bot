@@ -840,6 +840,27 @@ document.addEventListener('DOMContentLoaded', function () {
   // Клиент может СВЕРНУТЬ приложение (свайп вниз — сходить за Org ID и вернуться),
   // а при попытке ЗАКРЫТЬ Telegram спросит подтверждение (не потерять прогресс).
   try { if (tg.enableClosingConfirmation) tg.enableClosingConfirmation(); } catch(e) {}
+  function _tgHint(msg){
+    var old=document.getElementById('tg-hint'); if(old)old.remove();
+    var d=document.createElement('div'); d.id='tg-hint'; d.textContent=msg;
+    d.style.cssText='position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:100000;background:rgba(20,20,30,.92);color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;max-width:90%;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.35);';
+    document.body.appendChild(d); setTimeout(function(){try{d.remove();}catch(e){}},3500);
+  }
+  function _tgToolbar(tg){
+    if(document.getElementById('tg-mini-toolbar'))return;
+    var bar=document.createElement('div'); bar.id='tg-mini-toolbar';
+    bar.style.cssText='position:sticky;top:0;z-index:99999;display:flex;gap:8px;justify-content:flex-end;padding:6px 8px;background:transparent;pointer-events:none;';
+    function mk(txt){var b=document.createElement('button');b.type='button';b.textContent=txt;b.style.cssText='pointer-events:auto;border:none;border-radius:16px;padding:7px 12px;font-size:12px;font-weight:600;color:#fff;background:rgba(120,120,140,.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);box-shadow:0 1px 4px rgba(0,0,0,.25);cursor:pointer;';return b;}
+    var bKb=mk('⌨️ Скрыть'); bKb.onclick=function(){try{var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){}};
+    var bMin=mk('🔽 Свернуть'); bMin.onclick=function(){
+      try{var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){}
+      var did=false; try{ if(tg&&typeof tg.minimize==='function'){tg.minimize();did=true;} }catch(e){}
+      if(!did){ try{ if(tg&&tg.HapticFeedback&&tg.HapticFeedback.impactOccurred)tg.HapticFeedback.impactOccurred('light'); }catch(e){} _tgHint('Свайпни вниз ⬇️, чтобы свернуть — данные сохранятся'); }
+    };
+    bar.appendChild(bKb); bar.appendChild(bMin);
+    document.body.insertBefore(bar,document.body.firstChild);
+  }
+  try { _tgToolbar(tg); } catch(e) {}
 
   // expand() с задержкой + повторная активация полей после
   setTimeout(function() {
