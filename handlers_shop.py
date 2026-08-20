@@ -620,13 +620,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     else:
         shop_buttons.append([InlineKeyboardButton(text=f"Оплатить {final_shop_price}₽", url=pay_url, **pay_btn_kwargs())])
 
-    # Кнопка оплаты картой (Card RUB — метод API, ссылку создаём по клику)
-    _card_row = []
-    if final_shop_price > 0:
-        _card_row = [[InlineKeyboardButton(
-            text=f"💳 Оплатить картой {final_shop_price}₽",
-            callback_data=f"shop_card:{order_id}")]]
-    kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + _card_row + [
+    kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
             text="✅ Я оплатил - написать Александру",
             callback_data=f"shop_paid:{order_id}")],
@@ -716,52 +710,6 @@ async def shop_paid_forward(cb: CallbackQuery):
                 [InlineKeyboardButton(text="✍️ Отправить Александру", url=_url)]]))
     except Exception:
         pass
-    await cb.answer()
-
-
-@dp.callback_query(F.data.startswith("shop_card:"))
-async def shop_card_link(cb: CallbackQuery):
-    """Оплата картой (Card RUB, id=36). Метод API — ссылку создаём по клику через
-    FreeKassa API и отдаём клиенту прямой линк на оплату картой."""
-    order_id = cb.data.split(":", 1)[1]
-    o = await fk_get_order(order_id) or {}
-    amount = o.get("amount_rub")
-    uid = o.get("user_id") or cb.from_user.id
-    if not amount or float(amount) <= 0:
-        await cb.answer("Заказ не найден или уже оплачен", show_alert=True)
-        return
-    _wait = None
-    try:
-        _wait = await cb.message.answer("⏳ Создаю ссылку на оплату картой...")
-    except Exception:
-        pass
-    try:
-        card_url = await fk_create_order(float(amount), order_id, int(uid), payment_id=36)
-    except Exception as e:
-        logging.error(f"shop_card_link order={order_id}: {e}")
-        try:
-            if _wait:
-                await _wait.edit_text("⚠️ Не удалось создать оплату картой. "
-                                      "Попробуй ещё раз или оплати через СБП.")
-        except Exception:
-            pass
-        await cb.answer()
-        return
-    _txt = (f"💳 <b>Оплата картой — {int(float(amount))}₽</b>\n\n"
-            f"Нажми кнопку ниже — откроется защищённая страница оплаты картой (Visa/MasterCard/МИР). "
-            f"После оплаты подписка активируется автоматически 👇")
-    _kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Перейти к оплате картой", url=card_url)]])
-    try:
-        if _wait:
-            await _wait.edit_text(_txt, reply_markup=_kb, parse_mode="HTML")
-        else:
-            await cb.message.answer(_txt, reply_markup=_kb, parse_mode="HTML")
-    except Exception:
-        try:
-            await cb.message.answer(_txt, reply_markup=_kb, parse_mode="HTML")
-        except Exception:
-            pass
     await cb.answer()
 
 
@@ -1458,7 +1406,6 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
                 callback_data=f"pay_coins:{key}:{rest}"
             )])
     rows.append([InlineKeyboardButton(text=f"Оплатить через СБП - {final_price}₽", callback_data=f"payfk:{key}:sbp", **pay_btn_kwargs())])
-    rows.append([InlineKeyboardButton(text=f"💳 Оплатить картой - {final_price}₽", callback_data=f"payfk:{key}:card")])
     if not promo_code:
         rows.append([InlineKeyboardButton(text="🎟 Применить промокод", callback_data=f"promo_apply:{key}")])
     else:
@@ -1550,7 +1497,6 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     key = parts[1]
     method = parts[2] if len(parts) > 2 else "sbp"
-    _mlabel = "Картой 💳" if method == "card" else "СБП"
     p = CREDIT_PACKS.get(key)
     if not p:
         await cb.answer("Пакет не найден, открой меню заново", show_alert=True)
