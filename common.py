@@ -318,32 +318,38 @@ async def send_reminder(user_id: int, kind: str, text: str) -> bool:
 
 
 async def fk_create_order(amount: float, order_id: str, user_id: int,
-                         payment_id: int = 36, currency: str = "RUB") -> str:
+                         payment_id: int = 36, currency: str = "RUB",
+                         tel: str = "", email: str = "") -> str:
     """Создаёт заказ через FreeKassa API и возвращает ссылку на оплату.
-    payment_id: 36 = Card RUB API, 44 = СБП API
+    payment_id (параметр i): 36 = Card RUB API, 42 = СБП, 44 = СБП API.
+
+    ВАЖНО: наш номер заказа передаём в поле `paymentId` (как в офиц. доке
+    /orders/create) — по нему приходит вебхук (MERCHANT_ORDER_ID) и мы находим заказ.
+    Некоторым методам (карта) нужен телефон плательщика — поле `tel`.
     """
     import time as _time
     nonce = str(int(_time.time() * 1000))
     amount_str = f"{float(amount):.2f}"  # "2490.00"
 
-    # Только нужные поля - без дублей
     params = {
         "shopId": int(FK_SHOP_ID),
         "nonce": nonce,
         "i": payment_id,
-        "email": f"user{user_id}@tgbot.local",
-        "ip": "127.0.0.1",
+        "email": email or f"user{user_id}@tgbot.local",
+        "ip": "77.88.55.66",  # публичный IP-заглушка (FK отклоняет 127.0.0.1)
         "amount": amount_str,
         "currency": currency,
-        "orderId": order_id,
+        "paymentId": order_id,
     }
+    if tel:
+        params["tel"] = tel
     # HMAC-SHA256: сортируем по ключам, значения через |
     sorted_vals = [str(v) for k, v in sorted(params.items())]
     sign_str = "|".join(sorted_vals)
     signature = hmac.new(FK_API_KEY.encode(), sign_str.encode(), hashlib.sha256).hexdigest()
     params["signature"] = signature
 
-    logging.info(f"FK API sign_str: {sign_str}")
+    logging.info(f"FK API create order (i={payment_id}) sign_str: {sign_str}")
 
     url = "https://api.fk.life/v1/orders/create"
     headers = {"Content-Type": "application/json"}
@@ -353,7 +359,9 @@ async def fk_create_order(amount: float, order_id: str, user_id: int,
             logging.info(f"FK API create order response: {data}")
             if data.get("type") == "success":
                 return data.get("location", "")
-            raise Exception(f"FK API error: {data.get('message', data)}")
+            # Пробрасываем ПОЛНЫЙ текст ошибки от FK — чтобы видеть, чего не хватает
+            _err = data.get("message") or data.get("error") or data
+            raise Exception(f"FK API error: {_err}")
 
 
 async def safe_send_media(
