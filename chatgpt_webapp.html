@@ -497,6 +497,50 @@
     }
     .error-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
     .error-sub   { font-size: 13px; color: var(--text2); line-height: 1.65; text-align: center; max-width: 260px; margin-bottom: 24px; }
+
+    /* ─── Шторка «Как активировать» ─── */
+    .instr-ov{position:fixed;inset:0;z-index:100001;background:rgba(0,0,0,.45);opacity:0;pointer-events:none;transition:opacity .25s;}
+    .instr-ov.on{opacity:1;pointer-events:auto;}
+    .instr-sheet{position:fixed;left:0;right:0;bottom:0;top:38px;z-index:100002;background:var(--bg2);
+      border-radius:20px 20px 0 0;display:flex;flex-direction:column;transform:translateY(103%);
+      transition:transform .32s cubic-bezier(.2,.8,.2,1);box-shadow:0 -12px 44px rgba(0,0,0,.5);}
+    .instr-sheet.on{transform:translateY(0);}
+    .instr-grip{width:40px;height:4px;border-radius:3px;background:var(--text3);margin:9px auto 4px;}
+    .instr-head{display:flex;align-items:center;justify-content:space-between;padding:2px 16px 10px;}
+    .instr-head .t{font-size:16px;font-weight:800;color:var(--text);}
+    .instr-x{background:var(--bg3);border:none;color:var(--text);width:30px;height:30px;border-radius:50%;font-size:16px;cursor:pointer;line-height:1;}
+    .instr-steps{flex:1;overflow-y:auto;padding:4px 16px 96px;-webkit-overflow-scrolling:touch;}
+    .instr-step{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:13px;margin-bottom:12px;}
+    .instr-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+    .instr-num{width:26px;height:26px;flex:none;border-radius:8px;background:#3576f5;color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;}
+    .instr-title{font-size:14px;font-weight:700;color:var(--text);}
+    .instr-desc{color:var(--text2);font-size:12.5px;line-height:1.5;margin:0 0 12px;}
+    .instr-shot{border-radius:10px;overflow:hidden;border:1px solid var(--border);background:#000;}
+    .instr-foot{position:absolute;left:0;right:0;bottom:0;padding:12px 16px 16px;
+      background:linear-gradient(180deg,transparent,var(--bg2) 34%);}
+    .instr-done{background:var(--green);color:#fff;text-align:center;font-weight:700;padding:13px;border-radius:12px;cursor:pointer;}
+    /* схематичные скриншоты */
+    .ms-icons{display:flex;gap:22px;justify-content:center;padding:22px;background:linear-gradient(135deg,#6d5b4a,#4c4238);}
+    .ms-app{width:74px;text-align:center;}
+    .ms-app .ico{width:64px;height:64px;border-radius:16px;margin:0 auto 6px;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 10px rgba(0,0,0,.3);}
+    .ms-app .nm{font-size:11px;color:#fff;}
+    .ms-g{font-weight:700;font-size:34px;color:#4285F4;}
+    .ms-safari{width:60px;height:60px;border-radius:50%;background:radial-gradient(circle at 50% 50%,#3ea0ff,#1573e6);position:relative;}
+    .ms-safari:after{content:"";position:absolute;top:8px;left:50%;width:6px;height:44px;background:linear-gradient(180deg,#ff3b30 50%,#fff 50%);transform:translateX(-50%) rotate(35deg);clip-path:polygon(50% 0,60% 50%,50% 100%,40% 50%);}
+    .ms-login{background:#0c0c0c;padding:18px 16px 20px;}
+    .ms-login .tt{font-size:18px;font-weight:700;text-align:center;line-height:1.2;margin:6px 0 8px;color:#fff;}
+    .ms-login .ss{color:#b9b9b9;font-size:11px;text-align:center;line-height:1.4;margin:0 0 14px;}
+    .ms-login .ob{border:1px solid #444;border-radius:22px;padding:11px;text-align:center;font-size:13px;color:#fff;margin-bottom:9px;}
+    .ms-login .em{border:1px solid #555;border-radius:22px;padding:11px 14px;color:#8a8a8a;font-size:12px;margin:12px 0 8px;}
+    .ms-login .go{background:#fff;color:#000;border-radius:22px;padding:11px;text-align:center;font-weight:700;font-size:13px;}
+    .ms-url{background:#202329;padding:16px;display:flex;align-items:center;gap:10px;}
+    .ms-url .u{flex:1;color:#e8e8e8;font-size:13px;word-break:break-all;font-family:monospace;}
+    .ms-url .go2{width:34px;height:34px;flex:none;border-radius:50%;background:#3576f5;color:#fff;display:flex;align-items:center;justify-content:center;}
+    .ms-json{background:#0c0c0c;padding:14px;font-family:monospace;font-size:10.5px;color:#7fd88f;line-height:1.5;position:relative;}
+    .ms-json .cpy{position:absolute;top:8px;right:8px;background:#222;border:1px solid #444;color:#fff;font-size:10px;padding:4px 8px;border-radius:6px;font-family:inherit;}
+    .ms-hl{color:#f4d79a;}
+    #tg-help-pill._pulse{animation:helpPulse 2.2s ease-in-out infinite;}
+    @keyframes helpPulse{0%{box-shadow:0 0 0 0 rgba(24,163,126,.55);}70%{box-shadow:0 0 0 11px rgba(24,163,126,0);}100%{box-shadow:0 0 0 0 rgba(24,163,126,0);}}
   </style>
 </head>
 <body>
@@ -774,6 +818,9 @@ function showScreen(id) {
   var el = document.getElementById(id);
   if (el) el.classList.add('active');
   window.scrollTo(0, 0);
+  // Кнопка «Как активировать» — только на экране ввода токена
+  try { if (window._setHelpVisible) window._setHelpVisible(id === 's2'); } catch(e) {}
+  try { if (window.closeInstr) window.closeInstr(); } catch(e) {}
 }
 
 // ─── Тема ────────────────────────────────────────────────────────
@@ -1034,17 +1081,73 @@ function _initChatgptWebApp() {
   function _tgToolbar(tg){
     if(document.getElementById('tg-mini-toolbar'))return;
     var bar=document.createElement('div'); bar.id='tg-mini-toolbar';
-    bar.style.cssText='position:sticky;top:0;z-index:99999;display:flex;gap:8px;justify-content:flex-end;padding:6px 8px;background:transparent;pointer-events:none;';
+    bar.style.cssText='position:sticky;top:0;z-index:99999;display:flex;gap:8px;justify-content:space-between;align-items:flex-start;padding:6px 8px;background:transparent;pointer-events:none;';
     function mk(txt){var b=document.createElement('button');b.type='button';b.textContent=txt;b.style.cssText='pointer-events:auto;border:none;border-radius:16px;padding:7px 12px;font-size:12px;font-weight:600;color:#fff;background:rgba(120,120,140,.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);box-shadow:0 1px 4px rgba(0,0,0,.25);cursor:pointer;';return b;}
+    // Слева — «Как активировать» (видна только на шаге с токеном)
+    var bHelp=mk('❓ Как активировать'); bHelp.id='tg-help-pill';
+    bHelp.style.background='linear-gradient(90deg,#18a37e,#0f8a68)';
+    bHelp.style.boxShadow='0 2px 12px rgba(24,163,126,.45)';
+    bHelp.style.display='none';
+    bHelp.onclick=function(){try{openInstr();}catch(e){}};
+    var left=document.createElement('div'); left.style.cssText='pointer-events:none;'; left.appendChild(bHelp);
+    // Справа — «Скрыть» + «Свернуть»
+    var right=document.createElement('div'); right.style.cssText='display:flex;gap:8px;pointer-events:none;';
     var bKb=mk('⌨️ Скрыть'); bKb.onclick=function(){try{var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){}};
     var bMin=mk('🔽 Свернуть'); bMin.onclick=function(){
       try{var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){}
       var did=false; try{ if(tg&&typeof tg.minimize==='function'){tg.minimize();did=true;} }catch(e){}
       if(!did){ try{ if(tg&&tg.HapticFeedback&&tg.HapticFeedback.impactOccurred)tg.HapticFeedback.impactOccurred('light'); }catch(e){} _tgHint('Свайпни вниз ⬇️, чтобы свернуть — данные сохранятся'); }
     };
-    bar.appendChild(bKb); bar.appendChild(bMin);
+    right.appendChild(bKb); right.appendChild(bMin);
+    bar.appendChild(left); bar.appendChild(right);
     document.body.insertBefore(bar,document.body.firstChild);
+    _buildInstr();
   }
+  function _setHelpVisible(show){
+    var p=document.getElementById('tg-help-pill'); if(!p)return;
+    p.style.display = show ? 'inline-flex' : 'none';
+    if(show){ p.classList.add('_pulse'); setTimeout(function(){try{p.classList.remove('_pulse');}catch(e){}},6000); }
+  }
+  // ─── Шторка с пошаговой инструкцией ───
+  var _INSTR_SHOTS={
+    icons:'<div class="ms-icons"><div class="ms-app"><div class="ico"><span class="ms-g">G</span></div><div class="nm">Google</div></div><div class="ms-app"><div class="ico" style="background:transparent;box-shadow:none"><div class="ms-safari"></div></div><div class="nm">Safari</div></div></div>',
+    login:'<div class="ms-login"><div class="tt">Войти или зарегистрироваться</div><div class="ss">Вы будете получать более продуманные ответы и сможете загружать файлы.</div><div class="ob">G&nbsp;&nbsp;Продолжить с Google</div><div class="ob"> &nbsp;Продолжить с Apple</div><div class="ob">📞 Продолжить с номером телефона</div><div class="em">Адрес электронной почты</div><div class="go">Продолжить</div></div>',
+    url:'<div class="ms-url"><span style="color:#8a8a8a">‹</span><div class="u">https://chatgpt.com/api/auth/<span class="ms-hl">session</span></div><div class="go2">→</div></div>',
+    json:'<div class="ms-json"><span class="cpy">Копировать всё</span>{"WARNING":"...",<br>"user":{"email":"...","name":"..."},<br><span class="ms-hl">"accessToken":"eyJhbGciOi..."</span>,<br>"expires":"2026-..","..."}}}</div>'
+  };
+  var _INSTR_STEPS=[
+    {t:'Открой браузер',d:'Запусти Google Chrome или Safari. Не приложение ChatGPT, а именно браузер.',s:'icons'},
+    {t:'Зайди на chatgpt.com и авторизуйся',d:'Набери chatgpt.com в адресной строке и войди в свой аккаунт (Google, Apple, телефон или email).',s:'login'},
+    {t:'Открой ссылку с токеном',d:'Скопируй ссылку chatgpt.com/api/auth/session и перейди по ней в ТОМ ЖЕ браузере.',s:'url'},
+    {t:'Скопируй весь текст и вставь в бота',d:'Выдели и скопируй ВЕСЬ текст со страницы (от {"WARNING до false}}}), вернись в бота и вставь в поле.',s:'json'}
+  ];
+  function _buildInstr(){
+    if(document.getElementById('instr-ov'))return;
+    var ov=document.createElement('div'); ov.className='instr-ov'; ov.id='instr-ov'; ov.onclick=closeInstr;
+    var sh=document.createElement('div'); sh.className='instr-sheet'; sh.id='instr-sheet';
+    sh.onclick=function(e){e.stopPropagation();};
+    var stepsHtml=_INSTR_STEPS.map(function(st,i){
+      return '<div class="instr-step"><div class="instr-top"><div class="instr-num">'+(i+1)+'</div>'+
+        '<div class="instr-title">'+st.t+'</div></div><div class="instr-desc">'+st.d+'</div>'+
+        '<div class="instr-shot">'+_INSTR_SHOTS[st.s]+'</div></div>';
+    }).join('');
+    sh.innerHTML='<div class="instr-grip"></div>'+
+      '<div class="instr-head"><div class="t">🧭 Как активировать — пошагово</div>'+
+      '<button class="instr-x" id="instr-x">×</button></div>'+
+      '<div class="instr-steps">'+stepsHtml+'</div>'+
+      '<div class="instr-foot"><div class="instr-done" id="instr-done">Понятно, вернуться к активации</div></div>';
+    document.body.appendChild(ov); document.body.appendChild(sh);
+    var x=sh.querySelector('#instr-x'); if(x)x.addEventListener('click',closeInstr);
+    var d=sh.querySelector('#instr-done'); if(d)d.addEventListener('click',closeInstr);
+  }
+  function openInstr(){var o=document.getElementById('instr-ov'),s=document.getElementById('instr-sheet');
+    if(o)o.classList.add('on'); if(s){s.classList.add('on');var st=s.querySelector('.instr-steps');if(st)st.scrollTop=0;}}
+  function closeInstr(){var o=document.getElementById('instr-ov'),s=document.getElementById('instr-sheet');
+    if(o)o.classList.remove('on'); if(s)s.classList.remove('on');}
+  // Доступ из глобальной showScreen
+  window._setHelpVisible = _setHelpVisible;
+  window.openInstr = openInstr;
+  window.closeInstr = closeInstr;
 
   try { tg.ready(); } catch(e) {}
   // Подтверждение закрытия: клиент может СВЕРНУТЬ приложение (свайп вниз — сходить
