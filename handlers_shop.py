@@ -877,11 +877,17 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
             "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (order_id) DO NOTHING",
             order_id, uid, 0, rest, f"shop:{key}:{plan_idx}", coins_used
         )
+        try:
+            _onum = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+        except Exception:
+            _onum = None
+    _onum_str = f"#{_onum}" if _onum else order_id
     pay_url = fk_pay_url(rest, order_id)
     username = cb.from_user.username or cb.from_user.full_name
     import urllib.parse
     msg_text = urllib.parse.quote(
-        f"Привет! Оплатил заказ {order_id}\n"
+        f"Привет! Оплатил заказ {_onum_str}\n"
+        f"ID: {order_id}\n"
         f"Сервис: {s['name']}\nТариф: {p['name']}\n"
         f"Монетки: {coins_used}\u20bd + СБП: {rest}\u20bd"
     )

@@ -8688,16 +8688,19 @@ async def _send_manual_order(user_id, shop_key, service_name, plan_name,
                                    kind="manual", status="awaiting_payment")
         # Номер платежа в FreeKassa — чтобы клиент и админ сверялись по ОДНОМУ номеру
         _fk_no_cl = ""
+        _num_h = None
         try:
             _dbo_cl = await fk_get_order(order_id)
             _fk_no_cl = (_dbo_cl or {}).get("fk_intid") or ""
+            _num_h = (_dbo_cl or {}).get("num")
         except Exception:
             pass
-        _num_line = (f"\U0001f9fe Номер заказа: <code>{_fk_no_cl}</code>\n\n"
-                     if _fk_no_cl else f"\U0001f194 Номер заказа: <code>{order_id}</code>\n\n")
+        _onum_h = f"#{_num_h}" if _num_h else (_fk_no_cl or order_id)
+        _num_line = (f"\U0001f9fe Номер заказа: <code>{_onum_h}</code>\n\n"
+                     if (_num_h or _fk_no_cl) else f"\U0001f194 Номер заказа: <code>{order_id}</code>\n\n")
         import urllib.parse as _uq_manual
         _msg_to_alex = _uq_manual.quote(
-            f"Приветствую! Оплатил заказ.\nСервис: {service_name}\n"
+            f"Приветствую! Оплатил заказ {_onum_h}\nСервис: {service_name}\n"
             f"Номер заказа: {_fk_no_cl or order_id}")
         await bot.send_message(
             user_id,
