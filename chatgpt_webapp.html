@@ -560,6 +560,8 @@
       box-shadow:0 2px 6px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.06);transition:transform .15s ease}
     .rec-card .ic svg{width:27px;height:27px;display:block;fill:#fff}
     .rec-card .ic svg *{fill:#fff}
+    .rec-card .ic img.pnglogo{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
+    .card-ic img.pnglogo{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
     .rec-card .ic img{width:28px;height:28px;display:block;object-fit:contain}
     .rec-card .ic .mono{font:800 20px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#fff}
     .card-ic svg{width:46px;height:46px;display:block;fill:#fff}
@@ -924,8 +926,13 @@ function _hue(key){ var h=0,i; for(i=0;i<(key||'x').length;i++){h=(h*31+key.char
 function _brandBg(key){ return BG[key] || _hue(key); }
 function _esc1(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
 function _mono(name){ return '<span class="mono">'+((String(name||'?').trim().charAt(0)||'?').toUpperCase())+'</span>'; }
-// Логотип приходит от сервера как inline-SVG (window.__RECS__/__CATALOG__ .logo); иначе — монограмма.
-function _iconHtml(logo, name){ return (logo && String(logo).indexOf('<svg')===0) ? logo : _mono(name); }
+// Логотип приходит от сервера (.logo): inline-SVG или <img> (PNG data-URI); иначе — монограмма.
+function _iconHtml(logo, name){
+  var s = String(logo || '');
+  return (s.indexOf('<svg')===0 || s.indexOf('<img')===0) ? logo : _mono(name);
+}
+// Фон плитки: у цветных PNG-логотипов — белый (лого сам заполняет плитку), иначе фирменный.
+function _tileBg2(key, logo){ return (logo && String(logo).indexOf('pnglogo')>=0) ? '#ffffff' : _brandBg(key); }
 function _catList(){
   var c = window.__CATALOG__ || {};
   return Object.keys(c).map(function(k){
@@ -946,7 +953,7 @@ function renderRecs() {
   track.innerHTML = items.map(function(x){
     var price = x.from ? ('от ' + x.from + '₽') : '';
     return '<div class="rec-card">'
-      + '<div class="ic" style="background:' + _brandBg(x.key) + '">' + _iconHtml(x.logo, x.name) + '</div>'
+      + '<div class="ic" style="background:' + _tileBg2(x.key, x.logo) + '">' + _iconHtml(x.logo, x.name) + '</div>'
       + '<div class="nm">' + x.name + '</div>'
       + '<div class="pr">' + price + '</div>'
       + '<div class="go" onclick="openRec(\'' + _esc1(x.key) + '\')">Оформить</div>'
@@ -982,7 +989,7 @@ function openCard(key){
   }).join('');
   body.innerHTML =
     '<div class="card-head">'
-    + '<div class="card-ic" style="background:'+_brandBg(key)+'">'+_iconHtml(c.logo, c.name)+'</div>'
+    + '<div class="card-ic" style="background:'+_tileBg2(key, c.logo)+'">'+_iconHtml(c.logo, c.name)+'</div>'
     + '<div class="card-name">'+c.name+'</div></div>'
     + (c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
     + '<div class="card-plans-h">Тарифы</div>'

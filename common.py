@@ -1882,6 +1882,10 @@ try:
     from logos_data import LOGOS as _LOGOS_BUNDLE
 except Exception:
     _LOGOS_BUNDLE = {}
+try:
+    from logos_data import LOGO_IMG as _LOGOS_IMG
+except Exception:
+    _LOGOS_IMG = {}
 
 _LOGO_CACHE = {}
 async def _get_logo_svg(slug: str) -> str:
@@ -1924,7 +1928,10 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
         # Вшиваем официальные логотипы (inline SVG) в каталог и в ленту
         _logo_by_key = {}
         for _k in _cat.keys():
-            _logo_by_key[_k] = await _get_logo_svg(_LOGO_SLUG.get(_k, ""))
+            if _k in _LOGOS_IMG:
+                _logo_by_key[_k] = '<img class="pnglogo" src="' + _LOGOS_IMG[_k] + '">'
+            else:
+                _logo_by_key[_k] = await _get_logo_svg(_LOGO_SLUG.get(_k, ""))
             _cat[_k]["logo"] = _logo_by_key[_k]
         for _it in _recs:
             _it["logo"] = _logo_by_key.get(_it.get("key"), "")
