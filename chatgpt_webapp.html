@@ -561,6 +561,8 @@
     .rec-card .ic svg{width:27px;height:27px;display:block}
     .rec-card .ic img{width:28px;height:28px;display:block;object-fit:contain}
     .rec-card .ic .mono{font:800 20px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#fff}
+    .rec-card .ic img.domlogo{width:36px;height:36px}
+    .card-ic img.domlogo{width:58px;height:58px}
     .rec-card:active .ic{transform:scale(.93)}
     /* ─── Карточка сервиса (in-app) ─── */
     #svc-card .result-screen{justify-content:flex-start;padding-top:22px}
@@ -578,6 +580,12 @@
     .plan-p span{font-size:11px;color:var(--text3);font-weight:600}
     .plan-d{font-size:12px;color:var(--text2);line-height:1.5;margin:6px 0 10px}
     .plan-buy{background:var(--green);color:#fff;text-align:center;font-weight:700;font-size:13px;padding:10px;border-radius:10px;cursor:pointer}
+    .pay-methods{display:flex;gap:8px}
+    .pay-methods .pm{flex:1;text-align:center;font-weight:700;font-size:13px;padding:11px;border-radius:10px;cursor:pointer;color:#fff}
+    .pay-methods .pm.sbp{background:var(--green)}
+    .pay-methods .pm.card{background:#3576f5}
+    .pm-wait{text-align:center;font-size:12.5px;color:var(--text2);padding:10px}
+    .pm-err{text-align:center;font-size:12.5px;color:#e5484d;padding:6px}
     .rec-card .nm{font-size:13px;font-weight:700;line-height:1.15;color:var(--text)}
     .rec-card .pr{font-size:11.5px;color:var(--text2)}
     .rec-card .go{margin-top:3px;background:var(--green);color:#fff;text-align:center;font-size:11.5px;font-weight:700;
@@ -908,12 +916,28 @@ var BG = { chatgpt:'#0d8f6f', claude:'#c15f3c', grok:'#000000', perplexity:'#1f7
 function _hue(key){ var h=0,i; for(i=0;i<(key||'x').length;i++){h=(h*31+key.charCodeAt(i))%360;}
   return 'linear-gradient(135deg,hsl('+h+',52%,42%),hsl('+((h+28)%360)+',54%,30%))'; }
 function _brandBg(key){ return BG[key] || _hue(key); }
+// Домены для официальных лого (Clearbit) — когда бренда нет в Simple Icons.
+var DOMAIN = { chatgpt:'openai.com', claude:'claude.ai', grok:'x.ai', perplexity:'perplexity.ai',
+  zoom:'zoom.us', midjourney:'midjourney.com', canva:'canva.com', suno:'suno.com', spotify:'spotify.com',
+  elevenlabs:'elevenlabs.io', runway:'runwayml.com', gamma:'gamma.app', capcut:'capcut.com',
+  cursor:'cursor.com', openrouter:'openrouter.ai', heygen:'heygen.com', telegram:'telegram.org',
+  youtube:'youtube.com', lovable:'lovable.dev', appstore:'apple.com', gemini:'gemini.google.com',
+  kling:'klingai.com', manus:'manus.im' };
+function _tileBg(key){ if (SLUG[key]) return _brandBg(key); if (DOMAIN[key]) return '#ffffff'; return _brandBg(key); }
 function _esc1(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
 function _mono(name){ return '<span class="mono">'+((String(name||'?').trim().charAt(0)||'?').toUpperCase())+'</span>'; }
-function logoFail(img, name){ try { img.parentNode.innerHTML = _mono(name); } catch(e) {} }
+function logoDead(img, name){ try { var p=img.parentNode; p.style.background='#2a2d34'; p.innerHTML=_mono(name); } catch(e) {} }
+function logoStage2(img, key, name){
+  var dom = DOMAIN[key];
+  if (dom){ img.onerror=function(){ logoDead(img, name); }; try{ img.parentNode.style.background='#fff'; }catch(e){}
+    img.className='domlogo'; img.src='https://logo.clearbit.com/'+dom; }
+  else { logoDead(img, name); }
+}
 function _iconHtml(key, name){
   var slug = SLUG[key];
-  if (slug) return '<img src="https://cdn.simpleicons.org/'+slug+'/white" alt="" onerror="logoFail(this,\''+_esc1(name)+'\')">';
+  if (slug) return '<img src="https://cdn.simpleicons.org/'+slug+'/white" alt="" onerror="logoStage2(this,\''+_esc1(key)+'\',\''+_esc1(name)+'\')">';
+  var dom = DOMAIN[key];
+  if (dom) return '<img class="domlogo" src="https://logo.clearbit.com/'+dom+'" alt="" onerror="logoDead(this,\''+_esc1(name)+'\')">';
   return _mono(name);
 }
 function _catList(){
@@ -936,7 +960,7 @@ function renderRecs() {
   track.innerHTML = items.map(function(x){
     var price = x.from ? ('от ' + x.from + '₽') : '';
     return '<div class="rec-card">'
-      + '<div class="ic" style="background:' + _brandBg(x.key) + '">' + _iconHtml(x.key, x.name) + '</div>'
+      + '<div class="ic" style="background:' + _tileBg(x.key) + '">' + _iconHtml(x.key, x.name) + '</div>'
       + '<div class="nm">' + x.name + '</div>'
       + '<div class="pr">' + price + '</div>'
       + '<div class="go" onclick="openRec(\'' + _esc1(x.key) + '\')">Оформить</div>'
@@ -961,11 +985,11 @@ function openCard(key){
     return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.name+'</div>'
       + '<div class="plan-p">'+p.price+'₽<span>/мес</span></div></div>'
       + (p.desc?('<div class="plan-d">'+p.desc+'</div>'):'')
-      + '<div class="plan-buy" onclick="buyPlan(\''+_esc1(key)+'\','+p.idx+')">Оформить за '+p.price+'₽</div></div>';
+      + '<div class="plan-buy" onclick="chooseMethod(this,\''+_esc1(key)+'\','+p.idx+')">Оформить за '+p.price+'₽</div></div>';
   }).join('');
   body.innerHTML =
     '<div class="card-head">'
-    + '<div class="card-ic" style="background:'+_brandBg(key)+'">'+_iconHtml(key, c.name)+'</div>'
+    + '<div class="card-ic" style="background:'+_tileBg(key)+'">'+_iconHtml(key, c.name)+'</div>'
     + '<div class="card-name">'+c.name+'</div></div>'
     + (c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
     + '<div class="card-plans-h">Тарифы</div>'
@@ -973,10 +997,40 @@ function openCard(key){
     + '<button class="btn btn-outline" style="margin-top:14px" onclick="showScreen(\'s4\')">← Назад</button>';
   showScreen('svc-card');
 }
-function buyPlan(key, idx){
-  var url = 'https://t.me/' + BOT_USERNAME + '?start=shop_' + key;
-  try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); return; } } catch(e) {}
+// Оплата ПОЛНОСТЬЮ в мини-аппке: выбор способа → создание заказа → ссылка на оплату
+function chooseMethod(btn, key, idx){
+  if(!btn) return;
+  var wrap = document.createElement('div');
+  wrap.className = 'pay-methods';
+  wrap.innerHTML = '<div class="pm sbp" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\')">⚡ СБП</div>'
+    + '<div class="pm card" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'card\')">💳 Картой</div>';
+  btn.parentNode.replaceChild(wrap, btn);
+}
+function payVia(el, key, idx, method){
+  var row = el.parentNode;
+  row.innerHTML = '<div class="pm-wait">Создаю ссылку на оплату…</div>';
+  _api('/api/shop/pay', {key:key, planIdx:idx, method:method}).then(function(d){
+    if (d && d.ok && d.url){
+      row.innerHTML = '<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>';
+      _openPay(encodeURIComponent(d.url));
+    } else {
+      var msg = (d && d.error==='card_failed') ? 'Картой не удалось — попробуй СБП' : 'Не получилось. Попробуй ещё раз';
+      row.innerHTML = '<div class="pm-err">'+msg+'</div>'
+        + '<div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>';
+    }
+  });
+}
+function _openPay(enc){
+  var url = decodeURIComponent(enc);
+  try { if (tg && tg.openLink){ tg.openLink(url); return; } } catch(e) {}
   try { window.open(url, '_blank'); } catch(e) {}
+}
+function _api(path, body){
+  body = body || {};
+  try { body.initData = (tg && tg.initData) ? tg.initData : ''; } catch(e) { body.initData = ''; }
+  return fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(function(r){ return r.json().catch(function(){ return {ok:false}; }); })
+    .catch(function(){ return {ok:false}; });
 }
 
 // ─── Тема ────────────────────────────────────────────────────────

@@ -1836,8 +1836,22 @@ async def _build_recs_payload(exclude_key: str = "") -> list:
     return _out
 
 
+def _strip_usd_desc(txt: str) -> str:
+    """Убирает из описания цены в долларах (в мини-аппке показываем только ₽)."""
+    if not txt:
+        return txt or ""
+    import re as _re
+    t = txt
+    t = _re.sub(r'\s*[—–\-]?\s*\d{1,5}[.,]?\d*\s*\$\s*/?\s*мес', '', t)   # 20$/мес, — 100$ мес
+    t = _re.sub(r'\s*[—–\-]?\s*\$\s*\d{1,5}[.,]?\d*\s*/?\s*мес', '', t)   # $20/мес
+    t = _re.sub(r'\s*[—–\-]?\s*\$\s*\d{1,5}[.,]?\d*', '', t)             # $20
+    t = _re.sub(r'\s*[—–\-]?\s*\d{1,5}[.,]?\d*\s*\$', '', t)             # 20$
+    t = _re.sub(r'\s{2,}', ' ', t)
+    return t.strip(' —–-·,')
+
+
 def _build_catalog_payload() -> dict:
-    """Полный каталог для карточек сервисов в мини-аппке: описание + тарифы."""
+    """Полный каталог для карточек сервисов в мини-аппке: описание + тарифы (без цен в $)."""
     _out = {}
     for k, s in SHOP_CATALOG.items():
         plans = s.get("plans") or []
@@ -1849,8 +1863,9 @@ def _build_catalog_payload() -> dict:
                 _pr = int(p.get("price", 0))
             except Exception:
                 _pr = 0
-            _plans.append({"idx": i, "name": p.get("name", ""), "price": _pr, "desc": p.get("desc", "")})
-        _out[k] = {"name": s.get("name", k), "desc": s.get("desc", ""), "plans": _plans}
+            _plans.append({"idx": i, "name": p.get("name", ""), "price": _pr,
+                           "desc": _strip_usd_desc(p.get("desc", ""))})
+        _out[k] = {"name": s.get("name", k), "desc": _strip_usd_desc(s.get("desc", "")), "plans": _plans}
     return _out
 
 
@@ -2179,6 +2194,69 @@ async def api_admin_recs_save_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "featured": _seen})
     except Exception as _e:
         logging.error(f"api_admin_recs_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_shop_pay_handler(request: web.Request) -> web.Response:
+    """Оплата сервиса магазина прямо из мини-аппки: создаёт заказ и возвращает ссылку.
+    method: sbp (форма FreeKassa) или card (API i=36). Сумму берём с СЕРВЕРА по каталогу
+    (не доверяем клиенту). Юзер определяется по подписанному initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        key = str(body.get("key", "")).strip()
+        try:
+            idx = int(body.get("planIdx", 0))
+        except Exception:
+            idx = 0
+        method = str(body.get("method", "sbp")).strip().lower()
+        s = SHOP_CATALOG.get(key)
+        if not s or not s.get("plans") or idx < 0 or idx >= len(s["plans"]):
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        price = int(s["plans"][idx].get("price", 0) or 0)
+        if price <= 0:
+            return web.json_response({"ok": False, "error": "price"}, status=400)
+        import time as _t
+        order_id = f"shop_{uid}_{int(_t.time())}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack) "
+                "VALUES ($1,$2,$3,$4,$5) ON CONFLICT (order_id) DO NOTHING",
+                order_id, int(uid), 0, price, f"shop:{key}:{idx}")
+            try:
+                _num = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+            except Exception:
+                _num = None
+        if method == "card":
+            try:
+                url = await fk_create_order(float(price), order_id, int(uid), payment_id=36)
+            except Exception as _ce:
+                logging.error(f"api_shop_pay card order={order_id}: {_ce}")
+                return web.json_response({"ok": False, "error": "card_failed"})
+        else:
+            from config import fk_pay_url as _fk_pay_url
+            url = _fk_pay_url(price, order_id)
+        try:
+            _pl = s["plans"][idx].get("name", "")
+            _onum = f"#{_num}" if _num else order_id
+            await bot.send_message(
+                ADMIN_ID,
+                f"🛒 <b>Новый заказ {_onum}</b> (мини-апп)\n"
+                f"{s.get('name', key)} {_pl}\n💵 Сумма: <b>{price}₽</b>\n"
+                f"💳 Способ: {'Карта' if method == 'card' else 'СБП'}\n"
+                f"🆔 <code>{order_id}</code>\n\n⏳ Ожидает оплаты",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return web.json_response({"ok": True, "url": url, "orderId": order_id, "num": _num})
+    except Exception as _e:
+        logging.error(f"api_shop_pay: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -5613,6 +5691,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
     app.router.add_post("/api/admin/recs-save", api_admin_recs_save_handler)
+    app.router.add_post("/api/shop/pay", api_shop_pay_handler)
     app.router.add_post("/api/admin/stats", api_admin_stats_handler)
     app.router.add_post("/api/admin/sales", api_admin_sales_handler)
     app.router.add_post("/api/admin/plan-add", api_admin_plan_add_handler)
