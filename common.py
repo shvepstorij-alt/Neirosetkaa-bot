@@ -1875,13 +1875,22 @@ _LOGO_SLUG = {
     'chatgpt':'openai', 'claude':'claude', 'grok':'grok', 'perplexity':'perplexity', 'zoom':'zoom',
     'midjourney':'midjourney', 'canva':'canva', 'suno':'suno', 'spotify':'spotify', 'elevenlabs':'elevenlabs',
     'cursor':'cursor', 'telegram':'telegram', 'youtube':'youtube', 'lovable':'lovable', 'appstore':'apple',
-    'gemini':'googlegemini', 'capcut':'capcut', 'runway':'', 'gamma':'', 'openrouter':'', 'heygen':'',
-    'kling':'', 'manus':'', 'z.ai':'', 'spotify_':'spotify',
+    'gemini':'googlegemini', 'capcut':'capcut', 'runway':'', 'gamma':'', 'openrouter':'openrouter', 'heygen':'',
+    'kling':'', 'manus':'', 'z.ai':'', 'kimi':'kimi', 'freepik':'freepik',
 }
+try:
+    from logos_data import LOGOS as _LOGOS_BUNDLE
+except Exception:
+    _LOGOS_BUNDLE = {}
+
 _LOGO_CACHE = {}
 async def _get_logo_svg(slug: str) -> str:
     if not slug:
         return ""
+    # 1) Сначала зашитые в код логотипы (без сети — грузятся всегда)
+    _b = _LOGOS_BUNDLE.get(slug)
+    if _b:
+        return _b
     if _LOGO_CACHE.get(slug):        # кэшируем ТОЛЬКО успешный результат (пустой — повторим позже)
         return _LOGO_CACHE[slug]
     _svg = ""
