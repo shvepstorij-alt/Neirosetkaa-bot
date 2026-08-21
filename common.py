@@ -1836,13 +1836,33 @@ async def _build_recs_payload(exclude_key: str = "") -> list:
     return _out
 
 
+def _build_catalog_payload() -> dict:
+    """Полный каталог для карточек сервисов в мини-аппке: описание + тарифы."""
+    _out = {}
+    for k, s in SHOP_CATALOG.items():
+        plans = s.get("plans") or []
+        if not plans:
+            continue
+        _plans = []
+        for i, p in enumerate(plans):
+            try:
+                _pr = int(p.get("price", 0))
+            except Exception:
+                _pr = 0
+            _plans.append({"idx": i, "name": p.get("name", ""), "price": _pr, "desc": p.get("desc", "")})
+        _out[k] = {"name": s.get("name", k), "desc": s.get("desc", ""), "plans": _plans}
+    return _out
+
+
 async def _inject_recs(html: str, exclude_key: str) -> str:
-    """Вставляет window.__RECS__ / window.__BOT__ в <head> мини-аппки."""
+    """Вставляет window.__RECS__ / __CATALOG__ / __BOT__ в <head> мини-аппки."""
     import json as _json
     try:
         _recs = await _build_recs_payload(exclude_key=exclude_key)
+        _cat = _build_catalog_payload()
         _uname = await _get_bot_uname()
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
+                + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
         if "</head>" in html:
             return html.replace("</head>", _tag + "</head>", 1)

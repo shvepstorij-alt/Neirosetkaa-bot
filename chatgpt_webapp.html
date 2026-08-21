@@ -560,7 +560,24 @@
       box-shadow:0 2px 6px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.06);transition:transform .15s ease}
     .rec-card .ic svg{width:27px;height:27px;display:block}
     .rec-card .ic img{width:28px;height:28px;display:block;object-fit:contain}
+    .rec-card .ic .mono{font:800 20px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#fff}
     .rec-card:active .ic{transform:scale(.93)}
+    /* ─── Карточка сервиса (in-app) ─── */
+    #svc-card .result-screen{justify-content:flex-start;padding-top:22px}
+    .card-head{display:flex;flex-direction:column;align-items:center;gap:12px;margin-bottom:14px}
+    .card-ic{width:78px;height:78px;border-radius:20px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+    .card-ic img{width:46px;height:46px;object-fit:contain}
+    .card-ic .mono{font:800 34px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#fff}
+    .card-name{font-size:22px;font-weight:800;color:var(--text)}
+    .card-desc{font-size:13px;color:var(--text2);line-height:1.6;text-align:center;margin-bottom:18px}
+    .card-plans-h{align-self:flex-start;font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+    .plan{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:13px 14px;margin-bottom:10px;text-align:left}
+    .plan-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+    .plan-n{font-size:15px;font-weight:700;color:var(--text)}
+    .plan-p{font-size:16px;font-weight:800;color:var(--green);white-space:nowrap}
+    .plan-p span{font-size:11px;color:var(--text3);font-weight:600}
+    .plan-d{font-size:12px;color:var(--text2);line-height:1.5;margin:6px 0 10px}
+    .plan-buy{background:var(--green);color:#fff;text-align:center;font-weight:700;font-size:13px;padding:10px;border-radius:10px;cursor:pointer}
     .rec-card .nm{font-size:13px;font-weight:700;line-height:1.15;color:var(--text)}
     .rec-card .pr{font-size:11.5px;color:var(--text2)}
     .rec-card .go{margin-top:3px;background:var(--green);color:#fff;text-align:center;font-size:11.5px;font-weight:700;
@@ -836,6 +853,16 @@
 </div>
 
 
+<!-- ═══════════════════════════════════
+     КАРТОЧКА СЕРВИСА (из ленты рекомендаций)
+═══════════════════════════════════════ -->
+<div id="svc-card" class="screen">
+  <div class="result-screen">
+    <div id="svc-card-body" style="width:100%"></div>
+  </div>
+</div>
+
+
 <script>
 // ═══════════════════════════════════════════════════════════════════
 //  Глобальное состояние (доступно из onclick-атрибутов в HTML)
@@ -858,85 +885,95 @@ function showScreen(id) {
   if (id === 's4') { try { renderRecs(); } catch(e) {} }
 }
 
-// ─── Live-лента рекомендаций ─────────────────────────────────────
-// Данные отдаёт сервер (window.__RECS__); если нет — запасной список.
+// ─── Live-лента рекомендаций + карточки сервисов ─────────────────
+// Данные отдаёт сервер: window.__RECS__ (лента), window.__CATALOG__ (карточки).
 var CURRENT_SVC = 'chatgpt';
 var BOT_USERNAME = (window.__BOT__ || 'neirosetkaa_bot');
 var RECS_FALLBACK = [
-  { key:'claude',     name:'Claude',        emoji:'⚡', from:2000 },
-  { key:'grok',       name:'SuperGrok',     emoji:'⚡', from:2000 },
-  { key:'perplexity', name:'Perplexity',    emoji:'🔍', from:2000 },
-  { key:'midjourney', name:'Midjourney',    emoji:'🖼', from:1000 },
-  { key:'cursor',     name:'Cursor',        emoji:'💻', from:2300 },
-  { key:'lovable',    name:'Lovable',       emoji:'🚀', from:2300 }
+  { key:'claude', name:'Claude', from:2000 }, { key:'grok', name:'SuperGrok', from:2000 },
+  { key:'perplexity', name:'Perplexity', from:2000 }, { key:'midjourney', name:'Midjourney', from:1000 },
+  { key:'appstore', name:'App Store', from:500 }, { key:'suno', name:'Suno', from:1490 }
 ];
-// Брендовые иконки: плоская плитка фирменного цвета + белый SVG-логотип.
-function _sunburst(){ // Claude — лучистая звезда
-  var s='',N=12,c=12;
-  for(var i=0;i<N;i++){var a=i/N*6.2832;
-    s+='<line x1="'+(c+Math.sin(a)*2.6).toFixed(1)+'" y1="'+(c-Math.cos(a)*2.6).toFixed(1)
-      +'" x2="'+(c+Math.sin(a)*9).toFixed(1)+'" y2="'+(c-Math.cos(a)*9).toFixed(1)+'"/>';}
-  return '<svg viewBox="0 0 24 24" stroke="#fff" stroke-width="1.7" stroke-linecap="round">'+s+'</svg>';
+// Официальные логотипы (Simple Icons, белым) по slug; для неизвестных — монограмма.
+var SLUG = { chatgpt:'openai', claude:'claude', grok:'grok', perplexity:'perplexity', zoom:'zoom',
+  midjourney:'midjourney', canva:'canva', suno:'suno', spotify:'spotify', elevenlabs:'elevenlabs',
+  runway:'', gamma:'', capcut:'capcut', cursor:'cursor', openrouter:'', heygen:'', telegram:'telegram',
+  youtube:'youtube', lovable:'lovable', appstore:'appstore', gemini:'googlegemini', kling:'', manus:'' };
+var BG = { chatgpt:'#0d8f6f', claude:'#c15f3c', grok:'#000000', perplexity:'#1f7a8c', zoom:'#2d8cff',
+  midjourney:'#111317', canva:'linear-gradient(135deg,#00c4cc,#7d2ae8)', suno:'#0e0e10', spotify:'#1db954',
+  elevenlabs:'#0e0e10', runway:'#0e0e10', gamma:'#7c3aed', capcut:'#111317', cursor:'#0e0e10',
+  openrouter:'#6d6f7a', heygen:'#5b57e0', telegram:'#2aabee', youtube:'#ff0033', lovable:'#e5476d',
+  appstore:'linear-gradient(135deg,#1aa1ff,#0a6fe0)', gemini:'linear-gradient(135deg,#4285f4,#9b72cb)',
+  kling:'#111317', manus:'#5b57e0' };
+function _hue(key){ var h=0,i; for(i=0;i<(key||'x').length;i++){h=(h*31+key.charCodeAt(i))%360;}
+  return 'linear-gradient(135deg,hsl('+h+',52%,42%),hsl('+((h+28)%360)+',54%,30%))'; }
+function _brandBg(key){ return BG[key] || _hue(key); }
+function _esc1(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+function _mono(name){ return '<span class="mono">'+((String(name||'?').trim().charAt(0)||'?').toUpperCase())+'</span>'; }
+function logoFail(img, name){ try { img.parentNode.innerHTML = _mono(name); } catch(e) {} }
+function _iconHtml(key, name){
+  var slug = SLUG[key];
+  if (slug) return '<img src="https://cdn.simpleicons.org/'+slug+'/white" alt="" onerror="logoFail(this,\''+_esc1(name)+'\')">';
+  return _mono(name);
 }
-var SVG = {
-  claude: _sunburst(),
-  grok: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="7.6"/><line x1="8" y1="16" x2="16" y2="8"/></svg>',
-  perplexity: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"><path d="M12 4 L19 9 V15 L12 20 L5 15 V9 Z"/><path d="M12 4 V20 M5 9 L12 12.5 L19 9"/></svg>',
-  midjourney: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M3.5 16.5h17l-2.4 3.4H5.9z"/><path d="M11 3.5 6 15.5h5z"/><path d="M12.6 6.3 17.8 15.5h-5.2z"/></svg>',
-  cursor: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"><path d="M12 3 20 7.5v9L12 21 4 16.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/></svg>',
-  lovable: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M12 21C12 21 3.5 15.6 3.5 9.3 3.5 6.4 5.8 4.1 8.6 4.1c1.7 0 3 1 3.4 1.8.4-.8 1.7-1.8 3.4-1.8 2.8 0 5.1 2.3 5.1 5.2C20.5 15.6 12 21 12 21z"/></svg>',
-  suno: '<svg viewBox="0 0 24 24" fill="#fff"><circle cx="8" cy="17.4" r="2.8"/><rect x="10.2" y="4.6" width="1.8" height="12"/><path d="M10.2 4.6c3.9 0 6.8 1 6.8 4 0-2.5-4-2.5-5-1h-1.8z"/></svg>',
-  gemini: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M12 2c.4 4.9 5.1 9.6 10 10-4.9.4-9.6 5.1-10 10-.4-4.9-5.1-9.6-10-10 4.9-.4 9.6-5.1 10-10z"/></svg>'
-};
-var BG = {
-  claude:'#c15f3c', grok:'#000000', perplexity:'#1f7a8c', midjourney:'#111317',
-  cursor:'#0e0e10', lovable:'#e5476d', suno:'#0e0e10',
-  gemini:'linear-gradient(135deg,#4285f4,#9b72cb)',
-  canva:'linear-gradient(135deg,#00c4cc,#7d2ae8)', kling:'#111317', runway:'#0e0e10',
-  heygen:'#5b57e0', elevenlabs:'#0e0e10', gamma:'#7c3aed',
-  appstore:'linear-gradient(135deg,#1aa1ff,#0a6fe0)'
-};
-// Официальные логотипы через CDN Simple Icons (белым), с фолбэком на рисованный SVG.
-var SLUG = { claude:'claude', grok:'grok', perplexity:'perplexity', midjourney:'midjourney',
-  cursor:'cursor', lovable:'lovable', suno:'suno', gemini:'googlegemini', chatgpt:'openai',
-  canva:'canva', kling:'', runway:'runway', heygen:'', elevenlabs:'elevenlabs',
-  gamma:'', appstore:'appstore' };
-function _fallbackSvg(key){
-  return SVG[key] || '<svg viewBox="0 0 24 24" fill="#fff"><path d="M12 2 13.8 10.2 22 12 13.8 13.8 12 22 10.2 13.8 2 12 10.2 10.2z"/></svg>';
-}
-function logoFail(img, key){
-  try { img.parentNode.innerHTML = _fallbackSvg(key); } catch(e) {}
-}
-function _brand(key){
-  return { bg: BG[key] || 'linear-gradient(135deg,#12a37f,#0c7d61)',
-           slug: SLUG[key] || '' };
+function _catList(){
+  var c = window.__CATALOG__ || {};
+  return Object.keys(c).map(function(k){
+    var mn = 0; (c[k].plans||[]).forEach(function(p){ if(!mn||p.price<mn) mn=p.price; });
+    return { key:k, name:c[k].name, from:mn };
+  });
 }
 function _recsData() {
-  var list = (window.__RECS__ && window.__RECS__.length) ? window.__RECS__ : RECS_FALLBACK;
+  var list = (window.__RECS__ && window.__RECS__.length) ? window.__RECS__
+           : (Object.keys(window.__CATALOG__||{}).length ? _catList() : RECS_FALLBACK);
   return list.filter(function(x){ return x && x.key && x.key !== CURRENT_SVC; });
 }
 function renderRecs() {
-  var box = document.getElementById('rec-box');
-  var track = document.getElementById('rec-track');
+  var box = document.getElementById('rec-box'), track = document.getElementById('rec-track');
   if (!box || !track) return;
   var items = _recsData();
   if (!items.length) { box.style.display = 'none'; return; }
   track.innerHTML = items.map(function(x){
     var price = x.from ? ('от ' + x.from + '₽') : '';
-    var ic = _brand(x.key);
-    var inner = ic.slug
-      ? '<img src="https://cdn.simpleicons.org/' + ic.slug + '/white" alt="" onerror="logoFail(this,\'' + x.key + '\')">'
-      : _fallbackSvg(x.key);
     return '<div class="rec-card">'
-      + '<div class="ic" style="background:' + ic.bg + '">' + inner + '</div>'
+      + '<div class="ic" style="background:' + _brandBg(x.key) + '">' + _iconHtml(x.key, x.name) + '</div>'
       + '<div class="nm">' + x.name + '</div>'
       + '<div class="pr">' + price + '</div>'
-      + '<div class="go" onclick="openRec(\'' + x.key + '\')">Оформить</div>'
+      + '<div class="go" onclick="openRec(\'' + _esc1(x.key) + '\')">Оформить</div>'
       + '</div>';
   }).join('');
   box.style.display = '';
 }
-function openRec(key) {
+// «Оформить» в ленте → карточка сервиса ВНУТРИ мини-аппки
+function openRec(key){ openCard(key); }
+function openCard(key){
+  var c = (window.__CATALOG__ || {})[key];
+  var body = document.getElementById('svc-card-body');
+  if (!body) return;
+  if (!c) { // нет данных каталога — открываем сервис в боте
+    var url = 'https://t.me/' + BOT_USERNAME + '?start=shop_' + key;
+    try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); return; } } catch(e) {}
+    try { window.open(url, '_blank'); } catch(e) {}
+    return;
+  }
+  var plans = (c.plans||[]).slice().sort(function(a,b){return a.price-b.price;});
+  var plansHtml = plans.map(function(p){
+    return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.name+'</div>'
+      + '<div class="plan-p">'+p.price+'₽<span>/мес</span></div></div>'
+      + (p.desc?('<div class="plan-d">'+p.desc+'</div>'):'')
+      + '<div class="plan-buy" onclick="buyPlan(\''+_esc1(key)+'\','+p.idx+')">Оформить за '+p.price+'₽</div></div>';
+  }).join('');
+  body.innerHTML =
+    '<div class="card-head">'
+    + '<div class="card-ic" style="background:'+_brandBg(key)+'">'+_iconHtml(key, c.name)+'</div>'
+    + '<div class="card-name">'+c.name+'</div></div>'
+    + (c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
+    + '<div class="card-plans-h">Тарифы</div>'
+    + plansHtml
+    + '<button class="btn btn-outline" style="margin-top:14px" onclick="showScreen(\'s4\')">← Назад</button>';
+  showScreen('svc-card');
+}
+function buyPlan(key, idx){
   var url = 'https://t.me/' + BOT_USERNAME + '?start=shop_' + key;
   try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); return; } } catch(e) {}
   try { window.open(url, '_blank'); } catch(e) {}
