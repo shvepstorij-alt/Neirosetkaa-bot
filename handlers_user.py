@@ -103,6 +103,17 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer("👇", reply_markup=kb_reply(is_admin))
     await message.answer(text, reply_markup=kb_main(), parse_mode="HTML", disable_web_page_preview=True)
 
+    # Deep-link из мини-аппки (лента рекомендаций): /start shop_<key> — открыть сервис
+    if len(parts) > 1 and parts[1].startswith("shop_"):
+        _svc_key = parts[1][5:]
+        try:
+            from handlers_shop import build_service_screen
+            _t, _kb = build_service_screen(_svc_key)
+            if _t:
+                await message.answer(_t, reply_markup=_kb, parse_mode="HTML")
+        except Exception as _e:
+            logging.error(f"deep-link shop_{_svc_key}: {_e}")
+
 
 @dp.callback_query(F.data == "show_profile")
 async def show_profile_cb(cb: CallbackQuery):

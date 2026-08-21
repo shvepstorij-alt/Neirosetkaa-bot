@@ -296,17 +296,13 @@ async def sub_renew(cb: CallbackQuery, state: FSMContext):
             pass
 
 
-@dp.callback_query(F.data.startswith("shop_svc:"))
-async def shop_service(cb: CallbackQuery):
-    key = cb.data.split(":")[1]
+def build_service_screen(key: str):
+    """Строит экран сервиса магазина (текст + клавиатура).
+    Возвращает (text, kb) либо (None, None), если сервис/тарифы не найдены.
+    Используется и в callback shop_svc, и в deep-link /start shop_<key>."""
     s = SHOP_CATALOG.get(key)
-    if not s:
-        await cb.answer("Сервис не найден", show_alert=True)
-        return
-    if not s.get("plans"):
-        logging.warning(f"shop_service: no plans for key={key!r}")
-        await cb.answer("У этого сервиса пока нет тарифов. Напишите Александру.", show_alert=True)
-        return
+    if not s or not s.get("plans"):
+        return None, None
     _order = sorted(range(len(s["plans"])), key=lambda i: s["plans"][i].get("price", 0))
     plans_text = ""
     for _n, i in enumerate(_order, 1):
@@ -325,8 +321,7 @@ async def shop_service(cb: CallbackQuery):
             text=f"{p.get('name','')} - {p.get('price',0)}₽/мес",
             callback_data=f"shop_confirm:{key}:{i}"
         )])
-    # Только для ChatGPT: кнопка «Установить Приложение» с премиум-эмодзи —
-    # по клику меняет сообщение на инструкцию из админки (setting gpt_install_text).
+    # Только для ChatGPT: кнопка «Установить Приложение» с премиум-эмодзи.
     if key == "chatgpt":
         try:
             _inst_btn = InlineKeyboardButton(
@@ -336,9 +331,22 @@ async def shop_service(cb: CallbackQuery):
             _inst_btn = InlineKeyboardButton(
                 text="📲 Установить Приложение", callback_data="gpt_install_app")
         rows.append([_inst_btn])
-    back_cat = "menu_shop"
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_shop")])
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data.startswith("shop_svc:"))
+async def shop_service(cb: CallbackQuery):
+    key = cb.data.split(":")[1]
+    s = SHOP_CATALOG.get(key)
+    if not s:
+        await cb.answer("Сервис не найден", show_alert=True)
+        return
+    if not s.get("plans"):
+        logging.warning(f"shop_service: no plans for key={key!r}")
+        await cb.answer("У этого сервиса пока нет тарифов. Напишите Александру.", show_alert=True)
+        return
+    text, kb = build_service_screen(key)
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:

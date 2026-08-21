@@ -541,6 +541,26 @@
     .ms-hl{color:#f4d79a;}
     #tg-help-pill._pulse{animation:helpPulse 2.2s ease-in-out infinite;}
     @keyframes helpPulse{0%{box-shadow:0 0 0 0 rgba(24,163,126,.55);}70%{box-shadow:0 0 0 11px rgba(24,163,126,0);}100%{box-shadow:0 0 0 0 rgba(24,163,126,0);}}
+
+    /* ─── Live-лента рекомендаций (экран «Готово») ─── */
+    .rec{background:linear-gradient(160deg,var(--green-bg),var(--bg2));border:1px solid var(--green-brd);
+      border-radius:16px;padding:11px 11px 13px;text-align:left;margin:6px 0 16px}
+    .rec-h{display:flex;align-items:center;gap:7px;margin:0 0 10px;padding:0 2px}
+    .rec-live{display:inline-flex;align-items:center;gap:5px;background:rgba(255,80,80,.14);color:#e5484d;
+      font-size:10px;font-weight:800;letter-spacing:.04em;padding:2px 7px;border-radius:20px;text-transform:uppercase}
+    .rec-live .rd{width:6px;height:6px;border-radius:50%;background:#e5484d;animation:recBlink 1.3s infinite}
+    @keyframes recBlink{0%,100%{opacity:1}50%{opacity:.25}}
+    .rec-t{font-size:13px;font-weight:700;color:var(--text)}
+    .rec-track{display:flex;gap:9px;overflow-x:auto;padding:2px 2px 4px;-webkit-overflow-scrolling:touch;scroll-snap-type:x mandatory}
+    .rec-track::-webkit-scrollbar{height:0}
+    .rec-card{flex:0 0 130px;scroll-snap-align:start;background:var(--bg);border:1px solid var(--border);
+      border-radius:13px;padding:11px;display:flex;flex-direction:column;gap:6px}
+    .rec-card .ic{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+      font-size:19px;background:var(--bg3)}
+    .rec-card .nm{font-size:13px;font-weight:700;line-height:1.15;color:var(--text)}
+    .rec-card .pr{font-size:11.5px;color:var(--text2)}
+    .rec-card .go{margin-top:3px;background:var(--green);color:#fff;text-align:center;font-size:11.5px;font-weight:700;
+      padding:7px;border-radius:9px;cursor:pointer}
   </style>
 </head>
 <body>
@@ -769,6 +789,15 @@
       Подписка подключена к твоему аккаунту. Можешь заходить в ChatGPT и пользоваться прямо сейчас — я всегда на связи!
     </div>
 
+    <!-- Live-лента рекомендаций (наполняется из renderRecs) -->
+    <div class="rec" id="rec-box" style="display:none;">
+      <div class="rec-h">
+        <span class="rec-live"><span class="rd"></span>Live</span>
+        <span class="rec-t">Часто берут вместе</span>
+      </div>
+      <div class="rec-track" id="rec-track"></div>
+    </div>
+
     <div class="btn-wrap-inline">
       <a href="https://chatgpt.com" target="_blank" style="text-decoration:none;display:block;">
         <button class="btn btn-green" style="margin-bottom:9px;">Открыть ChatGPT ↗</button>
@@ -821,6 +850,47 @@ function showScreen(id) {
   // Кнопка «Как активировать» — только на экране ввода токена
   try { if (window._setHelpVisible) window._setHelpVisible(id === 's2'); } catch(e) {}
   try { if (window.closeInstr) window.closeInstr(); } catch(e) {}
+  // Live-лента рекомендаций — на экране «Готово»
+  if (id === 's4') { try { renderRecs(); } catch(e) {} }
+}
+
+// ─── Live-лента рекомендаций ─────────────────────────────────────
+// Данные отдаёт сервер (window.__RECS__); если нет — запасной список.
+var CURRENT_SVC = 'chatgpt';
+var BOT_USERNAME = (window.__BOT__ || 'neirosetkaa_bot');
+var RECS_FALLBACK = [
+  { key:'claude',     name:'Claude',        emoji:'⚡', from:2000 },
+  { key:'grok',       name:'SuperGrok',     emoji:'⚡', from:2000 },
+  { key:'perplexity', name:'Perplexity',    emoji:'🔍', from:2000 },
+  { key:'midjourney', name:'Midjourney',    emoji:'🖼', from:1000 },
+  { key:'cursor',     name:'Cursor',        emoji:'💻', from:2300 },
+  { key:'lovable',    name:'Lovable',       emoji:'🚀', from:2300 }
+];
+function _recsData() {
+  var list = (window.__RECS__ && window.__RECS__.length) ? window.__RECS__ : RECS_FALLBACK;
+  return list.filter(function(x){ return x && x.key && x.key !== CURRENT_SVC; });
+}
+function renderRecs() {
+  var box = document.getElementById('rec-box');
+  var track = document.getElementById('rec-track');
+  if (!box || !track) return;
+  var items = _recsData();
+  if (!items.length) { box.style.display = 'none'; return; }
+  track.innerHTML = items.map(function(x){
+    var price = x.from ? ('от ' + x.from + '₽') : '';
+    return '<div class="rec-card">'
+      + '<div class="ic">' + (x.emoji || '✨') + '</div>'
+      + '<div class="nm">' + x.name + '</div>'
+      + '<div class="pr">' + price + '</div>'
+      + '<div class="go" onclick="openRec(\'' + x.key + '\')">Оформить</div>'
+      + '</div>';
+  }).join('');
+  box.style.display = '';
+}
+function openRec(key) {
+  var url = 'https://t.me/' + BOT_USERNAME + '?start=shop_' + key;
+  try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); return; } } catch(e) {}
+  try { window.open(url, '_blank'); } catch(e) {}
 }
 
 // ─── Тема ────────────────────────────────────────────────────────
