@@ -413,9 +413,9 @@ async def shop_confirm(cb: CallbackQuery, state: FSMContext):
 
     rows = [
         [InlineKeyboardButton(
-            text=f"💳 Оплатить — {final_price}₽",
+            text=f"Оплатить — {final_price}₽",
             callback_data=f"shop_pay_sbp:{key}:{plan_idx}:{final_price}",
-            **pay_btn_kwargs()
+            icon_custom_emoji_id="5357079680002310747"
         )],
     ]
     if not promo_code:
@@ -617,11 +617,11 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             callback_data=f"shop_coins_sbp:{key}:{plan_idx}:{coins_used}"
         )])
         shop_buttons.append([InlineKeyboardButton(text=f"Оплатить СБП без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id), **pay_btn_kwargs())])
-        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {p['price']}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5472176990989592252")])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {p['price']}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5357079680002310747")])
     else:
         # Два способа: СБП (форма, работает сейчас) и Карта (через API)
         shop_buttons.append([InlineKeyboardButton(text=f"Оплатить через СБП {final_shop_price}₽", url=pay_url, **pay_btn_kwargs())])
-        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {final_shop_price}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5472176990989592252")])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {final_shop_price}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5357079680002310747")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
@@ -767,7 +767,7 @@ async def shop_pay_card(cb: CallbackQuery):
             f"Нажми кнопку ниже — откроется страница оплаты картой (Visa/MasterCard/МИР). "
             f"После оплаты подписка активируется автоматически 👇")
     _kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Перейти к оплате картой", url=card_url, icon_custom_emoji_id="5472176990989592252")],
+        [InlineKeyboardButton(text="Перейти к оплате картой", url=card_url, icon_custom_emoji_id="5357079680002310747")],
         [InlineKeyboardButton(text="✅ Я оплатил - написать Александру", callback_data=f"shop_paid:{order_id}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=_back_cb)]])
     try:
