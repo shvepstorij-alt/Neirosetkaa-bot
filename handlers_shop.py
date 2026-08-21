@@ -616,12 +616,12 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             text=f"🪙 Применить {coins_used}₽ монетками + СБП {final_shop_price}₽",
             callback_data=f"shop_coins_sbp:{key}:{plan_idx}:{coins_used}"
         )])
-        shop_buttons.append([InlineKeyboardButton(text=f"⚡ Оплатить СБП без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id), **pay_btn_kwargs())])
-        shop_buttons.append([InlineKeyboardButton(text=f"💳 Оплатить картой {p['price']}₽", callback_data=f"shop_pay_card:{order_id}")])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить СБП без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id), **pay_btn_kwargs())])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {p['price']}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5472176990989592252")])
     else:
         # Два способа: СБП (форма, работает сейчас) и Карта (через API)
-        shop_buttons.append([InlineKeyboardButton(text=f"⚡ Оплатить через СБП {final_shop_price}₽", url=pay_url, **pay_btn_kwargs())])
-        shop_buttons.append([InlineKeyboardButton(text=f"💳 Оплатить картой {final_shop_price}₽", callback_data=f"shop_pay_card:{order_id}")])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить через СБП {final_shop_price}₽", url=pay_url, **pay_btn_kwargs())])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {final_shop_price}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5472176990989592252")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(
@@ -725,23 +725,31 @@ async def shop_pay_card(cb: CallbackQuery):
     o = await fk_get_order(order_id) or {}
     amount = o.get("amount_rub")
     uid = o.get("user_id") or cb.from_user.id
+    _pack = o.get("pack") or ""
+    # Кнопка «Назад» — на экран подтверждения этого сервиса
+    _back_cb = "back_main"
+    if _pack.startswith("shop:"):
+        _pp = _pack.split(":")
+        if len(_pp) > 2:
+            _back_cb = f"shop_confirm:{_pp[1]}:{_pp[2]}"
     if not amount or float(amount) <= 0:
         await cb.answer("Заказ не найден или уже оплачен", show_alert=True)
         return
-    _wait = None
+    # Меняем ТЕКУЩЕЕ сообщение на «создаю…» (без нового сообщения)
     try:
-        _wait = await cb.message.answer("⏳ Создаю ссылку на оплату картой...")
+        await cb.message.edit_text("⏳ Создаю ссылку на оплату картой...")
     except Exception:
         pass
     try:
         card_url = await fk_create_order(float(amount), order_id, int(uid), payment_id=36)
     except Exception as e:
         logging.error(f"shop_pay_card order={order_id}: {e}")
-        # Клиенту — мягко, админу — точная ошибка FK (чтобы добить настройку)
+        # Клиенту — мягко (с возвратом к выбору), админу — точная ошибка FK
         try:
-            if _wait:
-                await _wait.edit_text("⚠️ Оплата картой временно недоступна. "
-                                      "Пожалуйста, оплати через СБП.")
+            await cb.message.edit_text(
+                "⚠️ Оплата картой временно недоступна. Пожалуйста, оплати через СБП.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад к оплате", callback_data=_back_cb)]]))
         except Exception:
             pass
         try:
@@ -759,12 +767,11 @@ async def shop_pay_card(cb: CallbackQuery):
             f"Нажми кнопку ниже — откроется страница оплаты картой (Visa/MasterCard/МИР). "
             f"После оплаты подписка активируется автоматически 👇")
     _kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Перейти к оплате картой", url=card_url)]])
+        [InlineKeyboardButton(text="Перейти к оплате картой", url=card_url, icon_custom_emoji_id="5472176990989592252")],
+        [InlineKeyboardButton(text="✅ Я оплатил - написать Александру", callback_data=f"shop_paid:{order_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=_back_cb)]])
     try:
-        if _wait:
-            await _wait.edit_text(_txt, reply_markup=_kb, parse_mode="HTML")
-        else:
-            await cb.message.answer(_txt, reply_markup=_kb, parse_mode="HTML")
+        await cb.message.edit_text(_txt, reply_markup=_kb, parse_mode="HTML")
     except Exception:
         try:
             await cb.message.answer(_txt, reply_markup=_kb, parse_mode="HTML")
