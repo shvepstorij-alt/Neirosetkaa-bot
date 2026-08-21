@@ -17,8 +17,9 @@ from db import save_desc_drafts
 
 logger = logging.getLogger(__name__)
 
-# Модели Claude для переписывания (по убыванию предпочтения)
-_MODELS = ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"]
+# Модели Claude для переписывания (по убыванию предпочтения). Первыми — актуальные,
+# затем известные рабочие как резерв.
+_MODELS = ["claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
 
 
 def _refreshable_services():
@@ -51,33 +52,43 @@ async def _rewrite_one(key: str, svc: dict):
         f"Текущее описание сервиса: {svc.get('desc','')}\n"
         f"Тарифы:\n{_plans_txt}\n\n"
         "Задача: перепиши описание сервиса и КАЖДОГО тарифа на русском, СОХРАНИВ стиль, "
-        "примерную длину, структуру и месячную цену в долларах (формат «— $X/мес»), но "
-        "ОБНОВИВ названия/версии моделей и функции на актуальные сегодня (сверься через "
-        "web_search). Рубли и внутренние цены НЕ упоминай. "
+        "примерную длину и структуру, но ОБНОВИВ названия/версии моделей и функции на "
+        "актуальные сегодня (сверься через web_search). "
+        "ЦЕНЫ НЕ УКАЗЫВАЙ ВООБЩЕ — ни в долларах, ни в рублях (никаких «$X/мес» и «X₽»). "
         'Верни JSON строго вида: '
         '{"service_desc":"...","plans":{"<точное имя тарифа>":"<описание>", ...}}. '
         "Ключи в plans — точные имена тарифов из списка выше."
     )
 
-    def _call(_model):
-        return claude_client.messages.create(
-            model=_model,
-            max_tokens=1600,
-            system=_sys,
-            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
-            messages=[{"role": "user", "content": _usr}],
-        )
+    def _call(_model, _use_tools):
+        _kw = dict(model=_model, max_tokens=1600, system=_sys,
+                   messages=[{"role": "user", "content": _usr}])
+        if _use_tools:
+            _kw["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+        return claude_client.messages.create(**_kw)
 
+    # Веб-поиск — основной режим: сперва пробуем ВСЕ модели С web_search.
     resp = None
+    _used_search = True
     for _m in _MODELS:
         try:
-            resp = await asyncio.to_thread(_call, _m)
+            resp = await asyncio.to_thread(_call, _m, True)
             break
         except Exception as e:
-            logger.warning(f"models_refresh {key} [{_m}]: {type(e).__name__}: {str(e)[:200]}")
+            logger.warning(f"models_refresh {key} [{_m}] web_search: {type(e).__name__}: {str(e)[:200]}")
             continue
+    # Только если веб-поиск не отработал НИ на одной модели — резерв без него (с пометкой).
     if resp is None:
-        return None
+        _used_search = False
+        for _m in _MODELS:
+            try:
+                resp = await asyncio.to_thread(_call, _m, False)
+                break
+            except Exception as e:
+                logger.warning(f"models_refresh {key} [{_m}] no-search: {type(e).__name__}: {str(e)[:200]}")
+                continue
+    if resp is None:
+        return None, _used_search
 
     _txt = ""
     for b in resp.content:
@@ -86,13 +97,13 @@ async def _rewrite_one(key: str, svc: dict):
     m = re.search(r"\{.*\}", _txt, re.S)
     if not m:
         logger.warning(f"models_refresh {key}: JSON не найден в ответе")
-        return None
+        return None, _used_search
     try:
         data = json.loads(m.group(0))
     except Exception as e:
         logger.warning(f"models_refresh {key}: битый JSON: {e}")
-        return None
-    return data if isinstance(data, dict) else None
+        return None, _used_search
+    return (data if isinstance(data, dict) else None), _used_search
 
 
 async def refresh_all_descriptions(notify: bool = True) -> str:
@@ -102,10 +113,17 @@ async def refresh_all_descriptions(notify: bool = True) -> str:
     from common import bot
 
     drafts = []   # (key, plan_name, old, new)
+    _ok = 0       # сколько сервисов реально обработала модель
+    _fail = 0     # сколько провалилось (ошибка API/парсинга)
+    _no_search = 0  # сколько обработано БЕЗ веб-поиска (резервный режим)
     for key, svc in _refreshable_services():
-        data = await _rewrite_one(key, svc)
+        data, _used_search = await _rewrite_one(key, svc)
         if not data:
+            _fail += 1
             continue
+        _ok += 1
+        if not _used_search:
+            _no_search += 1
         _svc_name = svc.get("name", key)
 
         _sd = (data.get("service_desc") or "").strip()
@@ -125,8 +143,17 @@ async def refresh_all_descriptions(notify: bool = True) -> str:
         await asyncio.sleep(1.0)  # мягкий rate-limit между сервисами
 
     if not drafts:
-        summary = ("♻️ <b>Обновление описаний тарифов</b>\n\n"
-                   "Изменений нет — описания актуальны ✅")
+        if _ok == 0:
+            summary = ("♻️ <b>Обновление описаний тарифов</b>\n\n"
+                       f"⚠️ Не удалось обновить: модель не ответила ни по одному сервису "
+                       f"(ошибок: {_fail}). Похоже на проблему с моделью/веб-поиском — проверь логи "
+                       f"(<code>models_refresh</code>).")
+        else:
+            _ns = (f"\n⚠️ Из них {_no_search} — без веб-поиска (инструмент был недоступен)."
+                   if _no_search else "")
+            summary = ("♻️ <b>Обновление описаний тарифов</b>\n\n"
+                       f"Изменений нет — описания актуальны ✅\n"
+                       f"<i>Обработано сервисов: {_ok}, пропущено (ошибки): {_fail}</i>" + _ns)
         return summary
 
     await save_desc_drafts(drafts)
@@ -144,5 +171,7 @@ async def refresh_all_descriptions(notify: bool = True) -> str:
                 ADMIN_ID, f"📝 Черновик описаний готов: {len(drafts)} изменений. Открой /refresh_desc.")
         except Exception:
             pass
-    logger.info(f"models_refresh: черновиков {len(drafts)}")
-    return f"📝 Черновик готов: {len(drafts)} изменений. Отправил превью с навигацией."
+    logger.info(f"models_refresh: черновиков {len(drafts)}, без поиска: {_no_search}")
+    _ns2 = (f"\n⚠️ {_no_search} сервисов обработаны БЕЗ веб-поиска (инструмент был недоступен) — проверь их внимательнее."
+            if _no_search else "")
+    return f"📝 Черновик готов: {len(drafts)} изменений. Отправил превью с навигацией." + _ns2
