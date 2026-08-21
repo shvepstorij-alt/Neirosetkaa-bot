@@ -150,7 +150,7 @@ function home(){
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
-   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["🤝","Рефералка","Премиум-рефералка"]]],
+   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
@@ -435,6 +435,29 @@ SCREENS["Редактор цен"]=function(){return hdr("Редактор це�
   rowItem("ti-tag","Тарифы магазина","сервисы, тарифы, ручная выдача","",'leaf(priceShop)')+
   rowItem("ti-coins","Пакеты кредитов","6 пакетов","",'leaf(pricePacks)')+
   rowItem("ti-photo","Настройки генерации","стоимость фото/видео/правок","",'leaf(priceGen)')+'</div>'};
+
+/* Лента рекомендаций — курирование первой пятёрки */
+SCREENS["Лента рекомендаций"]=function(){setTimeout(_loadRecs,30);
+  return hdr("Лента рекомендаций","первая пятёрка в мини-аппах")+'<div class="wrap">'+
+    '<div class="note">Выбери до 5 сервисов — они пойдут <b>первыми</b> в Live-ленте на экране «Готово» (ChatGPT/Claude). Порядок = порядок нажатий. Остальной каталог показывается следом автоматически.</div>'+
+    '<div id="recsbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';};
+window._recSel=[];window._recSvcs=[];
+function _recName(k){var a=(window._recSvcs||[]).filter(function(s){return s.key===k});return a.length?a[0].name:k;}
+function _loadRecs(){api('/api/admin/recs').then(function(d){
+  var b=document.getElementById('recsbody');if(!b)return;
+  if(!d||!d.ok){b.innerHTML='<div class="note">Ошибка загрузки</div>';return;}
+  window._recSvcs=d.services||[];window._recSel=(d.featured||[]).slice(0,5);_renderRecs();});}
+function _renderRecs(){
+  var body=document.getElementById('recsbody');if(!body)return;var sel=window._recSel||[];
+  var chips=sel.length?('<div class="note">Выбрано ('+sel.length+'/5): '+sel.map(function(k,i){return (i+1)+'. '+esc(_recName(k))}).join('  ·  ')+'</div>'):'<div class="note">Пока ничего не выбрано — лента покажет каталог по умолчанию.</div>';
+  var rows=(window._recSvcs||[]).map(function(s){var on=sel.indexOf(s.key);
+    return '<div class="row" onclick="_toggleRec(\''+s.key+'\')"><span class="ic">'+(on>=0?'✅':'⬜')+'</span><div><div class="lbl2">'+esc(s.name)+'</div></div>'+(on>=0?'<span class="tag g">'+(on+1)+'</span>':'<span class="chev"></span>')+'</div>';}).join('');
+  body.innerHTML=chips+'<div style="margin-top:10px">'+rows+'</div><button class="btn" style="margin-top:14px" onclick="_saveRecs()">💾 Сохранить</button>';}
+function _toggleRec(k){var sel=window._recSel||[];var i=sel.indexOf(k);
+  if(i>=0){sel.splice(i,1);}else{if(sel.length>=5){toast('Максимум 5');return;}sel.push(k);}
+  window._recSel=sel;_renderRecs();}
+function _saveRecs(){toast('Сохраняю…');api('/api/admin/recs-save',{featured:window._recSel||[]}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');});}
+
 function priceShop(){
   setTimeout(loadPriceShop,0);
   return hdr("Тарифы магазина")+'<div class="wrap"><button class="btn" onclick="leaf(serviceAdd)">➕ Добавить сервис</button><button class="btn sec" style="margin-top:8px" onclick="leaf(priceBulk)">🧮 Массовая наценка (несколько сервисов)</button><div id="psbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';

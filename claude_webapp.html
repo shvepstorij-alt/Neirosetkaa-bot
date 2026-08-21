@@ -330,6 +330,30 @@
     }
     .btn-wrap-inline { width: 100%; }
 
+    /* ─── Live-лента рекомендаций (экран «Готово») ─── */
+    .rec{background:linear-gradient(160deg,var(--orange-bg),var(--bg2));border:1px solid var(--orange-brd);
+      border-radius:16px;padding:11px 11px 13px;text-align:left;margin:6px 0 16px;
+      width:100%;max-width:100%;box-sizing:border-box;overflow:hidden}
+    .rec-h{display:flex;align-items:center;gap:7px;margin:0 0 10px;padding:0 2px}
+    .rec-live{display:inline-flex;align-items:center;gap:5px;background:rgba(255,80,80,.14);color:#e5484d;
+      font-size:10px;font-weight:800;letter-spacing:.04em;padding:2px 7px;border-radius:20px;text-transform:uppercase}
+    .rec-live .rd{width:6px;height:6px;border-radius:50%;background:#e5484d;animation:recBlink 1.3s infinite}
+    @keyframes recBlink{0%,100%{opacity:1}50%{opacity:.25}}
+    .rec-t{font-size:13px;font-weight:700;color:var(--text)}
+    .rec-track{display:flex;gap:9px;overflow-x:auto;overflow-y:hidden;padding:2px 2px 4px;-webkit-overflow-scrolling:touch;scroll-snap-type:x mandatory;min-width:0;width:100%;box-sizing:border-box}
+    .rec-track::-webkit-scrollbar{height:0}
+    .rec-card{flex:0 0 130px;scroll-snap-align:start;background:var(--bg);border:1px solid var(--border);
+      border-radius:13px;padding:11px;display:flex;flex-direction:column;gap:6px}
+    .rec-card .ic{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;
+      box-shadow:0 2px 6px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.06);transition:transform .15s ease}
+    .rec-card .ic svg{width:27px;height:27px;display:block}
+    .rec-card .ic img{width:28px;height:28px;display:block;object-fit:contain}
+    .rec-card:active .ic{transform:scale(.93)}
+    .rec-card .nm{font-size:13px;font-weight:700;line-height:1.15;color:var(--text)}
+    .rec-card .pr{font-size:11.5px;color:var(--text2)}
+    .rec-card .go{margin-top:3px;background:var(--orange);color:#fff;text-align:center;font-size:11.5px;font-weight:700;
+      padding:7px;border-radius:9px;cursor:pointer}
+
     .error-emoji { font-size: 72px; margin-bottom: 14px; line-height: 1; animation: shake .5s ease both; }
     @keyframes shake {
       0%,100%{transform:rotate(0);} 25%{transform:rotate(-8deg);} 75%{transform:rotate(8deg);}
@@ -535,6 +559,15 @@
       Подписка привязана к твоему аккаунту. Обычно появляется в течение 5–10 минут. Можешь заходить в Claude и пользоваться — я всегда на связи!
     </div>
 
+    <!-- Live-лента рекомендаций -->
+    <div class="rec" id="rec-box" style="display:none;">
+      <div class="rec-h">
+        <span class="rec-live"><span class="rd"></span>Live</span>
+        <span class="rec-t">Часто берут вместе</span>
+      </div>
+      <div class="rec-track" id="rec-track"></div>
+    </div>
+
     <div class="btn-wrap-inline">
       <a href="https://claude.ai" target="_blank" style="text-decoration:none;display:block;">
         <button class="btn btn-orange" style="margin-bottom:9px;">Открыть Claude ↗</button>
@@ -612,7 +645,75 @@ function showScreen(id) {
   if (id === 's4') {
     var vid = document.getElementById('success-video');
     if (vid) { vid.currentTime = 0; vid.play().catch(function(){}); }
+    try { renderRecs(); } catch(e) {}
   }
+}
+
+// ─── Live-лента рекомендаций ─────────────────────────────────────
+var CURRENT_SVC = 'claude';
+var BOT_USERNAME = (window.__BOT__ || 'neirosetkaa_bot');
+var RECS_FALLBACK = [
+  { key:'chatgpt', name:'ChatGPT', emoji:'✨', from:1000 },
+  { key:'grok', name:'SuperGrok', emoji:'⚡', from:2000 },
+  { key:'perplexity', name:'Perplexity', emoji:'🔍', from:2000 },
+  { key:'midjourney', name:'Midjourney', emoji:'🖼', from:1000 },
+  { key:'suno', name:'Suno', emoji:'🎵', from:1490 },
+  { key:'cursor', name:'Cursor', emoji:'💻', from:2300 }
+];
+function _sunburst(){
+  var s='',N=12,c=12;
+  for(var i=0;i<N;i++){var a=i/N*6.2832;
+    s+='<line x1="'+(c+Math.sin(a)*2.6).toFixed(1)+'" y1="'+(c-Math.cos(a)*2.6).toFixed(1)
+      +'" x2="'+(c+Math.sin(a)*9).toFixed(1)+'" y2="'+(c-Math.cos(a)*9).toFixed(1)+'"/>';}
+  return '<svg viewBox="0 0 24 24" stroke="#fff" stroke-width="1.7" stroke-linecap="round">'+s+'</svg>';
+}
+var SVG = {
+  claude: _sunburst(),
+  grok: '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="7.6"/><line x1="8" y1="16" x2="16" y2="8"/></svg>',
+  chatgpt: '<svg viewBox="0 0 24 24" fill="#fff"><path d="M12 2 13.8 10.2 22 12 13.8 13.8 12 22 10.2 13.8 2 12 10.2 10.2z"/></svg>'
+};
+var SLUG = { claude:'claude', grok:'grok', perplexity:'perplexity', midjourney:'midjourney',
+  cursor:'cursor', lovable:'lovable', suno:'suno', gemini:'googlegemini', chatgpt:'openai',
+  canva:'canva', kling:'', runway:'runway', heygen:'', elevenlabs:'elevenlabs',
+  gamma:'', appstore:'appstore' };
+var BG = {
+  claude:'#c15f3c', grok:'#000000', perplexity:'#1f7a8c', midjourney:'#111317',
+  cursor:'#0e0e10', lovable:'#e5476d', suno:'#0e0e10', chatgpt:'#0d8f6f',
+  gemini:'linear-gradient(135deg,#4285f4,#9b72cb)',
+  canva:'linear-gradient(135deg,#00c4cc,#7d2ae8)', kling:'#111317', runway:'#0e0e10',
+  heygen:'#5b57e0', elevenlabs:'#0e0e10', gamma:'#7c3aed',
+  appstore:'linear-gradient(135deg,#1aa1ff,#0a6fe0)'
+};
+function _fallbackSvg(key){
+  return SVG[key] || '<svg viewBox="0 0 24 24" fill="#fff"><path d="M12 2 13.8 10.2 22 12 13.8 13.8 12 22 10.2 13.8 2 12 10.2 10.2z"/></svg>';
+}
+function logoFail(img, key){ try { img.parentNode.innerHTML = _fallbackSvg(key); } catch(e) {} }
+function _brand(key){ return { bg: BG[key] || 'linear-gradient(135deg,#12a37f,#0c7d61)', slug: SLUG[key] || '' }; }
+function _recsData(){
+  var list = (window.__RECS__ && window.__RECS__.length) ? window.__RECS__ : RECS_FALLBACK;
+  return list.filter(function(x){ return x && x.key && x.key !== CURRENT_SVC; });
+}
+function renderRecs(){
+  var box = document.getElementById('rec-box'), track = document.getElementById('rec-track');
+  if (!box || !track) return;
+  var items = _recsData();
+  if (!items.length) { box.style.display = 'none'; return; }
+  track.innerHTML = items.map(function(x){
+    var price = x.from ? ('от ' + x.from + '₽') : '';
+    var ic = _brand(x.key);
+    var inner = ic.slug
+      ? '<img src="https://cdn.simpleicons.org/' + ic.slug + '/white" alt="" onerror="logoFail(this,\'' + x.key + '\')">'
+      : _fallbackSvg(x.key);
+    return '<div class="rec-card"><div class="ic" style="background:' + ic.bg + '">' + inner + '</div>'
+      + '<div class="nm">' + x.name + '</div><div class="pr">' + price + '</div>'
+      + '<div class="go" onclick="openRec(\'' + x.key + '\')">Оформить</div></div>';
+  }).join('');
+  box.style.display = '';
+}
+function openRec(key){
+  var url = 'https://t.me/' + BOT_USERNAME + '?start=shop_' + key;
+  try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); return; } } catch(e) {}
+  try { window.open(url, '_blank'); } catch(e) {}
 }
 
 // ─── Тема ────────────────────────────────────────────────────────

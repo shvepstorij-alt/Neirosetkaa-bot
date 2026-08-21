@@ -891,11 +891,16 @@ var SVG = {
 var BG = {
   claude:'#c15f3c', grok:'#000000', perplexity:'#1f7a8c', midjourney:'#111317',
   cursor:'#0e0e10', lovable:'#e5476d', suno:'#0e0e10',
-  gemini:'linear-gradient(135deg,#4285f4,#9b72cb)'
+  gemini:'linear-gradient(135deg,#4285f4,#9b72cb)',
+  canva:'linear-gradient(135deg,#00c4cc,#7d2ae8)', kling:'#111317', runway:'#0e0e10',
+  heygen:'#5b57e0', elevenlabs:'#0e0e10', gamma:'#7c3aed',
+  appstore:'linear-gradient(135deg,#1aa1ff,#0a6fe0)'
 };
 // Официальные логотипы через CDN Simple Icons (белым), с фолбэком на рисованный SVG.
 var SLUG = { claude:'claude', grok:'grok', perplexity:'perplexity', midjourney:'midjourney',
-  cursor:'cursor', lovable:'lovable', suno:'suno', gemini:'googlegemini', chatgpt:'openai' };
+  cursor:'cursor', lovable:'lovable', suno:'suno', gemini:'googlegemini', chatgpt:'openai',
+  canva:'canva', kling:'', runway:'runway', heygen:'', elevenlabs:'elevenlabs',
+  gamma:'', appstore:'appstore' };
 function _fallbackSvg(key){
   return SVG[key] || '<svg viewBox="0 0 24 24" fill="#fff"><path d="M12 2 13.8 10.2 22 12 13.8 13.8 12 22 10.2 13.8 2 12 10.2 10.2z"/></svg>';
 }

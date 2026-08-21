@@ -1795,10 +1795,68 @@ _NO_CACHE_HEADERS = {
 }
 
 
+_BOT_UNAME_CACHE = ""
+async def _get_bot_uname() -> str:
+    """Юзернейм бота для deep-link в ленте рекомендаций (кэшируется)."""
+    global _BOT_UNAME_CACHE
+    if not _BOT_UNAME_CACHE:
+        try:
+            _me = await bot.get_me()
+            _BOT_UNAME_CACHE = _me.username or ""
+        except Exception:
+            _BOT_UNAME_CACHE = ""
+    return _BOT_UNAME_CACHE
+
+
+async def _build_recs_payload(exclude_key: str = "") -> list:
+    """Список сервисов для Live-ленты: сперва приоритетная пятёрка из настройки
+    rec_featured (курируется в админке), затем остальной каталог. Цена — минимальный тариф."""
+    try:
+        _featured_raw = await get_setting("rec_featured", "") or ""
+    except Exception:
+        _featured_raw = ""
+    _featured = [k.strip() for k in _featured_raw.split(",") if k.strip()]
+    _keys = [k for k in _featured if k in SHOP_CATALOG]
+    for k in SHOP_CATALOG.keys():
+        if k not in _keys:
+            _keys.append(k)
+    _out = []
+    for k in _keys:
+        if k == exclude_key:
+            continue
+        s = SHOP_CATALOG.get(k) or {}
+        plans = s.get("plans") or []
+        if not plans:
+            continue
+        try:
+            _minp = min(int(p.get("price", 0)) for p in plans)
+        except Exception:
+            _minp = 0
+        _out.append({"key": k, "name": s.get("name", k), "from": _minp})
+    return _out
+
+
+async def _inject_recs(html: str, exclude_key: str) -> str:
+    """Вставляет window.__RECS__ / window.__BOT__ в <head> мини-аппки."""
+    import json as _json
+    try:
+        _recs = await _build_recs_payload(exclude_key=exclude_key)
+        _uname = await _get_bot_uname()
+        _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
+                + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
+        if "</head>" in html:
+            return html.replace("</head>", _tag + "</head>", 1)
+        return _tag + html
+    except Exception as _e:
+        logging.error(f"_inject_recs: {_e}")
+        return html
+
+
 async def webapp_chatgpt_handler(request: web.Request) -> web.Response:
     try:
         with open(_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
             _html = _f.read()
+        _html = await _inject_recs(_html, exclude_key="chatgpt")
         return web.Response(text=_html, content_type="text/html", charset="utf-8",
                             headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
@@ -2058,6 +2116,49 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_prices_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_recs_handler(request: web.Request) -> web.Response:
+    """Лента рекомендаций: текущая приоритетная пятёрка + список всех сервисов. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _raw = await get_setting("rec_featured", "") or ""
+        featured = [k.strip() for k in _raw.split(",") if k.strip() and k.strip() in SHOP_CATALOG]
+        services = [{"key": k, "name": sc.get("name", k)}
+                    for k, sc in SHOP_CATALOG.items() if sc.get("plans")]
+        return web.json_response({"ok": True, "featured": featured, "services": services})
+    except Exception as _e:
+        logging.error(f"api_admin_recs: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_recs_save_handler(request: web.Request) -> web.Response:
+    """Сохранение приоритетной пятёрки ленты (setting rec_featured). Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _feat = body.get("featured") or []
+        _seen = []
+        for k in _feat:
+            k = str(k).strip()
+            if k in SHOP_CATALOG and k not in _seen:
+                _seen.append(k)
+            if len(_seen) >= 5:
+                break
+        await set_setting("rec_featured", ",".join(_seen))
+        return web.json_response({"ok": True, "featured": _seen})
+    except Exception as _e:
+        logging.error(f"api_admin_recs_save: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -5490,6 +5591,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
+    app.router.add_post("/api/admin/recs", api_admin_recs_handler)
+    app.router.add_post("/api/admin/recs-save", api_admin_recs_save_handler)
     app.router.add_post("/api/admin/stats", api_admin_stats_handler)
     app.router.add_post("/api/admin/sales", api_admin_sales_handler)
     app.router.add_post("/api/admin/plan-add", api_admin_plan_add_handler)
@@ -6584,8 +6687,10 @@ async def webapp_claude_handler(request: web.Request) -> web.Response:
     оставался старый JS (напр. не отрабатывал экран подтверждения активации)."""
     try:
         with open(_CLAUDE_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
-            return web.Response(text=_f.read(), content_type="text/html", charset="utf-8",
-                                headers=_NO_CACHE_HEADERS)
+            _html = _f.read()
+        _html = await _inject_recs(_html, exclude_key="claude")
+        return web.Response(text=_html, content_type="text/html", charset="utf-8",
+                            headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
         return web.Response(text="Claude Mini App not found", status=404)
 
