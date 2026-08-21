@@ -561,10 +561,13 @@
     .rec-card .ic svg{width:27px;height:27px;display:block}
     .rec-card .ic img{width:28px;height:28px;display:block;object-fit:contain}
     .rec-card .ic .mono{font:800 20px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#fff}
-    .rec-card .ic img.domlogo{width:36px;height:36px}
-    .card-ic img.domlogo{width:58px;height:58px}
+    .card-ic svg{width:46px;height:46px;display:block}
     .rec-card:active .ic{transform:scale(.93)}
     /* ─── Карточка сервиса (in-app) ─── */
+    #svc-card{position:relative}
+    .card-back{position:absolute;top:10px;left:10px;z-index:20;width:38px;height:38px;border-radius:50%;
+      background:var(--bg2);border:1px solid var(--border);color:var(--text);font-size:24px;line-height:1;
+      display:flex;align-items:center;justify-content:center;cursor:pointer;padding-bottom:3px}
     #svc-card .result-screen{justify-content:flex-start;padding-top:22px}
     .card-head{display:flex;flex-direction:column;align-items:center;gap:12px;margin-bottom:14px}
     .card-ic{width:78px;height:78px;border-radius:20px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.4)}
@@ -832,7 +835,7 @@
         <button class="btn btn-green" style="margin-bottom:9px;">Открыть ChatGPT ↗</button>
       </a>
       <a href="https://t.me/AleksandrOii" target="_blank" style="text-decoration:none;display:block;">
-        <button class="btn btn-outline" style="margin-bottom:9px;">📣 Телеграм канал ↗</button>
+        <button class="btn btn-outline" style="margin-bottom:9px;background:#fff;color:#111;border-color:#fff;font-weight:700;">📣 Телеграм канал ↗</button>
       </a>
       <button class="btn btn-outline" onclick="tg.close()">Закрыть</button>
     </div>
@@ -865,6 +868,7 @@
      КАРТОЧКА СЕРВИСА (из ленты рекомендаций)
 ═══════════════════════════════════════ -->
 <div id="svc-card" class="screen">
+  <div class="card-back" onclick="showScreen('s4')">‹</div>
   <div class="result-screen">
     <div id="svc-card-body" style="width:100%"></div>
   </div>
@@ -916,30 +920,10 @@ var BG = { chatgpt:'#0d8f6f', claude:'#c15f3c', grok:'#000000', perplexity:'#1f7
 function _hue(key){ var h=0,i; for(i=0;i<(key||'x').length;i++){h=(h*31+key.charCodeAt(i))%360;}
   return 'linear-gradient(135deg,hsl('+h+',52%,42%),hsl('+((h+28)%360)+',54%,30%))'; }
 function _brandBg(key){ return BG[key] || _hue(key); }
-// Домены для официальных лого (Clearbit) — когда бренда нет в Simple Icons.
-var DOMAIN = { chatgpt:'openai.com', claude:'claude.ai', grok:'x.ai', perplexity:'perplexity.ai',
-  zoom:'zoom.us', midjourney:'midjourney.com', canva:'canva.com', suno:'suno.com', spotify:'spotify.com',
-  elevenlabs:'elevenlabs.io', runway:'runwayml.com', gamma:'gamma.app', capcut:'capcut.com',
-  cursor:'cursor.com', openrouter:'openrouter.ai', heygen:'heygen.com', telegram:'telegram.org',
-  youtube:'youtube.com', lovable:'lovable.dev', appstore:'apple.com', gemini:'gemini.google.com',
-  kling:'klingai.com', manus:'manus.im' };
-function _tileBg(key){ if (SLUG[key]) return _brandBg(key); if (DOMAIN[key]) return '#ffffff'; return _brandBg(key); }
 function _esc1(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
 function _mono(name){ return '<span class="mono">'+((String(name||'?').trim().charAt(0)||'?').toUpperCase())+'</span>'; }
-function logoDead(img, name){ try { var p=img.parentNode; p.style.background='#2a2d34'; p.innerHTML=_mono(name); } catch(e) {} }
-function logoStage2(img, key, name){
-  var dom = DOMAIN[key];
-  if (dom){ img.onerror=function(){ logoDead(img, name); }; try{ img.parentNode.style.background='#fff'; }catch(e){}
-    img.className='domlogo'; img.src='https://logo.clearbit.com/'+dom; }
-  else { logoDead(img, name); }
-}
-function _iconHtml(key, name){
-  var slug = SLUG[key];
-  if (slug) return '<img src="https://cdn.simpleicons.org/'+slug+'/white" alt="" onerror="logoStage2(this,\''+_esc1(key)+'\',\''+_esc1(name)+'\')">';
-  var dom = DOMAIN[key];
-  if (dom) return '<img class="domlogo" src="https://logo.clearbit.com/'+dom+'" alt="" onerror="logoDead(this,\''+_esc1(name)+'\')">';
-  return _mono(name);
-}
+// Логотип приходит от сервера как inline-SVG (window.__RECS__/__CATALOG__ .logo); иначе — монограмма.
+function _iconHtml(logo, name){ return (logo && String(logo).indexOf('<svg')===0) ? logo : _mono(name); }
 function _catList(){
   var c = window.__CATALOG__ || {};
   return Object.keys(c).map(function(k){
@@ -960,7 +944,7 @@ function renderRecs() {
   track.innerHTML = items.map(function(x){
     var price = x.from ? ('от ' + x.from + '₽') : '';
     return '<div class="rec-card">'
-      + '<div class="ic" style="background:' + _tileBg(x.key) + '">' + _iconHtml(x.key, x.name) + '</div>'
+      + '<div class="ic" style="background:' + _brandBg(x.key) + '">' + _iconHtml(x.logo, x.name) + '</div>'
       + '<div class="nm">' + x.name + '</div>'
       + '<div class="pr">' + price + '</div>'
       + '<div class="go" onclick="openRec(\'' + _esc1(x.key) + '\')">Оформить</div>'
@@ -971,6 +955,13 @@ function renderRecs() {
 // «Оформить» в ленте → карточка сервиса ВНУТРИ мини-аппки
 function openRec(key){ openCard(key); }
 function openCard(key){
+  // App Store / iCloud — пополнение через NS Gifts требует выбора региона: ведём в бота
+  if (key === 'appstore') {
+    var au = 'https://t.me/' + BOT_USERNAME + '?start=nsgapple';
+    try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(au); return; } } catch(e) {}
+    try { window.open(au, '_blank'); } catch(e) {}
+    return;
+  }
   var c = (window.__CATALOG__ || {})[key];
   var body = document.getElementById('svc-card-body');
   if (!body) return;
@@ -989,7 +980,7 @@ function openCard(key){
   }).join('');
   body.innerHTML =
     '<div class="card-head">'
-    + '<div class="card-ic" style="background:'+_tileBg(key)+'">'+_iconHtml(key, c.name)+'</div>'
+    + '<div class="card-ic" style="background:'+_brandBg(key)+'">'+_iconHtml(c.logo, c.name)+'</div>'
     + '<div class="card-name">'+c.name+'</div></div>'
     + (c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
     + '<div class="card-plans-h">Тарифы</div>'

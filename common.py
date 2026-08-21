@@ -1869,12 +1869,49 @@ def _build_catalog_payload() -> dict:
     return _out
 
 
+# Официальные логотипы: сервер сам скачивает SVG (Simple Icons) и кэширует —
+# мини-аппка рендерит их inline, без внешних запросов (в Telegram-вебвью они не блокируются).
+_LOGO_SLUG = {
+    'chatgpt':'openai', 'claude':'claude', 'grok':'grok', 'perplexity':'perplexity', 'zoom':'zoom',
+    'midjourney':'midjourney', 'canva':'canva', 'suno':'suno', 'spotify':'spotify', 'elevenlabs':'elevenlabs',
+    'cursor':'cursor', 'telegram':'telegram', 'youtube':'youtube', 'lovable':'lovable', 'appstore':'apple',
+    'gemini':'googlegemini', 'capcut':'capcut', 'runway':'', 'gamma':'', 'openrouter':'', 'heygen':'',
+    'kling':'', 'manus':'', 'z.ai':'', 'spotify_':'spotify',
+}
+_LOGO_CACHE = {}
+async def _get_logo_svg(slug: str) -> str:
+    if not slug:
+        return ""
+    if slug in _LOGO_CACHE:
+        return _LOGO_CACHE[slug]
+    _svg = ""
+    try:
+        async with aiohttp.ClientSession() as _s:
+            async with _s.get(f"https://cdn.simpleicons.org/{slug}/white",
+                              timeout=aiohttp.ClientTimeout(total=5)) as _r:
+                if _r.status == 200:
+                    _t = await _r.text()
+                    if _t.strip().startswith("<svg"):
+                        _svg = _t.strip()
+    except Exception:
+        _svg = ""
+    _LOGO_CACHE[slug] = _svg
+    return _svg
+
+
 async def _inject_recs(html: str, exclude_key: str) -> str:
     """Вставляет window.__RECS__ / __CATALOG__ / __BOT__ в <head> мини-аппки."""
     import json as _json
     try:
         _recs = await _build_recs_payload(exclude_key=exclude_key)
         _cat = _build_catalog_payload()
+        # Вшиваем официальные логотипы (inline SVG) в каталог и в ленту
+        _logo_by_key = {}
+        for _k in _cat.keys():
+            _logo_by_key[_k] = await _get_logo_svg(_LOGO_SLUG.get(_k, ""))
+            _cat[_k]["logo"] = _logo_by_key[_k]
+        for _it in _recs:
+            _it["logo"] = _logo_by_key.get(_it.get("key"), "")
         _uname = await _get_bot_uname()
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
@@ -2245,12 +2282,26 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         try:
             _pl = s["plans"][idx].get("name", "")
             _onum = f"#{_num}" if _num else order_id
+            # данные клиента для админского уведомления
+            _uname = ""
+            try:
+                async with pool.acquire() as _c2:
+                    _urow = await _c2.fetchrow("SELECT username FROM users WHERE user_id=$1", int(uid))
+                _uname = (_urow["username"] if _urow else "") or ""
+            except Exception:
+                _uname = ""
+            _who = (f"@{_uname}" if _uname else "без username") + f" (<code>{uid}</code>)"
             await bot.send_message(
                 ADMIN_ID,
-                f"🛒 <b>Новый заказ {_onum}</b> (мини-апп)\n"
-                f"{s.get('name', key)} {_pl}\n💵 Сумма: <b>{price}₽</b>\n"
+                f"🛒 <b>Новый заказ {_onum}</b>\n\n"
+                f"👤 {_who}\n"
+                f"📦 {s.get('name', key)} {_pl}\n"
+                f"💵 Сумма: <b>{price}₽</b>\n"
                 f"💳 Способ: {'Карта' if method == 'card' else 'СБП'}\n"
-                f"🆔 <code>{order_id}</code>\n\n⏳ Ожидает оплаты",
+                f"🧾 Заказ: <code>{_onum}</code>\n"
+                f"🆔 <code>{order_id}</code>\n\n"
+                f"⏳ <b>Статус: ожидает оплаты</b>\n"
+                f"<i>Оформлено через мини-приложение</i>",
                 parse_mode="HTML")
         except Exception:
             pass

@@ -113,6 +113,17 @@ async def cmd_start(message: Message, state: FSMContext):
                 await message.answer(_t, reply_markup=_kb, parse_mode="HTML")
         except Exception as _e:
             logging.error(f"deep-link shop_{_svc_key}: {_e}")
+    # Deep-link App Store / iCloud из мини-аппки → выбор региона (NS Gifts)
+    elif len(parts) > 1 and parts[1] == "nsgapple":
+        try:
+            await message.answer(
+                "🍎 <b>Пополнение App Store / iCloud</b>\n\n"
+                "Нажми кнопку — выберешь регион своего Apple ID и сумму пополнения 👇",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🍎 Выбрать регион", callback_data="nsg_start")]]))
+        except Exception as _e:
+            logging.error(f"deep-link nsgapple: {_e}")
 
 
 @dp.callback_query(F.data == "show_profile")
