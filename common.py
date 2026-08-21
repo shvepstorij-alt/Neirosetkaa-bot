@@ -1882,20 +1882,27 @@ _LOGO_CACHE = {}
 async def _get_logo_svg(slug: str) -> str:
     if not slug:
         return ""
-    if slug in _LOGO_CACHE:
+    if _LOGO_CACHE.get(slug):        # кэшируем ТОЛЬКО успешный результат (пустой — повторим позже)
         return _LOGO_CACHE[slug]
     _svg = ""
-    try:
-        async with aiohttp.ClientSession() as _s:
-            async with _s.get(f"https://cdn.simpleicons.org/{slug}/white",
-                              timeout=aiohttp.ClientTimeout(total=5)) as _r:
-                if _r.status == 200:
-                    _t = await _r.text()
-                    if _t.strip().startswith("<svg"):
-                        _svg = _t.strip()
-    except Exception:
-        _svg = ""
-    _LOGO_CACHE[slug] = _svg
+    # Два источника: если один недоступен с сервера — берём со второго.
+    _urls = [
+        f"https://cdn.simpleicons.org/{slug}/white",
+        f"https://cdn.jsdelivr.net/npm/simple-icons/icons/{slug}.svg",
+    ]
+    for _u in _urls:
+        try:
+            async with aiohttp.ClientSession() as _s:
+                async with _s.get(_u, timeout=aiohttp.ClientTimeout(total=6)) as _r:
+                    if _r.status == 200:
+                        _t = (await _r.text()).strip()
+                        if _t.startswith("<svg"):
+                            _svg = _t
+                            break
+        except Exception:
+            continue
+    if _svg:
+        _LOGO_CACHE[slug] = _svg
     return _svg
 
 
