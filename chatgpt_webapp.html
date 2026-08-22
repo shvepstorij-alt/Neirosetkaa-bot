@@ -945,33 +945,64 @@ function _recsData() {
            : (Object.keys(window.__CATALOG__||{}).length ? _catList() : RECS_FALLBACK);
   return list.filter(function(x){ return x && x.key && x.key !== CURRENT_SVC; });
 }
+function _recCard(x){
+  var price = x.from ? ('от ' + x.from + '₽') : '';
+  return '<div class="rec-card">'
+    + '<div class="ic" style="background:' + _tileBg2(x.key, x.logo) + '">' + _iconHtml(x.logo, x.name) + '</div>'
+    + '<div class="nm">' + x.name + '</div>'
+    + '<div class="pr">' + price + '</div>'
+    + '<div class="go" onclick="openRec(\'' + _esc1(x.key) + '\')">Оформить</div>'
+    + '</div>';
+}
+function _setupLoop(track){
+  requestAnimationFrame(function(){
+    var w = track.scrollWidth / 3;
+    if (!w) return;
+    track.scrollLeft = w;                     // старт со среднего набора
+    if (track._loopBound) return;
+    track._loopBound = true;
+    var ticking = false;
+    track.addEventListener('scroll', function(){
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function(){
+        var ww = track.scrollWidth / 3;
+        if (ww){
+          if (track.scrollLeft < ww * 0.5) track.scrollLeft += ww;
+          else if (track.scrollLeft > ww * 1.5) track.scrollLeft -= ww;
+        }
+        ticking = false;
+      });
+    }, {passive:true});
+  });
+}
 function renderRecs() {
   var box = document.getElementById('rec-box'), track = document.getElementById('rec-track');
   if (!box || !track) return;
   var items = _recsData();
   if (!items.length) { box.style.display = 'none'; return; }
-  track.innerHTML = items.map(function(x){
-    var price = x.from ? ('от ' + x.from + '₽') : '';
-    return '<div class="rec-card">'
-      + '<div class="ic" style="background:' + _tileBg2(x.key, x.logo) + '">' + _iconHtml(x.logo, x.name) + '</div>'
-      + '<div class="nm">' + x.name + '</div>'
-      + '<div class="pr">' + price + '</div>'
-      + '<div class="go" onclick="openRec(\'' + _esc1(x.key) + '\')">Оформить</div>'
-      + '</div>';
-  }).join('');
+  var loop = items.length >= 3;               // зацикливаем, если карточек достаточно
+  var seq = loop ? items.concat(items).concat(items) : items;
+  track.innerHTML = seq.map(_recCard).join('');
   box.style.display = '';
+  if (loop) _setupLoop(track);
 }
 // «Оформить» в ленте → карточка сервиса ВНУТРИ мини-аппки
 function openRec(key){ openCard(key); }
+function _isAppStore(key, name){
+  var s = ((key||'') + ' ' + (name||'')).toLowerCase().replace(/[^a-z]/g,'');
+  return s.indexOf('appstore') >= 0 || s.indexOf('icloud') >= 0;
+}
 function openCard(key){
+  var c = (window.__CATALOG__ || {})[key];
+  var _nm = (c && c.name) || key;
   // App Store / iCloud — пополнение через NS Gifts требует выбора региона: ведём в бота
-  if (key === 'appstore') {
+  if (_isAppStore(key, _nm)) {
     var au = 'https://t.me/' + BOT_USERNAME + '?start=nsgapple';
     try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(au); return; } } catch(e) {}
     try { window.open(au, '_blank'); } catch(e) {}
     return;
   }
-  var c = (window.__CATALOG__ || {})[key];
   var body = document.getElementById('svc-card-body');
   if (!body) return;
   if (!c) { // нет данных каталога — открываем сервис в боте
