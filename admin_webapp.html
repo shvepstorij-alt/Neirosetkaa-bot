@@ -637,6 +637,12 @@ function _bnEdit(b,i){var bn=window._bnList[i];if(!bn){window._bnEditIdx=null;_b
     +'<div class="kv" style="margin-top:8px"><span class="k">Фон (цвет/градиент CSS)</span></div><input class="f" placeholder="linear-gradient(135deg,#10a37f,#0c7d61)" value="'+esc(bn.bg||'')+'" oninput="window._bnList['+i+'].bg=this.value;_bnPreview('+i+')">'
     +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="tag g" style="cursor:pointer;padding:6px 10px">Загрузить картинку<input type="file" accept="image/*" style="display:none" onchange="_bnImg('+i+',this)"></label>'
     +(bn.img?'<span class="tag a">картинка есть</span><span class="tag r" style="cursor:pointer" onclick="window._bnList['+i+'].img=\'\';_bnRender()">убрать</span>':'<span class="sub">картинка перекрывает фон-цвет</span>')+'</div>'
+    +'<div class="kv" style="margin-top:10px"><span class="k">Высота баннера</span></div>'
+    +'<div style="display:flex;gap:8px">'+[['S',110],['M',150],['L',210]].map(function(o){return '<span class="tag '+(((bn.h||110)===o[1])?'g':'a')+'" style="cursor:pointer;padding:6px 16px" onclick="window._bnList['+i+'].h='+o[1]+';_bnRender()">'+o[0]+'</span>';}).join('')+'</div>'
+    +'<div class="kv" style="margin-top:10px"><span class="k">Цвет текста</span></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+      +['#ffffff','#111111','#ffe08a','#ff6b6b','#7dd3fc','#a3e635'].map(function(c){return '<span onclick="window._bnList['+i+'].tc=\''+c+'\';_bnPreview('+i+')" style="width:26px;height:26px;border-radius:50%;background:'+c+';cursor:pointer;border:2px solid rgba(255,255,255,.25)"></span>';}).join('')
+      +'<input class="f" style="max-width:120px" placeholder="#RRGGBB" value="'+esc(bn.tc||'')+'" oninput="window._bnList['+i+'].tc=this.value;_bnPreview('+i+')"></div>'
     +'<div class="kv" style="margin-top:10px"><span class="k">Действие по тапу</span></div>'
     +'<select class="f" onchange="window._bnList['+i+'].act=this.value;window._bnList['+i+'].val=\'\';_bnRender()">'
       +'<option value="url"'+(bn.act==='url'?' selected':'')+'>Ссылка</option>'
@@ -650,11 +656,12 @@ function _bnEdit(b,i){var bn=window._bnList[i];if(!bn){window._bnEditIdx=null;_b
 function _bnPreview(i){
   var host=document.getElementById('bprev'); if(!host) return; var b=window._bnList[i]; if(!b) return;
   var ex=(b.ex!=null?b.ex:5), ey=(b.ey!=null?b.ey:28), tx=(b.tx!=null?b.tx:22), ty=(b.ty!=null?b.ty:24);
+  var h=(b.h?b.h:110), tc=b.tc||'#ffffff';
   var bgstyle = b.img ? '' : ('background:'+(b.bg||'linear-gradient(135deg,#10a37f,#0c7d61)')+';');
-  host.style.cssText='position:relative;height:110px;border-radius:16px;overflow:hidden;color:#fff;margin-top:6px;'+bgstyle;
+  host.style.cssText='position:relative;height:'+h+'px;border-radius:16px;overflow:hidden;color:'+tc+';margin-top:6px;'+bgstyle;
   host.innerHTML=(b.img?'<div style="position:absolute;inset:0;background-size:cover;background-position:center;background-image:url(\''+b.img+'\')"></div><div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05))"></div>':'')
     +'<div id="bp-emoji" style="position:absolute;z-index:3;left:'+ex+'%;top:'+ey+'%;font-size:34px;cursor:move;touch-action:none">'+(b.emoji||'')+'</div>'
-    +'<div id="bp-text" style="position:absolute;z-index:3;left:'+tx+'%;top:'+ty+'%;max-width:74%;cursor:move;touch-action:none"><div style="font-weight:800;font-size:15px">'+esc(b.title||'')+'</div><div style="font-size:11px;opacity:.9">'+esc(b.sub||'')+'</div></div>';
+    +'<div id="bp-text" style="position:absolute;z-index:3;left:'+tx+'%;top:'+ty+'%;max-width:74%;cursor:move;touch-action:none;color:'+tc+'"><div style="font-weight:800;font-size:15px">'+esc(b.title||'')+'</div><div style="font-size:11px;opacity:.9">'+esc(b.sub||'')+'</div></div>';
   _bnDrag('bp-emoji', function(x,y){b.ex=x;b.ey=y;});
   _bnDrag('bp-text', function(x,y){b.tx=x;b.ty=y;});
 }
@@ -673,7 +680,42 @@ function _bnToggle(i){window._bnList[i].on=!window._bnList[i].on;_bnRender();}
 function _bnMove(i,d){var L=window._bnList;var j=i+d;if(j<0||j>=L.length)return;var t=L[i];L[i]=L[j];L[j]=t;_bnRender();}
 function _bnDel(i){window._bnList.splice(i,1);if(window._bnEditIdx!==null)window._bnEditIdx=null;_bnRender();}
 function _bnAdd(){window._bnList.push({id:'',on:true,title:'Новый баннер',sub:'',emoji:'🔥',bg:'linear-gradient(135deg,#10a37f,#0c7d61)',img:'',act:'url',val:''});window._bnEditIdx=window._bnList.length-1;_bnRender();}
-function _bnImg(i,input){var f=input.files&&input.files[0];if(!f)return;var r=new FileReader();r.onload=function(){var img=new Image();img.onload=function(){var mw=640;var sc=Math.min(1,mw/img.width);var w=Math.round(img.width*sc),h=Math.round(img.height*sc);var c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);window._bnList[i].img=c.toDataURL('image/jpeg',0.85);toast('Картинка добавлена');_bnRender();};img.src=r.result;};r.readAsDataURL(f);}
+function _bnImg(i,input){var f=input.files&&input.files[0];if(!f)return;var r=new FileReader();r.onload=function(){_openBannerCropper(r.result,i);};r.readAsDataURL(f);}
+function _openBannerCropper(src,i){
+  var b=window._bnList[i]; var h=(b.h||110); var RW=340; var Vw=300, Vh=Math.max(60,Math.round(Vw*h/RW));
+  var ov=document.createElement('div');ov.id='bcropov';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML='<div style="color:#fff;font-weight:700;margin-bottom:12px">Выбери область баннера</div>'
+    +'<div id="bcvp" style="width:'+Vw+'px;height:'+Vh+'px;overflow:hidden;border-radius:14px;position:relative;background:#fff;touch-action:none;box-shadow:0 0 0 2px rgba(255,255,255,.3)"><img id="bcimg" style="position:absolute;left:0;top:0;pointer-events:none;-webkit-user-drag:none" src="'+src+'"></div>'
+    +'<input id="bczoom" type="range" min="100" max="300" value="100" style="width:'+Vw+'px;margin:16px 0">'
+    +'<div style="display:flex;gap:10px;width:'+Vw+'px"><button class="btn sec" style="flex:1" onclick="_bcCancel()">Отмена</button><button class="btn" style="flex:1" onclick="_bcSave()">Готово</button></div>';
+  document.body.appendChild(ov);
+  window._bcrop={Vw:Vw,Vh:Vh,i:i,offx:0,offy:0,scale:1,base:1,w0:0,h0:0};
+  var img=document.getElementById('bcimg');
+  function ready(){var st=window._bcrop;st.w0=img.naturalWidth||1;st.h0=img.naturalHeight||1;
+    st.base=Math.max(Vw/st.w0,Vh/st.h0);st.scale=st.base;
+    st.offx=(Vw-st.w0*st.scale)/2;st.offy=(Vh-st.h0*st.scale)/2;_bcClamp();_bcRender();}
+  img.onload=ready; if(img.complete&&img.naturalWidth) ready();
+  _bcDrag();
+}
+function _bcClamp(){var st=window._bcrop;var w=st.w0*st.scale,h=st.h0*st.scale;st.offx=Math.min(0,Math.max(st.Vw-w,st.offx));st.offy=Math.min(0,Math.max(st.Vh-h,st.offy));}
+function _bcRender(){var st=window._bcrop;var img=document.getElementById('bcimg');if(!img)return;img.style.width=(st.w0*st.scale)+'px';img.style.height=(st.h0*st.scale)+'px';img.style.left=st.offx+'px';img.style.top=st.offy+'px';}
+function _bcZoom(z){var st=window._bcrop;var cx=(st.Vw/2-st.offx)/st.scale,cy=(st.Vh/2-st.offy)/st.scale;st.scale=st.base*z;st.offx=st.Vw/2-cx*st.scale;st.offy=st.Vh/2-cy*st.scale;_bcClamp();_bcRender();}
+function _bcDrag(){var vp=document.getElementById('bcvp');if(!vp)return;var st=window._bcrop;var d=false,px=0,py=0;
+  vp.addEventListener('pointerdown',function(e){d=true;px=e.clientX;py=e.clientY;try{vp.setPointerCapture(e.pointerId);}catch(x){}});
+  vp.addEventListener('pointermove',function(e){if(!d)return;st.offx+=e.clientX-px;st.offy+=e.clientY-py;px=e.clientX;py=e.clientY;_bcClamp();_bcRender();});
+  vp.addEventListener('pointerup',function(){d=false;});vp.addEventListener('pointercancel',function(){d=false;});
+  var z=document.getElementById('bczoom');if(z)z.addEventListener('input',function(){_bcZoom(this.value/100);});}
+function _bcCancel(){var o=document.getElementById('bcropov');if(o)o.remove();window._bcrop=null;}
+function _bcSave(){var st=window._bcrop;if(!st)return;var img=document.getElementById('bcimg');
+  var sSizeX=st.Vw/st.scale,sSizeY=st.Vh/st.scale,sx=-st.offx/st.scale,sy=-st.offy/st.scale;
+  sSizeX=Math.min(sSizeX,st.w0);sSizeY=Math.min(sSizeY,st.h0);
+  sx=Math.max(0,Math.min(sx,st.w0-sSizeX));sy=Math.max(0,Math.min(sy,st.h0-sSizeY));
+  var outW=680,outH=Math.round(outW*st.Vh/st.Vw);
+  var c=document.createElement('canvas');c.width=outW;c.height=outH;var ctx=c.getContext('2d');
+  try{ctx.drawImage(img,sx,sy,sSizeX,sSizeY,0,0,outW,outH);}catch(e){}
+  var i=st.i;var uri=c.toDataURL('image/jpeg',0.85);_bcCancel();
+  window._bnList[i].img=uri;toast('Картинка обрезана');_bnRender();}
 function _bnSave(){toast('Сохраняю…');api('/api/admin/banners-save',{banners:window._bnList||[]}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');});}
 
 function priceShop(){

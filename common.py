@@ -2670,6 +2670,8 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
                 "val": str(_b.get("val", ""))[:300],
                 "tx": _num(_b.get("tx")), "ty": _num(_b.get("ty")),
                 "ex": _num(_b.get("ex")), "ey": _num(_b.get("ey")),
+                "tc": str(_b.get("tc", ""))[:24],
+                "h": (max(80, min(320, int(_b["h"]))) if str(_b.get("h", "")).strip().lstrip("-").isdigit() else None),
             })
         await set_setting("shop_banners", _j.dumps(_out, ensure_ascii=False))
         return web.json_response({"ok": True})
