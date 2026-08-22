@@ -25,6 +25,17 @@
   .tgbar{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px 0}
   .pill{font-size:12px;font-weight:600;color:#fff;background:rgba(120,124,138,.34);border:none;border-radius:15px;padding:7px 11px}
 
+  /* Баннеры */
+  .banners{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 2px 14px;scrollbar-width:none}
+  .banners::-webkit-scrollbar{height:0}
+  .banner{flex:0 0 92%;scroll-snap-align:center;min-height:104px;border-radius:16px;overflow:hidden;position:relative;cursor:pointer;display:flex;align-items:center;padding:14px;color:#fff;background:linear-gradient(135deg,#10a37f,#0c7d61)}
+  .banner:active{transform:scale(.99)}
+  .banner .b-bg{position:absolute;inset:0;background-size:cover;background-position:center;z-index:0}
+  .banner .b-shade{position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05));z-index:1}
+  .banner .b-content{position:relative;z-index:2;display:flex;align-items:center}
+  .banner .b-emoji{font-size:38px;margin-right:12px}
+  .banner .b-tt{font-size:16px;font-weight:800;line-height:1.15}
+  .banner .b-sub{font-size:12px;opacity:.92;margin-top:3px}
   .hero{padding:6px 2px 12px}
   .hero h1{font-size:23px;font-weight:800}
   .hero p{color:var(--text2);font-size:13px;margin-top:3px}
@@ -107,6 +118,7 @@
   <div class="tgbar"><span class="pill" onclick="_kbHide()">⌨️ Скрыть</span><span class="pill" onclick="_min()">🔽 Свернуть</span></div>
   <div class="wrap">
     <div class="hero"><h1>🛍 Магазин</h1><p>Подписки на ИИ-сервисы и пополнение App Store</p></div>
+    <div class="banners" id="banners" style="display:none"></div>
     <div class="chips" id="chips"></div>
     <div class="grid" id="grid"></div>
   </div>
@@ -163,6 +175,29 @@ function _api(path, body){
   body = body||{}; try{ body.initData=(tg&&tg.initData)?tg.initData:''; }catch(e){ body.initData=''; }
   return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});
+}
+
+/* ─── Баннеры ─── */
+function renderBanners(){
+  var el=document.getElementById('banners'); if(!el) return;
+  var B=window.__BANNERS__||[];
+  if(!B.length){ el.style.display='none'; return; }
+  el.style.display='';
+  el.innerHTML=B.map(function(b,i){
+    var bg = b.img ? '<div class="b-bg" data-img="'+i+'"></div><div class="b-shade"></div>' : '';
+    var st = (!b.img && b.bg) ? (' style="background:'+b.bg+'"') : '';
+    return '<div class="banner"'+st+' onclick="bannerTap('+i+')">'+bg
+      +'<div class="b-content">'+(b.emoji?'<div class="b-emoji">'+b.emoji+'</div>':'')
+      +'<div><div class="b-tt">'+(b.title||'')+'</div>'+(b.sub?'<div class="b-sub">'+b.sub+'</div>':'')+'</div></div></div>';
+  }).join('');
+  var bgs=el.querySelectorAll('.b-bg');
+  for(var i=0;i<bgs.length;i++){ var idx=+bgs[i].getAttribute('data-img'); var im=(B[idx]&&B[idx].img)||''; if(im) bgs[i].style.backgroundImage='url("'+im+'")'; }
+}
+function bannerTap(i){
+  var b=(window.__BANNERS__||[])[i]; if(!b) return;
+  if(b.act==='svc' && b.val){ openCard(b.val); }
+  else if(b.act==='cat' && b.val){ setCat(b.val); window.scrollTo(0,0); }
+  else if(b.act==='url' && b.val){ try{ if(tg&&tg.openLink){ tg.openLink(b.val); return; } }catch(e){} try{ window.open(b.val,'_blank'); }catch(e){} }
 }
 
 /* ─── Главная: категории + сетка ─── */
@@ -284,12 +319,46 @@ function chooseMethod(btn,key,idx){
 function payVia(el,key,idx,method){
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
   _api('/api/shop/pay',{key:key,planIdx:idx,method:method}).then(function(d){
-    if(d&&d.ok&&d.url){ row.innerHTML='<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>'; _openPay(encodeURIComponent(d.url)); }
+    if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
     else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':'Не получилось. Попробуй ещё раз';
       row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'; }
   });
 }
 function _openPay(enc){ var url=decodeURIComponent(enc); try{if(tg&&tg.openLink){tg.openLink(url);return;}}catch(e){} try{window.open(url,'_blank');}catch(e){} }
+/* Экран/логика статуса оплаты */
+var _watchTimer=null;
+function _afterPay(row,url,orderId){
+  row.innerHTML='<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(url)+'\')">Перейти к оплате ↗</div>'
+    +'<div id="paystatus" class="pm-wait">Ожидаю оплату… После оплаты вернись сюда.</div>'
+    +'<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="_checkOrder(\''+_esc1(orderId)+'\')">Проверить оплату</div>';
+  _openPay(encodeURIComponent(url));
+  _watchOrder(orderId,0);
+}
+function _watchOrder(orderId,tries){
+  if(_watchTimer) clearTimeout(_watchTimer);
+  if(tries>45) return;
+  _watchTimer=setTimeout(function(){
+    _api('/api/order/status',{orderId:orderId}).then(function(d){
+      if(d&&d.ok&&d.paid){ _paySuccess(); } else { _watchOrder(orderId,tries+1); }
+    });
+  },4000);
+}
+function _checkOrder(orderId){
+  var s=document.getElementById('paystatus'); if(s)s.textContent='Проверяю…';
+  _api('/api/order/status',{orderId:orderId}).then(function(d){
+    if(d&&d.ok&&d.paid){ _paySuccess(); }
+    else{ var s2=document.getElementById('paystatus'); if(s2)s2.textContent='Оплата пока не найдена. Если оплатил — подожди минуту и нажми ещё раз.'; }
+  });
+}
+function _paySuccess(){
+  if(_watchTimer) clearTimeout(_watchTimer);
+  var body=document.getElementById('card-body'); if(!body) return;
+  body.innerHTML='<div style="text-align:center;padding:34px 10px">'
+    +'<div style="font-size:60px;line-height:1">✅</div>'
+    +'<div style="font-size:22px;font-weight:800;margin:12px 0 6px">Оплата прошла!</div>'
+    +'<div class="card-desc">Заказ активируется автоматически — доступ/код придёт в чат бота.</div>'
+    +'<div class="plan-buy" onclick="showHome()">Вернуться в каталог</div></div>';
+}
 
 /* ─── App Store (NS Gifts) ─── */
 function _appstoreLogo(){ for(var k in CATALOG){ if(_isAppStore(k,CATALOG[k].name)) return CATALOG[k].logo||''; } return ''; }
@@ -333,7 +402,7 @@ function asMethod(btn,catId,serviceId){
 function asPay(el,catId,serviceId,method){
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
   _api('/api/appstore/pay',{catId:catId,serviceId:serviceId,method:method}).then(function(d){
-    if(d&&d.ok&&d.url){ row.innerHTML='<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>'; _openPay(encodeURIComponent(d.url)); }
+    if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
     else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':(d&&d.error==='unavailable')?'Сервис временно недоступен':'Не получилось. Попробуй ещё раз'; row.innerHTML='<div class="pm-err">'+m+'</div>'; }
   });
 }
@@ -351,7 +420,14 @@ function _init(){
   try{ var _a=_getAccent(); if(_a) _applyAccent(_a); }catch(e){}
   CATALOG=window.__CATALOG__||{}; CATS=window.__CATEGORIES__||[]; RECS=window.__RECS__||[];
   BOT_USERNAME=window.__BOT__||BOT_USERNAME;
-  renderChips(); renderGrid();
+  renderBanners(); renderChips(); renderGrid();
+  // Deep-link: открыть сразу карточку сервиса (?svc=key или startapp=svc_key)
+  try{
+    var _svc='';
+    var _m=location.search.match(/[?&]svc=([^&]+)/); if(_m) _svc=decodeURIComponent(_m[1]);
+    if(!_svc){ var _sp=(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.start_param)||''; if(_sp.indexOf('svc_')===0) _svc=_sp.slice(4); }
+    if(_svc && (CATALOG[_svc] || _isAppStore(_svc,''))) setTimeout(function(){ openCard(_svc); },60);
+  }catch(e){}
 }
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_init); else _init();
 </script>

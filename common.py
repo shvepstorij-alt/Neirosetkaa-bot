@@ -2043,6 +2043,16 @@ async def _shop_cat_map() -> dict:
     return _amap
 
 
+async def _shop_banners() -> list:
+    """Баннеры/акции магазина (JSON-список из настройки shop_banners)."""
+    try:
+        import json as _j
+        _v = _j.loads(await get_setting("shop_banners", "") or "[]")
+        return _v if isinstance(_v, list) else []
+    except Exception:
+        return []
+
+
 async def _build_shop_categories() -> list:
     """Категории магазина по meta+map. Возвращает [{id,emoji,name,keys}]."""
     _meta = await _shop_cats_meta()
@@ -2107,9 +2117,14 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                     _c["keys"].sort(key=lambda k: _oidx2.get(k, 10**6))
         except Exception:
             _cats = []
+        try:
+            _banners = [_b for _b in await _shop_banners() if _b.get("on")]
+        except Exception:
+            _banners = []
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
+                + ";window.__BANNERS__=" + _json.dumps(_banners, ensure_ascii=False)
                 + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
         if "</head>" in html:
             return html.replace("</head>", _tag + "</head>", 1)
@@ -2591,6 +2606,67 @@ async def api_admin_logos_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "services": _out})
     except Exception as _e:
         logging.error(f"api_admin_logos: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_banners_handler(request: web.Request) -> web.Response:
+    """Баннеры + справочники (категории, сервисы) для выбора действия. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _banners = await _shop_banners()
+        _cats = await _build_shop_categories()
+        _categories = [{"id": _c["id"], "name": _c["name"]} for _c in _cats]
+        _services = [{"key": _k, "name": _s.get("name", _k)}
+                     for _k, _s in SHOP_CATALOG.items() if _s.get("plans")]
+        return web.json_response({"ok": True, "banners": _banners,
+                                  "categories": _categories, "services": _services})
+    except Exception as _e:
+        logging.error(f"api_admin_banners: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
+    """Сохранение баннеров (JSON-список shop_banners). Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        import json as _j, time as _t
+        _items = body.get("banners") or []
+        _out = []
+        for _i, _b in enumerate(_items):
+            if not isinstance(_b, dict):
+                continue
+            _img = str(_b.get("img", "") or "")
+            if _img and (not _img.startswith("data:image/") or len(_img) > 500000):
+                _img = ""
+            _act = str(_b.get("act", "url"))
+            if _act not in ("svc", "cat", "url"):
+                _act = "url"
+            _id = str(_b.get("id") or "").strip() or ("b%d_%d" % (int(_t.time()), _i))
+            _out.append({
+                "id": _id,
+                "on": bool(_b.get("on", True)),
+                "title": str(_b.get("title", ""))[:80],
+                "sub": str(_b.get("sub", ""))[:140],
+                "emoji": str(_b.get("emoji", ""))[:8],
+                "bg": str(_b.get("bg", ""))[:120],
+                "img": _img,
+                "act": _act,
+                "val": str(_b.get("val", ""))[:300],
+            })
+        await set_setting("shop_banners", _j.dumps(_out, ensure_ascii=False))
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_banners_save: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -6154,8 +6230,11 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/logos", api_admin_logos_handler)
     app.router.add_post("/api/admin/logo-save", api_admin_logo_save_handler)
     app.router.add_post("/api/admin/logo-del", api_admin_logo_del_handler)
+    app.router.add_post("/api/admin/banners", api_admin_banners_handler)
+    app.router.add_post("/api/admin/banners-save", api_admin_banners_save_handler)
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
     app.router.add_post("/api/cabinet", api_cabinet_handler)
+    app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
     app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
     app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
@@ -8368,6 +8447,35 @@ def _pack_label(pack: str) -> str:
     except Exception:
         pass
     return "Заказ"
+
+
+async def api_order_status_handler(request: web.Request) -> web.Response:
+    """Статус заказа для экрана «оплата прошла» в мини-аппке. Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _oid = str(body.get("orderId", "")).strip()
+        if not _oid:
+            return web.json_response({"ok": False, "error": "bad"}, status=400)
+        _paid = False
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                _row = await conn.fetchrow(
+                    "SELECT status, user_id FROM fk_orders WHERE order_id=$1", _oid)
+            if _row and int(_row["user_id"]) == int(uid):
+                _paid = (_row["status"] == "paid")
+        except Exception as _qe:
+            logging.error(f"api_order_status q: {_qe}")
+        return web.json_response({"ok": True, "paid": _paid})
+    except Exception as _e:
+        logging.error(f"api_order_status: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
 async def api_cabinet_handler(request: web.Request) -> web.Response:

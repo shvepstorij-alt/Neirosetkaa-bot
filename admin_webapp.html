@@ -150,7 +150,7 @@ function home(){
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
-   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["🤝","Рефералка","Премиум-рефералка"]]],
+   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
@@ -602,6 +602,54 @@ function _cropSave(){var st=window._crop;if(!st)return;var img=document.getEleme
   api('/api/admin/logo-save',{key:key,dataUri:uri}).then(function(d){toast(d&&d.ok?'Готово ✅':'Ошибка');open2('Логотипы сервисов');});
 }
 function _logoDel(key){toast('Удаляю…');api('/api/admin/logo-del',{key:key}).then(function(d){toast(d&&d.ok?'Сброшено ✅':'Ошибка');open2('Логотипы сервисов');});}
+
+/* Баннеры/акции на главной приложения */
+SCREENS["Баннеры"]=function(){setTimeout(_bnLoad,30);
+  return hdr("Баннеры","реклама на главной приложения")+'<div class="wrap"><div id="bnbody"><div class="note">Загружаю…</div></div></div>';};
+window._bnList=[];window._bnCats=[];window._bnSvcs=[];window._bnEditIdx=null;
+function _bnLoad(){api('/api/admin/banners').then(function(d){var b=document.getElementById('bnbody');if(!b)return;if(!d||!d.ok){b.innerHTML='<div class="note">Ошибка</div>';return;}window._bnList=d.banners||[];window._bnCats=d.categories||[];window._bnSvcs=d.services||[];window._bnEditIdx=null;_bnRender();});}
+function _bnRender(){var b=document.getElementById('bnbody');if(!b)return;if(window._bnEditIdx===null)_bnList2(b);else _bnEdit(b,window._bnEditIdx);}
+function _bnList2(b){var L=window._bnList||[];
+  b.innerHTML='<div class="note">Баннеры показываются вверху главной. Тап открывает сервис/категорию/ссылку.</div>'
+    +L.map(function(bn,i){
+      return '<div class="row"><div style="flex:1"><div class="lbl2"'+(bn.on?'':' style="opacity:.45"')+'>'+esc((bn.emoji?bn.emoji+' ':'')+(bn.title||'Без названия'))+'</div><div class="sub">'+esc(bn.sub||'')+'</div></div>'
+        +'<span class="tag '+(bn.on?'g':'r')+'" style="cursor:pointer" onclick="_bnToggle('+i+')">'+(bn.on?'вкл':'выкл')+'</span>'
+        +'<span class="tag a" style="cursor:pointer;padding:4px 8px;margin-left:4px" onclick="_bnMove('+i+',-1)">▲</span>'
+        +'<span class="tag a" style="cursor:pointer;padding:4px 8px" onclick="_bnMove('+i+',1)">▼</span>'
+        +'<span class="tag a" style="cursor:pointer;margin-left:4px;padding:4px 8px" onclick="window._bnEditIdx='+i+';_bnRender()">✏️</span>'
+        +'<span class="tag r" style="cursor:pointer;margin-left:4px;padding:4px 8px" onclick="_bnDel('+i+')">✕</span></div>';
+    }).join('')
+    +'<button class="btn sec" style="margin-top:10px" onclick="_bnAdd()">➕ Добавить баннер</button>'
+    +'<button class="btn" style="margin-top:8px" onclick="_bnSave()">💾 Сохранить</button>';
+}
+function _bnEdit(b,i){var bn=window._bnList[i];if(!bn){window._bnEditIdx=null;_bnRender();return;}
+  var svcOpts=window._bnSvcs.map(function(s){return '<option value="'+esc(s.key)+'"'+(bn.act==='svc'&&bn.val===s.key?' selected':'')+'>'+esc(s.name)+'</option>';}).join('');
+  var catOpts=window._bnCats.map(function(c){return '<option value="'+esc(c.id)+'"'+(bn.act==='cat'&&bn.val===c.id?' selected':'')+'>'+esc(c.name)+'</option>';}).join('');
+  var actPicker = bn.act==='svc' ? ('<select class="f" style="margin-top:8px" onchange="window._bnList['+i+'].val=this.value"><option value="">— выбери сервис —</option>'+svcOpts+'</select>')
+    : bn.act==='cat' ? ('<select class="f" style="margin-top:8px" onchange="window._bnList['+i+'].val=this.value"><option value="">— выбери категорию —</option>'+catOpts+'</select>')
+    : ('<input class="f" style="margin-top:8px" placeholder="https://…" value="'+esc(bn.val||'')+'" oninput="window._bnList['+i+'].val=this.value">');
+  b.innerHTML='<div class="block">'
+    +'<div class="kv"><span class="k">Заголовок</span></div><input class="f" value="'+esc(bn.title||'')+'" oninput="window._bnList['+i+'].title=this.value">'
+    +'<div class="kv" style="margin-top:8px"><span class="k">Подзаголовок</span></div><input class="f" value="'+esc(bn.sub||'')+'" oninput="window._bnList['+i+'].sub=this.value">'
+    +'<div class="kv" style="margin-top:8px"><span class="k">Эмодзи</span></div><input class="f" style="max-width:90px" value="'+esc(bn.emoji||'')+'" oninput="window._bnList['+i+'].emoji=this.value">'
+    +'<div class="kv" style="margin-top:8px"><span class="k">Фон (цвет/градиент CSS)</span></div><input class="f" placeholder="linear-gradient(135deg,#10a37f,#0c7d61)" value="'+esc(bn.bg||'')+'" oninput="window._bnList['+i+'].bg=this.value">'
+    +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="tag g" style="cursor:pointer;padding:6px 10px">Загрузить картинку<input type="file" accept="image/*" style="display:none" onchange="_bnImg('+i+',this)"></label>'
+    +(bn.img?'<span class="tag a">картинка есть</span><span class="tag r" style="cursor:pointer" onclick="window._bnList['+i+'].img=\'\';_bnRender()">убрать</span>':'<span class="sub">картинка перекрывает фон-цвет</span>')+'</div>'
+    +'<div class="kv" style="margin-top:10px"><span class="k">Действие по тапу</span></div>'
+    +'<select class="f" onchange="window._bnList['+i+'].act=this.value;window._bnList['+i+'].val=\'\';_bnRender()">'
+      +'<option value="url"'+(bn.act==='url'?' selected':'')+'>Ссылка</option>'
+      +'<option value="svc"'+(bn.act==='svc'?' selected':'')+'>Сервис</option>'
+      +'<option value="cat"'+(bn.act==='cat'?' selected':'')+'>Категория</option></select>'
+    +actPicker+'</div>'
+    +'<button class="btn" style="margin-top:10px" onclick="window._bnEditIdx=null;_bnRender()">← К списку</button>'
+    +'<button class="btn sec" style="margin-top:8px" onclick="_bnSave()">💾 Сохранить всё</button>';
+}
+function _bnToggle(i){window._bnList[i].on=!window._bnList[i].on;_bnRender();}
+function _bnMove(i,d){var L=window._bnList;var j=i+d;if(j<0||j>=L.length)return;var t=L[i];L[i]=L[j];L[j]=t;_bnRender();}
+function _bnDel(i){window._bnList.splice(i,1);if(window._bnEditIdx!==null)window._bnEditIdx=null;_bnRender();}
+function _bnAdd(){window._bnList.push({id:'',on:true,title:'Новый баннер',sub:'',emoji:'🔥',bg:'linear-gradient(135deg,#10a37f,#0c7d61)',img:'',act:'url',val:''});window._bnEditIdx=window._bnList.length-1;_bnRender();}
+function _bnImg(i,input){var f=input.files&&input.files[0];if(!f)return;var r=new FileReader();r.onload=function(){var img=new Image();img.onload=function(){var mw=640;var sc=Math.min(1,mw/img.width);var w=Math.round(img.width*sc),h=Math.round(img.height*sc);var c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);window._bnList[i].img=c.toDataURL('image/jpeg',0.85);toast('Картинка добавлена');_bnRender();};img.src=r.result;};r.readAsDataURL(f);}
+function _bnSave(){toast('Сохраняю…');api('/api/admin/banners-save',{banners:window._bnList||[]}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');});}
 
 function priceShop(){
   setTimeout(loadPriceShop,0);
