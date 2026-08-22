@@ -2652,6 +2652,12 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
             if _act not in ("svc", "cat", "url"):
                 _act = "url"
             _id = str(_b.get("id") or "").strip() or ("b%d_%d" % (int(_t.time()), _i))
+
+            def _num(_x):
+                try:
+                    return max(0.0, min(100.0, float(_x)))
+                except Exception:
+                    return None
             _out.append({
                 "id": _id,
                 "on": bool(_b.get("on", True)),
@@ -2662,6 +2668,8 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
                 "img": _img,
                 "act": _act,
                 "val": str(_b.get("val", ""))[:300],
+                "tx": _num(_b.get("tx")), "ty": _num(_b.get("ty")),
+                "ex": _num(_b.get("ex")), "ey": _num(_b.get("ey")),
             })
         await set_setting("shop_banners", _j.dumps(_out, ensure_ascii=False))
         return web.json_response({"ok": True})

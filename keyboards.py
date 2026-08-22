@@ -304,7 +304,8 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="🛍️ Магазин")],
+        [KeyboardButton(text="🛒 Каталог", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/shop"))]
+            if WEBAPP_BASE_URL else [KeyboardButton(text="🛍️ Магазин")],
         [KeyboardButton(text="📷 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
     ]

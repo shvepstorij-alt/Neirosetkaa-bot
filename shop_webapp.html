@@ -186,9 +186,10 @@ function renderBanners(){
   el.innerHTML=B.map(function(b,i){
     var bg = b.img ? '<div class="b-bg" data-img="'+i+'"></div><div class="b-shade"></div>' : '';
     var st = (!b.img && b.bg) ? (' style="background:'+b.bg+'"') : '';
-    return '<div class="banner"'+st+' onclick="bannerTap('+i+')">'+bg
-      +'<div class="b-content">'+(b.emoji?'<div class="b-emoji">'+b.emoji+'</div>':'')
-      +'<div><div class="b-tt">'+(b.title||'')+'</div>'+(b.sub?'<div class="b-sub">'+b.sub+'</div>':'')+'</div></div></div>';
+    var ex=(b.ex!=null?b.ex:5), ey=(b.ey!=null?b.ey:28), tx=(b.tx!=null?b.tx:22), ty=(b.ty!=null?b.ty:24);
+    var em = b.emoji ? ('<div class="b-emoji" style="position:absolute;z-index:2;left:'+ex+'%;top:'+ey+'%">'+b.emoji+'</div>') : '';
+    var txt = '<div style="position:absolute;z-index:2;left:'+tx+'%;top:'+ty+'%;max-width:74%"><div class="b-tt">'+(b.title||'')+'</div>'+(b.sub?'<div class="b-sub">'+b.sub+'</div>':'')+'</div>';
+    return '<div class="banner"'+st+' onclick="bannerTap('+i+')">'+bg+em+txt+'</div>';
   }).join('');
   var bgs=el.querySelectorAll('.b-bg');
   for(var i=0;i<bgs.length;i++){ var idx=+bgs[i].getAttribute('data-img'); var im=(B[idx]&&B[idx].img)||''; if(im) bgs[i].style.backgroundImage='url("'+im+'")'; }
