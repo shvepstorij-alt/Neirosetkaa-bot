@@ -75,6 +75,26 @@
   .as-region:active{transform:scale(.97)}.as-region .as-flag{font-size:20px}
   .as-region .as-rname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .empty{color:var(--text2);text-align:center;padding:40px 10px;font-size:14px}
+  /* Вкладки снизу */
+  body{padding-bottom:66px}
+  .tabbar{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--bg2);border-top:1px solid var(--border);z-index:40}
+  .tabbar .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:9px 0 11px;font-size:11px;color:var(--text2);cursor:pointer}
+  .tabbar .tab .t-ic{font-size:20px;line-height:1}
+  .tabbar .tab.on{color:var(--green)}
+  .tabbar.hidden{display:none}
+  /* Кабинет */
+  .bal-row{display:flex;gap:10px;margin-bottom:14px}
+  .bal{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px}
+  .bal .v{font-size:22px;font-weight:800}
+  .bal .l{font-size:12px;color:var(--text2);margin-top:2px}
+  .block{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:12px}
+  .block h3{font-size:14px;font-weight:700;margin-bottom:8px}
+  .ref-link{font-size:12px;color:var(--green);word-break:break-all;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:9px 10px;margin-bottom:8px}
+  .ref-copy{background:var(--green);color:#fff;text-align:center;font-weight:700;font-size:13px;padding:10px;border-radius:10px;cursor:pointer}
+  .ord{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
+  .ord:last-child{border-bottom:none}
+  .ord .o-l{color:var(--text)}.ord .o-s{color:var(--text2);font-size:11px}
+  .ord .o-a{font-weight:700;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -88,9 +108,21 @@
   </div>
 </div>
 
+<div id="cabinet" class="screen">
+  <div class="wrap">
+    <div class="hero"><h1>👤 Кабинет</h1><p>Баланс, заказы и приглашения</p></div>
+    <div id="cabinet-body"><div class="pm-wait">Загружаю…</div></div>
+  </div>
+</div>
+
 <div id="card" class="screen">
   <div class="card-back" onclick="showHome()">‹</div>
   <div class="wrap"><div id="card-body"></div></div>
+</div>
+
+<div class="tabbar" id="tabbar">
+  <div class="tab on" id="tab-catalog" onclick="switchTab('catalog')"><span class="t-ic">🛍</span><span>Каталог</span></div>
+  <div class="tab" id="tab-cabinet" onclick="switchTab('cabinet')"><span class="t-ic">👤</span><span>Кабинет</span></div>
 </div>
 
 <script>
@@ -154,8 +186,59 @@ function renderGrid(){
 }
 
 /* ─── Карточка сервиса ─── */
-function showHome(){ document.getElementById('card').classList.remove('active'); document.getElementById('home').classList.add('active'); window.scrollTo(0,0); }
-function _showCard(){ document.getElementById('home').classList.remove('active'); document.getElementById('card').classList.add('active'); window.scrollTo(0,0); }
+function switchTab(which){
+  var tb=document.getElementById('tabbar'); if(tb) tb.classList.remove('hidden');
+  document.getElementById('card').classList.remove('active');
+  if(which==='cabinet'){
+    document.getElementById('home').classList.remove('active');
+    document.getElementById('cabinet').classList.add('active');
+    document.getElementById('tab-catalog').classList.remove('on');
+    document.getElementById('tab-cabinet').classList.add('on');
+    loadCabinet();
+  } else {
+    document.getElementById('cabinet').classList.remove('active');
+    document.getElementById('home').classList.add('active');
+    document.getElementById('tab-cabinet').classList.remove('on');
+    document.getElementById('tab-catalog').classList.add('on');
+  }
+  window.scrollTo(0,0);
+}
+function showHome(){ switchTab('catalog'); }
+function _showCard(){
+  document.getElementById('home').classList.remove('active');
+  document.getElementById('cabinet').classList.remove('active');
+  document.getElementById('card').classList.add('active');
+  var tb=document.getElementById('tabbar'); if(tb) tb.classList.add('hidden');
+  window.scrollTo(0,0);
+}
+function loadCabinet(){
+  var b=document.getElementById('cabinet-body'); if(!b) return;
+  b.innerHTML='<div class="pm-wait">Загружаю…</div>';
+  _api('/api/cabinet').then(function(d){
+    if(!d||!d.ok){ b.innerHTML='<div class="pm-err">Не удалось загрузить кабинет</div>'; return; }
+    var orders=(d.orders||[]).map(function(o){
+      return '<div class="ord"><div><div class="o-l">'+(o.label||'Заказ')+'</div>'
+        +'<div class="o-s">'+(o.num?('#'+o.num+' · '):'')+(o.date||'')+'</div></div>'
+        +'<div class="o-a">'+o.amount+'₽</div></div>';
+    }).join('') || '<div class="o-s">Заказов пока нет</div>';
+    b.innerHTML=
+      '<div class="bal-row">'
+      +'<div class="bal"><div class="v">'+(d.credits||0)+'</div><div class="l">кредитов</div></div>'
+      +'<div class="bal"><div class="v">'+(d.coins||0)+'₽</div><div class="l">монеток</div></div></div>'
+      +'<div class="block"><h3>👥 Пригласи друга</h3>'
+      +'<div class="o-s" style="margin-bottom:8px">Приглашено: '+(d.refCount||0)+' · за покупку друга — бонус на баланс</div>'
+      +(d.refLink?('<div class="ref-link" id="ref-link">'+d.refLink+'</div><div class="ref-copy" onclick="_copyRef()">Скопировать ссылку</div>'):'')
+      +'</div>'
+      +'<div class="block"><h3>🧾 Мои заказы</h3>'+orders+'</div>';
+  });
+}
+function _copyRef(){
+  var el=document.getElementById('ref-link'); if(!el) return;
+  var t=el.textContent||'';
+  try{ if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(t); }catch(e){}
+  var btn=document.querySelector('.ref-copy');
+  if(btn){ var o=btn.textContent; btn.textContent='Скопировано ✓'; setTimeout(function(){btn.textContent=o;},1500); }
+}
 function openCard(key){
   var c=CATALOG[key]; var nm=(c&&c.name)||key;
   if(_isAppStore(key,nm)){ openAppstore(); return; }

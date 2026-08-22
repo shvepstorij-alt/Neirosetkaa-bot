@@ -1983,6 +1983,30 @@ async def _logo_html_for(key: str, name: str) -> str:
     return await _get_logo_svg(_val)
 
 
+async def _build_shop_categories() -> list:
+    """Категории магазина: базовые из config + оверрайды из настройки shop_cat_overrides
+    (админ перемещает сервисы между категориями). Возвращает [{emoji,name,keys}]."""
+    try:
+        from config import SHOP_CATEGORIES as _SC
+        _cats = [{"emoji": _e, "name": _n, "keys": list(_ks)} for (_e, _n, _ks) in _SC]
+    except Exception:
+        _cats = []
+    try:
+        import json as _j
+        _ov = _j.loads(await get_setting("shop_cat_overrides", "") or "{}")
+    except Exception:
+        _ov = {}
+    if isinstance(_ov, dict) and _ov:
+        _ovk = set(_ov.keys())
+        for _c in _cats:
+            _c["keys"] = [k for k in _c["keys"] if k not in _ovk]
+        _byname = {_c["name"]: _c for _c in _cats}
+        for _k, _cn in _ov.items():
+            if _cn and _cn in _byname:
+                _byname[_cn]["keys"].append(_k)
+    return _cats
+
+
 async def _inject_recs(html: str, exclude_key: str) -> str:
     """Вставляет window.__RECS__ / __CATALOG__ / __BOT__ в <head> мини-аппки."""
     import json as _json
@@ -1998,8 +2022,7 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
             _it["logo"] = _logo_by_key.get(_it.get("key"), "")
         _uname = await _get_bot_uname()
         try:
-            from config import SHOP_CATEGORIES as _SC
-            _cats = [{"emoji": _e, "name": _n, "keys": list(_ks)} for (_e, _n, _ks) in _SC]
+            _cats = await _build_shop_categories()
         except Exception:
             _cats = []
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
@@ -2334,6 +2357,53 @@ async def api_admin_recs_save_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "featured": _seen})
     except Exception as _e:
         logging.error(f"api_admin_recs_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_shopcats_handler(request: web.Request) -> web.Response:
+    """Категории магазина + текущее распределение сервисов. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _cats = await _build_shop_categories()
+        _keymap = {}
+        for _c in _cats:
+            for _k in _c["keys"]:
+                _keymap[_k] = _c["name"]
+        _services = [{"key": _k, "name": _s.get("name", _k), "cat": _keymap.get(_k, "")}
+                     for _k, _s in SHOP_CATALOG.items() if _s.get("plans")]
+        _catnames = [_c["name"] for _c in _cats]
+        return web.json_response({"ok": True, "categories": _catnames, "services": _services})
+    except Exception as _e:
+        logging.error(f"api_admin_shopcats: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_shopcats_save_handler(request: web.Request) -> web.Response:
+    """Сохранение распределения сервисов по категориям (setting shop_cat_overrides). Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _asg = body.get("assignments") or {}
+        _cats = await _build_shop_categories()
+        _valid = {_c["name"] for _c in _cats}
+        _clean = {}
+        for _k, _v in _asg.items():
+            if _k in SHOP_CATALOG:
+                _clean[_k] = _v if _v in _valid else ""
+        import json as _j
+        await set_setting("shop_cat_overrides", _j.dumps(_clean, ensure_ascii=False))
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_shopcats_save: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -5846,7 +5916,10 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
     app.router.add_post("/api/admin/recs-save", api_admin_recs_save_handler)
+    app.router.add_post("/api/admin/shopcats", api_admin_shopcats_handler)
+    app.router.add_post("/api/admin/shopcats-save", api_admin_shopcats_save_handler)
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
+    app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
     app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
     app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
@@ -8038,6 +8111,76 @@ async def api_activate_claude_status_handler(request: web.Request) -> web.Respon
 
 
 # ─── Callback: клиент переоткрывает WebApp сам ───────────────────────────────
+
+def _pack_label(pack: str) -> str:
+    """Человекочитаемое название заказа по значению pack в fk_orders."""
+    pack = pack or ""
+    try:
+        if pack.startswith("shop:"):
+            _p = pack.split(":")
+            _k = _p[1] if len(_p) > 1 else ""
+            _idx = int(_p[2]) if len(_p) > 2 and _p[2].isdigit() else 0
+            _s = SHOP_CATALOG.get(_k, {}) or {}
+            _nm = _s.get("name", _k)
+            _pl = _s.get("plans", [])
+            _plname = _pl[_idx]["name"] if 0 <= _idx < len(_pl) else ""
+            return (_nm + (f" {_plname}" if _plname else "")).strip() or "Заказ"
+        if pack.startswith("nsg:"):
+            return "iCloud / App Store"
+        if pack.startswith("credits:") or pack.startswith("pack"):
+            return "Пополнение кредитов"
+    except Exception:
+        pass
+    return "Заказ"
+
+
+async def api_cabinet_handler(request: web.Request) -> web.Response:
+    """Личный кабинет клиента: баланс, рефералка, история заказов. Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        try:
+            credits = await get_credits(int(uid))
+        except Exception:
+            credits = 0
+        try:
+            coins = int(await get_coins(int(uid)))
+        except Exception:
+            coins = 0
+        _uname = await _get_bot_uname()
+        _ref = (f"https://t.me/{_uname}?start=ref_{uid}") if _uname else ""
+        _refcount = 0
+        _orders = []
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                _refcount = int(await conn.fetchval(
+                    "SELECT COUNT(*) FROM users WHERE referred_by=$1", int(uid)) or 0)
+                _rows = await conn.fetch(
+                    "SELECT num, pack, amount_rub, paid_at FROM fk_orders "
+                    "WHERE user_id=$1 AND status='paid' ORDER BY paid_at DESC NULLS LAST LIMIT 12",
+                    int(uid))
+            for _r in _rows:
+                _dt = ""
+                try:
+                    _dt = _r["paid_at"].strftime("%d.%m.%Y") if _r["paid_at"] else ""
+                except Exception:
+                    _dt = ""
+                _orders.append({"num": _r["num"], "label": _pack_label(_r["pack"]),
+                                "amount": int(_r["amount_rub"] or 0), "date": _dt})
+        except Exception as _oe:
+            logging.error(f"api_cabinet orders: {_oe}")
+        return web.json_response({"ok": True, "credits": credits, "coins": coins,
+                                  "refLink": _ref, "refCount": _refcount, "orders": _orders})
+    except Exception as _e:
+        logging.error(f"api_cabinet: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
 
 async def _appstore_markup_for(brand: str) -> float:
     """Наценка % для бренда (Apple): переопределение nsg_markup_brand:{brand} → иначе общая."""
