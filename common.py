@@ -2121,10 +2121,18 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
             _banners = [_b for _b in await _shop_banners() if _b.get("on")]
         except Exception:
             _banners = []
+        try:
+            from config import IMAGE_MODELS as _IM
+            _imgmodels = [{"key": _k, "name": _v.get("name", _k), "credits": _v.get("credits", 0),
+                           "desc": _v.get("desc", ""), "speed": _v.get("speed", "")}
+                          for _k, _v in _IM.items()]
+        except Exception:
+            _imgmodels = []
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
                 + ";window.__BANNERS__=" + _json.dumps(_banners, ensure_ascii=False)
+                + ";window.__IMGMODELS__=" + _json.dumps(_imgmodels, ensure_ascii=False)
                 + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
         if "</head>" in html:
             return html.replace("</head>", _tag + "</head>", 1)
@@ -6264,6 +6272,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
+    app.router.add_post("/api/gen/image", api_gen_image_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
     app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
     app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
@@ -8476,6 +8485,62 @@ def _pack_label(pack: str) -> str:
     except Exception:
         pass
     return "Заказ"
+
+
+async def api_gen_image_handler(request: web.Request) -> web.Response:
+    """Генерация изображения из мини-аппки. Списывает кредиты, при ошибке возвращает."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        _idata = (body.get("initData") if isinstance(body, dict) else None) or ""
+        uid = _verify_tg_init_data(_idata)
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
+        from config import IMAGE_MODELS
+        _key = str(body.get("model", "")).strip()
+        _prompt = str(body.get("prompt", "")).strip()
+        _aspect = str(body.get("aspect", "1:1")).strip() or "1:1"
+        m = IMAGE_MODELS.get(_key)
+        if not m:
+            return web.json_response({"ok": False, "error": "model"}, status=400)
+        if len(_prompt) < 2:
+            return web.json_response({"ok": False, "error": "prompt"}, status=400)
+        _cost = int(m.get("credits", 0))
+        from db import deduct as _deduct, add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
+        _cr = await _get_cr(int(uid))
+        if _cr < _cost:
+            return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
+        if not await _deduct(int(uid), _cost):
+            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        try:
+            from generation_api import api_generate_image as _gen
+            _img = await _gen(_prompt, m["model_id"], _aspect, m.get("api", "imagen"),
+                              quality=m.get("quality", "medium"))
+        except Exception as _ge:
+            await _add_cr(int(uid), _cost)
+            logging.error(f"api_gen_image gen: {_ge}")
+            return web.json_response({"ok": False, "error": "gen_failed"})
+        if not _img:
+            await _add_cr(int(uid), _cost)
+            return web.json_response({"ok": False, "error": "empty"})
+        try:
+            await _log_gen(int(uid), "image", _key, _cost)
+        except Exception:
+            pass
+        try:
+            await bot.send_photo(int(uid), BufferedInputFile(_img, "image.png"),
+                                 caption=f"🎨 {m.get('name','')} · −{_cost} кр")
+        except Exception:
+            pass
+        _mime = "image/jpeg" if (len(_img) > 2 and _img[0] == 0xFF and _img[1] == 0xD8) else "image/png"
+        import base64 as _b64
+        _uri = "data:" + _mime + ";base64," + _b64.b64encode(_img).decode()
+        return web.json_response({"ok": True, "img": _uri, "credits": await _get_cr(int(uid))})
+    except Exception as _e:
+        logging.error(f"api_gen_image: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
 async def api_order_status_handler(request: web.Request) -> web.Response:

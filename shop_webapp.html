@@ -106,6 +106,18 @@
   .ord:last-child{border-bottom:none}
   .ord .o-l{color:var(--text)}.ord .o-s{color:var(--text2);font-size:11px}
   .ord .o-a{font-weight:700;white-space:nowrap}
+  .gm-list{display:flex;flex-direction:column;gap:8px}
+  .gm{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:11px;cursor:pointer}
+  .gm.on{border-color:var(--green);box-shadow:0 0 0 1px var(--green) inset}
+  .gm-n{font-size:14px;font-weight:700}.gm-d{font-size:12px;color:var(--text2);margin-top:2px}
+  .gm-c{font-size:12px;color:var(--green);font-weight:700;margin-top:3px}
+  .gen-ta{width:100%;min-height:92px;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:12px;color:var(--text);font-size:14px;resize:vertical;font-family:inherit;box-sizing:border-box}
+  .gen-img img{width:100%;border-radius:14px;display:block}
+  .prof{display:flex;align-items:center;gap:14px;background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:14px}
+  .prof .pav{width:56px;height:56px;border-radius:50%;overflow:hidden;flex:none;background:linear-gradient(135deg,var(--green),#0c7d61);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:#fff}
+  .prof .pav img{width:100%;height:100%;object-fit:cover;display:block}
+  .prof .pn{font-size:17px;font-weight:800}
+  .prof .pu{font-size:12px;color:var(--text2);margin-top:2px}
   .accents{display:flex;flex-wrap:wrap;gap:12px}
   .acc{width:42px;height:42px;border-radius:50%;cursor:pointer;border:3px solid transparent;transition:transform .1s}
   .acc:active{transform:scale(.9)}
@@ -136,8 +148,16 @@
   <div class="wrap"><div id="card-body"></div></div>
 </div>
 
+<div id="gen" class="screen">
+  <div class="wrap">
+    <div class="hero"><h1>🎨 Создать фото</h1><p>Генерация изображений нейросетями</p></div>
+    <div id="gen-body"></div>
+  </div>
+</div>
+
 <div class="tabbar" id="tabbar">
   <div class="tab on" id="tab-catalog" onclick="switchTab('catalog')"><span class="t-ic">🛍</span><span>Каталог</span></div>
+  <div class="tab" id="tab-gen" onclick="switchTab('gen')"><span class="t-ic">🎨</span><span>Создать</span></div>
   <div class="tab" id="tab-cabinet" onclick="switchTab('cabinet')"><span class="t-ic">👤</span><span>Кабинет</span></div>
 </div>
 
@@ -241,18 +261,11 @@ function renderGrid(){
 function switchTab(which){
   var tb=document.getElementById('tabbar'); if(tb) tb.classList.remove('hidden');
   document.getElementById('card').classList.remove('active');
-  if(which==='cabinet'){
-    document.getElementById('home').classList.remove('active');
-    document.getElementById('cabinet').classList.add('active');
-    document.getElementById('tab-catalog').classList.remove('on');
-    document.getElementById('tab-cabinet').classList.add('on');
-    loadCabinet();
-  } else {
-    document.getElementById('cabinet').classList.remove('active');
-    document.getElementById('home').classList.add('active');
-    document.getElementById('tab-cabinet').classList.remove('on');
-    document.getElementById('tab-catalog').classList.add('on');
-  }
+  ['home','gen','cabinet'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('active');});
+  ['catalog','gen','cabinet'].forEach(function(id){var e=document.getElementById('tab-'+id);if(e)e.classList.remove('on');});
+  if(which==='cabinet'){ document.getElementById('cabinet').classList.add('active'); document.getElementById('tab-cabinet').classList.add('on'); loadCabinet(); }
+  else if(which==='gen'){ document.getElementById('gen').classList.add('active'); document.getElementById('tab-gen').classList.add('on'); renderGen(); }
+  else { document.getElementById('home').classList.add('active'); document.getElementById('tab-catalog').classList.add('on'); }
   window.scrollTo(0,0);
 }
 function showHome(){ switchTab('catalog'); }
@@ -263,6 +276,46 @@ function _showCard(){
   var tb=document.getElementById('tabbar'); if(tb) tb.classList.add('hidden');
   window.scrollTo(0,0);
 }
+/* ─── Генерация фото ─── */
+function _h(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function _saveGenPrompt(){ var t=document.getElementById('gen-prompt'); if(t) window._genPrompt=t.value; }
+function renderGen(){
+  var b=document.getElementById('gen-body'); if(!b) return;
+  var M=window.__IMGMODELS__||[];
+  if(!M.length){ b.innerHTML='<div class="empty">Модели временно недоступны</div>'; return; }
+  if(!window._genModel) window._genModel=M[0].key;
+  if(!window._genAspect) window._genAspect='1:1';
+  var models=M.map(function(m){var on=(m.key===window._genModel);
+    return '<div class="gm'+(on?' on':'')+'" onclick="_saveGenPrompt();window._genModel=\''+m.key+'\';renderGen()"><div class="gm-n">'+m.name+'</div>'+(m.desc?'<div class="gm-d">'+m.desc+'</div>':'')+'<div class="gm-c">'+m.credits+' кр'+(m.speed?(' · '+m.speed):'')+'</div></div>';}).join('');
+  var aspects=['1:1','3:4','4:3','16:9','9:16'].map(function(a){return '<span class="chip'+(window._genAspect===a?' on':'')+'" onclick="_saveGenPrompt();window._genAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
+  var cur=(M.filter(function(m){return m.key===window._genModel})[0])||M[0];
+  b.innerHTML='<div class="block"><h3>Модель</h3><div class="gm-list">'+models+'</div></div>'
+    +'<div class="block"><h3>Что нарисовать</h3><textarea id="gen-prompt" class="gen-ta" placeholder="Опиши картинку: кот-космонавт в неоне, кинематографично…">'+_h(window._genPrompt||'')+'</textarea>'
+    +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
+    +'<div id="gen-result"></div>'
+    +'<div class="plan-buy" onclick="doGen()">✨ Сгенерировать за '+cur.credits+' кр</div>';
+}
+function doGen(){
+  _saveGenPrompt();
+  var p=(window._genPrompt||'').trim();
+  var res=document.getElementById('gen-result'); if(!res) return;
+  if(p.length<2){ res.innerHTML='<div class="pm-err">Введи описание картинки</div>'; return; }
+  res.innerHTML='<div class="pm-wait">Генерирую… обычно несколько секунд, не закрывай экран</div>';
+  _api('/api/gen/image',{model:window._genModel,prompt:p,aspect:window._genAspect}).then(function(d){
+    if(!res) return;
+    if(d&&d.ok&&d.img){
+      res.innerHTML='<div class="gen-img"><img src="'+d.img+'"></div>'
+        +'<div class="o-s" style="text-align:center;margin:8px 0 2px">Готово · остаток '+(d.credits!=null?d.credits:'')+' кр · картинка сохранена в чат бота</div>';
+    } else if(d&&d.error==='credits'){
+      res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>';
+    } else if(d&&String(d.error||'').indexOf('auth')===0){
+      res.innerHTML='<div class="pm-err">Сессия устарела — закрой и открой приложение заново.</div>';
+    } else {
+      res.innerHTML='<div class="pm-err">Не получилось сгенерировать. Попробуй ещё раз или другую модель.</div>';
+    }
+  });
+}
+
 function loadCabinet(){
   var b=document.getElementById('cabinet-body'); if(!b) return;
   b.innerHTML='<div class="pm-wait">Загружаю…</div>';
@@ -277,8 +330,13 @@ function loadCabinet(){
     var _themes='<div class="block"><h3>🎨 Цвет темы</h3><div class="accents">'
       + ACCENTS.map(function(c){ return '<div class="acc'+((c===_cur||(!_cur&&c===DEFAULT_ACCENT))?' on':'')+'" data-c="'+c+'" style="background:'+c+'" onclick="setAccent(\''+c+'\')"></div>'; }).join('')
       + '</div></div>';
+    var u=(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user)||{};
+    var _nm=((u.first_name||'')+' '+(u.last_name||'')).trim()||'Профиль';
+    var _un=u.username?('@'+u.username):('id '+(u.id||''));
+    var _av=u.photo_url?('<img src="'+u.photo_url+'" alt="">'):('<span>'+(_nm.charAt(0).toUpperCase()||'👤')+'</span>');
     b.innerHTML=
-      '<div class="bal-row">'
+      '<div class="prof"><div class="pav">'+_av+'</div><div><div class="pn">'+_nm+'</div><div class="pu">'+_un+'</div></div></div>'
+      +'<div class="bal-row">'
       +'<div class="bal"><div class="v">'+(d.credits||0)+'</div><div class="l">кредитов</div></div>'
       +'<div class="bal"><div class="v">'+(d.coins||0)+'₽</div><div class="l">монеток</div></div></div>'
       + _themes
