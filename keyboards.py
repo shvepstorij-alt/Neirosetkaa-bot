@@ -54,7 +54,7 @@ def kb_error_with_alt(menu: str, model_key: str):
 
 def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
-        *([[InlineKeyboardButton(text="🛍 Магазин (приложение)", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/shop"))]] if WEBAPP_BASE_URL else []),
+        *([[InlineKeyboardButton(text="Каталог", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/shop"), icon_custom_emoji_id="5197260068562676798")]] if WEBAPP_BASE_URL else []),
         [_eib("Изображение",   "menu_image"),    _eib("Видео",     "menu_video")],
         [_eib("Редактировать...","menu_edit"),    _eib("Анимировать...","menu_anim")],
         [_eib("Консультант AI", "menu_chat"),     _eib("Избранное", "menu_favorites")],
