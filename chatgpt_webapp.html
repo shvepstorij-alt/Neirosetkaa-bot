@@ -1071,9 +1071,18 @@ function _asFallbackToBot(){
   try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(au); return; } } catch(e) {}
   try { window.open(au, '_blank'); } catch(e) {}
 }
+function _appstoreLogo(){
+  var cat = window.__CATALOG__ || {};
+  for (var k in cat){ if (_isAppStore(k, cat[k] && cat[k].name)) return (cat[k] && cat[k].logo) || ''; }
+  var recs = window.__RECS__ || [];
+  for (var i=0;i<recs.length;i++){ if (_isAppStore(recs[i].key, recs[i].name)) return recs[i].logo || ''; }
+  return '';
+}
 function _asHead(sub){
-  return '<div class="card-head"><div class="card-ic" style="background:#fff">'
-    + (_iconHtml((window.__CATALOG__&&window.__CATALOG__.appstore&&window.__CATALOG__.appstore.logo)||'', 'A'))
+  var lg = _appstoreLogo();
+  var bg = (lg && lg.indexOf('pnglogo') >= 0) ? '#fff' : '#111';   // белый Apple-SVG — на тёмной плитке
+  return '<div class="card-head"><div class="card-ic" style="background:'+bg+'">'
+    + _iconHtml(lg, 'A')
     + '</div><div class="card-name">iCloud / App Store</div></div>'
     + '<div class="card-desc">' + (sub||'Пополнение Apple ID. Код придёт автоматически после оплаты.') + '</div>';
 }
