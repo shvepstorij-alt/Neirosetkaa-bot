@@ -323,7 +323,7 @@ function payVia(el,key,idx,method){
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
   _api('/api/shop/pay',{key:key,planIdx:idx,method:method}).then(function(d){
     if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
-    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':'Не получилось. Попробуй ещё раз';
+    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':((d&&d.error)?('Ошибка: '+d.error):'Не получилось. Попробуй ещё раз');
       row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'; }
   });
 }
@@ -406,7 +406,7 @@ function asPay(el,catId,serviceId,method){
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
   _api('/api/appstore/pay',{catId:catId,serviceId:serviceId,method:method}).then(function(d){
     if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
-    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':(d&&d.error==='unavailable')?'Сервис временно недоступен':'Не получилось. Попробуй ещё раз'; row.innerHTML='<div class="pm-err">'+m+'</div>'; }
+    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':(d&&d.error==='unavailable')?'Сервис временно недоступен':((d&&d.error)?('Ошибка: '+d.error):'Не получилось. Попробуй ещё раз'); row.innerHTML='<div class="pm-err">'+m+'</div>'; }
   });
 }
 
