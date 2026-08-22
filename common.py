@@ -1973,6 +1973,13 @@ def _resolve_logo_spec(key: str, name: str):
 
 
 async def _logo_html_for(key: str, name: str) -> str:
+    # 0) Логотип, загруженный админом (data-URI) — высший приоритет
+    try:
+        _dbl = await get_setting(f"shop_logo:{key}", "") or ""
+        if _dbl.startswith("data:"):
+            return '<img class="pnglogo" src="' + _dbl + '">'
+    except Exception:
+        pass
     _spec = _resolve_logo_spec(key, name)
     if not _spec:
         return ""
@@ -1983,28 +1990,86 @@ async def _logo_html_for(key: str, name: str) -> str:
     return await _get_logo_svg(_val)
 
 
-async def _build_shop_categories() -> list:
-    """Категории магазина: базовые из config + оверрайды из настройки shop_cat_overrides
-    (админ перемещает сервисы между категориями). Возвращает [{emoji,name,keys}]."""
+async def _shop_cats_meta() -> list:
+    """Мета категорий магазина: [{id,emoji,name}]. Из настройки shop_cats_meta или из config."""
+    import json as _j
+    try:
+        _v = _j.loads(await get_setting("shop_cats_meta", "") or "null")
+        if isinstance(_v, list) and _v:
+            _out = []
+            for _i, _c in enumerate(_v):
+                _out.append({"id": str(_c.get("id") or ("c%d" % _i)),
+                             "emoji": _c.get("emoji", ""), "name": _c.get("name", "")})
+            return _out
+    except Exception:
+        pass
     try:
         from config import SHOP_CATEGORIES as _SC
-        _cats = [{"emoji": _e, "name": _n, "keys": list(_ks)} for (_e, _n, _ks) in _SC]
+        return [{"id": "c%d" % _i, "emoji": _e, "name": _n} for _i, (_e, _n, _ks) in enumerate(_SC)]
     except Exception:
-        _cats = []
+        return []
+
+
+async def _shop_cat_map() -> dict:
+    """Привязка сервис→id категории. Из shop_cat_map или дефолт из config (+ миграция старых
+    name-оверрайдов shop_cat_overrides)."""
+    import json as _j
+    try:
+        _v = _j.loads(await get_setting("shop_cat_map", "") or "null")
+        if isinstance(_v, dict) and _v:
+            return {str(_k): str(_val) for _k, _val in _v.items()}
+    except Exception:
+        pass
+    _amap = {}
+    try:
+        from config import SHOP_CATEGORIES as _SC
+        for _i, (_e, _n, _ks) in enumerate(_SC):
+            for _k in _ks:
+                _amap[_k] = "c%d" % _i
+    except Exception:
+        pass
+    try:
+        _meta = await _shop_cats_meta()
+        _name2id = {_c["name"]: _c["id"] for _c in _meta}
+        _ov = _j.loads(await get_setting("shop_cat_overrides", "") or "{}")
+        if isinstance(_ov, dict):
+            for _k, _nm in _ov.items():
+                if _nm == "":
+                    _amap[_k] = ""
+                elif _nm in _name2id:
+                    _amap[_k] = _name2id[_nm]
+    except Exception:
+        pass
+    return _amap
+
+
+async def _build_shop_categories() -> list:
+    """Категории магазина по meta+map. Возвращает [{id,emoji,name,keys}]."""
+    _meta = await _shop_cats_meta()
+    _amap = await _shop_cat_map()
+    _cats = []
+    for _c in _meta:
+        _keys = [k for k, cid in _amap.items() if cid == _c["id"] and k in SHOP_CATALOG]
+        _cats.append({"id": _c["id"], "emoji": _c["emoji"], "name": _c["name"], "keys": _keys})
+    return _cats
+
+
+async def _shop_order_list() -> list:
     try:
         import json as _j
-        _ov = _j.loads(await get_setting("shop_cat_overrides", "") or "{}")
+        _v = _j.loads(await get_setting("shop_order", "") or "[]")
+        return _v if isinstance(_v, list) else []
     except Exception:
-        _ov = {}
-    if isinstance(_ov, dict) and _ov:
-        _ovk = set(_ov.keys())
-        for _c in _cats:
-            _c["keys"] = [k for k in _c["keys"] if k not in _ovk]
-        _byname = {_c["name"]: _c for _c in _cats}
-        for _k, _cn in _ov.items():
-            if _cn and _cn in _byname:
-                _byname[_cn]["keys"].append(_k)
-    return _cats
+        return []
+
+
+async def _shop_hidden_set() -> set:
+    try:
+        import json as _j
+        _v = _j.loads(await get_setting("shop_hidden", "") or "[]")
+        return set(_v) if isinstance(_v, list) else set()
+    except Exception:
+        return set()
 
 
 async def _inject_recs(html: str, exclude_key: str) -> str:
@@ -2013,6 +2078,17 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
     try:
         _recs = await _build_recs_payload(exclude_key=exclude_key)
         _cat = _build_catalog_payload()
+        # Скрытие и порядок сервисов (из админки)
+        _hidden = await _shop_hidden_set()
+        _order = await _shop_order_list()
+        if _hidden:
+            for _hk in list(_cat.keys()):
+                if _hk in _hidden:
+                    _cat.pop(_hk, None)
+            _recs = [_r for _r in _recs if _r.get("key") not in _hidden]
+        if _order:
+            _oidx = {_k: _i for _i, _k in enumerate(_order)}
+            _cat = {_k: _cat[_k] for _k in sorted(_cat.keys(), key=lambda k: _oidx.get(k, 10**6))}
         # Вшиваем официальные логотипы (inline SVG) в каталог и в ленту
         _logo_by_key = {}
         for _k in _cat.keys():
@@ -2023,6 +2099,12 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
         _uname = await _get_bot_uname()
         try:
             _cats = await _build_shop_categories()
+            # оставляем в категориях только видимые сервисы и сортируем по порядку
+            _oidx2 = {_k: _i for _i, _k in enumerate(_order)} if _order else {}
+            for _c in _cats:
+                _c["keys"] = [k for k in _c["keys"] if k in _cat]
+                if _order:
+                    _c["keys"].sort(key=lambda k: _oidx2.get(k, 10**6))
         except Exception:
             _cats = []
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
@@ -2373,11 +2455,11 @@ async def api_admin_shopcats_handler(request: web.Request) -> web.Response:
         _keymap = {}
         for _c in _cats:
             for _k in _c["keys"]:
-                _keymap[_k] = _c["name"]
-        _services = [{"key": _k, "name": _s.get("name", _k), "cat": _keymap.get(_k, "")}
+                _keymap[_k] = _c["id"]
+        _services = [{"key": _k, "name": _s.get("name", _k), "catId": _keymap.get(_k, "")}
                      for _k, _s in SHOP_CATALOG.items() if _s.get("plans")]
-        _catnames = [_c["name"] for _c in _cats]
-        return web.json_response({"ok": True, "categories": _catnames, "services": _services})
+        _categories = [{"id": _c["id"], "name": _c["name"], "emoji": _c["emoji"]} for _c in _cats]
+        return web.json_response({"ok": True, "categories": _categories, "services": _services})
     except Exception as _e:
         logging.error(f"api_admin_shopcats: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
@@ -2393,17 +2475,164 @@ async def api_admin_shopcats_save_handler(request: web.Request) -> web.Response:
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
         _asg = body.get("assignments") or {}
-        _cats = await _build_shop_categories()
-        _valid = {_c["name"] for _c in _cats}
+        _meta = await _shop_cats_meta()
+        _valid = {_c["id"] for _c in _meta}
         _clean = {}
         for _k, _v in _asg.items():
             if _k in SHOP_CATALOG:
                 _clean[_k] = _v if _v in _valid else ""
         import json as _j
-        await set_setting("shop_cat_overrides", _j.dumps(_clean, ensure_ascii=False))
+        await set_setting("shop_cat_map", _j.dumps(_clean, ensure_ascii=False))
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_shopcats_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_catsmeta_handler(request: web.Request) -> web.Response:
+    """Список категорий (мета: id, emoji, name) для редактирования. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        return web.json_response({"ok": True, "categories": await _shop_cats_meta()})
+    except Exception as _e:
+        logging.error(f"api_admin_catsmeta: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_catsmeta_save_handler(request: web.Request) -> web.Response:
+    """Сохранение меты категорий (переименование, эмодзи, добавление/удаление, порядок)."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _items = body.get("categories") or []
+        import json as _j, time as _t
+        _out = []
+        _seen = set()
+        for _i, _c in enumerate(_items):
+            _name = str(_c.get("name", "")).strip()
+            if not _name:
+                continue
+            _id = str(_c.get("id") or "").strip()
+            if not _id or _id in _seen:
+                _id = "u%d_%d" % (int(_t.time()), _i)
+            _seen.add(_id)
+            _out.append({"id": _id, "emoji": str(_c.get("emoji", "")).strip(), "name": _name})
+        await set_setting("shop_cats_meta", _j.dumps(_out, ensure_ascii=False))
+        return web.json_response({"ok": True, "categories": _out})
+    except Exception as _e:
+        logging.error(f"api_admin_catsmeta_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_logo_save_handler(request: web.Request) -> web.Response:
+    """Загрузка логотипа сервиса (data-URI PNG) в настройку shop_logo:{key}. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _key = str(body.get("key", "")).strip()
+        _uri = str(body.get("dataUri", "")).strip()
+        if _key not in SHOP_CATALOG:
+            return web.json_response({"ok": False, "error": "bad_key"}, status=400)
+        if not _uri.startswith("data:image/") or len(_uri) > 400000:
+            return web.json_response({"ok": False, "error": "bad_image"}, status=400)
+        await set_setting(f"shop_logo:{_key}", _uri)
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_logo_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_logo_del_handler(request: web.Request) -> web.Response:
+    """Удаление загруженного логотипа сервиса (вернётся вшитый/буквенный). Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _key = str(body.get("key", "")).strip()
+        if _key in SHOP_CATALOG:
+            await set_setting(f"shop_logo:{_key}", "")
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_logo_del: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_logos_handler(request: web.Request) -> web.Response:
+    """Список сервисов с флагом «загружен свой логотип». Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _out = []
+        for _k, _s in SHOP_CATALOG.items():
+            if not _s.get("plans"):
+                continue
+            _has = bool((await get_setting(f"shop_logo:{_k}", "") or "").startswith("data:"))
+            _out.append({"key": _k, "name": _s.get("name", _k), "custom": _has})
+        return web.json_response({"ok": True, "services": _out})
+    except Exception as _e:
+        logging.error(f"api_admin_logos: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_shopdisplay_handler(request: web.Request) -> web.Response:
+    """Порядок и показ сервисов в витрине. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _order = await _shop_order_list()
+        _hidden = await _shop_hidden_set()
+        _oidx = {_k: _i for _i, _k in enumerate(_order)}
+        _keys = [k for k, s in SHOP_CATALOG.items() if s.get("plans")]
+        _keys.sort(key=lambda k: _oidx.get(k, 10**6))
+        _services = [{"key": k, "name": SHOP_CATALOG[k].get("name", k),
+                      "hidden": (k in _hidden)} for k in _keys]
+        return web.json_response({"ok": True, "services": _services})
+    except Exception as _e:
+        logging.error(f"api_admin_shopdisplay: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_shopdisplay_save_handler(request: web.Request) -> web.Response:
+    """Сохранение порядка (shop_order) и скрытых (shop_hidden). Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _order = [str(k) for k in (body.get("order") or []) if k in SHOP_CATALOG]
+        _hidden = [str(k) for k in (body.get("hidden") or []) if k in SHOP_CATALOG]
+        import json as _j
+        await set_setting("shop_order", _j.dumps(_order, ensure_ascii=False))
+        await set_setting("shop_hidden", _j.dumps(_hidden, ensure_ascii=False))
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_admin_shopdisplay_save: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -5918,6 +6147,13 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/recs-save", api_admin_recs_save_handler)
     app.router.add_post("/api/admin/shopcats", api_admin_shopcats_handler)
     app.router.add_post("/api/admin/shopcats-save", api_admin_shopcats_save_handler)
+    app.router.add_post("/api/admin/shopdisplay", api_admin_shopdisplay_handler)
+    app.router.add_post("/api/admin/shopdisplay-save", api_admin_shopdisplay_save_handler)
+    app.router.add_post("/api/admin/catsmeta", api_admin_catsmeta_handler)
+    app.router.add_post("/api/admin/catsmeta-save", api_admin_catsmeta_save_handler)
+    app.router.add_post("/api/admin/logos", api_admin_logos_handler)
+    app.router.add_post("/api/admin/logo-save", api_admin_logo_save_handler)
+    app.router.add_post("/api/admin/logo-del", api_admin_logo_del_handler)
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)

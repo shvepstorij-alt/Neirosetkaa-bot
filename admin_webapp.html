@@ -150,7 +150,7 @@ function home(){
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
-   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🤝","Рефералка","Премиум-рефералка"]]],
+   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
@@ -457,6 +457,111 @@ function _toggleRec(k){var sel=window._recSel||[];var i=sel.indexOf(k);
   if(i>=0){sel.splice(i,1);}else{if(sel.length>=5){toast('Максимум 5');return;}sel.push(k);}
   window._recSel=sel;_renderRecs();}
 function _saveRecs(){toast('Сохраняю…');api('/api/admin/recs-save',{featured:window._recSel||[]}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');});}
+
+/* Категории магазина — перемещение сервисов между разделами */
+SCREENS["Категории магазина"]=function(){setTimeout(_loadShopCats,30);
+  return hdr("Категории магазина","перемещай сервисы между разделами")+'<div class="wrap">'+
+    '<div class="note">Выбери категорию для каждого сервиса. «— (Другое)» — сервис без раздела (в приложении попадёт во вкладку «Другое»). Изменения сразу применяются в мини-аппке.</div>'+
+    '<div id="scbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';};
+window._scCats=[];window._scSel={};
+function _loadShopCats(){api('/api/admin/shopcats').then(function(d){
+  var b=document.getElementById('scbody');if(!b)return;
+  if(!d||!d.ok){b.innerHTML='<div class="note">Ошибка загрузки</div>';return;}
+  window._scCats=d.categories||[];window._scSel={};
+  (d.services||[]).forEach(function(s){window._scSel[s.key]=s.catId||'';});
+  _renderShopCats(d.services||[]);});}
+function _renderShopCats(services){
+  var b=document.getElementById('scbody');if(!b)return;
+  function opts(cur){var o='<option value=""'+(cur===''?' selected':'')+'>— (Другое)</option>';
+    (window._scCats||[]).forEach(function(c){o+='<option value="'+esc(c.id)+'"'+(cur===c.id?' selected':'')+'>'+esc((c.emoji?c.emoji+' ':'')+c.name)+'</option>';});return o;}
+  b.innerHTML=services.map(function(s){
+    return '<div class="row"><div style="flex:1"><div class="lbl2">'+esc(s.name)+'</div></div>'
+      +'<select class="f" style="max-width:150px" onchange="window._scSel[\''+s.key+'\']=this.value">'+opts(window._scSel[s.key]||'')+'</select></div>';
+  }).join('')+'<button class="btn" style="margin-top:14px" onclick="_saveShopCats()">💾 Сохранить</button>';
+}
+function _saveShopCats(){toast('Сохраняю…');api('/api/admin/shopcats-save',{assignments:window._scSel||{}}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');});}
+
+/* Витрина: порядок сервисов и показ/скрытие */
+SCREENS["Витрина магазина"]=function(){setTimeout(_loadSd,30);
+  return hdr("Витрина магазина","порядок и показ сервисов")+'<div class="wrap">'+
+    '<div class="note">Стрелками меняй порядок сервисов в витрине, значком 👁 — скрывай/показывай. Скрытые не видны клиентам. Не забудь «Сохранить».</div>'+
+    '<div id="sdbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';};
+window._sdList=[];
+function _loadSd(){api('/api/admin/shopdisplay').then(function(d){
+  var b=document.getElementById('sdbody');if(!b)return;
+  if(!d||!d.ok){b.innerHTML='<div class="note">Ошибка загрузки</div>';return;}
+  window._sdList=d.services||[];_renderSd();});}
+function _renderSd(){
+  var b=document.getElementById('sdbody');if(!b)return;var L=window._sdList||[];
+  b.innerHTML=L.map(function(s,i){
+    var eye=s.hidden?'🚫':'👁';
+    return '<div class="row"><div style="display:flex;gap:4px;margin-right:8px">'
+      +'<span class="tag a" style="cursor:pointer;padding:4px 8px" onclick="_sdMove('+i+',-1)">▲</span>'
+      +'<span class="tag a" style="cursor:pointer;padding:4px 8px" onclick="_sdMove('+i+',1)">▼</span></div>'
+      +'<div style="flex:1"><div class="lbl2"'+(s.hidden?' style="opacity:.45"':'')+'>'+esc(s.name)+'</div></div>'
+      +'<span class="tag '+(s.hidden?'r':'g')+'" style="cursor:pointer" onclick="_sdToggle('+i+')">'+eye+'</span></div>';
+  }).join('')+'<button class="btn" style="margin-top:14px" onclick="_saveSd()">💾 Сохранить</button>';
+}
+function _sdMove(i,dir){var L=window._sdList;var j=i+dir;if(j<0||j>=L.length)return;var t=L[i];L[i]=L[j];L[j]=t;_renderSd();}
+function _sdToggle(i){window._sdList[i].hidden=!window._sdList[i].hidden;_renderSd();}
+function _saveSd(){var L=window._sdList||[];
+  var order=L.map(function(s){return s.key;});
+  var hidden=L.filter(function(s){return s.hidden;}).map(function(s){return s.key;});
+  toast('Сохраняю…');
+  api('/api/admin/shopdisplay-save',{order:order,hidden:hidden}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');});}
+
+/* Разделы категорий — названия, эмодзи, порядок, добавить/удалить */
+SCREENS["Разделы категорий"]=function(){setTimeout(_loadCm,30);
+  return hdr("Разделы категорий","названия, эмодзи, порядок")+'<div class="wrap">'+
+    '<div class="note">Меняй эмодзи и названия разделов, двигай порядок, добавляй/удаляй. Привязка сервисов — в «Категории магазина». Удаление раздела не удаляет сервисы (станут «Другое»).</div>'+
+    '<div id="cmbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';};
+window._cmList=[];
+function _loadCm(){api('/api/admin/catsmeta').then(function(d){var b=document.getElementById('cmbody');if(!b)return;if(!d||!d.ok){b.innerHTML='<div class="note">Ошибка</div>';return;}window._cmList=d.categories||[];_renderCm();});}
+function _renderCm(){var b=document.getElementById('cmbody');if(!b)return;var L=window._cmList||[];
+  b.innerHTML=L.map(function(c,i){
+    return '<div class="row"><input class="f" style="width:46px;text-align:center" value="'+esc(c.emoji||'')+'" onchange="window._cmList['+i+'].emoji=this.value">'
+      +'<input class="f" style="flex:1;margin:0 6px" value="'+esc(c.name||'')+'" onchange="window._cmList['+i+'].name=this.value">'
+      +'<span class="tag a" style="cursor:pointer;padding:4px 8px" onclick="_cmMove('+i+',-1)">▲</span>'
+      +'<span class="tag a" style="cursor:pointer;padding:4px 8px" onclick="_cmMove('+i+',1)">▼</span>'
+      +'<span class="tag r" style="cursor:pointer;padding:4px 8px" onclick="_cmDel('+i+')">✕</span></div>';
+  }).join('')+'<button class="btn sec" style="margin-top:10px" onclick="_cmAdd()">➕ Добавить раздел</button>'
+   +'<button class="btn" style="margin-top:8px" onclick="_saveCm()">💾 Сохранить</button>';
+}
+function _cmMove(i,d){var L=window._cmList;var j=i+d;if(j<0||j>=L.length)return;var t=L[i];L[i]=L[j];L[j]=t;_renderCm();}
+function _cmDel(i){window._cmList.splice(i,1);_renderCm();}
+function _cmAdd(){window._cmList.push({id:'',emoji:'✨',name:'Новый раздел'});_renderCm();}
+function _saveCm(){toast('Сохраняю…');api('/api/admin/catsmeta-save',{categories:window._cmList||[]}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');if(d&&d.ok&&d.categories)window._cmList=d.categories;});}
+
+/* Логотипы сервисов — загрузка/удаление */
+SCREENS["Логотипы сервисов"]=function(){setTimeout(_loadLogos,30);
+  return hdr("Логотипы сервисов","загрузи свой логотип")+'<div class="wrap">'+
+    '<div class="note">Загрузи PNG/JPG — логотип ужмётся до 96px на белом фоне и заменит вшитый. «✕» — вернуть логотип по умолчанию.</div>'+
+    '<div id="lgbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';};
+function _loadLogos(){api('/api/admin/logos').then(function(d){var b=document.getElementById('lgbody');if(!b)return;if(!d||!d.ok){b.innerHTML='<div class="note">Ошибка</div>';return;}
+  b.innerHTML=(d.services||[]).map(function(s){
+    return '<div class="row"><div style="flex:1"><div class="lbl2">'+esc(s.name)+'</div><div class="sub">'+(s.custom?'свой логотип':'по умолчанию')+'</div></div>'
+      +'<label class="tag g" style="cursor:pointer;padding:6px 10px">Загрузить<input type="file" accept="image/*" style="display:none" onchange="_logoPick(\''+s.key+'\',this)"></label>'
+      +(s.custom?'<span class="tag r" style="cursor:pointer;margin-left:6px;padding:6px 10px" onclick="_logoDel(\''+s.key+'\')">✕</span>':'')+'</div>';
+  }).join('');});}
+function _logoPick(key,input){
+  var f=input.files&&input.files[0]; if(!f)return;
+  var r=new FileReader();
+  r.onload=function(){
+    var img=new Image();
+    img.onload=function(){
+      var c=document.createElement('canvas');c.width=96;c.height=96;var ctx=c.getContext('2d');
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,96,96);
+      var sc=Math.min(96/img.width,96/img.height);var w=img.width*sc,h=img.height*sc;
+      ctx.drawImage(img,(96-w)/2,(96-h)/2,w,h);
+      var uri=c.toDataURL('image/png');
+      toast('Загружаю…');
+      api('/api/admin/logo-save',{key:key,dataUri:uri}).then(function(d){toast(d&&d.ok?'Готово ✅':'Ошибка');open2('Логотипы сервисов');});
+    };
+    img.src=r.result;
+  };
+  r.readAsDataURL(f);
+}
+function _logoDel(key){toast('Удаляю…');api('/api/admin/logo-del',{key:key}).then(function(d){toast(d&&d.ok?'Сброшено ✅':'Ошибка');open2('Логотипы сервисов');});}
 
 function priceShop(){
   setTimeout(loadPriceShop,0);
