@@ -1804,7 +1804,7 @@ def _verify_tg_init_data(init_data: str) -> int | None:
         try:
             import time as _t_iv
             _ad = int(params.get("auth_date", "0") or "0")
-            if _ad and (_t_iv.time() - _ad) > 86400:
+            if _ad and (_t_iv.time() - _ad) > 604800:  # 7 дней (Telegram кэширует мини-аппку)
                 logging.warning("initData verify: auth_date too old (replay?)")
                 return None
         except Exception:

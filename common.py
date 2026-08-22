@@ -2723,6 +2723,23 @@ async def api_admin_shopdisplay_save_handler(request: web.Request) -> web.Respon
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
+def _initdata_reason(s: str) -> str:
+    """Диагностика, почему initData не прошла (временно, для отладки)."""
+    try:
+        if not s:
+            return "empty"
+        from urllib.parse import parse_qsl
+        _p = dict(parse_qsl(s, keep_blank_values=True))
+        if "hash" not in _p:
+            return "nohash"
+        import time as _t2
+        _ad = int(_p.get("auth_date", "0") or "0")
+        _age = int(_t2.time() - _ad) if _ad else -1
+        return "age=%ss" % _age
+    except Exception:
+        return "err"
+
+
 async def api_shop_pay_handler(request: web.Request) -> web.Response:
     """Оплата сервиса магазина прямо из мини-аппки: создаёт заказ и возвращает ссылку.
     method: sbp (форма FreeKassa) или card (API i=36). Сумму берём с СЕРВЕРА по каталогу
@@ -2732,9 +2749,10 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             body = {}
-        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        _idata = (body.get("initData") if isinstance(body, dict) else None) or ""
+        uid = _verify_tg_init_data(_idata)
         if not uid:
-            return web.json_response({"ok": False, "error": "auth"}, status=403)
+            return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
         key = str(body.get("key", "")).strip()
         try:
             idx = int(body.get("planIdx", 0))
