@@ -95,6 +95,10 @@
   .ord:last-child{border-bottom:none}
   .ord .o-l{color:var(--text)}.ord .o-s{color:var(--text2);font-size:11px}
   .ord .o-a{font-weight:700;white-space:nowrap}
+  .accents{display:flex;flex-wrap:wrap;gap:12px}
+  .acc{width:42px;height:42px;border-radius:50%;cursor:pointer;border:3px solid transparent;transition:transform .1s}
+  .acc:active{transform:scale(.9)}
+  .acc.on{border-color:var(--text)}
 </style>
 </head>
 <body>
@@ -130,6 +134,16 @@ var tg = null;
 var CATALOG = {}, CATS = [], RECS = [];
 var BOT_USERNAME = 'neirosetkaa_bot';
 var _curCat = '*';
+var DEFAULT_ACCENT = '#10a37f';
+var ACCENTS = ['#a3e635','#22c55e','#3b82f6','#8b5cf6','#ec4899','#f59e0b','#ef4444','#10a37f'];
+function _getAccent(){ try{ return localStorage.getItem('shop_accent')||''; }catch(e){ return ''; } }
+function _applyAccent(c){ if(c) document.documentElement.style.setProperty('--green', c); }
+function setAccent(c){
+  try{ localStorage.setItem('shop_accent', c); }catch(e){}
+  _applyAccent(c);
+  var els=document.querySelectorAll('.acc');
+  for(var i=0;i<els.length;i++){ els[i].classList.toggle('on', els[i].getAttribute('data-c')===c); }
+}
 
 function _esc1(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
 function _mono(name){ return '<span class="mono">'+((String(name||'?').trim().charAt(0)||'?').toUpperCase())+'</span>'; }
@@ -221,12 +235,17 @@ function loadCabinet(){
         +'<div class="o-s">'+(o.num?('#'+o.num+' · '):'')+(o.date||'')+'</div></div>'
         +'<div class="o-a">'+o.amount+'₽</div></div>';
     }).join('') || '<div class="o-s">Заказов пока нет</div>';
+    var _cur=_getAccent()||'';
+    var _themes='<div class="block"><h3>🎨 Цвет темы</h3><div class="accents">'
+      + ACCENTS.map(function(c){ return '<div class="acc'+((c===_cur||(!_cur&&c===DEFAULT_ACCENT))?' on':'')+'" data-c="'+c+'" style="background:'+c+'" onclick="setAccent(\''+c+'\')"></div>'; }).join('')
+      + '</div></div>';
     b.innerHTML=
       '<div class="bal-row">'
       +'<div class="bal"><div class="v">'+(d.credits||0)+'</div><div class="l">кредитов</div></div>'
       +'<div class="bal"><div class="v">'+(d.coins||0)+'₽</div><div class="l">монеток</div></div></div>'
-      +'<div class="block"><h3>👥 Пригласи друга</h3>'
-      +'<div class="o-s" style="margin-bottom:8px">Приглашено: '+(d.refCount||0)+' · за покупку друга — бонус на баланс</div>'
+      + _themes
+      +'<div class="block"><h3>👥 Реферальная программа</h3>'
+      +'<div class="o-s" style="margin-bottom:8px">Друг оформляет по твоей ссылке — ты получаешь <b style="color:var(--green)">10% монетками</b> с его первой покупки. Приглашено: '+(d.refCount||0)+'</div>'
       +(d.refLink?('<div class="ref-link" id="ref-link">'+d.refLink+'</div><div class="ref-copy" onclick="_copyRef()">Скопировать ссылку</div>'):'')
       +'</div>'
       +'<div class="block"><h3>🧾 Мои заказы</h3>'+orders+'</div>';
@@ -329,6 +348,7 @@ function _init(){
   try{ tg.expand(); }catch(e){}
   try{ if(tg.enableClosingConfirmation) tg.enableClosingConfirmation(); }catch(e){}
   try{ if(tg.colorScheme==='light') document.documentElement.setAttribute('data-theme','light'); }catch(e){}
+  try{ var _a=_getAccent(); if(_a) _applyAccent(_a); }catch(e){}
   CATALOG=window.__CATALOG__||{}; CATS=window.__CATEGORIES__||[]; RECS=window.__RECS__||[];
   BOT_USERNAME=window.__BOT__||BOT_USERNAME;
   renderChips(); renderGrid();

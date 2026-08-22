@@ -546,20 +546,56 @@ function _loadLogos(){api('/api/admin/logos').then(function(d){var b=document.ge
 function _logoPick(key,input){
   var f=input.files&&input.files[0]; if(!f)return;
   var r=new FileReader();
-  r.onload=function(){
-    var img=new Image();
-    img.onload=function(){
-      var c=document.createElement('canvas');c.width=96;c.height=96;var ctx=c.getContext('2d');
-      ctx.fillStyle='#fff';ctx.fillRect(0,0,96,96);
-      var sc=Math.min(96/img.width,96/img.height);var w=img.width*sc,h=img.height*sc;
-      ctx.drawImage(img,(96-w)/2,(96-h)/2,w,h);
-      var uri=c.toDataURL('image/png');
-      toast('Загружаю…');
-      api('/api/admin/logo-save',{key:key,dataUri:uri}).then(function(d){toast(d&&d.ok?'Готово ✅':'Ошибка');open2('Логотипы сервисов');});
-    };
-    img.src=r.result;
-  };
+  r.onload=function(){ _openCropper(r.result, key); };
   r.readAsDataURL(f);
+}
+function _openCropper(src, key){
+  var V=280;
+  var ov=document.createElement('div'); ov.id='cropov';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.88);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML='<div style="color:#fff;font-weight:700;margin-bottom:12px">Выбери область логотипа</div>'
+    +'<div id="cropvp" style="width:'+V+'px;height:'+V+'px;overflow:hidden;border-radius:22px;position:relative;background:#fff;touch-action:none;box-shadow:0 0 0 2px rgba(255,255,255,.3)">'
+    +'<img id="cropimg" style="position:absolute;left:0;top:0;-webkit-user-drag:none;pointer-events:none" src="'+src+'"></div>'
+    +'<input id="cropzoom" type="range" min="100" max="300" value="100" style="width:'+V+'px;margin:16px 0">'
+    +'<div style="display:flex;gap:10px;width:'+V+'px"><button class="btn sec" style="flex:1" onclick="_cropCancel()">Отмена</button><button class="btn" style="flex:1" onclick="_cropSave()">Сохранить</button></div>';
+  document.body.appendChild(ov);
+  window._crop={V:V,key:key,offx:0,offy:0,scale:1,base:1,w0:0,h0:0};
+  var img=document.getElementById('cropimg');
+  function _ready(){
+    var st=window._crop; st.w0=img.naturalWidth||1; st.h0=img.naturalHeight||1;
+    st.base=V/Math.min(st.w0,st.h0); st.scale=st.base;
+    st.offx=(V-st.w0*st.scale)/2; st.offy=(V-st.h0*st.scale)/2;
+    _cropClamp(); _cropRender();
+  }
+  img.onload=_ready;
+  if(img.complete && img.naturalWidth) _ready();
+  _cropBindDrag();
+}
+function _cropClamp(){var st=window._crop;var w=st.w0*st.scale,h=st.h0*st.scale;
+  st.offx=Math.min(0,Math.max(st.V-w,st.offx)); st.offy=Math.min(0,Math.max(st.V-h,st.offy));}
+function _cropRender(){var st=window._crop;var img=document.getElementById('cropimg');if(!img)return;
+  img.style.width=(st.w0*st.scale)+'px';img.style.height=(st.h0*st.scale)+'px';
+  img.style.left=st.offx+'px';img.style.top=st.offy+'px';}
+function _cropZoom(z){var st=window._crop;if(!st)return;
+  var cx=(st.V/2-st.offx)/st.scale, cy=(st.V/2-st.offy)/st.scale;
+  st.scale=st.base*z; st.offx=st.V/2-cx*st.scale; st.offy=st.V/2-cy*st.scale;
+  _cropClamp(); _cropRender();}
+function _cropBindDrag(){var vp=document.getElementById('cropvp');if(!vp)return;var st=window._crop;var drag=false,px=0,py=0;
+  vp.addEventListener('pointerdown',function(e){drag=true;px=e.clientX;py=e.clientY;try{vp.setPointerCapture(e.pointerId);}catch(x){}});
+  vp.addEventListener('pointermove',function(e){if(!drag)return;st.offx+=e.clientX-px;st.offy+=e.clientY-py;px=e.clientX;py=e.clientY;_cropClamp();_cropRender();});
+  vp.addEventListener('pointerup',function(){drag=false;});
+  vp.addEventListener('pointercancel',function(){drag=false;});
+  var z=document.getElementById('cropzoom'); if(z) z.addEventListener('input',function(){_cropZoom(this.value/100);});
+}
+function _cropCancel(){var o=document.getElementById('cropov');if(o)o.remove();window._crop=null;}
+function _cropSave(){var st=window._crop;if(!st)return;var img=document.getElementById('cropimg');
+  var sSize=st.V/st.scale, sx=-st.offx/st.scale, sy=-st.offy/st.scale;
+  var c=document.createElement('canvas');c.width=96;c.height=96;var ctx=c.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,96,96);
+  try{ ctx.drawImage(img, sx,sy,sSize,sSize, 0,0,96,96); }catch(e){}
+  var uri=c.toDataURL('image/png'); var key=st.key; _cropCancel();
+  toast('Загружаю…');
+  api('/api/admin/logo-save',{key:key,dataUri:uri}).then(function(d){toast(d&&d.ok?'Готово ✅':'Ошибка');open2('Логотипы сервисов');});
 }
 function _logoDel(key){toast('Удаляю…');api('/api/admin/logo-del',{key:key}).then(function(d){toast(d&&d.ok?'Сброшено ✅':'Ошибка');open2('Логотипы сервисов');});}
 
