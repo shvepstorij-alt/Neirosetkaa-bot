@@ -1997,8 +1997,14 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
         for _it in _recs:
             _it["logo"] = _logo_by_key.get(_it.get("key"), "")
         _uname = await _get_bot_uname()
+        try:
+            from config import SHOP_CATEGORIES as _SC
+            _cats = [{"emoji": _e, "name": _n, "keys": list(_ks)} for (_e, _n, _ks) in _SC]
+        except Exception:
+            _cats = []
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
+                + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
                 + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
         if "</head>" in html:
             return html.replace("</head>", _tag + "</head>", 1)
@@ -2017,6 +2023,19 @@ async def webapp_chatgpt_handler(request: web.Request) -> web.Response:
                             headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
         return web.Response(text="Mini App not found", status=404)
+
+
+_SHOP_WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop_webapp.html")
+async def webapp_shop_handler(request: web.Request) -> web.Response:
+    """Мини-аппка «Магазин»: каталог → сервисы → карточка → оплата."""
+    try:
+        with open(_SHOP_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
+            _html = _f.read()
+        _html = await _inject_recs(_html, exclude_key="")
+        return web.Response(text=_html, content_type="text/html", charset="utf-8",
+                            headers=_NO_CACHE_HEADERS)
+    except FileNotFoundError:
+        return web.Response(text="Shop Mini App not found", status=404)
 
 
 async def webapp_admin_handler(request: web.Request) -> web.Response:
@@ -5819,6 +5838,7 @@ async def setup_webhook_server():
     # /getip — временный эндпоинт для получения исходящего IP
     app.router.add_get("/getip", getip_handler)
     app.router.add_get("/webapp/chatgpt", webapp_chatgpt_handler)
+    app.router.add_get("/webapp/shop", webapp_shop_handler)
     app.router.add_get("/webapp/admin", webapp_admin_handler)
     app.router.add_post("/api/admin/overview", api_admin_overview_handler)
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)

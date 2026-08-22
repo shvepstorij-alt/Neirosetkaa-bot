@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+<title>Магазин</title>
+<style>
+  :root{
+    --bg:#0f0f0f; --bg2:#1a1a1a; --bg3:#111; --border:#2a2a2a;
+    --text:#e9eaed; --text2:#8b8f96; --text3:#555; --green:#10a37f;
+  }
+  html[data-theme="light"]{
+    --bg:#f9fafb; --bg2:#fff; --bg3:#f3f4f6; --border:#e5e7eb;
+    --text:#111; --text2:#6b7280; --text3:#9ca3af;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+  .screen{display:none}
+  .screen.active{display:block;animation:fade .25s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .wrap{padding:14px 14px 30px;max-width:640px;margin:0 auto}
+
+  /* Верхняя мини-панель */
+  .tgbar{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px 0}
+  .pill{font-size:12px;font-weight:600;color:#fff;background:rgba(120,124,138,.34);border:none;border-radius:15px;padding:7px 11px}
+
+  .hero{padding:6px 2px 12px}
+  .hero h1{font-size:23px;font-weight:800}
+  .hero p{color:var(--text2);font-size:13px;margin-top:3px}
+
+  /* Категории (чипсы) */
+  .chips{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 12px;scrollbar-width:none}
+  .chips::-webkit-scrollbar{height:0}
+  .chip{flex:none;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:8px 13px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;white-space:nowrap}
+  .chip.on{background:var(--green);border-color:var(--green);color:#fff}
+
+  /* Сетка сервисов */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .tile{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:9px}
+  .tile:active{transform:scale(.98)}
+  .tile .ic{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35),inset 0 0 0 1px rgba(255,255,255,.06);overflow:hidden}
+  .tile .ic svg{width:30px;height:30px;display:block;fill:#fff}
+  .tile .ic svg *{fill:#fff}
+  .tile .ic img.pnglogo{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
+  .tile .ic .mono{font:800 22px/1 -apple-system,sans-serif;color:#fff}
+  .tile .nm{font-size:14px;font-weight:700;line-height:1.2}
+  .tile .pr{font-size:12px;color:var(--text2)}
+
+  /* Карточка сервиса */
+  .card-back{position:fixed;top:52px;left:10px;z-index:30;width:38px;height:38px;border-radius:50%;background:var(--bg2);border:1px solid var(--border);color:var(--text);font-size:24px;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer;padding-bottom:3px}
+  #card .wrap{padding-top:22px}
+  .card-head{display:flex;flex-direction:column;align-items:center;gap:12px;margin:6px 0 14px}
+  .card-ic{width:80px;height:80px;border-radius:20px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,.4);overflow:hidden}
+  .card-ic svg{width:48px;height:48px;display:block;fill:#fff}.card-ic svg *{fill:#fff}
+  .card-ic img.pnglogo{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
+  .card-ic .mono{font:800 36px/1 -apple-system,sans-serif;color:#fff}
+  .card-name{font-size:22px;font-weight:800;text-align:center}
+  .card-desc{font-size:13px;color:var(--text2);line-height:1.6;text-align:center;margin:8px 0 16px}
+  .card-plans-h{font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 8px}
+  .plan{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:13px 14px;margin-bottom:10px}
+  .plan-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  .plan-n{font-size:15px;font-weight:700}
+  .plan-p{font-size:16px;font-weight:800;color:var(--green);white-space:nowrap}
+  .plan-p span{font-size:11px;color:var(--text3);font-weight:600}
+  .plan-d{font-size:12px;color:var(--text2);line-height:1.5;margin:6px 0 10px}
+  .plan-buy{background:var(--green);color:#fff;text-align:center;font-weight:700;font-size:13px;padding:11px;border-radius:10px;cursor:pointer}
+  .pay-methods{display:flex;gap:8px}
+  .pay-methods .pm{flex:1;text-align:center;font-weight:700;font-size:13px;padding:12px;border-radius:10px;cursor:pointer;color:#fff}
+  .pay-methods .pm.sbp{background:var(--green)}.pay-methods .pm.card{background:#3576f5}
+  .pm-wait{text-align:center;font-size:12.5px;color:var(--text2);padding:10px}
+  .pm-err{text-align:center;font-size:12.5px;color:#e5484d;padding:6px}
+  .as-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .as-region{display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:12px;cursor:pointer;font-weight:600;font-size:13px}
+  .as-region:active{transform:scale(.97)}.as-region .as-flag{font-size:20px}
+  .as-region .as-rname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .empty{color:var(--text2);text-align:center;padding:40px 10px;font-size:14px}
+</style>
+</head>
+<body>
+
+<div id="home" class="screen active">
+  <div class="tgbar"><span class="pill" onclick="_kbHide()">⌨️ Скрыть</span><span class="pill" onclick="_min()">🔽 Свернуть</span></div>
+  <div class="wrap">
+    <div class="hero"><h1>🛍 Магазин</h1><p>Подписки на ИИ-сервисы и пополнение App Store</p></div>
+    <div class="chips" id="chips"></div>
+    <div class="grid" id="grid"></div>
+  </div>
+</div>
+
+<div id="card" class="screen">
+  <div class="card-back" onclick="showHome()">‹</div>
+  <div class="wrap"><div id="card-body"></div></div>
+</div>
+
+<script>
+var tg = null;
+var CATALOG = {}, CATS = [], RECS = [];
+var BOT_USERNAME = 'neirosetkaa_bot';
+var _curCat = '*';
+
+function _esc1(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+function _mono(name){ return '<span class="mono">'+((String(name||'?').trim().charAt(0)||'?').toUpperCase())+'</span>'; }
+function _hue(key){ var h=0,i; for(i=0;i<(key||'x').length;i++){h=(h*31+key.charCodeAt(i))%360;} return 'linear-gradient(135deg,hsl('+h+',52%,42%),hsl('+((h+28)%360)+',54%,30%))'; }
+var BG = { chatgpt:'#0d8f6f', claude:'#c15f3c', grok:'#000', perplexity:'#1f7a8c', zoom:'#2d8cff', midjourney:'#111317',
+  canva:'linear-gradient(135deg,#00c4cc,#7d2ae8)', suno:'#0e0e10', spotify:'#1db954', elevenlabs:'#0e0e10',
+  runway:'#0e0e10', gamma:'#7c3aed', capcut:'#111317', cursor:'#0e0e10', openrouter:'#6d6f7a', heygen:'#5b57e0',
+  telegram:'#2aabee', youtube:'#ff0033', lovable:'#e5476d', appstore:'#111',
+  gemini:'linear-gradient(135deg,#4285f4,#9b72cb)', kling:'#111317', manus:'#5b57e0' };
+function _brandBg(key){ return BG[key] || _hue(key); }
+function _iconHtml(logo, name){ var s=String(logo||''); return (s.indexOf('<svg')===0||s.indexOf('<img')===0)?logo:_mono(name); }
+function _tileBg2(key, logo){ if(logo && String(logo).indexOf('pnglogo')>=0) return '#fff'; if(_isAppStore(key,(CATALOG[key]&&CATALOG[key].name)))return '#111'; return _brandBg(key); }
+function _isAppStore(key, name){ var s=((key||'')+' '+(name||'')).toLowerCase().replace(/[^a-z]/g,''); return s.indexOf('appstore')>=0||s.indexOf('icloud')>=0; }
+function _minPrice(c){ var m=0; (c.plans||[]).forEach(function(p){ if(!m||p.price<m)m=p.price; }); return m; }
+
+function _api(path, body){
+  body = body||{}; try{ body.initData=(tg&&tg.initData)?tg.initData:''; }catch(e){ body.initData=''; }
+  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});
+}
+
+/* ─── Главная: категории + сетка ─── */
+function _catKeysSet(){ var s={}; CATS.forEach(function(c){(c.keys||[]).forEach(function(k){s[k]=1;});}); return s; }
+function renderChips(){
+  var el=document.getElementById('chips'); if(!el) return;
+  var chips=[['*','Все']];
+  CATS.forEach(function(c,i){ chips.push([''+i, c.emoji+' '+c.name]); });
+  // «Другое» — сервисы без категории
+  var inCat=_catKeysSet(); var hasOther=Object.keys(CATALOG).some(function(k){return !inCat[k];});
+  if(hasOther) chips.push(['other','✨ Другое']);
+  el.innerHTML=chips.map(function(c){
+    return '<div class="chip'+(_curCat===c[0]?' on':'')+'" onclick="setCat(\''+c[0]+'\')">'+c[1]+'</div>';
+  }).join('');
+}
+function setCat(c){ _curCat=c; renderChips(); renderGrid(); }
+function _servicesFor(cat){
+  var keys;
+  if(cat==='*'){ keys=Object.keys(CATALOG); }
+  else if(cat==='other'){ var inCat=_catKeysSet(); keys=Object.keys(CATALOG).filter(function(k){return !inCat[k];}); }
+  else { var c=CATS[+cat]; keys=(c&&c.keys||[]).filter(function(k){return CATALOG[k];}); }
+  return keys;
+}
+function renderGrid(){
+  var el=document.getElementById('grid'); if(!el) return;
+  var keys=_servicesFor(_curCat);
+  if(!keys.length){ el.innerHTML='<div class="empty">Здесь пока пусто</div>'; return; }
+  el.innerHTML=keys.map(function(k){
+    var c=CATALOG[k]; if(!c) return '';
+    var from=_minPrice(c); var price=from?('от '+from+'₽'):'';
+    return '<div class="tile" onclick="openCard(\''+_esc1(k)+'\')">'
+      + '<div class="ic" style="background:'+_tileBg2(k,c.logo)+'">'+_iconHtml(c.logo,c.name)+'</div>'
+      + '<div class="nm">'+c.name+'</div><div class="pr">'+price+'</div></div>';
+  }).join('');
+}
+
+/* ─── Карточка сервиса ─── */
+function showHome(){ document.getElementById('card').classList.remove('active'); document.getElementById('home').classList.add('active'); window.scrollTo(0,0); }
+function _showCard(){ document.getElementById('home').classList.remove('active'); document.getElementById('card').classList.add('active'); window.scrollTo(0,0); }
+function openCard(key){
+  var c=CATALOG[key]; var nm=(c&&c.name)||key;
+  if(_isAppStore(key,nm)){ openAppstore(); return; }
+  var body=document.getElementById('card-body'); if(!body||!c) return;
+  var plans=(c.plans||[]).slice().sort(function(a,b){return a.price-b.price;});
+  var plansHtml=plans.map(function(p){
+    return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.name+'</div>'
+      +'<div class="plan-p">'+p.price+'₽<span>/мес</span></div></div>'
+      +(p.desc?('<div class="plan-d">'+p.desc+'</div>'):'')
+      +'<div class="plan-buy" onclick="chooseMethod(this,\''+_esc1(key)+'\','+p.idx+')">Оформить за '+p.price+'₽</div></div>';
+  }).join('');
+  body.innerHTML='<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(key,c.logo)+'">'+_iconHtml(c.logo,c.name)+'</div>'
+    +'<div class="card-name">'+c.name+'</div></div>'
+    +(c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
+    +'<div class="card-plans-h">Тарифы</div>'+plansHtml;
+  _showCard();
+}
+function chooseMethod(btn,key,idx){
+  if(!btn)return; var w=document.createElement('div'); w.className='pay-methods';
+  w.innerHTML='<div class="pm sbp" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\')">⚡ СБП</div>'
+    +'<div class="pm card" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'card\')">💳 Картой</div>';
+  btn.parentNode.replaceChild(w,btn);
+}
+function payVia(el,key,idx,method){
+  var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
+  _api('/api/shop/pay',{key:key,planIdx:idx,method:method}).then(function(d){
+    if(d&&d.ok&&d.url){ row.innerHTML='<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>'; _openPay(encodeURIComponent(d.url)); }
+    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':'Не получилось. Попробуй ещё раз';
+      row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'; }
+  });
+}
+function _openPay(enc){ var url=decodeURIComponent(enc); try{if(tg&&tg.openLink){tg.openLink(url);return;}}catch(e){} try{window.open(url,'_blank');}catch(e){} }
+
+/* ─── App Store (NS Gifts) ─── */
+function _appstoreLogo(){ for(var k in CATALOG){ if(_isAppStore(k,CATALOG[k].name)) return CATALOG[k].logo||''; } return ''; }
+function _asHead(sub){
+  var lg=_appstoreLogo(); var bg=(lg&&lg.indexOf('pnglogo')>=0)?'#fff':'#111';
+  return '<div class="card-head"><div class="card-ic" style="background:'+bg+'">'+_iconHtml(lg,'A')+'</div>'
+    +'<div class="card-name">iCloud / App Store</div></div>'
+    +'<div class="card-desc">'+(sub||'Пополнение Apple ID. Код придёт автоматически после оплаты.')+'</div>';
+}
+function openAppstore(){
+  var body=document.getElementById('card-body'); if(!body) return;
+  body.innerHTML=_asHead()+'<div class="card-plans-h">Выбери регион</div><div id="as-body"><div class="pm-wait">Загружаю регионы…</div></div>';
+  _showCard();
+  _api('/api/appstore/regions').then(function(d){
+    var el=document.getElementById('as-body'); if(!el)return;
+    if(!d||!d.ok||!d.regions||!d.regions.length){ el.innerHTML='<div class="pm-err">Не удалось загрузить регионы. Попробуй позже.</div>'; return; }
+    el.innerHTML='<div class="as-grid">'+d.regions.map(function(r){
+      return '<div class="as-region" onclick="asDenoms('+r.catId+',\''+_esc1(r.name)+'\')"><span class="as-flag">'+(r.flag||'🌍')+'</span><span class="as-rname">'+r.name+'</span></div>';
+    }).join('')+'</div>';
+  });
+}
+function asDenoms(catId,name){
+  var body=document.getElementById('card-body'); if(!body) return;
+  body.innerHTML=_asHead('Регион: '+name)+'<div class="card-plans-h">Сумма пополнения</div><div id="as-body"><div class="pm-wait">Загружаю номиналы…</div></div>'
+    +'<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="openAppstore()">← Регионы</div>';
+  _api('/api/appstore/denoms',{catId:catId}).then(function(d){
+    var el=document.getElementById('as-body'); if(!el)return;
+    if(!d||!d.ok||!d.denoms||!d.denoms.length){ el.innerHTML='<div class="pm-err">Нет доступных номиналов.</div>'; return; }
+    el.innerHTML=d.denoms.map(function(p){
+      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.nominal+'</div><div class="plan-p">'+p.priceRub+'₽</div></div>'
+        +'<div class="plan-buy" onclick="asMethod(this,'+catId+','+p.serviceId+')">Оформить за '+p.priceRub+'₽</div></div>';
+    }).join('');
+  });
+}
+function asMethod(btn,catId,serviceId){
+  if(!btn)return; var w=document.createElement('div'); w.className='pay-methods';
+  w.innerHTML='<div class="pm sbp" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\')">⚡ СБП</div>'
+    +'<div class="pm card" onclick="asPay(this,'+catId+','+serviceId+',\'card\')">💳 Картой</div>';
+  btn.parentNode.replaceChild(w,btn);
+}
+function asPay(el,catId,serviceId,method){
+  var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
+  _api('/api/appstore/pay',{catId:catId,serviceId:serviceId,method:method}).then(function(d){
+    if(d&&d.ok&&d.url){ row.innerHTML='<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>'; _openPay(encodeURIComponent(d.url)); }
+    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':(d&&d.error==='unavailable')?'Сервис временно недоступен':'Не получилось. Попробуй ещё раз'; row.innerHTML='<div class="pm-err">'+m+'</div>'; }
+  });
+}
+
+/* ─── Панель ─── */
+function _kbHide(){ try{var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){} }
+function _min(){ _kbHide(); try{ if(tg&&typeof tg.minimize==='function'){tg.minimize();return;} }catch(e){} }
+
+function _init(){
+  tg=(window.Telegram&&window.Telegram.WebApp)?window.Telegram.WebApp:{ready:function(){},expand:function(){},initData:''};
+  try{ tg.ready(); }catch(e){}
+  try{ tg.expand(); }catch(e){}
+  try{ if(tg.enableClosingConfirmation) tg.enableClosingConfirmation(); }catch(e){}
+  try{ if(tg.colorScheme==='light') document.documentElement.setAttribute('data-theme','light'); }catch(e){}
+  CATALOG=window.__CATALOG__||{}; CATS=window.__CATEGORIES__||[]; RECS=window.__RECS__||[];
+  BOT_USERNAME=window.__BOT__||BOT_USERNAME;
+  renderChips(); renderGrid();
+}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_init); else _init();
+</script>
+</body>
+</html>
