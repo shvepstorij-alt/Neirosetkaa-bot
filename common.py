@@ -5827,6 +5827,9 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
     app.router.add_post("/api/admin/recs-save", api_admin_recs_save_handler)
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
+    app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
+    app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
+    app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
     app.router.add_post("/api/admin/stats", api_admin_stats_handler)
     app.router.add_post("/api/admin/sales", api_admin_sales_handler)
     app.router.add_post("/api/admin/plan-add", api_admin_plan_add_handler)
@@ -8015,6 +8018,161 @@ async def api_activate_claude_status_handler(request: web.Request) -> web.Respon
 
 
 # ─── Callback: клиент переоткрывает WebApp сам ───────────────────────────────
+
+async def _appstore_markup_for(brand: str) -> float:
+    """Наценка % для бренда (Apple): переопределение nsg_markup_brand:{brand} → иначе общая."""
+    try:
+        _mb = await get_setting(f"nsg_markup_brand:{brand}", "")
+        if _mb:
+            return float(_mb)
+    except Exception:
+        pass
+    return await _nsg_markup()
+
+
+async def api_appstore_regions_handler(request: web.Request) -> web.Response:
+    """Регионы пополнения App Store/iCloud (Apple-категории NS Gifts). Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        if not rt.nsgifts_client:
+            return web.json_response({"ok": False, "error": "unavailable"})
+        from ns_gifts import get_stock_cached, get_apple_categories, region_flag
+        stock = await get_stock_cached(rt.nsgifts_client)
+        cats = get_apple_categories(stock) or []
+        _out = []
+        for cat in cats:
+            _short = cat.get("category_name", "")
+            for _s in ("Apple Gift Card", "App Store", "iTunes", "Gift Card"):
+                _short = _short.replace(_s, "").strip()
+            _out.append({"catId": cat["category_id"],
+                         "name": _short or cat.get("category_name", ""),
+                         "flag": region_flag(cat.get("category_name", ""))})
+        return web.json_response({"ok": True, "regions": _out})
+    except Exception as _e:
+        logging.error(f"api_appstore_regions: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_appstore_denoms_handler(request: web.Request) -> web.Response:
+    """Номиналы пополнения для выбранного региона (Apple-категории)."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        if not rt.nsgifts_client:
+            return web.json_response({"ok": False, "error": "unavailable"})
+        try:
+            cat_id = int(body.get("catId"))
+        except Exception:
+            return web.json_response({"ok": False, "error": "bad"}, status=400)
+        from ns_gifts import (get_stock_cached, find_category, calc_price_rub,
+                              get_folder_by_category, brand_of)
+        stock = await get_stock_cached(rt.nsgifts_client)
+        cat = find_category(stock, cat_id)
+        if not cat:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        folder = get_folder_by_category(stock, cat_id)
+        brand = folder["brand"] if folder else brand_of(cat.get("category_name", ""))
+        usd_rate = await _nsg_usd_rate()
+        markup = await _appstore_markup_for(brand)
+        services = sorted([s for s in cat.get("services", []) if s.get("in_stock", 0) > 0],
+                          key=lambda s: s["price"])
+        _out = []
+        for svc in services:
+            _pr = int(calc_price_rub(svc["price"], usd_rate, markup))
+            _parts = svc.get("service_name", "").split("|")
+            _nom = _parts[-1].strip() if _parts else svc.get("service_name", "")
+            _out.append({"serviceId": svc["service_id"], "nominal": _nom, "priceRub": _pr})
+        return web.json_response({"ok": True, "denoms": _out})
+    except Exception as _e:
+        logging.error(f"api_appstore_denoms: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_appstore_pay_handler(request: web.Request) -> web.Response:
+    """Создание заказа App Store и ссылка на оплату (СБП/Карта). Цена считается на сервере."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        if not rt.nsgifts_client:
+            return web.json_response({"ok": False, "error": "unavailable"})
+        try:
+            cat_id = int(body.get("catId"))
+            service_id = int(body.get("serviceId"))
+        except Exception:
+            return web.json_response({"ok": False, "error": "bad"}, status=400)
+        method = str(body.get("method", "sbp")).strip().lower()
+        from ns_gifts import (get_stock_cached, find_category, calc_price_rub,
+                              get_folder_by_category, brand_of)
+        stock = await get_stock_cached(rt.nsgifts_client)
+        cat = find_category(stock, cat_id)
+        service = None
+        if cat:
+            service = next((s for s in cat.get("services", []) if s["service_id"] == service_id), None)
+        if not service or service.get("in_stock", 0) <= 0:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        folder = get_folder_by_category(stock, cat_id)
+        brand = folder["brand"] if folder else brand_of(cat.get("category_name", ""))
+        usd_rate = await _nsg_usd_rate()
+        markup = await _appstore_markup_for(brand)
+        price_rub = int(calc_price_rub(service["price"], usd_rate, markup))
+        if price_rub <= 0:
+            return web.json_response({"ok": False, "error": "price"}, status=400)
+        import time as _t
+        order_id = f"nsg_{service_id}_{uid}_{int(_t.time())}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO nsgifts_orders (user_id, fk_order_id, service_id, service_name, "
+                "quantity, price_usd, price_rub, status) VALUES ($1,$2,$3,$4,1,$5,$6,'pending') "
+                "ON CONFLICT (fk_order_id) DO NOTHING",
+                int(uid), order_id, service_id, service.get("service_name", ""),
+                service["price"], price_rub)
+            await conn.execute(
+                "INSERT INTO fk_orders (order_id,user_id,credits,amount_rub,pack) "
+                "VALUES ($1,$2,0,$3,$4) ON CONFLICT (order_id) DO NOTHING",
+                order_id, int(uid), price_rub, f"nsg:{service_id}")
+        if method == "card":
+            try:
+                url = await fk_create_order(float(price_rub), order_id, int(uid), payment_id=36)
+            except Exception as _ce:
+                logging.error(f"api_appstore_pay card {order_id}: {_ce}")
+                return web.json_response({"ok": False, "error": "card_failed"})
+        else:
+            from config import fk_pay_url as _fk_pay_url
+            url = _fk_pay_url(price_rub, order_id)
+        try:
+            _parts = service.get("service_name", "").split("|")
+            _nom = _parts[-1].strip() if _parts else ""
+            await bot.send_message(
+                ADMIN_ID,
+                f"🍎 <b>App Store заказ</b> (мини-апп)\n"
+                f"{service.get('service_name', _nom)}\n"
+                f"💵 <b>{price_rub}₽</b> · {'Карта' if method == 'card' else 'СБП'}\n"
+                f"🆔 <code>{order_id}</code>\n⏳ Ожидает оплаты",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return web.json_response({"ok": True, "url": url, "orderId": order_id})
+    except Exception as _e:
+        logging.error(f"api_appstore_pay: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
 
 async def _nsg_usd_rate() -> float:
     v = await get_setting("nsgifts_usd_rate")

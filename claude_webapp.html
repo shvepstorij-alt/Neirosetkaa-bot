@@ -381,6 +381,12 @@
     .pay-methods .pm.card{background:#3576f5}
     .pm-wait{text-align:center;font-size:12.5px;color:var(--text2);padding:10px}
     .pm-err{text-align:center;font-size:12.5px;color:#e5484d;padding:6px}
+    .as-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .as-region{display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--border);
+      border-radius:12px;padding:12px;cursor:pointer;font-weight:600;font-size:13px;color:var(--text)}
+    .as-region:active{transform:scale(.97)}
+    .as-region .as-flag{font-size:20px}
+    .as-region .as-rname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .rec-card .nm{font-size:13px;font-weight:700;line-height:1.15;color:var(--text)}
     .rec-card .pr{font-size:11.5px;color:var(--text2)}
     .rec-card .go{margin-top:3px;background:var(--orange);color:#fff;text-align:center;font-size:11.5px;font-weight:700;
@@ -782,12 +788,7 @@ function openCard(key){
   var c = (window.__CATALOG__ || {})[key];
   var _nm = (c && c.name) || key;
   // App Store / iCloud — пополнение через NS Gifts требует выбора региона: ведём в бота
-  if (_isAppStore(key, _nm)) {
-    var au = 'https://t.me/' + BOT_USERNAME + '?start=nsgapple';
-    try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(au); return; } } catch(e) {}
-    try { window.open(au, '_blank'); } catch(e) {}
-    return;
-  }
+  if (_isAppStore(key, _nm)) { openAppstore(); return; }
   var body = document.getElementById('svc-card-body');
   if (!body) return;
   if (!c) {
@@ -845,6 +846,75 @@ function _api(path, body){
   return fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
     .then(function(r){ return r.json().catch(function(){ return {ok:false}; }); })
     .catch(function(){ return {ok:false}; });
+}
+
+// ─── App Store / iCloud (NS Gifts) — регион → номинал → оплата, всё в мини-аппке ───
+function _asFallbackToBot(){
+  var au = 'https://t.me/' + BOT_USERNAME + '?start=nsgapple';
+  try { if (tg && tg.openTelegramLink) { tg.openTelegramLink(au); return; } } catch(e) {}
+  try { window.open(au, '_blank'); } catch(e) {}
+}
+function _asHead(sub){
+  return '<div class="card-head"><div class="card-ic" style="background:#fff">'
+    + (_iconHtml((window.__CATALOG__&&window.__CATALOG__.appstore&&window.__CATALOG__.appstore.logo)||'', 'A'))
+    + '</div><div class="card-name">iCloud / App Store</div></div>'
+    + '<div class="card-desc">' + (sub||'Пополнение Apple ID. Код придёт автоматически после оплаты.') + '</div>';
+}
+function openAppstore(){
+  var body = document.getElementById('svc-card-body'); if(!body) return;
+  body.innerHTML = _asHead() + '<div class="card-plans-h">Выбери регион</div>'
+    + '<div id="as-body"><div class="pm-wait">Загружаю регионы…</div></div>';
+  showScreen('svc-card');
+  _api('/api/appstore/regions').then(function(d){
+    var el = document.getElementById('as-body'); if(!el) return;
+    if(!d || !d.ok || !d.regions || !d.regions.length){
+      el.innerHTML = '<div class="pm-err">Не удалось загрузить регионы. Открыть в боте?</div>'
+        + '<div class="plan-buy" style="margin-top:8px" onclick="_asFallbackToBot()">Открыть в боте ↗</div>';
+      return;
+    }
+    el.innerHTML = '<div class="as-grid">' + d.regions.map(function(r){
+      return '<div class="as-region" onclick="asDenoms('+r.catId+',\''+_esc1(r.name)+'\')">'
+        + '<span class="as-flag">'+(r.flag||'🌍')+'</span><span class="as-rname">'+r.name+'</span></div>';
+    }).join('') + '</div>';
+  });
+}
+function asDenoms(catId, name){
+  var body = document.getElementById('svc-card-body'); if(!body) return;
+  body.innerHTML = _asHead('Регион: '+name) + '<div class="card-plans-h">Сумма пополнения</div>'
+    + '<div id="as-body"><div class="pm-wait">Загружаю номиналы…</div></div>'
+    + '<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="openAppstore()">← Регионы</div>';
+  _api('/api/appstore/denoms', {catId:catId}).then(function(d){
+    var el = document.getElementById('as-body'); if(!el) return;
+    if(!d || !d.ok || !d.denoms || !d.denoms.length){
+      el.innerHTML = '<div class="pm-err">Нет доступных номиналов. Попробуй другой регион.</div>';
+      return;
+    }
+    el.innerHTML = d.denoms.map(function(p){
+      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.nominal+'</div>'
+        + '<div class="plan-p">'+p.priceRub+'₽</div></div>'
+        + '<div class="plan-buy" onclick="asMethod(this,'+catId+','+p.serviceId+')">Оформить за '+p.priceRub+'₽</div></div>';
+    }).join('');
+  });
+}
+function asMethod(btn, catId, serviceId){
+  if(!btn) return;
+  var wrap = document.createElement('div'); wrap.className='pay-methods';
+  wrap.innerHTML = '<div class="pm sbp" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\')">⚡ СБП</div>'
+    + '<div class="pm card" onclick="asPay(this,'+catId+','+serviceId+',\'card\')">💳 Картой</div>';
+  btn.parentNode.replaceChild(wrap, btn);
+}
+function asPay(el, catId, serviceId, method){
+  var row = el.parentNode; row.innerHTML = '<div class="pm-wait">Создаю ссылку на оплату…</div>';
+  _api('/api/appstore/pay', {catId:catId, serviceId:serviceId, method:method}).then(function(d){
+    if(d && d.ok && d.url){
+      row.innerHTML = '<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>';
+      _openPay(encodeURIComponent(d.url));
+    } else {
+      var msg = (d && d.error==='card_failed') ? 'Картой не удалось — попробуй СБП'
+              : (d && d.error==='unavailable') ? 'Сервис временно недоступен' : 'Не получилось. Попробуй ещё раз';
+      row.innerHTML = '<div class="pm-err">'+msg+'</div>';
+    }
+  });
 }
 
 // ─── Тема ────────────────────────────────────────────────────────
