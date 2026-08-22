@@ -637,8 +637,11 @@ function _bnEdit(b,i){var bn=window._bnList[i];if(!bn){window._bnEditIdx=null;_b
     +'<div class="kv" style="margin-top:8px"><span class="k">Фон (цвет/градиент CSS)</span></div><input class="f" placeholder="linear-gradient(135deg,#10a37f,#0c7d61)" value="'+esc(bn.bg||'')+'" oninput="window._bnList['+i+'].bg=this.value;_bnPreview('+i+')">'
     +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="tag g" style="cursor:pointer;padding:6px 10px">Загрузить картинку<input type="file" accept="image/*" style="display:none" onchange="_bnImg('+i+',this)"></label>'
     +(bn.img?'<span class="tag a">картинка есть</span><span class="tag r" style="cursor:pointer" onclick="window._bnList['+i+'].img=\'\';_bnRender()">убрать</span>':'<span class="sub">картинка перекрывает фон-цвет</span>')+'</div>'
-    +'<div class="kv" style="margin-top:10px"><span class="k">Высота баннера</span></div>'
-    +'<div style="display:flex;gap:8px">'+[['S',110],['M',150],['L',210]].map(function(o){return '<span class="tag '+(((bn.h||110)===o[1])?'g':'a')+'" style="cursor:pointer;padding:6px 16px" onclick="window._bnList['+i+'].h='+o[1]+';_bnRender()">'+o[0]+'</span>';}).join('')+'</div>'
+    +'<div class="kv" style="margin-top:10px"><span class="k">Формат (соотношение сторон)</span></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+      +['16:9','4:3','1:1','4:5','9:16'].map(function(a){return '<span class="tag '+(((bn.ar||'16:6')===a)?'g':'a')+'" style="cursor:pointer;padding:6px 12px" onclick="window._bnList['+i+'].ar=\''+a+'\';_bnRender()">'+a+'</span>';}).join('')
+      +'<input class="f" style="max-width:92px" placeholder="W:H" value="'+esc(bn.ar||'')+'" oninput="window._bnList['+i+'].ar=this.value;_bnPreview('+i+')"></div>'
+    +'<div class="sub" style="margin-top:4px">Можно любой: 16:9, 4:3, 1:1, вертикальные 4:5 / 9:16 или свой W:H</div>'
     +'<div class="kv" style="margin-top:10px"><span class="k">Цвет текста</span></div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
       +['#ffffff','#111111','#ffe08a','#ff6b6b','#7dd3fc','#a3e635'].map(function(c){return '<span onclick="window._bnList['+i+'].tc=\''+c+'\';_bnPreview('+i+')" style="width:26px;height:26px;border-radius:50%;background:'+c+';cursor:pointer;border:2px solid rgba(255,255,255,.25)"></span>';}).join('')
@@ -656,9 +659,9 @@ function _bnEdit(b,i){var bn=window._bnList[i];if(!bn){window._bnEditIdx=null;_b
 function _bnPreview(i){
   var host=document.getElementById('bprev'); if(!host) return; var b=window._bnList[i]; if(!b) return;
   var ex=(b.ex!=null?b.ex:5), ey=(b.ey!=null?b.ey:28), tx=(b.tx!=null?b.tx:22), ty=(b.ty!=null?b.ty:24);
-  var h=(b.h?b.h:110), tc=b.tc||'#ffffff';
+  var ar=_bnAspect(b), tc=b.tc||'#ffffff';
   var bgstyle = b.img ? '' : ('background:'+(b.bg||'linear-gradient(135deg,#10a37f,#0c7d61)')+';');
-  host.style.cssText='position:relative;height:'+h+'px;border-radius:16px;overflow:hidden;color:'+tc+';margin-top:6px;'+bgstyle;
+  host.style.cssText='position:relative;width:100%;aspect-ratio:'+ar.w+'/'+ar.h+';border-radius:16px;overflow:hidden;color:'+tc+';margin-top:6px;'+bgstyle;
   host.innerHTML=(b.img?'<div style="position:absolute;inset:0;background-size:cover;background-position:center;background-image:url(\''+b.img+'\')"></div><div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05))"></div>':'')
     +'<div id="bp-emoji" style="position:absolute;z-index:3;left:'+ex+'%;top:'+ey+'%;font-size:34px;cursor:move;touch-action:none">'+(b.emoji||'')+'</div>'
     +'<div id="bp-text" style="position:absolute;z-index:3;left:'+tx+'%;top:'+ty+'%;max-width:74%;cursor:move;touch-action:none;color:'+tc+'"><div style="font-weight:800;font-size:15px">'+esc(b.title||'')+'</div><div style="font-size:11px;opacity:.9">'+esc(b.sub||'')+'</div></div>';
@@ -681,8 +684,15 @@ function _bnMove(i,d){var L=window._bnList;var j=i+d;if(j<0||j>=L.length)return;
 function _bnDel(i){window._bnList.splice(i,1);if(window._bnEditIdx!==null)window._bnEditIdx=null;_bnRender();}
 function _bnAdd(){window._bnList.push({id:'',on:true,title:'Новый баннер',sub:'',emoji:'🔥',bg:'linear-gradient(135deg,#10a37f,#0c7d61)',img:'',act:'url',val:''});window._bnEditIdx=window._bnList.length-1;_bnRender();}
 function _bnImg(i,input){var f=input.files&&input.files[0];if(!f)return;var r=new FileReader();r.onload=function(){_openBannerCropper(r.result,i);};r.readAsDataURL(f);}
+function _bnAspect(b){
+  var a=(b&&b.ar&&/^\d+:\d+$/.test(b.ar))?b.ar.split(':'):null;
+  if(a) return {w:+a[0], h:+a[1]};
+  return {w:340, h:(b&&b.h?b.h:110)};   // запас для старых баннеров
+}
 function _openBannerCropper(src,i){
-  var b=window._bnList[i]; var h=(b.h||110); var RW=340; var Vw=300, Vh=Math.max(60,Math.round(Vw*h/RW));
+  var b=window._bnList[i]; var ar=_bnAspect(b);
+  var Vw=300, Vh=Math.round(Vw*ar.h/ar.w);
+  if(Vh>380){ Vh=380; Vw=Math.round(Vh*ar.w/ar.h); }   // не выше экрана
   var ov=document.createElement('div');ov.id='bcropov';
   ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px';
   ov.innerHTML='<div style="color:#fff;font-weight:700;margin-bottom:12px">Выбери область баннера</div>'

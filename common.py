@@ -2639,7 +2639,7 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
             body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
-        import json as _j, time as _t
+        import json as _j, time as _t, re as _re
         _items = body.get("banners") or []
         _out = []
         for _i, _b in enumerate(_items):
@@ -2672,6 +2672,7 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
                 "ex": _num(_b.get("ex")), "ey": _num(_b.get("ey")),
                 "tc": str(_b.get("tc", ""))[:24],
                 "h": (max(80, min(320, int(_b["h"]))) if str(_b.get("h", "")).strip().lstrip("-").isdigit() else None),
+                "ar": (str(_b.get("ar", "")).strip() if _re.match(r'^\d{1,2}:\d{1,2}$', str(_b.get("ar", "")).strip()) else ""),
             })
         await set_setting("shop_banners", _j.dumps(_out, ensure_ascii=False))
         return web.json_response({"ok": True})

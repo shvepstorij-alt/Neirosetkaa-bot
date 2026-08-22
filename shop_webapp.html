@@ -28,7 +28,7 @@
   /* Баннеры */
   .banners{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 2px 14px;scrollbar-width:none}
   .banners::-webkit-scrollbar{height:0}
-  .banner{flex:0 0 92%;scroll-snap-align:center;min-height:104px;border-radius:16px;overflow:hidden;position:relative;cursor:pointer;display:flex;align-items:center;padding:14px;color:#fff;background:linear-gradient(135deg,#10a37f,#0c7d61)}
+  .banner{flex:0 0 92%;scroll-snap-align:center;border-radius:16px;overflow:hidden;position:relative;cursor:pointer;display:block;padding:0;color:#fff;background:linear-gradient(135deg,#10a37f,#0c7d61)}
   .banner:active{transform:scale(.99)}
   .banner .b-bg{position:absolute;inset:0;background-size:cover;background-position:center;z-index:0}
   .banner .b-shade{position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05));z-index:1}
@@ -185,8 +185,9 @@ function renderBanners(){
   el.style.display='';
   el.innerHTML=B.map(function(b,i){
     var bg = b.img ? '<div class="b-bg" data-img="'+i+'"></div><div class="b-shade"></div>' : '';
-    var h=(b.h?b.h:110), tc=b.tc||'#fff';
-    var st='style="height:'+h+'px;'+((!b.img && b.bg)?('background:'+b.bg):'')+'"';
+    var tc=b.tc||'#fff';
+    var ar=(b.ar&&/^\d+:\d+$/.test(b.ar))?b.ar.replace(':','/'):(b.h?('340/'+b.h):'16/6');
+    var st='style="aspect-ratio:'+ar+';height:auto;'+((!b.img && b.bg)?('background:'+b.bg):'')+'"';
     var ex=(b.ex!=null?b.ex:5), ey=(b.ey!=null?b.ey:28), tx=(b.tx!=null?b.tx:22), ty=(b.ty!=null?b.ty:24);
     var em = b.emoji ? ('<div class="b-emoji" style="position:absolute;z-index:2;left:'+ex+'%;top:'+ey+'%">'+b.emoji+'</div>') : '';
     var txt = '<div style="position:absolute;z-index:2;left:'+tx+'%;top:'+ty+'%;max-width:74%;color:'+tc+'"><div class="b-tt">'+(b.title||'')+'</div>'+(b.sub?'<div class="b-sub">'+b.sub+'</div>':'')+'</div>';
