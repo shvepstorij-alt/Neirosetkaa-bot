@@ -1919,6 +1919,70 @@ async def _get_logo_svg(slug: str) -> str:
     return _svg
 
 
+# Привязка логотипа по НАЗВАНИЮ сервиса (устойчиво к разным ключам в базе).
+_LOGO_NORM = {
+    # присланные PNG
+    "chatgpt": ("img", "chatgpt"), "openai": ("img", "chatgpt"),
+    "midjourney": ("img", "midjourney"),
+    "canva": ("img", "canva"),
+    "lovable": ("img", "lovable"),
+    "capcut": ("img", "capcut"),
+    "grok": ("img", "grok"), "supergrok": ("img", "grok"),
+    "openrouter": ("img", "openrouter"),
+    "gamma": ("img", "gamma"),
+    "heygen": ("img", "heygen"),
+    "kling": ("img", "kling"), "klingai": ("img", "kling"),
+    "higgsfield": ("img", "higgsfield"),
+    # SVG (Simple Icons, вшиты)
+    "perplexity": ("svg", "perplexity"),
+    "claude": ("svg", "claude"),
+    "gemini": ("svg", "googlegemini"), "googlegemini": ("svg", "googlegemini"),
+    "zoom": ("svg", "zoom"),
+    "suno": ("svg", "suno"),
+    "spotify": ("svg", "spotify"),
+    "elevenlabs": ("svg", "elevenlabs"),
+    "cursor": ("svg", "cursor"),
+    "telegram": ("svg", "telegram"),
+    "youtube": ("svg", "youtube"),
+    "apple": ("svg", "apple"), "icloud": ("svg", "apple"), "appstore": ("svg", "apple"),
+    "icloudappstore": ("svg", "apple"),
+    "kimi": ("svg", "kimi"),
+    "freepik": ("svg", "freepik"),
+    "github": ("svg", "github"),
+}
+def _norm_name(s: str) -> str:
+    import re as _re
+    _words = [w for w in _re.split(r'[^a-z0-9]+', (s or "").lower()) if w]
+    _drop = {"pro", "plus", "premium", "max", "go", "basic", "standard", "team", "ai", "app"}
+    _kept = [w for w in _words if w not in _drop] or _words
+    return "".join(_kept)
+
+
+def _resolve_logo_spec(key: str, name: str):
+    """Возвращает ('img', imgkey) | ('svg', slug) | None. Матчим по ключу и по имени."""
+    if key in _LOGOS_IMG:
+        return ("img", key)
+    for _cand in (_norm_name(name), _norm_name(key)):
+        _t = _LOGO_NORM.get(_cand)
+        if _t:
+            return _t
+    _sl = _LOGO_SLUG.get(key, "")
+    if _sl:
+        return ("svg", _sl)
+    return None
+
+
+async def _logo_html_for(key: str, name: str) -> str:
+    _spec = _resolve_logo_spec(key, name)
+    if not _spec:
+        return ""
+    _typ, _val = _spec
+    if _typ == "img":
+        _uri = _LOGOS_IMG.get(_val, "")
+        return ('<img class="pnglogo" src="' + _uri + '">') if _uri else ""
+    return await _get_logo_svg(_val)
+
+
 async def _inject_recs(html: str, exclude_key: str) -> str:
     """Вставляет window.__RECS__ / __CATALOG__ / __BOT__ в <head> мини-аппки."""
     import json as _json
@@ -1928,10 +1992,7 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
         # Вшиваем официальные логотипы (inline SVG) в каталог и в ленту
         _logo_by_key = {}
         for _k in _cat.keys():
-            if _k in _LOGOS_IMG:
-                _logo_by_key[_k] = '<img class="pnglogo" src="' + _LOGOS_IMG[_k] + '">'
-            else:
-                _logo_by_key[_k] = await _get_logo_svg(_LOGO_SLUG.get(_k, ""))
+            _logo_by_key[_k] = await _logo_html_for(_k, _cat[_k].get("name", ""))
             _cat[_k]["logo"] = _logo_by_key[_k]
         for _it in _recs:
             _it["logo"] = _logo_by_key.get(_it.get("key"), "")
