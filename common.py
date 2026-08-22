@@ -6273,6 +6273,10 @@ async def setup_webhook_server():
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)
+    app.router.add_get("/genimg", genimg_handler)
+    app.router.add_post("/api/gen/fav-add", api_gen_fav_add_handler)
+    app.router.add_post("/api/gen/favs", api_gen_favs_handler)
+    app.router.add_post("/api/gen/fav-del", api_gen_fav_del_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
     app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
     app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
@@ -8487,6 +8491,28 @@ def _pack_label(pack: str) -> str:
     return "Заказ"
 
 
+_GENIMG_CACHE = {}  # token -> (bytes, mime, ts) — временная отдача для скачивания
+def _genimg_put(_b: bytes, _mime: str) -> str:
+    import time as _t, secrets as _sec
+    _tok = _sec.token_urlsafe(10)
+    _GENIMG_CACHE[_tok] = (_b, _mime, _t.time())
+    if len(_GENIMG_CACHE) > 300:
+        _now = _t.time()
+        for _k in list(_GENIMG_CACHE.keys()):
+            if _now - _GENIMG_CACHE[_k][2] > 3600:
+                _GENIMG_CACHE.pop(_k, None)
+    return _tok
+
+
+async def genimg_handler(request: web.Request) -> web.Response:
+    """Отдаёт сгенерированную картинку по токену (для кнопки «Скачать»)."""
+    _it = _GENIMG_CACHE.get(request.query.get("t", ""))
+    if not _it:
+        return web.Response(status=404, text="not found")
+    return web.Response(body=_it[0], content_type=_it[1],
+                        headers={"Content-Disposition": 'inline; filename="image.png"'})
+
+
 async def api_gen_image_handler(request: web.Request) -> web.Response:
     """Генерация изображения из мини-аппки. Списывает кредиты, при ошибке возвращает."""
     try:
@@ -8537,9 +8563,85 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
         _mime = "image/jpeg" if (len(_img) > 2 and _img[0] == 0xFF and _img[1] == 0xD8) else "image/png"
         import base64 as _b64
         _uri = "data:" + _mime + ";base64," + _b64.b64encode(_img).decode()
-        return web.json_response({"ok": True, "img": _uri, "credits": await _get_cr(int(uid))})
+        _tok = _genimg_put(_img, _mime)
+        return web.json_response({"ok": True, "img": _uri, "token": _tok, "credits": await _get_cr(int(uid))})
     except Exception as _e:
         logging.error(f"api_gen_image: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_gen_fav_add_handler(request: web.Request) -> web.Response:
+    """Добавить картинку (миниатюру data-URI) в избранное. Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _uri = str(body.get("uri", "")).strip()
+        if not _uri.startswith("data:image/") or len(_uri) > 250000:
+            return web.json_response({"ok": False, "error": "bad"}, status=400)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("CREATE TABLE IF NOT EXISTS gen_favorites ("
+                               "id BIGSERIAL PRIMARY KEY, user_id BIGINT, uri TEXT, created_at TIMESTAMPTZ DEFAULT NOW())")
+            await conn.execute("INSERT INTO gen_favorites (user_id, uri) VALUES ($1,$2)", int(uid), _uri)
+            await conn.execute(
+                "DELETE FROM gen_favorites WHERE user_id=$1 AND id NOT IN "
+                "(SELECT id FROM gen_favorites WHERE user_id=$1 ORDER BY id DESC LIMIT 30)", int(uid))
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_gen_fav_add: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_gen_favs_handler(request: web.Request) -> web.Response:
+    """Список избранного пользователя."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _favs = []
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                _rows = await conn.fetch(
+                    "SELECT id, uri FROM gen_favorites WHERE user_id=$1 ORDER BY id DESC LIMIT 30", int(uid))
+            _favs = [{"id": _r["id"], "uri": _r["uri"]} for _r in _rows]
+        except Exception:
+            _favs = []
+        return web.json_response({"ok": True, "favs": _favs})
+    except Exception as _e:
+        logging.error(f"api_gen_favs: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_gen_fav_del_handler(request: web.Request) -> web.Response:
+    """Удалить из избранного по id."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        try:
+            _id = int(body.get("id"))
+        except Exception:
+            return web.json_response({"ok": False, "error": "bad"}, status=400)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM gen_favorites WHERE id=$1 AND user_id=$2", _id, int(uid))
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_gen_fav_del: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 

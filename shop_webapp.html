@@ -113,6 +113,10 @@
   .gm-c{font-size:12px;color:var(--green);font-weight:700;margin-top:3px}
   .gen-ta{width:100%;min-height:92px;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:12px;color:var(--text);font-size:14px;resize:vertical;font-family:inherit;box-sizing:border-box}
   .gen-img img{width:100%;border-radius:14px;display:block}
+  .favs-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .fav{position:relative;border-radius:12px;overflow:hidden;aspect-ratio:1/1;background:var(--bg)}
+  .fav img{width:100%;height:100%;object-fit:cover;display:block}
+  .fav-x{position:absolute;top:4px;right:4px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:13px;display:flex;align-items:center;justify-content:center;cursor:pointer}
   .prof{display:flex;align-items:center;gap:14px;background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px;margin-bottom:14px}
   .prof .pav{width:56px;height:56px;border-radius:50%;overflow:hidden;flex:none;background:linear-gradient(135deg,var(--green),#0c7d61);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:#fff}
   .prof .pav img{width:100%;height:100%;object-fit:cover;display:block}
@@ -281,6 +285,27 @@ function _h(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 function _saveGenPrompt(){ var t=document.getElementById('gen-prompt'); if(t) window._genPrompt=t.value; }
 function renderGen(){
   var b=document.getElementById('gen-body'); if(!b) return;
+  if(window._genMode==='photo'){ renderGenPhoto(b); return; }
+  if(window._genMode && window._genMode!=='photo'){ _genSoon(b, window._genMode); return; }
+  // Хаб: выбор из 4 разделов
+  var modes=[['photo','📷','Фото','Генерация изображений'],
+             ['video','🎬','Видео','Генерация видео'],
+             ['anim','✨','Анимация','Оживить фото'],
+             ['edit','🖌','Редактировать','Изменить фото по описанию']];
+  b.innerHTML='<div class="gm-list">'+modes.map(function(m){
+    return '<div class="gm" style="display:flex;align-items:center;gap:12px" onclick="genMode(\''+m[0]+'\')">'
+      +'<div style="font-size:30px">'+m[1]+'</div><div><div class="gm-n">'+m[2]+'</div><div class="gm-d">'+m[3]+'</div></div></div>';
+  }).join('')+'</div>';
+}
+function genMode(m){ window._genMode=m; renderGen(); }
+function _genSoon(b, m){
+  var names={video:'🎬 Видео',anim:'✨ Анимация',edit:'🖌 Редактирование фото'};
+  b.innerHTML='<div class="block" style="text-align:center;padding:26px 14px"><div style="font-size:44px">🛠</div>'
+    +'<div style="font-size:17px;font-weight:800;margin:10px 0 6px">'+(names[m]||'Раздел')+'</div>'
+    +'<div class="card-desc">Скоро появится прямо в приложении. Пока доступно в чате бота.</div>'
+    +'<div class="plan-buy" onclick="window._genMode=null;renderGen()">← К разделам</div></div>';
+}
+function renderGenPhoto(b){
   var M=window.__IMGMODELS__||[];
   if(!M.length){ b.innerHTML='<div class="empty">Модели временно недоступны</div>'; return; }
   if(!window._genModel) window._genModel=M[0].key;
@@ -289,7 +314,8 @@ function renderGen(){
     return '<div class="gm'+(on?' on':'')+'" onclick="_saveGenPrompt();window._genModel=\''+m.key+'\';renderGen()"><div class="gm-n">'+m.name+'</div>'+(m.desc?'<div class="gm-d">'+m.desc+'</div>':'')+'<div class="gm-c">'+m.credits+' кр'+(m.speed?(' · '+m.speed):'')+'</div></div>';}).join('');
   var aspects=['1:1','3:4','4:3','16:9','9:16'].map(function(a){return '<span class="chip'+(window._genAspect===a?' on':'')+'" onclick="_saveGenPrompt();window._genAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
   var cur=(M.filter(function(m){return m.key===window._genModel})[0])||M[0];
-  b.innerHTML='<div class="block"><h3>Модель</h3><div class="gm-list">'+models+'</div></div>'
+  b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div>'
+    +'<div class="block"><h3>Модель</h3><div class="gm-list">'+models+'</div></div>'
     +'<div class="block"><h3>Что нарисовать</h3><textarea id="gen-prompt" class="gen-ta" placeholder="Опиши картинку: кот-космонавт в неоне, кинематографично…">'+_h(window._genPrompt||'')+'</textarea>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
     +'<div id="gen-result"></div>'
@@ -304,8 +330,12 @@ function doGen(){
   _api('/api/gen/image',{model:window._genModel,prompt:p,aspect:window._genAspect}).then(function(d){
     if(!res) return;
     if(d&&d.ok&&d.img){
+      window._lastGenUri=d.img; window._lastGenToken=d.token||'';
       res.innerHTML='<div class="gen-img"><img src="'+d.img+'"></div>'
-        +'<div class="o-s" style="text-align:center;margin:8px 0 2px">Готово · остаток '+(d.credits!=null?d.credits:'')+' кр · картинка сохранена в чат бота</div>';
+        +'<div style="display:flex;gap:8px;margin-top:8px">'
+        +'<div class="plan-buy" id="favbtn" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text)" onclick="_favAdd()">⭐ В избранное</div>'
+        +'<div class="plan-buy" style="flex:1" onclick="_dl()">⬇️ Скачать</div></div>'
+        +'<div class="o-s" style="text-align:center;margin:8px 0 2px">остаток '+(d.credits!=null?d.credits:'')+' кр · сохранено в чат бота</div>';
     } else if(d&&d.error==='credits'){
       res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>';
     } else if(d&&String(d.error||'').indexOf('auth')===0){
@@ -314,6 +344,29 @@ function doGen(){
       res.innerHTML='<div class="pm-err">Не получилось сгенерировать. Попробуй ещё раз или другую модель.</div>';
     }
   });
+}
+
+function _dl(){
+  var t=window._lastGenToken;
+  if(t){ var url=location.origin+'/genimg?t='+t;
+    try{ if(tg&&tg.downloadFile){ tg.downloadFile({url:url, file_name:'neirosetka.png'}); return; } }catch(e){}
+    try{ if(tg&&tg.openLink){ tg.openLink(url); return; } }catch(e){}
+    try{ window.open(url,'_blank'); return; }catch(e){}
+  }
+  // запас: картинка уже в чате бота
+}
+function _favAdd(){
+  var uri=window._lastGenUri; if(!uri) return;
+  var img=new Image();
+  img.onload=function(){
+    var mx=320, sc=Math.min(1,mx/img.width), w=Math.round(img.width*sc), h=Math.round(img.height*sc);
+    var c=document.createElement('canvas'); c.width=w; c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
+    var thumb=c.toDataURL('image/jpeg',0.82);
+    _api('/api/gen/fav-add',{uri:thumb}).then(function(d){
+      var btn=document.getElementById('favbtn'); if(btn){ btn.textContent=(d&&d.ok)?'✅ В избранном':'Ошибка'; }
+    });
+  };
+  img.src=uri;
 }
 
 function loadCabinet(){
@@ -344,9 +397,22 @@ function loadCabinet(){
       +'<div class="o-s" style="margin-bottom:8px">Друг оформляет по твоей ссылке — ты получаешь <b style="color:var(--green)">10% монетками</b> с его первой покупки. Приглашено: '+(d.refCount||0)+'</div>'
       +(d.refLink?('<div class="ref-link" id="ref-link">'+d.refLink+'</div><div class="ref-copy" onclick="_copyRef()">Скопировать ссылку</div>'):'')
       +'</div>'
+      +'<div id="favs-block"></div>'
       +'<div class="block"><h3>🧾 Мои заказы</h3>'+orders+'</div>';
+    loadFavs();
   });
 }
+function loadFavs(){
+  _api('/api/gen/favs').then(function(d){
+    var host=document.getElementById('favs-block'); if(!host) return;
+    if(!d||!d.ok||!d.favs||!d.favs.length){ host.innerHTML=''; return; }
+    host.innerHTML='<div class="block"><h3>⭐ Избранное</h3><div class="favs-grid">'
+      + d.favs.map(function(f){
+        return '<div class="fav"><img src="'+f.uri+'"><span class="fav-x" onclick="_favDel('+f.id+')">✕</span></div>';
+      }).join('') + '</div></div>';
+  });
+}
+function _favDel(id){ _api('/api/gen/fav-del',{id:id}).then(function(){ loadFavs(); }); }
 function _copyRef(){
   var el=document.getElementById('ref-link'); if(!el) return;
   var t=el.textContent||'';
