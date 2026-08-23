@@ -2158,12 +2158,27 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                                    "durations": _durs})
         except Exception:
             _vidmodels = []
+        try:
+            from config import EDIT_MODELS as _EM
+            _editmodels = [{"key": _k, "name": _v.get("name", _k), "credits": _v.get("credits", 0),
+                            "desc": _v.get("desc", "")} for _k, _v in _EM.items()]
+        except Exception:
+            _editmodels = []
+        try:
+            from config import ANIM_MODELS as _AM
+            _animmodels = [{"key": _k, "name": _v.get("name", _k), "credits": _v.get("credits", 0),
+                            "desc": _v.get("desc", ""), "duration": _v.get("duration", 5)}
+                           for _k, _v in _AM.items()]
+        except Exception:
+            _animmodels = []
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
                 + ";window.__BANNERS__=" + _json.dumps(_banners, ensure_ascii=False)
                 + ";window.__IMGMODELS__=" + _json.dumps(_imgmodels, ensure_ascii=False)
                 + ";window.__VIDMODELS__=" + _json.dumps(_vidmodels, ensure_ascii=False)
+                + ";window.__EDITMODELS__=" + _json.dumps(_editmodels, ensure_ascii=False)
+                + ";window.__ANIMMODELS__=" + _json.dumps(_animmodels, ensure_ascii=False)
                 + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
         if "</head>" in html:
             return html.replace("</head>", _tag + "</head>", 1)
@@ -2837,7 +2852,7 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
             except Exception:
                 _uname = ""
             _who = (f"@{_uname}" if _uname else "без username") + f" (<code>{uid}</code>)"
-            await bot.send_message(
+            _amsg = await bot.send_message(
                 ADMIN_ID,
                 f"🛒 <b>Новый заказ {_onum}</b>\n\n"
                 f"👤 {_who}\n"
@@ -2849,6 +2864,14 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                 f"⏳ <b>Статус: ожидает оплаты</b>\n"
                 f"<i>Оформлено через мини-приложение</i>",
                 parse_mode="HTML")
+            # Сохраняем message_id, чтобы при оплате сообщение обновилось, а не дублировалось
+            try:
+                async with pool.acquire() as _c3:
+                    await _c3.execute(
+                        "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
+                        _amsg.message_id, order_id)
+            except Exception:
+                pass
         except Exception:
             pass
         return web.json_response({"ok": True, "url": url, "orderId": order_id, "num": _num})
@@ -6272,7 +6295,7 @@ async def getip_handler(request: web.Request) -> web.Response:
         return web.Response(text=f"Error: {e}", status=500)
 
 async def setup_webhook_server():
-    app = web.Application()
+    app = web.Application(client_max_size=25 * 1024 * 1024)  # до 25 МБ (загрузка фото для редактирования/анимации)
     FK_WEBHOOK_PATH = os.getenv("FK_WEBHOOK_URL", "").replace("https://", "").replace("http://", "")
     FK_WEBHOOK_PATH = "/" + FK_WEBHOOK_PATH.split("/", 1)[-1] if "/" in FK_WEBHOOK_PATH else "/fk_webhook"
     for path in set([FK_WEBHOOK_PATH, "/fk-webhook", "/fk_webhook"]):
@@ -8773,7 +8796,11 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         if not uid:
             return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
         from config import EDIT_MODELS
-        m = EDIT_MODELS.get("edit_gemini") or {"name": "Nano Banana", "credits": 10}
+        _key = str(body.get("model", "")).strip() or "edit_gemini"
+        m = EDIT_MODELS.get(_key)
+        if not m:
+            _key = "edit_gemini"
+            m = EDIT_MODELS.get("edit_gemini") or {"name": "Nano Banana", "credits": 10, "api": "gemini"}
         _prompt = str(body.get("prompt", "")).strip()
         if len(_prompt) < 2:
             return web.json_response({"ok": False, "error": "prompt"}, status=400)
@@ -8788,8 +8815,12 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         if not await _deduct(int(uid), _cost):
             return web.json_response({"ok": False, "error": "credits", "have": _cr})
         try:
-            from generation_api import api_edit_image as _edit
-            _out = await _edit(_img_in, _prompt)
+            if (m.get("api") or "gemini") == "fal" and m.get("model_id"):
+                from generation_api import api_fal_edit_image as _fedit
+                _out = await _fedit(_img_in, _prompt, m["model_id"])
+            else:
+                from generation_api import api_edit_image as _edit
+                _out = await _edit(_img_in, _prompt)
         except Exception as _ge:
             await _add_cr(int(uid), _cost)
             logging.error(f"api_gen_edit gen: {_ge}")
@@ -8798,7 +8829,7 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
             await _add_cr(int(uid), _cost)
             return web.json_response({"ok": False, "error": "empty"})
         try:
-            await _log_gen(int(uid), "edit", "edit_gemini", _cost)
+            await _log_gen(int(uid), "edit", _key, _cost)
         except Exception:
             pass
         try:
@@ -8816,20 +8847,24 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
-async def _run_anim_job(job_id, uid, prompt, img_bytes, aspect, cost):
-    """Фоновая анимация фото (Veo image-to-video)."""
+async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
+    """Фоновая анимация фото (Veo или fal image-to-video)."""
     from db import add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
     try:
-        from generation_api import api_animate_image as _anim
-        vid = await _anim(img_bytes, prompt, aspect)
+        if (m.get("api") or "veo_anim") == "fal" and m.get("model_id"):
+            from generation_api import api_fal_animate_image as _fanim
+            vid = await _fanim(img_bytes, prompt, m["model_id"], int(m.get("duration", 5)), aspect)
+        else:
+            from generation_api import api_animate_image as _anim
+            vid = await _anim(img_bytes, prompt, aspect)
         if not vid or len(vid) < 1000:
             raise Exception("empty")
         size_mb = len(vid) / 1024 / 1024
         try:
-            await _log_gen(int(uid), "anim", "anim_veo", cost)
+            await _log_gen(int(uid), "anim", key, cost)
         except Exception:
             pass
-        _cap = f"🎞 Анимация Veo · −{cost} кр"
+        _cap = f"🎞 {m.get('name','Анимация')} · −{cost} кр"
         _url = None
         _tok = None
         if size_mb > 48:
@@ -8880,7 +8915,11 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
         if not uid:
             return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
         from config import ANIM_MODELS
-        m = ANIM_MODELS.get("anim_veo") or {"credits": 249}
+        _key = str(body.get("model", "")).strip() or "anim_veo"
+        m = ANIM_MODELS.get(_key)
+        if not m:
+            _key = "anim_veo"
+            m = ANIM_MODELS.get("anim_veo") or {"credits": 249, "api": "veo_anim"}
         _prompt = str(body.get("prompt", "")).strip()
         if len(_prompt) < 2:
             return web.json_response({"ok": False, "error": "prompt"}, status=400)
@@ -8901,7 +8940,7 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
         _job = _sec.token_urlsafe(10)
         _genvid_gc()
         _GENVID_JOBS[_job] = {"status": "pending", "ts": _t.time()}
-        asyncio.create_task(_run_anim_job(_job, int(uid), _prompt, _img_in, _aspect, _cost))
+        asyncio.create_task(_run_anim_job(_job, int(uid), _key, m, _prompt, _img_in, _aspect, _cost))
         return web.json_response({"ok": True, "job": _job, "cost": _cost, "credits": await _get_cr(int(uid))})
     except Exception as _e:
         logging.error(f"api_gen_anim: {_e}")
@@ -9059,7 +9098,27 @@ async def api_order_status_handler(request: web.Request) -> web.Response:
                 _paid = (_row["status"] == "paid")
         except Exception as _qe:
             logging.error(f"api_order_status q: {_qe}")
-        return web.json_response({"ok": True, "paid": _paid})
+        # Если оплачен ChatGPT/Claude — вернём данные для активации прямо в мини-аппе
+        _act = None
+        if _paid:
+            try:
+                async with pool.acquire() as conn:
+                    _prow = await conn.fetchrow("SELECT pack FROM fk_orders WHERE order_id=$1", _oid)
+                _pack = (_prow["pack"] if _prow else "") or ""
+                _svc = _pack.split(":")[1] if _pack.startswith("shop:") and ":" in _pack else ""
+                if _svc == "chatgpt":
+                    _pend = await get_pending_activation(int(uid))
+                    if _pend:
+                        _act = {"service": "chatgpt", "code": _pend.get("code", ""),
+                                "plan": _pend.get("plan_name", "")}
+                elif _svc == "claude":
+                    _pend = await get_claude_pending_activation(int(uid))
+                    if _pend:
+                        _act = {"service": "claude", "code": _pend.get("code", ""),
+                                "plan": _pend.get("plan_name", "")}
+            except Exception as _ae:
+                logging.error(f"api_order_status activate: {_ae}")
+        return web.json_response({"ok": True, "paid": _paid, "activate": _act})
     except Exception as _e:
         logging.error(f"api_order_status: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)

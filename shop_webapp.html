@@ -116,6 +116,13 @@
   .upl-prev{position:relative;border-radius:14px;overflow:hidden}
   .upl-prev img{width:100%;display:block;border-radius:14px;max-height:320px;object-fit:cover}
   .upl-re{margin-top:8px;text-align:center;font-size:13px;font-weight:600;color:var(--green);cursor:pointer}
+  .act-steps{font-size:13px;color:var(--text);line-height:1.7}
+  .act-link{margin-top:10px;text-align:center;font-size:13px;font-weight:700;color:var(--green);border:1px solid var(--border);border-radius:10px;padding:10px;cursor:pointer}
+  .act-note{font-size:12px;color:var(--text2);margin-top:8px;line-height:1.5}
+  .act-note code{background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  .mdl-sel{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:13px 12px;font-size:15px;font-weight:700;color:var(--text);-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238b8f96' stroke-width='3'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px}
+  .mdl-desc{font-size:12.5px;color:var(--text2);margin-top:8px;line-height:1.5}
+  .mdl-desc b{color:var(--green)}
   .gm{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:11px;cursor:pointer}
   .gm.on{border-color:var(--green);box-shadow:0 0 0 1px var(--green) inset}
   .gm-n{font-size:14px;font-weight:700}.gm-d{font-size:12px;color:var(--text2);margin-top:2px}
@@ -353,22 +360,30 @@ function _genSoon(b, m){
     +'<div class="card-desc">Скоро появится прямо в приложении. Пока доступно в чате бота.</div>'
     +'<div class="plan-buy" onclick="window._genMode=null;renderGen()">← К разделам</div></div>';
 }
+// Компактный выбор модели: нативный select с группами по брендам
+function _mkSelect(selId,models,curKey,order,onchange){
+  var groups={}; models.forEach(function(m){var g=m.group||'';(groups[g]=groups[g]||[]).push(m);});
+  var gkeys;
+  if(order&&order.length){ gkeys=order.filter(function(g){return groups[g];}).concat(Object.keys(groups).filter(function(g){return order.indexOf(g)<0;})); }
+  else { gkeys=Object.keys(groups); }
+  var inner=gkeys.map(function(g){
+    var opts=groups[g].map(function(m){return '<option value="'+m.key+'"'+(m.key===curKey?' selected':'')+'>'+_h(m.name)+' · '+m.credits+' кр</option>';}).join('');
+    return g?('<optgroup label="'+_h(g)+'">'+opts+'</optgroup>'):opts;
+  }).join('');
+  return '<select id="'+selId+'" class="mdl-sel" onchange="'+onchange+'">'+inner+'</select>';
+}
 function renderGenPhoto(b){
   var M=window.__IMGMODELS__||[];
   if(!M.length){ b.innerHTML='<div class="empty">Модели временно недоступны</div>'; return; }
-  if(!window._genModel) window._genModel=M[0].key;
+  if(!window._genModel||!M.filter(function(m){return m.key===window._genModel;}).length) window._genModel=M[0].key;
   if(!window._genAspect) window._genAspect='1:1';
-  var groups={}; M.forEach(function(m){var g=m.group||'Другое';(groups[g]=groups[g]||[]).push(m);});
   var order=['Imagen','Nano Banana','GPT Image','Flux','Ideogram','Grok','Другое'];
-  var gkeys=order.filter(function(g){return groups[g];}).concat(Object.keys(groups).filter(function(g){return order.indexOf(g)<0;}));
-  var models=gkeys.map(function(g){
-    return '<div class="gm-group">'+g+'</div>'+groups[g].map(function(m){var on=(m.key===window._genModel);
-      return '<div class="gm'+(on?' on':'')+'" onclick="_saveGenPrompt();window._genModel=\''+m.key+'\';renderGen()"><div class="gm-n">'+m.name+'</div>'+(m.desc?'<div class="gm-d">'+m.desc+'</div>':'')+'<div class="gm-c">'+m.credits+' кр'+(m.speed?(' · '+m.speed):'')+'</div></div>';}).join('');
-  }).join('');
-  var aspects=['1:1','3:4','4:3','16:9','9:16'].map(function(a){return '<span class="chip'+(window._genAspect===a?' on':'')+'" onclick="_saveGenPrompt();window._genAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
+  var sel=_mkSelect('gen-sel',M,window._genModel,order,"_saveGenPrompt();window._genModel=this.value;renderGen()");
   var cur=(M.filter(function(m){return m.key===window._genModel})[0])||M[0];
+  var aspects=['1:1','3:4','4:3','16:9','9:16'].map(function(a){return '<span class="chip'+(window._genAspect===a?' on':'')+'" onclick="_saveGenPrompt();window._genAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
   b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div>'
-    +'<div class="block"><h3>Модель</h3><div class="gm-list">'+models+'</div></div>'
+    +'<div class="block"><h3>Модель</h3>'+sel
+    +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>'+cur.credits+' кр</b>'+(cur.speed?(' · '+_h(cur.speed)):'')+'</div></div>'
     +'<div class="block"><h3>Что нарисовать</h3><textarea id="gen-prompt" class="gen-ta" placeholder="Опиши картинку: кот-космонавт в неоне, кинематографично…">'+_h(window._genPrompt||'')+'</textarea>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
     +'<div id="gen-result"></div>'
@@ -380,20 +395,17 @@ function renderGenVideo(b){
   if(!M.length){ b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div><div class="empty">Видео-модели временно недоступны</div>'; return; }
   if(!window._vidModel) window._vidModel=M[0].key;
   if(!window._vidAspect) window._vidAspect='16:9';
+  if(!M.filter(function(m){return m.key===window._vidModel;}).length) window._vidModel=M[0].key;
   var cur=(M.filter(function(m){return m.key===window._vidModel;})[0])||M[0];
   var durs=cur.durations||[{d:8,credits:cur.credits}];
   if(!durs.filter(function(x){return x.d===window._vidDur;}).length) window._vidDur=durs[0].d;
-  var groups={}; M.forEach(function(m){var g=m.group||'Другое';(groups[g]=groups[g]||[]).push(m);});
   var order=['Veo','Kling','Seedance','Grok','Wan','Другое'];
-  var gkeys=order.filter(function(g){return groups[g];}).concat(Object.keys(groups).filter(function(g){return order.indexOf(g)<0;}));
-  var models=gkeys.map(function(g){
-    return '<div class="gm-group">'+g+'</div>'+groups[g].map(function(m){var on=(m.key===window._vidModel);
-      return '<div class="gm'+(on?' on':'')+'" onclick="_saveVidPrompt();window._vidModel=\''+m.key+'\';renderGen()"><div class="gm-n">'+m.name+'</div>'+(m.desc?'<div class="gm-d">'+m.desc+'</div>':'')+'<div class="gm-c">от '+((m.durations&&m.durations[0])?m.durations[0].credits:m.credits)+' кр'+(m.res?(' · '+m.res):'')+'</div></div>';}).join('');
-  }).join('');
+  var sel=_mkSelect('vid-sel',M,window._vidModel,order,"_saveVidPrompt();window._vidModel=this.value;renderGen()");
   var durChips=durs.map(function(x){return '<span class="chip'+(window._vidDur===x.d?' on':'')+'" onclick="_saveVidPrompt();window._vidDur='+x.d+';renderGen()">'+x.d+' сек · '+x.credits+' кр</span>';}).join('');
   var aspects=['16:9','9:16','1:1'].map(function(a){return '<span class="chip'+(window._vidAspect===a?' on':'')+'" onclick="_saveVidPrompt();window._vidAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
   b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div>'
-    +'<div class="block"><h3>Модель</h3><div class="gm-list">'+models+'</div></div>'
+    +'<div class="block"><h3>Модель</h3>'+sel
+    +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>от '+((cur.durations&&cur.durations[0])?cur.durations[0].credits:cur.credits)+' кр</b>'+(cur.res?(' · '+_h(cur.res)):'')+'</div></div>'
     +'<div class="block"><h3>Что снять</h3><textarea id="vid-prompt" class="gen-ta" placeholder="Опиши сцену: дрон летит над ночным неоновым городом, дождь, кинематографично…">'+_h(window._vidPrompt||'')+'</textarea>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Длительность</div><div class="chips" style="padding:0">'+durChips+'</div>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
@@ -479,11 +491,18 @@ window.__reUpl=function(imgVar){ _pickImage(function(u){ if(u){ window[imgVar]=u
 
 // ── Редактирование фото (Nano Banana) ──
 function renderGenEdit(b){
+  var M=window.__EDITMODELS__||[];
+  if(!window._editModel||!M.filter(function(m){return m.key===window._editModel;}).length) window._editModel=(M[0]||{}).key||'edit_gemini';
+  var cur=(M.filter(function(m){return m.key===window._editModel;})[0])||M[0]||{credits:10,name:'Nano Banana'};
+  var selBlock=M.length?('<div class="block"><h3>Модель</h3>'
+    +_mkSelect('edit-sel',M,window._editModel,null,"var t=document.getElementById('edit-prompt');if(t)window._editPrompt=t.value;window._editModel=this.value;renderGen()")
+    +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>'+cur.credits+' кр</b></div></div>'):'';
   b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div>'
     +'<div class="block"><h3>Исходное фото</h3>'+_uplBox('_editImg','Загрузить фото')+'</div>'
+    +selBlock
     +'<div class="block"><h3>Что изменить</h3><textarea id="edit-prompt" class="gen-ta" placeholder="Опиши правку: убери фон, добавь очки, сделай в стиле акварели…">'+_h(window._editPrompt||'')+'</textarea></div>'
     +'<div id="edit-result"></div>'
-    +'<div class="plan-buy" id="edit-btn" onclick="doGenEdit()">🖌 Изменить фото за 10 кр</div>';
+    +'<div class="plan-buy" id="edit-btn" onclick="doGenEdit()">🖌 Изменить фото за '+cur.credits+' кр</div>';
 }
 function doGenEdit(){
   if(window._editBusy) return;
@@ -496,7 +515,7 @@ function doGenEdit(){
   var btn=document.getElementById('edit-btn'); if(btn) btn.style.display='none';
   res.innerHTML='<div class="pm-wait">🖌 Редактирую фото… несколько секунд</div>';
   var restore=function(){ window._editBusy=false; var b2=document.getElementById('edit-btn'); if(b2) b2.style.display=''; };
-  _api('/api/gen/edit',{prompt:p,image:window._editImg}).then(function(d){
+  _api('/api/gen/edit',{prompt:p,image:window._editImg,model:window._editModel}).then(function(d){
     if(!res){ restore(); return; }
     if(d&&d.ok&&d.img){
       window._lastGenUri=d.img; window._lastGenToken=d.token||'';
@@ -516,13 +535,21 @@ function doGenEdit(){
 // ── Анимация фото (Veo image-to-video) ──
 function renderGenAnim(b){
   if(!window._animAspect) window._animAspect='16:9';
-  var aspects=['16:9','9:16','1:1'].map(function(a){return '<span class="chip'+(window._animAspect===a?' on':'')+'" onclick="var t=document.getElementById(\'anim-prompt\');if(t)window._animPrompt=t.value;window._animAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
+  var M=window.__ANIMMODELS__||[];
+  if(!window._animModel||!M.filter(function(m){return m.key===window._animModel;}).length) window._animModel=(M[0]||{}).key||'anim_veo';
+  var cur=(M.filter(function(m){return m.key===window._animModel;})[0])||M[0]||{credits:249,name:'Veo',duration:8};
+  var _sv="var t=document.getElementById('anim-prompt');if(t)window._animPrompt=t.value;";
+  var selBlock=M.length?('<div class="block"><h3>Модель</h3>'
+    +_mkSelect('anim-sel',M,window._animModel,null,_sv+"window._animModel=this.value;renderGen()")
+    +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>'+cur.credits+' кр</b>'+(cur.duration?(' · '+cur.duration+' сек'):'')+'</div></div>'):'';
+  var aspects=['16:9','9:16','1:1'].map(function(a){return '<span class="chip'+(window._animAspect===a?' on':'')+'" onclick="'+_sv+'window._animAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
   b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div>'
     +'<div class="block"><h3>Фото для оживления</h3>'+_uplBox('_animImg','Загрузить фото')+'</div>'
+    +selBlock
     +'<div class="block"><h3>Как оживить</h3><textarea id="anim-prompt" class="gen-ta" placeholder="Опиши движение: лёгкий ветер в волосах, камера медленно приближается, мигают огни…">'+_h(window._animPrompt||'')+'</textarea>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
     +'<div id="anim-result"></div>'
-    +'<div class="plan-buy" id="anim-btn" onclick="doGenAnim()">🎞 Оживить фото за 249 кр (Veo, 8 сек)</div>';
+    +'<div class="plan-buy" id="anim-btn" onclick="doGenAnim()">🎞 Оживить фото за '+cur.credits+' кр</div>';
 }
 function doGenAnim(){
   if(window._animBusy) return;
@@ -535,7 +562,7 @@ function doGenAnim(){
   var btn=document.getElementById('anim-btn'); if(btn) btn.style.display='none';
   res.innerHTML='<div class="pm-wait">🎞 Запускаю анимацию… обычно 1–5 минут, можно свернуть — пришлём в чат бота.</div>';
   var restore=function(){ window._animBusy=false; var b2=document.getElementById('anim-btn'); if(b2) b2.style.display=''; };
-  _api('/api/gen/anim',{prompt:p,image:window._animImg,aspect:window._animAspect}).then(function(d){
+  _api('/api/gen/anim',{prompt:p,image:window._animImg,aspect:window._animAspect,model:window._animModel}).then(function(d){
     if(!res){ restore(); return; }
     if(d&&d.ok&&d.job){ _vidPoll(d.job,0,'anim-result',restore); return; }
     if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
@@ -706,25 +733,138 @@ function _watchOrder(orderId,tries){
   if(tries>45) return;
   _watchTimer=setTimeout(function(){
     _api('/api/order/status',{orderId:orderId}).then(function(d){
-      if(d&&d.ok&&d.paid){ _paySuccess(); } else { _watchOrder(orderId,tries+1); }
+      if(d&&d.ok&&d.paid){ _paySuccess(d.activate); } else { _watchOrder(orderId,tries+1); }
     });
   },4000);
 }
 function _checkOrder(orderId){
   var s=document.getElementById('paystatus'); if(s)s.textContent='Проверяю…';
   _api('/api/order/status',{orderId:orderId}).then(function(d){
-    if(d&&d.ok&&d.paid){ _paySuccess(); }
+    if(d&&d.ok&&d.paid){ _paySuccess(d.activate); }
     else{ var s2=document.getElementById('paystatus'); if(s2)s2.textContent='Оплата пока не найдена. Если оплатил — подожди минуту и нажми ещё раз.'; }
   });
 }
-function _paySuccess(){
+function _paySuccess(act){
   if(_watchTimer) clearTimeout(_watchTimer);
   var body=document.getElementById('card-body'); if(!body) return;
+  // ChatGPT / Claude — продолжаем активацию прямо тут, не выходя из приложения
+  if(act&&act.service&&act.code){ window._act=act; renderActivate(); return; }
   body.innerHTML='<div style="text-align:center;padding:34px 10px">'
     +'<div style="font-size:60px;line-height:1">✅</div>'
     +'<div style="font-size:22px;font-weight:800;margin:12px 0 6px">Оплата прошла!</div>'
     +'<div class="card-desc">Заказ активируется автоматически — доступ/код придёт в чат бота.</div>'
     +'<div class="plan-buy" onclick="showHome()">Вернуться в каталог</div></div>';
+}
+
+/* ─── Активация подписки внутри мини-аппа (ChatGPT / Claude) ─── */
+function _actExtractToken(raw){
+  raw=(raw||'').trim();
+  try{ var o=JSON.parse(raw); if(o.accessToken) return o.accessToken; }catch(e){}
+  var m=raw.match(/"accessToken"\s*:\s*"([^"]+)"/);
+  if(m) return m[1];
+  return raw;
+}
+function renderActivate(){
+  var a=window._act||{}; var body=document.getElementById('card-body'); if(!body) return;
+  window._actForce=false;
+  var okline='<div style="text-align:center"><div style="font-size:44px">✅</div>'
+    +'<div style="font-size:16px;font-weight:800;margin:6px 0 2px">Оплата прошла!</div>'
+    +'<div class="card-desc" style="margin:6px 0 14px">Осталось активировать '+(a.service==='claude'?'Claude':'ChatGPT')+' '+_h(a.plan||'')+' — сделаем прямо здесь.</div></div>';
+  if(a.service==='chatgpt'){
+    body.innerHTML=okline
+      +'<div class="block"><h3>Как активировать</h3>'
+      +'<div class="act-steps">1. Зайди на <b>chatgpt.com</b> и авторизуйся (Chrome/Safari).<br>'
+      +'2. В том же браузере открой <b>chatgpt.com/api/auth/session</b>.<br>'
+      +'3. Скопируй <b>весь</b> текст со страницы.<br>'
+      +'4. Вставь его ниже и нажми «Активировать».</div>'
+      +'<div class="act-link" onclick="_openUrl(\'https://chatgpt.com/api/auth/session\')">🔗 Открыть страницу с токеном</div></div>'
+      +'<div class="block"><h3>Токен</h3><textarea id="act-token" class="gen-ta" placeholder="Вставь сюда весь текст со страницы session…"></textarea>'
+      +'<div class="act-note">⚠️ Аккаунт должен быть на бесплатном плане. 🎟 Код: <code>'+_h(a.code)+'</code></div></div>'
+      +'<div id="act-result"></div>'
+      +'<div class="plan-buy" id="act-btn" onclick="doActivate()">✨ Активировать ChatGPT</div>';
+  } else {
+    body.innerHTML=okline
+      +'<div class="block"><h3>Как активировать</h3>'
+      +'<div class="act-steps">1. Зайди на <b>claude.ai</b> и авторизуйся.<br>'
+      +'2. Открой <b>claude.ai/settings/account</b>.<br>'
+      +'3. Прокрути до <b>Organization ID</b> и скопируй (UUID).<br>'
+      +'4. Вставь ниже и нажми «Активировать».</div>'
+      +'<div class="act-link" onclick="_openUrl(\'https://claude.ai/settings/account\')">🔗 Открыть настройки Claude</div></div>'
+      +'<div class="block"><h3>Organization ID</h3><input id="act-org" class="gen-ta" style="min-height:0;height:44px" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">'
+      +'<div class="act-note">⚠️ Если есть платная подписка — сначала отмени её на claude.ai/settings/billing. 🎟 Код: <code>'+_h(a.code)+'</code></div></div>'
+      +'<div id="act-result"></div>'
+      +'<div class="plan-buy" id="act-btn" onclick="doActivate()">⚡ Активировать Claude</div>';
+  }
+}
+function _actBusy(on){ var b=document.getElementById('act-btn'); if(b) b.style.display=on?'none':''; window._actInFlight=on; }
+function doActivate(){
+  if(window._actInFlight) return;
+  var a=window._act||{}; var res=document.getElementById('act-result'); if(!res) return;
+  if(a.service==='chatgpt'){
+    var raw=(document.getElementById('act-token')||{}).value||'';
+    var tok=_actExtractToken(raw);
+    if(tok.indexOf('eyJ')!==0||tok.length<100){ res.innerHTML='<div class="pm-err">Токен не найден. Скопируй весь текст со страницы chatgpt.com/api/auth/session.</div>'; return; }
+    _actBusy(true);
+    res.innerHTML='<div class="pm-wait">✨ Активирую ChatGPT… обычно 1–2 минуты, не закрывай экран.</div>';
+    _api('/api/activate-chatgpt',{token:tok,raw_token:raw,code:a.code,init_data:(tg?tg.initData:''),force:window._actForce?1:0}).then(function(d){
+      if(d&&d.job_id){ _actPollGpt(d.job_id,0); }
+      else { res.innerHTML='<div class="pm-err">'+_h((d&&d.error)||'Не удалось запустить активацию.')+'</div>'; _actBusy(false); }
+    }).catch(function(){ res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; _actBusy(false); });
+  } else {
+    var org=(((document.getElementById('act-org')||{}).value||'').trim()).toLowerCase();
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(org)){ res.innerHTML='<div class="pm-err">Неверный формат. Organization ID — UUID вида xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.</div>'; return; }
+    _actBusy(true);
+    res.innerHTML='<div class="pm-wait">⚡ Активирую Claude… обычно 1–2 минуты (иногда до 5), не закрывай экран.</div>';
+    _api('/api/activate-claude',{org_id:org,code:a.code,init_data:(tg?tg.initData:''),force:window._actForce?1:0}).then(function(d){
+      if(d&&d.order_id){ _actPollClaude(d.order_id,0); }
+      else { res.innerHTML='<div class="pm-err">'+_h((d&&d.error)||'Не удалось запустить активацию.')+'</div>'; _actBusy(false); }
+    }).catch(function(){ res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; _actBusy(false); });
+  }
+}
+function _actForceRetry(){ window._actForce=true; doActivate(); }
+function _actOk(){
+  var res=document.getElementById('act-result');
+  try{ if(tg&&tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success'); }catch(e){}
+  if(res) res.innerHTML='<div class="block" style="text-align:center;padding:22px 14px"><div style="font-size:46px">🎉</div>'
+    +'<div style="font-size:17px;font-weight:800;margin:8px 0 4px">Подписка активирована!</div>'
+    +'<div class="card-desc">Готово — можно пользоваться. Детали пришли в чат бота.</div>'
+    +'<div class="plan-buy" onclick="showHome()">Вернуться в каталог</div></div>';
+}
+function _actErr(msg,force){
+  var res=document.getElementById('act-result'); _actBusy(false);
+  if(!res) return;
+  var html='<div class="pm-err">'+_h(msg||'Не получилось активировать.')+'</div>';
+  if(force){ html+='<div class="plan-buy" style="margin-top:8px" onclick="_actForceRetry()">Активировать всё равно</div>'; }
+  res.innerHTML=html;
+}
+function _actPollGpt(job,tries){
+  if(tries>120){ _actErr('Активация занимает слишком долго. Напиши в поддержку — поможем.'); return; }
+  fetch('/api/activate-status/'+job).then(function(r){return r.json();}).then(function(d){
+    if(!d){ setTimeout(function(){_actPollGpt(job,tries+1);},3000); return; }
+    if(d.status==='done'){
+      if(d.success){ _actOk(); }
+      else if(d.need_force){ _actErr((d.error||'На этом аккаунте уже есть подписка.'),true); }
+      else if(d.pending){ var res=document.getElementById('act-result'); if(res) res.innerHTML='<div class="pm-wait">Почти готово — активация ещё выполняется. Проверь чат бота через минуту.</div>'; _actBusy(false); }
+      else { _actErr(d.error); }
+      return;
+    }
+    setTimeout(function(){_actPollGpt(job,tries+1);},3000);
+  }).catch(function(){ setTimeout(function(){_actPollGpt(job,tries+1);},3000); });
+}
+function _actPollClaude(oid,tries){
+  if(tries>200){ _actErr('Активация затянулась. Напиши в поддержку — поможем.'); return; }
+  fetch('/api/activate-claude-status/'+encodeURIComponent(oid)).then(function(r){return r.json();}).then(function(d){
+    if(!d){ setTimeout(function(){_actPollClaude(oid,tries+1);},5000); return; }
+    if(d.status==='done'){
+      if(d.need_force){ _actErr((d.error||'На этом аккаунте уже есть подписка.'),true); }
+      else if(d.pending){ var res=document.getElementById('act-result'); if(res) res.innerHTML='<div class="pm-wait">Почти готово — активация ещё выполняется. Проверь чат бота через минуту.</div>'; _actBusy(false); }
+      else if(d.success!==false){ _actOk(); }
+      else { _actErr(d.error); }
+      return;
+    }
+    if(d.status==='failed'){ _actErr(d.error||'Активация не удалась'); return; }
+    setTimeout(function(){_actPollClaude(oid,tries+1);},5000);
+  }).catch(function(){ setTimeout(function(){_actPollClaude(oid,tries+1);},5000); });
 }
 
 /* ─── App Store (NS Gifts) ─── */

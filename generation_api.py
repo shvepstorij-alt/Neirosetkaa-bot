@@ -784,6 +784,101 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
     raise Exception(last_error or "Все модели недоступны. Попробуй позже.")
 
 
+async def _fal_queue_run(model_id: str, payload: dict, poll_max: int = 90) -> dict:
+    """Универсальный запуск fal.ai queue: submit → poll → result (JSON)."""
+    if not FAL_API_KEY:
+        raise Exception("FAL_API_KEY не задан.")
+    headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+    poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
+    async with aiohttp.ClientSession() as s:
+        async with s.post(f"https://queue.fal.run/{model_id}", headers=headers, json=payload,
+                          timeout=aiohttp.ClientTimeout(total=60)) as r:
+            submit = await r.json()
+            request_id = submit.get("request_id")
+            if not request_id:
+                raise Exception(f"fal submit failed: {str(submit)[:200]}")
+        status_url = submit.get("status_url") or f"https://queue.fal.run/{model_id}/requests/{request_id}/status"
+        response_url = submit.get("response_url") or f"https://queue.fal.run/{model_id}/requests/{request_id}"
+        for _ in range(poll_max):
+            await asyncio.sleep(5)
+            try:
+                async with s.get(status_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
+                    if not (sr.content_type and "json" in sr.content_type):
+                        continue
+                    st = await sr.json()
+                    if st.get("status") == "COMPLETED":
+                        break
+                    if st.get("status") == "FAILED":
+                        raise Exception(f"fal failed: {str(st)[:200]}")
+            except aiohttp.ContentTypeError:
+                continue
+        else:
+            raise Exception("fal timeout")
+        result = None
+        urls_to_try = [response_url]
+        if "queue.fal.run" in response_url:
+            urls_to_try.append(response_url.replace("queue.fal.run", "fal.run"))
+        elif "fal.run" in response_url:
+            urls_to_try.append(response_url.replace("fal.run", "queue.fal.run"))
+        for try_url in urls_to_try:
+            for _a in range(5):
+                try:
+                    async with s.get(try_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
+                        if rr.content_type and "json" in rr.content_type:
+                            result = await rr.json()
+                            break
+                        await asyncio.sleep(5)
+                except aiohttp.ContentTypeError:
+                    await asyncio.sleep(5)
+            if result:
+                break
+        if not result:
+            raise Exception("fal result: не удалось получить JSON")
+        return result
+
+
+def _fal_content_blocked(result) -> bool:
+    _rs = str(result).lower()
+    return "content_policy_violation" in _rs or "flagged by a content" in _rs
+
+
+async def api_fal_edit_image(image_bytes: bytes, prompt: str, model_id: str) -> bytes:
+    """Редактирование фото через fal.ai (Grok / GPT Image / Flux Kontext)."""
+    img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    data_uri = f"data:image/jpeg;base64,{img_b64}"
+    if "gpt-image" in model_id:
+        payload = {"prompt": prompt, "image_urls": [data_uri]}
+    else:
+        payload = {"prompt": prompt, "image_url": data_uri}
+    result = await _fal_queue_run(model_id, payload, poll_max=60)
+    out_url = (result.get("images") or [{}])[0].get("url") or (result.get("image") or {}).get("url")
+    if not out_url:
+        if _fal_content_blocked(result):
+            raise Exception("🛡 Контент заблокирован моделью. Попробуй переформулировать.")
+        raise Exception(f"fal edit: нет изображения: {str(result)[:150]}")
+    async with aiohttp.ClientSession() as s:
+        async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=120)) as dr:
+            return await dr.read()
+
+
+async def api_fal_animate_image(image_bytes: bytes, prompt: str, model_id: str,
+                                 duration: int = 5, aspect_ratio: str = "16:9") -> bytes:
+    """Анимация фото через fal.ai image-to-video (Grok / Kling / Wan)."""
+    img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    data_uri = f"data:image/jpeg;base64,{img_b64}"
+    payload = {"image_url": data_uri, "prompt": prompt,
+               "duration": duration, "aspect_ratio": aspect_ratio}
+    result = await _fal_queue_run(model_id, payload, poll_max=180)
+    video_url = (result.get("video") or {}).get("url")
+    if not video_url:
+        if _fal_content_blocked(result):
+            raise Exception("🛡 Контент заблокирован моделью. Попробуй переформулировать.")
+        raise Exception(f"fal anim: нет видео: {str(result)[:150]}")
+    async with aiohttp.ClientSession() as s:
+        async with s.get(video_url, timeout=aiohttp.ClientTimeout(total=180)) as dv:
+            return await dv.read()
+
+
 async def api_animate_image(
     first_bytes: bytes,
     prompt: str,
