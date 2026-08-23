@@ -514,7 +514,7 @@ function _pickImage(cb){
         var w=Math.round(img.width*sc), h=Math.round(img.height*sc);
         var c=document.createElement('canvas'); c.width=w; c.height=h;
         c.getContext('2d').drawImage(img,0,0,w,h);
-        cb(c.toDataURL('image/jpeg',0.9));
+        cb(c.toDataURL('image/jpeg',0.9), img.width, img.height);
       };
       img.onerror=function(){ cb(null); };
       img.src=rd.result;
@@ -523,12 +523,21 @@ function _pickImage(cb){
   };
   inp.click();
 }
+// Определяет ближайший формат видео по соотношению сторон фото
+function _detectAspect(w,h){
+  if(!w||!h) return '16:9';
+  var r=w/h;
+  var cands=[['1:1',1],['16:9',16/9],['9:16',9/16]];
+  var best='16:9', bd=1e9;
+  cands.forEach(function(c){ var d=Math.abs(r-c[1]); if(d<bd){bd=d;best=c[0];} });
+  return best;
+}
 function _uplBox(imgVar,label){
   var u=window[imgVar];
   if(u){ return '<div class="upl-prev"><img src="'+u+'"><div class="upl-re" onclick="'+ 'window.__reUpl(\''+imgVar+'\')">Заменить фото</div></div>'; }
   return '<div class="upl-btn" onclick="window.__reUpl(\''+imgVar+'\')">📷 '+label+'</div>';
 }
-window.__reUpl=function(imgVar){ _pickImage(function(u){ if(u){ window[imgVar]=u; renderGen(); } }); };
+window.__reUpl=function(imgVar){ _pickImage(function(u,w,h){ if(u){ window[imgVar]=u; if(imgVar==='_animImg'){ window._animAspect=_detectAspect(w,h); window._animAspectAuto=true; } renderGen(); } }); };
 
 // ── Редактирование фото (Nano Banana) ──
 function renderGenEdit(b){
@@ -583,12 +592,17 @@ function renderGenAnim(b){
   var selBlock=M.length?('<div class="block"><h3>Модель</h3>'
     +_mkSelect('anim-sel',M,window._animModel,null,_sv+"window._animModel=this.value;renderGen()")
     +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>'+cur.credits+' кр</b>'+(cur.duration?(' · '+cur.duration+' сек'):'')+'</div></div>'):'';
-  var aspects=['16:9','9:16','1:1'].map(function(a){return '<span class="chip'+(window._animAspect===a?' on':'')+'" onclick="'+_sv+'window._animAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
+  var aspects=['16:9','9:16','1:1'].map(function(a){return '<span class="chip'+(window._animAspect===a?' on':'')+'" onclick="'+_sv+'window._animAspect=\''+a+'\';window._animAspectAuto=false;renderGen()">'+a+'</span>';}).join('');
+  var fmtHint=window._animImg
+    ? (window._animAspectAuto
+        ? '<div class="mdl-desc">✅ Формат <b>'+window._animAspect+'</b> определён по твоему фото. Можно изменить вручную.</div>'
+        : '<div class="mdl-desc">Формат: <b>'+window._animAspect+'</b></div>')
+    : '<div class="mdl-desc">Загрузи фото — формат подберётся автоматически.</div>';
   b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div>'
     +'<div class="block"><h3>Фото для оживления</h3>'+_uplBox('_animImg','Загрузить фото')+'</div>'
     +selBlock
     +'<div class="block"><h3>Как оживить</h3><textarea id="anim-prompt" class="gen-ta" placeholder="Опиши движение: лёгкий ветер в волосах, камера медленно приближается, мигают огни…">'+_h(window._animPrompt||'')+'</textarea>'
-    +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
+    +'<div class="card-plans-h" style="margin:10px 0 6px">Формат видео</div><div class="chips" style="padding:0">'+aspects+'</div>'+fmtHint+'</div>'
     +'<div id="anim-result"></div>'
     +'<div class="plan-buy" id="anim-btn" onclick="doGenAnim()">🎞 Оживить фото за '+cur.credits+' кр</div>';
 }
