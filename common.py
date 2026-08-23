@@ -2138,11 +2138,32 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                           for _k, _v in _IM.items()]
         except Exception:
             _imgmodels = []
+        try:
+            from config import VIDEO_MODELS as _VM
+            def _vid_group(_k):
+                if _k.startswith("vid_"): return "Veo"
+                if _k.startswith("kling"): return "Kling"
+                if _k.startswith("seedance"): return "Seedance"
+                if "grok" in _k: return "Grok"
+                if _k.startswith("wan"): return "Wan"
+                return "Другое"
+            _vidmodels = []
+            for _k, _v in _VM.items():
+                _du = _v.get("durations")
+                _durs = ([{"d": _d, "credits": _t[0]} for _d, _t in sorted(_du.items())] if _du
+                         else [{"d": 8, "credits": int(_v.get("credits", 0))}])
+                _vidmodels.append({"key": _k, "name": _v.get("name", _k),
+                                   "credits": _v.get("credits", 0), "desc": _v.get("desc", ""),
+                                   "res": _v.get("res", ""), "group": _vid_group(_k),
+                                   "durations": _durs})
+        except Exception:
+            _vidmodels = []
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
                 + ";window.__BANNERS__=" + _json.dumps(_banners, ensure_ascii=False)
                 + ";window.__IMGMODELS__=" + _json.dumps(_imgmodels, ensure_ascii=False)
+                + ";window.__VIDMODELS__=" + _json.dumps(_vidmodels, ensure_ascii=False)
                 + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
         if "</head>" in html:
             return html.replace("</head>", _tag + "</head>", 1)
@@ -6289,6 +6310,10 @@ async def setup_webhook_server():
     app.router.add_post("/api/gen/fav-del", api_gen_fav_del_handler)
     app.router.add_post("/api/gen/hist-add", api_gen_hist_add_handler)
     app.router.add_post("/api/gen/history", api_gen_hist_handler)
+    app.router.add_post("/api/gen/video", api_gen_video_handler)
+    app.router.add_post("/api/gen/video-status", api_gen_video_status_handler)
+    app.router.add_post("/api/gen/edit", api_gen_edit_handler)
+    app.router.add_post("/api/gen/anim", api_gen_anim_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
     app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
     app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
@@ -8521,8 +8546,10 @@ async def genimg_handler(request: web.Request) -> web.Response:
     _it = _GENIMG_CACHE.get(request.query.get("t", ""))
     if not _it:
         return web.Response(status=404, text="not found")
-    return web.Response(body=_it[0], content_type=_it[1],
-                        headers={"Content-Disposition": 'inline; filename="image.png"'})
+    _mime = _it[1]
+    _fn = "video.mp4" if "video" in _mime else ("image.jpg" if "jpeg" in _mime else "image.png")
+    return web.Response(body=_it[0], content_type=_mime,
+                        headers={"Content-Disposition": 'inline; filename="' + _fn + '"'})
 
 
 async def api_gen_image_handler(request: web.Request) -> web.Response:
@@ -8579,6 +8606,305 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "img": _uri, "token": _tok, "credits": await _get_cr(int(uid))})
     except Exception as _e:
         logging.error(f"api_gen_image: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+_GENVID_JOBS = {}  # job_id -> {status, token, url, err, credits, size_mb, ts}
+
+def _genvid_gc():
+    import time as _t
+    _now = _t.time()
+    if len(_GENVID_JOBS) > 200:
+        for _k in list(_GENVID_JOBS.keys()):
+            if _now - _GENVID_JOBS[_k].get("ts", 0) > 3600:
+                _GENVID_JOBS.pop(_k, None)
+
+
+async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
+    """Фоновая генерация видео: результат в чат бота + токен на скачивание."""
+    from db import add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
+    try:
+        from generation_api import api_generate_video as _gv
+        try:
+            from generation_api import upload_large_file as _upl
+        except Exception:
+            _upl = None
+        vid = await _gv(prompt, m["model_id"], aspect, m.get("api", "veo"), duration)
+        if not vid or len(vid) < 1000:
+            raise Exception("empty")
+        size_mb = len(vid) / 1024 / 1024
+        try:
+            await _log_gen(int(uid), "video", key, cost)
+        except Exception:
+            pass
+        _cap = f"🎬 {m.get('name','')} · {duration}с · −{cost} кр"
+        _url = None
+        _tok = None
+        if size_mb > 48:
+            _url = await _upl(vid, f"video_{key}.mp4") if _upl else None
+            if not _url:
+                raise Exception("upload_failed")
+            try:
+                await bot.send_message(int(uid), f"{_cap}\nСкачать (ссылка 24ч): {_url}",
+                                       disable_web_page_preview=True)
+            except Exception:
+                pass
+        else:
+            try:
+                await bot.send_video(int(uid), BufferedInputFile(vid, "video.mp4"),
+                                     caption=_cap, supports_streaming=True)
+            except Exception as _se:
+                logging.error(f"video job send: {_se}")
+            _tok = _genimg_put(vid, "video/mp4")
+        _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url,
+                                     "size_mb": round(size_mb, 1), "credits": await _get_cr(int(uid))})
+    except Exception as _e:
+        try:
+            await _add_cr(int(uid), cost)
+        except Exception:
+            pass
+        logging.error(f"video job {job_id}: {_e}")
+        _cr = 0
+        try:
+            _cr = await _get_cr(int(uid))
+        except Exception:
+            pass
+        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "credits": _cr})
+
+
+async def api_gen_video_handler(request: web.Request) -> web.Response:
+    """Старт генерации видео из мини-аппки. Списывает кредиты, запускает фоновый job."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        _idata = (body.get("initData") if isinstance(body, dict) else None) or ""
+        uid = _verify_tg_init_data(_idata)
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
+        from config import VIDEO_MODELS
+        _key = str(body.get("model", "")).strip()
+        _prompt = str(body.get("prompt", "")).strip()
+        _aspect = str(body.get("aspect", "16:9")).strip() or "16:9"
+        if _aspect not in ("16:9", "9:16", "1:1"):
+            _aspect = "16:9"
+        m = VIDEO_MODELS.get(_key)
+        if not m:
+            return web.json_response({"ok": False, "error": "model"}, status=400)
+        if len(_prompt) < 2:
+            return web.json_response({"ok": False, "error": "prompt"}, status=400)
+        _durs = m.get("durations")
+        try:
+            _dur = int(body.get("duration", 0))
+        except Exception:
+            _dur = 0
+        if _durs:
+            if _dur not in _durs:
+                _dur = sorted(_durs.keys())[0]
+            _cost = int(_durs[_dur][0])
+        else:
+            _dur = 8
+            _cost = int(m.get("credits", 0))
+        from db import deduct as _deduct, get_credits as _get_cr
+        _cr = await _get_cr(int(uid))
+        if _cr < _cost:
+            return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
+        if not await _deduct(int(uid), _cost):
+            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        import time as _t, secrets as _sec
+        _job = _sec.token_urlsafe(10)
+        _genvid_gc()
+        _GENVID_JOBS[_job] = {"status": "pending", "ts": _t.time()}
+        asyncio.create_task(_run_video_job(_job, int(uid), _key, m, _prompt, _aspect, _dur, _cost))
+        return web.json_response({"ok": True, "job": _job, "cost": _cost, "credits": await _get_cr(int(uid))})
+    except Exception as _e:
+        logging.error(f"api_gen_video: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_gen_video_status_handler(request: web.Request) -> web.Response:
+    """Статус фоновой генерации видео."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _it = _GENVID_JOBS.get(str(body.get("job", "")))
+        if not _it:
+            return web.json_response({"ok": False, "error": "notfound"}, status=404)
+        return web.json_response({"ok": True, "status": _it.get("status"),
+                                  "token": _it.get("token"), "url": _it.get("url"),
+                                  "credits": _it.get("credits"), "size": _it.get("size_mb"),
+                                  "err": _it.get("err")})
+    except Exception as _e:
+        logging.error(f"api_gen_video_status: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+def _decode_data_uri_image(_uri: str):
+    """data:image/...;base64,XXX -> (bytes, mime) или (None, None)."""
+    try:
+        if not _uri.startswith("data:image/"):
+            return None, None
+        _head, _b64 = _uri.split(",", 1)
+        _mime = _head.split(";")[0][5:] or "image/jpeg"
+        import base64 as _b
+        _raw = _b.b64decode(_b64)
+        if len(_raw) < 100 or len(_raw) > 12 * 1024 * 1024:
+            return None, None
+        return _raw, _mime
+    except Exception:
+        return None, None
+
+
+async def api_gen_edit_handler(request: web.Request) -> web.Response:
+    """Редактирование фото по описанию (Nano Banana). Фото приходит data-URI от клиента."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        _idata = (body.get("initData") if isinstance(body, dict) else None) or ""
+        uid = _verify_tg_init_data(_idata)
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
+        from config import EDIT_MODELS
+        m = EDIT_MODELS.get("edit_gemini") or {"name": "Nano Banana", "credits": 10}
+        _prompt = str(body.get("prompt", "")).strip()
+        if len(_prompt) < 2:
+            return web.json_response({"ok": False, "error": "prompt"}, status=400)
+        _img_in, _ = _decode_data_uri_image(str(body.get("image", "")))
+        if not _img_in:
+            return web.json_response({"ok": False, "error": "image"}, status=400)
+        _cost = int(m.get("credits", 10))
+        from db import deduct as _deduct, add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
+        _cr = await _get_cr(int(uid))
+        if _cr < _cost:
+            return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
+        if not await _deduct(int(uid), _cost):
+            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        try:
+            from generation_api import api_edit_image as _edit
+            _out = await _edit(_img_in, _prompt)
+        except Exception as _ge:
+            await _add_cr(int(uid), _cost)
+            logging.error(f"api_gen_edit gen: {_ge}")
+            return web.json_response({"ok": False, "error": "gen_failed"})
+        if not _out:
+            await _add_cr(int(uid), _cost)
+            return web.json_response({"ok": False, "error": "empty"})
+        try:
+            await _log_gen(int(uid), "edit", "edit_gemini", _cost)
+        except Exception:
+            pass
+        try:
+            await bot.send_photo(int(uid), BufferedInputFile(_out, "edited.png"),
+                                 caption=f"🖌 {m.get('name','')} · −{_cost} кр")
+        except Exception:
+            pass
+        _mime = "image/jpeg" if (len(_out) > 2 and _out[0] == 0xFF and _out[1] == 0xD8) else "image/png"
+        import base64 as _b64
+        _uri = "data:" + _mime + ";base64," + _b64.b64encode(_out).decode()
+        _tok = _genimg_put(_out, _mime)
+        return web.json_response({"ok": True, "img": _uri, "token": _tok, "credits": await _get_cr(int(uid))})
+    except Exception as _e:
+        logging.error(f"api_gen_edit: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def _run_anim_job(job_id, uid, prompt, img_bytes, aspect, cost):
+    """Фоновая анимация фото (Veo image-to-video)."""
+    from db import add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
+    try:
+        from generation_api import api_animate_image as _anim
+        vid = await _anim(img_bytes, prompt, aspect)
+        if not vid or len(vid) < 1000:
+            raise Exception("empty")
+        size_mb = len(vid) / 1024 / 1024
+        try:
+            await _log_gen(int(uid), "anim", "anim_veo", cost)
+        except Exception:
+            pass
+        _cap = f"🎞 Анимация Veo · −{cost} кр"
+        _url = None
+        _tok = None
+        if size_mb > 48:
+            try:
+                from generation_api import upload_large_file as _upl
+                _url = await _upl(vid, "anim.mp4")
+            except Exception:
+                _url = None
+            if not _url:
+                raise Exception("upload_failed")
+            try:
+                await bot.send_message(int(uid), f"{_cap}\nСкачать (ссылка 24ч): {_url}",
+                                       disable_web_page_preview=True)
+            except Exception:
+                pass
+        else:
+            try:
+                await bot.send_video(int(uid), BufferedInputFile(vid, "anim.mp4"),
+                                     caption=_cap, supports_streaming=True)
+            except Exception as _se:
+                logging.error(f"anim job send: {_se}")
+            _tok = _genimg_put(vid, "video/mp4")
+        _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url,
+                                     "size_mb": round(size_mb, 1), "credits": await _get_cr(int(uid))})
+    except Exception as _e:
+        try:
+            await _add_cr(int(uid), cost)
+        except Exception:
+            pass
+        logging.error(f"anim job {job_id}: {_e}")
+        _cr = 0
+        try:
+            _cr = await _get_cr(int(uid))
+        except Exception:
+            pass
+        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "credits": _cr})
+
+
+async def api_gen_anim_handler(request: web.Request) -> web.Response:
+    """Старт анимации фото (Veo image-to-video). Фоновый job, опрос через /api/gen/video-status."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        _idata = (body.get("initData") if isinstance(body, dict) else None) or ""
+        uid = _verify_tg_init_data(_idata)
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
+        from config import ANIM_MODELS
+        m = ANIM_MODELS.get("anim_veo") or {"credits": 249}
+        _prompt = str(body.get("prompt", "")).strip()
+        if len(_prompt) < 2:
+            return web.json_response({"ok": False, "error": "prompt"}, status=400)
+        _img_in, _ = _decode_data_uri_image(str(body.get("image", "")))
+        if not _img_in:
+            return web.json_response({"ok": False, "error": "image"}, status=400)
+        _aspect = str(body.get("aspect", "16:9")).strip() or "16:9"
+        if _aspect not in ("16:9", "9:16", "1:1"):
+            _aspect = "16:9"
+        _cost = int(m.get("credits", 249))
+        from db import deduct as _deduct, get_credits as _get_cr
+        _cr = await _get_cr(int(uid))
+        if _cr < _cost:
+            return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
+        if not await _deduct(int(uid), _cost):
+            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        import time as _t, secrets as _sec
+        _job = _sec.token_urlsafe(10)
+        _genvid_gc()
+        _GENVID_JOBS[_job] = {"status": "pending", "ts": _t.time()}
+        asyncio.create_task(_run_anim_job(_job, int(uid), _prompt, _img_in, _aspect, _cost))
+        return web.json_response({"ok": True, "job": _job, "cost": _cost, "credits": await _get_cr(int(uid))})
+    except Exception as _e:
+        logging.error(f"api_gen_anim: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
