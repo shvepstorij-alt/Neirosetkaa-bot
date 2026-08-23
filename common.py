@@ -2123,8 +2123,18 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
             _banners = []
         try:
             from config import IMAGE_MODELS as _IM
+            def _img_group(_k, _v):
+                _a = (_v.get("api") or "")
+                if _k.startswith("img_"): return "Imagen"
+                if _k.startswith("nb_"): return "Nano Banana"
+                if _k.startswith("gptimg"): return "GPT Image"
+                if _k.startswith("flux"): return "Flux"
+                if _k.startswith("ideo"): return "Ideogram"
+                if "grok" in _k: return "Grok"
+                return "Другое"
             _imgmodels = [{"key": _k, "name": _v.get("name", _k), "credits": _v.get("credits", 0),
-                           "desc": _v.get("desc", ""), "speed": _v.get("speed", "")}
+                           "desc": _v.get("desc", ""), "speed": _v.get("speed", ""),
+                           "group": _img_group(_k, _v)}
                           for _k, _v in _IM.items()]
         except Exception:
             _imgmodels = []
@@ -6277,6 +6287,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/gen/fav-add", api_gen_fav_add_handler)
     app.router.add_post("/api/gen/favs", api_gen_favs_handler)
     app.router.add_post("/api/gen/fav-del", api_gen_fav_del_handler)
+    app.router.add_post("/api/gen/hist-add", api_gen_hist_add_handler)
+    app.router.add_post("/api/gen/history", api_gen_hist_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
     app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
     app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
@@ -8642,6 +8654,59 @@ async def api_gen_fav_del_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_gen_fav_del: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_gen_hist_add_handler(request: web.Request) -> web.Response:
+    """Добавить генерацию в историю (миниатюра + промпт). Авто после генерации."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _uri = str(body.get("uri", "")).strip()
+        _pr = str(body.get("prompt", ""))[:200]
+        if not _uri.startswith("data:image/") or len(_uri) > 250000:
+            return web.json_response({"ok": False, "error": "bad"}, status=400)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("CREATE TABLE IF NOT EXISTS gen_history ("
+                               "id BIGSERIAL PRIMARY KEY, user_id BIGINT, uri TEXT, prompt TEXT, created_at TIMESTAMPTZ DEFAULT NOW())")
+            await conn.execute("INSERT INTO gen_history (user_id, uri, prompt) VALUES ($1,$2,$3)", int(uid), _uri, _pr)
+            await conn.execute(
+                "DELETE FROM gen_history WHERE user_id=$1 AND id NOT IN "
+                "(SELECT id FROM gen_history WHERE user_id=$1 ORDER BY id DESC LIMIT 40)", int(uid))
+        return web.json_response({"ok": True})
+    except Exception as _e:
+        logging.error(f"api_gen_hist_add: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_gen_hist_handler(request: web.Request) -> web.Response:
+    """История генераций пользователя."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _hist = []
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                _rows = await conn.fetch(
+                    "SELECT id, uri, prompt FROM gen_history WHERE user_id=$1 ORDER BY id DESC LIMIT 40", int(uid))
+            _hist = [{"id": _r["id"], "uri": _r["uri"], "prompt": _r["prompt"] or ""} for _r in _rows]
+        except Exception:
+            _hist = []
+        return web.json_response({"ok": True, "history": _hist})
+    except Exception as _e:
+        logging.error(f"api_gen_hist: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
