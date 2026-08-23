@@ -10406,10 +10406,24 @@ def _lp_kb(order_id, full=True):
 
 
 async def _is_manual_plan(shop_key, plan_idx) -> bool:
+    # 1) Явный переключатель «Ручная выдача» в админке
     try:
-        return (await get_setting(f"manual:{shop_key}:{plan_idx}", "0") or "0") == "1"
+        if (await get_setting(f"manual:{shop_key}:{plan_idx}", "0") or "0") == "1":
+            return True
     except Exception:
-        return False
+        pass
+    # 2) Недельные тарифы всегда выдаём вручную (авто-активация — только для месячных).
+    #    Коды в пуле — месячные; недельную подписку оформляет Александр сам.
+    try:
+        _s = SHOP_CATALOG.get(shop_key, {}) or {}
+        _plans = _s.get("plans", []) or []
+        if 0 <= plan_idx < len(_plans):
+            _nm = (_plans[plan_idx].get("name", "") or "").lower()
+            if "недел" in _nm or "week" in _nm:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 async def _send_manual_order(user_id, shop_key, service_name, plan_name,
