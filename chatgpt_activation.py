@@ -2257,9 +2257,25 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                 if status == "failed":
                     msg = pd.get("message") or pd.get("error") or "Активация не удалась."
                     _ml = str(msg).lower()
+                    # 1) битая/просроченная сессия — стоп, клиент обновляет токен
                     if "session" in _ml or "token" in _ml or "expired" in _ml or "истёк" in _ml:
                         return {"success": False, "token_invalid": True, "error": str(msg)}
-                    if "already" in _ml or "used" in _ml or "claimed" in _ml or "использ" in _ml:
+                    # 2) на АККАУНТЕ уже есть подписка → нужна принудительная активация.
+                    #    bypriceactivate.pro форс не умеет → НЕ останавливаемся и НЕ жжём код:
+                    #    отдаём обычный сбой, чтобы диспетчер увёл активацию на другой сайт
+                    #    (где есть коды и поддерживается force).
+                    _has_plan = ("has plan" in _ml or "already has" in _ml or "already subscribed" in _ml
+                                 or "already on" in _ml or "already plus" in _ml or "has plus" in _ml
+                                 or "active subscription" in _ml or "subscription active" in _ml
+                                 or "already active" in _ml or "уже есть подписк" in _ml
+                                 or "уже активна" in _ml or "уже подключ" in _ml or "already premium" in _ml)
+                    if _has_plan:
+                        return {"success": False, "has_plan": True,
+                                "error": "На аккаунте уже есть Plus — увожу на сайт с принудительной активацией. " + str(msg)}
+                    # 3) сам КОД израсходован → берём следующий код этого сайта
+                    if ("code already" in _ml or "already claimed" in _ml or "already redeemed" in _ml
+                            or "code used" in _ml or "already used" in _ml
+                            or "код уже" in _ml or "код использ" in _ml):
                         return {"success": False, "code_already_used": True, "error": str(msg)}
                     return {"success": False, "error": str(msg)}
                 # queued | running | pending | review → продолжаем ждать

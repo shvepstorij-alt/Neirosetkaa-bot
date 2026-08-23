@@ -4733,6 +4733,15 @@ async def _run_activation_job(
                     _next = (_np, _nc)
                     break
             if not _next:
+                # Сайтов с кодами больше нет. Если текущий код НЕ израсходован
+                # (сбой сайта / на аккаунте уже есть подписка) и это не кейс,
+                # где код нужен для повторной попытки (force/токен) — вернём его
+                # в пул, чтобы он НЕ сгорел.
+                if (not result.get("code_already_used")) and (not _client_stop(result)):
+                    try:
+                        await release_gpt_code(code)
+                    except Exception:
+                        pass
                 break  # сайтов с кодами больше нет
             _was_used = bool(result.get("code_already_used"))
             _fail_reason = (result.get("error")
