@@ -123,6 +123,17 @@
   .mdl-sel{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:13px 12px;font-size:15px;font-weight:700;color:var(--text);-webkit-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238b8f96' stroke-width='3'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px}
   .mdl-desc{font-size:12.5px;color:var(--text2);margin-top:8px;line-height:1.5}
   .mdl-desc b{color:var(--green)}
+  .gen-vid{width:100%;border-radius:12px;display:block;background:#000;max-height:70vh}
+  .vp-wrap{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px}
+  .vp-top{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:700;margin-bottom:10px}
+  .vp-top .vp-t{color:var(--green);font-variant-numeric:tabular-nums}
+  .vp-bar{height:8px;border-radius:6px;background:var(--bg3);overflow:hidden;position:relative}
+  .vp-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--green),#0c7d61);transition:width .6s ease;position:relative;overflow:hidden}
+  .vp-fill:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.25),transparent);animation:vpsh 1.2s infinite}
+  @keyframes vpsh{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+  .vp-sub{font-size:11.5px;color:var(--text2);margin-top:8px;text-align:center}
+  .fav-play{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:34px;height:34px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:14px;display:flex;align-items:center;justify-content:center;padding-left:2px;pointer-events:none}
+  .fav-vplace{width:100%;height:100%;background:linear-gradient(135deg,#222,#111)}
   .gm{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:11px;cursor:pointer}
   .gm.on{border-color:var(--green);box-shadow:0 0 0 1px var(--green) inset}
   .gm-n{font-size:14px;font-weight:700}.gm-d{font-size:12px;color:var(--text2);margin-top:2px}
@@ -170,7 +181,7 @@
 
 <div id="gen" class="screen">
   <div class="wrap">
-    <div class="hero"><h1>🎨 Создать фото</h1><p>Генерация изображений нейросетями</p></div>
+    <div class="hero" id="gen-hero"><h1>🎨 Создать</h1><p>Генерация нейросетями</p></div>
     <div id="gen-body"></div>
   </div>
 </div>
@@ -299,8 +310,15 @@ function _showCard(){
 /* ─── Генерация фото ─── */
 function _h(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function _saveGenPrompt(){ var t=document.getElementById('gen-prompt'); if(t) window._genPrompt=t.value; }
+function _setGenHead(t,s){ var h=document.getElementById('gen-hero'); if(h) h.innerHTML='<h1>'+t+'</h1><p>'+s+'</p>'; }
 function renderGen(){
   var b=document.getElementById('gen-body'); if(!b) return;
+  var _heads={photo:['🎨 Создать фото','Генерация изображений нейросетями'],
+              video:['🎬 Создать видео','Генерация видео нейросетями'],
+              anim:['✨ Анимация фото','Оживление фото в видео'],
+              edit:['🖌 Редактирование','Изменение фото по описанию'],
+              hist:['🖼 Мои генерации','Всё, что ты создал']};
+  _setGenHead.apply(null,_heads[window._genMode]||['🎨 Создать','Выбери, что создать']);
   if(window._genMode==='photo'){ renderGenPhoto(b); return; }
   if(window._genMode==='video'){ renderGenVideo(b); return; }
   if(window._genMode==='anim'){ renderGenAnim(b); return; }
@@ -317,7 +335,7 @@ function renderGen(){
       +'<div style="font-size:30px">'+m[1]+'</div><div><div class="gm-n">'+m[2]+'</div><div class="gm-d">'+m[3]+'</div></div></div>';
   }).join('')
     +'<div class="gm" style="display:flex;align-items:center;gap:12px" onclick="genMode(\'hist\')">'
-    +'<div style="font-size:30px">🖼</div><div><div class="gm-n">Мои генерации</div><div class="gm-d">История созданных фото</div></div></div>'
+    +'<div style="font-size:30px">🖼</div><div><div class="gm-n">Мои генерации</div><div class="gm-d">История фото и видео</div></div></div>'
     +'</div>';
 }
 function renderGenHist(b){
@@ -326,9 +344,13 @@ function renderGenHist(b){
   _api('/api/gen/history',{}).then(function(d){
     var g=document.getElementById('hist-grid'); if(!g) return;
     var items=(d&&d.history)||[];
-    if(!items.length){ g.innerHTML='<div class="o-s">Здесь появятся созданные тобой фото.</div>'; return; }
+    if(!items.length){ g.innerHTML='<div class="o-s">Здесь появятся созданные тобой фото и видео.</div>'; return; }
     g.className='favs-grid';
     g.innerHTML=items.map(function(it){
+      if(it.kind==='video'){
+        var pv=it.uri?('<img src="'+it.uri+'">'):'<div class="fav-vplace"></div>';
+        return '<div class="fav" onclick="_histOpen(\''+it.id+'\')">'+pv+'<span class="fav-play">▶</span></div>';
+      }
       return '<div class="fav"><img src="'+it.uri+'" onclick="_histOpen(\''+it.id+'\')"></div>';
     }).join('');
     window._histMap={}; items.forEach(function(it){ window._histMap[it.id]=it; });
@@ -336,14 +358,24 @@ function renderGenHist(b){
 }
 function _histOpen(id){
   var it=(window._histMap||{})[id]; if(!it) return;
-  window._lastGenUri=it.uri; window._lastGenToken='';
   var m=document.getElementById('gen-modal');
   if(!m){ m=document.createElement('div'); m.id='gen-modal'; m.className='pm-back'; document.body.appendChild(m); }
-  m.innerHTML='<div class="pm-card"><div class="gen-img"><img src="'+it.uri+'"></div>'
-    +(it.prompt?'<div class="o-s" style="margin:8px 0">'+_h(it.prompt)+'</div>':'')
-    +'<div style="display:flex;gap:8px;margin-top:8px">'
-    +'<div class="plan-buy" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text)" onclick="_histClose()">Закрыть</div>'
-    +'<div class="plan-buy" style="flex:1" onclick="_dlUri()">⬇️ Скачать</div></div></div>';
+  if(it.kind==='video'){
+    var src=it.fid?(location.origin+'/genvidf?fid='+encodeURIComponent(it.fid)):'';
+    window._lastVidUrl=src;
+    m.innerHTML='<div class="pm-card"><video class="gen-vid" src="'+src+'" controls playsinline preload="metadata"></video>'
+      +(it.prompt?'<div class="o-s" style="margin:8px 0">'+_h(it.prompt)+'</div>':'')
+      +'<div style="display:flex;gap:8px;margin-top:8px">'
+      +'<div class="plan-buy" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text)" onclick="_histClose()">Закрыть</div>'
+      +'<div class="plan-buy" style="flex:1" onclick="_openUrl(\''+src+'\')">⬇️ Скачать</div></div></div>';
+  } else {
+    window._lastGenUri=it.uri; window._lastGenToken='';
+    m.innerHTML='<div class="pm-card"><div class="gen-img"><img src="'+it.uri+'"></div>'
+      +(it.prompt?'<div class="o-s" style="margin:8px 0">'+_h(it.prompt)+'</div>':'')
+      +'<div style="display:flex;gap:8px;margin-top:8px">'
+      +'<div class="plan-buy" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text)" onclick="_histClose()">Закрыть</div>'
+      +'<div class="plan-buy" style="flex:1" onclick="_dlUri()">⬇️ Скачать</div></div></div>';
+  }
   m.style.display='flex';
 }
 function _histClose(){ var m=document.getElementById('gen-modal'); if(m) m.style.display='none'; }
@@ -419,9 +451,9 @@ function doGenVideo(){
   var p=(window._vidPrompt||'').trim();
   var res=document.getElementById('vid-result'); if(!res) return;
   if(p.length<2){ res.innerHTML='<div class="pm-err">Опиши, что снять</div>'; return; }
-  window._vidBusy=true;
+  window._vidBusy=true; window._lastGenPromptV=p; window._genProgLabel='🎬 Генерирую видео…';
   var btn=document.getElementById('vid-btn'); if(btn) btn.style.display='none';
-  res.innerHTML='<div class="pm-wait">🎬 Запускаю генерацию… видео обычно готовится 1–5 минут, можно свернуть приложение — пришлём в чат бота.</div>';
+  res.innerHTML=_vidProgHtml(0);
   var restore=function(){ window._vidBusy=false; var b2=document.getElementById('vid-btn'); if(b2) b2.style.display=''; };
   _api('/api/gen/video',{model:window._vidModel,prompt:p,aspect:window._vidAspect,duration:window._vidDur}).then(function(d){
     if(!res){ restore(); return; }
@@ -432,26 +464,35 @@ function doGenVideo(){
     restore();
   }).catch(function(){ if(res) res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
 }
+function _fmtElapsed(sec){ var mm=Math.floor(sec/60), ss=sec%60; return (mm?(mm+' мин '):'')+ss+' сек'; }
+function _vidProgHtml(sec,label){
+  var pct=Math.min(92, Math.round((sec/210)*100));  // ориентир ~3.5 мин
+  return '<div class="vp-wrap"><div class="vp-top"><span>'+(label||window._genProgLabel||'🎬 Генерирую видео…')+'</span><span class="vp-t">'+_fmtElapsed(sec)+'</span></div>'
+    +'<div class="vp-bar"><div class="vp-fill" style="width:'+pct+'%"></div></div>'
+    +'<div class="vp-sub">Обычно 1–5 минут · можно свернуть, пришлём в чат бота</div></div>';
+}
 function _vidPoll(job,tries,resId,restore){
   resId=resId||'vid-result';
   var res=document.getElementById(resId);
-  if(tries>90){ if(res) res.innerHTML='<div class="pm-err">Долго нет ответа. Если готово — придёт в чат бота.</div>'; restore(); return; }
+  if(tries>150){ if(res) res.innerHTML='<div class="pm-err">Долго нет ответа. Если готово — придёт в чат бота.</div>'; restore(); return; }
   _api('/api/gen/video-status',{job:job}).then(function(d){
     if(!res) res=document.getElementById(resId);
     if(!d||!d.ok){ setTimeout(function(){_vidPoll(job,tries+1,resId,restore);},4000); return; }
     if(d.status==='pending'){
-      var dots='.'.repeat((tries%3)+1);
-      if(res) res.innerHTML='<div class="pm-wait">🎬 Генерирую видео'+dots+' обычно 1–5 минут, не обязательно ждать — пришлём в чат бота.</div>';
+      if(res) res.innerHTML=_vidProgHtml(tries*4);
       setTimeout(function(){_vidPoll(job,tries+1,resId,restore);},4000); return;
     }
     if(d.status==='done'){
       window._lastGenToken=d.token||''; window._lastVidUrl=d.url||'';
+      var src = d.token ? (location.origin+'/genimg?t='+d.token) : (d.url||'');
+      var player = src ? '<video class="gen-vid" src="'+src+'" controls playsinline preload="metadata"></video>' : '';
       var dl='';
       if(d.url){ dl='<div class="plan-buy" onclick="_openUrl(\''+d.url+'\')">⬇️ Скачать видео</div>'; }
       else if(d.token){ dl='<div class="plan-buy" onclick="_dl()">⬇️ Скачать видео</div>'; }
-      if(res) res.innerHTML='<div class="block" style="text-align:center;padding:20px 14px"><div style="font-size:40px">✅</div>'
-        +'<div style="font-size:16px;font-weight:800;margin:8px 0 4px">Видео готово!</div>'
-        +'<div class="o-s" style="margin-bottom:10px">Отправлено в чат бота'+(d.size?(' · '+d.size+' МБ'):'')+' · остаток '+(d.credits!=null?d.credits:'')+' кр</div>'+dl+'</div>';
+      if(res) res.innerHTML='<div class="block" style="padding:16px 14px"><div style="text-align:center;font-size:16px;font-weight:800;margin-bottom:10px">✅ Видео готово!</div>'
+        +player
+        +'<div class="o-s" style="text-align:center;margin:8px 0 10px">'+(d.size?(d.size+' МБ · '):'')+'сохранено в чат бота · остаток '+(d.credits!=null?d.credits:'')+' кр</div>'+dl+'</div>';
+      if(d.fid){ _api('/api/gen/hist-add',{kind:'video',fid:d.fid,prompt:window._lastGenPromptV||''}); }
       restore(); return;
     }
     // error
@@ -558,9 +599,9 @@ function doGenAnim(){
   if(!window._animImg){ res.innerHTML='<div class="pm-err">Сначала загрузи фото</div>'; return; }
   var p=(window._animPrompt||'').trim();
   if(p.length<2){ res.innerHTML='<div class="pm-err">Опиши, как оживить</div>'; return; }
-  window._animBusy=true;
+  window._animBusy=true; window._lastGenPromptV=p; window._genProgLabel='🎞 Оживляю фото…';
   var btn=document.getElementById('anim-btn'); if(btn) btn.style.display='none';
-  res.innerHTML='<div class="pm-wait">🎞 Запускаю анимацию… обычно 1–5 минут, можно свернуть — пришлём в чат бота.</div>';
+  res.innerHTML=_vidProgHtml(0);
   var restore=function(){ window._animBusy=false; var b2=document.getElementById('anim-btn'); if(b2) b2.style.display=''; };
   _api('/api/gen/anim',{prompt:p,image:window._animImg,aspect:window._animAspect,model:window._animModel}).then(function(d){
     if(!res){ restore(); return; }

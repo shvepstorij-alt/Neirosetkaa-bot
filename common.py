@@ -6328,6 +6328,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)
     app.router.add_get("/genimg", genimg_handler)
+    app.router.add_get("/genvidf", genvidf_handler)
     app.router.add_post("/api/gen/fav-add", api_gen_fav_add_handler)
     app.router.add_post("/api/gen/favs", api_gen_favs_handler)
     app.router.add_post("/api/gen/fav-del", api_gen_fav_del_handler)
@@ -8564,15 +8565,63 @@ def _genimg_put(_b: bytes, _mime: str) -> str:
     return _tok
 
 
+def _bytes_response(data: bytes, mime: str, filename: str, request: web.Request) -> web.Response:
+    """Отдача байтов с поддержкой Range (нужно для inline-видео на iOS)."""
+    total = len(data)
+    _base_h = {"Accept-Ranges": "bytes", "Content-Disposition": 'inline; filename="' + filename + '"'}
+    rng = request.headers.get("Range", "")
+    if rng.startswith("bytes="):
+        try:
+            _se = rng.split("=", 1)[1].split("-")
+            _start = int(_se[0]) if _se[0] else 0
+            _end = int(_se[1]) if len(_se) > 1 and _se[1] else total - 1
+            _end = min(_end, total - 1)
+            if _start > _end or _start >= total:
+                raise ValueError("bad range")
+            _h = dict(_base_h)
+            _h["Content-Range"] = f"bytes {_start}-{_end}/{total}"
+            return web.Response(status=206, body=data[_start:_end + 1], content_type=mime, headers=_h)
+        except Exception:
+            pass
+    return web.Response(body=data, content_type=mime, headers=_base_h)
+
+
 async def genimg_handler(request: web.Request) -> web.Response:
-    """Отдаёт сгенерированную картинку по токену (для кнопки «Скачать»)."""
+    """Отдаёт сгенерированную картинку/видео по токену (просмотр/скачивание)."""
     _it = _GENIMG_CACHE.get(request.query.get("t", ""))
     if not _it:
         return web.Response(status=404, text="not found")
     _mime = _it[1]
     _fn = "video.mp4" if "video" in _mime else ("image.jpg" if "jpeg" in _mime else "image.png")
-    return web.Response(body=_it[0], content_type=_mime,
-                        headers={"Content-Disposition": 'inline; filename="' + _fn + '"'})
+    return _bytes_response(_it[0], _mime, _fn, request)
+
+
+_GENVIDF_CACHE = {}  # file_id -> (bytes, ts) кэш скачанных из Telegram видео
+
+
+async def genvidf_handler(request: web.Request) -> web.Response:
+    """Постоянное воспроизведение видео из истории по telegram file_id."""
+    _fid = request.query.get("fid", "")
+    if not _fid:
+        return web.Response(status=404, text="not found")
+    try:
+        import time as _t
+        _c = _GENVIDF_CACHE.get(_fid)
+        if _c and (_t.time() - _c[1] < 3600):
+            _data = _c[0]
+        else:
+            _f = await bot.get_file(_fid)
+            _buf = await bot.download_file(_f.file_path)
+            _data = _buf.read() if hasattr(_buf, "read") else _buf
+            _GENVIDF_CACHE[_fid] = (_data, _t.time())
+            if len(_GENVIDF_CACHE) > 60:
+                for _k in list(_GENVIDF_CACHE.keys()):
+                    if _t.time() - _GENVIDF_CACHE[_k][1] > 3600:
+                        _GENVIDF_CACHE.pop(_k, None)
+        return _bytes_response(_data, "video/mp4", "video.mp4", request)
+    except Exception as _e:
+        logging.error(f"genvidf: {_e}")
+        return web.Response(status=404, text="not found")
 
 
 async def api_gen_image_handler(request: web.Request) -> web.Response:
@@ -8663,6 +8712,7 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
         _cap = f"🎬 {m.get('name','')} · {duration}с · −{cost} кр"
         _url = None
         _tok = None
+        _fid = None
         if size_mb > 48:
             _url = await _upl(vid, f"video_{key}.mp4") if _upl else None
             if not _url:
@@ -8674,12 +8724,16 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
                 pass
         else:
             try:
-                await bot.send_video(int(uid), BufferedInputFile(vid, "video.mp4"),
-                                     caption=_cap, supports_streaming=True)
+                _sent = await bot.send_video(int(uid), BufferedInputFile(vid, "video.mp4"),
+                                             caption=_cap, supports_streaming=True)
+                try:
+                    _fid = _sent.video.file_id if _sent and _sent.video else None
+                except Exception:
+                    _fid = None
             except Exception as _se:
                 logging.error(f"video job send: {_se}")
             _tok = _genimg_put(vid, "video/mp4")
-        _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url,
+        _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url, "fid": _fid,
                                      "size_mb": round(size_mb, 1), "credits": await _get_cr(int(uid))})
     except Exception as _e:
         try:
@@ -8761,6 +8815,7 @@ async def api_gen_video_status_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "notfound"}, status=404)
         return web.json_response({"ok": True, "status": _it.get("status"),
                                   "token": _it.get("token"), "url": _it.get("url"),
+                                  "fid": _it.get("fid"),
                                   "credits": _it.get("credits"), "size": _it.get("size_mb"),
                                   "err": _it.get("err")})
     except Exception as _e:
@@ -8867,6 +8922,7 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
         _cap = f"🎞 {m.get('name','Анимация')} · −{cost} кр"
         _url = None
         _tok = None
+        _fid = None
         if size_mb > 48:
             try:
                 from generation_api import upload_large_file as _upl
@@ -8882,12 +8938,16 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
                 pass
         else:
             try:
-                await bot.send_video(int(uid), BufferedInputFile(vid, "anim.mp4"),
-                                     caption=_cap, supports_streaming=True)
+                _sent = await bot.send_video(int(uid), BufferedInputFile(vid, "anim.mp4"),
+                                             caption=_cap, supports_streaming=True)
+                try:
+                    _fid = _sent.video.file_id if _sent and _sent.video else None
+                except Exception:
+                    _fid = None
             except Exception as _se:
                 logging.error(f"anim job send: {_se}")
             _tok = _genimg_put(vid, "video/mp4")
-        _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url,
+        _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url, "fid": _fid,
                                      "size_mb": round(size_mb, 1), "credits": await _get_cr(int(uid))})
     except Exception as _e:
         try:
@@ -9032,15 +9092,31 @@ async def api_gen_hist_add_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
         if not uid:
             return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _kind = str(body.get("kind", "image")).strip()
         _uri = str(body.get("uri", "")).strip()
         _pr = str(body.get("prompt", ""))[:200]
-        if not _uri.startswith("data:image/") or len(_uri) > 250000:
-            return web.json_response({"ok": False, "error": "bad"}, status=400)
+        _fid = str(body.get("fid", "")).strip()[:400]
+        if _kind == "video":
+            # для видео храним telegram file_id (постоянная ссылка), uri может быть пустым/постером
+            if not _fid:
+                return web.json_response({"ok": False, "error": "bad"}, status=400)
+            if _uri and (not _uri.startswith("data:image/") or len(_uri) > 250000):
+                _uri = ""
+        else:
+            _kind = "image"
+            if not _uri.startswith("data:image/") or len(_uri) > 250000:
+                return web.json_response({"ok": False, "error": "bad"}, status=400)
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute("CREATE TABLE IF NOT EXISTS gen_history ("
                                "id BIGSERIAL PRIMARY KEY, user_id BIGINT, uri TEXT, prompt TEXT, created_at TIMESTAMPTZ DEFAULT NOW())")
-            await conn.execute("INSERT INTO gen_history (user_id, uri, prompt) VALUES ($1,$2,$3)", int(uid), _uri, _pr)
+            try:
+                await conn.execute("ALTER TABLE gen_history ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'image'")
+                await conn.execute("ALTER TABLE gen_history ADD COLUMN IF NOT EXISTS fid TEXT")
+            except Exception:
+                pass
+            await conn.execute("INSERT INTO gen_history (user_id, uri, prompt, kind, fid) VALUES ($1,$2,$3,$4,$5)",
+                               int(uid), _uri, _pr, _kind, _fid or None)
             await conn.execute(
                 "DELETE FROM gen_history WHERE user_id=$1 AND id NOT IN "
                 "(SELECT id FROM gen_history WHERE user_id=$1 ORDER BY id DESC LIMIT 40)", int(uid))
@@ -9064,9 +9140,15 @@ async def api_gen_hist_handler(request: web.Request) -> web.Response:
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                _rows = await conn.fetch(
-                    "SELECT id, uri, prompt FROM gen_history WHERE user_id=$1 ORDER BY id DESC LIMIT 40", int(uid))
-            _hist = [{"id": _r["id"], "uri": _r["uri"], "prompt": _r["prompt"] or ""} for _r in _rows]
+                try:
+                    _rows = await conn.fetch(
+                        "SELECT id, uri, prompt, kind, fid FROM gen_history WHERE user_id=$1 ORDER BY id DESC LIMIT 40", int(uid))
+                except Exception:
+                    _rows = await conn.fetch(
+                        "SELECT id, uri, prompt FROM gen_history WHERE user_id=$1 ORDER BY id DESC LIMIT 40", int(uid))
+            _hist = [{"id": _r["id"], "uri": _r["uri"] or "", "prompt": _r["prompt"] or "",
+                      "kind": (_r["kind"] if "kind" in _r.keys() and _r["kind"] else "image"),
+                      "fid": (_r["fid"] if "fid" in _r.keys() else None)} for _r in _rows]
         except Exception:
             _hist = []
         return web.json_response({"ok": True, "history": _hist})
