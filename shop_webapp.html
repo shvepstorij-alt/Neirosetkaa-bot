@@ -418,8 +418,9 @@ function renderGenPhoto(b){
     +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>'+cur.credits+' кр</b>'+(cur.speed?(' · '+_h(cur.speed)):'')+'</div></div>'
     +'<div class="block"><h3>Что нарисовать</h3><textarea id="gen-prompt" class="gen-ta" placeholder="Опиши картинку: кот-космонавт в неоне, кинематографично…">'+_h(window._genPrompt||'')+'</textarea>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
-    +'<div class="plan-buy" id="gen-btn"'+(window._genBusy?' style="display:none"':'')+' onclick="doGen()">✨ Сгенерировать за '+cur.credits+' кр</div>'
-    +'<div id="gen-result">'+(window._genBusy?'<div class="pm-wait">Генерирую… обычно несколько секунд, не закрывай экран</div>':'')+'</div>';
+    +'<div class="plan-buy" id="gen-btn"'+(window._genBusy?' style="display:none"':'')+' onclick="doGen()">✨ '+(_getLast('photo')?'Сгенерировать ещё за ':'Сгенерировать за ')+cur.credits+' кр</div>'
+    +'<div id="gen-result">'+(window._genBusy?'<div class="pm-wait">Генерирую… обычно несколько секунд, не закрывай экран</div>':'')+'</div>'
+    +_lastResultHtml('photo');
 }
 function _vidPrice(m){ if(!m) return 0; var d=(m.durations||[]).filter(function(x){return x.d===window._vidDur;})[0]; return d?d.credits:(m.credits||0); }
 function renderGenVideo(b){
@@ -441,7 +442,7 @@ function renderGenVideo(b){
     +'<div class="block"><h3>Что снять</h3><textarea id="vid-prompt" class="gen-ta" placeholder="Опиши сцену: дрон летит над ночным неоновым городом, дождь, кинематографично…">'+_h(window._vidPrompt||'')+'</textarea>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Длительность</div><div class="chips" style="padding:0">'+durChips+'</div>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Формат</div><div class="chips" style="padding:0">'+aspects+'</div></div>'
-    +'<div class="plan-buy" id="vid-btn"'+(window._vidBusy?' style="display:none"':'')+' onclick="doGenVideo()">🎬 '+((window._lastResult&&window._lastResult.mode==='video')?'Снять ещё видео за ':'Снять видео за ')+_vidPrice(cur)+' кр</div>'
+    +'<div class="plan-buy" id="vid-btn"'+(window._vidBusy?' style="display:none"':'')+' onclick="doGenVideo()">🎬 '+(_getLast('video')?'Снять ещё видео за ':'Снять видео за ')+_vidPrice(cur)+' кр</div>'
     +'<div id="vid-result">'+(window._vidBusy?_vidProgHtml(_genElapsed()):'')+'</div>'
     +_lastResultHtml('video');
 }
@@ -474,13 +475,29 @@ function _vidProgHtml(sec,label){
 }
 function _vidResId(kind){ return kind==='anim'?'anim-result':'vid-result'; }
 function _genElapsed(){ return Math.floor((Date.now()-(window._genGenStart||Date.now()))/1000); }
+function _setLast(mode,obj){ window._lastResults=window._lastResults||{}; window._lastResults[mode]=obj; }
+function _getLast(mode){ return (window._lastResults||{})[mode]; }
+function _favLast(mode){ var r=_getLast(mode); if(!r||!r.img)return; window._lastGenUri=r.img; _favAdd(); }
+function _dlLast(mode){ var r=_getLast(mode); if(!r)return;
+  if(r.kind==='video'){ if(r.dlUrl){ _openUrl(r.dlUrl); return; } window._lastGenToken=r.token||''; _dl('video'); }
+  else { window._lastGenToken=r.token||''; _dl(); } }
 function _lastResultHtml(mode){
-  var r=window._lastResult; if(!r||r.mode!==mode||!r.src) return '';
-  var dl = r.dlUrl ? ('<div class="plan-buy" onclick="_openUrl(\''+r.dlUrl+'\')">⬇️ Скачать</div>')
-                   : (r.token?'<div class="plan-buy" onclick="window._lastGenToken=\''+r.token+'\';_dl(\'video\')">⬇️ Скачать</div>':'');
-  return '<div class="block" style="margin-top:14px"><div class="card-plans-h" style="margin-top:0">✅ Последняя генерация</div>'
-    +'<video class="gen-vid" src="'+r.src+'" controls playsinline preload="metadata"></video>'
-    +'<div class="o-s" style="text-align:center;margin:8px 0 10px">'+(r.size?(r.size+' МБ · '):'')+'сохранено в чат бота'+(r.credits!=null?(' · остаток '+r.credits+' кр'):'')+'</div>'+dl+'</div>';
+  var r=_getLast(mode); if(!r) return '';
+  var head='<div class="card-plans-h" style="margin-top:0">✅ Последняя генерация</div>';
+  if(r.kind==='video'){
+    if(!r.src) return '';
+    return '<div class="block" style="margin-top:14px">'+head
+      +'<video class="gen-vid" src="'+r.src+'" controls playsinline preload="metadata"></video>'
+      +'<div class="o-s" style="text-align:center;margin:8px 0 10px">'+(r.size?(r.size+' МБ · '):'')+'сохранено в чат бота'+(r.credits!=null?(' · остаток '+r.credits+' кр'):'')+'</div>'
+      +'<div class="plan-buy" onclick="_dlLast(\''+mode+'\')">⬇️ Скачать</div></div>';
+  }
+  if(!r.img) return '';
+  return '<div class="block" style="margin-top:14px">'+head
+    +'<div class="gen-img"><img src="'+r.img+'"></div>'
+    +'<div style="display:flex;gap:8px;margin-top:8px">'
+    +'<div class="plan-buy" id="favbtn" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text)" onclick="_favLast(\''+mode+'\')">⭐ В избранное</div>'
+    +'<div class="plan-buy" style="flex:1" onclick="_dlLast(\''+mode+'\')">⬇️ Скачать</div></div>'
+    +'<div class="o-s" style="text-align:center;margin:8px 0 2px">'+(r.credits!=null?('остаток '+r.credits+' кр · '):'')+'сохранено в чат бота</div></div>';
 }
 function _vidPoll(job,tries,kind,restore){
   var resId=_vidResId(kind);
@@ -496,7 +513,7 @@ function _vidPoll(job,tries,kind,restore){
     if(d.status==='done'){
       window._lastGenToken=d.token||''; window._lastVidUrl=d.url||'';
       var src = d.token ? (location.origin+'/genimg?t='+d.token) : (d.url||'');
-      window._lastResult={mode:kind,src:src,token:(d.token||''),dlUrl:(d.url||''),size:d.size,credits:d.credits,prompt:(window._lastGenPromptV||'')};
+      _setLast(kind,{kind:'video',src:src,token:(d.token||''),dlUrl:(d.url||''),size:d.size,credits:d.credits,prompt:(window._lastGenPromptV||'')});
       if(d.fid){ _api('/api/gen/hist-add',{kind:'video',fid:d.fid,prompt:window._lastGenPromptV||''}); }
       // сброс формы, чтобы можно было сразу создать ещё
       if(kind==='anim'){ window._animBusy=false; window._animImg=null; window._animPrompt=''; window._animAspectAuto=false; }
@@ -561,8 +578,9 @@ function renderGenEdit(b){
     +'<div class="block"><h3>Исходное фото</h3>'+_uplBox('_editImg','Загрузить фото')+'</div>'
     +selBlock
     +'<div class="block"><h3>Что изменить</h3><textarea id="edit-prompt" class="gen-ta" placeholder="Опиши правку: убери фон, добавь очки, сделай в стиле акварели…">'+_h(window._editPrompt||'')+'</textarea></div>'
-    +'<div class="plan-buy" id="edit-btn"'+(window._editBusy?' style="display:none"':'')+' onclick="doGenEdit()">🖌 Изменить фото за '+cur.credits+' кр</div>'
-    +'<div id="edit-result">'+(window._editBusy?'<div class="pm-wait">🖌 Редактирую фото… несколько секунд</div>':'')+'</div>';
+    +'<div class="plan-buy" id="edit-btn"'+(window._editBusy?' style="display:none"':'')+' onclick="doGenEdit()">🖌 '+(_getLast('edit')?'Изменить ещё за ':'Изменить фото за ')+cur.credits+' кр</div>'
+    +'<div id="edit-result">'+(window._editBusy?'<div class="pm-wait">🖌 Редактирую фото… несколько секунд</div>':'')+'</div>'
+    +_lastResultHtml('edit');
 }
 function doGenEdit(){
   if(window._editBusy) return;
@@ -576,20 +594,17 @@ function doGenEdit(){
   res.innerHTML='<div class="pm-wait">🖌 Редактирую фото… несколько секунд</div>';
   var restore=function(){ window._editBusy=false; var b2=document.getElementById('edit-btn'); if(b2) b2.style.display=''; };
   _api('/api/gen/edit',{prompt:p,image:window._editImg,model:window._editModel}).then(function(d){
-    if(!res){ restore(); return; }
+    res=document.getElementById('edit-result')||res;
     if(d&&d.ok&&d.img){
       window._lastGenUri=d.img; window._lastGenToken=d.token||'';
-      res.innerHTML='<div class="gen-img"><img src="'+d.img+'"></div>'
-        +'<div style="display:flex;gap:8px;margin-top:8px">'
-        +'<div class="plan-buy" id="favbtn" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text)" onclick="_favAdd()">⭐ В избранное</div>'
-        +'<div class="plan-buy" style="flex:1" onclick="_dl()">⬇️ Скачать</div></div>'
-        +'<div class="o-s" style="text-align:center;margin:8px 0 2px">остаток '+(d.credits!=null?d.credits:'')+' кр · сохранено в чат бота</div>';
+      _setLast('edit',{kind:'image',img:d.img,token:(d.token||''),credits:d.credits,prompt:p});
       _histSave(d.img,p);
+      window._editBusy=false; renderGen(); return;
     } else if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
     else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Сессия устарела — закрой и открой приложение заново.</div>'; }
     else { res.innerHTML='<div class="pm-err">Не получилось изменить фото. Попробуй другой промт.</div>'; }
     restore();
-  }).catch(function(){ if(res) res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
+  }).catch(function(){ var r2=document.getElementById('edit-result'); if(r2) r2.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
 }
 
 // ── Анимация фото (Veo image-to-video) ──
@@ -613,7 +628,7 @@ function renderGenAnim(b){
     +selBlock
     +'<div class="block"><h3>Как оживить</h3><textarea id="anim-prompt" class="gen-ta" placeholder="Опиши движение: лёгкий ветер в волосах, камера медленно приближается, мигают огни…">'+_h(window._animPrompt||'')+'</textarea>'
     +'<div class="card-plans-h" style="margin:10px 0 6px">Формат видео</div><div class="chips" style="padding:0">'+aspects+'</div>'+fmtHint+'</div>'
-    +'<div class="plan-buy" id="anim-btn"'+(window._animBusy?' style="display:none"':'')+' onclick="doGenAnim()">🎞 '+((window._lastResult&&window._lastResult.mode==='anim')?'Оживить ещё фото за ':'Оживить фото за ')+cur.credits+' кр</div>'
+    +'<div class="plan-buy" id="anim-btn"'+(window._animBusy?' style="display:none"':'')+' onclick="doGenAnim()">🎞 '+(_getLast('anim')?'Оживить ещё фото за ':'Оживить фото за ')+cur.credits+' кр</div>'
     +'<div id="anim-result">'+(window._animBusy?_vidProgHtml(_genElapsed()):'')+'</div>'
     +_lastResultHtml('anim');
 }
@@ -649,14 +664,12 @@ function doGen(){
   var _done=function(){ window._genBusy=false; var b2=document.getElementById('gen-btn'); if(b2) b2.style.display=''; };
   _api('/api/gen/image',{model:window._genModel,prompt:p,aspect:window._genAspect}).then(function(d){
     if(!res){ _done(); return; }
+    res=document.getElementById('gen-result')||res;
     if(d&&d.ok&&d.img){
       window._lastGenUri=d.img; window._lastGenToken=d.token||'';
-      res.innerHTML='<div class="gen-img"><img src="'+d.img+'"></div>'
-        +'<div style="display:flex;gap:8px;margin-top:8px">'
-        +'<div class="plan-buy" id="favbtn" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text)" onclick="_favAdd()">⭐ В избранное</div>'
-        +'<div class="plan-buy" style="flex:1" onclick="_dl()">⬇️ Скачать</div></div>'
-        +'<div class="o-s" style="text-align:center;margin:8px 0 2px">остаток '+(d.credits!=null?d.credits:'')+' кр · сохранено в чат бота</div>';
+      _setLast('photo',{kind:'image',img:d.img,token:(d.token||''),credits:d.credits,prompt:p});
       _histSave(d.img,p);
+      window._genBusy=false; renderGen(); return;
     } else if(d&&d.error==='credits'){
       res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>';
     } else if(d&&String(d.error||'').indexOf('auth')===0){
@@ -665,7 +678,7 @@ function doGen(){
       res.innerHTML='<div class="pm-err">Не получилось сгенерировать. Попробуй ещё раз или другую модель.</div>';
     }
     _done();
-  }).catch(function(){ if(res) res.innerHTML='<div class="pm-err">Ошибка сети. Кредиты не списаны, попробуй ещё раз.</div>'; _done(); });
+  }).catch(function(){ var r2=document.getElementById('gen-result'); if(r2) r2.innerHTML='<div class="pm-err">Ошибка сети. Кредиты не списаны, попробуй ещё раз.</div>'; _done(); });
 }
 function _histSave(uri,prompt){
   try{
