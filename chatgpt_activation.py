@@ -15,7 +15,7 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
     except ImportError:
         return {"success": False, "error": "Playwright не установлен на сервере."}
 
-    url = f"https://www.987ai.vip/recharge?card={card_code}"
+    url = f"https://ai.999uu.us/recharge?card={card_code}"
 
     account_id = ""
     try:
@@ -419,7 +419,7 @@ async def check_gpt_code(card_code: str) -> dict:
     except ImportError:
         return {"status": "error", "error": "Playwright не установлен"}
 
-    url = f"https://www.987ai.vip/recharge?card={card_code}"
+    url = f"https://ai.999uu.us/recharge?card={card_code}"
 
     async with async_playwright() as p:
         try:
@@ -1995,7 +1995,7 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
     except ImportError:
         return {"success": False, "error": "Playwright не установлен на сервере."}
 
-    _MIRRORS = ["https://ios.891014.best/", "https://www.987ai.vip/"]
+    _MIRRORS = ["https://ios.891014.best/", "https://ai.999uu.us/"]
     logger.info(f"activate_claude_ios891: cdk={cdk_code} org={org_id} plan={plan}")
 
     async with async_playwright() as p:

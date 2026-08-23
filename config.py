@@ -102,7 +102,7 @@ GPT_PROVIDERS = {
     # опрос GET /api/gpt/orders/{id}. session — тот же JSON со страницы
     # chatgpt.com/api/auth/session, что клиент вставляет в мини-аппе.
     "bpa":   {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
-    "987ai": {"name": "987ai.vip",   "base": "https://www.987ai.vip"},
+    "987ai": {"name": "ai.999uu.us",   "base": "https://ai.999uu.us"},
     "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz"},
     # kkqqai.com — CDK + ChatGPT Session, шаги 验证 CDK → 校验 AuthSession → 确认充值.
     "kkqq":  {"name": "kkqqai.com",  "base": "https://kkqqai.com"},
