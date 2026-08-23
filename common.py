@@ -4635,6 +4635,9 @@ async def _run_activation_job(
     provider: '987ai' (текущий, по access_token) | 'aipro' (6661231.xyz, по Session JSON).
     force=True — клиент подтвердил принудительную активацию поверх уже активной подписки."""
     async def _do_activate(_code):
+        if provider == "bpa":
+            from chatgpt_activation import activate_chatgpt_bpa
+            return await activate_chatgpt_bpa(_code, session_raw or access_token, force=force)
         if provider == "aipro":
             from chatgpt_activation import activate_chatgpt_aipro
             return await activate_chatgpt_aipro(_code, session_raw or access_token, force=force)
@@ -5410,7 +5413,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
 
     # Для сайта aipro нужен полный Session JSON. Если клиент прислал сырой session — берём его,
     # иначе (старый клиент прислал только токен) для aipro активация невозможна.
-    if provider in ("aipro", "kkqq", "redeem") and not session_raw:
+    if provider in ("bpa", "aipro", "kkqq", "redeem") and not session_raw:
         return _resp({"success": False, "error": "Обнови мини-приложение и вставь весь текст со страницы сессии заново."})
 
     # ЗАЩИТА ОТ ДВОЙНОЙ АКТИВАЦИИ: если у клиента уже крутится активация — возвращаем

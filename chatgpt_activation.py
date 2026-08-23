@@ -2188,6 +2188,89 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
                 pass
 
 
+async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False) -> dict:
+    """bypriceactivate.pro — ChatGPT Plus Direct (АСИНХРОННЫЙ API, без браузера).
+
+    POST /api/gpt/activate {code, session} -> {order_id}; далее опрос
+    GET /api/gpt/orders/{order_id} до completed|failed.
+    `session` — JSON со страницы chatgpt.com/api/auth/session (клиент вставляет его
+    в мини-аппе целиком). Принимает как JSON-объект, так и «сырой» accessToken.
+    Возвращает контракт как у прочих провайдеров:
+      {success, error, code_already_used, token_invalid, out_of_stock, email}."""
+    import aiohttp as _aiohttp, asyncio as _aio, json as _json
+    base = "https://bypriceactivate.pro"
+
+    _sess = (session_raw or "").strip()
+    if not _sess:
+        return {"success": False, "token_invalid": True,
+                "error": "Пустая сессия. Вставь весь текст со страницы chatgpt.com/api/auth/session."}
+    # session: JSON-объект (лучше) → иначе сырой accessToken → иначе строка как есть
+    try:
+        _sess_val = _json.loads(_sess)
+    except Exception:
+        _sess_val = {"accessToken": _sess} if _sess.startswith("eyJ") else _sess
+
+    body = {"code": code, "session": _sess_val}
+    headers = {"Content-Type": "application/json"}
+    try:
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=30)) as s:
+            async with s.post(f"{base}/api/gpt/activate", json=body, headers=headers) as r:
+                try:
+                    d = await r.json()
+                except Exception:
+                    d = {}
+                st = r.status
+                order_id = d.get("order_id")
+                if st in (200, 202) and order_id:
+                    pass  # приняли, ниже опрашиваем
+                else:
+                    ec = (d.get("error_code") or "").upper()
+                    det = d.get("detail") or d.get("error") or f"HTTP {st}"
+                    if st == 409 or ec == "CODE_ALREADY_USED":
+                        return {"success": False, "code_already_used": True, "error": str(det)}
+                    if st == 404 or ec == "CODE_NOT_FOUND":
+                        return {"success": False, "error": "Код не найден на сайте: " + str(det)}
+                    if st == 400 or ec == "SESSION_INVALID":
+                        return {"success": False, "token_invalid": True,
+                                "error": "Сессия не принята (просрочена/битая). Скопируй заново со страницы session."}
+                    if st == 503 or ec == "SERVICE_NOT_READY":
+                        return {"success": False, "out_of_stock": True,
+                                "error": "Сервис GPT временно недоступен: " + str(det)}
+                    if st == 429:
+                        return {"success": False, "error": "Слишком много запросов, попробуй позже."}
+                    return {"success": False, "error": str(det)}
+
+            # Опрос статуса заказа (до ~10 минут)
+            for _ in range(120):
+                await _aio.sleep(5)
+                try:
+                    async with s.get(f"{base}/api/gpt/orders/{order_id}") as pr:
+                        try:
+                            pd = await pr.json()
+                        except Exception:
+                            pd = {}
+                except Exception:
+                    continue
+                status = (pd.get("status") or "").lower()
+                if status == "completed":
+                    return {"success": True, "email": pd.get("account_email") or ""}
+                if status == "failed":
+                    msg = pd.get("message") or pd.get("error") or "Активация не удалась."
+                    _ml = str(msg).lower()
+                    if "session" in _ml or "token" in _ml or "expired" in _ml or "истёк" in _ml:
+                        return {"success": False, "token_invalid": True, "error": str(msg)}
+                    if "already" in _ml or "used" in _ml or "claimed" in _ml or "использ" in _ml:
+                        return {"success": False, "code_already_used": True, "error": str(msg)}
+                    return {"success": False, "error": str(msg)}
+                # queued | running | pending | review → продолжаем ждать
+            return {"success": False,
+                    "error": "Сайт долго обрабатывал заказ (>10 мин). Александр проверит вручную."}
+    except _aiohttp.ClientError as e:
+        return {"success": False, "error": "Сеть/сайт недоступен: " + str(e)[:120]}
+    except Exception as e:
+        return {"success": False, "error": str(e)[:200]}
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)

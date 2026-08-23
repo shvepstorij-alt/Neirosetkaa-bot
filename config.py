@@ -97,6 +97,11 @@ CLAUDE_DEFAULT_PROVIDER = "bpa"
 # У каждого сайта свои CDK-коды (отдельные пулы). Активный сайт и фолбэк
 # выбираются в админке (настройки gpt_provider / gpt_failover). Дефолт — 987ai.
 GPT_PROVIDERS = {
+    # bypriceactivate.pro — ChatGPT Plus Direct, АСИНХРОННЫЙ API (не браузер).
+    # Коды с префиксом GPTP-. POST /api/gpt/activate {code, session} → order_id,
+    # опрос GET /api/gpt/orders/{id}. session — тот же JSON со страницы
+    # chatgpt.com/api/auth/session, что клиент вставляет в мини-аппе.
+    "bpa":   {"name": "bypriceactivate.pro", "base": "https://bypriceactivate.pro", "api": "bpa"},
     "987ai": {"name": "987ai.vip",   "base": "https://www.987ai.vip"},
     "aipro": {"name": "6661231.xyz", "base": "https://6661231.xyz"},
     # kkqqai.com — CDK + ChatGPT Session, шаги 验证 CDK → 校验 AuthSession → 确认充值.
@@ -105,7 +110,7 @@ GPT_PROVIDERS = {
     # подтверждение почты → (при активной подписке) галочка force → успех.
     "redeem": {"name": "redeemgpt.com", "base": "https://redeemgpt.com"},
 }
-GPT_PROVIDER_ORDER   = ["987ai", "aipro", "kkqq", "redeem"]
+GPT_PROVIDER_ORDER   = ["bpa", "987ai", "aipro", "kkqq", "redeem"]
 GPT_DEFAULT_PROVIDER = "987ai"
 
 def gpt_provider_name(provider: str) -> str:
