@@ -13,7 +13,7 @@ from aiogram.types import (
     Message, ChatMemberUpdated, InlineKeyboardMarkup,
     InlineKeyboardButton, CallbackQuery,
     LabeledPrice, PreCheckoutQuery, BufferedInputFile,
-    ReplyKeyboardMarkup, KeyboardButton
+    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 )
 from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, StateFilter
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -23,7 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import (
     ADMIN_ID, ADMIN_SECRET, ANIM_MODELS, CREDIT_PACKS, DISABLED_MODELS, EDIT_MODELS,
     FAL_API_KEY, FK_ALLOWED_IPS, FK_API_KEY, FK_IP_CHECK_DISABLED, FK_SECRET1, FK_SECRET2,
-    FK_SHOP_ID, FK_WEBHOOK_URL, IMAGE_MODELS, SHOP_CATALOG, VIDEO_MODELS, _BOT_TZ,
+    FK_SHOP_ID, FK_WEBHOOK_URL, IMAGE_MODELS, SHOP_CATALOG, VIDEO_MODELS, WEBAPP_BASE_URL, _BOT_TZ,
     bot, dp,
     CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER, claude_provider_name,
 )
@@ -1291,6 +1291,60 @@ async def cmd_refresh_desc(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка обновления описаний: {str(e)[:300]}")
 
 
+@dp.message(F.text.startswith("/apply_desc"), StateFilter("*"))
+async def cmd_apply_desc(message: Message, state: FSMContext):
+    """Применяет подготовленный комплект описаний из desc_data.py БЕЗ Anthropic API.
+    Описание сервиса пишется по ключу; описание тарифа — только при совпадении имени."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("📝 Применяю подготовленные описания (без обращения к API)…")
+    try:
+        from desc_data import DESCRIPTIONS
+        from config import SHOP_CATALOG
+        from db import get_pool
+        _svc_n = 0
+        _plan_n = 0
+        _skipped = []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            for _key, _d in DESCRIPTIONS.items():
+                _scat = SHOP_CATALOG.get(_key)
+                if not _scat:
+                    continue
+                _sd = (_d.get("service") or "").strip()
+                if _sd:
+                    await conn.execute(
+                        "UPDATE bot_shop_items SET service_desc=$1 WHERE key=$2", _sd, _key)
+                    _scat["desc"] = _sd
+                    _svc_n += 1
+                _plans = _d.get("plans") or {}
+                for _i, _p in enumerate(_scat.get("plans", [])):
+                    _pn = _p.get("name", "")
+                    _nd = _plans.get(_pn)
+                    if _nd:
+                        await conn.execute(
+                            "UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3",
+                            _nd, _key, _pn)
+                        _scat["plans"][_i]["desc"] = _nd
+                        _plan_n += 1
+                    else:
+                        if _pn:
+                            _skipped.append(f"{_key}:{_pn}")
+        _tail = ""
+        if _skipped:
+            _tail = ("\n\n<i>Тарифы без совпадения по имени (описание не менял, поправь вручную "
+                     "в админке): " + ", ".join(_skipped[:20]) + ("…" if len(_skipped) > 20 else "") + "</i>")
+        await message.answer(
+            f"✅ <b>Описания применены</b>\n\n"
+            f"Сервисов обновлено: <b>{_svc_n}</b>\n"
+            f"Тарифов обновлено: <b>{_plan_n}</b>\n"
+            f"Тексты уже в боте и в карточках мини-аппки (доллары там дополнительно вычищаются)."
+            + _tail,
+            parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка применения описаний: {str(e)[:300]}")
+
+
 # ─── Антиспам: результат ввода редактирует сообщение-подсказку ──
 async def _adm_remember(cb, state):
     """Запомнить сообщение-панель, чтобы ответ на ввод редактировал его, а не слал новое."""
@@ -2086,20 +2140,51 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
 @dp.message(AdminState.waiting_broadcast)
 async def adm_broadcast_send(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
-    await state.clear()
+    # Запоминаем сообщение и спрашиваем про кнопку под ним
+    await state.update_data(bc_chat=message.chat.id, bc_msg=message.message_id)
+    await state.set_state(AdminState.waiting_broadcast_btn)
+    await message.answer(
+        "🔘 <b>Добавить кнопку под рассылку?</b>\n\n"
+        "Кнопки «Каталог/Claude/ChatGPT» открывают мини-приложение сразу на нужном экране.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Без кнопки", callback_data="bc_go:none")],
+            [InlineKeyboardButton(text="🛒 Каталог", callback_data="bc_go:catalog")],
+            [InlineKeyboardButton(text="⚡ Оформить Claude", callback_data="bc_go:claude"),
+             InlineKeyboardButton(text="✨ Оформить ChatGPT", callback_data="bc_go:chatgpt")],
+            [InlineKeyboardButton(text="🔗 Своя кнопка (текст + ссылка)", callback_data="bc_custom")],
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")],
+        ])
+    )
+
+
+def _bc_button_for(kind: str):
+    """Готовая инлайн-кнопка под рассылку по типу. None — без кнопки."""
+    _base = (WEBAPP_BASE_URL or "").rstrip("/")
+    if kind == "catalog":
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="🛒 Открыть каталог", web_app=WebAppInfo(url=f"{_base}/webapp/shop"))]])
+    if kind == "claude":
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="⚡ Оформить Claude", web_app=WebAppInfo(url=f"{_base}/webapp/shop?svc=claude"))]])
+    if kind == "chatgpt":
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="✨ Оформить ChatGPT", web_app=WebAppInfo(url=f"{_base}/webapp/shop?svc=chatgpt"))]])
+    return None
+
+
+async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Message):
+    """Общая рассылка copy_message всем незаблокированным пользователям."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         users = await conn.fetch("SELECT user_id FROM users WHERE is_blocked=0")
-    sent = 0
-    failed = 0
-    status_msg = await message.answer(f"📢 Рассылка запущена... 0/{len(users)}")
+    sent = failed = 0
+    status_msg = await notify.answer(f"📢 Рассылка запущена... 0/{len(users)}")
     for i, r in enumerate(users):
         uid = r["user_id"]
         try:
-            # copy_message копирует ЛЮБОЕ сообщение: текст, фото, видео, документ —
-            # с форматированием, эмодзи и подписью. Рассылка поддерживает любой формат.
-            await bot.copy_message(chat_id=uid, from_chat_id=message.chat.id,
-                                   message_id=message.message_id)
+            await bot.copy_message(chat_id=uid, from_chat_id=src_chat,
+                                   message_id=src_msg, reply_markup=reply_markup)
             sent += 1
         except Exception:
             failed += 1
@@ -2113,8 +2198,56 @@ async def adm_broadcast_send(message: Message, state: FSMContext):
         f"✅ <b>Рассылка завершена!</b>\n\n"
         f"✅ Отправлено: {sent}\n"
         f"❌ Не доставлено: {failed}",
-        parse_mode="HTML"
-    )
+        parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("bc_go:"), AdminState.waiting_broadcast_btn)
+async def adm_broadcast_go(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    kind = cb.data.split(":", 1)[1]
+    data = await state.get_data()
+    src_chat = data.get("bc_chat"); src_msg = data.get("bc_msg")
+    await state.clear()
+    await cb.answer("Запускаю…")
+    if not src_chat or not src_msg:
+        await cb.message.answer("⛔ Потерялось сообщение рассылки. Начни заново.")
+        return
+    await _do_broadcast(src_chat, src_msg, _bc_button_for(kind), cb.message)
+
+
+@dp.callback_query(F.data == "bc_custom", AdminState.waiting_broadcast_btn)
+async def adm_broadcast_custom(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await state.set_state(AdminState.waiting_broadcast_custom)
+    await cb.message.answer(
+        "🔗 <b>Своя кнопка</b>\n\n"
+        "Пришли одной строкой: <code>Текст кнопки | https://ссылка</code>\n\n"
+        "Пример: <code>Оформить подписку | https://t.me/neirosetkaa_bot</code>",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_broadcast_custom)
+async def adm_broadcast_custom_send(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    raw = (message.text or "").strip()
+    if "|" not in raw:
+        await message.answer("Формат: <code>Текст кнопки | https://ссылка</code>. Попробуй ещё раз.", parse_mode="HTML")
+        return
+    btn_text, url = [x.strip() for x in raw.split("|", 1)]
+    if not btn_text or not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
+        await message.answer("Нужен текст и корректная ссылка (https://…). Попробуй ещё раз.")
+        return
+    data = await state.get_data()
+    src_chat = data.get("bc_chat"); src_msg = data.get("bc_msg")
+    await state.clear()
+    if not src_chat or not src_msg:
+        await message.answer("⛔ Потерялось сообщение рассылки. Начни заново.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=url)]])
+    await _do_broadcast(src_chat, src_msg, kb, message)
 
 
 # ─── Техобслуживание ──────────────────────────────────────

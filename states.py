@@ -65,6 +65,8 @@ class AdminState(StatesGroup):
     waiting_block_id  = State()
     waiting_find_user = State()
     waiting_broadcast = State()
+    waiting_broadcast_btn    = State()   # выбор кнопки под рассылку
+    waiting_broadcast_custom = State()   # ввод своей кнопки «Текст | ссылка»
     waiting_welcome   = State()
     waiting_spend_uid = State()
     # Управление балансами
