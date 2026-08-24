@@ -6,6 +6,9 @@
 <title>Neirosetka — Админ-панель</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.7.0/tabler-icons.min.css"/>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hammerjs/2.0.8/hammer.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
 <style>
 :root{
   --bg:#0d0e12; --surface:#14161c; --card:#1a1d25; --card2:#23262f;
@@ -226,6 +229,13 @@ function loadProfit(per,off,date){
     var t=d.totals,h='';
     var share=d.services.filter(function(s){return s.profit>0}).map(function(s,i){return {label:s.name,val:s.profit,color:[C.pink,C.purple,C.teal,C.amber,C.blue,C.green][i%6]}});
     h+='<div class="block"><div class="mgrid" style="margin:0"><div class="mcard"><div class="mlab">Выручка</div><div class="mval">'+nf(t.rev)+' ₽</div></div><div class="mcard"><div class="mlab">Прибыль · '+t.margin+'%</div><div class="mval pos">+'+nf(t.profit)+' ₽</div></div><div class="mcard"><div class="mlab">Затраты (закуп)</div><div class="mval">'+nf(t.cost)+' ₽</div></div><div class="mcard"><div class="mlab">Комиссия 2%</div><div class="mval neg">−'+nf(t.commission)+' ₽</div></div></div></div>';
+    var _ser=d.series||[];
+    if(_ser.length>1){
+      h+='<div class="block"><h4>📈 Выручка и прибыль по дням '
+        +'<span class="muted" style="font-size:11px;font-weight:400">— тяни / зумь</span> '
+        +'<span onclick="resetProfitZoom()" style="float:right;font-size:11px;color:var(--txt2);cursor:pointer">↺ сброс</span></h4>'
+        +'<div style="height:240px;position:relative"><canvas id="profitChart"></canvas></div></div>';
+    }
     h+='<div class="block"><h4>📊 Маржа и структура</h4><div style="display:flex;align-items:center;gap:18px">'+ring(t.margin,C.green,"маржа")+'<div class="legend">'+(share.length?share.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+s.label+'<b>+'+nf(s.val)+'₽</b></div>'}).join(''):'<span class="muted" style="font-size:12px">нет продаж за период</span>')+'</div></div></div>';
     d.services.forEach(function(s){
       var pls=s.plans.map(function(pp){
@@ -238,8 +248,39 @@ function loadProfit(per,off,date){
     });
     if(d.credits&&d.credits.cnt){h+='<div class="block"><h4>💳 Кредиты · '+d.credits.cnt+' шт</h4><div class="kv"><span class="k">'+nf(d.credits.rev)+' ₽</span><span class="muted">себест. AI не учит.</span></div></div>';}
     el.innerHTML=h;
+    if(_ser.length>1) setTimeout(function(){renderProfitChart(_ser)},0);
   });
 }
+var _profitChart=null;
+function renderProfitChart(series){
+  var cv=document.getElementById('profitChart'); if(!cv||!window.Chart)return;
+  try{ var _zp=window.ChartZoom||window['chartjs-plugin-zoom']; if(_zp&&Chart.register){ Chart.register(_zp); } }catch(e){}
+  if(_profitChart){try{_profitChart.destroy()}catch(e){}}
+  var labels=series.map(function(s){return s.label});
+  var rev=series.map(function(s){return s.rev});
+  var prof=series.map(function(s){return s.profit});
+  _profitChart=new Chart(cv.getContext('2d'),{
+    type:'line',
+    data:{labels:labels,datasets:[
+      {label:'Выручка',data:rev,borderColor:C.blue,backgroundColor:'rgba(59,130,246,.12)',borderWidth:2,fill:true,tension:.3,pointRadius:2},
+      {label:'Прибыль',data:prof,borderColor:C.green,backgroundColor:'rgba(16,185,129,.12)',borderWidth:2,fill:true,tension:.3,pointRadius:2}
+    ]},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{labels:{color:'#9aa0ad',boxWidth:12}},
+        tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+nf(c.parsed.y)+' ₽'}}},
+        zoom:{pan:{enabled:true,mode:'x'},zoom:{wheel:{enabled:true},pinch:{enabled:true},mode:'x'}}
+      },
+      scales:{
+        x:{ticks:{color:'#9aa0ad',maxRotation:0,autoSkip:true,maxTicksLimit:8},grid:{color:'rgba(255,255,255,.05)'}},
+        y:{ticks:{color:'#9aa0ad',callback:function(v){return nf(v)}},grid:{color:'rgba(255,255,255,.05)'}}
+      }
+    }
+  });
+}
+function resetProfitZoom(){ if(_profitChart&&_profitChart.resetZoom){try{_profitChart.resetZoom()}catch(e){}} }
 function profitCosts(){
   setTimeout(loadPrices,0);
   return hdr("Себестоимость и цены","Все сервисы и тарифы")+'<div class="wrap"><div id="cbody"><div class="note">Загружаю…</div></div></div>';

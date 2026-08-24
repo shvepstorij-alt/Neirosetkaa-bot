@@ -409,9 +409,10 @@ async def safe_send_media(
 # Антиспам админ-алертов: одинаковый контекст (клиент+операция) — не чаще 1 раза в 10 мин
 _admin_err_at: dict = {}
 
-async def notify_admin_error(context: str, e: Exception):
+async def notify_admin_error(context: str, e: Exception, prompt: str = ""):
     """Отправляет реальную ошибку админу с деталями + трекинг для алертов.
-    Safety-блокировки - отдельный тип алерта (🟡 вместо 🔴), не считаются как инфра-ошибки."""
+    Safety-блокировки - отдельный тип алерта (🟡 вместо 🔴), не считаются как инфра-ошибки.
+    prompt — проблемный промт клиента (добавляется в алерт вместе с ником)."""
     err_msg = str(e)
     low = err_msg.lower()
 
@@ -450,6 +451,28 @@ async def notify_admin_error(context: str, e: Exception):
         return
     _admin_err_at[context] = _now_ae
 
+    # Ник клиента по uid из контекста + проблемный промт
+    def _esc_ae(_s):
+        return str(_s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    _client_tag = ""
+    try:
+        import re as _re_ae
+        _mm = _re_ae.search(r"uid=(\d+)", context)
+        if _mm:
+            _cuid = int(_mm.group(1))
+            _u = await get_user(_cuid)
+            if _u and _u.get("username"):
+                _client_tag = f"@{_esc_ae(_u['username'])} (<code>{_cuid}</code>)"
+            else:
+                _client_tag = f"<code>{_cuid}</code>"
+    except Exception:
+        _client_tag = ""
+    _extra = ""
+    if _client_tag:
+        _extra += f"\n\n👤 <b>Клиент:</b> {_client_tag}"
+    if prompt:
+        _extra += f"\n📝 <b>Промт:</b> <code>{_esc_ae(prompt)[:600]}</code>"
+
     # Safety - жёлтый алерт, не идёт в счётчик критических ошибок
     if is_safety:
         try:
@@ -457,7 +480,8 @@ async def notify_admin_error(context: str, e: Exception):
                 ADMIN_ID,
                 f"🟡 <b>Промт заблокирован фильтром</b> | {context}\n\n"
                 f"<i>Клиент попробовал нарушить safety. Кредиты возвращены.</i>\n\n"
-                f"<code>{err_msg[:600]}</code>",
+                f"<code>{err_msg[:400]}</code>"
+                f"{_extra}",
                 parse_mode="HTML"
             )
         except Exception:
@@ -466,10 +490,10 @@ async def notify_admin_error(context: str, e: Exception):
 
     # Реальная ошибка - красный алерт + счётчик
     try:
-        # Telegram лимит 4096 символов; оставляем 500 на форматирование
+        # Telegram лимит 4096 символов; оставляем запас на форматирование
         await bot.send_message(
             ADMIN_ID,
-            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{err_msg[:3500]}</code>",
+            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{err_msg[:3000]}</code>{_extra}",
             parse_mode="HTML"
         )
     except Exception:
@@ -2394,9 +2418,67 @@ async def api_admin_profit_handler(request: web.Request) -> web.Response:
         total_rev += credits["rev"]
         com = round(total_rev * 0.02); profit = total_rev - total_cost - com
         margin = round(profit / total_rev * 100) if total_rev else 0
+
+        # ── Ряд по дням для интерактивного графика (выручка + прибыль) ──
+        _days = []
+        _cur_d = since
+        while _cur_d < until:
+            _days.append(_cur_d)
+            _cur_d = _cur_d + _dt_pf.timedelta(days=1)
+        _rev_by = {d: 0 for d in _days}
+        _cost_by = {d: 0 for d in _days}
+        _uc_cache = {}
+        async def _unit_cost(_pack):
+            if _pack in _uc_cache:
+                return _uc_cache[_pack]
+            _pp = (_pack or "").split(":")
+            _kk = _pp[1] if len(_pp) > 1 else ""
+            _ii = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+            _usd2 = float(await get_setting(f"cost_usd:{_kk}:{_ii}", "0") or "0")
+            _val = round(_usd2 * rate) if _usd2 > 0 else 0
+            _uc_cache[_pack] = _val
+            return _val
+        def _dkey(_x):
+            return _x.date() if hasattr(_x, "date") else _x
+        try:
+            async with pool.acquire() as conn2:
+                _srow = await conn2.fetch(
+                    "SELECT date_trunc('day', paid_at) AS d, pack, COUNT(*) AS cnt, COALESCE(SUM(amount_rub),0) AS rev "
+                    "FROM fk_orders WHERE status='paid' AND pack LIKE 'shop:%' AND paid_at>=$1 AND paid_at<$2 "
+                    "GROUP BY d, pack", since, until)
+                _crow2 = await conn2.fetch(
+                    "SELECT date_trunc('day', paid_at) AS d, COALESCE(SUM(amount_rub),0) AS rev "
+                    "FROM fk_orders WHERE status='paid' AND paid_at>=$1 AND paid_at<$2 "
+                    "AND (pack IS NULL OR (pack NOT LIKE 'shop:%' AND pack NOT LIKE 'nsg:%')) GROUP BY d", since, until)
+                _nrow = await conn2.fetch(
+                    "SELECT date_trunc('day', created_at) AS d, COALESCE(SUM(price_rub),0) AS rev, COALESCE(SUM(price_usd),0) AS usd "
+                    "FROM nsgifts_orders WHERE status='fulfilled' AND created_at>=$1 AND created_at<$2 GROUP BY d", since, until)
+            for r in _srow:
+                _dd = _dkey(r["d"])
+                if _dd in _rev_by:
+                    _rev_by[_dd] += int(r["rev"] or 0)
+                    _cost_by[_dd] += (await _unit_cost(r["pack"])) * int(r["cnt"] or 0)
+            for r in _crow2:
+                _dd = _dkey(r["d"])
+                if _dd in _rev_by:
+                    _rev_by[_dd] += int(r["rev"] or 0)
+            for r in _nrow:
+                _dd = _dkey(r["d"])
+                if _dd in _rev_by:
+                    _rev_by[_dd] += int(r["rev"] or 0)
+                    _cost_by[_dd] += round(float(r["usd"] or 0) * rate)
+        except Exception as _se:
+            logging.error(f"profit series: {_se}")
+        _series = []
+        for d in _days:
+            _rv = _rev_by[d]; _ct = _cost_by[d]; _cm = round(_rv * 0.02)
+            _series.append({"date": d.isoformat(), "label": d.strftime("%d.%m"),
+                            "rev": _rv, "profit": _rv - _ct - _cm})
+
         return web.json_response({"ok": True, "services": services, "credits": credits,
                                   "totals": {"rev": total_rev, "cost": total_cost, "commission": com,
-                                             "profit": profit, "margin": margin}, "rate": rate})
+                                             "profit": profit, "margin": margin}, "rate": rate,
+                                  "series": _series})
     except Exception as _e:
         logging.error(f"api_admin_profit: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)

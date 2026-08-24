@@ -351,7 +351,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
             pass
     except Exception as e:
         await img_refund_once(f"exception:{type(e).__name__}")
-        await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e)
+        await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e, prompt=prompt)
         try:
             await cb.message.edit_text(
                 f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
@@ -1100,7 +1100,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 logging.error(f"upload_large_file failed for video: {up_err}")
     except Exception as e:
         await refund_once(f"exception:{type(e).__name__}")
-        await notify_admin_error(f"Генерация видео uid={uid} model={key} dur={duration_sec}s", e)
+        await notify_admin_error(f"Генерация видео uid={uid} model={key} dur={duration_sec}s", e, prompt=prompt)
         try:
             await cb.message.answer(
                 f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
@@ -1863,7 +1863,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
             pass
     except Exception as e:
         await edit_refund_once(f"exception:{type(e).__name__}")
-        await notify_admin_error(f"Редактирование фото uid={uid} model={model_key}", e)
+        await notify_admin_error(f"Редактирование фото uid={uid} model={model_key}", e, prompt=prompt)
         try:
             await wait.edit_text(
                 f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
@@ -2448,7 +2448,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 logging.error(f"upload_large_file anim failed: {up_err}")
     except Exception as e:
         await anim_refund_once(f"exception:{type(e).__name__}")
-        await notify_admin_error(f"Анимация фото uid={uid}", e)
+        await notify_admin_error(f"Анимация фото uid={uid}", e, prompt=prompt)
         try:
             await wait.edit_text(
                 f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
