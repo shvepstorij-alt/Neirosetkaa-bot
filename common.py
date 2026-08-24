@@ -6003,6 +6003,19 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         # Номер платежа В FreeKassa (колонка «Номер» в ЛК) — по нему ищется платёж
         _fk_no = ((db_order_admin or {}).get("fk_intid") or "") if db_order_admin else ""
         _fk_line = f"\U0001f9fe FreeKassa: <code>{_fk_no}</code>\n" if _fk_no else ""
+        _coins_spent = int((db_order_admin or {}).get("coins_spent") or 0)
+        try:
+            _amt_i = int(amount_rub)
+        except Exception:
+            _amt_i = amount_rub
+        if _coins_spent > 0:
+            _amount_block = (f"\U0001f4b5 \u0421\u0411\u041f: <b>{amount_rub}\u20bd</b>\n"
+                             f"\U0001fa99 \u041c\u043e\u043d\u0435\u0442\u043a\u0430\u043c\u0438: <b>{_coins_spent}\u20bd</b>\n"
+                             f"\U0001f4b0 \u0418\u0442\u043e\u0433\u043e: <b>{_amt_i + _coins_spent}\u20bd</b>\n")
+            _method_str = "\U0001fa99 \u041c\u043e\u043d\u0435\u0442\u043a\u0438 + \u0421\u0411\u041f"
+        else:
+            _amount_block = f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount_rub}\u20bd</b>\n"
+            _method_str = "\u0421\u0411\u041f"
 
         if is_shop and pack_info:
             shop_key = pack_info.split(":")[1] if ":" in pack_info else ""
@@ -6017,8 +6030,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 f"\u2705 <b>Заказ оплачен!</b>\n\n"
                 f"\U0001f464 {user_label} (<code>{user_id}</code>)\n"
                 f"\U0001f4e6 {service_name}\n"
-                f"\U0001f4b5 Сумма: <b>{amount_rub}\u20bd</b>\n"
-                f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
+                f"{_amount_block}"
+                f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: {_method_str}\n"
                 f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n"
                 f"{_fk_line}\n"
                 f"\u2705 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u043f\u043b\u0430\u0447\u0435\u043d</b>"
@@ -6027,9 +6040,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             admin_msg = (
                 f"\U0001f4b0 <b>\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0430!</b>\n\n"
                 f"\U0001f464 {user_label} (<code>{user_id}</code>)\n"
-                f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount_rub}\u20bd</b>\n"
+                f"{_amount_block}"
                 f"\U0001f48e \u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432: <b>{credits}</b>\n"
-                f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
+                f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: {_method_str}\n"
                 f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n"
                 f"{_fk_line}\n"
                 f"\u2705 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u043f\u043b\u0430\u0447\u0435\u043d</b>"

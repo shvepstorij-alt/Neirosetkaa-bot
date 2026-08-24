@@ -980,16 +980,25 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
         ])
     )
     try:
-        await bot.send_message(
+        _amsg_cs = await bot.send_message(
             ADMIN_ID,
             f"\U0001fa99 <b>Заказ (монетки + СБП)</b>\n\n"
             f"\U0001f464 @{username} (ID: {uid})\n"
             f"\U0001f4e6 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
             f"\U0001f4b5 СБП: {rest}\u20bd\n"
-            f"\U0001f194 Заказ: <code>{order_id}</code>",
+            f"\U0001f194 Заказ: <code>{order_id}</code>\n\n"
+            f"\u23f3 <b>Статус: ожидает оплаты</b>",
             parse_mode="HTML"
         )
+        try:
+            _pool_cs2 = await get_pool()
+            async with _pool_cs2.acquire() as _c_cs:
+                await _c_cs.execute(
+                    "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
+                    _amsg_cs.message_id, order_id)
+        except Exception:
+            pass
     except Exception:
         pass
     await cb.answer()
