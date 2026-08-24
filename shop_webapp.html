@@ -222,8 +222,24 @@ function _tileBg2(key, logo){ if(logo && String(logo).indexOf('pnglogo')>=0) ret
 function _isAppStore(key, name){ var s=((key||'')+' '+(name||'')).toLowerCase().replace(/[^a-z]/g,''); return s.indexOf('appstore')>=0||s.indexOf('icloud')>=0; }
 function _minPrice(c){ var m=0; (c.plans||[]).forEach(function(p){ if(!m||p.price<m)m=p.price; }); return m; }
 
+function _getInitData(){
+  // 1) штатный источник
+  try{ if(tg && tg.initData) return tg.initData; }catch(e){}
+  try{ if(window.Telegram && Telegram.WebApp && Telegram.WebApp.initData) return Telegram.WebApp.initData; }catch(e){}
+  // 2) фолбэк: данные запуска лежат в URL-хэше (#tgWebAppData=...) или query
+  try{
+    var h=location.hash||''; if(h.charAt(0)==='#') h=h.slice(1);
+    var d=new URLSearchParams(h).get('tgWebAppData'); if(d) return d;
+  }catch(e){}
+  try{
+    var d2=new URLSearchParams(location.search||'').get('tgWebAppData'); if(d2) return d2;
+  }catch(e){}
+  // 3) кэш, сохранённый при загрузке
+  try{ if(window._initDataCache) return window._initDataCache; }catch(e){}
+  return '';
+}
 function _api(path, body){
-  body = body||{}; try{ body.initData=(tg&&tg.initData)?tg.initData:''; }catch(e){ body.initData=''; }
+  body = body||{}; try{ body.initData=_getInitData(); }catch(e){ body.initData=''; }
   return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});
 }
@@ -794,7 +810,12 @@ function payVia(el,key,idx,method){
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
   _api('/api/shop/pay',{key:key,planIdx:idx,method:method}).then(function(d){
     if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
-    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':((d&&d.error)?('Ошибка: '+d.error):'Не получилось. Попробуй ещё раз');
+    else{
+      var _err=(d&&d.error)||'';
+      var m;
+      if(_err.indexOf('auth')===0){ m='Приложение открылось без данных Telegram. Полностью закрой мини-приложение и открой заново через кнопку «🛒 Каталог» в боте.'; }
+      else if(_err==='card_failed'){ m='Картой не удалось — попробуй СБП'; }
+      else { m=_err?('Ошибка: '+_err):'Не получилось. Попробуй ещё раз'; }
       row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'; }
   });
 }
@@ -886,7 +907,7 @@ function doActivate(){
     if(tok.indexOf('eyJ')!==0||tok.length<100){ res.innerHTML='<div class="pm-err">Токен не найден. Скопируй весь текст со страницы chatgpt.com/api/auth/session.</div>'; return; }
     _actBusy(true);
     res.innerHTML='<div class="pm-wait">✨ Активирую ChatGPT… обычно 1–2 минуты, не закрывай экран.</div>';
-    _api('/api/activate-chatgpt',{token:tok,raw_token:raw,code:a.code,init_data:(tg?tg.initData:''),force:window._actForce?1:0}).then(function(d){
+    _api('/api/activate-chatgpt',{token:tok,raw_token:raw,code:a.code,init_data:_getInitData(),force:window._actForce?1:0}).then(function(d){
       if(d&&d.job_id){ _actPollGpt(d.job_id,0); }
       else { res.innerHTML='<div class="pm-err">'+_h((d&&d.error)||'Не удалось запустить активацию.')+'</div>'; _actBusy(false); }
     }).catch(function(){ res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; _actBusy(false); });
@@ -895,7 +916,7 @@ function doActivate(){
     if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(org)){ res.innerHTML='<div class="pm-err">Неверный формат. Organization ID — UUID вида xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.</div>'; return; }
     _actBusy(true);
     res.innerHTML='<div class="pm-wait">⚡ Активирую Claude… обычно 1–2 минуты (иногда до 5), не закрывай экран.</div>';
-    _api('/api/activate-claude',{org_id:org,code:a.code,init_data:(tg?tg.initData:''),force:window._actForce?1:0}).then(function(d){
+    _api('/api/activate-claude',{org_id:org,code:a.code,init_data:_getInitData(),force:window._actForce?1:0}).then(function(d){
       if(d&&d.order_id){ _actPollClaude(d.order_id,0); }
       else { res.innerHTML='<div class="pm-err">'+_h((d&&d.error)||'Не удалось запустить активацию.')+'</div>'; _actBusy(false); }
     }).catch(function(){ res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; _actBusy(false); });
@@ -999,8 +1020,11 @@ function _kbHide(){ try{var a=document.activeElement;if(a&&a.blur)a.blur();}catc
 function _min(){ _kbHide(); try{ if(tg&&typeof tg.minimize==='function'){tg.minimize();return;} }catch(e){} }
 
 function _init(){
+  // Захватываем данные запуска из хэша СРАЗУ (Telegram может очистить хэш позже)
+  try{ var _id0=_getInitData(); if(_id0) window._initDataCache=_id0; }catch(e){}
   tg=(window.Telegram&&window.Telegram.WebApp)?window.Telegram.WebApp:{ready:function(){},expand:function(){},initData:''};
   try{ tg.ready(); }catch(e){}
+  try{ var _id1=_getInitData(); if(_id1) window._initDataCache=_id1; }catch(e){}
   try{ tg.expand(); }catch(e){}
   try{ if(tg.enableClosingConfirmation) tg.enableClosingConfirmation(); }catch(e){}
   try{ if(tg.colorScheme==='light') document.documentElement.setAttribute('data-theme','light'); }catch(e){}
