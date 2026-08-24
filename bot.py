@@ -35,7 +35,7 @@ from keyboards import (
 )
 from common import (
     _ensure_playwright_browser, claude_with_search, setup_webhook_server, process_linkpay_link,
-    load_miniapp_toggles,
+    load_miniapp_toggles, _assistant_enabled, ASSISTANT_OFF_TEXT, _assistant_off_kb,
 )
 from background import (
     _activation_jobs_cleanup_loop, _claude_job_results_cleanup_loop, _memory_cleanup_loop, auto_recover_lost_videos_loop, claude_codes_cleanup_loop, cleanup_stale_generations_loop,
@@ -78,7 +78,8 @@ bot.session.middleware(PremiumEmojiMiddleware())
     ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
     ~F.text.startswith("/recover") & ~F.text.startswith("/emoji") & ~F.text.startswith("/shopkeys") &
     ~F.text.startswith("/nsg_") & ~F.text.startswith("/refresh_desc") &
-    ~F.text.startswith("/subs_restore")
+    ~F.text.startswith("/apply_desc") &
+    ~F.text.startswith("/subs_restore") & ~F.text.startswith("/release_codes")
 )
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
@@ -98,6 +99,11 @@ async def handle_message(message: Message, state: FSMContext):
             return
     except Exception:
         pass
+
+    # AI-Консультант выключен админом — показываем заглушку с каталогом/контактом
+    if not await _assistant_enabled():
+        await message.answer(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
+        return
 
     # Валидация сообщения для консультанта
     ok_v, err = validate_chat_prompt(message.text)

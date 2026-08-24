@@ -750,7 +750,41 @@ async def _send_long_reply(message_or_cb, text: str, reply_markup=None,
 _conv_loaded: set = set()
 
 
+ASSISTANT_OFF_TEXT = (
+    "🔧 <b>AI-Консультант временно недоступен</b>\n\n"
+    "Сейчас чат с ассистентом на паузе. Уточнить информацию по сервисам и оформить "
+    "подписку можно в <b>Каталоге</b>, а по срочным вопросам пиши напрямую — помогу лично 🙌"
+)
+
+
+async def _assistant_enabled() -> bool:
+    """AI-Консультант включён? (настройка assistant_enabled, по умолчанию — да)."""
+    try:
+        return (await get_setting("assistant_enabled", "1") or "1") == "1"
+    except Exception:
+        return True
+
+
+def _assistant_off_kb():
+    """Клавиатура под сообщением «консультант выключен»: Каталог + написать Александру."""
+    _rows = []
+    try:
+        if WEBAPP_BASE_URL:
+            from aiogram.types import WebAppInfo as _WAI
+            _rows.append([InlineKeyboardButton(
+                text="🛒 Открыть каталог",
+                web_app=_WAI(url=WEBAPP_BASE_URL.rstrip("/") + "/webapp/shop"))])
+    except Exception:
+        pass
+    _rows.append([InlineKeyboardButton(text="✍️ Написать Александру",
+                                       url=f"https://t.me/{PERSONAL_USERNAME}")])
+    return InlineKeyboardMarkup(inline_keyboard=_rows)
+
+
 async def claude_with_search(uid: int, user_text: str) -> str:
+    # Ассистент выключен админом — не дёргаем API и не шлём алерты
+    if not await _assistant_enabled():
+        return ASSISTANT_OFF_TEXT
     conv = _get_conv(uid)
     # Подтягиваем историю из БД один раз за процесс (переживает рестарт/деплой)
     if uid not in _conv_loaded:

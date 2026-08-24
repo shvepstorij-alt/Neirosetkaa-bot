@@ -31,10 +31,19 @@ from keyboards import (
 )
 from common import (
     _send_long_reply, claude_with_search,
+    _assistant_enabled, ASSISTANT_OFF_TEXT, _assistant_off_kb,
 )
 
 @dp.callback_query(F.data == "menu_chat")
 async def menu_chat(cb: CallbackQuery, state: FSMContext):
+    if not await _assistant_enabled():
+        await state.clear()
+        try:
+            await cb.message.edit_text(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
+        except Exception:
+            await cb.message.answer(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
+        await cb.answer()
+        return
     await state.set_state(ChatState.chatting)
     await cb.message.edit_text(
         "💬 <b>AI-Консультант</b>\n\n"
@@ -70,6 +79,14 @@ async def chat_presets_again(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "chat_free_question")
 async def chat_free_question(cb: CallbackQuery, state: FSMContext):
     """Клиент хочет задать свой вопрос - просим его написать."""
+    if not await _assistant_enabled():
+        await state.clear()
+        try:
+            await cb.message.edit_text(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
+        except Exception:
+            await cb.message.answer(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
+        await cb.answer()
+        return
     await state.set_state(ChatState.chatting)
     try:
         await cb.message.edit_text(
@@ -104,6 +121,15 @@ async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
     preset_key = cb.data.split(":", 1)[1]
     preset_message = CHAT_PRESETS.get(preset_key)
     if not preset_message:
+        await cb.answer()
+        return
+
+    if not await _assistant_enabled():
+        await state.clear()
+        try:
+            await cb.message.edit_text(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
+        except Exception:
+            await cb.message.answer(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
         await cb.answer()
         return
 
@@ -164,6 +190,10 @@ async def chat_message(message: Message, state: FSMContext):
         return
     # Команды не перехватываем - передаём дальше
     if message.text.startswith("/"):
+        return
+    if not await _assistant_enabled():
+        await state.clear()
+        await message.answer(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
         return
     await bot.send_chat_action(message.chat.id, "typing")
     uid = message.from_user.id

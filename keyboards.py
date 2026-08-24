@@ -413,6 +413,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="Приветствие",         callback_data="adm_welcome",        icon_custom_emoji_id="5190859184312167965"),
          InlineKeyboardButton(text="Рассылка",            callback_data="adm_broadcast",      icon_custom_emoji_id="5907027384439148391")],
         [InlineKeyboardButton(text="Техобслуживание",     callback_data="adm_maintenance",    icon_custom_emoji_id="5458865216597012027")],
+        [InlineKeyboardButton(text="🤖 AI-Консультант (вкл/выкл)", callback_data="adm_assistant")],
         [InlineKeyboardButton(text="ChatGPT Mini App",    callback_data="adm_gpt_webapp", **_gpt)],
         [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
         [InlineKeyboardButton(text="Perplexity Mini App", callback_data="adm_perplexity_webapp", **_px)],

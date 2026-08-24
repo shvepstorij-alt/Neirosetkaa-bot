@@ -2275,6 +2275,52 @@ async def adm_maintenance(cb: CallbackQuery):
         await cb.answer()
 
 
+# ─── AI-Консультант: включение/выключение ─────────────────
+
+def _kb_assistant(on: bool):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=("🔴 Выключить консультанта" if on else "🟢 Включить консультанта"),
+            callback_data="adm_assistant_toggle")],
+        [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
+    ])
+
+
+async def _render_assistant(msg):
+    on = (await get_setting("assistant_enabled", "1") or "1") == "1"
+    status = "🟢 <b>ВКЛЮЧЁН</b>" if on else "🔴 <b>ВЫКЛЮЧЕН</b>"
+    txt = (
+        f"🤖 <b>AI-Консультант</b>\n\n"
+        f"Статус: {status}\n\n"
+        + ("Клиенты общаются с ассистентом как обычно."
+           if on else
+           "Клиентам приходит сообщение, что чат на паузе, с кнопками «Каталог» и «Написать Александру». "
+           "Алерты о сбоях API тебе <b>не приходят</b>, пока выключен.")
+    )
+    try:
+        await msg.edit_text(txt, parse_mode="HTML", reply_markup=_kb_assistant(on))
+    except Exception:
+        await msg.answer(txt, parse_mode="HTML", reply_markup=_kb_assistant(on))
+
+
+@dp.callback_query(F.data == "adm_assistant")
+async def adm_assistant(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    await _render_assistant(cb.message)
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_assistant_toggle")
+async def adm_assistant_toggle(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    cur = (await get_setting("assistant_enabled", "1") or "1") == "1"
+    await set_setting("assistant_enabled", "0" if cur else "1")
+    await cb.answer("Консультант выключен" if cur else "Консультант включён")
+    await _render_assistant(cb.message)
+
+
 # ─── Кнопка "назад к панели" ──────────────────────────────
 
 # adm_back обработчик выше (adm_back_to_panel)
