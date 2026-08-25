@@ -253,6 +253,8 @@ function _api(path, body){
   return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});
 }
+function _track(ev){ try{ var b={ev:ev}; b.initData=_getInitData();
+  fetch('/api/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),keepalive:true}).catch(function(){}); }catch(e){} }
 
 /* ─── Баннеры ─── */
 function _hex2rgb(h){ h=(h||'').replace('#',''); if(h.length===3){h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];} var n=parseInt(h,16); return [(n>>16)&255,(n>>8)&255,n&255]; }
@@ -306,6 +308,7 @@ function renderBanners(){
 }
 function bannerTap(i){
   var b=(window.__BANNERS__||[])[i]; if(!b) return;
+  try{ _track('banner:'+(b.id!=null?b.id:i)); }catch(e){}
   if(b.act==='svc' && b.val){ openCard(b.val); }
   else if(b.act==='cat' && b.val){ setCat(b.val); window.scrollTo(0,0); }
   else if(b.act==='url' && b.val){ try{ if(tg&&tg.openLink){ tg.openLink(b.val); return; } }catch(e){} try{ window.open(b.val,'_blank'); }catch(e){} }
@@ -324,7 +327,7 @@ function renderChips(){
     return '<div class="chip'+(_curCat===c[0]?' on':'')+'" onclick="setCat(\''+c[0]+'\')">'+c[1]+'</div>';
   }).join('');
 }
-function setCat(c){ _curCat=c; renderChips(); renderGrid(); }
+function setCat(c){ try{ _track('chip:'+c); }catch(e){} _curCat=c; renderChips(); renderGrid(); }
 function _servicesFor(cat){
   var keys;
   if(cat==='*'){ keys=Object.keys(CATALOG); }
@@ -347,6 +350,7 @@ function renderGrid(){
 
 /* ─── Карточка сервиса ─── */
 function switchTab(which){
+  try{ _track('tab:'+which); }catch(e){}
   var tb=document.getElementById('tabbar'); if(tb) tb.classList.remove('hidden');
   document.getElementById('card').classList.remove('active');
   ['home','gen','cabinet'].forEach(function(id){var e=document.getElementById(id);if(e)e.classList.remove('active');});
@@ -441,7 +445,7 @@ function _dlUri(){
   try{ var a=document.createElement('a'); a.href=uri; a.download='neirosetka.jpg'; document.body.appendChild(a); a.click(); a.remove(); return; }catch(e){}
   try{ if(tg&&tg.openLink){ tg.openLink(uri); } }catch(e){}
 }
-function genMode(m){ window._genMode=m; renderGen(); }
+function genMode(m){ try{ _track('gen:'+m); }catch(e){} window._genMode=m; renderGen(); }
 function _genSoon(b, m){
   var names={video:'🎬 Видео',anim:'✨ Анимация',edit:'🖌 Редактирование фото'};
   b.innerHTML='<div class="block" style="text-align:center;padding:26px 14px"><div style="font-size:44px">🛠</div>'
@@ -825,6 +829,7 @@ function _copyRef(){
   if(btn){ var o=btn.textContent; btn.textContent='Скопировано ✓'; setTimeout(function(){btn.textContent=o;},1500); }
 }
 function openCard(key){
+  try{ _track('card:'+key); }catch(e){}
   var c=CATALOG[key]; var nm=(c&&c.name)||key;
   if(_isAppStore(key,nm)){ openAppstore(); return; }
   var body=document.getElementById('card-body'); if(!body||!c) return;
@@ -848,6 +853,7 @@ function chooseMethod(btn,key,idx){
   btn.parentNode.replaceChild(w,btn);
 }
 function payVia(el,key,idx,method){
+  try{ _track('pay:'+key+':'+idx); }catch(e){}
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
   _api('/api/shop/pay',{key:key,planIdx:idx,method:method}).then(function(d){
     if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
@@ -1084,6 +1090,7 @@ function _init(){
   CATALOG=window.__CATALOG__||{}; CATS=window.__CATEGORIES__||[]; RECS=window.__RECS__||[];
   BOT_USERNAME=window.__BOT__||BOT_USERNAME;
   renderShopHead(); renderBanners(); renderChips(); renderGrid();
+  try{ _track('view'); }catch(e){}
   // Deep-link: открыть сразу карточку сервиса (?svc=key или startapp=svc_key)
   try{
     var _svc='';

@@ -151,7 +151,7 @@ function home(){
   var _bysvc=(ov.byService&&ov.byService.length?ov.byService:[{label:"ChatGPT",val:39650},{label:"Claude",val:34512},{label:"App Store",val:5200},{label:"Perplexity",val:1990}]).map(function(x,i){return {label:x.label,val:x.val,color:_pal[i%_pal.length]}});
   var _wvals=_week.map(function(x){return (x&&x.value!=null)?x.value:x});var _wmx=Math.max.apply(0,_wvals)||1;var _wksum=_wvals.reduce(function(a,b){return a+(b||0)},0);
   var groups=[
-   ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
+   ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["🔥","Аналитика Каталога","Аналитика Каталога"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
@@ -686,6 +686,61 @@ function _shSave(){
     if(d&&d.ok){toast('Сохранено ✅ (обнови Каталог)');window._sh=d;window._shImg=d.img||'';window._shColor=d.color||'';window._shPos=d.pos||'left';window._shSize=d.size||56;_shRender();}
     else{toast(d&&d.error==='img_too_big'?'Фото слишком большое':'Ошибка');}
   });
+}
+
+/* Аналитика Каталога + тепловая карта вовлечённости */
+SCREENS["Аналитика Каталога"]=function(){
+  if(window._caPer===undefined)window._caPer='month';
+  setTimeout(_caLoad,30);
+  var seg='<div class="seg">'+[['week','7 дней'],['month','30 дней']].map(function(x){return '<button class="'+((window._caPer||'month')===x[0]?'on':'')+'" onclick="window._caPer=\''+x[0]+'\';open2(\'Аналитика Каталога\')">'+x[1]+'</button>';}).join('')+'</div>';
+  return hdr("Аналитика Каталога","что смотрят и на что жмут")+'<div class="wrap">'+seg+'<div id="cabody"><div class="note">Загружаю…</div></div></div>';
+};
+function _caLoad(){api('/api/admin/catalog-analytics',{period:window._caPer||'month'}).then(function(d){var el=document.getElementById('cabody');if(!el)return;if(!d||!d.ok){el.innerHTML='<div class="note">Нет данных или ошибка.</div>';return;}window._ca=d;_caRender();});}
+function _heatColor(t){t=Math.max(0,Math.min(1,t));var st=[[45,90,160],[16,185,129],[240,180,41],[240,97,122]];var seg=t*(st.length-1);var i=Math.floor(seg);if(i>=st.length-1)return 'rgb('+st[st.length-1].join(',')+')';var f=seg-i,a=st[i],b=st[i+1];return 'rgb('+Math.round(a[0]+(b[0]-a[0])*f)+','+Math.round(a[1]+(b[1]-a[1])*f)+','+Math.round(a[2]+(b[2]-a[2])*f)+')';}
+function _caBars(arr,labelMap){
+  if(!arr||!arr.length)return '<div class="note">Нет данных.</div>';
+  var mx=Math.max.apply(0,arr.map(function(x){return x.taps}))||1;
+  return arr.slice(0,10).map(function(x){var w=Math.round(x.taps/mx*100);var lab=labelMap?labelMap(x.key):x.key;
+    return '<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px"><span>'+nsgEsc(lab)+'</span><b>'+nf(x.taps)+'</b></div><div style="height:8px;border-radius:6px;background:var(--card2)"><div style="height:8px;border-radius:6px;width:'+w+'%;background:var(--acc,#37c98a)"></div></div></div>';
+  }).join('');
+}
+function _caRender(){
+  var d=window._ca||{};var el=document.getElementById('cabody');if(!el)return;
+  var t=d.totals||{};
+  var h='<div class="mgrid"><div class="mcard"><div class="mlab">Открытий Каталога</div><div class="mval">'+nf(t.views||0)+'</div></div>'
+    +'<div class="mcard"><div class="mlab">Уник. посетителей</div><div class="mval">'+nf(t.users||0)+'</div></div>'
+    +'<div class="mcard"><div class="mlab">Открыто карточек</div><div class="mval">'+nf(t.cards||0)+'</div></div>'
+    +'<div class="mcard"><div class="mlab">Клики «Оплатить»</div><div class="mval">'+nf(t.pays||0)+'</div></div></div>';
+  // Тепловая карта сервисов (по открытиям карточек)
+  var svc=d.services||[];
+  var mxo=Math.max.apply(0,svc.map(function(s){return s.opens}))||1;
+  h+='<div class="block"><h4>🔥 Тепловая карта сервисов</h4><div class="note" style="margin-top:0">Цвет = как часто открывают карточку (синий → зелёный → жёлтый → красный).</div>';
+  if(!svc.length){h+='<div class="note">Пока нет данных о просмотрах.</div>';}
+  else{
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">';
+    svc.forEach(function(s){var t2=s.opens/mxo;var col=_heatColor(t2);
+      h+='<div style="border-radius:14px;padding:11px 12px;background:'+col+';color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.3)">'
+        +'<div style="font-weight:800;font-size:14px;text-shadow:0 1px 3px rgba(0,0,0,.4)">'+nsgEsc(s.name)+'</div>'
+        +'<div style="font-size:11.5px;opacity:.95;margin-top:4px;text-shadow:0 1px 2px rgba(0,0,0,.4)">👁 '+nf(s.opens)+' · 💳 '+nf(s.pays)+' · ✅ '+nf(s.paid)+'</div></div>';
+    });
+    h+='</div><div class="note" style="margin-top:8px">👁 открытий карточки · 💳 кликов «оплатить» · ✅ реально оплачено.</div>';
+  }
+  h+='</div>';
+  // Воронка по сервисам
+  if(svc.length){
+    h+='<div class="block"><h4>🧭 Воронка: открыли → оплатить → купили</h4>';
+    svc.slice(0,12).forEach(function(s){
+      var conv=(s.opens>0)?Math.round(s.paid/s.opens*100):0;
+      h+='<div class="kv"><span class="k">'+nsgEsc(s.name)+'</span><span>'+nf(s.opens)+' → '+nf(s.pays)+' → <b class="pos">'+nf(s.paid)+'</b>'+(s.opens>0?(' · '+conv+'%'):'')+'</span></div>';
+    });
+    h+='</div>';
+  }
+  // Категории / вкладки / генерации / баннеры
+  h+='<div class="block"><h4>🗂 Категории (клики по фильтрам)</h4>'+_caBars(d.cats,function(k){return k==='*'?'Все':(k==='other'?'Другое':('Категория '+k));})+'</div>';
+  h+='<div class="block"><h4>📱 Вкладки</h4>'+_caBars(d.tabs,function(k){return {catalog:'🛍 Каталог',gen:'🎨 Создать',cabinet:'👤 Кабинет'}[k]||k;})+'</div>';
+  h+='<div class="block"><h4>🎨 Разделы «Создать»</h4>'+_caBars(d.gens,function(k){return {photo:'📷 Фото',video:'🎬 Видео',anim:'✨ Анимация',edit:'🖌 Редактирование',hist:'🖼 История'}[k]||k;})+'</div>';
+  if(d.banners&&d.banners.length){h+='<div class="block"><h4>📢 Баннеры</h4>'+_caBars(d.banners,function(k){return 'Баннер '+k;})+'</div>';}
+  el.innerHTML=h;
 }
 
 /* Логотипы сервисов — загрузка/удаление */

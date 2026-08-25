@@ -2367,6 +2367,88 @@ def _admin_uid_from_body(body) -> "int | None":
     return _verify_tg_init_data(init_data)
 
 
+async def api_admin_catalog_analytics_handler(request: web.Request) -> web.Response:
+    """Аналитика Каталога + данные для тепловой карты (по элементам). Admin-only."""
+    import datetime as _dt_ca
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _pd = str(body.get("period") or "month")
+        _days = 7 if _pd == "week" else (1 if _pd == "day" else 30)
+        # events.created_at — TIMESTAMP без tz (NOW() в локали сервера), сравниваем наивным временем
+        _since = _dt_ca.datetime.now() - _dt_ca.timedelta(days=_days)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            _rows = await conn.fetch(
+                "SELECT data, COUNT(*) AS c, COUNT(DISTINCT user_id) AS u "
+                "FROM events WHERE kind='cat' AND created_at>=$1 AND data IS NOT NULL "
+                "GROUP BY data", _since)
+            _views = await conn.fetchrow(
+                "SELECT COUNT(*) AS c, COUNT(DISTINCT user_id) AS u FROM events "
+                "WHERE kind='cat' AND data LIKE 'view%' AND created_at>=$1", _since)
+            # реальные оплаченные заказы по сервисам за период
+            _paid = await conn.fetch(
+                "SELECT pack, COUNT(*) AS c FROM fk_orders WHERE status='paid' AND pack LIKE 'shop:%' "
+                "AND paid_at>=$1 GROUP BY pack", _since)
+        # агрегируем по префиксам
+        _svc = {}      # key -> {opens, pays}
+        _cats = {}     # cat -> taps
+        _tabs = {}     # tab -> taps
+        _gens = {}     # mode -> taps
+        _banners = {}  # id -> taps
+        _sum = {"cards": 0, "pays": 0, "gens": 0}
+        for r in _rows:
+            _d = r["data"] or ""; _c = int(r["c"] or 0)
+            _p = _d.split(":")
+            _pref = _p[0]; _val = _p[1] if len(_p) > 1 else ""
+            if _pref == "card" and _val:
+                _svc.setdefault(_val, {"opens": 0, "pays": 0})["opens"] += _c; _sum["cards"] += _c
+            elif _pref == "pay" and _val:
+                _svc.setdefault(_val, {"opens": 0, "pays": 0})["pays"] += _c; _sum["pays"] += _c
+            elif _pref == "chip" and _val:
+                _cats[_val] = _cats.get(_val, 0) + _c
+            elif _pref == "tab" and _val:
+                _tabs[_val] = _tabs.get(_val, 0) + _c
+            elif _pref == "gen" and _val:
+                _gens[_val] = _gens.get(_val, 0) + _c; _sum["gens"] += _c
+            elif _pref == "banner" and _val:
+                _banners[_val] = _banners.get(_val, 0) + _c
+        _paid_by = {}
+        for r in _paid:
+            _pp = (r["pack"] or "").split(":")
+            _k = _pp[1] if len(_pp) > 1 else ""
+            if _k:
+                _paid_by[_k] = _paid_by.get(_k, 0) + int(r["c"] or 0)
+        # собираем сервисы (все, что встречались + все оплаченные)
+        _keys = set(_svc.keys()) | set(_paid_by.keys())
+        _services = []
+        for _k in _keys:
+            _sc = SHOP_CATALOG.get(_k, {}) or {}
+            _services.append({
+                "key": _k, "name": _sc.get("name", _k),
+                "opens": _svc.get(_k, {}).get("opens", 0),
+                "pays": _svc.get(_k, {}).get("pays", 0),
+                "paid": _paid_by.get(_k, 0),
+            })
+        _services.sort(key=lambda x: -(x["opens"] + x["pays"] + x["paid"]))
+        _mk = lambda dct: [{"key": k, "taps": v} for k, v in sorted(dct.items(), key=lambda x: -x[1])]
+        return web.json_response({
+            "ok": True, "period": _pd,
+            "totals": {"views": int((_views or {})["c"] or 0) if _views else 0,
+                       "users": int((_views or {})["u"] or 0) if _views else 0,
+                       "cards": _sum["cards"], "pays": _sum["pays"], "gens": _sum["gens"]},
+            "services": _services,
+            "cats": _mk(_cats), "tabs": _mk(_tabs), "gens": _mk(_gens), "banners": _mk(_banners),
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_catalog_analytics: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
 async def api_admin_shophead_handler(request: web.Request) -> web.Response:
     """Шапка Каталога (заголовок/подзаголовок/эмодзи/лого). Чтение и сохранение. Admin-only."""
     try:
@@ -6517,6 +6599,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/overview", api_admin_overview_handler)
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)
     app.router.add_post("/api/admin/shophead", api_admin_shophead_handler)
+    app.router.add_post("/api/admin/catalog-analytics", api_admin_catalog_analytics_handler)
+    app.router.add_post("/api/track", api_track_handler)
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
@@ -9364,6 +9448,31 @@ async def api_gen_hist_handler(request: web.Request) -> web.Response:
     except Exception as _e:
         logging.error(f"api_gen_hist: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_track_handler(request: web.Request) -> web.Response:
+    """Трекинг событий Каталога для аналитики/тепловой карты. Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False}, status=403)
+        import re as _re_tk
+        _ev = str(body.get("ev", "")).strip()[:64]
+        # whitelisted prefixes only
+        if not _re_tk.match(r"^(view|card|chip|tab|pay|gen|banner):?[a-zA-Z0-9_.:\- ]{0,48}$", _ev):
+            return web.json_response({"ok": False}, status=400)
+        try:
+            from db import log_event as _le
+            await _le(int(uid), "cat", _ev)
+        except Exception:
+            pass
+        return web.json_response({"ok": True})
+    except Exception:
+        return web.json_response({"ok": False}, status=500)
 
 
 async def api_order_status_handler(request: web.Request) -> web.Response:
