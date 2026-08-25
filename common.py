@@ -2235,11 +2235,14 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                 "sub": (await get_setting("shop_head_sub", "") or "Подписки на ИИ-сервисы и пополнение App Store"),
                 "emoji": (await get_setting("shop_head_emoji", "") or "🛍"),
                 "img": (await get_setting("shop_head_img", "") or ""),
+                "color": (await get_setting("shop_head_color", "") or ""),
+                "pos": (await get_setting("shop_head_pos", "") or "left"),
+                "size": int(await get_setting("shop_head_size", "") or "56"),
             }
         except Exception:
             _shophead = {"title": "Neirosetka — Александр ИИ",
                          "sub": "Подписки на ИИ-сервисы и пополнение App Store",
-                         "emoji": "🛍", "img": ""}
+                         "emoji": "🛍", "img": "", "color": "", "pos": "left", "size": 56}
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
@@ -2386,12 +2389,30 @@ async def api_admin_shophead_handler(request: web.Request) -> web.Response:
             await set_setting("shop_head_sub", _s)
             await set_setting("shop_head_emoji", _e)
             await set_setting("shop_head_img", _im)
+            _col = str(body.get("color", "")).strip()
+            import re as _re_sh
+            if _col and not _re_sh.match(r"^#[0-9a-fA-F]{6}$", _col):
+                _col = ""
+            await set_setting("shop_head_color", _col)
+            _pos = str(body.get("pos", "left")).strip()
+            if _pos not in ("left", "right", "bg"):
+                _pos = "left"
+            await set_setting("shop_head_pos", _pos)
+            try:
+                _sz = int(body.get("size", 56))
+            except Exception:
+                _sz = 56
+            _sz = max(40, min(96, _sz))
+            await set_setting("shop_head_size", str(_sz))
         return web.json_response({
             "ok": True,
             "title": (await get_setting("shop_head_title", "") or "Neirosetka — Александр ИИ"),
             "sub": (await get_setting("shop_head_sub", "") or "Подписки на ИИ-сервисы и пополнение App Store"),
             "emoji": (await get_setting("shop_head_emoji", "") or "🛍"),
             "img": (await get_setting("shop_head_img", "") or ""),
+            "color": (await get_setting("shop_head_color", "") or ""),
+            "pos": (await get_setting("shop_head_pos", "") or "left"),
+            "size": int(await get_setting("shop_head_size", "") or "56"),
         })
     except Exception as _e:
         logging.error(f"api_admin_shophead: {_e}")

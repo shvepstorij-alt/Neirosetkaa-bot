@@ -44,6 +44,10 @@
   .sh-emoji{font-size:40px;line-height:1;flex:none}
   .sh-title{font-size:25px;font-weight:900;line-height:1.08;letter-spacing:.2px;background:linear-gradient(92deg,var(--green),#5eead4 60%,#7dd3fc);-webkit-background-clip:text;background-clip:text;color:transparent}
   .sh-sub{color:var(--text2);font-size:13px;margin-top:4px}
+  .sh-title-white{background:none!important;color:#fff!important;-webkit-text-fill-color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.6)}
+  .sh-bg{border-radius:16px;overflow:hidden;position:relative;min-height:118px;background-size:cover;background-position:center;display:flex;align-items:flex-end;padding:14px}
+  .sh-bg-shade{position:absolute;inset:0;background:linear-gradient(0deg,rgba(0,0,0,.72),rgba(0,0,0,.15) 70%,rgba(0,0,0,.05))}
+  .sh-bg-in{position:relative;z-index:1}
 
   /* Категории (чипсы) */
   .chips{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 12px;scrollbar-width:none}
@@ -211,6 +215,7 @@ function setAccent(c){
   _applyAccent(c);
   var els=document.querySelectorAll('.acc');
   for(var i=0;i<els.length;i++){ els[i].classList.toggle('on', els[i].getAttribute('data-c')===c); }
+  try{ renderShopHead(); }catch(e){}
 }
 
 function _esc1(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
@@ -250,14 +255,36 @@ function _api(path, body){
 }
 
 /* ─── Баннеры ─── */
+function _hex2rgb(h){ h=(h||'').replace('#',''); if(h.length===3){h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];} var n=parseInt(h,16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+function _lighten(hex,amt){ try{ var c=_hex2rgb(hex); var f=function(v){return Math.round(v+(255-v)*amt);}; return 'rgb('+f(c[0])+','+f(c[1])+','+f(c[2])+')'; }catch(e){ return hex; } }
+function _shopHeadGrad(){
+  var H=window.__SHOPHEAD__||{};
+  // приоритет: заданный админом цвет → тема клиента → дефолт
+  var base=(H.color && /^#[0-9a-fA-F]{6}$/.test(H.color)) ? H.color : (_getAccent()||DEFAULT_ACCENT);
+  return 'linear-gradient(92deg,'+base+','+_lighten(base,0.45)+' 62%,'+_lighten(base,0.7)+')';
+}
 function renderShopHead(){
   var el=document.getElementById('shop-hero'); if(!el) return;
   var H=window.__SHOPHEAD__||{};
   var title=H.title||'Neirosetka — Александр ИИ';
   var sub=H.sub||''; var img=H.img||''; var emoji=H.emoji||'';
-  var left = img ? ('<img class="sh-logo" src="'+img+'">') : (emoji?('<span class="sh-emoji">'+_h(emoji)+'</span>'):'');
-  el.innerHTML='<div class="sh-row">'+left+'<div><h1 class="sh-title">'+_h(title)+'</h1>'
-    +(sub?('<p class="sh-sub">'+_h(sub)+'</p>'):'')+'</div></div>';
+  var pos=H.pos||'left'; var size=H.size||56;
+  var grad=_shopHeadGrad();
+  var titleGrad='<h1 class="sh-title" style="background:'+grad+';-webkit-background-clip:text;background-clip:text;color:transparent">'+_h(title)+'</h1>';
+  // Фоном — фото на весь верх, заголовок поверх
+  if(img && pos==='bg'){
+    el.innerHTML='<div class="sh-bg" style="background-image:url('+img+')"><div class="sh-bg-shade"></div>'
+      +'<div class="sh-bg-in"><h1 class="sh-title sh-title-white">'+_h(title)+'</h1>'
+      +(sub?('<p class="sh-sub" style="color:#e8eaed">'+_h(sub)+'</p>'):'')+'</div></div>';
+    return;
+  }
+  var media = img
+    ? ('<img class="sh-logo" style="width:'+size+'px;height:'+size+'px" src="'+img+'">')
+    : (emoji?('<span class="sh-emoji">'+_h(emoji)+'</span>'):'');
+  var txt='<div>'+titleGrad+(sub?('<p class="sh-sub">'+_h(sub)+'</p>'):'')+'</div>';
+  el.innerHTML='<div class="sh-row"'+(pos==='right'?' style="justify-content:space-between"':'')+'>'
+    +(pos==='right' ? (txt+media) : (media+txt))
+    +'</div>';
 }
 function renderBanners(){
   var el=document.getElementById('banners'); if(!el) return;

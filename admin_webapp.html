@@ -576,43 +576,105 @@ function _saveCm(){toast('Сохраняю…');api('/api/admin/catsmeta-save',{
 /* Шапка магазина — заголовок / подзаголовок / эмодзи / логотип */
 SCREENS["Шапка магазина"]=function(){setTimeout(_shLoad,30);
   return hdr("Шапка магазина","заголовок Каталога — текст, эмодзи, фото")+'<div class="wrap"><div id="shbody"><div class="note">Загружаю…</div></div></div>';};
-function _shLoad(){api('/api/admin/shophead',{}).then(function(d){if(!d||!d.ok){var b=document.getElementById('shbody');if(b)b.innerHTML='<div class="note">Ошибка загрузки.</div>';return;}window._sh=d;window._shImg=d.img||'';_shRender();});}
-function _shPrevHtml(title,sub,emoji,img){
-  var left=img?('<img src="'+img+'" style="width:52px;height:52px;border-radius:15px;object-fit:cover;box-shadow:0 3px 12px rgba(0,0,0,.45)">'):(emoji?('<span style="font-size:38px;line-height:1">'+emoji+'</span>'):'');
-  return '<div style="display:flex;align-items:center;gap:12px;padding:8px 2px">'+left
-    +'<div><div style="font-size:24px;font-weight:900;line-height:1.08;background:linear-gradient(92deg,#37c98a,#5eead4 60%,#7dd3fc);-webkit-background-clip:text;background-clip:text;color:transparent">'+nsgEsc(title||'Neirosetka — Александр ИИ')+'</div>'
-    +(sub?('<div style="color:var(--txt2);font-size:12.5px;margin-top:4px">'+nsgEsc(sub)+'</div>'):'')+'</div></div>';
+var SH_COLORS=['#10a37f','#a3e635','#22c55e','#3b82f6','#8b5cf6','#ec4899','#f59e0b','#ef4444'];
+function _shLoad(){api('/api/admin/shophead',{}).then(function(d){if(!d||!d.ok){var b=document.getElementById('shbody');if(b)b.innerHTML='<div class="note">Ошибка загрузки.</div>';return;}window._sh=d;window._shImg=d.img||'';window._shColor=d.color||'';window._shPos=d.pos||'left';window._shSize=d.size||56;_shRender();});}
+function _shLighten(hex,amt){try{hex=(hex||'').replace('#','');if(hex.length===3){hex=hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];}var n=parseInt(hex,16),r=(n>>16)&255,g=(n>>8)&255,b=n&255,f=function(v){return Math.round(v+(255-v)*amt);};return 'rgb('+f(r)+','+f(g)+','+f(b)+')';}catch(e){return '#'+hex;}}
+function _shGrad(color){var base=(color&&/^#[0-9a-fA-F]{6}$/.test(color))?color:'#10a37f';return 'linear-gradient(92deg,'+base+','+_shLighten(base,0.45)+' 62%,'+_shLighten(base,0.7)+')';}
+function _shPrevHtml(title,sub,emoji,img,color,pos,size){
+  pos=pos||'left'; size=size||56;
+  var tt=nsgEsc(title||'Neirosetka — Александр ИИ');
+  var subH=sub?('<div style="color:var(--txt2);font-size:12.5px;margin-top:4px">'+nsgEsc(sub)+'</div>'):'';
+  if(img&&pos==='bg'){
+    return '<div style="border-radius:14px;overflow:hidden;position:relative;min-height:110px;background:url('+img+') center/cover;display:flex;align-items:flex-end;padding:12px">'
+      +'<div style="position:absolute;inset:0;background:linear-gradient(0deg,rgba(0,0,0,.72),rgba(0,0,0,.12))"></div>'
+      +'<div style="position:relative;z-index:1"><div style="font-size:23px;font-weight:900;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.6)">'+tt+'</div>'
+      +(sub?('<div style="color:#e8eaed;font-size:12.5px;margin-top:3px">'+nsgEsc(sub)+'</div>'):'')+'</div></div>';
+  }
+  var media=img?('<img src="'+img+'" style="width:'+size+'px;height:'+size+'px;border-radius:15px;object-fit:cover;box-shadow:0 3px 12px rgba(0,0,0,.45);flex:none">'):(emoji?('<span style="font-size:38px;line-height:1;flex:none">'+emoji+'</span>'):'');
+  var txt='<div><div style="font-size:24px;font-weight:900;line-height:1.08;background:'+_shGrad(color)+';-webkit-background-clip:text;background-clip:text;color:transparent">'+tt+'</div>'+subH+'</div>';
+  return '<div style="display:flex;align-items:center;gap:12px;padding:8px 2px'+(pos==='right'?';justify-content:space-between':'')+'">'
+    +(pos==='right'?(txt+media):(media+txt))+'</div>';
 }
 function _shPrev(){
   var t=(document.getElementById('sh_title')||{}).value||'';
   var s=(document.getElementById('sh_sub')||{}).value||'';
   var e=(document.getElementById('sh_emoji')||{}).value||'';
-  var pv=document.getElementById('shprev'); if(pv)pv.innerHTML=_shPrevHtml(t,s,e,window._shImg||'');
+  var pv=document.getElementById('shprev'); if(pv)pv.innerHTML=_shPrevHtml(t,s,e,window._shImg||'',window._shColor||'',window._shPos||'left',window._shSize||56);
 }
+function _shSetColor(c){window._shColor=c||'';_shRender();}
+function _shSetPos(p){window._shPos=p;_shRender();}
+function _shSetSize(v){window._shSize=parseInt(v,10)||56;_shPrev();}
 function _shRender(){
   var d=window._sh||{};var el=document.getElementById('shbody');if(!el)return;
   var img=window._shImg||'';
   el.innerHTML=
-    '<div class="block"><div class="note" style="margin-top:0">Так шапка выглядит в Каталоге:</div><div id="shprev">'+_shPrevHtml(d.title,d.sub,d.emoji,img)+'</div></div>'
+    '<div class="block"><div class="note" style="margin-top:0">Так шапка выглядит в Каталоге:</div><div id="shprev">'+_shPrevHtml(d.title,d.sub,d.emoji,img,window._shColor||'',window._shPos||'left',window._shSize||56)+'</div></div>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Цвет заголовка</label>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px">'
+    +'<div onclick="_shSetColor(\'\')" style="cursor:pointer;padding:7px 11px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid var(--card2);'+(!window._shColor?'background:var(--acc,#37c98a);color:#fff':'color:var(--txt2)')+'">🎨 По теме клиента</div>'
+    +SH_COLORS.map(function(c){return '<div onclick="_shSetColor(\''+c+'\')" style="width:30px;height:30px;border-radius:50%;cursor:pointer;background:'+c+';box-shadow:'+(window._shColor===c?'0 0 0 3px var(--txt)':'0 0 0 1px rgba(255,255,255,.15)')+'"></div>';}).join('')
+    +'</div><div class="note" style="margin-top:8px">«По теме клиента» — заголовок подстраивается под цвет, который клиент выбрал в Кабинете.</div></div>'
     +'<div class="block"><label class="fl" style="margin-top:0">Заголовок</label><input class="f" id="sh_title" oninput="_shPrev()" value="'+nsgEsc(d.title||'')+'"/>'
     +'<label class="fl">Подзаголовок</label><input class="f" id="sh_sub" oninput="_shPrev()" value="'+nsgEsc(d.sub||'')+'"/>'
     +'<label class="fl">Эмодзи (показывается, если нет фото)</label><input class="f" id="sh_emoji" oninput="_shPrev()" value="'+nsgEsc(d.emoji||'')+'" maxlength="8"/></div>'
     +'<div class="block"><label class="fl" style="margin-top:0">Логотип / фото (необязательно)</label>'
     +(img?('<div style="margin:6px 0"><img src="'+img+'" style="width:64px;height:64px;border-radius:15px;object-fit:cover"></div>'):'<div class="note" style="margin:6px 0">Без фото показывается эмодзи.</div>')
-    +'<button class="btn sec" onclick="_shPick()">📷 '+(img?'Заменить фото':'Загрузить фото')+'</button>'
+    +'<div class="note" style="margin:6px 0 4px">Формат кадрирования зависит от расположения: логотип — квадрат, «фоном» — широкий.</div>'
+    +'<button class="btn sec" onclick="_shPick()">📷 '+(img?'Заменить / кадрировать':'Загрузить и кадрировать')+'</button>'
     +(img?'<button class="btn sec" style="margin-top:6px" onclick="_shClearImg()">🗑 Убрать фото</button>':'')
     +'</div>'
+    + (img?('<div class="block"><label class="fl" style="margin-top:0">Расположение фото</label>'
+        +'<div class="seg" style="margin-top:6px">'
+        +[['left','⬅️ Логотип слева'],['right','➡️ Логотип справа'],['bg','🖼 Фоном']].map(function(x){return '<button class="'+((window._shPos||'left')===x[0]?'on':'')+'" style="font-size:12px" onclick="_shSetPos(\''+x[0]+'\')">'+x[1]+'</button>';}).join('')
+        +'</div>'
+        +(((window._shPos||'left')!=='bg')?('<label class="fl">Размер логотипа: <b>'+(window._shSize||56)+'px</b></label><input type="range" min="40" max="96" value="'+(window._shSize||56)+'" oninput="_shSetSize(this.value);var l=this.previousElementSibling;if(l)l.innerHTML=\'Размер логотипа: <b>\'+this.value+\'px</b>\'" style="width:100%">'):'<div class="note" style="margin-top:8px">В режиме «Фоном» фото занимает всю шапку, заголовок — поверх.</div>')
+        +'</div>'):'')
     +'<button class="btn" onclick="_shSave()">💾 Сохранить</button>';
 }
 function _shPick(){
+  var pos=window._shPos||'left';
+  var ar=(pos==='bg')?[3,1]:[1,1];
   var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;var rd=new FileReader();
-    rd.onload=function(){var im=new Image();im.onload=function(){
-      var mx=200,sc=Math.min(1,mx/Math.max(im.width,im.height));var w=Math.round(im.width*sc),hh=Math.round(im.height*sc);
-      var c=document.createElement('canvas');c.width=w;c.height=hh;c.getContext('2d').drawImage(im,0,0,w,hh);
-      window._shImg=c.toDataURL('image/jpeg',0.85);_shRender();};im.src=rd.result;};
+    rd.onload=function(){_shOpenCropper(rd.result,ar[0],ar[1],function(uri){window._shImg=uri;_shRender();});};
     rd.readAsDataURL(f);};
   inp.click();
+}
+/* Кроппер с произвольным соотношением сторон */
+function _shOpenCropper(src,arW,arH,cb){
+  var VW=290, VH=Math.round(VW*arH/arW);
+  var ov=document.createElement('div');ov.id='shcropov';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML='<div style="color:#fff;font-weight:700;margin-bottom:12px">Кадрируй фото — тяни и зумь</div>'
+    +'<div id="shcropvp" style="width:'+VW+'px;height:'+VH+'px;overflow:hidden;border-radius:16px;position:relative;background:#111;touch-action:none;box-shadow:0 0 0 2px rgba(255,255,255,.3)">'
+    +'<img id="shcropimg" style="position:absolute;left:0;top:0;-webkit-user-drag:none;pointer-events:none" src="'+src+'"></div>'
+    +'<input id="shcropzoom" type="range" min="100" max="320" value="100" style="width:'+VW+'px;margin:16px 0">'
+    +'<div style="display:flex;gap:10px;width:'+VW+'px"><button class="btn sec" style="flex:1" onclick="_shCropCancel()">Отмена</button><button class="btn" style="flex:1" onclick="_shCropSave()">Готово</button></div>';
+  document.body.appendChild(ov);
+  window._shcrop={VW:VW,VH:VH,cb:cb,offx:0,offy:0,scale:1,base:1,w0:0,h0:0};
+  var img=document.getElementById('shcropimg');
+  function _ready(){var st=window._shcrop;st.w0=img.naturalWidth||1;st.h0=img.naturalHeight||1;
+    st.base=Math.max(VW/st.w0,VH/st.h0);st.scale=st.base;
+    st.offx=(VW-st.w0*st.scale)/2;st.offy=(VH-st.h0*st.scale)/2;_shCropClamp();_shCropRender();}
+  img.onload=_ready; if(img.complete&&img.naturalWidth)_ready();
+  var vp=document.getElementById('shcropvp');var drag=false,px=0,py=0;
+  vp.addEventListener('pointerdown',function(e){drag=true;px=e.clientX;py=e.clientY;try{vp.setPointerCapture(e.pointerId);}catch(x){}});
+  vp.addEventListener('pointermove',function(e){if(!drag)return;var st=window._shcrop;st.offx+=e.clientX-px;st.offy+=e.clientY-py;px=e.clientX;py=e.clientY;_shCropClamp();_shCropRender();});
+  vp.addEventListener('pointerup',function(){drag=false;});
+  vp.addEventListener('pointercancel',function(){drag=false;});
+  var z=document.getElementById('shcropzoom');if(z)z.addEventListener('input',function(){var st=window._shcrop;var cx=(st.VW/2-st.offx)/st.scale,cy=(st.VH/2-st.offy)/st.scale;st.scale=st.base*(this.value/100);st.offx=st.VW/2-cx*st.scale;st.offy=st.VH/2-cy*st.scale;_shCropClamp();_shCropRender();});
+}
+function _shCropClamp(){var st=window._shcrop;var w=st.w0*st.scale,h=st.h0*st.scale;st.offx=Math.min(0,Math.max(st.VW-w,st.offx));st.offy=Math.min(0,Math.max(st.VH-h,st.offy));}
+function _shCropRender(){var st=window._shcrop;var img=document.getElementById('shcropimg');if(!img)return;img.style.width=(st.w0*st.scale)+'px';img.style.height=(st.h0*st.scale)+'px';img.style.left=st.offx+'px';img.style.top=st.offy+'px';}
+function _shCropCancel(){var o=document.getElementById('shcropov');if(o)o.remove();window._shcrop=null;}
+function _shCropSave(){var st=window._shcrop;if(!st)return;var img=document.getElementById('shcropimg');
+  var sx=-st.offx/st.scale,sy=-st.offy/st.scale,sw=st.VW/st.scale,sh=st.VH/st.scale;
+  sw=Math.min(sw,st.w0);sh=Math.min(sh,st.h0);
+  sx=Math.max(0,Math.min(sx,st.w0-sw));sy=Math.max(0,Math.min(sy,st.h0-sh));
+  var outW=(st.VW>st.VH)?720:300, outH=Math.round(outW*st.VH/st.VW);
+  var c=document.createElement('canvas');c.width=outW;c.height=outH;var ctx=c.getContext('2d');
+  try{ctx.drawImage(img,sx,sy,sw,sh,0,0,outW,outH);}catch(e){}
+  var uri=c.toDataURL('image/jpeg',0.85);var cb=st.cb;_shCropCancel();if(cb)cb(uri);
 }
 function _shClearImg(){window._shImg='';_shRender();}
 function _shSave(){
@@ -620,8 +682,8 @@ function _shSave(){
   var s=(document.getElementById('sh_sub')||{}).value||'';
   var e=(document.getElementById('sh_emoji')||{}).value||'';
   toast('Сохраняю…');
-  api('/api/admin/shophead',{save:true,title:t,sub:s,emoji:e,img:window._shImg||''}).then(function(d){
-    if(d&&d.ok){toast('Сохранено ✅ (обнови Каталог)');window._sh=d;window._shImg=d.img||'';_shRender();}
+  api('/api/admin/shophead',{save:true,title:t,sub:s,emoji:e,img:window._shImg||'',color:window._shColor||'',pos:window._shPos||'left',size:window._shSize||56}).then(function(d){
+    if(d&&d.ok){toast('Сохранено ✅ (обнови Каталог)');window._sh=d;window._shImg=d.img||'';window._shColor=d.color||'';window._shPos=d.pos||'left';window._shSize=d.size||56;_shRender();}
     else{toast(d&&d.error==='img_too_big'?'Фото слишком большое':'Ошибка');}
   });
 }
