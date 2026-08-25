@@ -153,7 +153,7 @@ function home(){
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
-   ["🛒","Каталог и цены",[["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
+   ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
@@ -572,6 +572,59 @@ function _cmMove(i,d){var L=window._cmList;var j=i+d;if(j<0||j>=L.length)return;
 function _cmDel(i){window._cmList.splice(i,1);_renderCm();}
 function _cmAdd(){window._cmList.push({id:'',emoji:'✨',name:'Новый раздел'});_renderCm();}
 function _saveCm(){toast('Сохраняю…');api('/api/admin/catsmeta-save',{categories:window._cmList||[]}).then(function(d){toast(d&&d.ok?'Сохранено ✅':'Ошибка');if(d&&d.ok&&d.categories)window._cmList=d.categories;});}
+
+/* Шапка магазина — заголовок / подзаголовок / эмодзи / логотип */
+SCREENS["Шапка магазина"]=function(){setTimeout(_shLoad,30);
+  return hdr("Шапка магазина","заголовок Каталога — текст, эмодзи, фото")+'<div class="wrap"><div id="shbody"><div class="note">Загружаю…</div></div></div>';};
+function _shLoad(){api('/api/admin/shophead',{}).then(function(d){if(!d||!d.ok){var b=document.getElementById('shbody');if(b)b.innerHTML='<div class="note">Ошибка загрузки.</div>';return;}window._sh=d;window._shImg=d.img||'';_shRender();});}
+function _shPrevHtml(title,sub,emoji,img){
+  var left=img?('<img src="'+img+'" style="width:52px;height:52px;border-radius:15px;object-fit:cover;box-shadow:0 3px 12px rgba(0,0,0,.45)">'):(emoji?('<span style="font-size:38px;line-height:1">'+emoji+'</span>'):'');
+  return '<div style="display:flex;align-items:center;gap:12px;padding:8px 2px">'+left
+    +'<div><div style="font-size:24px;font-weight:900;line-height:1.08;background:linear-gradient(92deg,#37c98a,#5eead4 60%,#7dd3fc);-webkit-background-clip:text;background-clip:text;color:transparent">'+nsgEsc(title||'Neirosetka — Александр ИИ')+'</div>'
+    +(sub?('<div style="color:var(--txt2);font-size:12.5px;margin-top:4px">'+nsgEsc(sub)+'</div>'):'')+'</div></div>';
+}
+function _shPrev(){
+  var t=(document.getElementById('sh_title')||{}).value||'';
+  var s=(document.getElementById('sh_sub')||{}).value||'';
+  var e=(document.getElementById('sh_emoji')||{}).value||'';
+  var pv=document.getElementById('shprev'); if(pv)pv.innerHTML=_shPrevHtml(t,s,e,window._shImg||'');
+}
+function _shRender(){
+  var d=window._sh||{};var el=document.getElementById('shbody');if(!el)return;
+  var img=window._shImg||'';
+  el.innerHTML=
+    '<div class="block"><div class="note" style="margin-top:0">Так шапка выглядит в Каталоге:</div><div id="shprev">'+_shPrevHtml(d.title,d.sub,d.emoji,img)+'</div></div>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Заголовок</label><input class="f" id="sh_title" oninput="_shPrev()" value="'+nsgEsc(d.title||'')+'"/>'
+    +'<label class="fl">Подзаголовок</label><input class="f" id="sh_sub" oninput="_shPrev()" value="'+nsgEsc(d.sub||'')+'"/>'
+    +'<label class="fl">Эмодзи (показывается, если нет фото)</label><input class="f" id="sh_emoji" oninput="_shPrev()" value="'+nsgEsc(d.emoji||'')+'" maxlength="8"/></div>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Логотип / фото (необязательно)</label>'
+    +(img?('<div style="margin:6px 0"><img src="'+img+'" style="width:64px;height:64px;border-radius:15px;object-fit:cover"></div>'):'<div class="note" style="margin:6px 0">Без фото показывается эмодзи.</div>')
+    +'<button class="btn sec" onclick="_shPick()">📷 '+(img?'Заменить фото':'Загрузить фото')+'</button>'
+    +(img?'<button class="btn sec" style="margin-top:6px" onclick="_shClearImg()">🗑 Убрать фото</button>':'')
+    +'</div>'
+    +'<button class="btn" onclick="_shSave()">💾 Сохранить</button>';
+}
+function _shPick(){
+  var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;var rd=new FileReader();
+    rd.onload=function(){var im=new Image();im.onload=function(){
+      var mx=200,sc=Math.min(1,mx/Math.max(im.width,im.height));var w=Math.round(im.width*sc),hh=Math.round(im.height*sc);
+      var c=document.createElement('canvas');c.width=w;c.height=hh;c.getContext('2d').drawImage(im,0,0,w,hh);
+      window._shImg=c.toDataURL('image/jpeg',0.85);_shRender();};im.src=rd.result;};
+    rd.readAsDataURL(f);};
+  inp.click();
+}
+function _shClearImg(){window._shImg='';_shRender();}
+function _shSave(){
+  var t=(document.getElementById('sh_title')||{}).value||'';
+  var s=(document.getElementById('sh_sub')||{}).value||'';
+  var e=(document.getElementById('sh_emoji')||{}).value||'';
+  toast('Сохраняю…');
+  api('/api/admin/shophead',{save:true,title:t,sub:s,emoji:e,img:window._shImg||''}).then(function(d){
+    if(d&&d.ok){toast('Сохранено ✅ (обнови Каталог)');window._sh=d;window._shImg=d.img||'';_shRender();}
+    else{toast(d&&d.error==='img_too_big'?'Фото слишком большое':'Ошибка');}
+  });
+}
 
 /* Логотипы сервисов — загрузка/удаление */
 SCREENS["Логотипы сервисов"]=function(){setTimeout(_loadLogos,30);

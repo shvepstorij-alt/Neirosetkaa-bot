@@ -2229,6 +2229,17 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                            for _k, _v in _AM.items()]
         except Exception:
             _animmodels = []
+        try:
+            _shophead = {
+                "title": (await get_setting("shop_head_title", "") or "Neirosetka — Александр ИИ"),
+                "sub": (await get_setting("shop_head_sub", "") or "Подписки на ИИ-сервисы и пополнение App Store"),
+                "emoji": (await get_setting("shop_head_emoji", "") or "🛍"),
+                "img": (await get_setting("shop_head_img", "") or ""),
+            }
+        except Exception:
+            _shophead = {"title": "Neirosetka — Александр ИИ",
+                         "sub": "Подписки на ИИ-сервисы и пополнение App Store",
+                         "emoji": "🛍", "img": ""}
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
@@ -2237,6 +2248,7 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                 + ";window.__VIDMODELS__=" + _json.dumps(_vidmodels, ensure_ascii=False)
                 + ";window.__EDITMODELS__=" + _json.dumps(_editmodels, ensure_ascii=False)
                 + ";window.__ANIMMODELS__=" + _json.dumps(_animmodels, ensure_ascii=False)
+                + ";window.__SHOPHEAD__=" + _json.dumps(_shophead, ensure_ascii=False)
                 + ";window.__BOT__=" + _json.dumps(_uname) + ";</script>")
         if "</head>" in html:
             return html.replace("</head>", _tag + "</head>", 1)
@@ -2350,6 +2362,40 @@ async def api_admin_overview_handler(request: web.Request) -> web.Response:
 def _admin_uid_from_body(body) -> "int | None":
     init_data = (body.get("initData") if isinstance(body, dict) else None) or ""
     return _verify_tg_init_data(init_data)
+
+
+async def api_admin_shophead_handler(request: web.Request) -> web.Response:
+    """Шапка Каталога (заголовок/подзаголовок/эмодзи/лого). Чтение и сохранение. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        if body.get("save"):
+            _t = str(body.get("title", "")).strip()[:80]
+            _s = str(body.get("sub", "")).strip()[:160]
+            _e = str(body.get("emoji", "")).strip()[:16]
+            _im = str(body.get("img", "")).strip()
+            if _im and not (_im.startswith("data:image/") or _im.startswith("http")):
+                _im = ""
+            if _im.startswith("data:image/") and len(_im) > 400000:
+                return web.json_response({"ok": False, "error": "img_too_big"})
+            await set_setting("shop_head_title", _t)
+            await set_setting("shop_head_sub", _s)
+            await set_setting("shop_head_emoji", _e)
+            await set_setting("shop_head_img", _im)
+        return web.json_response({
+            "ok": True,
+            "title": (await get_setting("shop_head_title", "") or "Neirosetka — Александр ИИ"),
+            "sub": (await get_setting("shop_head_sub", "") or "Подписки на ИИ-сервисы и пополнение App Store"),
+            "emoji": (await get_setting("shop_head_emoji", "") or "🛍"),
+            "img": (await get_setting("shop_head_img", "") or ""),
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_shophead: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
 async def api_admin_profit_handler(request: web.Request) -> web.Response:
@@ -6449,6 +6495,7 @@ async def setup_webhook_server():
     app.router.add_get("/webapp/admin", webapp_admin_handler)
     app.router.add_post("/api/admin/overview", api_admin_overview_handler)
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)
+    app.router.add_post("/api/admin/shophead", api_admin_shophead_handler)
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)

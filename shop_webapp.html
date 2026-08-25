@@ -39,6 +39,11 @@
   .hero{padding:6px 2px 12px}
   .hero h1{font-size:23px;font-weight:800}
   .hero p{color:var(--text2);font-size:13px;margin-top:3px}
+  .sh-row{display:flex;align-items:center;gap:12px}
+  .sh-logo{width:54px;height:54px;border-radius:15px;object-fit:cover;flex:none;box-shadow:0 3px 12px rgba(0,0,0,.45)}
+  .sh-emoji{font-size:40px;line-height:1;flex:none}
+  .sh-title{font-size:25px;font-weight:900;line-height:1.08;letter-spacing:.2px;background:linear-gradient(92deg,var(--green),#5eead4 60%,#7dd3fc);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sh-sub{color:var(--text2);font-size:13px;margin-top:4px}
 
   /* Категории (чипсы) */
   .chips{display:flex;gap:8px;overflow-x:auto;padding:4px 2px 12px;scrollbar-width:none}
@@ -160,7 +165,7 @@
 <div id="home" class="screen active">
   <div class="tgbar"><span class="pill" onclick="_kbHide()">⌨️ Скрыть</span><span class="pill" onclick="_min()">🔽 Свернуть</span></div>
   <div class="wrap">
-    <div class="hero"><h1>🛍 Магазин</h1><p>Подписки на ИИ-сервисы и пополнение App Store</p></div>
+    <div class="hero" id="shop-hero"></div>
     <div class="banners" id="banners" style="display:none"></div>
     <div class="chips" id="chips"></div>
     <div class="grid" id="grid"></div>
@@ -245,6 +250,15 @@ function _api(path, body){
 }
 
 /* ─── Баннеры ─── */
+function renderShopHead(){
+  var el=document.getElementById('shop-hero'); if(!el) return;
+  var H=window.__SHOPHEAD__||{};
+  var title=H.title||'Neirosetka — Александр ИИ';
+  var sub=H.sub||''; var img=H.img||''; var emoji=H.emoji||'';
+  var left = img ? ('<img class="sh-logo" src="'+img+'">') : (emoji?('<span class="sh-emoji">'+_h(emoji)+'</span>'):'');
+  el.innerHTML='<div class="sh-row">'+left+'<div><h1 class="sh-title">'+_h(title)+'</h1>'
+    +(sub?('<p class="sh-sub">'+_h(sub)+'</p>'):'')+'</div></div>';
+}
 function renderBanners(){
   var el=document.getElementById('banners'); if(!el) return;
   var B=window.__BANNERS__||[];
@@ -1042,7 +1056,7 @@ function _init(){
   try{ var _a=_getAccent(); if(_a) _applyAccent(_a); }catch(e){}
   CATALOG=window.__CATALOG__||{}; CATS=window.__CATEGORIES__||[]; RECS=window.__RECS__||[];
   BOT_USERNAME=window.__BOT__||BOT_USERNAME;
-  renderBanners(); renderChips(); renderGrid();
+  renderShopHead(); renderBanners(); renderChips(); renderGrid();
   // Deep-link: открыть сразу карточку сервиса (?svc=key или startapp=svc_key)
   try{
     var _svc='';
