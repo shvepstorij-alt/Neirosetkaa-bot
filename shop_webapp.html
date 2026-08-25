@@ -848,8 +848,19 @@ function _checkOrder(orderId){
 function _paySuccess(act){
   if(_watchTimer) clearTimeout(_watchTimer);
   var body=document.getElementById('card-body'); if(!body) return;
-  // ChatGPT / Claude — продолжаем активацию прямо тут, не выходя из приложения
-  if(act&&act.service&&act.code){ window._act=act; renderActivate(); return; }
+  // ChatGPT / Claude — ведём клиента на полноценный пошаговый экран активации
+  // (то же приложение, что открывается кнопкой из чата) прямо в этом окне.
+  if(act&&act.service&&act.code){
+    var _path=(act.service==='claude')?'/webapp/claude':'/webapp/chatgpt';
+    var _url=location.origin+_path+'?plan='+encodeURIComponent(act.plan||'')+'&code='+encodeURIComponent(act.code);
+    body.innerHTML='<div style="text-align:center;padding:34px 10px">'
+      +'<div style="font-size:60px;line-height:1">✅</div>'
+      +'<div style="font-size:22px;font-weight:800;margin:12px 0 6px">Оплата прошла!</div>'
+      +'<div class="card-desc">Открываю активацию '+(act.service==='claude'?'Claude':'ChatGPT')+'…</div>'
+      +'<div class="plan-buy" onclick="location.href=\''+_url+'\'">✨ Активировать подписку</div></div>';
+    try{ location.href=_url; }catch(e){}
+    return;
+  }
   body.innerHTML='<div style="text-align:center;padding:34px 10px">'
     +'<div style="font-size:60px;line-height:1">✅</div>'
     +'<div style="font-size:22px;font-weight:800;margin:12px 0 6px">Оплата прошла!</div>'
