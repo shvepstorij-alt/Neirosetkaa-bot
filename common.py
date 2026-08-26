@@ -2377,23 +2377,61 @@ async def api_admin_catalog_analytics_handler(request: web.Request) -> web.Respo
             body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
+        # Сброс статистики: считаем всё (включая покупки) только с этого момента
+        if body.get("reset"):
+            await set_setting("catalog_stats_since", _dt_ca.datetime.now().isoformat())
+            return web.json_response({"ok": True, "reset": True})
         _pd = str(body.get("period") or "month")
-        _days = 7 if _pd == "week" else (1 if _pd == "day" else 30)
+        _date_s = str(body.get("date") or "").strip()  # 'YYYY-MM-DD' — конкретный день
         # events.created_at — TIMESTAMP без tz (NOW() в локали сервера), сравниваем наивным временем
-        _since = _dt_ca.datetime.now() - _dt_ca.timedelta(days=_days)
+        _until = None
+        if _date_s:
+            try:
+                _d0 = _dt_ca.date.fromisoformat(_date_s)
+                _since = _dt_ca.datetime(_d0.year, _d0.month, _d0.day)
+                _until = _since + _dt_ca.timedelta(days=1)
+                _pd = "day"
+            except Exception:
+                _date_s = ""
+                _since = _dt_ca.datetime.now() - _dt_ca.timedelta(days=30)
+        if not _date_s:
+            _days = 1 if _pd == "day" else (7 if _pd == "week" else 30)
+            if _pd == "day":
+                _t0 = _dt_ca.date.today()
+                _since = _dt_ca.datetime(_t0.year, _t0.month, _t0.day)
+            else:
+                _since = _dt_ca.datetime.now() - _dt_ca.timedelta(days=_days)
+        # точка обнуления (если админ сбрасывал статистику) — не показываем старее неё
+        try:
+            _rs = await get_setting("catalog_stats_since", "")
+            if _rs:
+                _rt = _dt_ca.datetime.fromisoformat(_rs)
+                if _rt > _since:
+                    _since = _rt
+        except Exception:
+            pass
+        _uc = " AND created_at<$2" if _until else ""
+        _up = " AND paid_at<$2" if _until else ""
+        _args = ([_since, _until] if _until else [_since])
         pool = await get_pool()
         async with pool.acquire() as conn:
             _rows = await conn.fetch(
                 "SELECT data, COUNT(*) AS c, COUNT(DISTINCT user_id) AS u "
-                "FROM events WHERE kind='cat' AND created_at>=$1 AND data IS NOT NULL "
-                "GROUP BY data", _since)
+                "FROM events WHERE kind='cat' AND created_at>=$1" + _uc + " AND data IS NOT NULL "
+                "GROUP BY data", *_args)
             _views = await conn.fetchrow(
                 "SELECT COUNT(*) AS c, COUNT(DISTINCT user_id) AS u FROM events "
-                "WHERE kind='cat' AND data LIKE 'view%' AND created_at>=$1", _since)
-            # реальные оплаченные заказы по сервисам за период
+                "WHERE kind='cat' AND data LIKE 'view%' AND created_at>=$1" + _uc, *_args)
+            # реальные оплаченные заказы по сервисам — с той же точки отсчёта
             _paid = await conn.fetch(
                 "SELECT pack, COUNT(*) AS c FROM fk_orders WHERE status='paid' AND pack LIKE 'shop:%' "
-                "AND paid_at>=$1 GROUP BY pack", _since)
+                "AND paid_at>=$1" + _up + " GROUP BY pack", *_args)
+            # журнал: кто куда кликал (последние действия, без служебных view)
+            _logrows = await conn.fetch(
+                "SELECT e.user_id, e.data, e.created_at, u.username FROM events e "
+                "LEFT JOIN users u ON u.user_id=e.user_id "
+                "WHERE e.kind='cat' AND e.created_at>=$1" + _uc + " AND e.data NOT LIKE 'view%' "
+                "ORDER BY e.id DESC LIMIT 80", *_args)
         # агрегируем по префиксам
         _svc = {}      # key -> {opens, pays}
         _cats = {}     # cat -> taps
@@ -2436,13 +2474,23 @@ async def api_admin_catalog_analytics_handler(request: web.Request) -> web.Respo
             })
         _services.sort(key=lambda x: -(x["opens"] + x["pays"] + x["paid"]))
         _mk = lambda dct: [{"key": k, "taps": v} for k, v in sorted(dct.items(), key=lambda x: -x[1])]
+        _log = []
+        for r in _logrows:
+            _ts = r["created_at"]
+            _log.append({
+                "uid": r["user_id"],
+                "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"])),
+                "data": r["data"] or "",
+                "time": _ts.strftime("%d.%m %H:%M") if _ts else "",
+            })
         return web.json_response({
-            "ok": True, "period": _pd,
+            "ok": True, "period": _pd, "date": _date_s or "",
             "totals": {"views": int((_views or {})["c"] or 0) if _views else 0,
                        "users": int((_views or {})["u"] or 0) if _views else 0,
                        "cards": _sum["cards"], "pays": _sum["pays"], "gens": _sum["gens"]},
             "services": _services,
             "cats": _mk(_cats), "tabs": _mk(_tabs), "gens": _mk(_gens), "banners": _mk(_banners),
+            "log": _log,
         })
     except Exception as _e:
         logging.error(f"api_admin_catalog_analytics: {_e}")

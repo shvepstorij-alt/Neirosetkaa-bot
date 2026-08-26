@@ -691,11 +691,25 @@ function _shSave(){
 /* Аналитика Каталога + тепловая карта вовлечённости */
 SCREENS["Аналитика Каталога"]=function(){
   if(window._caPer===undefined)window._caPer='month';
+  if(window._caDate===undefined)window._caDate='';
   setTimeout(_caLoad,30);
-  var seg='<div class="seg">'+[['week','7 дней'],['month','30 дней']].map(function(x){return '<button class="'+((window._caPer||'month')===x[0]?'on':'')+'" onclick="window._caPer=\''+x[0]+'\';open2(\'Аналитика Каталога\')">'+x[1]+'</button>';}).join('')+'</div>';
-  return hdr("Аналитика Каталога","что смотрят и на что жмут")+'<div class="wrap">'+seg+'<div id="cabody"><div class="note">Загружаю…</div></div></div>';
+  var dts=window._caDate||'';
+  var seg='<div class="seg">'+[['day','Сегодня'],['week','7 дней'],['month','30 дней']].map(function(x){return '<button class="'+((window._caPer||'month')===x[0]&&!dts?'on':'')+'" onclick="window._caDate=\'\';window._caPer=\''+x[0]+'\';open2(\'Аналитика Каталога\')">'+x[1]+'</button>';}).join('')+'</div>';
+  var dp='<input class="f" type="date" value="'+dts+'" onchange="window._caDate=this.value;open2(\'Аналитика Каталога\')" style="margin-bottom:12px"/>';
+  var sub=dts?('за '+dts):(window._caPer==='day'?'сегодня':(window._caPer==='week'?'7 дней':'30 дней'));
+  return hdr("Аналитика Каталога",sub)+'<div class="wrap">'+seg+dp+'<div id="cabody"><div class="note">Загружаю…</div></div></div>';
 };
-function _caLoad(){api('/api/admin/catalog-analytics',{period:window._caPer||'month'}).then(function(d){var el=document.getElementById('cabody');if(!el)return;if(!d||!d.ok){el.innerHTML='<div class="note">Нет данных или ошибка.</div>';return;}window._ca=d;_caRender();});}
+function _caLoad(){api('/api/admin/catalog-analytics',{period:window._caPer||'month',date:window._caDate||null}).then(function(d){var el=document.getElementById('cabody');if(!el)return;if(!d||!d.ok){el.innerHTML='<div class="note">Нет данных или ошибка.</div>';return;}window._ca=d;_caRender();});}
+function _caLabel(data){
+  var p=(data||'').split(':');var pref=p[0],val=p[1]||'';
+  if(pref==='card'){var s=(window._ca&&(window._ca.services||[]).filter(function(x){return x.key===val})[0]);return '🃏 Открыл карточку: '+((s&&s.name)||val);}
+  if(pref==='pay'){var s2=(window._ca&&(window._ca.services||[]).filter(function(x){return x.key===val})[0]);return '💳 Нажал «Оплатить»: '+((s2&&s2.name)||val);}
+  if(pref==='chip'){return '🗂 Категория: '+(val==='*'?'Все':(val==='other'?'Другое':('#'+val)));}
+  if(pref==='tab'){return '📱 Вкладка: '+({catalog:'Каталог',gen:'Создать',cabinet:'Кабинет'}[val]||val);}
+  if(pref==='gen'){return '🎨 Создать: '+({photo:'Фото',video:'Видео',anim:'Анимация',edit:'Редактирование',hist:'История'}[val]||val);}
+  if(pref==='banner'){return '📢 Баннер '+val;}
+  return data;
+}
 function _heatColor(t){t=Math.max(0,Math.min(1,t));var st=[[45,90,160],[16,185,129],[240,180,41],[240,97,122]];var seg=t*(st.length-1);var i=Math.floor(seg);if(i>=st.length-1)return 'rgb('+st[st.length-1].join(',')+')';var f=seg-i,a=st[i],b=st[i+1];return 'rgb('+Math.round(a[0]+(b[0]-a[0])*f)+','+Math.round(a[1]+(b[1]-a[1])*f)+','+Math.round(a[2]+(b[2]-a[2])*f)+')';}
 function _caBars(arr,labelMap){
   if(!arr||!arr.length)return '<div class="note">Нет данных.</div>';
@@ -740,7 +754,23 @@ function _caRender(){
   h+='<div class="block"><h4>📱 Вкладки</h4>'+_caBars(d.tabs,function(k){return {catalog:'🛍 Каталог',gen:'🎨 Создать',cabinet:'👤 Кабинет'}[k]||k;})+'</div>';
   h+='<div class="block"><h4>🎨 Разделы «Создать»</h4>'+_caBars(d.gens,function(k){return {photo:'📷 Фото',video:'🎬 Видео',anim:'✨ Анимация',edit:'🖌 Редактирование',hist:'🖼 История'}[k]||k;})+'</div>';
   if(d.banners&&d.banners.length){h+='<div class="block"><h4>📢 Баннеры</h4>'+_caBars(d.banners,function(k){return 'Баннер '+k;})+'</div>';}
+  // Журнал: кто куда кликал
+  var lg=d.log||[];
+  h+='<div class="block"><h4>👣 Кто куда кликал</h4>';
+  if(!lg.length){h+='<div class="note">Пока нет кликов за этот период.</div>';}
+  else{h+=lg.map(function(m){
+    return '<div class="kv" style="align-items:flex-start"><span class="k" style="max-width:60%">'+_caLabel(m.data)+'</span><span style="text-align:right;font-size:11.5px"><div>'+nsgEsc(m.user)+'</div><div style="color:var(--txt3)">'+nsgEsc(m.time)+'</div></span></div>';
+  }).join('');}
+  h+='</div>';
+  h+='<button class="btn danger" style="margin-top:8px" onclick="_caReset()">🔄 Обнулить статистику (с текущего момента)</button>';
+  h+='<div class="note" style="margin-top:6px">Сброс уберёт старые покупки из отчёта — всё начнёт считаться с нуля вместе с просмотрами.</div>';
   el.innerHTML=h;
+}
+function _caReset(){
+  if(window.confirm&&!window.confirm('Обнулить статистику Каталога? Отчёт начнёт считаться заново с этого момента (просмотры + покупки).'))return;
+  if(window.confirm&&!window.confirm('Точно обнулить? Это действие необратимо — старые данные больше не будут показываться в отчёте.'))return;
+  toast('Сбрасываю…');
+  api('/api/admin/catalog-analytics',{reset:true}).then(function(d){toast(d&&d.ok?'Обнулено ✅':'Ошибка');if(d&&d.ok){window._caDate='';window._caPer='month';open2('Аналитика Каталога');}});
 }
 
 /* Логотипы сервисов — загрузка/удаление */
