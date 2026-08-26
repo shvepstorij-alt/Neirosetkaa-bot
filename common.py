@@ -2238,11 +2238,12 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                 "color": (await get_setting("shop_head_color", "") or ""),
                 "pos": (await get_setting("shop_head_pos", "") or "left"),
                 "size": int(await get_setting("shop_head_size", "") or "56"),
+                "cols": int(await get_setting("shop_cols", "") or "3"),
             }
         except Exception:
             _shophead = {"title": "Neirosetka — Александр ИИ",
                          "sub": "Подписки на ИИ-сервисы и пополнение App Store",
-                         "emoji": "🛍", "img": "", "color": "", "pos": "left", "size": 56}
+                         "emoji": "🛍", "img": "", "color": "", "pos": "left", "size": 56, "cols": 3}
         _tag = ("<script>window.__RECS__=" + _json.dumps(_recs, ensure_ascii=False)
                 + ";window.__CATALOG__=" + _json.dumps(_cat, ensure_ascii=False)
                 + ";window.__CATEGORIES__=" + _json.dumps(_cats, ensure_ascii=False)
@@ -2534,6 +2535,12 @@ async def api_admin_shophead_handler(request: web.Request) -> web.Response:
                 _sz = 56
             _sz = max(40, min(96, _sz))
             await set_setting("shop_head_size", str(_sz))
+            try:
+                _cols = int(body.get("cols", 3))
+            except Exception:
+                _cols = 3
+            _cols = max(2, min(4, _cols))
+            await set_setting("shop_cols", str(_cols))
         return web.json_response({
             "ok": True,
             "title": (await get_setting("shop_head_title", "") or "Neirosetka — Александр ИИ"),
@@ -2543,6 +2550,7 @@ async def api_admin_shophead_handler(request: web.Request) -> web.Response:
             "color": (await get_setting("shop_head_color", "") or ""),
             "pos": (await get_setting("shop_head_pos", "") or "left"),
             "size": int(await get_setting("shop_head_size", "") or "56"),
+            "cols": int(await get_setting("shop_cols", "") or "3"),
         })
     except Exception as _e:
         logging.error(f"api_admin_shophead: {_e}")

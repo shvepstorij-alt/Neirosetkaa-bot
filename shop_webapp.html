@@ -57,6 +57,13 @@
 
   /* Сетка сервисов */
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .grid.c3{grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .grid.c4{grid-template-columns:1fr 1fr 1fr 1fr;gap:7px}
+  .grid.c3 .tile,.grid.c4 .tile{padding:8px 7px;gap:6px;border-radius:13px;align-items:center;text-align:center}
+  .grid.c3 .ic,.grid.c4 .ic{width:48px;height:48px;border-radius:12px}
+  .grid.c4 .ic{width:42px;height:42px}
+  .grid.c3 .nm,.grid.c4 .nm{font-size:12px;line-height:1.15}
+  .grid.c3 .pr,.grid.c4 .pr{font-size:10.5px}
   .tile{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:9px}
   .tile:active{transform:scale(.98)}
   .tile .ic{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35),inset 0 0 0 1px rgba(255,255,255,.06);overflow:hidden}
@@ -337,6 +344,8 @@ function _servicesFor(cat){
 }
 function renderGrid(){
   var el=document.getElementById('grid'); if(!el) return;
+  var cols=((window.__SHOPHEAD__||{}).cols)||3; if(cols<2)cols=2; if(cols>4)cols=4;
+  el.className='grid c'+cols;
   var keys=_servicesFor(_curCat);
   if(!keys.length){ el.innerHTML='<div class="empty">Здесь пока пусто</div>'; return; }
   el.innerHTML=keys.map(function(k){
