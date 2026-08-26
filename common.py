@@ -358,7 +358,13 @@ async def fk_create_order(amount: float, order_id: str, user_id: int,
             data = await r.json()
             logging.info(f"FK API create order response: {data}")
             if data.get("type") == "success":
-                return data.get("location", "")
+                _loc = data.get("location", "")
+                # Оплата картой (i=36): FK иногда отдаёт ссылку с /qr/ — это страница СБП
+                # (выбор банка), а не ввод карты. Убираем /qr/ → открывается форма карты.
+                if int(payment_id) == 36 and _loc and "/qr/" in _loc:
+                    _loc = _loc.replace("/qr/", "/")
+                    logging.info(f"FK card link normalized (removed /qr/): {_loc}")
+                return _loc
             # Пробрасываем ПОЛНЫЙ текст ошибки от FK — чтобы видеть, чего не хватает
             _err = data.get("message") or data.get("error") or data
             raise Exception(f"FK API error: {_err}")
