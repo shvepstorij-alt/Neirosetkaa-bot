@@ -6657,6 +6657,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/shophead", api_admin_shophead_handler)
     app.router.add_post("/api/admin/catalog-analytics", api_admin_catalog_analytics_handler)
     app.router.add_post("/api/track", api_track_handler)
+    app.router.add_post("/api/actpromo", api_actpromo_handler)
+    app.router.add_post("/api/admin/actpromo", api_admin_actpromo_handler)
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
@@ -9503,6 +9505,69 @@ async def api_gen_hist_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "history": _hist})
     except Exception as _e:
         logging.error(f"api_gen_hist: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_actpromo_handler(request: web.Request) -> web.Response:
+    """Промо-окно после успешной активации — конфиг для мини-аппа. Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False}, status=403)
+        _on = (await get_setting("actpromo_on", "0") or "0") == "1"
+        if not _on:
+            return web.json_response({"ok": True, "on": False})
+        return web.json_response({
+            "ok": True, "on": True,
+            "title": (await get_setting("actpromo_title", "") or ""),
+            "text": (await get_setting("actpromo_text", "") or ""),
+            "img": (await get_setting("actpromo_img", "") or ""),
+            "btn_text": (await get_setting("actpromo_btn_text", "") or ""),
+            "btn_url": (await get_setting("actpromo_btn_url", "") or ""),
+        })
+    except Exception:
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_actpromo_handler(request: web.Request) -> web.Response:
+    """Редактор промо-окна активации. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        if body.get("save"):
+            await set_setting("actpromo_on", "1" if body.get("on") else "0")
+            await set_setting("actpromo_title", str(body.get("title", "")).strip()[:120])
+            await set_setting("actpromo_text", str(body.get("text", "")).strip()[:600])
+            await set_setting("actpromo_btn_text", str(body.get("btn_text", "")).strip()[:40])
+            _url = str(body.get("btn_url", "")).strip()[:300]
+            if _url and not (_url.startswith("http://") or _url.startswith("https://") or _url.startswith("tg://")):
+                _url = ""
+            await set_setting("actpromo_btn_url", _url)
+            _im = str(body.get("img", "")).strip()
+            if _im and not (_im.startswith("data:image/") or _im.startswith("http")):
+                _im = ""
+            if _im.startswith("data:image/") and len(_im) > 500000:
+                return web.json_response({"ok": False, "error": "img_too_big"})
+            await set_setting("actpromo_img", _im)
+        return web.json_response({
+            "ok": True,
+            "on": (await get_setting("actpromo_on", "0") or "0") == "1",
+            "title": (await get_setting("actpromo_title", "") or ""),
+            "text": (await get_setting("actpromo_text", "") or ""),
+            "img": (await get_setting("actpromo_img", "") or ""),
+            "btn_text": (await get_setting("actpromo_btn_text", "") or ""),
+            "btn_url": (await get_setting("actpromo_btn_url", "") or ""),
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_actpromo: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 

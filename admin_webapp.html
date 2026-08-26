@@ -155,7 +155,7 @@ function home(){
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
-   ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🛠️","Техобслуживание","Техобслуживание",1]]],
+   ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
   ];
   var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
@@ -775,6 +775,58 @@ function _caReset(){
   if(window.confirm&&!window.confirm('Точно обнулить? Это действие необратимо — старые данные больше не будут показываться в отчёте.'))return;
   toast('Сбрасываю…');
   api('/api/admin/catalog-analytics',{reset:true}).then(function(d){toast(d&&d.ok?'Обнулено ✅':'Ошибка');if(d&&d.ok){window._caDate='';window._caPer='month';open2('Аналитика Каталога');}});
+}
+
+/* Промо-окно после успешной активации */
+SCREENS["Промо активации"]=function(){setTimeout(_apLoad,30);
+  return hdr("Промо после активации","всплывает после успешной активации ChatGPT/Claude")+'<div class="wrap"><div id="apbody"><div class="note">Загружаю…</div></div></div>';};
+function _apLoad(){api('/api/admin/actpromo',{}).then(function(d){if(!d||!d.ok){var b=document.getElementById('apbody');if(b)b.innerHTML='<div class="note">Ошибка загрузки.</div>';return;}window._apCfg=d;window._apImg=d.img||'';window._apOn=!!d.on;_apRender();});}
+function _apPrevHtml(title,text,img,btnText){
+  return '<div style="background:#1b1c22;border:1px solid #2b2d36;border-radius:16px;padding:14px;text-align:center;color:#fff;max-width:300px;margin:0 auto">'
+    +(img?('<img src="'+img+'" style="width:100%;border-radius:12px;margin-bottom:10px">'):'')
+    +(title?('<div style="font-size:17px;font-weight:800;margin-bottom:6px">'+nsgEsc(title)+'</div>'):'')
+    +(text?('<div style="font-size:13px;color:#c7cad2;line-height:1.5;margin-bottom:12px">'+nsgEsc(text).replace(/\n/g,'<br>')+'</div>'):'')
+    +(btnText?('<div style="background:#10a37f;color:#fff;font-weight:700;padding:12px;border-radius:11px">'+nsgEsc(btnText)+'</div>'):'')
+    +'<div style="color:#9aa0ad;font-size:12px;padding:8px 0 0">Закрыть</div></div>';
+}
+function _apPrev(){
+  var t=(document.getElementById('ap_title')||{}).value||'';
+  var x=(document.getElementById('ap_text')||{}).value||'';
+  var b=(document.getElementById('ap_btn')||{}).value||'';
+  var pv=document.getElementById('approv');if(pv)pv.innerHTML=_apPrevHtml(t,x,window._apImg||'',b);
+}
+function _apToggle(){window._apOn=!window._apOn;_apRender();}
+function _apPick(){var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;var rd=new FileReader();
+    rd.onload=function(){_shOpenCropper(rd.result,16,9,function(uri){window._apImg=uri;_apRender();});};rd.readAsDataURL(f);};
+  inp.click();}
+function _apClearImg(){window._apImg='';_apRender();}
+function _apRender(){
+  var d=window._apCfg||{};var el=document.getElementById('apbody');if(!el)return;var img=window._apImg||'';
+  el.innerHTML=
+    '<div class="block"><div class="kv" style="border:0;padding:0"><span style="font-weight:700">Показывать промо-окно</span>'
+    +'<span onclick="_apToggle()" style="cursor:pointer;padding:6px 14px;border-radius:20px;font-weight:700;font-size:13px;'+(window._apOn?'background:var(--acc,#37c98a);color:#fff':'background:var(--card2);color:var(--txt2)')+'">'+(window._apOn?'ВКЛ':'ВЫКЛ')+'</span></div></div>'
+    +'<div class="block"><div class="note" style="margin-top:0">Превью окна:</div><div id="approv" style="margin-top:10px">'+_apPrevHtml(d.title,d.text,img,d.btn_text)+'</div></div>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Заголовок</label><input class="f" id="ap_title" oninput="_apPrev()" value="'+nsgEsc(d.title||'')+'"/>'
+    +'<label class="fl">Текст</label><textarea class="f" id="ap_text" oninput="_apPrev()" style="min-height:80px">'+nsgEsc(d.text||'')+'</textarea></div>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Картинка (необязательно, кадрируется 16:9)</label>'
+    +(img?('<div style="margin:6px 0"><img src="'+img+'" style="width:100%;max-width:260px;border-radius:12px"></div>'):'<div class="note" style="margin:6px 0">Можно без картинки — только текст.</div>')
+    +'<button class="btn sec" onclick="_apPick()">📷 '+(img?'Заменить картинку':'Загрузить картинку')+'</button>'
+    +(img?'<button class="btn sec" style="margin-top:6px" onclick="_apClearImg()">🗑 Убрать</button>':'')+'</div>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Текст кнопки (необязательно)</label><input class="f" id="ap_btn" oninput="_apPrev()" value="'+nsgEsc(d.btn_text||'')+'" placeholder="Напр.: Открыть неделю Claude"/>'
+    +'<label class="fl">Ссылка кнопки</label><input class="f" id="ap_url" value="'+nsgEsc(d.btn_url||'')+'" placeholder="https://t.me/твой_канал"/></div>'
+    +'<button class="btn" onclick="_apSave()">💾 Сохранить</button>';
+}
+function _apSave(){
+  var t=(document.getElementById('ap_title')||{}).value||'';
+  var x=(document.getElementById('ap_text')||{}).value||'';
+  var b=(document.getElementById('ap_btn')||{}).value||'';
+  var u=(document.getElementById('ap_url')||{}).value||'';
+  toast('Сохраняю…');
+  api('/api/admin/actpromo',{save:true,on:window._apOn?1:0,title:t,text:x,btn_text:b,btn_url:u,img:window._apImg||''}).then(function(d){
+    if(d&&d.ok){toast('Сохранено ✅');window._apCfg=d;window._apImg=d.img||'';window._apOn=!!d.on;_apRender();}
+    else{toast(d&&d.error==='img_too_big'?'Картинка слишком большая':'Ошибка');}
+  });
 }
 
 /* Логотипы сервисов — загрузка/удаление */

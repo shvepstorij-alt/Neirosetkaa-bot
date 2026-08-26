@@ -904,7 +904,29 @@ function showScreen(id) {
   try { if (window._setHelpVisible) window._setHelpVisible(id === 's2'); } catch(e) {}
   try { if (window.closeInstr) window.closeInstr(); } catch(e) {}
   // Live-лента рекомендаций — на экране «Готово»
-  if (id === 's4') { try { renderRecs(); } catch(e) {} }
+  if (id === 's4') { try { renderRecs(); } catch(e) {} try { _showActPromo(); } catch(e) {} }
+}
+// ─── Промо-окно после успешной активации (настраивается в админке) ───
+function _apEsc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function _apOpen(enc){var u=decodeURIComponent(enc);try{if(tg&&tg.openTelegramLink&&(u.indexOf('t.me/')>=0||u.indexOf('tg://')===0)){tg.openTelegramLink(u);return;}}catch(e){}try{if(tg&&tg.openLink){tg.openLink(u);return;}}catch(e){}try{window.open(u,'_blank');}catch(e){}}
+function _apClose(){var o=document.getElementById('ap-ov');if(o)o.remove();}
+function _showActPromo(){
+  if(window._actPromoShown)return;
+  _api('/api/actpromo',{}).then(function(d){
+    if(!d||!d.ok||!d.on)return;
+    window._actPromoShown=true;
+    var img=d.img?('<img src="'+d.img+'" style="width:100%;border-radius:14px;display:block;margin-bottom:12px">'):'';
+    var btn=(d.btn_text&&d.btn_url)?('<div onclick="_apOpen(\''+encodeURIComponent(d.btn_url)+'\')" style="background:#10a37f;color:#fff;font-weight:700;font-size:15px;padding:14px;border-radius:12px;cursor:pointer;margin-bottom:8px">'+_apEsc(d.btn_text)+'</div>'):'';
+    var ov=document.createElement('div');ov.id='ap-ov';
+    ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.innerHTML='<div style="background:#1b1c22;border:1px solid #2b2d36;border-radius:18px;padding:16px;max-width:380px;width:100%;max-height:90vh;overflow:auto;text-align:center;color:#fff">'+img
+      +(d.title?('<div style="font-size:19px;font-weight:800;margin-bottom:8px">'+_apEsc(d.title)+'</div>'):'')
+      +(d.text?('<div style="font-size:14px;color:#c7cad2;line-height:1.5;margin-bottom:14px">'+_apEsc(d.text).replace(/\n/g,'<br>')+'</div>'):'')
+      +btn
+      +'<div onclick="_apClose()" style="color:#9aa0ad;font-size:13px;padding:8px;cursor:pointer">Закрыть</div></div>';
+    ov.addEventListener('click',function(e){if(e.target===ov)_apClose();});
+    document.body.appendChild(ov);
+  });
 }
 
 // ─── Live-лента рекомендаций + карточки сервисов ─────────────────
