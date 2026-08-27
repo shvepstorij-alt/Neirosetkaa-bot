@@ -638,21 +638,30 @@ async def mark_gpt_code_used(code: str, user_id: int, order_id: str, email: str 
             "UPDATE gpt_codes SET used_by=$1, order_id=$2, email=$3, used_at=NOW() WHERE code=$4",
             user_id, order_id, email, code)
 
+async def activation_hours() -> int:
+    """Срок жизни сессии активации в часах (настраивается админом). По умолчанию 12."""
+    try:
+        h = int(await get_setting("activation_hours", "12") or "12")
+    except Exception:
+        h = 12
+    return max(1, min(168, h))
+
+
 async def save_pending_activation(user_id: int, code: str, order_id: str, plan: str, plan_name: str,
                                   provider: str = "987ai"):
+    _h = await activation_hours()
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Срок активации — 12 часов и при СОЗДАНИИ, и при обновлении. Раньше при
-        # первом INSERT срабатывал дефолт таблицы (2 часа), из-за чего клиент видел
-        # «время сессии истекло» задолго до реальных 12 ч.
+        # Срок активации настраивается (activation_hours, по умолчанию 12ч) — и при
+        # создании, и при обновлении. make_interval позволяет подставить часы параметром.
         await conn.execute(
             """INSERT INTO gpt_pending_activations
                    (user_id, code, order_id, plan, plan_name, provider, expires_at)
-               VALUES ($1,$2,$3,$4,$5,$6, NOW()+INTERVAL '12 hours')
+               VALUES ($1,$2,$3,$4,$5,$6, NOW()+make_interval(hours => $7))
                ON CONFLICT (user_id) DO UPDATE
                SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6, session_raw=NULL,
-                   created_at=NOW(), expires_at=NOW()+INTERVAL '12 hours'""",
-            user_id, code, order_id, plan, plan_name, provider)
+                   created_at=NOW(), expires_at=NOW()+make_interval(hours => $7)""",
+            user_id, code, order_id, plan, plan_name, provider, _h)
 
 async def get_pending_activation(user_id: int):
     pool = await get_pool()
@@ -1545,17 +1554,18 @@ async def save_claude_pending_activation(
     user_id: int, code: str, order_id: str, plan: str, plan_name: str,
     provider: str = "bpa"
 ):
+    _h = await activation_hours()
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO claude_pending_activations
-               (user_id, code, order_id, plan, plan_name, provider)
-               VALUES ($1,$2,$3,$4,$5,$6)
+               (user_id, code, order_id, plan, plan_name, provider, expires_at)
+               VALUES ($1,$2,$3,$4,$5,$6, NOW()+make_interval(hours => $7))
                ON CONFLICT (user_id) DO UPDATE
                SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6,
                    org_id='', bpa_order_id=NULL,
-                   created_at=NOW(), expires_at=NOW()+INTERVAL '12 hours'""",
-            user_id, code, order_id, plan, plan_name, provider
+                   created_at=NOW(), expires_at=NOW()+make_interval(hours => $7)""",
+            user_id, code, order_id, plan, plan_name, provider, _h
         )
 
 
@@ -1727,17 +1737,18 @@ async def mark_perplexity_code_used(code: str, user_id: int, order_id: str, org_
 async def save_perplexity_pending_activation(
     user_id: int, code: str, order_id: str, plan: str, plan_name: str
 ):
+    _h = await activation_hours()
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO perplexity_pending_activations
-               (user_id, code, order_id, plan, plan_name)
-               VALUES ($1,$2,$3,$4,$5)
+               (user_id, code, order_id, plan, plan_name, expires_at)
+               VALUES ($1,$2,$3,$4,$5, NOW()+make_interval(hours => $6))
                ON CONFLICT (user_id) DO UPDATE
                SET code=$2, order_id=$3, plan=$4, plan_name=$5,
                    org_id='', bpa_order_id=NULL,
-                   created_at=NOW(), expires_at=NOW()+INTERVAL '12 hours'""",
-            user_id, code, order_id, plan, plan_name
+                   created_at=NOW(), expires_at=NOW()+make_interval(hours => $6)""",
+            user_id, code, order_id, plan, plan_name, _h
         )
 
 

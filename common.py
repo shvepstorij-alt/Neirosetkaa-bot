@@ -3784,7 +3784,14 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
             scat = SHOP_CATALOG.get(svc_key, {}) or {}
             plans = scat.get("plans", [])
             plan_name = plans[idx]["name"] if 0 <= idx < len(plans) else "Plus"
-            plan_key = plan_name_to_key(plan_name)
+            # ВАЖНО: ключ тарифа должен совпадать с тем, что используется при ПОКУПКЕ,
+            # иначе коды не находятся. Claude/Perplexity имеют свою карту (не plan_name_to_key).
+            if svc_key == "claude":
+                plan_key = {"Pro": "pro", "Max 5×": "max_5x", "Max 20×": "max_20x"}.get(plan_name, "pro")
+            elif svc_key == "perplexity":
+                plan_key = "pro"
+            else:
+                plan_key = plan_name_to_key(plan_name)
             if svc_key == "chatgpt":
                 # ВАЖНО: переиспользуем УЖЕ закреплённый за этим заказом код (из pending),
                 # чтобы не потратить на один заказ второй код. Новый берём только если
@@ -6665,6 +6672,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/track", api_track_handler)
     app.router.add_post("/api/actpromo", api_actpromo_handler)
     app.router.add_post("/api/admin/actpromo", api_admin_actpromo_handler)
+    app.router.add_post("/api/admin/actwindow", api_admin_actwindow_handler)
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
@@ -9574,6 +9582,29 @@ async def api_admin_actpromo_handler(request: web.Request) -> web.Response:
         })
     except Exception as _e:
         logging.error(f"api_admin_actpromo: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_actwindow_handler(request: web.Request) -> web.Response:
+    """Время жизни сессии активации (часы). Чтение/сохранение. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        if body.get("save"):
+            try:
+                _h = int(body.get("hours", 12))
+            except Exception:
+                _h = 12
+            _h = max(1, min(168, _h))
+            await set_setting("activation_hours", str(_h))
+        return web.json_response({"ok": True,
+                                  "hours": int(await get_setting("activation_hours", "12") or "12")})
+    except Exception as _e:
+        logging.error(f"api_admin_actwindow: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 

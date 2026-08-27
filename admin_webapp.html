@@ -155,7 +155,7 @@ function home(){
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
-   ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
+   ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
   ];
   var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
@@ -776,6 +776,22 @@ function _caReset(){
   toast('Сбрасываю…');
   api('/api/admin/catalog-analytics',{reset:true}).then(function(d){toast(d&&d.ok?'Обнулено ✅':'Ошибка');if(d&&d.ok){window._caDate='';window._caPer='month';open2('Аналитика Каталога');}});
 }
+
+/* Время жизни сессии активации */
+SCREENS["Время активации"]=function(){setTimeout(_awLoad,30);
+  return hdr("Время активации","сколько у клиента есть на активацию подписки")+'<div class="wrap"><div id="awbody"><div class="note">Загружаю…</div></div></div>';};
+function _awLoad(){api('/api/admin/actwindow',{}).then(function(d){var el=document.getElementById('awbody');if(!el)return;if(!d||!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}window._awH=d.hours||12;_awRender();});}
+function _awRender(){
+  var el=document.getElementById('awbody');if(!el)return;var cur=window._awH||12;
+  var opts=[2,6,12,24,48,72];
+  el.innerHTML='<div class="block"><div class="note" style="margin-top:0">Столько времени у клиента есть, чтобы активировать купленную подписку (ChatGPT/Claude/Perplexity), прежде чем сессия истечёт. Код всё это время закреплён за заказом.</div>'
+    +'<div style="font-size:22px;font-weight:800;margin:12px 0 4px">Сейчас: '+cur+' ч</div></div>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Выбери срок</label><div class="seg" style="flex-wrap:wrap;margin-top:6px">'
+    +opts.map(function(h){return '<button class="'+(cur===h?'on':'')+'" onclick="window._awH='+h+';_awRender()">'+h+' ч</button>';}).join('')
+    +'</div><label class="fl">Или вручную (1–168 ч)</label><input class="f" id="aw_h" type="number" min="1" max="168" value="'+cur+'" oninput="window._awH=Math.max(1,Math.min(168,parseInt(this.value,10)||12))"/></div>'
+    +'<button class="btn" onclick="_awSave()">💾 Сохранить</button>';
+}
+function _awSave(){toast('Сохраняю…');api('/api/admin/actwindow',{save:true,hours:window._awH||12}).then(function(d){if(d&&d.ok){window._awH=d.hours||12;toast('Сохранено ✅ ('+window._awH+' ч)');_awRender();}else toast('Ошибка');});}
 
 /* Промо-окно после успешной активации */
 SCREENS["Промо активации"]=function(){setTimeout(_apLoad,30);
