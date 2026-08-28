@@ -10902,6 +10902,15 @@ async def _is_manual_plan(shop_key, plan_idx) -> bool:
     return False
 
 
+def _strip_tg_html(s: str) -> str:
+    """Убирает HTML/премиум-эмодзи из строки для подстановки в ?text= (t.me).
+    <tg-emoji ...>⚡</tg-emoji> → ⚡, прочие теги вырезаются. В ?text= HTML не рендерится."""
+    import re as _re_st
+    s = _re_st.sub(r"<tg-emoji[^>]*>(.*?)</tg-emoji>", r"\1", s or "")
+    s = _re_st.sub(r"<[^>]+>", "", s)
+    return _re_st.sub(r"\s{2,}", " ", s).strip()
+
+
 async def _send_manual_order(user_id, shop_key, service_name, plan_name,
                              order_id, amount_rub, delayed_note=""):
     """Тариф с ручной выдачей: создаём заказ, уведомляем клиента и админа (с кнопками)."""
@@ -10930,7 +10939,7 @@ async def _send_manual_order(user_id, shop_key, service_name, plan_name,
                      if (_num_h or _fk_no_cl) else f"\U0001f194 Номер заказа: <code>{order_id}</code>\n\n")
         import urllib.parse as _uq_manual
         _msg_to_alex = _uq_manual.quote(
-            f"Приветствую! Оплатил заказ {_onum_h}\nСервис: {service_name}\n"
+            f"Приветствую! Оплатил заказ {_onum_h}\nСервис: {_strip_tg_html(service_name)}\n"
             f"Номер заказа: {_fk_no_cl or order_id}")
         await bot.send_message(
             user_id,
