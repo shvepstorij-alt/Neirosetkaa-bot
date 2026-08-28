@@ -870,6 +870,15 @@ function _api(path, body){
     .then(function(r){ return r.json().catch(function(){ return {ok:false}; }); })
     .catch(function(){ return {ok:false}; });
 }
+// Устойчивый fetch: повторяет при обрыве связи (перезапуск сервера/деплой)
+async function _fetchR(url, opts, tries){
+  tries = tries || 4; var lastErr;
+  for (var i=0;i<tries;i++){
+    try { return await fetch(url, opts); }
+    catch(e){ lastErr=e; await new Promise(function(r){ setTimeout(r, 1500*(i+1)); }); }
+  }
+  throw lastErr || new Error('network');
+}
 
 // ─── App Store / iCloud (NS Gifts) — регион → номинал → оплата, всё в мини-аппке ───
 function _asFallbackToBot(){
@@ -1081,7 +1090,7 @@ async function startActivation() {
   showScreen('s3');
 
   try {
-    var resp = await fetch('/api/activate-claude', {
+    var resp = await _fetchR('/api/activate-claude', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1090,7 +1099,7 @@ async function startActivation() {
         init_data: tg ? tg.initData : '',
         force:     forceMode ? 1 : 0
       })
-    });
+    }, 4);
 
     if (!resp.ok) {
       var errMsg = 'Ошибка сервера. Попробуй снова.';
@@ -1103,7 +1112,7 @@ async function startActivation() {
     if (!body.order_id) { showError(body.error || 'Не удалось запустить активацию.'); return; }
     await pollStatus(body.order_id);
   } catch(e) {
-    showError('Нет соединения с сервером. Проверь интернет и попробуй снова.');
+    showError('⏳ Сервер сейчас обновляется. Подожди минуту и нажми «Попробовать снова» — код действителен, ничего не потеряется.');
   }
 }
 
