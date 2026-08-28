@@ -2750,32 +2750,29 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
                     if it.get("costUsd") is not None:
                         await set_setting(f"cost_usd:{k}:{idx}", str(float(it["costUsd"])))
                     scat = SHOP_CATALOG.get(k)
+                    # ПОЗИЦИЯ тарифа в БД (уникальный plan_idx) — устойчиво к дубликатам имён.
+                    # Порядок совпадает с формой цен и с загрузкой каталога (sort_order, plan_idx).
+                    _pos_row = await conn.fetchrow(
+                        "SELECT plan_idx FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
+                        "ORDER BY sort_order, plan_idx OFFSET $2 LIMIT 1", k, idx)
+                    _pidx = _pos_row["plan_idx"] if _pos_row else None
                     if it.get("price") is not None:
                         pr = int(float(it["price"]))
-                        # 1) пробуем по ИМЕНИ тарифа
-                        _res = None
-                        if pname:
-                            _res = await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_name=$3", pr, k, pname)
-                        # 2) ФОЛБЭК: если по имени 0 строк (в БД другое имя — иной символ «×»,
-                        #    пробелы и т.п.) — обновляем по ПОЗИЦИИ в том же порядке, что и форма цен.
-                        #    Так цена гарантированно сохраняется и не «слетает» после деплоя.
-                        if (not pname) or (isinstance(_res, str) and _res.strip().endswith(" 0")):
-                            _row = await conn.fetchrow(
-                                "SELECT plan_idx FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
-                                "ORDER BY sort_order, plan_idx OFFSET $2 LIMIT 1", k, idx)
-                            if _row:
-                                await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_idx=$3", pr, k, _row["plan_idx"])
+                        # Обновляем ТОЛЬКО этот конкретный тариф (по plan_idx). Раньше шло по
+                        # имени — при двух тарифах с одинаковым именем (напр. «Pro») правка
+                        # затрагивала оба, и цена «слетала» после деплоя.
+                        if _pidx is not None:
+                            await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_idx=$3", pr, k, _pidx)
+                        elif pname:
+                            await conn.execute("UPDATE bot_shop_items SET price=$1 WHERE key=$2 AND plan_name=$3", pr, k, pname)
                         if scat and 0 <= idx < len(scat.get("plans", [])):
                             scat["plans"][idx]["price"] = pr
-                    if it.get("desc") is not None and pname:
+                    if it.get("desc") is not None:
                         _pd = str(it["desc"])
-                        _resd = await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3", _pd, k, pname)
-                        if isinstance(_resd, str) and _resd.strip().endswith(" 0"):
-                            _rowd = await conn.fetchrow(
-                                "SELECT plan_idx FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 "
-                                "ORDER BY sort_order, plan_idx OFFSET $2 LIMIT 1", k, idx)
-                            if _rowd:
-                                await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_idx=$3", _pd, k, _rowd["plan_idx"])
+                        if _pidx is not None:
+                            await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_idx=$3", _pd, k, _pidx)
+                        elif pname:
+                            await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3", _pd, k, pname)
                         if scat and 0 <= idx < len(scat.get("plans", [])):
                             scat["plans"][idx]["desc"] = _pd
                     if it.get("manual") is not None:
