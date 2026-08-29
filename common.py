@@ -10454,6 +10454,74 @@ async def webapp_perplexity_handler(request: web.Request) -> web.Response:
         return web.Response(text="Perplexity Mini App not found", status=404)
 
 
+async def _perplexity_notify_success(code, user_id, order_id, plan_name, org_id):
+    """Уведомления после УСПЕШНОЙ синхронной активации Perplexity (клиент + админ)."""
+    import datetime as _dt2
+    _ts = _dt2.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
+    try:
+        _pool2 = await get_pool()
+        async with _pool2.acquire() as _c2:
+            _ur = await _c2.fetchrow("SELECT username, full_name FROM users WHERE user_id=$1", user_id)
+        _un = (_ur["username"] if _ur else "") or ""
+        _fn = (_ur["full_name"] if _ur else "") or ""
+    except Exception:
+        _un = _fn = ""
+    _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+    _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
+    _prof_kw_cl = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
+    _oref_px2 = await _order_ref_line(order_id)
+    _congrats_cl = (
+        "🎉 <b>Подписка Perplexity активирована!</b>\n\n"
+        f"📦 Тариф: <b>{plan_name}</b>\n"
+        f"🔑 Ключ: <code>{code}</code>\n"
+        f"{_oref_px2}\n"
+        f"📅 Действует до: <b>{_end_cl}</b>\n\n"
+        "Готово! Открой Perplexity, сделай «Restore Purchases» в приложении или просто перезайди — Pro подтянется. Спасибо за покупку! 🙌"
+    )
+    _kb_cl = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Открыть Perplexity ↗", url="https://perplexity.ai")],
+        [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", **_prof_kw_cl)],
+        [_eib("Главное меню", "back_main")],
+    ])
+    _mid_cl = _perplexity_act_msg.pop(user_id, None)
+    _edited = False
+    if _mid_cl:
+        try:
+            await bot.edit_message_text(_congrats_cl, chat_id=user_id, message_id=_mid_cl,
+                                        parse_mode="HTML", reply_markup=_kb_cl)
+            _edited = True
+        except Exception:
+            pass
+    if not _edited:
+        try:
+            await bot.send_message(user_id, _congrats_cl, parse_mode="HTML", reply_markup=_kb_cl)
+        except Exception:
+            pass
+    try:
+        _caption_ok = (
+            f"✅ <b>Perplexity авто-активация OK</b>\n\n"
+            f"👤 <b>{_tg}</b>  (<code>{user_id}</code>)\n"
+            f"🔑 Код: <code>{code}</code>\n"
+            f"📦 Тариф: <b>{plan_name}</b>\n"
+            f"🆔 User ID: <code>{org_id}</code>\n"
+            f"⏱ {_ts}"
+        )
+        try:
+            _ord_ok = await fk_get_order(order_id)
+            _amid_ok = (_ord_ok or {}).get("admin_msg_id")
+        except Exception:
+            _amid_ok = None
+        if _amid_ok:
+            try:
+                await bot.edit_message_text(_caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+            except Exception:
+                await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+        else:
+            await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+    except Exception:
+        pass
+
+
 async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     """POST /api/activate-perplexity"""
     import json as _j, re as _re
@@ -10590,9 +10658,11 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
         ) as _s:
+            # Perplexity у bypriceactivate.pro — ОТДЕЛЬНЫЙ СИНХРОННЫЙ эндпоинт:
+            # {code, user_id (UUID)} → сразу итог (без order_id/поллинга).
             async with _s.post(
-                "https://bypriceactivate.pro/api/activate",
-                json={"code": code, "org_id": org_id},
+                "https://bypriceactivate.pro/api/perplexity/activate",
+                json={"code": code, "user_id": org_id},
                 headers={"Content-Type": "application/json"},
             ) as _r:
                 try:
@@ -10600,51 +10670,59 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                 except Exception:
                     _rd = {}
 
-                if _r.status == 201:
-                    bpa_order_id = _rd.get("order_id")
-                    if not bpa_order_id:
-                        return _resp({"error": "Сервис не вернул order_id."})
-
-                    _pool3 = await get_pool()
-                    async with _pool3.acquire() as _c3:
-                        await _c3.execute(
-                            "UPDATE perplexity_pending_activations "
-                            "SET org_id=$1, bpa_order_id=$2 WHERE user_id=$3",
-                            org_id, bpa_order_id, user_id
-                        )
-                    asyncio.create_task(_perplexity_activation_polling_job(
-                        bpa_order_id, code, user_id, order_id, plan_name, org_id
-                    ))
-                    logging.info(
-                        f"Perplexity activation: bpa={bpa_order_id} user={user_id} code={code}"
-                    )
-                    return _resp({"order_id": bpa_order_id, "status": "queued"})
+                if _r.status == 200 and _rd.get("ok"):
+                    # Успех — оформляем сразу (синхронно)
+                    try:
+                        await mark_perplexity_code_used(code, user_id, order_id, org_id)
+                    except Exception:
+                        pass
+                    await delete_perplexity_pending_activation(user_id)
+                    _perplexity_double_warned.discard(user_id)
+                    import random as _rnd_px
+                    _ref = _rnd_px.randint(9000000, 9999999)
+                    _perplexity_job_results[_ref] = {"status": "done", "success": True}
+                    try:
+                        await _perplexity_notify_success(code, user_id, order_id, plan_name, org_id)
+                    except Exception as _ne:
+                        logging.warning(f"perplexity notify success: {_ne}")
+                    try:
+                        _fail_clear("perplexity", user_id)
+                    except Exception:
+                        pass
+                    await log_event(user_id, "perplexity_activation_ok", f"code={code} plan={plan_name}")
+                    logging.info(f"Perplexity SYNC activation OK: user={user_id} code={code} tx={_rd.get('transaction_id')}")
+                    return _resp({"order_id": _ref, "status": "queued"})
 
                 elif _r.status == 409:
-                    _detail = _rd.get("detail", "")
-                    if "already claimed" in _detail:
-                        _msg = "Код уже активирован. Напиши Александру."
-                    elif "out of stock" in _detail:
-                        _msg = "Временно нет активаций. Александр активирует вручную."
+                    _detail = (_rd.get("detail") or "").lower()
+                    if "fulfilled" in _detail or "already" in _detail or "уже" in _detail or "claimed" in _detail:
+                        return _resp({"error": "Код уже активирован. Напиши Александру."})
+                    if ("стоке" in _detail or "out of stock" in _detail or "нет свободных" in _detail
+                            or "receipt" in _detail or "no stock" in _detail):
                         try:
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 <b>Perplexity — нет стока!</b>\n"
                                 f"👤 <code>{user_id}</code> ({plan_name})\n"
-                                f"Пополни коды на bypriceactivate.pro",
+                                f"Пополни receipt'ы Perplexity на bypriceactivate.pro",
                                 parse_mode="HTML"
                             )
                         except Exception:
                             pass
-                    else:
-                        _msg = _detail or "Ошибка кода."
-                    return _resp({"error": _msg})
+                        return _resp({"error": "Временно нет активаций. Александр активирует вручную."})
+                    return _resp({"error": _rd.get("detail") or "Ошибка кода."})
 
                 elif _r.status == 404:
                     return _resp({"error": "Код не найден. Напиши Александру."})
 
+                elif _r.status == 400:
+                    _det4 = (_rd.get("detail") or "").lower()
+                    if "user_id" in _det4 or "uuid" in _det4:
+                        return _resp({"error": "Неверный Perplexity User ID — нужен UUID со страницы perplexity.ai/api/auth/session (поле id)."})
+                    return _resp({"error": _rd.get("detail") or "Ошибка запроса."})
+
                 else:
-                    logging.error(f"bypriceactivate.pro HTTP {_r.status}: {str(_rd)[:200]}")
+                    logging.error(f"bypriceactivate.pro perplexity HTTP {_r.status}: {str(_rd)[:200]}")
                     return _resp({"error": f"Ошибка ({_r.status}). Попробуй ещё раз."})
 
     except aiohttp.ClientError as _e:
