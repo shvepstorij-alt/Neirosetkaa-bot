@@ -156,7 +156,7 @@ function home(){
    ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
-   ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🍎","App Store","Настройка App Store"]]]
+   ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🖼","Фото/видео активации","Медиа активации"],["🍎","App Store","Настройка App Store"]]]
   ];
   var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
   h+='<div class="hero"><div class="hi">🎛️</div><h1>Панель управления</h1><p>Сегодня · '+(new Date()).toLocaleDateString('ru')+'</p></div>';
@@ -792,6 +792,66 @@ function _awRender(){
     +'<button class="btn" onclick="_awSave()">💾 Сохранить</button>';
 }
 function _awSave(){toast('Сохраняю…');api('/api/admin/actwindow',{save:true,hours:window._awH||12}).then(function(d){if(d&&d.ok){window._awH=d.hours||12;toast('Сохранено ✅ ('+window._awH+' ч)');_awRender();}else toast('Ошибка');});}
+
+/* Фото/видео в приложениях активации — по каждому сервису */
+SCREENS["Медиа активации"]=function(){
+  if(window._amSvc===undefined)window._amSvc='perplexity';
+  setTimeout(_amLoad,30);
+  var seg='<div class="seg">'+[['chatgpt','ChatGPT'],['claude','Claude'],['perplexity','Perplexity']].map(function(x){return '<button class="'+((window._amSvc||'perplexity')===x[0]?'on':'')+'" onclick="window._amSvc=\''+x[0]+'\';open2(\'Медиа активации\')">'+x[1]+'</button>';}).join('')+'</div>';
+  return hdr("Фото/видео активации","аватар и визуал экрана «Готово»")+'<div class="wrap">'+seg+'<div id="ambody"><div class="note">Загружаю…</div></div></div>';};
+function _amLoad(){api('/api/admin/actmedia',{svc:window._amSvc||'perplexity'}).then(function(d){var el=document.getElementById('ambody');if(!el)return;if(!d||!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}window._am=d;window._amAvatarNew='';window._amAvatarClear=false;window._amMediaNew='';window._amMediaClear=false;_amRender();});}
+function _amAbs(u){return (u&&u.indexOf('/media/')===0)?(location.origin+u):u;}
+function _amAvatarSrc(){if(window._amAvatarClear)return window._am.defAvatar;if(window._amAvatarNew)return window._amAvatarNew;var a=(window._am&&window._am.avatar)||'';return a?_amAbs(a):window._am.defAvatar;}
+function _amMediaSrc(){if(window._amMediaClear)return window._am.defMedia;if(window._amMediaNew)return window._amMediaNew;var v=(window._am&&window._am.media)||'';return v?_amAbs(v):window._am.defMedia;}
+function _amRender(){
+  var el=document.getElementById('ambody');if(!el)return;
+  var kind=(window._am&&window._am.kind)||'video';
+  var msrc=_amMediaSrc();
+  var mediaPrev=(kind==='video')
+    ? '<video src="'+msrc+'" style="width:100%;border-radius:14px;background:#000;max-height:300px" controls playsinline preload="metadata"></video>'
+    : '<img src="'+msrc+'" style="width:100%;border-radius:14px;max-height:300px;object-fit:contain;background:#000">';
+  var uploadBtn=(kind==='video')
+    ? '<button class="btn sec" style="margin-top:8px" onclick="_amPickMediaVideo()">🎬 Загрузить видео (до 15 МБ)</button>'
+    : '<button class="btn sec" style="margin-top:8px" onclick="_amPickMediaImage()">🖼 Загрузить картинку</button>';
+  var urlLabel=(kind==='video')?'…или ссылка на видео (mp4)':'…или ссылка на картинку';
+  var mediaTitle=(kind==='video')?'🎬 Видео на экране «Готово»':'🖼 Картинка на экране «Готово»';
+  el.innerHTML=
+    '<div class="block"><h4>🖼 Аватар (фото на экранах активации)</h4>'
+    +'<div style="text-align:center;margin:8px 0"><img src="'+_amAvatarSrc()+'" style="width:100px;height:100px;border-radius:22px;object-fit:cover"></div>'
+    +'<button class="btn sec" onclick="_amPickAvatar()">📷 Загрузить фото</button>'
+    +'<button class="btn sec" style="margin-top:6px" onclick="window._amAvatarClear=true;window._amAvatarNew=\'\';_amRender()">↩️ Вернуть стандартное</button></div>'
+    +'<div class="block"><h4>'+mediaTitle+'</h4>'+mediaPrev
+    +uploadBtn
+    +'<label class="fl">'+urlLabel+'</label><input class="f" id="am_vurl" placeholder="https://…" value="'+(((window._am&&window._am.media)||'').indexOf("http")===0?nsgEsc(window._am.media):'')+'"/>'
+    +'<button class="btn sec" style="margin-top:6px" onclick="window._amMediaClear=true;window._amMediaNew=\'\';var i=document.getElementById(\'am_vurl\');if(i)i.value=\'\';_amRender()">↩️ Вернуть стандартное</button></div>'
+    +'<button class="btn" onclick="_amSave()">💾 Сохранить</button>'
+    +'<div class="note" style="margin-top:6px">После сохранения переоткрой приложение активации, чтобы увидеть изменения.</div>';
+}
+function _amPickAvatar(){var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;var rd=new FileReader();
+    rd.onload=function(){_shOpenCropper(rd.result,1,1,function(uri){window._amAvatarNew=uri;window._amAvatarClear=false;_amRender();});};rd.readAsDataURL(f);};
+  inp.click();}
+function _amPickMediaVideo(){var inp=document.createElement('input');inp.type='file';inp.accept='video/*';
+  inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;if(f.size>15*1024*1024){toast('Видео больше 15 МБ — сожми или дай ссылкой');return;}var rd=new FileReader();
+    rd.onload=function(){window._amMediaNew=rd.result;window._amMediaClear=false;var i=document.getElementById('am_vurl');if(i)i.value='';_amRender();};rd.readAsDataURL(f);};
+  inp.click();}
+function _amPickMediaImage(){var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;var rd=new FileReader();
+    rd.onload=function(){var im=new Image();im.onload=function(){var mx=1000,sc=Math.min(1,mx/Math.max(im.width,im.height));var w=Math.round(im.width*sc),hh=Math.round(im.height*sc);var c=document.createElement('canvas');c.width=w;c.height=hh;c.getContext('2d').drawImage(im,0,0,w,hh);window._amMediaNew=c.toDataURL('image/jpeg',0.9);window._amMediaClear=false;var i=document.getElementById('am_vurl');if(i)i.value='';_amRender();};im.src=rd.result;};rd.readAsDataURL(f);};
+  inp.click();}
+function _amSave(){
+  var payload={save:true,svc:window._amSvc||'perplexity'};
+  if(window._amAvatarClear)payload.avatarClear=1;else if(window._amAvatarNew)payload.avatar=window._amAvatarNew;
+  var vurl=(document.getElementById('am_vurl')||{}).value||'';
+  if(window._amMediaClear)payload.mediaClear=1;
+  else if(window._amMediaNew)payload.media=window._amMediaNew;
+  else if(vurl.indexOf('http')===0)payload.media=vurl;
+  toast('Сохраняю…');
+  api('/api/admin/actmedia',payload).then(function(d){
+    if(d&&d.ok){toast('Сохранено ✅ (переоткрой активацию)');window._am=d;window._amAvatarNew='';window._amAvatarClear=false;window._amMediaNew='';window._amMediaClear=false;_amRender();}
+    else{toast(d&&d.error==='media_too_big'?'Медиа слишком большое':(d&&d.error==='avatar_too_big'?'Фото слишком большое':'Ошибка'));}
+  });
+}
 
 /* Промо-окно после успешной активации */
 SCREENS["Промо активации"]=function(){setTimeout(_apLoad,30);

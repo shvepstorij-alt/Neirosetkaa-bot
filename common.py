@@ -2273,6 +2273,7 @@ async def webapp_chatgpt_handler(request: web.Request) -> web.Response:
         with open(_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
             _html = _f.read()
         _html = await _inject_recs(_html, exclude_key="chatgpt")
+        _html = await _apply_act_media(_html, "chatgpt")
         return web.Response(text=_html, content_type="text/html", charset="utf-8",
                             headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
@@ -2501,6 +2502,140 @@ async def api_admin_catalog_analytics_handler(request: web.Request) -> web.Respo
         })
     except Exception as _e:
         logging.error(f"api_admin_catalog_analytics: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+# Дефолтные фото/медиа в приложениях активации — ПО КАЖДОМУ сервису.
+# avatar — фото «Александр ИИ», media — визуал на финальном экране «Готово»
+# (у ChatGPT это картинка, у Claude/Perplexity — видео).
+_ACT_DEFAULTS = {
+    "chatgpt": {
+        "avatar": "https://i.ibb.co/rGvgXht5/1.jpg",
+        "media": "https://i.ibb.co/3yB8F3bs/image.jpg",
+        "kind": "image",
+    },
+    "claude": {
+        "avatar": "https://i.ibb.co.com/fz5qw5MH/IMG-5621.png",
+        "media": "https://res.cloudinary.com/dn7bd4mvm/video/upload/IMG_5622_euw73v.mp4",
+        "kind": "video",
+    },
+    "perplexity": {
+        "avatar": "https://i.ibb.co.com/fz5qw5MH/IMG-5621.png",
+        "media": "https://res.cloudinary.com/dn7bd4mvm/video/upload/IMG_5622_euw73v.mp4",
+        "kind": "video",
+    },
+}
+
+
+async def _apply_act_media(html: str, svc: str) -> str:
+    """Подменяет дефолтные фото/видео в HTML активации на заданные админом (для сервиса svc)."""
+    try:
+        _def = _ACT_DEFAULTS.get(svc)
+        if not _def:
+            return html
+        _av = await get_setting(f"act_avatar:{svc}", "") or ""
+        _md = await get_setting(f"act_media:{svc}", "") or ""
+        if _av:
+            html = html.replace(_def["avatar"], _av)
+        if _md:
+            html = html.replace(_def["media"], _md)
+    except Exception:
+        pass
+    return html
+
+
+def _decode_data_uri(_uri: str):
+    """data:<mime>;base64,XXX -> (bytes, mime) или (None, None)."""
+    try:
+        if not _uri.startswith("data:"):
+            return None, None
+        _head, _b64 = _uri.split(",", 1)
+        _mime = _head[5:].split(";")[0] or "application/octet-stream"
+        import base64 as _b
+        _raw = _b.b64decode(_b64)
+        return _raw, _mime
+    except Exception:
+        return None, None
+
+
+async def genmedia_handler(request: web.Request) -> web.Response:
+    """Отдаёт медиа (фото/видео активации), сохранённое админом в БД. Публично."""
+    _key = request.match_info.get("key", "")
+    if not _key:
+        return web.Response(status=404, text="not found")
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            _row = await conn.fetchrow("SELECT data, mime FROM admin_media WHERE key=$1", _key)
+        if not _row or not _row["data"]:
+            return web.Response(status=404, text="not found")
+        _mime = _row["mime"] or "application/octet-stream"
+        _fn = "video.mp4" if "video" in _mime else ("image.jpg" if "jpeg" in _mime else "image.png")
+        return _bytes_response(bytes(_row["data"]), _mime, _fn, request)
+    except Exception as _e:
+        logging.error(f"genmedia: {_e}")
+        return web.Response(status=404, text="not found")
+
+
+async def api_admin_actmedia_handler(request: web.Request) -> web.Response:
+    """Редактор фото/видео приложений активации — по каждому сервису. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _svc = str(body.get("svc", "")).strip()
+        if _svc not in _ACT_DEFAULTS:
+            _svc = "perplexity"
+        _def = _ACT_DEFAULTS[_svc]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("CREATE TABLE IF NOT EXISTS admin_media ("
+                               "key TEXT PRIMARY KEY, data BYTEA, mime TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
+            if body.get("save"):
+                import time as _t
+                _av_key = f"act_avatar_{_svc}"
+                _md_key = f"act_media_{_svc}"
+                # Аватар
+                _av = str(body.get("avatar", "")).strip()
+                if body.get("avatarClear"):
+                    await set_setting(f"act_avatar:{_svc}", "")
+                    await conn.execute("DELETE FROM admin_media WHERE key=$1", _av_key)
+                elif _av.startswith("data:image/"):
+                    _raw, _mime = _decode_data_uri(_av)
+                    if not _raw or len(_raw) > 6 * 1024 * 1024:
+                        return web.json_response({"ok": False, "error": "avatar_too_big"})
+                    await conn.execute("INSERT INTO admin_media (key,data,mime,updated_at) VALUES ($1,$2,$3,NOW()) "
+                                       "ON CONFLICT (key) DO UPDATE SET data=$2, mime=$3, updated_at=NOW()", _av_key, _raw, _mime)
+                    await set_setting(f"act_avatar:{_svc}", f"/media/{_av_key}?v={int(_t.time())}")
+                elif _av.startswith("http"):
+                    await set_setting(f"act_avatar:{_svc}", _av)
+                    await conn.execute("DELETE FROM admin_media WHERE key=$1", _av_key)
+                # Медиа успеха (картинка или видео)
+                _md = str(body.get("media", "")).strip()
+                if body.get("mediaClear"):
+                    await set_setting(f"act_media:{_svc}", "")
+                    await conn.execute("DELETE FROM admin_media WHERE key=$1", _md_key)
+                elif _md.startswith("data:image/") or _md.startswith("data:video/"):
+                    _raw2, _mime2 = _decode_data_uri(_md)
+                    if not _raw2 or len(_raw2) > 20 * 1024 * 1024:
+                        return web.json_response({"ok": False, "error": "media_too_big"})
+                    await conn.execute("INSERT INTO admin_media (key,data,mime,updated_at) VALUES ($1,$2,$3,NOW()) "
+                                       "ON CONFLICT (key) DO UPDATE SET data=$2, mime=$3, updated_at=NOW()", _md_key, _raw2, _mime2)
+                    await set_setting(f"act_media:{_svc}", f"/media/{_md_key}?v={int(_t.time())}")
+                elif _md.startswith("http"):
+                    await set_setting(f"act_media:{_svc}", _md)
+                    await conn.execute("DELETE FROM admin_media WHERE key=$1", _md_key)
+        return web.json_response({
+            "ok": True, "svc": _svc, "kind": _def["kind"],
+            "avatar": (await get_setting(f"act_avatar:{_svc}", "") or ""),
+            "media": (await get_setting(f"act_media:{_svc}", "") or ""),
+            "defAvatar": _def["avatar"], "defMedia": _def["media"],
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_actmedia: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -6665,6 +6800,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/overview", api_admin_overview_handler)
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)
     app.router.add_post("/api/admin/shophead", api_admin_shophead_handler)
+    app.router.add_get("/media/{key}", genmedia_handler)
+    app.router.add_post("/api/admin/actmedia", api_admin_actmedia_handler)
     app.router.add_post("/api/admin/catalog-analytics", api_admin_catalog_analytics_handler)
     app.router.add_post("/api/track", api_track_handler)
     app.router.add_post("/api/actpromo", api_actpromo_handler)
@@ -7799,6 +7936,7 @@ async def webapp_claude_handler(request: web.Request) -> web.Response:
         with open(_CLAUDE_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
             _html = _f.read()
         _html = await _inject_recs(_html, exclude_key="claude")
+        _html = await _apply_act_media(_html, "claude")
         return web.Response(text=_html, content_type="text/html", charset="utf-8",
                             headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
@@ -10449,7 +10587,10 @@ async def webapp_perplexity_handler(request: web.Request) -> web.Response:
     """GET /webapp/perplexity — отдаёт perplexity_webapp.html"""
     try:
         with open(_PERPLEXITY_WEBAPP_HTML_PATH, "r", encoding="utf-8") as _f:
-            return web.Response(text=_f.read(), content_type="text/html", charset="utf-8")
+            _html = _f.read()
+        _html = await _apply_act_media(_html, "perplexity")
+        return web.Response(text=_html, content_type="text/html", charset="utf-8",
+                            headers=_NO_CACHE_HEADERS)
     except FileNotFoundError:
         return web.Response(text="Perplexity Mini App not found", status=404)
 
