@@ -1396,7 +1396,8 @@ function feedOrderView(id){
   if(!o.activated){
     h+='<button class="btn" onclick="feedAct(\''+id+'\',\'manual\')">✅ Активировали вручную</button>';
   }
-  if((o.isAuto||o.svc==='chatgpt'||o.svc==='claude'||o.svc==='perplexity') && !o.activated){
+  var _isActSvc = /chatgpt|claude|perplexity/i.test(''+(o.svc||'')+' '+(o.service||''));
+  if((o.isAuto||_isActSvc) && !o.activated){
     h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
   }
   h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+o.username+'\')'):('tgLinkId(\''+(o.userId||'')+'\')'))+'">✍️ Написать клиенту</button>';
