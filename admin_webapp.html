@@ -778,20 +778,24 @@ function _caReset(){
 }
 
 /* Время жизни сессии активации */
-SCREENS["Время активации"]=function(){setTimeout(_awLoad,30);
-  return hdr("Время активации","сколько у клиента есть на активацию подписки")+'<div class="wrap"><div id="awbody"><div class="note">Загружаю…</div></div></div>';};
-function _awLoad(){api('/api/admin/actwindow',{}).then(function(d){var el=document.getElementById('awbody');if(!el)return;if(!d||!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}window._awH=d.hours||12;_awRender();});}
+SCREENS["Время активации"]=function(){
+  if(window._awSvc===undefined)window._awSvc='chatgpt';
+  setTimeout(_awLoad,30);
+  var seg='<div class="seg">'+[['chatgpt','ChatGPT'],['claude','Claude'],['perplexity','Perplexity']].map(function(x){return '<button class="'+((window._awSvc||'chatgpt')===x[0]?'on':'')+'" onclick="window._awSvc=\''+x[0]+'\';open2(\'Время активации\')">'+x[1]+'</button>';}).join('')+'</div>';
+  return hdr("Время активации","сколько у клиента есть на активацию")+'<div class="wrap">'+seg+'<div id="awbody"><div class="note">Загружаю…</div></div></div>';};
+function _awLoad(){api('/api/admin/actwindow',{svc:window._awSvc||'chatgpt'}).then(function(d){var el=document.getElementById('awbody');if(!el)return;if(!d||!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}window._awH=d.hours||12;_awRender();});}
 function _awRender(){
   var el=document.getElementById('awbody');if(!el)return;var cur=window._awH||12;
   var opts=[2,6,12,24,48,72];
-  el.innerHTML='<div class="block"><div class="note" style="margin-top:0">Столько времени у клиента есть, чтобы активировать купленную подписку (ChatGPT/Claude/Perplexity), прежде чем сессия истечёт. Код всё это время закреплён за заказом.</div>'
+  var svcName={chatgpt:'ChatGPT',claude:'Claude',perplexity:'Perplexity'}[window._awSvc||'chatgpt'];
+  el.innerHTML='<div class="block"><div class="note" style="margin-top:0">Сколько времени у клиента есть, чтобы активировать <b>'+svcName+'</b>, прежде чем сессия истечёт. Код всё это время закреплён за заказом.</div>'
     +'<div style="font-size:22px;font-weight:800;margin:12px 0 4px">Сейчас: '+cur+' ч</div></div>'
     +'<div class="block"><label class="fl" style="margin-top:0">Выбери срок</label><div class="seg" style="flex-wrap:wrap;margin-top:6px">'
     +opts.map(function(h){return '<button class="'+(cur===h?'on':'')+'" onclick="window._awH='+h+';_awRender()">'+h+' ч</button>';}).join('')
     +'</div><label class="fl">Или вручную (1–168 ч)</label><input class="f" id="aw_h" type="number" min="1" max="168" value="'+cur+'" oninput="window._awH=Math.max(1,Math.min(168,parseInt(this.value,10)||12))"/></div>'
     +'<button class="btn" onclick="_awSave()">💾 Сохранить</button>';
 }
-function _awSave(){toast('Сохраняю…');api('/api/admin/actwindow',{save:true,hours:window._awH||12}).then(function(d){if(d&&d.ok){window._awH=d.hours||12;toast('Сохранено ✅ ('+window._awH+' ч)');_awRender();}else toast('Ошибка');});}
+function _awSave(){toast('Сохраняю…');api('/api/admin/actwindow',{save:true,svc:window._awSvc||'chatgpt',hours:window._awH||12}).then(function(d){if(d&&d.ok){window._awH=d.hours||12;toast('Сохранено ✅ ('+window._awH+' ч)');_awRender();}else toast('Ошибка');});}
 
 /* Фото/видео в приложениях активации — по каждому сервису */
 SCREENS["Медиа активации"]=function(){
@@ -1392,7 +1396,7 @@ function feedOrderView(id){
   if(!o.activated){
     h+='<button class="btn" onclick="feedAct(\''+id+'\',\'manual\')">✅ Активировали вручную</button>';
   }
-  if(o.isAuto && !o.activated){
+  if((o.isAuto||o.svc==='chatgpt'||o.svc==='claude'||o.svc==='perplexity') && !o.activated){
     h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
   }
   h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+o.username+'\')'):('tgLinkId(\''+(o.userId||'')+'\')'))+'">✍️ Написать клиенту</button>';
@@ -1637,6 +1641,9 @@ function shopOrderView(id){
   } else {
     // Авто-сервис, ещё не активирован клиентом
     h+='<button class="btn" onclick="soManual(\''+id+'\')">✅ Активировали вручную</button>';
+    if(svc==='chatgpt'||svc==='claude'||svc==='perplexity'){
+      h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
+    }
     h+='<div class="note">Код заказа вернётся в пул автоматически.</div>';
     h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button>';
   }

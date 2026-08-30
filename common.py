@@ -9788,15 +9788,23 @@ async def api_admin_actwindow_handler(request: web.Request) -> web.Response:
             body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
+        _svc = str(body.get("svc", "")).strip()
+        if _svc not in ("chatgpt", "claude", "perplexity"):
+            _svc = "chatgpt"
         if body.get("save"):
             try:
                 _h = int(body.get("hours", 12))
             except Exception:
                 _h = 12
             _h = max(1, min(168, _h))
-            await set_setting("activation_hours", str(_h))
-        return web.json_response({"ok": True,
-                                  "hours": int(await get_setting("activation_hours", "12") or "12")})
+            await set_setting(f"activation_hours:{_svc}", str(_h))
+        # текущее значение сервиса: своё → общий дефолт → 12
+        _cur = await get_setting(f"activation_hours:{_svc}", "") or (await get_setting("activation_hours", "12") or "12")
+        try:
+            _cur = int(_cur)
+        except Exception:
+            _cur = 12
+        return web.json_response({"ok": True, "svc": _svc, "hours": _cur})
     except Exception as _e:
         logging.error(f"api_admin_actwindow: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)

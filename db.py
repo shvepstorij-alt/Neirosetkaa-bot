@@ -638,10 +638,16 @@ async def mark_gpt_code_used(code: str, user_id: int, order_id: str, email: str 
             "UPDATE gpt_codes SET used_by=$1, order_id=$2, email=$3, used_at=NOW() WHERE code=$4",
             user_id, order_id, email, code)
 
-async def activation_hours() -> int:
-    """Срок жизни сессии активации в часах (настраивается админом). По умолчанию 12."""
+async def activation_hours(svc: str = None) -> int:
+    """Срок жизни сессии активации в часах (настраивается админом, по сервисам).
+    Приоритет: activation_hours:{svc} → общий activation_hours → 12."""
     try:
-        h = int(await get_setting("activation_hours", "12") or "12")
+        _v = ""
+        if svc:
+            _v = await get_setting(f"activation_hours:{svc}", "") or ""
+        if not _v:
+            _v = await get_setting("activation_hours", "12") or "12"
+        h = int(_v)
     except Exception:
         h = 12
     return max(1, min(168, h))
@@ -649,7 +655,7 @@ async def activation_hours() -> int:
 
 async def save_pending_activation(user_id: int, code: str, order_id: str, plan: str, plan_name: str,
                                   provider: str = "987ai"):
-    _h = await activation_hours()
+    _h = await activation_hours("chatgpt")
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Срок активации настраивается (activation_hours, по умолчанию 12ч) — и при
@@ -1554,7 +1560,7 @@ async def save_claude_pending_activation(
     user_id: int, code: str, order_id: str, plan: str, plan_name: str,
     provider: str = "bpa"
 ):
-    _h = await activation_hours()
+    _h = await activation_hours("claude")
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1737,7 +1743,7 @@ async def mark_perplexity_code_used(code: str, user_id: int, order_id: str, org_
 async def save_perplexity_pending_activation(
     user_id: int, code: str, order_id: str, plan: str, plan_name: str
 ):
-    _h = await activation_hours()
+    _h = await activation_hours("perplexity")
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
