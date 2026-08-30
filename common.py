@@ -3253,6 +3253,48 @@ def _initdata_reason(s: str) -> str:
         return "err"
 
 
+async def api_shop_promo_handler(request: web.Request) -> web.Response:
+    """Проверка промокода для мини-аппа: возвращает % и новую цену. Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        key = str(body.get("key", "")).strip()
+        try:
+            idx = int(body.get("planIdx", 0))
+        except Exception:
+            idx = 0
+        code = str(body.get("code", "")).strip().upper()[:32]
+        s = SHOP_CATALOG.get(key)
+        if not s or not s.get("plans") or idx < 0 or idx >= len(s["plans"]):
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        base = int(s["plans"][idx].get("price", 0) or 0)
+        if not code:
+            return web.json_response({"ok": False, "error": "Введи промокод"})
+        from db import check_promo_for_user as _chk
+        _okp, _msgp, _pr = await _chk(code, int(uid))
+        if not _okp:
+            return web.json_response({"ok": False, "error": _msgp or "Промокод недействителен"})
+        if not _pr or _pr.get("kind") != "percent":
+            return web.json_response({"ok": False, "error": "Этот промокод не даёт скидку на подписки"})
+        _psvc = _pr.get("service_key")
+        if _psvc and _psvc != key:
+            _svcn = (SHOP_CATALOG.get(_psvc, {}) or {}).get("name", _psvc)
+            return web.json_response({"ok": False, "error": f"Промокод действует только для {_svcn}"})
+        _val = int(_pr.get("value") or 0)
+        if not (0 < _val <= 100):
+            return web.json_response({"ok": False, "error": "Некорректный промокод"})
+        return web.json_response({"ok": True, "percent": _val, "oldPrice": base,
+                                  "newPrice": max(1, round(base * (100 - _val) / 100))})
+    except Exception as _e:
+        logging.error(f"api_shop_promo: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
 async def api_shop_pay_handler(request: web.Request) -> web.Response:
     """Оплата сервиса магазина прямо из мини-аппки: создаёт заказ и возвращает ссылку.
     method: sbp (форма FreeKassa) или card (API i=36). Сумму берём с СЕРВЕРА по каталогу
@@ -3278,14 +3320,30 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         price = int(s["plans"][idx].get("price", 0) or 0)
         if price <= 0:
             return web.json_response({"ok": False, "error": "price"}, status=400)
+        # Промокод (скидка %). Считаем скидку на СЕРВЕРЕ, клиенту не доверяем.
+        _promo_code = str(body.get("promo", "")).strip().upper()[:32]
+        _promo_applied = None
+        if _promo_code:
+            try:
+                from db import check_promo_for_user as _chk
+                _okp, _msgp, _pr = await _chk(_promo_code, int(uid))
+                _psvc = (_pr or {}).get("service_key")
+                if (_okp and _pr and _pr.get("kind") == "percent"
+                        and (not _psvc or _psvc == key)):
+                    _val = int(_pr.get("value") or 0)
+                    if 0 < _val <= 100:
+                        price = max(1, round(price * (100 - _val) / 100))
+                        _promo_applied = _promo_code
+            except Exception as _pe:
+                logging.warning(f"api_shop_pay promo: {_pe}")
         import time as _t
         order_id = f"shop_{uid}_{int(_t.time())}"
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack) "
-                "VALUES ($1,$2,$3,$4,$5) ON CONFLICT (order_id) DO NOTHING",
-                order_id, int(uid), 0, price, f"shop:{key}:{idx}")
+                "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, promo_code) "
+                "VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (order_id) DO NOTHING",
+                order_id, int(uid), 0, price, f"shop:{key}:{idx}", _promo_applied)
             try:
                 _num = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
             except Exception:
@@ -6823,6 +6881,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/banners", api_admin_banners_handler)
     app.router.add_post("/api/admin/banners-save", api_admin_banners_save_handler)
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
+    app.router.add_post("/api/shop/promo", api_shop_promo_handler)
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)

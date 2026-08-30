@@ -92,6 +92,12 @@
   .plan-p span{font-size:11px;color:var(--text3);font-weight:600}
   .plan-d{font-size:12px;color:var(--text2);line-height:1.5;margin:6px 0 10px}
   .plan-buy{background:var(--green);color:#fff;text-align:center;font-weight:700;font-size:13px;padding:11px;border-radius:10px;cursor:pointer}
+  .promo-box{display:flex;gap:8px;align-items:center}
+  .promo-box.on{background:var(--bg2);border:1px solid var(--green);border-radius:12px;padding:11px 13px;justify-content:space-between;font-size:13px}
+  .promo-inp{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;font-size:14px;color:var(--text);text-transform:uppercase}
+  .promo-btn{background:var(--green);color:#fff;font-weight:700;font-size:13px;padding:11px 16px;border-radius:10px;cursor:pointer;white-space:nowrap}
+  .promo-clr{color:var(--text2);font-size:12px;cursor:pointer;text-decoration:underline;white-space:nowrap}
+  .promo-status{font-size:12px;margin-top:6px}
   .pay-methods{display:flex;gap:8px}
   .pay-methods .pm{flex:1;text-align:center;font-weight:700;font-size:13px;padding:12px;border-radius:10px;cursor:pointer;color:#fff}
   .pay-methods .pm.sbp{background:var(--green)}.pay-methods .pm.card{background:#3576f5}
@@ -531,7 +537,7 @@ function doGenVideo(){
     if(!res){ restore(); return; }
     if(d&&d.ok&&d.job){ _vidPoll(d.job,0,'video',restore); return; }
     if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
-    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Сессия устарела — закрой и открой приложение заново.</div>'; }
+    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
     else { res.innerHTML='<div class="pm-err">Не удалось запустить генерацию. Попробуй ещё раз.</div>'; }
     restore();
   }).catch(function(){ if(res) res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
@@ -671,7 +677,7 @@ function doGenEdit(){
       _histSave(d.img,p);
       window._editBusy=false; renderGen(); return;
     } else if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
-    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Сессия устарела — закрой и открой приложение заново.</div>'; }
+    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
     else { res.innerHTML='<div class="pm-err">Не получилось изменить фото. Попробуй другой промт.</div>'; }
     restore();
   }).catch(function(){ var r2=document.getElementById('edit-result'); if(r2) r2.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
@@ -717,7 +723,7 @@ function doGenAnim(){
     if(!res){ restore(); return; }
     if(d&&d.ok&&d.job){ _vidPoll(d.job,0,'anim',restore); return; }
     if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
-    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Сессия устарела — закрой и открой приложение заново.</div>'; }
+    else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
     else { res.innerHTML='<div class="pm-err">Не удалось запустить анимацию. Попробуй ещё раз.</div>'; }
     restore();
   }).catch(function(){ if(res) res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
@@ -743,7 +749,7 @@ function doGen(){
     } else if(d&&d.error==='credits'){
       res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>';
     } else if(d&&String(d.error||'').indexOf('auth')===0){
-      res.innerHTML='<div class="pm-err">Сессия устарела — закрой и открой приложение заново.</div>';
+      res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>';
     } else {
       res.innerHTML='<div class="pm-err">Не получилось сгенерировать. Попробуй ещё раз или другую модель.</div>';
     }
@@ -837,24 +843,47 @@ function _copyRef(){
   var btn=document.querySelector('.ref-copy');
   if(btn){ var o=btn.textContent; btn.textContent='Скопировано ✓'; setTimeout(function(){btn.textContent=o;},1500); }
 }
-function openCard(key){
-  try{ _track('card:'+key); }catch(e){}
+function openCard(key, _silent){
+  if(!_silent){ try{ _track('card:'+key); }catch(e){} }
   var c=CATALOG[key]; var nm=(c&&c.name)||key;
   if(_isAppStore(key,nm)){ openAppstore(); return; }
+  // Промокод действует в рамках одной карточки — при открытии другого сервиса сбрасываем
+  if(window._shopPromoKey!==key){ window._shopPromo=null; window._shopPromoKey=key; }
   var body=document.getElementById('card-body'); if(!body||!c) return;
+  var P=(window._shopPromo&&window._shopPromo.percent)||0;
   var plans=(c.plans||[]).slice().sort(function(a,b){return a.price-b.price;});
   var plansHtml=plans.map(function(p){
+    var disc = P>0 ? Math.max(1, Math.round(p.price*(100-P)/100)) : p.price;
+    var priceHtml = P>0
+      ? ('<s style="color:var(--text3);font-size:13px">'+p.price+'₽</s> '+disc+'₽<span>/мес</span>')
+      : (p.price+'₽<span>/мес</span>');
     return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.name+'</div>'
-      +'<div class="plan-p">'+p.price+'₽<span>/мес</span></div></div>'
+      +'<div class="plan-p">'+priceHtml+'</div></div>'
       +(p.desc?('<div class="plan-d">'+p.desc+'</div>'):'')
-      +'<div class="plan-buy" onclick="chooseMethod(this,\''+_esc1(key)+'\','+p.idx+')">Оформить за '+p.price+'₽</div></div>';
+      +'<div class="plan-buy" onclick="chooseMethod(this,\''+_esc1(key)+'\','+p.idx+')">Оформить за '+disc+'₽</div></div>';
   }).join('');
+  var promoBlock = P>0
+    ? '<div class="promo-box on"><span>🎟 <b>'+_h(window._shopPromo.code)+'</b> — скидка '+P+'%</span><span class="promo-clr" onclick="clearPromo(\''+_esc1(key)+'\')">убрать</span></div>'
+    : '<div class="promo-box"><input id="promo-inp" class="promo-inp" placeholder="Промокод" autocapitalize="characters"><div class="promo-btn" onclick="applyPromo(\''+_esc1(key)+'\')">Применить</div></div><div id="promo-status" class="promo-status"></div>';
   body.innerHTML='<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(key,c.logo)+'">'+_iconHtml(c.logo,c.name)+'</div>'
     +'<div class="card-name">'+c.name+'</div></div>'
     +(c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
+    +'<div class="card-plans-h">🎟 Промокод</div>'+promoBlock
     +'<div class="card-plans-h">Тарифы</div>'+plansHtml;
   _showCard();
 }
+function applyPromo(key){
+  var inp=document.getElementById('promo-inp'); var code=((inp&&inp.value)||'').trim();
+  var st=document.getElementById('promo-status');
+  if(!code){ if(st)st.innerHTML='<span style="color:var(--text2)">Введи промокод</span>'; return; }
+  if(st)st.textContent='Проверяю…';
+  var pl=(CATALOG[key]&&CATALOG[key].plans)||[]; var firstIdx=(pl[0]&&pl[0].idx)||0;
+  _api('/api/shop/promo',{key:key,planIdx:firstIdx,code:code}).then(function(d){
+    if(d&&d.ok){ window._shopPromo={code:code.toUpperCase(),percent:d.percent}; window._shopPromoKey=key; openCard(key,true); }
+    else{ if(st)st.innerHTML='<span style="color:#e5484d">'+_h((d&&d.error)||'Промокод недействителен')+'</span>'; }
+  });
+}
+function clearPromo(key){ window._shopPromo=null; openCard(key,true); }
 function chooseMethod(btn,key,idx){
   if(!btn)return; var w=document.createElement('div'); w.className='pay-methods';
   w.innerHTML='<div class="pm sbp" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\')">⚡ СБП</div>'
@@ -864,12 +893,13 @@ function chooseMethod(btn,key,idx){
 function payVia(el,key,idx,method){
   try{ _track('pay:'+key+':'+idx); }catch(e){}
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
-  _api('/api/shop/pay',{key:key,planIdx:idx,method:method}).then(function(d){
+  var _promo=(window._shopPromo&&window._shopPromoKey===key)?window._shopPromo.code:'';
+  _api('/api/shop/pay',{key:key,planIdx:idx,method:method,promo:_promo}).then(function(d){
     if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
     else{
       var _err=(d&&d.error)||'';
       var m;
-      if(_err.indexOf('auth')===0){ m='Приложение открылось без данных Telegram. Полностью закрой мини-приложение и открой заново через кнопку «🛒 Каталог» в боте.'; }
+      if(_err.indexOf('auth')===0){ m='Приложение открылось без данных Telegram.<br><br>1) Закрой это мини-приложение (кнопка «Закрыть» вверху)<br>2) В боте напиши команду <b>/start</b><br>3) Снова открой «🛒 Каталог» и повтори оплату.'; }
       else if(_err==='card_failed'){ m='Картой не удалось — попробуй СБП'; }
       else { m=_err?('Ошибка: '+_err):'Не получилось. Попробуй ещё раз'; }
       row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'; }
