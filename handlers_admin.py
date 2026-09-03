@@ -519,6 +519,65 @@ async def cmd_subs_restore(message: Message):
         await message.answer(f"❌ Ошибка: {str(_e)[:200]}")
 
 
+@dp.message(F.text.startswith("/falcheck"), StateFilter("*"))
+async def cmd_falcheck(message: Message):
+    """Проверка валидности FAL_API_KEY без траты кредитов.
+    Пингует fal.ai статусом несуществующего запроса: авторизация проверяется
+    ДО поиска запроса, поэтому битый ключ → 401/403, живой → 404/422."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not FAL_API_KEY:
+        await message.answer(
+            "🔴 <b>FAL_API_KEY не задан</b>\n\n"
+            "Переменной нет в Railway Variables. Вся генерация на fal.ai не работает.",
+            parse_mode="HTML"
+        )
+        return
+    _tail = FAL_API_KEY[-4:] if len(FAL_API_KEY) >= 4 else "?"
+    status_msg = await message.answer(f"🔍 Проверяю ключ …{_tail} на fal.ai…")
+    check_url = "https://queue.fal.run/fal-ai/flux/dev/requests/falcheck-nonexistent-id/status"
+    headers = {"Authorization": f"Key {FAL_API_KEY}"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+            async with s.get(check_url, headers=headers) as r:
+                code = r.status
+                body = (await r.text())[:200]
+        if code in (401, 403):
+            await status_msg.edit_text(
+                f"🔴 <b>Ключ НЕДЕЙСТВИТЕЛЕН</b> (…{_tail})\n\n"
+                f"fal.ai вернул HTTP {code}. Ключ истёк, отозван или у аккаунта "
+                f"закончился баланс.\n\n"
+                f"Что делать:\n"
+                f"1. https://fal.ai/dashboard/keys — проверь/создай ключ\n"
+                f"2. https://fal.ai/dashboard/billing — проверь баланс\n"
+                f"3. Обнови <code>FAL_API_KEY</code> в Railway Variables и передеплой",
+                parse_mode="HTML", disable_web_page_preview=True
+            )
+        elif code in (404, 422, 400):
+            # Авторизация прошла — просто нет такого запроса. Ключ живой.
+            await status_msg.edit_text(
+                f"🟢 <b>Ключ рабочий</b> (…{_tail})\n\n"
+                f"Авторизация на fal.ai проходит (HTTP {code} — это ожидаемо для "
+                f"тестового запроса). Генерация должна работать.\n\n"
+                f"Если клиенты всё равно видят ошибку — проверь баланс: "
+                f"https://fal.ai/dashboard/billing",
+                parse_mode="HTML", disable_web_page_preview=True
+            )
+        else:
+            await status_msg.edit_text(
+                f"🟡 <b>Неоднозначный ответ</b> (…{_tail})\n\n"
+                f"fal.ai вернул HTTP {code}. Скорее всего ключ живой, но сервис "
+                f"временно шалит.\n<code>{body}</code>",
+                parse_mode="HTML", disable_web_page_preview=True
+            )
+    except Exception as _e:
+        await status_msg.edit_text(
+            f"⚠️ Не удалось достучаться до fal.ai: <code>{str(_e)[:200]}</code>\n\n"
+            f"Это сетевая ошибка, не обязательно проблема ключа. Попробуй ещё раз.",
+            parse_mode="HTML"
+        )
+
+
 @dp.message(F.text.startswith("/recover"), StateFilter("*"))
 async def cmd_recover(message: Message):
     """Админская команда для ручного восстановления потерянного видео из fal.ai.
