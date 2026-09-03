@@ -45,6 +45,7 @@ from generation_api import (
 )
 from common import (
     _check_can_generate, check_expiring_credits, mark_generation_active, notify_admin_error, safe_send_media, unmark_generation_active,
+    try_acquire_click, release_click,
 )
 
 @dp.callback_query(F.data == "menu_image")
@@ -265,12 +266,20 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     prompt = data.get("prompt", "")
     uid = cb.from_user.id
 
+    # Защита от двойного клика: тот же тап не должен списать кредиты дважды
+    _click_key = f"gen:img:{uid}:{cb.message.message_id}"
+    if not try_acquire_click(_click_key):
+        await cb.answer("⏳ Уже запускаю…", show_alert=False)
+        return
+
     # Rate limit
     if not await _check_can_generate(cb, uid, kind="photo"):
+        release_click(_click_key)
         return
 
     ok = await deduct(uid, m["credits"])
     if not ok:
+        release_click(_click_key)
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
@@ -365,6 +374,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML"
             )
     finally:
+        release_click(_click_key)
         await unmark_generation_active(uid)
     await cb.answer()
 async def download_original(cb: CallbackQuery):
@@ -825,12 +835,20 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     credits_cost = data.get("credits_override") or m["credits"]
     duration_sec = data.get("duration_sec") or 8  # Veo всегда 8
 
+    # Защита от двойного клика: тот же тап не должен списать кредиты дважды
+    _click_key = f"gen:vid:{uid}:{cb.message.message_id}"
+    if not try_acquire_click(_click_key):
+        await cb.answer("⏳ Уже запускаю…", show_alert=False)
+        return
+
     # Rate limit
     if not await _check_can_generate(cb, uid, kind="video"):
+        release_click(_click_key)
         return
 
     ok = await deduct(uid, credits_cost)
     if not ok:
+        release_click(_click_key)
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
@@ -1110,6 +1128,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         except Exception as msg_err:
             logging.warning(f"Failed to send error message: {msg_err}")
     finally:
+        release_click(_click_key)
         await unmark_generation_active(uid)
         # Отменяем фоновую задачу обновления статуса
         if not progress_task.done():
@@ -1183,6 +1202,12 @@ async def do_upscale(message: Message, state: FSMContext):
         )
         await state.clear()
         return
+
+    # Лимиты: почасовой + одновременные генерации (как у остальных разделов)
+    if not await _check_can_generate(message, uid, kind="photo"):
+        await state.clear()
+        return
+    await mark_generation_active(uid, "photo")
 
     wait = await message.answer("⏳ Улучшаю фото... обычно 20–40 сек")
     _deducted = False
@@ -1284,6 +1309,8 @@ async def do_upscale(message: Message, state: FSMContext):
                 [_eib("Главное меню", "back_main")],
             ])
         )
+    finally:
+        await unmark_generation_active(uid)
     await state.clear()
 
 
@@ -1686,18 +1713,27 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
     edit_cost = m["credits"]
     uid = cb.from_user.id
 
+    # Защита от двойного клика
+    _click_key = f"gen:edit:{uid}:{cb.message.message_id}"
+    if not try_acquire_click(_click_key):
+        await cb.answer("⏳ Уже запускаю…", show_alert=False)
+        return
+
     if not await _check_can_generate(cb.message, uid, kind="photo"):
+        release_click(_click_key)
         await state.clear()
         return
 
     cr = await get_credits(uid)
     if cr < edit_cost:
+        release_click(_click_key)
         await state.clear()
         await cb.message.answer(f"💸 Недостаточно кредитов. Нужно {edit_cost} кр.")
         return
 
     ok = await deduct(uid, edit_cost)
     if not ok:
+        release_click(_click_key)
         await state.clear()
         await cb.message.answer("⛔ Ошибка списания.")
         return
@@ -1872,6 +1908,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         except Exception as msg_err:
             logging.warning(f"edit error message failed: {msg_err}")
     finally:
+        release_click(_click_key)
         await unmark_generation_active(uid)
 
 
@@ -2184,18 +2221,27 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         await state.clear()
         return
 
+    # Защита от двойного клика
+    _click_key = f"gen:anim:{uid}:{cb.message.message_id}"
+    if not try_acquire_click(_click_key):
+        await cb.answer("⏳ Уже запускаю…", show_alert=False)
+        return
+
     if not await _check_can_generate(cb.message, uid, kind="anim"):
+        release_click(_click_key)
         await state.clear()
         return
 
     cr = await get_credits(uid)
     if cr < anim_cost:
+        release_click(_click_key)
         await state.clear()
         await cb.message.answer(f"❌ Недостаточно кредитов. Нужно {anim_cost} кр.")
         return
 
     ok = await deduct(uid, anim_cost)
     if not ok:
+        release_click(_click_key)
         await state.clear()
         await cb.message.answer("❌ Ошибка списания.")
         return
@@ -2457,6 +2503,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         except Exception as msg_err:
             logging.warning(f"anim error message failed: {msg_err}")
     finally:
+        release_click(_click_key)
         await unmark_generation_active(uid)
 
 
@@ -2709,14 +2756,25 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         await state.clear()
         return
 
+    # Защита от двойного клика (актуально для пути «Пропустить» — тот же message_id)
+    _click_key = f"gen:motion:{uid}:{getattr(msg_obj, 'message_id', 0)}"
+    if not try_acquire_click(_click_key):
+        try:
+            await msg_obj.answer("⏳ Уже запускаю…")
+        except Exception:
+            pass
+        return
+
     # Rate limit
     if not await _check_can_generate(msg_obj, uid, kind="motion"):
+        release_click(_click_key)
         await state.clear()
         return
 
     # Проверка баланса ещё раз (мог измениться)
     cr = await get_credits(uid)
     if cr < price:
+        release_click(_click_key)
         await state.clear()
         await msg_obj.answer(f"❌ Недостаточно кредитов. Нужно {price} кр, у тебя {cr}.")
         return
@@ -2724,6 +2782,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
     # Списываем
     ok = await deduct(uid, price)
     if not ok:
+        release_click(_click_key)
         await state.clear()
         await msg_obj.answer("❌ Ошибка списания. Попробуй ещё раз.")
         return
@@ -2909,6 +2968,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
             except Exception as msg_err:
                 logging.warning(f"motion error message failed: {msg_err}")
     finally:
+        release_click(_click_key)
         await unmark_generation_active(uid)
 
 

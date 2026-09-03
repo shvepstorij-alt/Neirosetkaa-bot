@@ -72,6 +72,32 @@ async def check_not_blocked(cb_or_msg, uid: int) -> bool:
     return True
 
 
+# ─── Anti-double-click guard ──────────────────────────────────
+# Защита от двойного клика по кнопке «Генерировать»: без этого быстрый
+# повторный тап проходит проверку баланса дважды (активных генераций ещё 0),
+# списывает кредиты 2 раза и запускает 2 генерации. Проверка+установка замка
+# происходят без await между ними — значит атомарны в рамках event-loop.
+_gen_click_locks: dict = {}
+
+
+def try_acquire_click(key: str, ttl: float = 45.0) -> bool:
+    """True если замок взят; False если этот же клик уже обрабатывается (дубль)."""
+    import time as _t_cl
+    now = _t_cl.time()
+    exp = _gen_click_locks.get(key, 0.0)
+    if exp > now:
+        return False
+    _gen_click_locks[key] = now + ttl
+    if len(_gen_click_locks) > 500:
+        for _k in [k for k, v in list(_gen_click_locks.items()) if v <= now]:
+            _gen_click_locks.pop(_k, None)
+    return True
+
+
+def release_click(key: str):
+    _gen_click_locks.pop(key, None)
+
+
 async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
     """Проверки перед генерацией. kind: 'photo' | 'video' | 'anim'. Возвращает True если можно."""
     # 0) Юзер не заблокирован
