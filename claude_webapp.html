@@ -711,7 +711,8 @@ function _showActPromo(){
     var btn=(d.btn_text&&d.btn_url)?('<div onclick="_apOpen(\''+encodeURIComponent(d.btn_url)+'\')" style="background:#c96442;color:#fff;font-weight:700;font-size:15px;padding:14px;border-radius:12px;cursor:pointer;margin-bottom:8px">'+_apEsc(d.btn_text)+'</div>'):'';
     var ov=document.createElement('div');ov.id='ap-ov';
     ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:20px';
-    ov.innerHTML='<div style="background:#1b1c22;border:1px solid #2b2d36;border-radius:18px;padding:16px;max-width:380px;width:100%;max-height:90vh;overflow:auto;text-align:center;color:#fff">'+img
+    var _mw=Math.max(240,Math.min(560,parseInt(d.size||380,10)||380));
+    ov.innerHTML='<div style="background:#1b1c22;border:1px solid #2b2d36;border-radius:18px;padding:16px;max-width:'+_mw+'px;width:100%;max-height:90vh;overflow:auto;text-align:center;color:#fff">'+img
       +(d.title?('<div style="font-size:19px;font-weight:800;margin-bottom:8px">'+_apEsc(d.title)+'</div>'):'')
       +(d.text?('<div style="font-size:14px;color:#c7cad2;line-height:1.5;margin-bottom:14px">'+_apEsc(d.text).replace(/\n/g,'<br>')+'</div>'):'')
       +btn

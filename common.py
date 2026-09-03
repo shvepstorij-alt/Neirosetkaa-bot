@@ -9736,6 +9736,7 @@ async def api_actpromo_handler(request: web.Request) -> web.Response:
             "img": (await get_setting("actpromo_img", "") or ""),
             "btn_text": (await get_setting("actpromo_btn_text", "") or ""),
             "btn_url": (await get_setting("actpromo_btn_url", "") or ""),
+            "size": (await get_setting("actpromo_size", "380") or "380"),
         })
     except Exception:
         return web.json_response({"ok": False}, status=500)
@@ -9765,6 +9766,12 @@ async def api_admin_actpromo_handler(request: web.Request) -> web.Response:
             if _im.startswith("data:image/") and len(_im) > 500000:
                 return web.json_response({"ok": False, "error": "img_too_big"})
             await set_setting("actpromo_img", _im)
+            try:
+                _sz = int(float(body.get("size", 380)))
+            except Exception:
+                _sz = 380
+            _sz = max(240, min(560, _sz))
+            await set_setting("actpromo_size", str(_sz))
         return web.json_response({
             "ok": True,
             "on": (await get_setting("actpromo_on", "0") or "0") == "1",
@@ -9773,6 +9780,7 @@ async def api_admin_actpromo_handler(request: web.Request) -> web.Response:
             "img": (await get_setting("actpromo_img", "") or ""),
             "btn_text": (await get_setting("actpromo_btn_text", "") or ""),
             "btn_url": (await get_setting("actpromo_btn_url", "") or ""),
+            "size": (await get_setting("actpromo_size", "380") or "380"),
         })
     except Exception as _e:
         logging.error(f"api_admin_actpromo: {_e}")

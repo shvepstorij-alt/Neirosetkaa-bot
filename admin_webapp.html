@@ -860,9 +860,13 @@ function _amSave(){
 /* Промо-окно после успешной активации */
 SCREENS["Промо активации"]=function(){setTimeout(_apLoad,30);
   return hdr("Промо после активации","всплывает после успешной активации ChatGPT/Claude")+'<div class="wrap"><div id="apbody"><div class="note">Загружаю…</div></div></div>';};
-function _apLoad(){api('/api/admin/actpromo',{}).then(function(d){if(!d||!d.ok){var b=document.getElementById('apbody');if(b)b.innerHTML='<div class="note">Ошибка загрузки.</div>';return;}window._apCfg=d;window._apImg=d.img||'';window._apOn=!!d.on;_apRender();});}
+var _AP_ARS=[[16,9,'16:9'],[4,3,'4:3'],[1,1,'1:1'],[4,5,'4:5'],[3,4,'3:4'],[9,16,'9:16']];
+function _apLoad(){api('/api/admin/actpromo',{}).then(function(d){if(!d||!d.ok){var b=document.getElementById('apbody');if(b)b.innerHTML='<div class="note">Ошибка загрузки.</div>';return;}window._apCfg=d;window._apImg=d.img||'';window._apOn=!!d.on;if(!window._apAR)window._apAR=[16,9];window._apSize=parseInt(d.size||380,10)||380;_apRender();});}
+function _apSetAR(w,h){window._apAR=[w,h];_apRender();}
+function _apSetSize(v){window._apSize=Math.max(240,Math.min(560,parseInt(v,10)||380));_apPrev();var lb=document.getElementById('ap_sizelbl');if(lb)lb.textContent=window._apSize+' px';}
 function _apPrevHtml(title,text,img,btnText){
-  return '<div style="background:#1b1c22;border:1px solid #2b2d36;border-radius:16px;padding:14px;text-align:center;color:#fff;max-width:300px;margin:0 auto">'
+  var _pw=Math.round((window._apSize||380)*0.72);
+  return '<div style="background:#1b1c22;border:1px solid #2b2d36;border-radius:16px;padding:14px;text-align:center;color:#fff;max-width:'+_pw+'px;margin:0 auto">'
     +(img?('<img src="'+img+'" style="width:100%;border-radius:12px;margin-bottom:10px">'):'')
     +(title?('<div style="font-size:17px;font-weight:800;margin-bottom:6px">'+nsgEsc(title)+'</div>'):'')
     +(text?('<div style="font-size:13px;color:#c7cad2;line-height:1.5;margin-bottom:12px">'+nsgEsc(text).replace(/\n/g,'<br>')+'</div>'):'')
@@ -878,7 +882,7 @@ function _apPrev(){
 function _apToggle(){window._apOn=!window._apOn;_apRender();}
 function _apPick(){var inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=function(){var f=inp.files&&inp.files[0];if(!f)return;var rd=new FileReader();
-    rd.onload=function(){_shOpenCropper(rd.result,16,9,function(uri){window._apImg=uri;_apRender();});};rd.readAsDataURL(f);};
+    rd.onload=function(){var _a=window._apAR||[16,9];_shOpenCropper(rd.result,_a[0],_a[1],function(uri){window._apImg=uri;_apRender();});};rd.readAsDataURL(f);};
   inp.click();}
 function _apClearImg(){window._apImg='';_apRender();}
 function _apRender(){
@@ -889,10 +893,17 @@ function _apRender(){
     +'<div class="block"><div class="note" style="margin-top:0">Превью окна:</div><div id="approv" style="margin-top:10px">'+_apPrevHtml(d.title,d.text,img,d.btn_text)+'</div></div>'
     +'<div class="block"><label class="fl" style="margin-top:0">Заголовок</label><input class="f" id="ap_title" oninput="_apPrev()" value="'+nsgEsc(d.title||'')+'"/>'
     +'<label class="fl">Текст</label><textarea class="f" id="ap_text" oninput="_apPrev()" style="min-height:80px">'+nsgEsc(d.text||'')+'</textarea></div>'
-    +'<div class="block"><label class="fl" style="margin-top:0">Картинка (необязательно, кадрируется 16:9)</label>'
+    +'<div class="block"><label class="fl" style="margin-top:0">Формат кадрирования</label>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">'
+    +_AP_ARS.map(function(a){var on=(window._apAR&&window._apAR[0]===a[0]&&window._apAR[1]===a[1]);return '<span onclick="_apSetAR('+a[0]+','+a[1]+')" style="cursor:pointer;padding:6px 12px;border-radius:16px;font-weight:700;font-size:13px;'+(on?'background:var(--acc,#37c98a);color:#fff':'background:var(--card2);color:var(--txt2)')+'">'+a[2]+'</span>';}).join('')
+    +'</div>'
+    +'<div class="note" style="margin:2px 0 8px">Выбери формат до загрузки — картинка обрежется под него.</div>'
     +(img?('<div style="margin:6px 0"><img src="'+img+'" style="width:100%;max-width:260px;border-radius:12px"></div>'):'<div class="note" style="margin:6px 0">Можно без картинки — только текст.</div>')
     +'<button class="btn sec" onclick="_apPick()">📷 '+(img?'Заменить картинку':'Загрузить картинку')+'</button>'
     +(img?'<button class="btn sec" style="margin-top:6px" onclick="_apClearImg()">🗑 Убрать</button>':'')+'</div>'
+    +'<div class="block"><div class="kv" style="border:0;padding:0"><label class="fl" style="margin:0">Размер баннера у клиента</label><span id="ap_sizelbl" style="font-weight:700;color:var(--txt2)">'+(window._apSize||380)+' px</span></div>'
+    +'<input type="range" min="240" max="560" step="20" value="'+(window._apSize||380)+'" oninput="_apSetSize(this.value)" style="width:100%;margin-top:8px"/>'
+    +'<div class="kv" style="border:0;padding:0"><span class="note" style="margin:0">Уже</span><span class="note" style="margin:0">Шире</span></div></div>'
     +'<div class="block"><label class="fl" style="margin-top:0">Текст кнопки (необязательно)</label><input class="f" id="ap_btn" oninput="_apPrev()" value="'+nsgEsc(d.btn_text||'')+'" placeholder="Напр.: Открыть неделю Claude"/>'
     +'<label class="fl">Ссылка кнопки</label><input class="f" id="ap_url" value="'+nsgEsc(d.btn_url||'')+'" placeholder="https://t.me/твой_канал"/></div>'
     +'<button class="btn" onclick="_apSave()">💾 Сохранить</button>';
@@ -903,8 +914,8 @@ function _apSave(){
   var b=(document.getElementById('ap_btn')||{}).value||'';
   var u=(document.getElementById('ap_url')||{}).value||'';
   toast('Сохраняю…');
-  api('/api/admin/actpromo',{save:true,on:window._apOn?1:0,title:t,text:x,btn_text:b,btn_url:u,img:window._apImg||''}).then(function(d){
-    if(d&&d.ok){toast('Сохранено ✅');window._apCfg=d;window._apImg=d.img||'';window._apOn=!!d.on;_apRender();}
+  api('/api/admin/actpromo',{save:true,on:window._apOn?1:0,title:t,text:x,btn_text:b,btn_url:u,img:window._apImg||'',size:window._apSize||380}).then(function(d){
+    if(d&&d.ok){toast('Сохранено ✅');window._apCfg=d;window._apImg=d.img||'';window._apOn=!!d.on;window._apSize=parseInt(d.size||380,10)||380;_apRender();}
     else{toast(d&&d.error==='img_too_big'?'Картинка слишком большая':'Ошибка');}
   });
 }
