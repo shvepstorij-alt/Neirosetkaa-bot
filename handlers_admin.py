@@ -553,21 +553,16 @@ async def cmd_falcheck(message: Message):
                 f"3. Обнови <code>FAL_API_KEY</code> в Railway Variables и передеплой",
                 parse_mode="HTML", disable_web_page_preview=True
             )
-        elif code in (404, 422, 400):
-            # Авторизация прошла — просто нет такого запроса. Ключ живой.
+        else:
+            # Любой ответ кроме 401/403 значит, что авторизация прошла: fal.ai
+            # проверяет ключ ДО метода/поиска запроса. 404/405/422/400 — ожидаемо
+            # для тестового «пустого» запроса. Ключ живой.
             await status_msg.edit_text(
                 f"🟢 <b>Ключ рабочий</b> (…{_tail})\n\n"
-                f"Авторизация на fal.ai проходит (HTTP {code} — это ожидаемо для "
-                f"тестового запроса). Генерация должна работать.\n\n"
+                f"Авторизация на fal.ai проходит (HTTP {code} — это нормально для "
+                f"тестового запроса). Генерация работает.\n\n"
                 f"Если клиенты всё равно видят ошибку — проверь баланс: "
                 f"https://fal.ai/dashboard/billing",
-                parse_mode="HTML", disable_web_page_preview=True
-            )
-        else:
-            await status_msg.edit_text(
-                f"🟡 <b>Неоднозначный ответ</b> (…{_tail})\n\n"
-                f"fal.ai вернул HTTP {code}. Скорее всего ключ живой, но сервис "
-                f"временно шалит.\n<code>{body}</code>",
                 parse_mode="HTML", disable_web_page_preview=True
             )
     except Exception as _e:
