@@ -1228,12 +1228,13 @@ async def _show_profile(message: Message, user, edit: bool = False):
                         if _r["code"]:  _det.append(f"   🎟 Код: <code>{_r['code']}</code>")
                 else:
                     _r = await pool.fetchrow(
-                        "SELECT account_email, account_pass FROM linkpay_orders "
-                        "WHERE user_id=$1 AND service_name=$2 AND (account_email<>'' OR account_pass<>'') "
+                        "SELECT account_email FROM linkpay_orders "
+                        "WHERE user_id=$1 AND service_name=$2 AND account_email<>'' "
                         "ORDER BY created_at DESC LIMIT 1", uid, s["service_name"])
                     if _r:
                         if _r["account_email"]: _det.append(f"   📧 Почта: <code>{_r['account_email']}</code>")
-                        if _r["account_pass"]:  _det.append(f"   🔑 Пароль: <code>{_r['account_pass']}</code>")
+                        # Пароль клиенту НЕ показываем: он его и так знает, а в истории
+                        # переписки пароль оставаться не должен.
             except Exception:
                 pass
             if _det:
@@ -5835,6 +5836,27 @@ def _subscription_days(plan_name: str) -> int:
     return 30
 
 
+# Защита от перебора кодов активации через фолбэк-авторизацию (без initData).
+_code_auth_fails: dict = {}          # ip -> [timestamps неудачных попыток]
+CODE_AUTH_MAX_FAILS_PER_HOUR = 15
+
+
+def _code_auth_allowed(ip: str) -> bool:
+    import time as _t_ca
+    _now = _t_ca.time()
+    _f = [t for t in _code_auth_fails.get(ip, []) if _now - t < 3600]
+    _code_auth_fails[ip] = _f
+    if len(_code_auth_fails) > 500:
+        for _k in [k for k, v in list(_code_auth_fails.items()) if not v]:
+            _code_auth_fails.pop(_k, None)
+    return len(_f) < CODE_AUTH_MAX_FAILS_PER_HOUR
+
+
+def _code_auth_fail(ip: str):
+    import time as _t_ca
+    _code_auth_fails.setdefault(ip, []).append(_t_ca.time())
+
+
 async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     """POST /api/activate-chatgpt — запускает задачу в фоне, сразу возвращает job_id."""
     import json as _json
@@ -5857,9 +5879,20 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     if not user_id and _fb_code:
         # Фолбэк: initData не прошёл (открыто в браузере / старый клиент) —
         # опознаём клиента по коду активации (секрет, выдан только покупателю).
+        # Это обход подписи Telegram, поэтому: считаем неудачные попытки по IP и
+        # блокируем перебор кодов, а факт использования фолбэка логируем.
+        _ip_fb = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                  or (request.remote or "unknown"))
+        if not _code_auth_allowed(_ip_fb):
+            logging.warning(f"activate-chatgpt: перебор кодов с IP {_ip_fb} — блокируем")
+            return _resp({"success": False,
+                          "error": "Слишком много попыток. Открой мини-приложение из бота."}, 429)
         _fb = await get_pending_activation_by_code(_fb_code)
         if _fb:
             user_id = _fb.get("user_id")
+            logging.info(f"activate-chatgpt: авторизация по коду (без initData) uid={user_id} ip={_ip_fb}")
+        else:
+            _code_auth_fail(_ip_fb)
     if not user_id:
         return _resp({"success": False, "error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
     if not access_token.startswith("eyJ") or len(access_token) < 100:
@@ -9175,6 +9208,27 @@ def _genimg_put(_b: bytes, _mime: str) -> str:
             if _now - _GENIMG_CACHE[_k][2] > 3600:
                 _GENIMG_CACHE.pop(_k, None)
     return _tok
+
+
+async def tg_file_proxy_url(file_id: str, mime: str = "image/jpeg") -> str:
+    """Публичная одноразовая ссылка на файл Telegram — БЕЗ токена бота в URL.
+
+    Раньше Motion Control отдавал EvoLink ссылку вида
+    https://api.telegram.org/file/bot<BOT_TOKEN>/... — то есть отправлял третьей
+    стороне полный токен бота (он же и есть доступ к боту: рассылка по всей базе,
+    перехват апдейтов). Теперь мы сами скачиваем файл и отдаём его со своего
+    домена по случайному токену, который живёт ~1 час.
+    """
+    if not WEBAPP_BASE_URL:
+        raise Exception(
+            "Не задан WEBAPP_BASE_URL — Motion Control временно недоступен. "
+            "Добавь переменную в Railway Variables."
+        )
+    _f = await bot.get_file(file_id)
+    _buf = await bot.download_file(_f.file_path)
+    _data = _buf.read() if hasattr(_buf, "read") else _buf
+    _tok = _genimg_put(_data, mime)
+    return f"{WEBAPP_BASE_URL.rstrip('/')}/genimg?t={_tok}"
 
 
 def _bytes_response(data: bytes, mime: str, filename: str, request: web.Request) -> web.Response:

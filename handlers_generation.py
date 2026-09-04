@@ -45,10 +45,13 @@ from generation_api import (
 )
 from common import (
     _check_can_generate, check_expiring_credits, mark_generation_active, notify_admin_error, safe_send_media, unmark_generation_active,
-    try_acquire_click, release_click,
+    try_acquire_click, release_click, tg_file_proxy_url,
 )
 
 import html as _html_mod
+
+# Страховка от «мёртвых» соединений в долгих сессиях (fal.ai polling, апскейл).
+_LONG_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=180)
 
 
 def _esc(s) -> str:
@@ -1329,7 +1332,7 @@ async def do_upscale(message: Message, state: FSMContext):
             "prompt": "masterpiece, best quality, highres, detailed",
             "negative_prompt": "(worst quality, low quality, normal quality:2)",
         }
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
             async with s.post(
                 "https://fal.run/fal-ai/clarity-upscaler",
                 headers=upscale_headers,
@@ -1347,7 +1350,7 @@ async def do_upscale(message: Message, state: FSMContext):
             raise Exception(f"Upscale failed: {str(result)[:200]}")
 
         # Скачиваем результат
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
             async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=60)) as r:
                 out_bytes = await r.read()
 
@@ -1901,7 +1904,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                     "prompt": prompt,
                     "image_url": image_data_uri,
                 }
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
                 # Все edit модели через queue (они могут быть медленными)
                 async with s.post(
                     f"https://queue.fal.run/{m['model_id']}",
@@ -2414,7 +2417,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 "aspect_ratio": aspect,
             }
 
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
                 # Submit
                 async with s.post(
                     f"https://queue.fal.run/{m['model_id']}",
@@ -2945,9 +2948,11 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         return
 
     try:
-        # Получаем публичные URL файлов Telegram (EvoLink сам скачает)
-        image_url = await _tg_file_public_url(image_file_id)
-        video_url = await _tg_file_public_url(video_file_id)
+        # Публичные ссылки на наши файлы для EvoLink — БЕЗ токена бота в URL.
+        # Раньше сюда уходил https://api.telegram.org/file/bot<BOT_TOKEN>/...,
+        # то есть токен бота передавался стороннему сервису и оседал в его логах.
+        image_url = await tg_file_proxy_url(image_file_id, "image/jpeg")
+        video_url = await tg_file_proxy_url(video_file_id, "video/mp4")
 
         # Запускаем генерацию (без retry - safety блоки не ретраятся, а ошибки API итак долгие)
         vid_bytes = await api_kling_motion_control(

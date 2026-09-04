@@ -562,20 +562,26 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     user_coins = await get_coins(uid)
     # Применяем промокодную цену если передана
     price_after_promo = promo_final if promo_final and promo_final < p["price"] else p["price"]
+    # Цена БЕЗ монеток — именно она уходит в платёжную ссылку СБП/карты на этом
+    # экране, и именно её должен ждать вебхук. Монетки списываются отдельными
+    # кнопками (shop_coins_sbp / shop_full_coins), и они сами обновляют amount_rub.
+    # Раньше в БД писалась сумма «со скидкой на монетки», которые ещё не списаны, —
+    # заказ и реальный платёж расходились.
+    price_for_link = price_after_promo
     coins_used = 0
     if user_coins >= 1:
         coins_used = int(min(user_coins, price_after_promo))
         price_after_promo = max(0, price_after_promo - coins_used)
     final_shop_price = price_after_promo
 
-    # Сохраняем заказ в БД с РЕАЛЬНОЙ суммой (после промокода и монеток)
+    # Сохраняем заказ в БД с суммой, соответствующей платёжной ссылке
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, promo_code)
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (order_id) DO NOTHING
-        """, order_id, uid, 0, final_shop_price if final_shop_price > 0 else p["price"],
+        """, order_id, uid, 0, price_for_link if price_for_link > 0 else p["price"],
             f"shop:{key}:{plan_idx}",
             (_promo_code.strip().upper() if (promo_final and promo_final < p["price"] and _promo_code) else None))
         try:
@@ -595,7 +601,8 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
         _fk_no = ""
     _num_disp = _fk_no or order_id
 
-    pay_url = fk_pay_url(final_shop_price, order_id) if final_shop_price > 0 else None
+    # Ссылка всегда на сумму без монеток — монетки применяются отдельной кнопкой
+    pay_url = fk_pay_url(price_for_link, order_id) if price_for_link > 0 else None
 
     coins_line = f"\n🪙 Монетки: <b>−{coins_used}₽</b>" if coins_used > 0 else ""
     has_discount = promo_final and promo_final < p["price"]
@@ -624,12 +631,15 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             text=f"🪙 Применить {coins_used}₽ монетками + СБП {final_shop_price}₽",
             callback_data=f"shop_coins_sbp:{key}:{plan_idx}:{coins_used}"
         )])
-        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить СБП без монеток {p['price']}₽", url=fk_pay_url(p["price"], order_id), **pay_btn_kwargs())])
-        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {p['price']}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5357079680002310747")])
+        # «без монеток» = цена с учётом промокода, но без списания монеток.
+        # Раньше тут стояла полная цена p['price'], из-за чего клиент с промокодом
+        # платил больше, чем записано в заказе.
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить СБП без монеток {price_for_link}₽", url=fk_pay_url(price_for_link, order_id), **pay_btn_kwargs())])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {price_for_link}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5357079680002310747")])
     else:
         # Два способа: СБП (форма, работает сейчас) и Карта (через API)
-        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить через СБП {final_shop_price}₽", url=pay_url, **pay_btn_kwargs())])
-        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {final_shop_price}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5357079680002310747")])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить через СБП {price_for_link}₽", url=pay_url, **pay_btn_kwargs())])
+        shop_buttons.append([InlineKeyboardButton(text=f"Оплатить картой {price_for_link}₽", callback_data=f"shop_pay_card:{order_id}", icon_custom_emoji_id="5357079680002310747")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=shop_buttons + [
         [InlineKeyboardButton(

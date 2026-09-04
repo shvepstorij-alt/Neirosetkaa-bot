@@ -465,7 +465,16 @@ async def db_cleanup_loop():
                 r3 = await conn.execute(
                     "DELETE FROM events WHERE created_at < NOW() - INTERVAL '60 days'"
                 )
-                logging.info(f"🧹 DB cleanup: gens={r1}, fk_orders={r2}, events={r3}")
+                # Подстраховка: пароли клиентов от их аккаунтов не должны лежать в БД
+                # дольше месяца, даже если заказ забыли закрыть кнопкой «Готово».
+                try:
+                    r4 = await conn.execute(
+                        "UPDATE linkpay_orders SET account_pass='' "
+                        "WHERE account_pass <> '' AND created_at < NOW() - INTERVAL '30 days'"
+                    )
+                except Exception as _e_pw:
+                    r4 = f"skip ({_e_pw})"
+                logging.info(f"🧹 DB cleanup: gens={r1}, fk_orders={r2}, events={r3}, passwords_cleared={r4}")
         except Exception as e:
             logging.error(f"DB cleanup error: {e}")
 

@@ -25,6 +25,14 @@ from config import (
     bot,
 )
 
+# Таймауты для «долгих» сессий (polling генерации, скачивание результата).
+# Раньше эти сессии создавались вообще без таймаута: зависший сокет держал
+# генерацию бесконечно — клиент видел «Генерирую…» без конца, кредиты уже списаны.
+# total=None, потому что polling законно идёт минутами; sock_connect/sock_read
+# страхуют именно от «мёртвого» соединения.
+_LONG_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=180)
+
+
 def _is_retryable_error(exc: Exception) -> bool:
     """Проверяет, стоит ли повторять запрос при этой ошибке."""
     msg = str(exc).lower()
@@ -648,7 +656,7 @@ async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:
         return await api_generate_fal_image(prompt, model_id, aspect_ratio, quality=quality)
 
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
 
         if api_type == "gemini":
             # ── Nano Banana (generateContent) ─────────────────
@@ -755,7 +763,7 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
     }
     headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
     last_error = None
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
         for model in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             for attempt in range(3):  # 3 попытки на каждую модель
@@ -790,7 +798,7 @@ async def _fal_queue_run(model_id: str, payload: dict, poll_max: int = 90) -> di
         raise Exception("FAL_API_KEY не задан.")
     headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
     poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
         async with s.post(f"https://queue.fal.run/{model_id}", headers=headers, json=payload,
                           timeout=aiohttp.ClientTimeout(total=60)) as r:
             submit = await r.json()
@@ -856,7 +864,7 @@ async def api_fal_edit_image(image_bytes: bytes, prompt: str, model_id: str) -> 
         if _fal_content_blocked(result):
             raise Exception("🛡 Контент заблокирован моделью. Попробуй переформулировать.")
         raise Exception(f"fal edit: нет изображения: {str(result)[:150]}")
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
         async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=120)) as dr:
             return await dr.read()
 
@@ -874,7 +882,7 @@ async def api_fal_animate_image(image_bytes: bytes, prompt: str, model_id: str,
         if _fal_content_blocked(result):
             raise Exception("🛡 Контент заблокирован моделью. Попробуй переформулировать.")
         raise Exception(f"fal anim: нет видео: {str(result)[:150]}")
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
         async with s.get(video_url, timeout=aiohttp.ClientTimeout(total=180)) as dv:
             return await dv.read()
 
@@ -901,7 +909,7 @@ async def api_animate_image(
 
     payload = {"instances": [instance], "parameters": params}
 
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
         async with s.post(
             f"{base}/models/veo-3.1-fast-generate-preview:predictLongRunning",
             json=payload, headers=headers
@@ -954,8 +962,13 @@ async def api_animate_image(
 # ══════════════════════════════════════════════════════════
 
 async def _tg_file_public_url(file_id: str) -> str:
-    """Получает публичный URL файла Telegram (действителен ~1 час).
-    EvoLink скачивает файл по этому URL для генерации."""
+    """УСТАРЕЛО, НЕ ИСПОЛЬЗОВАТЬ для внешних сервисов.
+
+    Возвращает ссылку Telegram, в которой содержится ТОКЕН БОТА. Передавать её
+    наружу нельзя: токен = полный доступ к боту (рассылка по всей базе, перехват
+    апдейтов). Для сторонних API используй common.tg_file_proxy_url() — она
+    отдаёт файл с нашего домена по одноразовому токену.
+    """
     file = await bot.get_file(file_id)
     return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
@@ -1001,7 +1014,7 @@ async def api_kling_motion_control(
     if prompt.strip():
         payload["prompt"] = prompt.strip()[:2500]
 
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
         # 1. Отправляем задачу
         async with s.post(f"{base}/videos/generations", json=payload, headers=headers) as r:
             if r.status != 200 and r.status != 202:
@@ -1156,7 +1169,7 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
         "instances": [{"prompt": prompt}],
         "parameters": {"durationSeconds": 8, "aspectRatio": aspect_ratio, "sampleCount": 1}
     }
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
         async with s.post(f"{base}/models/{model_id}:predictLongRunning",
                           json=payload, headers=headers) as r:
             if r.status != 200:

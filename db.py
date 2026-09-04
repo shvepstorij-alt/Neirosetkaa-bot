@@ -1079,6 +1079,24 @@ async def check_promo_for_user(code: str, user_id: int) -> tuple[bool, str, dict
             return False, "Срок действия промокода истёк", None
     if p["max_uses"] and p["used_count"] >= p["max_uses"]:
         return False, "Промокод уже использован максимальное число раз", None
+    # Лимитированный промокод: учитываем «занятые» лимиты — заказы других клиентов,
+    # созданные с этим кодом и ещё не оплаченные. Без этого один код с max_uses=1
+    # можно было применить в неограниченном числе параллельных заказов: счётчик
+    # растёт только при оплате, и скидку получали все.
+    if p["max_uses"]:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                _reserved = await conn.fetchval(
+                    "SELECT COUNT(*) FROM fk_orders "
+                    "WHERE promo_code=$1 AND status='pending' AND user_id <> $2 "
+                    "AND created_at > NOW() - INTERVAL '30 minutes'",
+                    code.strip().upper(), user_id
+                ) or 0
+            if p["used_count"] + int(_reserved) >= p["max_uses"]:
+                return False, "Промокод сейчас занят — лимит применений исчерпан", None
+        except Exception as _e_res:
+            logging.warning(f"check_promo reserved count {code}: {_e_res}")
     # Безлимитный СКИДОЧНЫЙ промокод (kind='percent', max_uses=0) можно применять
     # одному и тому же юзеру многократно (это скидка на покупку, а не начисление
     # кредитов — фарма нет). Для кредитных и лимитированных — проверка «раз на юзера».
@@ -1897,6 +1915,16 @@ async def set_linkpay_status(fk_order_id, status):
         if status == "cancelled":
             await conn.execute(
                 "UPDATE fk_orders SET status='cancelled' WHERE order_id=$1", fk_order_id)
+        # Заказ закрыт — пароль клиента от его аккаунта больше не нужен.
+        # Держать чужие пароли в БД бессрочно нельзя: при утечке дампа это прямой
+        # ущерб клиенту. Email оставляем — он нужен для идентификации подписки.
+        if status in ("done", "cancelled"):
+            try:
+                await conn.execute(
+                    "UPDATE linkpay_orders SET account_pass='' "
+                    "WHERE fk_order_id=$1 AND account_pass <> ''", fk_order_id)
+            except Exception as _e_pw:
+                logging.warning(f"clear account_pass {fk_order_id}: {_e_pw}")
 
 
 async def set_linkpay_admin_msg(fk_order_id, admin_msg_id):
