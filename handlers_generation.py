@@ -3076,7 +3076,7 @@ async def mot_got_duration(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "mot_skip_prompt", MotionState.waiting_prompt)
 async def mot_skip_prompt(cb: CallbackQuery, state: FSMContext):
     await state.update_data(prompt="")
-    await _mot_confirm_and_run(cb.message, state, cb.from_user.id, edit=True)
+    await _mot_show_confirm(cb.message, state, edit=True)
     await cb.answer()
 
 
@@ -3088,7 +3088,71 @@ async def mot_got_prompt(message: Message, state: FSMContext):
         await message.answer(err)
         return
     await state.update_data(prompt=prompt)
-    await _mot_confirm_and_run(message, state, message.from_user.id, edit=False)
+    await _mot_show_confirm(message, state, edit=False)
+
+
+async def _mot_show_confirm(msg_obj, state: FSMContext, edit: bool):
+    """Экран подтверждения перед списанием.
+
+    Раньше ЛЮБОЕ сообщение на шаге 4 (в том числе стикер, «ок» или вопрос)
+    сразу списывало 149–349 кр и запускало генерацию — единственный платный
+    раздел без подтверждения заказа.
+    """
+    data = await state.get_data()
+    duration = data.get("duration", 8)
+    price = data.get("price", MOTION_PRICES.get(duration, 349))
+    prompt = data.get("prompt", "")
+    await state.set_state(MotionState.waiting_confirm)
+    text = (
+        f"📋 <b>Проверь заказ</b>\n\n"
+        f"🎭 <b>Motion Control (Kling 3.0)</b>\n"
+        f"⏱ Длительность: <b>{duration} сек</b> · 720p\n"
+        f"💳 Спишется: <b>{price} кр</b>\n\n"
+        + (f"📝 <i>{_esc(prompt[:150])}</i>\n\n" if prompt else "📝 <i>Без промта — фон с фото</i>\n\n")
+        + f"⏱ Генерация занимает 3–10 минут."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🚀 Запустить за {price} кр", callback_data="mot_go")],
+        [InlineKeyboardButton(text="✍️ Изменить промт", callback_data="mot_edit_prompt")],
+        [_eib("Главное меню", "back_main")],
+    ])
+    if edit:
+        try:
+            await msg_obj.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    await msg_obj.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "mot_edit_prompt", MotionState.waiting_confirm)
+async def mot_edit_prompt(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(MotionState.waiting_prompt)
+    await cb.message.answer(
+        "✏️ Напиши новое описание сцены/фона (или нажми «Пропустить»):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏭ Пропустить промт", callback_data="mot_skip_prompt")],
+            [_eib("Главное меню", "back_main")],
+        ]))
+    await cb.answer()
+
+
+@dp.message(MotionState.waiting_confirm)
+async def mot_confirm_text(message: Message, state: FSMContext):
+    """Текст на экране подтверждения = новый промт (а не запуск генерации)."""
+    prompt = await _extract_prompt(message)
+    ok_v, err = validate_gen_prompt(prompt) if prompt else (True, "")
+    if not ok_v:
+        await message.answer(err)
+        return
+    await state.update_data(prompt=prompt)
+    await _mot_show_confirm(message, state, edit=False)
+
+
+@dp.callback_query(F.data == "mot_go", MotionState.waiting_confirm)
+async def mot_go(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await _mot_confirm_and_run(cb.message, state, cb.from_user.id, edit=True)
 
 
 async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool):

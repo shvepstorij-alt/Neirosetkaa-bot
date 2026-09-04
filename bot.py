@@ -251,28 +251,61 @@ def _register_global_error_handler():
 _register_global_error_handler()
 
 
+# Все фоновые циклы устроены как `while True: try/except`, но если задача всё же
+# умрёт (ошибка вне try, отмена, падение при старте) — раньше об этом никто бы не
+# узнал: тихо переставали возвращаться коды, монетки, сгорать партии, уходить
+# напоминания. Супервизор перезапускает такую задачу и пишет админу.
+_BG_TASKS: dict = {}
+
+
+def _spawn_bg(coro_factory, name: str):
+    async def _runner():
+        _fails = 0
+        while True:
+            try:
+                await coro_factory()
+                logging.error(f"⚠️ Фоновая задача {name} завершилась сама — перезапуск через 60с")
+            except asyncio.CancelledError:
+                raise
+            except Exception as _e_bg:
+                _fails += 1
+                logging.exception(f"💥 Фоновая задача {name} упала ({_fails}): {_e_bg}")
+                # Алертим только первые падения, чтобы не спамить при системном сбое
+                if _fails <= 3:
+                    try:
+                        from common import notify_admin_error
+                        await notify_admin_error(f"Фоновая задача {name} упала", _e_bg)
+                    except Exception:
+                        pass
+            await asyncio.sleep(60)
+
+    _t = asyncio.create_task(_runner())
+    _BG_TASKS[name] = _t
+    return _t
+
+
 async def main():
     await _ensure_playwright_browser()
     await init_db()
     await load_prices_from_db()
     await load_miniapp_toggles()
     asyncio.create_task(setup_webhook_server())
-    asyncio.create_task(cleanup_stale_generations_loop())
-    asyncio.create_task(auto_recover_lost_videos_loop())
-    asyncio.create_task(fk_auto_check_loop())
-    asyncio.create_task(_memory_cleanup_loop())
-    asyncio.create_task(credit_batches_loop())
-    asyncio.create_task(subscription_reminder_loop())
-    asyncio.create_task(reminders_loop())
-    asyncio.create_task(db_cleanup_loop())
-    asyncio.create_task(gpt_codes_cleanup_loop())
-    asyncio.create_task(gpt_code_rechecker_loop())
-    asyncio.create_task(_activation_jobs_cleanup_loop())
-    asyncio.create_task(claude_codes_cleanup_loop())
-    asyncio.create_task(perplexity_codes_cleanup_loop())
-    asyncio.create_task(coins_refund_loop())
-    asyncio.create_task(models_desc_refresh_loop())
-    asyncio.create_task(_claude_job_results_cleanup_loop())
+    _spawn_bg(cleanup_stale_generations_loop, "cleanup_stale_generations_loop")
+    _spawn_bg(auto_recover_lost_videos_loop, "auto_recover_lost_videos_loop")
+    _spawn_bg(fk_auto_check_loop, "fk_auto_check_loop")
+    _spawn_bg(_memory_cleanup_loop, "_memory_cleanup_loop")
+    _spawn_bg(credit_batches_loop, "credit_batches_loop")
+    _spawn_bg(subscription_reminder_loop, "subscription_reminder_loop")
+    _spawn_bg(reminders_loop, "reminders_loop")
+    _spawn_bg(db_cleanup_loop, "db_cleanup_loop")
+    _spawn_bg(gpt_codes_cleanup_loop, "gpt_codes_cleanup_loop")
+    _spawn_bg(gpt_code_rechecker_loop, "gpt_code_rechecker_loop")
+    _spawn_bg(_activation_jobs_cleanup_loop, "_activation_jobs_cleanup_loop")
+    _spawn_bg(claude_codes_cleanup_loop, "claude_codes_cleanup_loop")
+    _spawn_bg(perplexity_codes_cleanup_loop, "perplexity_codes_cleanup_loop")
+    _spawn_bg(coins_refund_loop, "coins_refund_loop")
+    _spawn_bg(models_desc_refresh_loop, "models_desc_refresh_loop")
+    _spawn_bg(_claude_job_results_cleanup_loop, "_claude_job_results_cleanup_loop")
     # NS Gifts: инициализируем клиент и фоновые задачи
 
     if NSGIFTS_USER_ID and NSGIFTS_LOGIN and NSGIFTS_API_SECRET:
@@ -288,7 +321,7 @@ async def main():
             proxy      = NSGIFTS_PROXY,
         )
         logging.info("✅ NS Gifts client initialized")
-        asyncio.create_task(nsgifts_balance_alert_loop())
+        _spawn_bg(nsgifts_balance_alert_loop, "nsgifts_balance_alert_loop")
     else:
         logging.warning("⚠️  NS Gifts: env-переменные не заданы — App Store отключён")
 

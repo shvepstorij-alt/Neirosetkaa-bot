@@ -48,6 +48,7 @@ class MotionState(StatesGroup):
     waiting_video    = State()   # референс-видео с движением
     waiting_duration = State()   # выбор длительности (5/8/10)
     waiting_prompt   = State()   # опциональный промт сцены
+    waiting_confirm  = State()   # подтверждение заказа перед списанием
 
 class UpscaleState(StatesGroup):
     waiting_photo = State()

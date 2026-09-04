@@ -759,7 +759,11 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
     - gemini-3-pro-image-preview (Nano Banana Pro) - премиум-резерв
     """
     img_b64 = base64.b64encode(image_bytes).decode()
-    # Список моделей - пробуем по очереди от свежей к стабильным
+    # Список моделей - пробуем по очереди от свежей к стабильным.
+    # ВАЖНО: премиум-резерв (3-pro) дороже клиентской цены редактирования, поэтому
+    # уходить на него имеет смысл только при реальной недоступности предыдущих,
+    # а не при отказе по контенту — иначе один заблокированный промт прогонялся
+    # через все модели и стоил бизнесу больше, чем заплатил клиент.
     models = [
         "gemini-2.5-flash-image",              # Стабильная основа (Nano Banana)
         "gemini-3.1-flash-image-preview",      # Nano Banana 2 (preview)
@@ -794,12 +798,35 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
                             last_error = f"API {r.status}: {(await r.text())[:150]}"
                             break
                         data = await r.json()
-                        for part in data["candidates"][0]["content"]["parts"]:
+                        # Блокировка по контенту: дальше перебирать модели
+                        # бессмысленно — все они применят тот же фильтр.
+                        _cands = data.get("candidates") or []
+                        if not _cands:
+                            _block = (data.get("promptFeedback", {}) or {}).get("blockReason", "")
+                            if _block:
+                                raise Exception(
+                                    "Промт заблокирован фильтром безопасности 🛡\n"
+                                    "Попробуй переформулировать — избегай узнаваемых людей, "
+                                    "насилия и откровенного содержания."
+                                )
+                            last_error = "Gemini вернул пустой ответ. Попробуй другой промт."
+                            break
+                        _fin = (_cands[0].get("finishReason") or "").upper()
+                        if _fin in ("SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "RECITATION"):
+                            raise Exception(
+                                "Промт или фото заблокированы фильтром безопасности 🛡\n"
+                                "Попробуй другое фото или переформулируй запрос."
+                            )
+                        for part in _cands[0].get("content", {}).get("parts", []):
                             if "inlineData" in part:
                                 return base64.b64decode(part["inlineData"]["data"])
                         last_error = "Gemini не вернул изображение. Попробуй другой промт."
                         break
                 except Exception as e:
+                    # Явную блокировку контента пробрасываем сразу: перебор моделей
+                    # её не обойдёт, а каждая попытка стоит денег и времени клиента.
+                    if "🛡" in str(e):
+                        raise
                     last_error = str(e)
                     await asyncio.sleep(2)
     raise Exception(last_error or "Все модели недоступны. Попробуй позже.")

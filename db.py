@@ -1753,19 +1753,38 @@ async def premium_ref_earned_this_month(referrer_id: int) -> float:
 
 
 async def log_premium_ref(referrer_id: int, referee_id: int, order_id: str,
-                          amount_rub: float, coins: float) -> bool:
-    """Пишет начисление в лог. Возвращает False если по order_id уже было (идемпотентность)."""
+                          amount_rub: float, coins: float, cap: float = 0.0) -> float:
+    """Пишет начисление в лог и возвращает СУММУ, которую реально можно начислить.
+
+    0.0 означает «не начислять» (уже было по этому order_id, либо месячный лимит
+    исчерпан). Лимит проверяется ВНУТРИ транзакции с блокировкой строк месяца:
+    раньше проверка шла отдельным запросом, и две одновременные оплаты рефералов
+    пробивали месячный cap.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        try:
-            await conn.execute(
-                "INSERT INTO ref_premium_log (referrer_id, referee_id, order_id, amount_rub, coins) "
-                "VALUES ($1,$2,$3,$4,$5)",
-                referrer_id, referee_id, order_id, round(amount_rub, 2), round(coins, 2)
-            )
-            return True
-        except Exception:
-            return False  # UNIQUE(order_id) — уже начисляли
+        async with conn.transaction():
+            try:
+                if cap and cap > 0:
+                    _earned = await conn.fetchval(
+                        """SELECT COALESCE(SUM(coins),0) FROM ref_premium_log
+                           WHERE referrer_id=$1 AND created_at >= date_trunc('month', NOW())
+                           FOR UPDATE""",
+                        referrer_id
+                    ) or 0
+                    _remaining = float(cap) - float(_earned)
+                    if _remaining <= 0:
+                        return 0.0
+                    if coins > _remaining:
+                        coins = round(_remaining, 2)
+                await conn.execute(
+                    "INSERT INTO ref_premium_log (referrer_id, referee_id, order_id, amount_rub, coins) "
+                    "VALUES ($1,$2,$3,$4,$5)",
+                    referrer_id, referee_id, order_id, round(amount_rub, 2), round(coins, 2)
+                )
+                return round(float(coins), 2)
+            except Exception:
+                return 0.0  # UNIQUE(order_id) — уже начисляли
 
 
 # ── Perplexity коды (копия Claude) ───────────────────────────────────────────

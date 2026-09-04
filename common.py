@@ -743,18 +743,13 @@ async def process_premium_referral(referee_id: int, order_id: str, amount_rub: f
             cap = float(await get_setting("ref_premium_cap", "0") or "0")
         except Exception:
             cap = 0.0
-        if cap > 0:
-            earned = await premium_ref_earned_this_month(referrer_id)
-            remaining = cap - earned
-            if remaining <= 0:
-                logging.info(f"premium ref monthly cap reached referrer={referrer_id}")
-                return
-            if reward > remaining:
-                reward = round(remaining, 2)
-        # идемпотентность по order_id (UNIQUE в ref_premium_log)
-        ok = await log_premium_ref(referrer_id, referee_id, order_id, float(amount_rub), reward)
-        if not ok:
-            logging.info(f"premium ref already logged order={order_id}")
+        # Лимит и запись в лог — одной транзакцией (идемпотентность по order_id +
+        # блокировка строк месяца). Раньше проверка шла отдельно, и две
+        # одновременные оплаты могли пробить месячный cap.
+        reward = await log_premium_ref(referrer_id, referee_id, order_id,
+                                       float(amount_rub), reward, cap=cap)
+        if not reward or reward <= 0:
+            logging.info(f"premium ref пропущен (лимит или дубль) order={order_id}")
             return
         await add_coins(referrer_id, reward, reason=f"ref_premium order={order_id}")
         try:
@@ -1214,16 +1209,43 @@ async def _show_profile(message: Message, user, edit: bool = False):
             _sn = (s["service_name"] or "").lower()
             _det = []
             try:
+                # Ищем данные ИМЕННО этой подписки: сперва по заказу того же
+                # сервиса и тарифа, и только если не нашли — по последнему коду.
+                # Раньше клиенту с двумя подписками одного сервиса (например
+                # Claude Pro и Claude Max) в обе строки подставлялся один и тот же,
+                # последний код — он вводил чужой Org ID и шёл в поддержку.
+                _ord_id = None
+                try:
+                    _ord_row = await pool.fetchrow(
+                        "SELECT order_id FROM fk_orders WHERE user_id=$1 AND status='paid' "
+                        "AND pack LIKE 'shop:%' AND paid_at <= $2 "
+                        "ORDER BY paid_at DESC LIMIT 1",
+                        uid, s["expires_at"])
+                    _ord_id = _ord_row["order_id"] if _ord_row else None
+                except Exception:
+                    _ord_id = None
                 if "claude" in _sk or "claude" in _sn:
-                    _r = await pool.fetchrow(
-                        "SELECT code, org_id FROM claude_codes WHERE used_by=$1 "
-                        "AND org_id IS NOT NULL AND org_id<>'' ORDER BY used_at DESC LIMIT 1", uid)
+                    _r = None
+                    if _ord_id:
+                        _r = await pool.fetchrow(
+                            "SELECT code, org_id FROM claude_codes WHERE used_by=$1 AND order_id=$2 "
+                            "AND org_id IS NOT NULL AND org_id<>'' LIMIT 1", uid, _ord_id)
+                    if not _r:
+                        _r = await pool.fetchrow(
+                            "SELECT code, org_id FROM claude_codes WHERE used_by=$1 "
+                            "AND org_id IS NOT NULL AND org_id<>'' ORDER BY used_at DESC LIMIT 1", uid)
                     if _r:
                         if _r["org_id"]: _det.append(f"   🏢 Org ID: <code>{_r['org_id']}</code>")
                         if _r["code"]:   _det.append(f"   🎟 Код: <code>{_r['code']}</code>")
                 elif "gpt" in _sk or "chatgpt" in _sn or "gpt" in _sn:
-                    _r = await pool.fetchrow(
-                        "SELECT code, email FROM gpt_codes WHERE used_by=$1 ORDER BY used_at DESC LIMIT 1", uid)
+                    _r = None
+                    if _ord_id:
+                        _r = await pool.fetchrow(
+                            "SELECT code, email FROM gpt_codes WHERE used_by=$1 AND order_id=$2 LIMIT 1",
+                            uid, _ord_id)
+                    if not _r:
+                        _r = await pool.fetchrow(
+                            "SELECT code, email FROM gpt_codes WHERE used_by=$1 ORDER BY used_at DESC LIMIT 1", uid)
                     if _r:
                         if _r["email"]: _det.append(f"   📧 Email: <code>{_r['email']}</code>")
                         if _r["code"]:  _det.append(f"   🎟 Код: <code>{_r['code']}</code>")
@@ -5237,15 +5259,42 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
 
         async def _bcast():
             ok = 0
-            for u in ids:
-                try:
-                    await bot.send_message(u, text, parse_mode="HTML")
-                    ok += 1
-                except Exception:
-                    pass
-                await asyncio.sleep(0.05)
+            blocked = 0
+            failed = 0
             try:
-                await bot.send_message(ADMIN_ID, f"✅ Рассылка завершена: доставлено {ok}/{len(ids)}")
+                for u in ids:
+                    try:
+                        await bot.send_message(u, text, parse_mode="HTML")
+                        ok += 1
+                    except Exception as _e_b:
+                        _lb = str(_e_b).lower()
+                        # Клиент заблокировал бота / удалил аккаунт — это не сбой
+                        if ("bot was blocked" in _lb or "user is deactivated" in _lb
+                                or "chat not found" in _lb or "bot can't initiate" in _lb):
+                            blocked += 1
+                        elif "retry after" in _lb:
+                            # Telegram просит притормозить — ждём и пробуем ещё раз
+                            import re as _re_b
+                            _m = _re_b.search(r"retry after (\d+)", _lb)
+                            await asyncio.sleep(int(_m.group(1)) if _m else 5)
+                            try:
+                                await bot.send_message(u, text, parse_mode="HTML")
+                                ok += 1
+                            except Exception:
+                                failed += 1
+                        else:
+                            failed += 1
+                    await asyncio.sleep(0.05)
+            except Exception as _e_all:
+                logging.exception(f"broadcast прерван: {_e_all}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"✅ <b>Рассылка завершена</b>\n\n"
+                    f"📨 Доставлено: <b>{ok}</b> из {len(ids)}\n"
+                    f"🚫 Заблокировали бота: <b>{blocked}</b>\n"
+                    f"⚠️ Прочие ошибки: <b>{failed}</b>",
+                    parse_mode="HTML")
             except Exception:
                 pass
         asyncio.create_task(_bcast())
