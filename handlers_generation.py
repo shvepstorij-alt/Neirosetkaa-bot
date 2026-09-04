@@ -54,6 +54,23 @@ import html as _html_mod
 _LONG_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=180)
 
 
+async def _model_or_none(cb, models: dict, key: str):
+    """Возвращает модель, если она существует И не выключена админом.
+
+    Раньше DISABLED_MODELS учитывался только при отрисовке меню: старые сообщения
+    («Ещё раз», «Попробовать ту же модель», ссылки из истории) продолжали запускать
+    выключенную модель. А несуществующий ключ давал KeyError и полную тишину.
+    """
+    m = models.get(key)
+    if not m or key in DISABLED_MODELS:
+        try:
+            await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
+        except Exception:
+            pass
+        return None
+    return m
+
+
 async def _cb_ack(cb, text: str = None, alert: bool = False):
     """Безопасный ответ на callback.
 
@@ -157,7 +174,9 @@ async def back_to_img_brands(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("imodel:"))
 async def choose_img_model(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[1]
-    m = IMAGE_MODELS[key]
+    m = await _model_or_none(cb, IMAGE_MODELS, key)
+    if not m:
+        return
     cr = await get_credits(cb.from_user.id)
     if cr < m["credits"]:
         await cb.answer(f"💸 Нужно {m['credits']} кредитов, у тебя {cr}", show_alert=True)
@@ -177,8 +196,8 @@ async def choose_img_model(cb: CallbackQuery, state: FSMContext):
 async def choose_alt_img_model(cb: CallbackQuery, state: FSMContext):
     """Клиент выбрал альтернативную фото-модель после ошибки 503."""
     key = cb.data.split(":")[1]
-    if key not in IMAGE_MODELS:
-        await cb.answer()
+    if key not in IMAGE_MODELS or key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
     # Переиспользуем основной flow выбора модели
     cb.data = f"imodel:{key}"
@@ -189,8 +208,8 @@ async def choose_alt_img_model(cb: CallbackQuery, state: FSMContext):
 async def retry_img_model(cb: CallbackQuery, state: FSMContext):
     """Клиент хочет попробовать ту же модель ещё раз после ошибки."""
     key = cb.data.split(":")[1]
-    if key not in IMAGE_MODELS:
-        await cb.answer()
+    if key not in IMAGE_MODELS or key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
     cb.data = f"imodel:{key}"
     await choose_img_model(cb, state)
@@ -201,7 +220,9 @@ async def choose_img_aspect(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     key = parts[1]
     ratio = ":".join(parts[2:])  # "9:16", "16:9" etc
-    m = IMAGE_MODELS[key]
+    m = await _model_or_none(cb, IMAGE_MODELS, key)
+    if not m:
+        return
     labels = {"1:1": "Квадрат 1:1", "16:9": "Широкий 16:9",
               "9:16": "Сторис 9:16", "4:3": "Фото 4:3", "3:4": "Портрет 3:4"}
     await state.update_data(model_key=key, aspect_ratio=ratio)
@@ -295,7 +316,9 @@ async def img_prompt(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("go:img:"))
 async def go_image(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[2]
-    m = IMAGE_MODELS[key]
+    m = await _model_or_none(cb, IMAGE_MODELS, key)
+    if not m:
+        return
     data = await state.get_data()
     prompt = data.get("prompt", "")
     uid = cb.from_user.id
@@ -319,6 +342,12 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
 
     await mark_generation_active(uid, "photo")
     await state.clear()
+    # Запоминаем формат уже после очистки: кнопка «Ещё раз» под результатом
+    # должна повторить ИМЕННО тот формат, который выбрал клиент.
+    try:
+        await state.update_data(aspect_ratio=data.get("aspect_ratio", "1:1"))
+    except Exception:
+        pass
 
     # Флаг чтобы избежать двойного возврата кредитов.
     # ВАЖНО: объявляем ДО отправки «Генерирую…» — этот вызов Telegram тоже может
@@ -527,8 +556,18 @@ async def after_gen_again(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     menu = parts[1]   # "image" или "video"
     key  = parts[2] if len(parts) > 2 else ""
+    # Формат (9:16, 16:9…) переживает очистку состояния: раньше «Ещё раз» молча
+    # возвращал квадрат 1:1 за те же деньги, хотя клиент выбирал сторис.
+    _prev = await state.get_data()
+    _keep_aspect = _prev.get("aspect_ratio")
+    _keep_dur = _prev.get("duration_sec")
+    _keep_cost = _prev.get("credits_override")
     await state.clear()
-    if menu == "image" and key in IMAGE_MODELS:
+    if _keep_aspect:
+        await state.update_data(aspect_ratio=_keep_aspect)
+    if _keep_dur:
+        await state.update_data(duration_sec=_keep_dur, credits_override=_keep_cost)
+    if menu == "image" and key in IMAGE_MODELS and key not in DISABLED_MODELS:
         m = IMAGE_MODELS[key]
         await state.update_data(model_key=key)
         await state.set_state(ImgState.waiting_prompt)
@@ -538,7 +577,7 @@ async def after_gen_again(cb: CallbackQuery, state: FSMContext):
             f"💡 Введи промт:",
             reply_markup=kb_cancel(), parse_mode="HTML"
         )
-    elif menu == "video" and key in VIDEO_MODELS:
+    elif menu == "video" and key in VIDEO_MODELS and key not in DISABLED_MODELS:
         m = VIDEO_MODELS[key]
         await state.update_data(model_key=key)
         await state.set_state(VidState.waiting_prompt)
@@ -559,8 +598,17 @@ async def after_gen_improve(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     menu = parts[1]
     key  = parts[2] if len(parts) > 2 else ""
+    # Сохраняем формат и длительность, как и в «Ещё раз»
+    _prev = await state.get_data()
+    _keep_aspect = _prev.get("aspect_ratio")
+    _keep_dur = _prev.get("duration_sec")
+    _keep_cost = _prev.get("credits_override")
     await state.clear()
-    if menu == "image" and key in IMAGE_MODELS:
+    if _keep_aspect:
+        await state.update_data(aspect_ratio=_keep_aspect)
+    if _keep_dur:
+        await state.update_data(duration_sec=_keep_dur, credits_override=_keep_cost)
+    if menu == "image" and key in IMAGE_MODELS and key not in DISABLED_MODELS:
         await state.update_data(model_key=key)
         await state.set_state(ImgState.waiting_prompt)
         await cb.message.answer(
@@ -572,7 +620,7 @@ async def after_gen_improve(cb: CallbackQuery, state: FSMContext):
             f"✏️ Новый промт:",
             reply_markup=kb_cancel(), parse_mode="HTML"
         )
-    elif menu == "video" and key in VIDEO_MODELS:
+    elif menu == "video" and key in VIDEO_MODELS and key not in DISABLED_MODELS:
         await state.update_data(model_key=key)
         await state.set_state(VidState.waiting_prompt)
         await cb.message.answer(
@@ -689,7 +737,9 @@ async def back_to_vid_brands(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("vmodel:"))
 async def choose_vid_model(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[1]
-    m = VIDEO_MODELS[key]
+    m = await _model_or_none(cb, VIDEO_MODELS, key)
+    if not m:
+        return
     cr = await get_credits(cb.from_user.id)
 
     # Если у модели есть выбор длительности (Kling) - сначала спрашиваем её
@@ -775,8 +825,8 @@ async def choose_vid_duration(cb: CallbackQuery, state: FSMContext):
 async def choose_alt_vid_model(cb: CallbackQuery, state: FSMContext):
     """Клиент выбрал альтернативную видео-модель после ошибки 503."""
     key = cb.data.split(":")[1]
-    if key not in VIDEO_MODELS:
-        await cb.answer()
+    if key not in VIDEO_MODELS or key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
     cb.data = f"vmodel:{key}"
     await choose_vid_model(cb, state)
@@ -786,8 +836,8 @@ async def choose_alt_vid_model(cb: CallbackQuery, state: FSMContext):
 async def retry_vid_model(cb: CallbackQuery, state: FSMContext):
     """Клиент хочет попробовать ту же видео-модель ещё раз после ошибки."""
     key = cb.data.split(":")[1]
-    if key not in VIDEO_MODELS:
-        await cb.answer()
+    if key not in VIDEO_MODELS or key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
     cb.data = f"vmodel:{key}"
     await choose_vid_model(cb, state)
@@ -798,7 +848,9 @@ async def choose_vid_aspect(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     key = parts[1]
     ratio = ":".join(parts[2:])  # "9:16", "16:9" etc
-    m = VIDEO_MODELS[key]
+    m = await _model_or_none(cb, VIDEO_MODELS, key)
+    if not m:
+        return
     labels = {"16:9": "Горизонталь 16:9", "9:16": "Вертикаль 9:16", "1:1": "Квадрат 1:1"}
     await state.update_data(model_key=key, aspect_ratio=ratio)
     await state.set_state(VidState.waiting_prompt)
@@ -894,7 +946,9 @@ async def vid_prompt(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("go:vid:"))
 async def go_video(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[2]
-    m = VIDEO_MODELS[key]
+    m = await _model_or_none(cb, VIDEO_MODELS, key)
+    if not m:
+        return
     data = await state.get_data()
     prompt = data.get("prompt", "")
     uid = cb.from_user.id
@@ -921,6 +975,15 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
     await mark_generation_active(uid, "video")
     await state.clear()
+    # Формат и длительность нужны кнопке «Ещё раз» под результатом
+    try:
+        await state.update_data(
+            aspect_ratio=data.get("aspect_ratio", "16:9"),
+            duration_sec=duration_sec,
+            credits_override=credits_cost,
+        )
+    except Exception:
+        pass
 
     # Флаг чтобы избежать двойного возврата кредитов при вложенных исключениях.
     # ВАЖНО: объявляем ДО отправки статус-сообщения — его сбой (flood-control,
@@ -1123,6 +1186,16 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
             except Exception as up_err:
                 logging.error(f"video large upload failed: {up_err}")
                 await refund_once("upload_exception")
+                # Раньше здесь клиент не получал НИЧЕГО: прогресс-бар уже удалён,
+                # видео не пришло, объяснения нет — после 20 минут ожидания.
+                try:
+                    await cb.message.answer(
+                        f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не удалось его доставить.\n"
+                        f"💳 Кредиты возвращены.\n\nНапиши @neirosetkaalex — пришлём файл напрямую.",
+                        reply_markup=kb_back(),
+                    )
+                except Exception:
+                    pass
             return
 
         # Видео <= 48 МБ - отправляем через Telegram
@@ -1449,6 +1522,69 @@ async def do_upscale(message: Message, state: FSMContext):
     await state.clear()
 
 
+@dp.message(EditState.waiting_confirm)
+async def edit_confirm_text(message: Message, state: FSMContext):
+    """Клиент написал текст вместо нажатия кнопки на экране подтверждения.
+
+    Раньше на это состояние не было ни одного хендлера, а общий catch-all ловит
+    только сообщения ВНЕ состояний — бот молчал, и это выглядело как поломка.
+    Трактуем текст как новый промт: так ожидает клиент.
+    """
+    new_prompt = await _extract_prompt(message)
+    ok_v, err = validate_gen_prompt(new_prompt)
+    if not ok_v:
+        await message.answer(err)
+        return
+    data = await state.get_data()
+    model_key = data.get("edit_model_key", "edit_gemini")
+    m = EDIT_MODELS.get(model_key, EDIT_MODELS["edit_gemini"])
+    await state.update_data(edit_prompt=new_prompt)
+    await message.answer(
+        f"✏️ <b>Промт обновлён</b>\n\n"
+        f"Модель: <b>{model_title_n(m['name'])}</b>\n"
+        f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
+        f"📝 <i>{_esc(new_prompt[:150])}</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
+            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_edit:{model_key}")],
+            [_eib("Главное меню", "back_main")],
+        ])
+    )
+
+
+@dp.message(AnimState.waiting_confirm)
+async def anim_confirm_text(message: Message, state: FSMContext):
+    """То же для анимации: текст на экране подтверждения = новый промт."""
+    new_prompt = await _extract_prompt(message)
+    ok_v, err = validate_gen_prompt(new_prompt)
+    if not ok_v:
+        await message.answer(err)
+        return
+    data = await state.get_data()
+    model_key = data.get("anim_model_key", "anim_veo")
+    m = ANIM_MODELS.get(model_key, ANIM_MODELS["anim_veo"])
+    await state.update_data(anim_prompt_text=new_prompt)
+    await message.answer(
+        f"✏️ <b>Промт обновлён</b>\n\n"
+        f"Модель: <b>{model_title_n(m['name'])}</b>\n"
+        f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
+        f"📝 <i>{_esc(new_prompt[:150])}</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
+            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_anim:{model_key}")],
+            [_eib("Главное меню", "back_main")],
+        ])
+    )
+
+
+@dp.message(ImproveState.waiting_model)
+async def improve_model_text(message: Message):
+    """Промт-ассистент: ждём выбор модели кнопкой, текст подсказываем."""
+    await message.answer("👆 Выбери модель кнопкой выше — или нажми «✏️ Изменить промт».")
+
+
 @dp.message(UpscaleState.waiting_photo)
 async def upscale_wrong_input(message: Message):
     await message.answer("📎 Пожалуйста, отправь фото (не файлом, а именно фото).")
@@ -1551,33 +1687,60 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         return
 
     m = IMAGE_MODELS.get(model_key)
-    if not m:
-        await cb.answer("Модель не найдена.", show_alert=True)
+    if not m or model_key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна. Выбери другую.", show_alert=True)
         return
 
     uid = cb.from_user.id
+
+    # Защита от двойного клика (её здесь не было вообще)
+    _click_key = f"gen:improve:{uid}:{cb.message.message_id}"
+    if not try_acquire_click(_click_key):
+        await cb.answer("⏳ Уже запускаю…", show_alert=False)
+        return
+
+    # Общие лимиты, как в остальных разделах (раньше через этот раздел их можно было обойти)
+    if not await _check_can_generate(cb, uid, kind="photo"):
+        release_click(_click_key)
+        return
+
     cr = await get_credits(uid)
     if cr < m["credits"]:
+        release_click(_click_key)
         await cb.answer(f"Недостаточно кредитов. Нужно {m['credits']} кр.", show_alert=True)
         return
 
-    await state.clear()
-    wait = await cb.message.answer(f"🎨 Генерирую с улучшенным промтом...\n<i>{_esc(improved_prompt[:80])}...</i>", parse_mode="HTML")
-    _charged = False
-    try:
-        # Генерируем изображение
-        cb.data = f"imodel:{model_key}"
-        # Используем общую функцию генерации через FSM-стейт
-        img_bytes = await api_generate_image(
-            improved_prompt, m["model_id"], "1:1", m["api"],
-            quality=m.get("quality", "medium"))
+    # СНАЧАЛА списываем, потом обращаемся к платному API. Раньше картинка
+    # генерировалась до списания: при нехватке кредитов она была уже оплачена
+    # бизнесом у провайдера, а клиенту не отдавалась.
+    _charged = await deduct(uid, m["credits"])
+    if not _charged:
+        release_click(_click_key)
+        await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
+        return
 
-        success = await deduct(uid, m["credits"])
-        if not success:
-            await wait.delete()
-            await cb.message.answer("💸 Недостаточно кредитов.")
-            return
-        _charged = True
+    await mark_generation_active(uid, "photo")
+    await state.clear()
+    try:
+        wait = await cb.message.answer(
+            f"🎨 Генерирую с улучшенным промтом...\n<i>{_esc(improved_prompt[:80])}...</i>",
+            parse_mode="HTML")
+    except Exception as _w_err:
+        logging.error(f"improve_gen: не удалось отправить статус uid={uid}: {_w_err}")
+        try:
+            await add_credits(uid, m["credits"])
+        except Exception:
+            pass
+        release_click(_click_key)
+        await unmark_generation_active(uid)
+        return
+
+    try:
+        img_bytes = await _with_retry(
+            lambda: api_generate_image(
+                improved_prompt, m["model_id"], data.get("aspect_ratio", "1:1"), m["api"],
+                quality=m.get("quality", "medium")),
+            max_attempts=3, op_name=f"ImproveGen {model_key}")
 
         new_cr = await get_credits(uid)
         await wait.delete()
@@ -1596,6 +1759,10 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
                  _eib("Купить кредиты", "menu_buy")],
             ])
         )
+        # Результат доставлен — дальше возврат не нужен
+        _charged = False
+        await log_gen(uid, "image", model_key, m["credits"])
+        _record_generation(uid, _photo_history)
         await log_event(uid, "improve_gen", f"model={model_key} credits={m['credits']}")
         await check_expiring_credits(uid)
 
@@ -1604,6 +1771,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         if _charged:
             try:
                 await add_credits(uid, m["credits"])
+                logging.info(f"improve_gen refund uid={uid} credits={m['credits']}")
             except Exception:
                 pass
         try:
@@ -1611,12 +1779,16 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         except Exception:
             pass
         await cb.message.answer(
-            "⚠️ Ошибка генерации. Кредиты возвращены, если были списаны. Попробуй другую модель.",
+            f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✨ Попробовать снова", callback_data="menu_improve")],
                 [_eib("Главное меню", "back_main")],
             ])
         )
+    finally:
+        release_click(_click_key)
+        await unmark_generation_active(uid)
     await _cb_ack(cb)
 
 
@@ -2588,6 +2760,14 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
             except Exception as up_err:
                 logging.error(f"anim large upload failed: {up_err}")
                 await anim_refund_once("upload_exception")
+                try:
+                    await cb.message.answer(
+                        f"⚠️ Анимация создана ({size_mb:.1f} МБ), но не удалось её доставить.\n"
+                        f"💳 Кредиты возвращены.\n\nНапиши @neirosetkaalex — пришлём файл напрямую.",
+                        reply_markup=kb_back(),
+                    )
+                except Exception:
+                    pass
             return
 
         # Видео <= 48 МБ - отправляем через Telegram

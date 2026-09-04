@@ -415,9 +415,22 @@ async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str =
             if r.status == 401 or r.status == 403:
                 raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
             if r.status == 422:
+                # 422 у fal.ai — это и safety, и обычная ошибка параметров
+                # (неподдерживаемая длительность/формат). Раньше клиенту всегда
+                # говорили «промт заблокирован», хотя промт был ни при чём.
+                _e422 = (await r.text())[:500]
+                _l422 = _e422.lower()
+                if ("safety" in _l422 or "moderation" in _l422 or "policy" in _l422
+                        or "nsfw" in _l422 or "violat" in _l422 or "blocked" in _l422
+                        or "flagged by a content" in _l422):
+                    raise Exception(
+                        "Промт заблокирован фильтром безопасности 🛡\n"
+                        "Переформулируй - избегай сцен с насилием, NSFW или знаменитостями."
+                    )
+                logging.error(f"fal.ai video 422 (validation) model={model_id} payload={payload} resp={_e422}")
                 raise Exception(
-                    "Промт заблокирован фильтром безопасности 🛡\n"
-                    "Переформулируй - избегай сцен с насилием, NSFW или знаменитостями."
+                    "⚠️ Ошибка параметров модели (формат или длительность). "
+                    "Попробуй другой формат/длительность или другую модель."
                 )
             if r.status not in (200, 202):
                 raise Exception(f"fal.ai queue API {r.status}: {(await r.text())[:300]}")
@@ -952,6 +965,15 @@ async def api_animate_image(
                             data_bytes = await vr.read()
                             if len(data_bytes) > 1000:
                                 return data_bytes
+                _ra_low = str(pd).lower()
+                if ("raimediafiltered" in _ra_low or "rai_media_filtered" in _ra_low
+                        or "filtered" in _ra_low or "safety" in _ra_low or "blocked" in _ra_low):
+                    logging.warning(f"Veo Anim RAI filter: {str(pd)[:400]}")
+                    raise Exception(
+                        "Фото или промт заблокированы фильтром безопасности 🛡\n"
+                        "Veo не анимирует узнаваемых людей и сцены с насилием. "
+                        "Попробуй другое фото или другую модель анимации."
+                    )
                 logging.error(f"Veo Anim unknown response: {str(pd)[:300]}")
                 raise Exception("Неизвестная структура ответа Veo Anim")
     raise Exception("Превышено время ожидания анимации (6 мин)")
@@ -1266,6 +1288,19 @@ async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16
                     if v.get("bytesBase64Encoded"):
                         return base64.b64decode(v["bytesBase64Encoded"])
 
+                # Частый случай: Google отфильтровал результат (RAI) и вернул
+                # ответ вообще без сэмплов. Раньше это выглядело как «неизвестная
+                # структура» и клиент получал общую «техническую проблемку».
+                _resp_low = str(pd.get("response", pd)).lower()
+                if ("raimediafiltered" in _resp_low or "rai_media_filtered" in _resp_low
+                        or "filtered" in _resp_low or "safety" in _resp_low
+                        or "blocked" in _resp_low):
+                    logging.warning(f"Veo RAI filter: {str(pd)[:400]}")
+                    raise Exception(
+                        "Запрос заблокирован фильтром безопасности 🛡\n"
+                        "Veo не создаёт сцены с реальными людьми, насилием и знаменитостями. "
+                        "Попробуй переформулировать или выбери другую модель."
+                    )
                 # Лог полного ответа для отладки
                 resp_str = str(pd.get("response", pd))[:600]
                 logging.error(f"Veo unknown response: {resp_str}")
