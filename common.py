@@ -837,10 +837,27 @@ def _assistant_off_kb():
     return InlineKeyboardMarkup(inline_keyboard=_rows)
 
 
+# Почасовой лимит бесплатного AI-консультанта: без него один скрипт мог
+# бесконечно гонять Sonnet с web_search за счёт бизнеса.
+_chat_history: dict = {}
+CHAT_LIMIT_PER_HOUR = int(os.getenv("CHAT_LIMIT_PER_HOUR", "30"))
+
+
 async def claude_with_search(uid: int, user_text: str) -> str:
     # Ассистент выключен админом — не дёргаем API и не шлём алерты
     if not await _assistant_enabled():
         return ASSISTANT_OFF_TEXT
+
+    # Лимит сообщений в час (админа не ограничиваем)
+    if uid != ADMIN_ID:
+        _can, _mins = _check_hourly_limit(uid, _chat_history, CHAT_LIMIT_PER_HOUR)
+        if not _can:
+            return (
+                f"⏰ <b>Лимит консультанта: {CHAT_LIMIT_PER_HOUR} сообщений в час.</b>\n\n"
+                f"Попробуй через {_mins} мин — или пиши напрямую @{PERSONAL_USERNAME}, "
+                f"он ответит лично 🙌"
+            )
+        _chat_history.setdefault(uid, []).append(_time_module.time())
     conv = _get_conv(uid)
     # Подтягиваем историю из БД один раз за процесс (переживает рестарт/деплой)
     if uid not in _conv_loaded:
@@ -926,16 +943,22 @@ async def claude_with_search(uid: int, user_text: str) -> str:
     # Попытка 1: с web_search, пробуя каждую модель
     for model_name in models_to_try:
         try:
-            resp = claude_client.messages.create(
-                model=model_name,
-                max_tokens=2048,
-                system=build_system_prompt(),
-                tools=[{
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": 3,
-                }],
-                messages=api_messages,
+            # ВАЖНО: claude_client — СИНХРОННЫЙ клиент. Прямой вызов блокировал
+            # весь event loop (вебхуки оплаты, генерации, все остальные клиенты)
+            # на всё время ответа Claude. Уносим в тред-пул.
+            resp = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: claude_client.messages.create(
+                    model=model_name,
+                    max_tokens=2048,
+                    system=build_system_prompt(),
+                    tools=[{
+                        "type": "web_search_20250305",
+                        "name": "web_search",
+                        "max_uses": 3,
+                    }],
+                    messages=api_messages,
+                ),
             )
             # Собираем ТОЛЬКО text-блоки
             reply = ""
@@ -966,11 +989,15 @@ async def claude_with_search(uid: int, user_text: str) -> str:
     logging.info("Claude API: все попытки с web_search провалились, пробую без search")
     for model_name in models_to_try:
         try:
-            resp = claude_client.messages.create(
-                model=model_name,
-                max_tokens=1024,
-                system=build_system_prompt(),
-                messages=api_messages,
+            # Тоже через тред-пул — см. комментарий выше.
+            resp = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: claude_client.messages.create(
+                    model=model_name,
+                    max_tokens=1024,
+                    system=build_system_prompt(),
+                    messages=api_messages,
+                ),
             )
             reply = ""
             for block in resp.content:
@@ -10189,6 +10216,19 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
         logging.info(f"NSGifts: order {fk_order_id} already fulfilled")
         return   # идемпотентность — уже выполнен
 
+    # АТОМАРНЫЙ ЗАХВАТ заказа. Без него два пути выдачи (вебхук FreeKassa и кнопка
+    # «Проверить оплату») могли стартовать одновременно, оба увидеть status='pending'
+    # и купить у поставщика ДВА кода — клиент оплатил один, второй в убыток.
+    async with pool.acquire() as conn:
+        _claim = await conn.execute(
+            "UPDATE nsgifts_orders SET status='processing' "
+            "WHERE fk_order_id=$1 AND status IN ('pending', 'paying')",
+            fk_order_id
+        )
+    if str(_claim).split()[-1] != "1":
+        logging.info(f"NSGifts: order {fk_order_id} уже обрабатывается другим путём — выходим")
+        return
+
     service_id   = row["service_id"]
     service_name = row["service_name"]
     price_rub    = row["price_rub"]
@@ -10213,11 +10253,12 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
         if not custom_id:
             raise RuntimeError(f"create_order: no custom_id in response: {create_resp}")
 
-        # Сохраняем custom_id
+        # Сохраняем custom_id. Статус НЕ трогаем: он остаётся 'processing',
+        # иначе заказ снова становится «захватываемым» и его может подхватить
+        # второй путь выдачи.
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE nsgifts_orders SET ns_custom_id=$1, status='paying' "
-                "WHERE fk_order_id=$2",
+                "UPDATE nsgifts_orders SET ns_custom_id=$1 WHERE fk_order_id=$2",
                 custom_id, fk_order_id
             )
 
@@ -10287,11 +10328,15 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
     except Exception as e:
         logging.error(f"NSGifts fulfill failed for {fk_order_id}: {e}", exc_info=True)
 
+        # Если код УЖЕ куплен (pins_json заполнен), а упала только доставка —
+        # не помечаем заказ как 'failed', иначе админ по алерту купит второй код.
         async with pool.acquire() as conn:
+            _has_pins = await conn.fetchval(
+                "SELECT (pins_json IS NOT NULL AND pins_json <> '') FROM nsgifts_orders "
+                "WHERE fk_order_id=$1", fk_order_id)
             await conn.execute(
-                "UPDATE nsgifts_orders SET status='failed', error_msg=$1 "
-                "WHERE fk_order_id=$2",
-                str(e)[:500], fk_order_id
+                "UPDATE nsgifts_orders SET status=$1, error_msg=$2 WHERE fk_order_id=$3",
+                ("fulfilled" if _has_pins else "failed"), str(e)[:500], fk_order_id
             )
 
         # Сообщение пользователю
@@ -10301,7 +10346,20 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
             f"Напиши @{PERSONAL_USERNAME} — код пришлю вручную в течение 15 минут! 🙏"
         )
 
-        # Алерт администратору с деталями
+        # Алерт администратору с деталями.
+        # Если код уже куплен — НЕ покупать повторно, а переслать имеющийся.
+        _pins_note = ""
+        if _has_pins:
+            try:
+                async with pool.acquire() as conn:
+                    _pj = await conn.fetchval(
+                        "SELECT pins_json FROM nsgifts_orders WHERE fk_order_id=$1", fk_order_id)
+                _pins_note = (
+                    f"\n\n✅ <b>КОД УЖЕ КУПЛЕН — повторно НЕ покупать!</b>\n"
+                    f"Упала только доставка. Перешли клиенту:\n<code>{_pj}</code>"
+                )
+            except Exception:
+                _pins_note = "\n\n✅ Код уже куплен — проверь pins_json в заказе, повторно НЕ покупай."
         await bot.send_message(
             ADMIN_ID,
             f"🚨 <b>NSGifts ОШИБКА выдачи</b>\n\n"
@@ -10309,8 +10367,9 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
             f"📦 {service_name}  (service_id={service_id})\n"
             f"💵 {price_rub} ₽\n"
             f"🆔 FK: <code>{fk_order_id}</code>\n\n"
-            f"❌ Ошибка: <code>{str(e)[:300]}</code>\n\n"
-            f"Активируй вручную через кабинет wholesale.ns.gifts",
+            f"❌ Ошибка: <code>{str(e)[:300]}</code>"
+            + (_pins_note if _has_pins else
+               "\n\nАктивируй вручную через кабинет wholesale.ns.gifts"),
             parse_mode="HTML"
         )
         await log_event(user_id, "nsgifts_failed",

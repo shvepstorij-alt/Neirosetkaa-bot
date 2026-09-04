@@ -886,13 +886,43 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
     if not ok:
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
+
+    # ФИКСИРУЕМ ЗАКАЗ В БД. Раньше оплата монетками не создавала никакой записи:
+    # единственным следом было сообщение админу — если оно терялось, клиент
+    # оставался без подписки, а заказа не было ни в админке, ни в отчётах.
+    import time as _t_fc
+    order_id = f"shop_{uid}_{int(_t_fc.time())}"
+    _onum = None
+    try:
+        _pool_fc = await get_pool()
+        async with _pool_fc.acquire() as _c_fc:
+            await _c_fc.execute(
+                "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
+                "coins_spent, promo_code, status, paid_at) "
+                "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
+                order_id, uid, f"shop:{key}:{plan_idx}", coins_used,
+                (_promo_code.strip().upper() if _promo_code else None))
+            _onum = await _c_fc.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+    except Exception as _e_fc:
+        logging.error(f"shop_full_coins: не удалось записать заказ {order_id}: {_e_fc}")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 <b>Оплата монетками: заказ НЕ записан в БД</b>\n"
+                f"👤 <code>{uid}</code>  🪙 {coins_used}₽\n"
+                f"📦 {key}:{plan_idx}\n<code>{_e_fc}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
+
     new_coins = await get_coins(uid)
     username = cb.from_user.username or cb.from_user.full_name
     await cb.message.edit_text(
         f"\U0001fa99 <b>Оплачено монетками!</b>\n\n"
         f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
         f"\U0001fa99 Списано: <b>{coins_used}\u20bd</b>\n"
-        f"\U0001fa99 Остаток монеток: <b>{new_coins:.0f}\u20bd</b>\n\n"
+        f"\U0001fa99 Остаток монеток: <b>{new_coins:.0f}\u20bd</b>\n"
+        f"🧾 Заказ: <code>{('#' + str(_onum)) if _onum else order_id}</code>\n\n"
         f"Александр активирует подписку в течение часа \U0001f447",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -907,7 +937,8 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
             f"\U0001f464 @{username} (ID: {uid})\n"
             f"\U0001f4e6 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
-            f"\U0001f4b5 СБП: 0\u20bd",
+            f"\U0001f4b5 СБП: 0\u20bd\n"
+            f"\U0001f194 Заказ: <code>{order_id}</code>",
             parse_mode="HTML"
         )
     except Exception:

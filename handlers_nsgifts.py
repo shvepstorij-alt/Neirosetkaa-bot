@@ -554,7 +554,13 @@ async def nsg_check_payment(cb: CallbackQuery):
             row = await conn.fetchrow(
                 "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1", order_id
             )
+        # Заказ должен принадлежать нажавшему — иначе код уйдёт не тому клиенту
+        if row and int(row["user_id"]) != int(uid):
+            await cb.answer("Этот заказ принадлежит другому аккаунту.", show_alert=True)
+            return
         if row and row["status"] == "pending":
+            # Внутри fulfill стоит атомарный захват — параллельный вебхук
+            # не сможет купить второй код.
             await nsgifts_fulfill_after_payment(order_id, uid)
         else:
             await cb.message.answer("✅ Заказ уже выполнен — код должен быть выше в чате.")

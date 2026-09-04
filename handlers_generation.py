@@ -48,6 +48,19 @@ from common import (
     try_acquire_click, release_click,
 )
 
+import html as _html_mod
+
+
+def _esc(s) -> str:
+    """Экранирует пользовательский текст для parse_mode='HTML'.
+
+    Без этого промт с символами < & > ломает сообщение (Telegram: 'unsupported
+    start tag'), клиент не получает ответа, а в go_image/go_video это
+    происходило уже ПОСЛЕ списания кредитов.
+    """
+    return _html_mod.escape(str(s or ""), quote=False)
+
+
 @dp.callback_query(F.data == "menu_image")
 async def menu_image(cb: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -253,7 +266,7 @@ async def img_prompt(message: Message, state: FSMContext):
         f"{model_title_n(m['name'])}\n"
         f"💳 <b>{m['credits']} кредитов</b>\n"
         f"⏱ {m['speed']}\n\n"
-        f"📝 <i>{prompt}</i>",
+        f"📝 <i>{_esc(prompt)}</i>",
         reply_markup=kb_confirm("img", key), parse_mode="HTML"
     )
 
@@ -285,12 +298,11 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
 
     await mark_generation_active(uid, "photo")
     await state.clear()
-    wait = await cb.message.edit_text(
-        f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{prompt[:80]}</i>",
-        parse_mode="HTML"
-    )
 
-    # Флаг чтобы избежать двойного возврата кредитов
+    # Флаг чтобы избежать двойного возврата кредитов.
+    # ВАЖНО: объявляем ДО отправки «Генерирую…» — этот вызов Telegram тоже может
+    # упасть (flood-control 429, сообщение удалено), и раньше исключение уходило
+    # наверх уже ПОСЛЕ списания: кредиты пропадали без возврата и без ответа.
     img_refunded = False
 
     async def img_refund_once(reason: str = ""):
@@ -301,6 +313,23 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         img_refunded = True
         await add_credits(uid, m["credits"])
         logging.info(f"img_refund_once EXECUTED uid={uid} credits={m['credits']} reason={reason}")
+
+    _wait_text = f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{_esc(prompt[:80])}</i>"
+    try:
+        wait = await cb.message.edit_text(_wait_text, parse_mode="HTML")
+    except Exception:
+        try:
+            wait = await cb.message.answer(_wait_text, parse_mode="HTML")
+        except Exception as _w_err:
+            logging.error(f"go_image: не удалось отправить статус-сообщение uid={uid}: {_w_err}")
+            await img_refund_once(f"wait_msg_failed:{type(_w_err).__name__}")
+            release_click(_click_key)
+            await unmark_generation_active(uid)
+            try:
+                await cb.answer("⚠️ Не удалось начать генерацию. Кредиты возвращены.", show_alert=True)
+            except Exception:
+                pass
+            return
 
     try:
         aspect = data.get("aspect_ratio", "1:1")
@@ -316,7 +345,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
                 wait_msg = f"⏳ Временный сбой, повтор через {int(delay)} сек ({attempt}/3)..."
             try:
                 await wait.edit_text(
-                    f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{prompt[:80]}</i>\n\n{wait_msg}",
+                    f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{_esc(prompt[:80])}</i>\n\n{wait_msg}",
                     parse_mode="HTML"
                 )
             except Exception:
@@ -446,8 +475,8 @@ async def improve_prompt_inline(cb: CallbackQuery, state: FSMContext):
         await wait.delete()
         await cb.message.answer(
             f"✨ <b>Промт улучшен!</b>\n\n"
-            f"<b>Было:</b> <i>{current_prompt[:100]}</i>\n\n"
-            f"<b>Стало:</b>\n<code>{improved}</code>\n\n"
+            f"<b>Было:</b> <i>{_esc(current_prompt[:100])}</i>\n\n"
+            f"<b>Стало:</b>\n<code>{_esc(improved)}</code>\n\n"
             f"Модель: <b>{model_name}</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -533,6 +562,23 @@ async def after_gen_improve(cb: CallbackQuery, state: FSMContext):
             reply_markup=kb_cancel(), parse_mode="HTML"
         )
     await cb.answer()
+
+
+def _vid_cost_and_duration(m: dict, data: dict) -> tuple[int, int]:
+    """Возвращает (цена_в_кредитах, длительность_сек), согласованные между собой.
+
+    Раньше при входе через «Ещё раз»/«Улучшить» состояние очищалось, и модель с
+    выбором длительности (Kling/Seedance/Wan/Grok) списывала цену за 5 сек, а в
+    API уходило duration=8 — клиент получал видео другой длины, а бизнес терял
+    деньги (на Kling 3.0 Pro 8 сек стоят 593 кр против списанных 391).
+    """
+    durations = m.get("durations") or {}
+    if durations:
+        dur = data.get("duration_sec")
+        if dur not in durations:
+            dur = min(durations)                 # самая короткая = базовая цена
+        return int(durations[dur][0]), int(dur)
+    return int(data.get("credits_override") or m["credits"]), int(data.get("duration_sec") or 8)
 
 
 @dp.callback_query(F.data == "menu_video")
@@ -733,10 +779,11 @@ async def choose_vid_aspect(cb: CallbackQuery, state: FSMContext):
     labels = {"16:9": "Горизонталь 16:9", "9:16": "Вертикаль 9:16", "1:1": "Квадрат 1:1"}
     await state.update_data(model_key=key, aspect_ratio=ratio)
     await state.set_state(VidState.waiting_prompt)
+    _vc, _vd = _vid_cost_and_duration(m, await state.get_data())
     await cb.message.edit_text(
         f"{model_title_n(m['name'])} | 📐 {labels.get(ratio, ratio)}\n\n"
-        f"💳 Спишется: <b>{m['credits']} кредитов</b>\n"
-        f"📐 {m['res']} | 8 сек\n\n"
+        f"💳 Спишется: <b>{_vc} кредитов</b>\n"
+        f"📐 {m['res']} | {_vd} сек\n\n"
         f"💡 <b>Введи промт:</b>\n\n"
         f"<i>Пример: A drone flies over Tokyo at night, cinematic, smooth motion</i>",
         reply_markup=kb_cancel(), parse_mode="HTML"
@@ -797,9 +844,8 @@ async def vid_prompt(message: Message, state: FSMContext):
 
     await state.update_data(prompt=prompt)
 
-    # Используем выбранную длительность и цену (Kling) или базовую (Veo)
-    credits_cost = data.get("credits_override") or m["credits"]
-    duration_sec = data.get("duration_sec") or 8
+    # Цена и длительность считаются вместе — иначе они расходятся (см. хелпер)
+    credits_cost, duration_sec = _vid_cost_and_duration(m, data)
 
     # Адаптивный текст времени в зависимости от модели
     api_type_ui = m.get("api", "veo")
@@ -816,7 +862,7 @@ async def vid_prompt(message: Message, state: FSMContext):
         f"{model_title_n(m['name'])}\n"
         f"📐 {m['res']} | {duration_sec} сек\n"
         f"💳 <b>{credits_cost} кредитов</b>\n\n"
-        f"📝 <i>{prompt}</i>\n\n"
+        f"📝 <i>{_esc(prompt)}</i>\n\n"
         f"⏱ <i>Генерация занимает {time_text}</i>",
         reply_markup=kb_confirm("vid", key), parse_mode="HTML"
     )
@@ -830,10 +876,8 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     prompt = data.get("prompt", "")
     uid = cb.from_user.id
 
-    # Для Kling-моделей используем выбранную длительность и её цену,
-    # для Veo - базовую цену из VIDEO_MODELS
-    credits_cost = data.get("credits_override") or m["credits"]
-    duration_sec = data.get("duration_sec") or 8  # Veo всегда 8
+    # Цена и длительность считаются вместе — иначе они расходятся (см. хелпер)
+    credits_cost, duration_sec = _vid_cost_and_duration(m, data)
 
     # Защита от двойного клика: тот же тап не должен списать кредиты дважды
     _click_key = f"gen:vid:{uid}:{cb.message.message_id}"
@@ -855,6 +899,21 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     await mark_generation_active(uid, "video")
     await state.clear()
 
+    # Флаг чтобы избежать двойного возврата кредитов при вложенных исключениях.
+    # ВАЖНО: объявляем ДО отправки статус-сообщения — его сбой (flood-control,
+    # удалённое сообщение) раньше уводил исключение наверх уже после списания.
+    refunded = False
+
+    async def refund_once(reason: str = ""):
+        """Возвращает кредиты только один раз, логирует."""
+        nonlocal refunded
+        if refunded:
+            logging.warning(f"refund_once SKIPPED (already refunded) uid={uid} reason={reason}")
+            return
+        refunded = True
+        await add_credits(uid, credits_cost)
+        logging.info(f"refund_once EXECUTED uid={uid} credits={credits_cost} reason={reason}")
+
     # Адаптивный текст начального сообщения в зависимости от модели
     api_type_ui = m.get("api", "veo")
     if api_type_ui == "fal":
@@ -865,13 +924,27 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     else:
         time_estimate = "1–6 минут"
 
-    status_msg = await cb.message.edit_text(
+    _status_text = (
         f"🎬 <b>Генерирую видео...</b>\n\n"
         f"{model_title_n(m['name'])} | {m['res']} | {duration_sec} сек\n"
-        f"📝 <i>{prompt[:80]}</i>\n\n"
-        f"🕐 Обычно {time_estimate}. Пришлю как только готово 👇",
-        parse_mode="HTML"
+        f"📝 <i>{_esc(prompt[:80])}</i>\n\n"
+        f"🕐 Обычно {time_estimate}. Пришлю как только готово 👇"
     )
+    try:
+        status_msg = await cb.message.edit_text(_status_text, parse_mode="HTML")
+    except Exception:
+        try:
+            status_msg = await cb.message.answer(_status_text, parse_mode="HTML")
+        except Exception as _w_err:
+            logging.error(f"go_video: не удалось отправить статус-сообщение uid={uid}: {_w_err}")
+            await refund_once(f"status_msg_failed:{type(_w_err).__name__}")
+            release_click(_click_key)
+            await unmark_generation_active(uid)
+            try:
+                await cb.answer("⚠️ Не удалось начать генерацию. Кредиты возвращены.", show_alert=True)
+            except Exception:
+                pass
+            return
 
     # Фоновая задача: анимированный прогресс-бар с %
     # Оценочное среднее время генерации по моделям (в секундах)
@@ -943,7 +1016,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                             f"🎬 <b>Генерирую видео - {progress_pct}%</b> {spinner}\n"
                             f"<code>{bar}</code>\n\n"
                             f"{model_title_n(m['name'])} | {m['res']}\n"
-                            f"📝 <i>{prompt[:80]}</i>\n\n"
+                            f"📝 <i>{_esc(prompt[:80])}</i>\n\n"
                             f"⏳ Прошло: <b>{elapsed_text}</b>\n"
                             f"{status_text}"
                         ),
@@ -956,19 +1029,6 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
             return
 
     progress_task = asyncio.create_task(progress_updates())
-
-    # Флаг чтобы избежать двойного возврата кредитов при вложенных исключениях
-    refunded = False
-
-    async def refund_once(reason: str = ""):
-        """Возвращает кредиты только один раз, логирует."""
-        nonlocal refunded
-        if refunded:
-            logging.warning(f"refund_once SKIPPED (already refunded) uid={uid} reason={reason}")
-            return
-        refunded = True
-        await add_credits(uid, credits_cost)
-        logging.info(f"refund_once EXECUTED uid={uid} credits={credits_cost} reason={reason}")
 
     try:
         aspect = data.get("aspect_ratio", "16:9")
@@ -1203,14 +1263,47 @@ async def do_upscale(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    # Защита от параллельных запусков (альбом из нескольких фото приходит
+    # отдельными апдейтами и раньше уходил в fal.ai N раз, а оплачивался один).
+    _click_key = f"gen:upscale:{uid}:{message.message_id}"
+    if not try_acquire_click(_click_key, ttl=180.0):
+        return
+
     # Лимиты: почасовой + одновременные генерации (как у остальных разделов)
     if not await _check_can_generate(message, uid, kind="photo"):
+        release_click(_click_key)
         await state.clear()
         return
     await mark_generation_active(uid, "photo")
 
-    wait = await message.answer("⏳ Улучшаю фото... обычно 20–40 сек")
-    _deducted = False
+    # СНАЧАЛА списываем, потом обращаемся к платному API. Раньше было наоборот:
+    # при нехватке кредитов апскейл уже был куплен у fal.ai за счёт бизнеса.
+    _deducted = await deduct(uid, UPSCALE_CREDIT_COST)
+    if not _deducted:
+        release_click(_click_key)
+        await unmark_generation_active(uid)
+        await state.clear()
+        await message.answer(
+            f"💸 Недостаточно кредитов. Нужно {UPSCALE_CREDIT_COST} кр.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [_eib("Купить кредиты", "menu_buy")],
+            ])
+        )
+        return
+
+    try:
+        wait = await message.answer("⏳ Улучшаю фото... обычно 20–40 сек")
+    except Exception as _w_err:
+        logging.error(f"upscale: не удалось отправить статус uid={uid}: {_w_err}")
+        try:
+            await add_credits(uid, UPSCALE_CREDIT_COST)
+        except Exception:
+            pass
+        release_click(_click_key)
+        await unmark_generation_active(uid)
+        await state.clear()
+        return
+
     try:
         # Скачиваем фото
         photo = message.photo[-1]
@@ -1258,15 +1351,7 @@ async def do_upscale(message: Message, state: FSMContext):
             async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=60)) as r:
                 out_bytes = await r.read()
 
-        # Списываем кредиты
-        success = await deduct(uid, UPSCALE_CREDIT_COST)
-        if not success:
-            await wait.delete()
-            await message.answer("💸 Недостаточно кредитов.")
-            await state.clear()
-            return
-        _deducted = True
-
+        # Кредиты уже списаны ДО вызова API (см. выше)
         new_cr = await get_credits(uid)
         await wait.delete()
         await message.answer_photo(
@@ -1283,11 +1368,18 @@ async def do_upscale(message: Message, state: FSMContext):
                  _eib("Купить кредиты", "menu_buy")],
             ])
         )
+        # Результат доставлен — дальше возврат кредитов уже НЕ нужен
+        # (иначе сбой при отправке документа делал бы апскейл бесплатным).
+        _deducted = False
+
         # Отправляем документом для скачивания в оригинале
-        await message.answer_document(
-            BufferedInputFile(out_bytes, "upscaled_4x.png"),
-            caption="📁 Оригинал без сжатия",
-        )
+        try:
+            await message.answer_document(
+                BufferedInputFile(out_bytes, "upscaled_4x.png"),
+                caption="📁 Оригинал без сжатия",
+            )
+        except Exception as _doc_err:
+            logging.warning(f"upscale send_document failed uid={uid}: {_doc_err}")
         await log_event(uid, "upscale", f"credits={UPSCALE_CREDIT_COST}")
         await check_expiring_credits(uid)
 
@@ -1303,13 +1395,15 @@ async def do_upscale(message: Message, state: FSMContext):
         except Exception:
             pass
         await message.answer(
-            f"⚠️ Ошибка апскейла. Кредиты возвращены. Попробуй ещё раз или напиши @neirosetkaalex.",
+            ("⚠️ Ошибка апскейла. Кредиты возвращены. " if _deducted
+             else "⚠️ Ошибка апскейла. ") + "Попробуй ещё раз или напиши @neirosetkaalex.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔍 Попробовать снова", callback_data="menu_upscale")],
                 [_eib("Главное меню", "back_main")],
             ])
         )
     finally:
+        release_click(_click_key)
         await unmark_generation_active(uid)
     await state.clear()
 
@@ -1380,7 +1474,7 @@ async def do_improve_prompt(message: Message, state: FSMContext):
         await wait.delete()
         await message.answer(
             f"✨ <b>Улучшенный промт:</b>\n\n"
-            f"<code>{improved}</code>\n\n"
+            f"<code>{_esc(improved)}</code>\n\n"
             f"Выбери модель для генерации 👇",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1427,7 +1521,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    wait = await cb.message.answer(f"🎨 Генерирую с улучшенным промтом...\n<i>{improved_prompt[:80]}...</i>", parse_mode="HTML")
+    wait = await cb.message.answer(f"🎨 Генерирую с улучшенным промтом...\n<i>{_esc(improved_prompt[:80])}...</i>", parse_mode="HTML")
     _charged = False
     try:
         # Генерируем изображение
@@ -1639,7 +1733,7 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         f"🖌️ <b>Подтверди редактирование</b>\n\n"
         f"Модель: <b>{model_title_n(m['name'])}</b>\n"
         f"💵 Стоимость: <b>{edit_cost} кр</b>\n\n"
-        f"📝 <i>{prompt[:150]}</i>",
+        f"📝 <i>{_esc(prompt[:150])}</i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
@@ -1681,8 +1775,8 @@ async def improve_edit_prompt(cb: CallbackQuery, state: FSMContext):
         await wait.delete()
         await cb.message.answer(
             f"✨ <b>Промт улучшен!</b>\n\n"
-            f"<b>Было:</b> <i>{current_prompt[:80]}</i>\n\n"
-            f"<b>Стало:</b>\n<code>{improved}</code>",
+            f"<b>Было:</b> <i>{_esc(current_prompt[:80])}</i>\n\n"
+            f"<b>Стало:</b>\n<code>{_esc(improved)}</code>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
@@ -1740,14 +1834,13 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
 
     await mark_generation_active(uid, "photo")
     await state.clear()
-    await cb.answer()
-    wait = await cb.message.answer(
-        f"🖌️ Редактирую фото...\n\n"
-        f"{model_title_n(m['name'])}\n"
-        f"<i>{prompt[:80]}</i>",
-        parse_mode="HTML"
-    )
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
+    # Возврат объявляем ДО отправки статус-сообщения: его сбой раньше уводил
+    # исключение наверх уже после списания кредитов.
     edit_refunded = False
 
     async def edit_refund_once(reason: str = ""):
@@ -1758,6 +1851,20 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         edit_refunded = True
         await add_credits(uid, edit_cost)
         logging.info(f"edit_refund_once EXECUTED uid={uid} credits={edit_cost} reason={reason}")
+
+    _wait_text = (
+        f"🖌️ Редактирую фото...\n\n"
+        f"{model_title_n(m['name'])}\n"
+        f"<i>{_esc(prompt[:80])}</i>"
+    )
+    try:
+        wait = await cb.message.answer(_wait_text, parse_mode="HTML")
+    except Exception as _w_err:
+        logging.error(f"go_edit: не удалось отправить статус-сообщение uid={uid}: {_w_err}")
+        await edit_refund_once(f"wait_msg_failed:{type(_w_err).__name__}")
+        release_click(_click_key)
+        await unmark_generation_active(uid)
+        return
 
     try:
         if m["api"] == "gemini":
@@ -2144,7 +2251,7 @@ async def anim_prompt(message: Message, state: FSMContext):
         f"🏃 <b>Подтверди анимацию</b>\n\n"
         f"Модель: <b>{model_title_n(m['name'])}</b>\n"
         f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
-        f"📝 <i>{prompt[:150]}</i>",
+        f"📝 <i>{_esc(prompt[:150])}</i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
@@ -2185,8 +2292,8 @@ async def improve_anim_prompt(cb: CallbackQuery, state: FSMContext):
         await wait.delete()
         await cb.message.answer(
             f"✨ <b>Промт улучшен!</b>\n\n"
-            f"<b>Было:</b> <i>{current_prompt[:80]}</i>\n\n"
-            f"<b>Стало:</b>\n<code>{improved}</code>",
+            f"<b>Было:</b> <i>{_esc(current_prompt[:80])}</i>\n\n"
+            f"<b>Стало:</b>\n<code>{_esc(improved)}</code>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
@@ -2248,16 +2355,13 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
 
     await mark_generation_active(uid, "anim")
     await state.clear()
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
     mode_label = "2️⃣ Два кадра" if mode == "two" else "1️⃣ Один кадр"
-    wait = await cb.message.answer(
-        f"⏳ Анимирую фото...\n\n"
-        f"{model_title_n(m['name'])} | {mode_label} | {aspect}\n"
-        f"<i>{prompt[:80]}</i>\n\n"
-        f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇",
-        parse_mode="HTML"
-    )
 
+    # Возврат объявляем ДО статус-сообщения (его сбой раньше терял кредиты).
     anim_refunded = False
 
     async def anim_refund_once(reason: str = ""):
@@ -2268,6 +2372,21 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         anim_refunded = True
         await add_credits(uid, anim_cost)
         logging.info(f"anim_refund_once EXECUTED uid={uid} credits={anim_cost} reason={reason}")
+
+    _wait_text = (
+        f"⏳ Анимирую фото...\n\n"
+        f"{model_title_n(m['name'])} | {mode_label} | {aspect}\n"
+        f"<i>{_esc(prompt[:80])}</i>\n\n"
+        f"⏱ Обычно 1–6 минут. Пришлю как только готово 👇"
+    )
+    try:
+        wait = await cb.message.answer(_wait_text, parse_mode="HTML")
+    except Exception as _w_err:
+        logging.error(f"go_anim: не удалось отправить статус-сообщение uid={uid}: {_w_err}")
+        await anim_refund_once(f"wait_msg_failed:{type(_w_err).__name__}")
+        release_click(_click_key)
+        await unmark_generation_active(uid)
+        return
 
     try:
         # Генерация в зависимости от модели
@@ -2790,21 +2909,8 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
     await mark_generation_active(uid, "motion")
     await state.clear()
 
-    wait_text = (
-        f"⏳ Запускаю Motion Control...\n\n"
-        f"🎭 Kling 3.0 | {duration} сек | 720p\n"
-        + (f"<i>{prompt[:80]}</i>\n" if prompt else "")
-        + f"\n⏱ Обычно 3–10 минут. Пришлю как только готово 👇"
-    )
-    if edit:
-        try:
-            wait = await msg_obj.edit_text(wait_text, parse_mode="HTML")
-        except Exception:
-            wait = await msg_obj.answer(wait_text, parse_mode="HTML")
-    else:
-        wait = await msg_obj.answer(wait_text, parse_mode="HTML")
-
-    # Защита от двойного возврата кредитов
+    # Защита от двойного возврата кредитов. Объявляем ДО статус-сообщения:
+    # его сбой раньше уводил исключение наверх уже после списания.
     motion_refunded = False
 
     async def motion_refund_once(reason: str = ""):
@@ -2815,6 +2921,28 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         motion_refunded = True
         await add_credits(uid, price)
         logging.info(f"motion_refund_once EXECUTED uid={uid} credits={price} reason={reason}")
+
+    wait_text = (
+        f"⏳ Запускаю Motion Control...\n\n"
+        f"🎭 Kling 3.0 | {duration} сек | 720p\n"
+        + (f"<i>{_esc(prompt[:80])}</i>\n" if prompt else "")
+        + f"\n⏱ Обычно 3–10 минут. Пришлю как только готово 👇"
+    )
+    wait = None
+    try:
+        if edit:
+            try:
+                wait = await msg_obj.edit_text(wait_text, parse_mode="HTML")
+            except Exception:
+                wait = await msg_obj.answer(wait_text, parse_mode="HTML")
+        else:
+            wait = await msg_obj.answer(wait_text, parse_mode="HTML")
+    except Exception as _w_err:
+        logging.error(f"motion: не удалось отправить статус-сообщение uid={uid}: {_w_err}")
+        await motion_refund_once(f"wait_msg_failed:{type(_w_err).__name__}")
+        release_click(_click_key)
+        await unmark_generation_active(uid)
+        return
 
     try:
         # Получаем публичные URL файлов Telegram (EvoLink сам скачает)

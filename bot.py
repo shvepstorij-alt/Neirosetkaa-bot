@@ -181,6 +181,61 @@ async def _maintenance_guard(handler, event, data):
     return await handler(event, data)
 
 
+# ── Глобальный перехват необработанных ошибок ────────────────────────────────
+# Раньше любое непойманное исключение в хендлере означало ПОЛНУЮ тишину для
+# клиента (ответа нет, кнопка «не работает») и отсутствие алерта для админа.
+# Теперь: пишем traceback в лог, извиняемся перед клиентом, алертим админа
+# (notify_admin_error сам троттлит одинаковые ошибки — не чаще 1 раза в 10 мин).
+def _register_global_error_handler():
+    try:
+        @dp.errors()
+        async def _global_error_handler(event):
+            exc = getattr(event, "exception", None)
+            upd = getattr(event, "update", None)
+            try:
+                logging.exception(f"UNHANDLED в хендлере: {type(exc).__name__}: {exc}")
+            except Exception:
+                pass
+
+            # 1) Отвечаем клиенту, чтобы бот не «молчал»
+            _uid = None
+            try:
+                cbq = getattr(upd, "callback_query", None)
+                msg = getattr(upd, "message", None)
+                if cbq is not None:
+                    _uid = cbq.from_user.id
+                    try:
+                        await cbq.answer("⚠️ Что-то пошло не так. Попробуй ещё раз 🙏", show_alert=True)
+                    except Exception:
+                        pass
+                elif msg is not None:
+                    _uid = msg.from_user.id if msg.from_user else None
+                    try:
+                        await msg.answer(
+                            "⚠️ Что-то пошло не так при обработке запроса.\n"
+                            "Попробуй ещё раз или напиши @neirosetkaalex."
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 2) Алертим админа (с троттлингом внутри notify_admin_error)
+            try:
+                from common import notify_admin_error
+                await notify_admin_error(f"Необработанная ошибка uid={_uid}", exc or Exception("unknown"))
+            except Exception:
+                pass
+            return True
+
+        logging.info("✅ Глобальный обработчик ошибок зарегистрирован")
+    except Exception as _e:
+        logging.warning(f"Не удалось зарегистрировать глобальный обработчик ошибок: {_e}")
+
+
+_register_global_error_handler()
+
+
 async def main():
     await _ensure_playwright_browser()
     await init_db()

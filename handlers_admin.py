@@ -174,7 +174,9 @@ async def cmd_audit_all(message: Message):
             uid = user["user_id"]
             current_balance = user["credits"]
 
-            # Начислено через credit_batches (все легальные источники)
+            # Остаток по АКТИВНЫМ партиям. ВАЖНО: credit_batches.credits_left уже
+            # уменьшается при каждом списании (db.deduct), т.е. это и есть ожидаемый
+            # баланс. Вычитать generations сверху нельзя — это двойной учёт трат.
             initial_row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(credits_left), 0) AS total FROM credit_batches WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())",
                 uid
@@ -188,7 +190,7 @@ async def cmd_audit_all(message: Message):
             )
             spent = int(spent_row["total"])
 
-            expected = initial - spent
+            expected = initial
             diff = current_balance - expected
 
             # Считаем только сильные расхождения (>50 кр - точно баг)
@@ -237,8 +239,9 @@ async def cmd_audit_all(message: Message):
     text_lines.append(
         f"\n\n<b>Что делать:</b>\n"
         f"• <code>/audit &lt;user_id&gt;</code> - посмотреть детали юзера\n"
-        f"• <code>/setcredits &lt;user_id&gt; &lt;amount&gt;</code> - исправить баланс\n"
-        f"• <code>/fix_all_balances</code> - автоматически исправить все (ОСТОРОЖНО!)"
+        f"• <code>/setcredits &lt;user_id&gt; &lt;amount&gt;</code> - исправить баланс вручную\n"
+        f"• <code>/fix_all_balances</code> - только отчёт, ничего не меняет\n"
+        f"<i>Расхождение возможно из-за возвратов кредитов — сверяй по /audit перед правкой.</i>"
     )
 
     full_text = "\n\n".join(text_lines)
@@ -264,9 +267,9 @@ async def cmd_fix_all_balances(message: Message):
     if len(parts) < 2 or parts[1].strip().upper() != "CONFIRM":
         await message.answer(
             "⚠️ <b>Массовое исправление балансов</b>\n\n"
-            "Эта команда установит всем юзерам с завышенным балансом правильное значение "
-            "(= сумма начислений − сумма потраченного).\n\n"
-            "Чтобы подтвердить выполнение, напиши:\n"
+            "Команда <b>только показывает</b> юзеров с расхождением баланса и партий. "
+            "Автоматическое списание отключено — правь вручную через /setcredits.\n\n"
+            "Чтобы получить отчёт, напиши:\n"
             "<code>/fix_all_balances CONFIRM</code>",
             parse_mode="HTML"
         )
@@ -293,20 +296,24 @@ async def cmd_fix_all_balances(message: Message):
                 "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1",
                 uid
             )
-            expected = int(init_row["total"]) - int(spent_row["total"])
-            expected = max(0, expected)  # Не ставим отрицательный баланс
+            # credits_left уже за вычетом трат — второй раз вычитать generations нельзя.
+            expected = int(init_row["total"])
+            expected = max(0, expected)
             diff = current - expected
 
             if diff > 50:
-                await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", expected, uid)
-                await log_event(uid, "admin_auto_fix", f"from={current} to={expected} removed={diff}")
+                # НИЧЕГО НЕ МЕНЯЕМ: прежняя версия вычитала траты дважды и списывала
+                # у клиентов оплаченные кредиты. Команда стала отчётом.
                 fixed_count += 1
                 total_removed += diff
 
     await message.answer(
-        f"✅ <b>Исправлено балансов: {fixed_count}</b>\n"
-        f"💰 Удалено лишних кредитов: <b>{total_removed} кр</b>\n\n"
-        f"Все затронутые юзеры получили правильный баланс (начислено − потрачено).",
+        f"📋 <b>Отчёт (изменений НЕ вносилось)</b>\n\n"
+        f"Юзеров с расхождением: <b>{fixed_count}</b>\n"
+        f"Суммарное расхождение: <b>{total_removed} кр</b>\n\n"
+        f"⚠️ Автоматическое списание отключено: расхождение бывает законным "
+        f"(возвраты кредитов не создают партию). Проверяй каждого через "
+        f"<code>/audit &lt;user_id&gt;</code> и правь вручную <code>/setcredits</code>.",
         parse_mode="HTML"
     )
 
@@ -1255,7 +1262,9 @@ async def adm_bal_fix_all_confirm(cb: CallbackQuery):
             spent_row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
             )
-            expected = max(0, int(init_row["total"]) - int(spent_row["total"]))
+            # credits_left уже уменьшен на все списания (db.deduct) — вычитать
+            # generations второй раз нельзя, это двойной учёт трат.
+            expected = max(0, int(init_row["total"]))
             if current - expected > 50:
                 to_fix.append({"uid": uid, "current": current, "expected": expected})
 
@@ -1273,12 +1282,13 @@ async def adm_bal_fix_all_confirm(cb: CallbackQuery):
         f"🔧 <b>Массовое исправление балансов</b>\n\n"
         f"Будет исправлено юзеров: <b>{len(to_fix)}</b>\n"
         f"Будет удалено кредитов: <b>{total_remove}</b>\n\n"
-        f"⚠️ Это необратимая операция!\n"
-        f"Для каждого юзера баланс будет установлен = <b>начислено − потрачено</b>\n\n"
-        f"Подтвердить?",
+        f"⚠️ Массовое авто-исправление ОТКЛЮЧЕНО: расхождение бывает законным "
+        f"(возвраты кредитов не создают партию), и прежняя версия списывала у клиентов "
+        f"оплаченные кредиты.\n\n"
+        f"Проверь каждого через <code>/audit &lt;user_id&gt;</code> и правь вручную "
+        f"<code>/setcredits</code>.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Да, исправить", callback_data="adm_bal_fix_all_do")],
-            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_balance_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_balance_menu")],
         ]),
         parse_mode="HTML"
     )
@@ -1307,19 +1317,18 @@ async def adm_bal_fix_all_do(cb: CallbackQuery):
             spent_row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(credits), 0) AS total FROM generations WHERE user_id = $1", uid
             )
-            expected = max(0, int(init_row["total"]) - int(spent_row["total"]))
+            expected = max(0, int(init_row["total"]))
             diff = current - expected
             if diff > 50:
-                await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", expected, uid)
-                await log_event(uid, "admin_auto_fix",
-                                f"from={current} to={expected} removed={diff} by_admin={cb.from_user.id}")
+                # НИЧЕГО НЕ МЕНЯЕМ — только считаем расхождение (см. комментарий выше).
                 fixed_count += 1
                 total_removed += diff
 
     await cb.message.edit_text(
-        f"✅ <b>Исправлено балансов: {fixed_count}</b>\n"
-        f"💰 Удалено лишних кредитов: <b>{total_removed} кр</b>\n\n"
-        f"Все затронутые юзеры получили правильный баланс.",
+        f"📋 <b>Отчёт (изменений НЕ вносилось)</b>\n\n"
+        f"Юзеров с расхождением: <b>{fixed_count}</b>\n"
+        f"Суммарное расхождение: <b>{total_removed} кр</b>\n\n"
+        f"Авто-списание отключено — правь вручную через /setcredits.",
         reply_markup=kb_balance_menu(),
         parse_mode="HTML"
     )

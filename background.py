@@ -28,7 +28,7 @@ from runtime_state import (
     rt,
 )
 from db import (
-    expire_old_batches, get_pool, log_event, add_coins,
+    expire_old_batches, get_pool, log_event, add_coins, activation_hours,
 )
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
@@ -470,14 +470,24 @@ async def db_cleanup_loop():
             logging.error(f"DB cleanup error: {e}")
 
 async def gpt_codes_cleanup_loop():
-    """Раз в 30 минут освобождает коды которые зарезервированы > 12 часов но не активированы.
-    Это происходит если клиент оплатил но так и не открыл Mini App.
-    Срок = 12 ч, как и окно активации (pending): иначе код клиента возвращался в пул
-    и мог уйти другому, пока у первого ещё открыта активация."""
+    """Раз в 30 минут освобождает коды, зарезервированные дольше окна активации.
+
+    Срок = activation_hours:chatgpt + 1 ч запаса, и дополнительно код не трогаем,
+    пока на него есть ЖИВАЯ запись в gpt_pending_activations. Иначе код клиента
+    возвращался в пул и мог уйти другому, пока у первого ещё открыта активация."""
     while True:
         try:
             await asyncio.sleep(1800)  # 30 минут
             pool = await get_pool()
+            # Срок берём из настройки activation_hours:chatgpt (админ меняет её в
+            # панели) + 1 час запаса. Раньше здесь было жёстко 12 часов: при окне
+            # активации больше 12 ч код клиента возвращался в пул и мог уйти
+            # второму клиенту — оба оплатили, активировал один.
+            try:
+                _act_h = await activation_hours("chatgpt")
+            except Exception:
+                _act_h = 12
+            _release_after_h = max(2, int(_act_h) + 1)
             async with pool.acquire() as conn:
                 await conn.execute(
                     "DELETE FROM gpt_pending_activations WHERE expires_at < NOW()")
@@ -486,7 +496,12 @@ async def gpt_codes_cleanup_loop():
                        SET is_used=FALSE, reserved_at=NULL
                        WHERE is_used=TRUE
                          AND used_by IS NULL
-                         AND reserved_at < NOW() - INTERVAL '12 hours'"""
+                         AND reserved_at < NOW() - make_interval(hours => $1)
+                         AND NOT EXISTS (
+                             SELECT 1 FROM gpt_pending_activations p
+                             WHERE p.code = gpt_codes.code
+                         )""",
+                    _release_after_h
                 )
                 if released and released != "UPDATE 0":
                     logging.info(f"🔑 gpt_codes cleanup: {released}")
@@ -494,7 +509,7 @@ async def gpt_codes_cleanup_loop():
                         await bot.send_message(
                             ADMIN_ID,
                             f"🔑 <b>Коды ChatGPT возвращены в пул</b>\n"
-                            f"Клиенты оплатили но не активировали в течение 12 часов.\n"
+                            f"Клиенты оплатили но не активировали за {_release_after_h} ч.\n"
                             f"<i>{released}</i>",
                             parse_mode="HTML"
                         )
