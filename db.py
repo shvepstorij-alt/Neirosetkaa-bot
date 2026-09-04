@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ANIM_MODELS, CREDIT_PACKS, CUSTOM_EMOJI_IDS, DATABASE_URL, DISABLED_MODELS, EDIT_MODELS,
-    FREE_CREDITS, IMAGE_MODELS, REF_BONUS, SHOP_CATALOG, VIDEO_MODELS, _pool,
+    FREE_CREDITS, IMAGE_MODELS, REF_BONUS, REF_WELCOME_CREDITS, SHOP_CATALOG, VIDEO_MODELS, _pool,
 )
 
 async def get_pool():
@@ -1351,8 +1351,8 @@ async def ensure_user(user_id: int, username: str = "", full_name: str = "", ref
             is_new = bool(row and row["is_new"])
             if is_new:
                 # Пригашённый друг получает реф-бонус как партию (ТОЛЬКО при первой регистрации)
-                await add_credits_batch(user_id, REF_BONUS, source="referral", days_valid=30)
-                logging.info(f"✨ New user {user_id} with referrer {referred_by}: +{REF_BONUS} cr")
+                await add_credits_batch(user_id, REF_WELCOME_CREDITS, source="referral", days_valid=30)
+                logging.info(f"✨ New user {user_id} with referrer {referred_by}: +{REF_WELCOME_CREDITS} cr")
         else:
             row = await conn.fetchrow("""
                 INSERT INTO users (user_id, credits, username, full_name)

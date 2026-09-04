@@ -21,7 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import (
-    ADMIN_ID, ADMIN_USERNAME, CHANNEL_ID, FREE_CREDITS, PERSONAL_USERNAME, REF_BONUS,
+    ADMIN_ID, ADMIN_USERNAME, CHANNEL_ID, FREE_CREDITS, PERSONAL_USERNAME, REF_BONUS, REF_WELCOME_CREDITS,
     SHOP_CATALOG, WELCOME_BACK, WELCOME_NEW, bot, dp, is_admin,
     strip_surrogates,
 )
@@ -77,7 +77,8 @@ async def cmd_start(message: Message, state: FSMContext):
             await bot.send_message(
                 referred_by,
                 f"🎉 <b>По твоей ссылке зарегистрировался новый пользователь!</b>\n\n"
-                f"💰 <b>+{REF_BONUS} кредитов</b> начислятся тебе когда он сделает первую покупку.",
+                f"💰 <b>+{REF_BONUS} кредитов</b> начислятся тебе, когда он сделает первую покупку.\n"
+                f"🎁 Другу уже начислено <b>{REF_WELCOME_CREDITS} кредитов</b>.",
                 parse_mode="HTML"
             )
         except Exception:
@@ -359,10 +360,10 @@ async def cmd_ref(message: Message):
     earned = paid_refs * REF_BONUS
     await message.answer(
         f"\U0001f91d <b>Пригласить друга</b>\n\n"
-        f"<b>За каждого друга - +{REF_BONUS} кредитов тебе и ему!</b>\n\n"
+        f"<b>+{REF_BONUS} кредитов тебе за друга и +{REF_WELCOME_CREDITS} — ему сразу!</b>\n\n"
         f"❓ <b>Как работает:</b>\n"
         f"1\u20e3 Поделись своей ссылкой\n"
-        f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_BONUS} кредитов</b>\n"
+        f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_WELCOME_CREDITS} кредитов</b>\n"
         f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кредитов</b>\n\n"
         f"\U0001f4ca <b>Статистика:</b>\n"
         f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
