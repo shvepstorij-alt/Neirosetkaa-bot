@@ -54,6 +54,24 @@ import html as _html_mod
 _LONG_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=180)
 
 
+async def _cb_ack(cb, text: str = None, alert: bool = False):
+    """Безопасный ответ на callback.
+
+    У callback-запроса Telegram короткий срок жизни (~1 минута). Генерация видео
+    идёт минутами, поэтому cb.answer() в конце хендлера падал с
+    "query is too old and response timeout expired or query ID is invalid".
+    Само по себе это безвредно (клиент уже получил результат), но исключение
+    вылетало из хендлера и теперь порождало бы алерт админу на каждое видео.
+    """
+    try:
+        if text is None:
+            await cb.answer()
+        else:
+            await cb.answer(text, show_alert=alert)
+    except Exception as _e_ack:
+        logging.debug(f"cb.answer пропущен (устаревший callback): {_e_ack}")
+
+
 def _esc(s) -> str:
     """Экранирует пользовательский текст для parse_mode='HTML'.
 
@@ -408,7 +426,9 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     finally:
         release_click(_click_key)
         await unmark_generation_active(uid)
-    await cb.answer()
+    await _cb_ack(cb)
+
+
 async def download_original(cb: CallbackQuery):
     """Отправляет оригинальное фото как документ без сжатия."""
     uid = cb.from_user.id
@@ -1054,7 +1074,10 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await check_expiring_credits(uid)
         cr = await get_credits(uid)
         caption = f"🎉 Готово! {model_title_n(m['name'])} | {m['res']} | {duration_sec} сек\n💸 Списано {credits_cost} кредитов | Остаток: {cr} кредитов"
-        # СНАЧАЛА удаляем сообщение прогресс-бара чтобы юзер не видел "90%" во время отправки
+        # Останавливаем прогресс-бар, но сообщение НЕ удаляем: заливка видео в
+        # Telegram занимает от десятков секунд до нескольких минут, и всё это время
+        # клиент видел пустоту — казалось, что бот пропал. Показываем статус
+        # «загружаю» и удалим сообщение уже после отправки.
         if not progress_task.done():
             progress_task.cancel()
             try:
@@ -1062,7 +1085,11 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
             except (asyncio.CancelledError, Exception):
                 pass
         try:
-            await status_msg.delete()
+            await status_msg.edit_text(
+                f"✅ <b>Видео готово!</b> ({size_mb:.1f} МБ)\n\n"
+                f"📤 Загружаю в Telegram — это может занять пару минут, не закрывай чат.",
+                parse_mode="HTML"
+            )
         except Exception:
             pass
 
@@ -1082,6 +1109,10 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                         disable_web_page_preview=True,
                         reply_markup=kb_after("video", key),
                     )
+                    try:
+                        await status_msg.delete()
+                    except Exception:
+                        pass
                 else:
                     await refund_once("upload_failed")
                     await cb.message.answer(
@@ -1134,6 +1165,13 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 pass
             await refund_once("video_send_failed")
             return
+
+        # Видео у клиента — статус «загружаю» больше не нужен
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
         # 2. Оригинал без сжатия - если < 48 МБ отправляем файлом, иначе загружаем на хостинг
         if size_mb < 48:
             doc_sent = False
@@ -1200,7 +1238,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 await progress_task
             except (asyncio.CancelledError, Exception):
                 pass
-    await cb.answer()
+    await _cb_ack(cb)
 
 
 @dp.callback_query(F.data.startswith("chprompt:vid:"))
@@ -1579,7 +1617,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
                 [_eib("Главное меню", "back_main")],
             ])
         )
-    await cb.answer()
+    await _cb_ack(cb)
 
 
 @dp.message(ImproveState.waiting_prompt)
@@ -2513,9 +2551,14 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
              _eib("Купить кредиты", "menu_buy")],
         ])
 
-        # Удаляем прогресс-сообщение ПЕРЕД отправкой видео
+        # Не удаляем сообщение, а превращаем его в статус загрузки: отправка видео
+        # в Telegram занимает время, и раньше клиент всё это время видел пустоту.
         try:
-            await wait.delete()
+            await wait.edit_text(
+                f"✅ <b>Анимация готова!</b> ({size_mb:.1f} МБ)\n\n"
+                f"📤 Загружаю в Telegram — это может занять пару минут.",
+                parse_mode="HTML"
+            )
         except Exception:
             pass
 
@@ -2563,6 +2606,10 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 op_name="anim_video",
             )
             video_sent = True
+            try:
+                await wait.delete()
+            except Exception:
+                pass
         except Exception as ve:
             logging.error(f"anim answer_video failed: {ve}")
 
@@ -2975,9 +3022,13 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
              _eib("Купить кредиты", "menu_buy")],
         ])
 
-        # Удаляем прогресс-сообщение ПЕРЕД отправкой (чистый UX)
+        # Статус вместо пустоты на время заливки видео в Telegram
         try:
-            await wait.delete()
+            await wait.edit_text(
+                f"✅ <b>Готово!</b> ({size_mb:.1f} МБ)\n\n"
+                f"📤 Загружаю в Telegram — это может занять пару минут.",
+                parse_mode="HTML"
+            )
         except Exception:
             pass
 
@@ -3033,6 +3084,10 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 op_name="motion_video",
             )
             video_sent = True
+            try:
+                await wait.delete()
+            except Exception:
+                pass
         except Exception as ve:
             logging.error(f"motion send_video failed: {ve}")
 

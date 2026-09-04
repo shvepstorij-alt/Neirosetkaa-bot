@@ -22,8 +22,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ALTERNATIVE_MODELS, ANIM_MODELS, CREDIT_PACKS, CUSTOM_EMOJI_IDS, DISABLED_MODELS, EDIT_MODELS,
-    IMAGE_BRAND_MODELS, IMAGE_MODELS, PERSONAL_USERNAME, SHOP_CATEGORIES, UI_EMOJI_IDS, VIDEO_BRAND_MODELS,
-    VIDEO_MODELS, WEBAPP_BASE_URL, is_admin,
+    IMAGE_BRAND_MODELS, IMAGE_MODELS, MOTION_PRICES, PERSONAL_USERNAME, SHOP_CATEGORIES, UI_EMOJI_IDS,
+    VIDEO_BRAND_MODELS, VIDEO_MODELS, WEBAPP_BASE_URL, is_admin,
 )
 
 def kb_error_with_alt(menu: str, model_key: str):
@@ -136,6 +136,20 @@ def kb_video_models_for_brand(brand: str):
                 callback_data=f"vmodel:{key}",
                 **btn_kwargs
             )])
+    # Motion Control живёт в подменю Kling. Раньше он был ОПИСАН в тексте этого
+    # экрана, но кнопки не было ни здесь, ни в главном меню — раздел был полностью
+    # недоступен клиентам, хотя код работал.
+    if brand == "kling":
+        try:
+            _min_motion = min(MOTION_PRICES.values())
+        except Exception:
+            _min_motion = 0
+        _mc_kwargs = {"icon_custom_emoji_id": brand_eid} if brand_eid else {}
+        rows.append([InlineKeyboardButton(
+            text=(f"Motion Control - от {_min_motion} кр" if _min_motion else "Motion Control"),
+            callback_data="menu_motion",
+            **_mc_kwargs
+        )])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_vid_brands")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

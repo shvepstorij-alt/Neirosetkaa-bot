@@ -865,12 +865,22 @@ function openCard(key, _silent){
   var promoBlock = P>0
     ? '<div class="promo-box on"><span>🎟 <b>'+_h(window._shopPromo.code)+'</b> — скидка '+P+'%</span><span class="promo-clr" onclick="clearPromo(\''+_esc1(key)+'\')">убрать</span></div>'
     : '<div class="promo-box"><input id="promo-inp" class="promo-inp" placeholder="Промокод" autocapitalize="characters"><div class="promo-btn" onclick="applyPromo(\''+_esc1(key)+'\')">Применить</div></div><div id="promo-status" class="promo-status"></div>';
+  if(window._coins===undefined){ _loadCoins(function(){ openCard(key,true); }); }
   body.innerHTML='<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(key,c.logo)+'">'+_iconHtml(c.logo,c.name)+'</div>'
     +'<div class="card-name">'+c.name+'</div></div>'
     +(c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
     +'<div class="card-plans-h">🎟 Промокод</div>'+promoBlock
     +'<div class="card-plans-h">Тарифы</div>'+plansHtml;
   _showCard();
+}
+/* Баланс монеток: нужен, чтобы предложить оплату монетками на карточке.
+   Берём из /api/cabinet один раз за сессию и кэшируем. */
+function _loadCoins(cb){
+  if(window._coins!==undefined){ if(cb)cb(); return; }
+  _api('/api/cabinet').then(function(d){
+    window._coins = (d&&d.ok&&d.coins)?Math.floor(d.coins):0;
+    if(cb)cb();
+  }).catch(function(){ window._coins=0; if(cb)cb(); });
 }
 function applyPromo(key){
   var inp=document.getElementById('promo-inp'); var code=((inp&&inp.value)||'').trim();
@@ -886,16 +896,36 @@ function applyPromo(key){
 function clearPromo(key){ window._shopPromo=null; openCard(key,true); }
 function chooseMethod(btn,key,idx){
   if(!btn)return; var w=document.createElement('div'); w.className='pay-methods';
-  w.innerHTML='<div class="pm sbp" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\')">⚡ СБП</div>'
-    +'<div class="pm card" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'card\')">💳 Картой</div>';
+  var P=(window._shopPromo&&window._shopPromoKey===key&&window._shopPromo.percent)||0;
+  var pl=((CATALOG[key]&&CATALOG[key].plans)||[]).filter(function(p){return p.idx===idx;})[0]||{};
+  var price=P>0?Math.max(1,Math.round((pl.price||0)*(100-P)/100)):(pl.price||0);
+  var coins=Math.floor(window._coins||0);
+  var html='';
+  if(coins>=1 && price>0){
+    if(coins>=price){
+      html+='<div class="pm" style="background:var(--green);color:#fff" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'coins\',1)">🪙 Монетками '+price+'₽</div>';
+    } else {
+      html+='<div class="pm" style="background:var(--green);color:#fff" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\',1)">🪙 '+coins+'₽ + СБП '+(price-coins)+'₽</div>';
+    }
+  }
+  html+='<div class="pm sbp" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\')">⚡ СБП</div>'
+     +'<div class="pm card" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'card\')">💳 Картой</div>';
+  w.innerHTML=html;
   btn.parentNode.replaceChild(w,btn);
 }
-function payVia(el,key,idx,method){
+function payVia(el,key,idx,method,useCoins){
   try{ _track('pay:'+key+':'+idx); }catch(e){}
-  var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
+  var row=el.parentNode; row.innerHTML='<div class="pm-wait">'+(useCoins?'Списываю монетки…':'Создаю ссылку на оплату…')+'</div>';
   var _promo=(window._shopPromo&&window._shopPromoKey===key)?window._shopPromo.code:'';
-  _api('/api/shop/pay',{key:key,planIdx:idx,method:method,promo:_promo}).then(function(d){
-    if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
+  _api('/api/shop/pay',{key:key,planIdx:idx,method:method,promo:_promo,useCoins:!!useCoins}).then(function(d){
+    if(d&&d.ok&&d.paidByCoins){
+      window._coins=Math.max(0,(window._coins||0)-(d.coinsUsed||0));
+      row.innerHTML='<div class="pm-wait" style="color:var(--green)">🪙 Оплачено монетками ('+(d.coinsUsed||0)+'₽)!<br>'
+        +'Заказ '+(d.num?('#'+d.num):'')+' принят — Александр активирует подписку в течение часа.<br>'
+        +'Подтверждение отправлено в чат бота.</div>';
+      return;
+    }
+    if(d&&d.ok&&d.url){ if(d.coinsUsed){ window._coins=Math.max(0,(window._coins||0)-d.coinsUsed); } _afterPay(row,d.url,d.orderId); }
     else{
       var _err=(d&&d.error)||'';
       var m;

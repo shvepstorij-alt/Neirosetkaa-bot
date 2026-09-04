@@ -192,12 +192,27 @@ def _register_global_error_handler():
         async def _global_error_handler(event):
             exc = getattr(event, "exception", None)
             upd = getattr(event, "update", None)
+
+            # Безобидные ошибки Telegram: клиент уже всё получил, реагировать нечем.
+            # Самая частая — устаревший callback после долгой генерации видео
+            # ("query is too old"): ответить на него уже нельзя, но это не сбой.
+            _low = str(exc or "").lower()
+            if ("query is too old" in _low or "query id is invalid" in _low
+                    or "message is not modified" in _low
+                    or "message to delete not found" in _low
+                    or "message to edit not found" in _low
+                    or "message can't be deleted" in _low):
+                logging.info(f"Безобидная ошибка Telegram (без алерта): {str(exc)[:150]}")
+                return True
+
             try:
                 logging.exception(f"UNHANDLED в хендлере: {type(exc).__name__}: {exc}")
             except Exception:
                 pass
 
-            # 1) Отвечаем клиенту, чтобы бот не «молчал»
+            # 1) Отвечаем клиенту, чтобы бот не «молчал».
+            #    Исключение — безобидные ошибки Telegram (см. ниже): по ним клиент
+            #    уже всё получил, лишнее «что-то пошло не так» только пугает.
             _uid = None
             try:
                 cbq = getattr(upd, "callback_query", None)

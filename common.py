@@ -50,7 +50,7 @@ from db import (
     create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
     set_linkpay_email,
     get_pending_activation_by_code, get_claude_pending_activation_by_code,
-    get_perplexity_pending_activation_by_code,
+    get_perplexity_pending_activation_by_code, deduct_coins,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji, tg_emoji_ui,
@@ -3368,6 +3368,7 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         except Exception:
             idx = 0
         method = str(body.get("method", "sbp")).strip().lower()
+        _use_coins = bool(body.get("useCoins"))
         s = SHOP_CATALOG.get(key)
         if not s or not s.get("plans") or idx < 0 or idx >= len(s["plans"]):
             return web.json_response({"ok": False, "error": "not_found"}, status=404)
@@ -3390,27 +3391,60 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                         _promo_applied = _promo_code
             except Exception as _pe:
                 logging.warning(f"api_shop_pay promo: {_pe}")
+        # Монетки (кэшбек). Раньше в мини-аппе их применить было нельзя вообще —
+        # клиент с балансом монеток мог потратить их только через меню бота.
+        # Считаем всё на сервере: клиенту доверяем только факт «хочу применить».
+        _coins_used = 0
+        if _use_coins:
+            try:
+                _bal = int(await get_coins(int(uid)))
+            except Exception:
+                _bal = 0
+            if _bal >= 1:
+                _coins_used = int(min(_bal, price))
+        _rest = max(0, price - _coins_used)
+
         import time as _t
         order_id = f"shop_{uid}_{int(_t.time())}"
+
+        if _coins_used > 0:
+            # Списываем монетки ДО создания заказа: если не хватило — заказ не создаём.
+            if not await deduct_coins(int(uid), _coins_used):
+                return web.json_response({"ok": False, "error": "Недостаточно монеток"})
+
         pool = await get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, promo_code) "
-                "VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (order_id) DO NOTHING",
-                order_id, int(uid), 0, price, f"shop:{key}:{idx}", _promo_applied)
+            if _coins_used > 0 and _rest == 0:
+                # Полностью оплачено монетками — заказ сразу оплачен.
+                await conn.execute(
+                    "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
+                    "promo_code, coins_spent, status, paid_at) "
+                    "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
+                    order_id, int(uid), f"shop:{key}:{idx}", _promo_applied, _coins_used)
+            else:
+                # coins_spent проставляем всегда: если клиент не доплатит,
+                # фоновая задача вернёт монетки через сутки.
+                await conn.execute(
+                    "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
+                    "promo_code, coins_spent) "
+                    "VALUES ($1,$2,0,$3,$4,$5,$6) ON CONFLICT (order_id) DO NOTHING",
+                    order_id, int(uid), _rest, f"shop:{key}:{idx}", _promo_applied, _coins_used)
             try:
                 _num = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
             except Exception:
                 _num = None
-        if method == "card":
+
+        if _coins_used > 0 and _rest == 0:
+            url = None
+        elif method == "card":
             try:
-                url = await fk_create_order(float(price), order_id, int(uid), payment_id=36)
+                url = await fk_create_order(float(_rest), order_id, int(uid), payment_id=36)
             except Exception as _ce:
                 logging.error(f"api_shop_pay card order={order_id}: {_ce}")
                 return web.json_response({"ok": False, "error": "card_failed"})
         else:
             from config import fk_pay_url as _fk_pay_url
-            url = _fk_pay_url(price, order_id)
+            url = _fk_pay_url(_rest, order_id)
         try:
             _pl = s["plans"][idx].get("name", "")
             _onum = f"#{_num}" if _num else order_id
@@ -3429,11 +3463,14 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                 f"👤 {_who}\n"
                 f"📦 {s.get('name', key)} {_pl}\n"
                 f"💵 Сумма: <b>{price}₽</b>\n"
-                f"💳 Способ: {'Карта' if method == 'card' else 'СБП'}\n"
-                f"🧾 Заказ: <code>{_onum}</code>\n"
+                + (f"🪙 Монетками: <b>{_coins_used}₽</b>\n" if _coins_used else "")
+                + (f"💳 Способ: {'Карта' if method == 'card' else 'СБП'} — <b>{_rest}₽</b>\n"
+                   if _rest > 0 else "💳 Способ: только монетки\n")
+                + f"🧾 Заказ: <code>{_onum}</code>\n"
                 f"🆔 <code>{order_id}</code>\n\n"
-                f"⏳ <b>Статус: ожидает оплаты</b>\n"
-                f"<i>Оформлено через мини-приложение</i>",
+                + ("✅ <b>Статус: ОПЛАЧЕН монетками</b>\n" if _rest == 0 and _coins_used
+                   else "⏳ <b>Статус: ожидает оплаты</b>\n")
+                + f"<i>Оформлено через мини-приложение</i>",
                 parse_mode="HTML")
             # Сохраняем message_id, чтобы при оплате сообщение обновилось, а не дублировалось
             try:
@@ -3445,7 +3482,30 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                 pass
         except Exception:
             pass
-        return web.json_response({"ok": True, "url": url, "orderId": order_id, "num": _num})
+        # Полная оплата монетками — пишем клиенту в чат бота, иначе он видит
+        # подтверждение только внутри мини-аппа и не понимает, что дальше.
+        if _coins_used > 0 and _rest == 0:
+            try:
+                await bot.send_message(
+                    int(uid),
+                    f"🪙 <b>Оплачено монетками!</b>\n\n"
+                    f"📦 <b>{s.get('name', key)} {s['plans'][idx].get('name', '')}</b>\n"
+                    f"🪙 Списано: <b>{_coins_used}₽</b>\n"
+                    f"🧾 Заказ: <code>{('#' + str(_num)) if _num else order_id}</code>\n\n"
+                    f"Александр активирует подписку в течение часа 👇",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="✅ Написать Александру",
+                                              url=f"https://t.me/{PERSONAL_USERNAME}")],
+                    ]))
+            except Exception as _e_notify:
+                logging.warning(f"api_shop_pay: не отправил клиенту подтверждение: {_e_notify}")
+
+        return web.json_response({
+            "ok": True, "url": url, "orderId": order_id, "num": _num,
+            "coinsUsed": _coins_used, "rest": _rest,
+            "paidByCoins": bool(_coins_used > 0 and _rest == 0),
+        })
     except Exception as _e:
         logging.error(f"api_shop_pay: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
