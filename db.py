@@ -415,6 +415,9 @@ async def init_db():
         for _col2, _def2 in [
             ("provider",    "TEXT NOT NULL DEFAULT '987ai'"),
             ("session_raw", "TEXT"),
+            # Метка «активация уже запущена» — переживает рестарт бота, в отличие
+            # от прежней защиты в памяти процесса (_gpt_job_active).
+            ("activating_at", "TIMESTAMPTZ"),
         ]:
             try:
                 await conn.execute(f"ALTER TABLE gpt_pending_activations ADD COLUMN {_col2} {_def2}")
@@ -668,6 +671,38 @@ async def save_pending_activation(user_id: int, code: str, order_id: str, plan: 
                SET code=$2, order_id=$3, plan=$4, plan_name=$5, provider=$6, session_raw=NULL,
                    created_at=NOW(), expires_at=NOW()+make_interval(hours => $7)""",
             user_id, code, order_id, plan, plan_name, provider, _h)
+
+async def claim_gpt_activation(user_id: int, stale_minutes: int = 10) -> bool:
+    """Атомарно «занимает» активацию клиента. True — можно запускать.
+
+    Раньше защита от параллельного запуска жила в словаре в памяти процесса и
+    терялась при каждом деплое: два запуска брали ДВА кода из пула, первый
+    активировал подписку, второй падал с «на аккаунте уже есть Plus» — минус один
+    оплаченный код. Метка в БД переживает рестарт; через stale_minutes она
+    считается протухшей (зависшая активация не блокирует клиента навсегда).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.execute(
+            "UPDATE gpt_pending_activations SET activating_at = NOW() "
+            "WHERE user_id = $1 AND (activating_at IS NULL "
+            "      OR activating_at < NOW() - make_interval(mins => $2))",
+            user_id, int(stale_minutes)
+        )
+    try:
+        return str(r).split()[-1] == "1"
+    except Exception:
+        return True
+
+
+async def release_gpt_activation(user_id: int):
+    """Снимает метку активации (после завершения задачи — успешного или нет)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE gpt_pending_activations SET activating_at = NULL WHERE user_id = $1",
+            user_id)
+
 
 async def get_pending_activation(user_id: int):
     pool = await get_pool()
@@ -1423,11 +1458,24 @@ async def deduct(user_id: int, amount: int) -> bool:
     await log_event(user_id, "deduct", f"amount={amount}")
     return True
 
-async def add_credits(user_id: int, amount: int):
+async def add_credits(user_id: int, amount: int, source: str = "refund"):
+    """Начисление/возврат кредитов.
+
+    ВАЖНО: положительное начисление теперь создаёт ПАРТИЮ (credit_batches), как и
+    покупка. Раньше возвраты меняли только users.credits, и учёт разъезжался:
+    сумма партий становилась меньше баланса, возвращённые кредиты не попадали ни
+    в предупреждения о сгорании, ни в отчёты, а аудит балансов показывал ложные
+    «лишние» кредиты. Возврат не сгорает (days_valid=0) — это деньги клиента.
+    """
+    if amount and int(amount) > 0:
+        await add_credits_batch(user_id, int(amount), source=source, days_valid=0)
+        await log_event(user_id, "refund_or_add", f"amount={amount}")
+        return
+    # Отрицательная сумма (админское списание) — прежнее поведение
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE users SET credits = credits + $1 WHERE user_id = $2",
+            "UPDATE users SET credits = GREATEST(0, credits + $1) WHERE user_id = $2",
             amount, user_id
         )
     await log_event(user_id, "refund_or_add", f"amount={amount}")

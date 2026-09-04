@@ -465,6 +465,18 @@ async def db_cleanup_loop():
                 r3 = await conn.execute(
                     "DELETE FROM events WHERE created_at < NOW() - INTERVAL '60 days'"
                 )
+                # Давно истёкшие подписки убираем из активных: иначе список
+                # «Мои подписки» бесконечно растёт, а профиль делает по паре
+                # запросов к БД на каждую строку. Месяц после окончания держим
+                # видимыми — клиент успевает увидеть «истекла» и продлить.
+                try:
+                    r_subs = await conn.execute(
+                        "UPDATE user_subscriptions SET is_active=FALSE "
+                        "WHERE is_active=TRUE AND expires_at < NOW() - INTERVAL '30 days'"
+                    )
+                except Exception as _e_subs:
+                    r_subs = f"skip ({_e_subs})"
+                logging.info(f"🧹 Подписки деактивированы (истекли >30 дней): {r_subs}")
                 # Подстраховка: пароли клиентов от их аккаунтов не должны лежать в БД
                 # дольше месяца, даже если заказ забыли закрыть кнопкой «Готово».
                 try:

@@ -1656,7 +1656,20 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
         )
     except Exception as _db_err:
         logging.error(f"pay_fk: fk_save_order failed: {_db_err}")
-        # Продолжаем - заказ есть в памяти, оплату сможем обработать
+        # Заказ остался ТОЛЬКО в памяти процесса: после деплоя/рестарта оплата
+        # придёт на «несуществующий» заказ и кредиты не зачислятся автоматически.
+        # Раньше это было тихо — теперь сразу пишем админу.
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 <b>Заказ НЕ записан в БД</b>\n\n"
+                f"👤 <code>{uid}</code>\n💎 {p['credits']} кр · {amount}₽\n"
+                f"🆔 <code>{order_id}</code>\n\n"
+                f"Если клиент оплатит, а бот перезапустится — начисли вручную: "
+                f"<code>/credit {order_id}</code>\n<code>{_db_err}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
 
     wait_msg = None
     try:

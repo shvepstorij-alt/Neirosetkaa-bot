@@ -51,6 +51,7 @@ from db import (
     set_linkpay_email,
     get_pending_activation_by_code, get_claude_pending_activation_by_code,
     get_perplexity_pending_activation_by_code, deduct_coins,
+    claim_gpt_activation, release_gpt_activation,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji, tg_emoji_ui,
@@ -4412,17 +4413,26 @@ async def api_admin_balance_handler(request: web.Request) -> web.Response:
         from db import add_credits
         uid = int(body.get("id")); op = str(body.get("op", "")); amount = int(float(body.get("amount") or 0))
         pool = await get_pool()
+        async with pool.acquire() as conn:
+            _bal_before = await conn.fetchval("SELECT credits FROM users WHERE user_id=$1", uid) or 0
         if op == "set":
             async with pool.acquire() as conn:
                 await conn.execute("UPDATE users SET credits=$1 WHERE user_id=$2", max(0, amount), uid)
         elif op == "add":
-            await add_credits(uid, amount)
+            await add_credits(uid, amount, source="admin_manual")
         elif op == "deduct":
             await add_credits(uid, -amount)
         else:
             return web.json_response({"ok": False, "msg": "Неизвестная операция"})
         async with pool.acquire() as conn:
             bal = await conn.fetchval("SELECT credits FROM users WHERE user_id=$1", uid)
+        # След в журнале: раньше правка баланса через мини-апп не логировалась
+        # вообще — при разборе спора опереться было не на что.
+        try:
+            await log_event(uid, "admin_balance",
+                            f"op={op} amount={amount} before={_bal_before} after={int(bal or 0)} by=miniapp")
+        except Exception:
+            pass
         return web.json_response({"ok": True, "balance": int(bal or 0)})
     except Exception as _e:
         logging.error(f"api_admin_balance: {_e}")
@@ -5796,6 +5806,10 @@ async def _run_activation_job(
                 _gpt_job_active.pop(user_id, None)
         except Exception:
             pass
+        try:
+            await release_gpt_activation(user_id)
+        except Exception as _e_rel:
+            logging.warning(f"release_gpt_activation uid={user_id}: {_e_rel}")
 
 
 # Клиенты, уже предупреждённые о повторной активации (in-memory, сбрасывается при рестарте).
@@ -6104,6 +6118,17 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         if _pj and _pj.get("status") != "done":
             logging.info(f"GPT activation dedupe: user={user_id} уже выполняется job={_prev_job}")
             return _resp({"job_id": _prev_job, "status": "started"})
+
+    # Тот же замок, но в БД: словарь выше живёт в памяти процесса и обнуляется
+    # при каждом деплое, после чего два параллельных запуска забирали ДВА кода.
+    try:
+        if not await claim_gpt_activation(user_id):
+            logging.info(f"GPT activation dedupe (БД): user={user_id} активация уже идёт")
+            return _resp({"success": False,
+                          "error": "Активация уже выполняется. Подожди пару минут — "
+                                   "результат придёт в чат."})
+    except Exception as _e_claim:
+        logging.warning(f"claim_gpt_activation: {_e_claim}")
 
     job_id = str(uuid.uuid4())[:12]
     _activation_jobs[job_id] = {"status": "pending"}
