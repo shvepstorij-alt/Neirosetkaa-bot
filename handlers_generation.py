@@ -1548,6 +1548,9 @@ async def do_upscale(message: Message, state: FSMContext):
             )
         except Exception as _doc_err:
             logging.warning(f"upscale send_document failed uid={uid}: {_doc_err}")
+        # Пишем и в generations — иначе апскейлы не видны в статистике и отчётах
+        await log_gen(uid, "upscale", "clarity_4x", UPSCALE_CREDIT_COST)
+        _record_generation(uid, _photo_history)
         await log_event(uid, "upscale", f"credits={UPSCALE_CREDIT_COST}")
         await check_expiring_credits(uid)
 

@@ -22,6 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, ADMIN_SECRET, ANIM_MODELS, CREDIT_PACKS, DISABLED_MODELS, EDIT_MODELS,
+    webapp_url,
     FAL_API_KEY, FK_ALLOWED_IPS, FK_API_KEY, FK_IP_CHECK_DISABLED, FK_SECRET1, FK_SECRET2,
     FK_SHOP_ID, FK_WEBHOOK_URL, IMAGE_MODELS, SHOP_CATALOG, VIDEO_MODELS, WEBAPP_BASE_URL, _BOT_TZ,
     bot, dp,
@@ -2226,13 +2227,13 @@ def _bc_button_for(kind: str):
     _base = (WEBAPP_BASE_URL or "").rstrip("/")
     if kind == "catalog":
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-            text="🛒 Открыть каталог", web_app=WebAppInfo(url=f"{_base}/webapp/shop"))]])
+            text="🛒 Открыть каталог", web_app=WebAppInfo(url=webapp_url("/webapp/shop")))]])
     if kind == "claude":
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-            text="⚡ Оформить Claude", web_app=WebAppInfo(url=f"{_base}/webapp/shop?svc=claude"))]])
+            text="⚡ Оформить Claude", web_app=WebAppInfo(url=webapp_url("/webapp/shop", svc="claude")))]])
     if kind == "chatgpt":
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-            text="✨ Оформить ChatGPT", web_app=WebAppInfo(url=f"{_base}/webapp/shop?svc=chatgpt"))]])
+            text="✨ Оформить ChatGPT", web_app=WebAppInfo(url=webapp_url("/webapp/shop", svc="chatgpt")))]])
     return None
 
 

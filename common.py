@@ -24,11 +24,11 @@ from config import (
     ACTIVITY_DAYS_PER_PAGE, ADMIN_ID, ANIM_LIMIT_PER_HOUR, CLAUDE_API_KEY, COINS_REF_PERCENT, FK_ALLOWED_IPS,
     FK_API_KEY, FK_IP_CHECK_DISABLED, FK_SECRET2, FK_SHOP_ID, MAX_CONCURRENT_GENS, MOTION_LIMIT_PER_HOUR,
     PAYMENTS_PAGE_SIZE, PERSONAL_USERNAME, PHOTO_LIMIT_PER_HOUR, SHOP_CATALOG, USERS_PAGE_SIZE, VIDEO_LIMIT_PER_HOUR,
-    UI_EMOJI_IDS, WEBAPP_BASE_URL, _BOT_TZ, _CLAUDE_WEBAPP_HTML_PATH, _WEBAPP_HTML_PATH, _activation_jobs, _active_generations,
+    UI_EMOJI_IDS, WEBAPP_BASE_URL, webapp_url, _BOT_TZ, _CLAUDE_WEBAPP_HTML_PATH, _WEBAPP_HTML_PATH, _activation_jobs, _active_generations,
     _anim_history, _check_hourly_limit, _classify_query_complexity, _claude_job_results, _get_conv, _gpt_retry_counts,
     _motion_history, _photo_history, _pool, _ref_bonus_for_count, _split_long_message, _strip_all_formatting,
     _verify_tg_init_data, _video_history, activate_chatgpt, bot, dp, build_system_prompt, claude_client,
-    clean_reply, pending_fk_payments, plan_name_to_key, strip_surrogates,
+    clean_reply, pending_fk_payments, plan_name_to_key, strip_surrogates, _rand_sfx,
     CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER,
     claude_provider_base, claude_provider_name,
     GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER,
@@ -614,7 +614,7 @@ async def fk_monitor_order(order_id: str):
     logging.info(f"FK monitor: order {order_id} не оплачен за 5 минут - стоп (auto-check продолжит)")
 
 
-async def process_referral_bonus(user_id: int):
+async def process_referral_bonus(user_id: int, order_amount: float = 0):
     """Начисляет бонус пригласившему при первой покупке реферала.
     Размер бонуса зависит от количества уже оплативших рефералов."""
     pool = await get_pool()
@@ -652,17 +652,21 @@ async def process_referral_bonus(user_id: int):
     bonus_amount = _ref_bonus_for_count(paid_count)
     await add_credits_batch(referrer_id, bonus_amount, source="referral", days_valid=30)
 
-    # Начисляем монетки - 10% от суммы покупки реферала
-    # Сумму покупки берём из последнего платежа реферала
+    # Начисляем монетки - 10% от суммы покупки реферала.
+    # Сумму берём из КОНКРЕТНОГО заказа, который сейчас оплачен: «последний
+    # платёж» мог оказаться чужим, если два заказа помечались оплаченными
+    # почти одновременно (вебхук + авто-проверка).
     try:
-        pool2 = await get_pool()
-        async with pool2.acquire() as conn2:
-            last_amount = await conn2.fetchval(
-                """SELECT amount_rub FROM fk_orders
-                   WHERE user_id=$1 AND status='paid'
-                   ORDER BY paid_at DESC LIMIT 1""",
-                user_id
-            )
+        last_amount = float(order_amount or 0)
+        if last_amount <= 0:
+            pool2 = await get_pool()
+            async with pool2.acquire() as conn2:
+                last_amount = await conn2.fetchval(
+                    """SELECT amount_rub FROM fk_orders
+                       WHERE user_id=$1 AND status='paid'
+                       ORDER BY paid_at DESC LIMIT 1""",
+                    user_id
+                )
         if last_amount:
             coins_earned = round(float(last_amount) * COINS_REF_PERCENT, 2)
             await add_coins(referrer_id, coins_earned, reason=f"ref_purchase uid={user_id}")
@@ -825,7 +829,7 @@ def _assistant_off_kb():
             from aiogram.types import WebAppInfo as _WAI
             _rows.append([InlineKeyboardButton(
                 text="🛒 Открыть каталог",
-                web_app=_WAI(url=WEBAPP_BASE_URL.rstrip("/") + "/webapp/shop"))])
+                web_app=_WAI(url=webapp_url("/webapp/shop")))])
     except Exception:
         pass
     _rows.append([InlineKeyboardButton(text="✍️ Написать Александру",
@@ -3428,7 +3432,7 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         _rest = max(0, price - _coins_used)
 
         import time as _t
-        order_id = f"shop_{uid}_{int(_t.time())}"
+        order_id = f"shop_{uid}_{int(_t.time())}{_rand_sfx()}"
 
         if _coins_used > 0:
             # Списываем монетки ДО создания заказа: если не хватило — заказ не создаём.
@@ -4133,7 +4137,7 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                 await save_pending_activation(uid, _code, oid, plan_key, plan_name, _prov)
                 import urllib.parse as _uq
                 from aiogram.types import WebAppInfo as _WAI
-                _url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uq.quote(plan_name)}&code={_uq.quote(_code)}"
+                _url = webapp_url("/webapp/chatgpt", plan=plan_name, code=_code)
                 try:
                     await bot.send_message(
                         uid,
@@ -5639,8 +5643,7 @@ async def _run_activation_job(
                 _acc = result.get("already_account") or ""
                 _until = result.get("already_until") or ""
                 _force_url = (
-                    f"{WEBAPP_BASE_URL}/webapp/chatgpt"
-                    f"?plan={_uparse_f.quote(plan_name)}&code={_uparse_f.quote(code)}&force=1"
+                    webapp_url("/webapp/chatgpt", plan=plan_name, code=code, force="1")
                 )
                 try:
                     await bot.send_message(
@@ -5701,8 +5704,7 @@ async def _run_activation_job(
                 # Токен от клиента невалидный/истёк — код не трогаем, просим переcкопировать
                 # Pending остаётся с тем же кодом, сессия жива
                 _same_url = (
-                    f"{WEBAPP_BASE_URL}/webapp/chatgpt"
-                    f"?plan={_uparse2.quote(plan_name)}&code={_uparse2.quote(code)}"
+                    webapp_url("/webapp/chatgpt", plan=plan_name, code=code)
                 )
                 try:
                     await bot.send_message(
@@ -5740,8 +5742,7 @@ async def _run_activation_job(
                 if attempt < MAX_RETRIES:
                     # Pending остаётся, код тот же — клиент просто повторяет
                     _same_url = (
-                        f"{WEBAPP_BASE_URL}/webapp/chatgpt"
-                        f"?plan={_uparse2.quote(plan_name)}&code={_uparse2.quote(code)}"
+                        webapp_url("/webapp/chatgpt", plan=plan_name, code=code)
                     )
                     try:
                         await bot.send_message(
@@ -6397,7 +6398,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             pass
         return False
     try:
-        await process_referral_bonus(user_id)
+        await process_referral_bonus(user_id, order_amount=float(amount_rub or 0))
         await process_premium_referral(user_id, order_id, amount_rub)
     except Exception as _ref_err:
         logging.error(f"FK referral post-processing error order={order_id}: {_ref_err}")
@@ -6528,7 +6529,10 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
                         parse_mode="HTML"
                     )
-                    return
+                    # True — оплата обработана (услуга уйдёт вручную). Раньше здесь
+                    # был голый return: вызывающий получал None и показывал клиенту
+                    # «оплата уже зачислена» вместо «оплата найдена».
+                    return True
                 _plan_key  = plan_name_to_key(_plan_name)
                 _code, _gpt_prov = await _gpt_pick_code(_plan_key)
                 if _code is None:
@@ -6545,7 +6549,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"Пополни коды на любом сайте ChatGPT.", parse_mode="HTML")
                 else:
                     await save_pending_activation(user_id, _code, order_id, _plan_key, _plan_name, _gpt_prov)
-                    _webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote(_plan_name)}&code={_uparse.quote(_code)}"
+                    _webapp_url = webapp_url("/webapp/chatgpt", plan=_plan_name, code=_code)
                     from aiogram.types import WebAppInfo
                     import datetime as _dt_gpt
                     _ord_g = await fk_get_order(order_id)
@@ -7813,10 +7817,8 @@ async def _send_claude_webapp_to_user(
 
     await save_claude_pending_activation(user_id, code, order_id, plan, plan_name, provider)
 
-    webapp_url = (
-        f"{WEBAPP_BASE_URL}/webapp/claude"
-        f"?plan={_up.quote(plan_name)}&code={_up.quote(code)}"
-    )
+    from config import webapp_url as _wa_url
+    webapp_url = _wa_url("/webapp/claude", plan=plan_name, code=code)
     try:
         import datetime as _dt_cl
         _oref_cl = await _order_ref_line(order_id)
@@ -8710,8 +8712,8 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         import urllib.parse as _uq_cf
                         from aiogram.types import WebAppInfo as _WAI_cf
                         _prev_txt = _r.get("already_until") or ""
-                        _force_url = (f"{WEBAPP_BASE_URL}/webapp/claude"
-                                      f"?plan={_uq_cf.quote(plan_name)}&force=1")
+                        from config import webapp_url as _wa_url_cf
+                        _force_url = _wa_url_cf("/webapp/claude", plan=plan_name, force="1")
                         _claude_job_results[ref] = {
                             "status": "done", "success": False, "need_force": True,
                             "org": org_id, "prev": _prev_txt,
@@ -10043,13 +10045,18 @@ async def api_actpromo_handler(request: web.Request) -> web.Response:
         _on = (await get_setting("actpromo_on", "0") or "0") == "1"
         if not _on:
             return web.json_response({"ok": True, "on": False})
+        # Пропускаем только безопасные схемы: значение приходит из настроек
+        # админки, и опечатка вида javascript:… не должна уезжать в мини-апп.
+        _btn_url = (await get_setting("actpromo_btn_url", "") or "").strip()
+        if not _btn_url.startswith(("https://", "http://", "tg://")):
+            _btn_url = ""
         return web.json_response({
             "ok": True, "on": True,
             "title": (await get_setting("actpromo_title", "") or ""),
             "text": (await get_setting("actpromo_text", "") or ""),
             "img": (await get_setting("actpromo_img", "") or ""),
             "btn_text": (await get_setting("actpromo_btn_text", "") or ""),
-            "btn_url": (await get_setting("actpromo_btn_url", "") or ""),
+            "btn_url": _btn_url,
             "size": (await get_setting("actpromo_size", "380") or "380"),
         })
     except Exception:
@@ -10654,10 +10661,8 @@ async def _send_perplexity_webapp_to_user(
     import urllib.parse as _up
     from aiogram.types import WebAppInfo as _WAI
 
-    webapp_url = (
-        f"{WEBAPP_BASE_URL}/webapp/perplexity"
-        f"?plan={_up.quote(plan_name)}&code={_up.quote(code)}"
-    )
+    from config import webapp_url as _wa_url
+    webapp_url = _wa_url("/webapp/perplexity", plan=plan_name, code=code)
     try:
         await save_perplexity_pending_activation(user_id, code, order_id, plan, plan_name)
         import datetime as _dt_cl
@@ -11419,13 +11424,14 @@ async def process_linkpay_link(user_id, text) -> bool:
             parse_mode="HTML")
         uname = order.get("username") or ""
         tag = f"@{uname}" if uname else f"id{user_id}"
+        import html as _h_lp
         admin_text = (
             f"💳 <b>Заказ на оплату по ссылке</b>\n\n"
-            f"👤 {tag} (<code>{user_id}</code>)\n"
-            f"📦 {order['service_name']}\n"
-            f"🎫 Тариф: <b>{order.get('plan_name') or '—'}</b>\n"
+            f"👤 {_h_lp.escape(tag)} (<code>{user_id}</code>)\n"
+            f"📦 {_h_lp.escape(str(order['service_name']))}\n"
+            f"🎫 Тариф: <b>{_h_lp.escape(str(order.get('plan_name') or '—'))}</b>\n"
             f"💵 Оплачено клиентом: <b>{order['amount_rub']}₽</b>\n"
-            f"🔗 Ссылка: {link}\n"
+            f"🔗 Ссылка: {_h_lp.escape(link)}\n"
             f"🆔 Заказ: <code>{order['fk_order_id']}</code>\n"
             + await _fk_num_line(order['fk_order_id'])
         )

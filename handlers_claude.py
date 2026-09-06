@@ -138,11 +138,8 @@ async def claude_reopen_webapp(cb: CallbackQuery):
         return
     import urllib.parse as _up3
     from aiogram.types import WebAppInfo as _WAI3
-    webapp_url = (
-        f"{WEBAPP_BASE_URL}/webapp/claude"
-        f"?plan={_up3.quote(pending['plan_name'])}"
-        f"&code={_up3.quote(pending['code'])}"
-    )
+    from config import webapp_url as _wa_url
+    webapp_url = _wa_url("/webapp/claude", plan=pending['plan_name'], code=pending['code'])
     await cb.message.answer(
         f"⚡ <b>Активация Claude {pending['plan_name']}</b>\n\n"
         f"Нажми кнопку, введи Organization ID из настроек Claude — "
@@ -704,10 +701,8 @@ async def test_claude_webapp(message: Message):
 
     await save_claude_pending_activation(uid, fake_code, fake_order, "pro", "Pro")
 
-    webapp_url = (
-        f"{WEBAPP_BASE_URL}/webapp/claude"
-        f"?plan={_up4.quote('Pro')}&code={_up4.quote(fake_code)}"
-    )
+    from config import webapp_url as _wa_url4
+    webapp_url = _wa_url4("/webapp/claude", plan="Pro", code=fake_code)
 
     await message.answer(
         f"🎉 <b>Оплата прошла!</b>\n\n"

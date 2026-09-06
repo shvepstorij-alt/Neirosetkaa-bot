@@ -191,7 +191,7 @@ MAX_PROMPT_LEN_GEN = 4000      # Для генерации фото/видео/�
 # Список коротких, явных маркеров. Полная фильтрация - на стороне Google.
 GEN_BLOCKLIST = [
     # Дети в сексуальном контексте - нулевая толерантность
-    "child porn", "cp ", "детск порн", "педофил", "loli", "shota",
+    "child porn", "child pornography", "детск порн", "педофил", "loli", "shota",
     "minor naked", "kid naked", "child naked",
     # Террор и насилие
     "bomb recipe", "how to make bomb", "как сделать бомбу",
@@ -580,6 +580,51 @@ def strip_surrogates(s: str) -> str:
     return s.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
 
 WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
+
+
+def _calc_webapp_ver() -> str:
+    """Версия мини-аппов = хэш от времени изменения их HTML-файлов.
+
+    WebView Telegram агрессивно кэширует мини-аппы: после деплоя часть клиентов
+    ещё сутками видит старую версию каталога (старые цены, старый интерфейс).
+    Меняющийся ?v= в ссылке заставляет его подтянуть свежий HTML.
+    """
+    import hashlib as _hl
+    _h = _hl.md5()
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+    for _f in ("shop_webapp.html", "chatgpt_webapp.html", "claude_webapp.html",
+               "perplexity_webapp.html", "admin_webapp.html"):
+        try:
+            _h.update(str(int(os.path.getmtime(os.path.join(_base_dir, _f)))).encode())
+        except Exception:
+            pass
+    return _h.hexdigest()[:8]
+
+
+WEBAPP_VER = _calc_webapp_ver()
+
+
+def webapp_url(path: str, **params) -> str:
+    """Ссылка на мини-апп с версией (анти-кэш). path — например '/webapp/shop'."""
+    from urllib.parse import urlencode as _ue
+    _base = (WEBAPP_BASE_URL or "").rstrip("/")
+    _q = {k: v for k, v in params.items() if v not in (None, "")}
+    _q["v"] = WEBAPP_VER
+    _sep = "&" if "?" in path else "?"
+    return f"{_base}{path}{_sep}{_ue(_q)}"
+
+
+def _rand_sfx(n: int = 3) -> str:
+    """Короткий случайный хвост для order_id.
+
+    Раньше номер заказа состоял из user_id и времени с точностью до секунды:
+    два клика в одну секунду давали ОДИН и тот же order_id, второй заказ молча
+    не создавался (ON CONFLICT DO NOTHING), и клиент мог оплатить не тот тариф.
+    """
+    import random as _r, string as _st
+    return "".join(_r.choices(_st.ascii_lowercase + _st.digits, k=n))
+
+
 def plan_name_to_key(plan_name: str) -> str:
     """Стабильный ключ тарифа для пула кодов. Существующие имена — фиксированы,
     новые тарифы получают уникальный slug (коды разных тарифов не смешиваются)."""

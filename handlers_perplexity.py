@@ -136,11 +136,8 @@ async def perplexity_reopen_webapp(cb: CallbackQuery):
         return
     import urllib.parse as _up3
     from aiogram.types import WebAppInfo as _WAI3
-    webapp_url = (
-        f"{WEBAPP_BASE_URL}/webapp/perplexity"
-        f"?plan={_up3.quote(pending['plan_name'])}"
-        f"&code={_up3.quote(pending['code'])}"
-    )
+    from config import webapp_url as _wa_url
+    webapp_url = _wa_url("/webapp/perplexity", plan=pending['plan_name'], code=pending['code'])
     await cb.message.answer(
         f"⚡ <b>Активация Perplexity {pending['plan_name']}</b>\n\n"
         f"Нажми кнопку, введи Perplexity User ID (perplexity.ai/api/auth/session) — "
@@ -647,24 +644,33 @@ async def test_perplexity_webapp(message: Message):
     import random, string as _string, urllib.parse as _up4
     from aiogram.types import WebAppInfo as _WAI4
 
-    # Фейковый код — не из БД, пропустит реальную активацию
-    suffix = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=12))
-    fake_code  = f"TEST-{suffix}"
-    fake_order = f"TEST-ORD-{suffix[:6]}"
     uid = message.from_user.id
+    suffix = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=12))
+    # «/test_perplexity_webapp real» — берём НАСТОЯЩИЙ код из пула и проверяем реальный API
+    _real = "real" in (message.text or "").lower()
+    if _real:
+        fake_code = await get_next_perplexity_code("pro")
+        if not fake_code:
+            await message.answer("⚠️ В пуле нет свободных PXY-кодов. Добавь код и повтори /test_perplexity_webapp real")
+            return
+        fake_order = f"TESTPX-{suffix[:6]}"
+        _warn = ("🔴 <b>РЕАЛЬНЫЙ тест</b> — код НАСТОЯЩИЙ из пула. Подписка активируется на тот "
+                 "аккаунт, чей User ID введёшь. Код будет израсходован.")
+    else:
+        fake_code  = f"TEST-{suffix}"
+        fake_order = f"TEST-ORD-{suffix[:6]}"
+        _warn = "⚠️ ТЕСТ — фейковый код, реальной активации нет (проверка интерфейса)."
 
     await save_perplexity_pending_activation(uid, fake_code, fake_order, "pro", "Pro")
 
-    webapp_url = (
-        f"{WEBAPP_BASE_URL}/webapp/perplexity"
-        f"?plan={_up4.quote('Pro')}&code={_up4.quote(fake_code)}"
-    )
+    from config import webapp_url as _wa_url4
+    webapp_url = _wa_url4("/webapp/perplexity", plan="Pro", code=fake_code)
 
     await message.answer(
         f"🎉 <b>Оплата прошла!</b>\n\n"
         f"📦 <b>Perplexity Pro</b>\n\n"
         f"Осталось активировать подписку — нажми кнопку ниже 👇\n\n"
-        f"<i>⚠️ ТЕСТ — фейковый код, реальной активации нет</i>\n"
+        f"<i>{_warn}</i>\n"
         f"<i>🔑 Код: <code>{fake_code}</code></i>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[

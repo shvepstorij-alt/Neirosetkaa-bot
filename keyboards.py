@@ -23,7 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import (
     ALTERNATIVE_MODELS, ANIM_MODELS, CREDIT_PACKS, CUSTOM_EMOJI_IDS, DISABLED_MODELS, EDIT_MODELS,
     IMAGE_BRAND_MODELS, IMAGE_MODELS, MOTION_PRICES, PERSONAL_USERNAME, SHOP_CATEGORIES, UI_EMOJI_IDS,
-    VIDEO_BRAND_MODELS, VIDEO_MODELS, WEBAPP_BASE_URL, is_admin,
+    VIDEO_BRAND_MODELS, VIDEO_MODELS, WEBAPP_BASE_URL, is_admin, webapp_url,
 )
 
 def kb_error_with_alt(menu: str, model_key: str):
@@ -54,7 +54,7 @@ def kb_error_with_alt(menu: str, model_key: str):
 
 def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
-        *([[InlineKeyboardButton(text="Каталог", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/shop"), icon_custom_emoji_id="5197260068562676798")]] if WEBAPP_BASE_URL else []),
+        *([[InlineKeyboardButton(text="Каталог", web_app=WebAppInfo(url=webapp_url("/webapp/shop")), icon_custom_emoji_id="5197260068562676798")]] if WEBAPP_BASE_URL else []),
         [_eib("Изображение",   "menu_image"),    _eib("Видео",     "menu_video")],
         [_eib("Редактировать...","menu_edit"),    _eib("Анимировать...","menu_anim")],
         [_eib("Консультант AI", "menu_chat"),     _eib("Избранное", "menu_favorites")],
@@ -318,7 +318,7 @@ def kb_contact():
 def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Постоянная нижняя панель кнопок."""
     rows = [
-        [KeyboardButton(text="🛒 Каталог", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/shop"))]
+        [KeyboardButton(text="🛒 Каталог", web_app=WebAppInfo(url=webapp_url("/webapp/shop")))]
             if WEBAPP_BASE_URL else [KeyboardButton(text="🛍️ Магазин")],
         [KeyboardButton(text="📷 Создать фото"), KeyboardButton(text="🎬 Создать видео")],
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
@@ -432,7 +432,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
         [InlineKeyboardButton(text="Perplexity Mini App", callback_data="adm_perplexity_webapp", **_px)],
         [InlineKeyboardButton(text="Настройка App Store", callback_data="adm_nsgifts", **_ap)],
-        *([[InlineKeyboardButton(text="🎛️ Mini App (бета)", web_app=WebAppInfo(url=f"{WEBAPP_BASE_URL}/webapp/admin"))]] if WEBAPP_BASE_URL else []),
+        *([[InlineKeyboardButton(text="🎛️ Mini App (бета)", web_app=WebAppInfo(url=webapp_url("/webapp/admin")))]] if WEBAPP_BASE_URL else []),
         [_eib("Главное меню", "back_main")],
     ])
 

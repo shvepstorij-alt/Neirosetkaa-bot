@@ -620,6 +620,14 @@ async def nsg_full_coins(cb: CallbackQuery):
         await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
+    # Фиксируем списанные монетки в заказе: если выдача кода сорвётся,
+    # фоновая задача вернёт их клиенту автоматически.
+    try:
+        async with pool.acquire() as _c_cs:
+            await _c_cs.execute(
+                "UPDATE fk_orders SET coins_spent=$1 WHERE order_id=$2", required, order_id)
+    except Exception as _e_cs:
+        logging.warning(f"nsg_full_coins coins_spent {order_id}: {_e_cs}")
     new_coins = await get_coins(uid)
     try:
         await cb.message.edit_text(

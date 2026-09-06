@@ -828,7 +828,8 @@ async def test_gpt_webapp(message: Message):
     suffix = "".join(random.choices(_string.ascii_uppercase + _string.digits, k=12))
     code = f"TEST-{suffix}"  # фейковый код — реальные из пула НЕ тратятся
     await save_pending_activation(uid, code, f"TEST-ORD-{suffix[:6]}", "plus", "Plus")
-    webapp_url = f"{WEBAPP_BASE_URL}/webapp/chatgpt?plan={_uparse.quote('Plus')}&code={_uparse.quote(code)}"
+    from config import webapp_url as _wa_url
+    webapp_url = _wa_url("/webapp/chatgpt", plan="Plus", code=code)
     from aiogram.types import WebAppInfo
     await message.answer(
         f"🎉 <b>Оплата прошла!</b>\n\n"

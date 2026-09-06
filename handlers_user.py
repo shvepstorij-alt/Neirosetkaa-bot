@@ -56,6 +56,16 @@ async def cmd_start(message: Message, state: FSMContext):
                 # Проверяем что пригласивший не заблокирован (иначе можно ему рефбонусами нагадить)
                 if not await is_blocked(rid):
                     referred_by = rid
+                    # Взаимные приглашения: если ЭТОТ пользователь уже значится
+                    # пригласившим для rid, связь не засчитываем — иначе пара
+                    # аккаунтов «приглашает» друг друга и качает бонусы.
+                    try:
+                        _r_owner = await get_user(rid)
+                        if _r_owner and _r_owner.get("referred_by") == uid:
+                            logging.info(f"ref: взаимное приглашение uid={uid} rid={rid} — игнорируем")
+                            referred_by = None
+                    except Exception:
+                        pass
         except ValueError:
             pass
 

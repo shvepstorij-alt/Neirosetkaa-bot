@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, CREDIT_PACKS, IMAGE_MODELS, PERSONAL_USERNAME, SHOP_CATALOG, SHOP_CATEGORIES,
-    VIDEO_MODELS, _ref_bonus_for_count, bot, dp, fk_pay_url, pending_fk_payments,
+    VIDEO_MODELS, _rand_sfx, _ref_bonus_for_count, bot, dp, fk_pay_url, pending_fk_payments,
 )
 from states import (
     PromoState, ShopPromoState,
@@ -556,7 +556,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
         if _ok_p and _promo and _promo.get("kind") == "percent":
             promo_final = max(1, int(p["price"] * (100 - _promo["value"]) / 100))
     import time as _time
-    order_id = f"shop_{uid}_{int(_time.time())}"
+    order_id = f"shop_{uid}_{int(_time.time())}{_rand_sfx()}"
 
     # Считаем итоговую сумму ДО записи в БД — чтобы сохранить правильную сумму
     user_coins = await get_coins(uid)
@@ -846,7 +846,7 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
             await cb.answer("Недостаточно монеток.", show_alert=True)
             return
         import time as _t
-        order_id = f"cr_{uid}_{int(_t.time())}"
+        order_id = f"cr_{uid}_{int(_t.time())}{_rand_sfx()}"
         await fk_save_order(order_id, uid, p["credits"], rest, key)
         try:
             _pool_cs = await get_pool()
@@ -901,7 +901,7 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
     # единственным следом было сообщение админу — если оно терялось, клиент
     # оставался без подписки, а заказа не было ни в админке, ни в отчётах.
     import time as _t_fc
-    order_id = f"shop_{uid}_{int(_t_fc.time())}"
+    order_id = f"shop_{uid}_{int(_t_fc.time())}{_rand_sfx()}"
     _onum = None
     try:
         _pool_fc = await get_pool()
@@ -985,7 +985,7 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
     import time as _t
-    order_id = f"shop_{uid}_{int(_t.time())}"
+    order_id = f"shop_{uid}_{int(_t.time())}{_rand_sfx()}"
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1638,7 +1638,7 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             amount = max(1, int(p["price"] * (100 - promo["value"]) / 100))
 
     import time as _time
-    order_id = f"{uid}_{int(_time.time())}"
+    order_id = f"{uid}_{int(_time.time())}{_rand_sfx()}"
 
     pending_fk_payments[order_id] = {
         "user_id": uid,
