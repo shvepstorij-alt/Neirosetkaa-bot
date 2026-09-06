@@ -5980,6 +5980,73 @@ def _code_auth_fail(ip: str):
     _code_auth_fails.setdefault(ip, []).append(_t_ca.time())
 
 
+async def _restore_gpt_pending(user_id: int):
+    """Восстанавливает истёкшую сессию активации ChatGPT по оплаченному заказу.
+
+    Возвращает новый pending или None. Безопасность: если по заказу код уже
+    использован (клиент активировал раньше) — ничего не выдаём, иначе можно было
+    бы получить второй код по одной оплате.
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            _ord = await conn.fetchrow(
+                "SELECT order_id, pack FROM fk_orders "
+                "WHERE user_id=$1 AND status='paid' AND pack LIKE 'shop:%' "
+                "  AND paid_at > NOW() - INTERVAL '7 days' "
+                "ORDER BY paid_at DESC LIMIT 1",
+                user_id)
+            if not _ord:
+                return None
+            _order_id = _ord["order_id"]
+            _pack = _ord["pack"] or ""
+            # Только заказы ChatGPT
+            _skey = _pack.split(":")[1] if _pack.count(":") >= 1 else ""
+            _s = SHOP_CATALOG.get(_skey, {}) or {}
+            _sname = (_s.get("name", "") or "").lower()
+            if "chatgpt" not in _skey.lower() and "chatgpt" not in _sname and _skey.lower() != "gpt":
+                return None
+            # Код по этому заказу уже активирован? Тогда восстанавливать нечего.
+            _used = await conn.fetchval(
+                "SELECT 1 FROM gpt_codes WHERE order_id=$1 AND used_by IS NOT NULL", _order_id)
+            if _used:
+                return None
+            _idx = int(_pack.split(":")[2]) if _pack.count(":") >= 2 and _pack.split(":")[2].isdigit() else 0
+            _plans = _s.get("plans", [])
+            _plan_name = _plans[_idx]["name"] if 0 <= _idx < len(_plans) else "Plus"
+
+        _plan_key = plan_name_to_key(_plan_name)
+        _code, _prov = await _gpt_pick_code(_plan_key)
+        if not _code:
+            logging.warning(f"restore GPT pending uid={user_id}: коды закончились")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>Не смог восстановить активацию ChatGPT</b>\n"
+                    f"👤 <code>{user_id}</code>  🆔 <code>{_order_id}</code>\n"
+                    f"Коды закончились — выдай вручную.", parse_mode="HTML")
+            except Exception:
+                pass
+            return None
+
+        await save_pending_activation(user_id, _code, _order_id, _plan_key, _plan_name, _prov)
+        logging.info(f"restore GPT pending uid={user_id} order={_order_id} code={_code} prov={_prov}")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"♻️ <b>Восстановлена активация ChatGPT</b>\n"
+                f"👤 <code>{user_id}</code>  📦 {_plan_name}\n"
+                f"🆔 <code>{_order_id}</code>  🎟 <code>{_code}</code>\n"
+                f"<i>Окно активации истекло — выдал новый код автоматически.</i>",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return await get_pending_activation(user_id)
+    except Exception as _e_r:
+        logging.error(f"_restore_gpt_pending uid={user_id}: {_e_r}")
+        return None
+
+
 async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     """POST /api/activate-chatgpt — запускает задачу в фоне, сразу возвращает job_id."""
     import json as _json
@@ -6023,7 +6090,13 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
 
     pending = await get_pending_activation(user_id)
     if not pending:
-        return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
+        # Окно активации истекло, а клиент ОПЛАТИЛ. Раньше это был тупик:
+        # «Время сессии истекло — напиши админу», и дальше вручную. Пробуем
+        # восстановить сессию сами: находим оплаченный заказ ChatGPT, убеждаемся,
+        # что по нему код ещё НЕ активирован, и выдаём новый код.
+        pending = await _restore_gpt_pending(user_id)
+        if not pending:
+            return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
 
     # Guard: повторная активация за 29 дней — НЕ блокируем жёстко.
     # Первый раз предупреждаем, повторное нажатие «Попробовать снова» = активируем

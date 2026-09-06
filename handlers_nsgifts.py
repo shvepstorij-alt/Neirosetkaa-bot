@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, NSGIFTS_API_SECRET, NSGIFTS_LOGIN, NSGIFTS_PASSWORD, NSGIFTS_USER_ID,
-    WEBSHARE_PROXY, bot, dp, fk_pay_url,
+    PERSONAL_USERNAME, WEBSHARE_PROXY, bot, dp, fk_pay_url,
 )
 from runtime_state import (
     rt,
@@ -461,6 +461,19 @@ async def nsg_svc(cb: CallbackQuery):
 
     if not service:
         await cb.message.answer("⚠️ Товар не найден. Попробуй выбрать снова.")
+        return
+
+    # Наличие проверяем ПЕРЕД созданием заказа: карточка могла быть открыта
+    # давно (каталог кэшируется до 30 минут), и товар мог закончиться —
+    # раньше клиент успевал оплатить то, что уже нельзя выдать.
+    if int(service.get("in_stock", 0) or 0) <= 0:
+        await cb.message.answer(
+            "😔 Этот номинал только что закончился.\n\n"
+            "Обнови каталог и выбери другой — или напиши @" + PERSONAL_USERNAME + ".",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Обновить список", callback_data=f"nsg_cat:{cat_id}")],
+                [_eib("Главное меню", "back_main")],
+            ]))
         return
 
     folder     = get_folder_by_category(stock, cat_id)

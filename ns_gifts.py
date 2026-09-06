@@ -190,6 +190,12 @@ _stock_cache: dict = {"data": None, "ts": 0.0}
 _CACHE_TTL = 1800  # 30 минут
 
 
+# Предельный возраст «аварийного» кэша: при недоступности API мы какое-то время
+# показываем последний известный каталог, но не бесконечно — иначе магазин
+# продолжает продавать товары, которых давно нет в наличии.
+_STALE_MAX = 6 * 3600
+
+
 async def get_stock_cached(client: NSGiftsClient) -> dict:
     """
     Возвращает каталог из кеша. Обновляет если кеш устарел.
@@ -204,7 +210,11 @@ async def get_stock_cached(client: NSGiftsClient) -> dict:
         return data
     except Exception as e:
         logger.error(f"NSGifts get_stock failed: {e}")
-        return _stock_cache["data"] or {}   # вернуть устаревший кеш при ошибке
+        _age = time.time() - (_stock_cache["ts"] or 0)
+        if _stock_cache["data"] and _age < _STALE_MAX:
+            logger.warning(f"NSGifts: отдаю устаревший каталог ({_age/3600:.1f} ч)")
+            return _stock_cache["data"]
+        return {}   # каталог слишком старый — лучше пусто, чем продать «мёртвый» товар
 
 
 def invalidate_stock_cache():

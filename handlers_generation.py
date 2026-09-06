@@ -54,6 +54,37 @@ import html as _html_mod
 _LONG_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=180)
 
 
+async def _photo_bytes_from(message) -> bytes | None:
+    """Байты картинки из сообщения: сжатое фото ИЛИ файл-картинка (документ).
+
+    Клиенты часто присылают исходник документом («без сжатия») — особенно для
+    редактирования и апскейла, где качество и есть смысл услуги. Раньше такие
+    сообщения отвергались с подсказкой «отправь фото», хотя это ровно то, что нужно.
+    """
+    _fid = None
+    if getattr(message, "photo", None):
+        _fid = message.photo[-1].file_id
+    else:
+        _doc = getattr(message, "document", None)
+        _mime = (getattr(_doc, "mime_type", "") or "") if _doc else ""
+        _name = (getattr(_doc, "file_name", "") or "").lower() if _doc else ""
+        if _doc and (_mime.startswith("image/")
+                     or _name.endswith((".jpg", ".jpeg", ".png", ".webp"))):
+            # 20 МБ — предел скачивания файлов ботом
+            if (getattr(_doc, "file_size", 0) or 0) > 20 * 1024 * 1024:
+                return None
+            _fid = _doc.file_id
+    if not _fid:
+        return None
+    try:
+        _f = await bot.get_file(_fid)
+        _buf = await bot.download_file(_f.file_path)
+        return _buf.read() if hasattr(_buf, "read") else _buf
+    except Exception as _e_ph:
+        logging.error(f"_photo_bytes_from: {_e_ph}")
+        return None
+
+
 async def _model_or_none(cb, models: dict, key: str):
     """Возвращает модель, если она существует И не выключена админом.
 
@@ -340,7 +371,17 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
-    await mark_generation_active(uid, "photo")
+    # Лимит одновременных генераций проверяется атомарно ИМЕННО здесь: между
+    # _check_can_generate и этой вставкой есть await, и два быстрых клика раньше
+    # проскакивали оба. Если лимит исчерпан — возвращаем кредиты.
+    if not await mark_generation_active(uid, "photo"):
+        try:
+            await add_credits(uid, m["credits"])
+        except Exception:
+            pass
+        release_click(_click_key)
+        await cb.answer("⏳ Дождись завершения текущих генераций.", show_alert=True)
+        return
     await state.clear()
     # Запоминаем формат уже после очистки: кнопка «Ещё раз» под результатом
     # должна повторить ИМЕННО тот формат, который выбрал клиент.
@@ -973,7 +1014,14 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
-    await mark_generation_active(uid, "video")
+    if not await mark_generation_active(uid, "video"):
+        try:
+            await add_credits(uid, credits_cost)
+        except Exception:
+            pass
+        release_click(_click_key)
+        await cb.answer("⏳ Дождись завершения текущих генераций.", show_alert=True)
+        return
     await state.clear()
     # Формат и длительность нужны кнопке «Ещё раз» под результатом
     try:
@@ -1363,7 +1411,7 @@ async def menu_upscale(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.message(UpscaleState.waiting_photo, F.photo)
+@dp.message(UpscaleState.waiting_photo, F.photo | F.document)
 async def do_upscale(message: Message, state: FSMContext):
     uid = message.from_user.id
     cr = await get_credits(uid)
@@ -1383,12 +1431,23 @@ async def do_upscale(message: Message, state: FSMContext):
     if not try_acquire_click(_click_key, ttl=180.0):
         return
 
+    # Картинку читаем ДО списания: если пришёл не тот файл, клиент не должен
+    # платить и ждать возврата.
+    img_bytes = await _photo_bytes_from(message)
+    if not img_bytes:
+        release_click(_click_key)
+        await message.answer(
+            "📎 Пришли изображение — фото из галереи или файлом (JPG/PNG до 20 МБ).")
+        return
+
     # Лимиты: почасовой + одновременные генерации (как у остальных разделов)
     if not await _check_can_generate(message, uid, kind="photo"):
         release_click(_click_key)
-        await state.clear()
         return
-    await mark_generation_active(uid, "photo")
+    if not await mark_generation_active(uid, "photo"):
+        release_click(_click_key)
+        await message.answer("⏳ Дождись завершения текущих генераций.")
+        return
 
     # СНАЧАЛА списываем, потом обращаемся к платному API. Раньше было наоборот:
     # при нехватке кредитов апскейл уже был куплен у fal.ai за счёт бизнеса.
@@ -1419,11 +1478,6 @@ async def do_upscale(message: Message, state: FSMContext):
         return
 
     try:
-        # Скачиваем фото
-        photo = message.photo[-1]
-        file = await bot.get_file(photo.file_id)
-        buf = await bot.download_file(file.file_path)
-        img_bytes = buf.read()
 
         # Конвертируем фото в base64 data URI - fal.ai принимает напрямую
         import base64 as _b64
@@ -1587,7 +1641,7 @@ async def improve_model_text(message: Message):
 
 @dp.message(UpscaleState.waiting_photo)
 async def upscale_wrong_input(message: Message):
-    await message.answer("📎 Пожалуйста, отправь фото (не файлом, а именно фото).")
+    await message.answer("📎 Пришли изображение — фото из галереи или файлом (JPG/PNG до 20 МБ).")
 
 
 # ─── ПРОМТ-АССИСТЕНТ ────────────────────────────────────────────────────────────
@@ -1897,15 +1951,12 @@ async def edit_model_select(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(EditState.waiting_photo)
 async def edit_get_photo(message: Message, state: FSMContext):
-    if not message.photo:
-        await message.answer("📷 Отправь <b>фотографию</b> - картинку из галереи или файл", parse_mode="HTML")
+    img_data = await _photo_bytes_from(message)
+    if not img_data:
+        await message.answer(
+            "📷 Отправь <b>фотографию</b> — из галереи или файлом (JPG/PNG до 20 МБ).",
+            parse_mode="HTML")
         return
-
-    # Берём лучшее качество фото
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    file_bytes = await bot.download_file(file.file_path)
-    img_data = file_bytes.read()
 
     await state.update_data(photo_bytes=list(img_data))
     await state.set_state(EditState.waiting_prompt)
@@ -2028,14 +2079,19 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
 
     if not await _check_can_generate(cb.message, uid, kind="photo"):
         release_click(_click_key)
-        await state.clear()
+        # Состояние НЕ чистим: клиент уже прислал фото и промт, и терять их
+        # из-за «подожди N минут» — значит заставлять всё вводить заново.
         return
 
     cr = await get_credits(uid)
     if cr < edit_cost:
         release_click(_click_key)
-        await state.clear()
-        await cb.message.answer(f"💸 Недостаточно кредитов. Нужно {edit_cost} кр.")
+        await cb.message.answer(
+            f"💸 Недостаточно кредитов. Нужно {edit_cost} кр.\n"
+            f"Пополни баланс — фото и промт я сохранил, вернись и нажми «Редактировать».",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [_eib("Купить кредиты", "menu_buy")],
+            ]))
         return
 
     ok = await deduct(uid, edit_cost)
@@ -2549,14 +2605,18 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
 
     if not await _check_can_generate(cb.message, uid, kind="anim"):
         release_click(_click_key)
-        await state.clear()
+        # Кадры и промт сохраняем — см. комментарий в редактировании.
         return
 
     cr = await get_credits(uid)
     if cr < anim_cost:
         release_click(_click_key)
-        await state.clear()
-        await cb.message.answer(f"❌ Недостаточно кредитов. Нужно {anim_cost} кр.")
+        await cb.message.answer(
+            f"💸 Недостаточно кредитов. Нужно {anim_cost} кр.\n"
+            f"Пополни баланс — кадры и промт я сохранил.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [_eib("Купить кредиты", "menu_buy")],
+            ]))
         return
 
     ok = await deduct(uid, anim_cost)
@@ -3181,7 +3241,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
     # Rate limit
     if not await _check_can_generate(msg_obj, uid, kind="motion"):
         release_click(_click_key)
-        await state.clear()
+        # Референсы (фото + видео) сохраняем — иначе всё загружать заново.
         return
 
     # Проверка баланса ещё раз (мог измениться)
