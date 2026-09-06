@@ -1932,8 +1932,14 @@ def fk_payment_url(order_id: str, amount: int, user_id: int) -> str:
 # ══════════════════════════════════════════════════════════
 
 FK_WEBHOOK_PORT = int(os.getenv("FK_WEBHOOK_PORT", "8080"))
-# Разрешённые IP от FreeKassa (актуально на апрель 2026)
-FK_ALLOWED_IPS = {"168.119.157.136", "168.119.60.227", "178.154.197.79", "51.250.54.238"}
+# Разрешённые IP от FreeKassa (актуально на апрель 2026).
+# Список можно обновить БЕЗ деплоя: FK_IPS="1.2.3.4,5.6.7.8" в Railway Variables.
+# Если переменная не задана или пустая - работает встроенный список ниже.
+_FK_IPS_DEFAULT = {"168.119.157.136", "168.119.60.227", "178.154.197.79", "51.250.54.238"}
+_fk_ips_env = {ip.strip() for ip in os.getenv("FK_IPS", "").replace(";", ",").split(",") if ip.strip()}
+FK_ALLOWED_IPS = _fk_ips_env or _FK_IPS_DEFAULT
+if _fk_ips_env:
+    logging.info(f"FK IP whitelist из переменной FK_IPS: {len(FK_ALLOWED_IPS)} адресов")
 # Аварийная опция: если FK добавит новые IP - установить FK_IP_CHECK=disabled в Railway
 # чтобы временно принимать webhooks с любых IP (подпись webhook'а всё равно проверяется!)
 FK_IP_CHECK_DISABLED = os.getenv("FK_IP_CHECK", "enabled").lower() in ("disabled", "off", "0", "false")

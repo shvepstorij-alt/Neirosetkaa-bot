@@ -3402,6 +3402,26 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         price = int(s["plans"][idx].get("price", 0) or 0)
         if price <= 0:
             return web.json_response({"ok": False, "error": "price"}, status=400)
+        # Защита от устаревшей страницы мини-аппа: WebView Telegram агрессивно
+        # кэширует, и если админ поменял цены/порядок тарифов, клиент мог видеть
+        # одну цену, а заказ создавался бы по другой. Клиент присылает цену и
+        # название тарифа, которые он ПОКАЗАЛ; расходятся - просим перезайти.
+        # Старые кэшированные страницы поля не шлют - для них проверка не работает.
+        _exp_price = body.get("expPrice")
+        _exp_name = body.get("expName")
+        if _exp_price is not None:
+            try:
+                _exp_price = int(_exp_price)
+            except Exception:
+                _exp_price = None
+        if _exp_price is not None and _exp_price != price:
+            logging.info(f"api_shop_pay stale price uid={uid} key={key} idx={idx} "
+                         f"показано={_exp_price} актуально={price}")
+            return web.json_response({"ok": False, "error": "stale"})
+        if _exp_name and str(_exp_name).strip() != str(s["plans"][idx].get("name", "") or "").strip():
+            logging.info(f"api_shop_pay stale plan uid={uid} key={key} idx={idx} "
+                         f"показано={_exp_name!r} актуально={s['plans'][idx].get('name')!r}")
+            return web.json_response({"ok": False, "error": "stale"})
         # Промокод (скидка %). Считаем скидку на СЕРВЕРЕ, клиенту не доверяем.
         _promo_code = str(body.get("promo", "")).strip().upper()[:32]
         _promo_applied = None
@@ -5981,6 +6001,42 @@ def _code_auth_fail(ip: str):
     _code_auth_fails.setdefault(ip, []).append(_t_ca.time())
 
 
+# ── Анти-перебор order_id/job_id на статус-эндпоинтах активации ──────────────
+# Эндпоинты /api/activate-status/{job_id} и /api/activate-claude-status/{order_id}
+# открыты без авторизации (мини-апп опрашивает их обычным fetch без initData).
+# Легальный клиент опрашивает СВОЙ существующий заказ и почти не получает 404,
+# а перебор чужих id даёт сплошные 404 — по ним и режем.
+_status_404 = {}          # ip -> [ts, ...]
+_status_404_alerted = set()
+STATUS_404_MAX_PER_10MIN = 60
+
+
+def _req_ip(request) -> str:
+    """Реальный IP клиента (Railway отдаёт цепочку в X-Forwarded-For)."""
+    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.remote or "")
+
+
+def _status_probe_allowed(ip: str) -> bool:
+    import time as _t_sp
+    _now = _t_sp.time()
+    _f = [t for t in _status_404.get(ip, []) if _now - t < 600]
+    _status_404[ip] = _f
+    if len(_status_404) > 500:
+        for _k in [k for k, v in list(_status_404.items()) if not v]:
+            _status_404.pop(_k, None)
+    return len(_f) < STATUS_404_MAX_PER_10MIN
+
+
+def _status_probe_fail(ip: str):
+    import time as _t_sp
+    _status_404.setdefault(ip, []).append(_t_sp.time())
+    if (len(_status_404[ip]) >= STATUS_404_MAX_PER_10MIN
+            and ip not in _status_404_alerted):
+        _status_404_alerted.add(ip)
+        logging.warning(f"🚫 Похоже на перебор id активации с IP {ip} - блокирую на 10 мин")
+
+
 async def _restore_gpt_pending(user_id: int):
     """Восстанавливает истёкшую сессию активации ChatGPT по оплаченному заказу.
 
@@ -6267,8 +6323,15 @@ async def api_activation_status_handler(request: web.Request) -> web.Response:
     """GET /api/activate-status/{job_id} — статус задачи активации."""
     import json as _json
     job_id = request.match_info.get("job_id", "")
+    _ip = _req_ip(request)
+    if not _status_probe_allowed(_ip):
+        return web.Response(
+            text=_json.dumps({"status": "not_found", "error": "Слишком много запросов"}),
+            content_type="application/json", status=429
+        )
     job    = _activation_jobs.get(job_id)
     if not job:
+        _status_probe_fail(_ip)
         return web.Response(
             text=_json.dumps({"status": "not_found", "error": "Задача не найдена"}),
             content_type="application/json", status=404
@@ -6952,7 +7015,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                         f"ℹ️ <b>Webhook с неизвестного IP</b>\n\n"
                         f"IP: <code>{client_ip}</code>\n"
                         f"Сейчас принимается (FK_IP_CHECK=disabled).\n"
-                        f"Если это реально FK - добавь IP в FK_ALLOWED_IPS в коде.",
+                        f"Если это реально FK - добавь IP в переменную FK_IPS в Railway (через запятую), деплой не нужен.",
                         parse_mode="HTML"
                     )
                 except Exception:
@@ -9365,6 +9428,12 @@ async def api_activate_claude_status_handler(request: web.Request) -> web.Respon
     (partner-API «R…») или числом (bpa) — ищем по обоим вариантам ключа."""
     import json as _j2
     _raw = (request.match_info.get("order_id", "") or "").strip()
+    _ip = _req_ip(request)
+    if not _status_probe_allowed(_ip):
+        return web.Response(
+            text=_j2.dumps({"status": "not_found"}),
+            content_type="application/json", status=429
+        )
     result = _claude_job_results.get(_raw)
     if result is None:
         try:
@@ -9372,6 +9441,7 @@ async def api_activate_claude_status_handler(request: web.Request) -> web.Respon
         except (ValueError, TypeError):
             result = None
     if result is None:
+        _status_probe_fail(_ip)
         return web.Response(
             text=_j2.dumps({"status": "not_found"}),
             content_type="application/json", status=404

@@ -3,7 +3,6 @@
 import asyncio, logging, os, re, uuid, base64, hashlib, hmac, json, time
 import datetime
 import datetime as _dt_tz
-import time as _time_module
 import asyncpg
 import aiohttp
 from aiohttp import web
@@ -25,7 +24,7 @@ from config import (
     IMAGE_BRAND_TITLES, IMAGE_MODELS, MOTION_MODEL_ID, MOTION_PRICES, UI_EMOJI_IDS, UPSCALE_CREDIT_COST,
     VIDEO_BRAND_MODELS, VIDEO_BRAND_TITLES, VIDEO_MODELS, _anim_history, _motion_history, _photo_history,
     _record_generation, _veo_semaphore, _video_history, bot, claude_client, dp,
-    friendly_error, model_title_n, user_orig_images, validate_gen_prompt,
+    friendly_error, model_title_n, validate_gen_prompt,
 )
 from states import (
     AnimState, EditState, ImgState, ImproveState, MotionState, UpscaleState,
@@ -505,8 +504,6 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         _record_generation(uid, _photo_history)
         await check_expiring_credits(uid)
         cr = await get_credits(uid)
-        # Сохраняем оригинал в памяти для скачивания (с timestamp для автоочистки)
-        user_orig_images[uid] = {"data": img_bytes, "ts": _time_module.time()}
         # Сначала отправляем оригинал как документ - с retry
         await safe_send_media(
             cb.message.answer_document,
@@ -547,22 +544,6 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         release_click(_click_key)
         await unmark_generation_active(uid)
     await _cb_ack(cb)
-
-
-async def download_original(cb: CallbackQuery):
-    """Отправляет оригинальное фото как документ без сжатия."""
-    uid = cb.from_user.id
-    stored = user_orig_images.get(uid)
-    img_bytes = stored["data"] if isinstance(stored, dict) else stored
-    if not img_bytes:
-        await cb.answer("❌ Оригинал не найден. Сгенерируй фото заново.", show_alert=True)
-        return
-    await cb.answer("⬇️ Отправляю оригинал...")
-    await cb.message.answer_document(
-        BufferedInputFile(img_bytes, "original_image.png"),
-        caption="\U0001f4ce <b>Оригинал без сжатия</b>\n\n<i>Файл в полном качестве</i>",
-        parse_mode="HTML"
-    )
 
 
 @dp.callback_query(F.data.startswith("chprompt:img:"))
@@ -1641,8 +1622,8 @@ async def do_upscale(message: Message, state: FSMContext):
         except Exception:
             pass
         await message.answer(
-            ("⚠️ Ошибка апскейла. Кредиты возвращены. " if _deducted
-             else "⚠️ Ошибка апскейла. ") + "Попробуй ещё раз или напиши @neirosetkaalex.",
+            f"⚠️ {friendly_error(e)}" + ("\n\n💳 Кредиты возвращены." if _deducted else ""),
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔍 Попробовать снова", callback_data="menu_upscale")],
                 [_eib("Главное меню", "back_main")],
@@ -2257,10 +2238,33 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=60)
                 ) as r:
+                    # Разбор HTTP-статуса ДО парсинга JSON: раньше 401/422/500
+                    # молча уходили в "fal submit failed: {...}" без объяснения,
+                    # клиент видел общее "техническая проблемка".
+                    if r.status in (401, 403):
+                        raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
+                    if r.status == 422:
+                        _e = (await r.text())[:400]; _l = _e.lower()
+                        if any(w in _l for w in ("safety", "moderation", "policy", "nsfw", "violat", "flagged", "blocked")):
+                            raise Exception(
+                                "🛡 Запрос отклонён фильтром безопасности.\n"
+                                "Попробуй другое фото или переформулируй задачу."
+                            )
+                        logging.error(f"fal edit 422 model={m['model_id']}: {_e}")
+                        raise Exception("⚠️ Ошибка параметров редактирования. Попробуй другое фото или выбери другую модель.")
+                    if r.status >= 500:
+                        _e = (await r.text())[:300]
+                        logging.error(f"fal edit HTTP {r.status} model={m['model_id']}: {_e}")
+                        raise Exception("Модель редактирования временно недоступна. Попробуй через минуту или выбери другую модель.")
+                    if not (r.content_type and "json" in r.content_type):
+                        raw = await r.text()
+                        logging.error(f"fal edit submit non-JSON HTTP {r.status}: {raw[:300]}")
+                        raise Exception("Модель редактирования временно недоступна. Попробуй через минуту или выбери другую модель.")
                     submit = await r.json()
                     request_id = submit.get("request_id")
                     if not request_id:
-                        raise Exception(f"fal submit failed: {submit}")
+                        logging.error(f"fal edit submit HTTP {r.status}: {str(submit)[:300]}")
+                        raise Exception(f"fal submit failed: {str(submit)[:200]}")
                 status_url = submit.get("status_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
                 response_url = submit.get("response_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
                 logging.info(f"fal edit submitted: {request_id} status_url={status_url[:80]} response_url={response_url[:80]}")
@@ -2272,6 +2276,8 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
                             headers={"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"},
                             timeout=aiohttp.ClientTimeout(total=15)
                         ) as sr:
+                            if sr.status in (401, 403):
+                                raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
                             if sr.content_type and "json" in sr.content_type:
                                 st = await sr.json()
                             else:
@@ -2358,6 +2364,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         try:
             await wait.edit_text(
                 f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                parse_mode="HTML",
                 reply_markup=kb_back()
             )
         except Exception as msg_err:
@@ -3028,6 +3035,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         try:
             await wait.edit_text(
                 f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                parse_mode="HTML",
                 reply_markup=kb_back()
             )
         except Exception as msg_err:
@@ -3570,12 +3578,14 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         try:
             await wait.edit_text(
                 f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                parse_mode="HTML",
                 reply_markup=kb_back()
             )
         except Exception:
             try:
                 await msg_obj.answer(
                     f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                    parse_mode="HTML",
                     reply_markup=kb_back()
                 )
             except Exception as msg_err:

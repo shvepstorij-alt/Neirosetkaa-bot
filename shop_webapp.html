@@ -917,7 +917,12 @@ function payVia(el,key,idx,method,useCoins){
   try{ _track('pay:'+key+':'+idx); }catch(e){}
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">'+(useCoins?'Списываю монетки…':'Создаю ссылку на оплату…')+'</div>';
   var _promo=(window._shopPromo&&window._shopPromoKey===key)?window._shopPromo.code:'';
-  _api('/api/shop/pay',{key:key,planIdx:idx,method:method,promo:_promo,useCoins:!!useCoins}).then(function(d){
+  /* Отправляем цену и название тарифа, которые РЕАЛЬНО показаны на экране:
+     если страница из кэша устарела (админ поменял цены), сервер это увидит
+     и попросит перезайти вместо оплаты не того тарифа. */
+  var _pl=((CATALOG[key]&&CATALOG[key].plans)||[]).filter(function(p){return p.idx===idx;})[0]||{};
+  _api('/api/shop/pay',{key:key,planIdx:idx,method:method,promo:_promo,useCoins:!!useCoins,
+                        expPrice:(_pl.price||0),expName:(_pl.name||'')}).then(function(d){
     if(d&&d.ok&&d.paidByCoins){
       window._coins=Math.max(0,(window._coins||0)-(d.coinsUsed||0));
       row.innerHTML='<div class="pm-wait" style="color:var(--green)">🪙 Оплачено монетками ('+(d.coinsUsed||0)+'₽)!<br>'
@@ -931,6 +936,7 @@ function payVia(el,key,idx,method,useCoins){
       var m;
       if(_err.indexOf('auth')===0){ m='Приложение открылось без данных Telegram.<br><br>1) Закрой это мини-приложение (кнопка «Закрыть» вверху)<br>2) В боте напиши команду <b>/start</b><br>3) Снова открой «🛒 Каталог» и повтори оплату.'; }
       else if(_err==='card_failed'){ m='Картой не удалось — попробуй СБП'; }
+      else if(_err==='stale'){ m='Тарифы обновились 🔄<br><br>Закрой это мини-приложение и открой «🛒 Каталог» заново — покажу актуальные цены.'; }
       else { m=_err?('Ошибка: '+_err):'Не получилось. Попробуй ещё раз'; }
       row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'; }
   });
