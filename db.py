@@ -238,6 +238,16 @@ async def init_db():
         """)
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_fsm_updated ON fsm_storage(updated_at)")
+        # Замок «одна активация на клиента» (переживает рестарт процесса).
+        # Раньше защита от параллельного запуска цепочки Claude жила в словаре
+        # в памяти: два одновременных запуска забирали ДВА кода из пула под одну
+        # оплату — второй код сгорал впустую.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS activation_claims (
+                key        TEXT PRIMARY KEY,
+                claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS order_thread (
                 id         SERIAL PRIMARY KEY,
@@ -705,6 +715,36 @@ async def claim_gpt_activation(user_id: int, stale_minutes: int = 10) -> bool:
         return str(r).split()[-1] == "1"
     except Exception:
         return True
+
+
+async def claim_activation(key: str, stale_minutes: int = 20) -> bool:
+    """Атомарно занимает замок с именем key. True — можно запускать.
+
+    Работает как INSERT ... ON CONFLICT DO UPDATE с условием по возрасту: если
+    замок свежий (кто-то уже работает) — обновления не будет и вернётся False.
+    Через stale_minutes замок считается протухшим (зависшая задача не блокирует
+    клиента навсегда). Не привязан к конкретной таблице — годится для любой
+    длительной операции «по одной на клиента».
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.execute(
+            "INSERT INTO activation_claims (key, claimed_at) VALUES ($1, NOW()) "
+            "ON CONFLICT (key) DO UPDATE SET claimed_at = NOW() "
+            "WHERE activation_claims.claimed_at < NOW() - make_interval(mins => $2)",
+            key, int(stale_minutes)
+        )
+    try:
+        return str(r).split()[-1] == "1"
+    except Exception:
+        return True
+
+
+async def release_activation(key: str):
+    """Снимает замок (после завершения задачи — успешного или нет)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM activation_claims WHERE key = $1", key)
 
 
 async def release_gpt_activation(user_id: int):

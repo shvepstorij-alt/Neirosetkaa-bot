@@ -51,7 +51,7 @@ from db import (
     set_linkpay_email,
     get_pending_activation_by_code, get_claude_pending_activation_by_code,
     get_perplexity_pending_activation_by_code, deduct_coins,
-    claim_gpt_activation, release_gpt_activation,
+    claim_gpt_activation, release_gpt_activation, claim_activation, release_activation,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji, tg_emoji_ui,
@@ -5882,10 +5882,47 @@ async def _run_activation_job(
             logging.warning(f"release_gpt_activation uid={user_id}: {_e_rel}")
 
 
-# Клиенты, уже предупреждённые о повторной активации (in-memory, сбрасывается при рестарте).
+# Клиенты, уже предупреждённые о повторной активации.
 # Повторное нажатие «Попробовать снова» = принудительная активация (на другой аккаунт).
+#
+# Раньше это жило ТОЛЬКО в памяти процесса: любой деплой или рестарт стирал
+# отметку, и клиент, уже нажавший «Попробовать снова», получал предупреждение
+# заново — и не мог активировать, пока не нажмёт ещё раз. Теперь отметка
+# дублируется в settings и живёт час; память остаётся быстрым кэшем.
 _gpt_double_warned: set = set()
 _claude_double_warned: set = set()
+_DBL_WARN_TTL = 3600  # секунд: через час предупредим снова (это защита, а не помеха)
+
+
+async def _dbl_warned_is(kind: str, uid: int, mem: set) -> bool:
+    if uid in mem:
+        return True
+    try:
+        import time as _t_dw
+        _ts = await get_setting(f"dblwarn:{kind}:{uid}", "") or ""
+        if _ts and (_t_dw.time() - float(_ts)) < _DBL_WARN_TTL:
+            mem.add(uid)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _dbl_warned_set(kind: str, uid: int, mem: set):
+    mem.add(uid)
+    try:
+        import time as _t_dw
+        await set_setting(f"dblwarn:{kind}:{uid}", str(_t_dw.time()))
+    except Exception as _e_dw:
+        logging.warning(f"dblwarn set {kind}:{uid}: {_e_dw}")
+
+
+async def _dbl_warned_clear(kind: str, uid: int, mem: set):
+    mem.discard(uid)
+    try:
+        await set_setting(f"dblwarn:{kind}:{uid}", "")
+    except Exception as _e_dw:
+        logging.warning(f"dblwarn clear {kind}:{uid}: {_e_dw}")
 
 # Антиспам алертов о НЕУДАЧНОЙ активации: не чаще 1 раза в 15 мин на (сервис, клиент).
 # Успех сбрасывает троттл (следующий сбой снова уведомит сразу).
@@ -6176,8 +6213,8 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 _uname = _u["full_name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             else:
                 _uname = "\u0431\u0435\u0437 \u043d\u0438\u043a\u0430"
-            if user_id not in _gpt_double_warned:
-                _gpt_double_warned.add(user_id)
+            if not await _dbl_warned_is("gpt", user_id, _gpt_double_warned):
+                await _dbl_warned_set("gpt", user_id, _gpt_double_warned)
                 logging.warning(f'GPT repeat activation: warned user={user_id} code={_recent_act["code"]}')
                 try:
                     await bot.send_message(
@@ -6224,7 +6261,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 _lines_dbl.append(f"\n\u0415\u0441\u043b\u0438 \u044d\u0442\u043e \u0441\u043b\u0443\u0447\u0430\u0439\u043d\u043e \u2014 \u043d\u0430\u043f\u0438\u0448\u0438 @{PERSONAL_USERNAME}.")
                 return _resp({"success": False, "error": "\n".join(_lines_dbl)})
             else:
-                _gpt_double_warned.discard(user_id)
+                await _dbl_warned_clear("gpt", user_id, _gpt_double_warned)
                 logging.info(f"GPT forced re-activation user={user_id}")
                 try:
                     await bot.send_message(
@@ -8629,6 +8666,23 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
     skip_providers — сайты, которые пропустить (напр. после ручного «не активировалась — другой сайт»)."""
     _skip = set(skip_providers or ())
     _claude_job_results[ref] = {"status": "queued"}
+    # Замок «одна цепочка на клиента» в БД. Проверка в памяти
+    # (_claude_chain_active) остаётся, но она теряется при рестарте и не
+    # спасает от двух запросов, пришедших одновременно: обе проверки видели
+    # пустой словарь, обе цепочки брали по коду — второй код сгорал впустую.
+    _claim_key = f"claude:{user_id}"
+    _claimed = False
+    try:
+        _claimed = await claim_activation(_claim_key, stale_minutes=20)
+    except Exception as _e_cl:
+        logging.warning(f"claude claim {user_id}: {_e_cl} — продолжаю без замка")
+        _claimed = True
+    if not _claimed:
+        logging.warning(f"Claude chain {ref}: активация для uid={user_id} уже идёт — второй запуск отменён")
+        _claude_job_results[ref] = {
+            "status": "done", "success": False, "pending": True,
+            "error": "Активация уже идёт — подписка появится в течение нескольких минут."}
+        return
     _report = []       # диагностика: что пробовали и почему упало
     _used_codes = []   # коды, пропущенные как «уже использованные» (для отчёта админу)
     _last_shot = None  # последний скриншот сайта активации (для отправки админу при сбое)
@@ -8998,6 +9052,10 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
         _claude_job_results[ref] = {"status": "done", "success": False,
             "error": "Внутренняя ошибка активации. Напиши Александру."}
     finally:
+        try:
+            await release_activation(_claim_key)
+        except Exception as _e_rel_cl:
+            logging.warning(f"release_activation {_claim_key}: {_e_rel_cl}")
         # Возвращаем в пул коды, под которые не было стока (они целы и валидны).
         for _c_oos in _oos_release:
             try:
@@ -9225,8 +9283,8 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 _uname = _u["full_name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             else:
                 _uname = "без ника"
-            if user_id not in _claude_double_warned:
-                _claude_double_warned.add(user_id)
+            if not await _dbl_warned_is("claude", user_id, _claude_double_warned):
+                await _dbl_warned_set("claude", user_id, _claude_double_warned)
                 logging.warning(f'Claude repeat activation: warned user={user_id} code={_recent["code"]}')
                 try:
                     await bot.send_message(
@@ -9269,7 +9327,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 _l_cl.append("\nЕсли это случайно — напиши Александру.")
                 return _resp({"error": "\n".join(_l_cl)})
             else:
-                _claude_double_warned.discard(user_id)
+                await _dbl_warned_clear("claude", user_id, _claude_double_warned)
                 logging.info(f"Claude forced re-activation user={user_id}")
                 try:
                     await bot.send_message(
