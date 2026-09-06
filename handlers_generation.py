@@ -85,6 +85,59 @@ async def _photo_bytes_from(message) -> bytes | None:
         return None
 
 
+def _re_clean_name(name: str) -> str:
+    """Имя модели без ведущего эмодзи (для кнопок)."""
+    import re as _re_n
+    return _re_n.sub(r'^[^\w\s]+\s*', '', str(name or "")).strip()
+
+
+def _photo_file_id(message) -> str | None:
+    """file_id картинки из сообщения (фото или файл-картинка). Без скачивания."""
+    if getattr(message, "photo", None):
+        return message.photo[-1].file_id
+    _doc = getattr(message, "document", None)
+    _mime = (getattr(_doc, "mime_type", "") or "") if _doc else ""
+    _name = (getattr(_doc, "file_name", "") or "").lower() if _doc else ""
+    if _doc and (_mime.startswith("image/") or _name.endswith((".jpg", ".jpeg", ".png", ".webp"))):
+        if (getattr(_doc, "file_size", 0) or 0) > 20 * 1024 * 1024:
+            return None
+        return _doc.file_id
+    return None
+
+
+async def _bytes_by_file_id(file_id: str) -> bytes | None:
+    """Скачивает файл Telegram по file_id."""
+    try:
+        _f = await bot.get_file(file_id)
+        _buf = await bot.download_file(_f.file_path)
+        return _buf.read() if hasattr(_buf, "read") else _buf
+    except Exception as _e_fid:
+        logging.error(f"_bytes_by_file_id {str(file_id)[:20]}: {_e_fid}")
+        return None
+
+
+async def _state_photo_bytes(data: dict, key_bytes: str, key_fid: str) -> bytes | None:
+    """Байты картинки из состояния: сначала по file_id, потом (для старых
+    сессий) из сохранённых байтов.
+
+    Раньше в FSM клались сами байты — список из миллионов int'ов: это ×8 памяти
+    на каждого клиента и невозможность вынести состояние в БД. Теперь храним
+    только file_id, а файл берём у Telegram в момент генерации.
+    """
+    _fid = data.get(key_fid)
+    if _fid:
+        _b = await _bytes_by_file_id(_fid)
+        if _b:
+            return _b
+    _raw = data.get(key_bytes)
+    if _raw:
+        try:
+            return bytes(_raw)
+        except Exception:
+            return None
+    return None
+
+
 async def _model_or_none(cb, models: dict, key: str):
     """Возвращает модель, если она существует И не выключена админом.
 
@@ -297,13 +350,10 @@ async def img_prompt_photo(message: Message, state: FSMContext):
     """Клиент прислал ФОТО в текстовой генерации — значит хочет работу ПО ФОТО
     (вставить объект, сменить фон/стиль). Это режим редактирования (Nano Banana/Gemini).
     Плавно переводим туда с уже подставленным фото."""
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    fb = await bot.download_file(file.file_path)
-    img_data = fb.read()
+    _fid = _photo_file_id(message)
     await state.clear()
     _mk = "edit_gemini" if "edit_gemini" in EDIT_MODELS else next(iter(EDIT_MODELS))
-    await state.update_data(photo_bytes=list(img_data), edit_model_key=_mk)
+    await state.update_data(photo_file_id=_fid, edit_model_key=_mk)
     await state.set_state(EditState.waiting_prompt)
     await message.answer(
         "📷 <b>Вижу фото!</b>\n\n"
@@ -917,26 +967,25 @@ async def vid_aspect_text(message: Message):
 async def vid_prompt_photo(message: Message, state: FSMContext):
     """Клиент прислал фото в текстовом видео-флоу — он хочет видео ИЗ фото.
     Кнопка «Видео» = текст→видео; для фото→видео нужна анимация. Плавно переводим туда."""
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    fb = await bot.download_file(file.file_path)
-    await state.update_data(
-        first_photo=list(fb.read()),
-        anim_model_key="anim_veo",
-        anim_mode="one",
-    )
-    await state.set_state(AnimState.waiting_aspect)
+    # Раньше модель жёстко ставилась на anim_veo (249 кр) — самую дорогую, без
+    # выбора и без проверки, включена ли она. Теперь просто уводим в раздел
+    # анимации: там клиент видит все модели с ценами и свой баланс.
+    await state.update_data(first_photo_id=_photo_file_id(message), first_photo=None,
+                            anim_mode="one")
+    await state.set_state(AnimState.waiting_first_photo)
+    _active_anim = {k: v for k, v in ANIM_MODELS.items() if k not in DISABLED_MODELS}
+    _rows = []
+    for _k, _m in _active_anim.items():
+        _rows.append([InlineKeyboardButton(
+            text=f"{_re_clean_name(_m['name'])} - {_m['credits']} кр",
+            callback_data=f"anim_model:{_k}")])
+    _rows.append([_eib("Главное меню", "back_main")])
     await message.answer(
         "📷 <b>Вижу фото!</b>\n\n"
         "Кнопка «🎬 Видео» делает ролик по <b>текстовому описанию</b> (без фото).\n"
         "А из твоего фото я сделаю <b>анимацию</b> — видео прямо из картинки 👇\n\n"
-        "Выбери формат видео:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
-            [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
-            [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
-            [_eib("Главное меню", "back_main")],
-        ]),
+        "Выбери модель:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=_rows),
         parse_mode="HTML"
     )
 
@@ -1170,10 +1219,36 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         # Семафор: не более 5 Veo генераций одновременно (клиенту не видно)
         # Для fal.ai - без семафора, параллельность там управляется самой платформой
         if api_type == "veo":
+            # Семафор ограничивает одновременные Veo-генерации. Раньше клиент в
+            # очереди видел «Генерирую…» и растущий прогресс-бар, хотя запрос
+            # ещё даже не ушёл. Сообщаем честно, если ждать придётся.
+            if _veo_semaphore.locked():
+                try:
+                    await bot.edit_message_text(
+                        chat_id=cb.message.chat.id, message_id=status_msg.message_id,
+                        text=("⏳ <b>Очередь на Veo</b>\n\n"
+                              "Сейчас идут другие генерации — твоя стартует через минуту-другую. "
+                              "Ничего делать не нужно, пришлю результат сюда."),
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+
+            async def _veo_retry_note(attempt, delay, err):
+                try:
+                    await bot.edit_message_text(
+                        chat_id=cb.message.chat.id, message_id=status_msg.message_id,
+                        text=(f"⚙️ <b>Повторная попытка {attempt}/2</b>\n\n"
+                              f"{model_title_n(m['name'])}\n"
+                              f"Провайдер ответил ошибкой, пробую снова через {int(delay)} сек."),
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+
             async with _veo_semaphore:
                 vid_bytes = await _with_retry(
                     lambda: api_generate_video(prompt, m["model_id"], aspect, api_type, duration_sec),
-                    max_attempts=2, base_delay=5.0, op_name=f"Veo {key}"
+                    max_attempts=2, base_delay=5.0, op_name=f"Veo {key}",
+                    on_retry=_veo_retry_note
                 )
         else:
             # Для fal.ai - без retry, т.к. одна попытка уже до 25 минут
@@ -1954,14 +2029,14 @@ async def edit_model_select(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(EditState.waiting_photo)
 async def edit_get_photo(message: Message, state: FSMContext):
-    img_data = await _photo_bytes_from(message)
-    if not img_data:
+    _fid = _photo_file_id(message)
+    if not _fid:
         await message.answer(
             "📷 Отправь <b>фотографию</b> — из галереи или файлом (JPG/PNG до 20 МБ).",
             parse_mode="HTML")
         return
 
-    await state.update_data(photo_bytes=list(img_data))
+    await state.update_data(photo_file_id=_fid, photo_bytes=None)
     await state.set_state(EditState.waiting_prompt)
     await message.answer(
         f"✅ Фото получено!\n\n"
@@ -2065,9 +2140,10 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
     model_key = cb.data.split(":")[1]
     data = await state.get_data()
     prompt = data.get("edit_prompt", "")
-    photo_bytes = bytes(data.get("photo_bytes", b""))
+    # Фото качаем по file_id прямо сейчас (в состоянии лежит только идентификатор)
+    photo_bytes = await _state_photo_bytes(data, "photo_bytes", "photo_file_id")
     if not prompt or not photo_bytes:
-        await cb.answer("Данные потеряны. Начни заново.", show_alert=True)
+        await cb.answer("Данные потеряны. Пришли фото заново.", show_alert=True)
         await state.clear()
         return
     m = EDIT_MODELS.get(model_key, EDIT_MODELS["edit_gemini"])
@@ -2387,6 +2463,30 @@ async def anim_model_select(cb: CallbackQuery, state: FSMContext):
 
     await state.update_data(anim_model_key=model_key)
 
+    # Фото уже прислано (клиент попал сюда из «Видео», отправив картинку) —
+    # не просим его заново, сразу переходим к выбору формата.
+    _d_am = await state.get_data()
+    if _d_am.get("first_photo_id") or _d_am.get("first_photo"):
+        await state.update_data(anim_mode=_d_am.get("anim_mode") or "one")
+        await state.set_state(AnimState.waiting_aspect)
+        _txt_am = (
+            f"<b>{model_title_n(m['name'])}</b>\n"
+            f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
+            f"✅ Фото уже загружено. Выбери формат видео:"
+        )
+        _kb_am = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
+            [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
+            [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
+            [_eib("Главное меню", "back_main")],
+        ])
+        try:
+            await cb.message.edit_text(_txt_am, reply_markup=_kb_am, parse_mode="HTML")
+        except Exception:
+            await cb.message.answer(_txt_am, reply_markup=_kb_am, parse_mode="HTML")
+        await cb.answer()
+        return
+
     # Veo поддерживает два кадра, остальные - только один
     if model_key == "anim_veo":
         text = (
@@ -2431,13 +2531,11 @@ async def anim_mode(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AnimState.waiting_first_photo)
 async def anim_first_photo(message: Message, state: FSMContext):
-    if not message.photo:
-        await message.answer("📷 Отправь фото (не файл)")
+    _fid = _photo_file_id(message)
+    if not _fid:
+        await message.answer("📷 Отправь изображение — фото или файлом (JPG/PNG до 20 МБ).")
         return
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    fb = await bot.download_file(file.file_path)
-    await state.update_data(first_photo=list(fb.read()))
+    await state.update_data(first_photo_id=_fid, first_photo=None)
 
     data = await state.get_data()
     mode = data.get("anim_mode", "one")
@@ -2463,13 +2561,11 @@ async def anim_first_photo(message: Message, state: FSMContext):
 
 @dp.message(AnimState.waiting_last_photo)
 async def anim_last_photo(message: Message, state: FSMContext):
-    if not message.photo:
-        await message.answer("📷 Отправь фото (не файл)")
+    _fid = _photo_file_id(message)
+    if not _fid:
+        await message.answer("📷 Отправь изображение — фото или файлом (JPG/PNG до 20 МБ).")
         return
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
-    lb = await bot.download_file(file.file_path)
-    await state.update_data(last_photo=list(lb.read()))
+    await state.update_data(last_photo_id=_fid, last_photo=None)
     await state.set_state(AnimState.waiting_aspect)
     await message.answer(
         "✅ Оба кадра получены! Выбери формат видео:",
@@ -2587,8 +2683,8 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
     model_key = cb.data.split(":")[1]
     data = await state.get_data()
     prompt = data.get("anim_prompt_text", "")
-    first_bytes = bytes(data.get("first_photo", []))
-    last_bytes = bytes(data["last_photo"]) if data.get("last_photo") else None
+    first_bytes = await _state_photo_bytes(data, "first_photo", "first_photo_id")
+    last_bytes = await _state_photo_bytes(data, "last_photo", "last_photo_id")
     aspect = data.get("aspect_ratio", "16:9")
     mode = data.get("anim_mode", "one")
     m = ANIM_MODELS.get(model_key, ANIM_MODELS["anim_veo"])
@@ -2683,12 +2779,20 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             }
+            # Payload как в text-to-video: duration строкой, у Wan — num_frames.
+            # Раньше здесь уходило число и «duration» для Wan — часть моделей
+            # отвечала 422, а клиент видел «промт заблокирован фильтром».
+            _dur_a = int(m.get("duration", 5) or 5)
             fal_payload = {
                 "image_url": image_data_uri,
                 "prompt": prompt,
-                "duration": m["duration"],
                 "aspect_ratio": aspect,
             }
+            if "wan" in (m.get("model_id") or ""):
+                fal_payload["num_frames"] = _dur_a * 16
+                fal_payload["resolution"] = "720p"
+            else:
+                fal_payload["duration"] = str(_dur_a)
 
             async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
                 # Submit
@@ -2698,10 +2802,24 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                     json=fal_payload,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as r:
+                    if r.status == 422:
+                        _e422 = (await r.text())[:400]
+                        _l422 = _e422.lower()
+                        if any(w in _l422 for w in ("safety", "moderation", "policy",
+                                                    "nsfw", "violat", "flagged")):
+                            raise Exception(
+                                "🛡 Контент заблокирован моделью.\n"
+                                "Попробуй другое фото или переформулируй промт.")
+                        logging.error(f"fal anim 422 model={m['model_id']} payload_keys={list(fal_payload)} resp={_e422}")
+                        raise Exception(
+                            "⚠️ Ошибка параметров модели. Попробуй другой формат "
+                            "или другую модель анимации.")
+                    if r.status in (401, 403):
+                        raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
                     submit = await r.json()
                     request_id = submit.get("request_id")
                     if not request_id:
-                        raise Exception(f"fal submit failed: {submit}")
+                        raise Exception(f"fal submit failed: {str(submit)[:200]}")
 
                 # Poll
                 poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
