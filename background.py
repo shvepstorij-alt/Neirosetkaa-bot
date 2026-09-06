@@ -465,6 +465,14 @@ async def db_cleanup_loop():
                 r3 = await conn.execute(
                     "DELETE FROM events WHERE created_at < NOW() - INTERVAL '60 days'"
                 )
+                # Брошенные состояния диалогов: клиент начал сценарий и ушёл.
+                # Без чистки таблица растёт бесконечно.
+                try:
+                    r_fsm = await conn.execute(
+                        "DELETE FROM fsm_storage WHERE updated_at < NOW() - INTERVAL '3 days'")
+                except Exception as _e_fsm:
+                    r_fsm = f"skip ({_e_fsm})"
+                logging.info(f"🧹 FSM-состояния старше 3 дней: {r_fsm}")
                 # Давно истёкшие подписки убираем из активных: иначе список
                 # «Мои подписки» бесконечно растёт, а профиль делает по паре
                 # запросов к БД на каждую строку. Месяц после окончания держим

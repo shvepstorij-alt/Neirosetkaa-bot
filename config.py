@@ -180,7 +180,34 @@ from aiogram.client.session.aiohttp import AiohttpSession
 _bot_session = AiohttpSession(timeout=300)  # 5 минут на запрос к Telegram API
 
 bot           = Bot(token=BOT_TOKEN, session=_bot_session)
-dp            = Dispatcher(storage=MemoryStorage())
+
+
+def _make_storage():
+    """Хранилище FSM: Postgres (переживает деплой) с откатом в память.
+
+    Переключатель на случай проблем: переменная FSM_STORAGE=memory в Railway
+    возвращает прежнее поведение без правки кода. Дополнительно проверяем,
+    что сигнатура BaseStorage в установленной версии aiogram — современная
+    (без параметра bot): при несовпадении не рискуем и берём память.
+    """
+    if os.getenv("FSM_STORAGE", "db").strip().lower() in ("memory", "mem", "off", "0"):
+        logging.info("FSM: используется MemoryStorage (FSM_STORAGE=memory)")
+        return MemoryStorage()
+    try:
+        import inspect
+        from aiogram.fsm.storage.base import BaseStorage as _BS
+        if "bot" in inspect.signature(_BS.set_state).parameters:
+            logging.warning("FSM: несовместимая сигнатура aiogram — остаюсь на MemoryStorage")
+            return MemoryStorage()
+        from fsm_storage import PostgresStorage
+        logging.info("✅ FSM: состояния хранятся в PostgreSQL (переживают деплой)")
+        return PostgresStorage()
+    except Exception as _e_fsm:
+        logging.error(f"FSM: не удалось включить Postgres-хранилище ({_e_fsm}) — работаю на памяти")
+        return MemoryStorage()
+
+
+dp            = Dispatcher(storage=_make_storage())
 claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 # ─── Лимиты и фильтрация промтов ──────────────────────────

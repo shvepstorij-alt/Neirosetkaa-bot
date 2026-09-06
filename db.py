@@ -226,6 +226,18 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        # Состояния диалогов (FSM). Раньше жили только в памяти процесса, и любой
+        # деплой выбрасывал клиентов из середины сценария («Сессия сброшена»).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS fsm_storage (
+                key        TEXT PRIMARY KEY,
+                state      TEXT,
+                data       JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fsm_updated ON fsm_storage(updated_at)")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS order_thread (
                 id         SERIAL PRIMARY KEY,
