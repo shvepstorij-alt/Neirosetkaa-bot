@@ -538,6 +538,7 @@ function doGenVideo(){
     if(d&&d.ok&&d.job){ _vidPoll(d.job,0,'video',restore); return; }
     if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
     else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
+    else if(d&&d.msg){ res.innerHTML='<div class="pm-err">'+d.msg+'</div>'; }
     else { res.innerHTML='<div class="pm-err">Не удалось запустить генерацию. Попробуй ещё раз.</div>'; }
     restore();
   }).catch(function(){ if(res) res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
@@ -678,6 +679,7 @@ function doGenEdit(){
       window._editBusy=false; renderGen(); return;
     } else if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
     else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
+    else if(d&&d.msg){ res.innerHTML='<div class="pm-err">'+d.msg+'</div>'; }
     else { res.innerHTML='<div class="pm-err">Не получилось изменить фото. Попробуй другой промт.</div>'; }
     restore();
   }).catch(function(){ var r2=document.getElementById('edit-result'); if(r2) r2.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
@@ -724,6 +726,7 @@ function doGenAnim(){
     if(d&&d.ok&&d.job){ _vidPoll(d.job,0,'anim',restore); return; }
     if(d&&d.error==='credits'){ res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>'; }
     else if(d&&String(d.error||'').indexOf('auth')===0){ res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>'; }
+    else if(d&&d.msg){ res.innerHTML='<div class="pm-err">'+d.msg+'</div>'; }
     else { res.innerHTML='<div class="pm-err">Не удалось запустить анимацию. Попробуй ещё раз.</div>'; }
     restore();
   }).catch(function(){ if(res) res.innerHTML='<div class="pm-err">Ошибка сети. Попробуй ещё раз.</div>'; restore(); });
@@ -750,6 +753,8 @@ function doGen(){
       res.innerHTML='<div class="pm-err">Не хватает кредитов (нужно '+(d.need||'')+', есть '+(d.have||0)+'). Пополни в «Каталоге».</div>';
     } else if(d&&String(d.error||'').indexOf('auth')===0){
       res.innerHTML='<div class="pm-err">Приложение открылось без данных Telegram. Закрой мини-приложение, напиши боту /start и открой Каталог заново.</div>';
+    } else if(d&&d.msg){
+      res.innerHTML='<div class="pm-err">'+d.msg+'</div>';
     } else {
       res.innerHTML='<div class="pm-err">Не получилось сгенерировать. Попробуй ещё раз или другую модель.</div>';
     }

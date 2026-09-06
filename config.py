@@ -308,9 +308,16 @@ def _check_hourly_limit(uid: int, history: dict, limit: int) -> tuple[bool, int]
 
 
 def _record_generation(uid: int, history: dict):
-    """Записать успешную генерацию."""
+    """Записать успешную генерацию.
+
+    Заодно подрезаем список до последнего часа: лимиты всё равно считаются за
+    час, а раньше отметки копились у активных клиентов бесконечно.
+    """
     import time as _t
-    history.setdefault(uid, []).append(_t.time())
+    _now = _t.time()
+    _h = [t for t in history.get(uid, []) if _now - t < 3600]
+    _h.append(_now)
+    history[uid] = _h
 
 
 import time as _time_module

@@ -777,14 +777,27 @@ async def coins_refund_loop():
 
 
 async def _claude_job_results_cleanup_loop():
-    """Каждый час удаляет завершённые записи из _claude_job_results."""
+    """Каждый час удаляет завершённые записи о задачах активации.
+
+    Perplexity добавлен позже Claude: его словарь чистился только рестартом
+    и рос по одной записи на каждый заказ.
+    """
     while True:
         await asyncio.sleep(3600)
         done_keys = [k for k, v in list(_claude_job_results.items()) if v.get("status") == "done"]
         for k in done_keys:
             del _claude_job_results[k]
-        if done_keys:
-            logging.info(f"🧹 claude_job_results cleanup: {len(done_keys)} removed")
+        _pp_done = []
+        try:
+            from common import _perplexity_job_results as _ppj
+            _pp_done = [k for k, v in list(_ppj.items())
+                        if isinstance(v, dict) and v.get("status") == "done"]
+            for k in _pp_done:
+                _ppj.pop(k, None)
+        except Exception as _e_pp:
+            logging.warning(f"perplexity_job_results cleanup: {_e_pp}")
+        if done_keys or _pp_done:
+            logging.info(f"🧹 job_results cleanup: claude={len(done_keys)} perplexity={len(_pp_done)}")
 
 
 async def nsgifts_balance_alert_loop():

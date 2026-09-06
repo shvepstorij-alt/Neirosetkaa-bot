@@ -99,6 +99,40 @@ def release_click(key: str):
     _gen_click_locks.pop(key, None)
 
 
+async def _webgen_guard(uid: int, kind: str, ttl: float = 45.0):
+    """Защита платных генераций ИЗ МИНИ-АППА: двойной тап и лимит параллельных.
+
+    В боте у каждой генерации есть замок клика и учёт активных генераций,
+    а в мини-аппе их не было вообще: двойной тап по кнопке в вебвью (обычное
+    дело на телефоне) списывал кредиты ДВАЖДЫ и запускал две генерации.
+
+    Возвращает (ok, err, click_key). err: 'busy' — дубль клика,
+    'too_many' — уже идёт максимум параллельных генераций.
+    """
+    _ck = f"webgen:{kind}:{uid}"
+    if not try_acquire_click(_ck, ttl=ttl):
+        return False, "busy", _ck
+    try:
+        if not await mark_generation_active(uid, kind):
+            release_click(_ck)
+            return False, "too_many", _ck
+    except Exception as _e_g:
+        logging.warning(f"_webgen_guard mark uid={uid}: {_e_g}")
+    return True, "", _ck
+
+
+async def _webgen_done(uid: int, click_key: str, keep_lock: bool = False):
+    """Снимает отметки после генерации из мини-аппа.
+    keep_lock=True — для фоновых задач: замок клика оставляем дотикать по TTL,
+    чтобы повторный POST в те же секунды не создал вторую задачу."""
+    if not keep_lock:
+        release_click(click_key)
+    try:
+        await unmark_generation_active(uid)
+    except Exception as _e_d:
+        logging.warning(f"_webgen_done unmark uid={uid}: {_e_d}")
+
+
 async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
     """Проверки перед генерацией. kind: 'photo' | 'video' | 'anim'. Возвращает True если можно."""
     # 0) Юзер не заблокирован
@@ -380,8 +414,12 @@ async def fk_create_order(amount: float, order_id: str, user_id: int,
 
     url = "https://api.fk.life/v1/orders/create"
     headers = {"Content-Type": "application/json"}
-    async with aiohttp.ClientSession() as s:
-        async with s.post(url, json=params, headers=headers) as r:
+    # Таймаут обязателен: это платёжный путь. Без него зависший сокет FreeKassa
+    # держал бы клиента на «Создаю ссылку на оплату…» бесконечно, вместе с
+    # замком клика — кнопка оплаты не оживала бы до перезапуска бота.
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
+        async with s.post(url, json=params, headers=headers,
+                          timeout=aiohttp.ClientTimeout(total=25)) as r:
             data = await r.json()
             logging.info(f"FK API create order response: {data}")
             if data.get("type") == "success":
@@ -480,6 +518,9 @@ async def notify_admin_error(context: str, e: Exception, prompt: str = ""):
     # Троттлинг: одинаковый контекст не чаще раза в 10 мин (клиент, тыкающий подряд, не спамит)
     import time as _t_ae
     _now_ae = _t_ae.time()
+    if len(_admin_err_at) > 400:   # ключ = текст контекста ошибки (может содержать uid)
+        for _k_ae in [k for k, v in list(_admin_err_at.items()) if _now_ae - v > 3600]:
+            _admin_err_at.pop(_k_ae, None)
     if _now_ae - _admin_err_at.get(context, 0.0) < 600:
         return
     _admin_err_at[context] = _now_ae
@@ -6070,6 +6111,8 @@ def _status_probe_fail(ip: str):
     _status_404.setdefault(ip, []).append(_t_sp.time())
     if (len(_status_404[ip]) >= STATUS_404_MAX_PER_10MIN
             and ip not in _status_404_alerted):
+        if len(_status_404_alerted) > 500:
+            _status_404_alerted.clear()   # предупреждение разовое, копить IP незачем
         _status_404_alerted.add(ip)
         logging.warning(f"🚫 Похоже на перебор id активации с IP {ip} - блокирую на 10 мин")
 
@@ -9652,16 +9695,28 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
-        if not await _deduct(int(uid), _cost):
-            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "photo")
+        if not _g_ok:
+            return web.json_response({"ok": False, "error": _g_err, "msg": (
+                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
+                else "Слишком много генераций одновременно. Дождись текущих.")})
+        try:
+            if not await _deduct(int(uid), _cost):
+                await _webgen_done(int(uid), _g_ck)
+                return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        except Exception:
+            await _webgen_done(int(uid), _g_ck)
+            raise
         try:
             from generation_api import api_generate_image as _gen
             _img = await _gen(_prompt, m["model_id"], _aspect, m.get("api", "imagen"),
                               quality=m.get("quality", "medium"))
         except Exception as _ge:
             await _add_cr(int(uid), _cost)
+            await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_image gen: {_ge}")
             return web.json_response({"ok": False, "error": "gen_failed"})
+        await _webgen_done(int(uid), _g_ck)
         if not _img:
             await _add_cr(int(uid), _cost)
             return web.json_response({"ok": False, "error": "empty"})
@@ -9750,6 +9805,13 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
         except Exception:
             pass
         _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "credits": _cr})
+    finally:
+        # Снимаем «идёт генерация»: иначе счётчик параллельных генераций
+        # оставался занятым до автоочистки через 30 минут и блокировал клиента.
+        try:
+            await unmark_generation_active(int(uid))
+        except Exception as _e_um:
+            logging.warning(f"unmark after video job uid={uid}: {_e_um}")
 
 
 async def api_gen_video_handler(request: web.Request) -> web.Response:
@@ -9790,8 +9852,18 @@ async def api_gen_video_handler(request: web.Request) -> web.Response:
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
-        if not await _deduct(int(uid), _cost):
-            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "video")
+        if not _g_ok:
+            return web.json_response({"ok": False, "error": _g_err, "msg": (
+                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
+                else "Слишком много генераций одновременно. Дождись текущих.")})
+        try:
+            if not await _deduct(int(uid), _cost):
+                await _webgen_done(int(uid), _g_ck)
+                return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        except Exception:
+            await _webgen_done(int(uid), _g_ck)
+            raise
         import time as _t, secrets as _sec
         _job = _sec.token_urlsafe(10)
         _genvid_gc()
@@ -9870,8 +9942,18 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
-        if not await _deduct(int(uid), _cost):
-            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "photo")
+        if not _g_ok:
+            return web.json_response({"ok": False, "error": _g_err, "msg": (
+                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
+                else "Слишком много генераций одновременно. Дождись текущих.")})
+        try:
+            if not await _deduct(int(uid), _cost):
+                await _webgen_done(int(uid), _g_ck)
+                return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        except Exception:
+            await _webgen_done(int(uid), _g_ck)
+            raise
         try:
             if (m.get("api") or "gemini") == "fal" and m.get("model_id"):
                 from generation_api import api_fal_edit_image as _fedit
@@ -9881,8 +9963,10 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
                 _out = await _edit(_img_in, _prompt)
         except Exception as _ge:
             await _add_cr(int(uid), _cost)
+            await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_edit gen: {_ge}")
             return web.json_response({"ok": False, "error": "gen_failed"})
+        await _webgen_done(int(uid), _g_ck)
         if not _out:
             await _add_cr(int(uid), _cost)
             return web.json_response({"ok": False, "error": "empty"})
@@ -9964,6 +10048,13 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
         except Exception:
             pass
         _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "credits": _cr})
+    finally:
+        # Снимаем «идёт генерация»: иначе счётчик параллельных генераций
+        # оставался занятым до автоочистки через 30 минут и блокировал клиента.
+        try:
+            await unmark_generation_active(int(uid))
+        except Exception as _e_um:
+            logging.warning(f"unmark after anim job uid={uid}: {_e_um}")
 
 
 async def api_gen_anim_handler(request: web.Request) -> web.Response:
@@ -9997,8 +10088,18 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
-        if not await _deduct(int(uid), _cost):
-            return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "anim")
+        if not _g_ok:
+            return web.json_response({"ok": False, "error": _g_err, "msg": (
+                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
+                else "Слишком много генераций одновременно. Дождись текущих.")})
+        try:
+            if not await _deduct(int(uid), _cost):
+                await _webgen_done(int(uid), _g_ck)
+                return web.json_response({"ok": False, "error": "credits", "have": _cr})
+        except Exception:
+            await _webgen_done(int(uid), _g_ck)
+            raise
         import time as _t, secrets as _sec
         _job = _sec.token_urlsafe(10)
         _genvid_gc()
