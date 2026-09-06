@@ -181,6 +181,50 @@ async def _maintenance_guard(handler, event, data):
     return await handler(event, data)
 
 
+# ── Предохранитель: админские действия — только админу ───────────────────────
+# В коде 135 админских кнопок и 12 команд, и у 134 из них проверка доступа
+# написана руками внутри хендлера. Достаточно один раз забыть её в новой кнопке
+# — и чужой человек, подобрав callback_data, попадёт в админку. Эта мидлварь
+# закрывает вопрос на входе: всё, что начинается с админского префикса,
+# для не-админа не доходит до хендлера вообще. Существующие проверки остаются
+# на месте (двойная защита), поведение для админа не меняется.
+# Правило на будущее: любая новая админская кнопка должна начинаться с "adm_"
+# — тогда она автоматически попадёт под защиту, даже если проверку внутри
+# хендлера забыли написать.
+_ADMIN_CB_PREFIXES = ("adm_", "adm:", "admp_", "bc_")
+_ADMIN_CMDS = (
+    "/admin", "/audit", "/audit_all", "/setcredits", "/test_fk",
+    "/fix_all_balances", "/release_codes", "/subs_restore", "/falcheck",
+    "/recover", "/refresh_desc", "/apply_desc",
+)
+
+
+@dp.update.outer_middleware()
+async def _admin_guard(handler, event, data):
+    user = data.get("event_from_user")
+    if user is None:
+        _obj = getattr(event, "message", None) or getattr(event, "callback_query", None)
+        user = getattr(_obj, "from_user", None)
+    if user is not None and user.id != ADMIN_ID:
+        cbq = getattr(event, "callback_query", None)
+        msg = getattr(event, "message", None)
+        _cd = (getattr(cbq, "data", "") or "") if cbq is not None else ""
+        if _cd.startswith(_ADMIN_CB_PREFIXES):
+            logging.warning(f"⛔ Чужой админ-callback uid={user.id} data={_cd[:60]}")
+            try:
+                await cbq.answer("❌ Нет доступа", show_alert=True)
+            except Exception:
+                pass
+            return
+        _txt = ((getattr(msg, "text", "") or "").strip().lower()) if msg is not None else ""
+        if _txt.startswith("/"):
+            _cmd = _txt.split()[0].split("@")[0]
+            if _cmd in _ADMIN_CMDS:
+                logging.warning(f"⛔ Чужая админ-команда uid={user.id} cmd={_cmd}")
+                return
+    return await handler(event, data)
+
+
 # ── Глобальный перехват необработанных ошибок ────────────────────────────────
 # Раньше любое непойманное исключение в хендлере означало ПОЛНУЮ тишину для
 # клиента (ответа нет, кнопка «не работает») и отсутствие алерта для админа.

@@ -3193,7 +3193,19 @@ async def mot_got_video(message: Message, state: FSMContext):
         )
         return
 
-    await state.update_data(video_file_id=file_id)
+    # Формат кадра берём из референс-видео: раньше результат ВСЕГДА был 16:9,
+    # и вертикальный референс (а это почти все видео с телефона) возвращался
+    # обрезанным по бокам — клиент платил за видео не того формата.
+    _vw = getattr(getattr(message, "video", None), "width", None) or 0
+    _vh = getattr(getattr(message, "video", None), "height", None) or 0
+    if message.video_note:
+        _aspect = "1:1"
+    elif _vw and _vh:
+        _ratio = _vw / _vh
+        _aspect = "16:9" if _ratio > 1.2 else ("9:16" if _ratio < 0.83 else "1:1")
+    else:
+        _aspect = "16:9"  # документом прислали — размеров не знаем
+    await state.update_data(video_file_id=file_id, aspect=_aspect)
     await state.set_state(MotionState.waiting_duration)
 
     # Показываем выбор длительности с ценами
@@ -3291,17 +3303,23 @@ async def _mot_show_confirm(msg_obj, state: FSMContext, edit: bool):
     duration = data.get("duration", 8)
     price = data.get("price", MOTION_PRICES.get(duration, 349))
     prompt = data.get("prompt", "")
+    aspect = data.get("aspect", "16:9")
+    _asp_label = {"16:9": "16:9 (горизонтальное)",
+                  "9:16": "9:16 (вертикальное)",
+                  "1:1": "1:1 (квадрат)"}.get(aspect, aspect)
     await state.set_state(MotionState.waiting_confirm)
     text = (
         f"📋 <b>Проверь заказ</b>\n\n"
         f"🎭 <b>Motion Control (Kling 3.0)</b>\n"
         f"⏱ Длительность: <b>{duration} сек</b> · 720p\n"
+        f"🖼 Формат: <b>{_asp_label}</b>\n"
         f"💳 Спишется: <b>{price} кр</b>\n\n"
         + (f"📝 <i>{_esc(prompt[:150])}</i>\n\n" if prompt else "📝 <i>Без промта — фон с фото</i>\n\n")
         + f"⏱ Генерация занимает 3–10 минут."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🚀 Запустить за {price} кр", callback_data="mot_go")],
+        [InlineKeyboardButton(text=f"🖼 Формат: {aspect} — сменить", callback_data="mot_aspect")],
         [InlineKeyboardButton(text="✍️ Изменить промт", callback_data="mot_edit_prompt")],
         [_eib("Главное меню", "back_main")],
     ])
@@ -3312,6 +3330,21 @@ async def _mot_show_confirm(msg_obj, state: FSMContext, edit: bool):
         except Exception:
             pass
     await msg_obj.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "mot_aspect", MotionState.waiting_confirm)
+async def mot_change_aspect(cb: CallbackQuery, state: FSMContext):
+    """Перебор форматов по кругу: 16:9 → 9:16 → 1:1 → 16:9."""
+    _order = ["16:9", "9:16", "1:1"]
+    data = await state.get_data()
+    _cur = data.get("aspect", "16:9")
+    try:
+        _nxt = _order[(_order.index(_cur) + 1) % len(_order)]
+    except ValueError:
+        _nxt = "16:9"
+    await state.update_data(aspect=_nxt)
+    await _mot_show_confirm(cb.message, state, edit=True)
+    await cb.answer(f"Формат: {_nxt}")
 
 
 @dp.callback_query(F.data == "mot_edit_prompt", MotionState.waiting_confirm)
@@ -3352,6 +3385,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
     duration = data.get("duration", 8)
     price = data.get("price", MOTION_PRICES.get(duration, 349))
     prompt = data.get("prompt", "")
+    aspect = data.get("aspect", "16:9")
 
     if not image_file_id or not video_file_id:
         await msg_obj.answer("⚠️ Не хватает данных. Начни заново через меню.")
@@ -3440,7 +3474,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
             video_url=video_url,
             duration=duration,
             prompt=prompt,
-            aspect_ratio="16:9",
+            aspect_ratio=aspect,
         )
         size_mb = len(vid_bytes) / 1024 / 1024
         logging.info(f"Motion Control ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB)")
