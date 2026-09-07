@@ -38,6 +38,7 @@ from db import (
     count_claude_free_by_provider,
     set_partner, list_partners, partner_stats, partner_recent_orders,
     list_partner_rates, set_partner_rate, add_partner_payout, partner_prices,
+    partner_clients,
 )
 from keyboards import (
     _all_models_map, _btn_emoji_id, _section_label, kb_admin_panel, kb_balance_menu, kb_block_actions, kb_stat_menu,
@@ -3807,7 +3808,14 @@ async def _partners_menu():
             f"  заработал {float(r.get('earned') or 0):.0f} ₽ · "
             f"выплачено {float(r.get('paid') or 0):.0f} ₽ · "
             f"<b>к выплате {_bal:.0f} ₽</b>")
-    kb_rows = [[InlineKeyboardButton(text="➕ Добавить партнёра", callback_data="adm_p_add")]]
+    try:
+        _fee = float(await get_setting("fk_fee_pct", "0") or 0)
+    except Exception:
+        _fee = 0.0
+    lines.append(f"\n🏦 Комиссия FreeKassa: <b>{_fee:.0f}%</b> "
+                 f"<i>(только для отчётов, доли партнёров не меняет)</i>")
+    kb_rows = [[InlineKeyboardButton(text="➕ Добавить партнёра", callback_data="adm_p_add")],
+               [InlineKeyboardButton(text="🏦 Комиссия FreeKassa", callback_data="adm_p_fee")]]
     for r in rows:
         _nm = ("@" + r["username"]) if r.get("username") else str(r["user_id"])
         kb_rows.append([InlineKeyboardButton(
@@ -3827,6 +3835,37 @@ async def adm_partners_menu(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_p_fee")
+async def adm_partner_fee_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    await state.set_state(AdminState.waiting_partner_fee)
+    try:
+        _cur = float(await get_setting("fk_fee_pct", "0") or 0)
+    except Exception:
+        _cur = 0.0
+    await cb.message.answer(
+        f"Введи <b>комиссию FreeKassa в процентах</b> (сейчас {_cur:.0f}%).\n\n"
+        f"Она нужна только для отчётов: в разделе клиентов будет видно, "
+        f"сколько ушло комиссии и сколько осталось чистыми. "
+        f"На доли партнёров не влияет.",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_partner_fee, F.text)
+async def adm_partner_fee_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    _v = _pnum((message.text or "").strip(), -1)
+    if not (0 <= _v <= 30):
+        await message.answer("❌ Введи число от 0 до 30:")
+        return
+    await set_setting("fk_fee_pct", str(_v))
+    await state.clear()
+    await message.answer(f"✅ Комиссия FreeKassa: <b>{_v:.0f}%</b>", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "adm_p_add")
@@ -3909,6 +3948,7 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
                          f"оплачено {float(o['paid_amount'] or 0):.0f} ₽, "
                          f"партнёру {float(o['partner_sum'] or 0):.0f} ₽")
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Приведённые клиенты", callback_data=f"adm_p_cl:{pid}")],
         [InlineKeyboardButton(text="📊 Ставки по сервисам", callback_data=f"adm_p_svcs:{pid}")],
         [InlineKeyboardButton(text="💸 Отметить выплату", callback_data=f"adm_p_pay:{pid}")],
         [InlineKeyboardButton(text="🚫 Убрать из партнёров", callback_data=f"adm_p_off:{pid}")],
@@ -3918,6 +3958,53 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML")
     except Exception:
         await cb.message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_p_cl:"))
+async def adm_partner_clients(cb: CallbackQuery, state: FSMContext):
+    """Кто пришёл по ссылке партнёра: ник, дата, покупки."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    await state.clear()
+    pid = int(cb.data.split(":")[1])
+    rows = await partner_clients(pid, 60)
+    try:
+        _fee = float(await get_setting("fk_fee_pct", "0") or 0)
+    except Exception:
+        _fee = 0.0
+    _t_paid = sum(float(c.get("paid") or 0) for c in rows)
+    _t_part = sum(float(c.get("partner_sum") or 0) for c in rows)
+    _comm = _t_paid * _fee / 100.0
+    lines = [f"👥 <b>Клиенты партнёра</b> <code>{pid}</code>\n"]
+    if not rows:
+        lines.append("По его ссылке пока никто не пришёл.")
+    else:
+        lines.append(f"Оплачено клиентами: <b>{_t_paid:.0f} ₽</b>")
+        if _fee > 0:
+            lines.append(f"Комиссия FreeKassa {_fee:.0f}%: <b>−{_comm:.0f} ₽</b>")
+        lines.append(f"Доля партнёра: <b>−{_t_part:.0f} ₽</b>")
+        lines.append(f"💰 Тебе чистыми: <b>{_t_paid - _comm - _t_part:.0f} ₽</b>\n")
+        for c in rows[:40]:
+            _nm = ("@" + c["username"]) if c.get("username") else (c.get("full_name") or f"id{c['user_id']}")
+            _nm = str(_nm).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            _since = c["created_at"].strftime("%d.%m.%Y") if c.get("created_at") else "—"
+            _o = int(c.get("orders") or 0)
+            if _o:
+                lines.append(f"• <b>{_nm}</b> · с {_since}\n"
+                             f"  покупок {_o} на {float(c.get('paid') or 0):.0f} ₽ · "
+                             f"партнёру {float(c.get('partner_sum') or 0):.0f} ₽")
+            else:
+                lines.append(f"• {_nm} · с {_since} — покупок нет")
+        if len(rows) > 40:
+            lines.append(f"\n<i>…и ещё {len(rows) - 40}. Полный список — в мини-аппе.</i>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ К партнёру", callback_data=f"adm_p_one:{pid}")]])
+    _txt = "\n".join(lines)[:4000]
+    try:
+        await cb.message.edit_text(_txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(_txt, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
 
 

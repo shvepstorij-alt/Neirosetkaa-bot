@@ -90,6 +90,7 @@ class AdminState(StatesGroup):
     waiting_partner_del      = State()   # убрать партнёра: ввод UID
     waiting_partner_rate     = State()   # ставки по сервису: "уступка% наценка%"
     waiting_partner_payout   = State()   # выплата: "сумма [комментарий]"
+    waiting_partner_fee      = State()   # комиссия FreeKassa, % (для отчётов)
 
     # Оплата по ссылке (link-pay)
     waiting_linkpay_clarify  = State()   # текст уточнения клиенту

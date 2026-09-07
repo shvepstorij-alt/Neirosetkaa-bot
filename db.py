@@ -2034,6 +2034,61 @@ async def partner_stats(partner_id: int) -> dict:
     return d
 
 
+async def partner_clients(partner_id: int, limit: int = 200) -> list[dict]:
+    """Клиенты партнёра: ник, дата прихода, число покупок и суммы.
+
+    Дату берём из users.created_at — клиент закрепляется за партнёром в момент
+    первого /start по его ссылке, так что это и есть дата прихода.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT c.user_id, c.username, c.full_name, c.created_at,
+                      COALESCE(e.cnt, 0)      AS orders,
+                      COALESCE(e.paid, 0)     AS paid,
+                      COALESCE(e.psum, 0)     AS partner_sum,
+                      e.last_at
+               FROM users c
+               LEFT JOIN (
+                   SELECT client_id,
+                          COUNT(*)            AS cnt,
+                          SUM(paid_amount)    AS paid,
+                          SUM(partner_sum)    AS psum,
+                          MAX(created_at)     AS last_at
+                   FROM partner_earnings WHERE partner_id = $1 GROUP BY client_id
+               ) e ON e.client_id = c.user_id
+               WHERE c.partner_id = $1
+               ORDER BY COALESCE(e.paid, 0) DESC, c.created_at DESC
+               LIMIT $2""",
+            partner_id, int(limit))
+    return [dict(r) for r in rows]
+
+
+async def partner_client_orders(partner_id: int, client_id: int, limit: int = 20) -> list[dict]:
+    """Покупки конкретного клиента партнёра."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT order_id, svc_key, plan_idx, paid_amount, partner_sum, created_at "
+            "FROM partner_earnings WHERE partner_id=$1 AND client_id=$2 "
+            "ORDER BY created_at DESC LIMIT $3",
+            partner_id, client_id, int(limit))
+    return [dict(r) for r in rows]
+
+
+async def get_partner_for_client(client_id: int) -> dict | None:
+    """Партнёр, приведший клиента — для пометки в сообщениях о заказе.
+    Возвращает {partner_id, username, full_name} либо None."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT p.user_id AS partner_id, p.username, p.full_name
+               FROM users c JOIN users p ON p.user_id = c.partner_id
+               WHERE c.user_id = $1 AND COALESCE(p.partner, FALSE) = TRUE""",
+            client_id)
+    return dict(row) if row else None
+
+
 async def partner_recent_orders(partner_id: int, limit: int = 10) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:

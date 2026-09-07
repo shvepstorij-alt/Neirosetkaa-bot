@@ -35,7 +35,7 @@ from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
 )
 from common import (
-    shop_price_for,
+    shop_price_for, partner_tag,
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
 )
 
@@ -699,7 +699,8 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             f"🧾 Номер заказа: <code>{_num_disp}</code>\n"
             f"🆔 Заказ: <code>{order_id}</code>\n\n"
             f"⏳ <b>Статус: ожидает оплаты</b>\n"
-            f"<i>Номер FreeKassa (intid) появится после оплаты.</i>",
+            f"<i>Номер FreeKassa (intid) появится после оплаты.</i>"
+            + await partner_tag(uid),
             parse_mode="HTML"
         )
         # Сохраняем message_id в БД для последующего редактирования

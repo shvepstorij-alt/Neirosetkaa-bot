@@ -47,7 +47,8 @@ from db import (
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
     get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
     partner_stats, partner_recent_orders, list_partners, set_partner,
-    set_partner_rate, add_partner_payout,
+    set_partner_rate, add_partner_payout, partner_clients, partner_client_orders,
+    get_partner_for_client,
     get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
     save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
     create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
@@ -105,6 +106,20 @@ def release_click(key: str):
 # ══════════════════════════════════════════════════════════════════════════
 #  ПАРТНЁРСКИЕ ЦЕНЫ: клиент партнёра видит каталог дороже
 # ══════════════════════════════════════════════════════════════════════════
+
+async def partner_tag(user_id: int) -> str:
+    """Строка «привёл — @ник» для сообщений о заказе. Пусто, если клиент обычный."""
+    try:
+        p = await get_partner_for_client(int(user_id))
+    except Exception:
+        return ""
+    if not p:
+        return ""
+    _nm = ("@" + p["username"]) if p.get("username") else (p.get("full_name") or "")
+    _nm = str(_nm).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (f"\n🏢 <i>Привёл: {_nm} (<code>{p['partner_id']}</code>)</i>"
+            if _nm else f"\n🏢 <i>Привёл партнёр <code>{p['partner_id']}</code></i>")
+
 
 async def partner_ctx(user_id: int, svc_key: str = "") -> dict | None:
     """Партнёрский контекст клиента: {partner_id, discount_pct, markup_pct}.
@@ -3805,7 +3820,8 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                 f"🆔 <code>{order_id}</code>\n\n"
                 + ("✅ <b>Статус: ОПЛАЧЕН монетками</b>\n" if _rest == 0 and _coins_used
                    else "⏳ <b>Статус: ожидает оплаты</b>\n")
-                + f"<i>Оформлено через мини-приложение</i>",
+                + f"<i>Оформлено через мини-приложение</i>"
+                + await partner_tag(uid),
                 parse_mode="HTML")
             # Сохраняем message_id, чтобы при оплате сообщение обновилось, а не дублировалось
             try:
@@ -4816,6 +4832,10 @@ async def api_admin_partners_handler(request: web.Request) -> web.Response:
             body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
+        try:
+            _fee = float(await get_setting("fk_fee_pct", "0") or 0)
+        except Exception:
+            _fee = 0.0
         _rows = await list_partners()
         _out = []
         for r in _rows:
@@ -4843,7 +4863,8 @@ async def api_admin_partners_handler(request: web.Request) -> web.Response:
             _un = (await bot.get_me()).username
         except Exception:
             _un = ""
-        return web.json_response({"ok": True, "partners": _out, "services": _svcs, "bot": _un})
+        return web.json_response({"ok": True, "partners": _out, "services": _svcs,
+                                  "bot": _un, "fee": _fee})
     except Exception as _e:
         logging.error(f"api_admin_partners: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
@@ -4939,6 +4960,71 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
                 return web.json_response({"ok": False, "error": "Уступка 0–100%, наценка 0–500%"})
             await set_partner_rate(_uid, _svc, _d, _m)
             return web.json_response({"ok": True})
+
+        if _act == "fee_set":
+            _f = _num(body.get("fee"), -1)
+            if not (0 <= _f <= 30):
+                return web.json_response({"ok": False, "error": "Комиссия 0–30%"})
+            await set_setting("fk_fee_pct", str(_f))
+            return web.json_response({"ok": True, "fee": _f})
+
+        if _act == "clients":
+            # Список приведённых клиентов + сводка с учётом комиссии FreeKassa
+            try:
+                _fee = float(await get_setting("fk_fee_pct", "0") or 0)
+            except Exception:
+                _fee = 0.0
+            _rows = await partner_clients(_uid)
+            _list = []
+            _t_paid = _t_psum = 0.0
+            for c in _rows:
+                _p = float(c.get("paid") or 0)
+                _ps = float(c.get("partner_sum") or 0)
+                _t_paid += _p
+                _t_psum += _ps
+                _dt = c.get("created_at")
+                _last = c.get("last_at")
+                _list.append({
+                    "id": int(c["user_id"]),
+                    "username": c.get("username") or "",
+                    "name": c.get("full_name") or "",
+                    "since": _dt.strftime("%d.%m.%Y") if _dt else "",
+                    "orders": int(c.get("orders") or 0),
+                    "paid": _p, "partner": _ps,
+                    "last": _last.strftime("%d.%m.%Y") if _last else "",
+                })
+            _comm = round(_t_paid * _fee / 100.0, 2)
+            return web.json_response({
+                "ok": True, "clients": _list, "fee": _fee,
+                "totalPaid": _t_paid, "totalPartner": _t_psum,
+                "commission": _comm,
+                # чистыми владельцу: оплачено − комиссия FK − доля партнёра
+                "net": round(_t_paid - _comm - _t_psum, 2),
+            })
+
+        if _act == "client_orders":
+            try:
+                _cid = int(str(body.get("client") or "0").strip())
+            except Exception:
+                _cid = 0
+            if _uid <= 0 or _cid <= 0:
+                return web.json_response({"ok": False})
+            _rows = await partner_client_orders(_uid, _cid)
+            _out = []
+            for o in _rows:
+                _s = SHOP_CATALOG.get(o.get("svc_key") or "", {}) or {}
+                _plans = _s.get("plans") or []
+                _pi = int(o.get("plan_idx") or 0)
+                _dt = o.get("created_at")
+                _out.append({
+                    "order": o.get("order_id") or "",
+                    "svc": _s.get("name", o.get("svc_key") or "?"),
+                    "plan": _plans[_pi].get("name", "") if _pi < len(_plans) else "",
+                    "paid": float(o.get("paid_amount") or 0),
+                    "partner": float(o.get("partner_sum") or 0),
+                    "date": _dt.strftime("%d.%m.%Y %H:%M") if _dt else "",
+                })
+            return web.json_response({"ok": True, "orders": _out})
 
         return web.json_response({"ok": False, "error": "unknown_action"})
     except Exception as _e:
@@ -7511,6 +7597,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             )
         if promo_code:
             admin_msg += f"\n\U0001f39f \u041f\u0440\u043e\u043c\u043e\u043a\u043e\u0434: <code>{promo_code}</code>"
+        # Клиент партнёра — помечаем и в сообщении об ОПЛАТЕ, не только при заказе
+        try:
+            admin_msg += await partner_tag(user_id)
+        except Exception:
+            pass
 
         # Тип заказа (ручной/вход/ссылка) — добавляем футер и кнопки → единое сообщение
         _lp_admin_kb = None
