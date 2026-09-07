@@ -153,7 +153,7 @@ function home(){
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["🔥","Аналитика Каталога","Аналитика Каталога"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
-   ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"]]],
+   ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"],["🏢","Партнёры (наценка)","Партнёры"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🖼","Фото/видео активации","Медиа активации"],["🍎","App Store","Настройка App Store"]]]
@@ -1275,6 +1275,121 @@ function refEdit(action,label,cur){var t=(window.prompt?window.prompt(label+':',
 function refRemove(id){api('/api/admin/referral-set',{action:'remove',uid:id}).then(function(d){toast(d.ok?'Убран':'Ошибка');if(d.ok)loadReferral();});}
 function refAdd(){return hdr("Добавить партнёра")+'<div class="wrap"><label class="fl">Telegram ID партнёра</label><input class="f" id="rp_uid" inputmode="numeric" placeholder="431818619"/><label class="fl">Его % (пусто = глобальный)</label><input class="f" id="rp_pct" inputmode="numeric" placeholder="15"/><button class="btn" onclick="doRefAdd()">Добавить</button></div>';}
 function doRefAdd(){var uid=fv('rp_uid');if(!uid){toast('Введи ID');return;}api('/api/admin/referral-set',{action:'add',uid:uid,pct:fv('rp_pct')}).then(function(d){toast(d.ok?'Добавлен ✓':'Ошибка');if(d.ok)back();});}
+
+/* ═══ Партнёры (B2B, наценка для их клиентов) ═══ */
+SCREENS["Партнёры"]=function(){
+  setTimeout(loadPartners,0);
+  return hdr("Партнёры","клиенты видят цены с наценкой")+'<div class="wrap"><div id="pbody"><div class="note">Загружаю…</div></div></div>';
+};
+function loadPartners(){
+  api('/api/admin/partners',{}).then(function(d){
+    var el=document.getElementById('pbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    window._pBot=d.bot||''; window._pSvcs=d.services||[];
+    var h='<div class="note">Клиент, пришедший по ссылке партнёра, видит каталог дороже. '
+        + 'Разница — доход партнёра. <b>Уступка</b> — насколько дешевле розницы товар уходит '
+        + 'партнёру (твоя доля). <b>Наценка</b> — насколько дороже видит цену его клиент.</div>';
+    if(!d.partners.length){ h+='<div class="note">Партнёров пока нет.</div>'; }
+    d.partners.forEach(function(p){
+      var nm=p.username?('@'+p.username):(p.name||('ID '+p.id));
+      h+='<div class="row" onclick="pOpen('+p.id+')"><span class="ic">🏢</span><div style="flex:1">'
+       + '<div class="lbl2">'+esc(nm)+'</div>'
+       + '<div class="sub">уступка '+p.discount+'% · наценка '+p.markup+'% · клиентов '+p.clients+'</div>'
+       + '<div class="sub">заработал '+nf(Math.round(p.earned))+' ₽ · к выплате <b>'+nf(Math.round(p.balance))+' ₽</b></div>'
+       + '</div><i class="ti ti-chevron-right"></i></div>';
+    });
+    h+='<button class="btn" onclick="leaf(pAdd)">➕ Добавить партнёра</button>';
+    el.innerHTML=h;
+  });
+}
+function pAdd(){
+  return hdr("Добавить партнёра")
+   +'<div class="wrap">'
+   +'<div class="note">Партнёр должен хотя бы раз написать боту <b>/start</b> — иначе его нет в базе.</div>'
+   +'<label class="fl">Telegram ID партнёра</label><input class="f" id="p_uid" inputmode="numeric" placeholder="431818619"/>'
+   +'<label class="fl">Уступка, % (твоя доля ниже розницы)</label><input class="f" id="p_disc" inputmode="decimal" placeholder="5"/>'
+   +'<label class="fl">Наценка, % (для его клиентов)</label><input class="f" id="p_mark" inputmode="decimal" placeholder="20"/>'
+   +'<button class="btn" onclick="doPAdd()">Добавить</button></div>';
+}
+function doPAdd(){
+  var uid=fv('p_uid'); if(!uid){toast('Введи ID');return;}
+  api('/api/admin/partner-set',{action:'add',uid:uid,discount:fv('p_disc'),markup:fv('p_mark')})
+  .then(function(d){ toast(d.ok?'Добавлен ✓':(d.error||'Ошибка')); if(d.ok) back(); });
+}
+function pOpen(id){
+  window._pCur=id;
+  leaf(function(){ setTimeout(function(){pLoadOne(id)},0);
+    return hdr("Партнёр")+'<div class="wrap"><div id="p1body"><div class="note">Загружаю…</div></div></div>'; });
+}
+function pLoadOne(id){
+  api('/api/admin/partners',{}).then(function(d){
+    var el=document.getElementById('p1body'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}
+    var p=null; (d.partners||[]).forEach(function(x){ if(x.id===id) p=x; });
+    if(!p){el.innerHTML='<div class="note">Партнёр не найден.</div>';return;}
+    var nm=p.username?('@'+p.username):(p.name||('ID '+p.id));
+    var link=d.bot?('https://t.me/'+d.bot+'?start=ref_'+p.id):'—';
+    var h='<div class="glabel">'+esc(nm)+'</div>'
+     +'<div class="mgrid">'
+     +'<div class="mcard"><div class="mlab">Уступка</div><div class="mval">'+p.discount+'%</div></div>'
+     +'<div class="mcard"><div class="mlab">Наценка</div><div class="mval">'+p.markup+'%</div></div>'
+     +'<div class="mcard"><div class="mlab">Клиентов</div><div class="mval">'+p.clients+'</div></div>'
+     +'<div class="mcard"><div class="mlab">К выплате</div><div class="mval">'+nf(Math.round(p.balance))+' ₽</div></div>'
+     +'</div>'
+     +'<div class="note">Заработал всего '+nf(Math.round(p.earned))+' ₽ · выплачено '+nf(Math.round(p.paid))+' ₽</div>'
+     +'<div class="note">Ссылка для его клиентов:<br><b>'+esc(link)+'</b></div>'
+     +'<button class="btn sec" onclick="pRates('+p.id+')">📊 Ставки по сервисам</button>'
+     +'<button class="btn sec" onclick="pEditBase('+p.id+','+p.discount+','+p.markup+')">✏️ Изменить общие %</button>'
+     +'<button class="btn sec" onclick="pPayout('+p.id+','+Math.round(p.balance)+')">💸 Отметить выплату</button>'
+     +'<button class="btn danger" onclick="pRemove('+p.id+')">Убрать из партнёров</button>';
+    el.innerHTML=h;
+  });
+}
+function pEditBase(id,d0,m0){
+  var d=(window.prompt?window.prompt('Уступка, % (твоя доля ниже розницы):',d0):null); if(d==null)return;
+  var m=(window.prompt?window.prompt('Наценка, % для его клиентов:',m0):null); if(m==null)return;
+  api('/api/admin/partner-set',{action:'add',uid:id,discount:d,markup:m}).then(function(r){
+    toast(r.ok?'Сохранено':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
+}
+function pPayout(id,bal){
+  var a=(window.prompt?window.prompt('Сумма выплаты, ₽ (к выплате '+bal+'):',bal):null); if(a==null||a==='')return;
+  var n=(window.prompt?window.prompt('Комментарий (необязательно):',''):'')||'';
+  api('/api/admin/partner-set',{action:'payout',uid:id,amount:a,note:n}).then(function(r){
+    toast(r.ok?'Записано ✓':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
+}
+function pRemove(id){
+  api('/api/admin/partner-set',{action:'remove',uid:id}).then(function(r){
+    toast(r.ok?'Убран':'Ошибка'); if(r.ok) back(); });
+}
+function pRates(id){
+  leaf(function(){ setTimeout(function(){pLoadRates(id)},0);
+    return hdr("Ставки по сервисам","свои проценты перекрывают общие")
+      +'<div class="wrap"><div id="prbody"><div class="note">Загружаю…</div></div></div>'; });
+}
+function pLoadRates(id){
+  api('/api/admin/partner-set',{action:'rates',uid:id}).then(function(d){
+    var el=document.getElementById('prbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}
+    var h='<div class="note">Общие: уступка '+d.discount+'% · наценка '+d.markup+'%. '
+        + 'Ниже — расчёт на первом тарифе каждого сервиса.</div>';
+    (d.rates||[]).forEach(function(r){
+      h+='<div class="row" onclick="pRateEdit('+id+',\''+r.key+'\','+r.discount+','+r.markup+')">'
+       + '<span class="ic">'+(r.own?'🎯':'▫️')+'</span><div style="flex:1">'
+       + '<div class="lbl2">'+esc(r.name)+' · '+r.discount+'/'+r.markup+'%'+(r.own?'':' <span class="sub">(общие)</span>')+'</div>'
+       + '<div class="sub">'+esc(r.plan)+': розница '+nf(r.base)+' → клиент <b>'+nf(r.client)+' ₽</b>, тебе '+nf(r.owner)+' ₽, партнёру '+nf(r.partner)+' ₽</div>'
+       + '</div><i class="ti ti-chevron-right"></i></div>';
+    });
+    el.innerHTML=h;
+  });
+}
+function pRateEdit(id,svc,d0,m0){
+  var d=(window.prompt?window.prompt('Уступка, % (пусто = вернуть общие):',d0):null); if(d==null)return;
+  if(d===''){ api('/api/admin/partner-set',{action:'rate_set',uid:id,svc:svc,reset:1}).then(function(r){
+    toast(r.ok?'Вернул общие':'Ошибка'); if(r.ok) pLoadRates(id); }); return; }
+  var m=(window.prompt?window.prompt('Наценка, %:',m0):null); if(m==null)return;
+  api('/api/admin/partner-set',{action:'rate_set',uid:id,svc:svc,discount:d,markup:m}).then(function(r){
+    toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) pLoadRates(id); });
+}
 
 /* Оплата по ссылке */
 SCREENS["Оплата по ссылке"]=function(){

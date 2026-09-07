@@ -46,7 +46,8 @@ from db import (
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
     get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
-    partner_stats, partner_recent_orders,
+    partner_stats, partner_recent_orders, list_partners, set_partner,
+    set_partner_rate, add_partner_payout,
     get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
     save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
     create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
@@ -4806,6 +4807,145 @@ async def api_admin_block_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_partners_handler(request: web.Request) -> web.Response:
+    """Список партнёров + каталог для экрана ставок. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _rows = await list_partners()
+        _out = []
+        for r in _rows:
+            _earned = float(r.get("earned") or 0)
+            _paid = float(r.get("paid") or 0)
+            _out.append({
+                "id": int(r["user_id"]),
+                "username": r.get("username") or "",
+                "name": r.get("full_name") or "",
+                "discount": float(r.get("partner_discount_pct") or 0),
+                "markup": float(r.get("partner_markup_pct") or 0),
+                "clients": int(r.get("clients") or 0),
+                "earned": _earned, "paid": _paid, "balance": _earned - _paid,
+            })
+        # каталог: только сервисы с тарифами — для экрана ставок
+        _svcs = []
+        for _k, _s in SHOP_CATALOG.items():
+            _plans = _s.get("plans") or []
+            if not _plans:
+                continue
+            _svcs.append({"key": _k, "name": _s.get("name", _k),
+                          "price": int(_plans[0].get("price") or 0),
+                          "plan": _plans[0].get("name", "")})
+        try:
+            _un = (await bot.get_me()).username
+        except Exception:
+            _un = ""
+        return web.json_response({"ok": True, "partners": _out, "services": _svcs, "bot": _un})
+    except Exception as _e:
+        logging.error(f"api_admin_partners: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
+    """Действия над партнёром: add | rates | rate_set | payout | remove. Admin-only."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _act = str(body.get("action") or "").strip()
+
+        def _num(v, d=0.0):
+            try:
+                return float(str(v).strip().replace(",", ".").replace("%", ""))
+            except Exception:
+                return d
+
+        try:
+            _uid = int(str(body.get("uid") or "0").strip())
+        except Exception:
+            _uid = 0
+
+        if _act == "add":
+            if _uid <= 0:
+                return web.json_response({"ok": False, "error": "Введи Telegram ID"})
+            if not await get_user(_uid):
+                return web.json_response(
+                    {"ok": False, "error": "Такого клиента нет в базе — пусть напишет боту /start"})
+            _d, _m = _num(body.get("discount")), _num(body.get("markup"))
+            if not (0 <= _d <= 100) or not (0 <= _m <= 500):
+                return web.json_response({"ok": False, "error": "Уступка 0–100%, наценка 0–500%"})
+            await set_partner(_uid, True, _d, _m)
+            return web.json_response({"ok": True})
+
+        if _act == "remove":
+            if _uid <= 0:
+                return web.json_response({"ok": False})
+            await set_partner(_uid, False, 0, 0)
+            return web.json_response({"ok": True})
+
+        if _act == "payout":
+            _amt = _num(body.get("amount"), 0)
+            if _uid <= 0 or _amt <= 0:
+                return web.json_response({"ok": False, "error": "Нужны ID и сумма"})
+            await add_partner_payout(_uid, _amt, str(body.get("note") or "")[:200])
+            _st = await partner_stats(_uid)
+            try:
+                await bot.send_message(
+                    _uid,
+                    f"💸 <b>Выплата отправлена</b>\n\nСумма: <b>{_amt:.0f} ₽</b>",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            return web.json_response({"ok": True, "balance": float(_st.get("balance") or 0)})
+
+        if _act == "rates":
+            # ставки партнёра по сервисам + пример расчёта на первом тарифе
+            _u = await get_user(_uid) or {}
+            _d0 = float(_u.get("partner_discount_pct") or 0)
+            _m0 = float(_u.get("partner_markup_pct") or 0)
+            _own = {r["svc_key"]: r for r in await list_partner_rates(_uid)}
+            _out = []
+            for _k, _s in SHOP_CATALOG.items():
+                _plans = _s.get("plans") or []
+                if not _plans:
+                    continue
+                _r = _own.get(_k)
+                _d = float(_r["discount_pct"] or 0) if _r else _d0
+                _m = float(_r["markup_pct"] or 0) if _r else _m0
+                _base = int(_plans[0].get("price") or 0)
+                _c, _o = partner_prices(_base, _d, _m)
+                _out.append({"key": _k, "name": _s.get("name", _k), "own": bool(_r),
+                             "discount": _d, "markup": _m, "base": _base,
+                             "client": _c, "owner": _o, "partner": _c - _o,
+                             "plan": _plans[0].get("name", "")})
+            return web.json_response({"ok": True, "rates": _out,
+                                      "discount": _d0, "markup": _m0})
+
+        if _act == "rate_set":
+            _svc = str(body.get("svc") or "").strip()
+            if _uid <= 0 or _svc not in SHOP_CATALOG:
+                return web.json_response({"ok": False, "error": "Сервис не найден"})
+            if body.get("reset"):
+                await set_partner_rate(_uid, _svc, None, None)
+                return web.json_response({"ok": True})
+            _d, _m = _num(body.get("discount")), _num(body.get("markup"))
+            if not (0 <= _d <= 100) or not (0 <= _m <= 500):
+                return web.json_response({"ok": False, "error": "Уступка 0–100%, наценка 0–500%"})
+            await set_partner_rate(_uid, _svc, _d, _m)
+            return web.json_response({"ok": True})
+
+        return web.json_response({"ok": False, "error": "unknown_action"})
+    except Exception as _e:
+        logging.error(f"api_admin_partner_set: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
 async def api_admin_referral_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -7719,6 +7859,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/blocks", api_admin_blocks_handler)
     app.router.add_post("/api/admin/block", api_admin_block_handler)
     app.router.add_post("/api/admin/referral", api_admin_referral_handler)
+    app.router.add_post("/api/admin/partners", api_admin_partners_handler)
+    app.router.add_post("/api/admin/partner-set", api_admin_partner_set_handler)
     app.router.add_post("/api/admin/referral-set", api_admin_referral_set_handler)
     app.router.add_post("/api/admin/svc-list", api_admin_svc_list_handler)
     app.router.add_post("/api/admin/svc-save", api_admin_svc_save_handler)
