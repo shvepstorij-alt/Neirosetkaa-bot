@@ -27,7 +27,7 @@ from config import (
 )
 from db import (
     add_credits_batch, ensure_user, fk_get_order, get_coins, get_credits, get_gen_count,
-    get_pool, get_user, is_blocked,
+    get_pool, get_user, is_blocked, attach_partner_client,
 )
 from keyboards import (
     _eib, kb_image_brands, kb_main, kb_reply, kb_video_brands, tg_emoji_ui,
@@ -72,12 +72,40 @@ async def cmd_start(message: Message, state: FSMContext):
     existing = await get_user(uid)
     is_new = existing is None
 
+    # ── Партнёрская ссылка (B2B) ────────────────────────────────────────────
+    # Если пригласивший — ПАРТНЁР, клиент закрепляется за ним отдельной связью
+    # (partner_id) и обычным рефералом НЕ становится: партнёру идёт только его
+    # доля с наценки, никаких кредитов и монеток сверху. Закрепляем лишь новых.
+    _partner_ref = None
+    if is_new and referred_by:
+        try:
+            _pu = await get_user(referred_by)
+            if _pu and _pu.get("partner"):
+                _partner_ref = referred_by
+                referred_by = None      # обычную рефералку для партнёра выключаем
+        except Exception as _e_pr:
+            logging.warning(f"partner ref check {referred_by}: {_e_pr}")
+
     await ensure_user(
         uid,
         message.from_user.username or '',
         message.from_user.full_name,
         referred_by=referred_by if is_new else None
     )
+    if _partner_ref:
+        try:
+            if await attach_partner_client(uid, _partner_ref):
+                logging.info(f"partner: клиент {uid} закреплён за партнёром {_partner_ref}")
+                try:
+                    await bot.send_message(
+                        _partner_ref,
+                        "🏢 <b>Новый клиент по твоей ссылке</b>\n\n"
+                        "Он видит цены с твоей наценкой. Доход начислится после оплаты.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+        except Exception as _e_ap:
+            logging.error(f"attach_partner_client {uid}->{_partner_ref}: {_e_ap}")
     credits = await get_credits(uid)
     is_admin = (uid == ADMIN_ID)
 
@@ -119,7 +147,7 @@ async def cmd_start(message: Message, state: FSMContext):
         _svc_key = parts[1][5:]
         try:
             from handlers_shop import build_service_screen
-            _t, _kb = build_service_screen(_svc_key)
+            _t, _kb = await build_service_screen(_svc_key, uid)
             if _t:
                 await message.answer(_t, reply_markup=_kb, parse_mode="HTML")
         except Exception as _e:

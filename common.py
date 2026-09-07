@@ -45,6 +45,8 @@ from db import (
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
+    get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
+    partner_stats, partner_recent_orders,
     get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
     save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
     create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
@@ -97,6 +99,54 @@ def try_acquire_click(key: str, ttl: float = 45.0) -> bool:
 
 def release_click(key: str):
     _gen_click_locks.pop(key, None)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  ПАРТНЁРСКИЕ ЦЕНЫ: клиент партнёра видит каталог дороже
+# ══════════════════════════════════════════════════════════════════════════
+
+async def partner_ctx(user_id: int, svc_key: str = "") -> dict | None:
+    """Партнёрский контекст клиента: {partner_id, discount_pct, markup_pct}.
+
+    None — обычный клиент, цены розничные. Ставки по конкретному сервису
+    перекрывают общие проценты партнёра.
+    """
+    try:
+        p = await get_partner_of(int(user_id))
+    except Exception as _e_pc:
+        logging.warning(f"partner_ctx {user_id}: {_e_pc}")
+        return None
+    if not p:
+        return None
+    _d = float(p.get("partner_discount_pct") or 0)
+    _m = float(p.get("partner_markup_pct") or 0)
+    if svc_key:
+        try:
+            _r = await get_partner_rate(int(p["partner_id"]), svc_key)
+            if _r:
+                _d, _m = _r
+        except Exception as _e_pr:
+            logging.warning(f"partner_rate {svc_key}: {_e_pr}")
+    return {"partner_id": int(p["partner_id"]), "discount_pct": _d, "markup_pct": _m}
+
+
+async def shop_price_for(user_id: int, svc_key: str, base_price) -> int:
+    """Цена тарифа ДЛЯ ЭТОГО клиента. Обычному — розница, клиенту партнёра — с наценкой.
+
+    Единственная точка, где появляется наценка: и показ, и списание идут через
+    неё, поэтому клиент не может увидеть одну цену, а заплатить другую.
+    """
+    try:
+        _b = int(float(base_price or 0))
+    except Exception:
+        return 0
+    if _b <= 0:
+        return _b
+    ctx = await partner_ctx(user_id, svc_key)
+    if not ctx or ctx["markup_pct"] <= 0:
+        return _b
+    client, _owner = partner_prices(_b, ctx["discount_pct"], ctx["markup_pct"])
+    return client
 
 
 async def _webgen_guard(uid: int, kind: str, ttl: float = 45.0):
@@ -749,6 +799,138 @@ async def process_referral_bonus(user_id: int, order_amount: float = 0):
 #  ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ
 # ══════════════════════════════════════════════════════════
 
+@dp.callback_query(F.data == "partner_cab")
+async def partner_cabinet(cb: CallbackQuery):
+    """Кабинет партнёра: сколько клиентов, сколько заработано, сколько к выплате."""
+    uid = cb.from_user.id
+    _u = await get_user(uid)
+    if not _u or not _u.get("partner"):
+        await cb.answer("Раздел доступен только партнёрам", show_alert=True)
+        return
+    await cb.answer()
+    st = await partner_stats(uid)
+    _last = await partner_recent_orders(uid, 8)
+    try:
+        _bot_un = (await bot.get_me()).username
+    except Exception:
+        _bot_un = ""
+    _link = f"https://t.me/{_bot_un}?start=ref_{uid}" if _bot_un else "—"
+    lines = [
+        "🏢 <b>Кабинет партнёра</b>\n",
+        f"👥 Клиентов по твоей ссылке: <b>{st.get('clients') or 0}</b>",
+        f"🧾 Оплаченных заказов: <b>{st.get('orders') or 0}</b>",
+        f"💰 Заработано всего: <b>{float(st.get('earned') or 0):.0f} ₽</b>",
+        f"📅 За текущий месяц: <b>{float(st.get('earned_month') or 0):.0f} ₽</b>",
+        f"✅ Выплачено: <b>{float(st.get('paid') or 0):.0f} ₽</b>",
+        f"\n💳 <b>К выплате: {float(st.get('balance') or 0):.0f} ₽</b>",
+    ]
+    if _last:
+        lines.append("\n<b>Последние продажи</b>")
+        for o in _last:
+            _s = SHOP_CATALOG.get(o.get("svc_key") or "", {}) or {}
+            _dt = o.get("created_at")
+            _ds = _dt.strftime("%d.%m") if _dt else ""
+            lines.append(f"• {_ds} {_s.get('name', o.get('svc_key') or '?')} — "
+                         f"твоя доля <b>{float(o.get('partner_sum') or 0):.0f} ₽</b>")
+    lines.append(f"\n🔗 <b>Твоя ссылка</b>\n<code>{_link}</code>")
+    lines.append("\n<i>Клиенты, пришедшие по ней, видят цены с твоей наценкой. "
+                 "Доля начисляется после оплаты. По выплатам — пиши Александру.</i>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="partner_cab")],
+        [_eib("Главное меню", "back_main")],
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML",
+                                   disable_web_page_preview=True)
+    except Exception:
+        await cb.message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML",
+                                disable_web_page_preview=True)
+
+
+async def process_partner_earning(client_id: int, order_id: str, amount_rub) -> None:
+    """Записывает долю партнёра по оплаченному заказу подписки.
+
+    Доля считается ПРОПОРЦИОНАЛЬНО фактически оплаченной сумме, а не как
+    жёсткая разница «цена клиента минус наша доля». Иначе промокод или монетки
+    съедали бы нашу маржу целиком, а при большой скидке партнёру причиталось бы
+    больше, чем клиент вообще заплатил.
+
+    Пример: розница 1990, уступка 5%, наценка 20% → клиент видит 2388, наша
+    доля 1890, партнёру 498 (это 20.9% от цены). Клиент применил промокод и
+    заплатил 2149 → партнёру 20.9% от 2149 = 449, нам 1700. Никто не в минусе.
+
+    Начисляем только по заказам КАТАЛОГА (pack вида «shop:<сервис>:<тариф>») —
+    кредиты, гифт-карты и генерации в партнёрскую программу не входят.
+    """
+    try:
+        _paid = float(amount_rub or 0)
+    except Exception:
+        return
+    if _paid <= 0:
+        return
+    _o = await fk_get_order(order_id) or {}
+    _pack = str(_o.get("pack") or "")
+    if not _pack.startswith("shop:"):
+        return
+    _parts = _pack.split(":")
+    _svc = _parts[1] if len(_parts) > 1 else ""
+    try:
+        _idx = int(_parts[2]) if len(_parts) > 2 and _parts[2].isdigit() else 0
+    except Exception:
+        _idx = 0
+    _s = SHOP_CATALOG.get(_svc) or {}
+    _plans = _s.get("plans") or []
+    if not _plans or _idx >= len(_plans):
+        return
+    _base = int(_plans[_idx].get("price") or 0)
+    if _base <= 0:
+        return
+    ctx = await partner_ctx(int(client_id), _svc)
+    if not ctx:
+        return
+    _client_price, _owner_price = partner_prices(_base, ctx["discount_pct"], ctx["markup_pct"])
+    # Начисляем при ЛЮБОЙ разнице: и когда она от наценки (клиент платит больше),
+    # и когда только от уступки (клиент платит розницу, а мы делимся маржой).
+    # Раньше при наценке 0% настройка молча игнорировалась.
+    if _client_price <= 0 or _client_price <= _owner_price:
+        return
+    _ratio = (_client_price - _owner_price) / float(_client_price)
+    _partner_sum = round(_paid * _ratio, 2)
+    _owner_sum = round(_paid - _partner_sum, 2)
+    if _partner_sum <= 0:
+        return
+    _written = await log_partner_earning(
+        int(ctx["partner_id"]), int(client_id), order_id, _svc, _idx,
+        _base, _client_price, _paid, _partner_sum, _owner_sum)
+    if not _written:
+        logging.info(f"partner earning дубль order={order_id} — не начисляем")
+        return
+    logging.info(f"partner earning: order={order_id} партнёр={ctx['partner_id']} "
+                 f"оплачено={_paid} доля={_partner_sum}")
+    try:
+        _st = await partner_stats(int(ctx["partner_id"]))
+        await bot.send_message(
+            int(ctx["partner_id"]),
+            f"💰 <b>Продажа по твоей ссылке</b>\n\n"
+            f"📦 {(_s.get('name') or _svc)} · {_plans[_idx].get('name','')}\n"
+            f"💳 Клиент оплатил: <b>{_paid:.0f} ₽</b>\n"
+            f"🤝 Твоя доля: <b>{_partner_sum:.0f} ₽</b>\n\n"
+            f"Всего к выплате: <b>{float(_st.get('balance') or 0):.0f} ₽</b>",
+            parse_mode="HTML")
+    except Exception:
+        pass
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🏢 <b>Заказ от партнёра</b>\n\n"
+            f"👤 клиент <code>{client_id}</code> · партнёр <code>{ctx['partner_id']}</code>\n"
+            f"📦 {(_s.get('name') or _svc)}\n"
+            f"💳 оплачено {_paid:.0f} ₽ → тебе {_owner_sum:.0f} ₽, партнёру {_partner_sum:.0f} ₽",
+            parse_mode="HTML")
+    except Exception:
+        pass
+
+
 async def process_premium_referral(referee_id: int, order_id: str, amount_rub: float):
     """Премиум-рефералка: % монетками с КАЖДОЙ оплаты реферала (только для премиум-партнёров).
     Идемпотентно по order_id, с месячным лимитом из настроек."""
@@ -1385,8 +1567,19 @@ async def _show_profile(message: Message, user, edit: bool = False):
     except Exception:
         pass
 
+    # Кабинет партнёра — только тем, у кого включён флаг partner
+    _partner_btn = []
+    try:
+        _pu = await get_user(uid)
+        if _pu and _pu.get("partner"):
+            _partner_btn = [[InlineKeyboardButton(
+                text="🏢 Кабинет партнёра", callback_data="partner_cab")]]
+    except Exception:
+        pass
+
     kb_profile = InlineKeyboardMarkup(inline_keyboard=[
         *_claude_pending_btn,
+        *_partner_btn,
         [_eib("Пригласить друга", "menu_ref")],
         [_eib("Мои подписки", "menu_subs"),
          _eib("Покупки", "profile_history")],
@@ -3394,7 +3587,9 @@ async def api_shop_promo_handler(request: web.Request) -> web.Response:
         s = SHOP_CATALOG.get(key)
         if not s or not s.get("plans") or idx < 0 or idx >= len(s["plans"]):
             return web.json_response({"ok": False, "error": "not_found"}, status=404)
-        base = int(s["plans"][idx].get("price", 0) or 0)
+        # Клиенту партнёра показываем скидку от ЕГО цены (с наценкой), иначе
+        # он увидел бы «было 1990 → стало 1791», а платил бы от 2388.
+        base = await shop_price_for(int(uid), key, s["plans"][idx].get("price", 0))
         if not code:
             return web.json_response({"ok": False, "error": "Введи промокод"})
         from db import check_promo_for_user as _chk
@@ -3414,6 +3609,55 @@ async def api_shop_promo_handler(request: web.Request) -> web.Response:
                                   "newPrice": max(1, round(base * (100 - _val) / 100))})
     except Exception as _e:
         logging.error(f"api_shop_promo: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_shop_prices_handler(request: web.Request) -> web.Response:
+    """Цены каталога ДЛЯ ЭТОГО клиента. Обычному отвечаем «партнёра нет» — он
+    видит цены, вшитые в страницу.
+
+    Зачем отдельный запрос: HTML мини-аппа отдаётся БЕЗ initData (сервер в тот
+    момент не знает, кто открыл), поэтому цены в него вшиты розничные. Клиент
+    партнёра дозапрашивает свои и перерисовывает каталог. Считает всё сервер —
+    свои формулы в JS не дублируем, иначе округление разошлось бы и оплата
+    падала бы на проверке «цены обновились».
+    """
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        _idata = (body.get("initData") if isinstance(body, dict) else None) or ""
+        uid = _verify_tg_init_data(_idata)
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        ctx = await partner_ctx(int(uid))
+        if not ctx:
+            return web.json_response({"ok": True, "partner": False})
+        # ставки по сервисам берём ОДНИМ запросом, иначе на 30 сервисов ушло бы
+        # под сотню обращений к базе
+        try:
+            _rates = {r["svc_key"]: (float(r.get("discount_pct") or 0),
+                                     float(r.get("markup_pct") or 0))
+                      for r in await list_partner_rates(int(ctx["partner_id"]))}
+        except Exception:
+            _rates = {}
+        _out = {}
+        for _k, _s in SHOP_CATALOG.items():
+            _plans = _s.get("plans") or []
+            if not _plans:
+                continue
+            _d, _m = _rates.get(_k, (ctx["discount_pct"], ctx["markup_pct"]))
+            if _m <= 0:
+                continue
+            _arr = []
+            for _p in _plans:
+                _c, _o = partner_prices(int(_p.get("price") or 0), _d, _m)
+                _arr.append(_c)
+            _out[_k] = _arr
+        return web.json_response({"ok": True, "partner": True, "prices": _out})
+    except Exception as _e:
+        logging.error(f"api_shop_prices: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -3440,7 +3684,9 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         s = SHOP_CATALOG.get(key)
         if not s or not s.get("plans") or idx < 0 or idx >= len(s["plans"]):
             return web.json_response({"ok": False, "error": "not_found"}, status=404)
-        price = int(s["plans"][idx].get("price", 0) or 0)
+        # Розничная цена и цена ЭТОГО клиента (у клиента партнёра — с наценкой).
+        _base_price = int(s["plans"][idx].get("price", 0) or 0)
+        price = await shop_price_for(int(uid), key, _base_price)
         if price <= 0:
             return web.json_response({"ok": False, "error": "price"}, status=400)
         # Защита от устаревшей страницы мини-аппа: WebView Telegram агрессивно
@@ -6652,6 +6898,12 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
     except Exception as _ref_err:
         logging.error(f"FK referral post-processing error order={order_id}: {_ref_err}")
 
+    # ── Доход партнёра (B2B) ────────────────────────────────────────────────
+    try:
+        await process_partner_earning(user_id, order_id, amount_rub)
+    except Exception as _pe:
+        logging.error(f"partner earning order={order_id}: {_pe}")
+
     # Если был промокод - инкрементим используемость.
     # Промокод хранится в заказе БД (в payload вебхука FreeKassa его нет!).
     try:
@@ -7428,6 +7680,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/banners-save", api_admin_banners_save_handler)
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
     app.router.add_post("/api/shop/promo", api_shop_promo_handler)
+    app.router.add_post("/api/shop/prices", api_shop_prices_handler)
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)

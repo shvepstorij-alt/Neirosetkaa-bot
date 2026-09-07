@@ -849,6 +849,7 @@ function _copyRef(){
   if(btn){ var o=btn.textContent; btn.textContent='Скопировано ✓'; setTimeout(function(){btn.textContent=o;},1500); }
 }
 function openCard(key, _silent){
+  window._openKey = key;   /* чтобы перерисовать карточку, когда придут цены партнёра */
   if(!_silent){ try{ _track('card:'+key); }catch(e){} }
   var c=CATALOG[key]; var nm=(c&&c.name)||key;
   if(_isAppStore(key,nm)){ openAppstore(); return; }
@@ -1170,6 +1171,28 @@ function _init(){
   CATALOG=window.__CATALOG__||{}; CATS=window.__CATEGORIES__||[]; RECS=window.__RECS__||[];
   BOT_USERNAME=window.__BOT__||BOT_USERNAME;
   renderShopHead(); renderBanners(); renderChips(); renderGrid();
+  /* Цены клиента партнёра. В страницу вшита розница (сервер при отдаче HTML
+     не знает, кто открыл), поэтому свои цены дозапрашиваем и перерисовываем.
+     Считает их сервер — в JS формулу не дублируем, иначе округление разойдётся
+     и оплата упрётся в проверку «тарифы обновились». */
+  try{
+    _api('/api/shop/prices').then(function(d){
+      if(!d||!d.ok||!d.partner||!d.prices) return;
+      var changed=false;
+      for(var k in d.prices){
+        var arr=d.prices[k]; var pl=(CATALOG[k]&&CATALOG[k].plans)||[];
+        for(var i=0;i<pl.length;i++){
+          var np=arr[pl[i].idx];
+          if(np!==undefined && np!==null && np!==pl[i].price){ pl[i].price=np; changed=true; }
+        }
+      }
+      if(changed){
+        try{ renderGrid(); }catch(e){}
+        /* если карточка уже открыта — перерисуем и её */
+        try{ if(window._openKey) openCard(window._openKey,true); }catch(e){}
+      }
+    });
+  }catch(e){}
   try{ _track('view'); }catch(e){}
   // Deep-link: открыть сразу карточку сервиса (?svc=key или startapp=svc_key)
   try{

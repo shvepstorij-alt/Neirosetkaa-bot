@@ -35,6 +35,7 @@ from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
 )
 from common import (
+    shop_price_for,
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
 )
 
@@ -65,10 +66,14 @@ async def shop_renew(cb: CallbackQuery):
     try:
         if s and s.get("plans"):
             _order = sorted(range(len(s["plans"])), key=lambda i: s["plans"][i].get("price", 0))
+            _rprices = {}
+            for _i2 in range(len(s["plans"])):
+                _rprices[_i2] = await shop_price_for(
+                    cb.from_user.id, key, s["plans"][_i2].get("price", 0))
             plans_text = ""
             for _n, i in enumerate(_order, 1):
                 p = s["plans"][i]
-                plans_text += (f"  {_n}. <b>{p.get('name','')} - {p.get('price',0)}₽/мес</b>\n"
+                plans_text += (f"  {_n}. <b>{p.get('name','')} - {_rprices[i]}₽/мес</b>\n"
                                f"     <i>{p.get('desc','')}</i>\n")
             text = (
                 f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
@@ -80,7 +85,7 @@ async def shop_renew(cb: CallbackQuery):
             for i in _order:
                 p = s["plans"][i]
                 rows.append([InlineKeyboardButton(
-                    text=f"{p.get('name','')} - {p.get('price',0)}₽/мес",
+                    text=f"{p.get('name','')} - {_rprices[i]}₽/мес",
                     callback_data=f"shop_confirm:{key}:{i}")])
             rows.append([InlineKeyboardButton(text="⬅️ В магазин", callback_data="menu_shop")])
             await bot.send_message(cb.from_user.id, text, parse_mode="HTML",
@@ -296,18 +301,25 @@ async def sub_renew(cb: CallbackQuery, state: FSMContext):
             pass
 
 
-def build_service_screen(key: str):
+async def build_service_screen(key: str, uid: int = 0):
     """Строит экран сервиса магазина (текст + клавиатура).
     Возвращает (text, kb) либо (None, None), если сервис/тарифы не найдены.
-    Используется и в callback shop_svc, и в deep-link /start shop_<key>."""
+    Используется и в callback shop_svc, и в deep-link /start shop_<key>.
+
+    uid нужен для партнёрских цен: клиент партнёра видит каталог с наценкой,
+    и показ обязан совпадать с тем, что спишется при оплате."""
     s = SHOP_CATALOG.get(key)
     if not s or not s.get("plans"):
         return None, None
     _order = sorted(range(len(s["plans"])), key=lambda i: s["plans"][i].get("price", 0))
+    _prices = {}
+    for i in range(len(s["plans"])):
+        _prices[i] = (await shop_price_for(uid, key, s["plans"][i].get("price", 0))
+                      if uid else int(s["plans"][i].get("price", 0) or 0))
     plans_text = ""
     for _n, i in enumerate(_order, 1):
         p = s["plans"][i]
-        plans_text += f"  {_n}. <b>{p.get('name','')} - {p.get('price',0)}₽/мес</b>\n     <i>{p.get('desc','')}</i>\n"
+        plans_text += f"  {_n}. <b>{p.get('name','')} - {_prices[i]}₽/мес</b>\n     <i>{p.get('desc','')}</i>\n"
     text = (
         f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
         f"<i>{s['desc']}</i>\n\n"
@@ -318,7 +330,7 @@ def build_service_screen(key: str):
     for i in _order:
         p = s["plans"][i]
         rows.append([InlineKeyboardButton(
-            text=f"{p.get('name','')} - {p.get('price',0)}₽/мес",
+            text=f"{p.get('name','')} - {_prices[i]}₽/мес",
             callback_data=f"shop_confirm:{key}:{i}"
         )])
     # Только для ChatGPT: кнопка «Установить Приложение» с премиум-эмодзи.
@@ -346,7 +358,7 @@ async def shop_service(cb: CallbackQuery):
         logging.warning(f"shop_service: no plans for key={key!r}")
         await cb.answer("У этого сервиса пока нет тарифов. Напишите Александру.", show_alert=True)
         return
-    text, kb = build_service_screen(key)
+    text, kb = await build_service_screen(key, cb.from_user.id)
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -392,6 +404,9 @@ async def shop_confirm(cb: CallbackQuery, state: FSMContext):
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
+    # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
+    # Копируем тариф, чтобы не портить общий каталог в памяти.
+    p = dict(p); p["price"] = await shop_price_for(uid, key, p.get("price", 0))
 
     # Проверяем применённый промокод из состояния
     data = await state.get_data()
@@ -547,6 +562,9 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
+    # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
+    # Копируем тариф, чтобы не портить общий каталог в памяти.
+    p = dict(p); p["price"] = await shop_price_for(uid, key, p.get("price", 0))
     # SECURITY: цену НЕ берём из callback_data. Промокод — из state, с повторной валидацией.
     _data = await state.get_data()
     _promo_code = _data.get(f"shop_promo_{key}_{plan_idx}")
@@ -879,6 +897,9 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
+    # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
+    # Копируем тариф, чтобы не портить общий каталог в памяти.
+    p = dict(p); p["price"] = await shop_price_for(uid, key, p.get("price", 0))
     # SECURITY: сумму к списанию считаем на сервере, не из callback_data.
     _data = await state.get_data()
     _promo_code = _data.get(f"shop_promo_{key}_{plan_idx}")
@@ -966,6 +987,9 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
+    # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
+    # Копируем тариф, чтобы не портить общий каталог в памяти.
+    p = dict(p); p["price"] = await shop_price_for(uid, key, p.get("price", 0))
     # SECURITY: монетки и доплату считаем на сервере, не из callback_data.
     _data = await state.get_data()
     _promo_code = _data.get(f"shop_promo_{key}_{plan_idx}")
@@ -1057,6 +1081,9 @@ async def shop_pay_stars(cb: CallbackQuery):
         return
     p = s["plans"][plan_idx]
     uid = cb.from_user.id
+    # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
+    # Копируем тариф, чтобы не портить общий каталог в памяти.
+    p = dict(p); p["price"] = await shop_price_for(uid, key, p.get("price", 0))
     username = cb.from_user.username or cb.from_user.full_name
 
     # Отправляем invoice Telegram Stars
