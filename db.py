@@ -740,6 +740,38 @@ async def claim_activation(key: str, stale_minutes: int = 20) -> bool:
         return True
 
 
+async def activation_cooldown(key: str, seconds: int = 60) -> int:
+    """Пропускает не чаще одной попытки в `seconds` секунд.
+
+    Возвращает 0 — можно запускать (отметка времени обновлена), либо число
+    секунд, которые осталось подождать. Отметка живёт в той же таблице
+    activation_claims и переживает рестарт: раньше клиент мог долбить кнопку
+    «Активировать» без конца, каждое нажатие поднимало полную цепочку по сайтам
+    и заваливало админа алертами.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO activation_claims (key, claimed_at) VALUES ($1, NOW()) "
+            "ON CONFLICT (key) DO UPDATE SET claimed_at = NOW() "
+            "WHERE activation_claims.claimed_at < NOW() - make_interval(secs => $2) "
+            "RETURNING claimed_at",
+            key, int(seconds)
+        )
+        if row is not None:
+            return 0
+        left = await conn.fetchval(
+            "SELECT CEIL(EXTRACT(EPOCH FROM ("
+            "  activation_claims.claimed_at + make_interval(secs => $2) - NOW()"
+            "))) FROM activation_claims WHERE key = $1",
+            key, int(seconds)
+        )
+    try:
+        return max(1, int(left or 1))
+    except Exception:
+        return int(seconds)
+
+
 async def release_activation(key: str):
     """Снимает замок (после завершения задачи — успешного или нет)."""
     pool = await get_pool()

@@ -51,7 +51,7 @@ from db import (
     set_linkpay_email,
     get_pending_activation_by_code, get_claude_pending_activation_by_code,
     get_perplexity_pending_activation_by_code, deduct_coins,
-    claim_gpt_activation, release_gpt_activation, claim_activation, release_activation,
+    claim_gpt_activation, release_gpt_activation, claim_activation, release_activation, activation_cooldown,
 )
 from keyboards import (
     _eib, kb_admin_panel, tg_emoji, tg_emoji_ui,
@@ -5457,12 +5457,20 @@ async def _run_activation_job(
 
         async def _bpa_rescue():
             nonlocal result, _bpa_rescue_done
-            if _bpa_rescue_done:
+            if _bpa_rescue_done or provider != "987ai":
                 return None
-            if not result.get("out_of_stock") or provider != "987ai":
+            # Несём код на bpa при ЛЮБОМ сбое 999uu, при котором код остался цел:
+            # нет стока, таймаут, «принудительное не помогло», сбой сайта.
+            # Не несём: код израсходован и ошибки клиента (протух токен, нужна
+            # проверка, нужно подтверждение) — там смена сайта не помогает.
+            if (result.get("success") or result.get("code_already_used")
+                    or result.get("token_invalid") or result.get("needs_check")
+                    or result.get("needs_force_confirm")):
                 return None
+            _was_oos = bool(result.get("out_of_stock"))
             _bpa_rescue_done = True
-            logging.warning(f"GPT: нет стока на 999uu — несу код {code} на bypriceactivate")
+            _why = "нет стока" if _was_oos else "сбой/таймаут"
+            logging.warning(f"GPT: 999uu не смог ({_why}) — несу ТОТ ЖЕ код {code} на bypriceactivate")
             _sess_for_bpa = session_raw or access_token
             _ok = False
             _err = ""
@@ -5489,15 +5497,23 @@ async def _run_activation_job(
                      "🚨 <b>ChatGPT — не вышло ни на 999uu, ни на bypriceactivate</b>\n\n")
                     + f"👤 <code>{user_id}</code> · {plan_name}\n"
                       f"🔑 <code>{code}</code>\n\n"
-                    + ("На 999uu не было стока — тот же код прошёл на bypriceactivate."
+                    + (f"На 999uu — {_why}. Тот же код прошёл на bypriceactivate."
                        if _ok else
-                       f"На 999uu нет стока. bypriceactivate: {_err_safe}\n"
-                       f"Новые коды НЕ трогал — активируй вручную этим же кодом."),
+                       f"На 999uu — {_why}. bypriceactivate: {_err_safe}\n"
+                       + ("Новые коды НЕ трогал — активируй вручную этим же кодом."
+                          if _was_oos else "Пробую остальные сайты их кодами.")),
                     parse_mode="HTML")
             except Exception:
                 pass
             if _ok:
                 return "ok"
+            # bpa уже пробован — чтобы цепочка не взяла оттуда ЕЩЁ один код
+            if "bpa" not in _tried_sites:
+                _tried_sites.append("bpa")
+            if not _was_oos:
+                # Обычный сбой: пусть цепочка добьёт остальные сайты своими кодами.
+                # Полный стоп делаем только когда стока нет — там перебор бессмыслен.
+                return "next"
             _activation_jobs[job_id] = {
                 "status": "done", "success": False,
                 "error": "Сейчас нет свободных активаций. Александр активирует вручную "
@@ -5629,16 +5645,10 @@ async def _run_activation_job(
 
         # 4) СБОЙ САЙТА и других сайтов с кодами нет → сообщаем и уходим в общую
         #    обработку ошибок (ретраи/токен) ниже.
-        if (not result.get("success")) and (not _client_stop(result)):
-            _fail_reason = (result.get("error") or "сбой сайта")[:140]
-            await _admin_fail_shot(
-                f"🚨 <b>ChatGPT — не удалось НИ НА ОДНОМ сайте</b> ({plan_name})\n"
-                f"👤 <code>{user_id}</code>\n"
-                f"🔑 Код: <code>{code}</code>\n"
-                f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
-                f"❗️ Последняя ошибка: {_fail_reason}\n"
-                f"Активируй вручную.",
-                result.get("screenshot"))
+        # Отдельного алерта «не удалось ни на одном сайте» больше НЕТ: ниже по
+        # тексту уже уходит подробный «авто-активация НЕУДАЧА» с тем же кодом и
+        # ошибкой. Два сообщения об одной неудаче только зашумляли чат — список
+        # пройденных сайтов перенесён в то, второе сообщение.
 
         if result.get("success"):
             _email = result.get("email") or _extract_email_from_token(access_token)
@@ -5974,6 +5984,7 @@ async def _run_activation_job(
                     f"🔑 Код: <code>{code}</code>\n"
                     f"📦 Тариф: <b>{plan_name}</b>\n"
                     f"⏱ Время: <b>{_fail_at}</b>\n"
+                    f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
                     f"❗ {error_text}\n"
                     f"🔒 Код закреплён за клиентом — активируй вручную ИМ ЖЕ."
                 )
@@ -6468,6 +6479,21 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                                    "результат придёт в чат."})
     except Exception as _e_claim:
         logging.warning(f"claim_gpt_activation: {_e_claim}")
+
+    # Не чаще одной попытки в минуту на клиента. Раньше клиент мог долбить
+    # «Активировать»/«Попробовать снова» без пауз: каждое нажатие поднимало
+    # ПОЛНУЮ цепочку по сайтам (браузер, 5 минут опроса) и слало админу пачку
+    # алертов. Отметка живёт в БД и переживает рестарт.
+    try:
+        _wait_s = await activation_cooldown(f"gptretry:{user_id}", seconds=60)
+    except Exception as _e_cd:
+        logging.warning(f"activation_cooldown uid={user_id}: {_e_cd}")
+        _wait_s = 0
+    if _wait_s:
+        logging.info(f"GPT: попытка чаще раза в минуту uid={user_id}, ждать {_wait_s} c")
+        return _resp({"success": False,
+                      "error": f"Подожди {_wait_s} сек — предыдущая попытка ещё обрабатывается. "
+                               f"Результат придёт в чат бота."})
 
     job_id = str(uuid.uuid4())[:12]
     _activation_jobs[job_id] = {"status": "pending"}

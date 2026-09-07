@@ -2269,7 +2269,9 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     return {"success": False, "error": str(det)}
 
             # Опрос статуса заказа (до ~10 минут)
-            for _ in range(120):
+            # 60 опросов по 5 с = 5 минут. Было 120 (10 минут) — клиент столько
+            # не ждёт, а бот всё это время держал заказ и не пробовал другой сайт.
+            for _ in range(60):
                 await _aio.sleep(5)
                 try:
                     async with s.get(f"{base}/api/gpt/orders/{order_id}") as pr:
@@ -2308,7 +2310,7 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     return {"success": False, "error": str(msg)}
                 # queued | running | pending | review → продолжаем ждать
             return {"success": False,
-                    "error": "Сайт долго обрабатывал заказ (>10 мин). Александр проверит вручную."}
+                    "error": "Сайт долго обрабатывал заказ (>5 мин). Александр проверит вручную."}
     except _aiohttp.ClientError as e:
         return {"success": False, "error": "Сеть/сайт недоступен: " + str(e)[:120]}
     except Exception as e:
