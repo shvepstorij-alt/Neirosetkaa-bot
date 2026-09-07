@@ -127,6 +127,19 @@ async def init_db():
             ("coins",          "NUMERIC(10,2) DEFAULT 0"),
             ("ref_premium",     "BOOLEAN DEFAULT FALSE"),
             ("ref_premium_pct", "DOUBLE PRECISION DEFAULT NULL"),
+            # Партнёрская программа (B2B): партнёр приводит клиентов по своей
+            # реф-ссылке, его клиенты видят цены с наценкой, разница — доход
+            # партнёра. partner_discount_pct — НАСКОЛЬКО дешевле розницы отдаём
+            # товар партнёру (наша доля), partner_markup_pct — наценка к рознице
+            # для ЕГО клиентов. Оба на весь каталог; по сервисам — отдельная
+            # таблица partner_rates, она перекрывает эти значения.
+            ("partner",              "BOOLEAN DEFAULT FALSE"),
+            ("partner_discount_pct", "DOUBLE PRECISION DEFAULT 0"),
+            ("partner_markup_pct",   "DOUBLE PRECISION DEFAULT 0"),
+            # Клиент закреплён за партнёром НАВСЕГДА и только если пришёл новым.
+            # Отдельная колонка, а не referred_by: обычная рефералка живёт своей
+            # жизнью, и путать их нельзя.
+            ("partner_id",           "BIGINT DEFAULT NULL"),
         ]:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")
@@ -158,6 +171,51 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_refprem_referrer_time "
             "ON ref_premium_log(referrer_id, created_at)"
         )
+        # ── Партнёрская программа ───────────────────────────────────────────
+        # Ставки по конкретному сервису каталога. Перекрывают общие проценты
+        # партнёра. Нет строки — действуют общие.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS partner_rates (
+                partner_id   BIGINT NOT NULL,
+                svc_key      TEXT   NOT NULL,
+                discount_pct DOUBLE PRECISION,
+                markup_pct   DOUBLE PRECISION,
+                updated_at   TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (partner_id, svc_key)
+            )
+        """)
+        # Начисления партнёру. order_id уникален — повторный вебхук по тому же
+        # заказу не начислит дважды (как в ref_premium_log).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS partner_earnings (
+                id           SERIAL PRIMARY KEY,
+                partner_id   BIGINT NOT NULL,
+                client_id    BIGINT,
+                order_id     TEXT UNIQUE,
+                svc_key      TEXT,
+                plan_idx     INTEGER,
+                base_price   NUMERIC(12,2),   -- розничная цена
+                client_price NUMERIC(12,2),   -- цена с наценкой (что видел клиент)
+                paid_amount  NUMERIC(12,2),   -- сколько реально оплачено (после скидок)
+                partner_sum  NUMERIC(12,2),   -- доля партнёра
+                owner_sum    NUMERIC(12,2),   -- осталось владельцу бота
+                created_at   TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_partner_earn ON partner_earnings(partner_id, created_at)")
+        # Выплаты партнёру (админ отмечает вручную).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS partner_payouts (
+                id         SERIAL PRIMARY KEY,
+                partner_id BIGINT NOT NULL,
+                amount     NUMERIC(12,2) NOT NULL,
+                note       TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_partner_payouts ON partner_payouts(partner_id, created_at)")
         # Избранное
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS favorites (
@@ -1800,6 +1858,198 @@ async def set_ref_premium(user_id: int, enabled: bool, pct: float | None = None)
             "UPDATE users SET ref_premium=$1, ref_premium_pct=$2 WHERE user_id=$3",
             enabled, pct, user_id
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  ПАРТНЁРСКАЯ ПРОГРАММА (B2B)
+# ══════════════════════════════════════════════════════════════════════════
+
+def partner_prices(base: float, discount_pct: float, markup_pct: float) -> tuple[int, int]:
+    """По розничной цене считает пару (цена_для_клиента_партнёра, наша_доля).
+
+    discount_pct — насколько дешевле розницы мы отдаём товар партнёру;
+    markup_pct   — наценка к рознице, которую видит его клиент.
+
+    Пример: розница 1990, уступка 5%, наценка 20% →
+            клиент видит 2388, нам причитается 1891, партнёру — разница.
+    Округляем до рубля; наша доля никогда не превышает цену клиента.
+    """
+    try:
+        _b = float(base or 0)
+    except Exception:
+        _b = 0.0
+    if _b <= 0:
+        return 0, 0
+    _d = max(0.0, min(100.0, float(discount_pct or 0)))
+    _m = max(0.0, float(markup_pct or 0))
+    client = int(round(_b * (100.0 + _m) / 100.0))
+    owner = int(round(_b * (100.0 - _d) / 100.0))
+    client = max(1, client)
+    owner = max(1, min(owner, client))   # доля партнёра не может быть отрицательной
+    return client, owner
+
+
+async def get_partner_of(user_id: int) -> dict | None:
+    """Партнёр, за которым закреплён клиент, вместе с его общими процентами.
+    None — клиент обычный (партнёрских цен не видит)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT p.user_id AS partner_id, p.partner_discount_pct, p.partner_markup_pct
+               FROM users c JOIN users p ON p.user_id = c.partner_id
+               WHERE c.user_id = $1 AND COALESCE(p.partner, FALSE) = TRUE""",
+            user_id
+        )
+    return dict(row) if row else None
+
+
+async def get_partner_rate(partner_id: int, svc_key: str) -> tuple[float, float] | None:
+    """Индивидуальные проценты партнёра по конкретному сервису (или None)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT discount_pct, markup_pct FROM partner_rates "
+            "WHERE partner_id=$1 AND svc_key=$2", partner_id, svc_key
+        )
+    if not row:
+        return None
+    return (float(row["discount_pct"] or 0), float(row["markup_pct"] or 0))
+
+
+async def set_partner_rate(partner_id: int, svc_key: str,
+                           discount_pct: float | None, markup_pct: float | None):
+    """Ставки по сервису. Обе None — строка удаляется (вернутся общие проценты)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if discount_pct is None and markup_pct is None:
+            await conn.execute(
+                "DELETE FROM partner_rates WHERE partner_id=$1 AND svc_key=$2",
+                partner_id, svc_key)
+            return
+        await conn.execute(
+            "INSERT INTO partner_rates (partner_id, svc_key, discount_pct, markup_pct) "
+            "VALUES ($1,$2,$3,$4) ON CONFLICT (partner_id, svc_key) DO UPDATE "
+            "SET discount_pct=$3, markup_pct=$4, updated_at=NOW()",
+            partner_id, svc_key, discount_pct, markup_pct)
+
+
+async def list_partner_rates(partner_id: int) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT svc_key, discount_pct, markup_pct FROM partner_rates "
+            "WHERE partner_id=$1 ORDER BY svc_key", partner_id)
+    return [dict(r) for r in rows]
+
+
+async def set_partner(user_id: int, enabled: bool,
+                      discount_pct: float = 0, markup_pct: float = 0):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET partner=$2, partner_discount_pct=$3, partner_markup_pct=$4 "
+            "WHERE user_id=$1", user_id, bool(enabled), float(discount_pct), float(markup_pct))
+
+
+async def list_partners() -> list[dict]:
+    """Партнёры с числом приведённых клиентов и заработком."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT u.user_id, u.username, u.full_name,
+                      u.partner_discount_pct, u.partner_markup_pct,
+                      (SELECT COUNT(*) FROM users c WHERE c.partner_id = u.user_id) AS clients,
+                      (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings e
+                        WHERE e.partner_id = u.user_id) AS earned,
+                      (SELECT COALESCE(SUM(amount),0) FROM partner_payouts p
+                        WHERE p.partner_id = u.user_id) AS paid
+               FROM users u WHERE COALESCE(u.partner, FALSE) = TRUE
+               ORDER BY earned DESC"""
+        )
+    return [dict(r) for r in rows]
+
+
+async def attach_partner_client(client_id: int, partner_id: int) -> bool:
+    """Закрепляет НОВОГО клиента за партнёром. True — закрепили.
+
+    Закрепляем только тех, кто ещё ни за кем не числится: по договорённости
+    партнёрскими становятся лишь новые клиенты, старые остаются с обычными
+    ценами, даже если кликнут партнёрскую ссылку.
+    """
+    if not client_id or not partner_id or client_id == partner_id:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.execute(
+            "UPDATE users SET partner_id=$2 WHERE user_id=$1 AND partner_id IS NULL",
+            client_id, partner_id)
+    try:
+        return str(r).split()[-1] == "1"
+    except Exception:
+        return False
+
+
+async def log_partner_earning(partner_id: int, client_id: int, order_id: str,
+                              svc_key: str, plan_idx: int, base_price: float,
+                              client_price: float, paid_amount: float,
+                              partner_sum: float, owner_sum: float) -> bool:
+    """Пишет начисление партнёру. False — по этому заказу уже писали."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            r = await conn.execute(
+                "INSERT INTO partner_earnings (partner_id, client_id, order_id, svc_key, "
+                "plan_idx, base_price, client_price, paid_amount, partner_sum, owner_sum) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (order_id) DO NOTHING",
+                partner_id, client_id, order_id, svc_key, int(plan_idx or 0),
+                float(base_price), float(client_price), float(paid_amount),
+                float(partner_sum), float(owner_sum))
+        except Exception as e:
+            logging.error(f"log_partner_earning {order_id}: {e}")
+            return False
+    try:
+        return str(r).split()[-1] == "1"
+    except Exception:
+        return True
+
+
+async def partner_stats(partner_id: int) -> dict:
+    """Сводка для кабинета партнёра."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT
+                 (SELECT COUNT(*) FROM users c WHERE c.partner_id=$1) AS clients,
+                 (SELECT COUNT(*) FROM partner_earnings e WHERE e.partner_id=$1) AS orders,
+                 (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings e
+                   WHERE e.partner_id=$1) AS earned,
+                 (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings e
+                   WHERE e.partner_id=$1 AND e.created_at >= date_trunc('month', NOW())
+                 ) AS earned_month,
+                 (SELECT COALESCE(SUM(amount),0) FROM partner_payouts p
+                   WHERE p.partner_id=$1) AS paid""",
+            partner_id)
+    d = dict(row) if row else {}
+    d["balance"] = float(d.get("earned") or 0) - float(d.get("paid") or 0)
+    return d
+
+
+async def partner_recent_orders(partner_id: int, limit: int = 10) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT order_id, svc_key, paid_amount, partner_sum, created_at "
+            "FROM partner_earnings WHERE partner_id=$1 ORDER BY created_at DESC LIMIT $2",
+            partner_id, int(limit))
+    return [dict(r) for r in rows]
+
+
+async def add_partner_payout(partner_id: int, amount: float, note: str = "") -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO partner_payouts (partner_id, amount, note) VALUES ($1,$2,$3)",
+            partner_id, float(amount), note or "")
 
 
 async def get_ref_premium(user_id: int) -> dict | None:

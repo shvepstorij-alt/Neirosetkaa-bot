@@ -422,6 +422,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="🛍 Продажи магазина",  callback_data="adm_shop_sales"),
          InlineKeyboardButton(text="💵 Редактор цен",      callback_data="adm_prices")],
         [InlineKeyboardButton(text="🤝 Премиум-рефералка", callback_data="adm_refprem")],
+        [InlineKeyboardButton(text="🏢 Партнёры (наценка)", callback_data="adm_partners")],
         [InlineKeyboardButton(text="🔗 Оплата по ссылке", callback_data="adm_linkpay")],
         [InlineKeyboardButton(text="🔐 Вход в аккаунт", callback_data="adm_creds")],
         [InlineKeyboardButton(text="Приветствие",         callback_data="adm_welcome",        icon_custom_emoji_id="5190859184312167965"),

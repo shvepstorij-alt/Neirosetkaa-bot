@@ -36,6 +36,8 @@ from db import (
     get_setting, get_user, list_promos, log_event, set_setting, unblock_user,
     set_ref_premium, get_ref_premium, list_ref_premium, premium_ref_earned_this_month,
     count_claude_free_by_provider,
+    set_partner, list_partners, partner_stats, partner_recent_orders,
+    list_partner_rates, set_partner_rate, add_partner_payout, partner_prices,
 )
 from keyboards import (
     _all_models_map, _btn_emoji_id, _section_label, kb_admin_panel, kb_balance_menu, kb_block_actions, kb_stat_menu,
@@ -3769,6 +3771,304 @@ async def _refprem_menu():
 
 async def _refprem_show(cb):
     text, kb = await _refprem_menu()
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  ПАРТНЁРСКАЯ ПРОГРАММА (B2B): клиенты партнёра видят цены с наценкой
+# ══════════════════════════════════════════════════════════════════════════
+
+def _pnum(v, default=0.0) -> float:
+    try:
+        return float(str(v).strip().replace(",", ".").replace("%", ""))
+    except Exception:
+        return default
+
+
+async def _partners_menu():
+    rows = await list_partners()
+    lines = ["🤝 <b>Партнёрская программа</b>\n",
+             "Клиенты партнёра видят цены с наценкой; разница — его доход.",
+             "<i>Уступка</i> — насколько дешевле розницы товар уходит партнёру (твоя доля).",
+             "<i>Наценка</i> — на сколько дороже розницы видит цену его клиент.\n"]
+    if not rows:
+        lines.append("Партнёров пока нет.")
+    for r in rows:
+        _nm = ("@" + r["username"]) if r.get("username") else (r.get("full_name") or "без ника")
+        _bal = float(r.get("earned") or 0) - float(r.get("paid") or 0)
+        lines.append(
+            f"• <b>{_nm}</b> <code>{r['user_id']}</code>\n"
+            f"  уступка {float(r.get('partner_discount_pct') or 0):.0f}% · "
+            f"наценка {float(r.get('partner_markup_pct') or 0):.0f}% · "
+            f"клиентов {r.get('clients') or 0}\n"
+            f"  заработал {float(r.get('earned') or 0):.0f} ₽ · "
+            f"выплачено {float(r.get('paid') or 0):.0f} ₽ · "
+            f"<b>к выплате {_bal:.0f} ₽</b>")
+    kb_rows = [[InlineKeyboardButton(text="➕ Добавить партнёра", callback_data="adm_p_add")]]
+    for r in rows:
+        _nm = ("@" + r["username"]) if r.get("username") else str(r["user_id"])
+        kb_rows.append([InlineKeyboardButton(
+            text=f"⚙️ {_nm}", callback_data=f"adm_p_one:{r['user_id']}")])
+    kb_rows.append([InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
+@dp.callback_query(F.data == "adm_partners")
+async def adm_partners_menu(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    await state.clear()
+    await cb.answer()
+    text, kb = await _partners_menu()
+    try:
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_p_add")
+async def adm_partner_add_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    await state.set_state(AdminState.waiting_partner_add)
+    await cb.message.answer(
+        "Введи <b>ID партнёра, уступку и наценку</b> через пробел.\n\n"
+        "Пример: <code>123456789 5 20</code>\n"
+        "— тебе остаётся розница минус 5%, его клиент видит розницу плюс 20%.\n\n"
+        "Проценты потом можно менять, в том числе отдельно по каждому сервису.",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_partner_add, F.text)
+async def adm_partner_add_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if not parts or not parts[0].lstrip("-").isdigit():
+        await message.answer("❌ Первым числом — ID партнёра. Пример: <code>123456789 5 20</code>",
+                             parse_mode="HTML")
+        return
+    uid = int(parts[0])
+    disc = _pnum(parts[1]) if len(parts) > 1 else 0.0
+    mark = _pnum(parts[2]) if len(parts) > 2 else 0.0
+    if not (0 <= disc <= 100) or not (0 <= mark <= 500):
+        await message.answer("❌ Уступка 0–100%, наценка 0–500%. Повтори:")
+        return
+    _u = await get_user(uid)
+    if not _u:
+        await message.answer("❌ Такого клиента нет в базе. Пусть сначала напишет боту /start.")
+        return
+    await set_partner(uid, True, disc, mark)
+    await state.clear()
+    _bot_un = (await bot.get_me()).username
+    await message.answer(
+        f"✅ Партнёр добавлен: <code>{uid}</code>\n"
+        f"Уступка {disc:.0f}% · наценка {mark:.0f}%\n\n"
+        f"Его ссылка для клиентов:\n"
+        f"<code>https://t.me/{_bot_un}?start=ref_{uid}</code>\n\n"
+        f"<i>Наценку увидят только НОВЫЕ клиенты, пришедшие по этой ссылке.</i>",
+        parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_p_one:"))
+async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    await state.clear()
+    pid = int(cb.data.split(":")[1])
+    st = await partner_stats(pid)
+    rates = await list_partner_rates(pid)
+    _u = await get_user(pid) or {}
+    _nm = ("@" + _u["username"]) if _u.get("username") else (_u.get("full_name") or str(pid))
+    _disc = float(_u.get("partner_discount_pct") or 0)
+    _mark = float(_u.get("partner_markup_pct") or 0)
+    lines = [f"🤝 <b>{_nm}</b> <code>{pid}</code>\n",
+             f"Общие ставки: уступка <b>{_disc:.0f}%</b> · наценка <b>{_mark:.0f}%</b>",
+             f"Клиентов: <b>{st.get('clients') or 0}</b> · заказов: <b>{st.get('orders') or 0}</b>",
+             f"Заработал всего: <b>{float(st.get('earned') or 0):.0f} ₽</b> "
+             f"(за месяц {float(st.get('earned_month') or 0):.0f} ₽)",
+             f"Выплачено: <b>{float(st.get('paid') or 0):.0f} ₽</b>",
+             f"💰 <b>К выплате: {float(st.get('balance') or 0):.0f} ₽</b>"]
+    if rates:
+        lines.append("\n<b>Ставки по сервисам</b> (перекрывают общие):")
+        for r in rates:
+            _s = SHOP_CATALOG.get(r["svc_key"], {}) or {}
+            lines.append(f"• {_s.get('name', r['svc_key'])}: уступка "
+                         f"{float(r.get('discount_pct') or 0):.0f}% · "
+                         f"наценка {float(r.get('markup_pct') or 0):.0f}%")
+    _last = await partner_recent_orders(pid, 5)
+    if _last:
+        lines.append("\n<b>Последние заказы</b>:")
+        for o in _last:
+            _s = SHOP_CATALOG.get(o["svc_key"] or "", {}) or {}
+            lines.append(f"• {_s.get('name', o['svc_key'] or '?')} — "
+                         f"оплачено {float(o['paid_amount'] or 0):.0f} ₽, "
+                         f"партнёру {float(o['partner_sum'] or 0):.0f} ₽")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Ставки по сервисам", callback_data=f"adm_p_svcs:{pid}")],
+        [InlineKeyboardButton(text="💸 Отметить выплату", callback_data=f"adm_p_pay:{pid}")],
+        [InlineKeyboardButton(text="🚫 Убрать из партнёров", callback_data=f"adm_p_off:{pid}")],
+        [InlineKeyboardButton(text="◀️ К партнёрам", callback_data="adm_partners")],
+    ])
+    try:
+        await cb.message.edit_text("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_p_svcs:"))
+async def adm_partner_services(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    pid = int(cb.data.split(":")[1])
+    rates = {r["svc_key"]: r for r in await list_partner_rates(pid)}
+    _u = await get_user(pid) or {}
+    _d0 = float(_u.get("partner_discount_pct") or 0)
+    _m0 = float(_u.get("partner_markup_pct") or 0)
+    rows = []
+    for k, s in list(SHOP_CATALOG.items())[:40]:
+        r = rates.get(k)
+        _tag = (f"{float(r.get('discount_pct') or 0):.0f}/{float(r.get('markup_pct') or 0):.0f}"
+                if r else f"{_d0:.0f}/{_m0:.0f} общие")
+        rows.append([InlineKeyboardButton(text=f"{s.get('name', k)} · {_tag}",
+                                          callback_data=f"adm_p_rate:{pid}:{k}")])
+    rows.append([InlineKeyboardButton(text="◀️ К партнёру", callback_data=f"adm_p_one:{pid}")])
+    try:
+        await cb.message.edit_text(
+            "📊 <b>Ставки по сервисам</b>\n\n"
+            "Формат кнопки: <i>уступка/наценка</i>. «Общие» — своих ставок нет,\n"
+            "действуют проценты партнёра на весь каталог.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_p_rate:"))
+async def adm_partner_rate_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    _, pid, svc = cb.data.split(":", 2)
+    await state.update_data(p_rate_pid=int(pid), p_rate_svc=svc)
+    await state.set_state(AdminState.waiting_partner_rate)
+    _s = SHOP_CATALOG.get(svc, {}) or {}
+    _plans = _s.get("plans") or []
+    _ex = ""
+    if _plans:
+        _bp = int(_plans[0].get("price") or 0)
+        _ex = f"\n\nСейчас «{_plans[0].get('name','')}» стоит {_bp} ₽ в рознице."
+    await cb.message.answer(
+        f"Ставки для <b>{_s.get('name', svc)}</b>.\n\n"
+        f"Введи <b>уступку и наценку</b> через пробел: <code>5 20</code>\n"
+        f"Или слово <code>общие</code> — чтобы вернуть проценты партнёра на весь каталог."
+        f"{_ex}",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_partner_rate, F.text)
+async def adm_partner_rate_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    pid = data.get("p_rate_pid"); svc = data.get("p_rate_svc")
+    if not pid or not svc:
+        await state.clear()
+        await message.answer("❌ Контекст потерян, открой раздел заново.")
+        return
+    txt = (message.text or "").strip().lower()
+    if txt in ("общие", "общая", "сброс", "-"):
+        await set_partner_rate(int(pid), svc, None, None)
+        await state.clear()
+        await message.answer("✅ Свои ставки убраны — действуют общие проценты партнёра.")
+        return
+    parts = txt.split()
+    if len(parts) < 2:
+        await message.answer("❌ Нужно два числа: уступка и наценка. Пример: <code>5 20</code>",
+                             parse_mode="HTML")
+        return
+    disc, mark = _pnum(parts[0], -1), _pnum(parts[1], -1)
+    if not (0 <= disc <= 100) or not (0 <= mark <= 500):
+        await message.answer("❌ Уступка 0–100%, наценка 0–500%. Повтори:")
+        return
+    await set_partner_rate(int(pid), svc, disc, mark)
+    await state.clear()
+    _s = SHOP_CATALOG.get(svc, {}) or {}
+    _plans = _s.get("plans") or []
+    _demo = ""
+    if _plans:
+        _bp = int(_plans[0].get("price") or 0)
+        _c, _o = partner_prices(_bp, disc, mark)
+        _demo = (f"\n\nПроверка на тарифе «{_plans[0].get('name','')}» ({_bp} ₽):\n"
+                 f"клиент увидит <b>{_c} ₽</b>, тебе останется <b>{_o} ₽</b>, "
+                 f"партнёру <b>{_c - _o} ₽</b>.")
+    await message.answer(
+        f"✅ {_s.get('name', svc)}: уступка <b>{disc:.0f}%</b> · наценка <b>{mark:.0f}%</b>{_demo}",
+        parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("adm_p_pay:"))
+async def adm_partner_payout_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    pid = int(cb.data.split(":")[1])
+    st = await partner_stats(pid)
+    await state.update_data(p_pay_pid=pid)
+    await state.set_state(AdminState.waiting_partner_payout)
+    await cb.message.answer(
+        f"К выплате сейчас: <b>{float(st.get('balance') or 0):.0f} ₽</b>\n\n"
+        f"Введи сумму выплаты (можно с комментарием): <code>5000 сбп 07.09</code>",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_partner_payout, F.text)
+async def adm_partner_payout_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    pid = data.get("p_pay_pid")
+    if not pid:
+        await state.clear()
+        await message.answer("❌ Контекст потерян, открой раздел заново.")
+        return
+    parts = (message.text or "").strip().split(maxsplit=1)
+    amount = _pnum(parts[0], -1) if parts else -1
+    if amount <= 0:
+        await message.answer("❌ Первым числом — сумма выплаты. Пример: <code>5000 сбп</code>",
+                             parse_mode="HTML")
+        return
+    note = parts[1] if len(parts) > 1 else ""
+    await add_partner_payout(int(pid), amount, note)
+    await state.clear()
+    st = await partner_stats(int(pid))
+    await message.answer(
+        f"✅ Выплата записана: <b>{amount:.0f} ₽</b>\n"
+        f"Осталось к выплате: <b>{float(st.get('balance') or 0):.0f} ₽</b>",
+        parse_mode="HTML")
+    try:
+        await bot.send_message(
+            int(pid),
+            f"💸 <b>Выплата отправлена</b>\n\nСумма: <b>{amount:.0f} ₽</b>"
+            + (f"\n{note}" if note else ""),
+            parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data.startswith("adm_p_off:"))
+async def adm_partner_off(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    pid = int(cb.data.split(":")[1])
+    await set_partner(pid, False, 0, 0)
+    await cb.answer("Партнёр отключён", show_alert=True)
+    text, kb = await _partners_menu()
     try:
         await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
