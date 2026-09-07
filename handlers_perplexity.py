@@ -86,8 +86,9 @@ async def cb_perplexity_manual_activated(cb: CallbackQuery):
     if pending:
         code = pending["code"]
         plan_name = pending.get("plan_name", "?")
-        # Помечаем код как использованный вручную (без bpa)
-        await mark_perplexity_code_used(code, uid, pending.get("order_id", ""), pending.get("org_id", ""))
+        # Код ВОЗВРАЩАЕМ в пул — см. комментарий в handlers_claude.py: ручная
+        # активация идёт другим кодом, а этот остаётся целым.
+        await release_perplexity_code(code)
         await delete_perplexity_pending_activation(uid)
         await log_event(uid, "perplexity_manual_activated", f"code={code} plan={plan_name}")
         await cb.message.answer(

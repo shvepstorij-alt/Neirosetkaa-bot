@@ -252,6 +252,20 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                 "пользователь уже", "смените аккаунт",
                 "you are currently subscribed", "уже подписан",
             ]
+            # Маркеры: НА САЙТЕ НЕТ СТОКА. Повторять бессмысленно — сколько ни жми
+            # «Подтвердить пополнение», запасов не прибавится. Раньше этот случай
+            # попадал в GENERIC_RETRY_MARKERS («Пополнение не удалось»), бот делал
+            # два лишних повтора и отдавал общую ошибку — понять, что дело в стоке,
+            # было нельзя. Теперь отдаём отдельный признак out_of_stock, и диспетчер
+            # уносит ТОТ ЖЕ код на bypriceactivate.pro.
+            # ВАЖНО: только точные фразы ИЗ БЛОКА ОШИБКИ. Плашка «Нет в наличии,
+            # подождите» висит вверху страницы ВСЕГДА, а мы читаем текст всего
+            # body — по ней судить нельзя, иначе бот бросит и удачные активации.
+            OUT_OF_STOCK_MARKERS = [
+                "нет доступных запасов",          # «Пополнение не удалось / Нет доступных запасов»
+                "库存不足", "暂无库存", "无库存", "售罄",
+                "out of stock", "no stock available", "sold out",
+            ]
             # Маркеры: обычный сбой (сеть, таймаут) → повтор БЕЗ чекбокса
             GENERIC_RETRY_MARKERS = [
                 "пополнение не удалось", "若提交多次", "充值未成功", "充值失败了",
@@ -322,6 +336,20 @@ async def activate_chatgpt(card_code: str, access_token: str) -> dict:
                         final_result = {"success": True, "message": "Подписка успешно активирована!", "screenshot": ss}
                         break
                 if final_result:
+                    break
+
+                # ── СЦЕНАРИЙ 0: на сайте нет стока → повторы не помогут, уходим сразу ──
+                _pt_low_oos = (page_text or "").lower()
+                if any(m in _pt_low_oos for m in OUT_OF_STOCK_MARKERS):
+                    ss = None
+                    try:
+                        ss = await page.screenshot(full_page=True)
+                    except Exception:
+                        pass
+                    logger.warning("999uu: нет стока — код цел, уводим на другой сайт")
+                    final_result = {"success": False, "out_of_stock": True,
+                                    "error": "На ai.999uu.us нет доступных запасов.",
+                                    "screenshot": ss}
                     break
 
                 # ── СЦЕНАРИЙ 1: клиент уже имеет Plus → включаем force recharge ──

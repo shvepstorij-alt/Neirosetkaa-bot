@@ -88,8 +88,10 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
     if pending:
         code = pending["code"]
         plan_name = pending.get("plan_name", "?")
-        # Помечаем код как использованный вручную (без bpa)
-        await mark_claude_code_used(code, uid, pending.get("order_id", ""), pending.get("org_id", ""))
+        # Код ВОЗВРАЩАЕМ в пул. Ручная активация делается ДРУГИМ кодом (админ
+        # выдаёт новый из панели), а этот остаётся целым. Раньше он помечался
+        # использованным — то есть при каждой ручной активации сгорал целый код.
+        await release_claude_code(code)
         await delete_claude_pending_activation(uid)
         await log_event(uid, "claude_manual_activated", f"code={code} plan={plan_name}")
         await cb.message.answer(

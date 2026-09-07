@@ -5446,6 +5446,74 @@ async def _run_activation_job(
             except Exception as _e:
                 logging.error(f"Не удалось пометить плохой код {_c}: {_e}")
 
+        # ── СПАСЕНИЕ ЧЕРЕЗ bypriceactivate.pro ──────────────────────────────
+        # Коды у сайтов общие: на 999uu штатно гасятся коды BYPRICE-..., а API
+        # bypriceactivate сам выбирает маршрут по коду и умеет пополнять поверх
+        # активной подписки. Поэтому «на 999uu нет стока» — не повод брать НОВЫЙ
+        # код на другом сайте (так на один заказ уходило два кода): несём ТОТ ЖЕ.
+        # Возвращает: "ok" — bpa активировал; "stop" — не вышло, дальше не жжём;
+        # None — случай не наш (сток есть / сайт не 999uu / уже пробовали).
+        _bpa_rescue_done = False
+
+        async def _bpa_rescue():
+            nonlocal result, _bpa_rescue_done
+            if _bpa_rescue_done:
+                return None
+            if not result.get("out_of_stock") or provider != "987ai":
+                return None
+            _bpa_rescue_done = True
+            logging.warning(f"GPT: нет стока на 999uu — несу код {code} на bypriceactivate")
+            _sess_for_bpa = session_raw or access_token
+            _ok = False
+            _err = ""
+            if not _sess_for_bpa:
+                _err = "нет session JSON (клиент на старой версии мини-аппа)"
+            else:
+                try:
+                    from chatgpt_activation import activate_chatgpt_bpa as _bpa_act
+                    _r = await _bpa_act(code, _sess_for_bpa)
+                    _ok = bool(_r.get("success"))
+                    _err = (_r.get("error") or "неизвестная ошибка")[:200]
+                    if _r.get("code_already_used"):
+                        await _burn_code(code)   # код реально израсходован
+                    result = _r
+                except Exception as _e_b:
+                    _err = f"{type(_e_b).__name__}: {_e_b}"[:200]
+                    logging.error(f"GPT bpa rescue: {_e_b}", exc_info=True)
+            _err_safe = _err.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    ("✅ <b>ChatGPT — выручил bypriceactivate</b>\n\n"
+                     if _ok else
+                     "🚨 <b>ChatGPT — не вышло ни на 999uu, ни на bypriceactivate</b>\n\n")
+                    + f"👤 <code>{user_id}</code> · {plan_name}\n"
+                      f"🔑 <code>{code}</code>\n\n"
+                    + ("На 999uu не было стока — тот же код прошёл на bypriceactivate."
+                       if _ok else
+                       f"На 999uu нет стока. bypriceactivate: {_err_safe}\n"
+                       f"Новые коды НЕ трогал — активируй вручную этим же кодом."),
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            if _ok:
+                return "ok"
+            _activation_jobs[job_id] = {
+                "status": "done", "success": False,
+                "error": "Сейчас нет свободных активаций. Александр активирует вручную "
+                         "в течение часа — подписка появится, ничего делать не нужно 🙌"}
+            try:
+                await bot.send_message(
+                    user_id,
+                    "⏳ <b>Активация займёт чуть больше времени</b>\n\n"
+                    "На сайте активации временно нет свободных мест. "
+                    "Александр активирует подписку вручную в ближайшее время — "
+                    "ничего повторять не нужно, я напишу, когда всё будет готово 🙌",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            return "stop"
+
         async def _cycle_used_current_site() -> bool:
             """Перебирает коды ТЕКУЩЕГО сайта, пока приходит code_already_used.
             Обновляет code/result. Возвращает True, если сайт исчерпан
@@ -5477,6 +5545,10 @@ async def _run_activation_job(
         def _client_stop(_res):
             return bool(_res.get("token_invalid") or _res.get("needs_check")
                         or _res.get("needs_force_confirm"))
+
+        # 0) 999uu без стока → тот же код на bypriceactivate (до всякого перебора)
+        if await _bpa_rescue() == "stop":
+            return
 
         # 1) текущий сайт: сперва перебор использованных кодов
         await _cycle_used_current_site()
@@ -5528,6 +5600,14 @@ async def _run_activation_job(
             except Exception:
                 _switch_msg_id = None
             result = await _do_activate(code)
+            # Ушли на 999uu и там нет стока → тот же код на bypriceactivate.
+            # Это ОСНОВНОЙ сценарий: Plus-клиент стартует на приоритетном сайте,
+            # получает «на аккаунте уже есть подписка» и попадает сюда.
+            _rescue = await _bpa_rescue()
+            if _rescue == "stop":
+                return
+            if _rescue == "ok":
+                break
             await _cycle_used_current_site()  # на новом сайте тоже перебираем использованные
 
         # 3) КОДЫ КОНЧИЛИСЬ ВЕЗДЕ: результат — «код использован», а свободных кодов больше
