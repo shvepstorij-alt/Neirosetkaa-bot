@@ -33,6 +33,8 @@ from config import (
     claude_provider_base, claude_provider_name,
     GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER,
     gpt_provider_base, gpt_provider_name,
+    GPT_AUTO_PLANS, GPT_ENABLED_PROVIDERS, GPT_ROUTE_LABELS, gpt_route_for_code,
+    gpt_enabled_provider,
 )
 from runtime_state import (
     rt,
@@ -5099,9 +5101,18 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
             _pct = _num(body.get("pct"), 0)
             _mode = str(body.get("mode") or "off").strip()
             _days = int(_num(body.get("days"), 7))
+            # Итог до/после — наценку при смене скидки не трогаем, поэтому
+            # подсказываем в панели, куда уехал итог для клиента.
+            def _net(_mk, _pr):
+                return round(((1.0 + float(_mk or 0) / 100.0)
+                              * (1.0 - float(_pr or 0) / 100.0) - 1.0) * 100.0, 2)
+            _mk_cur = float(_u.get("partner_markup_pct") or 0)
+            _pr_old = float(_u.get("partner_promo_pct") or 0)
             if _pct <= 0 or _mode == "off":
                 await set_partner_promo(_uid, 0, "off", 0)
-                return web.json_response({"ok": True})
+                return web.json_response({"ok": True,
+                                          "netBefore": _net(_mk_cur, _pr_old),
+                                          "netAfter": _net(_mk_cur, 0)})
             if _pct > _max:
                 return web.json_response({
                     "ok": False,
@@ -5111,7 +5122,9 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
             if _mode == "days" and not (1 <= _days <= 365):
                 return web.json_response({"ok": False, "error": "Срок 1–365 дней"})
             await set_partner_promo(_uid, _pct, _mode, _days if _mode == "days" else 0)
-            return web.json_response({"ok": True})
+            return web.json_response({"ok": True,
+                                      "netBefore": _net(_mk_cur, _pr_old),
+                                      "netAfter": _net(_mk_cur, _pct)})
 
         if _act == "fee_set":
             _f = _num(body.get("fee"), -1)
@@ -5850,6 +5863,10 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
             _provider = (await get_setting(f"{_set}_provider", _def) or _def)
             if _provider not in _reg:
                 _provider = _def
+        # ChatGPT: не даём залить коды в пул отключённого сайта — оттуда их
+        # никогда не выдадут (в настройке мог остаться старый 987ai).
+        if service == "chatgpt":
+            _provider = gpt_enabled_provider(_provider)
         pool = await get_pool()
         added = 0
         dupes = 0            # уже были в базе (ON CONFLICT DO NOTHING) — раньше молча считались добавленными
@@ -7050,6 +7067,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         _paused = {p for p in _dis_raw.split(",") if p}
     except Exception:
         _paused = set()
+    # Сайты, выключенные в коде, тоже считаем паузными: pending мог быть создан
+    # ДО переезда на bypriceactivate и до сих пор указывать на старый сайт.
+    _paused |= _gpt_off_providers()
     if provider in _paused:
         _pk_rp = plan_name_to_key(plan_name)
         _new_code = _new_prov = None
@@ -7082,6 +7102,73 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     # иначе (старый клиент прислал только токен) для aipro активация невозможна.
     if provider in ("bpa", "aipro", "kkqq", "redeem") and not session_raw:
         return _resp({"success": False, "error": "Обнови мини-приложение и вставь весь текст со страницы сессии заново."})
+
+    # ── Выбор маршрута по плану аккаунта ────────────────────────────────────
+    # Код резервируется сразу после оплаты, когда план клиента ещё неизвестен.
+    # Здесь session уже есть — определяем план и, если зарезервирован код не того
+    # маршрута, возвращаем его в пул и берём правильный.
+    #   Go            -> всегда iOS
+    #   Plus + free   -> Филиппины
+    #   Plus + подписка (или план не определён) -> iOS
+    # Филиппинский код на аккаунте с активной подпиской сгорает впустую, поэтому
+    # при любой неопределённости идём на iOS, а при пустом iOS-пуле — в ручной
+    # режим: тратить iOS вместо филиппинского нельзя (решение Александра).
+    if provider == "bpa":
+        _pk_rt = plan_name_to_key(plan_name)
+        try:
+            from chatgpt_activation import gpt_plan_from_session, gpt_has_subscription
+            _acc_plan, _plan_src = gpt_plan_from_session(session_raw, access_token)
+            _has_sub = gpt_has_subscription(_acc_plan)
+        except Exception as _e_pl:
+            logging.warning(f"GPT plan detect uid={user_id}: {_e_pl}")
+            _acc_plan, _plan_src, _has_sub = "", "", True
+        _need_route = "ios" if (_pk_rt == "go" or _has_sub) else "ph"
+        _cur_route = gpt_route_for_code(code)
+        logging.info(
+            f"GPT route: uid={user_id} тариф={_pk_rt} план={_acc_plan or '(не определён)'} "
+            f"({_plan_src or '-'}) нужен={_need_route} код={code} маршрут_кода={_cur_route or '(нет)'}")
+        if _cur_route != _need_route:
+            _new_code = await get_next_gpt_code(_pk_rt, "bpa", _need_route)
+            if _new_code:
+                try:
+                    await release_gpt_code(code)   # прежний код не тронут — вернём в пул
+                except Exception as _e_rel:
+                    logging.warning(f"release_gpt_code {code}: {_e_rel}")
+                logging.info(f"GPT route swap: uid={user_id} {code} -> {_new_code} ({_need_route})")
+                code = _new_code
+                await save_pending_activation(user_id, code, order_id, _pk_rt, plan_name, "bpa")
+            else:
+                # Нужного маршрута нет — активацию НЕ делаем: чужим маршрутом
+                # либо сожжём филиппинский код, либо потратим iOS не по делу.
+                try:
+                    await release_gpt_code(code)
+                except Exception:
+                    pass
+                await delete_pending_activation(user_id)
+                _lbl = GPT_ROUTE_LABELS.get(_need_route, _need_route)
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 <b>ChatGPT — нет кодов нужного маршрута</b>\n"
+                        f"👤 <code>{user_id}</code>  🆔 <code>{order_id}</code>\n"
+                        f"📦 Тариф: <b>{plan_name}</b>\n"
+                        f"🧑‍💻 План аккаунта: <b>{_acc_plan or 'не определён'}</b>\n"
+                        f"🧭 Нужен маршрут: <b>{_lbl}</b> — свободных нет.\n\n"
+                        f"Активируй вручную. Прежний код возвращён в пул.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⏳ <b>Активация займёт чуть больше времени</b>\n\n"
+                        "Александр активирует подписку вручную в течение часа. "
+                        "Ничего делать не нужно — сообщение придёт сюда.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                return _resp({"success": False,
+                              "error": "Активация уйдёт вручную — Александр сделает в течение часа."})
 
     # ЗАЩИТА ОТ ДВОЙНОЙ АКТИВАЦИИ: если у клиента уже крутится активация — возвращаем
     # ТОТ ЖЕ job вместо запуска второго. Иначе два параллельных запуска берут по коду
@@ -8643,9 +8730,28 @@ async def _claude_redeem_via(provider: str, code: str, org_id: str, order_id: st
 
 
 # ─── Мультипровайдер ChatGPT: выбор активного сайта + авто-фолбэк ─────────────
+def _gpt_off_providers() -> set:
+    """Сайты, выключенные в коде (не в настройках) — GPT_ENABLED_PROVIDERS.
+
+    Отдельно от паузы в админке: пауза временная и снимается кнопкой, а это
+    осознанное отключение старых сайтов. Возврат — правкой списка в config.
+    """
+    return {p for p in GPT_PROVIDERS if p not in GPT_ENABLED_PROVIDERS}
+
+
 async def _gpt_active_provider() -> str:
+    """Активный сайт. Если в настройке остался выключенный сайт (например
+    987ai после переезда на bypriceactivate) — молча берём первый включённый,
+    иначе активация ушла бы на отключённый сайт мимо настроек кода."""
     p = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
-    return p if p in GPT_PROVIDERS else GPT_DEFAULT_PROVIDER
+    _off = _gpt_off_providers()
+    if p not in GPT_PROVIDERS or p in _off:
+        for _c in list(GPT_ENABLED_PROVIDERS) + [GPT_DEFAULT_PROVIDER]:
+            if _c in GPT_PROVIDERS and _c not in _off:
+                if p != _c:
+                    logging.info(f"GPT: активный сайт {p!r} отключён в коде → {_c!r}")
+                return _c
+    return p
 
 
 async def _gpt_failover_on() -> bool:
@@ -8660,6 +8766,7 @@ async def _gpt_provider_order() -> list:
         _disabled = {p for p in _dis_raw.split(",") if p}
     except Exception:
         _disabled = set()
+    _disabled |= _gpt_off_providers()
     active = await _gpt_active_provider()
     order = []
     if active in GPT_PROVIDERS and active not in _disabled:
@@ -8673,11 +8780,23 @@ async def _gpt_provider_order() -> list:
 
 async def _gpt_pick_code(plan: str):
     """Берёт CDK-код из пула активного сайта ChatGPT; при пустом пуле и включённом
-    фолбэке пробует остальные. Возвращает (code, provider) либо (None, None)."""
+    фолбэке пробует остальные. Возвращает (code, provider) либо (None, None).
+
+    Резерв происходит сразу после оплаты, когда план аккаунта клиента ещё
+    неизвестен, поэтому маршрут здесь выбираем только там, где он предрешён
+    тарифом: Go активируется всегда через iOS. Для Plus маршрут уточняется
+    позже, в момент активации, когда придёт session (см. подмену маршрута).
+    """
     order = await _gpt_provider_order()
+    if not order:
+        # Все сайты на паузе — раньше здесь падало IndexError на order[0].
+        logging.warning("_gpt_pick_code: нет доступных сайтов (все на паузе)")
+        return None, None
     active = order[0]
+    _route = "ios" if plan == "go" else None
     for prov in order:
-        code = await get_next_gpt_code(plan, prov)
+        code = await get_next_gpt_code(plan, prov, _route) if prov == "bpa" \
+            else await get_next_gpt_code(plan, prov)
         if code:
             if prov != active:
                 try:
@@ -12504,6 +12623,18 @@ async def _is_manual_plan(shop_key, plan_idx) -> bool:
             return True
     except Exception:
         pass
+    # 1a) ChatGPT: автоматически активируются только тарифы из GPT_AUTO_PLANS
+    #     (Plus и Go). Pro 5× / Pro 20× Александр активирует сам — правило зашито
+    #     здесь, а не только переключателем в админке, чтобы забытый тумблер не
+    #     привёл к резерву кода под тариф, который бот всё равно не активирует.
+    try:
+        if shop_key == "chatgpt":
+            _pl = (SHOP_CATALOG.get(shop_key, {}) or {}).get("plans", []) or []
+            if 0 <= plan_idx < len(_pl):
+                if plan_name_to_key(_pl[plan_idx].get("name", "")) not in GPT_AUTO_PLANS:
+                    return True
+    except Exception as _e_ap:
+        logging.warning(f"_is_manual_plan auto-plans: {_e_ap}")
     # 2) Недельные тарифы всегда выдаём вручную (авто-активация — только для месячных).
     #    Коды в пуле — месячные; недельную подписку оформляет Александр сам.
     try:

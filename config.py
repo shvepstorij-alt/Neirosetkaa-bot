@@ -110,8 +110,52 @@ GPT_PROVIDERS = {
     # подтверждение почты → (при активной подписке) галочка force → успех.
     "redeem": {"name": "redeemgpt.com", "base": "https://redeemgpt.com"},
 }
+# ── Маршрут активации ChatGPT по префиксу кода ──────────────────────────────
+# iOS-коды кладутся на ЛЮБОЙ аккаунт (и на free, и поверх активной подписки) —
+# только через iOS возможно принудительное пополнение.
+# Филиппинские работают ТОЛЬКО по free plan: на аккаунте с активной подпиской
+# такой код сгорает впустую, поэтому его берём лишь при подтверждённом free.
+GPT_CODE_ROUTES = {
+    "GPTI-":  "ios",   # iOS, тариф Plus
+    "GPTGO-": "ios",   # iOS, тариф Go
+    "GPTP-":  "ph",    # Филиппины, только free plan
+}
+GPT_ROUTE_LABELS = {"ios": "iOS", "ph": "Филиппины"}
+# Сайты, реально участвующие в активации ChatGPT. Старые (999uu, aipro, kkqq,
+# redeem) отключены: bypriceactivate умеет и iOS, и Филиппины, и оба тарифа.
+# Код старых сайтов НЕ удалён — чтобы вернуть, допиши ключ в этот список.
+GPT_ENABLED_PROVIDERS = ("bpa",)
+# Тарифы, которые активируются автоматически. Остальные (Pro 5×, Pro 20×) —
+# сразу в ручной режим, пул кодов не трогаем.
+GPT_AUTO_PLANS = ("plus", "go")
+
+
+def gpt_enabled_provider(p: str = "") -> str:
+    """Приводит сайт к включённому.
+
+    В настройке gpt_provider может остаться отключённый сайт (например 987ai
+    после переезда на bypriceactivate). Если оставить как есть, новые коды
+    зальются в пул мёртвого сайта и никогда не будут выданы.
+    """
+    if p and p in GPT_PROVIDERS and p in GPT_ENABLED_PROVIDERS:
+        return p
+    for _c in GPT_ENABLED_PROVIDERS:
+        if _c in GPT_PROVIDERS:
+            return _c
+    return GPT_DEFAULT_PROVIDER
+
+
+def gpt_route_for_code(code: str) -> str:
+    """Маршрут по префиксу кода: 'ios' | 'ph' | '' если префикс незнакомый."""
+    _c = (code or "").strip().upper()
+    for _pref, _route in GPT_CODE_ROUTES.items():
+        if _c.startswith(_pref):
+            return _route
+    return ""
+
+
 GPT_PROVIDER_ORDER   = ["bpa", "987ai", "aipro", "kkqq", "redeem"]
-GPT_DEFAULT_PROVIDER = "987ai"
+GPT_DEFAULT_PROVIDER = "bpa"
 
 def gpt_provider_name(provider: str) -> str:
     return GPT_PROVIDERS.get(provider, GPT_PROVIDERS[GPT_DEFAULT_PROVIDER])["name"]

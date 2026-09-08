@@ -23,6 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import (
     ANIM_MODELS, CREDIT_PACKS, CUSTOM_EMOJI_IDS, DATABASE_URL, DISABLED_MODELS, EDIT_MODELS,
     FREE_CREDITS, IMAGE_MODELS, REF_BONUS, REF_WELCOME_CREDITS, SHOP_CATALOG, VIDEO_MODELS, _pool,
+    GPT_CODE_ROUTES,
 )
 
 async def get_pool():
@@ -481,11 +482,52 @@ async def init_db():
             ("last_checked_at",  "TIMESTAMPTZ"),
             ("flagged_reason",   "TEXT"),
             ("provider",         "TEXT NOT NULL DEFAULT '987ai'"),  # сайт активации (987ai|aipro)
+            # Маршрут активации: 'ios' кладётся на любой аккаунт, 'ph' — только
+            # на free plan. NULL = префикс незнакомый, разметить вручную.
+            ("route",            "TEXT"),
         ]:
             try:
                 await conn.execute(f"ALTER TABLE gpt_codes ADD COLUMN {_col} {_def}")
             except Exception:
                 pass
+        # Разметка маршрута по префиксу. Кодов в базу добавляют из трёх мест
+        # (команда, FSM-экран, мини-апп), поэтому вешаем ТРИГГЕР — так ни один
+        # путь вставки не сможет её обойти, включая ручной SQL. Тело триггера
+        # генерим из GPT_CODE_ROUTES, чтобы карта префиксов жила в одном месте.
+        _branches = "\n".join(
+            f"    {'IF' if _i == 0 else 'ELSIF'} UPPER(NEW.code) LIKE '{_pref.upper()}%' "
+            f"THEN NEW.route := '{_route}';"
+            for _i, (_pref, _route) in enumerate(GPT_CODE_ROUTES.items()))
+        try:
+            await conn.execute(f"""
+                CREATE OR REPLACE FUNCTION gpt_codes_set_route() RETURNS trigger AS $fn$
+                BEGIN
+                  IF NEW.route IS NULL THEN
+                {_branches}
+                    END IF;
+                  END IF;
+                  RETURN NEW;
+                END $fn$ LANGUAGE plpgsql""")
+            await conn.execute("DROP TRIGGER IF EXISTS trg_gpt_codes_route ON gpt_codes")
+            await conn.execute(
+                "CREATE TRIGGER trg_gpt_codes_route BEFORE INSERT OR UPDATE OF code "
+                "ON gpt_codes FOR EACH ROW EXECUTE FUNCTION gpt_codes_set_route()")
+        except Exception as _e_trg:
+            logging.warning(f"gpt_codes route-триггер не создался: {_e_trg}")
+        # Разовый бэкофилл для кодов, залитых до появления колонки.
+        for _pref, _route in GPT_CODE_ROUTES.items():
+            try:
+                await conn.execute(
+                    "UPDATE gpt_codes SET route=$1 WHERE route IS NULL AND UPPER(code) LIKE $2",
+                    _route, _pref.upper() + "%")
+            except Exception:
+                pass
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gpt_codes_free_route "
+                "ON gpt_codes(route, plan, is_used) WHERE is_used = FALSE")
+        except Exception:
+            pass
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS gpt_pending_activations (
                 id          SERIAL PRIMARY KEY,
@@ -663,29 +705,62 @@ async def init_db():
 
 # ── GPT АКТИВАЦИЯ — вспомогательные функции ─────────────────────────────────
 
-async def get_next_gpt_code(plan: str = "plus", provider: str = "987ai"):
+async def get_next_gpt_code(plan: str = "plus", provider: str = "987ai",
+                            route: str | None = None):
     """Выдаёт следующий свободный код ИЗ ПУЛА КОНКРЕТНОГО САЙТА.
-    Приоритет: check_status='ok' > 'unchecked'. 'used'/'invalid' не выдаются."""
+
+    Приоритет: check_status='ok' > 'unchecked'. 'used'/'invalid' не выдаются.
+
+    route ('ios' | 'ph') сужает выборку до нужного маршрута. Это ключевая
+    защита: филиппинский код на аккаунте с активной подпиской сгорает впустую,
+    поэтому его нельзя выдать «заодно». route=None — старое поведение
+    (любой код), оставлено для прочих сайтов и ручных сценариев.
+    """
+    pool = await get_pool()
+    _r = (route or "").strip().lower() or None
+    async with pool.acquire() as conn:
+        for _status_cond in ("COALESCE(check_status,'unchecked') = 'ok'",
+                             "COALESCE(check_status,'unchecked') NOT IN ('used','invalid')"):
+            if _r:
+                row = await conn.fetchrow(
+                    f"""UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
+                        WHERE id=(SELECT id FROM gpt_codes
+                                  WHERE plan=$1 AND provider=$2 AND is_used=FALSE
+                                    AND route=$3 AND {_status_cond}
+                                  ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                        RETURNING code""", plan, provider, _r)
+            else:
+                row = await conn.fetchrow(
+                    f"""UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
+                        WHERE id=(SELECT id FROM gpt_codes
+                                  WHERE plan=$1 AND provider=$2 AND is_used=FALSE
+                                    AND {_status_cond}
+                                  ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                        RETURNING code""", plan, provider)
+            if row:
+                return row["code"]
+    return None
+
+
+async def count_gpt_free_by_route() -> list[dict]:
+    """Свободные коды по маршруту и тарифу: [{route, plan, free}]."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Сначала пробуем 'ok' (проверенные речекером)
-        row = await conn.fetchrow(
-            """UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
-               WHERE id=(SELECT id FROM gpt_codes
-                         WHERE plan=$1 AND provider=$2 AND is_used=FALSE
-                           AND COALESCE(check_status,'unchecked') = 'ok'
-                         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-               RETURNING code""", plan, provider)
-        if not row:
-            # Fallback: любые непроверенные (не помеченные как плохие)
-            row = await conn.fetchrow(
-                """UPDATE gpt_codes SET is_used=TRUE, reserved_at=NOW()
-                   WHERE id=(SELECT id FROM gpt_codes
-                             WHERE plan=$1 AND provider=$2 AND is_used=FALSE
-                               AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid')
-                             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-                   RETURNING code""", plan, provider)
-    return row["code"] if row else None
+        rows = await conn.fetch(
+            "SELECT COALESCE(route,'') AS route, plan, COUNT(*) AS free "
+            "FROM gpt_codes WHERE is_used=FALSE "
+            "AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid') "
+            "GROUP BY COALESCE(route,''), plan ORDER BY route, plan")
+    return [dict(r) for r in rows]
+
+
+async def set_gpt_code_route(code: str, route: str) -> bool:
+    """Ручная разметка маршрута для кода с незнакомым префиксом."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.execute("UPDATE gpt_codes SET route=$2 WHERE code=$1",
+                               code, (route or "").strip().lower() or None)
+    return str(r).split()[-1] == "1"
 
 
 async def count_gpt_free_by_provider() -> dict:

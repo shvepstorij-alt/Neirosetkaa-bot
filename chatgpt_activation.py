@@ -2,6 +2,8 @@
 chatgpt_activation.py — активация ChatGPT через 987ai.vip (Playwright).
 """
 import asyncio
+import base64
+import json
 import logging
 import os
 
@@ -546,6 +548,77 @@ async def _aipro_ss(page):
         return await page.screenshot(full_page=True)
     except Exception:
         return None
+
+
+def gpt_plan_from_session(session_raw: str = "", access_token: str = "") -> tuple[str, str]:
+    """План аккаунта ChatGPT: ('free' | 'plus' | 'pro' | ..., откуда взяли).
+
+    Читается ОФЛАЙН, из того, что клиент и так прислал — запрос к chatgpt.com
+    не нужен (а с серверного IP его и режет Cloudflare). Два источника, оба
+    проверены на живых аккаунтах:
+      1) session JSON  ->  account.planType
+      2) accessToken (JWT) -> https://api.openai.com/auth.chatgpt_plan_type
+
+    Возвращает ("", "") если план определить не удалось. Вызывающий код в этом
+    случае обязан идти по iOS-маршруту: iOS-код ложится на любой аккаунт, а
+    филиппинский на аккаунте с подпиской сгорает впустую.
+
+    При расхождении источников считаем, что подписка ЕСТЬ — ошибка в эту
+    сторону стоит лишнего iOS-кода, в обратную — сгоревшего филиппинского.
+    """
+    _vals = []
+
+    # 1) session JSON
+    try:
+        if session_raw and session_raw.strip().startswith("{"):
+            _d = json.loads(session_raw)
+            _p = ((_d.get("account") or {}).get("planType") or "").strip().lower()
+            if _p:
+                _vals.append((_p, "session.account.planType"))
+    except Exception as _e:
+        logger.debug(f"gpt_plan_from_session: session JSON не разобрался: {_e}")
+
+    # 2) JWT accessToken
+    _tok = (access_token or "").strip()
+    if not _tok and session_raw:
+        try:
+            _tok = (json.loads(session_raw).get("accessToken") or "").strip()
+        except Exception:
+            for _w in session_raw.replace('"', " ").replace(",", " ").split():
+                if _w.startswith("eyJ") and len(_w) > 100:
+                    _tok = _w
+                    break
+    if _tok.startswith("eyJ"):
+        try:
+            _seg = _tok.split(".")[1]
+            _seg += "=" * (-len(_seg) % 4)
+            _pl = json.loads(base64.urlsafe_b64decode(_seg.encode()).decode("utf-8", "replace"))
+            _p2 = ((_pl.get("https://api.openai.com/auth") or {})
+                   .get("chatgpt_plan_type") or "").strip().lower()
+            if _p2:
+                _vals.append((_p2, "jwt.chatgpt_plan_type"))
+        except Exception as _e:
+            logger.debug(f"gpt_plan_from_session: JWT не разобрался: {_e}")
+
+    if not _vals:
+        return "", ""
+    _plans = {v for v, _ in _vals}
+    if len(_plans) > 1:
+        # Расхождение — выбираем НЕ free, чтобы не сжечь филиппинский код.
+        for _v, _src in _vals:
+            if _v != "free":
+                logger.warning(f"gpt_plan_from_session: источники разошлись {_vals} → берём {_v}")
+                return _v, _src + " (расхождение)"
+    return _vals[0][0], _vals[0][1]
+
+
+def gpt_has_subscription(plan: str) -> bool:
+    """True, если на аккаунте есть активная подписка (любая, кроме free).
+
+    Пустая строка = план не определён → считаем, что подписка есть:
+    безопасная сторона, филиппинский код не тратится наугад.
+    """
+    return (plan or "").strip().lower() != "free"
 
 
 def _email_from_session(session_json: str) -> str:

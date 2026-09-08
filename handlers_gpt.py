@@ -24,6 +24,8 @@ from config import (
     ADMIN_ID, PERSONAL_USERNAME, WEBAPP_BASE_URL, _BOT_TZ, bot, dp,
     is_admin, SHOP_CATALOG, plan_name_to_key,
     GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER, gpt_provider_name,
+    GPT_ROUTE_LABELS, gpt_route_for_code, gpt_enabled_provider,
+    GPT_ENABLED_PROVIDERS,
 )
 from runtime_state import (
     rt,
@@ -34,7 +36,7 @@ from states import (
 from db import (
     delete_pending_activation, ensure_user, get_next_gpt_code, get_pending_activation, get_pool, log_event,
     release_gpt_code, save_pending_activation,
-    get_setting, set_setting, count_gpt_free_by_provider,
+    get_setting, set_setting, count_gpt_free_by_provider, set_gpt_code_route,
 )
 from keyboards import (
     _eib,
@@ -48,16 +50,18 @@ async def admin_add_gpt_codes(message: Message):
     lines = message.text.strip().split("\n")
     parts = lines[0].split()
     plan = parts[1].lower() if len(parts) > 1 else "plus"
-    if plan not in ("plus", "pro_5x", "pro_max"):
+    if plan not in ("plus", "go", "pro_5x", "pro_max"):
         await message.answer(
-            "❌ План: <code>plus</code>, <code>pro_5x</code>, <code>pro_max</code>\n"
+            "❌ План: <code>plus</code>, <code>go</code>, <code>pro_5x</code>, "
+            "<code>pro_max</code>\n"
             "Пример: <code>/add_gpt_codes plus\nCODE1\nCODE2</code>", parse_mode="HTML")
         return
     codes = [l.strip() for l in lines[1:] if l.strip()]
     if not codes:
         await message.answer("❌ Нет кодов.\n<code>/add_gpt_codes plus\nCODE1</code>", parse_mode="HTML")
         return
-    prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    prov = gpt_enabled_provider(
+        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
     if prov not in GPT_PROVIDERS:
         prov = GPT_DEFAULT_PROVIDER
     pool = await get_pool()
@@ -72,9 +76,97 @@ async def admin_add_gpt_codes(message: Message):
     async with pool.acquire() as conn:
         remaining = await conn.fetchval(
             "SELECT COUNT(*) FROM gpt_codes WHERE plan=$1 AND provider=$2 AND is_used=FALSE", plan, prov) or 0
+        _by_route = await conn.fetch(
+            "SELECT COALESCE(route,'') AS route, COUNT(*) AS n FROM gpt_codes "
+            "WHERE plan=$1 AND provider=$2 AND is_used=FALSE GROUP BY COALESCE(route,'')",
+            plan, prov)
+    _rt_txt = "  ·  ".join(
+        f"{GPT_ROUTE_LABELS.get(r['route'], '⚠️ без маршрута')}: <b>{r['n']}</b>"
+        for r in _by_route) or "—"
+    # Маршрут проставляет триггер в БД по префиксу; сюда попадают только коды
+    # с незнакомым префиксом — их автоактивация не возьмёт вообще.
+    _unknown = [c for c in codes if not gpt_route_for_code(c)]
+    _warn = ""
+    if _unknown:
+        _warn = (f"\n\n⚠️ <b>Незнакомый префикс</b> у {len(_unknown)} код(ов) — "
+                 "маршрут не проставлен, автоактивация их не возьмёт:\n"
+                 + "\n".join(f"<code>{c}</code>" for c in _unknown[:10])
+                 + "\n\nРазметь вручную: <code>/gpt_code_route КОД ios|ph</code>")
     await message.answer(
         f"✅ <b>Коды добавлены</b>\n\n📦 {plan}\n➕ {added} добавлено  ⏭ {skipped} дублей\n"
-        f"📊 Свободных: <b>{remaining}</b>", parse_mode="HTML")
+        f"📊 Свободных: <b>{remaining}</b>\n🧭 {_rt_txt}{_warn}", parse_mode="HTML")
+
+
+@dp.message(F.text.startswith("/gpt_codes_to_bpa"), StateFilter("*"))
+async def admin_gpt_codes_to_bpa(message: Message):
+    """Переносит свободные коды со ОТКЛЮЧЁННЫХ сайтов на активный.
+
+    После переезда на bypriceactivate коды, залитые под старые сайты, лежат в
+    их пулах и никогда не будут выданы. Переносим только СВОБОДНЫЕ и только с
+    понятным префиксом — использованные и неразмеченные не трогаем.
+    Без аргумента показывает, что будет перенесено; с «да» — переносит.
+    """
+    if not is_admin(message.from_user.id):
+        return
+    _target = gpt_enabled_provider(
+        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
+    _off = [p for p in GPT_PROVIDERS if p not in GPT_ENABLED_PROVIDERS]
+    if not _off:
+        await message.answer("✅ Отключённых сайтов нет — переносить нечего.")
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT provider, plan, COALESCE(route,'') AS route, COUNT(*) AS n "
+            "FROM gpt_codes WHERE is_used=FALSE AND provider = ANY($1::text[]) "
+            "AND route IS NOT NULL "
+            "AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid') "
+            "GROUP BY provider, plan, COALESCE(route,'') ORDER BY provider, plan",
+            _off)
+    _total = sum(int(r["n"]) for r in rows)
+    if not _total:
+        await message.answer(
+            f"📭 Свободных размеченных кодов на отключённых сайтах нет.\n"
+            f"Отключены: {', '.join(gpt_provider_name(p) for p in _off)}")
+        return
+    _list = "\n".join(
+        f"• {gpt_provider_name(r['provider'])} · {r['plan']} · "
+        f"{GPT_ROUTE_LABELS.get(r['route'], r['route'])}: <b>{r['n']}</b>" for r in rows)
+    if "да" not in (message.text or "").lower():
+        await message.answer(
+            f"🧭 <b>Перенос кодов на {gpt_provider_name(_target)}</b>\n\n{_list}\n\n"
+            f"Всего: <b>{_total}</b>\n\n"
+            f"Использованные и коды с незнакомым префиксом не трогаю.\n"
+            f"Выполнить: <code>/gpt_codes_to_bpa да</code>", parse_mode="HTML")
+        return
+    async with pool.acquire() as conn:
+        res = await conn.execute(
+            "UPDATE gpt_codes SET provider=$1 WHERE is_used=FALSE "
+            "AND provider = ANY($2::text[]) AND route IS NOT NULL "
+            "AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid')",
+            _target, _off)
+    _moved = str(res).split()[-1] if isinstance(res, str) else "?"
+    await message.answer(
+        f"✅ Перенесено на {gpt_provider_name(_target)}: <b>{_moved}</b>\n"
+        f"Проверь: /gpt_codes_status", parse_mode="HTML")
+
+
+@dp.message(F.text.startswith("/gpt_code_route"), StateFilter("*"))
+async def admin_gpt_code_route(message: Message):
+    """Ручная разметка маршрута: /gpt_code_route КОД ios|ph"""
+    if not is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 3 or parts[2].lower() not in ("ios", "ph"):
+        await message.answer(
+            "❌ Формат: <code>/gpt_code_route КОД ios|ph</code>\n\n"
+            "<b>ios</b> — ложится на любой аккаунт (и на free, и поверх подписки)\n"
+            "<b>ph</b> — Филиппины, только на free plan", parse_mode="HTML")
+        return
+    ok = await set_gpt_code_route(parts[1], parts[2].lower())
+    await message.answer(
+        (f"✅ <code>{parts[1]}</code> → {GPT_ROUTE_LABELS.get(parts[2].lower(), parts[2])}"
+         if ok else f"❌ Код <code>{parts[1]}</code> не найден"), parse_mode="HTML")
 
 
 @dp.message(F.text == "/gpt_codes_status", StateFilter("*"))
@@ -85,15 +177,16 @@ async def admin_gpt_codes_status(message: Message):
     async with pool.acquire() as conn:
         # Свободные коды с деталями
         free_rows = await conn.fetch(
-            """SELECT plan, code, created_at FROM gpt_codes
-               WHERE is_used = FALSE ORDER BY plan, id""")
+            """SELECT plan, COALESCE(route,'') AS route, code, created_at
+               FROM gpt_codes WHERE is_used = FALSE ORDER BY plan, route, id""")
         # Статистика по тарифам
         stat_rows = await conn.fetch(
-            """SELECT plan,
+            """SELECT plan, COALESCE(route,'') AS route,
                       COUNT(*) FILTER(WHERE NOT is_used)                     AS free,
                       COUNT(*) FILTER(WHERE is_used AND used_by IS NOT NULL)  AS used,
                       COUNT(*) FILTER(WHERE is_used AND used_by IS NULL)      AS pending
-               FROM gpt_codes GROUP BY plan ORDER BY plan""")
+               FROM gpt_codes GROUP BY plan, COALESCE(route,'')
+               ORDER BY plan, route""")
     if not stat_rows:
         await message.answer("📭 Кодов нет. Добавь: /add_gpt_codes")
         return
@@ -103,18 +196,20 @@ async def admin_gpt_codes_status(message: Message):
     from collections import defaultdict
     free_by_plan = defaultdict(list)
     for r in free_rows:
-        free_by_plan[r["plan"]].append(r["code"])
+        free_by_plan[(r["plan"], r["route"])].append(r["code"])
 
     lines = ["📊 <b>Коды ChatGPT — статус</b>\n"]
     for r in stat_rows:
         plan = r["plan"]
         label = plan_labels.get(plan, plan)
+        _rt = GPT_ROUTE_LABELS.get(r["route"], "⚠️ без маршрута")
         icon = "✅" if r["free"] > 2 else ("⚠️" if r["free"] > 0 else "🚨")
         pending_str = f"  ⏳ {r['pending']} ждут" if r["pending"] else ""
         lines.append(
-            f"\n{icon} <b>{label}</b>: {r['free']} своб / {r['used']} актив{pending_str}"
+            f"\n{icon} <b>{label}</b> · {_rt}: "
+            f"{r['free']} своб / {r['used']} актив{pending_str}"
         )
-        codes = free_by_plan.get(plan, [])
+        codes = free_by_plan.get((plan, r["route"]), [])
         if codes:
             for i, c in enumerate(codes, 1):
                 lines.append(f"  {i}. <code>{c}</code>")
@@ -190,7 +285,8 @@ async def adm_gpt_webapp_menu(cb: CallbackQuery):
             last_txt = f"\n\n⏱ Последняя активация: <code>{last_used['code']}</code> ({used_str})"
 
     # ── Провайдер активации (сайт) ──
-    active_prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    active_prov = gpt_enabled_provider(
+        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
     if active_prov not in GPT_PROVIDERS:
         active_prov = GPT_DEFAULT_PROVIDER
     failover_on = (await get_setting("gpt_failover", "1") or "1") == "1"
@@ -255,7 +351,8 @@ async def adm_gpt_toggle(cb: CallbackQuery):
 
 # ─── Провайдер (сайт) активации ChatGPT ───────────────────────────
 async def _render_gpt_provider(target_msg):
-    active = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    active = gpt_enabled_provider(
+        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
     if active not in GPT_PROVIDERS:
         active = GPT_DEFAULT_PROVIDER
     failover = (await get_setting("gpt_failover", "1") or "1") == "1"
@@ -327,7 +424,8 @@ async def adm_gpt_add_start(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     plan = cb.data.split(":")[1]
-    prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    prov = gpt_enabled_provider(
+        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
     if prov not in GPT_PROVIDERS:
         prov = GPT_DEFAULT_PROVIDER
     await state.update_data(gpt_add_plan=plan, _adm_pmid=cb.message.message_id, _adm_pchat=cb.message.chat.id)
@@ -374,7 +472,8 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
                    InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")]]))
         return
     plan = data.get("gpt_add_plan", "plus")
-    prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER) or GPT_DEFAULT_PROVIDER
+    prov = gpt_enabled_provider(
+        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
     if prov not in GPT_PROVIDERS:
         prov = GPT_DEFAULT_PROVIDER
     codes = [l.strip() for l in (message.text or "").split("\n") if l.strip()]
