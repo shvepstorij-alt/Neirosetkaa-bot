@@ -1025,6 +1025,9 @@ function _bnEdit(b,i){var bn=window._bnList[i];if(!bn){window._bnEditIdx=null;_b
     +'<div class="kv" style="margin-top:8px"><span class="k">Фон (цвет/градиент CSS)</span></div><input class="f" placeholder="linear-gradient(135deg,#10a37f,#0c7d61)" value="'+esc(bn.bg||'')+'" oninput="window._bnList['+i+'].bg=this.value;_bnPreview('+i+')">'
     +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="tag g" style="cursor:pointer;padding:6px 10px">Загрузить картинку<input type="file" accept="image/*" style="display:none" onchange="_bnImg('+i+',this)"></label>'
     +(bn.img?'<span class="tag a">картинка есть</span><span class="tag r" style="cursor:pointer" onclick="window._bnList['+i+'].img=\'\';_bnRender()">убрать</span>':'<span class="sub">картинка перекрывает фон-цвет</span>')+'</div>'
+    +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><label class="tag g" style="cursor:pointer;padding:6px 10px">🎬 Видео или GIF<input type="file" accept="image/gif,video/mp4,video/webm" style="display:none" onchange="_bnMed('+i+',this)"></label>'
+    +(bn.med?('<span class="tag a">'+(bn.mtype==='video'?'видео':'GIF')+' загружено</span><span class="tag r" style="cursor:pointer" onclick="_bnMedClear('+i+')">убрать</span>'):'')+'</div>'
+    +'<div class="sub" style="margin-top:4px">Видео MP4 или WebM до 12 МБ, GIF до 8 МБ. Играет само, без звука, по кругу — звук в баннере телефоны всё равно не дают. Видео и GIF перекрывают картинку.</div>'
     +'<div class="kv" style="margin-top:10px"><span class="k">Формат (соотношение сторон)</span></div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
       +['16:9','4:3','1:1','4:5','9:16'].map(function(a){return '<span class="tag '+(((bn.ar||'16:6')===a)?'g':'a')+'" style="cursor:pointer;padding:6px 12px" onclick="window._bnList['+i+'].ar=\''+a+'\';_bnRender()">'+a+'</span>';}).join('')
@@ -1048,9 +1051,14 @@ function _bnPreview(i){
   var host=document.getElementById('bprev'); if(!host) return; var b=window._bnList[i]; if(!b) return;
   var ex=(b.ex!=null?b.ex:5), ey=(b.ey!=null?b.ey:28), tx=(b.tx!=null?b.tx:22), ty=(b.ty!=null?b.ty:24);
   var ar=_bnAspect(b), tc=b.tc||'#ffffff';
-  var bgstyle = b.img ? '' : ('background:'+(b.bg||'linear-gradient(135deg,#10a37f,#0c7d61)')+';');
+  var bgstyle = (b.img||b.med) ? '' : ('background:'+(b.bg||'linear-gradient(135deg,#10a37f,#0c7d61)')+';');
   host.style.cssText='position:relative;width:100%;aspect-ratio:'+ar.w+'/'+ar.h+';border-radius:16px;overflow:hidden;color:'+tc+';margin-top:6px;'+bgstyle;
-  host.innerHTML=(b.img?'<div style="position:absolute;inset:0;background-size:cover;background-position:center;background-image:url(\''+b.img+'\')"></div><div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05))"></div>':'')
+  var _mv = (b.med&&b.mtype==='video')
+    ? '<video src="'+b.med+'" autoplay muted loop playsinline style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"></video><div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05))"></div>'
+    : (b.med
+       ? '<div style="position:absolute;inset:0;background-size:cover;background-position:center;background-image:url(\''+b.med+'\')"></div><div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05))"></div>'
+       : '');
+  host.innerHTML=(_mv||(b.img?'<div style="position:absolute;inset:0;background-size:cover;background-position:center;background-image:url(\''+b.img+'\')"></div><div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.5),rgba(0,0,0,.05))"></div>':''))
     +'<div id="bp-emoji" style="position:absolute;z-index:3;left:'+ex+'%;top:'+ey+'%;font-size:34px;cursor:move;touch-action:none">'+(b.emoji||'')+'</div>'
     +'<div id="bp-text" style="position:absolute;z-index:3;left:'+tx+'%;top:'+ty+'%;max-width:74%;cursor:move;touch-action:none;color:'+tc+'"><div style="font-weight:800;font-size:15px">'+esc(b.title||'')+'</div><div style="font-size:11px;opacity:.9">'+esc(b.sub||'')+'</div></div>';
   _bnDrag('bp-emoji', function(x,y){b.ex=x;b.ey=y;});
@@ -1070,7 +1078,42 @@ function _bnDrag(id,setxy){
 function _bnToggle(i){window._bnList[i].on=!window._bnList[i].on;_bnRender();}
 function _bnMove(i,d){var L=window._bnList;var j=i+d;if(j<0||j>=L.length)return;var t=L[i];L[i]=L[j];L[j]=t;_bnRender();}
 function _bnDel(i){window._bnList.splice(i,1);if(window._bnEditIdx!==null)window._bnEditIdx=null;_bnRender();}
-function _bnAdd(){window._bnList.push({id:'',on:true,title:'Новый баннер',sub:'',emoji:'🔥',bg:'linear-gradient(135deg,#10a37f,#0c7d61)',img:'',act:'url',val:''});window._bnEditIdx=window._bnList.length-1;_bnRender();}
+function _bnAdd(){window._bnList.push({id:_bnNewId(),on:true,title:'Новый баннер',sub:'',emoji:'🔥',bg:'linear-gradient(135deg,#10a37f,#0c7d61)',img:'',act:'url',val:''});window._bnEditIdx=window._bnList.length-1;_bnRender();}
+function _bnNewId(){return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+/* Видео и гифки НЕ гоняем через кадрировщик: он перерисовывает файл в canvas,
+   и от анимации остаётся один кадр. Грузим как есть, кадр подбирается
+   соотношением сторон. Файл уходит на сервер и живёт в БД, в баннере — ссылка. */
+function _bnMed(i,input){
+  var f=input.files&&input.files[0]; if(!f) return;
+  var b=window._bnList[i]; if(!b) return;
+  if(!b.id) b.id=_bnNewId();
+  var isVid=/^video\//.test(f.type||'');
+  var lim=isVid?12:8;
+  if(f.size>lim*1024*1024){
+    toast('Файл '+(f.size/1024/1024).toFixed(1)+' МБ — максимум '+lim+' МБ'); input.value=''; return;
+  }
+  if(isVid && ['video/mp4','video/webm'].indexOf(f.type)<0){
+    toast('Нужен MP4 или WebM'); input.value=''; return;
+  }
+  toast('Загружаю…');
+  var r=new FileReader();
+  r.onload=function(){
+    api('/api/admin/banner-media',{id:b.id,data:r.result}).then(function(d){
+      if(!d||!d.ok){ toast((d&&d.msg)||'Ошибка загрузки'); return; }
+      b.med=d.med; b.mtype=d.mtype; b.img='';
+      toast((d.mtype==='video'?'Видео':'GIF')+' загружено ('+(d.size/1024/1024).toFixed(1)+' МБ)');
+      _bnRender();
+    });
+  };
+  r.readAsDataURL(f);
+  input.value='';
+}
+function _bnMedClear(i){
+  var b=window._bnList[i]; if(!b) return;
+  api('/api/admin/banner-media',{id:b.id,clear:1}).then(function(){
+    b.med=''; b.mtype=''; toast('Убрано'); _bnRender();
+  });
+}
 function _bnImg(i,input){var f=input.files&&input.files[0];if(!f)return;var r=new FileReader();r.onload=function(){_openBannerCropper(r.result,i);};r.readAsDataURL(f);}
 function _bnAspect(b){
   var a=(b&&b.ar&&/^\d+:\d+$/.test(b.ar))?b.ar.split(':'):null;

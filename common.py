@@ -2485,6 +2485,12 @@ async def _shop_cat_map() -> dict:
     return _amap
 
 
+# Лимиты медиа баннера. Держим ниже client_max_size (25 МБ): при передаче
+# base64 объём растёт примерно на треть.
+BANNER_VIDEO_MAX_MB = 12
+BANNER_GIF_MAX_MB = 8
+
+
 async def _shop_banners() -> list:
     """Баннеры/акции магазина (JSON-список из настройки shop_banners)."""
     try:
@@ -3521,6 +3527,67 @@ async def api_admin_banners_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
+async def api_admin_banner_media_handler(request: web.Request) -> web.Response:
+    """Загрузка гифки/видео для баннера каталога. Admin-only.
+
+    Кладём файл в admin_media (та же таблица, что у медиа активаций) и отдаём
+    ссылку /media/bn_<id>. В настройку shop_banners попадает только ссылка:
+    base64 гифки или видео раздул бы и строку настройки, и HTML магазина,
+    который грузится при каждом открытии каталога.
+    """
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        import re as _re_bm, time as _t_bm
+        _bid = str(body.get("id", "") or "").strip()
+        if not _re_bm.match(r"^[A-Za-z0-9_\-]{1,48}$", _bid):
+            return web.json_response({"ok": False, "error": "bad_id"})
+        _key = "bn_" + _bid
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "CREATE TABLE IF NOT EXISTS admin_media ("
+                "key TEXT PRIMARY KEY, data BYTEA, mime TEXT, updated_at TIMESTAMPTZ DEFAULT NOW())")
+            if body.get("clear"):
+                await conn.execute("DELETE FROM admin_media WHERE key=$1", _key)
+                return web.json_response({"ok": True, "med": "", "mtype": ""})
+
+            _data = str(body.get("data", "") or "")
+            if not (_data.startswith("data:image/gif") or _data.startswith("data:video/")):
+                return web.json_response({"ok": False, "error": "bad_type"})
+            _raw, _mime = _decode_data_uri(_data)
+            if not _raw:
+                return web.json_response({"ok": False, "error": "bad_data"})
+            _is_video = _mime.startswith("video/")
+            # Лимиты держим ниже client_max_size (25 МБ): base64 раздувает ~на треть.
+            _lim = BANNER_VIDEO_MAX_MB if _is_video else BANNER_GIF_MAX_MB
+            if len(_raw) > _lim * 1024 * 1024:
+                return web.json_response({
+                    "ok": False, "error": "too_big",
+                    "msg": f"Файл {len(_raw)/1024/1024:.1f} МБ — максимум {_lim} МБ"})
+            if _is_video and _mime not in ("video/mp4", "video/webm"):
+                return web.json_response({
+                    "ok": False, "error": "bad_video",
+                    "msg": "Поддерживаются MP4 и WebM — другие форматы не проиграются на телефонах"})
+            await conn.execute(
+                "INSERT INTO admin_media (key,data,mime,updated_at) VALUES ($1,$2,$3,NOW()) "
+                "ON CONFLICT (key) DO UPDATE SET data=$2, mime=$3, updated_at=NOW()",
+                _key, _raw, _mime)
+        _url = f"/media/{_key}?v={int(_t_bm.time())}"
+        logging.info(f"banner media: {_key} {_mime} {len(_raw)} байт")
+        return web.json_response({
+            "ok": True, "med": _url, "mtype": ("video" if _is_video else "gif"),
+            "size": len(_raw), "mime": _mime})
+    except Exception as _e:
+        logging.error(f"api_admin_banner_media: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
 async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
     """Сохранение баннеров (JSON-список shop_banners). Admin-only."""
     try:
@@ -3539,6 +3606,8 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
             _img = str(_b.get("img", "") or "")
             if _img and (not _img.startswith("data:image/") or len(_img) > 500000):
                 _img = ""
+            _med = str(_b.get("med", "") or "")[:200]
+            _mt = str(_b.get("mtype", "") or "").strip().lower()
             _act = str(_b.get("act", "url"))
             if _act not in ("svc", "cat", "url"):
                 _act = "url"
@@ -3557,6 +3626,11 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
                 "emoji": str(_b.get("emoji", ""))[:8],
                 "bg": str(_b.get("bg", ""))[:120],
                 "img": _img,
+                # med — ссылка вида /media/bn_<id> на файл в admin_media.
+                # Гифки и видео base64-ом хранить нельзя: они лягут в ту же
+                # строку настройки и в HTML каждой загрузки магазина.
+                "med": (_med if _med.startswith("/media/") else ""),
+                "mtype": (_mt if _mt in ("gif", "video") else ""),
                 "act": _act,
                 "val": str(_b.get("val", ""))[:300],
                 "tx": _num(_b.get("tx")), "ty": _num(_b.get("ty")),
@@ -3566,6 +3640,17 @@ async def api_admin_banners_save_handler(request: web.Request) -> web.Response:
                 "ar": (str(_b.get("ar", "")).strip() if _re.match(r'^\d{1,2}:\d{1,2}$', str(_b.get("ar", "")).strip()) else ""),
             })
         await set_setting("shop_banners", _j.dumps(_out, ensure_ascii=False))
+        # Баннер удалили — его файл в admin_media больше никому не нужен.
+        # Трогаем только ключи bn_*, чужие медиа не задеваем.
+        try:
+            _alive = ["bn_" + str(_x.get("id") or "") for _x in _out]
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM admin_media WHERE key LIKE 'bn\\_%' "
+                    "AND NOT (key = ANY($1::text[]))", _alive)
+        except Exception as _e_cl:
+            logging.warning(f"banners media cleanup: {_e_cl}")
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_banners_save: {_e}")
@@ -8194,6 +8279,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/logo-del", api_admin_logo_del_handler)
     app.router.add_post("/api/admin/banners", api_admin_banners_handler)
     app.router.add_post("/api/admin/banners-save", api_admin_banners_save_handler)
+    app.router.add_post("/api/admin/banner-media", api_admin_banner_media_handler)
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
     app.router.add_post("/api/shop/promo", api_shop_promo_handler)
     app.router.add_post("/api/shop/prices", api_shop_prices_handler)
