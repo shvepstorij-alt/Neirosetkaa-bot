@@ -315,28 +315,27 @@ async def build_service_screen(key: str, uid: int = 0):
     # Пара цен: полная (её зачёркиваем) и к оплате. У обычного клиента они равны.
     _prices, _full = {}, {}
     _promo_left = 0
+    _promo_pct = 0
     for i in range(len(s["plans"])):
         if uid:
-            _f, _c, _left = await shop_price_pair(uid, key, s["plans"][i].get("price", 0))
+            _f, _c, _pc, _left = await shop_price_pair(uid, key, s["plans"][i].get("price", 0))
             _full[i], _prices[i] = _f, _c
             _promo_left = max(_promo_left, _left)
+            _promo_pct = max(_promo_pct, _pc)
         else:
             _b = int(s["plans"][i].get("price", 0) or 0)
             _full[i] = _prices[i] = _b
     plans_text = ""
     for _n, i in enumerate(_order, 1):
         p = s["plans"][i]
-        _pr = (f"<s>{_full[i]}₽</s> <b>{_prices[i]}₽/мес</b>"
-               if _full[i] > _prices[i] else f"<b>{_prices[i]}₽/мес</b>")
+        # Показываем ОДНУ итоговую сумму и рядом процент скидки — без «было → стало».
+        _dsc = (f" <i>(−{_promo_pct}%)</i>"
+                if (_promo_pct > 0 and _full[i] > _prices[i]) else "")
+        _pr = f"<b>{_prices[i]}₽/мес</b>{_dsc}"
         plans_text += f"  {_n}. <b>{p.get('name','')}</b> - {_pr}\n     <i>{p.get('desc','')}</i>\n"
     _promo_line = ""
-    if any(_full[i] > _prices[i] for i in _prices):
-        _pct = 0
-        for i in _prices:
-            if _full[i] > _prices[i]:
-                _pct = round((_full[i] - _prices[i]) / _full[i] * 100)
-                break
-        _promo_line = (f"🏷 <b>Скидка {_pct}%</b>"
+    if _promo_pct > 0 and any(_full[i] > _prices[i] for i in _prices):
+        _promo_line = (f"🏷 <b>Скидка {_promo_pct}%</b> уже учтена в ценах"
                        + (f" — действует ещё {_promo_left} дн." if _promo_left else "")
                        + "\n\n")
     text = (
@@ -349,9 +348,10 @@ async def build_service_screen(key: str, uid: int = 0):
     rows = []
     for i in _order:
         p = s["plans"][i]
-        # В кнопках Telegram зачёркивание не поддерживается — показываем «было → стало»
-        _btxt = (f"{p.get('name','')} - {_full[i]} → {_prices[i]}₽/мес"
-                 if _full[i] > _prices[i] else f"{p.get('name','')} - {_prices[i]}₽/мес")
+        # Одна итоговая цена; процент скидки — подписью рядом.
+        _bd = (f" (−{_promo_pct}%)"
+               if (_promo_pct > 0 and _full[i] > _prices[i]) else "")
+        _btxt = f"{p.get('name','')} - {_prices[i]}₽/мес{_bd}"
         rows.append([InlineKeyboardButton(
             text=_btxt, callback_data=f"shop_confirm:{key}:{i}"
         )])

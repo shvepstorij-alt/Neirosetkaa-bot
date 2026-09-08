@@ -860,11 +860,15 @@ function openCard(key, _silent){
   var plans=(c.plans||[]).slice().sort(function(a,b){return a.price-b.price;});
   var plansHtml=plans.map(function(p){
     var disc = P>0 ? Math.max(1, Math.round(p.price*(100-P)/100)) : p.price;
-    /* Зачёркиваем полную цену партнёра, а если сверху ещё промокод — цену до него */
-    var _old = (p.full && p.full>disc) ? p.full : (P>0 ? p.price : 0);
+    /* Партнёрская скидка уже внутри p.price — показываем ОДНУ итоговую сумму
+       и рядом процент. Зачёркиваем только когда сверху введён промокод. */
+    var _old = (P>0 ? p.price : 0);
+    var _pd = (window._pPromo>0 && p.full && p.full>p.price)
+      ? '<span style="color:var(--green);font-size:12px;margin-left:5px">−'+Math.round(window._pPromo)+'%</span>'
+      : '';
     var priceHtml = _old
       ? ('<s style="color:var(--text3);font-size:13px">'+_old+'₽</s> '+disc+'₽<span>/мес</span>')
-      : (disc+'₽<span>/мес</span>');
+      : (disc+'₽<span>/мес</span>'+_pd);
     return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.name+'</div>'
       +'<div class="plan-p">'+priceHtml+'</div></div>'
       +(p.desc?('<div class="plan-d">'+p.desc+'</div>'):'')
@@ -872,7 +876,7 @@ function openCard(key, _silent){
   }).join('');
   var partnerPromo = '';
   if(window._pPromo>0 && plans.some(function(p){return p.full&&p.full>p.price;})){
-    partnerPromo = '<div class="promo-box on"><span>🏷 <b>Скидка '+Math.round(window._pPromo)+'%</b>'
+    partnerPromo = '<div class="promo-box on"><span>🏷 <b>Скидка '+Math.round(window._pPromo)+'%</b> уже учтена в ценах'
       + (window._pPromoLeft>0 ? (' — действует ещё '+window._pPromoLeft+' дн.') : '')
       + '</span></div>';
   }

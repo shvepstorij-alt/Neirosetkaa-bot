@@ -183,24 +183,27 @@ async def shop_price_for(user_id: int, svc_key: str, base_price) -> int:
     return _pay
 
 
-async def shop_price_pair(user_id: int, svc_key: str, base_price) -> tuple[int, int, int]:
-    """(полная_цена, цена_к_оплате, осталось_дней_скидки) для показа клиенту.
+async def shop_price_pair(user_id: int, svc_key: str, base_price) -> tuple[int, int, int, int]:
+    """(полная_цена, цена_к_оплате, процент_скидки, осталось_дней) для показа.
 
-    Полная и к оплате совпадают, если партнёра нет или скидка неактивна —
-    тогда зачёркивать нечего.
+    Полная и к оплате совпадают, а процент равен нулю, если партнёра нет или
+    скидка неактивна. Процент берём ровно тот, что задан в панели, а не
+    пересчитываем из цен: после округления пересчёт может дать 14% вместо 15%,
+    а клиенту показывается обещанная величина.
     """
     try:
         _b = int(float(base_price or 0))
     except Exception:
-        return 0, 0, 0
+        return 0, 0, 0, 0
     if _b <= 0:
-        return _b, _b, 0
+        return _b, _b, 0, 0
     ctx = await partner_ctx(user_id, svc_key)
     if not ctx or ctx["markup_pct"] <= 0:
-        return _b, _b, 0
+        return _b, _b, 0, 0
     _full, _pay, _owner = partner_prices(_b, ctx["discount_pct"], ctx["markup_pct"],
                                          ctx.get("promo_pct") or 0)
-    return _full, _pay, int(ctx.get("promo_left") or 0)
+    _pct = int(round(float(ctx.get("promo_pct") or 0))) if _full > _pay else 0
+    return _full, _pay, _pct, int(ctx.get("promo_left") or 0)
 
 
 async def _webgen_guard(uid: int, kind: str, ttl: float = 45.0):
