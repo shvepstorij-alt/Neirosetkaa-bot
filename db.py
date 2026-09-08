@@ -2018,6 +2018,16 @@ async def set_partner(user_id: int, enabled: bool,
             "WHERE user_id=$1", user_id, bool(enabled), float(discount_pct), float(markup_pct))
 
 
+async def set_partner_promo(user_id: int, pct: float, mode: str, days: int):
+    """Скидка партнёра своим клиентам: процент, условие и срок."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET partner_promo_pct=$2, partner_promo_mode=$3, "
+            "partner_promo_days=$4 WHERE user_id=$1",
+            user_id, float(pct or 0), (mode or "off"), int(days or 0))
+
+
 async def list_partners() -> list[dict]:
     """Партнёры с числом приведённых клиентов и заработком."""
     pool = await get_pool()
@@ -2025,6 +2035,7 @@ async def list_partners() -> list[dict]:
         rows = await conn.fetch(
             """SELECT u.user_id, u.username, u.full_name,
                       u.partner_discount_pct, u.partner_markup_pct,
+                      u.partner_promo_pct, u.partner_promo_mode, u.partner_promo_days,
                       (SELECT COUNT(*) FROM users c WHERE c.partner_id = u.user_id) AS clients,
                       (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings e
                         WHERE e.partner_id = u.user_id) AS earned,
