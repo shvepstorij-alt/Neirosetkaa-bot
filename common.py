@@ -5303,13 +5303,16 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
         idcol = "email" if svc == "chatgpt" else "org_id"
         has_prov = svc in ("claude", "chatgpt")
         _pcol = ", provider" if has_prov else ""
+        # Маршрут активации (iOS / Филиппины) есть только у кодов ChatGPT.
+        _rcol = ", COALESCE(route,'') AS route" if svc == "chatgpt" else ""
         pool = await get_pool()
         async with pool.acquire() as conn:
             recent = await conn.fetch(
                 f"SELECT c.code, c.used_by, c.used_at, c.order_id, c.{idcol} AS acc, u.username "
                 f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
                 f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL ORDER BY c.used_at DESC LIMIT 15")
-            free = await conn.fetch(f"SELECT code, plan{_pcol} FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 1000")
+            free = await conn.fetch(
+                f"SELECT code, plan{_pcol}{_rcol} FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 1000")
             # Точный итог свободных кодов (не длина обрезанного списка) — иначе
             # «Всего в пуле» упирался в лимит и выглядел как пропажа кодов.
             free_total = await conn.fetchval(f"SELECT COUNT(*) FROM {tbl} WHERE is_used=FALSE") or 0
@@ -5341,9 +5344,31 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                         "date": ua.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ua else "",
                         "order": r["order_id"] or "", "acc": r["acc"] or ""})
         freec = [dict({"code": r["code"], "plan": r["plan"]},
-                      **({"provider": r["provider"]} if has_prov else {})) for r in free]
+                      **({"provider": r["provider"]} if has_prov else {}),
+                      **({"route": r["route"]} if svc == "chatgpt" else {}))
+                 for r in free]
         resp = {"ok": True, "recent": rec, "free": freec,
                 "freeCount": int(free_total), "freeShown": len(freec)}
+        if svc == "chatgpt":
+            # Сводка по маршрутам считается ЗАПРОСОМ, а не по списку free:
+            # список обрезан лимитом 1000, и при большом пуле цифры разошлись бы.
+            try:
+                async with pool.acquire() as _c_rt2:
+                    _rt2 = await _c_rt2.fetch(
+                        "SELECT COALESCE(route,'') AS route, plan, "
+                        "       COUNT(*) FILTER (WHERE NOT is_used) AS free, "
+                        "       COUNT(*) FILTER (WHERE is_used AND used_by IS NULL) AS waiting "
+                        "FROM gpt_codes GROUP BY COALESCE(route,''), plan "
+                        "HAVING COUNT(*) FILTER (WHERE NOT is_used) > 0 "
+                        "    OR COUNT(*) FILTER (WHERE is_used AND used_by IS NULL) > 0 "
+                        "ORDER BY route, plan")
+                resp["routes"] = [
+                    {"route": r["route"],
+                     "label": GPT_ROUTE_LABELS.get(r["route"], "без маршрута"),
+                     "plan": r["plan"], "free": int(r["free"]),
+                     "waiting": int(r["waiting"])} for r in _rt2]
+            except Exception as _e_rt2:
+                logging.warning(f"miniapp-detail routes: {_e_rt2}")
         if has_prov:
             if svc == "claude":
                 _pset, _reg, _order, _def, _pname, _countfn = (
