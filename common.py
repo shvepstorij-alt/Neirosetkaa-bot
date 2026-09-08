@@ -5898,6 +5898,25 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
                 "dupeList": _dupe_list, "badList": _bad_list, "total": len(lines)}
         if service in ("claude", "chatgpt"):
             _msg["provider"] = _provider
+        if service == "chatgpt":
+            # Остатки по маршрутам после заливки — чтобы сразу видеть, чего мало.
+            # Маршрут проставляет триггер в БД по префиксу кода, руками его не
+            # задают: иначе появился бы способ ошибиться и сломать защиту.
+            try:
+                async with pool.acquire() as _c_rt:
+                    _rt_rows = await _c_rt.fetch(
+                        "SELECT COALESCE(route,'') AS route, plan, COUNT(*) AS n "
+                        "FROM gpt_codes WHERE is_used=FALSE AND provider=$1 "
+                        "AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid') "
+                        "GROUP BY COALESCE(route,''), plan ORDER BY route, plan",
+                        _provider)
+                _msg["routes"] = [
+                    {"route": r["route"],
+                     "label": GPT_ROUTE_LABELS.get(r["route"], "без маршрута"),
+                     "plan": r["plan"], "free": int(r["n"])} for r in _rt_rows]
+            except Exception as _e_rt:
+                logging.warning(f"add-codes routes: {_e_rt}")
+            _msg["noRoute"] = [c for c in valid if not gpt_route_for_code(c)][:10]
         return web.json_response(_msg)
     except Exception as _e:
         logging.error(f"api_admin_add_codes: {_e}")

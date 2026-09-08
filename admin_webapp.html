@@ -1453,13 +1453,25 @@ function pPromoTxt(p){
   if(p.promoMode==='first') return Math.round(p.promo)+'% на первую покупку';
   return Math.round(p.promo)+'% первые '+(p.promoDays||0)+' дн. после перехода';
 }
+/* После смены скидки наценка остаётся прежней — значит итог для клиента
+   уехал. Ничего не меняем сами, только показываем, как вернуть. */
+function pNetMoved(id,r){
+  if(!r||r.netBefore==null||r.netAfter==null)return;
+  var b=Number(r.netBefore), a=Number(r.netAfter);
+  if(Math.abs(b-a)<0.1)return;
+  var t=(Math.abs(b-Math.round(b))<0.15)?Math.round(b):Math.round(b*100)/100;
+  if(window.alert)window.alert(
+    'Итог для клиента был '+(b>=0?'+':'')+b.toFixed(1)+'%, стал '+(a>=0?'+':'')+a.toFixed(1)+'%.\n'
+    +'Наценку я не трогал.\n\nЧтобы вернуть прежний итог: «Изменить общие %» → '
+    +'в поле «Наценка» введи =' + fpct(t));
+}
 function pPromoEdit(id,cur,mode,days,max){
   var t=(window.prompt?window.prompt(
     'Скидка для клиентов партнёра, % (максимум '+max+'%, пусто = выключить):',cur||''):null);
   if(t==null)return;
   if(t===''||Number(t)<=0){
     api('/api/admin/partner-set',{action:'promo_set',uid:id,pct:0,mode:'off'}).then(function(r){
-      toast(r.ok?'Скидка убрана':'Ошибка'); if(r.ok) pLoadOne(id); });
+      toast(r.ok?'Скидка убрана':'Ошибка'); if(r.ok){ pNetMoved(id,r); pLoadOne(id); } });
     return;
   }
   var m=(window.prompt?window.prompt(
@@ -1471,7 +1483,7 @@ function pPromoEdit(id,cur,mode,days,max){
   if(mm.indexOf('перв')===0||mm==='first'){ body.mode='first'; }
   else { body.mode='days'; body.days=mm; }
   api('/api/admin/partner-set',body).then(function(r){
-    toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
+    toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok){ pNetMoved(id,r); pLoadOne(id); } });
 }
 function pFeeEdit(){
   var f=(window.prompt?window.prompt('Комиссия FreeKassa, % (0–30):',window._pFee||0):null);
@@ -2188,7 +2200,7 @@ function addCodes(svc){
     }
   }
   var hasProv=!!provSel;
-  return hdr("Добавить коды",svc)+'<div class="wrap">'+provSel+'<label class="fl"'+(hasProv?'':' style="margin-top:0"')+'>Тариф</label><select class="f" id="ac_plan">'+opts+'</select><label class="fl">Коды (по одному в строке)</label><textarea class="f" id="ac_codes" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="doAddCodes(\''+svc+'\')">Добавить</button><button class="btn sec" style="margin-top:10px" onclick="doReleaseCodes(\''+svc+'\')">♻️ Вернуть коды в пул</button><div class="sub" style="margin-top:6px">«Вернуть в пул» — снимает пометку «использован» у вставленных кодов (если бот ошибочно их сжёг).</div></div>';
+  return hdr("Добавить коды",svc)+'<div class="wrap">'+provSel+'<label class="fl"'+(hasProv?'':' style="margin-top:0"')+'>Тариф</label><select class="f" id="ac_plan">'+opts+'</select><label class="fl">Коды (по одному в строке)</label><textarea class="f" id="ac_codes" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="doAddCodes(\''+svc+'\')">Добавить</button><button class="btn sec" style="margin-top:10px" onclick="doReleaseCodes(\''+svc+'\')">♻️ Вернуть коды в пул</button><div class="sub" style="margin-top:6px">«Вернуть в пул» — снимает пометку «использован» у вставленных кодов (если бот ошибочно их сжёг).</div>'+(svc==='chatgpt'?'<div class="sub" style="margin-top:10px">🧭 <b>Маршрут определяется сам, по префиксу кода:</b><br>GPTI- и GPTGO- → iOS (ложатся на любой аккаунт)<br>GPTP- → Филиппины (только free plan)<br>Разделять при заливке не нужно — после добавления покажу остатки по маршрутам.</div>':'')+'</div>';
 }
 function doReleaseCodes(svc){
   var codes=fv('ac_codes');if(!codes){toast('Вставь коды, которые вернуть');return;}
@@ -2220,6 +2232,20 @@ function doAddCodes(svc){
     if(d.dupeList&&d.dupeList.length) h+='<div class="sub" style="margin-top:8px">Дубли: '+d.dupeList.join(', ')+'</div>';
     if(d.badList&&d.badList.length)   h+='<div class="sub" style="margin-top:6px">Отсеяно: '+d.badList.join(', ')+'</div>';
     h+='</div>';
+    /* Остатки по маршрутам: сразу видно, какого типа кодов не хватает */
+    if(d.routes&&d.routes.length){
+      h+='<div class="block"><h4>🧭 Свободно по маршрутам</h4>';
+      for(var i=0;i<d.routes.length;i++){var rr=d.routes[i];
+        h+='<div class="kv"><span class="k">'+esc(rr.label)+' · '+esc(rr.plan)+'</span><span'
+          +(rr.route?'':' class="neg"')+'>'+rr.free+'</span></div>';}
+      h+='</div>';
+    }
+    if(d.noRoute&&d.noRoute.length){
+      h+='<div class="block"><h4>⚠️ Незнакомый префикс</h4>'
+        +'<div class="sub">Маршрут не проставлен — автоактивация такие коды НЕ возьмёт:<br>'
+        +d.noRoute.map(esc).join('<br>')
+        +'<br><br>Разметить: в чате бота <b>/gpt_code_route КОД ios|ph</b></div></div>';
+    }
     leaf(function(){return hdr("Результат добавления",svc)+'<div class="wrap">'+h
       +'<button class="btn sec" onclick="back()">Готово</button></div>';});
   });
