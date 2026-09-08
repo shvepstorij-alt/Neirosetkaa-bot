@@ -48,7 +48,9 @@ from db import (
     get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
     partner_stats, partner_recent_orders, list_partners, set_partner,
     set_partner_rate, add_partner_payout, partner_clients, partner_client_orders,
-    get_partner_for_client,
+    set_partner_promo, partner_promo_max, partners_overview,
+    partner_payouts_list, partner_all_orders,
+    get_partner_for_client, partner_promo_active, partner_promo_ctx,
     get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
     save_perplexity_pending_activation, get_perplexity_pending_activation, delete_perplexity_pending_activation,
     create_linkpay_order, get_linkpay_order, set_linkpay_link, set_linkpay_status, set_linkpay_admin_msg,
@@ -143,7 +145,22 @@ async def partner_ctx(user_id: int, svc_key: str = "") -> dict | None:
                 _d, _m = _r
         except Exception as _e_pr:
             logging.warning(f"partner_rate {svc_key}: {_e_pr}")
-    return {"partner_id": int(p["partner_id"]), "discount_pct": _d, "markup_pct": _m}
+    # Скидка партнёра своим клиентам: действует только при выполненном условии
+    # (N дней с прихода либо первая покупка), иначе клиент платит полную цену.
+    _promo, _left = 0.0, 0
+    try:
+        _pp = float(p.get("partner_promo_pct") or 0)
+        if _pp > 0:
+            _pc = await partner_promo_ctx(int(user_id), int(p["partner_id"]))
+            _act, _left = partner_promo_active(
+                p.get("partner_promo_mode"), int(p.get("partner_promo_days") or 0),
+                _pc.get("joined"), _pc.get("orders"))
+            if _act:
+                _promo = _pp
+    except Exception as _e_pp:
+        logging.warning(f"partner promo {user_id}: {_e_pp}")
+    return {"partner_id": int(p["partner_id"]), "discount_pct": _d, "markup_pct": _m,
+            "promo_pct": _promo, "promo_left": _left}
 
 
 async def shop_price_for(user_id: int, svc_key: str, base_price) -> int:
@@ -161,8 +178,29 @@ async def shop_price_for(user_id: int, svc_key: str, base_price) -> int:
     ctx = await partner_ctx(user_id, svc_key)
     if not ctx or ctx["markup_pct"] <= 0:
         return _b
-    client, _owner = partner_prices(_b, ctx["discount_pct"], ctx["markup_pct"])
-    return client
+    _full, _pay, _owner = partner_prices(_b, ctx["discount_pct"], ctx["markup_pct"],
+                                         ctx.get("promo_pct") or 0)
+    return _pay
+
+
+async def shop_price_pair(user_id: int, svc_key: str, base_price) -> tuple[int, int, int]:
+    """(полная_цена, цена_к_оплате, осталось_дней_скидки) для показа клиенту.
+
+    Полная и к оплате совпадают, если партнёра нет или скидка неактивна —
+    тогда зачёркивать нечего.
+    """
+    try:
+        _b = int(float(base_price or 0))
+    except Exception:
+        return 0, 0, 0
+    if _b <= 0:
+        return _b, _b, 0
+    ctx = await partner_ctx(user_id, svc_key)
+    if not ctx or ctx["markup_pct"] <= 0:
+        return _b, _b, 0
+    _full, _pay, _owner = partner_prices(_b, ctx["discount_pct"], ctx["markup_pct"],
+                                         ctx.get("promo_pct") or 0)
+    return _full, _pay, int(ctx.get("promo_left") or 0)
 
 
 async def _webgen_guard(uid: int, kind: str, ttl: float = 45.0):
@@ -904,16 +942,19 @@ async def process_partner_earning(client_id: int, order_id: str, amount_rub) -> 
     ctx = await partner_ctx(int(client_id), _svc)
     if not ctx:
         return
-    _client_price, _owner_price = partner_prices(_base, ctx["discount_pct"], ctx["markup_pct"])
-    # Начисляем при ЛЮБОЙ разнице: и когда она от наценки (клиент платит больше),
-    # и когда только от уступки (клиент платит розницу, а мы делимся маржой).
-    # Раньше при наценке 0% настройка молча игнорировалась.
+    _full_price, _client_price, _owner_price = partner_prices(
+        _base, ctx["discount_pct"], ctx["markup_pct"], ctx.get("promo_pct") or 0)
     if _client_price <= 0 or _client_price <= _owner_price:
         return
-    _ratio = (_client_price - _owner_price) / float(_client_price)
-    _partner_sum = round(_paid * _ratio, 2)
+    # Наша доля — фиксированная партнёрская цена, партнёру достаётся остаток.
+    # Именно так партнёр и предлагал: «тебе фиксированная цена, разница мне».
+    # Значит любая скидка (его собственная промо-скидка, промокод, монетки)
+    # режет СНАЧАЛА его долю, а наша остаётся целой. Если скидка съела всё —
+    # партнёру ноль, но в минус мы не уходим.
+    _partner_sum = round(max(0.0, _paid - _owner_price), 2)
     _owner_sum = round(_paid - _partner_sum, 2)
     if _partner_sum <= 0:
+        logging.info(f"partner earning: скидка съела долю партнёра order={order_id}")
         return
     _written = await log_partner_earning(
         int(ctx["partner_id"]), int(client_id), order_id, _svc, _idx,
@@ -3650,6 +3691,8 @@ async def api_shop_prices_handler(request: web.Request) -> web.Response:
         ctx = await partner_ctx(int(uid))
         if not ctx:
             return web.json_response({"ok": True, "partner": False})
+        _promo = float(ctx.get("promo_pct") or 0)
+        _left = int(ctx.get("promo_left") or 0)
         # ставки по сервисам берём ОДНИМ запросом, иначе на 30 сервисов ушло бы
         # под сотню обращений к базе
         try:
@@ -3668,10 +3711,11 @@ async def api_shop_prices_handler(request: web.Request) -> web.Response:
                 continue
             _arr = []
             for _p in _plans:
-                _c, _o = partner_prices(int(_p.get("price") or 0), _d, _m)
-                _arr.append(_c)
+                _f, _c, _o = partner_prices(int(_p.get("price") or 0), _d, _m, _promo)
+                _arr.append([_c, _f] if _f > _c else _c)
             _out[_k] = _arr
-        return web.json_response({"ok": True, "partner": True, "prices": _out})
+        return web.json_response({"ok": True, "partner": True, "prices": _out,
+                                  "promo": _promo, "promoLeft": _left})
     except Exception as _e:
         logging.error(f"api_shop_prices: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
@@ -4849,6 +4893,11 @@ async def api_admin_partners_handler(request: web.Request) -> web.Response:
                 "markup": float(r.get("partner_markup_pct") or 0),
                 "clients": int(r.get("clients") or 0),
                 "earned": _earned, "paid": _paid, "balance": _earned - _paid,
+                "promo": float(r.get("partner_promo_pct") or 0),
+                "promoMode": (r.get("partner_promo_mode") or "off"),
+                "promoDays": int(r.get("partner_promo_days") or 0),
+                "promoMax": partner_promo_max(float(r.get("partner_discount_pct") or 0),
+                                              float(r.get("partner_markup_pct") or 0)),
             })
         # каталог: только сервисы с тарифами — для экрана ставок
         _svcs = []
@@ -4863,8 +4912,15 @@ async def api_admin_partners_handler(request: web.Request) -> web.Response:
             _un = (await bot.get_me()).username
         except Exception:
             _un = ""
+        try:
+            _ov = await partners_overview()
+        except Exception:
+            _ov = {}
+        _ov = {k: float(v or 0) for k, v in (_ov or {}).items()}
+        _ov["commission"] = round(float(_ov.get("turnover") or 0) * _fee / 100.0, 2)
+        _ov["net"] = round(float(_ov.get("owner_sum") or 0) - _ov["commission"], 2)
         return web.json_response({"ok": True, "partners": _out, "services": _svcs,
-                                  "bot": _un, "fee": _fee})
+                                  "bot": _un, "fee": _fee, "overview": _ov})
     except Exception as _e:
         logging.error(f"api_admin_partners: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
@@ -4930,6 +4986,7 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
             _u = await get_user(_uid) or {}
             _d0 = float(_u.get("partner_discount_pct") or 0)
             _m0 = float(_u.get("partner_markup_pct") or 0)
+            _promo0 = float(_u.get("partner_promo_pct") or 0)
             _own = {r["svc_key"]: r for r in await list_partner_rates(_uid)}
             _out = []
             for _k, _s in SHOP_CATALOG.items():
@@ -4940,13 +4997,13 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
                 _d = float(_r["discount_pct"] or 0) if _r else _d0
                 _m = float(_r["markup_pct"] or 0) if _r else _m0
                 _base = int(_plans[0].get("price") or 0)
-                _c, _o = partner_prices(_base, _d, _m)
+                _f, _c, _o = partner_prices(_base, _d, _m, _promo0)
                 _out.append({"key": _k, "name": _s.get("name", _k), "own": bool(_r),
                              "discount": _d, "markup": _m, "base": _base,
-                             "client": _c, "owner": _o, "partner": _c - _o,
+                             "full": _f, "client": _c, "owner": _o, "partner": _c - _o,
                              "plan": _plans[0].get("name", "")})
             return web.json_response({"ok": True, "rates": _out,
-                                      "discount": _d0, "markup": _m0})
+                                      "discount": _d0, "markup": _m0, "promo": _promo0})
 
         if _act == "rate_set":
             _svc = str(body.get("svc") or "").strip()
@@ -4959,6 +5016,87 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
             if not (0 <= _d <= 100) or not (0 <= _m <= 500):
                 return web.json_response({"ok": False, "error": "Уступка 0–100%, наценка 0–500%"})
             await set_partner_rate(_uid, _svc, _d, _m)
+            return web.json_response({"ok": True})
+
+        if _act == "stats":
+            if _uid <= 0:
+                return web.json_response({"ok": False})
+            _st = await partner_stats(_uid)
+            try:
+                _fee = float(await get_setting("fk_fee_pct", "0") or 0)
+            except Exception:
+                _fee = 0.0
+            _turn = float(_st.get("turnover") or 0)
+            _comm = round(_turn * _fee / 100.0, 2)
+            _out = {k: (float(v) if isinstance(v, (int, float)) else v)
+                    for k, v in _st.items() if k not in ("first_order", "last_order")}
+            _out["fee"] = _fee
+            _out["commission"] = _comm
+            _out["net"] = round(float(_st.get("owner_sum") or 0) - _comm, 2)
+            for _k in ("first_order", "last_order"):
+                _d = _st.get(_k)
+                _out[_k] = _d.strftime("%d.%m.%Y") if _d else ""
+            return web.json_response({"ok": True, "stats": _out})
+
+        if _act == "payouts":
+            if _uid <= 0:
+                return web.json_response({"ok": False})
+            _rows = await partner_payouts_list(_uid, 30)
+            return web.json_response({"ok": True, "payouts": [
+                {"amount": float(r["amount"] or 0), "note": r.get("note") or "",
+                 "date": r["created_at"].strftime("%d.%m.%Y %H:%M") if r.get("created_at") else ""}
+                for r in _rows]})
+
+        if _act == "orders":
+            if _uid <= 0:
+                return web.json_response({"ok": False})
+            try:
+                _off = int(_num(body.get("offset"), 0))
+            except Exception:
+                _off = 0
+            _rows = await partner_all_orders(_uid, 30, _off)
+            _out = []
+            for o in _rows:
+                _s = SHOP_CATALOG.get(o.get("svc_key") or "", {}) or {}
+                _plans = _s.get("plans") or []
+                _pi = int(o.get("plan_idx") or 0)
+                _dt = o.get("created_at")
+                _out.append({
+                    "order": o.get("order_id") or "",
+                    "client": int(o.get("client_id") or 0),
+                    "username": o.get("username") or "",
+                    "svc": _s.get("name", o.get("svc_key") or "?"),
+                    "plan": _plans[_pi].get("name", "") if _pi < len(_plans) else "",
+                    "base": float(o.get("base_price") or 0),
+                    "shown": float(o.get("client_price") or 0),
+                    "paid": float(o.get("paid_amount") or 0),
+                    "partner": float(o.get("partner_sum") or 0),
+                    "owner": float(o.get("owner_sum") or 0),
+                    "date": _dt.strftime("%d.%m.%Y %H:%M") if _dt else "",
+                })
+            return web.json_response({"ok": True, "orders": _out, "offset": _off})
+
+        if _act == "promo_set":
+            if _uid <= 0:
+                return web.json_response({"ok": False})
+            _u = await get_user(_uid) or {}
+            _max = partner_promo_max(float(_u.get("partner_discount_pct") or 0),
+                                     float(_u.get("partner_markup_pct") or 0))
+            _pct = _num(body.get("pct"), 0)
+            _mode = str(body.get("mode") or "off").strip()
+            _days = int(_num(body.get("days"), 7))
+            if _pct <= 0 or _mode == "off":
+                await set_partner_promo(_uid, 0, "off", 0)
+                return web.json_response({"ok": True})
+            if _pct > _max:
+                return web.json_response({
+                    "ok": False,
+                    "error": f"Максимум {_max}% — выше цена упадёт ниже твоей партнёрской"})
+            if _mode not in ("days", "first"):
+                _mode = "days"
+            if _mode == "days" and not (1 <= _days <= 365):
+                return web.json_response({"ok": False, "error": "Срок 1–365 дней"})
+            await set_partner_promo(_uid, _pct, _mode, _days if _mode == "days" else 0)
             return web.json_response({"ok": True})
 
         if _act == "fee_set":

@@ -35,7 +35,7 @@ from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
 )
 from common import (
-    shop_price_for, partner_tag,
+    shop_price_for, partner_tag, shop_price_pair,
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
 )
 
@@ -312,26 +312,48 @@ async def build_service_screen(key: str, uid: int = 0):
     if not s or not s.get("plans"):
         return None, None
     _order = sorted(range(len(s["plans"])), key=lambda i: s["plans"][i].get("price", 0))
-    _prices = {}
+    # Пара цен: полная (её зачёркиваем) и к оплате. У обычного клиента они равны.
+    _prices, _full = {}, {}
+    _promo_left = 0
     for i in range(len(s["plans"])):
-        _prices[i] = (await shop_price_for(uid, key, s["plans"][i].get("price", 0))
-                      if uid else int(s["plans"][i].get("price", 0) or 0))
+        if uid:
+            _f, _c, _left = await shop_price_pair(uid, key, s["plans"][i].get("price", 0))
+            _full[i], _prices[i] = _f, _c
+            _promo_left = max(_promo_left, _left)
+        else:
+            _b = int(s["plans"][i].get("price", 0) or 0)
+            _full[i] = _prices[i] = _b
     plans_text = ""
     for _n, i in enumerate(_order, 1):
         p = s["plans"][i]
-        plans_text += f"  {_n}. <b>{p.get('name','')} - {_prices[i]}₽/мес</b>\n     <i>{p.get('desc','')}</i>\n"
+        _pr = (f"<s>{_full[i]}₽</s> <b>{_prices[i]}₽/мес</b>"
+               if _full[i] > _prices[i] else f"<b>{_prices[i]}₽/мес</b>")
+        plans_text += f"  {_n}. <b>{p.get('name','')}</b> - {_pr}\n     <i>{p.get('desc','')}</i>\n"
+    _promo_line = ""
+    if any(_full[i] > _prices[i] for i in _prices):
+        _pct = 0
+        for i in _prices:
+            if _full[i] > _prices[i]:
+                _pct = round((_full[i] - _prices[i]) / _full[i] * 100)
+                break
+        _promo_line = (f"🏷 <b>Скидка {_pct}%</b>"
+                       + (f" — действует ещё {_promo_left} дн." if _promo_left else "")
+                       + "\n\n")
     text = (
         f"{tg_emoji(s)} <b>{s['name']}</b>\n\n"
         f"<i>{s['desc']}</i>\n\n"
+        f"{_promo_line}"
         f"Доступные тарифы:\n{plans_text}\n"
         f"<b>👇 Выбери тариф:</b>"
     )
     rows = []
     for i in _order:
         p = s["plans"][i]
+        # В кнопках Telegram зачёркивание не поддерживается — показываем «было → стало»
+        _btxt = (f"{p.get('name','')} - {_full[i]} → {_prices[i]}₽/мес"
+                 if _full[i] > _prices[i] else f"{p.get('name','')} - {_prices[i]}₽/мес")
         rows.append([InlineKeyboardButton(
-            text=f"{p.get('name','')} - {_prices[i]}₽/мес",
-            callback_data=f"shop_confirm:{key}:{i}"
+            text=_btxt, callback_data=f"shop_confirm:{key}:{i}"
         )])
     # Только для ChatGPT: кнопка «Установить Приложение» с премиум-эмодзи.
     if key == "chatgpt":

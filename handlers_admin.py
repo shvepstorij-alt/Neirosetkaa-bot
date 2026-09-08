@@ -38,7 +38,8 @@ from db import (
     count_claude_free_by_provider,
     set_partner, list_partners, partner_stats, partner_recent_orders,
     list_partner_rates, set_partner_rate, add_partner_payout, partner_prices,
-    partner_clients,
+    partner_clients, set_partner_promo, partner_promo_max,
+    partners_overview, partner_payouts_list, partner_all_orders,
 )
 from keyboards import (
     _all_models_map, _btn_emoji_id, _section_label, kb_admin_panel, kb_balance_menu, kb_block_actions, kb_stat_menu,
@@ -3812,6 +3813,24 @@ async def _partners_menu():
         _fee = float(await get_setting("fk_fee_pct", "0") or 0)
     except Exception:
         _fee = 0.0
+    try:
+        _ov = await partners_overview()
+    except Exception:
+        _ov = {}
+    if float(_ov.get("orders") or 0) > 0:
+        _turn = float(_ov.get("turnover") or 0)
+        _comm = _turn * _fee / 100.0
+        _own = float(_ov.get("owner_sum") or 0)
+        _psum = float(_ov.get("partners_sum") or 0)
+        _pout = float(_ov.get("payouts") or 0)
+        lines.insert(4,
+            f"📊 <b>Итого по программе</b>\n"
+            f"Оборот: <b>{_turn:.0f} ₽</b> (за месяц {float(_ov.get('turnover_month') or 0):.0f} ₽)\n"
+            f"Заказов: <b>{int(_ov.get('orders') or 0)}</b> · "
+            f"клиентов: <b>{int(_ov.get('clients') or 0)}</b>\n"
+            f"Комиссия FK {_fee:.0f}%: −{_comm:.0f} ₽ · партнёрам: −{_psum:.0f} ₽\n"
+            f"💰 Тебе чистыми: <b>{_own - _comm:.0f} ₽</b>\n"
+            f"Выплачено партнёрам: {_pout:.0f} ₽ · к выплате {_psum - _pout:.0f} ₽\n")
     lines.append(f"\n🏦 Комиссия FreeKassa: <b>{_fee:.0f}%</b> "
                  f"<i>(только для отчётов, доли партнёров не меняет)</i>")
     kb_rows = [[InlineKeyboardButton(text="➕ Добавить партнёра", callback_data="adm_p_add")],
@@ -3925,13 +3944,39 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
     _nm = ("@" + _u["username"]) if _u.get("username") else (_u.get("full_name") or str(pid))
     _disc = float(_u.get("partner_discount_pct") or 0)
     _mark = float(_u.get("partner_markup_pct") or 0)
+    _promo = float(_u.get("partner_promo_pct") or 0)
+    _pmode = (_u.get("partner_promo_mode") or "off")
+    _pdays = int(_u.get("partner_promo_days") or 0)
+    _promo_txt = "выключена"
+    if _promo > 0 and _pmode == "days":
+        _promo_txt = f"{_promo:.0f}% первые {_pdays} дн. после перехода"
+    elif _promo > 0 and _pmode == "first":
+        _promo_txt = f"{_promo:.0f}% на первую покупку"
     lines = [f"🤝 <b>{_nm}</b> <code>{pid}</code>\n",
              f"Общие ставки: уступка <b>{_disc:.0f}%</b> · наценка <b>{_mark:.0f}%</b>",
-             f"Клиентов: <b>{st.get('clients') or 0}</b> · заказов: <b>{st.get('orders') or 0}</b>",
+             f"🏷 Скидка его клиентам: <b>{_promo_txt}</b>",
+             f"Клиентов: <b>{st.get('clients') or 0}</b> "
+             f"(платящих {st.get('clients_paying') or 0}, конверсия {st.get('conversion') or 0}%)",
+             f"Заказов: <b>{st.get('orders') or 0}</b> "
+             f"(за месяц {st.get('orders_month') or 0}) · "
+             f"средний чек <b>{float(st.get('avg_check') or 0):.0f} ₽</b>",
+             f"Оборот: <b>{float(st.get('turnover') or 0):.0f} ₽</b> "
+             f"(за месяц {float(st.get('turnover_month') or 0):.0f} ₽)",
              f"Заработал всего: <b>{float(st.get('earned') or 0):.0f} ₽</b> "
              f"(за месяц {float(st.get('earned_month') or 0):.0f} ₽)",
              f"Выплачено: <b>{float(st.get('paid') or 0):.0f} ₽</b>",
              f"💰 <b>К выплате: {float(st.get('balance') or 0):.0f} ₽</b>"]
+    try:
+        _fee2 = float(await get_setting("fk_fee_pct", "0") or 0)
+    except Exception:
+        _fee2 = 0.0
+    _comm2 = float(st.get("turnover") or 0) * _fee2 / 100.0
+    lines.append(f"🏦 Комиссия FK {_fee2:.0f}%: −{_comm2:.0f} ₽ · "
+                 f"<b>тебе чистыми {float(st.get('owner_sum') or 0) - _comm2:.0f} ₽</b>")
+    if st.get("first_order"):
+        lines.append(f"📅 Первый заказ {st['first_order'].strftime('%d.%m.%Y')}"
+                     + (f" · последний {st['last_order'].strftime('%d.%m.%Y')}"
+                        if st.get("last_order") else ""))
     if rates:
         lines.append("\n<b>Ставки по сервисам</b> (перекрывают общие):")
         for r in rates:
@@ -3948,7 +3993,10 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
                          f"оплачено {float(o['paid_amount'] or 0):.0f} ₽, "
                          f"партнёру {float(o['partner_sum'] or 0):.0f} ₽")
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏷 Скидка для его клиентов", callback_data=f"adm_p_promo:{pid}")],
         [InlineKeyboardButton(text="👥 Приведённые клиенты", callback_data=f"adm_p_cl:{pid}")],
+        [InlineKeyboardButton(text="🧾 Все заказы", callback_data=f"adm_p_ord:{pid}"),
+         InlineKeyboardButton(text="📜 Выплаты", callback_data=f"adm_p_pays:{pid}")],
         [InlineKeyboardButton(text="📊 Ставки по сервисам", callback_data=f"adm_p_svcs:{pid}")],
         [InlineKeyboardButton(text="💸 Отметить выплату", callback_data=f"adm_p_pay:{pid}")],
         [InlineKeyboardButton(text="🚫 Убрать из партнёров", callback_data=f"adm_p_off:{pid}")],
@@ -3959,6 +4007,105 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
     except Exception:
         await cb.message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_p_promo:"))
+async def adm_partner_promo_start(cb: CallbackQuery, state: FSMContext):
+    """Скидка, которую партнёр даёт своим клиентам: % + условие."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    pid = int(cb.data.split(":")[1])
+    _u = await get_user(pid) or {}
+    _d = float(_u.get("partner_discount_pct") or 0)
+    _m = float(_u.get("partner_markup_pct") or 0)
+    _max = partner_promo_max(_d, _m)
+    await state.update_data(p_promo_pid=pid, p_promo_max=_max)
+    await state.set_state(AdminState.waiting_partner_promo)
+    _ex = ""
+    for _k, _s in SHOP_CATALOG.items():
+        _pl = _s.get("plans") or []
+        if _pl:
+            _bp = int(_pl[0].get("price") or 0)
+            _f, _c, _o = partner_prices(_bp, _d, _m, min(20, _max))
+            _ex = (f"\n\nНа примере «{_s.get('name', _k)} {_pl[0].get('name','')}» "
+                   f"при скидке {min(20, _max)}%:\n"
+                   f"клиент видит <s>{_f} ₽</s> → <b>{_c} ₽</b>, тебе <b>{_o} ₽</b>.")
+            break
+    await cb.message.answer(
+        f"🏷 <b>Скидка для клиентов партнёра</b>\n\n"
+        f"Полная цена (с наценкой {_m:.0f}%) показывается зачёркнутой, "
+        f"клиент платит со скидкой. Скидка действует по условию — кто под него "
+        f"не попал, платит полную. Так зачёркнутая цена остаётся настоящей.\n\n"
+        f"<b>Максимум для этого партнёра: {_max}%</b> — выше цена упала бы ниже "
+        f"твоей партнёрской, и ты продавал бы себе в убыток.\n\n"
+        f"Введи одной строкой: <code>процент условие [дней]</code>\n"
+        f"• <code>20 дней 7</code> — 20% первые 7 дней после перехода\n"
+        f"• <code>20 первая</code> — 20% только на первую покупку\n"
+        f"• <code>выкл</code> — убрать скидку"
+        f"{_ex}",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.message(AdminState.waiting_partner_promo, F.text)
+async def adm_partner_promo_save(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    data = await state.get_data()
+    pid = data.get("p_promo_pid"); _max = int(data.get("p_promo_max") or 0)
+    if not pid:
+        await state.clear()
+        await message.answer("❌ Контекст потерян, открой раздел заново.")
+        return
+    txt = (message.text or "").strip().lower()
+    if txt in ("выкл", "off", "0", "нет", "-"):
+        await set_partner_promo(int(pid), 0, "off", 0)
+        await state.clear()
+        await message.answer("✅ Скидка убрана — клиенты платят полную цену партнёра.")
+        return
+    parts = txt.split()
+    pct = _pnum(parts[0], -1) if parts else -1
+    if not (0 < pct <= 95):
+        await message.answer("❌ Первым числом — процент скидки. Пример: <code>20 дней 7</code>",
+                             parse_mode="HTML")
+        return
+    if pct > _max:
+        await message.answer(
+            f"❌ Максимум для этого партнёра — <b>{_max}%</b>.\n"
+            f"Больше нельзя: цена упала бы ниже твоей партнёрской. "
+            f"Чтобы дать глубже — сначала подними ему наценку.",
+            parse_mode="HTML")
+        return
+    _mode = "days"
+    _days = 7
+    if len(parts) > 1:
+        _w = parts[1]
+        if _w.startswith("перв") or _w in ("first", "1"):
+            _mode, _days = "first", 0
+        elif _w.startswith("д") or _w in ("days", "day"):
+            _mode = "days"
+            _days = int(_pnum(parts[2], 7)) if len(parts) > 2 else 7
+            if not (1 <= _days <= 365):
+                await message.answer("❌ Срок 1–365 дней. Повтори:")
+                return
+    await set_partner_promo(int(pid), pct, _mode, _days)
+    await state.clear()
+    _cond = f"первые {_days} дн. после перехода" if _mode == "days" else "на первую покупку"
+    _u = await get_user(int(pid)) or {}
+    _d = float(_u.get("partner_discount_pct") or 0)
+    _m = float(_u.get("partner_markup_pct") or 0)
+    _demo = ""
+    for _k, _s in SHOP_CATALOG.items():
+        _pl = _s.get("plans") or []
+        if _pl:
+            _bp = int(_pl[0].get("price") or 0)
+            _f, _c, _o = partner_prices(_bp, _d, _m, pct)
+            _demo = (f"\n\n«{_s.get('name', _k)} {_pl[0].get('name','')}»: "
+                     f"клиент видит <s>{_f} ₽</s> → <b>{_c} ₽</b>, "
+                     f"тебе <b>{_o} ₽</b>, партнёру <b>{_c - _o} ₽</b>.")
+            break
+    await message.answer(
+        f"✅ Скидка <b>{pct:.0f}%</b>, действует {_cond}.{_demo}", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("adm_p_cl:"))
@@ -3999,6 +4146,74 @@ async def adm_partner_clients(cb: CallbackQuery, state: FSMContext):
         if len(rows) > 40:
             lines.append(f"\n<i>…и ещё {len(rows) - 40}. Полный список — в мини-аппе.</i>")
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ К партнёру", callback_data=f"adm_p_one:{pid}")]])
+    _txt = "\n".join(lines)[:4000]
+    try:
+        await cb.message.edit_text(_txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(_txt, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_p_ord:"))
+async def adm_partner_orders(cb: CallbackQuery, state: FSMContext):
+    """Все заказы партнёра: что клиент видел, что заплатил, как поделилось."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    await state.clear()
+    pid = int(cb.data.split(":")[1])
+    rows = await partner_all_orders(pid, 25, 0)
+    lines = [f"🧾 <b>Заказы партнёра</b> <code>{pid}</code>\n"]
+    if not rows:
+        lines.append("Заказов пока нет.")
+    for o in rows:
+        _s = SHOP_CATALOG.get(o.get("svc_key") or "", {}) or {}
+        _plans = _s.get("plans") or []
+        _pi = int(o.get("plan_idx") or 0)
+        _pn = _plans[_pi].get("name", "") if _pi < len(_plans) else ""
+        _nm = ("@" + o["username"]) if o.get("username") else f"id{o.get('client_id')}"
+        _nm = str(_nm).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        _dt = o["created_at"].strftime("%d.%m %H:%M") if o.get("created_at") else ""
+        lines.append(
+            f"• <b>{_s.get('name', o.get('svc_key') or '?')}</b> {_pn} · {_dt}\n"
+            f"  {_nm} · розница {float(o.get('base_price') or 0):.0f} → "
+            f"показано {float(o.get('client_price') or 0):.0f} → "
+            f"оплачено <b>{float(o.get('paid_amount') or 0):.0f} ₽</b>\n"
+            f"  тебе {float(o.get('owner_sum') or 0):.0f} ₽ · "
+            f"партнёру {float(o.get('partner_sum') or 0):.0f} ₽")
+    if len(rows) >= 25:
+        lines.append("\n<i>Показаны последние 25. Полный список — в мини-аппе.</i>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ К партнёру", callback_data=f"adm_p_one:{pid}")]])
+    _txt = "\n".join(lines)[:4000]
+    try:
+        await cb.message.edit_text(_txt, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(_txt, reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_p_pays:"))
+async def adm_partner_payouts(cb: CallbackQuery, state: FSMContext):
+    """История выплат партнёру."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    await state.clear()
+    pid = int(cb.data.split(":")[1])
+    rows = await partner_payouts_list(pid, 30)
+    _sum = sum(float(r.get("amount") or 0) for r in rows)
+    lines = [f"📜 <b>Выплаты партнёру</b> <code>{pid}</code>\n"]
+    if not rows:
+        lines.append("Выплат ещё не было.")
+    else:
+        lines.append(f"Всего выплачено: <b>{_sum:.0f} ₽</b> за {len(rows)} раз(а)\n")
+        for r in rows:
+            _dt = r["created_at"].strftime("%d.%m.%Y %H:%M") if r.get("created_at") else ""
+            _note = str(r.get("note") or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            lines.append(f"• <b>{float(r.get('amount') or 0):.0f} ₽</b> · {_dt}"
+                         + (f"\n  <i>{_note}</i>" if _note else ""))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💸 Отметить выплату", callback_data=f"adm_p_pay:{pid}")],
         [InlineKeyboardButton(text="◀️ К партнёру", callback_data=f"adm_p_one:{pid}")]])
     _txt = "\n".join(lines)[:4000]
     try:
@@ -4090,7 +4305,7 @@ async def adm_partner_rate_save(message: Message, state: FSMContext):
     _demo = ""
     if _plans:
         _bp = int(_plans[0].get("price") or 0)
-        _c, _o = partner_prices(_bp, disc, mark)
+        _f, _c, _o = partner_prices(_bp, disc, mark)
         _demo = (f"\n\nПроверка на тарифе «{_plans[0].get('name','')}» ({_bp} ₽):\n"
                  f"клиент увидит <b>{_c} ₽</b>, тебе останется <b>{_o} ₽</b>, "
                  f"партнёру <b>{_c - _o} ₽</b>.")

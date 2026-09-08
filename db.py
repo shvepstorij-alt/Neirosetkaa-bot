@@ -140,6 +140,13 @@ async def init_db():
             # Отдельная колонка, а не referred_by: обычная рефералка живёт своей
             # жизнью, и путать их нельзя.
             ("partner_id",           "BIGINT DEFAULT NULL"),
+            # Скидка, которую партнёр даёт СВОИМ клиентам. Полная цена (с наценкой)
+            # показывается зачёркнутой, платит клиент со скидкой. Скидка условная —
+            # кто под условие не попал, платит полную: иначе зачёркнутая цена была бы
+            # фикцией. mode: 'off' | 'days' (N дней с прихода) | 'first' (первая покупка).
+            ("partner_promo_pct",  "DOUBLE PRECISION DEFAULT 0"),
+            ("partner_promo_mode", "TEXT DEFAULT 'off'"),
+            ("partner_promo_days", "INTEGER DEFAULT 7"),
         ]:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")
@@ -1864,29 +1871,88 @@ async def set_ref_premium(user_id: int, enabled: bool, pct: float | None = None)
 #  ПАРТНЁРСКАЯ ПРОГРАММА (B2B)
 # ══════════════════════════════════════════════════════════════════════════
 
-def partner_prices(base: float, discount_pct: float, markup_pct: float) -> tuple[int, int]:
-    """По розничной цене считает пару (цена_для_клиента_партнёра, наша_доля).
+def partner_prices(base: float, discount_pct: float, markup_pct: float,
+                   promo_pct: float = 0.0) -> tuple[int, int, int]:
+    """По розничной цене считает (полная_цена, цена_со_скидкой, наша_доля).
 
-    discount_pct — насколько дешевле розницы мы отдаём товар партнёру;
-    markup_pct   — наценка к рознице, которую видит его клиент.
+    discount_pct — насколько дешевле розницы мы отдаём товар партнёру (наша доля);
+    markup_pct   — наценка к рознице: из неё складывается ПОЛНАЯ цена его клиента;
+    promo_pct    — скидка, которую партнёр даёт своим клиентам (0 = скидки нет).
 
-    Пример: розница 1990, уступка 5%, наценка 20% →
-            клиент видит 2388, нам причитается 1891, партнёру — разница.
-    Округляем до рубля; наша доля никогда не превышает цену клиента.
+    Полная цена показывается зачёркнутой, платит клиент цену со скидкой.
+    Скидку даёт партнёр — значит она урезает ЕГО долю, а наша остаётся прежней.
+
+    Пример: розница 1990, уступка 5%, наценка 50%, скидка 20% →
+            полная 2985, к оплате 2388, нам 1891, партнёру 497.
     """
     try:
         _b = float(base or 0)
     except Exception:
         _b = 0.0
     if _b <= 0:
-        return 0, 0
+        return 0, 0, 0
     _d = max(0.0, min(100.0, float(discount_pct or 0)))
     _m = max(0.0, float(markup_pct or 0))
-    client = int(round(_b * (100.0 + _m) / 100.0))
+    _p = max(0.0, min(95.0, float(promo_pct or 0)))
+    full = max(1, int(round(_b * (100.0 + _m) / 100.0)))
+    pay = max(1, int(round(full * (100.0 - _p) / 100.0)))
     owner = int(round(_b * (100.0 - _d) / 100.0))
-    client = max(1, client)
-    owner = max(1, min(owner, client))   # доля партнёра не может быть отрицательной
-    return client, owner
+    # Наша доля не может превышать то, что клиент реально заплатил
+    owner = max(1, min(owner, pay))
+    return full, pay, owner
+
+
+def partner_promo_max(discount_pct: float, markup_pct: float) -> int:
+    """Максимальная скидка партнёра, при которой цена не падает ниже НАШЕЙ доли.
+
+    Наценка 50% и уступка 5% → полная 150%, наша доля 95% от розницы,
+    значит скидывать можно не больше 36%. Иначе партнёр своей акцией
+    продавал бы товар дешевле, чем мы согласились его отдать.
+    """
+    _d = max(0.0, min(100.0, float(discount_pct or 0)))
+    _m = max(0.0, float(markup_pct or 0))
+    _full = 100.0 + _m
+    _owner = 100.0 - _d
+    if _full <= 0:
+        return 0
+    return max(0, int((1.0 - _owner / _full) * 100))
+
+
+def partner_promo_active(mode: str, days: int, joined_at, orders_done: int) -> tuple[bool, int]:
+    """Действует ли сейчас скидка партнёра для этого клиента.
+
+    Возвращает (действует, осталось_дней). Скидка ВСЕГДА условная — иначе полную
+    цену не платит никто и зачёркнутая цифра превращается в фикцию.
+    """
+    _mode = (mode or "off").strip().lower()
+    if _mode == "first":
+        return (int(orders_done or 0) == 0), 0
+    if _mode == "days":
+        if not joined_at:
+            return False, 0
+        try:
+            import datetime as _dt
+            _now = _dt.datetime.now(joined_at.tzinfo) if joined_at.tzinfo else _dt.datetime.now()
+            _left = int(days or 0) - (_now - joined_at).days
+            return (_left > 0), max(0, _left)
+        except Exception:
+            return False, 0
+    return False, 0
+
+
+async def partner_promo_ctx(client_id: int, partner_id: int) -> dict:
+    """Данные для проверки скидки: когда клиент пришёл и сколько покупок сделал."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT c.created_at,
+                      (SELECT COUNT(*) FROM partner_earnings e
+                        WHERE e.partner_id = $2 AND e.client_id = $1) AS orders
+               FROM users c WHERE c.user_id = $1""",
+            client_id, partner_id)
+    if not row:
+        return {"joined": None, "orders": 0}
+    return {"joined": row["created_at"], "orders": int(row["orders"] or 0)}
 
 
 async def get_partner_of(user_id: int) -> dict | None:
@@ -1895,7 +1961,8 @@ async def get_partner_of(user_id: int) -> dict | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """SELECT p.user_id AS partner_id, p.partner_discount_pct, p.partner_markup_pct
+            """SELECT p.user_id AS partner_id, p.partner_discount_pct, p.partner_markup_pct,
+                      p.partner_promo_pct, p.partner_promo_mode, p.partner_promo_days
                FROM users c JOIN users p ON p.user_id = c.partner_id
                WHERE c.user_id = $1 AND COALESCE(p.partner, FALSE) = TRUE""",
             user_id
@@ -2014,24 +2081,87 @@ async def log_partner_earning(partner_id: int, client_id: int, order_id: str,
 
 
 async def partner_stats(partner_id: int) -> dict:
-    """Сводка для кабинета партнёра."""
+    """Полная сводка по партнёру: клиенты, заказы, деньги, конверсия."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT
                  (SELECT COUNT(*) FROM users c WHERE c.partner_id=$1) AS clients,
+                 (SELECT COUNT(DISTINCT client_id) FROM partner_earnings e
+                   WHERE e.partner_id=$1) AS clients_paying,
                  (SELECT COUNT(*) FROM partner_earnings e WHERE e.partner_id=$1) AS orders,
+                 (SELECT COUNT(*) FROM partner_earnings e
+                   WHERE e.partner_id=$1 AND e.created_at >= date_trunc('month', NOW())
+                 ) AS orders_month,
                  (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings e
                    WHERE e.partner_id=$1) AS earned,
                  (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings e
                    WHERE e.partner_id=$1 AND e.created_at >= date_trunc('month', NOW())
                  ) AS earned_month,
+                 (SELECT COALESCE(SUM(paid_amount),0) FROM partner_earnings e
+                   WHERE e.partner_id=$1) AS turnover,
+                 (SELECT COALESCE(SUM(paid_amount),0) FROM partner_earnings e
+                   WHERE e.partner_id=$1 AND e.created_at >= date_trunc('month', NOW())
+                 ) AS turnover_month,
+                 (SELECT COALESCE(SUM(owner_sum),0) FROM partner_earnings e
+                   WHERE e.partner_id=$1) AS owner_sum,
+                 (SELECT MIN(created_at) FROM partner_earnings e WHERE e.partner_id=$1) AS first_order,
+                 (SELECT MAX(created_at) FROM partner_earnings e WHERE e.partner_id=$1) AS last_order,
                  (SELECT COALESCE(SUM(amount),0) FROM partner_payouts p
                    WHERE p.partner_id=$1) AS paid""",
             partner_id)
     d = dict(row) if row else {}
     d["balance"] = float(d.get("earned") or 0) - float(d.get("paid") or 0)
+    _o = int(d.get("orders") or 0)
+    d["avg_check"] = round(float(d.get("turnover") or 0) / _o, 2) if _o else 0.0
+    _c = int(d.get("clients") or 0)
+    d["conversion"] = round(int(d.get("clients_paying") or 0) / _c * 100, 1) if _c else 0.0
     return d
+
+
+async def partner_payouts_list(partner_id: int, limit: int = 20) -> list[dict]:
+    """История выплат партнёру."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT amount, note, created_at FROM partner_payouts "
+            "WHERE partner_id=$1 ORDER BY created_at DESC LIMIT $2",
+            partner_id, int(limit))
+    return [dict(r) for r in rows]
+
+
+async def partners_overview() -> dict:
+    """Сводка по ВСЕЙ партнёрской программе — для главного экрана раздела."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT
+                 (SELECT COUNT(*) FROM users WHERE COALESCE(partner,FALSE)=TRUE) AS partners,
+                 (SELECT COUNT(*) FROM users WHERE partner_id IS NOT NULL) AS clients,
+                 (SELECT COUNT(*) FROM partner_earnings) AS orders,
+                 (SELECT COALESCE(SUM(paid_amount),0) FROM partner_earnings) AS turnover,
+                 (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings) AS partners_sum,
+                 (SELECT COALESCE(SUM(owner_sum),0) FROM partner_earnings) AS owner_sum,
+                 (SELECT COALESCE(SUM(paid_amount),0) FROM partner_earnings
+                   WHERE created_at >= date_trunc('month', NOW())) AS turnover_month,
+                 (SELECT COALESCE(SUM(partner_sum),0) FROM partner_earnings
+                   WHERE created_at >= date_trunc('month', NOW())) AS partners_month,
+                 (SELECT COALESCE(SUM(amount),0) FROM partner_payouts) AS payouts""")
+    return dict(row) if row else {}
+
+
+async def partner_all_orders(partner_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
+    """Все заказы партнёра постранично."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT e.order_id, e.client_id, e.svc_key, e.plan_idx, e.base_price,
+                      e.client_price, e.paid_amount, e.partner_sum, e.owner_sum,
+                      e.created_at, u.username
+               FROM partner_earnings e LEFT JOIN users u ON u.user_id = e.client_id
+               WHERE e.partner_id=$1 ORDER BY e.created_at DESC LIMIT $2 OFFSET $3""",
+            partner_id, int(limit), int(offset))
+    return [dict(r) for r in rows]
 
 
 async def partner_clients(partner_id: int, limit: int = 200) -> list[dict]:

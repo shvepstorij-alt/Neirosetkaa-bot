@@ -860,14 +860,22 @@ function openCard(key, _silent){
   var plans=(c.plans||[]).slice().sort(function(a,b){return a.price-b.price;});
   var plansHtml=plans.map(function(p){
     var disc = P>0 ? Math.max(1, Math.round(p.price*(100-P)/100)) : p.price;
-    var priceHtml = P>0
-      ? ('<s style="color:var(--text3);font-size:13px">'+p.price+'₽</s> '+disc+'₽<span>/мес</span>')
-      : (p.price+'₽<span>/мес</span>');
+    /* Зачёркиваем полную цену партнёра, а если сверху ещё промокод — цену до него */
+    var _old = (p.full && p.full>disc) ? p.full : (P>0 ? p.price : 0);
+    var priceHtml = _old
+      ? ('<s style="color:var(--text3);font-size:13px">'+_old+'₽</s> '+disc+'₽<span>/мес</span>')
+      : (disc+'₽<span>/мес</span>');
     return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.name+'</div>'
       +'<div class="plan-p">'+priceHtml+'</div></div>'
       +(p.desc?('<div class="plan-d">'+p.desc+'</div>'):'')
       +'<div class="plan-buy" onclick="chooseMethod(this,\''+_esc1(key)+'\','+p.idx+')">Оформить за '+disc+'₽</div></div>';
   }).join('');
+  var partnerPromo = '';
+  if(window._pPromo>0 && plans.some(function(p){return p.full&&p.full>p.price;})){
+    partnerPromo = '<div class="promo-box on"><span>🏷 <b>Скидка '+Math.round(window._pPromo)+'%</b>'
+      + (window._pPromoLeft>0 ? (' — действует ещё '+window._pPromoLeft+' дн.') : '')
+      + '</span></div>';
+  }
   var promoBlock = P>0
     ? '<div class="promo-box on"><span>🎟 <b>'+_h(window._shopPromo.code)+'</b> — скидка '+P+'%</span><span class="promo-clr" onclick="clearPromo(\''+_esc1(key)+'\')">убрать</span></div>'
     : '<div class="promo-box"><input id="promo-inp" class="promo-inp" placeholder="Промокод" autocapitalize="characters"><div class="promo-btn" onclick="applyPromo(\''+_esc1(key)+'\')">Применить</div></div><div id="promo-status" class="promo-status"></div>';
@@ -875,6 +883,7 @@ function openCard(key, _silent){
   body.innerHTML='<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(key,c.logo)+'">'+_iconHtml(c.logo,c.name)+'</div>'
     +'<div class="card-name">'+c.name+'</div></div>'
     +(c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
+    +partnerPromo
     +'<div class="card-plans-h">🎟 Промокод</div>'+promoBlock
     +'<div class="card-plans-h">Тарифы</div>'+plansHtml;
   _showCard();
@@ -1179,11 +1188,17 @@ function _init(){
     _api('/api/shop/prices').then(function(d){
       if(!d||!d.ok||!d.partner||!d.prices) return;
       var changed=false;
+      window._pPromo=(d.promo||0); window._pPromoLeft=(d.promoLeft||0);
       for(var k in d.prices){
         var arr=d.prices[k]; var pl=(CATALOG[k]&&CATALOG[k].plans)||[];
         for(var i=0;i<pl.length;i++){
           var np=arr[pl[i].idx];
-          if(np!==undefined && np!==null && np!==pl[i].price){ pl[i].price=np; changed=true; }
+          if(np===undefined || np===null) continue;
+          /* сервер шлёт либо число (цена), либо [к оплате, полная] — когда есть скидка */
+          var pay=np, full=0;
+          if(Object.prototype.toString.call(np)==='[object Array]'){ pay=np[0]; full=np[1]; }
+          if(pay!==pl[i].price){ pl[i].price=pay; changed=true; }
+          if(full && full>pay && pl[i].full!==full){ pl[i].full=full; changed=true; }
         }
       }
       if(changed){

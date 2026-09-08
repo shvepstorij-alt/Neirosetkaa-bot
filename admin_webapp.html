@@ -1289,6 +1289,19 @@ function loadPartners(){
     var h='<div class="note">Клиент, пришедший по ссылке партнёра, видит каталог дороже. '
         + 'Разница — доход партнёра. <b>Уступка</b> — насколько дешевле розницы товар уходит '
         + 'партнёру (твоя доля). <b>Наценка</b> — насколько дороже видит цену его клиент.</div>';
+    var ov=d.overview||{};
+    if((ov.orders||0)>0){
+      h+='<div class="mgrid">'
+       +'<div class="mcard"><div class="mlab">Оборот от партнёров</div><div class="mval">'+nf(Math.round(ov.turnover||0))+' ₽</div></div>'
+       +'<div class="mcard"><div class="mlab">За этот месяц</div><div class="mval">'+nf(Math.round(ov.turnover_month||0))+' ₽</div></div>'
+       +'<div class="mcard"><div class="mlab">Комиссия FK '+(d.fee||0)+'%</div><div class="mval">−'+nf(Math.round(ov.commission||0))+' ₽</div></div>'
+       +'<div class="mcard"><div class="mlab">Партнёрам</div><div class="mval">−'+nf(Math.round(ov.partners_sum||0))+' ₽</div></div>'
+       +'<div class="mcard"><div class="mlab">Тебе чистыми</div><div class="mval">'+nf(Math.round(ov.net||0))+' ₽</div></div>'
+       +'<div class="mcard"><div class="mlab">Заказов · клиентов</div><div class="mval">'+(ov.orders||0)+' · '+(ov.clients||0)+'</div></div>'
+       +'</div>'
+       +'<div class="note">Выплачено партнёрам всего: '+nf(Math.round(ov.payouts||0))+' ₽ · '
+       +'осталось к выплате '+nf(Math.round((ov.partners_sum||0)-(ov.payouts||0)))+' ₽</div>';
+    }
     h+='<div class="row" onclick="pFeeEdit()"><span class="ic">🏦</span><div style="flex:1">'
      + '<div class="lbl2">Комиссия FreeKassa: '+(d.fee||0)+'%</div>'
      + '<div class="sub">учитывается только в отчётах — доли партнёров не меняет</div>'
@@ -1299,6 +1312,7 @@ function loadPartners(){
       h+='<div class="row" onclick="pOpen('+p.id+')"><span class="ic">🏢</span><div style="flex:1">'
        + '<div class="lbl2">'+esc(nm)+'</div>'
        + '<div class="sub">уступка '+p.discount+'% · наценка '+p.markup+'% · клиентов '+p.clients+'</div>'
+       + '<div class="sub">🏷 '+pPromoTxt(p)+'</div>'
        + '<div class="sub">заработал '+nf(Math.round(p.earned))+' ₽ · к выплате <b>'+nf(Math.round(p.balance))+' ₽</b></div>'
        + '</div><i class="ti ti-chevron-right"></i></div>';
     });
@@ -1326,11 +1340,18 @@ function pOpen(id){
     return hdr("Партнёр")+'<div class="wrap"><div id="p1body"><div class="note">Загружаю…</div></div></div>'; });
 }
 function pLoadOne(id){
+  api('/api/admin/partner-set',{action:'stats',uid:id}).then(function(s){
+    window._pStats=(s&&s.ok)?s.stats:{};
+    pLoadOne2(id);
+  });
+}
+function pLoadOne2(id){
   api('/api/admin/partners',{}).then(function(d){
     var el=document.getElementById('p1body'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}
     var p=null; (d.partners||[]).forEach(function(x){ if(x.id===id) p=x; });
     if(!p){el.innerHTML='<div class="note">Партнёр не найден.</div>';return;}
+    var st=window._pStats||{};
     var nm=p.username?('@'+p.username):(p.name||('ID '+p.id));
     var link=d.bot?('https://t.me/'+d.bot+'?start=ref_'+p.id):'—';
     var h='<div class="glabel">'+esc(nm)+'</div>'
@@ -1340,9 +1361,26 @@ function pLoadOne(id){
      +'<div class="mcard" style="cursor:pointer" onclick="pClients('+p.id+')"><div class="mlab">Клиентов ›</div><div class="mval">'+p.clients+'</div></div>'
      +'<div class="mcard"><div class="mlab">К выплате</div><div class="mval">'+nf(Math.round(p.balance))+' ₽</div></div>'
      +'</div>'
-     +'<div class="note">Заработал всего '+nf(Math.round(p.earned))+' ₽ · выплачено '+nf(Math.round(p.paid))+' ₽</div>'
+     +'<div class="mgrid">'
+     +'<div class="mcard"><div class="mlab">Оборот</div><div class="mval">'+nf(Math.round(st.turnover||0))+' ₽</div></div>'
+     +'<div class="mcard"><div class="mlab">Заказов</div><div class="mval">'+(st.orders||0)+'</div></div>'
+     +'<div class="mcard"><div class="mlab">Средний чек</div><div class="mval">'+nf(Math.round(st.avg_check||0))+' ₽</div></div>'
+     +'<div class="mcard"><div class="mlab">Конверсия</div><div class="mval">'+(st.conversion||0)+'%</div></div>'
+     +'<div class="mcard"><div class="mlab">Тебе чистыми</div><div class="mval">'+nf(Math.round(st.net||0))+' ₽</div></div>'
+     +'<div class="mcard"><div class="mlab">За этот месяц</div><div class="mval">'+nf(Math.round(st.turnover_month||0))+' ₽</div></div>'
+     +'</div>'
+     +'<div class="note">Заработал всего '+nf(Math.round(p.earned))+' ₽ (за месяц '+nf(Math.round(st.earned_month||0))+' ₽) · выплачено '+nf(Math.round(p.paid))+' ₽'
+     + ((st.first_order)?('<br>первый заказ '+esc(st.first_order)+' · последний '+esc(st.last_order||'')):'')
+     + '<br>платящих клиентов '+(st.clients_paying||0)+' из '+(st.clients||0)
+     + ' · комиссия FK '+nf(Math.round(st.commission||0))+' ₽</div>'
+     +'<div class="note">🏷 Скидка его клиентам: <b>'+pPromoTxt(p)+'</b><br>'
+     + 'Полная цена показывается зачёркнутой. Скидку даёт партнёр из своей доли — '
+     + 'твоя партнёрская цена не меняется. Максимум для него: '+(p.promoMax||0)+'%.</div>'
+     +'<button class="btn sec" onclick="pPromoEdit('+p.id+','+(p.promo||0)+',\''+(p.promoMode||'off')+'\','+(p.promoDays||7)+','+(p.promoMax||0)+')">🏷 Скидка для его клиентов</button>'
      +'<div class="note">Ссылка для его клиентов:<br><b>'+esc(link)+'</b></div>'
      +'<button class="btn sec" onclick="pClients('+p.id+')">👥 Приведённые клиенты</button>'
+     +'<button class="btn sec" onclick="pOrders('+p.id+',0)">🧾 Все заказы</button>'
+     +'<button class="btn sec" onclick="pPayouts('+p.id+')">📜 История выплат</button>'
      +'<button class="btn sec" onclick="pRates('+p.id+')">📊 Ставки по сервисам</button>'
      +'<button class="btn sec" onclick="pEditBase('+p.id+','+p.discount+','+p.markup+')">✏️ Изменить общие %</button>'
      +'<button class="btn sec" onclick="pPayout('+p.id+','+Math.round(p.balance)+')">💸 Отметить выплату</button>'
@@ -1366,11 +1404,85 @@ function pRemove(id){
   api('/api/admin/partner-set',{action:'remove',uid:id}).then(function(r){
     toast(r.ok?'Убран':'Ошибка'); if(r.ok) back(); });
 }
+function pPromoTxt(p){
+  if(!p.promo || p.promoMode==='off') return 'выключена';
+  if(p.promoMode==='first') return Math.round(p.promo)+'% на первую покупку';
+  return Math.round(p.promo)+'% первые '+(p.promoDays||0)+' дн. после перехода';
+}
+function pPromoEdit(id,cur,mode,days,max){
+  var t=(window.prompt?window.prompt(
+    'Скидка для клиентов партнёра, % (максимум '+max+'%, пусто = выключить):',cur||''):null);
+  if(t==null)return;
+  if(t===''||Number(t)<=0){
+    api('/api/admin/partner-set',{action:'promo_set',uid:id,pct:0,mode:'off'}).then(function(r){
+      toast(r.ok?'Скидка убрана':'Ошибка'); if(r.ok) pLoadOne(id); });
+    return;
+  }
+  var m=(window.prompt?window.prompt(
+    'Условие: введи число дней после перехода, либо слово «первая» — скидка только на первый заказ:',
+    (mode==='first'?'первая':(days||7))):null);
+  if(m==null)return;
+  var mm=String(m).trim().toLowerCase();
+  var body={action:'promo_set',uid:id,pct:t};
+  if(mm.indexOf('перв')===0||mm==='first'){ body.mode='first'; }
+  else { body.mode='days'; body.days=mm; }
+  api('/api/admin/partner-set',body).then(function(r){
+    toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
+}
 function pFeeEdit(){
   var f=(window.prompt?window.prompt('Комиссия FreeKassa, % (0–30):',window._pFee||0):null);
   if(f==null||f==='')return;
   api('/api/admin/partner-set',{action:'fee_set',fee:f}).then(function(r){
     toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) loadPartners(); });
+}
+function pOrders(id,off){
+  leaf(function(){ setTimeout(function(){pLoadOrders(id,off||0)},0);
+    return hdr("Все заказы партнёра")
+      +'<div class="wrap"><div id="pobody"><div class="note">Загружаю…</div></div></div>'; });
+}
+function pLoadOrders(id,off){
+  api('/api/admin/partner-set',{action:'orders',uid:id,offset:off||0}).then(function(d){
+    var el=document.getElementById('pobody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}
+    var o=d.orders||[];
+    if(!o.length){el.innerHTML='<div class="note">'+((off||0)?'Больше заказов нет.':'Заказов пока нет.')+'</div>';return;}
+    var h='';
+    o.forEach(function(x){
+      var nm=x.username?('@'+x.username):('ID '+x.client);
+      h+='<div class="row" style="cursor:default"><span class="ic">🧾</span><div style="flex:1">'
+       + '<div class="lbl2">'+esc(x.svc)+(x.plan?(' · '+esc(x.plan)):'')+'</div>'
+       + '<div class="sub">'+esc(x.date)+' · '+esc(nm)+'</div>'
+       + '<div class="sub">розница '+nf(Math.round(x.base))+' → показано '+nf(Math.round(x.shown))
+       + ' → оплачено <b>'+nf(Math.round(x.paid))+' ₽</b></div>'
+       + '<div class="sub">тебе '+nf(Math.round(x.owner))+' ₽ · партнёру '+nf(Math.round(x.partner))+' ₽</div>'
+       + '</div></div>';
+    });
+    if(o.length>=30){
+      h+='<button class="btn sec" onclick="pOrders('+id+','+((off||0)+30)+')">Показать ещё</button>';
+    }
+    el.innerHTML=h;
+  });
+}
+function pPayouts(id){
+  leaf(function(){ setTimeout(function(){pLoadPayouts(id)},0);
+    return hdr("История выплат")
+      +'<div class="wrap"><div id="ppbody"><div class="note">Загружаю…</div></div></div>'; });
+}
+function pLoadPayouts(id){
+  api('/api/admin/partner-set',{action:'payouts',uid:id}).then(function(d){
+    var el=document.getElementById('ppbody'); if(!el)return;
+    if(!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}
+    var p=d.payouts||[];
+    if(!p.length){el.innerHTML='<div class="note">Выплат пока не было.</div>';return;}
+    var sum=0; p.forEach(function(x){sum+=x.amount||0;});
+    var h='<div class="note">Всего выплачено: <b>'+nf(Math.round(sum))+' ₽</b> за '+p.length+' раз(а)</div>';
+    p.forEach(function(x){
+      h+='<div class="row" style="cursor:default"><span class="ic">💸</span><div style="flex:1">'
+       + '<div class="lbl2">'+nf(Math.round(x.amount))+' ₽</div>'
+       + '<div class="sub">'+esc(x.date)+(x.note?(' · '+esc(x.note)):'')+'</div></div></div>';
+    });
+    el.innerHTML=h;
+  });
 }
 function pClients(id){
   leaf(function(){ setTimeout(function(){pLoadClients(id)},0);
