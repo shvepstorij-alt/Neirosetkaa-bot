@@ -48,7 +48,8 @@ from db import (
     get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
     partner_stats, partner_recent_orders, list_partners, set_partner,
     set_partner_rate, add_partner_payout, partner_clients, partner_client_orders,
-    set_partner_promo, partner_promo_max, partners_overview,
+    set_partner_promo, partner_promo_max, partner_markup_for_target,
+    partners_overview,
     partner_payouts_list, partner_all_orders,
     get_partner_for_client, partner_promo_active, partner_promo_ctx,
     get_next_perplexity_code, release_perplexity_code, mark_perplexity_code_used,
@@ -4958,10 +4959,20 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"ok": False, "error": "Такого клиента нет в базе — пусть напишет боту /start"})
             _d, _m = _num(body.get("discount")), _num(body.get("markup"))
+            # target — желаемый ИТОГ к рознице; наценку под него считаем сами,
+            # целых процентов для ровного итога не хватает (35% даёт +14.7%).
+            _tg = body.get("target")
+            if _tg is not None and str(_tg).strip() != "":
+                _tgv = _num(_tg)
+                if not (0 <= _tgv <= 500):
+                    return web.json_response({"ok": False, "error": "Итог 0–500%"})
+                _pu = await get_user(_uid) or {}
+                _m = partner_markup_for_target(
+                    _tgv, float(_pu.get("partner_promo_pct") or 0))
             if not (0 <= _d <= 100) or not (0 <= _m <= 500):
                 return web.json_response({"ok": False, "error": "Уступка 0–100%, наценка 0–500%"})
             await set_partner(_uid, True, _d, _m)
-            return web.json_response({"ok": True})
+            return web.json_response({"ok": True, "markup": _m})
 
         if _act == "remove":
             if _uid <= 0:

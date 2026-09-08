@@ -39,6 +39,7 @@ from db import (
     set_partner, list_partners, partner_stats, partner_recent_orders,
     list_partner_rates, set_partner_rate, add_partner_payout, partner_prices,
     partner_clients, set_partner_promo, partner_promo_max,
+    partner_markup_for_target,
     partners_overview, partner_payouts_list, partner_all_orders,
 )
 from keyboards import (
@@ -3783,6 +3784,12 @@ async def _refprem_show(cb):
 #  ПАРТНЁРСКАЯ ПРОГРАММА (B2B): клиенты партнёра видят цены с наценкой
 # ══════════════════════════════════════════════════════════════════════════
 
+def _fpct(v) -> str:
+    """Процент без лишних нулей: 35 → «35», 35.29 → «35.29»."""
+    _v = round(float(v or 0), 2)
+    return f"{_v:.0f}" if abs(_v - round(_v)) < 0.005 else f"{_v:.2f}".rstrip("0").rstrip(".")
+
+
 def _pnum(v, default=0.0) -> float:
     try:
         return float(str(v).strip().replace(",", ".").replace("%", ""))
@@ -3896,6 +3903,8 @@ async def adm_partner_add_start(cb: CallbackQuery, state: FSMContext):
         "Введи <b>ID партнёра, уступку и наценку</b> через пробел.\n\n"
         "Пример: <code>123456789 5 20</code>\n"
         "— тебе остаётся розница минус 5%, его клиент видит розницу плюс 20%.\n\n"
+        "Если у партнёра будет скидка для клиентов, вместо наценки можно задать "
+        "нужный <b>итог</b>: <code>123456789 5 итог 15</code> — бот подберёт наценку сам.\n\n"
         "Проценты потом можно менять, в том числе отдельно по каждому сервису.",
         parse_mode="HTML")
     await cb.answer()
@@ -3918,10 +3927,11 @@ async def adm_partner_base_start(cb: CallbackQuery, state: FSMContext):
     await state.set_state(AdminState.waiting_partner_add)
     await cb.message.answer(
         f"✏️ <b>Общие проценты партнёра</b> <code>{pid}</code>\n\n"
-        f"Сейчас: уступка <b>{_d:.0f}%</b> · наценка <b>{_m:.0f}%</b>\n"
+        f"Сейчас: уступка <b>{_fpct(_d)}%</b> · наценка <b>{_fpct(_m)}%</b>\n"
         f"{_partner_net_line(_m, _pr)}\n\n"
         f"Отправь строкой <code>ID уступка наценка</code> — скопируй и поправь:\n"
-        f"<code>{pid} {_d:.0f} {_m:.0f}</code>\n\n"
+        f"<code>{pid} {_fpct(_d)} {_fpct(_m)}</code>\n"
+        f"или сразу нужный итог: <code>{pid} {_fpct(_d)} итог 15</code>\n\n"
         f"{_partner_hint(_pr)}",
         parse_mode="HTML")
     await cb.answer()
@@ -3938,13 +3948,30 @@ async def adm_partner_add_save(message: Message, state: FSMContext):
         return
     uid = int(parts[0])
     disc = _pnum(parts[1]) if len(parts) > 1 else 0.0
-    mark = _pnum(parts[2]) if len(parts) > 2 else 0.0
-    if not (0 <= disc <= 100) or not (0 <= mark <= 500):
-        await message.answer("❌ Уступка 0–100%, наценка 0–500%. Повтори:")
-        return
     _u = await get_user(uid)
     if not _u:
         await message.answer("❌ Такого клиента нет в базе. Пусть сначала напишет боту /start.")
+        return
+    # Третьим значением можно задать не наценку, а желаемый ИТОГ к рознице:
+    # «итог15», «итог 15» или «=15». Наценку под него бот считает сам —
+    # целых процентов для ровного итога не хватает (35% даёт +14.7%).
+    _rest = " ".join(parts[2:]).strip().lower().replace(" ", "")
+    _tgt = None
+    for _pfx in ("итог", "="):
+        if _rest.startswith(_pfx):
+            _tgt = _pnum(_rest[len(_pfx):].lstrip("+"), -1.0)
+            break
+    if _tgt is not None:
+        if not (0 <= _tgt <= 500):
+            await message.answer("❌ Итог 0–500%. Пример: <code>"
+                                 f"{uid} {_fpct(disc)} итог 15</code>", parse_mode="HTML")
+            return
+        _promo_cur = float((_u or {}).get("partner_promo_pct") or 0)
+        mark = partner_markup_for_target(_tgt, _promo_cur)
+    else:
+        mark = _pnum(parts[2]) if len(parts) > 2 else 0.0
+    if not (0 <= disc <= 100) or not (0 <= mark <= 500):
+        await message.answer("❌ Уступка 0–100%, наценка 0–500%. Повтори:")
         return
     _was = bool((_u or {}).get("partner"))
     _promo_now = float((_u or {}).get("partner_promo_pct") or 0)
@@ -3953,7 +3980,7 @@ async def adm_partner_add_save(message: Message, state: FSMContext):
     _bot_un = (await bot.get_me()).username
     await message.answer(
         f"✅ Партнёр {'обновлён' if _was else 'добавлен'}: <code>{uid}</code>\n"
-        f"Уступка {disc:.0f}% · наценка {mark:.0f}%\n"
+        f"Уступка {_fpct(disc)}% · наценка {_fpct(mark)}%\n"
         f"{_partner_net_line(mark, _promo_now)}\n\n"
         f"Его ссылка для клиентов:\n"
         f"<code>https://t.me/{_bot_un}?start=ref_{uid}</code>\n\n"
@@ -3980,7 +4007,9 @@ def _partner_hint(promo_pct: float) -> str:
     return ("💡 <b>Проценты перемножаются, а не складываются.</b>\n"
             f"Скидка {_p:.0f}% снимается с уже накрученной цены, поэтому "
             f"наценка 30% и скидка {_p:.0f}% дают не +15%, а меньше.\n"
-            "Чтобы итог к рознице был:\n   " + "\n   ".join(_parts))
+            "Чтобы итог к рознице был:\n   " + "\n   ".join(_parts) +
+            "\n\n✅ Проще: вместо наценки напиши <code>итог 15</code> — "
+            "бот сам подберёт точную наценку, чтобы вышло ровно +15%.")
 
 
 def _partner_net_line(markup_pct: float, promo_pct: float) -> str:
@@ -4031,7 +4060,7 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
     elif _promo > 0 and _pmode == "first":
         _promo_txt = f"{_promo:.0f}% на первую покупку"
     lines = [f"🤝 <b>{_nm}</b> <code>{pid}</code>\n",
-             f"Общие ставки: уступка <b>{_disc:.0f}%</b> · наценка <b>{_mark:.0f}%</b>",
+             f"Общие ставки: уступка <b>{_fpct(_disc)}%</b> · наценка <b>{_fpct(_mark)}%</b>",
              f"🏷 Скидка его клиентам: <b>{_promo_txt}</b>",
              _partner_net_line(_mark, _promo),
              f"Клиентов: <b>{st.get('clients') or 0}</b> "
@@ -4114,7 +4143,7 @@ async def adm_partner_promo_start(cb: CallbackQuery, state: FSMContext):
             break
     await cb.message.answer(
         f"🏷 <b>Скидка для клиентов партнёра</b>\n\n"
-        f"Скидка снимается с цены, уже накрученной на {_m:.0f}%, а не с розницы — "
+        f"Скидка снимается с цены, уже накрученной на {_fpct(_m)}%, а не с розницы — "
         f"проценты перемножаются, а не складываются. Клиент видит одну итоговую "
         f"сумму и рядом процент. Скидка действует по условию: кто под него не "
         f"попал, платит полную цену — поэтому процент настоящий.\n\n"
@@ -4393,7 +4422,7 @@ async def adm_partner_rate_save(message: Message, state: FSMContext):
                  f"клиент увидит <b>{_c} ₽</b>, тебе останется <b>{_o} ₽</b>, "
                  f"партнёру <b>{_c - _o} ₽</b>.")
     await message.answer(
-        f"✅ {_s.get('name', svc)}: уступка <b>{disc:.0f}%</b> · наценка <b>{mark:.0f}%</b>{_demo}",
+        f"✅ {_s.get('name', svc)}: уступка <b>{_fpct(disc)}%</b> · наценка <b>{_fpct(mark)}%</b>{_demo}",
         parse_mode="HTML")
 
 

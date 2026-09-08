@@ -2018,6 +2018,20 @@ async def set_partner(user_id: int, enabled: bool,
             "WHERE user_id=$1", user_id, bool(enabled), float(discount_pct), float(markup_pct))
 
 
+def partner_markup_for_target(target_pct: float, promo_pct: float) -> float:
+    """Наценка, при которой клиент в итоге платит ровно +target_pct% к рознице.
+
+    Наценка и скидка перемножаются: итог = (1+нац)·(1−скидка) − 1.
+    Отсюда нац = (1+итог)/(1−скидка) − 1. Целых процентов не хватает
+    (35% даёт +14.7%, а не +15%), поэтому держим два знака после запятой.
+    """
+    _t = float(target_pct or 0) / 100.0
+    _p = float(promo_pct or 0) / 100.0
+    if _p >= 1.0:
+        return 0.0
+    return round(((1.0 + _t) / (1.0 - _p) - 1.0) * 100.0, 2)
+
+
 async def set_partner_promo(user_id: int, pct: float, mode: str, days: int):
     """Скидка партнёра своим клиентам: процент, условие и срок."""
     pool = await get_pool()

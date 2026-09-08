@@ -1311,7 +1311,7 @@ function loadPartners(){
       var nm=p.username?('@'+p.username):(p.name||('ID '+p.id));
       h+='<div class="row" onclick="pOpen('+p.id+')"><span class="ic">🏢</span><div style="flex:1">'
        + '<div class="lbl2">'+esc(nm)+'</div>'
-       + '<div class="sub">уступка '+p.discount+'% · наценка '+p.markup+'% · клиентов '+p.clients+'</div>'
+       + '<div class="sub">уступка '+fpct(p.discount)+'% · наценка '+fpct(p.markup)+'% · клиентов '+p.clients+'</div>'
        + '<div class="sub">🏷 '+pPromoTxt(p)+'</div>'
        + '<div class="sub">заработал '+nf(Math.round(p.earned))+' ₽ · к выплате <b>'+nf(Math.round(p.balance))+' ₽</b></div>'
        + '</div><i class="ti ti-chevron-right"></i></div>';
@@ -1357,7 +1357,7 @@ function pLoadOne2(id){
     var h='<div class="glabel">'+esc(nm)+'</div>'
      +'<div class="mgrid">'
      +'<div class="mcard"><div class="mlab">Уступка</div><div class="mval">'+p.discount+'%</div></div>'
-     +'<div class="mcard"><div class="mlab">Наценка</div><div class="mval">'+p.markup+'%</div></div>'
+     +'<div class="mcard"><div class="mlab">Наценка</div><div class="mval">'+fpct(p.markup)+'%</div></div>'
      +'<div class="mcard" style="cursor:pointer" onclick="pClients('+p.id+')"><div class="mlab">Клиентов ›</div><div class="mval">'+p.clients+'</div></div>'
      +'<div class="mcard"><div class="mlab">К выплате</div><div class="mval">'+nf(Math.round(p.balance))+' ₽</div></div>'
      +'</div>'
@@ -1402,9 +1402,17 @@ function pEditBase(id,d0,m0,promo){
     hint='Наценка, % для его клиентов.\n\nПри скидке '+pr+'% проценты перемножаются.\n'
       +'Чтобы итог к рознице был:\n'+t.join('\n');
   }
+  if(pr>0) hint+='\n\nИли задай сразу нужный итог: напиши =15 — наценку подберёт бот.';
   var m=(window.prompt?window.prompt(hint,m0):null); if(m==null)return;
-  api('/api/admin/partner-set',{action:'add',uid:id,discount:d,markup:m}).then(function(r){
-    toast(r.ok?'Сохранено':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
+  /* «=15» или «итог 15» — это желаемый ИТОГ, наценку считает сервер:
+     формулу в JS не дублируем, иначе разойдётся с ботом. */
+  var raw=String(m).trim().toLowerCase().replace(/\s+/g,'');
+  var body={action:'add',uid:id,discount:d,markup:m};
+  var mt=raw.match(/^(?:=|итог)\+?([0-9.,]+)$/);
+  if(mt){ body={action:'add',uid:id,discount:d,markup:0,target:mt[1].replace(',','.')}; }
+  api('/api/admin/partner-set',body).then(function(r){
+    toast(r.ok?('Сохранено'+(mt?(' · наценка '+fpct(r.markup)+'%'):'')):(r.error||'Ошибка'));
+    if(r.ok) pLoadOne(id); });
 }
 function pPayout(id,bal){
   var a=(window.prompt?window.prompt('Сумма выплаты, ₽ (к выплате '+bal+'):',bal):null); if(a==null||a==='')return;
@@ -1430,6 +1438,12 @@ function pRemove(id,nick,clients,balance){
 }
 /* Итог к рознице: (1+наценка)*(1-скидка)-1. Только для показа —
    цены считает сервер, здесь формулу не дублируем. */
+/* Процент без лишних нулей: 35 → «35», 35.29 → «35.29». */
+function fpct(v){
+  var n=Math.round((Number(v)||0)*100)/100;
+  return (Math.abs(n-Math.round(n))<0.005) ? String(Math.round(n))
+       : String(n).replace(/0+$/,'').replace(/\.$/,'');
+}
 function pNetTxt(markup, promo){
   var n=((1+(markup||0)/100)*(1-(promo||0)/100)-1)*100;
   return (n>=0?'+':'')+n.toFixed(1)+'%';
