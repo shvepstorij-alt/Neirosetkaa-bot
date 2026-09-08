@@ -4395,10 +4395,48 @@ async def adm_partner_payout_save(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_p_off:"))
 async def adm_partner_off(cb: CallbackQuery, state: FSMContext):
+    """Первое подтверждение: показываем последствия, удаляем только на втором шаге."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True); return
     pid = int(cb.data.split(":")[1])
+    _u = await get_user(pid) or {}
+    _nm = ("@" + _u["username"]) if _u.get("username") else (_u.get("full_name") or str(pid))
+    try:
+        st = await partner_stats(pid)
+    except Exception:
+        st = {}
+    _bal = float(st.get("balance") or 0)
+    _cl = int(st.get("clients") or 0)
+    _warn = (f"\n\n⚠️ <b>За тобой числится долг {_bal:.0f} ₽</b> — сначала отметь "
+             f"выплату, иначе сумма останется висеть в истории." if _bal > 0 else "")
+    await cb.message.answer(
+        f"🚫 <b>Убрать из партнёров: {_nm}</b> <code>{pid}</code>\n\n"
+        f"Что произойдёт:\n"
+        f"• его {_cl} клиент(ов) сразу перейдут на обычные цены;\n"
+        f"• начисления по новым заказам прекратятся;\n"
+        f"• история заказов и выплат сохранится, ничего не удаляется;\n"
+        f"• привязка клиентов остаётся — если вернёшь его в партнёры, "
+        f"всё заработает как раньше."
+        f"{_warn}\n\n"
+        f"<b>Подтверждаешь?</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚫 Да, убрать", callback_data=f"adm_p_off2:{pid}")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data=f"adm_p_one:{pid}")],
+        ]),
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_p_off2:"))
+async def adm_partner_off_confirm(cb: CallbackQuery, state: FSMContext):
+    """Второе подтверждение — здесь уже отключаем."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    pid = int(cb.data.split(":")[1])
+    _u = await get_user(pid) or {}
+    _nm = ("@" + _u["username"]) if _u.get("username") else (_u.get("full_name") or str(pid))
     await set_partner(pid, False, 0, 0)
+    logging.info(f"admin: партнёр {pid} ({_nm}) убран из партнёров")
     await cb.answer("Партнёр отключён", show_alert=True)
     text, kb = await _partners_menu()
     try:

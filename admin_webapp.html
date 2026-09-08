@@ -1386,7 +1386,7 @@ function pLoadOne2(id){
      +'<button class="btn sec" onclick="pRates('+p.id+')">📊 Ставки по сервисам</button>'
      +'<button class="btn sec" onclick="pEditBase('+p.id+','+p.discount+','+p.markup+')">✏️ Изменить общие %</button>'
      +'<button class="btn sec" onclick="pPayout('+p.id+','+Math.round(p.balance)+')">💸 Отметить выплату</button>'
-     +'<button class="btn danger" onclick="pRemove('+p.id+')">Убрать из партнёров</button>';
+     +'<button class="btn danger" onclick="pRemove('+p.id+',\''+(p.username||'').replace(/[^A-Za-z0-9_]/g,'')+'\','+(st.clients||0)+','+Math.round(p.balance||0)+')">Убрать из партнёров</button>';
     el.innerHTML=h;
   });
 }
@@ -1402,7 +1402,19 @@ function pPayout(id,bal){
   api('/api/admin/partner-set',{action:'payout',uid:id,amount:a,note:n}).then(function(r){
     toast(r.ok?'Записано ✓':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
 }
-function pRemove(id){
+/* Удаление партнёра — двойное подтверждение: первое с последствиями,
+   второе короткое. Действие не удаляет историю, но сразу меняет цены
+   у всех его клиентов, поэтому случайный тап недопустим. */
+function pRemove(id,nick,clients,balance){
+  var who=nick?('@'+nick):('ID '+id);
+  var msg='Убрать из партнёров '+who+'?\n\n'
+    +'• его '+(clients||0)+' клиент(ов) сразу перейдут на обычные цены\n'
+    +'• начисления по новым заказам прекратятся\n'
+    +'• история заказов и выплат сохранится\n'
+    +'• привязка клиентов останется — вернёшь в партнёры, всё заработает как раньше';
+  if(balance>0) msg+='\n\n⚠️ За тобой долг '+Math.round(balance)+' ₽ — сначала отметь выплату.';
+  if(window.confirm&&!window.confirm(msg))return;
+  if(window.confirm&&!window.confirm('Последнее подтверждение: убрать '+who+' из партнёров?'))return;
   api('/api/admin/partner-set',{action:'remove',uid:id}).then(function(r){
     toast(r.ok?'Убран':'Ошибка'); if(r.ok) back(); });
 }
