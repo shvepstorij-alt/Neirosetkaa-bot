@@ -1384,15 +1384,25 @@ function pLoadOne2(id){
      +'<button class="btn sec" onclick="pOrders('+p.id+',0)">🧾 Все заказы</button>'
      +'<button class="btn sec" onclick="pPayouts('+p.id+')">📜 История выплат</button>'
      +'<button class="btn sec" onclick="pRates('+p.id+')">📊 Ставки по сервисам</button>'
-     +'<button class="btn sec" onclick="pEditBase('+p.id+','+p.discount+','+p.markup+')">✏️ Изменить общие %</button>'
+     +'<button class="btn sec" onclick="pEditBase('+p.id+','+p.discount+','+p.markup+','+(p.promo||0)+')">✏️ Изменить общие %</button>'
      +'<button class="btn sec" onclick="pPayout('+p.id+','+Math.round(p.balance)+')">💸 Отметить выплату</button>'
      +'<button class="btn danger" onclick="pRemove('+p.id+',\''+(p.username||'').replace(/[^A-Za-z0-9_]/g,'')+'\','+(st.clients||0)+','+Math.round(p.balance||0)+')">Убрать из партнёров</button>';
     el.innerHTML=h;
   });
 }
-function pEditBase(id,d0,m0){
+function pEditBase(id,d0,m0,promo){
   var d=(window.prompt?window.prompt('Уступка, % (твоя доля ниже розницы):',d0):null); if(d==null)return;
-  var m=(window.prompt?window.prompt('Наценка, % для его клиентов:',m0):null); if(m==null)return;
+  /* Наценка и скидка перемножаются — подсказываем готовые значения,
+     иначе «30 минус 15» читается как +15%, а на деле +10.5%. */
+  var hint='Наценка, % для его клиентов:';
+  var pr=Number(promo||0);
+  if(pr>0){
+    var t=[]; for(var i=0;i<5;i++){ var n=10+i*5;
+      t.push('+'+n+'% → '+Math.round(((1+n/100)/(1-pr/100)-1)*100)+'%'); }
+    hint='Наценка, % для его клиентов.\n\nПри скидке '+pr+'% проценты перемножаются.\n'
+      +'Чтобы итог к рознице был:\n'+t.join('\n');
+  }
+  var m=(window.prompt?window.prompt(hint,m0):null); if(m==null)return;
   api('/api/admin/partner-set',{action:'add',uid:id,discount:d,markup:m}).then(function(r){
     toast(r.ok?'Сохранено':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
 }

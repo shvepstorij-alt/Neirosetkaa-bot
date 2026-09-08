@@ -3901,6 +3901,32 @@ async def adm_partner_add_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+@dp.callback_query(F.data.startswith("adm_p_base:"))
+async def adm_partner_base_start(cb: CallbackQuery, state: FSMContext):
+    """Смена общих процентов из карточки — паритет с мини-аппом.
+
+    Разбор строки тот же, что при добавлении: set_partner() перезаписывает
+    ставки существующего партнёра, отдельная ветка не нужна.
+    """
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    pid = int(cb.data.split(":")[1])
+    _u = await get_user(pid) or {}
+    _d = float(_u.get("partner_discount_pct") or 0)
+    _m = float(_u.get("partner_markup_pct") or 0)
+    _pr = float(_u.get("partner_promo_pct") or 0)
+    await state.set_state(AdminState.waiting_partner_add)
+    await cb.message.answer(
+        f"✏️ <b>Общие проценты партнёра</b> <code>{pid}</code>\n\n"
+        f"Сейчас: уступка <b>{_d:.0f}%</b> · наценка <b>{_m:.0f}%</b>\n"
+        f"{_partner_net_line(_m, _pr)}\n\n"
+        f"Отправь строкой <code>ID уступка наценка</code> — скопируй и поправь:\n"
+        f"<code>{pid} {_d:.0f} {_m:.0f}</code>\n\n"
+        f"{_partner_hint(_pr)}",
+        parse_mode="HTML")
+    await cb.answer()
+
+
 @dp.message(AdminState.waiting_partner_add, F.text)
 async def adm_partner_add_save(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -3920,16 +3946,41 @@ async def adm_partner_add_save(message: Message, state: FSMContext):
     if not _u:
         await message.answer("❌ Такого клиента нет в базе. Пусть сначала напишет боту /start.")
         return
+    _was = bool((_u or {}).get("partner"))
+    _promo_now = float((_u or {}).get("partner_promo_pct") or 0)
     await set_partner(uid, True, disc, mark)
     await state.clear()
     _bot_un = (await bot.get_me()).username
     await message.answer(
-        f"✅ Партнёр добавлен: <code>{uid}</code>\n"
-        f"Уступка {disc:.0f}% · наценка {mark:.0f}%\n\n"
+        f"✅ Партнёр {'обновлён' if _was else 'добавлен'}: <code>{uid}</code>\n"
+        f"Уступка {disc:.0f}% · наценка {mark:.0f}%\n"
+        f"{_partner_net_line(mark, _promo_now)}\n\n"
         f"Его ссылка для клиентов:\n"
         f"<code>https://t.me/{_bot_un}?start=ref_{uid}</code>\n\n"
         f"<i>Наценку увидят только НОВЫЕ клиенты, пришедшие по этой ссылке.</i>",
         parse_mode="HTML")
+
+
+def _partner_hint(promo_pct: float) -> str:
+    """Готовая таблица «хочешь итог +N% → ставь наценку M%».
+
+    Наценка и скидка перемножаются, поэтому «30 минус 15 = 15» неверно.
+    Считаем обратную задачу: M = ((1 + N/100) / (1 - скидка/100) - 1) * 100.
+    """
+    _p = float(promo_pct or 0)
+    if _p <= 0:
+        return ("💡 Скидка выключена — наценка и есть итог: поставишь 15%, "
+                "клиент заплатит на 15% больше розницы.")
+    _k = 1.0 - _p / 100.0
+    if _k <= 0:
+        return ""
+    _parts = []
+    for _n in (10, 15, 20, 25, 30):
+        _parts.append(f"+{_n}% → наценка <b>{round(((1 + _n / 100.0) / _k - 1) * 100)}%</b>")
+    return ("💡 <b>Проценты перемножаются, а не складываются.</b>\n"
+            f"Скидка {_p:.0f}% снимается с уже накрученной цены, поэтому "
+            f"наценка 30% и скидка {_p:.0f}% дают не +15%, а меньше.\n"
+            "Чтобы итог к рознице был:\n   " + "\n   ".join(_parts))
 
 
 def _partner_net_line(markup_pct: float, promo_pct: float) -> str:
@@ -4026,6 +4077,7 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🧾 Все заказы", callback_data=f"adm_p_ord:{pid}"),
          InlineKeyboardButton(text="📜 Выплаты", callback_data=f"adm_p_pays:{pid}")],
         [InlineKeyboardButton(text="📊 Ставки по сервисам", callback_data=f"adm_p_svcs:{pid}")],
+        [InlineKeyboardButton(text="✏️ Изменить общие %", callback_data=f"adm_p_base:{pid}")],
         [InlineKeyboardButton(text="💸 Отметить выплату", callback_data=f"adm_p_pay:{pid}")],
         [InlineKeyboardButton(text="🚫 Убрать из партнёров", callback_data=f"adm_p_off:{pid}")],
         [InlineKeyboardButton(text="◀️ К партнёрам", callback_data="adm_partners")],
@@ -4130,8 +4182,9 @@ async def adm_partner_promo_save(message: Message, state: FSMContext):
         if _pl:
             _bp = int(_pl[0].get("price") or 0)
             _f, _c, _o = partner_prices(_bp, _d, _m, pct)
-            _demo = (f"\n\n«{_s.get('name', _k)} {_pl[0].get('name','')}»: "
-                     f"клиент видит <s>{_f} ₽</s> → <b>{_c} ₽</b>, "
+            _demo = (f"\n{_partner_net_line(_m, pct)}\n\n"
+                     f"«{_s.get('name', _k)} {_pl[0].get('name','')}» "
+                     f"(розница {_bp} ₽): клиент видит <b>{_c} ₽ (−{pct:.0f}%)</b>, "
                      f"тебе <b>{_o} ₽</b>, партнёру <b>{_c - _o} ₽</b>.")
             break
     await message.answer(
