@@ -6849,12 +6849,15 @@ def _status_probe_fail(ip: str):
         logging.warning(f"🚫 Похоже на перебор id активации с IP {ip} - блокирую на 10 мин")
 
 
-async def _restore_gpt_pending(user_id: int):
-    """Восстанавливает истёкшую сессию активации ChatGPT по оплаченному заказу.
+async def _notify_gpt_pending_expired(user_id: int) -> None:
+    """Окно активации ChatGPT истекло — СООБЩАЕМ админу, код НЕ выдаём.
 
-    Возвращает новый pending или None. Безопасность: если по заказу код уже
-    использован (клиент активировал раньше) — ничего не выдаём, иначе можно было
-    бы получить второй код по одной оплате.
+    Раньше бот сам брал новый код из пула и продлевал активацию. Повторную
+    выдачу делает только Александр через админ-панель (Заказы → «Отправить
+    кнопку активации ещё раз»), поэтому здесь мы лишь находим оплаченный заказ
+    и присылаем по нему сводку.
+
+    Ничего не возвращает: pending не создаётся, пул не трогается.
     """
     try:
         pool = await get_pool()
@@ -6884,35 +6887,34 @@ async def _restore_gpt_pending(user_id: int):
             _plans = _s.get("plans", [])
             _plan_name = _plans[_idx]["name"] if 0 <= _idx < len(_plans) else "Plus"
 
-        _plan_key = plan_name_to_key(_plan_name)
-        _code, _prov = await _gpt_pick_code(_plan_key)
-        if not _code:
-            logging.warning(f"restore GPT pending uid={user_id}: коды закончились")
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"🚨 <b>Не смог восстановить активацию ChatGPT</b>\n"
-                    f"👤 <code>{user_id}</code>  🆔 <code>{_order_id}</code>\n"
-                    f"Коды закончились — выдай вручную.", parse_mode="HTML")
-            except Exception:
-                pass
-            return None
+        # Клиент может жать кнопку много раз — шлём не чаще раза в 30 минут.
+        try:
+            if await activation_cooldown(f"gptexpired:{user_id}", seconds=1800):
+                return None
+        except Exception as _e_cd2:
+            logging.warning(f"cooldown gptexpired uid={user_id}: {_e_cd2}")
 
-        await save_pending_activation(user_id, _code, _order_id, _plan_key, _plan_name, _prov)
-        logging.info(f"restore GPT pending uid={user_id} order={_order_id} code={_code} prov={_prov}")
+        _u = await get_user(user_id) or {}
+        _nick = ("@" + _u["username"]) if _u.get("username") else (
+            (_u.get("full_name") or "без ника").replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
+        logging.info(f"GPT pending истёк uid={user_id} order={_order_id} — жду ручной выдачи")
         try:
             await bot.send_message(
                 ADMIN_ID,
-                f"♻️ <b>Восстановлена активация ChatGPT</b>\n"
-                f"👤 <code>{user_id}</code>  📦 {_plan_name}\n"
-                f"🆔 <code>{_order_id}</code>  🎟 <code>{_code}</code>\n"
-                f"<i>Окно активации истекло — выдал новый код автоматически.</i>",
+                f"⏰ <b>Истекло окно активации ChatGPT</b>\n"
+                f"👤 {_nick} <code>{user_id}</code>  📦 {_plan_name}\n"
+                f"🆔 <code>{_order_id}</code>\n\n"
+                f"Клиент нажал «Активировать», но срок вышел. Код автоматически "
+                f"<b>не выдан</b>.\n"
+                f"Выдать повторно: админ-панель → Заказы → этот заказ → "
+                f"«Отправить кнопку активации ещё раз».",
                 parse_mode="HTML")
         except Exception:
             pass
-        return await get_pending_activation(user_id)
+        return None
     except Exception as _e_r:
-        logging.error(f"_restore_gpt_pending uid={user_id}: {_e_r}")
+        logging.error(f"_notify_gpt_pending_expired uid={user_id}: {_e_r}")
         return None
 
 
@@ -6959,13 +6961,13 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
 
     pending = await get_pending_activation(user_id)
     if not pending:
-        # Окно активации истекло, а клиент ОПЛАТИЛ. Раньше это был тупик:
-        # «Время сессии истекло — напиши админу», и дальше вручную. Пробуем
-        # восстановить сессию сами: находим оплаченный заказ ChatGPT, убеждаемся,
-        # что по нему код ещё НЕ активирован, и выдаём новый код.
-        pending = await _restore_gpt_pending(user_id)
-        if not pending:
-            return _resp({"success": False, "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME}"})
+        # Окно активации истекло. Новый код автоматически НЕ выдаём — повторную
+        # выдачу делает только Александр из админ-панели. Здесь лишь уведомляем
+        # его, что клиент упёрся в истёкшее окно.
+        await _notify_gpt_pending_expired(user_id)
+        return _resp({"success": False,
+                      "error": f"Время активации истекло. Напиши @{PERSONAL_USERNAME} — "
+                               f"он выдаст новую активацию."})
 
     # Guard: повторная активация за 29 дней — НЕ блокируем жёстко.
     # Первый раз предупреждаем, повторное нажатие «Попробовать снова» = активируем
