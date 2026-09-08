@@ -1374,7 +1374,9 @@ function pLoadOne2(id){
      + '<br>платящих клиентов '+(st.clients_paying||0)+' из '+(st.clients||0)
      + ' · комиссия FK '+nf(Math.round(st.commission||0))+' ₽</div>'
      +'<div class="note">🏷 Скидка его клиентам: <b>'+pPromoTxt(p)+'</b><br>'
-     + 'Полная цена показывается зачёркнутой. Скидку даёт партнёр из своей доли — '
+     + '📈 Итог для клиента: <b>'+pNetTxt(p.markup,p.promo)+'</b> к рознице'
+     + ((p.promo>0)?' — наценка и скидка перемножаются, а не складываются: скидка снимается с уже накрученной цены.':'')+'<br>'
+     + 'Клиент видит одну итоговую сумму и рядом процент. Скидку даёт партнёр из своей доли — '
      + 'твоя партнёрская цена не меняется. Максимум для него: '+(p.promoMax||0)+'%.</div>'
      +'<button class="btn sec" onclick="pPromoEdit('+p.id+','+(p.promo||0)+',\''+(p.promoMode||'off')+'\','+(p.promoDays||7)+','+(p.promoMax||0)+')">🏷 Скидка для его клиентов</button>'
      +'<div class="note">Ссылка для его клиентов:<br><b>'+esc(link)+'</b></div>'
@@ -1403,6 +1405,12 @@ function pPayout(id,bal){
 function pRemove(id){
   api('/api/admin/partner-set',{action:'remove',uid:id}).then(function(r){
     toast(r.ok?'Убран':'Ошибка'); if(r.ok) back(); });
+}
+/* Итог к рознице: (1+наценка)*(1-скидка)-1. Только для показа —
+   цены считает сервер, здесь формулу не дублируем. */
+function pNetTxt(markup, promo){
+  var n=((1+(markup||0)/100)*(1-(promo||0)/100)-1)*100;
+  return (n>=0?'+':'')+n.toFixed(1)+'%';
 }
 function pPromoTxt(p){
   if(!p.promo || p.promoMode==='off') return 'выключена';

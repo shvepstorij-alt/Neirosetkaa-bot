@@ -3932,6 +3932,33 @@ async def adm_partner_add_save(message: Message, state: FSMContext):
         parse_mode="HTML")
 
 
+def _partner_net_line(markup_pct: float, promo_pct: float) -> str:
+    """Строка «итог к рознице» для карточки партнёра.
+
+    Наценка и скидка ПЕРЕМНОЖАЮТСЯ: скидка снимается с уже накрученной цены,
+    а не с розницы. +30% и −15% дают не +15%, а +10.5%. Показываем это явно,
+    иначе проценты в панели читаются как складывающиеся.
+    """
+    _n = ((1.0 + float(markup_pct or 0) / 100.0)
+          * (1.0 - float(promo_pct or 0) / 100.0) - 1.0) * 100.0
+    _ex = ""
+    for _k, _s in SHOP_CATALOG.items():
+        _pl = _s.get("plans") or []
+        if _pl and int(_pl[0].get("price") or 0) > 0:
+            _b = int(_pl[0]["price"])
+            # Цену берём той же функцией, что и при показе клиенту: округление
+            # двухступенчатое (сначала наценка, потом скидка), и «в один шаг»
+            # оно местами расходится на рубль.
+            _pay = partner_prices(_b, 0, float(markup_pct or 0),
+                                  float(promo_pct or 0))[1]
+            _ex = f" — например {_b} ₽ → {_pay} ₽"
+            break
+    if float(promo_pct or 0) <= 0:
+        return f"📈 Итог для клиента: <b>{_n:+.1f}%</b> к рознице{_ex}"
+    return (f"📈 Итог для клиента: <b>{_n:+.1f}%</b> к рознице{_ex}\n"
+            f"   <i>(наценка и скидка перемножаются, а не складываются)</i>")
+
+
 @dp.callback_query(F.data.startswith("adm_p_one:"))
 async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
@@ -3955,6 +3982,7 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
     lines = [f"🤝 <b>{_nm}</b> <code>{pid}</code>\n",
              f"Общие ставки: уступка <b>{_disc:.0f}%</b> · наценка <b>{_mark:.0f}%</b>",
              f"🏷 Скидка его клиентам: <b>{_promo_txt}</b>",
+             _partner_net_line(_mark, _promo),
              f"Клиентов: <b>{st.get('clients') or 0}</b> "
              f"(платящих {st.get('clients_paying') or 0}, конверсия {st.get('conversion') or 0}%)",
              f"Заказов: <b>{st.get('orders') or 0}</b> "
@@ -4026,16 +4054,18 @@ async def adm_partner_promo_start(cb: CallbackQuery, state: FSMContext):
         _pl = _s.get("plans") or []
         if _pl:
             _bp = int(_pl[0].get("price") or 0)
-            _f, _c, _o = partner_prices(_bp, _d, _m, min(20, _max))
+            _pv = min(20, _max)
+            _f, _c, _o = partner_prices(_bp, _d, _m, _pv)
             _ex = (f"\n\nНа примере «{_s.get('name', _k)} {_pl[0].get('name','')}» "
-                   f"при скидке {min(20, _max)}%:\n"
-                   f"клиент видит <s>{_f} ₽</s> → <b>{_c} ₽</b>, тебе <b>{_o} ₽</b>.")
+                   f"(розница {_bp} ₽) при скидке {_pv}%:\n"
+                   f"клиент видит <b>{_c} ₽ (−{_pv}%)</b>, тебе <b>{_o} ₽</b>.")
             break
     await cb.message.answer(
         f"🏷 <b>Скидка для клиентов партнёра</b>\n\n"
-        f"Полная цена (с наценкой {_m:.0f}%) показывается зачёркнутой, "
-        f"клиент платит со скидкой. Скидка действует по условию — кто под него "
-        f"не попал, платит полную. Так зачёркнутая цена остаётся настоящей.\n\n"
+        f"Скидка снимается с цены, уже накрученной на {_m:.0f}%, а не с розницы — "
+        f"проценты перемножаются, а не складываются. Клиент видит одну итоговую "
+        f"сумму и рядом процент. Скидка действует по условию: кто под него не "
+        f"попал, платит полную цену — поэтому процент настоящий.\n\n"
         f"<b>Максимум для этого партнёра: {_max}%</b> — выше цена упала бы ниже "
         f"твоей партнёрской, и ты продавал бы себе в убыток.\n\n"
         f"Введи одной строкой: <code>процент условие [дней]</code>\n"
