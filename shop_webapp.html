@@ -24,6 +24,9 @@
   /* Верхняя мини-панель */
   .tgbar{display:flex;gap:8px;justify-content:flex-end;padding:8px 10px 0}
   .pill{font-size:12px;font-weight:600;color:#fff;background:rgba(120,124,138,.34);border:none;border-radius:15px;padding:7px 11px}
+  /* Стрелка «свернуть приложение» — тот же вид, что у стрелки,
+     которая прячет клавиатуру, чтобы читались как одна пара. */
+  .minbtn{display:flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;border:none;border-radius:50%;color:#fff;background:rgba(30,32,38,.86);box-shadow:0 3px 12px rgba(0,0,0,.4);opacity:.92;cursor:pointer;-webkit-tap-highlight-color:transparent}
 
   /* Баннеры */
   .banners{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 2px 14px;scrollbar-width:none}
@@ -180,7 +183,7 @@
 <body>
 
 <div id="home" class="screen active">
-  <div class="tgbar"><span class="pill" onclick="_kbHide()">⌨️ Скрыть</span><span class="pill" onclick="_min()">🔽 Свернуть</span></div>
+  <div class="tgbar"><button type="button" class="minbtn" aria-label="Свернуть приложение" onclick="_min()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
   <div class="wrap">
     <div class="hero" id="shop-hero"></div>
     <div class="banners" id="banners" style="display:none"></div>
