@@ -162,6 +162,39 @@
     .lc-sub  { font-size: 10px; color: var(--text3); margin-top: 2px; }
     .lc-arrow { color: var(--orange); font-size: 18px; flex-shrink: 0; }
 
+    /* Ссылка на страницу с данными аккаунта. Выглядит как обычная ссылка,
+       текст можно выделить и скопировать длинным тапом — плюс явные кнопки:
+       внутри Telegram переход часто открывается во встроенном браузере, где
+       клиент не авторизован, и тогда рабочий путь — скопировать и открыть
+       в своём Chrome или Safari. */
+    .lc-box {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--orange);
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+    }
+    .lc-url {
+      display: inline-block;
+      font-size: 13.5px; font-weight: 600;
+      color: #4da3ff; text-decoration: underline;
+      text-underline-offset: 2px;
+      word-break: break-all; line-height: 1.35;
+      -webkit-user-select: text; user-select: text;
+      -webkit-touch-callout: default;
+    }
+    .lc-btns { display: flex; gap: 8px; margin-top: 10px; }
+    .lc-btn {
+      flex: 1; padding: 9px 10px; border-radius: 9px;
+      border: 1px solid var(--border); background: var(--bg2);
+      color: var(--text); font-size: 12.5px; font-weight: 600;
+      cursor: pointer; -webkit-tap-highlight-color: transparent;
+      font-family: inherit;
+    }
+    .lc-btn:active { opacity: .7; }
+    .lc-btn.primary { background: var(--orange); border-color: var(--orange); color: #fff; }
+
     /* ── FIELDS ── */
     .field-wrap { margin-bottom: 13px; }
     .field-lbl  { font-size: 11px; font-weight: 600; color: var(--text2); margin-bottom: 6px; }
@@ -507,13 +540,15 @@
       </div>
     </div>
 
-    <a class="link-card" href="https://claude.ai/settings/account" target="_blank">
-      <div>
-        <div class="lc-text">claude.ai/settings/account</div>
-        <div class="lc-sub">Нажми — откроется в браузере</div>
+    <div class="lc-box">
+      <a class="lc-url" id="sess-link" href="https://claude.ai/settings/account"
+         target="_blank" rel="noopener">https://claude.ai/settings/account</a>
+      <div class="lc-sub">Открой её в том браузере, где ты вошёл в Claude — в Chrome или Safari</div>
+      <div class="lc-btns">
+        <button type="button" class="lc-btn primary" id="sess-copy">📋 Скопировать ссылку</button>
+        <button type="button" class="lc-btn" id="sess-open">↗ Открыть</button>
       </div>
-      <span class="lc-arrow">↗</span>
-    </a>
+    </div>
 
     <div class="step-row">
       <div class="step-ico">3️⃣</div>
@@ -1135,6 +1170,54 @@ function copyCode() {
   }
   if (tg && tg.HapticFeedback) try { tg.HapticFeedback.impactOccurred('light'); } catch(e) {}
 }
+
+// ─── Ссылка на страницу аккаунта: скопировать / открыть ──────────
+(function(){
+  var URL_SESS = 'https://claude.ai/settings/account';
+  function flash(btn, txt){
+    if (!btn) return;
+    var old = btn.textContent;
+    btn.textContent = txt;
+    setTimeout(function(){ btn.textContent = old; }, 1800);
+  }
+  function copySess(){
+    var btn = document.getElementById('sess-copy');
+    function fallback(){
+      // Старые WebView без clipboard API, а также http-контексты.
+      var ta = document.createElement('textarea');
+      ta.value = URL_SESS; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch(_) {}
+      document.body.removeChild(ta);
+      flash(btn, ok ? '\u2705 Скопировано' : '\u274c Не вышло — выдели вручную');
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(URL_SESS)
+          .then(function(){ flash(btn, '\u2705 Скопировано'); })
+          .catch(fallback);
+      } else { fallback(); }
+    } catch(e) { fallback(); }
+    if (typeof tg !== 'undefined' && tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.impactOccurred('light'); } catch(e) {}
+    }
+  }
+  function openSess(){
+    // openLink уводит во внешний браузер там, где клиент это умеет;
+    // иначе обычное окно. Если откроется встроенный браузер Telegram и
+    // клиент там не авторизован — у него есть кнопка «Скопировать».
+    try { if (typeof tg !== 'undefined' && tg && tg.openLink) { tg.openLink(URL_SESS); return; } } catch(e) {}
+    try { window.open(URL_SESS, '_blank'); } catch(e) { location.href = URL_SESS; }
+  }
+  function bind(){
+    var c = document.getElementById('sess-copy'), o = document.getElementById('sess-open');
+    if (c && !c._bound) { c._bound = 1; c.addEventListener('click', copySess); }
+    if (o && !o._bound) { o._bound = 1; o.addEventListener('click', openSess); }
+  }
+  document.addEventListener('DOMContentLoaded', bind);
+  bind();   // скрипт может выполниться уже после DOMContentLoaded
+})();
 
 // ─── Принудительная активация полей ─────────────────────────────
 function forceEnableInputs() {
