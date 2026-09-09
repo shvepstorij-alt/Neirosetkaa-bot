@@ -6605,6 +6605,30 @@ async def _run_activation_job(
                     )
                 # Если было авто-переключение сайта — дописываем ИТОГ в то самое сообщение,
                 # чтобы в одном месте было видно: куда ушли и чем закончилось.
+                # Висящее «у аккаунта уже есть Plus» по этому заказу закрываем:
+                # клиент подтвердил и активация прошла.
+                try:
+                    _gf_key = f"gpt_confirm_msg:{order_id}"
+                    _gf_mid2 = (await get_setting(_gf_key, "") or "").strip()
+                    if _gf_mid2.isdigit():
+                        _gf_txt = (
+                            f"✅ <b>ChatGPT — клиент подтвердил, активация прошла</b>\n\n"
+                            f"👤 Клиент: <b>{_tg_name}</b> (<code>{user_id}</code>)\n"
+                            f"📧 Email: <b>{_email or '—'}</b>\n"
+                            f"🔑 Итоговый код: <code>{code}</code>\n"
+                            f"📦 Тариф: <b>{plan_name}</b>\n"
+                            f"🆔 <code>{order_id}</code>\n"
+                            + await _fk_num_line(order_id)
+                            + f"⏱ {_used_at}")
+                        try:
+                            await bot.edit_message_text(
+                                _gf_txt, chat_id=ADMIN_ID,
+                                message_id=int(_gf_mid2), parse_mode="HTML")
+                        except Exception as _e_ge:
+                            logging.info(f"gpt confirm msg edit: {_e_ge}")
+                        await set_setting(_gf_key, "")
+                except Exception as _e_gf2:
+                    logging.warning(f"gpt confirm msg close: {_e_gf2}")
                 try:
                     if locals().get("_switch_msg_id"):
                         await bot.edit_message_text(
@@ -6677,12 +6701,22 @@ async def _run_activation_job(
                     )
                 except Exception as _fe:
                     logging.error(f"needs_force_confirm msg: {_fe}")
-                await _admin_fail_shot(
+                _gf_mid = await _admin_fail_shot(
                     "⚠️ <b>ChatGPT — у аккаунта уже есть Plus</b> (клиенту предложено активировать принудительно)\n\n"
                     f"👤 <code>{user_id}</code> · {plan_name}\n"
                     f"🔑 <code>{code}</code>\n"
-                    f"📧 {_acc or '—'}" + (f" · до {_until}" if _until else ""),
+                    f"📧 {_acc or '—'}" + (f" · до {_until}" if _until else "")
+                    + f"\n🆔 <code>{order_id}</code>\n"
+                    + await _fk_num_line(order_id),
                     result.get("screenshot"))
+                # Клиент подтвердит отдельным запуском, возможно после редеплоя —
+                # id сообщения кладём в настройку, чтобы потом переписать его
+                # в «успешно» и не оставлять висящих предупреждений.
+                if _gf_mid:
+                    try:
+                        await set_setting(f"gpt_confirm_msg:{order_id}", str(_gf_mid))
+                    except Exception as _e_gf:
+                        logging.warning(f"gpt confirm msg id: {_e_gf}")
                 _activation_jobs[job_id] = {"status": "done", "success": False, "need_force": True,
                                             "account": _acc, "until": _until,
                                             "error": "На аккаунте уже есть активная подписка Plus."}
