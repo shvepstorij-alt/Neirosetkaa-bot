@@ -6139,12 +6139,19 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 async def _admin_fail_shot(text, screenshot=None):
-    """Отправляет админу текст о сбое и, если есть, скриншот сайта активации отдельным фото."""
+    """Шлёт админу текст о сбое и, если есть, скриншот сайта отдельным фото.
+
+    Возвращает message_id отправленного текста (или None) — чтобы сообщение
+    можно было потом отредактировать, когда ситуация разрешится.
+    """
+    _mid = None
     try:
-        await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        _m = await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        _mid = getattr(_m, "message_id", None)
     except Exception:
         try:
-            await bot.send_message(ADMIN_ID, text)
+            _m = await bot.send_message(ADMIN_ID, text)
+            _mid = getattr(_m, "message_id", None)
         except Exception:
             pass
     if screenshot:
@@ -6156,6 +6163,7 @@ async def _admin_fail_shot(text, screenshot=None):
                 caption="📸 Экран сайта активации")
         except Exception as _se:
             logging.warning(f"send fail screenshot: {_se}")
+    return _mid
 
 
 async def _run_activation_job(
@@ -6332,8 +6340,93 @@ async def _run_activation_job(
             return bool(_res.get("token_invalid") or _res.get("needs_check")
                         or _res.get("needs_force_confirm"))
 
+        # ── ПЕРЕВОД НА iOS ПРИ БЛОКИРОВКЕ ПОКУПКИ OpenAI ───────────────────
+        # Филиппинский маршрут — это покупка на стороне сайта, и её иногда
+        # рубит антифрод самого OpenAI («деньги не списаны»). Смена САЙТА тут
+        # не поможет — помогает смена МАРШРУТА: через iOS (чек Apple) покупка
+        # проходит. Филиппинский код при этом цел, возвращаем его в пул.
+        _ios_rescue_done = False
+
+        async def _ios_rescue():
+            nonlocal result, code, _ios_rescue_done
+            if _ios_rescue_done or provider != "bpa":
+                return None
+            if result.get("success") or _client_stop(result):
+                return None
+            if not result.get("openai_blocked"):
+                return None
+            if gpt_route_for_code(code) != "ph":
+                return None      # уже iOS — переводить некуда
+            _ios_rescue_done = True
+            _new = await get_next_gpt_code(_plan_key, "bpa", "ios")
+            if not _new:
+                # iOS-кодов нет: филиппинский вернём в пул и уйдём в ручной
+                # режим. Пробовать тем же маршрутом ещё раз бессмысленно —
+                # его только что отбил антифрод.
+                try:
+                    await release_gpt_code(code)
+                except Exception as _e_rl:
+                    logging.warning(f"release_gpt_code {code}: {_e_rl}")
+                await delete_pending_activation(user_id)
+                logging.warning(f"GPT ios rescue: uid={user_id} нет iOS-кодов, ручной режим")
+                await _admin_fail_shot(
+                    f"🚨 <b>ChatGPT — OpenAI отклонил покупку, а iOS-кодов нет</b>\n"
+                    f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    f"🔑 <code>{code}</code> — возвращён в пул\n"
+                    f"🆔 <code>{order_id}</code>\n"
+                    f"{await _fk_num_line(order_id)}\n"
+                    f"Филиппинский маршрут заблокирован защитой OpenAI. "
+                    f"Пополни iOS-коды или активируй вручную.")
+                _activation_jobs[job_id] = {
+                    "status": "done", "success": False,
+                    "error": "Активация займёт чуть больше времени — Александр "
+                             "сделает вручную в течение часа."}
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⏳ <b>Активация займёт чуть больше времени</b>\n\n"
+                        "Александр активирует подписку вручную в течение часа. "
+                        "Ничего делать не нужно — сообщение придёт сюда.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                return "stop"
+
+            _old_code = code
+            try:
+                await release_gpt_code(_old_code)   # не сгорел — обратно в пул
+            except Exception as _e_rl2:
+                logging.warning(f"release_gpt_code {_old_code}: {_e_rl2}")
+            code = _new
+            await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, "bpa")
+            logging.warning(
+                f"GPT ios rescue: uid={user_id} OpenAI отклонил покупку по {_old_code} "
+                f"(ph) → повторяю через iOS {code}")
+            result = await _do_activate(code)
+            _ok_ios = bool(result.get("success"))
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    ("✅ <b>ChatGPT — выручил iOS-маршрут</b>\n\n" if _ok_ios else
+                     "🚨 <b>ChatGPT — не помог и iOS-маршрут</b>\n\n")
+                    + f"👤 <code>{user_id}</code> · {plan_name}\n"
+                      f"🇵🇭 Филиппинский <code>{_old_code}</code> — OpenAI отклонил "
+                      f"покупку, код возвращён в пул\n"
+                      f"📱 iOS <code>{code}</code> — "
+                    + ("активация прошла" if _ok_ios else "тоже не вышло")
+                    + f"\n🆔 <code>{order_id}</code>\n"
+                    + await _fk_num_line(order_id),
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            return "ok" if _ok_ios else None
+
         # 0) 999uu без стока → тот же код на bypriceactivate (до всякого перебора)
         if await _bpa_rescue() == "stop":
+            return
+
+        # 0б) OpenAI отклонил покупку на филиппинском коде → пробуем iOS
+        if await _ios_rescue() == "stop":
             return
 
         # 1) текущий сайт: сперва перебор использованных кодов
@@ -7033,7 +7126,8 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
                 ADMIN_ID,
                 f"⏰ <b>Истекло окно активации ChatGPT</b>\n"
                 f"👤 {_nick} <code>{user_id}</code>  📦 {_plan_name}\n"
-                f"🆔 <code>{_order_id}</code>\n\n"
+                f"🆔 <code>{_order_id}</code>\n"
+                f"{await _fk_num_line(_order_id)}\n"
                 f"Клиент нажал «Активировать», но срок вышел. Код автоматически "
                 f"<b>не выдан</b>.\n"
                 f"Выдать повторно: админ-панель → Заказы → этот заказ → "
@@ -9691,6 +9785,28 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
                 await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
     except Exception:
         pass
+    # Если по этому заказу висело сообщение «нужно подтверждение клиента» —
+    # переписываем его в успешное, чтобы в чате не оставалось незакрытых
+    # предупреждений по уже активированным заказам.
+    try:
+        _cf_key = f"claude_confirm_msg:{order_id}"
+        _cf_mid2 = (await get_setting(_cf_key, "") or "").strip()
+        if _cf_mid2.isdigit():
+            _done_txt = (
+                f"✅ <b>Claude — клиент подтвердил, активация прошла</b>\n"
+                f"👤 <b>{_tg}</b> (<code>{user_id}</code>) · {plan_name}\n"
+                f"🔑 <code>{code}</code>\n🧩 Org: <code>{org_id}</code>\n"
+                f"🆔 <code>{order_id}</code>\n"
+                + await _fk_num_line(order_id)
+                + f"⏱ {_ts}")
+            try:
+                await bot.edit_message_text(_done_txt, chat_id=ADMIN_ID,
+                                            message_id=int(_cf_mid2), parse_mode="HTML")
+            except Exception as _e_ed:
+                logging.info(f"claude confirm msg edit: {_e_ed}")
+            await set_setting(_cf_key, "")
+    except Exception as _e_cf3:
+        logging.warning(f"claude confirm msg close: {_e_cf3}")
     _fail_clear("claude", user_id)
     await log_event(user_id, "claude_activation_ok", f"code={code} site={site_name} plan={plan_name}")
 
@@ -9892,13 +10008,23 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                                 ]))
                         except Exception as _e_cf:
                             logging.error(f"claude needs_force_confirm msg: {_e_cf}")
-                        await _admin_fail_shot(
+                        _cf_mid = await _admin_fail_shot(
                             f"⚠️ <b>Claude {_site} — нужно подтверждение клиента</b>\n"
                             f"👤 <code>{user_id}</code> · {plan_name}\n"
                             f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n"
+                            f"🆔 <code>{order_id}</code>\n"
+                            + await _fk_num_line(order_id)
                             + (f"📋 Прежняя активация: {_prev_txt}\n" if _prev_txt else "")
                             + "Клиенту отправлена кнопка подтверждения. Код возвращён в пул.",
                             _r.get("screenshot"))
+                        # Клиент подтвердит позже, отдельным запуском активации —
+                        # id сообщения кладём в настройку, чтобы пережить редеплой
+                        # и отредактировать его в «успешно», когда активация пройдёт.
+                        if _cf_mid:
+                            try:
+                                await set_setting(f"claude_confirm_msg:{order_id}", str(_cf_mid))
+                            except Exception as _e_cf2:
+                                logging.warning(f"claude confirm msg id: {_e_cf2}")
                         return
                     if _r.get("needs_check"):
                         # активация вероятно прошла, но не подтверждена — НЕ фолбэсим авто (риск двойной),

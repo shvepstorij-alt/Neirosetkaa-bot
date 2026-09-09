@@ -550,6 +550,33 @@ async def _aipro_ss(page):
         return None
 
 
+# Отказ OpenAI на стороне оплаты: покупку останавливает антифрод самого
+# OpenAI, а не сайт активации. Через iOS-маршрут (чек Apple) такая покупка
+# проходит, поэтому филиппинский код тут возвращаем в пул и берём iOS.
+# Фразы — из реального ответа bypriceactivate; список расширяем только по
+# фактически увиденным сообщениям, а не по догадкам.
+OPENAI_BLOCKED_MARKERS = (
+    "остановил покупку",
+    "системой защиты",
+    "деньги не списаны",
+    "purchase was blocked",
+    "purchase blocked",
+    "blocked the purchase",
+    "fraud protection",
+    "anti-fraud",
+    "antifraud",
+)
+
+
+def openai_purchase_blocked(message: str) -> bool:
+    """True, если OpenAI отклонил покупку своей защитой (деньги не списаны).
+
+    Такой сбой лечится сменой МАРШРУТА, а не сайта: через iOS покупка проходит.
+    """
+    _m = (message or "").lower()
+    return any(_k in _m for _k in OPENAI_BLOCKED_MARKERS)
+
+
 def gpt_plan_from_session(session_raw: str = "", access_token: str = "") -> tuple[str, str]:
     """План аккаунта ChatGPT: ('free' | 'plus' | 'pro' | ..., откуда взяли).
 
@@ -2380,7 +2407,9 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                             or "code used" in _ml or "already used" in _ml
                             or "код уже" in _ml or "код использ" in _ml):
                         return {"success": False, "code_already_used": True, "error": str(msg)}
-                    return {"success": False, "error": str(msg)}
+                    logger.warning(f"bpa gpt failed: order={order_id} msg={str(msg)[:300]!r}")
+                    return {"success": False, "error": str(msg),
+                            "openai_blocked": openai_purchase_blocked(str(msg))}
                 # queued | running | pending | review → продолжаем ждать
             return {"success": False,
                     "error": "Сайт долго обрабатывал заказ (>5 мин). Александр проверит вручную."}
