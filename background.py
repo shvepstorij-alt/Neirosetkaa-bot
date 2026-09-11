@@ -32,7 +32,7 @@ from db import (
 )
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
-    gpt_pool_audit,
+    gpt_pool_audit, gpt_reconcile_orphans,
 )
 
 async def cleanup_stale_generations_loop():
@@ -568,6 +568,53 @@ async def gpt_codes_cleanup_loop():
                         pass
         except Exception as e:
             logging.error(f"gpt_codes_cleanup_loop: {e}")
+
+
+async def gpt_orphans_loop():
+    """Подбирает активации, оборванные рестартом бота.
+
+    Раз в час и сразу после запуска: активация bypriceactivate длится до 5 минут,
+    и деплой в этот момент убивает задачу — сайт активацию доводит, а записать
+    её некому. Тогда код остаётся «свободным» и уходит второму клиенту.
+    """
+    await asyncio.sleep(90)           # даём боту подняться и подхватить вебхук
+    while True:
+        try:
+            _r = await gpt_reconcile_orphans()
+            for _f in (_r.get("fixed") or []):
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"♻️ <b>Дописал потерянную активацию ChatGPT</b>\n"
+                        f"👤 <code>{_f['user_id']}</code> · {_f['plan_name']}\n"
+                        f"🔑 <code>{_f['code']}</code> — сайт: {_f['status']}\n"
+                        + (f"📧 {_f['email']}\n" if _f.get("email") else "")
+                        + f"🆔 <code>{_f['order_id']}</code>\n\n"
+                        f"Активация прошла, но подтверждение потерялось при "
+                        f"перезапуске бота. Код закреплён за клиентом, подписка "
+                        f"записана, клиенту сообщил.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+            for _u in (_r.get("unsure") or []):
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"❓ <b>Оборванная активация — проверь вручную</b>\n"
+                        f"👤 <code>{_u['user_id']}</code> · {_u['plan_name']}\n"
+                        f"🔑 <code>{_u['code']}</code> — сайт: {_u['status']}\n"
+                        f"📧 на сайте: <code>{_u['site_email'] or '—'}</code>\n"
+                        f"📧 у клиента: <code>{_u['client_email'] or '—'}</code>\n"
+                        f"🆔 <code>{_u['order_id']}</code>\n\n"
+                        f"Код потрачен, но что он ушёл именно этому клиенту — "
+                        f"подтвердить не могу. Подписку НЕ записывал: иначе "
+                        f"клиент увидел бы в профиле то, чего у него нет.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.error(f"gpt_orphans_loop: {e}")
+        await asyncio.sleep(3600)
 
 
 async def gpt_pool_audit_loop():

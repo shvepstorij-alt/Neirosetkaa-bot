@@ -9060,6 +9060,87 @@ async def _gpt_provider_order() -> list:
     return order
 
 
+async def gpt_reconcile_orphans() -> dict:
+    """Подбирает активации, оборванные рестартом бота.
+
+    Активация через bypriceactivate — это до 5 минут опроса статуса. Если в этот
+    момент бот перезапустился (деплой, падение), задача умирает: сайт спокойно
+    доводит активацию до конца и выдаёт клиенту подписку, а записать результат
+    некому. Код остаётся used_by IS NULL, выглядит свободным и позже уходит
+    ДРУГОМУ клиенту — так 11.09.2026 один код ушёл двоим.
+
+    Здесь спрашиваем у сайта судьбу таких кодов и дописываем то, что не успел
+    упавший процесс: отмечаем код использованным (это и есть запись подписки —
+    профиль читает её из gpt_codes), закрываем pending, сообщаем клиенту и
+    админу. Коды, по которым активации НЕ было, не трогаем: клиент ещё может
+    активировать сам.
+    """
+    from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
+                                    _email_from_session, _same_email)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT user_id, code, order_id, plan, plan_name, session_raw, activating_at "
+            "FROM gpt_pending_activations "
+            "WHERE provider='bpa' AND activating_at IS NOT NULL "
+            "  AND activating_at < NOW() - INTERVAL '10 minutes'")
+    if not rows:
+        return {"ok": True, "checked": 0, "fixed": []}
+
+    _st = await bpa_query_codes([r["code"] for r in rows])
+    if not _st:
+        logging.warning("gpt_reconcile_orphans: сайт не ответил — ничего не трогаем")
+        return {"ok": False, "checked": 0, "fixed": [],
+                "error": "Сайт проверки не ответил."}
+
+    _fixed, _unsure = [], []
+    for r in rows:
+        _info = _st.get((r["code"] or "").strip().upper()) or {}
+        _v = _info.get("status", "")
+        if _v not in BPA_USED_STATUSES:
+            continue                      # активации не было — pending оставляем
+        _uid, _code = int(r["user_id"]), r["code"]
+        _email = ""
+        try:
+            _email = _email_from_session(r["session_raw"] or "")
+        except Exception:
+            pass
+        # «Код потрачен» само по себе НЕ значит «потрачен нашим клиентом»:
+        # процесс мог умереть на коде, который был израсходован кем-то раньше.
+        # Записать тогда подписку этому клиенту — значит соврать ему в профиле.
+        # Кредитуем только при совпадении почты; иначе отдаём на проверку.
+        _site_mail = _info.get("email") or ""
+        _sure = bool(_site_mail) and bool(_email) and _same_email(_site_mail, _email)
+        if not _sure:
+            _unsure.append({"user_id": _uid, "code": _code, "order_id": r["order_id"],
+                            "plan_name": r["plan_name"], "status": _v,
+                            "site_email": _site_mail, "client_email": _email})
+            continue
+        try:
+            await mark_gpt_code_used(_code, _uid, r["order_id"], _email)
+            await delete_pending_activation(_uid)
+        except Exception as _e_mk:
+            logging.error(f"gpt_reconcile_orphans {_code}: {_e_mk}")
+            continue
+        _fixed.append({"user_id": _uid, "code": _code, "order_id": r["order_id"],
+                       "plan_name": r["plan_name"], "email": _email, "status": _v})
+        try:
+            await bot.send_message(
+                _uid,
+                "🎉 <b>Подписка ChatGPT активирована!</b>\n\n"
+                f"📦 Тариф: <b>{r['plan_name']}</b>\n"
+                + (f"📧 Аккаунт: <b>{_email}</b>\n" if _email else "")
+                + "\nАктивация прошла, но подтверждение потерялось из-за "
+                  "перезапуска бота — поэтому сообщение приходит с задержкой. "
+                  "Подписка уже работает, ничего делать не нужно 🙌",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        logging.warning(f"gpt_reconcile_orphans: дописал активацию {_code} "
+                        f"uid={_uid} order={r['order_id']} статус={_v}")
+    return {"ok": True, "checked": len(rows), "fixed": _fixed, "unsure": _unsure}
+
+
 async def gpt_pool_audit(include_reserved: bool = True) -> dict:
     """Сверяет коды пула bypriceactivate с сайтом (POST /query, без активации).
 
@@ -9077,14 +9158,20 @@ async def gpt_pool_audit(include_reserved: bool = True) -> dict:
     from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
                                     BPA_FREE_STATUSES)
     pool = await get_pool()
+    # Коды, которые клиент активирует ПРЯМО СЕЙЧАС, исключаем: сайт может уже
+    # показать fulfilled, хотя это законная активация в процессе — пометили бы
+    # её как «похоже, потрачен» и зря подняли тревогу.
+    _busy = ("AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p "
+             "WHERE p.code = gpt_codes.code AND p.activating_at IS NOT NULL "
+             "AND p.activating_at > NOW() - INTERVAL '15 minutes') ")
     async with pool.acquire() as conn:
         if include_reserved:
             rows = await conn.fetch(
                 "SELECT code FROM gpt_codes WHERE provider='bpa' "
-                "AND (is_used=FALSE OR (is_used=TRUE AND used_by IS NULL))")
+                "AND (is_used=FALSE OR (is_used=TRUE AND used_by IS NULL)) " + _busy)
         else:
             rows = await conn.fetch(
-                "SELECT code FROM gpt_codes WHERE provider='bpa' AND is_used=FALSE")
+                "SELECT code FROM gpt_codes WHERE provider='bpa' AND is_used=FALSE " + _busy)
     _codes = [r["code"] for r in rows]
     if not _codes:
         return {"ok": True, "checked": 0, "spent": [], "free": 0, "odd": []}
@@ -9098,7 +9185,7 @@ async def gpt_pool_audit(include_reserved: bool = True) -> dict:
     _spent, _odd, _free = [], [], 0
     async with pool.acquire() as conn:
         for _c in _codes:
-            _v = _st.get(_c.strip().upper(), "")
+            _v = (_st.get(_c.strip().upper()) or {}).get("status", "")
             if not _v:
                 continue                      # сайт про этот код не ответил
             if _v in BPA_USED_STATUSES:

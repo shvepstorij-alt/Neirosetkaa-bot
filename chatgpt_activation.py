@@ -576,7 +576,11 @@ BPA_FREE_STATUSES = ("unused",)
 
 
 async def bpa_query_codes(codes: list) -> dict:
-    """Статус кодов на bypriceactivate БЕЗ активации: {код: статус}.
+    """Статус кодов на bypriceactivate БЕЗ активации.
+
+    Возвращает {КОД: {"status": ..., "email": ..., "cells": [...]}}. Почта
+    нужна, чтобы проверить, ЧЕЙ это код: «потрачен» само по себе не значит
+    «потрачен нашим клиентом».
 
     Это обычная форма (POST /query, поле `codes`, до 300 штук за раз), ответ —
     HTML-таблица, где у каждой строки есть data-code и data-status. JSON-API для
@@ -601,15 +605,31 @@ async def bpa_query_codes(codes: list) -> dict:
                         logger.warning(f"bpa query: HTTP {r.status}")
                         return {}
                     html = await r.text()
+                # Берём строку целиком: кроме статуса нужна ПОЧТА — по ней
+                # проверяется, чей это код. Колонки: #, код, план, статус,
+                # Organization ID, почта, время.
                 _rows = _re.findall(
-                    r'data-code="([^"]+)"\s+data-status="([^"]+)"', html)
+                    r'<tr[^>]*data-code="([^"]+)"[^>]*data-status="([^"]+)"[^>]*>(.*?)</tr>',
+                    html, _re.S)
                 if not _rows:
                     # Ни одной размеченной строки — значит это не та страница,
                     # что мы разбираем. Молча «ничего не нашли» отдавать нельзя.
                     logger.warning("bpa query: в ответе нет data-code/data-status")
                     return {}
-                for _c, _st in _rows:
-                    out[_c.strip().upper()] = _st.strip().lower()
+                for _c, _st, _body in _rows:
+                    _tds = [_re.sub(r"<[^>]+>", " ", _t)
+                            for _t in _re.findall(r"<td[^>]*>(.*?)</td>", _body, _re.S)]
+                    _tds = [" ".join(_t.split()) for _t in _tds]
+                    _mail = ""
+                    for _t in _tds:
+                        if "@" in _t and "." in _t:
+                            _mail = _t
+                            break
+                    out[_c.strip().upper()] = {
+                        "status": _st.strip().lower(),
+                        "email": _mail,
+                        "cells": _tds,
+                    }
                 if _i + 300 < len(_codes):
                     await asyncio.sleep(2)                  # не долбим сайт
     except Exception as _e:
@@ -2476,7 +2496,12 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                         _made = float(pd.get("created_at") or 0)
                     except Exception:
                         _made = 0.0
-                    if _made and _made < (_sent_at - 120):
+                    # Запас 10 минут: заказ, созданный за пару минут до нашего
+                    # запроса, мог быть и нашим (расхождение часов, ретрай).
+                    # Ложное срабатывание тут дороже пропуска: оно сожгло бы
+                    # ТОЛЬКО ЧТО активированный код и запустило вторую активацию
+                    # тому же клиенту. Настоящую подмену ловит existing=true.
+                    if _made and _made < (_sent_at - 600):
                         logger.warning(
                             f"bpa gpt: заказ {order_id} создан до нашего запроса "
                             f"({_made} < {_sent_at}) — код {code} чужой.")
