@@ -9156,8 +9156,18 @@ async def gpt_reconcile_orphans() -> dict:
         rows = await conn.fetch(
             "SELECT user_id, code, order_id, plan, plan_name, session_raw, activating_at "
             "FROM gpt_pending_activations "
-            "WHERE provider='bpa' AND activating_at IS NOT NULL "
-            "  AND activating_at < NOW() - INTERVAL '10 minutes'")
+            "WHERE provider='bpa' AND ("
+            # (1) задача оборвалась на полуслове: метка «активация идёт» пережила
+            #     рестарт, значит снять её было некому
+            "      (activating_at IS NOT NULL "
+            "       AND activating_at < NOW() - INTERVAL '10 minutes')"
+            # (2) задача ЗАВЕРШИЛАСЬ неудачей (метка снята), но сайт мог довести
+            #     активацию уже после того, как бот сдался: 11.09.2026 бот сообщил
+            #     о неудаче в 12:48, а сайт проставил fulfilled в 13:01. Такой код
+            #     оставался закреплён за клиентом и через 2 часа уходил в пул.
+            "   OR (activating_at IS NULL "
+            "       AND created_at < NOW() - INTERVAL '15 minutes')"
+            ")")
     if not rows:
         return {"ok": True, "checked": 0, "fixed": []}
 
@@ -9186,6 +9196,18 @@ async def gpt_reconcile_orphans() -> dict:
         _site_mail = _info.get("email") or ""
         _sure = bool(_site_mail) and bool(_email) and _same_email(_site_mail, _email)
         if not _sure:
+            # Подписку не записываем — но и молча отпускать код нельзя: он
+            # потрачен, и через два часа ушёл бы следующему клиенту как
+            # «свободный». Ставим ту же обратимую пометку, что и сверка пула:
+            # из первой очереди выдачи уходит, в пул сам не вернётся.
+            try:
+                async with pool.acquire() as _cflag:
+                    await _cflag.execute(
+                        "UPDATE gpt_codes SET check_status='error', "
+                        "last_checked_at=NOW(), flagged_reason=$2 WHERE code=$1",
+                        _code, f"bpa/query: {_v} — потрачен, чей аккаунт не подтверждён")
+            except Exception as _e_fl:
+                logging.warning(f"gpt_reconcile_orphans флаг {_code}: {_e_fl}")
             _unsure.append({"user_id": _uid, "code": _code, "order_id": r["order_id"],
                             "plan_name": r["plan_name"], "status": _v,
                             "site_email": _site_mail, "client_email": _email})
@@ -9204,9 +9226,9 @@ async def gpt_reconcile_orphans() -> dict:
                 "🎉 <b>Подписка ChatGPT активирована!</b>\n\n"
                 f"📦 Тариф: <b>{r['plan_name']}</b>\n"
                 + (f"📧 Аккаунт: <b>{_email}</b>\n" if _email else "")
-                + "\nАктивация прошла, но подтверждение потерялось из-за "
-                  "перезапуска бота — поэтому сообщение приходит с задержкой. "
-                  "Подписка уже работает, ничего делать не нужно 🙌",
+                + "\nАктивация прошла, но подтверждение дошло до бота с "
+                  "задержкой — поэтому сообщение приходит не сразу. Подписка "
+                  "уже работает, ничего делать не нужно 🙌",
                 parse_mode="HTML")
         except Exception:
             pass
@@ -9215,15 +9237,29 @@ async def gpt_reconcile_orphans() -> dict:
     return {"ok": True, "checked": len(rows), "fixed": _fixed, "unsure": _unsure}
 
 
-# Что проверяем на bypriceactivate: таблица кодов, таблица «в процессе» и
-# нужно ли фильтровать по провайдеру (у Perplexity колонки provider нет).
+# Что проверяем на bypriceactivate: таблица кодов, таблица «в процессе»,
+# нужно ли фильтровать по провайдеру (у Perplexity колонки provider нет) и
+# по какому условию считать активацию ИДУЩЕЙ ПРЯМО СЕЙЧАС.
+#
+# Последнее — важное. Раньше из сверки выпадал любой код, у которого есть
+# строка в таблице «в процессе». Но после неудачной активации бот эту строку
+# НЕ удаляет (код закрепляется за клиентом, чтобы активировать вручную тем же
+# кодом) — и такой код становился невидимым для сверки на два часа. Ровно в
+# этом промежутке 11.09.2026 код GPTP-ISFG-…-B6ZQ числился «годным», хотя на
+# сайте уже стоял fulfilled. Теперь пропускаем только те, что реально в
+# работе: у ChatGPT это свежая метка activating_at, у остальных — свежая
+# строка «в процессе» (колонки activating_at у них нет).
 _AUDIT_SERVICES = {
     "chatgpt":    {"name": "ChatGPT",    "table": "gpt_codes",
-                   "pending": "gpt_pending_activations",        "by_provider": True},
+                   "pending": "gpt_pending_activations",        "by_provider": True,
+                   "inflight": "p.activating_at IS NOT NULL "
+                               "AND p.activating_at > NOW() - INTERVAL '15 minutes'"},
     "claude":     {"name": "Claude",     "table": "claude_codes",
-                   "pending": "claude_pending_activations",     "by_provider": True},
+                   "pending": "claude_pending_activations",     "by_provider": True,
+                   "inflight": "p.created_at > NOW() - INTERVAL '15 minutes'"},
     "perplexity": {"name": "Perplexity", "table": "perplexity_codes",
-                   "pending": "perplexity_pending_activations", "by_provider": False},
+                   "pending": "perplexity_pending_activations", "by_provider": False,
+                   "inflight": "p.created_at > NOW() - INTERVAL '15 minutes'"},
 }
 
 
@@ -9246,6 +9282,8 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
     pool = await get_pool()
 
     _all, _by_code = [], {}
+    _pool_n = {_sv: 0 for _sv in _svcs}          # сколько кодов в пуле сервиса
+    _sql_err = {}                                # сервис → почему не смогли выбрать
     async with pool.acquire() as conn:
         for _sv in _svcs:
             _cfg = _AUDIT_SERVICES[_sv]
@@ -9258,26 +9296,46 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
             # Код, который активируют ПРЯМО СЕЙЧАС, не трогаем: сайт может уже
             # показывать fulfilled, хотя это законная активация в процессе, —
             # пометили бы её как «похоже, потрачен» и зря подняли тревогу.
+            # Но именно СЕЙЧАС, а не «когда-то была строка»: см. _AUDIT_SERVICES.
             _where.append(f"NOT EXISTS (SELECT 1 FROM {_cfg['pending']} p "
-                          f"WHERE p.code = {_cfg['table']}.code)")
+                          f"WHERE p.code = {_cfg['table']}.code "
+                          f"  AND ({_cfg['inflight']}))")
             try:
                 _rows = await conn.fetch(
                     f"SELECT code FROM {_cfg['table']} WHERE " + " AND ".join(_where))
             except Exception as _e_sel:
-                logging.warning(f"pool_audit {_sv}: {_e_sel}")
+                # Молчать нельзя: в отчёте сервис выглядел бы как «пул пуст»,
+                # то есть проверка соврала бы, что всё в порядке.
+                logging.error(f"pool_audit {_sv}: не смог выбрать коды: {_e_sel}")
+                _sql_err[_sv] = str(_e_sel)[:200]
                 continue
             for _r in _rows:
                 _all.append(_r["code"])
                 _by_code[(_r["code"] or "").strip().upper()] = _sv
+                _pool_n[_sv] = _pool_n.get(_sv, 0) + 1
+
+    def _blank(_extra=None):
+        """Пустая разбивка по сервисам — чтобы отчёт всегда показывал ВСЕ сервисы,
+        даже когда проверять было нечего или сайт не ответил."""
+        _b = {}
+        for _sv in _svcs:
+            _b[_sv] = {"pool": _pool_n.get(_sv, 0), "checked": 0, "free": 0,
+                       "spent": [], "odd": [], "noanswer": 0, "unknown": False,
+                       "error": _sql_err.get(_sv, "")}
+            if _extra == "noanswer":
+                _b[_sv]["noanswer"] = _pool_n.get(_sv, 0)
+        return _b
+
     if not _all:
         return {"ok": True, "checked": 0, "spent": [], "free": 0, "odd": [],
-                "services": _svcs}
+                "services": _svcs, "unknown": [], "by_service": _blank()}
 
     _st = await bpa_query_codes(_all)
     if not _st:
         logging.warning("pool_audit: сайт не ответил — пулы не трогаем")
         return {"ok": False, "checked": 0, "spent": [], "free": 0, "odd": [],
-                "services": _svcs,
+                "services": _svcs, "unknown": [],
+                "by_service": _blank("noanswer"),
                 "error": "Сайт проверки не ответил — пулы не меняли."}
 
     # Сначала раскладываем ответ по полочкам В ПАМЯТИ и только потом пишем в базу.
@@ -9288,12 +9346,16 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
     # проверкой и не трогаем вовсе.
     _plan = []                       # (код, статус, сервис, что_делать)
     _ans, _nid = {}, {}              # сколько ответов и сколько not_in_db по сервисам
+    _noans = {_sv: 0 for _sv in _svcs}   # коды, про которые сайт промолчал
     for _c in _all:
         _key = (_c or "").strip().upper()
         _v = (_st.get(_key) or {}).get("status", "")
-        if not _v:
-            continue                          # сайт про этот код не ответил
         _sv = _by_code.get(_key, "chatgpt")
+        if not _v:
+            # Сайт про этот код не ответил вовсе. Не молчим об этом: если таких
+            # много у одного сервиса — значит проверка его толком не покрывает.
+            _noans[_sv] = _noans.get(_sv, 0) + 1
+            continue
         _ans[_sv] = _ans.get(_sv, 0) + 1
         if _v == "not_in_db":
             _nid[_sv] = _nid.get(_sv, 0) + 1
@@ -9338,51 +9400,103 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
                     f"flagged_reason=$2 WHERE code=$1", _c, f"bpa/query: {_v}")
                 _odd.append((_c, _v, _sv))
     _checked = sum(1 for _c, _v, _sv, _w in _plan if _sv not in _unknown)
+
+    # Разбивка по сервисам — её показывает отчёт. Считаем по _svcs, а не по
+    # найденному, чтобы сервис с пустым пулом тоже попал в отчёт отдельной
+    # строкой: «проверять нечего» — это тоже ответ.
+    _by = {}
+    for _sv in _svcs:
+        _u = _sv in _unknown
+        _by[_sv] = {
+            "pool": _pool_n.get(_sv, 0),
+            "checked": 0 if _u else sum(1 for _c, _v, _s, _w in _plan if _s == _sv),
+            "free": 0 if _u else sum(1 for _c, _v, _s, _w in _plan
+                                     if _s == _sv and _w == "free"),
+            "spent": [(_c, _v) for _c, _v, _s in _spent if _s == _sv],
+            "odd": [(_c, _v) for _c, _v, _s in _odd if _s == _sv],
+            "noanswer": _noans.get(_sv, 0),
+            "unknown": _u,
+            "error": _sql_err.get(_sv, ""),
+        }
     logging.info(f"pool_audit: проверено {_checked}, подозрительных {len(_spent)}, "
                  f"годных {_free}, спорных {len(_odd)}, непокрытых сервисов "
                  f"{len(_unknown)} — ничего не гасили")
+    for _sv, _d in _by.items():
+        logging.info(f"pool_audit/{_sv}: пул {_d['pool']}, проверено {_d['checked']}, "
+                     f"годных {_d['free']}, потрачено {len(_d['spent'])}, "
+                     f"спорных {len(_d['odd'])}, без ответа {_d['noanswer']}")
     return {"ok": True, "checked": _checked, "spent": _spent, "free": _free,
-            "odd": _odd, "services": _svcs, "unknown": _unknown}
+            "odd": _odd, "services": _svcs, "unknown": _unknown, "by_service": _by}
 
 
 def pool_audit_report(r: dict) -> str:
-    """Человеческий отчёт по сверке пулов — один текст для команды и для задачи."""
-    if not r.get("ok"):
-        return ("❌ <b>Сайт проверки не ответил</b>\n"
-                + (r.get("error") or "")
-                + "\n\nПулы не тронуты. Если повторяется — возможно, сайт не "
-                  "принимает запросы с сервера; тогда нужен их JSON-эндпоинт.")
-    _t = (f"🔎 <b>Сверка пулов</b>\n"
-          f"Проверено кодов: <b>{r.get('checked')}</b>\n"
-          f"✅ Годных: <b>{r.get('free')}</b>\n")
+    """Отчёт по сверке пулов: отдельный блок на КАЖДЫЙ сервис.
 
-    def _grouped(_rows, _title, _icon):
+    Общая цифра «проверено 89» ничего не говорит о том, дошла ли проверка до
+    Claude и Perplexity вообще. Поэтому каждый сервис показываем своей строкой
+    с собственными числами — даже когда у него всё чисто или пул пуст, — а
+    каждый проблемный код пишем отдельной строкой под своим сервисом.
+    """
+    if not r.get("ok"):
+        _t = ("❌ <b>Сайт проверки не ответил</b>\n"
+              + (r.get("error") or "")
+              + "\n\nПулы не тронуты. Если повторяется — возможно, сайт не "
+                "принимает запросы с сервера; тогда нужен их JSON-эндпоинт.")
+        _bs = r.get("by_service") or {}
+        if _bs:
+            _t += "\n\nНе сверялись:\n" + "\n".join(
+                f"• <b>{(_AUDIT_SERVICES.get(_sv) or {}).get('name', _sv)}</b>"
+                f" — {_d.get('pool', 0)} код(ов) в пуле"
+                for _sv, _d in _bs.items())
+        return _t
+
+    _by = r.get("by_service") or {}
+    if not _by:
+        # Совместимость: старый вызов без разбивки — отдаём общий итог.
+        return (f"🔎 <b>Сверка пулов</b>\nПроверено кодов: <b>{r.get('checked')}</b>\n"
+                f"✅ Годных: <b>{r.get('free')}</b>")
+
+    _t = (f"🔎 <b>Сверка пулов</b>\n"
+          f"Итого проверено: <b>{r.get('checked')}</b> · "
+          f"✅ годных: <b>{r.get('free')}</b>\n")
+
+    _LIMIT = 15          # столько проблемных кодов показываем на сервис в группе
+
+    def _codes(_rows, _title, _icon):
         if not _rows:
             return ""
-        _by = {}
-        for _c, _v, _sv in _rows:
-            _by.setdefault(_sv, []).append((_c, _v))
-        _out = f"\n{_icon} <b>{_title} ({len(_rows)}):</b>\n"
-        for _sv, _items in _by.items():
-            _nm = (_AUDIT_SERVICES.get(_sv) or {}).get("name", _sv)
-            _out += f"<b>{_nm}</b>\n"
-            _out += "\n".join(f"• <code>{_c}</code> — {_v}" for _c, _v in _items[:20])
-            if len(_items) > 20:
-                _out += f"\n…и ещё {len(_items) - 20}"
-            _out += "\n"
-        return _out
+        _out = f"{_icon} <b>{_title} ({len(_rows)}):</b>\n"
+        _out += "\n".join(f"   • <code>{_c}</code> — {_v}"
+                           for _c, _v in _rows[:_LIMIT])
+        if len(_rows) > _LIMIT:
+            _out += f"\n   …и ещё {len(_rows) - _LIMIT} — смотри логи"
+        return _out + "\n"
 
-    _t += _grouped(r.get("spent") or [], "Похоже, потрачены", "⚠️")
-    _t += _grouped(r.get("odd") or [], "Непонятный статус", "❔")
-    if r.get("unknown"):
-        _nms = ", ".join((_AUDIT_SERVICES.get(_u) or {}).get("name", _u)
-                         for _u in r["unknown"])
-        _t += (f"\nℹ️ Страница проверки не знает коды: <b>{_nms}</b> — "
-               f"их пулы не сверялись и не помечались.\n")
-    if not r.get("spent") and not r.get("odd"):
-        _t += ("\nПодозрительных кодов нет — пулы чистые."
-               if r.get("checked") else "\nПроверять было нечего.")
-    else:
+    for _sv, _d in _by.items():
+        _nm = (_AUDIT_SERVICES.get(_sv) or {}).get("name", _sv)
+        _t += f"\n━━━━━━━━━━\n<b>{_nm}</b>\n"
+        if _d.get("error"):
+            _t += (f"❌ Не смог проверить — ошибка запроса к базе:\n"
+                   f"<code>{_d['error']}</code>\n")
+            continue
+        if _d.get("unknown"):
+            _t += (f"ℹ️ Страница проверки не знает эти коды "
+                   f"({_d.get('pool', 0)} шт.) — пул не сверялся и не помечался.\n")
+            continue
+        if not _d.get("pool"):
+            _t += "Пул пуст — проверять нечего.\n"
+            continue
+        _t += (f"Проверено: <b>{_d.get('checked', 0)}</b> из "
+               f"{_d.get('pool', 0)} · ✅ годных: <b>{_d.get('free', 0)}</b>\n")
+        _t += _codes(_d.get("spent") or [], "Похоже, потрачены", "⚠️")
+        _t += _codes(_d.get("odd") or [], "Непонятный статус", "❔")
+        if _d.get("noanswer"):
+            _t += (f"🔇 Сайт не ответил по {_d['noanswer']} код(ам) — "
+                   f"их не трогали.\n")
+        if not _d.get("spent") and not _d.get("odd") and not _d.get("noanswer"):
+            _t += "Всё чисто.\n"
+
+    if r.get("spent") or r.get("odd"):
         _t += ("\n<i>Ничего не гасил и не удалял — только пометил. Помеченные "
                "не возвращаются в пул автоматически и выдаются последними. "
                "Удалить — в админ-панели.</i>")
