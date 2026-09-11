@@ -7185,10 +7185,12 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
                 f"🆔 <code>{_order_id}</code>\n"
                 f"{await _fk_num_line(_order_id)}\n"
                 f"Клиент нажал «Активировать», но срок вышел. Код автоматически "
-                f"<b>не выдан</b>.\n"
-                f"Выдать повторно: админ-панель → Заказы → этот заказ → "
-                f"«Отправить кнопку активации ещё раз».",
-                parse_mode="HTML")
+                f"<b>не выдан</b>.\n\n"
+                f"Можно выдать повторно прямо отсюда 👇",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="📨 Отправить повторно",
+                                         callback_data=f"adm_resend:{_order_id}")]]))
         except Exception:
             pass
         return None
@@ -9058,6 +9060,78 @@ async def _gpt_provider_order() -> list:
             if p in GPT_PROVIDERS and p not in order and p not in _disabled:
                 order.append(p)
     return order
+
+
+async def gpt_resend_activation(order_id: str) -> tuple:
+    """Повторно шлёт клиенту кнопку активации ChatGPT по заказу.
+
+    Та же логика, что у кнопки «Отправить кнопку активации ещё раз» в
+    админ-панели, вынесенная отдельно: её дёргает и панель, и кнопка под
+    уведомлением «Истекло окно активации» — чтобы не искать заказ руками.
+
+    Возвращает (успех, текст для админа).
+    """
+    _oid = str(order_id or "").strip()
+    if not _oid:
+        return False, "Пустой номер заказа"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        o = await conn.fetchrow("SELECT user_id, pack FROM fk_orders WHERE order_id=$1", _oid)
+    if not o:
+        return False, "Заказ не найден"
+    uid = o["user_id"]
+    pack = o["pack"] or ""
+    if not pack.startswith("shop:"):
+        return False, "Не магазинный заказ"
+    _parts = pack.split(":")
+    _svc = _parts[1] if len(_parts) > 1 else ""
+    _idx = int(_parts[2]) if len(_parts) > 2 and _parts[2].isdigit() else 0
+    if _svc != "chatgpt":
+        return False, "Эта кнопка только для ChatGPT"
+    _cat = SHOP_CATALOG.get(_svc, {}) or {}
+    _plans = _cat.get("plans", [])
+    _plan_name = _plans[_idx]["name"] if 0 <= _idx < len(_plans) else "Plus"
+    _plan_key = plan_name_to_key(_plan_name)
+
+    # Код, уже закреплённый за заказом, переиспользуем: иначе на один заказ
+    # уйдёт второй код. Новый берём, только если прежнего не осталось.
+    _pend = await get_pending_activation(uid)
+    if _pend and _pend.get("code"):
+        _code = _pend["code"]
+        _prov = _pend.get("provider") or "bpa"
+        _reused = True
+    else:
+        _code, _prov = await _gpt_pick_code(_plan_key)
+        _reused = False
+        if not _code:
+            return False, f"Нет свободных кодов ChatGPT ({_plan_key})"
+    await save_pending_activation(uid, _code, _oid, _plan_key, _plan_name, _prov)
+
+    from aiogram.types import WebAppInfo as _WAI
+    _url = webapp_url("/webapp/chatgpt", plan=_plan_name, code=_code)
+    try:
+        await bot.send_message(
+            uid,
+            f"🔔 <b>Активация подписки ChatGPT</b>\n\n"
+            f"📦 {_cat.get('name','ChatGPT')} {_plan_name}\n"
+            f"🎟 Код: <code>{_code}</code>\n\n"
+            f"Нажми кнопку ниже, чтобы активировать 👇",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✨ Активировать подписку", web_app=_WAI(url=_url))],
+                [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="gpt_need_help")],
+            ]))
+    except Exception as _se:
+        return False, f"Не удалось отправить клиенту: {_se}"
+    try:
+        await set_setting(f"order_done:{_oid}", "0")
+    except Exception:
+        pass
+    logging.info(f"gpt_resend_activation: order={_oid} uid={uid} code={_code} "
+                 f"{'прежний' if _reused else 'новый'}")
+    return True, (f"Кнопка отправлена клиенту.\n🎟 Код: <code>{_code}</code>"
+                  + ("\n<i>Это тот же код, что был закреплён за заказом.</i>"
+                     if _reused else "\n<i>Прежнего кода не было — выдан новый.</i>"))
 
 
 async def gpt_reconcile_orphans() -> dict:

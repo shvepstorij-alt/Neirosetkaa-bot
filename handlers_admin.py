@@ -48,6 +48,7 @@ from keyboards import (
 )
 from common import (
     _build_stat_text, _show_activity_page, _show_payments_page, _show_users_page, _nsg_usd_rate, fk_check_order_status, show_admin_panel,
+    gpt_resend_activation,
 )
 
 @dp.message(F.text.startswith("/admin"), StateFilter("*"))
@@ -3988,6 +3989,29 @@ async def adm_partner_add_save(message: Message, state: FSMContext):
         parse_mode="HTML")
 
 
+def _partner_net(markup_pct: float, promo_pct: float) -> float:
+    """Итог к рознице в процентах: (1+наценка)·(1−скидка) − 1."""
+    return ((1.0 + float(markup_pct or 0) / 100.0)
+            * (1.0 - float(promo_pct or 0) / 100.0) - 1.0) * 100.0
+
+
+def _partner_restore_hint(pid: int, disc_pct: float,
+                          markup_pct: float, promo_old: float, promo_new: float) -> str:
+    """Подсказка после смены скидки: итог уехал, вот готовая строка обратно.
+
+    Наценку при смене скидки бот не трогает — значит итог для клиента
+    смещается. Ничего не меняем сами, только показываем команду.
+    """
+    _before = _partner_net(markup_pct, promo_old)
+    _after = _partner_net(markup_pct, promo_new)
+    if abs(_before - _after) < 0.1:
+        return ""
+    _t = round(_before) if abs(_before - round(_before)) < 0.15 else round(_before, 2)
+    return (f"\n\n↩️ Итог был <b>{_before:+.1f}%</b>, стал <b>{_after:+.1f}%</b> — "
+            f"наценку я не трогал.\nЧтобы вернуть прежний итог, отправь:\n"
+            f"<code>{pid} {_fpct(disc_pct)} итог {_fpct(_t)}</code>")
+
+
 def _partner_hint(promo_pct: float) -> str:
     """Готовая таблица «хочешь итог +N% → ставь наценку M%».
 
@@ -4170,9 +4194,16 @@ async def adm_partner_promo_save(message: Message, state: FSMContext):
         return
     txt = (message.text or "").strip().lower()
     if txt in ("выкл", "off", "0", "нет", "-"):
+        _u0 = await get_user(int(pid)) or {}
+        _p0 = float(_u0.get("partner_promo_pct") or 0)
+        _d0 = float(_u0.get("partner_discount_pct") or 0)
+        _m0 = float(_u0.get("partner_markup_pct") or 0)
         await set_partner_promo(int(pid), 0, "off", 0)
         await state.clear()
-        await message.answer("✅ Скидка убрана — клиенты платят полную цену партнёра.")
+        await message.answer(
+            "✅ Скидка убрана — клиенты платят полную цену партнёра."
+            + _partner_restore_hint(int(pid), _d0, _m0, _p0, 0),
+            parse_mode="HTML")
         return
     parts = txt.split()
     pct = _pnum(parts[0], -1) if parts else -1
@@ -4199,10 +4230,12 @@ async def adm_partner_promo_save(message: Message, state: FSMContext):
             if not (1 <= _days <= 365):
                 await message.answer("❌ Срок 1–365 дней. Повтори:")
                 return
+    # Старую скидку читаем ДО сохранения — по ней считаем, куда уехал итог.
+    _u = await get_user(int(pid)) or {}
+    _promo_old = float(_u.get("partner_promo_pct") or 0)
     await set_partner_promo(int(pid), pct, _mode, _days)
     await state.clear()
     _cond = f"первые {_days} дн. после перехода" if _mode == "days" else "на первую покупку"
-    _u = await get_user(int(pid)) or {}
     _d = float(_u.get("partner_discount_pct") or 0)
     _m = float(_u.get("partner_markup_pct") or 0)
     _demo = ""
@@ -4216,8 +4249,9 @@ async def adm_partner_promo_save(message: Message, state: FSMContext):
                      f"(розница {_bp} ₽): клиент видит <b>{_c} ₽ (−{pct:.0f}%)</b>, "
                      f"тебе <b>{_o} ₽</b>, партнёру <b>{_c - _o} ₽</b>.")
             break
+    _fix = _partner_restore_hint(int(pid), _d, _m, _promo_old, pct)
     await message.answer(
-        f"✅ Скидка <b>{pct:.0f}%</b>, действует {_cond}.{_demo}", parse_mode="HTML")
+        f"✅ Скидка <b>{pct:.0f}%</b>, действует {_cond}.{_demo}{_fix}", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("adm_p_cl:"))
@@ -4674,3 +4708,80 @@ async def adm_refp_del_save(message: Message, state: FSMContext):
         f"✅ Партнёр <code>{uid}</code> убран из премиум-рефералки.",
         parse_mode="HTML"
     )
+
+
+@dp.callback_query(F.data.startswith("adm_resend:"))
+async def adm_resend_activation_ask(cb: CallbackQuery, state: FSMContext):
+    """Первое подтверждение повторной выдачи кнопки активации.
+
+    Кнопка висит под уведомлением «Истекло окно активации», чтобы не искать
+    заказ в админ-панели. Отправка — только на втором шаге: клиенту уходит
+    сообщение, случайный тап тут недопустим.
+    """
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    _oid = cb.data.split(":", 1)[1]
+    _uid = None
+    _plan = ""
+    try:
+        _p = await get_pool()
+        async with _p.acquire() as _c:
+            _o = await _c.fetchrow(
+                "SELECT user_id, pack FROM fk_orders WHERE order_id=$1", _oid)
+        if _o:
+            _uid = _o["user_id"]
+            _pk = _o["pack"] or ""
+            if _pk.startswith("shop:"):
+                _pp = _pk.split(":")
+                _sv = SHOP_CATALOG.get(_pp[1] if len(_pp) > 1 else "", {}) or {}
+                _ix = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+                _pl = _sv.get("plans", [])
+                _plan = _pl[_ix].get("name", "") if 0 <= _ix < len(_pl) else ""
+    except Exception as _e_o:
+        logging.warning(f"adm_resend look-up {_oid}: {_e_o}")
+    if not _uid:
+        await cb.answer("Заказ не найден", show_alert=True); return
+    await cb.message.answer(
+        f"📨 <b>Отправить клиенту кнопку активации ещё раз?</b>\n\n"
+        f"👤 <code>{_uid}</code>" + (f" · {_plan}" if _plan else "") + "\n"
+        f"🆔 <code>{_oid}</code>\n\n"
+        f"Клиенту придёт новое сообщение с кнопкой. Код возьму тот, что уже "
+        f"закреплён за заказом; если его нет — новый из пула.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📨 Да, отправить",
+                                  callback_data=f"adm_resend2:{_oid}")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data="adm_resend_no")],
+        ]),
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_resend2:"))
+async def adm_resend_activation_do(cb: CallbackQuery, state: FSMContext):
+    """Второе подтверждение — здесь сообщение клиенту действительно уходит."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    _oid = cb.data.split(":", 1)[1]
+    await cb.answer("Отправляю…")
+    try:
+        _ok, _msg = await gpt_resend_activation(_oid)
+    except Exception as _e:
+        _ok, _msg = False, f"{type(_e).__name__}: {_e}"
+        logging.error(f"adm_resend2 {_oid}: {_e}", exc_info=True)
+    _txt = (f"{'✅' if _ok else '❌'} <b>Повторная выдача</b>\n"
+            f"🆔 <code>{_oid}</code>\n\n{_msg}")
+    try:
+        await cb.message.edit_text(_txt, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(_txt, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_resend_no")
+async def adm_resend_activation_cancel(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌ Нет доступа", show_alert=True); return
+    try:
+        await cb.message.edit_text("↩️ Отменено — клиенту ничего не отправлял.")
+    except Exception:
+        pass
+    await cb.answer()
