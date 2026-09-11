@@ -32,6 +32,7 @@ from db import (
 )
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
+    gpt_pool_audit,
 )
 
 async def cleanup_stale_generations_loop():
@@ -517,6 +518,26 @@ async def gpt_codes_cleanup_loop():
             except Exception:
                 _act_h = 12
             _release_after_h = max(2, int(_act_h) + 1)
+            # ПЕРЕД возвратом в пул сверяем коды с сайтом активации: код мог
+            # быть реально потрачен, а бот этого не зафиксировал (упал,
+            # перезапустился, счёл неудачей). Тогда used_by остаётся NULL, код
+            # выглядит свободным — и уходит следующему клиенту. Так 11.09.2026
+            # один код ушёл двум клиентам, второму бот показал чужую почту.
+            try:
+                _audit = await gpt_pool_audit(include_reserved=True)
+                if _audit.get("spent"):
+                    _sp = "\n".join(f"• <code>{c}</code> — {v}"
+                                     for c, v in _audit["spent"][:15])
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ <b>Похоже, в пуле есть потраченные коды</b> "
+                        f"({len(_audit['spent'])})\n{_sp}\n\n"
+                        f"Ничего не гасил и не удалял — проверь сам. "
+                        f"В пул автоматически они не вернутся, и в выдаче "
+                        f"стоят последними. Удалить можно в админ-панели.",
+                        parse_mode="HTML")
+            except Exception as _e_au:
+                logging.warning(f"gpt_pool_audit перед возвратом: {_e_au}")
             async with pool.acquire() as conn:
                 await conn.execute(
                     "DELETE FROM gpt_pending_activations WHERE expires_at < NOW()")
@@ -526,6 +547,7 @@ async def gpt_codes_cleanup_loop():
                        WHERE is_used=TRUE
                          AND used_by IS NULL
                          AND reserved_at < NOW() - make_interval(hours => $1)
+                         AND COALESCE(check_status,'unchecked') NOT IN ('used','error','invalid')
                          AND NOT EXISTS (
                              SELECT 1 FROM gpt_pending_activations p
                              WHERE p.code = gpt_codes.code
@@ -546,6 +568,37 @@ async def gpt_codes_cleanup_loop():
                         pass
         except Exception as e:
             logging.error(f"gpt_codes_cleanup_loop: {e}")
+
+
+async def gpt_pool_audit_loop():
+    """Раз в 3 часа сверяет пул ChatGPT с сайтом активации.
+
+    Ловит коды, потраченные мимо бота: сайт про них говорит fulfilled/claimed,
+    а у нас они числятся свободными. Такой код, попав клиенту, раньше давал
+    ложный «успех» с чужой почтой.
+    """
+    await asyncio.sleep(300)          # даём боту подняться
+    while True:
+        try:
+            _r = await gpt_pool_audit(include_reserved=True)
+            if _r.get("ok") and (_r.get("spent") or _r.get("odd")):
+                _txt = f"🔎 <b>Сверка пула ChatGPT</b>\nПроверено: {_r.get('checked')}\n"
+                if _r.get("spent"):
+                    _txt += (f"\n⚠️ <b>Похоже, потрачены ({len(_r['spent'])})</b> — "
+                             f"проверь и реши сам:\n"
+                             + "\n".join(f"• <code>{c}</code> — {v}" for c, v in _r["spent"][:15]))
+                if _r.get("odd"):
+                    _txt += (f"\n\n❔ <b>Непонятный статус ({len(_r['odd'])})</b>:\n"
+                             + "\n".join(f"• <code>{c}</code> — {v}" for c, v in _r["odd"][:15]))
+                _txt += "\n\n<i>Ничего не гасил и не удалял — только пометил.</i>"
+                _txt += f"\n\n✅ Годных в пуле: {_r.get('free')}"
+                try:
+                    await bot.send_message(ADMIN_ID, _txt, parse_mode="HTML")
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.error(f"gpt_pool_audit_loop: {e}")
+        await asyncio.sleep(3 * 3600)
 
 
 async def _activation_jobs_cleanup_loop():

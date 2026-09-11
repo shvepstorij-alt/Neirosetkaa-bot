@@ -39,7 +39,7 @@ from common import (
 )
 from background import (
     _activation_jobs_cleanup_loop, _claude_job_results_cleanup_loop, _memory_cleanup_loop, auto_recover_lost_videos_loop, claude_codes_cleanup_loop, cleanup_stale_generations_loop,
-    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, models_desc_refresh_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
+    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, gpt_pool_audit_loop, models_desc_refresh_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
     reminders_loop, subscription_reminder_loop,
 )
 from _registration_order import ORIG_ORDER as _ORIG_ORDER
@@ -343,6 +343,7 @@ async def main():
     _spawn_bg(reminders_loop, "reminders_loop")
     _spawn_bg(db_cleanup_loop, "db_cleanup_loop")
     _spawn_bg(gpt_codes_cleanup_loop, "gpt_codes_cleanup_loop")
+    _spawn_bg(gpt_pool_audit_loop, "gpt_pool_audit_loop")
     _spawn_bg(gpt_code_rechecker_loop, "gpt_code_rechecker_loop")
     _spawn_bg(_activation_jobs_cleanup_loop, "_activation_jobs_cleanup_loop")
     _spawn_bg(claude_codes_cleanup_loop, "claude_codes_cleanup_loop")

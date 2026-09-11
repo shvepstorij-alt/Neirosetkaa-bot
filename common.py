@@ -6316,9 +6316,31 @@ async def _run_activation_job(
             while (not result.get("success") and result.get("code_already_used")
                    and len(_gpt_used_codes) < 30):
                 _gpt_used_codes.append(code)
+                # Код был активирован НЕ нашим клиентом: сайт вернул чужой,
+                # уже завершённый заказ. Значит в пуле лежал потраченный код —
+                # админу надо об этом знать, это не рядовая «занятость».
+                if result.get("wrong_account"):
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ <b>В пуле оказался УЖЕ ПОТРАЧЕННЫЙ код</b>\n"
+                            f"🔑 <code>{code}</code> — сжёг, беру следующий\n"
+                            f"👤 Клиент: <code>{user_id}</code> · {plan_name}\n"
+                            f"🆔 <code>{order_id}</code>\n"
+                            f"{await _fk_num_line(order_id)}"
+                            + (f"📧 Ушёл на: <code>{result.get('other_email')}</code>\n"
+                               if result.get("other_email") else "")
+                            + "\nРаньше бот в такой ситуации рапортовал успех "
+                              "с чужой почтой. Проверь пул: /gpt_codes_status",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
                 await _burn_code(code)
                 logging.warning(f"Код {code} уже использован (site={provider}), беру следующий")
-                _nc = await get_next_gpt_code(_plan_key, provider)
+                # Маршрут держим тот же: филиппинский код нельзя подсунуть
+                # аккаунту с подпиской, а iOS — наоборот, годится везде.
+                _rt_cur = gpt_route_for_code(code) if provider == "bpa" else None
+                _nc = await get_next_gpt_code(_plan_key, provider, _rt_cur)
                 if not _nc:
                     return True   # на этом сайте кодов больше нет
                 await save_pending_activation(user_id, _nc, order_id, _plan_key, plan_name, provider)
@@ -9036,6 +9058,75 @@ async def _gpt_provider_order() -> list:
             if p in GPT_PROVIDERS and p not in order and p not in _disabled:
                 order.append(p)
     return order
+
+
+async def gpt_pool_audit(include_reserved: bool = True) -> dict:
+    """Сверяет коды пула bypriceactivate с сайтом (POST /query, без активации).
+
+    Зачем: код мог быть реально потрачен, а бот этого не зафиксировал (упал,
+    перезапустился, счёл неудачей). Тогда он выглядит свободным и уходит
+    следующему клиенту — именно так 11.09.2026 один код ушёл двум клиентам.
+
+    include_reserved — проверять и выданные, но не подтверждённые коды
+    (is_used=TRUE, used_by IS NULL). Это как раз те, которые фоновая задача
+    собирается вернуть в пул.
+
+    Возвращает сводку. Если сайт не ответил или ответил не тем — НИЧЕГО не
+    меняем: пустой ответ разметил бы весь пул как «неизвестно».
+    """
+    from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
+                                    BPA_FREE_STATUSES)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if include_reserved:
+            rows = await conn.fetch(
+                "SELECT code FROM gpt_codes WHERE provider='bpa' "
+                "AND (is_used=FALSE OR (is_used=TRUE AND used_by IS NULL))")
+        else:
+            rows = await conn.fetch(
+                "SELECT code FROM gpt_codes WHERE provider='bpa' AND is_used=FALSE")
+    _codes = [r["code"] for r in rows]
+    if not _codes:
+        return {"ok": True, "checked": 0, "spent": [], "free": 0, "odd": []}
+
+    _st = await bpa_query_codes(_codes)
+    if not _st:
+        logging.warning("gpt_pool_audit: сайт не ответил — пул не трогаем")
+        return {"ok": False, "checked": 0, "spent": [], "free": 0, "odd": [],
+                "error": "Сайт проверки не ответил — пул не меняли."}
+
+    _spent, _odd, _free = [], [], 0
+    async with pool.acquire() as conn:
+        for _c in _codes:
+            _v = _st.get(_c.strip().upper(), "")
+            if not _v:
+                continue                      # сайт про этот код не ответил
+            if _v in BPA_USED_STATUSES:
+                # Сайт говорит, что код потрачен. НЕ гасим и не удаляем: проверка
+                # могла ошибиться, а решение о судьбе товара — за Александром.
+                # Ставим пометку (обратимую) и докладываем. Пометка убирает код
+                # из первой очереди на выдачу: get_next_gpt_code сперва берёт
+                # коды со статусом 'ok'.
+                await conn.execute(
+                    "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
+                    "flagged_reason=$2 WHERE code=$1",
+                    _c, f"bpa/query: {_v} — похоже, уже потрачен")
+                _spent.append((_c, _v))
+            elif _v in BPA_FREE_STATUSES:
+                await conn.execute(
+                    "UPDATE gpt_codes SET check_status='ok', last_checked_at=NOW(), "
+                    "flagged_reason=NULL WHERE code=$1", _c)
+                _free += 1
+            else:
+                # failed / zoom_* / not_in_db — состояние неясное. Не жжём и не
+                # объявляем годным: помечаем и показываем админу.
+                await conn.execute(
+                    "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
+                    "flagged_reason=$2 WHERE code=$1", _c, f"bpa/query: {_v}")
+                _odd.append((_c, _v))
+    logging.info(f"gpt_pool_audit: проверено {len(_st)}, подозрительных {len(_spent)}, "
+                 f"годных {_free}, спорных {len(_odd)} — ничего не гасили")
+    return {"ok": True, "checked": len(_st), "spent": _spent, "free": _free, "odd": _odd}
 
 
 async def _gpt_pick_code(plan: str):

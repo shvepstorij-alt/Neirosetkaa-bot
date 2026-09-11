@@ -151,6 +151,50 @@ async def admin_gpt_codes_to_bpa(message: Message):
         f"Проверь: /gpt_codes_status", parse_mode="HTML")
 
 
+@dp.message(F.text.startswith("/gpt_check_pool"), StateFilter("*"))
+async def admin_gpt_check_pool(message: Message):
+    """Сверяет пул ChatGPT с сайтом активации прямо сейчас.
+
+    То же, что делает фоновая задача раз в 3 часа. Нужна, чтобы проверить связь
+    с сайтом сразу после деплоя и разобрать пул руками.
+    """
+    if not is_admin(message.from_user.id):
+        return
+    # Импорт локальный: handlers_gpt не тянет common на уровне модуля,
+    # и заводить эту связь ради одной команды не стоит.
+    from common import gpt_pool_audit
+    await message.answer("🔎 Сверяю пул с сайтом активации…")
+    try:
+        r = await gpt_pool_audit(include_reserved=True)
+    except Exception as _e:
+        await message.answer(f"❌ Не вышло: <code>{_e}</code>", parse_mode="HTML")
+        return
+    if not r.get("ok"):
+        await message.answer(
+            "❌ <b>Сайт проверки не ответил</b>\n"
+            f"{r.get('error') or ''}\n\n"
+            "Пул не тронут. Если повторяется — возможно, сайт не принимает "
+            "запросы с сервера; тогда нужен их JSON-эндпоинт для проверки кодов.",
+            parse_mode="HTML")
+        return
+    _txt = (f"🔎 <b>Сверка пула ChatGPT</b>\n"
+            f"Проверено кодов: <b>{r.get('checked')}</b>\n"
+            f"✅ Годных: <b>{r.get('free')}</b>\n")
+    if r.get("spent"):
+        _txt += ("\n⚠️ <b>Похоже, потрачены (%d):</b>\n" % len(r["spent"])
+                 + "\n".join(f"• <code>{c}</code> — {v}" for c, v in r["spent"][:20]))
+    if r.get("odd"):
+        _txt += ("\n\n❔ <b>Непонятный статус (%d):</b>\n" % len(r["odd"])
+                 + "\n".join(f"• <code>{c}</code> — {v}" for c, v in r["odd"][:20]))
+    if not r.get("spent") and not r.get("odd"):
+        _txt += "\nПодозрительных кодов нет — пул чистый."
+    else:
+        _txt += ("\n\n<i>Ничего не гасил и не удалял — только пометил. "
+                 "Помеченные не вернутся в пул автоматически и выдаются "
+                 "последними. Удалить — в админ-панели.</i>")
+    await message.answer(_txt, parse_mode="HTML")
+
+
 @dp.message(F.text.startswith("/gpt_code_route"), StateFilter("*"))
 async def admin_gpt_code_route(message: Message):
     """Ручная разметка маршрута: /gpt_code_route КОД ios|ph"""

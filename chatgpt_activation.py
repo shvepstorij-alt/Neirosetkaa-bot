@@ -568,6 +568,77 @@ OPENAI_BLOCKED_MARKERS = (
 )
 
 
+# Статусы со страницы https://bypriceactivate.pro/query — взяты из её же
+# скрипта, а не придуманы: USED_STATUSES / UNUSED_STATUSES.
+BPA_USED_STATUSES = ("claimed", "fulfilled", "zoom_token_ready")
+BPA_SUSPECT_STATUSES = ("failed", "zoom_preparing", "zoom_failed", "not_in_db")
+BPA_FREE_STATUSES = ("unused",)
+
+
+async def bpa_query_codes(codes: list) -> dict:
+    """Статус кодов на bypriceactivate БЕЗ активации: {код: статус}.
+
+    Это обычная форма (POST /query, поле `codes`, до 300 штук за раз), ответ —
+    HTML-таблица, где у каждой строки есть data-code и data-status. JSON-API для
+    этого у них нет — проверено по документации и по самой странице.
+
+    Пустой словарь = проверку провести НЕ удалось (сеть, редизайн, ошибка).
+    Вызывающий код обязан в этом случае ничего не менять: пометить пул по
+    пустому ответу хуже, чем не проверить вовсе.
+    """
+    import aiohttp as _ah, re as _re
+    _codes = [str(c).strip() for c in (codes or []) if str(c).strip()]
+    if not _codes:
+        return {}
+    out = {}
+    try:
+        async with _ah.ClientSession(timeout=_ah.ClientTimeout(total=60)) as s:
+            for _i in range(0, len(_codes), 300):          # лимит страницы — 300
+                _chunk = _codes[_i:_i + 300]
+                async with s.post("https://bypriceactivate.pro/query",
+                                  data={"codes": "\n".join(_chunk)}) as r:
+                    if r.status != 200:
+                        logger.warning(f"bpa query: HTTP {r.status}")
+                        return {}
+                    html = await r.text()
+                _rows = _re.findall(
+                    r'data-code="([^"]+)"\s+data-status="([^"]+)"', html)
+                if not _rows:
+                    # Ни одной размеченной строки — значит это не та страница,
+                    # что мы разбираем. Молча «ничего не нашли» отдавать нельзя.
+                    logger.warning("bpa query: в ответе нет data-code/data-status")
+                    return {}
+                for _c, _st in _rows:
+                    out[_c.strip().upper()] = _st.strip().lower()
+                if _i + 300 < len(_codes):
+                    await asyncio.sleep(2)                  # не долбим сайт
+    except Exception as _e:
+        logger.warning(f"bpa query: {_e}")
+        return {}
+    return out
+
+
+def _same_email(masked: str, real: str) -> bool:
+    """Одна ли это почта: сайт отдаёт её замаскированной («al***@gmail.com»).
+
+    Сравниваем домен и видимую часть до звёздочек. Если чего-то не хватает —
+    возвращаем True (не ругаемся), решение принимает вызывающий код по другим
+    признакам: сверка нужна, чтобы ЛОВИТЬ расхождение, а не выдумывать его.
+    """
+    _m = (masked or "").strip().lower()
+    _r = (real or "").strip().lower()
+    if not _m or not _r or "@" not in _m or "@" not in _r:
+        return True
+    _mu, _md = _m.rsplit("@", 1)
+    _ru, _rd = _r.rsplit("@", 1)
+    if _md != _rd:
+        return False
+    _vis = _mu.split("*")[0]          # видимый префикс до звёздочек
+    if not _vis:
+        return True
+    return _ru.startswith(_vis)
+
+
 def openai_purchase_blocked(message: str) -> bool:
     """True, если OpenAI отклонил покупку своей защитой (деньги не списаны).
 
@@ -2325,7 +2396,7 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
     в мини-аппе целиком). Принимает как JSON-объект, так и «сырой» accessToken.
     Возвращает контракт как у прочих провайдеров:
       {success, error, code_already_used, token_invalid, out_of_stock, email}."""
-    import aiohttp as _aiohttp, asyncio as _aio, json as _json
+    import aiohttp as _aiohttp, asyncio as _aio, json as _json, time as _time
     base = "https://bypriceactivate.pro"
 
     _sess = (session_raw or "").strip()
@@ -2338,6 +2409,10 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
     except Exception:
         _sess_val = {"accessToken": _sess} if _sess.startswith("eyJ") else _sess
 
+    # Почта клиента из его же сессии — с ней сверяем, ЧЬЮ активацию вернул сайт.
+    _client_email = _email_from_session(_sess)
+    _sent_at = _time.time()
+
     body = {"code": code, "session": _sess_val}
     headers = {"Content-Type": "application/json"}
     try:
@@ -2349,6 +2424,17 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     d = {}
                 st = r.status
                 order_id = d.get("order_id")
+                # existing=true — сайт вернул СТАРЫЙ заказ по этому же коду:
+                # код уже отправляли раньше, и он ушёл на чужой аккаунт. Если
+                # это проглядеть, опрос старого заказа отдаёт completed и бот
+                # рапортует успех с чужой почтой (так и случилось 11.09.2026).
+                if st in (200, 202) and order_id and d.get("existing"):
+                    logger.warning(
+                        f"bpa gpt: код {code} уже отправляли — existing=true, "
+                        f"старый заказ {order_id}. Активации НЕ было.")
+                    return {"success": False, "code_already_used": True, "wrong_account": True,
+                            "error": "Код уже был использован раньше — сайт вернул прежнюю "
+                                     "активацию на другой аккаунт."}
                 if st in (200, 202) and order_id:
                     pass  # приняли, ниже опрашиваем
                 else:
@@ -2383,7 +2469,31 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     continue
                 status = (pd.get("status") or "").lower()
                 if status == "completed":
-                    return {"success": True, "email": pd.get("account_email") or ""}
+                    _acc = pd.get("account_email") or ""
+                    # Заказ создан РАНЬШЕ, чем мы отправили запрос → это чужой,
+                    # уже завершённый заказ по тому же коду, а не наш.
+                    try:
+                        _made = float(pd.get("created_at") or 0)
+                    except Exception:
+                        _made = 0.0
+                    if _made and _made < (_sent_at - 120):
+                        logger.warning(
+                            f"bpa gpt: заказ {order_id} создан до нашего запроса "
+                            f"({_made} < {_sent_at}) — код {code} чужой.")
+                        return {"success": False, "code_already_used": True, "wrong_account": True,
+                                "error": "Код уже был активирован раньше на другой аккаунт "
+                                         "(сайт вернул старый заказ)."}
+                    # Почта в ответе не совпала с почтой клиента → подписка ушла
+                    # НЕ ему. Считаем код израсходованным и берём следующий.
+                    if not _same_email(_acc, _client_email):
+                        logger.warning(
+                            f"bpa gpt: почта не совпала — сайт {_acc!r}, клиент "
+                            f"{_client_email!r}, код {code}.")
+                        return {"success": False, "code_already_used": True, "wrong_account": True,
+                                "error": f"Код активирован на ЧУЖОЙ аккаунт ({_acc}), "
+                                         f"а не на аккаунт клиента ({_client_email}).",
+                                "other_email": _acc, "client_email": _client_email}
+                    return {"success": True, "email": _acc or _client_email}
                 if status == "failed":
                     msg = pd.get("message") or pd.get("error") or "Активация не удалась."
                     _ml = str(msg).lower()
