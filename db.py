@@ -632,6 +632,19 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_perplexity_codes_free "
             "ON perplexity_codes(plan, is_used) WHERE is_used = FALSE"
         )
+        # Колонки для сверки пула с сайтом активации — такие же, как у ChatGPT.
+        for _tbl_chk in ("claude_codes", "perplexity_codes"):
+            for _col_chk, _def_chk in (
+                ("check_status",    "TEXT DEFAULT 'unchecked'"),
+                ("last_checked_at", "TIMESTAMPTZ"),
+                ("flagged_reason",  "TEXT"),
+            ):
+                try:
+                    await conn.execute(
+                        f"ALTER TABLE {_tbl_chk} ADD COLUMN IF NOT EXISTS "
+                        f"{_col_chk} {_def_chk}")
+                except Exception:
+                    pass
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS perplexity_pending_activations (
                 id           SERIAL PRIMARY KEY,
@@ -709,7 +722,7 @@ async def get_next_gpt_code(plan: str = "plus", provider: str = "987ai",
                             route: str | None = None):
     """Выдаёт следующий свободный код ИЗ ПУЛА КОНКРЕТНОГО САЙТА.
 
-    Приоритет: check_status='ok' > 'unchecked'. 'used'/'invalid' не выдаются.
+    Приоритет: 'ok' → 'unchecked' → помеченные. 'used'/'invalid' не выдаются.
 
     route ('ios' | 'ph') сужает выборку до нужного маршрута. Это ключевая
     защита: филиппинский код на аккаунте с активной подпиской сгорает впустую,
@@ -719,7 +732,11 @@ async def get_next_gpt_code(plan: str = "plus", provider: str = "987ai",
     pool = await get_pool()
     _r = (route or "").strip().lower() or None
     async with pool.acquire() as conn:
+        # Три очереди: подтверждённые сверкой → непроверенные → помеченные
+        # подозрительными. Помеченные выдаются ПОСЛЕДНИМИ, но не блокируются:
+        # сверка могла ошибиться, а без кода клиент останется ни с чем.
         for _status_cond in ("COALESCE(check_status,'unchecked') = 'ok'",
+                             "COALESCE(check_status,'unchecked') = 'unchecked'",
                              "COALESCE(check_status,'unchecked') NOT IN ('used','invalid')"):
             if _r:
                 row = await conn.fetchrow(
@@ -1790,15 +1807,24 @@ async def get_next_claude_code(plan: str = "pro", provider: str = "bpa"):
     ИЗ ПУЛА КОНКРЕТНОГО ПРОВАЙДЕРА (у каждого сайта свои коды)."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """UPDATE claude_codes SET is_used=TRUE
-               WHERE id=(SELECT id FROM claude_codes
-                         WHERE plan=$1 AND provider=$2 AND is_used=FALSE
-                         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-               RETURNING code""",
-            plan, provider
-        )
-    return row["code"] if row else None
+        # Три очереди: подтверждённые сверкой → непроверенные → помеченные
+        # подозрительными. Помеченные выдаются ПОСЛЕДНИМИ, но не блокируются:
+        # сверка могла ошибиться, а без кода клиент останется ни с чем.
+        for _status_cond in ("COALESCE(check_status,'unchecked') = 'ok'",
+                             "COALESCE(check_status,'unchecked') = 'unchecked'",
+                             "COALESCE(check_status,'unchecked') NOT IN ('used','invalid')"):
+            row = await conn.fetchrow(
+                f"""UPDATE claude_codes SET is_used=TRUE
+                    WHERE id=(SELECT id FROM claude_codes
+                              WHERE plan=$1 AND provider=$2 AND is_used=FALSE
+                                AND {_status_cond}
+                              ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                    RETURNING code""",
+                plan, provider
+            )
+            if row:
+                return row["code"]
+    return None
 
 
 async def count_claude_free_by_provider() -> dict:
@@ -2412,15 +2438,24 @@ async def get_next_perplexity_code(plan: str = "pro"):
     """Резервирует и возвращает следующий свободный код нужного плана."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """UPDATE perplexity_codes SET is_used=TRUE
-               WHERE id=(SELECT id FROM perplexity_codes
-                         WHERE plan=$1 AND is_used=FALSE
-                         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-               RETURNING code""",
-            plan
-        )
-    return row["code"] if row else None
+        # Три очереди: подтверждённые сверкой → непроверенные → помеченные
+        # подозрительными. Помеченные выдаются ПОСЛЕДНИМИ, но не блокируются:
+        # сверка могла ошибиться, а без кода клиент останется ни с чем.
+        for _status_cond in ("COALESCE(check_status,'unchecked') = 'ok'",
+                             "COALESCE(check_status,'unchecked') = 'unchecked'",
+                             "COALESCE(check_status,'unchecked') NOT IN ('used','invalid')"):
+            row = await conn.fetchrow(
+                f"""UPDATE perplexity_codes SET is_used=TRUE
+                    WHERE id=(SELECT id FROM perplexity_codes
+                              WHERE plan=$1 AND is_used=FALSE
+                                AND {_status_cond}
+                              ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                    RETURNING code""",
+                plan
+            )
+            if row:
+                return row["code"]
+    return None
 
 
 async def release_perplexity_code(code: str):

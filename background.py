@@ -32,7 +32,7 @@ from db import (
 )
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
-    gpt_pool_audit, gpt_reconcile_orphans,
+    gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report,
 )
 
 async def cleanup_stale_generations_loop():
@@ -618,7 +618,7 @@ async def gpt_orphans_loop():
 
 
 async def gpt_pool_audit_loop():
-    """Раз в 3 часа сверяет пул ChatGPT с сайтом активации.
+    """Раз в 3 часа сверяет пулы ChatGPT, Claude и Perplexity с сайтом активации.
 
     Ловит коды, потраченные мимо бота: сайт про них говорит fulfilled/claimed,
     а у нас они числятся свободными. Такой код, попав клиенту, раньше давал
@@ -627,20 +627,11 @@ async def gpt_pool_audit_loop():
     await asyncio.sleep(300)          # даём боту подняться
     while True:
         try:
-            _r = await gpt_pool_audit(include_reserved=True)
+            _r = await pool_audit(include_reserved=True)
             if _r.get("ok") and (_r.get("spent") or _r.get("odd")):
-                _txt = f"🔎 <b>Сверка пула ChatGPT</b>\nПроверено: {_r.get('checked')}\n"
-                if _r.get("spent"):
-                    _txt += (f"\n⚠️ <b>Похоже, потрачены ({len(_r['spent'])})</b> — "
-                             f"проверь и реши сам:\n"
-                             + "\n".join(f"• <code>{c}</code> — {v}" for c, v in _r["spent"][:15]))
-                if _r.get("odd"):
-                    _txt += (f"\n\n❔ <b>Непонятный статус ({len(_r['odd'])})</b>:\n"
-                             + "\n".join(f"• <code>{c}</code> — {v}" for c, v in _r["odd"][:15]))
-                _txt += "\n\n<i>Ничего не гасил и не удалял — только пометил.</i>"
-                _txt += f"\n\n✅ Годных в пуле: {_r.get('free')}"
                 try:
-                    await bot.send_message(ADMIN_ID, _txt, parse_mode="HTML")
+                    await bot.send_message(ADMIN_ID, pool_audit_report(_r),
+                                           parse_mode="HTML")
                 except Exception:
                     pass
         except Exception as e:

@@ -9215,79 +9215,193 @@ async def gpt_reconcile_orphans() -> dict:
     return {"ok": True, "checked": len(rows), "fixed": _fixed, "unsure": _unsure}
 
 
-async def gpt_pool_audit(include_reserved: bool = True) -> dict:
-    """Сверяет коды пула bypriceactivate с сайтом (POST /query, без активации).
+# Что проверяем на bypriceactivate: таблица кодов, таблица «в процессе» и
+# нужно ли фильтровать по провайдеру (у Perplexity колонки provider нет).
+_AUDIT_SERVICES = {
+    "chatgpt":    {"name": "ChatGPT",    "table": "gpt_codes",
+                   "pending": "gpt_pending_activations",        "by_provider": True},
+    "claude":     {"name": "Claude",     "table": "claude_codes",
+                   "pending": "claude_pending_activations",     "by_provider": True},
+    "perplexity": {"name": "Perplexity", "table": "perplexity_codes",
+                   "pending": "perplexity_pending_activations", "by_provider": False},
+}
 
-    Зачем: код мог быть реально потрачен, а бот этого не зафиксировал (упал,
+
+async def pool_audit(services=None, include_reserved: bool = True) -> dict:
+    """Сверяет пулы кодов с сайтом активации (POST /query, без активации).
+
+    Код мог быть реально потрачен, а бот этого не зафиксировал (упал,
     перезапустился, счёл неудачей). Тогда он выглядит свободным и уходит
-    следующему клиенту — именно так 11.09.2026 один код ушёл двум клиентам.
+    следующему клиенту — так 11.09.2026 один код ушёл двум клиентам.
 
-    include_reserved — проверять и выданные, но не подтверждённые коды
-    (is_used=TRUE, used_by IS NULL). Это как раз те, которые фоновая задача
-    собирается вернуть в пул.
+    Коды всех сервисов уходят ОДНИМ запросом: сайт принимает их вперемешку и
+    различает сам по префиксу.
 
-    Возвращает сводку. Если сайт не ответил или ответил не тем — НИЧЕГО не
-    меняем: пустой ответ разметил бы весь пул как «неизвестно».
+    Ничего не гасит и не удаляет: ставит обратимую пометку и возвращает сводку.
+    Если сайт не ответил или ответил не тем — пулы не меняются вовсе.
     """
     from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
                                     BPA_FREE_STATUSES)
+    _svcs = [x for x in (services or list(_AUDIT_SERVICES)) if x in _AUDIT_SERVICES]
     pool = await get_pool()
-    # Коды, которые клиент активирует ПРЯМО СЕЙЧАС, исключаем: сайт может уже
-    # показать fulfilled, хотя это законная активация в процессе — пометили бы
-    # её как «похоже, потрачен» и зря подняли тревогу.
-    _busy = ("AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p "
-             "WHERE p.code = gpt_codes.code AND p.activating_at IS NOT NULL "
-             "AND p.activating_at > NOW() - INTERVAL '15 minutes') ")
-    async with pool.acquire() as conn:
-        if include_reserved:
-            rows = await conn.fetch(
-                "SELECT code FROM gpt_codes WHERE provider='bpa' "
-                "AND (is_used=FALSE OR (is_used=TRUE AND used_by IS NULL)) " + _busy)
-        else:
-            rows = await conn.fetch(
-                "SELECT code FROM gpt_codes WHERE provider='bpa' AND is_used=FALSE " + _busy)
-    _codes = [r["code"] for r in rows]
-    if not _codes:
-        return {"ok": True, "checked": 0, "spent": [], "free": 0, "odd": []}
 
-    _st = await bpa_query_codes(_codes)
+    _all, _by_code = [], {}
+    async with pool.acquire() as conn:
+        for _sv in _svcs:
+            _cfg = _AUDIT_SERVICES[_sv]
+            if include_reserved:
+                _where = ["(is_used=FALSE OR (is_used=TRUE AND used_by IS NULL))"]
+            else:
+                _where = ["is_used=FALSE"]
+            if _cfg["by_provider"]:
+                _where.append("provider='bpa'")
+            # Код, который активируют ПРЯМО СЕЙЧАС, не трогаем: сайт может уже
+            # показывать fulfilled, хотя это законная активация в процессе, —
+            # пометили бы её как «похоже, потрачен» и зря подняли тревогу.
+            _where.append(f"NOT EXISTS (SELECT 1 FROM {_cfg['pending']} p "
+                          f"WHERE p.code = {_cfg['table']}.code)")
+            try:
+                _rows = await conn.fetch(
+                    f"SELECT code FROM {_cfg['table']} WHERE " + " AND ".join(_where))
+            except Exception as _e_sel:
+                logging.warning(f"pool_audit {_sv}: {_e_sel}")
+                continue
+            for _r in _rows:
+                _all.append(_r["code"])
+                _by_code[(_r["code"] or "").strip().upper()] = _sv
+    if not _all:
+        return {"ok": True, "checked": 0, "spent": [], "free": 0, "odd": [],
+                "services": _svcs}
+
+    _st = await bpa_query_codes(_all)
     if not _st:
-        logging.warning("gpt_pool_audit: сайт не ответил — пул не трогаем")
+        logging.warning("pool_audit: сайт не ответил — пулы не трогаем")
         return {"ok": False, "checked": 0, "spent": [], "free": 0, "odd": [],
-                "error": "Сайт проверки не ответил — пул не меняли."}
+                "services": _svcs,
+                "error": "Сайт проверки не ответил — пулы не меняли."}
+
+    # Сначала раскладываем ответ по полочкам В ПАМЯТИ и только потом пишем в базу.
+    # Причина: страница /query сделана под ChatGPT, и не факт, что она вообще
+    # знает коды Claude/Perplexity. Если не знает — она ответит на них
+    # not_in_db, и построчная запись пометила бы ВЕСЬ пул сервиса как спорный.
+    # Поэтому сервис, у которого ВСЕ ответы — not_in_db, считаем непокрытым
+    # проверкой и не трогаем вовсе.
+    _plan = []                       # (код, статус, сервис, что_делать)
+    _ans, _nid = {}, {}              # сколько ответов и сколько not_in_db по сервисам
+    for _c in _all:
+        _key = (_c or "").strip().upper()
+        _v = (_st.get(_key) or {}).get("status", "")
+        if not _v:
+            continue                          # сайт про этот код не ответил
+        _sv = _by_code.get(_key, "chatgpt")
+        _ans[_sv] = _ans.get(_sv, 0) + 1
+        if _v == "not_in_db":
+            _nid[_sv] = _nid.get(_sv, 0) + 1
+        if _v in BPA_USED_STATUSES:
+            _plan.append((_c, _v, _sv, "spent"))
+        elif _v in BPA_FREE_STATUSES:
+            _plan.append((_c, _v, _sv, "free"))
+        else:
+            _plan.append((_c, _v, _sv, "odd"))
+
+    _unknown = sorted(_sv for _sv, _n in _ans.items()
+                      if _n >= 3 and _nid.get(_sv, 0) == _n)
+    if _unknown:
+        logging.warning("pool_audit: сайт не знает коды сервисов "
+                        + ", ".join(_unknown) + " — их не трогаем")
 
     _spent, _odd, _free = [], [], 0
     async with pool.acquire() as conn:
-        for _c in _codes:
-            _v = (_st.get(_c.strip().upper()) or {}).get("status", "")
-            if not _v:
-                continue                      # сайт про этот код не ответил
-            if _v in BPA_USED_STATUSES:
+        for _c, _v, _sv, _what in _plan:
+            if _sv in _unknown:
+                continue                      # сервис не покрыт проверкой
+            _tbl = _AUDIT_SERVICES[_sv]["table"]
+            if _what == "spent":
                 # Сайт говорит, что код потрачен. НЕ гасим и не удаляем: проверка
                 # могла ошибиться, а решение о судьбе товара — за Александром.
-                # Ставим пометку (обратимую) и докладываем. Пометка убирает код
-                # из первой очереди на выдачу: get_next_gpt_code сперва берёт
-                # коды со статусом 'ok'.
+                # Пометка обратима и убирает код из первой очереди на выдачу.
                 await conn.execute(
-                    "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
-                    "flagged_reason=$2 WHERE code=$1",
+                    f"UPDATE {_tbl} SET check_status='error', last_checked_at=NOW(), "
+                    f"flagged_reason=$2 WHERE code=$1",
                     _c, f"bpa/query: {_v} — похоже, уже потрачен")
-                _spent.append((_c, _v))
-            elif _v in BPA_FREE_STATUSES:
+                _spent.append((_c, _v, _sv))
+            elif _what == "free":
                 await conn.execute(
-                    "UPDATE gpt_codes SET check_status='ok', last_checked_at=NOW(), "
-                    "flagged_reason=NULL WHERE code=$1", _c)
+                    f"UPDATE {_tbl} SET check_status='ok', last_checked_at=NOW(), "
+                    f"flagged_reason=NULL WHERE code=$1", _c)
                 _free += 1
             else:
                 # failed / zoom_* / not_in_db — состояние неясное. Не жжём и не
                 # объявляем годным: помечаем и показываем админу.
                 await conn.execute(
-                    "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
-                    "flagged_reason=$2 WHERE code=$1", _c, f"bpa/query: {_v}")
-                _odd.append((_c, _v))
-    logging.info(f"gpt_pool_audit: проверено {len(_st)}, подозрительных {len(_spent)}, "
-                 f"годных {_free}, спорных {len(_odd)} — ничего не гасили")
-    return {"ok": True, "checked": len(_st), "spent": _spent, "free": _free, "odd": _odd}
+                    f"UPDATE {_tbl} SET check_status='error', last_checked_at=NOW(), "
+                    f"flagged_reason=$2 WHERE code=$1", _c, f"bpa/query: {_v}")
+                _odd.append((_c, _v, _sv))
+    _checked = sum(1 for _c, _v, _sv, _w in _plan if _sv not in _unknown)
+    logging.info(f"pool_audit: проверено {_checked}, подозрительных {len(_spent)}, "
+                 f"годных {_free}, спорных {len(_odd)}, непокрытых сервисов "
+                 f"{len(_unknown)} — ничего не гасили")
+    return {"ok": True, "checked": _checked, "spent": _spent, "free": _free,
+            "odd": _odd, "services": _svcs, "unknown": _unknown}
+
+
+def pool_audit_report(r: dict) -> str:
+    """Человеческий отчёт по сверке пулов — один текст для команды и для задачи."""
+    if not r.get("ok"):
+        return ("❌ <b>Сайт проверки не ответил</b>\n"
+                + (r.get("error") or "")
+                + "\n\nПулы не тронуты. Если повторяется — возможно, сайт не "
+                  "принимает запросы с сервера; тогда нужен их JSON-эндпоинт.")
+    _t = (f"🔎 <b>Сверка пулов</b>\n"
+          f"Проверено кодов: <b>{r.get('checked')}</b>\n"
+          f"✅ Годных: <b>{r.get('free')}</b>\n")
+
+    def _grouped(_rows, _title, _icon):
+        if not _rows:
+            return ""
+        _by = {}
+        for _c, _v, _sv in _rows:
+            _by.setdefault(_sv, []).append((_c, _v))
+        _out = f"\n{_icon} <b>{_title} ({len(_rows)}):</b>\n"
+        for _sv, _items in _by.items():
+            _nm = (_AUDIT_SERVICES.get(_sv) or {}).get("name", _sv)
+            _out += f"<b>{_nm}</b>\n"
+            _out += "\n".join(f"• <code>{_c}</code> — {_v}" for _c, _v in _items[:20])
+            if len(_items) > 20:
+                _out += f"\n…и ещё {len(_items) - 20}"
+            _out += "\n"
+        return _out
+
+    _t += _grouped(r.get("spent") or [], "Похоже, потрачены", "⚠️")
+    _t += _grouped(r.get("odd") or [], "Непонятный статус", "❔")
+    if r.get("unknown"):
+        _nms = ", ".join((_AUDIT_SERVICES.get(_u) or {}).get("name", _u)
+                         for _u in r["unknown"])
+        _t += (f"\nℹ️ Страница проверки не знает коды: <b>{_nms}</b> — "
+               f"их пулы не сверялись и не помечались.\n")
+    if not r.get("spent") and not r.get("odd"):
+        _t += ("\nПодозрительных кодов нет — пулы чистые."
+               if r.get("checked") else "\nПроверять было нечего.")
+    else:
+        _t += ("\n<i>Ничего не гасил и не удалял — только пометил. Помеченные "
+               "не возвращаются в пул автоматически и выдаются последними. "
+               "Удалить — в админ-панели.</i>")
+    # Телеграм режет сообщения длиннее 4096 символов — при трёх сервисах
+    # список может до этого дорасти. Лучше обрезать самому, чем не отправить.
+    if len(_t) > 3900:
+        _t = _t[:3900].rsplit("\n", 1)[0] + "\n\n<i>…список обрезан, полностью — в логах.</i>"
+    return _t
+
+
+async def gpt_pool_audit(include_reserved: bool = True) -> dict:
+    """Сверка только пула ChatGPT — её зовёт возврат кодов в пул.
+
+    Отдаёт пары (код, статус) без имени сервиса: так ждут прежние вызывающие.
+    """
+    _r = await pool_audit(["chatgpt"], include_reserved=include_reserved)
+    _r["spent"] = [(c, v) for c, v, _s in _r.get("spent", [])]
+    _r["odd"] = [(c, v) for c, v, _s in _r.get("odd", [])]
+    return _r
 
 
 async def _gpt_pick_code(plan: str):
