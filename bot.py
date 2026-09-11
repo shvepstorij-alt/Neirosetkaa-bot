@@ -69,7 +69,7 @@ bot.session.middleware(PremiumEmojiMiddleware())
     ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") &
     ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") &
     ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") &
-    ~F.text.startswith("/gpt_codes_status") & ~F.text.startswith("/test_gpt_webapp") &
+    ~F.text.startswith("/gpt_") & ~F.text.startswith("/test_gpt_webapp") &
     ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp") &
     ~F.text.startswith("/test_perplexity_webapp") &
     ~F.text.startswith("/test_linkpay") &
@@ -196,6 +196,10 @@ _ADMIN_CMDS = (
     "/admin", "/audit", "/audit_all", "/setcredits", "/test_fk",
     "/fix_all_balances", "/release_codes", "/subs_restore", "/falcheck",
     "/recover", "/refresh_desc", "/apply_desc",
+    # Команды по пулу кодов ChatGPT — только Александру. Внутри хендлеров
+    # проверка is_admin тоже есть, это второй рубеж.
+    "/gpt_codes_status", "/gpt_check_pool", "/gpt_code_route",
+    "/gpt_codes_to_bpa", "/add_gpt_codes",
 )
 
 
