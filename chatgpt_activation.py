@@ -665,7 +665,15 @@ async def bpa_query_codes(codes: list) -> dict:
                     # нет, по нему тоже видно, на какой аккаунт лёг код.
                     _org = ""
                     for _t in _tds:
-                        if _t.startswith("gpt:") or "gpt_" in _t:
+                        # Колонка «Привязан к Organization ID» бывает двух
+                        # видов: gpt:gpt_a524… и голый UUID вида
+                        # 3fc0bdb4-522f-4c71-b962-920ae2347dfe. Прежняя проверка
+                        # знала только первый — по второму отчёт оставался без
+                        # опознавательного знака вовсе.
+                        if (_t.startswith("gpt:") or "gpt_" in _t
+                                or _re.fullmatch(
+                                    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+                                    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", _t)):
                             _org = _t
                             break
                     out[_c.strip().upper()] = {

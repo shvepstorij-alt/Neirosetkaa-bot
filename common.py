@@ -9499,6 +9499,11 @@ def tg_chunks(text: str, limit: int = 3800) -> list:
             _cur = (_cur + "\n" + _line) if _cur else _line
     if _cur:
         _out.append(_cur)
+    # Подписываем части: иначе непонятно, это весь список или он оборвался.
+    if len(_out) > 1:
+        _n = len(_out)
+        _out = [f"{_p}\n\n<i>— часть {_i + 1} из {_n} —</i>"
+                for _i, _p in enumerate(_out)]
     return _out
 
 
