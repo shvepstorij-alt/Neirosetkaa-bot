@@ -2094,7 +2094,7 @@ function loadMiniApp(svc){
     if(svc==='claude'||svc==='chatgpt'){h+='<div id="clprov_'+svc+'" style="margin-top:14px"></div>';}
     h+='<div id="madet_'+svc+'"><div class="note">Загружаю активации…</div></div>';
     el.innerHTML=h;
-    api('/api/admin/miniapp-detail',{service:svc}).then(function(dd){
+    api('/api/admin/miniapp-detail',{service:svc,days:(window._miDays&&window._miDays[svc])||0}).then(function(dd){
       var de=document.getElementById('madet_'+svc); if(!de)return;
       if(!dd.ok){de.innerHTML='';return;}
       var byp={};(dd.free||[]).forEach(function(c){byp[c.plan]=(byp[c.plan]||0)+1});
@@ -2121,16 +2121,26 @@ function loadMiniApp(svc){
             +'Филиппины — только на free plan.</div>';
         }
         cb.innerHTML=bh;}
-      var hh='<div class="glabel" style="margin-top:16px">🧾 Последние активации</div>';
-      if(!dd.recent.length){hh+='<div class="note">Пока нет активаций.</div>';}
+      var _dsel=(window._miDays&&window._miDays[svc])||0;
+      var hh='<div class="glabel" style="margin-top:16px">🧾 Активации</div>';
+      hh+='<div class="seg" style="margin-bottom:8px">'+[[0,'Последние 15'],[7,'7 дней'],[30,'30 дней']].map(function(x){
+        return '<button class="'+(_dsel===x[0]?'on':'')+'" onclick="miDays(\''+svc+'\','+x[0]+')">'+x[1]+'</button>';}).join('')+'</div>';
+      if(!dd.recent.length){hh+='<div class="note">За этот период активаций нет.</div>';}
+      else{hh+='<div class="sub" style="margin-bottom:6px">Показано: '+dd.recent.length
+        +(dd.burned?(' · из них сожжено перебором: <b>'+dd.burned+'</b>'):'')+'</div>';}
       dd.recent.forEach(function(r){
-        hh+='<div class="block" style="cursor:pointer" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+r.user+' · '+r.date+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
+        var _burn=(r.kind==='burn');
+        hh+='<div class="block" style="cursor:pointer'+(_burn?';border-left:3px solid '+C.red:'')+'" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+r.user+' · '+r.date+(_burn?' · <span class="neg">сожжён перебором</span>':'')+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
       });
+      if(dd.burned)hh+='<div class="note" style="margin-top:8px">Красным — коды, помеченные использованными при переборе, без реальной активации. Проверить и вернуть целые: команда <code>/gpt_codes_recover</code> в боте.</div>';
       de.innerHTML=hh;
       if(dd.providers){window._provList[svc]=dd.providers;window._provActive[svc]=dd.activeProvider;renderClProv(dd,svc);}
     });
   });
 }
+/* Период списка активаций: 0 = последние 15, иначе N дней */
+window._miDays={};
+function miDays(svc,d){window._miDays[svc]=d;loadMiniApp(svc);}
 /* ── Провайдер активации (claude / chatgpt) ── */
 window._provList={}; window._provActive={};
 function provName(svc,key){var l=(window._provList&&window._provList[svc])||[];for(var i=0;i<l.length;i++){if(l[i].key===key)return l[i].name;}return key;}

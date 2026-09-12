@@ -172,6 +172,27 @@ async def admin_gpt_check_pool(message: Message):
     await message.answer(pool_audit_report(r), parse_mode="HTML")
 
 
+@dp.message(F.text.startswith("/gpt_codes_recover"), StateFilter("*"))
+async def admin_gpt_codes_recover(message: Message):
+    """Коды, сожжённые перебором зря: показать, а по «да» — вернуть в пул."""
+    if not is_admin(message.from_user.id):
+        return
+    from common import gpt_codes_recover, gpt_codes_recover_report
+    _parts = (message.text or "").split()
+    _apply = len(_parts) > 1 and _parts[1].lower() in ("да", "yes", "y")
+    _days = 3
+    for _p in _parts[1:]:
+        if _p.isdigit():
+            _days = int(_p)
+    await message.answer("\U0001f50e Проверяю сожжённые коды на сайте…")
+    try:
+        _r = await gpt_codes_recover(days=_days, apply=_apply)
+    except Exception as _e:
+        await message.answer(f"\u274c Не вышло: <code>{_e}</code>", parse_mode="HTML")
+        return
+    await message.answer(gpt_codes_recover_report(_r, applied=_apply), parse_mode="HTML")
+
+
 @dp.message(F.text.startswith("/gpt_code_route"), StateFilter("*"))
 async def admin_gpt_code_route(message: Message):
     """Ручная разметка маршрута: /gpt_code_route КОД ios|ph"""

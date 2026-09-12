@@ -4761,19 +4761,41 @@ async def adm_resend_activation_do(cb: CallbackQuery, state: FSMContext):
     """Второе подтверждение — здесь сообщение клиенту действительно уходит."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌ Нет доступа", show_alert=True); return
-    _oid = cb.data.split(":", 1)[1]
-    await cb.answer("Отправляю…")
+    try:
+        _oid = cb.data.split(":", 1)[1]
+    except Exception:
+        try: await cb.answer("Не разобрал заказ", show_alert=True)
+        except Exception: pass
+        return
+    # Сеть до Telegram отваливается (12.09.2026: Connection reset by peer на
+    # api.telegram.org). Раньше это падало необработанным, и админ видел
+    # «Что-то пошло не так» — при том что выдача могла ПРОЙТИ. Поэтому каждый
+    # вызов к Telegram здесь отдельно защищён, а исход всегда пишется в лог.
+    try:
+        await cb.answer("Отправляю…")
+    except Exception as _e_ack:
+        logging.warning(f"adm_resend2 ack {_oid}: {_e_ack}")
     try:
         _ok, _msg = await gpt_resend_activation(_oid)
     except Exception as _e:
         _ok, _msg = False, f"{type(_e).__name__}: {_e}"
         logging.error(f"adm_resend2 {_oid}: {_e}", exc_info=True)
+    logging.warning(f"adm_resend2 {_oid}: ok={_ok} msg={str(_msg)[:200]}")
     _txt = (f"{'✅' if _ok else '❌'} <b>Повторная выдача</b>\n"
             f"🆔 <code>{_oid}</code>\n\n{_msg}")
-    try:
-        await cb.message.edit_text(_txt, parse_mode="HTML")
-    except Exception:
-        await cb.message.answer(_txt, parse_mode="HTML")
+    for _send in (lambda: cb.message.edit_text(_txt, parse_mode="HTML"),
+                  lambda: cb.message.answer(_txt, parse_mode="HTML"),
+                  lambda: bot.send_message(ADMIN_ID, _txt, parse_mode="HTML")):
+        try:
+            await _send()
+            break
+        except Exception:
+            continue
+    else:
+        # Доложить не вышло вообще — но выдача уже состоялась или нет, и знать
+        # об этом важнее, чем о неудачной отправке.
+        logging.error(f"adm_resend2 {_oid}: не смог доложить в Telegram, "
+                      f"результат был ok={_ok}")
 
 
 @dp.callback_query(F.data == "adm_resend_no")

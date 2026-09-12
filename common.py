@@ -5390,12 +5390,28 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
         _pcol = ", provider" if has_prov else ""
         # Маршрут активации (iOS / Филиппины) есть только у кодов ChatGPT.
         _rcol = ", COALESCE(route,'') AS route" if svc == "chatgpt" else ""
+        # Период списка активаций. По умолчанию — последние 15 записей (как было),
+        # но админ может попросить всё за N дней: на 15 строках история 12.09.2026
+        # обрывалась ровно там, где начиналось интересное.
+        try:
+            _days = int(body.get("days") or 0)
+        except Exception:
+            _days = 0
+        _days = max(0, min(90, _days))
         pool = await get_pool()
         async with pool.acquire() as conn:
-            recent = await conn.fetch(
-                f"SELECT c.code, c.used_by, c.used_at, c.order_id, c.{idcol} AS acc, u.username "
-                f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
-                f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL ORDER BY c.used_at DESC LIMIT 15")
+            if _days:
+                recent = await conn.fetch(
+                    f"SELECT c.code, c.used_by, c.used_at, c.order_id, c.{idcol} AS acc, u.username "
+                    f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
+                    f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL "
+                    f"  AND c.used_at >= NOW() - make_interval(days => $1) "
+                    f"ORDER BY c.used_at DESC LIMIT 500", _days)
+            else:
+                recent = await conn.fetch(
+                    f"SELECT c.code, c.used_by, c.used_at, c.order_id, c.{idcol} AS acc, u.username "
+                    f"FROM {tbl} c LEFT JOIN users u ON u.user_id=c.used_by "
+                    f"WHERE c.is_used=TRUE AND c.used_at IS NOT NULL ORDER BY c.used_at DESC LIMIT 15")
             free = await conn.fetch(
                 f"SELECT code, plan{_pcol}{_rcol} FROM {tbl} WHERE is_used=FALSE ORDER BY id LIMIT 1000")
             # Точный итог свободных кодов (не длина обрезанного списка) — иначе
@@ -5424,15 +5440,21 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
         rec = []
         for r in recent:
             ua = r["used_at"]
+            # Настоящая активация записывает order_id и почту. Код, сожжённый
+            # перебором («уже использован»), остаётся без них — и раньше в этом
+            # списке выглядел точно так же, как успешная выдача.
+            _real = bool(r["order_id"])
             rec.append({"code": r["code"],
                         "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["used_by"]) if r["used_by"] else "—"),
                         "date": ua.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ua else "",
-                        "order": r["order_id"] or "", "acc": r["acc"] or ""})
+                        "order": r["order_id"] or "", "acc": r["acc"] or "",
+                        "kind": "ok" if _real else "burn"})
         freec = [dict({"code": r["code"], "plan": r["plan"]},
                       **({"provider": r["provider"]} if has_prov else {}),
                       **({"route": r["route"]} if svc == "chatgpt" else {}))
                  for r in free]
-        resp = {"ok": True, "recent": rec, "free": freec,
+        resp = {"ok": True, "recent": rec, "free": freec, "days": _days,
+                "burned": sum(1 for _r in rec if _r.get("kind") == "burn"),
                 "freeCount": int(free_total), "freeShown": len(freec)}
         if svc == "chatgpt":
             # Сводка по маршрутам считается ЗАПРОСОМ, а не по списку free:
@@ -6308,13 +6330,19 @@ async def _run_activation_job(
                 pass
             return "stop"
 
+        _GPT_MAX_BURN = 5      # максимум кодов на ОДИН заказ, см. ниже
+
         async def _cycle_used_current_site() -> bool:
             """Перебирает коды ТЕКУЩЕГО сайта, пока приходит code_already_used.
             Обновляет code/result. Возвращает True, если сайт исчерпан
             использованными кодами (пора уходить на другой сайт)."""
             nonlocal code, result
+            # Потолок 5, а не 30. Пять кодов подряд «уже использованы» — это уже
+            # не «в пуле попался потраченный», а системный сбой: так 12.09.2026
+            # за две минуты ушло 8 кодов. Дешевле остановиться и активировать
+            # вручную, чем выесть пул на одном заказе.
             while (not result.get("success") and result.get("code_already_used")
-                   and len(_gpt_used_codes) < 30):
+                   and len(_gpt_used_codes) < _GPT_MAX_BURN):
                 _gpt_used_codes.append(code)
                 # Код был активирован НЕ нашим клиентом: сайт вернул чужой,
                 # уже завершённый заказ. Значит в пуле лежал потраченный код —
@@ -6354,6 +6382,24 @@ async def _run_activation_job(
                     except Exception:
                         pass
                 result = await _do_activate(code)
+            if (len(_gpt_used_codes) >= _GPT_MAX_BURN
+                    and result.get("code_already_used")):
+                # Дальше не жжём. Код оставляем закреплённым за клиентом.
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🛑 <b>Стоп: подряд {_GPT_MAX_BURN} кодов «уже использованы»</b>\n"
+                        f"👤 <code>{user_id}</code> · {plan_name}\n"
+                        f"🆔 <code>{order_id}</code>\n"
+                        f"♻️ Потрачены: {', '.join(_gpt_used_codes)}\n\n"
+                        f"Это не похоже на случайность — перебор остановлен, "
+                        f"чтобы не выесть пул. Активируй вручную и проверь коды: "
+                        f"<code>/gpt_codes_recover</code>",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                logging.error(f"GPT: потолок перебора ({_GPT_MAX_BURN}) uid={user_id} "
+                              f"order={order_id} коды={_gpt_used_codes}")
             return False
 
         # Ошибки КЛИЕНТА — сменой сайта не лечатся (протухшая сессия, «нужна проверка»,
@@ -9427,6 +9473,97 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
                      f"спорных {len(_d['odd'])}, без ответа {_d['noanswer']}")
     return {"ok": True, "checked": _checked, "spent": _spent, "free": _free,
             "odd": _odd, "services": _svcs, "unknown": _unknown, "by_service": _by}
+
+
+async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
+    """Ищет коды, сожжённые перебором зря, и (по команде) возвращает их в пул.
+
+    Настоящая активация пишет коду order_id и почту. Перебор «код уже
+    использован» помечает код использованным БЕЗ них. Если такой код на сайте
+    до сих пор числится unused — значит он не потрачен, и его сожгли впустую:
+    12.09.2026 так ушло 8 кодов за две минуты.
+
+    Сам ничего не возвращает: apply=False только показывает список. Возврат —
+    отдельной командой с подтверждением, как договаривались про пул.
+    """
+    from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
+    pool = await get_pool()
+    _d = max(1, min(30, int(days or 3)))
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT c.code, c.used_by, c.used_at, u.username "
+            "FROM gpt_codes c LEFT JOIN users u ON u.user_id=c.used_by "
+            "WHERE c.is_used=TRUE AND c.used_by IS NOT NULL "
+            "  AND (c.order_id IS NULL OR c.order_id='') "
+            "  AND c.used_at >= NOW() - make_interval(days => $1) "
+            "  AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p "
+            "                  WHERE p.code = c.code) "
+            "ORDER BY c.used_at DESC LIMIT 300", _d)
+    if not rows:
+        return {"ok": True, "checked": 0, "free": [], "spent": [], "applied": 0,
+                "days": _d}
+
+    _st = await bpa_query_codes([r["code"] for r in rows])
+    if not _st:
+        return {"ok": False, "days": _d,
+                "error": "Сайт проверки не ответил — ничего не трогал."}
+
+    _free, _spent = [], []
+    for r in rows:
+        _v = (_st.get((r["code"] or "").strip().upper()) or {}).get("status", "")
+        if not _v:
+            continue                       # сайт промолчал — гадать не будем
+        _who = ("@" + r["username"]) if r["username"] else f"id{r['used_by']}"
+        if _v in BPA_FREE_STATUSES:
+            _free.append((r["code"], _who))
+        else:
+            _spent.append((r["code"], _v, _who))
+
+    _applied = 0
+    if apply and _free:
+        async with pool.acquire() as conn:
+            for _c, _w in _free:
+                try:
+                    # Возвращаем в пул и снимаем пометку: сайт подтвердил, что
+                    # код не потрачен, — это его ответ, а не наша догадка.
+                    await conn.execute(
+                        "UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
+                        "order_id=NULL, reserved_at=NULL, check_status='ok', "
+                        "last_checked_at=NOW(), flagged_reason=NULL WHERE code=$1", _c)
+                    _applied += 1
+                except Exception as _e_up:
+                    logging.error(f"gpt_codes_recover {_c}: {_e_up}")
+        logging.warning(f"gpt_codes_recover: вернул в пул {_applied} кодов")
+    return {"ok": True, "checked": len(_st), "free": _free, "spent": _spent,
+            "applied": _applied, "days": _d}
+
+
+def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
+    """Отчёт по кодам, сожжённым перебором зря."""
+    if not r.get("ok"):
+        return "❌ " + (r.get("error") or "Не получилось.")
+    _f, _s = r.get("free") or [], r.get("spent") or []
+    if not _f and not _s:
+        return (f"✅ За {r.get('days')} дн. зря сожжённых кодов не нашёл — "
+                f"пул чистый.")
+    _t = (f"\U0001f527 <b>Коды, сожжённые перебором</b> (за {r.get('days')} дн.)\n"
+          f"Проверено: <b>{r.get('checked')}</b>\n\n")
+    if _f:
+        _t += (f"♻️ <b>Целы на сайте — можно вернуть ({len(_f)}):</b>\n"
+               + "\n".join(f"• <code>{c}</code> — жёгся на {w}" for c, w in _f[:25])
+               + (f"\n…и ещё {len(_f) - 25}" if len(_f) > 25 else "") + "\n\n")
+    if _s:
+        _t += (f"\U0001f525 <b>Реально потрачены ({len(_s)}):</b>\n"
+               + "\n".join(f"• <code>{c}</code> — {v} ({w})" for c, v, w in _s[:15])
+               + (f"\n…и ещё {len(_s) - 15}" if len(_s) > 15 else "") + "\n\n")
+    if applied:
+        _t += f"✅ Вернул в пул: <b>{r.get('applied')}</b>."
+    elif _f:
+        _t += ("Вернуть целые в пул: <code>/gpt_codes_recover да</code>\n"
+               "<i>Возвращаю только те, про которые сайт сказал «не использован».</i>")
+    if len(_t) > 3900:
+        _t = _t[:3900].rsplit("\n", 1)[0] + "\n\n<i>…обрезано, полностью — в логах.</i>"
+    return _t
 
 
 def pool_audit_report(r: dict) -> str:
