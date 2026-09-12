@@ -679,10 +679,26 @@ async def bpa_query_codes(codes: list) -> dict:
                     # Время активации с сайта. По нему видно главное: код
                     # потратили ДО того, как мы его выдали (значит он пришёл
                     # в пул уже использованным), или во время нашей активации.
-                    _when = ""
+                    # when_ts — абсолютный момент в секундах, когда он известен
+                    # точно (сайт отдал unix). Из строки вида «11.09.2026,
+                    # 13:01:41» абсолютное время НЕ выводится: это часовой пояс
+                    # сайта, а он свой. Поэтому храним отдельно: точное время и
+                    # строку сайта «как есть», а сдвиг применяем уже в отчёте.
+                    _when, _when_ts, _exact = "", 0, False
                     for _t in _tds:
                         if _re.fullmatch(r"\d{2}\.\d{2}\.\d{4},?\s*\d{2}:\d{2}(:\d{2})?", _t):
                             _when = _t
+                            try:
+                                import datetime as _dts
+                                _cl = _t.replace(",", " ")
+                                _cl = " ".join(_cl.split())
+                                _fmt = "%d.%m.%Y %H:%M:%S" if _cl.count(":") == 2 \
+                                    else "%d.%m.%Y %H:%M"
+                                _when_ts = _dts.datetime.strptime(
+                                    _cl, _fmt).replace(
+                                    tzinfo=_dts.timezone.utc).timestamp()
+                            except Exception:
+                                _when_ts = 0
                             break
                         if _re.fullmatch(r"1[0-9]{9}", _t):     # unix-время
                             try:
@@ -697,6 +713,8 @@ async def bpa_query_codes(codes: list) -> dict:
                                     _tzq = None
                                 _when = _dtq.datetime.fromtimestamp(
                                     int(_t), _tzq).strftime("%d.%m.%Y %H:%M")
+                                _when_ts = float(_t)
+                                _exact = True        # unix — без домыслов
                             except Exception:
                                 _when = _t
                             break
@@ -705,6 +723,8 @@ async def bpa_query_codes(codes: list) -> dict:
                         "email": _mail,
                         "org": _org,
                         "when": _when,
+                        "when_ts": _when_ts,
+                        "when_exact": _exact,
                         "cells": _tds,
                     }
                 if _i + 300 < len(_codes):

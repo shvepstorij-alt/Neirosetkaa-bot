@@ -2315,6 +2315,22 @@ function doAddCodes(svc){
     if(d.dupeList&&d.dupeList.length) h+='<div class="sub" style="margin-top:8px">Дубли: '+d.dupeList.join(', ')+'</div>';
     if(d.badList&&d.badList.length)   h+='<div class="sub" style="margin-top:6px">Отсеяно: '+d.badList.join(', ')+'</div>';
     h+='</div>';
+    /* Проверка на сайте активации: пришли ли коды уже потраченными */
+    if(d.spent&&d.spent.length){
+      h+='<div class="block"><h4>🚨 Уже потрачены ('+d.spent.length+')</h4>'
+        +'<div class="sub">Сайт говорит, что эти коды использованы ДО загрузки. '
+        +'Они в пуле, но помечены и уйдут последними. Это вопрос к поставщику.</div>';
+      for(var si=0;si<d.spent.length;si++){var sp=d.spent[si];
+        h+='<div class="kv"><span class="k" style="word-break:break-all">'+esc(sp.code)+'</span>'
+          +'<span class="neg">'+esc(sp.status)+'</span></div>'
+          +((sp.email||sp.when)?('<div class="sub" style="margin:-4px 0 6px">'
+            +(sp.email?('📧 '+esc(sp.email)):'')+(sp.when?('  🕒 '+esc(sp.when)):'')+'</div>'):'');
+      }
+      h+='</div>';
+    } else if(d.checked){
+      h+='<div class="block"><div class="kv"><span class="k">🔎 Проверено на сайте</span>'
+        +'<span class="pos">все '+d.checkedOk+' целы</span></div></div>';
+    }
     /* Остатки по маршрутам: сразу видно, какого типа кодов не хватает */
     if(d.routes&&d.routes.length){
       h+='<div class="block"><h4>🧭 Свободно по маршрутам</h4>';

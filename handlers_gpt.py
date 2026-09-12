@@ -214,6 +214,34 @@ async def admin_gpt_check_pool(message: Message):
         await message.answer(_part, parse_mode="HTML")
 
 
+@dp.message(F.text.startswith("/gpt_tz"), StateFilter("*"))
+async def admin_gpt_tz(message: Message):
+    """Сдвиг часового пояса сайта относительно нашего: /gpt_tz 2"""
+    if not is_admin(message.from_user.id):
+        return
+    from db import get_setting, set_setting
+    _p = (message.text or "").split()
+    if len(_p) > 1:
+        try:
+            _v = float(_p[1].replace(",", "."))
+        except Exception:
+            await message.answer("\u274c Формат: <code>/gpt_tz 2</code> "
+                                 "(можно отрицательное и дробное)", parse_mode="HTML")
+            return
+        if abs(_v) > 14:
+            await message.answer("\u274c Сдвиг больше 14 часов не бывает.")
+            return
+        await set_setting("bpa_tz_shift", str(_v))
+        await message.answer(f"\u2705 Сдвиг времени сайта: <b>{_v:g} ч</b>.\n"
+                             f"Применяется к строкам вида «11.09.2026, 13:01» — там, "
+                             f"где сайт отдаёт unix-время, поправка не нужна.",
+                             parse_mode="HTML")
+        return
+    _cur = await get_setting("bpa_tz_shift", "2") or "2"
+    await message.answer(f"\U0001f552 Сейчас сдвиг сайта: <b>{_cur} ч</b>.\n"
+                         f"Поменять: <code>/gpt_tz 3</code>", parse_mode="HTML")
+
+
 @dp.message(F.text.startswith("/gpt_codes_recover"), StateFilter("*"))
 async def admin_gpt_codes_recover(message: Message):
     """Коды, сожжённые перебором зря: показать, а по «да» — вернуть в пул."""

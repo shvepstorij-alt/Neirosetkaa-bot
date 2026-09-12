@@ -6028,6 +6028,50 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
         _msg = {"ok": True, "added": added, "dupes": dupes,
                 "skipped": len(_uniq) - len(valid), "dupInBatch": _dupe_in_batch,
                 "dupeList": _dupe_list, "badList": _bad_list, "total": len(lines)}
+
+        # Сразу спрашиваем сайт, целы ли залитые коды. Код, пришедший в пул уже
+        # потраченным, иначе всплывёт только у клиента в момент активации — и
+        # будет выглядеть как поломка бота, хотя вопрос к поставщику.
+        # Проверяем ВСЕ присланные (valid), а не только новые: если код уже был
+        # в базе, знать его состояние тем более нужно.
+        if valid and (service != "chatgpt" or _provider == "bpa"):
+            try:
+                from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
+                _q = await bpa_query_codes(valid)
+                _tbl_chk = {"chatgpt": "gpt_codes", "claude": "claude_codes",
+                            "perplexity": "perplexity_codes"}[service]
+                _spent_new, _okn = [], 0
+                for _c in valid:
+                    _i = _q.get(_c.strip().upper()) or {}
+                    _v = _i.get("status", "")
+                    if not _v:
+                        continue                 # сайт промолчал — не трогаем
+                    if _v in BPA_FREE_STATUSES:
+                        _okn += 1
+                        continue
+                    _spent_new.append({"code": _c, "status": _v,
+                                       "email": _i.get("email", ""),
+                                       "when": _i.get("when", "")})
+                if _spent_new:
+                    async with pool.acquire() as _cn3:
+                        for _r3 in _spent_new:
+                            try:
+                                await _cn3.execute(
+                                    f"UPDATE {_tbl_chk} SET check_status='error', "
+                                    f"last_checked_at=NOW(), flagged_reason=$2 "
+                                    f"WHERE code=$1",
+                                    _r3["code"],
+                                    f"при загрузке: {_r3['status']} — пришёл уже потраченным")
+                            except Exception as _e_f3:
+                                logging.warning(f"add-codes флаг {_r3['code']}: {_e_f3}")
+                    logging.warning(
+                        f"add-codes: {len(_spent_new)} из {len(valid)} пришли "
+                        f"уже потраченными ({service})")
+                _msg["checked"] = len(_q)
+                _msg["checkedOk"] = _okn
+                _msg["spent"] = _spent_new
+            except Exception as _e_q:
+                logging.warning(f"add-codes проверка на сайте: {_e_q}")
         if service in ("claude", "chatgpt"):
             _msg["provider"] = _provider
         if service == "chatgpt":
@@ -9555,7 +9599,8 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
             _spent.append((r["code"], _v, _who,
                            _inf.get("email", ""), _inf.get("org", ""),
                            _inf.get("cells", []), _inf.get("when", ""),
-                           r["used_at"]))
+                           r["used_at"], _inf.get("when_ts", 0),
+                           bool(_inf.get("when_exact"))))
 
     _applied = 0
     if apply and _free:
@@ -9572,8 +9617,16 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
                 except Exception as _e_up:
                     logging.error(f"gpt_codes_recover {_c}: {_e_up}")
         logging.warning(f"gpt_codes_recover: вернул в пул {_applied} кодов")
+    # Часовой пояс сайта отличается от нашего, и в строках вида «11.09.2026,
+    # 13:01:41» он не указан. Сдвиг задаётся настройкой (по умолчанию 2 часа)
+    # и применяется ТОЛЬКО к таким строкам — там, где сайт отдал unix, время
+    # и так абсолютное.
+    try:
+        _shift = float(await get_setting("bpa_tz_shift", "2") or 2)
+    except Exception:
+        _shift = 2.0
     return {"ok": True, "checked": len(_st), "free": _free, "spent": _spent,
-            "applied": _applied, "days": _d}
+            "applied": _applied, "days": _d, "shift": _shift}
 
 
 def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
@@ -9581,6 +9634,7 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
     if not r.get("ok"):
         return "❌ " + (r.get("error") or "Не получилось.")
     _f, _s = r.get("free") or [], r.get("spent") or []
+    _shift = r.get("shift", 2.0)
     if not _f and not _s:
         return (f"✅ За {r.get('days')} дн. зря сожжённых кодов не нашёл — "
                 f"пул чистый.")
@@ -9616,20 +9670,48 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
                 _tail = " → <i>сайт не показал ни почту, ни ID</i>"
             _when = _x[6] if len(_x) > 6 else ""
             _burn = _x[7] if len(_x) > 7 else None
+            _wts = _x[8] if len(_x) > 8 else 0
+            _exact = _x[9] if len(_x) > 9 else False
             _time = ""
             if _when:
-                _time = f"\n   🕒 потрачен на сайте: <b>{_when}</b>"
+                _time = f"\n   🕒 сайт: <b>{_when}</b>"
                 if _burn is not None:
                     try:
-                        _time += (f" · у нас сожжён: "
+                        _time += (f" · мы сожгли: "
                                   f"{_burn.astimezone(_BOT_TZ).strftime('%d.%m.%Y %H:%M')}")
+                    except Exception:
+                        pass
+                # Разницу считаем сами — глазами её по двум строкам не свести,
+                # тем более с чужим часовым поясом.
+                if _wts and _burn is not None:
+                    try:
+                        _site = _wts if _exact else (_wts - _shift * 3600)
+                        _dh = (_site - _burn.timestamp()) / 3600.0
+                        _ab = abs(_dh)
+                        _hum = (f"{int(round(_ab * 60))} мин" if _ab < 1
+                                else (f"{_ab:.1f} ч" if _ab < 48
+                                      else f"{_ab / 24:.1f} сут"))
+                        if _dh > 0.25:
+                            _time += (f"\n   ➡️ потрачен <b>ПОЗЖЕ</b> нашего сжигания "
+                                      f"на {_hum} — значит код кто-то активировал "
+                                      f"после (скорее всего ты вручную)")
+                        elif _dh < -0.25:
+                            _time += (f"\n   ⬅️ потрачен <b>РАНЬШЕ</b> нашего сжигания "
+                                      f"на {_hum} — код попал в пул уже "
+                                      f"использованным")
+                        else:
+                            _time += (f"\n   ⏱ потрачен одновременно с нашей активацией "
+                                      f"(разница {_hum}) — это наша активация прошла, "
+                                      f"а бот её не записал")
                     except Exception:
                         pass
             return f"• <code>{c}</code> — {v}\n   {w}{_tail}{_time}"
         _t += (f"\U0001f525 <b>Реально потрачены ({len(_s)}):</b>\n"
                + "\n".join(_srow(_x) for _x in _s)
-               + "\n<i>Почта совпала с аккаунтом клиента — подписку он получил, "
-                 "бот просто не записал. Чужая почта — код ушёл мимо.</i>\n\n")
+               + f"\n<i>Время сайта сдвинуто на {_shift:g} ч относительно нашего "
+                 f"(поменять: /gpt_tz N). «Позже нашего сжигания» = код не пропал, "
+                 f"его активировали потом. «Раньше» = пришёл в пул уже "
+                 f"использованным.</i>\n\n")
     if applied:
         _t += f"✅ Вернул в пул: <b>{r.get('applied')}</b>."
     elif _f:
