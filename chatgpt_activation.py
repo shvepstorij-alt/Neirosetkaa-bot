@@ -676,10 +676,35 @@ async def bpa_query_codes(codes: list) -> dict:
                                     r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", _t)):
                             _org = _t
                             break
+                    # Время активации с сайта. По нему видно главное: код
+                    # потратили ДО того, как мы его выдали (значит он пришёл
+                    # в пул уже использованным), или во время нашей активации.
+                    _when = ""
+                    for _t in _tds:
+                        if _re.fullmatch(r"\d{2}\.\d{2}\.\d{4},?\s*\d{2}:\d{2}(:\d{2})?", _t):
+                            _when = _t
+                            break
+                        if _re.fullmatch(r"1[0-9]{9}", _t):     # unix-время
+                            try:
+                                import datetime as _dtq
+                                # В часовом поясе БОТА, а не сервера: иначе это
+                                # время не сравнить ни с чем остальным в отчёте
+                                # (на Railway сервер в UTC), и разница в часах
+                                # выглядела бы как «код потратили раньше».
+                                try:
+                                    from config import _BOT_TZ as _tzq
+                                except Exception:
+                                    _tzq = None
+                                _when = _dtq.datetime.fromtimestamp(
+                                    int(_t), _tzq).strftime("%d.%m.%Y %H:%M")
+                            except Exception:
+                                _when = _t
+                            break
                     out[_c.strip().upper()] = {
                         "status": _st.strip().lower(),
                         "email": _mail,
                         "org": _org,
+                        "when": _when,
                         "cells": _tds,
                     }
                 if _i + 300 < len(_codes):

@@ -96,6 +96,47 @@ async def admin_add_gpt_codes(message: Message):
         f"✅ <b>Коды добавлены</b>\n\n📦 {plan}\n➕ {added} добавлено  ⏭ {skipped} дублей\n"
         f"📊 Свободных: <b>{remaining}</b>\n🧭 {_rt_txt}{_warn}", parse_mode="HTML")
 
+    # Сразу спрашиваем сайт, целы ли свежие коды. Смысл — отделить две беды,
+    # которые иначе не различить: поставщик отдал уже потраченные коды, или их
+    # потратила наша активация позже. Проверка на входе отвечает на это сразу,
+    # а не через недели, когда код всплывёт у клиента.
+    if added and prov == "bpa":
+        try:
+            from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
+            _chk = await bpa_query_codes(codes)
+            if _chk:
+                _bad = []
+                for _c in codes:
+                    _i = _chk.get(_c.strip().upper()) or {}
+                    _v = _i.get("status", "")
+                    if _v and _v not in BPA_FREE_STATUSES:
+                        _bad.append((_c, _v, _i.get("email", ""), _i.get("when", "")))
+                if _bad:
+                    _txt = (f"🚨 <b>Часть новых кодов уже потрачена</b> ({len(_bad)} из "
+                            f"{len(codes)})\n\n"
+                            + "\n".join(
+                                f"• <code>{_c}</code> — {_v}"
+                                + (f"\n   📧 <code>{_m}</code>" if _m else "")
+                                + (f"  🕒 {_w}" if _w else "")
+                                for _c, _v, _m, _w in _bad)
+                            + "\n\n<i>Они в пуле, но помечены и уйдут последними. "
+                              "Это вопрос к поставщику: коды пришли уже использованными.</i>")
+                    _pool2 = await get_pool()
+                    async with _pool2.acquire() as _cn2:
+                        for _c, _v, _m, _w in _bad:
+                            await _cn2.execute(
+                                "UPDATE gpt_codes SET check_status='error', "
+                                "last_checked_at=NOW(), flagged_reason=$2 WHERE code=$1",
+                                _c, f"при загрузке: {_v} — пришёл уже потраченным")
+                    from common import tg_chunks
+                    for _p in tg_chunks(_txt):
+                        await message.answer(_p, parse_mode="HTML")
+                else:
+                    await message.answer(
+                        f"🔎 Проверил на сайте: все {len(_chk)} код(ов) целы.")
+        except Exception as _e_chk:
+            logging.warning(f"add_gpt_codes проверка: {_e_chk}")
+
 
 @dp.message(F.text.startswith("/gpt_codes_to_bpa"), StateFilter("*"))
 async def admin_gpt_codes_to_bpa(message: Message):
@@ -179,8 +220,11 @@ async def admin_gpt_codes_recover(message: Message):
     if not is_admin(message.from_user.id):
         return
     from common import gpt_codes_recover, gpt_codes_recover_report, tg_chunks
+    # «да» ищем среди ВСЕХ слов, а не только во втором: «/gpt_codes_recover 7 да»
+    # раньше молча отрабатывало как показ без возврата — и выглядело так,
+    # будто команда ничего не сделала.
     _parts = (message.text or "").split()
-    _apply = len(_parts) > 1 and _parts[1].lower() in ("да", "yes", "y")
+    _apply = any(_p.lower() in ("да", "yes", "y") for _p in _parts[1:])
     _days = 3
     for _p in _parts[1:]:
         if _p.isdigit():

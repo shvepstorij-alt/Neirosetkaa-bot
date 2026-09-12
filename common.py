@@ -9554,7 +9554,8 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
             _inf = _st.get((r["code"] or "").strip().upper()) or {}
             _spent.append((r["code"], _v, _who,
                            _inf.get("email", ""), _inf.get("org", ""),
-                           _inf.get("cells", [])))
+                           _inf.get("cells", []), _inf.get("when", ""),
+                           r["used_at"]))
 
     _applied = 0
     if apply and _free:
@@ -9590,6 +9591,10 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
                + "\n".join(f"• <code>{c}</code> — жёгся на {w}" for c, w in _f)
                + "\n\n")
     if _s:
+        # Время нужно, чтобы отличить две разные беды: код пришёл в пул уже
+        # потраченным (сайт активировал его ЗАДОЛГО до нашей выдачи — вопрос
+        # к поставщику) или его потратила наша же несохранённая активация
+        # (время близко к нашему). Без времени это неразличимо.
         def _srow(_x):
             c, v, w = _x[0], _x[1], _x[2]
             m = _x[3] if len(_x) > 3 else ""
@@ -9609,7 +9614,18 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
                 _tail = f"\n   <i>ответ сайта:</i> <code>{_raw}</code>"
             else:
                 _tail = " → <i>сайт не показал ни почту, ни ID</i>"
-            return f"• <code>{c}</code> — {v}\n   {w}{_tail}"
+            _when = _x[6] if len(_x) > 6 else ""
+            _burn = _x[7] if len(_x) > 7 else None
+            _time = ""
+            if _when:
+                _time = f"\n   🕒 потрачен на сайте: <b>{_when}</b>"
+                if _burn is not None:
+                    try:
+                        _time += (f" · у нас сожжён: "
+                                  f"{_burn.astimezone(_BOT_TZ).strftime('%d.%m.%Y %H:%M')}")
+                    except Exception:
+                        pass
+            return f"• <code>{c}</code> — {v}\n   {w}{_tail}{_time}"
         _t += (f"\U0001f525 <b>Реально потрачены ({len(_s)}):</b>\n"
                + "\n".join(_srow(_x) for _x in _s)
                + "\n<i>Почта совпала с аккаунтом клиента — подписку он получил, "
