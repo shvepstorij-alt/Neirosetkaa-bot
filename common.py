@@ -9732,7 +9732,12 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
         rows = await conn.fetch(
             "SELECT c.code, c.used_by, c.used_at, u.username "
             "FROM gpt_codes c LEFT JOIN users u ON u.user_id=c.used_by "
-            "WHERE c.is_used=TRUE AND c.used_by IS NOT NULL "
+            # Только коды bypriceactivate: спрашивать его про коды старых
+            # сайтов (999uu, kkqq, redeem — префиксы ALEXANDR…, bbtus…)
+            # бессмысленно, он честно отвечает not_in_db, а в отчёте они
+            # выглядели как «реально потрачены». Это исторические коды,
+            # возвращать там нечего.
+            "WHERE c.provider='bpa' AND c.is_used=TRUE AND c.used_by IS NOT NULL "
             "  AND (c.order_id IS NULL OR c.order_id='') "
             "  AND c.used_at >= NOW() - make_interval(days => $1) "
             "  AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p "
@@ -9752,7 +9757,7 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
         return {"ok": False, "days": _d,
                 "error": "Сайт проверки не ответил — ничего не трогал."}
 
-    _free, _spent = [], []
+    _free, _spent, _unknown = [], [], []
     for r in rows:
         _v = (_st.get((r["code"] or "").strip().upper()) or {}).get("status", "")
         if not _v:
@@ -9760,6 +9765,10 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
         _who = ("@" + r["username"]) if r["username"] else f"id{r['used_by']}"
         if _v in BPA_FREE_STATUSES:
             _free.append((r["code"], _who))
+        elif _v == "not_in_db":
+            # Сайт про код не знает — это НЕ «потрачен». Отдельной кучкой,
+            # иначе такие коды читаются как потери, которых не было.
+            _unknown.append((r["code"], _who))
         else:
             # Для потраченных берём почту и Organization ID с сайта: по ним
             # сразу видно, ушла подписка нашему клиенту или постороннему.
@@ -9795,7 +9804,7 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
         _shift = 2.0
     return {"ok": True, "checked": len(_st), "free": _free, "spent": _spent,
             "applied": _applied, "days": _d, "shift": _shift,
-            "want": _want, "cut": _cut}
+            "want": _want, "cut": _cut, "unknown": _unknown}
 
 
 def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
@@ -9803,8 +9812,9 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
     if not r.get("ok"):
         return "❌ " + (r.get("error") or "Не получилось.")
     _f, _s = r.get("free") or [], r.get("spent") or []
+    _nk = r.get("unknown") or []
     _shift = r.get("shift", 2.0)
-    if not _f and not _s:
+    if not _f and not _s and not _nk:
         _w = ""
         if r.get("want") and r["want"] > r.get("days", 0):
             _w = f" (просил {r['want']}, смотрю максимум {r.get('days')})"
@@ -9900,6 +9910,12 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
                  f"(поменять: /gpt_tz N). «Позже нашего сжигания» = код не пропал, "
                  f"его активировали потом. «Раньше» = пришёл в пул уже "
                  f"использованным.</i>\n\n")
+    if _nk:
+        _t += (f"❔ <b>Сайт про эти коды не знает ({len(_nk)}):</b>\n"
+               + "\n".join(f"• <code>{c}</code> — жёгся на {w}" for c, w in _nk)
+               + "\n<i>Не потери: bypriceactivate их и не должен знать. "
+                 "Проверь формат — обычно это коды старых сайтов или мусор, "
+                 "попавший в пул при заливке.</i>\n\n")
     if applied:
         _t += f"✅ Вернул в пул: <b>{r.get('applied')}</b>."
     elif _f:
