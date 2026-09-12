@@ -6034,14 +6034,19 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
         # будет выглядеть как поломка бота, хотя вопрос к поставщику.
         # Проверяем ВСЕ присланные (valid), а не только новые: если код уже был
         # в базе, знать его состояние тем более нужно.
-        if valid and (service != "chatgpt" or _provider == "bpa"):
+        # Проверяем не больше 300 за раз: страница сайта столько и принимает,
+        # а на большой партии несколько запросов подряд подвесили бы ответ
+        # панели. Остальное досмотрит /gpt_check_pool.
+        _chk_list = valid[:300]
+        _chk_rest = len(valid) - len(_chk_list)
+        if _chk_list and (service != "chatgpt" or _provider == "bpa"):
             try:
                 from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
-                _q = await bpa_query_codes(valid)
+                _q = await bpa_query_codes(_chk_list)
                 _tbl_chk = {"chatgpt": "gpt_codes", "claude": "claude_codes",
                             "perplexity": "perplexity_codes"}[service]
                 _spent_new, _okn = [], 0
-                for _c in valid:
+                for _c in _chk_list:
                     _i = _q.get(_c.strip().upper()) or {}
                     _v = _i.get("status", "")
                     if not _v:
@@ -6065,11 +6070,12 @@ async def api_admin_add_codes_handler(request: web.Request) -> web.Response:
                             except Exception as _e_f3:
                                 logging.warning(f"add-codes флаг {_r3['code']}: {_e_f3}")
                     logging.warning(
-                        f"add-codes: {len(_spent_new)} из {len(valid)} пришли "
+                        f"add-codes: {len(_spent_new)} из {len(_chk_list)} пришли "
                         f"уже потраченными ({service})")
                 _msg["checked"] = len(_q)
                 _msg["checkedOk"] = _okn
                 _msg["spent"] = _spent_new
+                _msg["checkRest"] = _chk_rest
             except Exception as _e_q:
                 logging.warning(f"add-codes проверка на сайте: {_e_q}")
         if service in ("claude", "chatgpt"):
@@ -6232,6 +6238,9 @@ async def _admin_fail_shot(text, screenshot=None):
     return _mid
 
 
+_SAFE_REL_ALERT_AT = 0.0      # когда последний раз сообщали про невозврат
+
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str,
@@ -6293,14 +6302,17 @@ async def _run_activation_job(
             Сказал что-то другое или промолчал — оставляем за клиентом и метим:
             решение о судьбе кода принимает Александр, а не догадка.
             """
-            try:
+            _free_st = ("unused",)      # запас на случай, если импорт упадёт:
+            _v = ""                     # иначе ниже был бы NameError и код
+            try:                        # молча не вернулся бы вообще
                 from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
+                _free_st = BPA_FREE_STATUSES
                 _q = await bpa_query_codes([_c])
                 _v = (_q.get((_c or "").strip().upper()) or {}).get("status", "")
             except Exception as _e_sr:
                 logging.warning(f"_safe_release {_c}: {_e_sr}")
                 _v = ""
-            if _v in BPA_FREE_STATUSES:
+            if _v in _free_st:
                 await release_gpt_code(_c)
                 return True
             _pool_sr = await get_pool()
@@ -6311,6 +6323,13 @@ async def _run_activation_job(
                     _c, f"не возвращён в пул: сайт ответил {_v or '(молчит)'}")
             logging.warning(
                 f"_safe_release: {_c} НЕ возвращён в пул — сайт: {_v or 'молчит'}")
+            # Если сайт лежит, таких кодов будет много подряд — не заваливаем
+            # админа одинаковыми сообщениями, одного в 15 минут достаточно.
+            global _SAFE_REL_ALERT_AT
+            import time as _t_sr
+            if _t_sr.time() - _SAFE_REL_ALERT_AT < 900:
+                return False
+            _SAFE_REL_ALERT_AT = _t_sr.time()
             try:
                 await bot.send_message(
                     ADMIN_ID,
@@ -6945,6 +6964,40 @@ async def _run_activation_job(
                 except Exception as _te:
                     logging.error(f"Token invalid message failed: {_te}")
 
+            elif result.get("out_of_stock"):
+                # Нет свободных мест на сайте — токен клиента тут ни при чём.
+                # Раньше этот случай попадал в общую ветку и бот советовал
+                # «обнови токен», хотя обновляй не обновляй — мест нет.
+                _gpt_retry_counts.pop(user_id, None)
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⏳ <b>Активация займёт чуть больше времени</b>\n\n"
+                        "На сайте активации сейчас нет свободных мест. "
+                        "Александр активирует подписку вручную в ближайшее "
+                        "время — повторять ничего не нужно, я напишу, когда "
+                        "всё будет готово 🙌",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                if _fail_should_alert("gpt", user_id):
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🚨 <b>ChatGPT — на сайте нет мест</b>\n"
+                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"🔑 <code>{code}</code>\n"
+                            f"🆔 <code>{order_id}</code>\n"
+                            + await _fk_num_line(order_id)
+                            + f"❗ {error_text}\n\n"
+                            f"Код за клиентом, не сожжён. Активируй вручную.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                _activation_jobs[job_id] = {
+                    "status": "done", "success": False,
+                    "error": "Временно нет свободных мест. Александр активирует вручную 🙌"}
+                return
             else:
                 # Другая ошибка (таймаут, сеть, неизвестное) — код остаётся тем же
                 # Считаем попытки только для не-токенных ошибок

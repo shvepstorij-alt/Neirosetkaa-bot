@@ -2564,8 +2564,37 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                 else:
                     ec = (d.get("error_code") or "").upper()
                     det = d.get("detail") or d.get("error") or f"HTTP {st}"
+                    # 409 у этого сайта значит НЕ ТОЛЬКО «код уже использован».
+                    # Тем же кодом он отвечает «нет свободных мест / нет
+                    # receipt'ов» — это видно по его же эндпоинту Perplexity,
+                    # где 409 разбирают по тексту. Мы разбор пропускали и жгли
+                    # код на каждом «нет стока»: 10.09.2026 за минуту так ушло
+                    # пять ЦЕЛЫХ кодов (Александр потом активировал их вручную).
+                    # Теперь решает текст, а неопознанный 409 код НЕ жжёт:
+                    # ошибиться в сторону «не трогать» дешевле.
+                    _dl = str(det).lower()
                     if st == 409 or ec == "CODE_ALREADY_USED":
-                        return {"success": False, "code_already_used": True, "error": str(det)}
+                        _used_words = ("already" in _dl or "claimed" in _dl
+                                       or "fulfilled" in _dl or "redeem" in _dl
+                                       or "уже" in _dl or "использ" in _dl
+                                       or "активирован" in _dl)
+                        _stock_words = ("stock" in _dl or "receipt" in _dl
+                                        or "стоке" in _dl or "запас" in _dl
+                                        or "нет свободных" in _dl
+                                        or "нет мест" in _dl or "sold out" in _dl
+                                        or "unavailable" in _dl
+                                        or "недоступ" in _dl or "закончил" in _dl)
+                        if ec == "CODE_ALREADY_USED" or (_used_words and not _stock_words):
+                            return {"success": False, "code_already_used": True,
+                                    "error": str(det)}
+                        if _stock_words:
+                            return {"success": False, "out_of_stock": True,
+                                    "error": "На сайте нет свободных мест: " + str(det)}
+                        logger.warning(
+                            f"bpa gpt: 409 без понятной причины — код {code} НЕ жжём. "
+                            f"detail={str(det)[:200]!r}")
+                        return {"success": False,
+                                "error": "Сайт отклонил запрос (409): " + str(det)}
                     if st == 404 or ec == "CODE_NOT_FOUND":
                         return {"success": False, "error": "Код не найден на сайте: " + str(det)}
                     if st == 400 or ec == "SESSION_INVALID":

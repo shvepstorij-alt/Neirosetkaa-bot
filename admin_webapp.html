@@ -2329,7 +2329,9 @@ function doAddCodes(svc){
       h+='</div>';
     } else if(d.checked){
       h+='<div class="block"><div class="kv"><span class="k">🔎 Проверено на сайте</span>'
-        +'<span class="pos">все '+d.checkedOk+' целы</span></div></div>';
+        +'<span class="pos">все '+d.checkedOk+' целы</span></div>'
+        +(d.checkRest?('<div class="sub">Ещё '+d.checkRest+' не проверял — за раз сайт '
+          +'принимает 300. Досмотреть: /gpt_check_pool</div>'):'')+'</div>';
     }
     /* Остатки по маршрутам: сразу видно, какого типа кодов не хватает */
     if(d.routes&&d.routes.length){
