@@ -9796,10 +9796,19 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
     _f, _s = r.get("free") or [], r.get("spent") or []
     _shift = r.get("shift", 2.0)
     if not _f and not _s:
-        return (f"✅ За {r.get('days')} дн. зря сожжённых кодов не нашёл — "
+        _w = ""
+        if r.get("want") and r["want"] > r.get("days", 0):
+            _w = f" (просил {r['want']}, смотрю максимум {r.get('days')})"
+        return (f"✅ За {r.get('days')} дн.{_w} зря сожжённых кодов не нашёл — "
                 f"пул чистый.")
     _t = (f"\U0001f527 <b>Коды, сожжённые перебором</b> (за {r.get('days')} дн.)\n"
-          f"Проверено: <b>{r.get('checked')}</b>\n\n")
+          f"Проверено: <b>{r.get('checked')}</b>\n")
+    if r.get("want") and r["want"] > r.get("days", 0):
+        _t += f"⚠️ Просил {r['want']} дн. — смотрю максимум {r.get('days')}.\n"
+    if r.get("cut"):
+        _t += ("⚠️ Кодов больше 1000 — показаны первые 1000. "
+               "Прогони ещё раз после возврата.\n")
+    _t += "\n"
     if _f:
         _t += (f"♻️ <b>Целы на сайте — можно вернуть ({len(_f)}):</b>\n"
                + "\n".join(f"• <code>{c}</code> — жёгся на {w}" for c, w in _f)
