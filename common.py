@@ -6442,11 +6442,23 @@ async def _run_activation_job(
 
         _GPT_MAX_BURN = 5      # максимум кодов на ОДИН заказ, см. ниже
 
+        # Сколько iOS-кодов уже ушло на сайт по этому заказу. Считаем отдельно
+        # от филиппинских, потому что риск у них разный:
+        #   iOS   — реально применяет подписку на ЛЮБОЙ аккаунт, и она
+        #           складывается (пять подряд лягут пять раз). Второй iOS-код
+        #           на тот же аккаунт — это прямая потеря денег.
+        #   Филиппины — на аккаунте с активным тарифом сайт код отклоняет,
+        #           код цел и возвращается в пул.
+        # Поэтому перебор iOS-кодов разрешаем только когда сайт ПРЯМО сказал,
+        # что предыдущий ушёл на ЧУЖОЙ аккаунт (wrong_account) — тогда клиенту
+        # он подписку не дал и брать следующий безопасно.
+        _ios_sent = 1 if gpt_route_for_code(code) == "ios" else 0
+
         async def _cycle_used_current_site() -> bool:
             """Перебирает коды ТЕКУЩЕГО сайта, пока приходит code_already_used.
             Обновляет code/result. Возвращает True, если сайт исчерпан
             использованными кодами (пора уходить на другой сайт)."""
-            nonlocal code, result
+            nonlocal code, result, _ios_sent
             # Потолок 5, а не 30. Пять кодов подряд «уже использованы» — это уже
             # не «в пуле попался потраченный», а системный сбой: так 12.09.2026
             # за две минуты ушло 8 кодов. Дешевле остановиться и активировать
@@ -6478,9 +6490,34 @@ async def _run_activation_job(
                 # Маршрут держим тот же: филиппинский код нельзя подсунуть
                 # аккаунту с подпиской, а iOS — наоборот, годится везде.
                 _rt_cur = gpt_route_for_code(code) if provider == "bpa" else None
+                # ЗАЩИТА ОТ ДВОЙНОЙ ПОДПИСКИ НА ОДИН АККАУНТ.
+                # Следующий код того же маршрута iOS отправим только если сайт
+                # подтвердил, что предыдущий лёг на ЧУЖОЙ аккаунт. Иначе он мог
+                # лечь на аккаунт этого клиента — и второй код добавит ему
+                # вторую подписку поверх первой, за наши деньги.
+                if _rt_cur == "ios" and _ios_sent >= 1 and not result.get("wrong_account"):
+                    logging.warning(
+                        f"GPT: второй iOS-код на аккаунт uid={user_id} НЕ выдаю "
+                        f"(сайт не подтвердил чужой аккаунт) — ручной режим")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🛑 <b>Не стал выдавать второй iOS-код</b>\n"
+                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"🔑 <code>{code}</code>\n"
+                            f"🆔 <code>{order_id}</code>\n\n"
+                            f"Первый iOS-код мог уже лечь на аккаунт клиента — "
+                            f"второй добавил бы подписку поверх, за наши деньги. "
+                            f"Проверь код на сайте и активируй вручную.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    return False
                 _nc = await get_next_gpt_code(_plan_key, provider, _rt_cur)
                 if not _nc:
                     return True   # на этом сайте кодов больше нет
+                if gpt_route_for_code(_nc) == "ios":
+                    _ios_sent += 1
                 await save_pending_activation(user_id, _nc, order_id, _plan_key, plan_name, provider)
                 code = _nc
                 if len(_gpt_used_codes) == 1:
@@ -6526,7 +6563,7 @@ async def _run_activation_job(
         _ios_rescue_done = False
 
         async def _ios_rescue():
-            nonlocal result, code, _ios_rescue_done
+            nonlocal result, code, _ios_rescue_done, _ios_sent
             if _ios_rescue_done or provider != "bpa":
                 return None
             if result.get("success") or _client_stop(result):
@@ -6581,6 +6618,7 @@ async def _run_activation_job(
             except Exception as _e_rl2:
                 logging.warning(f"_safe_release {_old_code}: {_e_rl2}")
             code = _new
+            _ios_sent += 1          # перевели на iOS — это и есть первый iOS-код
             await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, "bpa")
             logging.warning(
                 f"GPT ios rescue: uid={user_id} OpenAI отклонил покупку по {_old_code} "
@@ -6626,6 +6664,19 @@ async def _run_activation_job(
                     continue
                 _nc = await get_next_gpt_code(_plan_key, _np)
                 if _nc:
+                    # Та же защита, что и в переборе кодов: второй iOS-код на
+                    # тот же аккаунт выдаём только при подтверждённом чужом
+                    # аккаунте — иначе клиент получит вторую подписку поверх.
+                    if (gpt_route_for_code(_nc) == "ios" and _ios_sent >= 1
+                            and not result.get("wrong_account")):
+                        try:
+                            await release_gpt_code(_nc)   # даже не отправляли
+                        except Exception:
+                            pass
+                        logging.warning(
+                            f"GPT: второй iOS-код при смене сайта НЕ выдаю "
+                            f"uid={user_id}")
+                        continue
                     _next = (_np, _nc)
                     break
             if not _next:
@@ -6651,6 +6702,8 @@ async def _run_activation_job(
                 except Exception:
                     pass
             provider, code = _next
+            if gpt_route_for_code(code) == "ios":
+                _ios_sent += 1
             _tried_sites.append(provider)
             await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, provider)
             _activation_jobs[job_id] = {"status": "pending", "retrying": True}
