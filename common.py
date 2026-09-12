@@ -6279,6 +6279,53 @@ async def _run_activation_job(
         _switch_msg_id = None
         _switch_text = ""
 
+        async def _safe_release(_c):
+            """Возврат кода в пул ТОЛЬКО с подтверждением сайта.
+
+            Активация могла провалиться на нашей стороне, пока у сайта заказ по
+            этому коду ещё жив: он спокойно доводит его до конца через часы.
+            Прежний безусловный возврат отдавал такой код следующему клиенту —
+            тот получал «код уже использован», код сжигался, и цикл шёл дальше.
+            Так 10.09.2026 за минуту ушло пять кодов, и каждый из них сайт
+            активировал позже, на СВОЙ аккаунт.
+
+            Спрашиваем ровно про один код — это дёшево. Сказал unused — вернём.
+            Сказал что-то другое или промолчал — оставляем за клиентом и метим:
+            решение о судьбе кода принимает Александр, а не догадка.
+            """
+            try:
+                from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
+                _q = await bpa_query_codes([_c])
+                _v = (_q.get((_c or "").strip().upper()) or {}).get("status", "")
+            except Exception as _e_sr:
+                logging.warning(f"_safe_release {_c}: {_e_sr}")
+                _v = ""
+            if _v in BPA_FREE_STATUSES:
+                await release_gpt_code(_c)
+                return True
+            _pool_sr = await get_pool()
+            async with _pool_sr.acquire() as _cn_sr:
+                await _cn_sr.execute(
+                    "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
+                    "flagged_reason=$2 WHERE code=$1",
+                    _c, f"не возвращён в пул: сайт ответил {_v or '(молчит)'}")
+            logging.warning(
+                f"_safe_release: {_c} НЕ возвращён в пул — сайт: {_v or 'молчит'}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🔒 <b>Код не вернул в пул</b>\n"
+                    f"🔑 <code>{_c}</code> · сайт: <b>{_v or 'не ответил'}</b>\n"
+                    f"👤 <code>{user_id}</code> · {plan_name}\n\n"
+                    f"Активация у нас не удалась, но у сайта заказ по этому коду "
+                    f"может быть ещё жив — вернуть его в пул значит отдать "
+                    f"следующему клиенту уже потраченный. Проверь: "
+                    f"<code>/gpt_codes_recover</code>",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            return False
+
         async def _burn_code(_c):
             """Помечаем использованный код навсегда — в пул не возвращаем."""
             try:
@@ -6476,9 +6523,12 @@ async def _run_activation_job(
                 # режим. Пробовать тем же маршрутом ещё раз бессмысленно —
                 # его только что отбил антифрод.
                 try:
-                    await release_gpt_code(code)
+                    # Код сайту уже отправляли — возвращаем только с его
+                    # подтверждением, иначе отдадим следующему клиенту заказ,
+                    # который сайт ещё может дозавершить.
+                    await _safe_release(code)
                 except Exception as _e_rl:
-                    logging.warning(f"release_gpt_code {code}: {_e_rl}")
+                    logging.warning(f"_safe_release {code}: {_e_rl}")
                 await delete_pending_activation(user_id)
                 logging.warning(f"GPT ios rescue: uid={user_id} нет iOS-кодов, ручной режим")
                 await _admin_fail_shot(
@@ -6506,9 +6556,11 @@ async def _run_activation_job(
 
             _old_code = code
             try:
-                await release_gpt_code(_old_code)   # не сгорел — обратно в пул
+                # То же самое: филиппинский код отбил антифрод OpenAI, но заказ
+                # на сайте мог остаться живым — возвращаем с подтверждением.
+                await _safe_release(_old_code)
             except Exception as _e_rl2:
-                logging.warning(f"release_gpt_code {_old_code}: {_e_rl2}")
+                logging.warning(f"_safe_release {_old_code}: {_e_rl2}")
             code = _new
             await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, "bpa")
             logging.warning(
@@ -6564,17 +6616,19 @@ async def _run_activation_job(
                 # в пул, чтобы он НЕ сгорел.
                 if (not result.get("code_already_used")) and (not _client_stop(result)):
                     try:
-                        await release_gpt_code(code)
+                        await _safe_release(code)
                     except Exception:
                         pass
                 break  # сайтов с кодами больше нет
             _was_used = bool(result.get("code_already_used"))
             _fail_reason = (result.get("error")
                             or ("код уже использован" if _was_used else "сбой сайта"))[:140]
-            # прежний код валиден (сбой сайта, не «использован») → вернём его в пул
+            # Прежний код валиден (сбой сайта, не «использован») → вернём в пул,
+            # но только если сайт подтвердит, что он цел: заказ по нему мог
+            # остаться живым и завершиться позже.
             if not _was_used:
                 try:
-                    await release_gpt_code(code)
+                    await _safe_release(code)
                 except Exception:
                     pass
             provider, code = _next
