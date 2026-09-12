@@ -32,7 +32,7 @@ from db import (
 )
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
-    gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report,
+    gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report, tg_chunks,
 )
 
 async def cleanup_stale_generations_loop():
@@ -637,8 +637,8 @@ async def gpt_pool_audit_loop():
             _r = await pool_audit(include_reserved=True)
             if _r.get("ok") and (_r.get("spent") or _r.get("odd")):
                 try:
-                    await bot.send_message(ADMIN_ID, pool_audit_report(_r),
-                                           parse_mode="HTML")
+                    for _part in tg_chunks(pool_audit_report(_r)):
+                        await bot.send_message(ADMIN_ID, _part, parse_mode="HTML")
                 except Exception:
                     pass
         except Exception as e:

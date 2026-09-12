@@ -162,14 +162,15 @@ async def admin_gpt_check_pool(message: Message):
         return
     # Импорт локальный: handlers_gpt не тянет common на уровне модуля,
     # и заводить эту связь ради одной команды не стоит.
-    from common import pool_audit, pool_audit_report
+    from common import pool_audit, pool_audit_report, tg_chunks
     await message.answer("🔎 Сверяю пулы с сайтом активации…")
     try:
         r = await pool_audit(include_reserved=True)
     except Exception as _e:
         await message.answer(f"❌ Не вышло: <code>{_e}</code>", parse_mode="HTML")
         return
-    await message.answer(pool_audit_report(r), parse_mode="HTML")
+    for _part in tg_chunks(pool_audit_report(r)):
+        await message.answer(_part, parse_mode="HTML")
 
 
 @dp.message(F.text.startswith("/gpt_codes_recover"), StateFilter("*"))
@@ -177,7 +178,7 @@ async def admin_gpt_codes_recover(message: Message):
     """Коды, сожжённые перебором зря: показать, а по «да» — вернуть в пул."""
     if not is_admin(message.from_user.id):
         return
-    from common import gpt_codes_recover, gpt_codes_recover_report
+    from common import gpt_codes_recover, gpt_codes_recover_report, tg_chunks
     _parts = (message.text or "").split()
     _apply = len(_parts) > 1 and _parts[1].lower() in ("да", "yes", "y")
     _days = 3
@@ -190,7 +191,9 @@ async def admin_gpt_codes_recover(message: Message):
     except Exception as _e:
         await message.answer(f"\u274c Не вышло: <code>{_e}</code>", parse_mode="HTML")
         return
-    await message.answer(gpt_codes_recover_report(_r, applied=_apply), parse_mode="HTML")
+    # Списком, целиком: если не влезает в одно сообщение — несколькими.
+    for _part in tg_chunks(gpt_codes_recover_report(_r, applied=_apply)):
+        await message.answer(_part, parse_mode="HTML")
 
 
 @dp.message(F.text.startswith("/gpt_code_route"), StateFilter("*"))

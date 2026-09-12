@@ -9475,6 +9475,33 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
             "odd": _odd, "services": _svcs, "unknown": _unknown, "by_service": _by}
 
 
+def tg_chunks(text: str, limit: int = 3800) -> list:
+    """Режет длинный текст на сообщения по границам строк.
+
+    Telegram не принимает сообщения длиннее 4096 символов. Раньше списки
+    кодов просто обрезались («…и ещё 20»), и половина пула оставалась
+    невидимой — а смотреть их нужно все. Теперь вместо обрезки —
+    несколько сообщений подряд.
+    """
+    _t = text or ""
+    if len(_t) <= limit:
+        return [_t]
+    _out, _cur = [], ""
+    for _line in _t.split("\n"):
+        # Одна строка длиннее лимита — режем её саму, иначе цикл встанет.
+        while len(_line) > limit:
+            if _cur:
+                _out.append(_cur); _cur = ""
+            _out.append(_line[:limit]); _line = _line[limit:]
+        if len(_cur) + len(_line) + 1 > limit:
+            _out.append(_cur); _cur = _line
+        else:
+            _cur = (_cur + "\n" + _line) if _cur else _line
+    if _cur:
+        _out.append(_cur)
+    return _out
+
+
 async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
     """Ищет коды, сожжённые перебором зря, и (по команде) возвращает их в пул.
 
@@ -9517,7 +9544,12 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
         if _v in BPA_FREE_STATUSES:
             _free.append((r["code"], _who))
         else:
-            _spent.append((r["code"], _v, _who))
+            # Для потраченных берём почту и Organization ID с сайта: по ним
+            # сразу видно, ушла подписка нашему клиенту или постороннему.
+            _inf = _st.get((r["code"] or "").strip().upper()) or {}
+            _spent.append((r["code"], _v, _who,
+                           _inf.get("email", ""), _inf.get("org", ""),
+                           _inf.get("cells", [])))
 
     _applied = 0
     if apply and _free:
@@ -9550,17 +9582,31 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
           f"Проверено: <b>{r.get('checked')}</b>\n\n")
     if _f:
         _t += (f"♻️ <b>Целы на сайте — можно вернуть ({len(_f)}):</b>\n"
-               + "\n".join(f"• <code>{c}</code> — жёгся на {w}" for c, w in _f[:25])
-               + (f"\n…и ещё {len(_f) - 25}" if len(_f) > 25 else "") + "\n\n")
+               + "\n".join(f"• <code>{c}</code> — жёгся на {w}" for c, w in _f)
+               + "\n\n")
     if _s:
         def _srow(_x):
             c, v, w = _x[0], _x[1], _x[2]
             m = _x[3] if len(_x) > 3 else ""
-            return (f"• <code>{c}</code> — {v}\n   {w}"
-                    + (f" → 📧 <code>{m}</code>" if m else ""))
+            g = _x[4] if len(_x) > 4 else ""
+            cells = _x[5] if len(_x) > 5 else []
+            if m:
+                _tail = f" → 📧 <code>{m}</code>"
+            elif g:
+                # Почты сайт не дал — показываем Organization ID: по нему тоже
+                # видно, на какой аккаунт лёг код.
+                _tail = f" → 🆔 <code>{g}</code>"
+            elif cells:
+                # Не нашли ни того, ни другого — показываем, что сайт вообще
+                # вернул по этой строке. Лучше сырые данные, чем пустота:
+                # по ним сразу видно, изменилась ли разметка страницы.
+                _raw = " | ".join(str(_x2) for _x2 in cells)[:160]
+                _tail = f"\n   <i>ответ сайта:</i> <code>{_raw}</code>"
+            else:
+                _tail = " → <i>сайт не показал ни почту, ни ID</i>"
+            return f"• <code>{c}</code> — {v}\n   {w}{_tail}"
         _t += (f"\U0001f525 <b>Реально потрачены ({len(_s)}):</b>\n"
-               + "\n".join(_srow(_x) for _x in _s[:15])
-               + (f"\n…и ещё {len(_s) - 15}" if len(_s) > 15 else "")
+               + "\n".join(_srow(_x) for _x in _s)
                + "\n<i>Почта совпала с аккаунтом клиента — подписку он получил, "
                  "бот просто не записал. Чужая почта — код ушёл мимо.</i>\n\n")
     if applied:
@@ -9568,8 +9614,6 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
     elif _f:
         _t += ("Вернуть целые в пул: <code>/gpt_codes_recover да</code>\n"
                "<i>Возвращаю только те, про которые сайт сказал «не использован».</i>")
-    if len(_t) > 3900:
-        _t = _t[:3900].rsplit("\n", 1)[0] + "\n\n<i>…обрезано, полностью — в логах.</i>"
     return _t
 
 
@@ -9604,16 +9648,13 @@ def pool_audit_report(r: dict) -> str:
           f"Итого проверено: <b>{r.get('checked')}</b> · "
           f"✅ годных: <b>{r.get('free')}</b>\n")
 
-    _LIMIT = 15          # столько проблемных кодов показываем на сервис в группе
-
     def _codes(_rows, _title, _icon):
         if not _rows:
             return ""
         _out = f"{_icon} <b>{_title} ({len(_rows)}):</b>\n"
-        _out += "\n".join(f"   • <code>{_c}</code> — {_v}"
-                           for _c, _v in _rows[:_LIMIT])
-        if len(_rows) > _LIMIT:
-            _out += f"\n   …и ещё {len(_rows) - _LIMIT} — смотри логи"
+        # Показываем ВСЕ коды. Обрезка «…и ещё N» прятала ровно те строки,
+        # ради которых сводку и смотрят; длину разложит tg_chunks.
+        _out += "\n".join(f"   • <code>{_c}</code> — {_v}" for _c, _v in _rows)
         return _out + "\n"
 
     for _sv, _d in _by.items():
@@ -9644,10 +9685,8 @@ def pool_audit_report(r: dict) -> str:
         _t += ("\n<i>Ничего не гасил и не удалял — только пометил. Помеченные "
                "не возвращаются в пул автоматически и выдаются последними. "
                "Удалить — в админ-панели.</i>")
-    # Телеграм режет сообщения длиннее 4096 символов — при трёх сервисах
-    # список может до этого дорасти. Лучше обрезать самому, чем не отправить.
-    if len(_t) > 3900:
-        _t = _t[:3900].rsplit("\n", 1)[0] + "\n\n<i>…список обрезан, полностью — в логах.</i>"
+    # Длину не режем: отправитель разложит текст на несколько сообщений
+    # через tg_chunks. Обрезка прятала ровно те коды, ради которых всё это.
     return _t
 
 

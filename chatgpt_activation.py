@@ -636,14 +636,42 @@ async def bpa_query_codes(codes: list) -> dict:
                     _tds = [_re.sub(r"<[^>]+>", " ", _t)
                             for _t in _re.findall(r"<td[^>]*>(.*?)</td>", _body, _re.S)]
                     _tds = [" ".join(_t.split()) for _t in _tds]
+                    # Почту ищем регуляркой по ВСЕЙ строке, а не «первая ячейка,
+                    # где есть @ и точка». Прежний способ давал пустую почту,
+                    # если адрес делили теги (<span>pr***@gmail.</span>com) или
+                    # он лежал в одной ячейке с другим текстом. Маска сайта —
+                    # pr***@gmail.com, поэтому звёздочки тоже разрешены.
+                    # Ищем ПОКЛЕТОЧНО и склеиваем текст ячейки без пробелов:
+                    # адрес часто разорван тегом (<span>pr***@gmail.</span>com),
+                    # и обычная замена тега на пробел давала «pr***@gmail. com»
+                    # — регулярка такое не ловит, почта выходила пустой.
+                    # По ячейкам, а не по всей строке, чтобы к адресу не
+                    # прилипал хвост соседней колонки (Organization ID).
                     _mail = ""
+                    for _raw in _re.findall(r"<td[^>]*>(.*?)</td>", _body, _re.S):
+                        _tight = "".join(_re.sub(r"<[^>]+>", "", _raw).split())
+                        _m = _re.search(
+                            r"[A-Za-z0-9._%+\-\*]+@[A-Za-z0-9.\-\*]+\.[A-Za-z]{2,}",
+                            _tight)
+                        if _m:
+                            _mail = _m.group(0)
+                            break
+                    if not _mail:
+                        for _t in _tds:                     # старый способ как запас
+                            if "@" in _t and "." in _t:
+                                _mail = _t
+                                break
+                    # Organization ID — второй опознавательный знак: когда почты
+                    # нет, по нему тоже видно, на какой аккаунт лёг код.
+                    _org = ""
                     for _t in _tds:
-                        if "@" in _t and "." in _t:
-                            _mail = _t
+                        if _t.startswith("gpt:") or "gpt_" in _t:
+                            _org = _t
                             break
                     out[_c.strip().upper()] = {
                         "status": _st.strip().lower(),
                         "email": _mail,
+                        "org": _org,
                         "cells": _tds,
                     }
                 if _i + 300 < len(_codes):
