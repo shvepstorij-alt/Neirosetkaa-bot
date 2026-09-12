@@ -9553,9 +9553,16 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
                + "\n".join(f"• <code>{c}</code> — жёгся на {w}" for c, w in _f[:25])
                + (f"\n…и ещё {len(_f) - 25}" if len(_f) > 25 else "") + "\n\n")
     if _s:
+        def _srow(_x):
+            c, v, w = _x[0], _x[1], _x[2]
+            m = _x[3] if len(_x) > 3 else ""
+            return (f"• <code>{c}</code> — {v}\n   {w}"
+                    + (f" → 📧 <code>{m}</code>" if m else ""))
         _t += (f"\U0001f525 <b>Реально потрачены ({len(_s)}):</b>\n"
-               + "\n".join(f"• <code>{c}</code> — {v} ({w})" for c, v, w in _s[:15])
-               + (f"\n…и ещё {len(_s) - 15}" if len(_s) > 15 else "") + "\n\n")
+               + "\n".join(_srow(_x) for _x in _s[:15])
+               + (f"\n…и ещё {len(_s) - 15}" if len(_s) > 15 else "")
+               + "\n<i>Почта совпала с аккаунтом клиента — подписку он получил, "
+                 "бот просто не записал. Чужая почта — код ушёл мимо.</i>\n\n")
     if applied:
         _t += f"✅ Вернул в пул: <b>{r.get('applied')}</b>."
     elif _f:
