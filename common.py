@@ -9724,7 +9724,10 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
     """
     from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
     pool = await get_pool()
-    _d = max(1, min(30, int(days or 3)))
+    # Окно до года: раньше молча резали до 30 дней, и «проверил за 100 дней»
+    # было неправдой. Про любую обрезку отчёт теперь говорит прямо.
+    _want = int(days or 3)
+    _d = max(1, min(365, _want))
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT c.code, c.used_by, c.used_at, u.username "
@@ -9734,10 +9737,15 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
             "  AND c.used_at >= NOW() - make_interval(days => $1) "
             "  AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p "
             "                  WHERE p.code = c.code) "
-            "ORDER BY c.used_at DESC LIMIT 300", _d)
+            "ORDER BY c.used_at DESC LIMIT 1001", _d)
+    # Больше 1000 за раз не тянем, но молчать об обрезке нельзя:
+    # иначе «всё проверено» будет неправдой.
+    _cut = len(rows) > 1000
+    if _cut:
+        rows = rows[:1000]
     if not rows:
         return {"ok": True, "checked": 0, "free": [], "spent": [], "applied": 0,
-                "days": _d}
+                "days": _d, "want": _want, "cut": False}
 
     _st = await bpa_query_codes([r["code"] for r in rows])
     if not _st:
@@ -9786,7 +9794,8 @@ async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
     except Exception:
         _shift = 2.0
     return {"ok": True, "checked": len(_st), "free": _free, "spent": _spent,
-            "applied": _applied, "days": _d, "shift": _shift}
+            "applied": _applied, "days": _d, "shift": _shift,
+            "want": _want, "cut": _cut}
 
 
 def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
@@ -9864,10 +9873,20 @@ def gpt_codes_recover_report(r: dict, applied: bool = False) -> str:
                             _time += (f"\n   ➡️ потрачен <b>ПОЗЖЕ</b> нашего сжигания "
                                       f"на {_hum} — значит код кто-то активировал "
                                       f"после (скорее всего ты вручную)")
-                        elif _dh < -0.25:
+                        elif _dh < -3:
                             _time += (f"\n   ⬅️ потрачен <b>РАНЬШЕ</b> нашего сжигания "
                                       f"на {_hum} — код попал в пул уже "
-                                      f"использованным")
+                                      f"использованным (вопрос к поставщику)")
+                        elif _dh < -0.25:
+                            # Полчаса-два до сжигания — это почти наверняка НЕ
+                            # поставщик, а наша же активация другому клиенту,
+                            # прошедшая и не записанная: код остался в пуле и
+                            # тут же ушёл следующему. Разница в минутах такого
+                            # вывода не выдерживает, поэтому не настаиваем.
+                            _time += (f"\n   ⬅️ потрачен незадолго <b>ДО</b> нашего "
+                                      f"сжигания ({_hum}) — скорее всего наша же "
+                                      f"активация другому клиенту прошла и не "
+                                      f"записалась, а код остался в пуле")
                         else:
                             _time += (f"\n   ⏱ потрачен одновременно с нашей активацией "
                                       f"(разница {_hum}) — это наша активация прошла, "
