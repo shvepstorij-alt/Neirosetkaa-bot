@@ -2183,31 +2183,65 @@ function _gwRender(){
   }
   var st=d.stats||{},h='';
 
-  h+='<div class="block"><h4>'+esc(g.title||'Розыгрыш')+(g.status==='finished'?' <span class="neg">(завершён)</span>':'')+'</h4>'
-    +(g.status==='finished'?'<div class="sub">Приём закрыт — новые комментарии не засчитываются. Проверять участников и подводить итоги можно.</div>':'')
-    +'<div class="kv"><span class="k">Участников (с комментарием)</span><span>'+(st.total||0)+'</span></div>'
-    +'<div class="kv"><span class="k">Выполнили все условия</span><span class="pos">'+(st.ok||0)+'</span></div>'
-    +(st.susp?'<div class="kv"><span class="k">⚠️ Подозрительных</span><span class="neg">'+st.susp+'</span></div>':'')
-    +(st.unchecked?'<div class="kv"><span class="k">Ещё не проверены</span><span class="neg">'+st.unchecked+'</span></div>':'')
-    +'<div class="kv"><span class="k">Последняя проверка</span><span'+(_gwAgeCls(d)+'>'+_gwAgeTxt(d))+'</span></div>' 
-    +'<div class="kv"><span class="k">Кнопка в меню бота</span><span'+(g.postUrl?' class="pos">показана':' class="neg">нет ссылки')+'</span></div>'
-    +'<div class="sub" style="margin-top:8px">Условия: подписка на канал + '+g.needRefs
-    +' приглашённых + слово «'+esc(g.keyword)+'» в комментарии</div></div>';
+  /* Раньше всё шло одной простынёй: счётчики, итоги, участники — и кнопки,
+     до которых нужно доскроллить. Теперь сверху только то, ради чего сюда
+     заходят (состояние в одну строку + действия), а подробности убраны
+     в сворачиваемые разделы. */
+  var fin=(g.status==='finished');
+  var blocked=(st.unchecked||0)>0||(st.total||0)===0;
 
+  h+='<div class="block"><h4>'+esc(g.title||'Розыгрыш')+(fin?' <span class="neg">(завершён)</span>':'')+'</h4>'
+    +'<div class="sub" style="margin-top:4px">'
+    +'<b>'+(st.total||0)+'</b> участн. &nbsp;·&nbsp; проходят <b class="pos">'+(st.ok||0)+'</b>'
+    +'&nbsp;·&nbsp; проверка <span'+_gwAgeCls(d)+'>'+_gwAgeTxt(d)+'</span></div>'
+    +(fin?'<div class="sub" style="margin-top:6px">Приём закрыт — новые комментарии не засчитываются. Проверять участников и подводить итоги можно.</div>':'')
+    +(st.unchecked?'<div class="sub neg" style="margin-top:6px">⚠️ Не проверены: '+st.unchecked+' — нажми «Проверить участников».</div>':'')
+    +(st.susp?'<div class="sub neg" style="margin-top:4px">⚠️ Подозрительных: '+st.susp+' (смотри в списке участников)</div>':'')
+    +'</div>';
+
+  /* Действия — до всех подробностей, чтобы за ними не приходилось скроллить. */
   h+='<div class="btns2">'
     +'<button class="btn row2 sec" onclick="_gwRefresh()">'+(d.refreshing?'⏳ Идёт проверка…':'🔄 Проверить участников')+'</button>'
     +'<button class="btn row2 sec" onclick="_gwEdit()">⚙️ Настройки</button></div>';
   if(d.refreshing)h+='<div class="note">Бот опрашивает Telegram по каждому участнику и его друзьям. Это занимает время — экран обновится сам.</div>';
 
-  if(d.winners&&d.winners.length){
-    h+='<div class="block"><h4>🏆 Итоги</h4>';
-    d.winners.forEach(function(w){
-      h+='<div class="kv"><span class="k">'+(w.reserve?'резерв ':'')+w.place+'. '+esc(w.user)+'</span>'
-        +'<span'+(w.reserve?'':' class="pos"')+'>'+(w.reserve?'запасной':'победитель')+'</span></div>';
-    });
-    h+='<button class="btn sec" style="margin-top:10px" onclick="_gwText()">📋 Текст для канала</button></div>';
+  h+='<button class="btn'+(blocked?' sec':'')+'" style="margin-top:10px" onclick="_gwDraw()">🎲 Разыграть ('+(st.ok||0)+' участников)</button>'
+    +(blocked?'<div class="note neg">Сначала нажми «Проверить участников» — иначе розыгрыш не запустится.</div>':'');
+
+  /* Завершённый розыгрыш: «Новый» и «Возобновить» видны сразу, а не только
+     внутри «Настроек» — именно их ищут, закончив предыдущий. */
+  if(fin){
+    h+='<div class="btns2" style="margin-top:10px">'
+      +'<button class="btn row2 sec" onclick="_gwReopen('+(g.id||0)+')">↩️ Возобновить приём</button>'
+      +'<button class="btn row2 danger" onclick="_gwNew()">➕ Новый розыгрыш</button></div>';
   }
 
+  /* ── Итоги ───────────────────────────────────────────────────────────── */
+  if(d.winners&&d.winners.length){
+    var wi='<div class="block">';
+    d.winners.forEach(function(w){
+      wi+='<div class="kv"><span class="k">'+(w.reserve?'резерв ':'')+w.place+'. '+esc(w.user)+'</span>'
+        +'<span'+(w.reserve?'':' class="pos"')+'>'+(w.reserve?'запасной':'победитель')+'</span></div>';
+    });
+    wi+='<button class="btn sec" style="margin-top:10px" onclick="_gwText()">📋 Текст для канала</button></div>';
+    h+=_gwBox('win','🏆 Итоги',d.winners.length+' ',wi,true);
+  }
+
+  /* ── Подробности ─────────────────────────────────────────────────────── */
+  var si='<div class="block">'
+    +'<div class="kv"><span class="k">Участников (с комментарием)</span><span>'+(st.total||0)+'</span></div>'
+    +'<div class="kv"><span class="k">Выполнили все условия</span><span class="pos">'+(st.ok||0)+'</span></div>'
+    +(st.susp?'<div class="kv"><span class="k">⚠️ Подозрительных</span><span class="neg">'+st.susp+'</span></div>':'')
+    +(st.unchecked?'<div class="kv"><span class="k">Ещё не проверены</span><span class="neg">'+st.unchecked+'</span></div>':'')
+    +'<div class="kv"><span class="k">Последняя проверка</span><span'+(_gwAgeCls(d)+'>'+_gwAgeTxt(d))+'</span></div>'
+    +'<div class="kv"><span class="k">Кнопка в меню бота</span><span'+(g.postUrl?' class="pos">показана':' class="neg">нет ссылки')+'</span></div>'
+    +'<div class="sub" style="margin-top:8px">Условия: подписка на канал + '+g.needRefs
+    +' приглашённых + слово «'+esc(g.keyword)+'» в комментарии</div></div>'
+    +'<div class="note">Победители выбираются случайно среди тех, кто выполнил все условия. '
+    +'Можно перезапустить до публикации — итоги перезапишутся.</div>';
+  h+=_gwBox('sum','📊 Подробности','',si,false);
+
+  /* ── Участники ───────────────────────────────────────────────────────── */
   /* Наверх — то, что требует решения: подозрительные, затем не прошедшие.
      Прошедшие в самом низу: с ними всё и так ясно. */
   var people=(d.people||[]).slice().sort(function(a,b){
@@ -2220,16 +2254,15 @@ function _gwRender(){
      строк списка весит сотни килобайт, и мини-апп на телефоне встаёт.
      Сортировка уже подняла наверх тех, к кому есть вопросы. */
   var LIM=window._gwShowAll?100000:100;
-  var shown=people.slice(0,LIM),hidden=people.length-shown.length;
-  h+='<div class="glabel" style="margin-top:16px">Участники'
-    +(people.length>shown.length?(' — показаны '+shown.length+' из '+people.length):'')+'</div>';
+  var shown=people.slice(0,LIM),hidden=people.length-shown.length,pi='';
   if(!people.length){
-    h+='<div class="note">Пока никто не прокомментировал. Как только под постом появится '
+    pi+='<div class="note">Пока никто не прокомментировал. Как только под постом появится '
       +'«'+esc(g.keyword)+'», человек появится здесь.</div>';
   }
+  if(hidden>0)pi+='<div class="sub" style="margin:4px 0">Показаны '+shown.length+' из '+people.length+'</div>';
   shown.forEach(function(p){
     var mark=function(v){return v?'✅':'⬜️';};
-    h+='<div class="block" style="'+(p.excluded?'opacity:.5;':'')+(p.susp?'border-left:3px solid '+C.red+';':'')+'">'
+    pi+='<div class="block" style="'+(p.excluded?'opacity:.5;':'')+(p.susp?'border-left:3px solid '+C.red+';':'')+'">'
       +'<div style="font-size:13px;font-weight:700">'+esc(p.user)+(p.ok?' <span class="pos">— проходит</span>':'')+'</div>'
       +'<div class="sub" style="margin-top:4px">'
       +mark(p.sub)+' подписка &nbsp; '+mark(p.refs>=g.needRefs)+' друзья: '+p.refs+'/'+g.needRefs
@@ -2243,20 +2276,37 @@ function _gwRender(){
       +(p.excluded?'Вернуть в розыгрыш':'Исключить')+'</button>'
       +'</div>';
   });
-
-  var blocked=(st.unchecked||0)>0||(st.total||0)===0;
   if(hidden>0){
-    h+='<button class="btn sec" onclick="window._gwShowAll=1;_gwRender()">Показать все ('+people.length+')</button>'
+    pi+='<button class="btn sec" onclick="window._gwShowAll=1;_gwRender()">Показать все ('+people.length+')</button>'
       +'<div class="note">Наверху те, к кому есть вопросы: не прошедшие и подозрительные. '
       +'На розыгрыш это не влияет — он считает всех.</div>';
   } else if(window._gwShowAll&&people.length>100){
-    h+='<button class="btn sec" onclick="window._gwShowAll=0;_gwRender()">Свернуть список</button>';
+    pi+='<button class="btn sec" onclick="window._gwShowAll=0;_gwRender()">Свернуть список</button>';
   }
-  h+='<button class="btn'+(blocked?' sec':'')+'" style="margin-top:14px" onclick="_gwDraw()">🎲 Разыграть ('+(st.ok||0)+' участников)</button>'
-    +(blocked?'<div class="note neg">Сначала нажми «Проверить участников» — иначе розыгрыш не запустится.</div>':'')
-    +'<div class="note">Победители выбираются случайно среди тех, кто выполнил все условия. '
-    +'Можно перезапустить до публикации — итоги перезапишутся.</div>';
+  h+=_gwBox('ppl','👥 Участники',(people.length||0)+' ',pi,false);
+
   el.innerHTML=h;
+}
+
+/* Сворачиваемый раздел. Состояние держим в window, а не в DOM: _gwRender
+   перерисовывает экран целиком, и любая «открытость», записанная в разметку,
+   схлопывалась бы при каждом обновлении. */
+function _gwFold(k){
+  window._gwOpen=window._gwOpen||{};
+  window._gwOpen[k]=!window._gwOpen[k];
+  _gwRender();
+}
+
+function _gwBox(k,title,badge,inner,dflt){
+  window._gwOpen=window._gwOpen||{};
+  var o=window._gwOpen;
+  if(!(k in o))o[k]=!!dflt;
+  var open=o[k];
+  return '<div class="block" style="cursor:pointer;margin-top:12px" onclick="_gwFold(&quot;'+k+'&quot;)">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+    +'<span style="font-size:13px;font-weight:700">'+title+'</span>'
+    +'<span class="sub">'+(badge||'')+(open?'▾':'▸')+'</span></div></div>'
+    +(open?inner:'');
 }
 
 /* Возраст последней проверки: по нему решаем, можно ли разыгрывать.
