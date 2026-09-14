@@ -70,22 +70,11 @@ bot.session.middleware(PremiumEmojiMiddleware())
     # первом же добавлении бота в группу обсуждения канала: консультант начал бы
     # отвечать на КАЖДЫЙ комментарий под постом, включая «Участвую» в розыгрыше.
     F.chat.type == "private",
-    ~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") &
-    ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") &
-    ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") &
-    ~F.text.startswith("/sub") & ~F.text.startswith("/add_gpt_codes") &
-    ~F.text.startswith("/gpt_") & ~F.text.startswith("/test_gpt_webapp") &
-    ~F.text.startswith("/test_chatgpt") & ~F.text.startswith("/test_claude_webapp") &
-    ~F.text.startswith("/test_perplexity_webapp") &
-    ~F.text.startswith("/test_linkpay") &
-    ~F.text.startswith("/test_creds") &
-    ~F.text.startswith("/myip") & ~F.text.startswith("/audit") &
-    ~F.text.startswith("/fix_all_balances") & ~F.text.startswith("/setcredits") &
-    ~F.text.startswith("/recover") & ~F.text.startswith("/falcheck") & ~F.text.startswith("/emoji") & ~F.text.startswith("/shopkeys") &
-    ~F.text.startswith("/nsg_") & ~F.text.startswith("/refresh_desc") &
-    ~F.text.startswith("/apply_desc") &
-    ~F.text.startswith("/subs_restore") & ~F.text.startswith("/release_codes")
-)
+    # Консультант НЕ берёт команды — никакие. Раньше здесь был список
+    # исключений, и каждая новая команда, забытая в нём, молча уходила к ИИ
+    # вместо своего обработчика. Одно правило вместо двух десятков строк,
+    # и забыть его нельзя.
+    ~F.text.startswith("/"))
 async def handle_message(message: Message, state: FSMContext):
     if not message.text:
         return
@@ -139,12 +128,32 @@ async def handle_message(message: Message, state: FSMContext):
 # handlers order can matter (reply-buttons vs FSM states). We sort each
 # observer's handler list by the handler's original line number in the old
 # monolithic bot.py, so dispatch is byte-for-byte identical to before.
+# ВАЖНО про обработчики, которых нет в _ORIG_ORDER (то есть все новые).
+# Раньше им доставался ключ 10**9, и они уезжали в САМЫЙ КОНЕЦ — за
+# handle_message, то есть за AI-консультанта. Консультант ловит любой текст,
+# поэтому каждая новая команда молча им перехватывалась, и «лечилось» это
+# дописыванием команды в его чёрный список. Так было с /gpt_check_pool, потом
+# с /giveaway — и повторялось бы с каждой следующей.
+# Теперь новые обработчики встают ПЕРЕД консультантом, сохраняя между собой
+# порядок регистрации. Дописывать ничего не нужно.
+_CATCH_ALL_AT = _ORIG_ORDER.get("handle_message", 10**9)
+
+
 def _restore_handler_order():
     for _ev, _obs in dp.observers.items():
         try:
-            _obs.handlers.sort(
-                key=lambda h: _ORIG_ORDER.get(getattr(h.callback, "__name__", ""), 10**9)
-            )
+            _seen = {}
+
+            def _key(h, _seen=_seen):
+                _n = getattr(h.callback, "__name__", "")
+                if _n in _ORIG_ORDER:
+                    return float(_ORIG_ORDER[_n])
+                # Новый обработчик: сразу перед перехватчиком, но после всего
+                # остального. Доли — чтобы не перемешать новые между собой.
+                _seen[_n] = len(_seen)
+                return _CATCH_ALL_AT - 1 + _seen[_n] * 1e-6
+
+            _obs.handlers.sort(key=_key)
         except Exception as _e:
             logging.warning("could not restore handler order for %s: %s", _ev, _e)
 
