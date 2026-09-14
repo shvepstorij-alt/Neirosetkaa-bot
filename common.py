@@ -4732,6 +4732,190 @@ async def api_admin_order_delete_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_giveaway_handler(request: web.Request) -> web.Response:
+    """Состояние розыгрыша для панели: настройки, участники, итоги. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import giveaway_last, giveaway_get, giveaway_winners_list
+        _gid = int(body.get("id") or 0)
+        # Берём ПОСЛЕДНИЙ, а не активный: после завершения приёма экран должен
+        # остаться доступным — итоги подводятся уже на завершённом розыгрыше.
+        _gw = await giveaway_get(_gid) if _gid else await giveaway_last()
+        if not _gw:
+            return web.json_response({"ok": True, "giveaway": None})
+        _gid = _gw["id"]
+        _people = await giveaway_participants(_gid)
+        _need = _gw_int(_gw.get("need_refs"), 2)
+
+        def _row(p):
+            _ok = (bool(p.get("subscribed")) and not p.get("excluded")
+                   and int(p.get("refs_ok") or 0) >= _need)
+            return {
+                "id": int(p["user_id"]),
+                "user": ("@" + p["username"]) if p.get("username")
+                        else (p.get("full_name") or f"id{p['user_id']}"),
+                "sub": bool(p.get("subscribed")),
+                "refs": int(p.get("refs_ok") or 0),
+                "refsAll": int(p.get("refs_total") or 0),
+                "susp": p.get("suspicious") or "",
+                "excluded": bool(p.get("excluded")),
+                "checked": bool(p.get("checked_at")),
+                "ok": _ok,
+            }
+        _rows = [_row(p) for p in _people]
+        _win = await giveaway_winners_list(_gid)
+        # Дата в ISO — мини-апп покажет её по-своему.
+        def _iso(v):
+            try: return v.isoformat()
+            except Exception: return ""
+        return web.json_response({
+            "ok": True,
+            "giveaway": {
+                "id": _gid, "title": _gw.get("title") or "",
+                "keyword": _gw.get("keyword") or "участвую",
+                "needRefs": _need,
+                "winnersCount": _gw_int(_gw.get("winners_count"), 10),
+                "reserveCount": _gw_int(_gw.get("reserve_count"), 0),
+                "status": _gw.get("status") or "active",
+                "postUrl": _gw.get("post_url") or "",
+                "btnText": _gw.get("btn_text") or "",
+                "startsAt": _iso(_gw.get("starts_at")),
+                "endsAt": _iso(_gw.get("ends_at")),
+            },
+            "people": _rows,
+            "stats": {
+                "total": len(_rows),
+                "ok": sum(1 for r in _rows if r["ok"]),
+                "susp": sum(1 for r in _rows if r["susp"]),
+                "unchecked": sum(1 for r in _rows if not r["checked"]),
+            },
+            "winners": [{
+                "id": int(w["user_id"]), "place": w["place"],
+                "reserve": bool(w["is_reserve"]),
+                "user": ("@" + w["username"]) if w.get("username")
+                        else (w.get("full_name") or f"id{w['user_id']}"),
+            } for w in _win],
+            "refreshing": _gid in _GW_REFRESH_RUNNING,
+            "checkedAt": await get_setting(f"gw_checked:{_gid}", "") or "",
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_giveaway: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_giveaway_action_handler(request: web.Request) -> web.Response:
+    """Действия по розыгрышу: создать/сохранить, пересчитать, разыграть. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from db import (giveaway_last, giveaway_get, giveaway_save,
+                        giveaway_winners_list)
+        _act = str(body.get("action") or "")
+        _gid = int(body.get("id") or 0)
+
+        if _act == "save":
+            _kw = {}
+            for _k, _src in (("title", "title"), ("keyword", "keyword"),
+                             ("post_url", "postUrl"), ("btn_text", "btnText")):
+                if body.get(_src) is not None:
+                    _kw[_k] = str(body[_src])[:300].strip()
+            # Ссылка должна быть настоящей: Telegram отклоняет кнопку с чем
+            # угодно кроме http(s), и тогда падает ВСЁ главное меню.
+            if _kw.get("post_url") and not _kw["post_url"].lower().startswith(
+                    ("https://", "http://")):
+                return web.json_response(
+                    {"ok": False, "msg": "Ссылка должна начинаться с https://"})
+            for _k, _src in (("need_refs", "needRefs"),
+                             ("winners_count", "winnersCount"),
+                             ("reserve_count", "reserveCount")):
+                if body.get(_src) is not None:
+                    try: _kw[_k] = max(0, min(1000, int(body[_src])))
+                    except Exception: pass
+            if body.get("status"):
+                _kw["status"] = "finished" if body["status"] == "finished" else "active"
+            _gid = await giveaway_save(_gid, **_kw)
+            await giveaway_sync_button()
+            return web.json_response({"ok": True, "id": _gid})
+
+        if _act == "refresh":
+            if not _gid:
+                _g = await giveaway_last()
+                _gid = (_g or {}).get("id") or 0
+            if not _gid:
+                return web.json_response({"ok": False, "msg": "Розыгрыш не создан"})
+            if _gid in _GW_REFRESH_RUNNING:
+                return web.json_response({"ok": True, "started": False,
+                                          "msg": "Проверка уже идёт"})
+            # Фоном: на сотне участников это сотни запросов к Telegram, панель
+            # столько не прождёт.
+            asyncio.create_task(giveaway_refresh(_gid))
+            return web.json_response({"ok": True, "started": True})
+
+        if _act == "exclude":
+            _uid = int(body.get("userId") or 0)
+            _on = bool(body.get("on"))
+            if not (_gid and _uid):
+                return web.json_response({"ok": False, "msg": "Нет id"})
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE giveaway_comments SET excluded=$3 "
+                    "WHERE giveaway_id=$1 AND user_id=$2", _gid, _uid, _on)
+            return web.json_response({"ok": True})
+
+        if _act == "draw":
+            if not _gid:
+                return web.json_response({"ok": False, "msg": "Нет id"})
+            # Розыгрыш — момент, после которого имена уходят в канал. Поэтому
+            # не даём разыграть по неактуальным данным: иначе приз получит
+            # тот, кто отписался, а «никто не выполнил условия» прозвучит
+            # ровно тогда, когда объявлять итоги.
+            _pp = await giveaway_participants(_gid)
+            if not _pp:
+                return web.json_response(
+                    {"ok": False, "msg": "Участников нет: никто не оставил комментарий."})
+            _unchecked = sum(1 for _x in _pp if not _x.get("checked_at"))
+            if _unchecked:
+                return web.json_response({"ok": False, "msg":
+                    f"Сначала нажми «Проверить участников» — "
+                    f"{_unchecked} из {len(_pp)} ещё не проверены."})
+            try:
+                _last_chk = max(_x["checked_at"].timestamp() for _x in _pp
+                                if _x.get("checked_at"))
+                _age_min = (_time_module.time() - _last_chk) / 60.0
+            except Exception:
+                _age_min = 0
+            if _age_min > 60 and not body.get("force"):
+                return web.json_response({"ok": False, "stale": True, "msg":
+                    f"Последняя проверка была {int(_age_min)} мин назад. "
+                    f"За это время кто-то мог отписаться — прогони "
+                    f"«Проверить участников» заново."})
+            _r = await giveaway_draw(_gid)
+            if not _r.get("ok"):
+                return web.json_response({"ok": False, "msg": _r.get("error") or "Ошибка"})
+            _gw = await giveaway_get(_gid)
+            _txt = giveaway_post_text(_gw, await giveaway_winners_list(_gid))
+            return web.json_response({"ok": True, "pool": _r.get("pool"),
+                                      "text": _txt})
+
+        if _act == "text":
+            if not _gid:
+                return web.json_response({"ok": False, "msg": "Нет id"})
+            _gw = await giveaway_get(_gid)
+            _txt = giveaway_post_text(_gw, await giveaway_winners_list(_gid))
+            return web.json_response({"ok": True, "text": _txt})
+
+        return web.json_response({"ok": False, "msg": "Неизвестное действие"})
+    except Exception as _e:
+        logging.error(f"api_admin_giveaway_action: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
 async def api_admin_shop_orders_handler(request: web.Request) -> web.Response:
     """Заказы по авто-активации (chatgpt/claude/perplexity) и App Store с полной инфой. Admin-only."""
     try:
@@ -8716,6 +8900,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/order-action", api_admin_order_action_handler)
     app.router.add_post("/api/admin/order-thread", api_admin_order_thread_handler)
     app.router.add_post("/api/admin/order-delete", api_admin_order_delete_handler)
+    app.router.add_post("/api/admin/giveaway", api_admin_giveaway_handler)
+    app.router.add_post("/api/admin/giveaway-action", api_admin_giveaway_action_handler)
     app.router.add_post("/api/admin/shop-orders", api_admin_shop_orders_handler)
     app.router.add_post("/api/admin/shop-order-action", api_admin_shop_order_action_handler)
     app.router.add_post("/api/admin/user-find", api_admin_user_find_handler)
@@ -9677,6 +9863,255 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
                      f"спорных {len(_d['odd'])}, без ответа {_d['noanswer']}")
     return {"ok": True, "checked": _checked, "spent": _spent, "free": _free,
             "odd": _odd, "services": _svcs, "unknown": _unknown, "by_service": _by}
+
+
+def _gw_int(v, default: int) -> int:
+    """int() с защитой от нуля.
+
+    Писать int(x or 2) нельзя: ноль — ложное значение, и «0 друзей» молча
+    превратилось бы в 2. Тогда при настройке «приглашать никого не нужно»
+    условия не выполнил бы никто, и понять почему было бы невозможно.
+    """
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+_GW_REFRESH_RUNNING = set()      # какие розыгрыши сейчас пересчитываются
+
+
+async def giveaway_refresh(gid: int) -> dict:
+    """Пересчитывает участников розыгрыша: подписка, приглашённые, подозрения.
+
+    Работает в фоне и складывает результат прямо в giveaway_comments. Панель
+    потом читает готовое: опрос Telegram по каждому участнику и каждому его
+    другу — это сотни запросов, держать на них открытый HTTP от мини-аппа
+    нельзя, оно отвалится по таймауту.
+    """
+    from handlers_giveaway import giveaway_is_subscribed
+    from db import giveaway_get, giveaway_commenters, giveaway_refs
+    if gid in _GW_REFRESH_RUNNING:
+        return {"ok": False, "busy": True}
+    _GW_REFRESH_RUNNING.add(gid)
+    try:
+        _gw = await giveaway_get(gid)
+        if not _gw:
+            return {"ok": False, "error": "Розыгрыш не найден"}
+        _need = _gw_int(_gw.get("need_refs"), 2)
+        _since = _gw["starts_at"]
+        _people = await giveaway_commenters(gid)
+        _sub_cache = {}
+
+        async def _sub(uid):
+            """True/False/None. None — спросить не удалось, см. giveaway_is_subscribed."""
+            if uid not in _sub_cache:
+                _sub_cache[uid] = await giveaway_is_subscribed(uid)
+                # Telegram не любит больше ~30 запросов в секунду — идём
+                # спокойно, торопиться тут некуда.
+                await asyncio.sleep(0.05)
+            return _sub_cache[uid]
+
+        pool = await get_pool()
+        _done = 0
+        _unknown = 0
+        for _p in _people:
+            _uid = int(_p["user_id"])
+            _ok_sub = await _sub(_uid)
+            _refs = await giveaway_refs(_uid, _since)
+            # Друг засчитывается, если он новый в боте (referred_by и так
+            # проставляется только новым) И подписан на канал сейчас.
+            _cnt, _murky = 0, (_ok_sub is None)
+            for _r in _refs:
+                _rs = await _sub(int(_r["user_id"]))
+                if _rs is True:
+                    _cnt += 1
+                elif _rs is None:
+                    _murky = True       # про друга не узнали — итог неполный
+                if _cnt >= _need:
+                    break
+            _flags = _gw_suspicion(_refs)
+            if _murky:
+                # Про кого-то не удалось спросить. Пишем что есть, но НЕ
+                # ставим checked_at: участник останется «не проверен», и
+                # розыгрыш не запустится, пока не прогонишь ещё раз. Молча
+                # засчитать неполную проверку — это лотерея с чужими призами.
+                _unknown += 1
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE giveaway_comments SET subscribed=$3, refs_ok=$4, "
+                        "refs_total=$5, suspicious=$6, checked_at=NULL "
+                        "WHERE giveaway_id=$1 AND user_id=$2",
+                        gid, _uid, (_ok_sub if _ok_sub is not None else None),
+                        _cnt, len(_refs), _flags)
+            else:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE giveaway_comments SET subscribed=$3, refs_ok=$4, "
+                        "refs_total=$5, suspicious=$6, checked_at=NOW() "
+                        "WHERE giveaway_id=$1 AND user_id=$2",
+                        gid, _uid, bool(_ok_sub), _cnt, len(_refs), _flags)
+            _done += 1
+        await set_setting(f"gw_checked:{gid}", str(int(_time_module.time())))
+        if _unknown:
+            logging.warning(f"giveaway_refresh #{gid}: по {_unknown} участникам "
+                            f"Telegram не ответил — они остались непроверенными")
+        logging.info(f"giveaway_refresh #{gid}: проверено {_done} участников")
+        return {"ok": True, "checked": _done, "unknown": _unknown}
+    except Exception as _e:
+        logging.error(f"giveaway_refresh #{gid}: {_e}", exc_info=True)
+        return {"ok": False, "error": str(_e)[:200]}
+    finally:
+        _GW_REFRESH_RUNNING.discard(gid)
+
+
+def _gw_suspicion(refs: list) -> str:
+    """Признаки накрутки. НЕ приговор — бот никого не исключает сам.
+
+    Смысл в том, чтобы Александр посмотрел на десяток подозрительных, а не на
+    весь список. Telegram не даёт боту ни возраст аккаунта, ни устройство,
+    поэтому судим по тому немногому, что видно.
+
+    Одного слабого признака мало: двое друзей, зашедших в бота подряд, — это
+    совершенно обычное дело (позвал в общем чате, оба нажали). Поэтому
+    помечаем либо по сильному признаку, либо когда слабых набралось два.
+    """
+    if not refs:
+        return ""
+    _strong, _weak = [], []
+    _noname = sum(1 for r in refs if not (r.get("username") or "").strip())
+    if len(refs) >= 2 and _noname == len(refs):
+        _strong.append("все приглашённые без юзернейма")
+    elif _noname >= 2:
+        _weak.append(f"без юзернейма: {_noname}")
+    # Регистрации впритык друг к другу. Само по себе — не улика.
+    try:
+        _ts = sorted(r["created_at"] for r in refs if r.get("created_at"))
+        _fast = sum(1 for _i in range(1, len(_ts))
+                    if (_ts[_i] - _ts[_i - 1]).total_seconds() < 120)
+        if _fast:
+            _weak.append("регистрации подряд (<2 мин)")
+    except Exception:
+        pass
+    # Имена вида «Иван1», «Иван2» — типичная заготовка аккаунтов.
+    try:
+        import re as _re_gw
+        _stems = [_re_gw.sub(r"\d+$", "", (r.get("username") or "").lower())
+                  for r in refs if (r.get("username") or "").strip()]
+        _stems = [x for x in _stems if len(x) >= 3]
+        if len(_stems) >= 2 and len(set(_stems)) == 1:
+            _strong.append("юзернеймы отличаются только цифрой")
+    except Exception:
+        pass
+    if _strong:
+        return "; ".join(_strong + _weak)
+    return "; ".join(_weak) if len(_weak) >= 2 else ""
+
+
+async def giveaway_sync_button() -> str:
+    """Ставит или убирает кнопку розыгрыша в главном меню.
+
+    Кнопка появляется, только когда розыгрыш активен И указана ссылка на пост:
+    кнопка, ведущая в никуда, хуже, чем её отсутствие.
+    """
+    from db import giveaway_active
+    from keyboards import set_giveaway_button
+    try:
+        _gw = await giveaway_active()
+        _url = (_gw.get("post_url") or "") if _gw else ""
+        if _url and not _url.lower().startswith(("http://", "https://")):
+            _url = ""
+        set_giveaway_button(_url, (_gw.get("btn_text") or "") if _gw else "")
+        logging.info(f"giveaway button: {'показана' if _url else 'скрыта'}")
+        return _url
+    except Exception as _e:
+        logging.warning(f"giveaway_sync_button: {_e}")
+        return ""
+
+
+async def giveaway_participants(gid: int) -> list:
+    """Участники с результатом последней проверки — то, что видит панель."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT c.user_id, "
+            "       COALESCE(NULLIF(c.username,''), u.username, '') AS username, "
+            "       COALESCE(NULLIF(c.full_name,''), u.full_name, '') AS full_name, "
+            "       c.created_at, c.subscribed, c.refs_ok, c.refs_total, "
+            "       c.suspicious, c.excluded, c.checked_at "
+            "FROM giveaway_comments c LEFT JOIN users u ON u.user_id=c.user_id "
+            "WHERE c.giveaway_id=$1 ORDER BY c.created_at", gid)
+    return [dict(r) for r in rows]
+
+
+async def giveaway_eligible(gid: int) -> list:
+    """Кто выполнил ВСЕ условия — из них и тянем победителей."""
+    from db import giveaway_get
+    _gw = await giveaway_get(gid)
+    _need = _gw_int((_gw or {}).get("need_refs"), 2)
+    _out = []
+    for _p in await giveaway_participants(gid):
+        if _p.get("excluded"):
+            continue
+        if not _p.get("subscribed"):
+            continue
+        if int(_p.get("refs_ok") or 0) < _need:
+            continue
+        _out.append(_p)
+    return _out
+
+
+async def giveaway_draw(gid: int) -> dict:
+    """Случайный выбор победителей среди выполнивших условия.
+
+    Берём system random (os.urandom), а не обычный псевдослучайный генератор:
+    у того результат зависит от внутреннего состояния, и «а ты не перезапускал?»
+    имело бы под собой основание.
+    """
+    from db import giveaway_get, giveaway_set_winners
+    import secrets as _secrets
+    _gw = await giveaway_get(gid)
+    if not _gw:
+        return {"ok": False, "error": "Розыгрыш не найден"}
+    _pool_people = await giveaway_eligible(gid)
+    if not _pool_people:
+        return {"ok": False, "error": "Никто пока не выполнил все условия."}
+    _wn = _gw_int(_gw.get("winners_count"), 10)
+    _rn = _gw_int(_gw.get("reserve_count"), 0)
+    _ids = [int(p["user_id"]) for p in _pool_people]
+    _shuffled = list(_ids)
+    # Перемешивание Фишера–Йетса на криптостойком источнике.
+    for _i in range(len(_shuffled) - 1, 0, -1):
+        _j = _secrets.randbelow(_i + 1)
+        _shuffled[_i], _shuffled[_j] = _shuffled[_j], _shuffled[_i]
+    _winners = _shuffled[:_wn]
+    _reserves = _shuffled[_wn:_wn + _rn]
+    await giveaway_set_winners(gid, _winners, _reserves)
+    return {"ok": True, "winners": _winners, "reserves": _reserves,
+            "pool": len(_ids)}
+
+
+def giveaway_post_text(gw: dict, winners: list) -> str:
+    """Готовый текст итогов для канала — чтобы не собирать его руками."""
+    _w = [x for x in winners if not x.get("is_reserve")]
+    _r = [x for x in winners if x.get("is_reserve")]
+
+    def _name(x):
+        return ("@" + x["username"]) if x.get("username") else (
+            x.get("full_name") or f"id{x['user_id']}")
+
+    _t = (f"🏆 <b>Итоги розыгрыша</b>\n"
+          f"{gw.get('title') or ''}\n\n"
+          f"Победители ({len(_w)}):\n"
+          + "\n".join(f"{_i}. {_name(x)}" for _i, x in enumerate(_w, 1)))
+    if _r:
+        _t += ("\n\nРезервный список:\n"
+               + "\n".join(f"{_i}. {_name(x)}" for _i, x in enumerate(_r, 1)))
+    _t += ("\n\nПобедителям — написать в поддержку через бота в течение 7 дней. "
+           "Невостребованные призы уходят в резерв.\n\nСпасибо всем за участие! 🍀")
+    return _t
 
 
 def tg_chunks(text: str, limit: int = 3800) -> list:

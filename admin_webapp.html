@@ -155,7 +155,7 @@ function home(){
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"],["🏢","Партнёры (наценка)","Партнёры"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
-   ["⚙️","Управление",[["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
+   ["⚙️","Управление",[["🎁","Розыгрыш","Розыгрыш"],["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
    ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🖼","Фото/видео активации","Медиа активации"],["🍎","App Store","Настройка App Store"]]]
   ];
   var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
@@ -2141,6 +2141,276 @@ function loadMiniApp(svc){
 /* Период списка активаций: 0 = последние 15, иначе N дней */
 window._miDays={};
 function miDays(svc,d){window._miDays[svc]=d;loadMiniApp(svc);}
+/* ── Розыгрыш в канале ─────────────────────────────────────────────────────
+   Три условия проверяются по-разному: подписку и приглашённых бот спрашивает
+   у Telegram при пересчёте, комментарий ловит в группе обсуждения. Пересчёт
+   идёт ФОНОМ — на сотне участников это сотни запросов, экран бы завис.        */
+SCREENS["Розыгрыш"]=function(){setTimeout(_gwLoad,30);
+  return hdr("Розыгрыш","участники, проверка условий, итоги")
+    +'<div class="wrap"><div id="gwbody"><div class="note">Загружаю…</div></div></div>';};
+
+function _gwLoad(){
+  api('/api/admin/giveaway',{}).then(function(d){
+    var el=document.getElementById('gwbody');if(!el)return;
+    if(!d||!d.ok){el.innerHTML='<div class="note">Ошибка загрузки.</div>';return;}
+    window._gw=d;_gwRender();
+    /* пока идёт пересчёт — подтягиваем сами, чтобы не жать «обновить» */
+    if(d.refreshing){clearTimeout(window._gwPoll);window._gwPoll=setTimeout(_gwLoad,3000);}
+  });
+}
+
+function _gwRender(){
+  var el=document.getElementById('gwbody');if(!el)return;
+  var d=window._gw||{},g=d.giveaway;
+  if(!g){
+    el.innerHTML='<div class="block"><h4>Розыгрыша ещё нет</h4>'
+      +'<div class="note">Создай его — после этого бот начнёт засчитывать комментарии '
+      +'под постами в группе обсуждения канала.</div>'
+      +'<label class="fl">Название</label><input class="f" id="gw_title" value="Неделя ChatGPT"/>'
+      +'<label class="fl">Слово в комментарии</label><input class="f" id="gw_kw" value="участвую"/>'
+      +'<label class="fl">Ссылка на пост в канале</label><input class="f" id="gw_url" placeholder="https://t.me/AleksandrOii/123"/>'
+      +'<label class="fl">Текст кнопки в меню бота</label><input class="f" id="gw_btn" value="🎁 Участвовать в розыгрыше"/>'
+      +'<label class="fl">Сколько друзей пригласить</label><input class="f" id="gw_refs" type="number" min="0" max="20" value="2"/>'
+      +'<label class="fl">Победителей</label><input class="f" id="gw_win" type="number" min="1" max="100" value="10"/>'
+      +'<label class="fl">Резерв</label><input class="f" id="gw_res" type="number" min="0" max="100" value="3"/>'
+      +'</div><button class="btn" onclick="_gwSave(0)">➕ Создать розыгрыш</button>'
+      +'<div class="note" style="margin-top:10px">⚠️ Перед публикацией поста добавь бота '
+      +'в группу обсуждения канала. Комментарии, отправленные до этого, он не увидит — '
+      +'задним числом их не собрать. Проверить: команда <b>/giveaway_where</b> в боте.</div>';
+    return;
+  }
+  var st=d.stats||{},h='';
+
+  h+='<div class="block"><h4>'+esc(g.title||'Розыгрыш')+(g.status==='finished'?' <span class="neg">(завершён)</span>':'')+'</h4>'
+    +(g.status==='finished'?'<div class="sub">Приём закрыт — новые комментарии не засчитываются. Проверять участников и подводить итоги можно.</div>':'')
+    +'<div class="kv"><span class="k">Участников (с комментарием)</span><span>'+(st.total||0)+'</span></div>'
+    +'<div class="kv"><span class="k">Выполнили все условия</span><span class="pos">'+(st.ok||0)+'</span></div>'
+    +(st.susp?'<div class="kv"><span class="k">⚠️ Подозрительных</span><span class="neg">'+st.susp+'</span></div>':'')
+    +(st.unchecked?'<div class="kv"><span class="k">Ещё не проверены</span><span class="neg">'+st.unchecked+'</span></div>':'')
+    +'<div class="kv"><span class="k">Последняя проверка</span><span'+(_gwAgeCls(d)+'>'+_gwAgeTxt(d))+'</span></div>' 
+    +'<div class="kv"><span class="k">Кнопка в меню бота</span><span'+(g.postUrl?' class="pos">показана':' class="neg">нет ссылки')+'</span></div>'
+    +'<div class="sub" style="margin-top:8px">Условия: подписка на канал + '+g.needRefs
+    +' приглашённых + слово «'+esc(g.keyword)+'» в комментарии</div></div>';
+
+  h+='<div class="btns2">'
+    +'<button class="btn row2 sec" onclick="_gwRefresh()">'+(d.refreshing?'⏳ Идёт проверка…':'🔄 Проверить участников')+'</button>'
+    +'<button class="btn row2 sec" onclick="_gwEdit()">⚙️ Настройки</button></div>';
+  if(d.refreshing)h+='<div class="note">Бот опрашивает Telegram по каждому участнику и его друзьям. Это занимает время — экран обновится сам.</div>';
+
+  if(d.winners&&d.winners.length){
+    h+='<div class="block"><h4>🏆 Итоги</h4>';
+    d.winners.forEach(function(w){
+      h+='<div class="kv"><span class="k">'+(w.reserve?'резерв ':'')+w.place+'. '+esc(w.user)+'</span>'
+        +'<span'+(w.reserve?'':' class="pos"')+'>'+(w.reserve?'запасной':'победитель')+'</span></div>';
+    });
+    h+='<button class="btn sec" style="margin-top:10px" onclick="_gwText()">📋 Текст для канала</button></div>';
+  }
+
+  /* Наверх — то, что требует решения: подозрительные, затем не прошедшие.
+     Прошедшие в самом низу: с ними всё и так ясно. */
+  var people=(d.people||[]).slice().sort(function(a,b){
+    var sa=a.susp?0:1, sb=b.susp?0:1;
+    if(sa!==sb)return sa-sb;
+    if(a.ok!==b.ok)return a.ok?1:-1;
+    return (b.refs||0)-(a.refs||0);
+  });
+  /* Рисуем не всех: на паре сотен участников страница из одних только
+     строк списка весит сотни килобайт, и мини-апп на телефоне встаёт.
+     Сортировка уже подняла наверх тех, к кому есть вопросы. */
+  var LIM=window._gwShowAll?100000:100;
+  var shown=people.slice(0,LIM),hidden=people.length-shown.length;
+  h+='<div class="glabel" style="margin-top:16px">Участники'
+    +(people.length>shown.length?(' — показаны '+shown.length+' из '+people.length):'')+'</div>';
+  if(!people.length){
+    h+='<div class="note">Пока никто не прокомментировал. Как только под постом появится '
+      +'«'+esc(g.keyword)+'», человек появится здесь.</div>';
+  }
+  shown.forEach(function(p){
+    var mark=function(v){return v?'✅':'⬜️';};
+    h+='<div class="block" style="'+(p.excluded?'opacity:.5;':'')+(p.susp?'border-left:3px solid '+C.red+';':'')+'">'
+      +'<div style="font-size:13px;font-weight:700">'+esc(p.user)+(p.ok?' <span class="pos">— проходит</span>':'')+'</div>'
+      +'<div class="sub" style="margin-top:4px">'
+      +mark(p.sub)+' подписка &nbsp; '+mark(p.refs>=g.needRefs)+' друзья: '+p.refs+'/'+g.needRefs
+      +(p.refsAll>p.refs?(' <span style="opacity:.6">(всего привёл '+p.refsAll+')</span>'):'')
+      +' &nbsp; ✅ комментарий'
+      +(p.checked?'':' <span class="neg">— не проверен</span>')
+      +'</div>'
+      +(p.susp?'<div class="sub neg" style="margin-top:4px">⚠️ '+esc(p.susp)+'</div>':'')
+      +'<button class="btn sec" style="margin-top:8px;padding:7px 10px;font-size:12px;width:auto" '
+      +'onclick="_gwExclude('+p.id+','+(p.excluded?'false':'true')+')">'
+      +(p.excluded?'Вернуть в розыгрыш':'Исключить')+'</button>'
+      +'</div>';
+  });
+
+  var blocked=(st.unchecked||0)>0||(st.total||0)===0;
+  if(hidden>0){
+    h+='<button class="btn sec" onclick="window._gwShowAll=1;_gwRender()">Показать все ('+people.length+')</button>'
+      +'<div class="note">Наверху те, к кому есть вопросы: не прошедшие и подозрительные. '
+      +'На розыгрыш это не влияет — он считает всех.</div>';
+  } else if(window._gwShowAll&&people.length>100){
+    h+='<button class="btn sec" onclick="window._gwShowAll=0;_gwRender()">Свернуть список</button>';
+  }
+  h+='<button class="btn'+(blocked?' sec':'')+'" style="margin-top:14px" onclick="_gwDraw()">🎲 Разыграть ('+(st.ok||0)+' участников)</button>'
+    +(blocked?'<div class="note neg">Сначала нажми «Проверить участников» — иначе розыгрыш не запустится.</div>':'')
+    +'<div class="note">Победители выбираются случайно среди тех, кто выполнил все условия. '
+    +'Можно перезапустить до публикации — итоги перезапишутся.</div>';
+  el.innerHTML=h;
+}
+
+/* Возраст последней проверки: по нему решаем, можно ли разыгрывать.
+   Данные часовой давности — это уже не про «кто подписан сейчас». */
+/* Двойное подтверждение для необратимого в разделе розыгрыша.
+   Второй вопрос НАМЕРЕННО другой: два одинаковых окна подряд пролистываются
+   на автомате, и защита превращается в две лишние кнопки. */
+function _gwSure(what,second){
+  if(!window.confirm)return true;
+  if(!window.confirm(what))return false;
+  return window.confirm(second||'Точно? Это действие нельзя отменить.');
+}
+
+function _gwAgeMin(d){
+  var t=parseInt((d&&d.checkedAt)||'0',10);
+  if(!t)return -1;
+  return Math.floor((Date.now()/1000-t)/60);
+}
+function _gwAgeTxt(d){
+  var m=_gwAgeMin(d);
+  if(m<0)return 'не проводилась';
+  if(m<1)return 'только что';
+  if(m<60)return m+' мин назад';
+  return Math.floor(m/60)+' ч назад';
+}
+function _gwAgeCls(d){var m=_gwAgeMin(d);return (m<0||m>60)?' class="neg"':' class="pos"';}
+
+function _gwSave(id){
+  var v=function(i,dflt){var e=document.getElementById(i);return e?e.value:dflt;};
+  var pl={action:'save',id:id||0,title:v('gw_title','Розыгрыш'),keyword:v('gw_kw','участвую'),
+          postUrl:v('gw_url',''),btnText:v('gw_btn',''),
+          needRefs:parseInt(v('gw_refs',2),10),winnersCount:parseInt(v('gw_win',10),10),
+          reserveCount:parseInt(v('gw_res',3),10)};
+  toast('Сохраняю…');
+  api('/api/admin/giveaway-action',pl).then(function(d){
+    if(d&&d.ok){toast('Готово ✅');_gwLoad();}else toast((d&&d.msg)||'Ошибка');});
+}
+
+function _gwEdit(){
+  var g=(window._gw||{}).giveaway||{};
+  var el=document.getElementById('gwbody');if(!el)return;
+  el.innerHTML='<div class="block"><h4>Настройки розыгрыша</h4>'
+    +'<label class="fl">Название</label><input class="f" id="gw_title" value="'+esc(g.title||'')+'"/>'
+    +'<label class="fl">Слово в комментарии</label><input class="f" id="gw_kw" value="'+esc(g.keyword||'участвую')+'"/>'
+    +'<label class="fl">Ссылка на пост в канале</label><input class="f" id="gw_url" placeholder="https://t.me/AleksandrOii/123" value="'+esc(g.postUrl||'')+'"/>'
+    +'<div class="sub">Пока ссылка пустая — кнопки розыгрыша в меню бота нет. Вставь её после публикации поста.</div>'
+    +'<label class="fl">Текст кнопки в меню бота</label><input class="f" id="gw_btn" value="'+esc(g.btnText||'🎁 Участвовать в розыгрыше')+'"/>'
+    +'<label class="fl">Сколько друзей пригласить</label><input class="f" id="gw_refs" type="number" min="0" max="20" value="'+(g.needRefs||2)+'"/>'
+    +'<label class="fl">Победителей</label><input class="f" id="gw_win" type="number" min="1" max="100" value="'+(g.winnersCount||10)+'"/>'
+    +'<label class="fl">Резерв</label><input class="f" id="gw_res" type="number" min="0" max="100" value="'+(g.reserveCount||0)+'"/>'
+    +'</div><div class="btns2"><button class="btn row2" onclick="_gwSave('+(g.id||0)+')">💾 Сохранить</button>'
+    +'<button class="btn row2 sec" onclick="_gwLoad()">Отмена</button></div>'
+    +(g.status==='finished'
+       ? '<button class="btn sec" style="margin-top:12px" onclick="_gwReopen('+(g.id||0)+')">↩️ Возобновить приём</button>'
+         +'<div class="note">Розыгрыш завершён. Можно вернуть приём участников или начать новый — тогда текущий закроется окончательно.</div>'
+         +'<button class="btn danger" onclick="_gwNew()">➕ Новый розыгрыш</button>'
+       : '<button class="btn danger" style="margin-top:12px" onclick="_gwFinish('+(g.id||0)+')">Завершить розыгрыш</button>'
+         +'<div class="note">После завершения комментарии перестанут засчитываться. Участники и итоги останутся, приём можно будет вернуть.</div>');
+}
+
+function _gwFinish(id){
+  if(!_gwSure('Завершить розыгрыш?\n\nНовые комментарии перестанут засчитываться, кнопка исчезнет из меню бота.',
+              'Подтверди ещё раз: закрываем приём участников?'))return;
+  api('/api/admin/giveaway-action',{action:'save',id:id,status:'finished'}).then(function(d){
+    if(d&&d.ok){toast('Розыгрыш завершён');_gwLoad();}else toast('Ошибка');});
+}
+
+/* Возврат приёма: «Завершить» перестаёт быть необратимым, а значит и
+   страшным. Кнопка в меню бота вернётся сама при следующем сохранении. */
+function _gwReopen(id){
+  if(window.confirm&&!window.confirm('Вернуть приём участников? Комментарии снова начнут засчитываться.'))return;
+  api('/api/admin/giveaway-action',{action:'save',id:id,status:'active'}).then(function(d){
+    if(d&&d.ok){toast('Приём возобновлён');_gwLoad();}else toast('Ошибка');});
+}
+
+/* Новый розыгрыш закрывает текущий окончательно — поэтому два вопроса
+   и форма создания, а не мгновенное действие. */
+function _gwNew(){
+  if(!_gwSure('Начать НОВЫЙ розыгрыш?\n\nТекущий закроется, его участники и итоги останутся в базе, но экран будет показывать новый.',
+              'Подтверди: создаём новый розыгрыш?'))return;
+  var el=document.getElementById('gwbody');if(!el)return;
+  el.innerHTML='<div class="block"><h4>Новый розыгрыш</h4>'
+    +'<label class="fl">Название</label><input class="f" id="gw_title" value=""/>'
+    +'<label class="fl">Слово в комментарии</label><input class="f" id="gw_kw" value="участвую"/>'
+    +'<label class="fl">Ссылка на пост в канале</label><input class="f" id="gw_url" placeholder="https://t.me/AleksandrOii/123"/>'
+    +'<label class="fl">Текст кнопки в меню бота</label><input class="f" id="gw_btn" value="🎁 Участвовать в розыгрыше"/>'
+    +'<label class="fl">Сколько друзей пригласить</label><input class="f" id="gw_refs" type="number" min="0" max="20" value="2"/>'
+    +'<label class="fl">Победителей</label><input class="f" id="gw_win" type="number" min="1" max="100" value="10"/>'
+    +'<label class="fl">Резерв</label><input class="f" id="gw_res" type="number" min="0" max="100" value="3"/>'
+    +'</div><div class="btns2"><button class="btn row2" onclick="_gwSave(0)">Создать</button>'
+    +'<button class="btn row2 sec" onclick="_gwLoad()">Отмена</button></div>';
+}
+
+function _gwRefresh(){
+  var g=(window._gw||{}).giveaway||{};
+  api('/api/admin/giveaway-action',{action:'refresh',id:g.id||0}).then(function(d){
+    if(d&&d.ok){toast(d.started?'Проверка запущена':'Проверка уже идёт');
+      clearTimeout(window._gwPoll);window._gwPoll=setTimeout(_gwLoad,2000);}
+    else toast((d&&d.msg)||'Ошибка');});
+}
+
+function _gwExclude(uid,on){
+  var g=(window._gw||{}).giveaway||{};
+  /* Имя ищем здесь, а не тащим через onclick: имя задаёт посторонний
+     человек в Telegram, и кавычка в нём сломала бы всю разметку списка. */
+  var who='id'+uid,pp=(window._gw||{}).people||[];
+  for(var i=0;i<pp.length;i++){if(pp[i].id===uid){who=pp[i].user;break;}}
+  if(on&&!_gwSure('Исключить '+who+' из розыгрыша?',
+                  'Этот участник не попадёт в число победителей. Точно?'))return;
+  api('/api/admin/giveaway-action',{action:'exclude',id:g.id,userId:uid,on:on}).then(function(d){
+    if(d&&d.ok){toast(on?'Исключён':'Возвращён');_gwLoad();}else toast('Ошибка');});
+}
+
+function _gwDraw(){
+  var g=(window._gw||{}).giveaway||{};
+  var n=((window._gw||{}).stats||{}).ok||0;
+  var had=((window._gw||{}).winners||[]).length;
+  if(!_gwSure('Разыграть '+(g.winnersCount||10)+' призов среди '+n+' участников?'
+              +(had?'\n\n⚠️ Прежние итоги ('+had+') будут перезаписаны.':''),
+              had?'Прежних победителей после этого не восстановить. Разыграть заново?'
+                 :'Подтверди: выбираем победителей?'))return;
+  toast('Разыгрываю…');
+  api('/api/admin/giveaway-action',{action:'draw',id:g.id}).then(function(d){
+    if(d&&!d.ok&&d.stale){
+      /* Данные устарели — предлагаем перепроверить, а не разыгрывать вслепую */
+      if(window.confirm&&window.confirm(d.msg+'\n\nРазыграть всё равно по старым данным?')){
+        api('/api/admin/giveaway-action',{action:'draw',id:g.id,force:true}).then(function(d2){
+          if(!d2||!d2.ok){toast((d2&&d2.msg)||'Ошибка');return;}
+          toast('Готово 🎉');_gwLoad();setTimeout(function(){_gwShowText(d2.text||'');},400);});
+      } else { _gwRefresh(); }
+      return;
+    }
+    if(!d||!d.ok){toast((d&&d.msg)||'Ошибка');return;}
+    toast('Готово 🎉');window._gwText=d.text||'';_gwLoad();
+    setTimeout(function(){_gwShowText(d.text||'');},400);
+  });
+}
+
+function _gwText(){
+  var g=(window._gw||{}).giveaway||{};
+  api('/api/admin/giveaway-action',{action:'text',id:g.id}).then(function(d){
+    if(d&&d.ok)_gwShowText(d.text||'');else toast('Ошибка');});
+}
+
+/* Текст итогов показываем как есть, с кнопкой копирования: постить в канал
+   Александр будет сам, руками — так он успеет перечитать перед публикацией. */
+function _gwShowText(t){
+  var plain=(t||'').replace(/<\/?b>/g,'');
+  window._gwTextCache=plain;
+  var el=document.getElementById('gwbody');if(!el)return;
+  el.innerHTML='<div class="block"><h4>📋 Текст для канала</h4>'
+    +'<div class="sub" style="white-space:pre-wrap;margin-top:8px">'+esc(plain)+'</div>'
+    +'<button class="btn" style="margin-top:12px" onclick="copyText(window._gwTextCache||\'\')">Скопировать</button>'
+    +'</div><button class="btn sec" onclick="_gwLoad()">← Назад к участникам</button>';
+}
+
 /* ── Провайдер активации (claude / chatgpt) ── */
 window._provList={}; window._provActive={};
 function provName(svc,key){var l=(window._provList&&window._provList[svc])||[];for(var i=0;i<l.length;i++){if(l[i].key===key)return l[i].name;}return key;}

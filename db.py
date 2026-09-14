@@ -263,6 +263,79 @@ async def init_db():
                 UNIQUE (code, user_id)
             )
         """)
+        # ── Розыгрыши в канале ──────────────────────────────────────────────
+        # Участие складывается из трёх условий, и каждое проверяется по-своему:
+        #   подписка на канал  — запросом к Telegram в момент подведения итогов
+        #                        (иначе «отписался перед розыгрышем» прошёл бы);
+        #   приглашённые       — из users.referred_by, отдельная таблица не нужна:
+        #                        бот и так пишет, кто кого привёл;
+        #   комментарий        — вот его хранить негде, поэтому таблица ниже.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS giveaways (
+                id            SERIAL PRIMARY KEY,
+                title         TEXT NOT NULL DEFAULT 'Розыгрыш',
+                keyword       TEXT NOT NULL DEFAULT 'участвую',
+                need_refs     INTEGER NOT NULL DEFAULT 2,
+                winners_count INTEGER NOT NULL DEFAULT 10,
+                reserve_count INTEGER NOT NULL DEFAULT 3,
+                starts_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ends_at       TIMESTAMPTZ,
+                status        TEXT NOT NULL DEFAULT 'active',
+                post_url      TEXT NOT NULL DEFAULT '',
+                btn_text      TEXT NOT NULL DEFAULT '',
+                created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS giveaway_comments (
+                id          SERIAL PRIMARY KEY,
+                giveaway_id INTEGER NOT NULL,
+                user_id     BIGINT NOT NULL,
+                username    TEXT DEFAULT '',
+                full_name   TEXT DEFAULT '',
+                chat_id     BIGINT,
+                message_id  BIGINT,
+                thread_id   BIGINT,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (giveaway_id, user_id)
+            )
+        """)
+        for _c_g2, _d_g2 in (("post_url", "TEXT NOT NULL DEFAULT ''"),
+                             ("btn_text", "TEXT NOT NULL DEFAULT ''")):
+            try:
+                await conn.execute(
+                    f"ALTER TABLE giveaways ADD COLUMN IF NOT EXISTS {_c_g2} {_d_g2}")
+            except Exception:
+                pass
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gw_comments ON giveaway_comments(giveaway_id)")
+        # Результат последней проверки храним прямо здесь: участники — это и
+        # есть комментаторы, отдельная таблица была бы копией этой. Панель
+        # читает готовые значения и не ждёт опроса Telegram.
+        for _c_gw, _d_gw in (
+            ("subscribed",  "BOOLEAN"),
+            ("refs_ok",     "INTEGER DEFAULT 0"),
+            ("refs_total",  "INTEGER DEFAULT 0"),
+            ("suspicious",  "TEXT DEFAULT ''"),
+            ("excluded",    "BOOLEAN DEFAULT FALSE"),
+            ("checked_at",  "TIMESTAMPTZ"),
+        ):
+            try:
+                await conn.execute(
+                    f"ALTER TABLE giveaway_comments ADD COLUMN IF NOT EXISTS {_c_gw} {_d_gw}")
+            except Exception:
+                pass
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS giveaway_winners (
+                id          SERIAL PRIMARY KEY,
+                giveaway_id INTEGER NOT NULL,
+                user_id     BIGINT NOT NULL,
+                place       INTEGER NOT NULL,
+                is_reserve  BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (giveaway_id, user_id)
+            )
+        """)
         # Партии кредитов с истечением (новая модель - каждая покупка = отдельная партия)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS credit_batches (
@@ -717,6 +790,141 @@ async def init_db():
 
 
 # ── GPT АКТИВАЦИЯ — вспомогательные функции ─────────────────────────────────
+
+async def giveaway_active() -> dict:
+    """Текущий незавершённый розыгрыш или {}. Активным считаем ровно один."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM giveaways WHERE status='active' ORDER BY id DESC LIMIT 1")
+    return dict(row) if row else {}
+
+
+async def giveaway_last() -> dict:
+    """Последний розыгрыш — активный или уже завершённый.
+
+    Панель открывается именно по нему: после кнопки «Завершить» активного
+    больше нет, и по giveaway_active() экран показал бы форму создания —
+    то есть доступ к участникам и итогам пропал бы ровно там, где он нужен.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM giveaways ORDER BY id DESC LIMIT 1")
+    return dict(row) if row else {}
+
+
+async def giveaway_get(gid: int) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM giveaways WHERE id=$1", gid)
+    return dict(row) if row else {}
+
+
+async def giveaway_save(gid: int = 0, **kw) -> int:
+    """Создаёт или обновляет розыгрыш. Возвращает id."""
+    _fields = ("title", "keyword", "need_refs", "winners_count",
+               "reserve_count", "starts_at", "ends_at", "status",
+               "post_url", "btn_text")
+    _vals = {k: v for k, v in kw.items() if k in _fields and v is not None}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if gid:
+            if _vals:
+                _set = ", ".join(f"{k}=${i+2}" for i, k in enumerate(_vals))
+                await conn.execute(f"UPDATE giveaways SET {_set} WHERE id=$1",
+                                   gid, *_vals.values())
+            return gid
+        # Новый розыгрыш закрывает предыдущий: активным должен быть только один,
+        # иначе комментарии посыплются сразу в два и участники перемешаются.
+        await conn.execute("UPDATE giveaways SET status='finished' WHERE status='active'")
+        _cols = list(_vals) or ["title"]
+        if "title" not in _vals:
+            _vals["title"] = "Розыгрыш"
+            _cols = list(_vals)
+        _ph = ", ".join(f"${i+1}" for i in range(len(_cols)))
+        return await conn.fetchval(
+            f"INSERT INTO giveaways ({', '.join(_cols)}) VALUES ({_ph}) RETURNING id",
+            *[_vals[c] for c in _cols])
+
+
+async def giveaway_add_comment(gid: int, user_id: int, username: str = "",
+                               full_name: str = "", chat_id: int = 0,
+                               message_id: int = 0, thread_id: int = 0) -> bool:
+    """Записывает комментарий участника. Повторные не в счёт — UNIQUE по (розыгрыш, юзер).
+
+    Возвращает True, если это первый комментарий этого человека.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _r = await conn.execute(
+            "INSERT INTO giveaway_comments "
+            "(giveaway_id, user_id, username, full_name, chat_id, message_id, thread_id) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (giveaway_id, user_id) DO NOTHING",
+            gid, user_id, username or "", full_name or "",
+            chat_id or None, message_id or None, thread_id or None)
+    return isinstance(_r, str) and _r.strip().endswith(" 1")
+
+
+async def giveaway_refs(user_id: int, since) -> list:
+    """Кого этот человек привёл в бота ПОСЛЕ начала розыгрыша.
+
+    Считаем только пришедших за время розыгрыша: иначе у кого-то с прошлыми
+    рефералами участие засчиталось бы само собой, без единого приглашения.
+    """
+    # users.created_at — TIMESTAMP без зоны, а starts_at розыгрыша — с зоной.
+    # Postgres такое сравнение не принимает, поэтому приводим к «наивному» UTC:
+    # база живёт в UTC, так что смысл времени не меняется.
+    import datetime as _dt_gw
+    if getattr(since, "tzinfo", None) is not None:
+        since = since.astimezone(_dt_gw.timezone.utc).replace(tzinfo=None)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT user_id, username, full_name, created_at FROM users "
+            "WHERE referred_by=$1 AND created_at >= $2 ORDER BY created_at",
+            user_id, since)
+    return [dict(r) for r in rows]
+
+
+async def giveaway_commenters(gid: int) -> list:
+    """Все, кто оставил комментарий — это и есть база участников."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT c.user_id, COALESCE(NULLIF(c.username,''), u.username, '') AS username, "
+            "       COALESCE(NULLIF(c.full_name,''), u.full_name, '') AS full_name, "
+            "       c.created_at, (u.user_id IS NOT NULL) AS in_bot "
+            "FROM giveaway_comments c LEFT JOIN users u ON u.user_id=c.user_id "
+            "WHERE c.giveaway_id=$1 ORDER BY c.created_at", gid)
+    return [dict(r) for r in rows]
+
+
+async def giveaway_set_winners(gid: int, winners: list, reserves: list) -> None:
+    """Сохраняет итоги. Перезапись разрешена: пересчитать до публикации можно."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM giveaway_winners WHERE giveaway_id=$1", gid)
+            for _i, _u in enumerate(winners, 1):
+                await conn.execute(
+                    "INSERT INTO giveaway_winners (giveaway_id, user_id, place, is_reserve) "
+                    "VALUES ($1,$2,$3,FALSE) ON CONFLICT DO NOTHING", gid, int(_u), _i)
+            for _i, _u in enumerate(reserves, 1):
+                await conn.execute(
+                    "INSERT INTO giveaway_winners (giveaway_id, user_id, place, is_reserve) "
+                    "VALUES ($1,$2,$3,TRUE) ON CONFLICT DO NOTHING", gid, int(_u), _i)
+
+
+async def giveaway_winners_list(gid: int) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT w.user_id, w.place, w.is_reserve, "
+            "       COALESCE(u.username,'') AS username, COALESCE(u.full_name,'') AS full_name "
+            "FROM giveaway_winners w LEFT JOIN users u ON u.user_id=w.user_id "
+            "WHERE w.giveaway_id=$1 ORDER BY w.is_reserve, w.place", gid)
+    return [dict(r) for r in rows]
+
 
 async def get_next_gpt_code(plan: str = "plus", provider: str = "987ai",
                             route: str | None = None):

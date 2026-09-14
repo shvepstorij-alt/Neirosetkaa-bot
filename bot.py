@@ -53,6 +53,7 @@ import handlers_admin
 import handlers_gpt
 import handlers_claude
 import handlers_perplexity
+import handlers_giveaway
 import handlers_linkpay
 import handlers_nsgifts
 import handlers_desc
@@ -65,6 +66,10 @@ bot.session.middleware(PremiumEmojiMiddleware())
 # handle_message: the broad catch-all (defined here, order fixed below)
 @dp.message(
     StateFilter(None),  # только вне FSM-состояний — иначе перехватывает admin/edit states
+    # ТОЛЬКО ЛИЧКА. Фильтра по типу чата здесь не было, и это выстрелило бы при
+    # первом же добавлении бота в группу обсуждения канала: консультант начал бы
+    # отвечать на КАЖДЫЙ комментарий под постом, включая «Участвую» в розыгрыше.
+    F.chat.type == "private",
     ~F.text.startswith("/privacy") & ~F.text.startswith("/publicoffer") &
     ~F.text.startswith("/help") & ~F.text.startswith("/ref") & ~F.text.startswith("/start") &
     ~F.text.startswith("/admin") & ~F.text.startswith("/test_fk") & ~F.text.startswith("/credit") &
@@ -199,7 +204,7 @@ _ADMIN_CMDS = (
     # Команды по пулу кодов ChatGPT — только Александру. Внутри хендлеров
     # проверка is_admin тоже есть, это второй рубеж.
     "/gpt_codes_status", "/gpt_codes_recover", "/gpt_tz", "/gpt_check_pool", "/gpt_code_route",
-    "/gpt_codes_to_bpa", "/add_gpt_codes",
+    "/gpt_codes_to_bpa", "/add_gpt_codes", "/giveaway_where",
 )
 
 
@@ -374,6 +379,14 @@ async def main():
         _spawn_bg(nsgifts_balance_alert_loop, "nsgifts_balance_alert_loop")
     else:
         logging.warning("⚠️  NS Gifts: env-переменные не заданы — App Store отключён")
+
+    # Кнопка розыгрыша живёт в памяти процесса — после рестарта её надо
+    # вернуть, иначе она молча пропадёт из меню до первого сохранения в панели.
+    try:
+        from common import giveaway_sync_button
+        await giveaway_sync_button()
+    except Exception as _e_gw:
+        logging.warning(f"giveaway button on start: {_e_gw}")
 
     await dp.start_polling(bot)
 

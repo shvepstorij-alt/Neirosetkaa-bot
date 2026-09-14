@@ -52,8 +52,28 @@ def kb_error_with_alt(menu: str, model_key: str):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# Кнопка розыгрыша в главном меню. Держим в памяти, а не читаем из базы:
+# kb_main() синхронная и вызывается на каждый показ меню — ходить за этим в
+# базу каждый раз незачем. Значение проставляется при старте бота и сразу же
+# при сохранении настроек розыгрыша в панели.
+_GW_BTN = {"url": "", "text": "🎁 Участвовать в розыгрыше"}
+
+
+def set_giveaway_button(url: str = "", text: str = "") -> None:
+    """Показать/убрать кнопку розыгрыша. Пустой url — кнопки нет."""
+    _GW_BTN["url"] = (url or "").strip()
+    if text:
+        _GW_BTN["text"] = text.strip()[:60]
+
+
+def giveaway_button_url() -> str:
+    return _GW_BTN.get("url") or ""
+
+
 def kb_main():
     return InlineKeyboardMarkup(inline_keyboard=[
+        *([[InlineKeyboardButton(text=_GW_BTN["text"], url=_GW_BTN["url"])]]
+          if _GW_BTN.get("url") else []),
         *([[InlineKeyboardButton(text="Каталог", web_app=WebAppInfo(url=webapp_url("/webapp/shop")), icon_custom_emoji_id="5197260068562676798")]] if WEBAPP_BASE_URL else []),
         [_eib("Изображение",   "menu_image"),    _eib("Видео",     "menu_video")],
         [_eib("Редактировать...","menu_edit"),    _eib("Анимировать...","menu_anim")],
