@@ -153,6 +153,26 @@ async def init_db():
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")
             except Exception:
                 pass
+        # Индекса по referred_by не было вообще, хотя колонку читают в четырёх
+        # местах: бонус за приглашение, кабинет клиента, пересчёт розыгрыша и
+        # экран рефералов в панели. На 20 000 пользователей замер показал
+        # 2436 мс против 13 мс — разница в 182 раза; экран рефералов без него
+        # выглядел бы зависшим, а пересчёт розыгрыша шёл бы вдесятеро дольше.
+        # Частичный (WHERE referred_by IS NOT NULL): у большинства он пустой.
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_referred_by "
+                "ON users(referred_by) WHERE referred_by IS NOT NULL")
+        except Exception as _e_ix:
+            logging.warning(f"индекс idx_users_referred_by не создался: {_e_ix}")
+        # Платежи и заказы ищутся по дате оплаты («История платежей», отчёт
+        # прибыли, лента заказов) — тоже без индекса.
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fk_orders_paid_at "
+                "ON fk_orders(paid_at) WHERE status='paid'")
+        except Exception as _e_ix2:
+            logging.warning(f"индекс idx_fk_orders_paid_at не создался: {_e_ix2}")
         # Таблица событий - для аудита критичных операций
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS events (
@@ -547,6 +567,16 @@ async def init_db():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_gpt_codes_free ON gpt_codes(plan, is_used) WHERE is_used = FALSE"
         )
+        # Разбивка прибыли по маршрутам связывает код с заказом по order_id.
+        # Ставим ЗДЕСЬ, а не выше по файлу: там gpt_codes ещё не создана, и на
+        # чистой базе CREATE INDEX молча ушёл бы в except — ровно тот капкан,
+        # на который этот проект уже наступал с ALTER TABLE perplexity_codes.
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gpt_codes_order "
+                "ON gpt_codes(order_id) WHERE order_id IS NOT NULL")
+        except Exception as _e_ixo:
+            logging.warning(f"индекс idx_gpt_codes_order не создался: {_e_ixo}")
         # Миграция: добавить email, reserved_at, check_status, last_checked_at, flagged_reason
         for _col, _def in [
             ("email",            "TEXT"),

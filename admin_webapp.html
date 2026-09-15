@@ -121,7 +121,13 @@ var OV_STATE='load';
 var C={pink:"#e24a82",purple:"#8b7be0",teal:"#2dd4bf",amber:"#f0b429",blue:"#4a9be2",green:"#37c98a",red:"#f0617a",gray:"#5a5e6b"};
 
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('show')},1400)}
-function esc(s){return(''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+/* esc экранировал только & и < . Этого хватает для текста, но НЕ для
+   атрибутов: кавычка в названии обрывала value="…" — поле просто теряло
+   часть текста, и выглядело это как «панель съела название». В соседнем
+   экране (NS Gifts) это уже чинили своим nsgEsc — приводим общий esc к
+   тому же. Проверено: esc нигде не применяется дважды и никуда, кроме
+   разметки, не уходит. */
+function esc(s){return(''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function nf(n){return n.toLocaleString('ru')}
 function go(fn,push){if(push!==false)stack.push(fn);window._cur=fn;window.scrollTo(0,0);app.innerHTML=fn();syncBack()}
 function back(){stack.pop();var fn=stack[stack.length-1]||home;window._cur=fn;window._lastScreen=null;window.scrollTo(0,0);app.innerHTML=fn();syncBack()}
@@ -416,7 +422,7 @@ function salesPlans(i){var s=(window._salesData||[])[i]||{name:'',plans:[]};retu
 
 /* История платежей */
 /* История платежей — ДЕНЬГИ, а не выдача.
-   Раньше экран был макетом: пять выдуманных строк («@TarAnton», «@maxpower»)
+   Раньше экран был макетом: пять выдуманных строк с придуманными никами
    и пончик из четырёх констант, сервер не дёргался вообще. Теперь всё живое.
    От «Ленты заказов» отличается тем, что показывает способ оплаты, промокод,
    списанные монетки и неоплаченные/отменённые — там про выдачу, здесь про деньги. */
@@ -481,7 +487,9 @@ function _payRender(){
       +(r.coins?(' · монетками '+r.coins):'');
     h+='<div class="row"><div><div class="lbl2">'+esc(r.user)+(r.num?(' <span class="muted">#'+r.num+'</span>'):'')+'</div>'
       +'<div class="sub">'+esc(sub)+'</div>'
-      +'<div class="sub muted">'+_payWhen(r.when)+(r.fk?(' · FK '+esc(r.fk)):'')+'</div></div>'
+      +'<div class="sub muted">'+_payWhen(r.when)
+      +(r.fk?(' · FK '+esc(r.fk)):'')
+      +(r.orderId?(' · <code>'+esc(r.orderId)+'</code>'):'')+'</div></div>'
       +'<div style="margin-left:auto;text-align:right">'
       +'<div style="font-size:13px;font-weight:600">'+nf(r.amount)+' ₽</div>'
       +'<span class="tag '+r.tag+'">'+esc(r.statusRu)+'</span></div></div>';
@@ -532,7 +540,7 @@ function userCardHtml(u){
       +(u.refsCount||0)+(u.refsPaid?(' · из них купили '+u.refsPaid):'')+'</span></div>'+
     '<div class="kv"><span class="k">Пришёл по ссылке</span><span>'
       +(u.invitedBy?esc(u.invitedBy.user):'сам')+'</span></div>'+'</div>'+
-    (u.refsCount?'<button class="btn sec" onclick="_refKids('+u.id+',\''+esc(name).replace(/'/g,"")+'\')">👥 Показать приглашённых ('+u.refsCount+')</button>':'')+
+    (u.refsCount?'<button class="btn sec" onclick="_refKids('+u.id+')">👥 Показать приглашённых ('+u.refsCount+')</button>':'')+
     '<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return balForm(\'add\',\''+u.id+'\')})">Начислить</button><button class="btn row2 danger" onclick="toggleBlock('+u.id+','+(u.blocked?'false':'true')+')">'+(u.blocked?'Разблокировать':'Заблокировать')+'</button></div>';
 }
 function toggleBlock(id,block){toast('…');api('/api/admin/block',{id:id,block:block}).then(function(d){toast(d.ok?(block?'Заблокирован':'Разблокирован'):'Ошибка');if(d.ok&&window._curUser){window._curUser.blocked=block;var el=document.getElementById('findres');if(el)el.innerHTML=userCardHtml(window._curUser);}});}
@@ -581,7 +589,7 @@ function _refRender(){
         :'Пока никто никого не привёл.')+'</div>';
   }
   rows.forEach(function(r,i){
-    h+='<div class="row" onclick="_refKids('+r.id+',\''+String(r.user).replace(/[\\\'"<>]/g,'')+'\')">'
+    h+='<div class="row" onclick="_refKids('+r.id+')">'
       +'<div><div class="lbl2">'+((d.page||0)*40+i+1)+'. '+esc(r.user)+'</div>'
       +'<div class="sub">ID '+r.id+'</div></div>'
       +'<div style="margin-left:auto;text-align:right">'
@@ -602,7 +610,17 @@ function _refRender(){
 
 /* Кого именно привёл конкретный человек. Открывается и из списка рефералов,
    и из карточки клиента — экран один. */
-function _refKids(uid,who){
+function _refKids(uid){
+  /* Имя НЕ передаём через разметку. esc() в этой панели экранирует только & и <,
+     кавычки не трогает: имя в Telegram задаёт посторонний человек, и двойная
+     кавычка оборвала бы атрибут onclick, а обратный слэш — JS-строку. Имя берём
+     из данных, которые и так лежат в памяти. */
+  var who='';
+  var _rows=((window._refD||{}).rows)||[];
+  for(var _i=0;_i<_rows.length;_i++){ if(_rows[_i].id===uid){ who=_rows[_i].user; break; } }
+  if(!who&&window._curUser&&window._curUser.id===uid){
+    who=window._curUser.username?('@'+window._curUser.username):(window._curUser.name||'');
+  }
   leaf(function(){
     setTimeout(function(){
       api('/api/admin/referrals',{action:'kids',userId:uid}).then(function(d){
