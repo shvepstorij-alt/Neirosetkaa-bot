@@ -579,8 +579,9 @@ async def gpt_orphans_loop():
     fulfilled в 13:01). В обоих случаях код остаётся «свободным» и через два
     часа уходит следующему клиенту.
 
-    Раз в 20 минут: строка «в процессе» живёт 2 часа, и за это время нужно
-    успеть переспросить сайт не один раз, а несколько.
+    Раз в 5 минут: клиент ждёт подписку здесь и сейчас, и разница между
+    «узнали через 5 минут» и «через 20» — это разница между «бот сам всё
+    поправил» и «клиент успел написать в поддержку».
     """
     await asyncio.sleep(90)           # даём боту подняться и подхватить вебхук
     while True:
@@ -603,6 +604,18 @@ async def gpt_orphans_loop():
                 except Exception:
                     pass
             for _u in (_r.get("unsure") or []):
+                # Дедуп по паре КОД+КЛИЕНТ. Этот путь НЕ удаляет строку
+                # ожидания (и правильно: код закреплён за клиентом), поэтому
+                # одна и та же находка попадает в КАЖДЫЙ проход. Клиент в
+                # ключе обязателен: тот же код у ДРУГОГО клиента — это новая
+                # находка, и глушить её старой пометкой нельзя. На 20 минутах это было три
+                # сообщения в час, на пяти стало бы двенадцать.
+                try:
+                    from db import get_setting as _gs2, set_setting as _ss2
+                    if (await _gs2(f"unsure:{_u['code']}:{_u['user_id']}", "")) == "1":
+                        continue
+                except Exception:
+                    pass
                 try:
                     await bot.send_message(
                         ADMIN_ID,
@@ -615,8 +628,15 @@ async def gpt_orphans_loop():
                         f"Код потрачен, но что он ушёл именно этому клиенту — "
                         f"подтвердить не могу. Подписку НЕ записывал: иначе "
                         f"клиент увидел бы в профиле то, чего у него нет.\n"
-                        f"Код пометил — в пул сам не вернётся.",
+                        f"Код пометил — в пул сам не вернётся.\n"
+                        f"<i>Если проверил и это точно его аккаунт — "
+                        f"<code>/gpt_lost_ok {_u['code']}</code></i>",
                         parse_mode="HTML")
+                    try:
+                        from db import set_setting as _ss3
+                        await _ss3(f"unsure:{_u['code']}:{_u['user_id']}", "1")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         except Exception as e:
@@ -667,13 +687,17 @@ async def gpt_orphans_loop():
                     # Помечаем показанным сразу: иначе одна и та же находка
                     # будет приходить каждые 20 минут.
                     from db import set_setting as _ss
-                    await _ss(f"lostact:{_l['code']}", "1")
+                    await _ss(f"lostact:{_l['code']}:{_l['user_id']}", "1")
                 except Exception as _e_s:
                     logging.warning(f"lostact alert {_l['code']}: {_e_s}")
         except Exception as e2:
             logging.error(f"gpt_lost_activations: {e2}")
 
-        await asyncio.sleep(20 * 60)
+        # Каждые 5 минут, а не 20: клиент не должен столько ждать, пока бот
+        # заметит, что активация всё-таки прошла. Спама это не добавляет —
+        # каждая находка помечается и присылается один раз. Нагрузка на сайт
+        # проверки — два запроса за проход, то есть 24 в час.
+        await asyncio.sleep(5 * 60)
 
 
 async def gpt_pool_audit_loop():

@@ -287,7 +287,49 @@ async def cb_gpt_lost_apply(cb):
             pass
 
 
-@dp.message(F.text.startswith("/gpt_lost"), StateFilter("*"))
+@dp.message(F.text.startswith("/gpt_lost_ok"), StateFilter("*"))
+async def admin_gpt_lost_ok(message: Message):
+    """Записать активацию, когда бот сверить не смог, а человек проверил.
+
+    Нужна для старых случаев: почту клиента начали сохранять только сейчас,
+    и по прежним заказам сверять не с чем. Без этой команды такие находки —
+    тупик: бот не подтверждает, а сказать «я проверил» нечем.
+
+    РАЗНЫЕ почты этой командой не переопределяются: если сайт показал чужой
+    адрес, ошибка стоила бы клиенту чужой подписки в профиле.
+    """
+    if not is_admin(message.from_user.id):
+        return
+    _parts = (message.text or "").split()
+    if len(_parts) < 2:
+        await message.answer(
+            "Формат: <code>/gpt_lost_ok КОД</code>\n\n"
+            "<i>Записывает активацию, когда бот сам подтвердить не может "
+            "(нет почты клиента за старые заказы). Проверь на сайте, что код "
+            "потрачен именно на аккаунт этого клиента.</i>", parse_mode="HTML")
+        return
+    _code = _parts[1].strip()
+    await message.answer("\U0001f50e Проверяю на сайте…")
+    from common import gpt_lost_activation_apply
+    try:
+        _r = await gpt_lost_activation_apply(_code, force=True)
+    except Exception as _e:
+        _r = {"ok": False, "msg": f"Сбой: {str(_e)[:150]}"}
+    if _r.get("ok"):
+        await message.answer(
+            f"✅ <b>Записал активацию</b>\n"
+            f"🔑 <code>{_code}</code>\n"
+            f"👤 <code>{_r['user_id']}</code>\n"
+            f"🆔 <code>{_r['order_id']}</code>\n\n"
+            f"Сообщение заказа поправил, клиенту написал.", parse_mode="HTML")
+    else:
+        await message.answer("❌ " + (_r.get("msg") or "Не вышло."), parse_mode="HTML")
+
+
+# ТОЧНОЕ совпадение, а не startswith: иначе этот обработчик съедал бы и
+# /gpt_lost_ok — ровно так когда-то /giveaway съедал /giveaway_where.
+# Порядок регистрации тут не опора: он может измениться от любой правки.
+@dp.message(F.text.regexp(r"^/gpt_lost(@\S+)?(\s+\d+)?$"), StateFilter("*"))
 async def admin_gpt_lost(message: Message):
     """Разово посмотреть те же находки, не дожидаясь фонового прохода."""
     if not is_admin(message.from_user.id):

@@ -10188,8 +10188,13 @@ async def gpt_reconcile_orphans() -> dict:
             #     активацию уже после того, как бот сдался: 11.09.2026 бот сообщил
             #     о неудаче в 12:48, а сайт проставил fulfilled в 13:01. Такой код
             #     оставался закреплён за клиентом и через 2 часа уходил в пул.
+            # Было 15 минут — и это, а не интервал цикла, определяло, как
+            # быстро бот замечает. Сама активация опрашивает сайт максимум
+            # 5 минут, значит через 7 минут после создания строки задача
+            # заведомо завершилась. Запас в 2 минуты оставлен намеренно:
+            # раньше этого срока можно принять идущую активацию за брошенную.
             "   OR (activating_at IS NULL "
-            "       AND created_at < NOW() - INTERVAL '15 minutes')"
+            "       AND created_at < NOW() - INTERVAL '7 minutes')"
             ")")
     if not rows:
         return {"ok": True, "checked": 0, "fixed": []}
@@ -10801,25 +10806,43 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
         logging.warning("gpt_lost_activations: сайт не ответил — ничего не решаем")
         return []
 
+    # Пометки забираем ОДНИМ запросом, а не по одной на строку: цикл теперь
+    # ходит каждые 5 минут, и 200 отдельных SELECT'ов за проход — это 2400
+    # запросов в час на пустом месте.
+    _seen_keys = set()
+    if only_new:
+        try:
+            async with pool.acquire() as _c_seen:
+                _seen_keys = {x["key"] for x in await _c_seen.fetch(
+                    "SELECT key FROM settings WHERE key LIKE 'lostact:%' AND value='1'")}
+        except Exception as _e_sk:
+            logging.warning(f"lostact: не прочитал пометки: {_e_sk}")
+
     out = []
-    for r in rows:
-        _info = _st.get((r["code"] or "").strip().upper()) or {}
-        _v = (_info.get("status") or "").lower()
-        if _v not in BPA_USED_STATUSES:
-            continue                      # цел или неизвестен — это другой разговор
-        _uid = int(r["used_by"])
-        # Уже показывали — второй раз не дёргаем. НО только когда нас зовёт
-        # фоновый цикл: он помечает находку показанной сразу после отправки
-        # сообщения, и если бы этот фильтр действовал всегда, кнопка под тем
-        # самым сообщением НИКОГДА бы не сработала — проверка при нажатии
-        # просто не нашла бы код и ответила «условия изменились».
-        if only_new and (await get_setting(f"lostact:{r['code']}", "")) == "1":
-            continue
-        # Почта клиента: сперва из его текущей сессии, иначе из его же прошлой
-        # удачной активации. Без почты решать НЕЛЬЗЯ: «код потрачен» само по
-        # себе не значит «потрачен нашим клиентом».
-        _mine = ""
-        async with pool.acquire() as conn2:
+    # Одно соединение на весь проход. Раньше каждая строка брала своё —
+    # при 200 находках это 200 захватов пула подряд.
+    async with pool.acquire() as conn2:
+        for r in rows:
+            _info = _st.get((r["code"] or "").strip().upper()) or {}
+            _v = (_info.get("status") or "").lower()
+            if _v not in BPA_USED_STATUSES:
+                continue                      # цел или неизвестен — это другой разговор
+            _uid = int(r["used_by"])
+            # Уже показывали — второй раз не дёргаем. НО только когда нас зовёт
+            # фоновый цикл: он помечает находку показанной сразу после отправки
+            # сообщения, и если бы этот фильтр действовал всегда, кнопка под тем
+            # самым сообщением НИКОГДА бы не сработала — проверка при нажатии
+            # просто не нашла бы код и ответила «условия изменились».
+            # В ключ входит и КЛИЕНТ. Иначе так: код пометили, потом вернули в пул
+            # (сайт сказал «цел»), он ушёл другому клиенту и снова сгорел — а
+            # пометка старая, и находка молча не придёт. Пометка, которая глушит
+            # будущие потери, хуже её отсутствия.
+            if only_new and f"lostact:{r['code']}:{_uid}" in _seen_keys:
+                continue
+            # Почта клиента: сперва из его текущей сессии, иначе из его же прошлой
+            # удачной активации. Без почты решать НЕЛЬЗЯ: «код потрачен» само по
+            # себе не значит «потрачен нашим клиентом».
+            _mine = ""
             _pr = await conn2.fetchrow(
                 "SELECT session_raw FROM gpt_pending_activations WHERE user_id=$1", _uid)
             if _pr and _pr["session_raw"]:
@@ -10849,27 +10872,34 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
                 "  AND NOT EXISTS (SELECT 1 FROM gpt_codes g "
                 "                  WHERE g.order_id = f.order_id) "
                 "ORDER BY f.paid_at DESC LIMIT 1", _uid, r["used_at"])
-        _site_mail = _info.get("email") or ""
-        _match = None
-        if _site_mail and _mine:
-            _match = bool(_same_email(_site_mail, _mine))
-        out.append({
-            "code": r["code"], "user_id": _uid,
-            "user": ("@" + r["username"]) if r["username"] else f"id{_uid}",
-            "status": _v, "site_email": _site_mail, "client_email": _mine,
-            "match": _match,                  # True / False / None (не с чем сверить)
-            "burned_at": r["used_at"],
-            "site_when": _info.get("when", ""),
-            "order_id": (_ord or {}).get("order_id") or "",
-        })
+            _site_mail = _info.get("email") or ""
+            _match = None
+            if _site_mail and _mine:
+                _match = bool(_same_email(_site_mail, _mine))
+            out.append({
+                "code": r["code"], "user_id": _uid,
+                "user": ("@" + r["username"]) if r["username"] else f"id{_uid}",
+                "status": _v, "site_email": _site_mail, "client_email": _mine,
+                "match": _match,                  # True / False / None (не с чем сверить)
+                "burned_at": r["used_at"],
+                "site_when": _info.get("when", ""),
+                "order_id": (_ord or {}).get("order_id") or "",
+            })
     return out
 
 
-async def gpt_lost_activation_apply(code: str) -> dict:
+async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
     """Записывает найденную активацию — ТОЛЬКО по команде человека.
 
     Перед записью сайт спрашивается ЗАНОВО: сообщение могло пролежать в чате
-    час, и за это время всё могло измениться. Дальше — то же, что сделал бы
+    час, и за это время всё могло измениться.
+
+    force=True — человек проверил сам и берёт ответственность на себя. Нужен
+    для старых случаев, где почты клиента в базе просто нет (её начали
+    сохранять только теперь), — иначе такие находки были бы тупиком: бот не
+    может подтвердить, а у Александра нет способа сказать «я проверил».
+    Разные почты force НЕ переопределяет: там ошибка стоила бы клиенту чужой
+    подписки в профиле. Дальше — то же, что сделал бы
     удачный проход: код получает заказ и почту (именно это и есть запись
     подписки, профиль читает её отсюда), сообщение заказа у админа правится
     на «активировано», клиенту уходит короткое «подписка всё-таки активна».
@@ -10892,16 +10922,20 @@ async def gpt_lost_activation_apply(code: str) -> dict:
         return {"ok": False,
                 "msg": f"Условия изменились: на сайте сейчас «{_v or '?'}». "
                        f"Ничего не записал."}
-    if _found["match"] is not True:
+    if _found["match"] is False:
         return {"ok": False,
-                "msg": "Почта клиента и почта на сайте не совпали — "
+                "msg": "Почта клиента и почта на сайте РАЗНЫЕ — "
                        "записывать активацию этому клиенту нельзя."}
+    if _found["match"] is None and not force:
+        return {"ok": False,
+                "msg": "Сверить почту не с чем — бот подтвердить не может.\n"
+                       f"Если проверил сам: <code>/gpt_lost_ok {code}</code>"}
     _uid = _found["user_id"]
     _oid = _found["order_id"]
     if not _oid:
         return {"ok": False, "msg": "Не нашёл оплаченный заказ ChatGPT у этого клиента."}
     await mark_gpt_code_used(code, _uid, _oid, _found["site_email"])
-    await set_setting(f"lostact:{code}", "1")
+    await set_setting(f"lostact:{code}:{_uid}", "1")
     # Строку ожидания, если она ещё висит на этом клиенте, закрываем.
     try:
         pool = await get_pool()

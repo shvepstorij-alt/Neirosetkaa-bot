@@ -213,7 +213,7 @@ _ADMIN_CMDS = (
     # Команды по пулу кодов ChatGPT — только Александру. Внутри хендлеров
     # проверка is_admin тоже есть, это второй рубеж.
     "/gpt_codes_status", "/gpt_codes_recover", "/gpt_tz", "/gpt_check_pool", "/gpt_code_route",
-    "/gpt_codes_to_bpa", "/add_gpt_codes", "/giveaway_where", "/gpt_lost",
+    "/gpt_codes_to_bpa", "/add_gpt_codes", "/giveaway_where", "/gpt_lost", "/gpt_lost_ok",
 )
 
 
