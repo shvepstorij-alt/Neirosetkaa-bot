@@ -111,6 +111,13 @@ var S={toggles:{Suno:1,Kling:1,HeyGen:0,Higgsfield:1,Zoom:1,Krea:1,YouTube:0,
    "Veo 3.1":1,"Kling Turbo":1,"Seedance 1.5 Pro":1,"Kling Pro":0,"Nano Banana edit":1,"Flux Kontext":1,"Kling Motion":1,"Higgsfield Anim":0}};
 var stack=[],app=document.getElementById('app');
 var OVERVIEW=null;
+/* Состояние загрузки дашборда. Раньше его не было, и home() при пустом
+   OVERVIEW подставлял ЗАШИТЫЕ демо-числа (22 заказа, 78 140 ₽, 9 юзеров,
+   выдуманная неделя и разбивка по сервисам). Их видно было и в первую
+   секунду до ответа сервера, и — навсегда — если запрос падал: .catch был
+   пустой. Пустой экран честен, а такой — нет: по этим числам можно было
+   принять решение. Теперь три состояния: грузим / получили / не смогли. */
+var OV_STATE='load';
 var C={pink:"#e24a82",purple:"#8b7be0",teal:"#2dd4bf",amber:"#f0b429",blue:"#4a9be2",green:"#37c98a",red:"#f0617a",gray:"#5a5e6b"};
 
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('show')},1400)}
@@ -145,11 +152,18 @@ function kpi(lab,val,delta){var up=delta>=0;return '<div class="mcard"><div clas
 /* ===== HOME ===== */
 function home(){
   var ov=OVERVIEW||{};
-  var _ord=(ov.orders!=null?ov.orders:22),_rev=(ov.revenue!=null?ov.revenue:78140),_nu=(ov.newUsers!=null?ov.newUsers:9);
-  var _week=(ov.week&&ov.week.length)?ov.week:[{value:52,label:"Пн",date:""},{value:61,label:"Вт",date:""},{value:48,label:"Ср",date:""},{value:73,label:"Чт",date:""},{value:69,label:"Пт",date:""},{value:90,label:"Сб",date:""},{value:78,label:"Вс",date:""}];
+  var _ovOk=(OV_STATE==='ok');
+  /* Никаких подстановок по умолчанию: пока не пришёл ответ — «…», при сбое —
+     прочерк и явное сообщение. Выдуманных чисел на дашборде больше нет. */
+  var _dash=function(v,suf){return _ovOk?(nf(v||0)+(suf||'')):(OV_STATE==='load'?'…':'—');};
+  var _ord=ov.orders,_rev=ov.revenue,_nu=ov.newUsers;
+  var _week=(_ovOk&&ov.week&&ov.week.length)?ov.week:[];
   var _pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
-  var _bysvc=(ov.byService&&ov.byService.length?ov.byService:[{label:"ChatGPT",val:39650},{label:"Claude",val:34512},{label:"App Store",val:5200},{label:"Perplexity",val:1990}]).map(function(x,i){return {label:x.label,val:x.val,color:_pal[i%_pal.length]}});
-  var _wvals=_week.map(function(x){return (x&&x.value!=null)?x.value:x});var _wmx=Math.max.apply(0,_wvals)||1;var _wksum=_wvals.reduce(function(a,b){return a+(b||0)},0);
+  var _bysvc=((_ovOk&&ov.byService&&ov.byService.length)?ov.byService:[])
+    .map(function(x,i){return {label:x.label,val:x.val,color:_pal[i%_pal.length]}});
+  var _wvals=_week.map(function(x){return (x&&x.value!=null)?x.value:x});
+  var _wmx=Math.max.apply(0,_wvals.length?_wvals:[1])||1;
+  var _wksum=_wvals.reduce(function(a,b){return a+(b||0)},0);
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["🔥","Аналитика Каталога","Аналитика Каталога"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
    ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
@@ -160,10 +174,24 @@ function home(){
   ];
   var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
   h+='<div class="hero"><div class="hi">🎛️</div><h1>Панель управления</h1><p>Сегодня · '+(new Date()).toLocaleDateString('ru')+'</p></div>';
-  h+='<div class="chips"><div class="chip"><div class="v">'+_ord+'</div><div class="l">заказов</div></div><div class="chip"><div class="v">'+nf(_rev)+'₽</div><div class="l">выручка</div></div><div class="chip"><div class="v">'+_nu+'</div><div class="l">новых юзеров</div></div></div>';
-  var _wbh='<div class="bars">'+_week.map(function(x){var v=(x&&x.value!=null)?x.value:x,dt=(x&&x.date)?x.date:'',lb=(x&&x.label)?x.label:'';return '<div class="b" style="height:'+Math.max(3,Math.round(v/_wmx*100))+'%;cursor:pointer" onclick="window._stDate=\''+dt+'\';open2(\'Статистика\')"><span>'+nf(v)+'</span><i>'+lb+'</i></div>'}).join('')+'</div>';
-  h+='<div class="block"><h4>📈 Выручка за 7 дней <span class="muted" style="font-size:11px;font-weight:400">— нажми на день</span></h4>'+_wbh+'<div class="kv" style="margin-top:14px"><span class="k">Итого за неделю</span><span>'+nf(_wksum)+' ₽</span></div></div>';
-  h+='<div class="block"><h4>🥧 Выручка по сервисам (сегодня)</h4>'+donut(_bysvc)+'</div>';
+  h+='<div class="chips"><div class="chip"><div class="v">'+_dash(_ord)+'</div><div class="l">заказов</div></div>'
+    +'<div class="chip"><div class="v">'+_dash(_rev,'₽')+'</div><div class="l">выручка</div></div>'
+    +'<div class="chip"><div class="v">'+_dash(_nu)+'</div><div class="l">новых юзеров</div></div></div>';
+  /* Сбой загрузки виден как сбой, а не как «сегодня тихо». С кнопкой повтора:
+     чаще всего это просто перезапуск сервера после деплоя. */
+  if(OV_STATE==='err'){
+    h+='<div class="block"><div class="sub neg">⚠️ Не удалось загрузить сводку — цифры выше не показаны намеренно, '
+      +'чтобы не принять старое за сегодняшнее.</div>'
+      +'<button class="btn sec" style="margin-top:10px" onclick="ovReload()">🔄 Повторить</button></div>';
+  }
+  var _wbh=_week.length
+    ? '<div class="bars">'+_week.map(function(x){var v=(x&&x.value!=null)?x.value:x,dt=(x&&x.date)?x.date:'',lb=(x&&x.label)?x.label:'';return '<div class="b" style="height:'+Math.max(3,Math.round(v/_wmx*100))+'%;cursor:pointer" onclick="window._stDate=\''+dt+'\';open2(\'Статистика\')"><span>'+nf(v)+'</span><i>'+lb+'</i></div>'}).join('')+'</div>'
+    : '<div class="note">'+(OV_STATE==='load'?'Загружаю…':(OV_STATE==='err'?'Данные не загрузились.':'За последние 7 дней оплат не было.'))+'</div>';
+  h+='<div class="block"><h4>📈 Выручка за 7 дней'+(_week.length?' <span class="muted" style="font-size:11px;font-weight:400">— нажми на день</span>':'')+'</h4>'+_wbh
+    +(_week.length?'<div class="kv" style="margin-top:14px"><span class="k">Итого за неделю</span><span>'+nf(_wksum)+' ₽</span></div>':'')+'</div>';
+  h+='<div class="block"><h4>🥧 Выручка по сервисам (сегодня)</h4>'
+    +(_bysvc.length?donut(_bysvc)
+      :'<div class="note">'+(OV_STATE==='load'?'Загружаю…':(OV_STATE==='err'?'Данные не загрузились.':'Сегодня оплат ещё не было.'))+'</div>')+'</div>';
   groups.forEach(function(g){h+='<div class="glabel">'+g[0]+' '+g[1]+'</div><div class="grid">';g[2].forEach(function(c){h+='<div class="card'+(c[3]?' full':'')+'" onclick="open2(\''+c[2]+'\')"><span class="ic">'+c[0]+'</span><span class="lbl">'+c[1]+'</span></div>'});h+='</div>'});
   return h+'</div>';
 }
@@ -338,12 +366,96 @@ function loadSales(per,date){
 function salesPlans(i){var s=(window._salesData||[])[i]||{name:'',plans:[]};return hdr(s.name,"продажи по тарифам")+'<div class="wrap"><div class="block">'+hbars((s.plans||[]).map(function(p,j){return {label:p.name,val:p.cnt,color:[C.pink,C.purple,C.teal,C.amber][j%4]}}),' шт')+'</div></div>'}
 
 /* История платежей */
-SCREENS["История платежей"]=function(){
-  var d=[["@TarAnton","ChatGPT Plus","1 890 ₽","g","оплачен"],["@vlasovasonyaa","Claude Pro","1 990 ₽","g","оплачен"],["@maxpower","Kling (ссылка)","2 400 ₽","a","в работе"],["@nik","Zoom Pro","1 500 ₽","b","выполнен"],["@olya","Промокод SUMMER","−300 ₽","n","скидка"]];
-  return hdr("История платежей")+'<div class="wrap"><div class="block"><h4><i class="ti ti-chart-pie"></i> Статусы</h4>'+donut([{label:"Оплачены",val:18,color:C.green},{label:"Выполнены",val:9,color:C.blue},{label:"В работе",val:3,color:C.amber},{label:"Возвраты",val:1,color:C.red}])+'</div>'+
-    '<div class="search"><i class="ti ti-search muted"></i><input placeholder="Поиск по ID или @нику" oninput="toast(\'Фильтр: \'+(this.value||\'все\'))"/></div>'+
-    d.map(function(x){return '<div class="row" onclick="toast(\'Заказ '+x[0]+'\')"><div><div class="lbl2">'+x[0]+'</div><div class="sub">'+x[1]+'</div></div><div style="margin-left:auto;text-align:right"><div style="font-size:13px;font-weight:600">'+x[2]+'</div><span class="tag '+x[3]+'">'+x[4]+'</span></div></div>'}).join('')+'</div>';
-};
+/* История платежей — ДЕНЬГИ, а не выдача.
+   Раньше экран был макетом: пять выдуманных строк («@TarAnton», «@maxpower»)
+   и пончик из четырёх констант, сервер не дёргался вообще. Теперь всё живое.
+   От «Ленты заказов» отличается тем, что показывает способ оплаты, промокод,
+   списанные монетки и неоплаченные/отменённые — там про выдачу, здесь про деньги. */
+SCREENS["История платежей"]=function(){setTimeout(_payLoad,30);
+  return hdr("История платежей","оплаты, способы, промокоды")
+    +'<div class="wrap"><div id="paybody"><div class="note">Загружаю…</div></div></div>';};
+
+function _payLoad(){
+  var st=window._pay||{};
+  api('/api/admin/payments',{page:st.page||0,q:st.q||'',filter:st.filter||'all',days:st.days||30})
+   .then(function(d){
+     var el=document.getElementById('paybody');if(!el)return;
+     if(!d||!d.ok){el.innerHTML='<div class="block"><div class="sub neg">⚠️ Не удалось загрузить платежи.</div>'
+        +'<button class="btn sec" style="margin-top:10px" onclick="_payLoad()">🔄 Повторить</button></div>';return;}
+     window._payD=d;_payRender();
+   });
+}
+
+function _paySet(k,v){window._pay=window._pay||{};window._pay[k]=v;
+  if(k!=='page')window._pay.page=0;_payLoad();}
+
+function _payRender(){
+  var el=document.getElementById('paybody');if(!el)return;
+  var d=window._payD||{},st=window._pay||{},h='';
+  var PAL={paid:C.green,pending:C.amber,cancelled:C.red};
+  var _stats=(d.stats||[]).filter(function(x){return x.n>0;});
+
+  h+='<div class="block"><h4>💰 За '+(d.days||30)+' дн.</h4>';
+  if(_stats.length){
+    h+=donut(_stats.map(function(x){return {label:x.label,val:x.n,color:PAL[x.key]||C.blue};}));
+    _stats.forEach(function(x){
+      h+='<div class="kv"><span class="k">'+esc(x.label)+'</span><span>'+x.n+' · '+nf(x.rub)+' ₽</span></div>';
+    });
+    h+='<div class="kv"><span class="k"><b>Получено деньгами</b></span><span class="pos"><b>'+nf(d.paidSum||0)+' ₽</b></span></div>';
+  } else {
+    h+='<div class="note">За этот период платежей не было — ни одного, даже неоплаченного.</div>';
+  }
+  h+='</div>';
+
+  /* Период и фильтр статуса: то, ради чего сюда обычно и заходят. */
+  /* Переключатели — тем же .seg, что и на «Статистике»: своих классов .tabs/.tab
+     в панели нет, и они бы просто не нарисовались. */
+  h+='<div class="seg">'+[[7,'7 дн'],[30,'30 дн'],[90,'90 дн'],[3650,'всё время']].map(function(x){
+      return '<button class="'+(((st.days||30)===x[0])?'on':'')+'" onclick="_paySet(\'days\','+x[0]+')">'+x[1]+'</button>';
+    }).join('')+'</div>';
+  h+='<div class="seg">'+[['all','Все'],['paid','Оплачены'],['pending','Не оплачены'],['cancelled','Отменены']].map(function(x){
+      return '<button class="'+(((st.filter||'all')===x[0])?'on':'')+'" onclick="_paySet(\'filter\',\''+x[0]+'\')">'+x[1]+'</button>';
+    }).join('')+'</div>';
+
+  h+='<div class="search"><i class="ti ti-search muted"></i>'
+    +'<input id="pay_q" placeholder="@ник, ID клиента, № заказа" value="'+esc(st.q||'')+'" '
+    +'onchange="_paySet(\'q\',this.value)"/></div>';
+
+  var rows=d.rows||[];
+  if(!rows.length){
+    h+='<div class="note">'+(st.q?'По запросу «'+esc(st.q)+'» ничего не найдено.'
+        :'Платежей с такими условиями нет.')+'</div>';
+  }
+  rows.forEach(function(r){
+    var sub=r.what+(r.method?(' · '+r.method):'')
+      +(r.promo?(' · промокод '+esc(r.promo)):'')
+      +(r.coins?(' · монетками '+r.coins):'');
+    h+='<div class="row"><div><div class="lbl2">'+esc(r.user)+(r.num?(' <span class="muted">#'+r.num+'</span>'):'')+'</div>'
+      +'<div class="sub">'+esc(sub)+'</div>'
+      +'<div class="sub muted">'+_payWhen(r.when)+(r.fk?(' · FK '+esc(r.fk)):'')+'</div></div>'
+      +'<div style="margin-left:auto;text-align:right">'
+      +'<div style="font-size:13px;font-weight:600">'+nf(r.amount)+' ₽</div>'
+      +'<span class="tag '+r.tag+'">'+esc(r.statusRu)+'</span></div></div>';
+  });
+
+  if((d.pages||1)>1){
+    h+='<div class="btns2" style="margin-top:10px">'
+      +'<button class="btn row2 sec"'+((d.page||0)<=0?' disabled':'')+' onclick="_paySet(\'page\','+((d.page||0)-1)+')">← Раньше</button>'
+      +'<button class="btn row2 sec"'+((d.page||0)>=(d.pages-1)?' disabled':'')+' onclick="_paySet(\'page\','+((d.page||0)+1)+')">Позже →</button></div>'
+      +'<div class="note">Стр. '+((d.page||0)+1)+' из '+d.pages+' · всего '+nf(d.total||0)+' платежей</div>';
+  } else if(rows.length){
+    h+='<div class="note">Всего '+nf(d.total||0)+' платежей за период.</div>';
+  }
+  el.innerHTML=h;
+}
+
+function _payWhen(iso){
+  if(!iso)return '—';
+  try{var t=new Date(iso);
+    return t.toLocaleDateString('ru',{day:'2-digit',month:'2-digit'})+' '
+      +t.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
+  }catch(e){return iso;}
+}
 
 /* Найти по ID */
 SCREENS["Найти по ID"]=function(){
@@ -1288,10 +1400,138 @@ function delPlan(key,name){if(window.confirm&&!window.confirm('Удалить т
 function serviceAdd(){return hdr("Новый сервис")+'<div class="wrap"><label class="fl">Название</label><input class="f" id="sv_name" placeholder="Например: Notion"/><label class="fl">Эмодзи (необязательно)</label><input class="f" id="sv_em" placeholder="📝"/><label class="fl">Первый тариф — название</label><input class="f" id="sv_plan" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="sv_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doServiceAdd()">Создать</button><div class="note">Тарифы и закуп можно изменить после создания.</div></div>';}
 function doServiceAdd(){var name=fv('sv_name'),price=fv('sv_price');if(!name||!price){toast('Название и цена обязательны');return;}toast('Создаю…');api('/api/admin/service-add',{name:name,emoji:fv('sv_em'),planName:fv('sv_plan'),price:price}).then(function(d){toast(d.ok?'Сервис добавлен ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
 function delService(key){if(window.confirm&&!window.confirm('Удалить сервис целиком?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/service-delete',{key:key}).then(function(d){toast(d.ok?'Удалён':(d.msg||'Ошибка'));if(d.ok)back();});}
-function pricePacks(){var d=[["100 кр",129],["300 кр",349],["700 кр",715],["1500 кр",1329],["3000 кр",2490],["7000 кр",5290]];
-  return hdr("Пакеты кредитов")+'<div class="wrap"><button class="btn" onclick="toast(\'Добавить пакет\')"><i class="ti ti-plus"></i> Добавить пакет</button>'+d.map(function(x){return '<label class="fl">'+x[0]+'</label><div class="search"><input value="'+x[1]+'" style="font-size:14px"/><span class="muted">₽</span><button class="btn row2 danger" style="width:auto;margin:0;padding:6px 10px;font-size:11px" onclick="toast(\'Удалить\')">✕</button></div>'}).join('')+'<button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
-function priceGen(){var d=[["Фото (за генерацию)","10"],["Видео (за генерацию)","45"],["Редактирование фото","12"],["Анимация фото","40"],["Улучшение 4x (upscale)","8"],["Улучшение промта","0"]];
-  return hdr("Настройки генерации","стоимость в кредитах")+'<div class="wrap">'+d.map(function(x){return '<label class="fl">'+x[0]+'</label><input class="f" value="'+x[1]+'" inputmode="numeric"/>'}).join('')+'<button class="btn" onclick="toast(\'Сохранено\')">Сохранить</button></div>'}
+/* Пакеты кредитов — НАСТОЯЩИЕ, из bot_credit_packs.
+   Раньше здесь было шесть строк, зашитых в HTML, и кнопка «Сохранить», которая
+   показывала «Сохранено» и не отправляла ничего. Цены при этом давно живут в
+   базе и подхватываются ботом при старте — не хватало только записи. */
+function pricePacks(){setTimeout(_pkLoad,30);
+  return hdr("Пакеты кредитов","то, что клиент видит в боте")
+    +'<div class="wrap"><div id="pkbody"><div class="note">Загружаю…</div></div></div>';}
+
+function _pkLoad(){
+  api('/api/admin/packs',{}).then(function(d){
+    var el=document.getElementById('pkbody');if(!el)return;
+    if(!d||!d.ok){el.innerHTML='<div class="block"><div class="sub neg">⚠️ Не удалось загрузить пакеты.</div>'
+      +'<button class="btn sec" style="margin-top:10px" onclick="_pkLoad()">🔄 Повторить</button></div>';return;}
+    window._pk=d;_pkRender();
+  });
+}
+
+function _pkRender(){
+  var el=document.getElementById('pkbody');if(!el)return;
+  var ps=(window._pk||{}).packs||[],h='';
+  if(!ps.length){
+    h+='<div class="note">Пакетов в базе нет. Бот запишет туда значения из кода '
+      +'при следующем запуске — или добавь пакет вручную ниже.</div>';
+  }
+  ps.forEach(function(p,i){
+    /* Цена за кредит — то, ради чего сюда и заходят: видно, какой пакет выгоднее
+       клиенту, а какой нам. Считаем, а не заставляем делить в уме. */
+    var per=p.credits?(p.price/p.credits):0;
+    h+='<div class="block"'+(p.enabled?'':' style="opacity:.5"')+'>'
+      +'<div style="font-size:13px;font-weight:700">'+esc(p.name||p.key)
+      +(p.enabled?'':' <span class="neg">— скрыт</span>')+'</div>'
+      +'<div class="sub" style="margin-top:2px">ключ <code>'+esc(p.key)+'</code>'
+      +' · '+(per?('≈ '+per.toFixed(2)+' ₽ за кредит'):'кредитов не задано')+'</div>'
+      +'<label class="fl">Название</label><input class="f" id="pk_n'+i+'" value="'+esc(p.name)+'"/>'
+      +'<label class="fl">Кредитов</label><input class="f" id="pk_c'+i+'" type="number" min="1" value="'+p.credits+'"/>'
+      +'<label class="fl">Цена, ₽</label><input class="f" id="pk_p'+i+'" type="number" min="1" value="'+p.price+'"/>'
+      +'<label class="fl">Звёзды Telegram (0 — не продаём за звёзды)</label>'
+      +'<input class="f" id="pk_s'+i+'" type="number" min="0" value="'+p.stars+'"/>'
+      +'<label class="fl">Подпись (необязательно)</label><input class="f" id="pk_d'+i+'" value="'+esc(p.desc)+'"/>'
+      +'<label class="fl">Бейдж (например «выгодно»)</label><input class="f" id="pk_b'+i+'" value="'+esc(p.badge)+'"/>'
+      +'<div class="btns2" style="margin-top:10px">'
+      +'<button class="btn row2" onclick="_pkSave('+i+')">💾 Сохранить</button>'
+      +'<button class="btn row2 sec" onclick="_pkToggle(\''+esc(p.key)+'\','+(p.enabled?'false':'true')+')">'
+      +(p.enabled?'Скрыть из бота':'Показать в боте')+'</button></div></div>';
+  });
+  h+='<div class="block"><h4>➕ Новый пакет</h4>'
+    +'<div class="note">Ключ менять потом нельзя — по нему считаются прошлые заказы.</div>'
+    +'<label class="fl">Ключ (латиницей, например pack_500)</label><input class="f" id="pk_nk" placeholder="pack_500"/>'
+    +'<label class="fl">Название</label><input class="f" id="pk_nn" placeholder="500 кредитов"/>'
+    +'<label class="fl">Кредитов</label><input class="f" id="pk_nc" type="number" min="1"/>'
+    +'<label class="fl">Цена, ₽</label><input class="f" id="pk_np" type="number" min="1"/>'
+    +'<button class="btn" style="margin-top:10px" onclick="_pkNew()">Добавить</button></div>'
+    +'<div class="note">Удаления здесь нет намеренно: пакет, за который уже платили, '
+    +'лучше скрыть — он пропадёт из бота, но останется в истории заказов.</div>';
+  el.innerHTML=h;
+}
+
+function _pkSave(i){
+  var p=((window._pk||{}).packs||[])[i];if(!p)return;
+  var v=function(id){var e=document.getElementById(id);return e?e.value:'';};
+  toast('Сохраняю…');
+  api('/api/admin/packs-save',{action:'save',key:p.key,name:v('pk_n'+i),
+      credits:v('pk_c'+i),price:v('pk_p'+i),stars:v('pk_s'+i),
+      desc:v('pk_d'+i),badge:v('pk_b'+i),sort:p.sort})
+   .then(function(d){ if(d&&d.ok){toast('Сохранено ✅');_pkLoad();}
+                      else toast((d&&d.msg)||'Не сохранилось'); });
+}
+
+function _pkToggle(key,on){
+  api('/api/admin/packs-save',{action:'toggle',key:key,enabled:on}).then(function(d){
+    if(d&&d.ok){toast(on?'Показан в боте':'Скрыт из бота');_pkLoad();}
+    else toast((d&&d.msg)||'Не вышло');});
+}
+
+function _pkNew(){
+  var v=function(id){var e=document.getElementById(id);return e?e.value.trim():'';};
+  if(!v('pk_nk')||!v('pk_nn')){toast('Нужны ключ и название');return;}
+  api('/api/admin/packs-save',{action:'save',key:v('pk_nk'),name:v('pk_nn'),
+      credits:v('pk_nc'),price:v('pk_np'),stars:0,sort:99})
+   .then(function(d){ if(d&&d.ok){toast('Добавлен ✅');_pkLoad();}
+                      else toast((d&&d.msg)||'Не добавился'); });
+}
+
+/* Стоимость генераций. Экран был макетом из шести выдуманных строк; настоящие
+   цены лежат по каждой МОДЕЛИ в bot_gen_prices, и их же показывает раздел
+   «Модели». Поэтому не заводим второе место для той же таблицы, а правим цену
+   прямо в списке моделей. */
+function priceGen(){setTimeout(_gpLoad,30);
+  return hdr("Стоимость генераций","в кредитах, по каждой модели")
+    +'<div class="wrap"><div id="gpbody"><div class="note">Загружаю…</div></div></div>';}
+
+function _gpLoad(){
+  api('/api/admin/models',{}).then(function(d){
+    var el=document.getElementById('gpbody');if(!el)return;
+    if(!d||!d.ok){el.innerHTML='<div class="block"><div class="sub neg">⚠️ Не удалось загрузить модели.</div>'
+      +'<button class="btn sec" style="margin-top:10px" onclick="_gpLoad()">🔄 Повторить</button></div>';return;}
+    window._gp=d;_gpRender();
+  });
+}
+
+function _gpRender(){
+  var el=document.getElementById('gpbody');if(!el)return;
+  var secs=(window._gp||{}).sections||[],h='';
+  h+='<div class="note">Цена списывается с клиента за одну генерацию. '
+    +'Выключенные модели показаны бледным — их в боте не видно, '
+    +'включать и выключать можно в разделе «Модели».</div>';
+  secs.forEach(function(sc){
+    h+='<div class="glabel" style="margin-top:14px">'+esc(sc.title)+' — '+sc.models.length+' шт</div>';
+    sc.models.forEach(function(m,i){
+      var id='gp_'+sc.section+'_'+i;
+      h+='<div class="block"'+(m.enabled?'':' style="opacity:.5"')+'>'
+        +'<div style="font-size:13px;font-weight:700">'+esc(m.name)
+        +(m.enabled?'':' <span class="neg">— выключена</span>')+'</div>'
+        +'<div class="sub" style="margin-top:2px">сейчас <b>'+m.credits+'</b> кр.</div>'
+        +'<div class="search" style="margin-top:8px">'
+        +'<input id="'+id+'" type="number" min="0" value="'+m.credits+'" style="font-size:14px"/>'
+        +'<span class="muted">кр.</span>'
+        +'<button class="btn row2" style="width:auto;margin:0;padding:6px 12px;font-size:11px" '
+        +'onclick="_gpSave(\''+esc(sc.section)+'\',\''+esc(m.key)+'\',\''+id+'\')">Сохранить</button>'
+        +'</div></div>';
+    });
+  });
+  el.innerHTML=h;
+}
+
+function _gpSave(section,key,inputId){
+  var e=document.getElementById(inputId);if(!e)return;
+  toast('Сохраняю…');
+  api('/api/admin/model-price',{section:section,key:key,credits:e.value})
+   .then(function(d){ if(d&&d.ok){toast('Сохранено ✅');_gpLoad();}
+                      else toast((d&&d.msg)||'Не сохранилось'); });
+}
 
 /* Рефералка */
 SCREENS["Премиум-рефералка"]=function(){
@@ -2061,7 +2301,17 @@ SCREENS["Приветствие"]=function(){
   return hdr("Приветствие")+'<div class="wrap"><label class="fl">Доп. текст приветствия (HTML)</label><textarea class="f" id="wel_txt" placeholder="Загружаю…"></textarea><button class="btn" onclick="saveWelcome()">Сохранить</button><div class="note">Добавляется к приветствию при /start.</div></div>'
     +'<div class="wrap" style="margin-top:14px"><label class="fl">📲 Текст «Установить приложение» ChatGPT (HTML)</label><textarea class="f" id="inst_txt" placeholder="Загружаю…" style="min-height:180px"></textarea><button class="btn" onclick="saveInstall()">Сохранить</button><div class="note">Показывается клиенту по кнопке «Установить Приложение» в меню ChatGPT. Можно HTML: &lt;b&gt;, &lt;a href&gt;, эмодзи.</div></div>';
 };
-function loadSettings(cb){api('/api/admin/settings',{}).then(function(d){window._settings=d;var w=document.getElementById('wel_txt');if(w&&d.ok)w.value=d.welcome||'';var iw=document.getElementById('inst_txt');if(iw&&d.ok)iw.value=d.gptInstall||'';if(cb)cb(d);});}
+/* При сбое настройки не подставляем ПУСТУЮ строку: сохранить такое поверх
+   настоящего текста — значит стереть приветствие. Показываем ошибку прямо
+   в поле, раньше там навсегда оставалось «Загружаю…». */
+function loadSettings(cb){api('/api/admin/settings',{}).then(function(d){
+  window._settings=d;
+  var w=document.getElementById('wel_txt'), iw=document.getElementById('inst_txt');
+  if(d&&d.ok){ if(w)w.value=d.welcome||''; if(iw)iw.value=d.gptInstall||''; }
+  else { if(w)w.placeholder='⚠️ Не загрузилось — не сохраняй, сначала открой заново';
+         if(iw)iw.placeholder='⚠️ Не загрузилось — не сохраняй, сначала открой заново';
+         toast('Настройки не загрузились'); }
+  if(cb)cb(d);});}
 function saveWelcome(){var t=fv('wel_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'welcome',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 function saveInstall(){var t=fv('inst_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'gpt_install',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 
@@ -2085,10 +2335,22 @@ function loadMiniApp(svc){
   api('/api/admin/settings',{}).then(function(d){
     var el=document.getElementById('ma_'+svc); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    var m=(d.miniapps||[]).filter(function(x){return x.key===svc})[0]||{enabled:false,codes:0};
+    /* Если сервиса нет в ответе — это НЕ «ноль кодов», это отсутствие данных.
+       Подставлять codes:0 значило показывать пустой пул там, где его просто
+       не спросили. */
+    var _mFound=(d.miniapps||[]).filter(function(x){return x.key===svc})[0];
+    var m=_mFound||{enabled:false,codes:null,missing:true};
     var em={chatgpt:'✨',claude:'⚡',perplexity:'🔍'}[svc]||'📱';
     var h='<div class="row" style="cursor:default"><span class="ic">'+em+'</span><div><div class="lbl2">Приложение '+(m.enabled?'включено':'выключено')+'</div><div class="sub">активация у клиентов</div></div><span class="sw'+(m.enabled?' on':'')+'" onclick="toggleMiniApp(this,\''+svc+'\')"><b></b></span></div>';
-    h+='<div class="block"><h4>🔑 Запас кодов</h4><div id="codesbk_'+svc+'"><div class="kv" style="border:0;padding-bottom:6px"><span class="k">В пуле</span><span>'+m.codes+' шт</span></div>'+prog(Math.min(100,m.codes*2),m.codes<10?C.red:C.green)+'</div></div>';
+    /* m.codes === null означает «сервис не пришёл в ответе», а не «кодов ноль».
+       Показывать в этом случае «0 шт» и красную полосу — врать про пустой пул. */
+    var _cn=(m.codes==null)?null:m.codes;
+    h+='<div class="block"><h4>🔑 Запас кодов</h4><div id="codesbk_'+svc+'">'
+      +(_cn==null
+        ? '<div class="note neg">⚠️ Данные по пулу не пришли — это сбой загрузки, а не пустой пул.</div>'
+        : '<div class="kv" style="border:0;padding-bottom:6px"><span class="k">В пуле</span><span>'+_cn+' шт</span></div>'
+          +prog(Math.min(100,_cn*2),_cn<10?C.red:C.green))
+      +'</div></div>';
     h+='<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return addCodes(\''+svc+'\')})">➕ Коды</button><button class="btn row2 sec" onclick="leaf(function(){return codesPool(\''+svc+'\')})">🗂 Пул</button></div>';
     if(svc==='claude'||svc==='chatgpt'){h+='<button class="btn sec" style="margin-top:10px" onclick="leaf(function(){return pendingScreen(\''+svc+'\')})">⏳ Ждущие коды</button>';}
     if(svc==='claude'||svc==='chatgpt'){h+='<div id="clprov_'+svc+'" style="margin-top:14px"></div>';}
@@ -2096,7 +2358,10 @@ function loadMiniApp(svc){
     el.innerHTML=h;
     api('/api/admin/miniapp-detail',{service:svc,days:(window._miDays&&window._miDays[svc])||0}).then(function(dd){
       var de=document.getElementById('madet_'+svc); if(!de)return;
-      if(!dd.ok){de.innerHTML='';return;}
+      /* Раньше при сбое блок просто затирался, и «не загрузилось» было не
+         отличить от «активаций нет». Теперь сбой виден как сбой. */
+      if(!dd.ok){de.innerHTML='<div class="note neg">⚠️ Не удалось загрузить активации — '
+        +'это сбой загрузки, а не пустой список.</div>';return;}
       var byp={};(dd.free||[]).forEach(function(c){byp[c.plan]=(byp[c.plan]||0)+1});
       var cb=document.getElementById('codesbk_'+svc);
       if(cb){var tot=(typeof dd.freeCount==='number'?dd.freeCount:(dd.free?dd.free.length:0));
@@ -2695,10 +2960,27 @@ function boot(){
   if(tg&&tg.BackButton){try{tg.BackButton.onClick(function(){back()});}catch(e){}}
   var initData=tg?tg.initData:"";
   go(home);
-  fetch('/api/admin/overview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initData:initData})})
-   .then(function(r){return r.json().then(function(d){return {s:r.status,d:d}})})
-   .then(function(x){ if(x.s===403||!x.d||!x.d.ok){ denied(); return;} OVERVIEW=x.d; if(stack.length<=1){ go(home,false);} })
-   .catch(function(){});
+  window._ovInit=initData;
+  ovReload();
+}
+
+/* Загрузка сводки дашборда. Вынесена из boot(), чтобы кнопка «Повторить»
+   вызывала ровно то же самое. Пустого .catch больше нет: любой сбой переводит
+   экран в состояние «не загрузилось», а не оставляет его с чем попало. */
+function ovReload(){
+  OV_STATE='load';
+  if(stack.length<=1)go(home,false);
+  fetch('/api/admin/overview',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({initData:window._ovInit||''})})
+   .then(function(r){return r.json().then(function(d){return {s:r.status,d:d}},
+                                          function(){return {s:r.status,d:null}})})
+   .then(function(x){
+     if(x.s===403){ denied(); return; }
+     if(!x.d||!x.d.ok){ OV_STATE='err'; }
+     else { OVERVIEW=x.d; OV_STATE='ok'; }
+     if(stack.length<=1){ go(home,false); }
+   })
+   .catch(function(){ OV_STATE='err'; if(stack.length<=1){ go(home,false); } });
 }
 boot();
 </script>

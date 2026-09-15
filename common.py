@@ -4320,6 +4320,150 @@ async def api_admin_model_toggle_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_model_price_handler(request: web.Request) -> web.Response:
+    """Цена генерации в кредитах для одной модели. Admin-only.
+
+    Экран «Настройки генерации» в панели был макетом: шесть строк, зашитых в
+    HTML, и кнопка «Сохранить», которая показывала «Сохранено ✅» и не делала
+    ничего. Цены при этом давно лежат в таблице bot_gen_prices и подхватываются
+    при старте бота — не хватало только записи. Правим там же, где и список
+    моделей, чтобы не было двух мест, редактирующих одну таблицу.
+    """
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from config import IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS
+        key = str(body.get("key", "")).strip()
+        section = str(body.get("section", "")).strip()
+        dmap = {"image": IMAGE_MODELS, "video": VIDEO_MODELS,
+                "edit": EDIT_MODELS, "anim": ANIM_MODELS}
+        models = dmap.get(section, {})
+        if not key or key not in models:
+            return web.json_response({"ok": False, "msg": "Модель не найдена"})
+        try:
+            credits = int(body.get("credits"))
+        except Exception:
+            return web.json_response({"ok": False, "msg": "Цена — целое число"})
+        if credits < 0 or credits > 100000:
+            return web.json_response({"ok": False, "msg": "Цена вне разумных границ"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_gen_prices (model_key, section, credits, enabled) "
+                "VALUES ($1,$2,$3,TRUE) "
+                "ON CONFLICT (model_key) DO UPDATE SET credits=$3, section=$2",
+                key, section, credits)
+        # И в память — иначе новая цена заработала бы только после перезапуска.
+        models[key]["credits"] = credits
+        logging.info(f"admin: цена генерации {section}/{key} = {credits} кр.")
+        return web.json_response({"ok": True, "key": key, "credits": credits})
+    except Exception as _e:
+        logging.error(f"api_admin_model_price: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_packs_handler(request: web.Request) -> web.Response:
+    """Пакеты кредитов из bot_credit_packs — то, что клиент видит в боте. Admin-only."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key, name, credits, price, stars, description, badge, "
+                "       enabled, sort_order FROM bot_credit_packs "
+                "ORDER BY sort_order, price")
+        return web.json_response({"ok": True, "packs": [{
+            "key": r["key"], "name": r["name"] or "", "credits": int(r["credits"] or 0),
+            "price": int(r["price"] or 0), "stars": int(r["stars"] or 0),
+            "desc": r["description"] or "", "badge": r["badge"] or "",
+            "enabled": bool(r["enabled"]), "sort": int(r["sort_order"] or 0),
+        } for r in rows]})
+    except Exception as _e:
+        logging.error(f"api_admin_packs: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_packs_save_handler(request: web.Request) -> web.Response:
+    """Сохранение пакета кредитов: цена, кредиты, название, показ. Admin-only.
+
+    Удаление намеренно НЕ делаем: пакет, за который кто-то уже платил, лучше
+    выключить — тогда он пропадает из бота, но остаётся в истории заказов.
+    """
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        from config import CREDIT_PACKS
+        _act = str(body.get("action") or "save")
+        key = str(body.get("key") or "").strip()
+        if not key or len(key) > 40 or not re.fullmatch(r"[A-Za-z0-9_\-]+", key):
+            return web.json_response({"ok": False, "msg": "Ключ: латиница, цифры, _ и -"})
+
+        if _act == "toggle":
+            _on = bool(body.get("enabled"))
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                _r = await conn.execute(
+                    "UPDATE bot_credit_packs SET enabled=$2 WHERE key=$1", key, _on)
+            if not (isinstance(_r, str) and _r.strip().endswith(" 1")):
+                return web.json_response({"ok": False, "msg": "Пакет не найден"})
+            if not _on:
+                CREDIT_PACKS.pop(key, None)
+            await _reload_prices_safe()
+            return web.json_response({"ok": True})
+
+        def _num(field, lo, hi, dflt=None):
+            _v = body.get(field)
+            if _v is None or _v == "":
+                return dflt
+            try: _v = int(_v)
+            except Exception: return None
+            return _v if lo <= _v <= hi else None
+
+        name = str(body.get("name") or "").strip()[:60]
+        credits = _num("credits", 1, 1000000)
+        price = _num("price", 1, 1000000)
+        stars = _num("stars", 0, 1000000, 0)
+        if not name or credits is None or price is None or stars is None:
+            return web.json_response(
+                {"ok": False, "msg": "Название обязательно, кредиты и цена — "
+                                     "целые числа больше нуля"})
+        desc = str(body.get("desc") or "")[:200]
+        badge = str(body.get("badge") or "")[:40]
+        sort = _num("sort", 0, 999, 0) or 0
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_credit_packs "
+                "(key, name, credits, price, stars, description, badge, enabled, sort_order) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE,$8) "
+                "ON CONFLICT (key) DO UPDATE SET name=$2, credits=$3, price=$4, "
+                "stars=$5, description=$6, badge=$7, sort_order=$8",
+                key, name, credits, price, stars, desc, badge, sort)
+        await _reload_prices_safe()
+        logging.info(f"admin: пакет {key} = {credits} кр. за {price} ₽")
+        return web.json_response({"ok": True, "key": key})
+    except Exception as _e:
+        logging.error(f"api_admin_packs_save: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def _reload_prices_safe():
+    """Перечитывает цены из БД в память бота. Сбой не должен ронять сохранение:
+    запись уже в базе, а в память она попадёт при следующем старте."""
+    try:
+        from db import load_prices_from_db
+        await load_prices_from_db()
+    except Exception as _e:
+        logging.warning(f"перечитать цены не вышло (в базе сохранено): {_e}")
+
+
 async def api_admin_orders_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -4350,6 +4494,139 @@ async def api_admin_orders_handler(request: web.Request) -> web.Response:
     except Exception as _e:
         logging.error(f"api_admin_orders: {_e}")
         return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_payments_handler(request: web.Request) -> web.Response:
+    """История платежей: деньги, а не выдача. Реальные строки из fk_orders.
+
+    Экран «История платежей» до этого был макетом — пять выдуманных строк и
+    четыре константы в пончике, никакого обращения к серверу. Выглядело как
+    настоящая статистика, и это худший вид ошибки: по ней можно было принять
+    решение. Здесь всё считается по базе.
+
+    Отличие от «Ленты заказов»: та про выдачу (активирован / в работе), эта —
+    про оплату: способ, промокод, монетки, отменённые и незавершённые.
+    Admin-only.
+    """
+    import datetime as _dt_pay
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        page = max(0, int(body.get("page") or 0))
+        q = str(body.get("q") or "").strip()
+        flt = str(body.get("filter") or "all")        # all | paid | pending | cancelled
+        days = int(body.get("days") or 30)
+        days = max(1, min(days, 3650))
+        PAGE = 30
+        _since = _dt_pay.date.today() - _dt_pay.timedelta(days=days - 1)
+
+        # Отбор по времени: у оплаченных смотрим на paid_at, у неоплаченных его
+        # нет вовсе — иначе неоплаченные исчезли бы из выборки целиком.
+        # $1 — именно объект date, не строка: с явным ::date asyncpg выводит тип
+        # параметра как date и строку не принимает («str has no toordinal»).
+        # Живая база это ловит сразу, а в проде это было бы падение экрана.
+        #
+        # ВАЖНО про два набора условий. Пончик считает ВСЕ статусы за период, а
+        # список — только выбранный. Раньше я собирал один список условий и для
+        # пончика просто выбрасывал из него строку про статус, оставляя аргументы
+        # как есть: получалось «запросу нужен 1 аргумент, передали 2», а при
+        # поиске ещё и разъезжалась нумерация $2, $3… Поэтому база (период +
+        # поиск) собирается один раз, а условие статуса добавляется ПОСЛЕДНИМ и
+        # только в запрос списка — тогда номера у общей части всегда одни и те же.
+        base_where = ["COALESCE(f.paid_at, f.created_at) >= $1"]
+        base_args = [_since]
+        if q:
+            _qq = q.lstrip("#@")
+            base_args.append(q);          _i1 = len(base_args)
+            base_args.append(_qq);        _i2 = len(base_args)
+            base_args.append(f"%{q}%");   _i3 = len(base_args)
+            base_args.append(f"%{_qq}%"); _i4 = len(base_args)
+            base_where.append(
+                f"(f.fk_intid = ${_i1} OR CAST(f.num AS TEXT) = ${_i2} "
+                f"OR f.order_id ILIKE ${_i3} OR u.username ILIKE ${_i4} "
+                f"OR CAST(f.user_id AS TEXT) = ${_i2})")
+        where = list(base_where)
+        args = list(base_args)
+        if flt in ("paid", "pending", "cancelled"):
+            args.append(flt); where.append(f"f.status = ${len(args)}")
+        where_sql = " AND ".join(where)
+        base_sql = " AND ".join(base_where)
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            # Пончик — по тем же условиям, что и список, но без фильтра статуса:
+            # иначе «Оплачены 18» показывалось бы рядом со списком из одних
+            # отменённых, и два числа на экране противоречили бы друг другу.
+            _stats = await conn.fetch(
+                "SELECT f.status, COUNT(*) AS n, COALESCE(SUM(f.amount_rub),0) AS rub "
+                "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+                f"WHERE {base_sql} GROUP BY f.status", *base_args)
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+                f"WHERE {where_sql}", *args) or 0
+            pages = max(1, (total + PAGE - 1) // PAGE)
+            page = min(page, pages - 1)
+            rows = await conn.fetch(
+                "SELECT f.order_id, f.num, f.user_id, f.amount_rub, f.pack, f.credits, "
+                "       f.status, f.payment_method, f.promo_code, f.coins_spent, "
+                "       f.paid_at, f.created_at, f.fk_intid, "
+                "       COALESCE(u.username,'') AS username, COALESCE(u.full_name,'') AS full_name "
+                "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+                f"WHERE {where_sql} "
+                "ORDER BY COALESCE(f.paid_at, f.created_at) DESC "
+                f"LIMIT {PAGE} OFFSET {page * PAGE}", *args)
+
+        def _what(pack, credits):
+            """Человеческое название покупки из технического pack."""
+            _p = (pack or "")
+            if _p.startswith("shop:"):
+                _pp = _p.split(":")
+                _k = _pp[1] if len(_pp) > 1 else ""
+                _i = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else -1
+                _cat = SHOP_CATALOG.get(_k, {}) or {}
+                _plans = _cat.get("plans", [])
+                _pn = _plans[_i]["name"] if 0 <= _i < len(_plans) else ""
+                return (f"{_cat.get('name', _k)} · {_pn}" if _pn else _cat.get("name", _k or "Покупка"))
+            if _p.startswith("nsg:"):
+                return "App Store"
+            return f"Кредиты × {credits}" if credits else "Пополнение"
+
+        _st_ru = {"paid": "оплачен", "pending": "не оплачен", "cancelled": "отменён"}
+        _st_tag = {"paid": "g", "pending": "a", "cancelled": "n"}
+        _out = []
+        for r in rows:
+            _when = r["paid_at"] or r["created_at"]
+            _out.append({
+                "orderId": r["order_id"],
+                "num": int(r["num"] or 0),
+                "uid": int(r["user_id"] or 0),
+                "user": ("@" + r["username"]) if r["username"]
+                        else (r["full_name"] or f"id{r['user_id']}"),
+                "what": _what(r["pack"], int(r["credits"] or 0)),
+                "amount": int(r["amount_rub"] or 0),
+                "status": r["status"] or "",
+                "statusRu": _st_ru.get(r["status"] or "", r["status"] or "—"),
+                "tag": _st_tag.get(r["status"] or "", "b"),
+                "method": {"sbp": "СБП", "card": "Карта"}.get(r["payment_method"] or "",
+                                                              r["payment_method"] or ""),
+                "promo": r["promo_code"] or "",
+                "coins": int(r["coins_spent"] or 0),
+                "fk": r["fk_intid"] or "",
+                "when": _when.isoformat() if _when else "",
+            })
+        _sd = {x["status"]: {"n": int(x["n"] or 0), "rub": int(x["rub"] or 0)} for x in _stats}
+        return web.json_response({
+            "ok": True, "rows": _out, "total": total, "page": page, "pages": pages,
+            "days": days,
+            "stats": [{"key": k, "label": _st_ru.get(k, k), "n": v["n"], "rub": v["rub"]}
+                      for k, v in sorted(_sd.items(), key=lambda x: -x[1]["n"])],
+            "paidSum": _sd.get("paid", {}).get("rub", 0),
+        })
+    except Exception as _e:
+        logging.error(f"api_admin_payments: {_e}", exc_info=True)
+        return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
 async def api_admin_all_orders_handler(request: web.Request) -> web.Response:
@@ -6638,6 +6915,38 @@ async def _run_activation_job(
         # он подписку не дал и брать следующий безопасно.
         _ios_sent = 1 if gpt_route_for_code(code) == "ios" else 0
 
+        async def _site_says_used(_c):
+            """Спрашиваем САЙТ, потрачен ли код. True / False / None (не узнали).
+
+            Зачем: раньше «код уже использован» решалось ТОЛЬКО по тексту ответа
+            сайта, а сам статус кода никто не спрашивал. 15.09.2026 это сожгло
+            пять целых Plus-кодов подряд по заказу 248333474 — на странице
+            bypriceactivate.pro/query все пять значились unused, без почты и без
+            Organization ID, то есть их никто не активировал.
+
+            Страница /query — это то же самое, что Александр открывает руками,
+            и она отвечает по каждому коду: unused / claimed / fulfilled.
+            Спросить её дешевле, чем потерять код.
+            """
+            if provider != "bpa":
+                return None          # у остальных сайтов такой страницы нет
+            try:
+                from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
+                                                BPA_FREE_STATUSES)
+                _q = await bpa_query_codes([_c])
+            except Exception as _e:
+                logging.warning(f"GPT: не смог спросить сайт про код {_c}: {_e}")
+                return None
+            _row = (_q or {}).get(_c) or (_q or {}).get(str(_c).upper()) or {}
+            _st = str(_row.get("status") or "").strip().lower()
+            if not _st:
+                return None
+            if _st in BPA_FREE_STATUSES:
+                return False
+            if _st in BPA_USED_STATUSES:
+                return True
+            return None              # failed / not_in_db / незнакомый — не решаем
+
         async def _cycle_used_current_site() -> bool:
             """Перебирает коды ТЕКУЩЕГО сайта, пока приходит code_already_used.
             Обновляет code/result. Возвращает True, если сайт исчерпан
@@ -6649,6 +6958,43 @@ async def _run_activation_job(
             # вручную, чем выесть пул на одном заказе.
             while (not result.get("success") and result.get("code_already_used")
                    and len(_gpt_used_codes) < _GPT_MAX_BURN):
+                # СНАЧАЛА СПРАШИВАЕМ САЙТ, а уже потом жжём. Слово «already» в
+                # тексте ошибки — это НЕ доказательство того, что код потрачен:
+                # тем же ответом сайт отвечает и на «аккаунту нельзя», и на свои
+                # внутренние сбои. Жечь по тексту — то, что 15.09.2026 съело
+                # пять целых кодов подряд.
+                _used_on_site = await _site_says_used(code)
+                if _used_on_site is not True:
+                    _why = ("сайт говорит, что код ЦЕЛ (unused)"
+                            if _used_on_site is False
+                            else "статус кода на сайте узнать не удалось")
+                    if _used_on_site is False:
+                        # Код цел — возвращаем в пул, он ничей.
+                        try:
+                            await release_gpt_code(code)
+                        except Exception as _e_rel:
+                            logging.error(f"не смог вернуть код {code} в пул: {_e_rel}")
+                    logging.error(
+                        f"GPT: НЕ жгу код {code} — {_why}. uid={user_id} "
+                        f"order={order_id} ответ сайта={str(result.get('error'))[:200]!r}")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🛑 <b>Не стал сжигать код</b>\n"
+                            f"🔑 <code>{code}</code>\n"
+                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"🆔 <code>{order_id}</code>\n"
+                            f"{await _fk_num_line(order_id)}\n"
+                            f"Сайт ответил «уже использован», но {_why}.\n"
+                            + ("Код возвращён в пул.\n" if _used_on_site is False
+                               else "Код оставлен закреплённым за клиентом.\n")
+                            + f"\n<i>Ответ сайта:</i> <code>"
+                            + str(result.get("error") or "—")[:300]
+                            + "</code>\n\nАктивируй вручную.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    return False
                 _gpt_used_codes.append(code)
                 # Код был активирован НЕ нашим клиентом: сайт вернул чужой,
                 # уже завершённый заказ. Значит в пуле лежал потраченный код —
@@ -8921,6 +9267,10 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/settings", api_admin_settings_handler)
     app.router.add_post("/api/admin/setting-save", api_admin_setting_save_handler)
     app.router.add_post("/api/admin/all-orders", api_admin_all_orders_handler)
+    app.router.add_post("/api/admin/payments", api_admin_payments_handler)
+    app.router.add_post("/api/admin/model-price", api_admin_model_price_handler)
+    app.router.add_post("/api/admin/packs", api_admin_packs_handler)
+    app.router.add_post("/api/admin/packs-save", api_admin_packs_save_handler)
     app.router.add_post("/api/admin/feed-order-action", api_admin_feed_order_action_handler)
     app.router.add_post("/api/admin/nsg-catalog", api_admin_nsg_catalog_handler)
     app.router.add_post("/api/admin/nsg-product", api_admin_nsg_product_handler)
