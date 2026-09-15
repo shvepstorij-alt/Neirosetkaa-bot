@@ -166,7 +166,7 @@ function home(){
   var _wksum=_wvals.reduce(function(a,b){return a+(b||0)},0);
   var groups=[
    ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["🔥","Аналитика Каталога","Аналитика Каталога"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
-   ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
+   ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["👥","Рефералы","Рефералы"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
    ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"],["🏢","Партнёры (наценка)","Партнёры"]]],
    ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
    ["⚙️","Управление",[["🎁","Розыгрыш","Розыгрыш"],["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
@@ -275,6 +275,39 @@ function loadProfit(per,off,date){
       h+='<div class="block"><h4>'+s.name+' · '+s.cnt+' шт'+(s.missing?' <span class="tag a">себест. не задана</span>':'')+'</h4>'+pls+'<div class="kv"><span class="k">'+nf(s.rev)+' ₽ − '+nf(s.cost)+' ₽</span><span class="pos">+'+nf(s.profit)+' ₽</span></div></div>';
     });
     if(d.credits&&d.credits.cnt){h+='<div class="block"><h4>💳 Кредиты · '+d.credits.cnt+' шт</h4><div class="kv"><span class="k">'+nf(d.credits.rev)+' ₽</span><span class="muted">себест. AI не учит.</span></div></div>';}
+
+    /* ChatGPT по маршруту кода: филиппинские против iOS. Маршрут берётся из
+       префикса самого кода, поэтому разбивка честна за всю историю, включая
+       заказы до появления этой колонки. Три «особые» строки показываем
+       отдельно, а не растворяем в общей куче. */
+    var gr=d.gptRoutes||[];
+    if(gr.length){
+      var inexact=false;
+      h+='<div class="glabel" style="margin-top:16px">ChatGPT по маршруту кода</div>';
+      gr.forEach(function(g){
+        var tot=g.rows.reduce(function(a,r){return a+r.cnt;},0);
+        h+='<div class="block"><h4>'+esc(g.plan)+' · '+tot+' шт</h4>';
+        g.rows.forEach(function(r){
+          var special=(r.key!=='ph'&&r.key!=='ios');
+          if(!r.exact&&!special)inexact=true;
+          h+='<div class="kv"><span class="k">'+esc(r.label)+' × '+r.cnt
+            +' · '+nf(r.rev)+' ₽ − '+nf(r.cost)+' ₽'
+            +((!r.exact&&!special)?' <span class="muted">(себест. общая)</span>':'')
+            +'</span><span class="'+(special?'neg':(r.profit>=0?'pos':'muted'))+'">'
+            +(r.profit>=0?'+':'')+nf(r.profit)+' ₽</span></div>';
+        });
+        h+='</div>';
+      });
+      if(inexact){
+        h+='<div class="note">Себестоимость по маршрутам пока одна на тариф — '
+          +'прибыль в этих строках посчитана по ней, и разница между филиппинскими '
+          +'и iOS видна только по выручке и количеству. Чтобы считалось точно, '
+          +'задай отдельные значения в «Себестоимости» ниже.</div>';
+      }
+      h+='<div class="note"><b>Код не привязан</b> — заказ активирован вручную мимо бота. '
+        +'<b>Маршрут не определён</b> — префикс кода незнаком, разметь: <code>/gpt_code_route КОД ios|ph</code>. '
+        +'<b>Ушло несколько кодов</b> — на заказ потрачен не один код.</div>';
+    }
     el.innerHTML=h;
     if(_ser.length>1) setTimeout(function(){renderProfitChart(_ser)},0);
   });
@@ -321,7 +354,17 @@ function loadPrices(){
     d.services.forEach(function(s){
       h+='<div class="block"><h4>'+(s.emoji?s.emoji+' ':'')+s.name+'</h4>';
       s.plans.forEach(function(pp){
-        h+='<div style="margin-bottom:12px" data-key="'+s.key+'" data-idx="'+pp.idx+'"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px"><span>'+pp.name+'</span><span class="'+(pp.margin>=20?'pos':'neg')+'" style="font-size:11px">маржа '+pp.margin+'%</span></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pc-price" value="'+pp.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pc-cost" value="'+pp.costUsd+'" inputmode="decimal"/></div></div></div>';
+        /* У ChatGPT закуп бывает разный: филиппинский код и iOS стоят не
+           одинаково. Раньше значение было одно на тариф, и разницу в марже
+           между маршрутами увидеть было нельзя. Пусто = считать по общему. */
+        var rt=(s.key==='chatgpt')
+          ? '<div style="display:flex;gap:8px;margin-top:8px">'
+            +'<div style="flex:1"><div class="mlab">Закуп $ — Филиппины</div>'
+            +'<input class="f pc-ph" placeholder="как общий" value="'+(pp.costPh?pp.costPh:'')+'" inputmode="decimal"/></div>'
+            +'<div style="flex:1"><div class="mlab">Закуп $ — iOS</div>'
+            +'<input class="f pc-ios" placeholder="как общий" value="'+(pp.costIos?pp.costIos:'')+'" inputmode="decimal"/></div></div>'
+          : '';
+        h+='<div style="margin-bottom:12px" data-key="'+s.key+'" data-idx="'+pp.idx+'"><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px"><span>'+pp.name+'</span><span class="'+(pp.margin>=20?'pos':'neg')+'" style="font-size:11px">маржа '+pp.margin+'%</span></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pc-price" value="'+pp.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $ (общий)</div><input class="f pc-cost" value="'+pp.costUsd+'" inputmode="decimal"/></div></div>'+rt+'</div>';
       });
       h+='</div>';
     });
@@ -332,7 +375,13 @@ function loadPrices(){
 function savePrices(){
   var items=[];
   document.querySelectorAll('#cbody [data-key]').forEach(function(div){
-    items.push({key:div.getAttribute('data-key'),idx:+div.getAttribute('data-idx'),price:div.querySelector('.pc-price').value,costUsd:div.querySelector('.pc-cost').value});
+    var _ph=div.querySelector('.pc-ph'), _ios=div.querySelector('.pc-ios');
+    var _it={key:div.getAttribute('data-key'),idx:+div.getAttribute('data-idx'),
+             price:div.querySelector('.pc-price').value,
+             costUsd:div.querySelector('.pc-cost').value};
+    if(_ph)_it.costPh=_ph.value;
+    if(_ios)_it.costIos=_ios.value;
+    items.push(_it);
   });
   var rate=(document.getElementById('costrate')||{}).value;
   toast('Сохраняю…');
@@ -475,10 +524,115 @@ function userCardHtml(u){
     '<div class="kv"><span class="k">Баланс</span><span>'+nf(u.credits)+' кр</span></div>'+
     '<div class="kv"><span class="k">Покупок</span><span>'+u.purchases+' на '+nf(u.spent)+' ₽</span></div>'+
     '<div class="kv"><span class="k">Статус</span><span class="tag '+(u.blocked?'r':'g')+'">'+(u.blocked?'заблокирован':'активен')+'</span></div>'+
-    (u.refPremium?'<div class="kv"><span class="k">Премиум-реферал</span><span>'+(u.refPct!=null?u.refPct+'%':'да')+'</span></div>':'')+'</div>'+
+    (u.refPremium?'<div class="kv"><span class="k">Премиум-реферал</span><span>'+(u.refPct!=null?u.refPct+'%':'да')+'</span></div>':'')+
+    /* Рефералка. Раньше в карточке её не было вовсе, хотя бот пишет, кто кого
+       привёл, с первого дня. Клиент, приведший десяток платящих, выглядел тут
+       ровно так же, как пришедший сам по себе. */
+    '<div class="kv"><span class="k">Привёл людей</span><span'+(u.refsCount?' class="pos"':'')+'>'
+      +(u.refsCount||0)+(u.refsPaid?(' · из них купили '+u.refsPaid):'')+'</span></div>'+
+    '<div class="kv"><span class="k">Пришёл по ссылке</span><span>'
+      +(u.invitedBy?esc(u.invitedBy.user):'сам')+'</span></div>'+'</div>'+
+    (u.refsCount?'<button class="btn sec" onclick="_refKids('+u.id+',\''+esc(name).replace(/'/g,"")+'\')">👥 Показать приглашённых ('+u.refsCount+')</button>':'')+
     '<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return balForm(\'add\',\''+u.id+'\')})">Начислить</button><button class="btn row2 danger" onclick="toggleBlock('+u.id+','+(u.blocked?'false':'true')+')">'+(u.blocked?'Разблокировать':'Заблокировать')+'</button></div>';
 }
 function toggleBlock(id,block){toast('…');api('/api/admin/block',{id:id,block:block}).then(function(d){toast(d.ok?(block?'Заблокирован':'Разблокирован'):'Ошибка');if(d.ok&&window._curUser){window._curUser.blocked=block;var el=document.getElementById('findres');if(el)el.innerHTML=userCardHtml(window._curUser);}});}
+
+/* ── Рефералы: кто сколько человек привёл ─────────────────────────────────
+   Этого в панели не было вообще: ни один админский эндпоинт не обращался к
+   users.referred_by, хотя бот пишет туда с первого дня. Экран
+   «Премиум-рефералка» показывает только проценты и начисленные рубли — ни
+   одного человека. */
+SCREENS["Рефералы"]=function(){setTimeout(_refLoad,30);
+  return hdr("Рефералы","кто сколько привёл в бота")
+    +'<div class="wrap"><div id="refbody"><div class="note">Загружаю…</div></div></div>';};
+
+function _refLoad(){
+  var st=window._ref||{};
+  api('/api/admin/referrals',{action:'list',page:st.page||0,q:st.q||''})
+   .then(function(d){
+     var el=document.getElementById('refbody');if(!el)return;
+     if(!d||!d.ok){el.innerHTML='<div class="block"><div class="sub neg">⚠️ Не удалось загрузить.</div>'
+       +'<button class="btn sec" style="margin-top:10px" onclick="_refLoad()">🔄 Повторить</button></div>';return;}
+     window._refD=d;_refRender();
+   });
+}
+
+function _refSet(k,v){window._ref=window._ref||{};window._ref[k]=v;
+  if(k!=='page')window._ref.page=0;_refLoad();}
+
+function _refRender(){
+  var el=document.getElementById('refbody');if(!el)return;
+  var d=window._refD||{},st=window._ref||{},h='';
+  var share=d.usersTotal?Math.round(d.invitedTotal/d.usersTotal*100):0;
+  h+='<div class="block"><h4>👥 Всего по рекомендациям</h4>'
+    +'<div class="kv"><span class="k">Пришло по чьей-то ссылке</span><span class="pos">'
+      +nf(d.invitedTotal||0)+'</span></div>'
+    +'<div class="kv"><span class="k">Всего клиентов в боте</span><span>'+nf(d.usersTotal||0)+'</span></div>'
+    +'<div class="kv"><span class="k">Доля приглашённых</span><span>'+share+'%</span></div>'
+    +'<div class="kv"><span class="k">Приглашающих</span><span>'+nf(d.total||0)+'</span></div></div>';
+
+  h+='<div class="search"><i class="ti ti-search muted"></i>'
+    +'<input placeholder="@ник, имя или ID" value="'+esc(st.q||'')+'" '
+    +'onchange="_refSet(\'q\',this.value)"/></div>';
+
+  var rows=d.rows||[];
+  if(!rows.length){
+    h+='<div class="note">'+(st.q?'По запросу «'+esc(st.q)+'» никого.'
+        :'Пока никто никого не привёл.')+'</div>';
+  }
+  rows.forEach(function(r,i){
+    h+='<div class="row" onclick="_refKids('+r.id+',\''+String(r.user).replace(/[\\\'"<>]/g,'')+'\')">'
+      +'<div><div class="lbl2">'+((d.page||0)*40+i+1)+'. '+esc(r.user)+'</div>'
+      +'<div class="sub">ID '+r.id+'</div></div>'
+      +'<div style="margin-left:auto;text-align:right">'
+      +'<div style="font-size:13px;font-weight:600">'+r.refs+'</div>'
+      +'<span class="tag '+(r.refsPaid?'g':'n')+'">'
+      +(r.refsPaid?('купили '+r.refsPaid):'без покупок')+'</span></div></div>';
+  });
+  if((d.pages||1)>1){
+    h+='<div class="btns2" style="margin-top:10px">'
+      +'<button class="btn row2 sec"'+((d.page||0)<=0?' disabled':'')+' onclick="_refSet(\'page\','+((d.page||0)-1)+')">← Назад</button>'
+      +'<button class="btn row2 sec"'+((d.page||0)>=(d.pages-1)?' disabled':'')+' onclick="_refSet(\'page\','+((d.page||0)+1)+')">Вперёд →</button></div>'
+      +'<div class="note">Стр. '+((d.page||0)+1)+' из '+d.pages+' · нажми на строку, чтобы увидеть, КОГО именно привёл</div>';
+  } else if(rows.length){
+    h+='<div class="note">Нажми на строку, чтобы увидеть, кого именно человек привёл.</div>';
+  }
+  el.innerHTML=h;
+}
+
+/* Кого именно привёл конкретный человек. Открывается и из списка рефералов,
+   и из карточки клиента — экран один. */
+function _refKids(uid,who){
+  leaf(function(){
+    setTimeout(function(){
+      api('/api/admin/referrals',{action:'kids',userId:uid}).then(function(d){
+        var el=document.getElementById('kidsbody');if(!el)return;
+        if(!d||!d.ok){el.innerHTML='<div class="note neg">⚠️ Не удалось загрузить.</div>';return;}
+        var ks=d.kids||[],h='';
+        if(!ks.length){h='<div class="note">Никого не привёл.</div>';}
+        var bought=ks.filter(function(k){return k.orders>0;}).length;
+        var rub=ks.reduce(function(a,k){return a+(k.rub||0);},0);
+        if(ks.length){
+          h+='<div class="block"><div class="kv"><span class="k">Приглашено</span><span>'+ks.length+'</span></div>'
+            +'<div class="kv"><span class="k">Из них купили</span><span'+(bought?' class="pos"':'')+'>'+bought+'</span></div>'
+            +'<div class="kv"><span class="k">Всего оплатили</span><span>'+nf(rub)+' ₽</span></div></div>';
+        }
+        ks.forEach(function(k){
+          h+='<div class="row"><div><div class="lbl2">'+esc(k.user)+'</div>'
+            +'<div class="sub">ID '+k.id+(k.when?(' · пришёл '+_payWhen(k.when)):'')+'</div></div>'
+            +'<div style="margin-left:auto;text-align:right">'
+            +(k.orders?('<div style="font-size:13px;font-weight:600">'+nf(k.rub)+' ₽</div>'
+                        +'<span class="tag g">покупок '+k.orders+'</span>')
+                      :'<span class="tag n">не покупал</span>')
+            +'</div></div>';
+        });
+        el.innerHTML=h;
+      });
+    },30);
+    return hdr("Кого привёл "+(who||('ID '+uid)))
+      +'<div class="wrap"><div id="kidsbody"><div class="note">Загружаю…</div></div></div>';
+  });
+}
 
 /* Балансы */
 SCREENS["Балансы"]=function(){

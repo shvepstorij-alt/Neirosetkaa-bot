@@ -3146,6 +3146,85 @@ async def api_admin_profit_handler(request: web.Request) -> web.Response:
                              "profit": nrev - ncost, "missing": False, "plans": []})
         credits = {"cnt": int(cr["cnt"] or 0), "rev": int(cr["rev"] or 0)}
         total_rev += credits["rev"]
+
+        # ── ChatGPT: разбивка по МАРШРУТУ кода (филиппинские / iOS) ──────────
+        # Маршрут не записывается в момент продажи — он определяется по префиксу
+        # самого кода, и в базе есть и триггер, и разовый бэкофилл. Поэтому
+        # разбивка честна за ВСЮ историю, включая заказы, которые прошли до
+        # появления колонки.
+        #
+        # Три случая, которые нельзя молча свалить в общую кучу, поэтому они
+        # идут отдельными строками:
+        #   «маршрут не определён» — префикс кода незнаком (/gpt_code_route);
+        #   «код не привязан»      — заказ активирован вручную мимо бота;
+        #   «несколько кодов»      — на заказ ушло больше одного кода (повторы).
+        _routes = {}
+        try:
+            async with pool.acquire() as conn3:
+                _rr = await conn3.fetch(
+                    "SELECT f.order_id, f.pack, f.amount_rub, "
+                    "       ARRAY_REMOVE(ARRAY_AGG(DISTINCT g.route), NULL) AS routes, "
+                    "       COUNT(g.code) AS codes "
+                    "FROM fk_orders f "
+                    "LEFT JOIN gpt_codes g ON g.order_id = f.order_id AND g.used_at IS NOT NULL "
+                    "WHERE f.status='paid' AND f.pack LIKE 'shop:chatgpt:%' "
+                    "      AND f.paid_at>=$1 AND f.paid_at<$2 "
+                    "GROUP BY f.order_id, f.pack, f.amount_rub", since, until)
+            _plans_gpt = (SHOP_CATALOG.get("chatgpt", {}) or {}).get("plans", [])
+            for _r in _rr:
+                _pp = (_r["pack"] or "").split(":")
+                _idx = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+                _pname = (_plans_gpt[_idx]["name"] if 0 <= _idx < len(_plans_gpt)
+                          else f"#{_idx}")
+                _rts = [x for x in (_r["routes"] or []) if x]
+                _ncodes = int(_r["codes"] or 0)
+                if _ncodes == 0:
+                    _key = "manual"
+                elif len(_rts) > 1:
+                    _key = "multi"
+                elif not _rts:
+                    _key = "unknown"
+                else:
+                    _key = _rts[0]                    # 'ph' | 'ios'
+                # Себестоимость: сначала отдельная для маршрута, иначе общая
+                # по тарифу. Отдельной может не быть — тогда так и скажем
+                # в панели, а не сделаем вид, что маржа посчитана точно.
+                _usd_r = 0.0
+                _exact = False
+                if _key in ("ph", "ios"):
+                    _v = await get_setting(f"cost_usd:chatgpt:{_idx}:{_key}", "")
+                    try:
+                        _usd_r = float(_v or 0)
+                    except Exception:
+                        _usd_r = 0.0
+                    _exact = _usd_r > 0
+                if not _exact:
+                    try:
+                        _usd_r = float(await get_setting(f"cost_usd:chatgpt:{_idx}", "0") or "0")
+                    except Exception:
+                        _usd_r = 0.0
+                _unit = round(_usd_r * rate) if _usd_r > 0 else 0
+                _p = _routes.setdefault(_pname, {})
+                _c = _p.setdefault(_key, {"cnt": 0, "rev": 0, "cost": 0, "exact": _exact})
+                _c["cnt"] += 1
+                _c["rev"] += int(_r["amount_rub"] or 0)
+                _c["cost"] += _unit
+                if not _exact:
+                    _c["exact"] = False
+        except Exception as _e_rt:
+            logging.error(f"profit routes: {_e_rt}")
+            _routes = {}
+        _RU = {"ph": "Филиппинские", "ios": "iOS",
+               "unknown": "Маршрут не определён", "manual": "Код не привязан",
+               "multi": "Ушло несколько кодов"}
+        gpt_routes = [{
+            "plan": _pn,
+            "rows": [{"key": _k, "label": _RU.get(_k, _k), "cnt": _v["cnt"],
+                      "rev": _v["rev"], "cost": _v["cost"],
+                      "profit": _v["rev"] - _v["cost"], "exact": bool(_v["exact"])}
+                     for _k, _v in sorted(_pv.items(), key=lambda x: -x[1]["rev"])],
+        } for _pn, _pv in sorted(_routes.items(),
+                                 key=lambda x: -sum(v["rev"] for v in x[1].values()))]
         com = round(total_rev * 0.02); profit = total_rev - total_cost - com
         margin = round(profit / total_rev * 100) if total_rev else 0
 
@@ -3208,7 +3287,7 @@ async def api_admin_profit_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "services": services, "credits": credits,
                                   "totals": {"rev": total_rev, "cost": total_cost, "commission": com,
                                              "profit": profit, "margin": margin}, "rate": rate,
-                                  "series": _series})
+                                  "series": _series, "gptRoutes": gpt_routes})
     except Exception as _e:
         logging.error(f"api_admin_profit: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
@@ -3235,7 +3314,19 @@ async def api_admin_prices_handler(request: web.Request) -> web.Response:
                 price = int(p.get("price") or 0)
                 marg = round((price - usd * rate) / price * 100) if price > 0 else 0
                 man = (await get_setting(f"manual:{k}:{i}", "0") or "0") == "1"
-                pl.append({"idx": i, "name": p.get("name", ""), "price": price, "costUsd": usd, "margin": marg, "manual": man, "desc": p.get("desc", "")})
+                _row = {"idx": i, "name": p.get("name", ""), "price": price,
+                        "costUsd": usd, "margin": marg, "manual": man,
+                        "desc": p.get("desc", "")}
+                # Закуп по маршруту отдаём только у ChatGPT: только там код
+                # бывает филиппинским или iOS, и стоят они по-разному.
+                if k == "chatgpt":
+                    for _rt in ("ph", "ios"):
+                        try:
+                            _row["cost" + _rt.capitalize()] = float(
+                                await get_setting(f"cost_usd:{k}:{i}:{_rt}", "") or 0)
+                        except Exception:
+                            _row["cost" + _rt.capitalize()] = 0.0
+                pl.append(_row)
             services.append({"key": k, "name": scat.get("name", k), "emoji": scat.get("emoji", ""), "desc": scat.get("desc", ""), "plans": pl})
         return web.json_response({"ok": True, "rate": rate, "services": services})
     except Exception as _e:
@@ -3268,6 +3359,20 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
                         continue
                     if it.get("costUsd") is not None:
                         await set_setting(f"cost_usd:{k}:{idx}", str(float(it["costUsd"])))
+                    # Отдельный закуп по маршруту (только ChatGPT): филиппинские
+                    # и iOS коды стоят по-разному, а до этого закуп был один на
+                    # тариф — и разницу в марже между ними было не увидеть.
+                    # Пусто или 0 = «отдельного нет, считать по общему».
+                    for _rt in ("ph", "ios"):
+                        _rv = it.get("cost" + _rt.capitalize())
+                        if _rv is None:
+                            continue
+                        try:
+                            _rf = float(_rv or 0)
+                        except Exception:
+                            continue
+                        await set_setting(f"cost_usd:{k}:{idx}:{_rt}",
+                                          str(_rf) if _rf > 0 else "")
                     scat = SHOP_CATALOG.get(k)
                     # ПОЗИЦИЯ тарифа в БД (уникальный plan_idx) — устойчиво к дубликатам имён.
                     # Порядок совпадает с формой цен и с загрузкой каталога (sort_order, plan_idx).
@@ -5336,6 +5441,21 @@ async def api_admin_user_find_handler(request: web.Request) -> web.Response:
             pur = await conn.fetchrow(
                 "SELECT COUNT(*) AS c, COALESCE(SUM(amount_rub),0) AS s FROM fk_orders "
                 "WHERE user_id=$1 AND status='paid'", uid)
+            # Рефералка: кто привёл этого клиента и скольких привёл он сам.
+            # Данные были в базе с первого дня (users.referred_by), но ни один
+            # админский эндпоинт к ним не обращался — в панели этого не было видно.
+            _refs_cnt = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0
+            _refs_paid = await conn.fetchval(
+                "SELECT COUNT(*) FROM users r WHERE r.referred_by=$1 AND EXISTS("
+                "  SELECT 1 FROM fk_orders o WHERE o.user_id=r.user_id AND o.status='paid')",
+                uid) or 0
+            _inv = None
+            if u.get("referred_by"):
+                _inv = await conn.fetchrow(
+                    "SELECT user_id, COALESCE(username,'') AS username, "
+                    "       COALESCE(full_name,'') AS full_name FROM users WHERE user_id=$1",
+                    int(u["referred_by"]))
         rp = await get_ref_premium(uid)
         cr = u.get("created_at")
         return web.json_response({"ok": True, "user": {
@@ -5344,10 +5464,102 @@ async def api_admin_user_find_handler(request: web.Request) -> web.Response:
             "created": cr.strftime("%d.%m.%Y") if cr else "",
             "purchases": int(pur["c"] or 0), "spent": int(pur["s"] or 0),
             "refPremium": bool(rp and rp.get("ref_premium")),
-            "refPct": (rp.get("ref_premium_pct") if rp else None)}})
+            "refPct": (rp.get("ref_premium_pct") if rp else None),
+            "refsCount": int(_refs_cnt), "refsPaid": int(_refs_paid),
+            "invitedBy": ({"id": int(_inv["user_id"]),
+                           "user": ("@" + _inv["username"]) if _inv["username"]
+                                   else (_inv["full_name"] or f"id{_inv['user_id']}")}
+                          if _inv else None)}})
     except Exception as _e:
         logging.error(f"api_admin_user_find: {_e}")
         return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_referrals_handler(request: web.Request) -> web.Response:
+    """Кто сколько человек привёл в бота. Admin-only.
+
+    Данные лежат в users.referred_by с самого первого дня — бот пишет их при
+    регистрации по ссылке. Но в панели этого не было видно ВООБЩЕ: ни один
+    админский эндпоинт к referred_by не обращался, а экран «Премиум-рефералка»
+    показывает только проценты и начисленные рубли, без единого человека.
+
+    action:
+      "" / "list"  — приглашающие, по убыванию числа приглашённых;
+      "kids"       — поимённо, кого привёл конкретный человек.
+    """
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _act = str(body.get("action") or "list")
+        pool = await get_pool()
+
+        if _act == "kids":
+            _uid = int(body.get("userId") or 0)
+            if not _uid:
+                return web.json_response({"ok": False, "msg": "Нет id"})
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT r.user_id, COALESCE(r.username,'') AS username, "
+                    "       COALESCE(r.full_name,'') AS full_name, r.created_at, "
+                    "       COALESCE(o.cnt,0) AS orders, COALESCE(o.rub,0) AS rub "
+                    "FROM users r "
+                    "LEFT JOIN (SELECT user_id, COUNT(*) AS cnt, SUM(amount_rub) AS rub "
+                    "           FROM fk_orders WHERE status='paid' GROUP BY user_id) o "
+                    "       ON o.user_id = r.user_id "
+                    "WHERE r.referred_by=$1 ORDER BY r.created_at DESC LIMIT 500", _uid)
+            return web.json_response({"ok": True, "kids": [{
+                "id": int(r["user_id"]),
+                "user": ("@" + r["username"]) if r["username"]
+                        else (r["full_name"] or f"id{r['user_id']}"),
+                "when": r["created_at"].isoformat() if r["created_at"] else "",
+                "orders": int(r["orders"] or 0), "rub": int(r["rub"] or 0),
+            } for r in rows]})
+
+        q = str(body.get("q") or "").strip().lstrip("@#")
+        page = max(0, int(body.get("page") or 0))
+        PAGE = 40
+        _where = ["u.user_id IN (SELECT referred_by FROM users WHERE referred_by IS NOT NULL)"]
+        _args = []
+        if q:
+            _args.append(f"%{q}%"); _i1 = len(_args)
+            _args.append(q);        _i2 = len(_args)
+            _where.append(f"(u.username ILIKE ${_i1} OR u.full_name ILIKE ${_i1} "
+                          f"OR CAST(u.user_id AS TEXT) = ${_i2})")
+        _w = " AND ".join(_where)
+        async with pool.acquire() as conn:
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM users u WHERE {_w}", *_args) or 0
+            rows = await conn.fetch(
+                "SELECT u.user_id, COALESCE(u.username,'') AS username, "
+                "       COALESCE(u.full_name,'') AS full_name, "
+                "       (SELECT COUNT(*) FROM users r WHERE r.referred_by=u.user_id) AS refs, "
+                "       (SELECT COUNT(*) FROM users r WHERE r.referred_by=u.user_id "
+                "          AND EXISTS(SELECT 1 FROM fk_orders o "
+                "                     WHERE o.user_id=r.user_id AND o.status='paid')) AS refs_paid "
+                f"FROM users u WHERE {_w} "
+                "ORDER BY refs DESC, u.user_id "
+                f"LIMIT {PAGE} OFFSET {page * PAGE}", *_args)
+            # Итог по всей базе, а не по странице: сколько людей вообще пришло
+            # по чьей-то ссылке. Показываем рядом с общим числом клиентов —
+            # иначе «1 200 приглашённых» не с чем сравнить.
+            _all_ref = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL") or 0
+            _all_users = await conn.fetchval("SELECT COUNT(*) FROM users") or 0
+        _pages = max(1, (total + PAGE - 1) // PAGE)
+        return web.json_response({"ok": True, "page": min(page, _pages - 1),
+            "pages": _pages, "total": total,
+            "invitedTotal": int(_all_ref), "usersTotal": int(_all_users),
+            "rows": [{
+                "id": int(r["user_id"]),
+                "user": ("@" + r["username"]) if r["username"]
+                        else (r["full_name"] or f"id{r['user_id']}"),
+                "refs": int(r["refs"] or 0), "refsPaid": int(r["refs_paid"] or 0),
+            } for r in rows]})
+    except Exception as _e:
+        logging.error(f"api_admin_referrals: {_e}", exc_info=True)
+        return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
 async def api_admin_balance_handler(request: web.Request) -> web.Response:
@@ -9271,6 +9483,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/model-price", api_admin_model_price_handler)
     app.router.add_post("/api/admin/packs", api_admin_packs_handler)
     app.router.add_post("/api/admin/packs-save", api_admin_packs_save_handler)
+    app.router.add_post("/api/admin/referrals", api_admin_referrals_handler)
     app.router.add_post("/api/admin/feed-order-action", api_admin_feed_order_action_handler)
     app.router.add_post("/api/admin/nsg-catalog", api_admin_nsg_catalog_handler)
     app.router.add_post("/api/admin/nsg-product", api_admin_nsg_product_handler)
