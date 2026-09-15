@@ -148,6 +148,14 @@ async def init_db():
             ("partner_promo_pct",  "DOUBLE PRECISION DEFAULT 0"),
             ("partner_promo_mode", "TEXT DEFAULT 'off'"),
             ("partner_promo_days", "INTEGER DEFAULT 7"),
+            # Почта аккаунта ChatGPT клиента. Нужна, чтобы отвечать на вопрос
+            # «этот потраченный код ушёл НАШЕМУ клиенту или постороннему».
+            # Раньше её брали из gpt_pending_activations.session_raw — а туда
+            # её НИКТО никогда не записывал: колонка есть, при обновлении
+            # строки обнуляется, а сохранять некому. Из-за этого обе сверки
+            # (оборванные активации и потерянные) всегда упирались в «у
+            # клиента: —» и уходили в «проверь вручную».
+            ("gpt_email",      "TEXT"),
         ]:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")

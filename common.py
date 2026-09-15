@@ -8387,6 +8387,30 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     #   Plus + подписка (или план не определён) -> iOS
     # Филиппинский код на аккаунте с активной подпиской сгорает впустую, поэтому
     # при любой неопределённости идём на iOS, а при пустом iOS-пуле — в ручной
+    # Запоминаем почту аккаунта ChatGPT клиента — ОДИН РАЗ, в момент, когда он
+    # её и присылает. Без этого ни одна сверка не может сказать, чей код
+    # потрачен: раньше почту искали в pending.session_raw, куда её никто не
+    # записывал, и обе проверки всегда отвечали «у клиента: —».
+    # Храним ТОЛЬКО адрес, не сессию: сессия — это ключ от аккаунта, ей в базе
+    # не место, а для сверки достаточно почты.
+    try:
+        # _email_from_session живёт в chatgpt_activation, а
+        # _extract_email_from_token — в db. Разные модули.
+        from chatgpt_activation import _email_from_session
+        from db import _extract_email_from_token
+        _cl_mail = ""
+        if session_raw:
+            _cl_mail = _email_from_session(session_raw) or ""
+        if not _cl_mail and access_token:
+            _cl_mail = _extract_email_from_token(access_token) or ""
+        if _cl_mail and "@" in _cl_mail:
+            _p_em = await get_pool()
+            async with _p_em.acquire() as _c_em:
+                await _c_em.execute(
+                    "UPDATE users SET gpt_email=$2 WHERE user_id=$1", user_id, _cl_mail)
+    except Exception as _e_em:
+        logging.warning(f"GPT: не сохранил почту клиента {user_id}: {_e_em}")
+
     # режим: тратить iOS вместо филиппинского нельзя (решение Александра).
     if provider == "bpa":
         _pk_rt = plan_name_to_key(plan_name)
@@ -10188,6 +10212,21 @@ async def gpt_reconcile_orphans() -> dict:
             _email = _email_from_session(r["session_raw"] or "")
         except Exception:
             pass
+        if not _email:
+            # session_raw в эту таблицу никто никогда не писал, поэтому раньше
+            # почта тут была пуста ВСЕГДА — и сверка ни одной активации не
+            # подтверждала, всё уходило в «проверь вручную». Берём сохранённую.
+            try:
+                async with pool.acquire() as _c_em2:
+                    _email = await _c_em2.fetchval(
+                        "SELECT gpt_email FROM users WHERE user_id=$1", _uid) or ""
+                    if not _email:
+                        _email = await _c_em2.fetchval(
+                            "SELECT email FROM gpt_codes WHERE used_by=$1 "
+                            "AND COALESCE(email,'')<>'' ORDER BY used_at DESC LIMIT 1",
+                            _uid) or ""
+            except Exception as _e_em3:
+                logging.warning(f"reconcile: почта клиента {_uid}: {_e_em3}")
         # «Код потрачен» само по себе НЕ значит «потрачен нашим клиентом»:
         # процесс мог умереть на коде, который был израсходован кем-то раньше.
         # Записать тогда подписку этому клиенту — значит соврать ему в профиле.
@@ -10283,6 +10322,7 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
     _all, _by_code = [], {}
     _pool_n = {_sv: 0 for _sv in _svcs}          # сколько кодов в пуле сервиса
     _sql_err = {}                                # сервис → почему не смогли выбрать
+    _skipped = {}                                # сервис → пропущено (активация идёт)
     async with pool.acquire() as conn:
         for _sv in _svcs:
             _cfg = _AUDIT_SERVICES[_sv]
@@ -10299,6 +10339,20 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
             _where.append(f"NOT EXISTS (SELECT 1 FROM {_cfg['pending']} p "
                           f"WHERE p.code = {_cfg['table']}.code "
                           f"  AND ({_cfg['inflight']}))")
+            # Сколько кодов мы ПРОПУСКАЕМ из-за идущей активации — считаем
+            # отдельно и показываем в отчёте. Без этого «годных: 47» читалось
+            # как «всё чисто», хотя пропущенный код мог быть уже потрачен:
+            # 15.09.2026 так и вышло — проверка через 11 минут после неудачи
+            # не увидела код, который на сайте уже значился fulfilled.
+            try:
+                _skipped[_sv] = await conn.fetchval(
+                    f"SELECT COUNT(*) FROM {_cfg['table']} WHERE "
+                    + " AND ".join(_where[:-1])
+                    + f" AND EXISTS (SELECT 1 FROM {_cfg['pending']} p "
+                      f"WHERE p.code = {_cfg['table']}.code "
+                      f"  AND ({_cfg['inflight']}))") or 0
+            except Exception:
+                _skipped[_sv] = 0
             try:
                 _rows = await conn.fetch(
                     f"SELECT code FROM {_cfg['table']} WHERE " + " AND ".join(_where))
@@ -10425,7 +10479,8 @@ async def pool_audit(services=None, include_reserved: bool = True) -> dict:
                      f"годных {_d['free']}, потрачено {len(_d['spent'])}, "
                      f"спорных {len(_d['odd'])}, без ответа {_d['noanswer']}")
     return {"ok": True, "checked": _checked, "spent": _spent, "free": _free,
-            "odd": _odd, "services": _svcs, "unknown": _unknown, "by_service": _by}
+            "odd": _odd, "services": _svcs, "unknown": _unknown, "by_service": _by,
+            "skipped": {k: int(v) for k, v in _skipped.items() if v}}
 
 
 def _gw_int(v, default: int) -> int:
@@ -10772,6 +10827,10 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
                     _mine = _email_from_session(_pr["session_raw"]) or ""
                 except Exception:
                     _mine = ""
+            if not _mine:
+                # Основной источник: почта, сохранённая в момент активации.
+                _mine = await conn2.fetchval(
+                    "SELECT gpt_email FROM users WHERE user_id=$1", _uid) or ""
             if not _mine:
                 _mine = await conn2.fetchval(
                     "SELECT email FROM gpt_codes WHERE used_by=$1 AND COALESCE(email,'')<>'' "
@@ -11128,6 +11187,16 @@ def pool_audit_report(r: dict) -> str:
     _t = (f"🔎 <b>Сверка пулов</b>\n"
           f"Итого проверено: <b>{r.get('checked')}</b> · "
           f"✅ годных: <b>{r.get('free')}</b>\n")
+    # Пропущенные — ОБЯЗАТЕЛЬНО отдельной строкой. Без неё «годных: 47»
+    # читается как «всё чисто», хотя пропущенный код мог быть уже потрачен:
+    # 15.09.2026 проверка через 11 минут после неудачи не увидела код, который
+    # на сайте уже значился fulfilled, и выглядело это как ошибка бота.
+    _sk = r.get("skipped") or {}
+    _sk_n = sum(int(v or 0) for v in _sk.values())
+    if _sk_n:
+        _t += (f"⏳ Пропущено: <b>{_sk_n}</b> — по ним прямо сейчас идёт "
+               f"активация, сайт мог бы показать их потраченными зря. "
+               f"Проверь ещё раз минут через 15.\n")
 
     def _codes(_rows, _title, _icon):
         if not _rows:
