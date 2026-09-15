@@ -10709,6 +10709,182 @@ def tg_chunks(text: str, limit: int = 3800) -> list:
     return _out
 
 
+async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> list:
+    """Ищет активации, которые ПРОШЛИ, а бот записал их как неудачу.
+
+    Откуда берётся этот случай. Перебор «код уже использован» помечает код
+    использованным без order_id и без почты, а строку ожидания затирает
+    следующий код. Из-за этого фоновый сверщик оборванных активаций
+    (gpt_reconcile_orphans) такие коды не видит вовсе: он смотрит только
+    gpt_pending_activations. А на сайте код при этом значится fulfilled, с
+    почтой клиента и временем в минуту от нашей попытки — то есть подписка
+    клиенту УШЛА, просто бот об этом не узнал (15.09.2026, три заказа подряд).
+
+    Сам ничего не пишет и ничего не возвращает в пул: отдаёт находки, решение
+    за человеком. Это то же правило, что и с кодами, — бот не распоряжается
+    ими молча.
+    """
+    from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
+                                    _email_from_session, _same_email)
+    _h = max(1, min(int(hours or 48), 24 * 30))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT c.code, c.used_by, c.used_at, COALESCE(u.username,'') AS username "
+            "FROM gpt_codes c LEFT JOIN users u ON u.user_id=c.used_by "
+            "WHERE c.provider='bpa' AND c.is_used=TRUE AND c.used_by IS NOT NULL "
+            "  AND (c.order_id IS NULL OR c.order_id='') "
+            "  AND c.used_at >= NOW() - make_interval(hours => $1) "
+            # Код, который прямо сейчас активируют, не трогаем.
+            "  AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p "
+            "                  WHERE p.code = c.code) "
+            "ORDER BY c.used_at DESC LIMIT 200", _h)
+    if not rows:
+        return []
+    _st = await bpa_query_codes([r["code"] for r in rows])
+    if not _st:
+        logging.warning("gpt_lost_activations: сайт не ответил — ничего не решаем")
+        return []
+
+    out = []
+    for r in rows:
+        _info = _st.get((r["code"] or "").strip().upper()) or {}
+        _v = (_info.get("status") or "").lower()
+        if _v not in BPA_USED_STATUSES:
+            continue                      # цел или неизвестен — это другой разговор
+        _uid = int(r["used_by"])
+        # Уже показывали — второй раз не дёргаем. НО только когда нас зовёт
+        # фоновый цикл: он помечает находку показанной сразу после отправки
+        # сообщения, и если бы этот фильтр действовал всегда, кнопка под тем
+        # самым сообщением НИКОГДА бы не сработала — проверка при нажатии
+        # просто не нашла бы код и ответила «условия изменились».
+        if only_new and (await get_setting(f"lostact:{r['code']}", "")) == "1":
+            continue
+        # Почта клиента: сперва из его текущей сессии, иначе из его же прошлой
+        # удачной активации. Без почты решать НЕЛЬЗЯ: «код потрачен» само по
+        # себе не значит «потрачен нашим клиентом».
+        _mine = ""
+        async with pool.acquire() as conn2:
+            _pr = await conn2.fetchrow(
+                "SELECT session_raw FROM gpt_pending_activations WHERE user_id=$1", _uid)
+            if _pr and _pr["session_raw"]:
+                try:
+                    _mine = _email_from_session(_pr["session_raw"]) or ""
+                except Exception:
+                    _mine = ""
+            if not _mine:
+                _mine = await conn2.fetchval(
+                    "SELECT email FROM gpt_codes WHERE used_by=$1 AND COALESCE(email,'')<>'' "
+                    "ORDER BY used_at DESC LIMIT 1", _uid) or ""
+            # Заказ, к которому это относится: ближайшая оплата ChatGPT
+            # этого клиента до момента сжигания.
+            # Берём БЛИЖАЙШИЙ заказ, к которому ещё не привязан ни один код.
+            # Иначе код прицепился бы к заказу, который давно закрыт другим
+            # кодом, и в разбивке прибыли появилось бы «ушло несколько кодов»
+            # там, где ушёл один.
+            _ord = await conn2.fetchrow(
+                "SELECT f.order_id FROM fk_orders f "
+                "WHERE f.user_id=$1 AND f.status='paid' "
+                "  AND f.pack LIKE 'shop:chatgpt:%' "
+                "  AND f.paid_at <= $2::timestamptz + INTERVAL '10 minutes' "
+                "  AND NOT EXISTS (SELECT 1 FROM gpt_codes g "
+                "                  WHERE g.order_id = f.order_id) "
+                "ORDER BY f.paid_at DESC LIMIT 1", _uid, r["used_at"])
+        _site_mail = _info.get("email") or ""
+        _match = None
+        if _site_mail and _mine:
+            _match = bool(_same_email(_site_mail, _mine))
+        out.append({
+            "code": r["code"], "user_id": _uid,
+            "user": ("@" + r["username"]) if r["username"] else f"id{_uid}",
+            "status": _v, "site_email": _site_mail, "client_email": _mine,
+            "match": _match,                  # True / False / None (не с чем сверить)
+            "burned_at": r["used_at"],
+            "site_when": _info.get("when", ""),
+            "order_id": (_ord or {}).get("order_id") or "",
+        })
+    return out
+
+
+async def gpt_lost_activation_apply(code: str) -> dict:
+    """Записывает найденную активацию — ТОЛЬКО по команде человека.
+
+    Перед записью сайт спрашивается ЗАНОВО: сообщение могло пролежать в чате
+    час, и за это время всё могло измениться. Дальше — то же, что сделал бы
+    удачный проход: код получает заказ и почту (именно это и есть запись
+    подписки, профиль читает её отсюда), сообщение заказа у админа правится
+    на «активировано», клиенту уходит короткое «подписка всё-таки активна».
+    """
+    from chatgpt_activation import bpa_query_codes, BPA_USED_STATUSES, _same_email
+    code = (code or "").strip()
+    if not code:
+        return {"ok": False, "msg": "Пустой код"}
+    _found = None
+    for _f in await gpt_lost_activations_scan(hours=24 * 30, only_new=False):
+        if _f["code"].upper() == code.upper():
+            _found = _f
+            break
+    if not _found:
+        # Мог уже быть записан, возвращён в пул или сайт передумал.
+        _st = await bpa_query_codes([code])
+        if not _st:
+            return {"ok": False, "msg": "Сайт не ответил — попробуй позже."}
+        _v = ((_st.get(code.upper()) or {}).get("status") or "").lower()
+        return {"ok": False,
+                "msg": f"Условия изменились: на сайте сейчас «{_v or '?'}». "
+                       f"Ничего не записал."}
+    if _found["match"] is not True:
+        return {"ok": False,
+                "msg": "Почта клиента и почта на сайте не совпали — "
+                       "записывать активацию этому клиенту нельзя."}
+    _uid = _found["user_id"]
+    _oid = _found["order_id"]
+    if not _oid:
+        return {"ok": False, "msg": "Не нашёл оплаченный заказ ChatGPT у этого клиента."}
+    await mark_gpt_code_used(code, _uid, _oid, _found["site_email"])
+    await set_setting(f"lostact:{code}", "1")
+    # Строку ожидания, если она ещё висит на этом клиенте, закрываем.
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM gpt_pending_activations WHERE user_id=$1 AND code=$2",
+                _uid, code)
+    except Exception as _e_p:
+        logging.warning(f"lostact: не закрыл pending {code}: {_e_p}")
+    # Сообщение заказа у админа — в тот же вид, что и при обычном успехе.
+    try:
+        _ord = await fk_get_order(_oid)
+        _amid = (_ord or {}).get("admin_msg_id")
+        if _amid:
+            await bot.edit_message_text(
+                f"✅ <b>Заказ активирован</b>\n\n"
+                f"👤 {_found['user']} (<code>{_uid}</code>)\n"
+                f"🔑 <code>{code}</code>\n"
+                f"📧 <code>{_found['site_email']}</code>\n"
+                f"🆔 <code>{_oid}</code>\n"
+                f"{await _fk_num_line(_oid)}\n"
+                f"<i>Активация прошла на сайте, но бот её не записал — "
+                f"дописано по твоему подтверждению.</i>",
+                chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
+    except Exception as _e_m:
+        logging.warning(f"lostact: не поправил сообщение заказа {_oid}: {_e_m}")
+    # И клиенту — он получил «не получилось» и, скорее всего, ждёт.
+    try:
+        await bot.send_message(
+            _uid,
+            "✅ <b>Подписка всё-таки активна</b>\n\n"
+            "Мы перепроверили: активация прошла, хотя бот сообщил об ошибке. "
+            "Загляни в ChatGPT — Plus уже должен быть на месте.\n\n"
+            "Извини за путаницу 🙌",
+            parse_mode="HTML")
+    except Exception as _e_c:
+        logging.info(f"lostact: клиенту {_uid} не написалось: {_e_c}")
+    logging.warning(f"lostact: записал активацию {code} → uid={_uid} заказ={_oid}")
+    return {"ok": True, "user_id": _uid, "order_id": _oid,
+            "email": _found["site_email"]}
+
+
 async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:
     """Ищет коды, сожжённые перебором зря, и (по команде) возвращает их в пул.
 

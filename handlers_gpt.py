@@ -242,6 +242,96 @@ async def admin_gpt_tz(message: Message):
                          f"Поменять: <code>/gpt_tz 3</code>", parse_mode="HTML")
 
 
+@dp.callback_query(F.data.startswith("gptlost:"))
+async def cb_gpt_lost_apply(cb):
+    """«Записать активацию» под находкой фонового сверщика.
+
+    Бот сам такие активации не записывает — только показывает. Здесь человек
+    подтвердил, и запись выполняется: код привязывается к заказу (это и есть
+    запись подписки), сообщение заказа правится, клиенту уходит уведомление.
+    Сайт при этом опрашивается ЗАНОВО: сообщение могло пролежать в чате час.
+    """
+    if not is_admin(cb.from_user.id):
+        try:
+            await cb.answer("Не для тебя", show_alert=True)
+        except Exception:
+            pass
+        return
+    _code = (cb.data or "").split(":", 1)[1].strip()
+    try:
+        await cb.answer("Проверяю на сайте…")
+    except Exception:
+        pass
+    from common import gpt_lost_activation_apply
+    try:
+        _r = await gpt_lost_activation_apply(_code)
+    except Exception as _e:
+        _r = {"ok": False, "msg": f"Сбой: {str(_e)[:150]}"}
+    if _r.get("ok"):
+        _txt = (f"✅ <b>Записал активацию</b>\n"
+                f"🔑 <code>{_code}</code>\n"
+                f"👤 <code>{_r['user_id']}</code>\n"
+                f"📧 <code>{_r.get('email') or '—'}</code>\n"
+                f"🆔 <code>{_r['order_id']}</code>\n\n"
+                f"Сообщение заказа поправил, клиенту написал.")
+    else:
+        _txt = ("❌ <b>Не записал</b>\n"
+                f"🔑 <code>{_code}</code>\n\n" + (_r.get("msg") or "Не вышло."))
+    # Правим ту же карточку, чтобы кнопка не осталась нажимаемой второй раз.
+    try:
+        await cb.message.edit_text(_txt, parse_mode="HTML")
+    except Exception:
+        try:
+            await cb.message.answer(_txt, parse_mode="HTML")
+        except Exception:
+            pass
+
+
+@dp.message(F.text.startswith("/gpt_lost"), StateFilter("*"))
+async def admin_gpt_lost(message: Message):
+    """Разово посмотреть те же находки, не дожидаясь фонового прохода."""
+    if not is_admin(message.from_user.id):
+        return
+    from common import gpt_lost_activations_scan
+    _parts = (message.text or "").split()
+    _h = 48
+    for _p in _parts[1:]:
+        if _p.isdigit():
+            _h = max(1, min(int(_p), 24 * 30))
+    await message.answer(f"\U0001f50e Смотрю за последние {_h} ч…")
+    try:
+        # Команду зовёт человек — показываем ВСЁ, включая уже присланное
+        # фоном: иначе найти нужное повторно было бы нечем.
+        _rows = await gpt_lost_activations_scan(hours=_h, only_new=False)
+    except Exception as _e:
+        await message.answer(f"\u274c Не вышло: <code>{_e}</code>", parse_mode="HTML")
+        return
+    if not _rows:
+        await message.answer(
+            f"✅ За {_h} ч потерянных активаций не нашёл.\n\n"
+            f"<i>Ищутся коды, сожжённые перебором, которые на сайте значатся "
+            f"потраченными: значит подписка ушла, а бот записал неудачу. "
+            f"Команда показывает всё, включая уже присланное фоном.</i>",
+            parse_mode="HTML")
+        return
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    for _l in _rows:
+        _m = _l.get("match")
+        _t = ((("✅ <b>Похоже, активация всё-таки прошла</b>") if _m is True
+               else "❓ <b>Код потрачен — чей аккаунт, не подтверждаю</b>") + "\n"
+              f"👤 {_l['user']} (<code>{_l['user_id']}</code>)\n"
+              f"🔑 <code>{_l['code']}</code> — сайт: {_l['status']}\n"
+              f"📧 на сайте: <code>{_l['site_email'] or '—'}</code>\n"
+              f"📧 у клиента: <code>{_l['client_email'] or '—'}</code>\n"
+              + (f"🆔 <code>{_l['order_id']}</code>\n" if _l.get("order_id") else ""))
+        _kb = None
+        if _m is True:
+            _kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Записать активацию",
+                                     callback_data=f"gptlost:{_l['code']}")]])
+        await message.answer(_t, parse_mode="HTML", reply_markup=_kb)
+
+
 @dp.message(F.text.startswith("/gpt_codes_recover"), StateFilter("*"))
 async def admin_gpt_codes_recover(message: Message):
     """Коды, сожжённые перебором зря: показать, а по «да» — вернуть в пул."""

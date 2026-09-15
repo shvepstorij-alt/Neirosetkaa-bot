@@ -621,6 +621,58 @@ async def gpt_orphans_loop():
                     pass
         except Exception as e:
             logging.error(f"gpt_orphans_loop: {e}")
+
+        # ── Второй проход: активации, которые ПРОШЛИ, а бот записал неудачу ──
+        # Сверху разбираются «висящие» активации — те, у кого жива строка
+        # ожидания. Но перебор «код уже использован» строку затирает следующим
+        # кодом, и такие случаи наверх не попадают вовсе: 15.09.2026 три заказа
+        # подряд были активированы на сайте (fulfilled, почта клиента, разница
+        # в минуты), а бот сообщил о неудаче. Видел это только ручной
+        # /gpt_codes_recover.
+        # Сам ничего не пишем: присылаем находку с кнопкой.
+        try:
+            from common import gpt_lost_activations_scan
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            for _l in await gpt_lost_activations_scan(hours=48):
+                _m = _l.get("match")
+                _head = ("✅ <b>Похоже, активация всё-таки прошла</b>"
+                         if _m is True else
+                         "❓ <b>Код потрачен — чей аккаунт, не подтверждаю</b>")
+                _txt = (f"{_head}\n"
+                        f"👤 {_l['user']} (<code>{_l['user_id']}</code>)\n"
+                        f"🔑 <code>{_l['code']}</code> — сайт: {_l['status']}\n"
+                        f"📧 на сайте: <code>{_l['site_email'] or '—'}</code>\n"
+                        f"📧 у клиента: <code>{_l['client_email'] or '—'}</code>\n"
+                        + (f"🆔 <code>{_l['order_id']}</code>\n" if _l.get("order_id") else "")
+                        + (f"🕐 сайт: {_l['site_when']}\n" if _l.get("site_when") else ""))
+                if _m is True:
+                    _txt += ("\nПочта совпала — подписка ушла этому клиенту, "
+                             "а бот записал неудачу. Нажми, чтобы дописать: "
+                             "код привяжется к заказу, сообщение заказа "
+                             "поправится, клиенту уйдёт уведомление.")
+                    _kb = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✅ Записать активацию",
+                                             callback_data=f"gptlost:{_l['code']}")]])
+                elif _m is False:
+                    _txt += ("\nПочты РАЗНЫЕ — записывать нельзя: клиент увидел "
+                             "бы в профиле чужую подписку. Разберись вручную.")
+                    _kb = None
+                else:
+                    _txt += ("\nСверить почту не с чем. Ничего не трогаю — "
+                             "посмотри сам.")
+                    _kb = None
+                try:
+                    await bot.send_message(ADMIN_ID, _txt, parse_mode="HTML",
+                                           reply_markup=_kb)
+                    # Помечаем показанным сразу: иначе одна и та же находка
+                    # будет приходить каждые 20 минут.
+                    from db import set_setting as _ss
+                    await _ss(f"lostact:{_l['code']}", "1")
+                except Exception as _e_s:
+                    logging.warning(f"lostact alert {_l['code']}: {_e_s}")
+        except Exception as e2:
+            logging.error(f"gpt_lost_activations: {e2}")
+
         await asyncio.sleep(20 * 60)
 
 
