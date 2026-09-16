@@ -624,6 +624,8 @@ async def gpt_orphans_loop():
                         f"🔑 <code>{_u['code']}</code> — сайт: {_u['status']}\n"
                         f"📧 на сайте: <code>{_u['site_email'] or '—'}</code>\n"
                         f"📧 у клиента: <code>{_u['client_email'] or '—'}</code>\n"
+                        f"🏢 org на сайте: <code>{_u.get('site_org') or '—'}</code>\n"
+                        f"🏢 org у клиента: <code>{_u.get('client_org') or '—'}</code>\n"
                         f"🆔 <code>{_u['order_id']}</code>\n\n"
                         f"Код потрачен, но что он ушёл именно этому клиенту — "
                         f"подтвердить не могу. Подписку НЕ записывал: иначе "
@@ -663,19 +665,25 @@ async def gpt_orphans_loop():
                         f"🔑 <code>{_l['code']}</code> — сайт: {_l['status']}\n"
                         f"📧 на сайте: <code>{_l['site_email'] or '—'}</code>\n"
                         f"📧 у клиента: <code>{_l['client_email'] or '—'}</code>\n"
+                        + (f"🏢 org на сайте: <code>{_l.get('site_org') or '—'}</code>\n"
+                           f"🏢 org у клиента: <code>{_l.get('client_org') or '—'}</code>\n"
+                           if (_l.get('site_org') or _l.get('client_org')) else "")
+                        + ""
                         + (f"🆔 <code>{_l['order_id']}</code>\n" if _l.get("order_id") else "")
                         + (f"🕐 сайт: {_l['site_when']}\n" if _l.get("site_when") else ""))
                 if _m is True:
-                    _txt += ("\nПочта совпала — подписка ушла этому клиенту, "
+                    _txt += ((f"\nСошлось по {'Organization ID' if _l.get('by')=='org' else 'почте'} — "
+                              f"подписка ушла этому клиенту, "
                              "а бот записал неудачу. Нажми, чтобы дописать: "
                              "код привяжется к заказу, сообщение заказа "
-                             "поправится, клиенту уйдёт уведомление.")
+                             "поправится, клиенту уйдёт уведомление."))
                     _kb = InlineKeyboardMarkup(inline_keyboard=[[
                         InlineKeyboardButton(text="✅ Записать активацию",
                                              callback_data=f"gptlost:{_l['code']}")]])
                 elif _m is False:
-                    _txt += ("\nПочты РАЗНЫЕ — записывать нельзя: клиент увидел "
-                             "бы в профиле чужую подписку. Разберись вручную.")
+                    _txt += ((f"\n{'Organization ID' if _l.get('by')=='org' else 'Почты'} "
+                              f"РАЗНЫЕ — записывать нельзя: клиент увидел бы "
+                              f"в профиле чужую подписку. Разберись вручную."))
                     _kb = None
                 else:
                     _txt += ("\nСверить почту не с чем. Ничего не трогаю — "

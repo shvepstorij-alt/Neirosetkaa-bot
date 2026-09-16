@@ -7626,23 +7626,27 @@ async def _run_activation_job(
                 if _gu:
                     _uc = "\n".join(f"   • <code>{c}</code>" for c in _gu)
                     _caption += f"\n\n♻️ <b>Пропущены уже использованные коды</b> ({len(_gu)}):\n{_uc}"
-                if _gu:
-                    # были пропущены использованные коды → отдельное НОВОЕ сообщение об успехе
-                    await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
-                else:
-                    # Обновляем ТО ЖЕ сообщение заказа (создан → оплачен → активирован), без скрина
+                # Карточку заказа правим ВСЕГДА — и когда пропускались уже
+                # использованные коды тоже. Раньше в этом случае успех уходил
+                # НОВЫМ сообщением, а карточка так и висела «оплачен»: в чате
+                # одновременно были «заказ оплачен» и «активировано», и понять,
+                # что с заказом, можно было только вчитываясь.
+                _edited = False
+                try:
+                    _ord_ok = await fk_get_order(order_id)
+                    _amid_ok = (_ord_ok or {}).get("admin_msg_id")
+                except Exception:
+                    _amid_ok = None
+                if _amid_ok:
                     try:
-                        _ord_ok = await fk_get_order(order_id)
-                        _amid_ok = (_ord_ok or {}).get("admin_msg_id")
-                    except Exception:
-                        _amid_ok = None
-                    if _amid_ok:
-                        try:
-                            await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
-                        except Exception:
-                            await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
-                    else:
-                        await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+                        await bot.edit_message_text(_caption, chat_id=ADMIN_ID,
+                                                    message_id=_amid_ok, parse_mode="HTML")
+                        _edited = True
+                    except Exception as _e_ed:
+                        if "not modified" in str(_e_ed).lower():
+                            _edited = True
+                if not _edited:
+                    await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
             except Exception:
                 pass
             _fail_clear("gpt", user_id)
@@ -8403,11 +8407,33 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             _cl_mail = _email_from_session(session_raw) or ""
         if not _cl_mail and access_token:
             _cl_mail = _extract_email_from_token(access_token) or ""
-        if _cl_mail and "@" in _cl_mail:
+        # И Organization ID: у тарифа Go сайт привязывает код к нему, а не к
+        # почте — без него такие активации не сверить ничем.
+        _cl_org, _cl_hint = "", []
+        try:
+            from chatgpt_activation import gpt_org_from_session, gpt_org_loose
+            _cl_org = gpt_org_from_session(session_raw or "", access_token or "") or ""
+            if not _cl_org:
+                _cl_hint = gpt_org_loose((session_raw or "") or (access_token or ""))
+        except Exception:
+            _cl_org, _cl_hint = "", []
+        if (_cl_mail and "@" in _cl_mail) or _cl_org or _cl_hint:
             _p_em = await get_pool()
             async with _p_em.acquire() as _c_em:
-                await _c_em.execute(
-                    "UPDATE users SET gpt_email=$2 WHERE user_id=$1", user_id, _cl_mail)
+                if _cl_mail and "@" in _cl_mail:
+                    await _c_em.execute(
+                        "UPDATE users SET gpt_email=$2 WHERE user_id=$1", user_id, _cl_mail)
+                if _cl_org:
+                    await _c_em.execute(
+                        "UPDATE users SET gpt_org=$2 WHERE user_id=$1", user_id, _cl_org)
+                elif _cl_hint:
+                    # Строгого поля нет, но в начале присланного есть UUID-ы.
+                    # Кладём их отдельно: ими можно ПОДТВЕРДИТЬ совпадение с
+                    # сайтом, но нельзя доказать несовпадение — это может быть
+                    # id сессии, а не организации.
+                    await _c_em.execute(
+                        "UPDATE users SET gpt_org_hint=$2 WHERE user_id=$1",
+                        user_id, ",".join(_cl_hint)[:500])
     except Exception as _e_em:
         logging.warning(f"GPT: не сохранил почту клиента {user_id}: {_e_em}")
 
@@ -8537,12 +8563,27 @@ async def api_activation_status_handler(request: web.Request) -> web.Response:
 
 
 async def _fk_num_line(order_id: str) -> str:
-    """Готовая HTML-строка с номером платежа FreeKassa для сообщений по заказу.
-    Возвращает '🧾 FreeKassa: <code>NNN</code>\\n' либо '' (Stripe/вебхук без intid)."""
+    """Строка с НОМЕРОМ заказа и номером платежа FreeKassa — для сообщений админу.
+
+    Раньше отдавала только FreeKassa, и человеческого номера заказа (#N) не было
+    НИ В ОДНОМ админском сообщении: в карточке стоял длинный технический
+    order_id вида shop_357226740_1788953993jj2, по которому заказ глазами не
+    найти. Нужны оба: по номеру ищешь у себя, по платежу сверяешься с FreeKassa.
+
+    Помощник один на 18 мест, поэтому правка чинит их все разом.
+    """
     try:
-        _o = await fk_get_order(order_id)
-        _n = (_o or {}).get("fk_intid") or ""
-        return f"\U0001f9fe FreeKassa: <code>{_n}</code>\n" if _n else ""
+        _o = await fk_get_order(order_id) or {}
+        _num = _o.get("num")
+        _fk = _o.get("fk_intid") or ""
+        _parts = []
+        if _num:
+            _parts.append(f"Заказ <b>#{_num}</b>")
+        if _fk:
+            _parts.append(f"FreeKassa <code>{_fk}</code>")
+        if not _parts:
+            return ""
+        return "\U0001f9fe " + " \u00b7 ".join(_parts) + "\n"
     except Exception:
         return ""
 
@@ -8601,6 +8642,16 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
     user_id    = payment["user_id"]
     credits    = payment["credits"]
     amount_rub = payment["amount"]
+
+    # Строка «🧾 Заказ #N · FreeKassa NNN» для КЛИЕНТА. Раньше её не было в
+    # большинстве сообщений об оплате: клиент видел «оплата прошла» и не мог
+    # сослаться ни на номер заказа, ни на платёж, когда писал в поддержку.
+    # Считаем ОДИН раз и до всех ветвлений — иначе половина веток осталась бы
+    # без неё, как это и было.
+    try:
+        _oref_pay = await _order_ref_line(order_id)
+    except Exception:
+        _oref_pay = ""
 
     # 0. Валидация суммы для НЕ-webhook путей (webhook валидирует ДО вызова).
     # Кредитные заказы: пришло меньше ожидаемого = блок (анти-фрод, как в вебхуке).
@@ -8778,7 +8829,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await bot.send_message(
                         user_id,
                         f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_oref_pay}\n"
                         f"🔧 Сейчас ведутся технические работы. "
                         f"Александр активирует подписку вручную в течение часа 🙌{delayed_note}",
                         parse_mode="HTML",
@@ -8804,7 +8856,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await bot.send_message(
                         user_id,
                         f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_oref_pay}\n"
                         f"⚠️ Коды временно закончились. Александр активирует вручную в течение часа 🙌"
                         f"{delayed_note}", parse_mode="HTML")
                     await bot.send_message(
@@ -8887,7 +8940,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await bot.send_message(
                         user_id,
                         f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_oref_pay}\n"
                         f"Александр активирует Claude вручную в течение часа 🙌"
                         f"{delayed_note}",
                         parse_mode="HTML",
@@ -8911,7 +8965,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         await bot.send_message(
                             user_id,
                             f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                            f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                            f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_oref_pay}\n"
                             f"⚠️ Коды временно закончились. "
                             f"Александр активирует вручную в течение часа 🙌"
                             f"{delayed_note}",
@@ -8943,7 +8998,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await bot.send_message(
                         user_id,
                         f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                        f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_oref_pay}\n"
                         f"Александр активирует Perplexity вручную в течение часа 🙌"
                         f"{delayed_note}",
                         parse_mode="HTML",
@@ -8967,7 +9023,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         await bot.send_message(
                             user_id,
                             f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                            f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                            f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_oref_pay}\n"
                             f"⚠️ Коды временно закончились. "
                             f"Александр активирует вручную в течение часа 🙌"
                             f"{delayed_note}",
@@ -9000,7 +9057,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             await bot.send_message(
                                 user_id,
                                 f"🎉 <b>Оплата прошла успешно!</b>\n\n"
-                                f"📦 <b>{service_name}</b> — {amount_rub}₽\n\n"
+                                f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                        f"{_oref_pay}\n"
                                 f"Александр активирует Perplexity вручную в течение часа 🙌{delayed_note}",
                                 parse_mode="HTML",
                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -9035,6 +9093,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     f"💵 <b>Сумма:</b> {amount_rub}₽\n"
                     f"💳 <b>Способ оплаты:</b> СБП\n"
                     f"━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"{_oref_pay}\n"
                     f"🆔 Заказ: <code>{order_id}</code>\n"
                     + await _fk_num_line(order_id) + "\n"
                     + f"Александр свяжется с тобой и активирует подписку в течение часа 🙌\n"
@@ -9057,6 +9116,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 f"💵 <b>Баланс:</b> {old_balance} → <b>{new_balance} кр</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n\n"
                 f"💳 Способ оплаты: СБП · {amount_rub}₽\n"
+                f"{_oref_pay}"
                 f"🆔 Заказ: <code>{order_id}</code>\n"
                 + await _fk_num_line(order_id)
                 + f"{delayed_note}\n\n"
@@ -9088,7 +9148,16 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         pack_info = (db_order_admin or {}).get("pack", "") if db_order_admin else ""
         # Номер платежа В FreeKassa (колонка «Номер» в ЛК) — по нему ищется платёж
         _fk_no = ((db_order_admin or {}).get("fk_intid") or "") if db_order_admin else ""
-        _fk_line = f"\U0001f9fe FreeKassa: <code>{_fk_no}</code>\n" if _fk_no else ""
+        # Номер заказа (#N) — рядом с платежом. Тут строка собиралась вручную,
+        # мимо общего помощника, и человеческого номера в карточке не было:
+        # оставался только технический order_id, по которому заказ не найти.
+        _num_no = (db_order_admin or {}).get("num") if db_order_admin else None
+        _fk_parts = []
+        if _num_no:
+            _fk_parts.append(f"Заказ <b>#{_num_no}</b>")
+        if _fk_no:
+            _fk_parts.append(f"FreeKassa <code>{_fk_no}</code>")
+        _fk_line = ("\U0001f9fe " + " \u00b7 ".join(_fk_parts) + "\n") if _fk_parts else ""
         _coins_spent = int((db_order_admin or {}).get("coins_spent") or 0)
         try:
             _amt_i = int(amount_rub)
@@ -10173,7 +10242,7 @@ async def gpt_reconcile_orphans() -> dict:
     активировать сам.
     """
     from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
-                                    _email_from_session, _same_email)
+                                    _email_from_session, _same_email, same_org)
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -10237,7 +10306,33 @@ async def gpt_reconcile_orphans() -> dict:
         # Записать тогда подписку этому клиенту — значит соврать ему в профиле.
         # Кредитуем только при совпадении почты; иначе отдаём на проверку.
         _site_mail = _info.get("email") or ""
-        _sure = bool(_site_mail) and bool(_email) and _same_email(_site_mail, _email)
+        _site_org = _info.get("org") or ""
+        # Organization ID сверяем ПЕРВЫМ: он точный, а почта на сайте
+        # замаскирована; у тарифа Go почты нет вовсе, и раньше такие
+        # активации подтвердить было нечем в принципе.
+        _org_cl = ""
+        try:
+            async with pool.acquire() as _c_org:
+                _org_cl = await _c_org.fetchval(
+                    "SELECT gpt_org FROM users WHERE user_id=$1", _uid) or ""
+        except Exception as _e_og:
+            logging.warning(f"reconcile: org клиента {_uid}: {_e_og}")
+        _om = same_org(_site_org, _org_cl)
+        if _om is None and _site_org:
+            # Кандидаты из начала присланного текста — только для подтверждения.
+            try:
+                async with pool.acquire() as _c_h:
+                    _hint = await _c_h.fetchval(
+                        "SELECT gpt_org_hint FROM users WHERE user_id=$1", _uid) or ""
+                if _hint and _site_org.strip().lower() in [
+                        x.strip().lower() for x in _hint.split(",") if x.strip()]:
+                    _om = True
+            except Exception as _e_h:
+                logging.warning(f"reconcile: подсказки org {_uid}: {_e_h}")
+        if _om is not None:
+            _sure = _om
+        else:
+            _sure = bool(_site_mail) and bool(_email) and _same_email(_site_mail, _email)
         if not _sure:
             # Подписку не записываем — но и молча отпускать код нельзя: он
             # потрачен, и через два часа ушёл бы следующему клиенту как
@@ -10253,7 +10348,8 @@ async def gpt_reconcile_orphans() -> dict:
                 logging.warning(f"gpt_reconcile_orphans флаг {_code}: {_e_fl}")
             _unsure.append({"user_id": _uid, "code": _code, "order_id": r["order_id"],
                             "plan_name": r["plan_name"], "status": _v,
-                            "site_email": _site_mail, "client_email": _email})
+                            "site_email": _site_mail, "client_email": _email,
+                            "site_org": _site_org, "client_org": _org_cl})
             continue
         try:
             await mark_gpt_code_used(_code, _uid, r["order_id"], _email)
@@ -10275,6 +10371,15 @@ async def gpt_reconcile_orphans() -> dict:
                 parse_mode="HTML")
         except Exception:
             pass
+        # Карточка заказа у админа — в «активирован». Раньше этот путь её не
+        # трогал, и в чате оставалось «оплачен» или «НЕУДАЧА» при выданной
+        # подписке.
+        try:
+            await gpt_order_mark_activated(
+                r["order_id"], _uid, _code, _email, _site_org,
+                "Активация прошла, бот узнал о ней с задержкой — дописано сверкой.")
+        except Exception as _e_om:
+            logging.warning(f"reconcile: карточка заказа {r['order_id']}: {_e_om}")
         logging.warning(f"gpt_reconcile_orphans: дописал активацию {_code} "
                         f"uid={_uid} order={r['order_id']} статус={_v}")
     return {"ok": True, "checked": len(rows), "fixed": _fixed, "unsure": _unsure}
@@ -10769,6 +10874,57 @@ def tg_chunks(text: str, limit: int = 3800) -> list:
     return _out
 
 
+async def gpt_order_mark_activated(order_id: str, user_id: int, code: str,
+                                   email: str = "", org: str = "",
+                                   note: str = "") -> bool:
+    """Переводит ИСХОДНОЕ сообщение заказа у админа в «активирован».
+
+    Одно место на все пути, которыми бот узнаёт об успехе: обычная активация,
+    сверка оборванных, сверка потерянных, ручное подтверждение. Раньше каждый
+    путь решал сам, и получалось вразнобой: обычная активация сообщение
+    правила, сверка оборванных — нет (слала отдельное), а при пропуске
+    использованных кодов даже успех уходил НОВЫМ сообщением. В чате оставалась
+    карточка «заказ оплачен» или «НЕУДАЧА», хотя подписка давно выдана.
+
+    Возвращает True, если сообщение действительно поправлено.
+    """
+    if not order_id:
+        return False
+    try:
+        _ord = await fk_get_order(order_id)
+    except Exception as _e:
+        logging.warning(f"order_mark: не прочитал заказ {order_id}: {_e}")
+        return False
+    _amid = (_ord or {}).get("admin_msg_id")
+    if not _amid:
+        return False
+    _who = ""
+    try:
+        _u = await get_user(user_id)
+        _un = (_u or {}).get("username") or ""
+        _who = ("@" + _un) if _un else f"id{user_id}"
+    except Exception:
+        _who = f"id{user_id}"
+    _txt = (f"✅ <b>Заказ активирован</b>\n\n"
+            f"👤 {_who} (<code>{user_id}</code>)\n"
+            f"🔑 <code>{code}</code>\n"
+            + (f"📧 <code>{email}</code>\n" if email else "")
+            + (f"🏢 <code>{org}</code>\n" if org else "")
+            + f"🆔 <code>{order_id}</code>\n"
+            + f"{await _fk_num_line(order_id)}\n"
+            + (f"\n<i>{note}</i>" if note else ""))
+    try:
+        await bot.edit_message_text(_txt, chat_id=ADMIN_ID, message_id=_amid,
+                                    parse_mode="HTML")
+        return True
+    except Exception as _e2:
+        # «message is not modified» — тоже успех: карточка уже в нужном виде.
+        if "not modified" in str(_e2).lower():
+            return True
+        logging.warning(f"order_mark: не поправил сообщение {order_id}: {_e2}")
+        return False
+
+
 async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> list:
     """Ищет активации, которые ПРОШЛИ, а бот записал их как неудачу.
 
@@ -10785,7 +10941,7 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
     ими молча.
     """
     from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
-                                    _email_from_session, _same_email)
+                                    _email_from_session, _same_email, same_org)
     _h = max(1, min(int(hours or 48), 24 * 30))
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -10854,6 +11010,10 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
                 # Основной источник: почта, сохранённая в момент активации.
                 _mine = await conn2.fetchval(
                     "SELECT gpt_email FROM users WHERE user_id=$1", _uid) or ""
+            _mine_org = await conn2.fetchval(
+                    "SELECT gpt_org FROM users WHERE user_id=$1", _uid) or ""
+            _hint_org = await conn2.fetchval(
+                    "SELECT gpt_org_hint FROM users WHERE user_id=$1", _uid) or ""
             if not _mine:
                 _mine = await conn2.fetchval(
                     "SELECT email FROM gpt_codes WHERE used_by=$1 AND COALESCE(email,'')<>'' "
@@ -10873,14 +11033,29 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
                 "                  WHERE g.order_id = f.order_id) "
                 "ORDER BY f.paid_at DESC LIMIT 1", _uid, r["used_at"])
             _site_mail = _info.get("email") or ""
-            _match = None
-            if _site_mail and _mine:
+            _site_org = _info.get("org") or ""
+            # Organization ID — сильнее почты: он точный, а почта на сайте
+            # замаскирована. И у тарифа Go почты нет вовсе, сверять можно
+            # ТОЛЬКО по нему. Поэтому сначала он, потом почта.
+            _match = same_org(_site_org, _mine_org)
+            _by = "org" if _match is not None else ""
+            # Кандидаты из начала токена: совпал — значит наш, это факт.
+            # Не совпал — НЕ доказательство: среди них может быть id сессии.
+            # Поэтому здесь только True, а False отсюда не бывает.
+            if _match is None and _site_org and _hint_org:
+                if _site_org.strip().lower() in [
+                        x.strip().lower() for x in _hint_org.split(",") if x.strip()]:
+                    _match, _by = True, "org"
+            if _match is None and _site_mail and _mine:
                 _match = bool(_same_email(_site_mail, _mine))
+                _by = "email"
             out.append({
                 "code": r["code"], "user_id": _uid,
                 "user": ("@" + r["username"]) if r["username"] else f"id{_uid}",
                 "status": _v, "site_email": _site_mail, "client_email": _mine,
                 "match": _match,                  # True / False / None (не с чем сверить)
+                "by": _by,                        # по чему сверили: org | email | ''
+                "site_org": _site_org, "client_org": _mine_org,
                 "burned_at": r["used_at"],
                 "site_when": _info.get("when", ""),
                 "order_id": (_ord or {}).get("order_id") or "",
@@ -10945,23 +11120,14 @@ async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
                 _uid, code)
     except Exception as _e_p:
         logging.warning(f"lostact: не закрыл pending {code}: {_e_p}")
-    # Сообщение заказа у админа — в тот же вид, что и при обычном успехе.
+    # Карточка заказа — тем же помощником, что и все остальные пути.
     try:
-        _ord = await fk_get_order(_oid)
-        _amid = (_ord or {}).get("admin_msg_id")
-        if _amid:
-            await bot.edit_message_text(
-                f"✅ <b>Заказ активирован</b>\n\n"
-                f"👤 {_found['user']} (<code>{_uid}</code>)\n"
-                f"🔑 <code>{code}</code>\n"
-                f"📧 <code>{_found['site_email']}</code>\n"
-                f"🆔 <code>{_oid}</code>\n"
-                f"{await _fk_num_line(_oid)}\n"
-                f"<i>Активация прошла на сайте, но бот её не записал — "
-                f"дописано по твоему подтверждению.</i>",
-                chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
+        await gpt_order_mark_activated(
+            _oid, _uid, code, _found["site_email"], _found.get("site_org") or "",
+            "Активация прошла на сайте, но бот её не записал — "
+            "дописано по твоему подтверждению.")
     except Exception as _e_m:
-        logging.warning(f"lostact: не поправил сообщение заказа {_oid}: {_e_m}")
+        logging.warning(f"lostact: карточка заказа {_oid}: {_e_m}")
     # И клиенту — он получил «не получилось» и, скорее всего, ждёт.
     try:
         await bot.send_message(

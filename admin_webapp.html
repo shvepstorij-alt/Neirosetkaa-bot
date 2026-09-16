@@ -89,6 +89,15 @@ input.f:focus,textarea.f:focus{border-color:var(--acc)}textarea.f{min-height:96p
 .tabbar a i{display:block;font-size:20px;margin-bottom:3px}.tabbar a.on{color:var(--acc)}
 .search{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:9px 12px;margin-bottom:12px}
 .search input{flex:1;background:transparent;border:0;outline:none;color:var(--txt);font-size:13.5px}
+/* Живой поиск по странице. Появляется сам там, где есть что искать, — списки
+   в панели доходят до сотни строк (89 кодов в пуле), и прокручивать их,
+   чтобы найти один, невозможно. */
+.psbar{display:none;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:8px 11px;margin:0 14px 10px}
+.psbar.on{display:flex}
+.psbar input{flex:1;background:transparent;border:0;outline:none;color:var(--txt);font-size:13.5px}
+.psbar .psn{font-size:11.5px;color:var(--txt2);white-space:nowrap}
+.psbar .psx{cursor:pointer;color:var(--txt2);font-size:15px;padding:0 2px}
+.pshit{background:rgba(240,180,41,.28);border-radius:3px}
 </style>
 </head>
 <body>
@@ -129,13 +138,88 @@ function toast(t){var e=document.getElementById('toast');e.textContent=t;e.class
    разметки, не уходит. */
 function esc(s){return(''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function nf(n){return n.toLocaleString('ru')}
-function go(fn,push){if(push!==false)stack.push(fn);window._cur=fn;window.scrollTo(0,0);app.innerHTML=fn();syncBack()}
+function go(fn,push){if(push!==false)stack.push(fn);window._cur=fn;window.scrollTo(0,0);app.innerHTML=fn();syncBack();psInit()}
+
+/* ── Живой поиск по странице ───────────────────────────────────────────────
+   Фильтрует то, что уже нарисовано, — без запросов к серверу. Ищем по
+   «листьям»: блокам и строкам, внутри которых нет других таких же. Иначе
+   пришлось бы прятать целую секцию из-за одного несовпадения.
+   Заголовок группы прячется, только если под ним не осталось ни одной
+   видимой строки — иначе в списке висели бы пустые подписи. */
+function _psItems(){
+  var out=[],all=document.querySelectorAll('#app .block, #app .row');
+  for(var i=0;i<all.length;i++){
+    var e=all[i];
+    if(e.querySelector && e.querySelector('.block, .row'))continue;  // не лист
+    if(e.querySelector && e.querySelector('#psq'))continue;          // сама строка поиска
+    out.push(e);
+  }
+  return out;
+}
+function psInit(){
+  var bar=document.getElementById('psbar');if(!bar)return;
+  /* Экраны рисуются не сразу (данные приходят запросом), поэтому смотрим
+     дважды: сразу и через полсекунды, когда список уже на месте. */
+  var check=function(){
+    var b=document.getElementById('psbar');if(!b)return;
+    if(_psItems().length>=8){b.classList.add('on');}else{b.classList.remove('on');}
+    if(window._psQ){var q=document.getElementById('psq');if(q){q.value=window._psQ;psApply(window._psQ);}}
+  };
+  check();setTimeout(check,500);setTimeout(check,1500);
+}
+function psClear(){window._psQ='';var q=document.getElementById('psq');if(q)q.value='';psApply('');}
+function psApply(v){
+  window._psQ=v||'';
+  var q=(v||'').trim().toLowerCase().replace(/ё/g,'е');
+  var items=_psItems(),shown=0;
+  for(var i=0;i<items.length;i++){
+    var e=items[i];
+    if(!q){e.style.display='';shown++;continue;}
+    var t=(e.textContent||'').toLowerCase().replace(/ё/g,'е');
+    var ok=t.indexOf(q)>=0;
+    e.style.display=ok?'':'none';
+    if(ok)shown++;
+  }
+  /* Контейнеры (блок, внутри которого лежат строки) листьями не считаются и
+     сами не фильтруются. Если этого не сделать, от них остаётся пустая
+     карточка с одним заголовком, а подпись группы над ней так и висит —
+     именно это и показал тест. Прячем контейнер, когда внутри не осталось
+     ни одной видимой строки. */
+  var conts=document.querySelectorAll('#app .block, #app .row');
+  for(var k=0;k<conts.length;k++){
+    var c=conts[k];
+    if(!c.querySelector||!c.querySelector('.block, .row'))continue;   // это лист
+    if(!q){c.style.display='';continue;}
+    var kids=c.querySelectorAll('.block, .row'),alive=false;
+    for(var m=0;m<kids.length;m++){
+      if(kids[m].querySelector&&kids[m].querySelector('.block, .row'))continue;
+      if(kids[m].style.display!=='none'){alive=true;break;}
+    }
+    c.style.display=alive?'':'none';
+  }
+  /* Подписи групп: прячем те, под которыми не осталось ничего видимого. */
+  var labs=document.querySelectorAll('#app .glabel');
+  for(var j=0;j<labs.length;j++){
+    var lab=labs[j],n=lab.nextElementSibling,any=!q;
+    while(n&&!(n.classList&&n.classList.contains('glabel'))){
+      if(n.classList&&(n.classList.contains('block')||n.classList.contains('row'))
+         &&n.style.display!=='none'){any=true;break;}
+      n=n.nextElementSibling;
+    }
+    lab.style.display=any?'':'none';
+  }
+  var n1=document.getElementById('psn');
+  if(n1)n1.textContent=q?(shown+' из '+items.length):'';
+}
 function back(){stack.pop();var fn=stack[stack.length-1]||home;window._cur=fn;window._lastScreen=null;window.scrollTo(0,0);app.innerHTML=fn();syncBack()}
 function syncBack(){var b=window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.BackButton;if(!b)return;try{if(window._cur&&window._cur!==home){b.show()}else{b.hide()}}catch(e){}}
 function leaf(fn){window._lastScreen=null;go(fn)}
 function open2(n){var same=(window._lastScreen===n);window._lastScreen=n;go(function(){return SCREENS[n]?SCREENS[n]():stub(n)}, !same)}
 function goHome(){stack=[home];window._lastScreen="home";window._cur=home;window.scrollTo(0,0);app.innerHTML=home();syncBack()}
-function hdr(t,s){return '<div class="hdr"><div class="back" onclick="back()"><i class="ti ti-chevron-left"></i></div><div><div class="htitle">'+esc(t)+'</div>'+(s?'<div class="hsub">'+esc(s)+'</div>':'')+'</div></div>'}
+function hdr(t,s){return '<div class="hdr"><div class="back" onclick="back()"><i class="ti ti-chevron-left"></i></div><div><div class="htitle">'+esc(t)+'</div>'+(s?'<div class="hsub">'+esc(s)+'</div>':'')+'</div></div>'
+  +'<div class="psbar" id="psbar"><i class="ti ti-search muted"></i>'
+  +'<input id="psq" placeholder="Поиск по странице" oninput="psApply(this.value)" autocomplete="off"/>'
+  +'<span class="psn" id="psn"></span><span class="psx" onclick="psClear()">✕</span></div>'}
 function sw(name){var k=name.replace(/'/g,"");return '<span class="sw'+(S.toggles[name]?' on':'')+'" onclick="S.toggles[\''+k+'\']=S.toggles[\''+k+'\']?0:1;this.classList.toggle(\'on\')"><b></b></span>'}
 function rowItem(icon,label,sub,right,onclick){return '<div class="row" onclick="'+(onclick||'')+'"><span class="ic"><i class="ti '+icon+'"></i></span><div><div class="lbl2">'+esc(label)+'</div>'+(sub?'<div class="sub">'+esc(sub)+'</div>':'')+'</div>'+(right||'<span class="chev"><i class="ti ti-chevron-right"></i></span>')+'</div>'}
 function stub(n){return hdr(n)+'<div class="wrap"><div class="note">Экран «'+esc(n)+'» — превью.</div></div>'}

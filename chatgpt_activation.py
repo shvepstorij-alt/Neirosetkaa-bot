@@ -836,6 +836,163 @@ def gpt_has_subscription(plan: str) -> bool:
     return (plan or "").strip().lower() != "free"
 
 
+_ORG_RE_ANY = __import__("re").compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", __import__("re").I)
+_ORG_RE = _re_org = __import__("re").compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", __import__("re").I)
+
+
+def gpt_org_from_session(session_json: str = "", access_token: str = "") -> str:
+    """Organization ID аккаунта ChatGPT из того, что прислал клиент.
+
+    Зачем. У тарифа Go (маршрут iOS) сайт активации привязывает код НЕ к почте,
+    а к Organization ID — в его таблице колонка «Почта» пустая, а «Привязан к
+    Organization ID» заполнена. Сверять такие активации по почте нечем, и они
+    всегда уходили в «подтвердить не могу», хотя ответ есть — просто в другом
+    столбце.
+
+    Точную форму session JSON у OpenAI мы не документируем и не угадываем:
+    обходим структуру целиком и берём значение у ключа, в имени которого есть
+    organization/org, если оно похоже на UUID (8-4-4-4-12). Ничего не нашли —
+    возвращаем пустую строку, и решение принимается по почте, как раньше.
+    """
+    import json as _json
+
+    def _find_id(obj, depth=0):
+        """Ищем поле id с UUID — только внутри уже найденного org-контейнера."""
+        if depth > 4:
+            return ""
+        if isinstance(obj, dict):
+            _v = obj.get("id")
+            if isinstance(_v, str) and _ORG_RE.match(_v.strip()):
+                return _v.strip()
+            for _x in obj.values():
+                _r = _find_id(_x, depth + 1)
+                if _r:
+                    return _r
+        elif isinstance(obj, list):
+            for _x in obj[:20]:
+                _r = _find_id(_x, depth + 1)
+                if _r:
+                    return _r
+        return ""
+
+    def _account_id(obj, depth=0):
+        """account.id — ИМЕННО там ChatGPT держит id аккаунта/организации.
+
+        Ключа со словом organization в session JSON нет вовсе: структура вида
+        {"user": {...}, "account": {"id": "...", "planType": "plus", ...}}.
+        Строгий поиск по org-ключам её не видел, поэтому смотрим здесь первым.
+        """
+        if depth > 5:
+            return ""
+        if isinstance(obj, dict):
+            _acc = obj.get("account")
+            if isinstance(_acc, dict):
+                _v = _acc.get("id")
+                if isinstance(_v, str) and _ORG_RE.match(_v.strip()):
+                    return _v.strip()
+            for _k, _v in obj.items():
+                if isinstance(_v, (dict, list)):
+                    _r = _account_id(_v, depth + 1)
+                    if _r:
+                        return _r
+        elif isinstance(obj, list):
+            for _v in obj[:20]:
+                _r = _account_id(_v, depth + 1)
+                if _r:
+                    return _r
+        return ""
+
+    def _walk(obj, depth=0):
+        if depth > 6:
+            return ""
+        if isinstance(obj, dict):
+            for _k, _v in obj.items():
+                _kl = str(_k).lower()
+                if ("organization" in _kl or _kl in ("org_id", "orgid", "org")) \
+                        and isinstance(_v, str) and _ORG_RE.match(_v.strip()):
+                    return _v.strip()
+            # Мы ВНУТРИ контейнера с именем organization/orgs — здесь годится
+            # любой id-похожий на UUID, даже если он лежит глубже (например
+            # orgs.data[0].id, вполне правдоподобная форма у OpenAI).
+            for _k, _v in obj.items():
+                _kl = str(_k).lower()
+                if "org" in _kl and isinstance(_v, (dict, list)):
+                    _r = _walk(_v, depth + 1) or _find_id(_v, 0)
+                    if _r:
+                        return _r
+            for _v in obj.values():
+                _r = _walk(_v, depth + 1)
+                if _r:
+                    return _r
+        elif isinstance(obj, list):
+            for _v in obj[:20]:
+                _r = _walk(_v, depth + 1)
+                if _r:
+                    return _r
+        return ""
+
+    for _src in (session_json, ):
+        if not _src:
+            continue
+        try:
+            _obj = _json.loads(_src)
+            # account.id — первым: это штатное место у ChatGPT.
+            _r = _account_id(_obj) or _walk(_obj)
+            if _r:
+                return _r
+        except Exception:
+            pass
+    # Второй источник — тот же JWT, из которого берём почту.
+    if access_token:
+        try:
+            import base64 as _b64
+            _pb = access_token.split(".")[1]
+            _pb += "=" * ((4 - len(_pb) % 4) % 4)
+            _jp = _json.loads(_b64.urlsafe_b64decode(_pb))
+            _r = _account_id(_jp) or _walk(_jp)
+            if _r:
+                return _r
+        except Exception:
+            pass
+    return ""
+
+
+def gpt_org_loose(text: str) -> list:
+    """UUID-ы из НАЧАЛА того, что прислал клиент (первая треть).
+
+    Александр: Organization ID лежит в начале токена. Значит он может быть там
+    просто текстом, а не в размеченном поле, — и строгий разбор его не найдёт.
+
+    Отдаём СПИСОК кандидатов, а не один: какой из них организация, мы не знаем.
+    Поэтому такой источник годится только чтобы ПОДТВЕРДИТЬ совпадение с
+    сайтом. Несовпадение он не доказывает ничего: это мог быть id сессии или
+    устройства. Трактовать его как «чужой аккаунт» было бы враньём с
+    последствиями — бот отказался бы записывать законную активацию.
+    """
+    import re as _re2
+    _t = (text or "")[: max(200, len(text or "") // 3)]
+    _out, _seen = [], set()
+    for _m in _ORG_RE_ANY.finditer(_t):
+        _v = _m.group(0).lower()
+        if _v not in _seen:
+            _seen.add(_v)
+            _out.append(_v)
+        if len(_out) >= 8:
+            break
+    return _out
+
+
+def same_org(site_org: str, client_org: str):
+    """Один ли это Organization ID. None — сравнить не с чем."""
+    _a = (site_org or "").strip().lower()
+    _b = (client_org or "").strip().lower()
+    if not _a or not _b:
+        return None
+    return _a == _b
+
+
 def _email_from_session(session_json: str) -> str:
     """Достаёт email из полного Session JSON (или из accessToken внутри него)."""
     try:
