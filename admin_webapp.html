@@ -2729,6 +2729,13 @@ function _gwRender(){
   h+='<button class="btn'+(blocked?' sec':'')+'" style="margin-top:10px" onclick="_gwDraw()">🎲 Разыграть ('+(st.ok||0)+' участников)</button>'
     +(blocked?'<div class="note neg">Сначала нажми «Проверить участников» — иначе розыгрыш не запустится.</div>':'');
 
+  /* Напоминание — только пока приём открыт: после завершения звать приводить
+     друзей уже некуда. */
+  if(!fin){
+    h+='<button class="btn sec" style="margin-top:10px" onclick="_gwRemind()">📣 Напомнить участникам</button>'
+      +'<div class="note">Каждому уйдёт его личное: чего не хватает и сколько ещё друзей привести. Тем, кто уже всё выполнил, не пишем.</div>';
+  }
+
   /* Завершённый розыгрыш: «Новый» и «Возобновить» видны сразу, а не только
      внутри «Настроек» — именно их ищут, закончив предыдущий. */
   if(fin){
@@ -2835,11 +2842,51 @@ function _gwBox(k,title,badge,inner,dflt){
 /* Двойное подтверждение для необратимого в разделе розыгрыша.
    Второй вопрос НАМЕРЕННО другой: два одинаковых окна подряд пролистываются
    на автомате, и защита превращается в две лишние кнопки. */
-function _gwSure(what,second){
-  if(!window.confirm)return true;
-  if(!window.confirm(what))return false;
-  return window.confirm(second||'Точно? Это действие нельзя отменить.');
+/* Подтверждение в два шага СВОИМ окном, а не window.confirm.
+
+   В Telegram-вебвью нативный confirm часто недоступен или молча не
+   показывается. Прежний код на этот случай писал `if(!window.confirm)return
+   true` — то есть при отсутствии диалога ПРОПУСКАЛ действие без вопроса.
+   Для розыгрыша это значит: одно случайное касание — и победители выбраны,
+   а прежних не восстановить.
+
+   Здесь два разных экрана с разными кнопками: на первом «Дальше», на втором
+   «Да, <действие>». Случайно пройти оба подряд нельзя. Второй шаг открывается
+   не сразу, а через полсекунды — чтобы палец, уже летящий вниз, не попал по
+   нему по инерции. */
+function _gwConfirm2(title, text, okText, cb){
+  var prev=document.getElementById('gwcfm'); if(prev)prev.remove();
+  var ov=document.createElement('div'); ov.id='gwcfm';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.88);'
+    +'display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px';
+  function close(){ try{ov.remove();}catch(e){} }
+  function step2(){
+    ov.innerHTML='<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:340px;width:100%">'
+      +'<div style="font-weight:700;font-size:16px;margin-bottom:10px">Ещё раз: точно?</div>'
+      +'<div class="sub" style="white-space:pre-wrap">'+esc(text)+'</div>'
+      +'<div style="display:flex;gap:10px;margin-top:16px">'
+      +'<button class="btn sec" style="flex:1" id="gwcfmno2">Отмена</button>'
+      +'<button class="btn" style="flex:1" id="gwcfmyes" disabled>'+esc(okText)+'</button>'
+      +'</div></div>';
+    document.getElementById('gwcfmno2').onclick=close;
+    var y=document.getElementById('gwcfmyes');
+    /* Пауза перед разблокировкой: защита от «протыкивания» вслепую. */
+    setTimeout(function(){ if(y){ y.disabled=false; } }, 500);
+    y.onclick=function(){ close(); try{cb();}catch(e){} };
+  }
+  ov.innerHTML='<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:340px;width:100%">'
+    +'<div style="font-weight:700;font-size:16px;margin-bottom:10px">'+esc(title)+'</div>'
+    +'<div class="sub" style="white-space:pre-wrap">'+esc(text)+'</div>'
+    +'<div style="display:flex;gap:10px;margin-top:16px">'
+    +'<button class="btn sec" style="flex:1" id="gwcfmno">Отмена</button>'
+    +'<button class="btn" style="flex:1" id="gwcfmnext">Дальше</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+  document.getElementById('gwcfmno').onclick=close;
+  document.getElementById('gwcfmnext').onclick=step2;
 }
+
+
 
 function _gwAgeMin(d){
   var t=parseInt((d&&d.checkedAt)||'0',10);
@@ -2889,25 +2936,33 @@ function _gwEdit(){
 }
 
 function _gwFinish(id){
-  if(!_gwSure('Завершить розыгрыш?\n\nНовые комментарии перестанут засчитываться, кнопка исчезнет из меню бота.',
-              'Подтверди ещё раз: закрываем приём участников?'))return;
-  api('/api/admin/giveaway-action',{action:'save',id:id,status:'finished'}).then(function(d){
-    if(d&&d.ok){toast('Розыгрыш завершён');_gwLoad();}else toast('Ошибка');});
+  _gwConfirm2('Завершить розыгрыш?',
+    'Новые комментарии перестанут засчитываться, кнопка исчезнет из меню бота.\n\nПриём можно будет вернуть.',
+    'Да, завершить', function(){
+    api('/api/admin/giveaway-action',{action:'save',id:id,status:'finished'}).then(function(d){
+      if(d&&d.ok){toast('Розыгрыш завершён');_gwLoad();}else toast('Ошибка');});
+  });
 }
 
 /* Возврат приёма: «Завершить» перестаёт быть необратимым, а значит и
    страшным. Кнопка в меню бота вернётся сама при следующем сохранении. */
 function _gwReopen(id){
-  if(window.confirm&&!window.confirm('Вернуть приём участников? Комментарии снова начнут засчитываться.'))return;
-  api('/api/admin/giveaway-action',{action:'save',id:id,status:'active'}).then(function(d){
-    if(d&&d.ok){toast('Приём возобновлён');_gwLoad();}else toast('Ошибка');});
+  _gwConfirm2('Вернуть приём участников?',
+    'Комментарии снова начнут засчитываться. Действие обратимое.',
+    'Да, вернуть', function(){
+    api('/api/admin/giveaway-action',{action:'save',id:id,status:'active'}).then(function(d){
+      if(d&&d.ok){toast('Приём возобновлён');_gwLoad();}else toast('Ошибка');});
+  });
 }
 
 /* Новый розыгрыш закрывает текущий окончательно — поэтому два вопроса
    и форма создания, а не мгновенное действие. */
 function _gwNew(){
-  if(!_gwSure('Начать НОВЫЙ розыгрыш?\n\nТекущий закроется, его участники и итоги останутся в базе, но экран будет показывать новый.',
-              'Подтверди: создаём новый розыгрыш?'))return;
+  _gwConfirm2('Начать НОВЫЙ розыгрыш?',
+    'Текущий закроется. Его участники и итоги останутся в базе, но экран будет показывать новый.',
+    'Да, новый', function(){ _gwNewForm(); });
+}
+function _gwNewForm(){
   var el=document.getElementById('gwbody');if(!el)return;
   el.innerHTML='<div class="block"><h4>Новый розыгрыш</h4>'
     +'<label class="fl">Название</label><input class="f" id="gw_title" value=""/>'
@@ -2935,29 +2990,72 @@ function _gwExclude(uid,on){
      человек в Telegram, и кавычка в нём сломала бы всю разметку списка. */
   var who='id'+uid,pp=(window._gw||{}).people||[];
   for(var i=0;i<pp.length;i++){if(pp[i].id===uid){who=pp[i].user;break;}}
-  if(on&&!_gwSure('Исключить '+who+' из розыгрыша?',
-                  'Этот участник не попадёт в число победителей. Точно?'))return;
-  api('/api/admin/giveaway-action',{action:'exclude',id:g.id,userId:uid,on:on}).then(function(d){
-    if(d&&d.ok){toast(on?'Исключён':'Возвращён');_gwLoad();}else toast('Ошибка');});
+  function _go(){
+    api('/api/admin/giveaway-action',{action:'exclude',id:g.id,userId:uid,on:on}).then(function(d){
+      if(d&&d.ok){toast(on?'Исключён':'Возвращён');_gwLoad();}else toast('Ошибка');});
+  }
+  /* Возврат участника обратно безобиден — спрашиваем только про исключение. */
+  if(!on){ _go(); return; }
+  _gwConfirm2('Исключить из розыгрыша?', who+' не попадёт в число победителей.\n\nВернуть можно тем же способом.',
+              'Да, исключить', _go);
 }
 
 function _gwDraw(){
   var g=(window._gw||{}).giveaway||{};
   var n=((window._gw||{}).stats||{}).ok||0;
   var had=((window._gw||{}).winners||[]).length;
-  if(!_gwSure('Разыграть '+(g.winnersCount||10)+' призов среди '+n+' участников?'
-              +(had?'\n\n⚠️ Прежние итоги ('+had+') будут перезаписаны.':''),
-              had?'Прежних победителей после этого не восстановить. Разыграть заново?'
-                 :'Подтверди: выбираем победителей?'))return;
+  var _t='Призов: '+(g.winnersCount||10)+'\nУчастников, прошедших проверку: '+n;
+  if(had)_t+='\n\n⚠️ Прежние итоги ('+had+' победителей) будут перезаписаны, '
+             +'и восстановить их нельзя.';
+  else _t+='\n\nПосле розыгрыша имена победителей уйдут в канал.';
+  _gwConfirm2(had?'Разыграть ЗАНОВО?':'Разыграть призы?', _t,
+              had?'Да, перезаписать':'Да, разыграть', _gwDrawGo);
+}
+/* Напоминание участникам. Сначала спрашиваем у сервера, СКОЛЬКО получат —
+   чтобы в подтверждении стояло настоящее число, а не обещание. */
+function _gwRemind(){
+  var g=(window._gw||{}).giveaway||{};
+  toast('Считаю…');
+  api('/api/admin/giveaway-action',{action:'remind',id:g.id,dry:true}).then(function(d){
+    if(!d||!d.ok){toast((d&&d.msg)||'Ошибка');return;}
+    var n=d.todo||0;
+    if(!n){toast('Напоминать некому — все всё выполнили');return;}
+    _gwConfirm2('Напомнить участникам?',
+      'Сообщение получат '+n+' из '+(d.total||0)+' участников — те, у кого что-то не закрыто.\n\n'
+      +'Каждому уйдёт его личный список: подписка, сколько друзей осталось, его ссылка.\n\n'
+      +'Отправленное не отозвать.',
+      'Да, отправить', function(){ _gwRemindGo(false); });
+  });
+}
+function _gwRemindGo(force){
+  var g=(window._gw||{}).giveaway||{};
+  toast('Отправляю…');
+  api('/api/admin/giveaway-action',{action:'remind',id:g.id,force:!!force}).then(function(d){
+    if(d&&!d.ok&&d.stale){
+      _gwConfirm2('Слишком часто', d.msg||'', 'Всё равно отправить',
+                  function(){ _gwRemindGo(true); });
+      return;
+    }
+    if(!d||!d.ok){toast((d&&d.msg)||'Ошибка');return;}
+    toast('Отправлено: '+(d.sent||0)
+          +((d.blocked||0)?' · заблокировали бота: '+d.blocked:'')
+          +((d.failed||0)?' · ошибок: '+d.failed:''));
+  });
+}
+
+function _gwDrawGo(){
+  var g=(window._gw||{}).giveaway||{};
   toast('Разыгрываю…');
   api('/api/admin/giveaway-action',{action:'draw',id:g.id}).then(function(d){
     if(d&&!d.ok&&d.stale){
-      /* Данные устарели — предлагаем перепроверить, а не разыгрывать вслепую */
-      if(window.confirm&&window.confirm(d.msg+'\n\nРазыграть всё равно по старым данным?')){
+      /* Данные устарели — предлагаем перепроверить, а не разыгрывать вслепую.
+         Тем же окном, а не window.confirm: в вебвью он не работает. */
+      _gwConfirm2('Данные устарели', (d.msg||'')+'\n\nРазыграть всё равно по старым данным?',
+                  'Да, по старым', function(){
         api('/api/admin/giveaway-action',{action:'draw',id:g.id,force:true}).then(function(d2){
           if(!d2||!d2.ok){toast((d2&&d2.msg)||'Ошибка');return;}
           toast('Готово 🎉');_gwLoad();setTimeout(function(){_gwShowText(d2.text||'');},400);});
-      } else { _gwRefresh(); }
+      });
       return;
     }
     if(!d||!d.ok){toast((d&&d.msg)||'Ошибка');return;}

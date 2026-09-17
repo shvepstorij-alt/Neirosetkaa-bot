@@ -1323,3 +1323,43 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
 
 # ── Помощь с активацией Claude ──────────────────────────────────────────────
 
+
+
+# ─── Проверить активацию прямо сейчас ────────────────────────────────────────
+# Сверка ходит раз в пять минут. Но когда сообщение о неудаче уже пришло, а на
+# сайте видно, что активация прошла, ждать эти минуты незачем.
+
+@dp.callback_query(F.data.startswith("gptrc:"))
+async def cb_gpt_recheck_now(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("❌", show_alert=True)
+        return
+    _code = cb.data.split(":", 1)[1]
+    await cb.answer("Проверяю…")
+    from common import gpt_recheck_report
+    try:
+        _t = await gpt_recheck_report(_code)
+    except Exception as _e:
+        logging.warning(f"gptrc {_code}: {_e}")
+        await cb.message.answer(f"⚠️ Не смог проверить: {_e}")
+        return
+    await cb.message.answer(_t, parse_mode="HTML")
+
+
+@dp.message(F.text.regexp(r"^/gpt_check(@\S+)?(\s+\S+)?$"), StateFilter("*"))
+async def admin_gpt_check(message: Message):
+    """Запустить сверку активаций сейчас. С кодом — только по нему."""
+    if not is_admin(message.from_user.id):
+        return
+    _parts = (message.text or "").split()
+    _code = _parts[1].strip() if len(_parts) > 1 else ""
+    await message.answer("🔄 Проверяю активации…")
+    from common import gpt_recheck_report, tg_chunks
+    try:
+        _t = await gpt_recheck_report(_code)
+    except Exception as _e:
+        logging.warning(f"/gpt_check: {_e}")
+        await message.answer(f"⚠️ Не смог проверить: {_e}")
+        return
+    for _chunk in tg_chunks(_t):
+        await message.answer(_chunk, parse_mode="HTML")

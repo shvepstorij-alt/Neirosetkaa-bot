@@ -5344,6 +5344,25 @@ async def api_admin_giveaway_action_handler(request: web.Request) -> web.Respons
             return web.json_response({"ok": True, "pool": _r.get("pool"),
                                       "text": _txt})
 
+        if _act == "remind":
+            if not _gid:
+                return web.json_response({"ok": False, "msg": "Нет id"})
+            if body.get("dry"):
+                return web.json_response(await giveaway_remind(_gid, dry=True))
+            # Защита от повторной рассылки в тот же вечер: одно и то же
+            # напоминание дважды за час читается как спам и отписывает людей.
+            try:
+                import time as _t_rm
+                _was = float(await get_setting(f"gwremind_at:{_gid}", "0") or 0)
+                _ago_h = (_t_rm.time() - _was) / 3600.0 if _was else 999
+            except Exception:
+                _ago_h = 999
+            if _ago_h < 6 and not body.get("force"):
+                return web.json_response({"ok": False, "stale": True, "msg":
+                    f"Напоминание уже уходило {int(_ago_h * 60)} мин назад. "
+                    f"Слать чаще раза в 6 часов не стоит — отпишутся."})
+            return web.json_response(await giveaway_remind(_gid))
+
         if _act == "text":
             if not _gid:
                 return web.json_response({"ok": False, "msg": "Нет id"})
@@ -7960,13 +7979,30 @@ async def _run_activation_job(
                     f"⏱ Время: <b>{_fail_at}</b>\n"
                     f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
                     f"❗ {error_text}\n"
-                    f"🔒 Код закреплён за клиентом — активируй вручную ИМ ЖЕ."
                 )
+                # Сайт не успел за отведённые 5 минут — это НЕ отказ. Он почти
+                # всегда дозавершает заказ через минуту-другую. Называть это
+                # «неудачей» без оговорки значит каждый раз пугать зря.
+                _slow = "долго обрабатывал" in (error_text or "")
+                if _slow:
+                    txt += ("\n⏳ Сайт не уложился в отведённые 5 минут. Чаще "
+                            "всего он дозавершает заказ через минуту-другую — "
+                            "тогда сверка закроет его сама.\n"
+                            "Не хочешь ждать — нажми кнопку ниже.")
+                else:
+                    txt += "🔒 Код закреплён за клиентом — активируй вручную ИМ ЖЕ."
+                # Кнопка проверки: сверка сама зайдёт сюда в течение 5 минут, но
+                # ждать не обязательно — по нажатию проверяем этот код сразу.
+                _kb_rc = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🔄 Проверить сейчас",
+                                         callback_data=f"gptrc:{code}")]])
                 if screenshot:
                     await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
-                                         caption=txt, parse_mode="HTML")
+                                         caption=txt, parse_mode="HTML",
+                                         reply_markup=_kb_rc)
                 else:
-                    await bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
+                    await bot.send_message(ADMIN_ID, txt, parse_mode="HTML",
+                                           reply_markup=_kb_rc)
               except Exception:
                 pass
     except Exception as e:
@@ -10285,7 +10321,7 @@ async def gpt_resend_activation(order_id: str) -> tuple:
                      if _reused else "\n<i>Прежнего кода не было — выдан новый.</i>"))
 
 
-async def gpt_reconcile_orphans() -> dict:
+async def gpt_reconcile_orphans(only_code: str = "") -> dict:
     """Подбирает активации, оборванные рестартом бота.
 
     Активация через bypriceactivate — это до 5 минут опроса статуса. Если в этот
@@ -10304,27 +10340,33 @@ async def gpt_reconcile_orphans() -> dict:
                                     _email_from_session, _same_email, same_org,
                                     _org_norm)
     pool = await get_pool()
+    _oc = (only_code or "").strip().upper()
+    # Сроки нужны, чтобы АВТОМАТИКА не приняла идущую активацию за брошенную.
+    # Когда проверку запускает человек (кнопка под сообщением о неудаче или
+    # /gpt_check), ждать эти минуты незачем: он уже видит, что активация
+    # кончилась, и хочет ответ сейчас. Поэтому по коду — без порогов.
+    _where = ("provider='bpa' AND UPPER(code)=$1" if _oc else
+              "provider='bpa' AND ("
+              # (1) задача оборвалась на полуслове: метка «активация идёт»
+              #     пережила рестарт, значит снять её было некому
+              "      (activating_at IS NOT NULL "
+              "       AND activating_at < NOW() - INTERVAL '10 minutes')"
+              # (2) задача ЗАВЕРШИЛАСЬ неудачей (метка снята), но сайт мог
+              #     довести активацию уже после того, как бот сдался:
+              #     11.09.2026 бот сообщил о неудаче в 12:48, а сайт проставил
+              #     fulfilled в 13:01. Такой код оставался закреплён за
+              #     клиентом и через 2 часа уходил в пул.
+              # Было 15 минут — и это, а не интервал цикла, определяло, как
+              # быстро бот замечает. Сама активация опрашивает сайт максимум
+              # 5 минут, значит через 7 минут после создания строки задача
+              # заведомо завершилась. Запас в 2 минуты оставлен намеренно.
+              "   OR (activating_at IS NULL "
+              "       AND created_at < NOW() - INTERVAL '7 minutes')"
+              ")")
+    _sql = ("SELECT user_id, code, order_id, plan, plan_name, session_raw, "
+            "activating_at FROM gpt_pending_activations WHERE " + _where)
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT user_id, code, order_id, plan, plan_name, session_raw, activating_at "
-            "FROM gpt_pending_activations "
-            "WHERE provider='bpa' AND ("
-            # (1) задача оборвалась на полуслове: метка «активация идёт» пережила
-            #     рестарт, значит снять её было некому
-            "      (activating_at IS NOT NULL "
-            "       AND activating_at < NOW() - INTERVAL '10 minutes')"
-            # (2) задача ЗАВЕРШИЛАСЬ неудачей (метка снята), но сайт мог довести
-            #     активацию уже после того, как бот сдался: 11.09.2026 бот сообщил
-            #     о неудаче в 12:48, а сайт проставил fulfilled в 13:01. Такой код
-            #     оставался закреплён за клиентом и через 2 часа уходил в пул.
-            # Было 15 минут — и это, а не интервал цикла, определяло, как
-            # быстро бот замечает. Сама активация опрашивает сайт максимум
-            # 5 минут, значит через 7 минут после создания строки задача
-            # заведомо завершилась. Запас в 2 минуты оставлен намеренно:
-            # раньше этого срока можно принять идущую активацию за брошенную.
-            "   OR (activating_at IS NULL "
-            "       AND created_at < NOW() - INTERVAL '7 minutes')"
-            ")")
+        rows = (await conn.fetch(_sql, _oc)) if _oc else (await conn.fetch(_sql))
     if not rows:
         return {"ok": True, "checked": 0, "fixed": []}
 
@@ -10865,6 +10907,89 @@ async def giveaway_participants(gid: int) -> list:
     return [dict(r) for r in rows]
 
 
+async def giveaway_remind(gid: int, dry: bool = False) -> dict:
+    """Напоминание участникам конкурса — каждому про ЕГО недостающее.
+
+    Просьба Александра 17.09.2026: «нужна рассылка всем участникам с
+    напоминанием о конкурсе и о том, сколько ещё людей нужно привести».
+
+    Общий текст тут бесполезен: человеку нужно знать, чего не хватает ИМЕННО
+    ему. Поэтому письмо собирается по его строке проверки — подписка, друзья,
+    комментарий — и заканчивается его личной ссылкой.
+
+    dry=True — ничего не отправляет, только считает. Так панель показывает
+    «получат N человек» ДО подтверждения, а не после.
+    """
+    from db import giveaway_get
+    from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
+    _gw = await giveaway_get(gid) or {}
+    _need = _gw_int(_gw.get("need_refs"), 2)
+    _title = strip_surrogates(str(_gw.get("title") or "Розыгрыш"))
+    _post = (_gw.get("post_url") or "").strip()
+    _pp = [p for p in await giveaway_participants(gid) if not p.get("excluded")]
+    # Тем, кто уже всё выполнил, напоминание не нужно: «ты в списке» они и так
+    # видят в /giveaway, а лишнее сообщение от бота раздражает.
+    _todo = [p for p in _pp
+             if not (p.get("subscribed") and int(p.get("refs_ok") or 0) >= _need)]
+    if dry:
+        return {"ok": True, "total": len(_pp), "todo": len(_todo)}
+
+    _un = ""
+    try:
+        _un = (await bot.get_me()).username or ""
+    except Exception:
+        _un = ""
+
+    _sent = _blocked = _failed = 0
+    for _p in _todo:
+        _uid = int(_p["user_id"])
+        _have = int(_p.get("refs_ok") or 0)
+        _left = max(0, _need - _have)
+        _lines = [f"🎁 <b>{_title}</b>\n", "Напоминаю, чего не хватает для участия:\n"]
+        _lines.append(("✅" if _p.get("subscribed") else "⬜️") + " подписка на канал")
+        _lines.append(("✅" if _have >= _need else "⬜️")
+                      + f" друзей: <b>{_have}</b> из {_need}")
+        _lines.append("✅ комментарий под постом")
+        if _left:
+            _lines.append(f"\nОсталось привести <b>{_left}</b> "
+                          + ("друга" if _left == 1 else "друзей") + ".")
+        if _un:
+            _lines.append(f"\n🔗 Твоя ссылка:\n<code>https://t.me/{_un}?start=ref_{_uid}</code>")
+        _lines.append("\nПроверить себя: /giveaway")
+        _kb = None
+        if _post.lower().startswith(("http://", "https://")):
+            _kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📢 Открыть пост", url=_post)]])
+        for _try in (1, 2):
+            try:
+                await bot.send_message(_uid, "\n".join(_lines), parse_mode="HTML",
+                                       disable_web_page_preview=True, reply_markup=_kb)
+                _sent += 1
+                break
+            except TelegramRetryAfter as _e_fl:
+                _w = min(int(getattr(_e_fl, "retry_after", 5)) + 1, 60)
+                logging.warning(f"giveaway_remind: флуд-лимит, жду {_w} с")
+                await asyncio.sleep(_w)
+                continue
+            except TelegramForbiddenError:
+                _blocked += 1
+                break
+            except Exception as _e_s:
+                logging.warning(f"giveaway_remind {_uid}: {_e_s}")
+                _failed += 1
+                break
+        await asyncio.sleep(0.05)
+    try:
+        import time as _t_gr
+        await set_setting(f"gwremind_at:{gid}", str(int(_t_gr.time())))
+    except Exception:
+        pass
+    logging.warning(f"giveaway_remind {gid}: отправлено {_sent}, "
+                    f"заблокировали {_blocked}, ошибок {_failed}")
+    return {"ok": True, "sent": _sent, "blocked": _blocked, "failed": _failed,
+            "total": len(_pp), "todo": len(_todo)}
+
+
 async def giveaway_eligible(gid: int) -> list:
     """Кто выполнил ВСЕ условия — из них и тянем победителей."""
     from db import giveaway_get
@@ -11234,6 +11359,48 @@ async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
     logging.warning(f"lostact: записал активацию {code} → uid={_uid} заказ={_oid}")
     return {"ok": True, "user_id": _uid, "order_id": _oid,
             "email": _found["site_email"]}
+
+
+async def gpt_recheck_report(code: str = "") -> str:
+    """Проверить активации ПРЯМО СЕЙЧАС и сказать, чем кончилось.
+
+    Александр 17.09.2026: «нужно чтобы я сам мог запускать проверку, чтобы не
+    ждать по несколько минут». Сверка и так ходит раз в пять минут, но когда
+    сообщение о неудаче уже пришло и на сайте видно, что активация прошла,
+    ждать эти минуты нечего.
+
+    С кодом — проверяем только его и без порогов по времени. Без кода —
+    прогоняем обычную сверку целиком.
+    """
+    try:
+        _r = await gpt_reconcile_orphans(only_code=(code or "").strip())
+    except Exception as _e_rr:
+        logging.warning(f"gpt_recheck_report: {_e_rr}")
+        return f"⚠️ Не смог проверить: {_e_rr}"
+    if not _r.get("ok") and _r.get("error"):
+        return f"⚠️ {_r['error']}"
+    _fx, _un = _r.get("fixed") or [], _r.get("unsure") or []
+    if not _fx and not _un:
+        return ("🔍 Проверил — закрывать нечего.\n\n"
+                "<i>Либо сайт ещё не считает код потраченным, либо строки "
+                "ожидания по нему нет. Подробности: /gpt_why КОД</i>")
+    _L = []
+    for _f in _fx:
+        _L.append(f"✅ <b>Активация записана</b>\n"
+                  f"👤 <code>{_f['user_id']}</code> · {_f.get('plan_name') or '—'}\n"
+                  f"🔑 <code>{_f['code']}</code>\n"
+                  + (f"📧 {_f['email']}\n" if _f.get("email") else "")
+                  + f"🆔 <code>{_f.get('order_id') or '—'}</code>\n"
+                  + "Карточка заказа поправлена, клиенту сообщил.")
+    for _u in _un:
+        _L.append(f"❓ <b>Подтвердить не могу</b>\n"
+                  f"👤 <code>{_u['user_id']}</code>\n"
+                  f"🔑 <code>{_u['code']}</code> — сайт: {_u.get('status') or '—'}\n"
+                  f"📧 на сайте: <code>{_u.get('site_email') or '—'}</code>\n"
+                  f"📧 у клиента: <code>{_u.get('client_email') or '—'}</code>\n"
+                  f"Подписку НЕ записывал. Если проверил сам — "
+                  f"<code>/gpt_lost_ok {_u['code']}</code>")
+    return "\n\n".join(_L)
 
 
 async def gpt_why(code: str) -> str:
