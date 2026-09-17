@@ -593,6 +593,27 @@ async def init_db():
                 "ON gpt_codes(order_id) WHERE order_id IS NOT NULL")
         except Exception as _e_ixo:
             logging.warning(f"индекс idx_gpt_codes_order не создался: {_e_ixo}")
+
+        # ── Учёт доставки рассылки ──────────────────────────────────────────
+        # 17.09.2026: рассылка на 3171 человека оборвалась на деплое, и ответить
+        # на вопрос «кому дошло» было НЕЧЕМ — учёта не существовало вовсе.
+        # Счётчик в сообщении показывал 850, но он обновляется раз в 25 и
+        # только если правка прошла, то есть отстаёт от действительности.
+        # Теперь каждая отправка отмечается: можно дослать ровно тем, кто не
+        # получил, а не всем подряд по второму разу.
+        try:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS broadcast_sent (
+                    bc_id   TEXT   NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    ok      BOOLEAN NOT NULL DEFAULT TRUE,
+                    reason  TEXT   NOT NULL DEFAULT '',
+                    at      TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (bc_id, user_id)
+                )
+            """)
+        except Exception as _e_bc:
+            logging.warning(f"broadcast_sent не создалась: {_e_bc}")
         # Миграция: добавить email, reserved_at, check_status, last_checked_at, flagged_reason
         for _col, _def in [
             ("email",            "TEXT"),

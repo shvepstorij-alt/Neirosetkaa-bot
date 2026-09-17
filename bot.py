@@ -364,6 +364,9 @@ async def main():
     _spawn_bg(gpt_codes_cleanup_loop, "gpt_codes_cleanup_loop")
     _spawn_bg(gpt_pool_audit_loop, "gpt_pool_audit_loop")
     _spawn_bg(gpt_orphans_loop, "gpt_orphans_loop")
+    # Рассылка, убитая перезапуском, больше не пропадает молча: бот сам
+    # напомнит и предложит дослать только тем, кто не получил.
+    _spawn_bg(handlers_admin.broadcast_resume_notice, "broadcast_resume_notice")
     _spawn_bg(gpt_code_rechecker_loop, "gpt_code_rechecker_loop")
     _spawn_bg(_activation_jobs_cleanup_loop, "_activation_jobs_cleanup_loop")
     _spawn_bg(claude_codes_cleanup_loop, "claude_codes_cleanup_loop")
