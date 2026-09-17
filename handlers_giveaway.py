@@ -201,6 +201,9 @@ async def giveaway_status_text(user) -> tuple:
         _rows.append([InlineKeyboardButton(text="📢 Открыть пост", url=_post)])
     _rows.append([InlineKeyboardButton(text="🔄 Проверить ещё раз",
                                        callback_data="gw_recheck")])
+    # Выхода с экрана не было вовсе: человек заходил сюда из профиля и
+    # оставался в тупике — только свернуть чат или искать меню заново.
+    _rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu_profile")])
     return _t, InlineKeyboardMarkup(inline_keyboard=_rows)
 
 
@@ -223,11 +226,22 @@ async def giveaway_recheck(cb):
     except Exception as _e:
         logging.warning(f"giveaway recheck: {_e}")
         return
-    # Правим то же сообщение, если можем; если нет — присылаем новое.
+    # Правим ТО ЖЕ сообщение. Новое шлём только если правка невозможна
+    # по-настоящему (сообщение удалено, слишком старое).
+    try:
+        await cb.message.edit_text(_t, parse_mode="HTML",
+                                   disable_web_page_preview=True,
+                                   reply_markup=_kb)
+        return
+    except Exception as _e_ed:
+        # «message is not modified» — это НЕ ошибка: с прошлой проверки ничего
+        # не изменилось, и на экране уже ровно то, что нужно. Прежний код
+        # считал это сбоем и слал новое сообщение — поэтому каждое нажатие
+        # «Проверить ещё раз» добавляло в чат копию экрана.
+        if "not modified" in str(_e_ed).lower():
+            return
+        logging.info(f"giveaway recheck: правка не вышла ({_e_ed}) — шлю новое")
     for _send in (
-        lambda: cb.message.edit_text(_t, parse_mode="HTML",
-                                     disable_web_page_preview=True,
-                                     reply_markup=_kb),
         lambda: cb.message.answer(_t, parse_mode="HTML",
                                   disable_web_page_preview=True,
                                   reply_markup=_kb),
