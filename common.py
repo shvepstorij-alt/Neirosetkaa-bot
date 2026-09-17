@@ -10439,7 +10439,17 @@ async def gpt_reconcile_orphans() -> dict:
             logging.error(f"gpt_reconcile_orphans {_code}: {_e_mk}")
             continue
         _fixed.append({"user_id": _uid, "code": _code, "order_id": r["order_id"],
-                       "plan_name": r["plan_name"], "email": _email, "status": _v})
+                       "plan_name": r["plan_name"], "email": _email, "status": _v,
+                       # Строка ожидания без заказа: подписку клиенту всё равно
+                       # записываем (иначе он останется ни с чем), но связать её
+                       # с покупкой нечем — карточку заказа не найти, в прибыли
+                       # код не сойдётся. Молчать об этом нельзя: снаружи такой
+                       # код выглядит как сожжённый зря.
+                       "no_order": not (r["order_id"] or "")})
+        if not (r["order_id"] or ""):
+            logging.warning(
+                f"gpt_reconcile_orphans: {_code} записан клиенту {_uid} БЕЗ заказа "
+                f"— в строке ожидания order_id пуст")
         try:
             await bot.send_message(
                 _uid,
@@ -11267,17 +11277,25 @@ async def gpt_why(code: str) -> str:
             "EXTRACT(EPOCH FROM (NOW()-created_at))/60 AS age_min, "
             "EXTRACT(EPOCH FROM (NOW()-activating_at))/60 AS act_min "
             "FROM gpt_pending_activations WHERE UPPER(code)=$1", code)
+    # Раньше на отсутствии кода в пуле отчёт ЗАКАНЧИВАЛСЯ — «такого кода нет»
+    # и всё. А кода в пуле может не быть по совершенно обычным причинам: его
+    # удалили вручную, почистили пул, он пришёл не оттуда. При этом строка
+    # ожидания, ответ сайта и вердикт — то, ради чего команду и зовут — никуда
+    # не делись. Обрывать разбор на первом же пустом месте значит оставлять
+    # человека ровно с тем вопросом, с которым он пришёл.
+    _uid = (_c["used_by"] if _c else None) or (_p["user_id"] if _p else None)
+    _L.append("<b>В пуле:</b>")
     if not _c:
-        _L.append("❌ Такого кода в базе нет вообще.")
-        return "\n".join(_L)
-
-    _uid = _c["used_by"] or (_p["user_id"] if _p else None)
-    _L.append("<b>В базе:</b>")
-    _L.append(f"  сожжён: {'да' if _c['is_used'] else 'нет'}"
-              + (f", за клиентом <code>{_c['used_by']}</code>" if _c["used_by"] else ""))
-    _L.append(f"  заказ у кода: <code>{_e(_c['order_id'] or '—')}</code>")
-    if _c["check_status"]:
-        _L.append(f"  пометка: <b>{_e(_c['check_status'])}</b> — {_e(_c['flagged_reason'] or '')}")
+        _L.append("  такого кода нет — мог быть удалён вручную или вычищен.")
+        _L.append("  <i>На разбор ниже это не влияет: сверка смотрит строку "
+                  "ожидания и сайт, а не пул.</i>")
+    else:
+        _L.append(f"  сожжён: {'да' if _c['is_used'] else 'нет'}"
+                  + (f", за клиентом <code>{_c['used_by']}</code>" if _c["used_by"] else ""))
+        _L.append(f"  заказ у кода: <code>{_e(_c['order_id'] or '—')}</code>")
+        if _c["check_status"]:
+            _L.append(f"  пометка: <b>{_e(_c['check_status'])}</b> — "
+                      f"{_e(_c['flagged_reason'] or '')}")
 
     # ── 2. Строка ожидания — именно её смотрит сверка оборванных активаций
     _L.append("\n<b>Строка ожидания:</b>")
@@ -11287,6 +11305,13 @@ async def gpt_why(code: str) -> str:
     else:
         _L.append(f"  клиент <code>{_p['user_id']}</code> · {_e(_p['plan_name'] or '—')}"
                   f" · сайт {_e(_p['provider'] or '—')}")
+        # Заказ ИЗ СТРОКИ ОЖИДАНИЯ — именно его сверка пропишет коду. Без него
+        # запись пройдёт «в пустоту»: код останется без заказа, а карточку
+        # заказа будет нечего править. Раньше отчёт это поле не показывал —
+        # и на вопрос «почему у кода нет заказа» ответить было нечем.
+        _L.append(f"  заказ: <code>{_e(_p['order_id'] or '—')}</code>"
+                  + ("" if (_p["order_id"] or "")
+                     else "  ⚠️ пусто — записывать активацию не к чему"))
         _L.append(f"  создана {float(_p['age_min'] or 0):.0f} мин назад")
         if _p["activating_at"] is None:
             _L.append("  метка «активация идёт»: снята")
@@ -11385,9 +11410,26 @@ async def gpt_why(code: str) -> str:
 
     # ── 6. Что бот сделает
     _L.append("\n<b>Что будет:</b>")
-    if _site_st and _site_st not in BPA_USED_STATUSES:
+    _burned_for_nothing = bool(
+        _c and _c["is_used"] and not (_c["order_id"] or "")
+        and _site_st and _site_st in BPA_FREE_STATUSES)
+    if _burned_for_nothing:
+        # Код помечен использованным, заказа за ним нет, а САЙТ говорит, что
+        # он цел. Это сожжённый зря код — потерянный товар, лежащий мёртвым
+        # грузом. Прежняя версия отчёта писала тут «трогать нечего» и была
+        # формально права (сверка его действительно не тронет), но по сути
+        # врала: делать надо, и есть чем.
+        _L.append("  ⚠️ Код помечен использованным, но заказа за ним нет, "
+                  "а сайт говорит, что код ЦЕЛ.")
+        _L.append("  Похоже, он сгорел зря — при переборе или на оборванной "
+                  "активации. В пуле его нет, продать нельзя.")
+        _L.append("  Вернуть в пул: <code>/gpt_codes_recover</code>")
+        if not _c["used_by"]:
+            _L.append("  <i>За кодом не закреплён никто — значит это не чужая "
+                      "активация, а именно потеря.</i>")
+    elif _site_st and _site_st not in BPA_USED_STATUSES:
         _L.append("  Сайт не считает код потраченным — трогать нечего.")
-    elif not _p and _c["is_used"] and _c["used_by"] and not (_c["order_id"] or ""):
+    elif not _p and _c and _c["is_used"] and _c["used_by"] and not (_c["order_id"] or ""):
         _L.append("  Это случай для второго прохода (потерянные активации):")
         _L.append("  " + ("пришлю с кнопкой «Записать активацию»." if _om is True
                           else "пришлю как «проверь вручную», сам не запишу."))
@@ -11400,10 +11442,17 @@ async def gpt_why(code: str) -> str:
             _L.append(f"  Ещё рано — сверка возьмёт его через ~{max(0, _wait):.0f} мин.")
         elif _om is True:
             _L.append("  Допишет активацию сам и поправит карточку заказа.")
+            if _c and not (_c["order_id"] or ""):
+                # Отвечает на вопрос «почему у кода не написан заказ»: его
+                # пишет не активация, а именно сверка — на ближайшем проходе.
+                _L.append(f"  Тогда же коду пропишется заказ "
+                          f"<code>{_e(_p['order_id'] or '—')}</code> — сейчас "
+                          f"его нет потому, что код сожгло перебором, а "
+                          f"перебор заказ не пишет.")
         else:
             _L.append("  Сам НЕ запишет. Пришлёт «проверь вручную».")
             _L.append(f"  Подтвердить руками: <code>/gpt_lost_ok {code}</code>")
-    elif _c["is_used"] and _c["used_by"] and (_c["order_id"] or ""):
+    elif _c and _c["is_used"] and _c["used_by"] and (_c["order_id"] or ""):
         # Здоровый закрытый случай. Раньше он попадал в общий «ни строки
         # ожидания, ни признаков» и читался как тупик — хотя это ровно то,
         # чем всё должно заканчиваться.
