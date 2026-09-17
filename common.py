@@ -1366,6 +1366,24 @@ async def claude_with_search(uid: int, user_text: str) -> str:
 #  REPLY KEYBOARD HANDLERS
 # ══════════════════════════════════════════════════════════
 
+# Имя бота не меняется, а профиль открывают часто. Спрашиваем Telegram один
+# раз за запуск: иначе каждый заход в профиль — лишний запрос к их API.
+_BOT_UN_CACHE = {"un": ""}
+
+
+async def _bot_ref_link(uid: int) -> str:
+    """Личная ссылка приглашения. Пустая строка, если имя бота неизвестно."""
+    _un = _BOT_UN_CACHE.get("un") or ""
+    if not _un:
+        try:
+            _un = (await bot.get_me()).username or ""
+            if _un:
+                _BOT_UN_CACHE["un"] = _un
+        except Exception:
+            return ""
+    return f"https://t.me/{_un}?start=ref_{uid}" if _un else ""
+
+
 async def _show_profile(message: Message, user, edit: bool = False):
     uid = user.id
     try:
@@ -1600,10 +1618,47 @@ async def _show_profile(message: Message, user, edit: bool = False):
         purchases_block = "\n\n\ud83e\uddfe <b>\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a:</b>\n" + "\n".join(pur_lines)
 
     safe_name = strip_surrogates(user.full_name or "")
-    # \u0411\u043b\u043e\u043a \u0440\u0435\u0444\u0435\u0440\u0430\u043b\u043e\u0432
+    # \u0411\u043b\u043e\u043a \u0440\u0435\u0444\u0435\u0440\u0430\u043b\u043e\u0432. \u0421\u0441\u044b\u043b\u043a\u0443 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u043c \u0412\u0421\u0415\u0413\u0414\u0410, \u0430 \u043d\u0435 \u0442\u043e\u043b\u044c\u043a\u043e \u0442\u0435\u043c, \u043a\u0442\u043e \u0443\u0436\u0435
+    # \u043a\u043e\u0433\u043e-\u0442\u043e \u043f\u0440\u0438\u0432\u0451\u043b: \u0440\u0430\u043d\u044c\u0448\u0435 \u043d\u043e\u0432\u0438\u0447\u043e\u043a \u0432\u0438\u0434\u0435\u043b \u043f\u0443\u0441\u0442\u043e\u0442\u0443 \u0438 \u043d\u0435 \u043f\u043e\u043d\u0438\u043c\u0430\u043b, \u0433\u0434\u0435 \u0435\u0451 \u0432\u0437\u044f\u0442\u044c,
+    # \u0430 \u0432\u043e \u0432\u0440\u0435\u043c\u044f \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0430 \u0441\u0441\u044b\u043b\u043a\u0430 \u043d\u0443\u0436\u043d\u0430 \u0432 \u043f\u0435\u0440\u0432\u0443\u044e \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438\u043c\u0435\u043d\u043d\u043e \u043d\u043e\u0432\u0438\u0447\u043a\u0443.
     refs_block = ""
-    if total_refs > 0:
-        refs_block = f"\n\n\ud83e\udd1d <b>\u0420\u0435\u0444\u0435\u0440\u0430\u043b\u044b:</b> {total_refs} \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u043e \u00b7 {paid_refs} \u0441 \u043f\u043e\u043a\u0443\u043f\u043a\u043e\u0439"
+    _ref_link = ""
+    try:
+        _ref_link = await _bot_ref_link(uid)
+    except Exception as _e_rl:
+        import logging as _lg_rl
+        _lg_rl.warning(f"\u043f\u0440\u043e\u0444\u0438\u043b\u044c: \u0441\u0441\u044b\u043b\u043a\u0430 \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u0438\u044f {uid}: {_e_rl}")
+    if _ref_link:
+        refs_block = (
+            f"\n\n\U0001f517 <b>\u0422\u0432\u043e\u044f \u0441\u0441\u044b\u043b\u043a\u0430 \u0434\u043b\u044f \u0434\u0440\u0443\u0437\u0435\u0439:</b>\n"
+            f"<code>{_ref_link}</code>\n"
+            f"<i>\u041d\u0430\u0436\u043c\u0438 \u043d\u0430 \u0441\u0441\u044b\u043b\u043a\u0443 \u2014 \u043e\u043d\u0430 \u0441\u043a\u043e\u043f\u0438\u0440\u0443\u0435\u0442\u0441\u044f.</i>"
+        )
+        if total_refs > 0:
+            refs_block += (f"\n\U0001f91d \u041f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u043e: <b>{total_refs}</b>"
+                           f" \u00b7 \u0441 \u043f\u043e\u043a\u0443\u043f\u043a\u043e\u0439: <b>{paid_refs}</b>")
+    elif total_refs > 0:
+        # \u0418\u043c\u044f \u0431\u043e\u0442\u0430 \u0443\u0437\u043d\u0430\u0442\u044c \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u2014 \u0441\u0441\u044b\u043b\u043a\u0443 \u043d\u0435 \u0432\u044b\u0434\u0443\u043c\u044b\u0432\u0430\u0435\u043c, \u043d\u043e \u0446\u0438\u0444\u0440\u044b \u043f\u043e\u043a\u0430\u0436\u0435\u043c.
+        refs_block = (f"\n\n\U0001f91d <b>\u0420\u0435\u0444\u0435\u0440\u0430\u043b\u044b:</b> {total_refs} \u043f\u0440\u0438\u0433\u043b\u0430\u0448\u0435\u043d\u043e"
+                      f" \u00b7 {paid_refs} \u0441 \u043f\u043e\u043a\u0443\u043f\u043a\u043e\u0439")
+
+    # \u0418\u0434\u0451\u0442 \u043a\u043e\u043d\u043a\u0443\u0440\u0441 \u2014 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u043c, \u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0434\u0440\u0443\u0437\u0435\u0439 \u0443\u0436\u0435 \u0437\u0430\u0441\u0447\u0438\u0442\u0430\u043d\u043e \u0438\u043c\u0435\u043d\u043d\u043e \u043f\u043e \u043d\u0435\u043c\u0443.
+    # \u041e\u0431\u0449\u0435\u0435 \u0447\u0438\u0441\u043b\u043e \u0440\u0435\u0444\u0435\u0440\u0430\u043b\u043e\u0432 \u0442\u0443\u0442 \u043d\u0435 \u043f\u043e\u0434\u0445\u043e\u0434\u0438\u0442: \u0432 \u0440\u043e\u0437\u044b\u0433\u0440\u044b\u0448\u0435 \u0441\u0447\u0438\u0442\u0430\u044e\u0442\u0441\u044f \u0442\u043e\u043b\u044c\u043a\u043e
+    # \u043f\u0440\u0438\u0448\u0435\u0434\u0448\u0438\u0435 \u043f\u043e\u0441\u043b\u0435 \u0435\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0430.
+    _gw_block, _gw_btn = "", []
+    try:
+        from db import giveaway_active, giveaway_refs as _gw_refs
+        _gw_p = await giveaway_active()
+        if _gw_p:
+            _gw_need = int(_gw_p.get("need_refs") or 0)
+            _gw_have = len(await _gw_refs(uid, _gw_p["starts_at"]))
+            _gw_ttl = strip_surrogates(str(_gw_p.get("title") or "\u0420\u043e\u0437\u044b\u0433\u0440\u044b\u0448"))
+            _gw_block = (f"\n\n\U0001f381 <b>{_gw_ttl}</b>\n"
+                         f"\u0414\u0440\u0443\u0437\u0435\u0439 \u043f\u043e \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0443: <b>{_gw_have}</b> \u0438\u0437 {_gw_need}")
+            _gw_btn = [[_eib("\u041c\u043e\u0451 \u0443\u0447\u0430\u0441\u0442\u0438\u0435 \u0432 \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0435", "gw_recheck")]]
+    except Exception as _e_gw:
+        import logging as _lg_gw
+        _lg_gw.warning(f"\u043f\u0440\u043e\u0444\u0438\u043b\u044c: \u043a\u043e\u043d\u043a\u0443\u0440\u0441 {uid}: {_e_gw}")
 
     text = (
         f"\ud83d\udc64 <b>\u041f\u0440\u043e\u0444\u0438\u043b\u044c</b>\n\n"
@@ -1617,6 +1672,7 @@ async def _show_profile(message: Message, user, edit: bool = False):
         f"  <b>\u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432 \u043f\u043e\u0442\u0440\u0430\u0447\u0435\u043d\u043e:</b> {total_credits_spent}"
         + model_lines
         + subs_block
+        + _gw_block
     )
     # БАГ 6 FIX: кнопка Активировать Claude если есть pending
     _claude_pending_btn = []
@@ -1642,6 +1698,7 @@ async def _show_profile(message: Message, user, edit: bool = False):
 
     kb_profile = InlineKeyboardMarkup(inline_keyboard=[
         *_claude_pending_btn,
+        *_gw_btn,
         *_partner_btn,
         [_eib("Пригласить друга", "menu_ref")],
         [_eib("Мои подписки", "menu_subs"),
@@ -1653,7 +1710,8 @@ async def _show_profile(message: Message, user, edit: bool = False):
     _txt = strip_surrogates(text)
     if edit:
         try:
-            await message.edit_text(_txt, reply_markup=kb_profile, parse_mode="HTML")
+            await message.edit_text(_txt, reply_markup=kb_profile, parse_mode="HTML",
+                                    disable_web_page_preview=True)
             return
         except Exception:
             # сообщение с медиа/уже удалено — заменяем новым
@@ -1662,7 +1720,8 @@ async def _show_profile(message: Message, user, edit: bool = False):
             except Exception:
                 pass
     try:
-        await message.answer(_txt, reply_markup=kb_profile, parse_mode="HTML")
+        await message.answer(_txt, reply_markup=kb_profile, parse_mode="HTML",
+                             disable_web_page_preview=True)
     except Exception as e:
         import logging
         logging.error(f"reply_profile send error uid={uid}: {e}")
@@ -10270,7 +10329,26 @@ async def gpt_reconcile_orphans() -> dict:
 
     _st = await bpa_query_codes([r["code"] for r in rows])
     if not _st:
+        # Раньше это была ТИХАЯ остановка: в лог строчка, в чат ничего. Сверка
+        # могла не работать сутками, а выглядело бы это как «просто нечего
+        # находить» — ровно то, чего мы боимся: закрытая стена. Говорим вслух,
+        # но не чаще раза в полчаса, иначе при лежащем сайте будет спам.
         logging.warning("gpt_reconcile_orphans: сайт не ответил — ничего не трогаем")
+        try:
+            _last_q = await get_setting("recon_site_down_at", "0")
+            import time as _t_rq
+            if _t_rq.time() - float(_last_q or 0) > 1800:
+                await set_setting("recon_site_down_at", str(_t_rq.time()))
+                await bot.send_message(
+                    ADMIN_ID,
+                    "⚠️ <b>Сверка активаций не работает</b>\n\n"
+                    f"Сайт проверки не ответил, а в очереди <b>{len(rows)}</b> "
+                    f"незакрытых активаций.\n"
+                    "Пока он молчит, бот НЕ узнает о прошедших активациях и "
+                    "ничего не допишет сам. Проверю снова через 5 минут.",
+                    parse_mode="HTML")
+        except Exception:
+            pass
         return {"ok": False, "checked": 0, "fixed": [],
                 "error": "Сайт проверки не ответил."}
 
@@ -11142,6 +11220,187 @@ async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
     logging.warning(f"lostact: записал активацию {code} → uid={_uid} заказ={_oid}")
     return {"ok": True, "user_id": _uid, "order_id": _oid,
             "email": _found["site_email"]}
+
+
+async def gpt_why(code: str) -> str:
+    """Отчёт: что бот видит по КОНКРЕТНОМУ коду и почему бездействует.
+
+    Появилась после 17.09.2026. Код GPTGO-…-9E8N: сайт показывал fulfilled и
+    Organization ID, а бот за десять минут не дописал активацию и ничего не
+    сообщил. Проверить это было нечем: все звенья цепочки — строка ожидания,
+    сроки, ответ сайта, сохранённый id клиента — живут в разных местах, и
+    единственным способом разобраться была археология по коду.
+
+    Здесь бот отвечает сам: что лежит в базе, что говорит сайт, совпадают ли
+    личности, попадает ли код под сроки сверки и чем всё кончится. Ничего не
+    меняет — только показывает.
+    """
+    from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
+                                    BPA_FREE_STATUSES, same_org, _same_email)
+    code = (code or "").strip().upper()
+    if not code:
+        return "Пустой код."
+    _L = [f"🔎 <b>Разбор кода</b>\n<code>{code}</code>\n"]
+    pool = await get_pool()
+
+    # ── 1. Что знает наша база
+    async with pool.acquire() as conn:
+        _c = await conn.fetchrow(
+            "SELECT code, provider, is_used, used_by, used_at, order_id, email, "
+            "check_status, flagged_reason FROM gpt_codes WHERE UPPER(code)=$1", code)
+        _p = await conn.fetchrow(
+            "SELECT user_id, order_id, plan_name, provider, created_at, activating_at, "
+            "EXTRACT(EPOCH FROM (NOW()-created_at))/60 AS age_min, "
+            "EXTRACT(EPOCH FROM (NOW()-activating_at))/60 AS act_min "
+            "FROM gpt_pending_activations WHERE UPPER(code)=$1", code)
+    if not _c:
+        _L.append("❌ Такого кода в базе нет вообще.")
+        return "\n".join(_L)
+
+    _uid = _c["used_by"] or (_p["user_id"] if _p else None)
+    _L.append("<b>В базе:</b>")
+    _L.append(f"  сожжён: {'да' if _c['is_used'] else 'нет'}"
+              + (f", за клиентом <code>{_c['used_by']}</code>" if _c["used_by"] else ""))
+    _L.append(f"  заказ у кода: <code>{_c['order_id'] or '—'}</code>")
+    if _c["check_status"]:
+        _L.append(f"  пометка: <b>{_c['check_status']}</b> — {_c['flagged_reason'] or ''}")
+
+    # ── 2. Строка ожидания — именно её смотрит сверка оборванных активаций
+    _L.append("\n<b>Строка ожидания:</b>")
+    if not _p:
+        _L.append("  ❗ её НЕТ — сверка оборванных активаций этот код не увидит.")
+        _L.append("  <i>Её удаляют при успехе и при уходе в ручной режим.</i>")
+    else:
+        _L.append(f"  клиент <code>{_p['user_id']}</code> · {_p['plan_name'] or '—'}"
+                  f" · сайт {_p['provider'] or '—'}")
+        _L.append(f"  создана {float(_p['age_min'] or 0):.0f} мин назад")
+        if _p["activating_at"] is None:
+            _L.append("  метка «активация идёт»: снята")
+        else:
+            _L.append(f"  метка «активация идёт»: стоит {float(_p['act_min'] or 0):.0f} мин")
+
+    # ── 3. Что говорит сайт
+    _L.append("\n<b>Сайт:</b>")
+    _site_st = _site_org = _site_mail = ""
+    try:
+        _q = await bpa_query_codes([code])
+        _i = _q.get(code) or {}
+        if not _q:
+            _L.append("  ⛔ не ответил. Пока он молчит, сверка не работает вовсе.")
+        elif not _i:
+            _L.append("  кода у сайта нет.")
+        else:
+            _site_st = _i.get("status", "")
+            _site_org = _i.get("org", "") or ""
+            _site_mail = _i.get("email", "") or ""
+            _L.append(f"  статус: <b>{_site_st or '—'}</b>"
+                      + ("  (считается использованным)" if _site_st in BPA_USED_STATUSES
+                         else "  (считается свободным)" if _site_st in BPA_FREE_STATUSES
+                         else "  (статус незнакомый)"))
+            _L.append(f"  org: <code>{_site_org or '—'}</code>")
+            _L.append(f"  почта: <code>{_site_mail or '—'}</code>")
+            if _i.get("when"):
+                _L.append(f"  время: {_i['when']}")
+    except Exception as _e_s:
+        _L.append(f"  ⛔ ошибка запроса: {_e_s}")
+
+    # ── 4. Что мы знаем о клиенте
+    _cl_org = _cl_mail = _hint = ""
+    if _uid:
+        async with pool.acquire() as conn:
+            _u = await conn.fetchrow(
+                "SELECT username, gpt_email, gpt_org, gpt_org_hint FROM users WHERE user_id=$1", _uid)
+        if _u:
+            _cl_org = _u["gpt_org"] or ""
+            _cl_mail = _u["gpt_email"] or ""
+            _hint = _u["gpt_org_hint"] or ""
+        _L.append("\n<b>Клиент:</b>")
+        _L.append(f"  <code>{_uid}</code>"
+                  + (f" @{_u['username']}" if _u and _u["username"] else ""))
+        _L.append(f"  org: <code>{_cl_org or '—'}</code>")
+        _L.append(f"  почта: <code>{_cl_mail or '—'}</code>")
+        if _hint:
+            _L.append(f"  кандидаты в org: <code>{_hint[:120]}</code>")
+
+    # ── 5. Вердикт — тот же порядок, что в самой сверке
+    _L.append("\n<b>Сверка личности:</b>")
+    _om = same_org(_site_org, _cl_org)
+    if _om is True:
+        _L.append("  ✅ Organization ID совпал — этого достаточно.")
+    elif _om is False:
+        _L.append("  ⛔ Organization ID РАЗНЫЕ — записывать нельзя ни при каких условиях.")
+    else:
+        _why = ("у клиента org не сохранён" if _site_org and not _cl_org
+                else "сайт org не показал" if _cl_org and not _site_org
+                else "org нет ни там, ни там")
+        _L.append(f"  ❔ по org сказать нечего: {_why}.")
+        if _site_org and _hint and _site_org.strip().lower() in [
+                x.strip().lower() for x in _hint.split(",") if x.strip()]:
+            _L.append("  ✅ но org с сайта есть среди кандидатов клиента — этого хватит.")
+            _om = True
+        elif _site_mail and _cl_mail:
+            _ok_m = bool(_same_email(_site_mail, _cl_mail))
+            _L.append(("  ✅ почты сходятся." if _ok_m else "  ⛔ почты РАЗНЫЕ."))
+            _om = _ok_m
+        else:
+            _L.append("  ❔ и по почте сверить нечем"
+                      + (" (сайт почту не показывает — обычное дело для Go)."
+                         if not _site_mail else " (у клиента почта не сохранена)."))
+
+    # ── 6. Что бот сделает
+    _L.append("\n<b>Что будет:</b>")
+    if _site_st and _site_st not in BPA_USED_STATUSES:
+        _L.append("  Сайт не считает код потраченным — трогать нечего.")
+    elif not _p and _c["is_used"] and _c["used_by"] and not (_c["order_id"] or ""):
+        _L.append("  Это случай для второго прохода (потерянные активации):")
+        _L.append("  " + ("пришлю с кнопкой «Записать активацию»." if _om is True
+                          else "пришлю как «проверь вручную», сам не запишу."))
+    elif _p:
+        _age = float(_p["age_min"] or 0)
+        _act = _p["activating_at"]
+        _ready = (_act is not None and float(_p["act_min"] or 0) >= 10) or (_act is None and _age >= 7)
+        if not _ready:
+            _wait = (10 - float(_p["act_min"] or 0)) if _act is not None else (7 - _age)
+            _L.append(f"  Ещё рано — сверка возьмёт его через ~{max(0, _wait):.0f} мин.")
+        elif _om is True:
+            _L.append("  Допишет активацию сам и поправит карточку заказа.")
+        else:
+            _L.append("  Сам НЕ запишет. Пришлёт «проверь вручную».")
+            _L.append(f"  Подтвердить руками: <code>/gpt_lost_ok {code}</code>")
+    else:
+        _L.append("  Ни строки ожидания, ни признаков потерянной активации.")
+
+    # ── 7. Когда сверка вообще последний раз работала
+    try:
+        import time as _t_w
+        _ra = float(await get_setting("recon_last_at", "0") or 0)
+        _rm = float(await get_setting("recon_last_ms", "0") or 0)
+        _L.append("\n<b>Сверка:</b>")
+        if not _ra:
+            _L.append("  ⚠️ ни одного прохода с последнего запуска бота.")
+        else:
+            _ago = (_t_w.time() - _ra) / 60.0
+            _L.append(f"  последний проход {_ago:.0f} мин назад, занял {_rm/1000:.0f} с")
+            if _ago > 12:
+                _L.append("  ⚠️ это дольше, чем должно быть (норма — раз в 5 минут).")
+        _la = float(await get_setting("lostscan_last_at", "0") or 0)
+        if _la:
+            _L.append(f"  тяжёлый проход {(_t_w.time()-_la)/60.0:.0f} мин назад "
+                      f"(идёт раз в ~15 мин)")
+    except Exception:
+        pass
+
+    # ── 8. Не заглушено ли уже отправленным сообщением
+    if _uid:
+        try:
+            _f1 = await get_setting(f"unsure:{code}:{_uid}", "")
+            _f2 = await get_setting(f"lostact:{code}:{_uid}", "")
+            if _f1 == "1" or _f2 == "1":
+                _L.append("\n⚠️ Об этом коде я уже присылал сообщение — "
+                          "повторно оно не придёт (защита от спама).")
+        except Exception:
+            pass
+    return "\n".join(_L)
 
 
 async def gpt_codes_recover(days: int = 3, apply: bool = False) -> dict:

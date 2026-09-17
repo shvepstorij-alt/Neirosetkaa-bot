@@ -584,7 +584,10 @@ async def gpt_orphans_loop():
     поправил» и «клиент успел написать в поддержку».
     """
     await asyncio.sleep(90)           # даём боту подняться и подхватить вебхук
+    _pass_no = 0
     while True:
+        _pass_no += 1
+        _t_started = time.time()
         try:
             _r = await gpt_reconcile_orphans()
             for _f in (_r.get("fixed") or []):
@@ -643,6 +646,16 @@ async def gpt_orphans_loop():
                     pass
         except Exception as e:
             logging.error(f"gpt_orphans_loop: {e}")
+        # Засекаем КАЖДЫЙ проход быстрой сверки. Без этого вопрос «почему бот
+        # заметил активацию только через полчаса» не имеет ответа: изнутри
+        # видно лишь итог, а не когда проход был и сколько занял. 17.09.2026
+        # именно это и пришлось выяснять раскопками.
+        try:
+            from db import set_setting as _ss_t
+            await _ss_t("recon_last_at", str(int(time.time())))
+            await _ss_t("recon_last_ms", str(int((time.time() - _t_started) * 1000)))
+        except Exception:
+            pass
 
         # ── Второй проход: активации, которые ПРОШЛИ, а бот записал неудачу ──
         # Сверху разбираются «висящие» активации — те, у кого жива строка
@@ -652,10 +665,23 @@ async def gpt_orphans_loop():
         # в минуты), а бот сообщил о неудаче. Видел это только ручной
         # /gpt_codes_recover.
         # Сам ничего не пишем: присылаем находку с кнопкой.
+        # Тяжёлый проход живёт в ТОМ ЖЕ цикле, что и быстрый, и пока он идёт,
+        # быстрый не начнётся. А он перебирает все сожжённые коды за двое
+        # суток — это отдельный запрос к сайту и работа по базе. Из-за этого
+        # «раз в 5 минут» на бумаге превращалось в «раз в 5 минут ПЛЮС сколько
+        # займут оба прохода», и клиент ждал дольше обещанного.
+        # Быстрая сверка идёт каждый проход, тяжёлая — каждый третий, то есть
+        # примерно раз в 15 минут. Ей спешить некуда: она разбирает случаи, где
+        # строки ожидания уже нет, и сама ничего не записывает.
+        _t_scan = time.time()
         try:
-            from common import gpt_lost_activations_scan
+            if _pass_no % 3 != 1:
+                _lost_found = []             # не наш проход — тяжёлое пропускаем
+            else:
+                from common import gpt_lost_activations_scan
+                _lost_found = await gpt_lost_activations_scan(hours=48)
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            for _l in await gpt_lost_activations_scan(hours=48):
+            for _l in _lost_found:
                 _m = _l.get("match")
                 _head = ("✅ <b>Похоже, активация всё-таки прошла</b>"
                          if _m is True else
@@ -700,12 +726,21 @@ async def gpt_orphans_loop():
                     logging.warning(f"lostact alert {_l['code']}: {_e_s}")
         except Exception as e2:
             logging.error(f"gpt_lost_activations: {e2}")
+        if _pass_no % 3 == 1:
+            try:
+                from db import set_setting as _ss_t2
+                await _ss_t2("lostscan_last_at", str(int(time.time())))
+                await _ss_t2("lostscan_last_ms", str(int((time.time() - _t_scan) * 1000)))
+            except Exception:
+                pass
 
-        # Каждые 5 минут, а не 20: клиент не должен столько ждать, пока бот
-        # заметит, что активация всё-таки прошла. Спама это не добавляет —
-        # каждая находка помечается и присылается один раз. Нагрузка на сайт
-        # проверки — два запроса за проход, то есть 24 в час.
-        await asyncio.sleep(5 * 60)
+        # Ждём 5 минут ОТ НАЧАЛА прохода, а не после него. Прежний безусловный
+        # sleep(5 мин) в конце давал интервал «5 минут плюс сколько заняли оба
+        # прохода»: обещали пять, а на деле выходило больше — и понять это
+        # снаружи было нельзя. Если проход затянулся дольше пяти минут,
+        # следующий стартует сразу, но не чаще раза в 30 секунд.
+        _spent = time.time() - _t_started
+        await asyncio.sleep(max(30, 5 * 60 - _spent))
 
 
 async def gpt_pool_audit_loop():

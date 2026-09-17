@@ -287,6 +287,37 @@ async def cb_gpt_lost_apply(cb):
             pass
 
 
+@dp.message(F.text.regexp(r"^/gpt_why(@\S+)?(\s+\S+)?$"), StateFilter("*"))
+async def admin_gpt_why(message: Message):
+    """Бот объясняет, что видит по коду и почему бездействует.
+
+    Ничего не меняет. Нужна ровно для случая «на сайте активация есть, а бот
+    молчит»: показывает строку ожидания, сроки, ответ сайта, id клиента и
+    вердикт сверки одним сообщением — вместо раскопок по логам.
+    """
+    if not is_admin(message.from_user.id):
+        return
+    _parts = (message.text or "").split()
+    if len(_parts) < 2:
+        await message.answer(
+            "Формат: <code>/gpt_why КОД</code>\n\n"
+            "<i>Показывает, что бот знает про код: сожжён ли, есть ли строка "
+            "ожидания, что отвечает сайт, совпадает ли Organization ID с "
+            "клиентом и что бот собирается делать. Ничего не меняет.</i>",
+            parse_mode="HTML")
+        return
+    await message.answer("🔎 Смотрю…")
+    from common import gpt_why, tg_chunks
+    try:
+        _t = await gpt_why(_parts[1])
+    except Exception as _e:
+        logging.warning(f"/gpt_why: {_e}")
+        await message.answer(f"⚠️ Не смог разобрать: {_e}")
+        return
+    for _chunk in tg_chunks(_t):
+        await message.answer(_chunk, parse_mode="HTML")
+
+
 @dp.message(F.text.startswith("/gpt_lost_ok"), StateFilter("*"))
 async def admin_gpt_lost_ok(message: Message):
     """Записать активацию, когда бот сверить не смог, а человек проверил.
