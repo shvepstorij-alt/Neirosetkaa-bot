@@ -4983,7 +4983,6 @@ async def _broadcast_resume_once(_json_br):
     # Напоминаем ОДИН раз на рассылку, а не каждые десять минут.
     if (await get_setting(f"bcnotified:{_bc}", "")) == "1":
         return
-    await set_setting(f"bcnotified:{_bc}", "1")
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -5008,8 +5007,13 @@ async def _broadcast_resume_once(_json_br):
                 [InlineKeyboardButton(text="✖️ Забыть эту рассылку",
                                       callback_data=f"bcdrop:{_bc}")],
             ]))
+        # Помечаем ТОЛЬКО после успешной отправки. Пометка до неё означала бы:
+        # сообщение не ушло — и больше не уйдёт никогда, а рассылка так и
+        # осталась бы недоделанной без единого напоминания.
+        await set_setting(f"bcnotified:{_bc}", "1")
     except Exception as _e_s:
-        logging.warning(f"broadcast resume: не отправилось: {_e_s}")
+        logging.warning(f"broadcast resume: не отправилось, повторю через "
+                        f"10 минут: {_e_s}")
 
 
 @dp.callback_query(F.data.startswith("bcres:"))
