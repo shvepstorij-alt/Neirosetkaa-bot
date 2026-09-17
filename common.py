@@ -11240,7 +11240,16 @@ async def gpt_why(code: str) -> str:
     code = (code or "").strip().upper()
     if not code:
         return "Пустой код."
-    _L = [f"🔎 <b>Разбор кода</b>\n<code>{code}</code>\n"]
+
+    # Всё, что пришло СНАРУЖИ — от сайта проверки, из имени клиента, из
+    # пометки кода — экранируем. Один символ «<» в ответе сайта превратил бы
+    # отчёт в сообщение, которое Telegram откажется отправить, и вместо
+    # разбора я бы получил пустоту — ровно там, где разбираюсь с пустотой.
+    import html as _h_w
+    def _e(v):
+        return _h_w.escape(str(v if v is not None else ""))
+
+    _L = [f"🔎 <b>Разбор кода</b>\n<code>{_e(code)}</code>\n"]
     pool = await get_pool()
 
     # ── 1. Что знает наша база
@@ -11261,9 +11270,9 @@ async def gpt_why(code: str) -> str:
     _L.append("<b>В базе:</b>")
     _L.append(f"  сожжён: {'да' if _c['is_used'] else 'нет'}"
               + (f", за клиентом <code>{_c['used_by']}</code>" if _c["used_by"] else ""))
-    _L.append(f"  заказ у кода: <code>{_c['order_id'] or '—'}</code>")
+    _L.append(f"  заказ у кода: <code>{_e(_c['order_id'] or '—')}</code>")
     if _c["check_status"]:
-        _L.append(f"  пометка: <b>{_c['check_status']}</b> — {_c['flagged_reason'] or ''}")
+        _L.append(f"  пометка: <b>{_e(_c['check_status'])}</b> — {_e(_c['flagged_reason'] or '')}")
 
     # ── 2. Строка ожидания — именно её смотрит сверка оборванных активаций
     _L.append("\n<b>Строка ожидания:</b>")
@@ -11271,8 +11280,8 @@ async def gpt_why(code: str) -> str:
         _L.append("  ❗ её НЕТ — сверка оборванных активаций этот код не увидит.")
         _L.append("  <i>Её удаляют при успехе и при уходе в ручной режим.</i>")
     else:
-        _L.append(f"  клиент <code>{_p['user_id']}</code> · {_p['plan_name'] or '—'}"
-                  f" · сайт {_p['provider'] or '—'}")
+        _L.append(f"  клиент <code>{_p['user_id']}</code> · {_e(_p['plan_name'] or '—')}"
+                  f" · сайт {_e(_p['provider'] or '—')}")
         _L.append(f"  создана {float(_p['age_min'] or 0):.0f} мин назад")
         if _p["activating_at"] is None:
             _L.append("  метка «активация идёт»: снята")
@@ -11293,16 +11302,16 @@ async def gpt_why(code: str) -> str:
             _site_st = _i.get("status", "")
             _site_org = _i.get("org", "") or ""
             _site_mail = _i.get("email", "") or ""
-            _L.append(f"  статус: <b>{_site_st or '—'}</b>"
+            _L.append(f"  статус: <b>{_e(_site_st or '—')}</b>"
                       + ("  (считается использованным)" if _site_st in BPA_USED_STATUSES
                          else "  (считается свободным)" if _site_st in BPA_FREE_STATUSES
                          else "  (статус незнакомый)"))
-            _L.append(f"  org: <code>{_site_org or '—'}</code>")
-            _L.append(f"  почта: <code>{_site_mail or '—'}</code>")
+            _L.append(f"  org: <code>{_e(_site_org or '—')}</code>")
+            _L.append(f"  почта: <code>{_e(_site_mail or '—')}</code>")
             if _i.get("when"):
-                _L.append(f"  время: {_i['when']}")
+                _L.append(f"  время: {_e(_i['when'])}")
     except Exception as _e_s:
-        _L.append(f"  ⛔ ошибка запроса: {_e_s}")
+        _L.append(f"  ⛔ ошибка запроса: {_e(_e_s)}")
 
     # ── 4. Что мы знаем о клиенте
     _cl_org = _cl_mail = _hint = ""
@@ -11316,11 +11325,11 @@ async def gpt_why(code: str) -> str:
             _hint = _u["gpt_org_hint"] or ""
         _L.append("\n<b>Клиент:</b>")
         _L.append(f"  <code>{_uid}</code>"
-                  + (f" @{_u['username']}" if _u and _u["username"] else ""))
-        _L.append(f"  org: <code>{_cl_org or '—'}</code>")
-        _L.append(f"  почта: <code>{_cl_mail or '—'}</code>")
+                  + (f" @{_e(_u['username'])}" if _u and _u["username"] else ""))
+        _L.append(f"  org: <code>{_e(_cl_org or '—')}</code>")
+        _L.append(f"  почта: <code>{_e(_cl_mail or '—')}</code>")
         if _hint:
-            _L.append(f"  кандидаты в org: <code>{_hint[:120]}</code>")
+            _L.append(f"  кандидаты в org: <code>{_e(_hint[:120])}</code>")
 
     # ── 5. Вердикт — тот же порядок, что в самой сверке
     _L.append("\n<b>Сверка личности:</b>")

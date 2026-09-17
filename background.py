@@ -583,6 +583,14 @@ async def gpt_orphans_loop():
     «узнали через 5 минут» и «через 20» — это разница между «бот сам всё
     поправил» и «клиент успел написать в поддержку».
     """
+    # Почта и Organization ID приходят С САЙТА. Один «<» в их ответе — и
+    # Telegram отказался бы разобрать сообщение, а находка молча пропала бы:
+    # отправка обёрнута в try, и в лог ушла бы строчка, которую никто не
+    # читает. Экранируем всё внешнее.
+    import html as _h_w
+    def _ew(v):
+        return _h_w.escape(str(v if v is not None else ""))
+
     await asyncio.sleep(90)           # даём боту подняться и подхватить вебхук
     _pass_no = 0
     while True:
@@ -624,11 +632,11 @@ async def gpt_orphans_loop():
                         ADMIN_ID,
                         f"❓ <b>Оборванная активация — проверь вручную</b>\n"
                         f"👤 <code>{_u['user_id']}</code> · {_u['plan_name']}\n"
-                        f"🔑 <code>{_u['code']}</code> — сайт: {_u['status']}\n"
-                        f"📧 на сайте: <code>{_u['site_email'] or '—'}</code>\n"
-                        f"📧 у клиента: <code>{_u['client_email'] or '—'}</code>\n"
-                        f"🏢 org на сайте: <code>{_u.get('site_org') or '—'}</code>\n"
-                        f"🏢 org у клиента: <code>{_u.get('client_org') or '—'}</code>\n"
+                        f"🔑 <code>{_ew(_u['code'])}</code> — сайт: {_ew(_u['status'])}\n"
+                        f"📧 на сайте: <code>{_ew(_u['site_email'] or '—')}</code>\n"
+                        f"📧 у клиента: <code>{_ew(_u['client_email'] or '—')}</code>\n"
+                        f"🏢 org на сайте: <code>{_ew(_u.get('site_org') or '—')}</code>\n"
+                        f"🏢 org у клиента: <code>{_ew(_u.get('client_org') or '—')}</code>\n"
                         f"🆔 <code>{_u['order_id']}</code>\n\n"
                         f"Код потрачен, но что он ушёл именно этому клиенту — "
                         f"подтвердить не могу. Подписку НЕ записывал: иначе "
@@ -687,16 +695,16 @@ async def gpt_orphans_loop():
                          if _m is True else
                          "❓ <b>Код потрачен — чей аккаунт, не подтверждаю</b>")
                 _txt = (f"{_head}\n"
-                        f"👤 {_l['user']} (<code>{_l['user_id']}</code>)\n"
-                        f"🔑 <code>{_l['code']}</code> — сайт: {_l['status']}\n"
-                        f"📧 на сайте: <code>{_l['site_email'] or '—'}</code>\n"
-                        f"📧 у клиента: <code>{_l['client_email'] or '—'}</code>\n"
-                        + (f"🏢 org на сайте: <code>{_l.get('site_org') or '—'}</code>\n"
-                           f"🏢 org у клиента: <code>{_l.get('client_org') or '—'}</code>\n"
+                        f"👤 {_ew(_l['user'])} (<code>{_l['user_id']}</code>)\n"
+                        f"🔑 <code>{_ew(_l['code'])}</code> — сайт: {_ew(_l['status'])}\n"
+                        f"📧 на сайте: <code>{_ew(_l['site_email'] or '—')}</code>\n"
+                        f"📧 у клиента: <code>{_ew(_l['client_email'] or '—')}</code>\n"
+                        + (f"🏢 org на сайте: <code>{_ew(_l.get('site_org') or '—')}</code>\n"
+                           f"🏢 org у клиента: <code>{_ew(_l.get('client_org') or '—')}</code>\n"
                            if (_l.get('site_org') or _l.get('client_org')) else "")
                         + ""
                         + (f"🆔 <code>{_l['order_id']}</code>\n" if _l.get("order_id") else "")
-                        + (f"🕐 сайт: {_l['site_when']}\n" if _l.get("site_when") else ""))
+                        + (f"🕐 сайт: {_ew(_l['site_when'])}\n" if _l.get("site_when") else ""))
                 if _m is True:
                     _txt += ((f"\nСошлось по {'Organization ID' if _l.get('by')=='org' else 'почте'} — "
                               f"подписка ушла этому клиенту, "
