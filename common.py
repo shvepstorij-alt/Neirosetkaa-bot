@@ -10301,7 +10301,8 @@ async def gpt_reconcile_orphans() -> dict:
     активировать сам.
     """
     from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
-                                    _email_from_session, _same_email, same_org)
+                                    _email_from_session, _same_email, same_org,
+                                    _org_norm)
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -10402,8 +10403,10 @@ async def gpt_reconcile_orphans() -> dict:
                 async with pool.acquire() as _c_h:
                     _hint = await _c_h.fetchval(
                         "SELECT gpt_org_hint FROM users WHERE user_id=$1", _uid) or ""
-                if _hint and _site_org.strip().lower() in [
-                        x.strip().lower() for x in _hint.split(",") if x.strip()]:
+                # Сравниваем через _org_norm: на сайте идентификатор может
+                # прийти с префиксом «gpt:», а у клиента лежать без него.
+                if _hint and _org_norm(_site_org) in [
+                        _org_norm(x) for x in _hint.split(",") if x.strip()]:
                     _om = True
             except Exception as _e_h:
                 logging.warning(f"reconcile: подсказки org {_uid}: {_e_h}")
@@ -11019,7 +11022,8 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
     ими молча.
     """
     from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
-                                    _email_from_session, _same_email, same_org)
+                                    _email_from_session, _same_email, same_org,
+                                    _org_norm)
     _h = max(1, min(int(hours or 48), 24 * 30))
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -11121,8 +11125,8 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
             # Не совпал — НЕ доказательство: среди них может быть id сессии.
             # Поэтому здесь только True, а False отсюда не бывает.
             if _match is None and _site_org and _hint_org:
-                if _site_org.strip().lower() in [
-                        x.strip().lower() for x in _hint_org.split(",") if x.strip()]:
+                if _org_norm(_site_org) in [
+                        _org_norm(x) for x in _hint_org.split(",") if x.strip()]:
                     _match, _by = True, "org"
             if _match is None and _site_mail and _mine:
                 _match = bool(_same_email(_site_mail, _mine))
@@ -11236,7 +11240,8 @@ async def gpt_why(code: str) -> str:
     меняет — только показывает.
     """
     from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
-                                    BPA_FREE_STATUSES, same_org, _same_email)
+                                    BPA_FREE_STATUSES, same_org, _same_email,
+                                    _org_norm, _org_kind)
     code = (code or "").strip().upper()
     if not code:
         return "Пустой код."
@@ -11306,7 +11311,16 @@ async def gpt_why(code: str) -> str:
                       + ("  (считается использованным)" if _site_st in BPA_USED_STATUSES
                          else "  (считается свободным)" if _site_st in BPA_FREE_STATUSES
                          else "  (статус незнакомый)"))
-            _L.append(f"  org: <code>{_e(_site_org or '—')}</code>")
+            # Одна и та же колонка сайта содержит разное: у iOS — настоящий
+            # Organization ID, у филиппинских — номер заказа на самом сайте.
+            # Называем то, что видим, иначе отчёт вводит в заблуждение ровно
+            # там, где в нём больше всего нуждаются.
+            if _org_kind(_site_org) == "siteorder":
+                _L.append(f"  🧾 номер заказа на сайте: <code>{_e(_site_org)}</code>")
+                _L.append("  <i>Это НЕ Organization ID аккаунта — сверять "
+                          "личность по нему нельзя, решает почта.</i>")
+            else:
+                _L.append(f"  org: <code>{_e(_site_org or '—')}</code>")
             _L.append(f"  почта: <code>{_e(_site_mail or '—')}</code>")
             if _i.get("when"):
                 _L.append(f"  время: {_e(_i['when'])}")
@@ -11339,12 +11353,25 @@ async def gpt_why(code: str) -> str:
     elif _om is False:
         _L.append("  ⛔ Organization ID РАЗНЫЕ — записывать нельзя ни при каких условиях.")
     else:
-        _why = ("у клиента org не сохранён" if _site_org and not _cl_org
-                else "сайт org не показал" if _cl_org and not _site_org
-                else "org нет ни там, ни там")
-        _L.append(f"  ❔ по org сказать нечего: {_why}.")
-        if _site_org and _hint and _site_org.strip().lower() in [
-                x.strip().lower() for x in _hint.split(",") if x.strip()]:
+        _ks, _kc = _org_kind(_site_org), _org_kind(_cl_org)
+        if _ks == "siteorder":
+            # Филиппинский маршрут: в колонке org у сайта лежит номер его
+            # СОБСТВЕННОГО заказа. Сверять по нему нечего — и это не пробел,
+            # а нормальный порядок вещей для этого маршрута.
+            _L.append("  ❔ сайт показал номер своего заказа, а не Organization "
+                      "ID аккаунта — так он помечает филиппинские коды. "
+                      "Личность сверяем по почте.")
+        elif _site_org and _cl_org and _ks != _kc:
+            _L.append("  ❔ по org сказать нечего: на сайте и у клиента "
+                      f"идентификаторы разного вида ({_ks or 'неопознан'} и "
+                      f"{_kc or 'неопознан'}). Решает почта.")
+        else:
+            _why = ("у клиента org не сохранён" if _site_org and not _cl_org
+                    else "сайт org не показал" if _cl_org and not _site_org
+                    else "org нет ни там, ни там")
+            _L.append(f"  ❔ по org сказать нечего: {_why}.")
+        if _site_org and _hint and _org_norm(_site_org) in [
+                _org_norm(x) for x in _hint.split(",") if x.strip()]:
             _L.append("  ✅ но org с сайта есть среди кандидатов клиента — этого хватит.")
             _om = True
         elif _site_mail and _cl_mail:

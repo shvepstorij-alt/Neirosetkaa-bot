@@ -591,6 +591,22 @@ async def gpt_orphans_loop():
     def _ew(v):
         return _h_w.escape(str(v if v is not None else ""))
 
+    def _orgline(label, v):
+        """Строка про org с честной подписью.
+
+        В колонке org сайт показывает разное: у кодов iOS — настоящий
+        Organization ID аккаунта, у филиппинских — номер СВОЕГО заказа
+        (выяснилось 17.09.2026). Подписывать номер заказа словом «org» значит
+        каждый раз заставлять себя гадать, почему он «не совпал».
+        """
+        try:
+            from chatgpt_activation import _org_kind as _ok_b
+            if _ok_b(v) == "siteorder":
+                return f"🧾 заказ на сайте: <code>{_ew(v)}</code>\n"
+        except Exception:
+            pass
+        return f"{label}: <code>{_ew(v or '—')}</code>\n"
+
     await asyncio.sleep(90)           # даём боту подняться и подхватить вебхук
     _pass_no = 0
     while True:
@@ -635,9 +651,9 @@ async def gpt_orphans_loop():
                         f"🔑 <code>{_ew(_u['code'])}</code> — сайт: {_ew(_u['status'])}\n"
                         f"📧 на сайте: <code>{_ew(_u['site_email'] or '—')}</code>\n"
                         f"📧 у клиента: <code>{_ew(_u['client_email'] or '—')}</code>\n"
-                        f"🏢 org на сайте: <code>{_ew(_u.get('site_org') or '—')}</code>\n"
-                        f"🏢 org у клиента: <code>{_ew(_u.get('client_org') or '—')}</code>\n"
-                        f"🆔 <code>{_u['order_id']}</code>\n\n"
+                        + _orgline("🏢 org на сайте", _u.get('site_org'))
+                        + _orgline("🏢 org у клиента", _u.get('client_org'))
+                        + f"🆔 <code>{_u['order_id']}</code>\n\n"
                         f"Код потрачен, но что он ушёл именно этому клиенту — "
                         f"подтвердить не могу. Подписку НЕ записывал: иначе "
                         f"клиент увидел бы в профиле то, чего у него нет.\n"
@@ -699,8 +715,8 @@ async def gpt_orphans_loop():
                         f"🔑 <code>{_ew(_l['code'])}</code> — сайт: {_ew(_l['status'])}\n"
                         f"📧 на сайте: <code>{_ew(_l['site_email'] or '—')}</code>\n"
                         f"📧 у клиента: <code>{_ew(_l['client_email'] or '—')}</code>\n"
-                        + (f"🏢 org на сайте: <code>{_ew(_l.get('site_org') or '—')}</code>\n"
-                           f"🏢 org у клиента: <code>{_ew(_l.get('client_org') or '—')}</code>\n"
+                        + ((_orgline("🏢 org на сайте", _l.get('site_org'))
+                            + _orgline("🏢 org у клиента", _l.get('client_org')))
                            if (_l.get('site_org') or _l.get('client_org')) else "")
                         + ""
                         + (f"🆔 <code>{_l['order_id']}</code>\n" if _l.get("order_id") else "")
