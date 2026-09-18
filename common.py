@@ -8218,7 +8218,9 @@ async def _run_activation_job(
 # отметку, и клиент, уже нажавший «Попробовать снова», получал предупреждение
 # заново — и не мог активировать, пока не нажмёт ещё раз. Теперь отметка
 # дублируется в settings и живёт час; память остаётся быстрым кэшем.
-_gpt_double_warned: set = set()
+# _gpt_double_warned убран вместе с предупреждением о повторной активации
+# ChatGPT (18.09.2026): ссылаться на него стало нечему. У Perplexity свой
+# набор, у Claude — свой, они не тронуты.
 _claude_double_warned: set = set()
 _DBL_WARN_TTL = 3600  # секунд: через час предупредим снова (это защита, а не помеха)
 
@@ -8528,88 +8530,25 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                       "error": f"Время активации истекло. Напиши @{PERSONAL_USERNAME} — "
                                f"он выдаст новую активацию."})
 
-    # Guard: повторная активация за 29 дней — НЕ блокируем жёстко.
-    # Первый раз предупреждаем, повторное нажатие «Попробовать снова» = активируем
-    # принудительно (клиент может оформлять подписку на другой аккаунт, напр. другу).
-    try:
-        _pool_dbl = await get_pool()
-        async with _pool_dbl.acquire() as _c_dbl:
-            _recent_act = await _c_dbl.fetchrow(
-                "SELECT code, plan, used_at, email FROM gpt_codes"
-                " WHERE used_by=$1 AND used_at > NOW() - INTERVAL '29 days'"
-                " AND used_by IS NOT NULL ORDER BY used_at DESC LIMIT 1",
-                user_id
-            )
-        if _recent_act:
-            _us = _recent_act["used_at"].strftime("%d.%m.%Y %H:%M") if _recent_act["used_at"] else "-"
-            _u = await get_user(user_id)
-            if _u and _u.get("username"):
-                _uname = "@" + _u["username"]
-            elif _u and _u.get("full_name"):
-                _uname = _u["full_name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            else:
-                _uname = "\u0431\u0435\u0437 \u043d\u0438\u043a\u0430"
-            if not await _dbl_warned_is("gpt", user_id, _gpt_double_warned):
-                await _dbl_warned_set("gpt", user_id, _gpt_double_warned)
-                logging.warning(f'GPT repeat activation: warned user={user_id} code={_recent_act["code"]}')
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        "\u26a0\ufe0f <b>\u041f\u043e\u0432\u0442\u043e\u0440\u043d\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f ChatGPT</b> (\u043a\u043b\u0438\u0435\u043d\u0442 \u043f\u0440\u0435\u0434\u0443\u043f\u0440\u0435\u0436\u0434\u0451\u043d)\n\n"
-                        f"\U0001f464 {_uname} (<code>{user_id}</code>)\n"
-                        f"\U0001f511 \u0423\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d: <code>{_recent_act['code']}</code>\n"
-                        f"\U0001f4e6 \u0422\u0430\u0440\u0438\u0444: <b>{_recent_act['plan']}</b>\n"
-                        f"\u23f1 \u0414\u0430\u0442\u0430: <b>{_us}</b>\n"
-                        f"\U0001f4e7 Email: {_recent_act.get('email') or '-'}\n\n"
-                        "\u0415\u0441\u043b\u0438 \u043d\u0430\u0436\u043c\u0451\u0442 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb \u2014 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0442 \u043d\u0430 \u0434\u0440\u0443\u0433\u043e\u0439 \u0430\u043a\u043a\u0430\u0443\u043d\u0442.",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-                # \u041a\u043b\u0438\u0435\u043d\u0442\u0443 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u043c \u041e\u0411\u0415 \u043f\u043e\u0447\u0442\u044b: \u043a\u0443\u0434\u0430 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043b\u0438 \u0440\u0430\u043d\u044c\u0448\u0435 \u0438 \u043a\u0443\u0434\u0430 \u0438\u0434\u0451\u0442 \u0441\u0435\u0439\u0447\u0430\u0441,
-                # \u0438\u043d\u0430\u0447\u0435 \u043d\u0435\u043f\u043e\u043d\u044f\u0442\u043d\u043e \u2014 \u0442\u043e\u0442 \u0436\u0435 \u044d\u0442\u043e \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0438\u043b\u0438 \u0434\u0440\u0443\u0433\u043e\u0439.
-                _prev_email = (_recent_act.get("email") or "").strip()
-                _now_email = ""
-                try:
-                    _now_email = (_extract_email_from_token(access_token) or "").strip()
-                except Exception:
-                    _now_email = ""
-                _same = bool(_prev_email and _now_email and
-                             _prev_email.lower() == _now_email.lower())
-                _lines_dbl = ["\u26a0\ufe0f \u041d\u0430 \u044d\u0442\u043e\u0442 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0443\u0436\u0435 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043b\u0438 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0443 ChatGPT.\n"]
-                if _prev_email:
-                    _lines_dbl.append(f"\ud83d\udce7 \u041f\u0440\u043e\u0448\u043b\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f: {_prev_email} ({_us})")
-                else:
-                    _lines_dbl.append(f"\ud83d\udcc5 \u041f\u0440\u043e\u0448\u043b\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f: {_us}")
-                if _now_email:
-                    _lines_dbl.append(f"\ud83d\udce7 \u0421\u0435\u0439\u0447\u0430\u0441 \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0448\u044c: {_now_email}")
-                if _same:
-                    _lines_dbl.append(
-                        "\n\u041d\u0430 \u044d\u0442\u043e\u0442 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0431\u044b\u043b\u0430 \u043e\u0444\u043e\u0440\u043c\u043b\u0435\u043d\u0430 \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 \u043c\u0435\u043d\u0435\u0435 \u043c\u0435\u0441\u044f\u0446\u0430 \u043d\u0430\u0437\u0430\u0434 "
-                        "\u0438 \u043e\u043d\u0430 \u0435\u0449\u0451 \u0430\u043a\u0442\u0438\u0432\u043d\u0430. \u041c\u043e\u0436\u0435\u0442\u0435 \u043f\u0440\u043e\u0434\u043b\u0438\u0442\u044c \u043f\u043e\u0434\u043f\u0438\u0441\u043a\u0443 \u043d\u0430\u0447\u0438\u043d\u0430\u044f \u0441 \u0441\u0435\u0433\u043e\u0434\u043d\u044f\u0448\u043d\u0435\u0433\u043e \u0434\u043d\u044f "
-                        "\u043f\u043e \u043a\u043d\u043e\u043f\u043a\u0435 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb.")
-                elif _now_email:
-                    _lines_dbl.append(
-                        "\n\u042d\u0442\u043e \u0414\u0420\u0423\u0413\u041e\u0419 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u2014 \u0432\u0441\u0451 \u0432 \u043f\u043e\u0440\u044f\u0434\u043a\u0435. \u041d\u0430\u0436\u043c\u0438 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb, \u0438 \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f \u043f\u0440\u043e\u0439\u0434\u0451\u0442.")
-                else:
-                    _lines_dbl.append(
-                        "\n\u0415\u0441\u043b\u0438 \u043e\u0444\u043e\u0440\u043c\u043b\u044f\u0435\u0448\u044c \u043d\u0430 \u0414\u0420\u0423\u0413\u041e\u0419 \u0430\u043a\u043a\u0430\u0443\u043d\u0442 (\u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440, \u0434\u043b\u044f \u0434\u0440\u0443\u0433\u0430) \u2014 \u043d\u0430\u0436\u043c\u0438 \u00ab\u041f\u043e\u043f\u0440\u043e\u0431\u043e\u0432\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430\u00bb.")
-                _lines_dbl.append(f"\n\u0415\u0441\u043b\u0438 \u044d\u0442\u043e \u0441\u043b\u0443\u0447\u0430\u0439\u043d\u043e \u2014 \u043d\u0430\u043f\u0438\u0448\u0438 @{PERSONAL_USERNAME}.")
-                return _resp({"success": False, "error": "\n".join(_lines_dbl)})
-            else:
-                await _dbl_warned_clear("gpt", user_id, _gpt_double_warned)
-                logging.info(f"GPT forced re-activation user={user_id}")
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        "\u2705 <b>\u041f\u043e\u0432\u0442\u043e\u0440\u043d\u0430\u044f \u0430\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u044f ChatGPT \u2014 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0430</b>\n\n"
-                        f"\U0001f464 {_uname} (<code>{user_id}</code>) \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0435\u0442 \u0435\u0449\u0451 \u0440\u0430\u0437 (\u0434\u0440\u0443\u0433\u043e\u0439 \u0430\u043a\u043a\u0430\u0443\u043d\u0442).",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-    except Exception as _dbl_e:
-        logging.error(f'double-activation check: {_dbl_e}')
+    # Предупреждения о ПОВТОРНОЙ активации ChatGPT здесь больше нет.
+    #
+    # Было так: если за 29 дней клиент уже активировал код, бот показывал ему
+    # предупреждение «на этот аккаунт уже активировали подписку», требовал
+    # нажать «Попробовать снова» второй раз и присылал Александру два
+    # сообщения — про предупреждение и про подтверждение.
+    #
+    # Убрано по его просьбе 18.09.2026. Причина простая: активацию нельзя
+    # начать без ОПЛАЧЕННОГО заказа — строка ожидания создаётся только под
+    # него. Значит «повторная активация» это не подозрительное поведение, а
+    # просто второй купленный заказ: человек оформляет подписку другу или на
+    # второй свой аккаунт. Лишний шаг тормозил клиента, а два сообщения
+    # засоряли чат без единого случая, когда бы они что-то предотвратили.
+    #
+    # Если понадобится вернуть — блок жил здесь и опирался на _dbl_warned_is /
+    # _dbl_warned_set / _dbl_warned_clear с ключом "gpt". Сами помощники
+    # остались: ими пользуется Claude (у Perplexity своя проверка, попроще).
+    # У Claude и Perplexity предупреждение НЕ трогал — там оно про другое:
+    # их коды дороже и выдаются штучно.
 
 
     # Всегда используем pending["code"] — он актуальный даже после retry

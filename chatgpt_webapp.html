@@ -788,6 +788,7 @@
       <div class="field-hint">
         Скопируй <b>весь</b> текст страницы целиком — от начала до конца
       </div>
+      <div id="tok-hint" class="field-hint" style="display:none;color:#ff6b6b;font-size:11px;"></div>
     </div>
 
     <div id="acct-box" style="display:none;margin-top:12px;padding:11px 13px;border-radius:11px;background:var(--bg3);font-size:13px;line-height:1.45;">
@@ -1261,22 +1262,64 @@ function validateToken() {
   var box = document.getElementById('acct-box');
   var eml = document.getElementById('acct-email');
   if (err) err.classList.remove('show');
-  var ok = !!(el && el.value.trim().length >= 50);
+  var raw = el ? (el.value || '').trim() : '';
+  var tok = findToken(raw);
+  var ok  = tokenLooksValid(tok);
   if (btn) btn.disabled = !ok;
-  var email = ok ? _emailFromToken(extractToken(el.value)) : '';
+
+  /* Подсказка прямо под полем: пустое поле — молчим, что-то вставлено без
+     токена — объясняем, что именно не так. Иначе клиент видит мёртвую кнопку
+     и не понимает почему. */
+  var hint = document.getElementById('tok-hint');
+  if (hint) {
+    if (!raw) {
+      hint.style.display = 'none';
+    } else if (!ok) {
+      hint.style.display = 'block';
+      hint.innerHTML = (raw.indexOf('WARNING') >= 0 || raw.indexOf('DO NOT SHARE') >= 0)
+        ? '\u26a0\ufe0f Это только предупреждение сверху страницы — самого токена тут нет.<br>'
+          + 'Пролистай страницу до конца и скопируй <b>весь</b> текст.'
+        : '\u26a0\ufe0f Токен не найден. Нужен весь текст со страницы '
+          + '<b>chatgpt.com/api/auth/session</b> — целиком, от <code>{</code> до <code>}</code>.';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
+
+  var email = ok ? _emailFromToken(tok) : '';
   if (email && box && eml) { eml.textContent = email; box.style.display = 'block'; }
   else if (box) { box.style.display = 'none'; }
 }
 
 // ─── Вспомогательные ─────────────────────────────────────────────
-function extractToken(raw) {
-  raw = raw.trim();
-  try { var obj = JSON.parse(raw); if (obj.accessToken) return obj.accessToken; } catch(e) {}
+/* Находит НАСТОЯЩИЙ токен во вставленном тексте — или возвращает пустую строку.
+
+   18.09.2026: клиенты часто вставляют только верхнюю часть страницы — то самое
+   предупреждение «DO NOT SHARE ANY PART...». Токена в нём нет вовсе, а длина —
+   под три сотни символов. Кнопка при этом включалась (проверка была «текст
+   длиннее 50 символов»), клиент жал «Активировать», и всё падало уже на
+   сервере. Теперь нет токена — нет и кнопки.
+
+   Прежняя extractToken на такой текст возвращала его ЦЕЛИКОМ, поэтому
+   отличить «токен есть» от «токена нет» по ней было нельзя. */
+function findToken(raw) {
+  raw = (raw || '').trim();
+  if (!raw) return '';
+  try { var obj = JSON.parse(raw); if (obj && typeof obj.accessToken === 'string') return obj.accessToken; } catch(e) {}
   var m = raw.match(/"accessToken"\s*:\s*"([^"]+)"/);
   if (m) return m[1];
-  if (raw.startsWith('eyJ')) return raw;
-  return raw;
+  /* Сырой JWT: три части через точку. Ищем в любом месте текста — клиент мог
+     вставить его вместе с посторонним мусором. */
+  var j = raw.match(/eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+/);
+  if (j) return j[0];
+  return '';
 }
+
+function tokenLooksValid(tok) {
+  return !!(tok && tok.indexOf('eyJ') === 0 && tok.length >= 100);
+}
+
+
 
 var _sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
 
@@ -1354,9 +1397,9 @@ async function startActivation() {
   var tokenRaw = (document.getElementById('token-input').value || '').trim();
   var errBox   = document.getElementById('err-box');
   var code     = codeInput ? codeInput.value.trim() : '';
-  var token    = extractToken(tokenRaw);
+  var token    = findToken(tokenRaw);
 
-  if (!token.startsWith('eyJ') || token.length < 100) {
+  if (!tokenLooksValid(token)) {
     if (errBox) {
       errBox.textContent = 'Токен не найден. Убедись что скопировал весь текст со страницы chatgpt.com/api/auth/session';
       errBox.classList.add('show');
