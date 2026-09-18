@@ -2816,6 +2816,18 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                         return {"success": False, "token_invalid": True,
                                 "error": "Сессия не принята (просрочена/битая). Скопируй заново со страницы session."}
                     if st == 503 or ec == "SERVICE_NOT_READY":
+                        # 18.09.2026: сайт ответил «Service temporarily paused
+                        # for maintenance. Codes stay valid; retry later», а бот
+                        # записал это в «нет мест» и увёл заказ в ручной режим.
+                        # Хотя сток был (708 чеков Go iOS), код цел, и сайт сам
+                        # просил повторить. Это НЕ отсутствие мест — это пауза.
+                        _pl = str(det).lower()
+                        if ("paus" in _pl or "maintenance" in _pl
+                                or "retry later" in _pl or "try again later" in _pl
+                                or "техработ" in _pl or "обслуживан" in _pl
+                                or "позже" in _pl):
+                            return {"success": False, "site_paused": True,
+                                    "error": "Сайт на техобслуживании: " + str(det)}
                         return {"success": False, "out_of_stock": True,
                                 "error": "Сервис GPT временно недоступен: " + str(det)}
                     if st == 429:

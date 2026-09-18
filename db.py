@@ -1143,10 +1143,27 @@ async def claim_gpt_activation(user_id: int, stale_minutes: int = 10) -> bool:
             "      OR activating_at < NOW() - make_interval(mins => $2))",
             user_id, int(stale_minutes)
         )
-    try:
-        return str(r).split()[-1] == "1"
-    except Exception:
+        try:
+            _ok = str(r).split()[-1] == "1"
+        except Exception:
+            return True
+        if _ok:
+            return True
+        # Ноль изменённых строк — это ДВА разных случая, а раньше оба означали
+        # «занято»:
+        #   • строка есть и метка свежая — активация правда идёт, ждём;
+        #   • строки НЕТ вовсе — занимать нечего, и блокировать не за что.
+        # Во втором случае клиент получал «активация уже выполняется» и не мог
+        # запустить её НИКОГДА: замок не отпустится, потому что отпускать
+        # нечего. Разводим эти случаи.
+        _exists = await conn.fetchval(
+            "SELECT 1 FROM gpt_pending_activations WHERE user_id = $1", user_id)
+    if not _exists:
+        logging.warning(
+            f"claim_gpt_activation: у {user_id} нет строки ожидания — "
+            f"блокировать нечего, пропускаю")
         return True
+    return False
 
 
 async def claim_activation(key: str, stale_minutes: int = 20) -> bool:

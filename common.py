@@ -7068,6 +7068,49 @@ async def _run_activation_job(
         # ─────────────────────────────────────────────────────────────────────
         result = await _do_activate(code)
 
+        # ── Сайт на паузе: ждём и пробуем сами, тем же кодом ────────────────
+        # 18.09.2026: сайт ответил «Service temporarily paused for maintenance.
+        # Codes stay valid; retry later» — то есть сам попросил повторить. Бот
+        # вместо этого объявил провал и увёл заказ в ручной режим, а клиента
+        # ещё и заблокировал на несколько минут защитой от двойного запуска.
+        # Клиент видел «не получилось» и не мог даже нажать заново.
+        #
+        # Повторяем ЗДЕСЬ, внутри той же задачи: замок на клиенте наш, значит
+        # сам себе он не мешает, и лишних кодов из пула никто не возьмёт — код
+        # тот же. Три попытки с паузой в минуту: если сайт чинят дольше, дальше
+        # ждать бессмысленно, и тогда разбираемся как раньше.
+        _paused_tries = 0
+        while result.get("site_paused") and _paused_tries < 3:
+            _paused_tries += 1
+            logging.warning(
+                f"GPT: сайт на паузе, попытка {_paused_tries}/3 через 60 с "
+                f"(код {code}, клиент {user_id})")
+            _activation_jobs[job_id] = {"status": "pending", "retrying": True}
+            if _paused_tries == 1:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⏳ <b>Сайт активации на техобслуживании</b>\n\n"
+                        "Это ненадолго. Код за тобой, ничего делать не нужно — "
+                        "пробую сам каждую минуту и напишу, как получится 🙌",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+            await asyncio.sleep(60)
+            # Освежаем метку «активация идёт». Она считается протухшей через
+            # 10 минут, а с тремя паузами по минуте и опросом сайта задача
+            # легко живёт дольше. Протухни метка — клиент смог бы запустить
+            # ВТОРУЮ активацию поверх работающей и забрать второй код: ровно
+            # та беда, от которой этот замок и ставили.
+            try:
+                await claim_gpt_activation(user_id, stale_minutes=0)
+            except Exception as _e_cl:
+                logging.warning(f"GPT: не освежил метку активации {user_id}: {_e_cl}")
+            result = await _do_activate(code)
+        if _paused_tries and not result.get("site_paused"):
+            logging.warning(
+                f"GPT: сайт ожил после {_paused_tries} попыток (код {code})")
+
         _plan_key = plan_name_to_key(plan_name)
         _gpt_used_codes = []        # все сожжённые использованные коды (для отчёта)
         _tried_sites = [provider]   # сайты, где уже пробовали
@@ -7416,8 +7459,17 @@ async def _run_activation_job(
         # Ошибки КЛИЕНТА — сменой сайта не лечатся (протухшая сессия, «нужна проверка»,
         # подтверждение принудительной активации). Их НЕ фолбэсим по сайтам.
         def _client_stop(_res):
+            # site_paused здесь же, хотя к клиенту отношения не имеет: смысл
+            # списка — «дальше перебирать сайты бессмысленно». Сайт на
+            # техобслуживании мы уже трижды переспросили, а уход на другой сайт
+            # означал бы вернуть его код в пул — через _safe_release, который
+            # до лежащего сайта не достучится, пометит код и пришлёт «код не
+            # вернул в пул». Ровно этот шум Александр и видел 18.09.2026.
+            # Код цел, сайт сам написал «codes stay valid» — оставляем за
+            # клиентом и идём в свою ветку.
             return bool(_res.get("token_invalid") or _res.get("needs_check")
-                        or _res.get("needs_force_confirm"))
+                        or _res.get("needs_force_confirm")
+                        or _res.get("site_paused"))
 
         # ── ПЕРЕВОД НА iOS ПРИ БЛОКИРОВКЕ ПОКУПКИ OpenAI ───────────────────
         # Филиппинский маршрут — это покупка на стороне сайта, и её иногда
@@ -7937,6 +7989,44 @@ async def _run_activation_job(
                     )
                 except Exception as _te:
                     logging.error(f"Token invalid message failed: {_te}")
+
+            elif result.get("site_paused"):
+                # Три попытки за три минуты — сайт всё ещё чинят. Код цел и
+                # закреплён за клиентом: сайт прямо пишет «codes stay valid».
+                # Возвращать его в пул и тревожить «не вернул в пул» не о чем.
+                _gpt_retry_counts.pop(user_id, None)
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⏳ <b>Сайт активации ещё на техобслуживании</b>\n\n"
+                        "Код закреплён за тобой и никуда не денется. "
+                        "Александр активирует вручную, как только сайт "
+                        "оживёт — повторять ничего не нужно, я напишу 🙌",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                if _fail_should_alert("gpt", user_id):
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⏸ <b>ChatGPT — сайт на техобслуживании</b>\n"
+                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"🔑 <code>{code}</code>\n"
+                            f"🆔 <code>{order_id}</code>\n"
+                            + await _fk_num_line(order_id)
+                            + f"❗ {error_text}\n\n"
+                            f"Пробовал сам 3 раза с паузой в минуту — сайт всё "
+                            f"ещё закрыт. Код ЦЕЛ и закреплён за клиентом, "
+                            f"в пул не возвращён. Как оживёт — активируй его "
+                            f"или дай клиенту нажать «Активировать» заново.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                _activation_jobs[job_id] = {
+                    "status": "done", "success": False,
+                    "error": "Сайт активации на техобслуживании. Код за тобой — "
+                             "Александр активирует вручную 🙌"}
+                return
 
             elif result.get("out_of_stock"):
                 # Нет свободных мест на сайте — токен клиента тут ни при чём.
