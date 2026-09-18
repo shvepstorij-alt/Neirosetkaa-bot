@@ -2918,6 +2918,36 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     return {"success": False, "error": str(msg),
                             "openai_blocked": openai_purchase_blocked(str(msg))}
                 # queued | running | pending | review → продолжаем ждать
+            # ── Пять минут вышли. Но прежде чем звать это неудачей, спросим
+            # сайт ПРО САМ КОД, а не про заказ.
+            #
+            # 18.09.2026, код GPTI-0AGH-UM2C-NJ1N: опрос заказа так и не дал
+            # completed, бот объявил неудачу — и в ту же секунду другой запрос
+            # (возврат кода в пул) получил от сайта «claimed». То есть сайт УЖЕ
+            # считал код использованным, пока бот по другому адресу видел
+            # «обрабатывается». Два конца одного сайта расходятся, а платил за
+            # это клиент: подписка есть, а бот пишет «не удалось».
+            #
+            # Здесь не решаем судьбу заказа — только отмечаем, что сайт считает
+            # код потраченным. Дальше это уходит в обычную сверку, где личность
+            # подтверждается по Organization ID или почте. Тихо записывать
+            # подписку по одному лишь «claimed» нельзя: код мог быть потрачен
+            # на чужой аккаунт.
+            _site_used = False
+            try:
+                _q2 = await bpa_query_codes([code])
+                _v2 = (_q2.get((code or "").strip().upper()) or {}).get("status", "")
+                _site_used = _v2 in BPA_USED_STATUSES
+                if _site_used:
+                    logger.warning(
+                        f"bpa gpt: заказ {order_id} не дошёл до completed за 5 мин, "
+                        f"но сам код {code} на сайте уже «{_v2}» — отдаём на сверку.")
+            except Exception as _e_q2:
+                logger.warning(f"bpa gpt: не спросил статус кода {code}: {_e_q2}")
+            if _site_used:
+                return {"success": False, "site_claimed": True,
+                        "error": "Сайт не уложился в 5 минут, но код у него уже "
+                                 "числится использованным — проверяю сверкой."}
             return {"success": False,
                     "error": "Сайт долго обрабатывал заказ (>5 мин). Александр проверит вручную."}
     except _aiohttp.ClientError as e:

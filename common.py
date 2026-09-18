@@ -6992,6 +6992,41 @@ async def _admin_fail_shot(text, screenshot=None):
 _SAFE_REL_ALERT_AT = 0.0      # когда последний раз сообщали про невозврат
 
 
+async def gpt_activation_already_done(code: str, user_id: int,
+                                      order_id: str = "") -> bool:
+    """Записана ли уже эта активация — кем-то другим, пока мы работали.
+
+    Активация клиента и сверка идут параллельно и могут прийти к финишу в
+    разном порядке. Сверка узнаёт об успехе от сайта и закрывает заказ; задача
+    активации в это время ещё висит и, добравшись до конца, объявляет неудачу
+    по уже закрытому заказу — с криком в чат и «не удалось» клиенту, у которого
+    подписка работает.
+
+    Признак «уже записано» один и надёжный: код закреплён ЗА ЭТИМ клиентом и
+    привязан к заказу. Это делает только запись активации — ни перебор, ни
+    отказ такого не оставляют.
+    """
+    _c = (code or "").strip().upper()
+    if not _c or not user_id:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _r = await conn.fetchrow(
+            "SELECT used_by, order_id FROM gpt_codes WHERE UPPER(code)=$1", _c)
+        if _r and _r["used_by"] and int(_r["used_by"]) == int(user_id) \
+                and (_r["order_id"] or ""):
+            return True
+        if order_id:
+            # Тот же заказ мог закрыться ДРУГИМ кодом (перебор, ручная выдача).
+            # Клиенту подписка уже записана — второй раз объявлять неудачу не о чем.
+            _n = await conn.fetchval(
+                "SELECT COUNT(*) FROM gpt_codes WHERE order_id=$1 AND used_by=$2",
+                order_id, int(user_id)) or 0
+            if _n:
+                return True
+    return False
+
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str,
@@ -7053,6 +7088,15 @@ async def _run_activation_job(
             Сказал что-то другое или промолчал — оставляем за клиентом и метим:
             решение о судьбе кода принимает Александр, а не догадка.
             """
+            # Если активация уже записана (сверка нас обогнала) — код и должен
+            # остаться за клиентом, и тревожить незачем: «не вернул в пул»
+            # звучит как проблема, а это ровно правильный исход.
+            try:
+                if await gpt_activation_already_done(_c, user_id, order_id):
+                    logging.info(f"_safe_release: {_c} — активация уже записана, молчу")
+                    return False
+            except Exception:
+                pass
             _free_st = ("unused",)      # запас на случай, если импорт упадёт:
             _v = ""                     # иначе ниже был бы NameError и код
             try:                        # молча не вернулся бы вообще
@@ -7731,6 +7775,59 @@ async def _run_activation_job(
             _activation_jobs[job_id] = {"status": "done", "success": True}
         else:
             error_text = result.get("error", "Ошибка активации")
+            # ── Гонка со сверкой ────────────────────────────────────────────
+            # 18.09.2026, код GPTI-0AGH-UM2C-NJ1N: в 14:55 сверка увидела на
+            # сайте успех и закрыла заказ («дописано сверкой»), а в 14:58 эта
+            # задача — всё ещё висевшая в воздухе — доехала до конца и объявила
+            # НЕУДАЧУ по уже закрытому заказу. В чат ушли «код не вернул в пул»
+            # и «авто-активация НЕУДАЧА» для подписки, которая работает.
+            # Клиенту при этом грозило «не удалось» после «подписка активна».
+            #
+            # Спрашиваем базу: не записана ли эта активация, пока мы шли сюда.
+            # Записана — молчим. Проигравший в гонке не должен кричать.
+            try:
+                if await gpt_activation_already_done(code, user_id, order_id):
+                    logging.warning(
+                        f"GPT: неудача по {code} uid={user_id} НЕ объявляется — "
+                        f"активация уже записана (сверка обогнала задачу).")
+                    _activation_jobs[job_id] = {"status": "done", "success": True}
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"ℹ️ <b>Активация закрыта раньше</b>\n"
+                            f"🔑 <code>{code}</code> · <code>{user_id}</code>\n\n"
+                            f"Задача активации дошла до конца и собиралась "
+                            f"сообщить о неудаче, но заказ к этому моменту уже "
+                            f"закрыт сверкой. Ничего делать не нужно.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    return
+            except Exception as _e_rc:
+                logging.warning(f"GPT: проверка «уже записано» {code}: {_e_rc}")
+
+            # ── Сайт не уложился в срок, но код у него уже использован ──────
+            # Ровно то, что 18.09.2026 Александр делал руками кнопкой
+            # «Проверить сейчас»: прогнать сверку по этому коду немедленно.
+            # Она подтвердит личность по Organization ID или почте и, если
+            # сойдётся, сама запишет подписку, поправит карточку и напишет
+            # клиенту. Не сойдётся — пойдём дальше объявлять неудачу, как и
+            # раньше. Нажимать кнопку самому больше не нужно.
+            if result.get("site_claimed"):
+                try:
+                    _rr = await gpt_reconcile_orphans(only_code=code)
+                    if _rr.get("fixed"):
+                        logging.warning(
+                            f"GPT: {code} закрыт сверкой сразу после таймаута "
+                            f"(сайт уже считал код использованным).")
+                        _activation_jobs[job_id] = {"status": "done", "success": True}
+                        return
+                    logging.warning(
+                        f"GPT: {code} — сайт считает код использованным, но "
+                        f"сверка личность не подтвердила; объявляю неудачу.")
+                except Exception as _e_sc:
+                    logging.warning(f"GPT: срочная сверка {code}: {_e_sc}")
+
             _plan_key = plan_name_to_key(plan_name)
             import urllib.parse as _uparse2
             from aiogram.types import WebAppInfo as _WebAppInfo
