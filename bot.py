@@ -214,7 +214,7 @@ _ADMIN_CMDS = (
     # проверка is_admin тоже есть, это второй рубеж.
     "/gpt_codes_status", "/gpt_codes_recover", "/gpt_tz", "/gpt_check_pool", "/gpt_code_route",
     "/gpt_codes_to_bpa", "/add_gpt_codes", "/giveaway_where", "/gpt_lost", "/gpt_lost_ok",
-    "/gpt_why", "/gpt_check",
+    "/gpt_why", "/gpt_check", "/balance",
 )
 
 

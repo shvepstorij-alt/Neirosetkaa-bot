@@ -5050,3 +5050,28 @@ async def adm_broadcast_drop(cb: CallbackQuery):
             "✖️ Рассылка снята с продолжения. Отметки о доставке остались в базе.")
     except Exception:
         pass
+
+
+@dp.message(F.text.regexp(r"^/balance(@\S+)?(\s+\d+)?$"), StateFilter("*"))
+async def admin_balance_report(message: Message):
+    """Откуда у клиента кредиты и монетки и куда они делись."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    _parts = (message.text or "").split()
+    if len(_parts) < 2:
+        await message.answer(
+            "Формат: <code>/balance ID</code>\n\n"
+            "<i>Показывает, откуда у клиента кредиты и монетки и куда они "
+            "делись: партии кредитов со сроками, списания монеток по заказам. "
+            "Ничего не меняет.</i>", parse_mode="HTML")
+        return
+    await message.answer("💰 Собираю…")
+    from common import balance_report, tg_chunks
+    try:
+        _t = await balance_report(int(_parts[1]))
+    except Exception as _e:
+        logging.warning(f"/balance: {_e}")
+        await message.answer(f"⚠️ Не смог собрать: {_e}")
+        return
+    for _chunk in tg_chunks(_t):
+        await message.answer(_chunk, parse_mode="HTML")

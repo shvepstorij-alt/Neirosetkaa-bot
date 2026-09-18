@@ -1552,6 +1552,14 @@ async def get_coins(user_id: int) -> float:
         )
         return float(val or 0)
 
+# Движения монеток пишем в СОБЫТИЯ, а не только в лог.
+#
+# 18.09.2026 клиент написал: «монетки-кэшбэк насыпались, а потом куда-то
+# пропали». Ответить было нечем: начисления и списания уходили только в
+# logging.info, то есть в лог Railway, который ротируется. Через неделю
+# восстановить картину невозможно в принципе — ни клиенту объяснить, ни свою
+# правоту проверить. Строка в events стоит доли миллисекунды и живёт вечно.
+
 async def add_coins(user_id: int, amount: float, reason: str = ""):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -1560,8 +1568,13 @@ async def add_coins(user_id: int, amount: float, reason: str = ""):
             round(amount, 2), user_id
         )
     logging.info(f"add_coins uid={user_id} +{amount:.2f} reason={reason}")
+    try:
+        await log_event(user_id, "coins",
+                        f"+{round(amount, 2)} ₽" + (f" — {reason}" if reason else ""))
+    except Exception:
+        pass
 
-async def deduct_coins(user_id: int, amount: float) -> bool:
+async def deduct_coins(user_id: int, amount: float, reason: str = "") -> bool:
     # SECURITY: 0 или отрицательное списание недопустимо (иначе обход оплаты монетками)
     if amount is None or amount <= 0:
         return False
@@ -1571,7 +1584,14 @@ async def deduct_coins(user_id: int, amount: float) -> bool:
             "UPDATE users SET coins = coins - $1 WHERE user_id=$2 AND COALESCE(coins,0) >= $1",
             round(amount, 2), user_id
         )
-        return int(result.split()[-1]) > 0
+        _ok = int(result.split()[-1]) > 0
+    if _ok:
+        try:
+            await log_event(user_id, "coins",
+                            f"−{round(amount, 2)} ₽" + (f" — {reason}" if reason else ""))
+        except Exception:
+            pass
+    return _ok
 
 
 async def log_event(user_id: int | None, kind: str, data: str = ""):

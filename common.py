@@ -4058,7 +4058,8 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
 
         if _coins_used > 0:
             # Списываем монетки ДО создания заказа: если не хватило — заказ не создаём.
-            if not await deduct_coins(int(uid), _coins_used):
+            if not await deduct_coins(int(uid), _coins_used,
+                                      reason=f"оплата заказа {order_id}"):
                 return web.json_response({"ok": False, "error": "Недостаточно монеток"})
 
         pool = await get_pool()
@@ -11485,6 +11486,111 @@ async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
     logging.warning(f"lostact: записал активацию {code} → uid={_uid} заказ={_oid}")
     return {"ok": True, "user_id": _uid, "order_id": _oid,
             "email": _found["site_email"]}
+
+
+async def balance_report(user_id: int) -> str:
+    """Откуда у клиента кредиты и монетки и куда они делись.
+
+    18.09.2026 клиент написал: «монетки-кэшбэк насыпались, а потом куда-то
+    пропали, и кредиты пропадают». Ответить было нечем: движения монеток
+    пишутся только в лог Railway, а он ротируется. Классическая закрытая
+    стена — цифра есть, объяснить её нечем.
+
+    Что здесь восстанавливается по базе:
+      • кредиты — целиком: партии хранят источник, срок и остаток, и по ним
+        видно, что именно сгорело и когда;
+      • монетки — частично: сколько потрачено, видно по заказам (в каждом
+        записано coins_spent). Сколько было НАЧИСЛЕНО, задним числом взять
+        неоткуда — с этого дня пишем в события.
+    """
+    pool = await get_pool()
+    _uid = int(user_id)
+    async with pool.acquire() as conn:
+        _u = await conn.fetchrow(
+            "SELECT username, full_name, credits, COALESCE(coins,0) AS coins "
+            "FROM users WHERE user_id=$1", _uid)
+        if not _u:
+            return f"Клиент <code>{_uid}</code> в базе не найден."
+        _b = await conn.fetch(
+            "SELECT credits_init, credits_left, source, expires_at, created_at "
+            "FROM credit_batches WHERE user_id=$1 ORDER BY created_at", _uid)
+        _sp = await conn.fetch(
+            "SELECT order_id, coins_spent, amount_rub, paid_at, status "
+            "FROM fk_orders WHERE user_id=$1 AND COALESCE(coins_spent,0)>0 "
+            "ORDER BY created_at", _uid)
+        _ev = await conn.fetch(
+            "SELECT kind, data, created_at FROM events "
+            "WHERE user_id=$1 AND kind IN ('coins','batch_expired') "
+            "ORDER BY created_at DESC LIMIT 20", _uid)
+
+    _tag = ("@" + _u["username"]) if _u["username"] else (_u["full_name"] or "без ника")
+    import html as _h_b
+    _L = [f"💰 <b>Баланс клиента</b>\n"
+          f"👤 {_h_b.escape(str(_tag))} (<code>{_uid}</code>)\n"
+          f"💵 Кредитов сейчас: <b>{int(_u['credits'] or 0)}</b>\n"
+          f"🪙 Монеток сейчас: <b>{float(_u['coins'] or 0):.0f} ₽</b>"]
+
+    # ── Кредиты по партиям
+    _L.append("\n<b>Кредиты — откуда и куда:</b>")
+    if not _b:
+        _L.append("  партий нет (кредиты начислялись до появления партий "
+                  "или напрямую).")
+    else:
+        _SRC = {"purchase": "покупка", "referral": "за друга", "promo": "промокод",
+                "free": "бонус", "admin_manual": "начислено вручную",
+                "admin": "начислено вручную"}
+        _burned = 0
+        import datetime as _dt_b
+        _now = _dt_b.datetime.now()
+        for r in _b:
+            _src = _SRC.get((r["source"] or "").strip(), r["source"] or "—")
+            _when = r["created_at"].strftime("%d.%m.%Y") if r["created_at"] else "—"
+            _init, _left = int(r["credits_init"] or 0), int(r["credits_left"] or 0)
+            _exp = r["expires_at"]
+            if _exp is None:
+                _tail = "не сгорает"
+            elif _exp <= _now:
+                _lost = _init - _left if _left == 0 else 0
+                _burned += max(0, _init - _left) if _left == 0 else 0
+                _tail = f"<b>сгорела {_exp.strftime('%d.%m.%Y')}</b>"
+            else:
+                _tail = f"сгорит {_exp.strftime('%d.%m.%Y')}"
+            _L.append(f"  • {_when} · {_src} · {_init} кр"
+                      + (f" (осталось {_left})" if _left != _init else "")
+                      + f" — {_tail}")
+        if _burned:
+            _L.append(f"  <b>Сгорело всего: {_burned} кр.</b> Бонусные кредиты "
+                      f"(за друга, промокод) живут 30 дней. Купленные и "
+                      f"начисленные вручную не сгорают никогда.")
+
+    # ── Монетки
+    _L.append("\n<b>Монетки — куда потрачены:</b>")
+    if not _sp:
+        _L.append("  ни в одном заказе монетки не списывались.")
+    else:
+        _tot = 0
+        for r in _sp:
+            _when = r["paid_at"].strftime("%d.%m.%Y") if r["paid_at"] else "—"
+            _cs = int(r["coins_spent"] or 0)
+            _tot += _cs if (r["status"] or "") == "paid" else 0
+            _L.append(f"  • {_when} · заказ <code>{_h_b.escape(str(r['order_id']))}</code>"
+                      f" · −{_cs} ₽"
+                      + ("" if (r["status"] or "") == "paid" else " <i>(не оплачен — возвращены)</i>"))
+        _L.append(f"  <b>Списано по оплаченным заказам: {_tot} ₽</b>")
+    _L.append("  <i>Монетки НЕ сгорают: их можно только потратить при оплате. "
+              "Если заказ не оплачен, они возвращаются через сутки.</i>")
+
+    # ── Движения, записанные с 18.09.2026
+    if _ev:
+        _L.append("\n<b>Последние движения:</b>")
+        for r in _ev:
+            _when = r["created_at"].strftime("%d.%m %H:%M") if r["created_at"] else "—"
+            _L.append(f"  {_when} · {_h_b.escape(str(r['data'] or r['kind']))}")
+    else:
+        _L.append("\n<i>Подробных движений пока нет — их начали записывать "
+                  "18.09.2026. За более ранние периоды выше только то, что "
+                  "восстанавливается по заказам и партиям.</i>")
+    return "\n".join(_L)
 
 
 async def gpt_recheck_report(code: str = "") -> str:

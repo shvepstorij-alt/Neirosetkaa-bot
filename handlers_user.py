@@ -132,11 +132,22 @@ async def cmd_start(message: Message, state: FSMContext):
         )
     else:
         gen_count = await get_gen_count(uid)
+        # Монетки показываем ТОЛЬКО тем, у кого они есть, и сразу говорим, что
+        # с ними делать. 18.09.2026 клиент решил, что монетки «куда-то
+        # пропали», хотя они лежали на месте — он просто нигде их не видел.
+        # Нулевая строка у большинства только мешала бы.
+        try:
+            _coins = float(await get_coins(uid) or 0)
+        except Exception:
+            _coins = 0.0
+        _coins_line = (f"\n🪙 Монетки: <b>{_coins:.0f} ₽</b> — ими можно оплатить "
+                       f"подписку в магазине") if _coins >= 1 else ""
         text = WELCOME_BACK.format(
             name=message.from_user.first_name,
             credits=credits,
             gen_count=gen_count,
             channel=ADMIN_USERNAME,
+            coins_line=_coins_line,
         )
 
     await message.answer("👇", reply_markup=kb_reply(is_admin))
