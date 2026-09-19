@@ -19,7 +19,7 @@ from aiogram.filters import StateFilter
 from config import ADMIN_ID, CHANNEL_ID, bot, dp, is_admin
 from db import (
     ensure_user, get_pool,
-    giveaway_active, giveaway_add_comment, giveaway_refs,
+    giveaway_active, giveaway_add_comment,
 )
 
 # id группы обсуждения узнаём у самого Telegram и держим в памяти: он не
@@ -119,6 +119,28 @@ async def giveaway_is_subscribed(user_id: int):
     return None
 
 
+async def giveaway_refs_split(user_id: int, since, limit: int = 20) -> tuple:
+    """(засчитанные, пришли_но_не_подписаны, было_неясно).
+
+    Правило зачёта теперь ОДНО и для экрана участника, и для пересчёта
+    в админке: друг идёт в зачёт, только если подписан на канал СЕЙЧАС.
+    Раньше экран считал всех, кто пришёл по ссылке: человек видел «2 из 2»,
+    а в панели у него был 0 — и на итогах это выглядело как обман.
+    """
+    from db import giveaway_refs
+    _refs = await giveaway_refs(user_id, since)
+    _ok, _no, _murky = [], [], False
+    for _r in _refs[:limit]:
+        _st = await giveaway_is_subscribed(int(_r["user_id"]))
+        if _st is True:
+            _ok.append(_r)
+        elif _st is False:
+            _no.append(_r)
+        else:
+            _murky = True
+    return _ok, _no, _murky
+
+
 @dp.message(F.chat.type.in_({"group", "supergroup"}), StateFilter("*"))
 async def giveaway_catch_comment(message: Message):
     """Ловит комментарии под постами канала — только в группе обсуждения."""
@@ -165,7 +187,7 @@ async def giveaway_status_text(user) -> tuple:
     _sub = await giveaway_is_subscribed(user.id)
     _nr = _gw.get("need_refs")
     _need = 2 if _nr is None else int(_nr)
-    _refs = await giveaway_refs(user.id, _gw["starts_at"])
+    _refs, _no_sub, _murky_ref = await giveaway_refs_split(user.id, _gw["starts_at"])
     pool = await get_pool()
     async with pool.acquire() as conn:
         _commented = await conn.fetchval(
@@ -190,8 +212,18 @@ async def giveaway_status_text(user) -> tuple:
         _t += ("👥 <b>Засчитаны:</b>\n" + "\n".join(
             f"• {('@' + r['username']) if r.get('username') else (r.get('full_name') or 'без имени')}"
             for r in _refs[:10]) + "\n\n")
+    # Главная причина жалоб «друг пришёл, а не засчиталось»: пришёл, но
+    # на канал не подписался. Говорим прямо и сразу, кого подтолкнуть.
+    if _no_sub:
+        _t += ("⏳ <b>Пришли по ссылке, но не подписаны на канал:</b>\n" + "\n".join(
+            f"• {('@' + r['username']) if r.get('username') else (r.get('full_name') or 'без имени')}"
+            for r in _no_sub[:10])
+            + "\n<i>Попроси их подписаться — тогда засчитается.</i>\n\n")
+    if _murky_ref:
+        _t += ("❓ <i>Про кого-то из друзей Telegram не ответил — нажми "
+               "«Проверить ещё раз» через минуту.</i>\n\n")
     _t += (f"🔗 <b>Твоя ссылка:</b>\n<code>{_link}</code>\n"
-           f"<i>Друг должен открыть её и запустить бота — и подписаться на канал.</i>\n\n")
+           f"<i>Друг должен открыть её и запустить бота — и подписаться на канал.\nЗасчитываются только те, кто раньше бота не запускал.</i>\n\n")
     _t += ("🎉 <b>Все условия выполнены — ты в списке!</b>"
            if _all else "Осталось закрыть пункты выше 👆")
 
@@ -254,6 +286,96 @@ async def giveaway_recheck(cb):
             return
         except Exception:
             continue
+
+
+@dp.message(F.text.startswith("/gw_why"), StateFilter("*"))
+async def giveaway_why(message: Message):
+    """/gw_why <id> — почему у этого человека такие галочки.
+
+    Ответ на жалобу «друг пришёл, а не засчиталось» должен быть за одну
+    команду, а не за поход в базу. Показывает три условия и КАЖДОГО
+    приглашённого с причиной, почему он в зачёте или нет.
+    """
+    if not is_admin(message.from_user.id):
+        return
+    _parts = (message.text or "").split()
+    if len(_parts) < 2 or not _parts[1].lstrip("-").isdigit():
+        await message.answer("Формат: <code>/gw_why 862690780</code>", parse_mode="HTML")
+        return
+    _uid = int(_parts[1])
+
+    _gw = await giveaway_active()
+    if not _gw:
+        await message.answer("Сейчас нет активного розыгрыша.")
+        return
+    _need = 2 if _gw.get("need_refs") is None else int(_gw["need_refs"])
+    _since = _gw["starts_at"]
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _me_row = await conn.fetchrow(
+            "SELECT username, full_name, created_at, started_at, referred_by, partner_id "
+            "FROM users WHERE user_id=$1", _uid)
+        _commented = await conn.fetchval(
+            "SELECT created_at FROM giveaway_comments WHERE giveaway_id=$1 AND user_id=$2",
+            _gw["id"], _uid)
+        # ВСЕ приглашённые, без фильтра по дате: иначе не видно тех,
+        # кто пришёл ДО старта розыгрыша — а это частая причина спора.
+        _all_refs = await conn.fetch(
+            "SELECT user_id, username, full_name, created_at FROM users "
+            "WHERE referred_by=$1 ORDER BY created_at", _uid)
+
+    if not _me_row:
+        await message.answer(f"⚠️ <code>{_uid}</code> вообще нет в базе бота.",
+                             parse_mode="HTML")
+        return
+
+    import datetime as _dt_w
+    _since_n = _since
+    if getattr(_since_n, "tzinfo", None) is not None:
+        _since_n = _since_n.astimezone(_dt_w.timezone.utc).replace(tzinfo=None)
+
+    _sub = await giveaway_is_subscribed(_uid)
+    _mk = lambda v: "✅" if v is True else ("❓" if v is None else "❌")
+
+    _who = ("@" + (_me_row["username"] or "")) if _me_row["username"] else (
+        _me_row["full_name"] or f"id{_uid}")
+    _t = [f"🔎 <b>{_who}</b> — <code>{_uid}</code>",
+          f"🎁 Розыгрыш: <b>{_gw.get('title') or '—'}</b> (старт {_since_n:%d.%m %H:%M} UTC)",
+          "",
+          f"{_mk(_sub)} Подписка на канал",
+          f"{_mk(bool(_commented))} Комментарий"
+          + (f" ({_commented:%d.%m %H:%M})" if _commented else ""),
+          ""]
+
+    _ok = 0
+    _lines = []
+    for _r in _all_refs:
+        _rn = ("@" + (_r["username"] or "")) if _r["username"] else (
+            _r["full_name"] or f"id{_r['user_id']}")
+        if _r["created_at"] and _r["created_at"] < _since_n:
+            _lines.append(f"• {_rn} — ⛔ пришёл ДО старта ({_r['created_at']:%d.%m %H:%M})")
+            continue
+        _rs = await giveaway_is_subscribed(int(_r["user_id"]))
+        if _rs is True:
+            _ok += 1
+            _lines.append(f"• {_rn} — ✅ в зачёте")
+        elif _rs is False:
+            _lines.append(f"• {_rn} — ❌ не подписан на канал")
+        else:
+            _lines.append(f"• {_rn} — ❓ Telegram не ответил")
+
+    _t.append(f"{_mk(_ok >= _need)} Приглашено: <b>{_ok}</b> из {_need}")
+    _t += _lines if _lines else ["<i>По его ссылке не пришёл никто.</i>"]
+    _t.append("")
+    _t.append(f"<i>В боте с {_me_row['created_at']:%d.%m.%Y %H:%M}"
+              + (f", /start {_me_row['started_at']:%d.%m %H:%M}" if _me_row["started_at"]
+                 else ", <b>/start не зафиксирован</b>")
+              + (f", пригласил {_me_row['referred_by']}" if _me_row["referred_by"] else "")
+              + (f", партнёр {_me_row['partner_id']}" if _me_row["partner_id"] else "")
+              + "</i>")
+    await message.answer("\n".join(_t), parse_mode="HTML",
+                         disable_web_page_preview=True)
 
 
 _ADMIN_ST = ("administrator", "creator", "owner")

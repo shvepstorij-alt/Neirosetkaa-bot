@@ -1387,7 +1387,11 @@ async def _bot_ref_link(uid: int) -> str:
 async def _show_profile(message: Message, user, edit: bool = False):
     uid = user.id
     try:
-        await ensure_user(uid)
+        # Имя передаём обязательно: раньше здесь был голый ensure_user(uid),
+        # и открытие профиля затирало username и full_name пустыми
+        # строками — оттуда «без имени» в списках и ложные флаги накрутки.
+        await ensure_user(uid, getattr(user, "username", "") or "",
+                          getattr(user, "full_name", "") or "")
         cr = await get_credits(uid)
     except Exception as e:
         await message.answer(f"⚠️ Ошибка загрузки профиля: {e}")
@@ -1647,14 +1651,21 @@ async def _show_profile(message: Message, user, edit: bool = False):
     # \u043f\u0440\u0438\u0448\u0435\u0434\u0448\u0438\u0435 \u043f\u043e\u0441\u043b\u0435 \u0435\u0433\u043e \u0441\u0442\u0430\u0440\u0442\u0430.
     _gw_block, _gw_btn = "", []
     try:
-        from db import giveaway_active, giveaway_refs as _gw_refs
+        from db import giveaway_active
+        from handlers_giveaway import giveaway_refs_split as _gw_split
         _gw_p = await giveaway_active()
         if _gw_p:
             _gw_need = int(_gw_p.get("need_refs") or 0)
-            _gw_have = len(await _gw_refs(uid, _gw_p["starts_at"]))
+            # \u0421\u0447\u0438\u0442\u0430\u0435\u043c \u0442\u0435\u043c \u0436\u0435 \u043f\u0440\u0430\u0432\u0438\u043b\u043e\u043c, \u0447\u0442\u043e \u044d\u043a\u0440\u0430\u043d \u00ab\u041c\u043e\u0451 \u0443\u0447\u0430\u0441\u0442\u0438\u0435\u00bb \u0438 \u043f\u0435\u0440\u0435\u0441\u0447\u0451\u0442 \u0432
+            # \u0430\u0434\u043c\u0438\u043d\u043a\u0435: \u0434\u0440\u0443\u0433 \u0432 \u0437\u0430\u0447\u0451\u0442\u0435, \u0442\u043e\u043b\u044c\u043a\u043e \u0435\u0441\u043b\u0438 \u043f\u043e\u0434\u043f\u0438\u0441\u0430\u043d \u043d\u0430 \u043a\u0430\u043d\u0430\u043b. \u041f\u043e\u0442\u043e\u043b\u043e\u043a \u0432 10 \u2014
+            # \u043f\u0440\u043e\u0444\u0438\u043b\u044c \u043e\u0442\u043a\u0440\u044b\u0432\u0430\u044e\u0442 \u0447\u0430\u0441\u0442\u043e, \u0430 \u043a\u0430\u0436\u0434\u044b\u0439 \u0434\u0440\u0443\u0433 \u2014 \u044d\u0442\u043e \u0437\u0430\u043f\u0440\u043e\u0441 \u043a Telegram.
+            _gw_ok, _gw_nosub, _gw_murk = await _gw_split(uid, _gw_p["starts_at"], limit=10)
+            _gw_have = len(_gw_ok)
             _gw_ttl = strip_surrogates(str(_gw_p.get("title") or "\u0420\u043e\u0437\u044b\u0433\u0440\u044b\u0448"))
             _gw_block = (f"\n\n\U0001f381 <b>{_gw_ttl}</b>\n"
                          f"\u0414\u0440\u0443\u0437\u0435\u0439 \u043f\u043e \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0443: <b>{_gw_have}</b> \u0438\u0437 {_gw_need}")
+            if _gw_nosub:
+                _gw_block += (f"\n\u23f3 \u041f\u0440\u0438\u0448\u043b\u0438, \u043d\u043e \u043d\u0435 \u043f\u043e\u0434\u043f\u0438\u0441\u0430\u043d\u044b \u043d\u0430 \u043a\u0430\u043d\u0430\u043b: {len(_gw_nosub)}")
             _gw_btn = [[_eib("\u041c\u043e\u0451 \u0443\u0447\u0430\u0441\u0442\u0438\u0435 \u0432 \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0435", "gw_recheck")]]
     except Exception as _e_gw:
         import logging as _lg_gw
@@ -7867,19 +7878,33 @@ async def _run_activation_job(
             # клиенту. Не сойдётся — пойдём дальше объявлять неудачу, как и
             # раньше. Нажимать кнопку самому больше не нужно.
             if result.get("site_claimed"):
-                try:
-                    _rr = await gpt_reconcile_orphans(only_code=code)
-                    if _rr.get("fixed"):
-                        logging.warning(
-                            f"GPT: {code} закрыт сверкой сразу после таймаута "
-                            f"(сайт уже считал код использованным).")
-                        _activation_jobs[job_id] = {"status": "done", "success": True}
-                        return
-                    logging.warning(
-                        f"GPT: {code} — сайт считает код использованным, но "
-                        f"сверка личность не подтвердила; объявляю неудачу.")
-                except Exception as _e_sc:
-                    logging.warning(f"GPT: срочная сверка {code}: {_e_sc}")
+                # Сверка запускается НЕ один раз. Она подтверждает личность по
+                # Organization ID или почте, а сайт публикует их только вместе
+                # с «fulfilled». Единственная попытка почти всегда приходилась
+                # на «claimed», когда подтверждать ещё нечем, — и заказ уходил
+                # в неудачу, хотя через пару минут та же сверка его закрывала
+                # (кнопкой «Проверить сейчас» или фоном). Три захода с паузой
+                # в минуту перекрывают этот разрыв; фоновая сверка раз в пять
+                # минут остаётся последним рубежом.
+                import asyncio as _aio_sc
+                for _try_sc in range(3):
+                    try:
+                        _rr = await gpt_reconcile_orphans(only_code=code)
+                        if _rr.get("fixed"):
+                            logging.warning(
+                                f"GPT: {code} закрыт сверкой после таймаута "
+                                f"(попытка {_try_sc + 1}, сайт: "
+                                f"{result.get('site_status') or '?'}).")
+                            _activation_jobs[job_id] = {"status": "done", "success": True}
+                            return
+                    except Exception as _e_sc:
+                        logging.warning(f"GPT: срочная сверка {code} "
+                                        f"(попытка {_try_sc + 1}): {_e_sc}")
+                    if _try_sc < 2:
+                        await _aio_sc.sleep(60)
+                logging.warning(
+                    f"GPT: {code} — сайт считает код использованным, но за три "
+                    f"захода сверка личность не подтвердила; объявляю неудачу.")
 
             _plan_key = plan_name_to_key(plan_name)
             import urllib.parse as _uparse2

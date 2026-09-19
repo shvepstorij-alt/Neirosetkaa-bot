@@ -591,6 +591,44 @@ BPA_SUSPECT_STATUSES = ("failed", "zoom_preparing", "zoom_failed", "not_in_db")
 BPA_FREE_STATUSES = ("unused",)
 
 
+async def bpa_wait_fulfilled(code: str, tries: int = 24, pause: float = 20.0) -> tuple:
+    """Ждёт, пока код на сайте перейдёт из «claimed» в «fulfilled».
+
+    «claimed» — НЕ результат активации. Это «код привязан к аккаунту, подписка
+    ещё не выдана»: сайт в этот момент не публикует у себя в /query ни
+    Organization ID, ни почту, а без них сверка не может подтвердить, ЧЕЙ это
+    код, и заказ уходит в «неудачу». Через несколько минут сайт дописывает
+    «fulfilled» вместе с org ID и почтой — и та же самая сверка спокойно всё
+    подтверждает. Именно этот разрыв Александр каждый раз закрывал руками
+    кнопкой «Проверить сейчас».
+
+    Возвращает (статус, данные_строки). Статус «claimed» на выходе означает,
+    что за отведённое время так и не дозрело.
+    """
+    import asyncio as _aio_wf
+    _c = (code or "").strip().upper()
+    _st, _info = "", {}
+    for _i in range(max(1, tries)):
+        try:
+            _q = await bpa_query_codes([_c])
+            _info = _q.get(_c) or {}
+            _st = (_info.get("status") or "").lower()
+        except Exception as _e_wf:
+            logger.warning(f"bpa wait fulfilled {_c}: {_e_wf}")
+            _st, _info = "", {}
+        # Всё, кроме «привязан, но не выдан», — это уже окончательный ответ.
+        if _st and _st != "claimed":
+            if _i:
+                logger.warning(f"bpa: код {_c} дозрел до «{_st}» за "
+                               f"~{int((_i + 1) * pause)} с ожидания.")
+            return _st, _info
+        if _i < tries - 1:
+            await _aio_wf.sleep(pause)
+    logger.warning(f"bpa: код {_c} так и остался «claimed» после "
+                   f"{int(tries * pause)} с ожидания.")
+    return (_st or "claimed"), _info
+
+
 async def bpa_query_codes(codes: list) -> dict:
     """Статус кодов на bypriceactivate БЕЗ активации.
 
@@ -2837,7 +2875,8 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
             # Опрос статуса заказа (до ~10 минут)
             # 60 опросов по 5 с = 5 минут. Было 120 (10 минут) — клиент столько
             # не ждёт, а бот всё это время держал заказ и не пробовал другой сайт.
-            for _ in range(60):
+            _early_done = ""
+            for _poll_i in range(60):
                 await _aio.sleep(5)
                 try:
                     async with s.get(f"{base}/api/gpt/orders/{order_id}") as pr:
@@ -2848,6 +2887,23 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                 except Exception:
                     continue
                 status = (pd.get("status") or "").lower()
+                # Раз в минуту спрашиваем сайт про САМ КОД. Его таблица codes и
+                # его же эндпоинт заказов расходятся: заказ может висеть в
+                # «обрабатывается», когда код уже «fulfilled». Раньше бот этого
+                # не видел и честно досиживал все пять минут впустую.
+                if status not in ("completed", "failed") and _poll_i and _poll_i % 12 == 0:
+                    try:
+                        _qe = await bpa_query_codes([code])
+                        _ve = ((_qe.get((code or "").strip().upper()) or {})
+                               .get("status", "") or "").lower()
+                        if _ve == "fulfilled":
+                            logger.warning(
+                                f"bpa gpt: заказ {order_id} ещё «{status or '?'}», "
+                                f"но код {code} уже «fulfilled» — не ждём дальше.")
+                            _early_done = _ve
+                            break
+                    except Exception as _e_qe:
+                        logger.warning(f"bpa gpt: промежуточный опрос кода {code}: {_e_qe}")
                 if status == "completed":
                     _acc = pd.get("account_email") or ""
                     # Заказ создан РАНЬШЕ, чем мы отправили запрос → это чужой,
@@ -2946,20 +3002,42 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
             # подписку по одному лишь «claimed» нельзя: код мог быть потрачен
             # на чужой аккаунт.
             _site_used = False
-            try:
-                _q2 = await bpa_query_codes([code])
-                _v2 = (_q2.get((code or "").strip().upper()) or {}).get("status", "")
+            _v2 = ""
+            if _early_done == "fulfilled":
+                # Уже спросили внутри цикла — второй раз сайт не дёргаем.
+                _v2, _site_used = "fulfilled", True
+            else:
+                try:
+                    _q2 = await bpa_query_codes([code])
+                    _v2 = ((_q2.get((code or "").strip().upper()) or {})
+                           .get("status", "") or "").lower()
+                    _site_used = _v2 in BPA_USED_STATUSES
+                    if _site_used:
+                        logger.warning(
+                            f"bpa gpt: заказ {order_id} не дошёл до completed за "
+                            f"5 мин, но сам код {code} на сайте уже «{_v2}» — "
+                            f"отдаём на сверку.")
+                except Exception as _e_q2:
+                    logger.warning(f"bpa gpt: не спросил статус кода {code}: {_e_q2}")
+
+            # ── «claimed» — это НЕ ответ, это середина процесса ──────────────
+            # 18–19.09.2026, каждая активация подряд: на пятой минуте сайт
+            # отвечал «claimed», бот звал срочную сверку, та не находила ни
+            # Organization ID, ни почты (сайт их ещё не опубликовал) — и заказ
+            # объявлялся неудачей. Через 2–10 минут сайт дописывал «fulfilled»
+            # вместе с org ID и почтой, и ровно та же сверка всё подтверждала:
+            # Александр нажимал «Проверить сейчас», фоновая сверка делала то же
+            # ночью. Ошибки не было ни разу — бот просто спрашивал слишком рано.
+            #
+            # Поэтому здесь ждём, пока «claimed» дозреет. Пять минут: дальше
+            # заказ всё равно подхватит фоновая сверка, дублировать её незачем.
+            if _v2 == "claimed":
+                _v2, _ = await bpa_wait_fulfilled(code, tries=15, pause=20.0)
                 _site_used = _v2 in BPA_USED_STATUSES
-                if _site_used:
-                    logger.warning(
-                        f"bpa gpt: заказ {order_id} не дошёл до completed за 5 мин, "
-                        f"но сам код {code} на сайте уже «{_v2}» — отдаём на сверку.")
-            except Exception as _e_q2:
-                logger.warning(f"bpa gpt: не спросил статус кода {code}: {_e_q2}")
             if _site_used:
-                return {"success": False, "site_claimed": True,
-                        "error": "Сайт не уложился в 5 минут, но код у него уже "
-                                 "числится использованным — проверяю сверкой."}
+                return {"success": False, "site_claimed": True, "site_status": _v2,
+                        "error": f"Сайт не уложился в срок, но код у него уже "
+                                 f"числится использованным («{_v2}») — проверяю сверкой."}
             return {"success": False,
                     "error": "Сайт долго обрабатывал заказ (>5 мин). Александр проверит вручную."}
     except _aiohttp.ClientError as e:

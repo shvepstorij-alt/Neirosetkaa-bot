@@ -164,11 +164,37 @@ async def init_db():
             # запятую. Ими можно ПОДТВЕРДИТЬ совпадение с сайтом; доказать
             # несовпадение — нельзя, среди них может быть id сессии.
             ("gpt_org_hint",   "TEXT"),
+            # Момент первого НАСТОЯЩЕГО /start. Строку в users заводил и вход в
+            # канал — у такого человека бота в глаза не видели, а рефералка уже
+            # считала его «старым» и приглашение теряла. Эта колонка отличает
+            # «зашёл в бота» от «просто попал в базу».
+            ("started_at",     "TIMESTAMP DEFAULT NULL"),
         ]:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dfn}")
             except Exception:
                 pass
+        # Разовый бэкфилл started_at. Всем, кто уже пользовался ботом,
+        # проставляем дату создания: они точно запускались, и «досчитать
+        # приглашение» к ним применяться не должно. У остальных остаётся NULL —
+        # это и есть те, кого вход в канал завёл в базу мимо /start.
+        try:
+            _bf_done = await conn.fetchval(
+                "SELECT value FROM settings WHERE key='started_at_backfill'")
+            if _bf_done != "1":
+                await conn.execute(
+                    "UPDATE users SET started_at=created_at "
+                    "WHERE started_at IS NULL AND ("
+                    "  referred_by IS NOT NULL"
+                    "  OR EXISTS (SELECT 1 FROM generations g WHERE g.user_id=users.user_id)"
+                    "  OR EXISTS (SELECT 1 FROM payments p WHERE p.user_id=users.user_id)"
+                    "  OR EXISTS (SELECT 1 FROM payments_fk f WHERE f.user_id=users.user_id))")
+                await conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('started_at_backfill','1') "
+                    "ON CONFLICT (key) DO UPDATE SET value='1'")
+                logging.info("✅ started_at: бэкфилл выполнен")
+        except Exception as _e_bf:
+            logging.warning(f"started_at backfill: {_e_bf}")
         # Индекса по referred_by не было вообще, хотя колонку читают в четырёх
         # местах: бонус за приглашение, кабинет клиента, пересчёт розыгрыша и
         # экран рефералов в панели. На 20 000 пользователей замер показал
@@ -1884,6 +1910,11 @@ async def ensure_user(user_id: int, username: str = "", full_name: str = "", ref
     """Создаёт юзера или обновляет last_active. При первом создании начисляет 
     приветственные/реферальные кредиты как партию со сроком 30 дней.
 
+    ИМЕНА НЕ ЗАТИРАЕМ. Часть вызовов приходит без username/full_name
+    (открытие профиля, вход в канал) — раньше такой вызов писал в базу
+    пустоту поверх настоящего имени. Оттуда брались «без имени» в списках
+    и ложные флаги накрутки в розыгрыше.
+
     ВАЖНО: детекция нового юзера через RETURNING (xmax=0 → INSERT, xmax>0 → UPDATE).
     Раньше использовался 'INSERT 0 1' в conn.execute(), но PostgreSQL возвращает
     его И при INSERT, И при ON CONFLICT DO UPDATE - из-за этого кредиты начислялись
@@ -1896,8 +1927,8 @@ async def ensure_user(user_id: int, username: str = "", full_name: str = "", ref
                 INSERT INTO users (user_id, credits, username, full_name, referred_by)
                 VALUES ($1, 0, $2, $3, $4)
                 ON CONFLICT (user_id) DO UPDATE
-                SET username=EXCLUDED.username,
-                    full_name=EXCLUDED.full_name,
+                SET username=COALESCE(NULLIF(EXCLUDED.username,''), users.username),
+                    full_name=COALESCE(NULLIF(EXCLUDED.full_name,''), users.full_name),
                     last_active=NOW()
                 RETURNING (xmax = 0) AS is_new
             """, user_id, username, full_name, referred_by)
@@ -1911,8 +1942,8 @@ async def ensure_user(user_id: int, username: str = "", full_name: str = "", ref
                 INSERT INTO users (user_id, credits, username, full_name)
                 VALUES ($1, 0, $2, $3)
                 ON CONFLICT (user_id) DO UPDATE
-                SET username=EXCLUDED.username,
-                    full_name=EXCLUDED.full_name,
+                SET username=COALESCE(NULLIF(EXCLUDED.username,''), users.username),
+                    full_name=COALESCE(NULLIF(EXCLUDED.full_name,''), users.full_name),
                     last_active=NOW()
                 RETURNING (xmax = 0) AS is_new
             """, user_id, username, full_name)
@@ -1921,6 +1952,54 @@ async def ensure_user(user_id: int, username: str = "", full_name: str = "", ref
                 # Приветственные кредиты партией на 30 дней (ТОЛЬКО при первой регистрации)
                 await add_credits_batch(user_id, FREE_CREDITS, source="free", days_valid=30)
                 logging.info(f"✨ New user {user_id}: +{FREE_CREDITS} welcome cr")
+
+async def mark_started(user_id: int) -> None:
+    """Отмечает, что человек реально открывал бота (/start).
+
+    Пишется ровно один раз: дата первого запуска не должна сдвигаться.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET started_at=NOW() WHERE user_id=$1 AND started_at IS NULL",
+            user_id)
+
+
+async def attach_referrer_late(user_id: int, referrer_id: int) -> bool:
+    """Досчитывает приглашение тому, кто попал в базу мимо /start.
+
+    Строку без /start заводил вход в канал: человек подписывался раньше,
+    чем открывал реф-ссылку, — и приглашение пропадало навсегда: ни в
+    розыгрыше, ни в рефералке его было не видно.
+
+    Условия жёсткие и проверяются в самом UPDATE, чтобы не было гонки:
+    пригласившего ещё нет, бота ни разу не запускал, ничего не покупал.
+    Старого клиента «усыновить» так нельзя.
+    """
+    if not referrer_id or referrer_id == user_id:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _r = await conn.execute(
+            "UPDATE users SET referred_by=$2 "
+            "WHERE user_id=$1 AND referred_by IS NULL AND started_at IS NULL "
+            "  AND ref_bonus_paid=FALSE "
+            "  AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id=$1) "
+            "  AND NOT EXISTS (SELECT 1 FROM payments_fk f WHERE f.user_id=$1)",
+            user_id, referrer_id)
+    _ok = isinstance(_r, str) and _r.strip().endswith(" 1")
+    if _ok:
+        # Приветственные кредиты он уже получил при заведении строки,
+        # реферальных положено больше — доначисляем разницу, а не всю сумму заново.
+        _diff = int(REF_WELCOME_CREDITS) - int(FREE_CREDITS)
+        if _diff > 0:
+            try:
+                await add_credits_batch(user_id, _diff, source="referral", days_valid=30)
+            except Exception as _e_lc:
+                logging.warning(f"late ref {user_id}: кредиты не начислены: {_e_lc}")
+        logging.info(f"✨ Поздняя рефералка: {user_id} ← {referrer_id}")
+    return _ok
+
 
 async def get_setting(key: str, default: str = "") -> str:
     pool = await get_pool()
