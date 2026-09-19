@@ -7039,6 +7039,48 @@ async def gpt_activation_already_done(code: str, user_id: int,
     return False
 
 
+def _gpt_fail_why(result: dict, code: str = "") -> str:
+    """Техническая причина отказа — строкой для сообщения админу.
+
+    Раньше в чат уходил только человеческий текст сайта («Покупку завершить
+    не удалось»), по которому нельзя понять ни что сломалось, ни что делать.
+    Технические поля при этом БЫЛИ: HTTP-код и error_code при отказе на
+    /api/gpt/activate, provider_status у GET /api/gpt/orders/{id}, статус
+    самого кода на /query. Бот их читал и выбрасывал.
+
+    Собираем всё, что есть, в одну строку. Пусто — значит сайт не дал ничего,
+    кроме текста; тогда строки в сообщении просто не будет.
+    """
+    if not isinstance(result, dict):
+        return ""
+    _p = []
+    _http, _ec = result.get("http"), str(result.get("error_code") or "").strip()
+    if _http:
+        _p.append(f"HTTP {_http}" + (f" · <code>{_ec}</code>" if _ec else ""))
+    elif _ec:
+        _p.append(f"<code>{_ec}</code>")
+    for _k, _label in (("order_status", "заказ"), ("provider_status", "провайдер"),
+                       ("site_status", "код на сайте")):
+        _v = str(result.get(_k) or "").strip()
+        if _v:
+            _p.append(f"{_label}: <code>{_v}</code>")
+    if code:
+        _rt = gpt_route_for_code(code)
+        if _rt:
+            _p.append("маршрут: " + GPT_ROUTE_LABELS.get(_rt, _rt))
+    # Флаги решают, что бот сделает дальше, — их стоит видеть рядом с причиной.
+    _flags = [_f for _f in ("code_already_used", "wrong_account", "token_invalid",
+                            "has_plan", "out_of_stock", "site_paused",
+                            "site_claimed", "openai_blocked", "needs_check")
+              if result.get(_f)]
+    if _flags:
+        _p.append("признаки: " + ", ".join(_flags))
+    _oid = str(result.get("order_id") or "").strip()
+    if _oid:
+        _p.append(f"заказ сайта: <code>{_oid}</code>")
+    return ("\U0001f50e <b>Причина:</b> " + " \u00b7 ".join(_p) + "\n") if _p else ""
+
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str,
@@ -7126,6 +7168,14 @@ async def _run_activation_job(
         _plan_key = plan_name_to_key(plan_name)
         _gpt_used_codes = []        # все сожжённые использованные коды (для отчёта)
         _tried_sites = [provider]   # сайты, где уже пробовали
+        # Почему перебор кодов прекратили ДОБРОВОЛЬНО. Пустая строка — не
+        # прекращали. 19.09.2026: защита «сначала спроси сайт, потом жги»
+        # остановила перебор на первом же коде, но флаг code_already_used в
+        # result остался — и терминальная ветка объявила «коды закончились на
+        # ВСЕХ сайтах» при полном пуле и НУЛЕ сожжённых кодов. Это два разных
+        # события, и путать их нельзя: на одно надо докупать коды, на другое —
+        # разбираться с сайтом.
+        _burn_stop = {"why": ""}
         _switch_msg_id = None
         _switch_text = ""
 
@@ -7305,7 +7355,14 @@ async def _run_activation_job(
         _ios_sent = 1 if gpt_route_for_code(code) == "ios" else 0
 
         async def _site_says_used(_c):
-            """Спрашиваем САЙТ, потрачен ли код. True / False / None (не узнали).
+            """Спрашиваем САЙТ, потрачен ли код.
+
+            Возвращает ПАРУ (вердикт, что_ответил_сайт): True / False / None и
+            сырой статус строкой. Раньше отдавался только вердикт, и None
+            означал сразу две несовместимые вещи — «сайт промолчал» и «сайт
+            ответил failed / not_in_db / незнакомым статусом». В сообщении
+            админу обе превращались в «статус узнать не удалось», и понять по
+            нему, что на самом деле случилось с кодом, было нельзя.
 
             Зачем: раньше «код уже использован» решалось ТОЛЬКО по тексту ответа
             сайта, а сам статус кода никто не спрашивал. 15.09.2026 это сожгло
@@ -7318,23 +7375,46 @@ async def _run_activation_job(
             Спросить её дешевле, чем потерять код.
             """
             if provider != "bpa":
-                return None          # у остальных сайтов такой страницы нет
-            try:
-                from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
-                                                BPA_FREE_STATUSES)
-                _q = await bpa_query_codes([_c])
-            except Exception as _e:
-                logging.warning(f"GPT: не смог спросить сайт про код {_c}: {_e}")
-                return None
-            _row = (_q or {}).get(_c) or (_q or {}).get(str(_c).upper()) or {}
-            _st = str(_row.get("status") or "").strip().lower()
-            if not _st:
-                return None
-            if _st in BPA_FREE_STATUSES:
-                return False
-            if _st in BPA_USED_STATUSES:
-                return True
-            return None              # failed / not_in_db / незнакомый — не решаем
+                return None, ""      # у остальных сайтов такой страницы нет
+            # Спрашиваем ДО ТРЁХ РАЗ. Пустой ответ /query — это почти всегда
+            # разовая осечка: сеть моргнула, сайт притормозил, упёрлись в лимит
+            # частоты. Приговором коду это не является, а одной попытки хватало,
+            # чтобы остановить весь заказ: защита ниже не жжёт код и прекращает
+            # перебор, клиент уходит в ручной режим при ПОЛНОМ пуле.
+            # 19.09.2026, заказ #5395, код GPTP-JTRU-WZ3P-3SSC: ровно так.
+            # Повторяем только при невнятном ответе. Любой понятный статус —
+            # unused, claimed, fulfilled, failed — возвращается сразу.
+            import asyncio as _aio_sq
+            _last_err = ""
+            for _att in range(3):
+                try:
+                    from chatgpt_activation import (bpa_query_codes, BPA_USED_STATUSES,
+                                                    BPA_FREE_STATUSES)
+                    _q = await bpa_query_codes([_c])
+                except Exception as _e:
+                    logging.warning(f"GPT: не смог спросить сайт про код {_c} "
+                                    f"(попытка {_att + 1}/3): {_e}")
+                    _last_err = "сбой запроса: " + str(_e)[:80]
+                    if _att < 2:
+                        await _aio_sq.sleep(3)
+                    continue
+                _row = (_q or {}).get(_c) or (_q or {}).get(str(_c).upper()) or {}
+                _st = str(_row.get("status") or "").strip().lower()
+                if _st:
+                    if _att:
+                        logging.warning(f"GPT: статус кода {_c} получен только "
+                                        f"с {_att + 1}-й попытки: {_st}")
+                    if _st in BPA_FREE_STATUSES:
+                        return False, _st
+                    if _st in BPA_USED_STATUSES:
+                        return True, _st
+                    return None, _st     # failed / not_in_db / незнакомый — не решаем
+                _last_err = ""           # сайт ответил, но кода в таблице нет
+                if _att < 2:
+                    await _aio_sq.sleep(3)
+            logging.error(f"GPT: сайт три раза подряд не сказал ничего внятного "
+                          f"про код {_c}" + (f" ({_last_err})" if _last_err else ""))
+            return None, _last_err
 
         async def _cycle_used_current_site() -> bool:
             """Перебирает коды ТЕКУЩЕГО сайта, пока приходит code_already_used.
@@ -7352,17 +7432,24 @@ async def _run_activation_job(
                 # тем же ответом сайт отвечает и на «аккаунту нельзя», и на свои
                 # внутренние сбои. Жечь по тексту — то, что 15.09.2026 съело
                 # пять целых кодов подряд.
-                _used_on_site = await _site_says_used(code)
+                _used_on_site, _raw_st = await _site_says_used(code)
                 if _used_on_site is not True:
-                    _why = ("сайт говорит, что код ЦЕЛ (unused)"
-                            if _used_on_site is False
-                            else "статус кода на сайте узнать не удалось")
+                    if _used_on_site is False:
+                        _why = "сайт говорит, что код ЦЕЛ (unused)"
+                    elif _raw_st:
+                        # Сайт ОТВЕТИЛ — просто ответом, по которому нельзя
+                        # решить судьбу кода. Это совсем не то же самое, что
+                        # молчание, и путать их в отчёте нельзя.
+                        _why = f"сайт ответил «{_raw_st}» — по такому статусу решать нельзя"
+                    else:
+                        _why = "сайт не ответил про этот код (пустой ответ /query)"
                     if _used_on_site is False:
                         # Код цел — возвращаем в пул, он ничей.
                         try:
                             await release_gpt_code(code)
                         except Exception as _e_rel:
                             logging.error(f"не смог вернуть код {code} в пул: {_e_rel}")
+                    _burn_stop["why"] = f"не стал жечь код {code} — {_why}"
                     logging.error(
                         f"GPT: НЕ жгу код {code} — {_why}. uid={user_id} "
                         f"order={order_id} ответ сайта={str(result.get('error'))[:200]!r}")
@@ -7377,6 +7464,7 @@ async def _run_activation_job(
                             f"Сайт ответил «уже использован», но {_why}.\n"
                             + ("Код возвращён в пул.\n" if _used_on_site is False
                                else "Код оставлен закреплённым за клиентом.\n")
+                            + _gpt_fail_why(result, code)
                             + f"\n<i>Ответ сайта:</i> <code>"
                             + str(result.get("error") or "—")[:300]
                             + "</code>\n\nАктивируй вручную.",
@@ -7415,6 +7503,7 @@ async def _run_activation_job(
                 # лечь на аккаунт этого клиента — и второй код добавит ему
                 # вторую подписку поверх первой, за наши деньги.
                 if _rt_cur == "ios" and _ios_sent >= 1 and not result.get("wrong_account"):
+                    _burn_stop["why"] = ("второй iOS-код на тот же аккаунт не выдаю — сайт не подтвердил, что первый ушёл на чужой")
                     logging.warning(
                         f"GPT: второй iOS-код на аккаунт uid={user_id} НЕ выдаю "
                         f"(сайт не подтвердил чужой аккаунт) — ручной режим")
@@ -7464,6 +7553,7 @@ async def _run_activation_job(
                         parse_mode="HTML")
                 except Exception:
                     pass
+                _burn_stop["why"] = (f"потолок перебора: подряд {_GPT_MAX_BURN} кодов «уже использованы»")
                 logging.error(f"GPT: потолок перебора ({_GPT_MAX_BURN}) uid={user_id} "
                               f"order={order_id} коды={_gpt_used_codes}")
             return False
@@ -7601,6 +7691,7 @@ async def _run_activation_job(
                             await release_gpt_code(_nc)   # даже не отправляли
                         except Exception:
                             pass
+                        _burn_stop["why"] = ("на другом сайте лежит только iOS-код, а второй iOS на тот же аккаунт выдавать нельзя")
                         logging.warning(
                             f"GPT: второй iOS-код при смене сайта НЕ выдаю "
                             f"uid={user_id}")
@@ -7660,16 +7751,67 @@ async def _run_activation_job(
         if (not result.get("success")) and result.get("code_already_used"):
             _skipped = (f"♻️ Пропущены использованные ({len(_gpt_used_codes)}): "
                         f"{', '.join(_gpt_used_codes)}\n" if _gpt_used_codes else "")
-            await _admin_fail_shot(
-                f"🚨 <b>ChatGPT — коды {_plan_key} закончились на ВСЕХ сайтах</b> ({plan_name})\n"
-                f"👤 <code>{user_id}</code> ждёт активации.\n"
-                f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
-                f"{_skipped}"
-                f"Добавь коды: /add_gpt_codes",
-                result.get("screenshot"))
+            # Сколько кодов РЕАЛЬНО осталось. Без этой строки сообщение «коды
+            # закончились» невозможно проверить, не открывая панель, — а
+            # 19.09.2026 оно как раз и оказалось неправдой.
+            _left_line = ""
+            try:
+                _pl = await get_pool()
+                async with _pl.acquire() as _c_left:
+                    _lrows = await _c_left.fetch(
+                        "SELECT COALESCE(route,'—') AS route, COUNT(*) AS n "
+                        "FROM gpt_codes WHERE plan=$1 AND provider=$2 AND is_used=FALSE "
+                        "  AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid') "
+                        "GROUP BY 1 ORDER BY 1", _plan_key, provider)
+                _left_total = sum(int(_r["n"]) for _r in _lrows)
+                if _lrows:
+                    _left_line = ("🔑 Свободно на " + gpt_provider_name(provider) + ": "
+                                  + ", ".join(f"{_r['route']} — {_r['n']}" for _r in _lrows)
+                                  + f" (всего {_left_total})\n")
+                else:
+                    _left_line = f"🔑 Свободных кодов {_plan_key} на {gpt_provider_name(provider)}: 0\n"
+            except Exception as _e_left:
+                logging.warning(f"GPT: не посчитал остаток пула: {_e_left}")
+
+            if _burn_stop["why"]:
+                # Коды ЕСТЬ — перебор прекращён сознательно, защитой. Это не
+                # «закончились»: докупать нечего, надо разбираться с кодом или
+                # с сайтом. Раньше оба случая слались одним текстом про
+                # «закончились на ВСЕХ сайтах», причём с нулём сожжённых кодов.
+                await _admin_fail_shot(
+                    f"🛑 <b>ChatGPT — перебор кодов остановлен защитой</b> ({plan_name})\n"
+                    f"👤 <code>{user_id}</code> ждёт активации.\n"
+                    f"🆔 <code>{order_id}</code>\n"
+                    f"{await _fk_num_line(order_id)}\n"
+                    f"⛔️ Причина: {_burn_stop['why']}\n"
+                    + _gpt_fail_why(result, code)
+                    + f"{_left_line}"
+                    f"{_skipped}"
+                    f"\n<i>Ответ сайта:</i> <code>"
+                    + str(result.get("error") or "—")[:300] + "</code>\n\n"
+                    f"Коды в пуле есть — добавлять не нужно. Активируй вручную, "
+                    f"а код проверь: <code>/gpt_check</code>",
+                    result.get("screenshot"))
+                logging.error(
+                    f"GPT: перебор остановлен защитой uid={user_id} order={order_id} "
+                    f"причина={_burn_stop['why']!r} сожжено={len(_gpt_used_codes)}")
+            else:
+                await _admin_fail_shot(
+                    f"🚨 <b>ChatGPT — коды {_plan_key} закончились на ВСЕХ сайтах</b> ({plan_name})\n"
+                    f"👤 <code>{user_id}</code> ждёт активации.\n"
+                    f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
+                    f"{_left_line}"
+                    f"{_skipped}"
+                    f"Добавь коды: /add_gpt_codes",
+                    result.get("screenshot"))
+            # Клиенту тоже не врём. «Коды закончились» — правда только когда
+            # пул действительно пуст; при остановке защитой коды есть, просто
+            # выдать их автоматически нельзя.
             _activation_jobs[job_id] = {
                 "status": "done", "success": False,
-                "error": "Коды временно закончились. Александр активирует вручную в течение часа 🙌"}
+                "error": ("Активация не прошла автоматически. Александр активирует "
+                          "вручную в течение часа 🙌") if _burn_stop["why"] else
+                         "Коды временно закончились. Александр активирует вручную в течение часа 🙌"}
             return
 
         # 4) СБОЙ САЙТА и других сайтов с кодами нет → сообщаем и уходим в общую
@@ -8192,6 +8334,7 @@ async def _run_activation_job(
                     f"⏱ Время: <b>{_fail_at}</b>\n"
                     f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
                     f"❗ {error_text}\n"
+                    + _gpt_fail_why(result, code)
                 )
                 # Сайт не успел за отведённые 5 минут — это НЕ отказ. Он почти
                 # всегда дозавершает заказ через минуту-другую. Называть это

@@ -591,7 +591,7 @@ BPA_SUSPECT_STATUSES = ("failed", "zoom_preparing", "zoom_failed", "not_in_db")
 BPA_FREE_STATUSES = ("unused",)
 
 
-async def bpa_wait_fulfilled(code: str, tries: int = 24, pause: float = 20.0) -> tuple:
+async def bpa_wait_fulfilled(code: str, tries: int = 10, pause: float = 30.0) -> tuple:
     """Ждёт, пока код на сайте перейдёт из «claimed» в «fulfilled».
 
     «claimed» — НЕ результат активации. Это «код привязан к аккаунту, подписка
@@ -2839,14 +2839,15 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                                         or "недоступ" in _dl or "закончил" in _dl)
                         if ec == "CODE_ALREADY_USED" or (_used_words and not _stock_words):
                             return {"success": False, "code_already_used": True,
-                                    "error": str(det)}
+                                    "error": str(det), "http": st, "error_code": ec}
                         if _stock_words:
-                            return {"success": False, "out_of_stock": True,
+                            return {"success": False, "out_of_stock": True, "http": st,
+                                    "error_code": ec,
                                     "error": "На сайте нет свободных мест: " + str(det)}
                         logger.warning(
                             f"bpa gpt: 409 без понятной причины — код {code} НЕ жжём. "
                             f"detail={str(det)[:200]!r}")
-                        return {"success": False,
+                        return {"success": False, "http": st, "error_code": ec,
                                 "error": "Сайт отклонил запрос (409): " + str(det)}
                     if st == 404 or ec == "CODE_NOT_FOUND":
                         return {"success": False, "error": "Код не найден на сайте: " + str(det)}
@@ -2887,11 +2888,15 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                 except Exception:
                     continue
                 status = (pd.get("status") or "").lower()
-                # Раз в минуту спрашиваем сайт про САМ КОД. Его таблица codes и
-                # его же эндпоинт заказов расходятся: заказ может висеть в
-                # «обрабатывается», когда код уже «fulfilled». Раньше бот этого
-                # не видел и честно досиживал все пять минут впустую.
-                if status not in ("completed", "failed") and _poll_i and _poll_i % 12 == 0:
+                # Раз в ДВЕ минуты спрашиваем сайт про САМ КОД. Его таблица
+                # codes и его же эндпоинт заказов расходятся: заказ может
+                # висеть в «обрабатывается», когда код уже «fulfilled». Раньше
+                # бот этого не видел и досиживал все пять минут впустую.
+                # Две минуты, а не одна: /query — общий и довольно хрупкий
+                # эндпоинт, по нему же защита решает, жечь код или нет. Чем
+                # реже мы его дёргаем, тем меньше шанс, что защита получит
+                # пустой ответ и остановит чужой заказ.
+                if status not in ("completed", "failed") and _poll_i and _poll_i % 24 == 0:
                     try:
                         _qe = await bpa_query_codes([code])
                         _ve = ((_qe.get((code or "").strip().upper()) or {})
@@ -2961,10 +2966,19 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     return {"success": True, "email": _acc or _client_email}
                 if status == "failed":
                     msg = pd.get("message") or pd.get("error") or "Активация не удалась."
+                    # ТЕХНИЧЕСКАЯ причина. `message` — текст для человека
+                    # («Покупку завершить не удалось»), а что именно сломалось,
+                    # знает provider_status: его отдаёт GET /api/gpt/orders/{id}
+                    # (см. https://bypriceactivate.pro/api). Раньше бот его
+                    # читал и выбрасывал, и в чат уходила общая фраза, по
+                    # которой нельзя понять ни причину, ни что делать.
+                    _dg = {"order_id": order_id, "order_status": status,
+                           "provider_status": str(pd.get("provider_status") or "").strip(),
+                           "site_message": str(msg)[:300]}
                     _ml = str(msg).lower()
                     # 1) битая/просроченная сессия — стоп, клиент обновляет токен
                     if "session" in _ml or "token" in _ml or "expired" in _ml or "истёк" in _ml:
-                        return {"success": False, "token_invalid": True, "error": str(msg)}
+                        return {"success": False, "token_invalid": True, "error": str(msg), **_dg}
                     # 2) на АККАУНТЕ уже есть подписка → нужна принудительная активация.
                     #    bypriceactivate.pro форс не умеет → НЕ останавливаемся и НЕ жжём код:
                     #    отдаём обычный сбой, чтобы диспетчер увёл активацию на другой сайт
@@ -2975,15 +2989,15 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                                  or "already active" in _ml or "уже есть подписк" in _ml
                                  or "уже активна" in _ml or "уже подключ" in _ml or "already premium" in _ml)
                     if _has_plan:
-                        return {"success": False, "has_plan": True,
+                        return {"success": False, "has_plan": True, **_dg,
                                 "error": "На аккаунте уже есть Plus — увожу на сайт с принудительной активацией. " + str(msg)}
                     # 3) сам КОД израсходован → берём следующий код этого сайта
                     if ("code already" in _ml or "already claimed" in _ml or "already redeemed" in _ml
                             or "code used" in _ml or "already used" in _ml
                             or "код уже" in _ml or "код использ" in _ml):
-                        return {"success": False, "code_already_used": True, "error": str(msg)}
+                        return {"success": False, "code_already_used": True, "error": str(msg), **_dg}
                     logger.warning(f"bpa gpt failed: order={order_id} msg={str(msg)[:300]!r}")
-                    return {"success": False, "error": str(msg),
+                    return {"success": False, "error": str(msg), **_dg,
                             "openai_blocked": openai_purchase_blocked(str(msg))}
                 # queued | running | pending | review → продолжаем ждать
             # ── Пять минут вышли. Но прежде чем звать это неудачей, спросим
@@ -3032,7 +3046,9 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
             # Поэтому здесь ждём, пока «claimed» дозреет. Пять минут: дальше
             # заказ всё равно подхватит фоновая сверка, дублировать её незачем.
             if _v2 == "claimed":
-                _v2, _ = await bpa_wait_fulfilled(code, tries=15, pause=20.0)
+                # 10 проверок по 30 с — те же пять минут, но на треть меньше
+                # запросов к /query, чем при шаге в 20 секунд.
+                _v2, _ = await bpa_wait_fulfilled(code, tries=10, pause=30.0)
                 _site_used = _v2 in BPA_USED_STATUSES
             if _site_used:
                 return {"success": False, "site_claimed": True, "site_status": _v2,
