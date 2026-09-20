@@ -7122,6 +7122,27 @@ def _gpt_fail_why(result: dict, code: str = "") -> str:
     return ("\U0001f50e <b>Причина:</b> " + " \u00b7 ".join(_p) + "\n") if _p else ""
 
 
+async def _who_user(uid) -> str:
+    """«@ник (id)» для сообщений админу.
+
+    Ник у бота есть всегда — он лежит в users с первого /start. Но в
+    сообщениях его подставляли руками и не везде: в одних был «@ник», в
+    других голый номер, и по такому сообщению нельзя ни написать клиенту,
+    ни узнать его в переписке, не идя в базу. Один помощник на все случаи.
+    """
+    try:
+        _u = await get_user(int(uid))
+    except Exception:
+        _u = None
+    _n = ((_u or {}).get("username") or "").strip()
+    if _n:
+        return f"@{_n} (<code>{uid}</code>)"
+    _f = ((_u or {}).get("full_name") or "").strip()
+    if _f:
+        return f"{strip_surrogates(_f)} (<code>{uid}</code>)"
+    return f"<code>{uid}</code>"
+
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str,
@@ -7154,7 +7175,7 @@ async def _run_activation_job(
                 await bot.send_message(
                     ADMIN_ID,
                     f"🧪 <b>Тест активации завершён</b>\n"
-                    f"👤 <code>{user_id}</code> — тестовый код, нигде не записан.",
+                    f"👤 {await _who_user(user_id)} — тестовый код, нигде не записан.",
                     parse_mode="HTML"
                 )
             except Exception:
@@ -7207,6 +7228,8 @@ async def _run_activation_job(
                 f"GPT: сайт ожил после {_paused_tries} попыток (код {code})")
 
         _plan_key = plan_name_to_key(plan_name)
+        # Ник клиента — один раз на всю задачу, дальше только подстановка.
+        _who_u = await _who_user(user_id)
         _gpt_used_codes = []        # все сожжённые использованные коды (для отчёта)
         _tried_sites = [provider]   # сайты, где уже пробовали
         # Почему перебор кодов прекратили ДОБРОВОЛЬНО. Пустая строка — не
@@ -7276,7 +7299,7 @@ async def _run_activation_job(
                     ADMIN_ID,
                     f"🔒 <b>Код не вернул в пул</b>\n"
                     f"🔑 <code>{_c}</code> · сайт: <b>{_v or 'не ответил'}</b>\n"
-                    f"👤 <code>{user_id}</code> · {plan_name}\n\n"
+                    f"👤 {_who_u} · {plan_name}\n\n"
                     f"Активация у нас не удалась, но у сайта заказ по этому коду "
                     f"может быть ещё жив — вернуть его в пул значит отдать "
                     f"следующему клиенту уже потраченный. Проверь: "
@@ -7346,7 +7369,7 @@ async def _run_activation_job(
                     ("✅ <b>ChatGPT — выручил bypriceactivate</b>\n\n"
                      if _ok else
                      "🚨 <b>ChatGPT — не вышло ни на 999uu, ни на bypriceactivate</b>\n\n")
-                    + f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    + f"👤 {_who_u} · {plan_name}\n"
                       f"🔑 <code>{code}</code>\n\n"
                     + (f"На 999uu — {_why}. Тот же код прошёл на bypriceactivate."
                        if _ok else
@@ -7499,7 +7522,7 @@ async def _run_activation_job(
                             ADMIN_ID,
                             f"🛑 <b>Не стал сжигать код</b>\n"
                             f"🔑 <code>{code}</code>\n"
-                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"👤 {_who_u} · {plan_name}\n"
                             f"🆔 <code>{order_id}</code>\n"
                             f"{await _fk_num_line(order_id)}\n"
                             f"Сайт ответил «уже использован», но {_why}.\n"
@@ -7523,7 +7546,7 @@ async def _run_activation_job(
                             ADMIN_ID,
                             f"⚠️ <b>В пуле оказался УЖЕ ПОТРАЧЕННЫЙ код</b>\n"
                             f"🔑 <code>{code}</code> — сжёг, беру следующий\n"
-                            f"👤 Клиент: <code>{user_id}</code> · {plan_name}\n"
+                            f"👤 Клиент: {_who_u} · {plan_name}\n"
                             f"🆔 <code>{order_id}</code>\n"
                             f"{await _fk_num_line(order_id)}"
                             + (f"📧 Ушёл на: <code>{result.get('other_email')}</code>\n"
@@ -7552,7 +7575,7 @@ async def _run_activation_job(
                         await bot.send_message(
                             ADMIN_ID,
                             f"🛑 <b>Не стал выдавать второй iOS-код</b>\n"
-                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"👤 {_who_u} · {plan_name}\n"
                             f"🔑 <code>{code}</code>\n"
                             f"🆔 <code>{order_id}</code>\n\n"
                             f"Первый iOS-код мог уже лечь на аккаунт клиента — "
@@ -7585,7 +7608,7 @@ async def _run_activation_job(
                     await bot.send_message(
                         ADMIN_ID,
                         f"🛑 <b>Стоп: подряд {_GPT_MAX_BURN} кодов «уже использованы»</b>\n"
-                        f"👤 <code>{user_id}</code> · {plan_name}\n"
+                        f"👤 {_who_u} · {plan_name}\n"
                         f"🆔 <code>{order_id}</code>\n"
                         f"♻️ Потрачены: {', '.join(_gpt_used_codes)}\n\n"
                         f"Это не похоже на случайность — перебор остановлен, "
@@ -7627,7 +7650,12 @@ async def _run_activation_job(
                 return None
             if result.get("success") or _client_stop(result):
                 return None
-            if not result.get("openai_blocked"):
+            # has_plan — тот же случай, просто сайт назвал его иначе:
+            # «у аккаунта уже есть платный план». Филиппинский код на таком
+            # аккаунте не сработает никогда, а iOS сработает. Раньше ветка
+            # ждала только openai_blocked, и 409 GPT_PLAN_ALREADY_ACTIVE
+            # проходил мимо неё (20.09.2026, заказ #5456).
+            if not (result.get("openai_blocked") or result.get("has_plan")):
                 return None
             if gpt_route_for_code(code) != "ph":
                 return None      # уже iOS — переводить некуда
@@ -7648,7 +7676,7 @@ async def _run_activation_job(
                 logging.warning(f"GPT ios rescue: uid={user_id} нет iOS-кодов, ручной режим")
                 await _admin_fail_shot(
                     f"🚨 <b>ChatGPT — OpenAI отклонил покупку, а iOS-кодов нет</b>\n"
-                    f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    f"👤 {_who_u} · {plan_name}\n"
                     f"🔑 <code>{code}</code> — возвращён в пул\n"
                     f"🆔 <code>{order_id}</code>\n"
                     f"{await _fk_num_line(order_id)}\n"
@@ -7689,7 +7717,7 @@ async def _run_activation_job(
                     ADMIN_ID,
                     ("✅ <b>ChatGPT — выручил iOS-маршрут</b>\n\n" if _ok_ios else
                      "🚨 <b>ChatGPT — не помог и iOS-маршрут</b>\n\n")
-                    + f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    + f"👤 {_who_u} · {plan_name}\n"
                       f"🇵🇭 Филиппинский <code>{_old_code}</code> — OpenAI отклонил "
                       f"покупку, код возвращён в пул\n"
                       f"📱 iOS <code>{code}</code> — "
@@ -7821,7 +7849,7 @@ async def _run_activation_job(
                 # «закончились на ВСЕХ сайтах», причём с нулём сожжённых кодов.
                 await _admin_fail_shot(
                     f"🛑 <b>ChatGPT — перебор кодов остановлен защитой</b> ({plan_name})\n"
-                    f"👤 <code>{user_id}</code> ждёт активации.\n"
+                    f"👤 {_who_u} ждёт активации.\n"
                     f"🆔 <code>{order_id}</code>\n"
                     f"{await _fk_num_line(order_id)}\n"
                     f"⛔️ Причина: {_burn_stop['why']}\n"
@@ -7839,7 +7867,7 @@ async def _run_activation_job(
             else:
                 await _admin_fail_shot(
                     f"🚨 <b>ChatGPT — коды {_plan_key} закончились на ВСЕХ сайтах</b> ({plan_name})\n"
-                    f"👤 <code>{user_id}</code> ждёт активации.\n"
+                    f"👤 {_who_u} ждёт активации.\n"
                     f"🧭 Пробовали: {', '.join(gpt_provider_name(_p) for _p in _tried_sites)}\n"
                     f"{_left_line}"
                     f"{_skipped}"
@@ -8021,7 +8049,42 @@ async def _run_activation_job(
             _fail_clear("gpt", user_id)
             _activation_jobs[job_id] = {"status": "done", "success": True}
         else:
-            error_text = result.get("error", "Ошибка активации")
+            # `or`, а не значение по умолчанию: сайт иногда отдаёт ПУСТУЮ
+            # строку, и в чат уходило голое «❗» без единого слова причины.
+            error_text = result.get("error") or "Сайт не объяснил причину"
+            # ── Пауза перед приговором ──────────────────────────────────────
+            # Сайт регулярно дозавершает активацию через несколько секунд
+            # после того, как отдал нам отказ. Из-за этого клиент получал
+            # «не удалось», Александр жал «Проверить сейчас» — и подписка
+            # оказывалась на месте. Так повторялось изо дня в день.
+            # Теперь бот выжидает и перепроверяет САМ, прежде чем кого-то
+            # пугать. Восемь секунд: столько занимает дозапись у сайта в
+            # большинстве случаев, а клиент такой задержки не замечает.
+            #
+            # НЕ ждём там, где ответ окончательный и мгновенный: битая
+            # сессия, нужен форс, нет стока, сайт на техобслуживании —
+            # там пауза только тормозила бы ответ клиенту.
+            if not (result.get("token_invalid") or result.get("needs_force_confirm")
+                    or result.get("out_of_stock") or result.get("site_paused")):
+                await asyncio.sleep(8)
+                try:
+                    if await gpt_activation_already_done(code, user_id, order_id):
+                        logging.warning(
+                            f"GPT: {code} подтвердился за паузу — неудачу НЕ объявляю")
+                        _activation_jobs[job_id] = {"status": "done", "success": True}
+                        return
+                except Exception as _e_pw:
+                    logging.warning(f"GPT: проверка в паузе {code}: {_e_pw}")
+                try:
+                    _rr0 = await gpt_reconcile_orphans(only_code=code)
+                    if _rr0.get("fixed"):
+                        logging.warning(
+                            f"GPT: {code} закрыт сверкой за паузу перед приговором")
+                        _activation_jobs[job_id] = {"status": "done", "success": True}
+                        return
+                except Exception as _e_pr:
+                    logging.warning(f"GPT: сверка в паузе {code}: {_e_pr}")
+
             # ── Гонка со сверкой ────────────────────────────────────────────
             # 18.09.2026, код GPTI-0AGH-UM2C-NJ1N: в 14:55 сверка увидела на
             # сайте успех и закрыла заказ («дописано сверкой»), а в 14:58 эта
@@ -8042,7 +8105,7 @@ async def _run_activation_job(
                         await bot.send_message(
                             ADMIN_ID,
                             f"ℹ️ <b>Активация закрыта раньше</b>\n"
-                            f"🔑 <code>{code}</code> · <code>{user_id}</code>\n\n"
+                            f"🔑 <code>{code}</code> · {_who_u}\n\n"
                             f"Задача активации дошла до конца и собиралась "
                             f"сообщить о неудаче, но заказ к этому моменту уже "
                             f"закрыт сверкой. Ничего делать не нужно.",
@@ -8123,7 +8186,7 @@ async def _run_activation_job(
                     logging.error(f"needs_force_confirm msg: {_fe}")
                 _gf_mid = await _admin_fail_shot(
                     "⚠️ <b>ChatGPT — у аккаунта уже есть Plus</b> (клиенту предложено активировать принудительно)\n\n"
-                    f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    f"👤 {_who_u} · {plan_name}\n"
                     f"🔑 <code>{code}</code>\n"
                     f"📧 {_acc or '—'}" + (f" · до {_until}" if _until else "")
                     + f"\n🆔 <code>{order_id}</code>\n"
@@ -8158,7 +8221,7 @@ async def _run_activation_job(
                     pass
                 await _admin_fail_shot(
                     "⚠️ <b>ChatGPT — нужна ручная проверка</b>\n\n"
-                    f"👤 <code>{user_id}</code> · {plan_name}\n"
+                    f"👤 {_who_u} · {plan_name}\n"
                     f"🔑 <code>{code}</code>\n"
                     f"{error_text}\n\n"
                     "Проверь на 6661231.xyz по email клиента ПЕРЕД повторной активацией (риск двойной).",
@@ -8219,7 +8282,7 @@ async def _run_activation_job(
                         await bot.send_message(
                             ADMIN_ID,
                             f"⏸ <b>ChatGPT — сайт на техобслуживании</b>\n"
-                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"👤 {_who_u} · {plan_name}\n"
                             f"🔑 <code>{code}</code>\n"
                             f"🆔 <code>{order_id}</code>\n"
                             + await _fk_num_line(order_id)
@@ -8258,7 +8321,7 @@ async def _run_activation_job(
                         await bot.send_message(
                             ADMIN_ID,
                             f"🚨 <b>ChatGPT — на сайте нет мест</b>\n"
-                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"👤 {_who_u} · {plan_name}\n"
                             f"🔑 <code>{code}</code>\n"
                             f"🆔 <code>{order_id}</code>\n"
                             + await _fk_num_line(order_id)
@@ -8335,7 +8398,7 @@ async def _run_activation_job(
                     if _fail_should_alert("gpt", user_id):
                         await _admin_fail_shot(
                             "🚨 <b>Авто-активация ChatGPT не удалась</b>\n\n"
-                            f"👤 <code>{user_id}</code>\n"
+                            f"👤 {_who_u}\n"
                             f"🔑 Код: <code>{code}</code>\n"
                             f"📦 Тариф: <b>{plan_name}</b>\n"
                             f"🆔 Заказ: <code>{order_id}</code>\n"
@@ -11875,14 +11938,14 @@ async def gpt_recheck_report(code: str = "") -> str:
     _L = []
     for _f in _fx:
         _L.append(f"✅ <b>Активация записана</b>\n"
-                  f"👤 <code>{_f['user_id']}</code> · {_f.get('plan_name') or '—'}\n"
+                  f"👤 {await _who_user(_f['user_id'])} · {_f.get('plan_name') or '—'}\n"
                   f"🔑 <code>{_f['code']}</code>\n"
                   + (f"📧 {_f['email']}\n" if _f.get("email") else "")
                   + f"🆔 <code>{_f.get('order_id') or '—'}</code>\n"
                   + "Карточка заказа поправлена, клиенту сообщил.")
     for _u in _un:
         _L.append(f"❓ <b>Подтвердить не могу</b>\n"
-                  f"👤 <code>{_u['user_id']}</code>\n"
+                  f"👤 {await _who_user(_u['user_id'])}\n"
                   f"🔑 <code>{_u['code']}</code> — сайт: {_u.get('status') or '—'}\n"
                   f"📧 на сайте: <code>{_u.get('site_email') or '—'}</code>\n"
                   f"📧 у клиента: <code>{_u.get('client_email') or '—'}</code>\n"

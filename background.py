@@ -33,6 +33,7 @@ from db import (
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
     gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report, tg_chunks,
+    _who_user,
 )
 
 async def cleanup_stale_generations_loop():
@@ -619,7 +620,7 @@ async def gpt_orphans_loop():
                     await bot.send_message(
                         ADMIN_ID,
                         f"♻️ <b>Дописал потерянную активацию ChatGPT</b>\n"
-                        f"👤 <code>{_f['user_id']}</code> · {_f['plan_name']}\n"
+                        f"👤 {await _who_user(_f['user_id'])} · {_f['plan_name']}\n"
                         f"🔑 <code>{_f['code']}</code> — сайт: {_f['status']}\n"
                         + (f"📧 {_f['email']}\n" if _f.get("email") else "")
                         + f"🆔 <code>{_f['order_id']}</code>\n\n"

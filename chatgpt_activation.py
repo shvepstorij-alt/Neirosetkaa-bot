@@ -2826,8 +2826,46 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     # Теперь решает текст, а неопознанный 409 код НЕ жжёт:
                     # ошибиться в сторону «не трогать» дешевле.
                     _dl = str(det).lower()
+                    _el = (ec or "").lower()
                     if st == 409 or ec == "CODE_ALREADY_USED":
-                        _used_words = ("already" in _dl or "claimed" in _dl
+                        # ── У АККАУНТА уже есть платный план. Это НЕ про код ──
+                        # 20.09.2026, заказ #5456: сайт ответил 409
+                        # GPT_PLAN_ALREADY_ACTIVE — «ChatGPT-аккаунт уже
+                        # содержит платный план… OpenAI не принимает новую
+                        # покупку; КОД НЕ ИСПОЛЬЗОВАН». Бот увидел в этом
+                        # тексте подстроку «использ», проглядел отрицание и
+                        # записал код в потраченные. Дальше включалась защита
+                        # «сначала спроси сайт» — код уцелел, но перебор встал,
+                        # и клиент ушёл в ручной режим. Хотя в пуле лежало
+                        # 16 iOS-кодов, которые в этой ситуации и нужны:
+                        # филиппинский ложится только на free plan, iOS — на
+                        # любой аккаунт.
+                        #
+                        # openai_blocked ставим намеренно: по нему срабатывает
+                        # _ios_rescue, который вернёт код в пул и продолжит
+                        # активацию тому же клиенту уже по iOS-маршруту.
+                        if (ec == "GPT_PLAN_ALREADY_ACTIVE" or "already_active" in _el
+                                or "уже содержит платный план" in _dl
+                                or "остаток прежней подписки" in _dl
+                                or "не принимает новую покупку" in _dl
+                                or "already has" in _dl or "has plan" in _dl
+                                or "already subscribed" in _dl
+                                or "already premium" in _dl
+                                or "active subscription" in _dl):
+                            logger.warning(
+                                f"bpa gpt: у аккаунта уже есть план (409 {ec}) — "
+                                f"код {code} ЦЕЛ, ухожу на iOS-маршрут.")
+                            return {"success": False, "has_plan": True,
+                                    "openai_blocked": True, "http": st,
+                                    "error_code": ec, "error": str(det)}
+                        # «код НЕ использован» — это отрицание, а не признак
+                        # израсходованного кода. Без этой проверки подстрока
+                        # «использ» ловилась прямо внутри отрицания.
+                        _neg = ("не использован" in _dl or "не использ" in _dl
+                                or "not used" in _dl or "not been used" in _dl
+                                or "код цел" in _dl or "unused" in _dl)
+                        _used_words = (not _neg) and (
+                                       "already" in _dl or "claimed" in _dl
                                        or "fulfilled" in _dl or "redeem" in _dl
                                        or "уже" in _dl or "использ" in _dl
                                        or "активирован" in _dl)
