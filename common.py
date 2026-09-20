@@ -6913,6 +6913,49 @@ async def api_admin_release_codes_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+# ── Одна рассылка за раз ────────────────────────────────────────────────
+# Две рассылки, идущие одновременно, — это сообщение ДВАЖДЫ каждому клиенту.
+# Защита от дублей внутри одной рассылки (таблица broadcast_sent) тут не
+# спасает: у второго запуска свой номер, и он честно обходит весь список
+# заново. 20.09.2026 клиенты получили рассылку дважды с разницей в минуту
+# именно так — из мини-аппа запрос ушёл два раза.
+_BC_LOCK = {"busy": False, "started": 0.0, "fp": "", "fp_at": 0.0}
+
+
+def broadcast_claim(fingerprint: str = "") -> str:
+    """Занимает право на рассылку. Пустая строка — можно, иначе причина отказа.
+
+    Два рубежа:
+      • busy  — прямо сейчас рассылка уже идёт;
+      • fp    — такую же рассылку запускали меньше 15 минут назад. Это про
+                повторный запрос с тем же содержимым: второй тап по кнопке,
+                ретрай мини-аппа на плохой связи, дубль апдейта от Telegram.
+    Функция синхронная и без await намеренно: внутри одного цикла событий её
+    нельзя «переложить» между двумя параллельными запросами, а значит гонки
+    двух нажатий здесь не существует.
+    """
+    import time as _t_bl
+    _now = _t_bl.time()
+    # Зависший захват (процесс упал, finally не отработал) отпускаем сами.
+    if _BC_LOCK["busy"] and _now - _BC_LOCK["started"] > 7200:
+        logging.warning("broadcast: снимаю зависший замок (больше 2 часов)")
+        _BC_LOCK["busy"] = False
+    if _BC_LOCK["busy"]:
+        return "рассылка уже идёт"
+    if fingerprint and fingerprint == _BC_LOCK["fp"] and _now - _BC_LOCK["fp_at"] < 900:
+        return "точно такая же рассылка запускалась меньше 15 минут назад"
+    _BC_LOCK.update({"busy": True, "started": _now})
+    if fingerprint:
+        _BC_LOCK.update({"fp": fingerprint, "fp_at": _now})
+    return ""
+
+
+def broadcast_release() -> None:
+    """Отпускает замок. Отпечаток НЕ сбрасываем — он и должен пережить
+    окончание рассылки, иначе повтор сразу после неё снова пройдёт."""
+    _BC_LOCK["busy"] = False
+
+
 async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -6924,51 +6967,36 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "msg": "Пустой текст"})
         pool = await get_pool()
         async with pool.acquire() as conn:
-            users = await conn.fetch("SELECT user_id FROM users WHERE is_blocked=0")
-        ids = [r["user_id"] for r in users]
+            _cnt = await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE is_blocked=0") or 0
 
-        async def _bcast():
-            ok = 0
-            blocked = 0
-            failed = 0
-            try:
-                for u in ids:
-                    try:
-                        await bot.send_message(u, text, parse_mode="HTML")
-                        ok += 1
-                    except Exception as _e_b:
-                        _lb = str(_e_b).lower()
-                        # Клиент заблокировал бота / удалил аккаунт — это не сбой
-                        if ("bot was blocked" in _lb or "user is deactivated" in _lb
-                                or "chat not found" in _lb or "bot can't initiate" in _lb):
-                            blocked += 1
-                        elif "retry after" in _lb:
-                            # Telegram просит притормозить — ждём и пробуем ещё раз
-                            import re as _re_b
-                            _m = _re_b.search(r"retry after (\d+)", _lb)
-                            await asyncio.sleep(int(_m.group(1)) if _m else 5)
-                            try:
-                                await bot.send_message(u, text, parse_mode="HTML")
-                                ok += 1
-                            except Exception:
-                                failed += 1
-                        else:
-                            failed += 1
-                    await asyncio.sleep(0.05)
-            except Exception as _e_all:
-                logging.exception(f"broadcast прерван: {_e_all}")
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"✅ <b>Рассылка завершена</b>\n\n"
-                    f"📨 Доставлено: <b>{ok}</b> из {len(ids)}\n"
-                    f"🚫 Заблокировали бота: <b>{blocked}</b>\n"
-                    f"⚠️ Прочие ошибки: <b>{failed}</b>",
-                    parse_mode="HTML")
-            except Exception:
-                pass
-        asyncio.create_task(_bcast())
-        return web.json_response({"ok": True, "count": len(ids)})
+        # Здесь была ВТОРАЯ, независимая рассылка: без номера, без отметок о
+        # доставке, без защиты от повторного запуска и на send_message вместо
+        # copy_message — то есть фото и видео из мини-аппа не уходили вовсе.
+        # Любой повтор запроса (второй тап, ретрай на плохой связи) запускал
+        # полный проход по всем ещё раз: 20.09.2026 клиенты получили рассылку
+        # дважды с разницей в минуту.
+        #
+        # Теперь мини-апп пользуется тем же движком, что и админка в боте:
+        # текст сначала уходит Александру (он видит ровно то, что получат
+        # клиенты), а дальше копируется всем — с отметкой по каждому,
+        # переживанием флуд-лимита и возможностью дослать после обрыва.
+        import hashlib as _hl_bc
+        _fp = "webapp:" + _hl_bc.sha256(text.encode("utf-8")).hexdigest()[:16]
+        _why = broadcast_claim(_fp)
+        if _why:
+            logging.warning(f"broadcast(webapp): запуск отклонён — {_why}")
+            return web.json_response({"ok": False, "msg": "Не запускаю: " + _why})
+        try:
+            _src = await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        except Exception as _e_src:
+            broadcast_release()
+            logging.error(f"broadcast(webapp): образец не отправился: {_e_src}")
+            return web.json_response({"ok": False, "msg": "Не смог отправить образец себе"})
+        from handlers_admin import _do_broadcast
+        asyncio.create_task(_do_broadcast(ADMIN_ID, _src.message_id, None, _src,
+                                          claimed=True))
+        return web.json_response({"ok": True, "count": int(_cnt)})
     except Exception as _e:
         logging.error(f"api_admin_broadcast: {_e}")
         return web.json_response({"ok": False}, status=500)

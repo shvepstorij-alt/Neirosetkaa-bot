@@ -2259,7 +2259,46 @@ def _bc_markup_from_spec(spec: dict):
 
 
 async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Message,
-                        btn_spec: dict = None, bc_id: str = ""):
+                        btn_spec: dict = None, bc_id: str = "",
+                        fingerprint: str = None, claimed: bool = False):
+    """Единственная точка входа в рассылку. Следит, чтобы она была ОДНА.
+
+    Отметки в broadcast_sent защищают от дублей только ВНУТРИ одной рассылки:
+    у второго запуска свой номер, и он спокойно обходит весь список заново.
+    Поэтому дубли ловятся здесь, до начала работы.
+
+    fingerprint: чем считать «та же самая рассылка». По умолчанию —
+    сообщение-источник; пустая строка выключает проверку (досылка остатка
+    после обрыва — это законный повтор, её бережёт номер рассылки).
+    claimed: замок уже занят вызывающим (мини-апп занимает его до того, как
+    ответить браузеру, иначе второй запрос успел бы проскочить).
+    """
+    from common import broadcast_claim, broadcast_release
+    if not claimed:
+        _fp = f"{src_chat}:{src_msg}" if fingerprint is None else fingerprint
+        _why = broadcast_claim(_fp)
+        if _why:
+            logging.warning(f"broadcast: запуск отклонён — {_why} (fp={_fp!r})")
+            try:
+                await notify.answer(
+                    "⛔️ <b>Рассылка НЕ запущена</b>\n\n"
+                    f"Причина: {_why}.\n\n"
+                    "Второй запуск — это сообщение дважды каждому клиенту, "
+                    "поэтому бот его не делает. Если прошлая рассылка "
+                    "закончилась и нужно отправить это же ещё раз — подожди "
+                    "15 минут.", parse_mode="HTML")
+            except Exception:
+                pass
+            return
+    try:
+        return await _do_broadcast_inner(src_chat, src_msg, reply_markup,
+                                         notify, btn_spec, bc_id)
+    finally:
+        broadcast_release()
+
+
+async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify: Message,
+                              btn_spec: dict = None, bc_id: str = ""):
     """Рассылка copy_message с учётом доставки по каждому человеку.
 
     Переписана 17.09.2026 после случая, когда рассылка на 3171 человека
@@ -2386,6 +2425,13 @@ async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Messa
         await _status(f"📢 Рассылка… {sent + blocked + failed}/{total}")
 
     try:
+        # Состояние под НОМЕРОМ рассылки переживает её окончание. Без этого
+        # строчка «номер рассылки …» в отчёте была украшением: досылать по
+        # нему было нечем, общее состояние к тому моменту уже стёрто.
+        await set_setting(f"bcstate:{bc_id}", await get_setting(_BC_STATE, ""))
+    except Exception as _e_keep:
+        logging.warning(f"broadcast: состояние {bc_id} не сохранилось: {_e_keep}")
+    try:
         await set_setting(_BC_STATE, "")
     except Exception:
         pass
@@ -2396,13 +2442,23 @@ async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Messa
             f"❌ Прочие ошибки: {failed}\n\n"
             f"<i>Отметки по каждому сохранены. Если понадобится дослать — "
             f"номер рассылки <code>{bc_id}</code>.</i>")
+    # Кнопка досылки — только когда есть КОМУ досылать. Заблокировавшие бота
+    # сюда не считаются: им повтор всё равно не дойдёт, а кнопка «дослать 300
+    # человек», которая ничего не меняет, хуже её отсутствия.
+    _kb_left = None
+    if failed:
+        _txt += (f"\n\n<i>{failed} не получили из-за ошибок — можно повторить "
+                 f"только им, остальных это не заденет.</i>")
+        _kb_left = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text=f"▶️ Дослать тем, кому не дошло ({failed})",
+            callback_data=f"bcres:{bc_id}")]])
     if _edit_fails:
         _txt += (f"\n\n<i>Счётчик по дороге отставал ({_edit_fails} правок "
                  f"Telegram не принял) — на доставку это не влияло.</i>")
     try:
-        await status_msg.edit_text(_txt, parse_mode="HTML")
+        await status_msg.edit_text(_txt, parse_mode="HTML", reply_markup=_kb_left)
     except Exception:
-        await notify.answer(_txt, parse_mode="HTML")
+        await notify.answer(_txt, parse_mode="HTML", reply_markup=_kb_left)
 
 
 @dp.callback_query(F.data.startswith("bc_go:"), AdminState.waiting_broadcast_btn)
@@ -5027,6 +5083,14 @@ async def adm_broadcast_resume(cb: CallbackQuery):
     except Exception:
         _st = {}
     if _st.get("bc_id") != _bc:
+        # Рассылка могла завершиться штатно — тогда общего состояния уже нет,
+        # но своё, под номером, сохранено. Иначе кнопка «дослать» под отчётом
+        # отвечала бы «неактуально» сразу после рассылки.
+        try:
+            _st = _json_r.loads(await get_setting(f"bcstate:{_bc}", "") or "{}")
+        except Exception:
+            _st = {}
+    if _st.get("bc_id") != _bc:
         await cb.answer("Эта рассылка уже неактуальна", show_alert=True)
         return
     await cb.answer("Продолжаю…")
@@ -5034,9 +5098,12 @@ async def adm_broadcast_resume(cb: CallbackQuery):
         await cb.message.edit_text("▶️ Досылаю оставшимся…")
     except Exception:
         pass
+    # fingerprint="" — досылка остатка это законный повтор того же сообщения,
+    # от дублей её бережёт номер рассылки и отметки по каждому клиенту.
     await _do_broadcast(int(_st["chat"]), int(_st["msg"]),
                         _bc_markup_from_spec(_st.get("btn") or {}),
-                        cb.message, btn_spec=_st.get("btn") or {}, bc_id=_bc)
+                        cb.message, btn_spec=_st.get("btn") or {}, bc_id=_bc,
+                        fingerprint="")
 
 
 @dp.callback_query(F.data.startswith("bcdrop:"))

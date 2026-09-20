@@ -2574,7 +2574,19 @@ function saveInstall(){var t=fv('inst_txt');toast('Сохраняю…');api('/a
 SCREENS["Рассылка"]=function(){
   return hdr("Рассылка")+'<div class="wrap"><label class="fl">Текст сообщения (HTML)</label><textarea class="f" id="bc_txt" placeholder="Текст рассылки…"></textarea><button class="btn" onclick="sendBroadcast()">Отправить всем</button><div class="note">Отправится всем незаблокированным. По завершении придёт отчёт.</div></div>';
 };
-function sendBroadcast(){var t=fv('bc_txt');if(!t){toast('Введи текст');return;}if(window.confirm&&!window.confirm('Отправить рассылку всем пользователям?'))return;toast('Запускаю…');api('/api/admin/broadcast',{text:t}).then(function(d){toast(d.ok?('Рассылка на '+d.count+' польз.'):'Ошибка');});}
+var _bcBusy=false;
+/* Второй тап по кнопке запускал ВТОРУЮ полную рассылку — каждый клиент
+   получал сообщение дважды (20.09.2026). На сервере теперь стоит замок,
+   здесь — простая защита от дабл-клика и от повторного нажатия, пока
+   ответ не пришёл. */
+function sendBroadcast(){var t=fv('bc_txt');if(!t){toast('Введи текст');return;}
+if(_bcBusy){toast('Рассылка уже запущена — второй раз не отправляю');return;}
+if(window.confirm&&!window.confirm('Отправить рассылку всем пользователям?'))return;
+_bcBusy=true;toast('Запускаю…');
+api('/api/admin/broadcast',{text:t}).then(function(d){
+  if(d&&d.ok){toast('Рассылка на '+d.count+' польз. Отчёт придёт в бот.');}
+  else{_bcBusy=false;toast((d&&d.msg)?d.msg:'Ошибка');}
+});}
 
 SCREENS["Техобслуживание"]=function(){
   setTimeout(function(){loadSettings(function(d){var e=document.getElementById('maint_sw');if(e&&d.ok){if(d.maintenance)e.classList.add('on');else e.classList.remove('on');}})},0);
