@@ -183,61 +183,112 @@ async def cmd_nsg_check(message: Message):
     20.09.2026 клиенты не могли пополнить App Store, а в мини-аппе была одна
     красная строка «не удалось загрузить регионы». Причин у неё три, и
     различить их можно было только по логам Railway.
+
+    СНАЧАЛА отвечаем, потом проверяем. Проверка нарочно делает СВЕЖИЙ запрос
+    к поставщику, а он в том и состоянии, что не отвечает: логин ждёт до
+    15 секунд и повторяется. Молчание всё это время читается как «команда не
+    работает» — так и случилось при первом же запуске.
     """
     if message.from_user.id != ADMIN_ID:
         return
     import html as _h_nc
-    from ns_gifts import (get_stock_cached, get_apple_categories,
-                          last_stock_error, stock_age, invalidate_stock_cache)
-    _L = ["🔎 <b>NS Gifts — проверка</b>\n"]
-    if not rt.nsgifts_client:
-        _L.append("🚨 <b>Клиент не инициализирован.</b>")
-        _L.append("<i>Значит при старте не хватило переменных: NSGIFTS_USER_ID, "
-                  "NSGIFTS_LOGIN, NSGIFTS_API_SECRET. Проверь их в Railway "
-                  "и сделай Redeploy.</i>")
-        await message.answer("\n".join(_L), parse_mode="HTML")
-        return
-    _L.append("✅ Клиент инициализирован.")
-    _L.append("🌐 Прокси: <code>" + _h_nc.escape(rt.nsgifts_client.proxy_host or "НЕ ЗАДАН") + "</code>"
-              + ("" if rt.nsgifts_client.proxy_host else
-                 "\n<i>Без прокси Railway ходит с одного из трёх общих IP, "
-                 "а у NS Gifts доступ по белому списку — логин будет падать "
-                 "с 403.</i>"))
-
-    # Свежий запрос, а не кэш: смысл проверки в том, отвечает ли поставщик СЕЙЧАС.
-    invalidate_stock_cache()
-    _stock = await get_stock_cached(rt.nsgifts_client)
-    _err, _ago = last_stock_error()
-    if not _stock:
-        _L.append("\n🚨 <b>Каталог не загрузился.</b>")
-        _L.append(f"<i>Ответ поставщика:</i> <code>{_h_nc.escape(_err or '—')}</code>")
-        _L.append("\n<i>Что проверить: жив ли api.ns.gifts, не истёк ли прокси "
-                  "NSGIFTS_PROXY — у NS Gifts доступ по белому списку IP, и "
-                  "без фиксированного адреса Railway каждый раз приходит "
-                  "с нового.</i>")
-    else:
-        _cats = _stock.get("categories", []) or []
-        _apple = get_apple_categories(_stock) or []
-        _L.append(f"\n✅ Каталог получен: категорий <b>{len(_cats)}</b>, "
-                  f"Apple-регионов в наличии <b>{len(_apple)}</b>.")
-        if not _apple:
-            _L.append("⚠️ <i>Apple-карт в наличии НЕТ — пополнение App Store "
-                      "клиентам сейчас недоступно, и это не поломка.</i>")
-        else:
-            _L.append("<i>" + ", ".join(
-                str(c.get("category_name", "?")) for c in _apple[:8]) + "</i>")
-        if _err:
-            _L.append(f"\n<i>Последний сбой был {_ago // 60} мин назад: "
-                      f"<code>{_h_nc.escape(_err)}</code></i>")
-
+    _wait = await message.answer("🔎 Проверяю NS Gifts… до минуты, если поставщик молчит.")
     try:
-        _bal = await rt.nsgifts_client.check_balance()
-        _L.append(f"\n💰 Баланс у поставщика: <code>{_h_nc.escape(str(_bal))[:200]}</code>")
-    except Exception as _e_b:
-        _L.append(f"\n⚠️ Баланс не проверить: <code>{_h_nc.escape(str(_e_b)[:150])}</code>")
+        from ns_gifts import (get_stock_cached, get_apple_categories,
+                              last_stock_error, invalidate_stock_cache)
+        _L = ["🔎 <b>NS Gifts — проверка</b>\n"]
+        if not rt.nsgifts_client:
+            _L.append("🚨 <b>Клиент не инициализирован.</b>")
+            _L.append("<i>При старте не хватило переменных: NSGIFTS_USER_ID, "
+                      "NSGIFTS_LOGIN, NSGIFTS_API_SECRET. Проверь их в Railway "
+                      "и сделай Redeploy.</i>")
+            await _wait.edit_text("\n".join(_L), parse_mode="HTML")
+            return
+        _L.append("✅ Клиент инициализирован.")
+        _px = getattr(rt.nsgifts_client, "proxy_host", "") or ""
+        _L.append("🌐 Прокси: <code>" + _h_nc.escape(_px or "НЕ ЗАДАН") + "</code>"
+                  + ("" if _px else
+                     "\n<i>Без прокси Railway ходит с одного из трёх общих IP, "
+                     "а у NS Gifts доступ по белому списку — логин будет "
+                     "отклоняться с 403.</i>"))
 
-    await message.answer("\n".join(_L), parse_mode="HTML",
-                         disable_web_page_preview=True)
+        # ── Жив ли САМ прокси ───────────────────────────────────────────
+        # Без этой проверки «TimeoutError» неразличим: то ли прокси принимает
+        # соединение и не пересылает, то ли молчит api.ns.gifts. Стучимся
+        # через тот же прокси на нейтральный сайт — он отвечает всегда.
+        # Заодно видно наш внешний IP: именно он должен стоять в белом
+        # списке NS Gifts, и по нему сразу понятно, тот ли адрес.
+        if _px:
+            try:
+                import aiohttp as _ah_nc
+                async with _ah_nc.ClientSession() as _s_nc:
+                    async with _s_nc.get(
+                            "https://api.ipify.org?format=json",
+                            proxy=rt.nsgifts_client.proxy,
+                            timeout=_ah_nc.ClientTimeout(total=12)) as _r_nc:
+                        _ip_nc = (await _r_nc.json()).get("ip", "?")
+                _L.append(f"🛰 Прокси живой. Наш внешний IP: <code>{_h_nc.escape(str(_ip_nc))}</code>")
+                _L.append("<i>Этот адрес и должен быть в белом списке NS Gifts.</i>")
+            except Exception as _e_px:
+                _L.append(f"🛰 <b>Через прокси не открылся даже нейтральный сайт</b> "
+                          f"(<code>{type(_e_px).__name__}</code>).")
+                _L.append("➡️ <b>Значит дело в ПРОКСИ, а не в NS Gifts.</b> "
+                          "Меняй NSGIFTS_PROXY и делай Redeploy.")
+
+        # Свежий запрос, а не кэш: смысл проверки в том, отвечает ли поставщик СЕЙЧАС.
+        invalidate_stock_cache()
+        _stock = await get_stock_cached(rt.nsgifts_client)
+        _err, _ago = last_stock_error()
+        if not _stock:
+            _L.append("\n🚨 <b>Каталог не загрузился.</b>")
+            _L.append(f"<i>Ответ поставщика:</i> <code>{_h_nc.escape(_err or '—')}</code>")
+            _lw = (_err or "").lower()
+            if "proxy" in _lw:
+                _L.append("\n➡️ <b>Не отвечает ПРОКСИ.</b> Меняй NSGIFTS_PROXY "
+                          "в Railway и делай Redeploy.")
+            elif "timeout" in _lw:
+                _L.append("\n➡️ <b>Не отвечает сам api.ns.gifts</b> (или прокси "
+                          "молча глотает запрос). Если прокси задан — проверь "
+                          "его отдельно; если нет — это на стороне NS Gifts.")
+            elif "403" in _lw:
+                _L.append("\n➡️ <b>Доступ отклонён.</b> Либо креды, либо IP не "
+                          "в белом списке NS Gifts.")
+            else:
+                _L.append("\n➡️ Причина выше — с ней и идти в поддержку NS Gifts.")
+        else:
+            _cats = _stock.get("categories", []) or []
+            _apple = get_apple_categories(_stock) or []
+            _L.append(f"\n✅ Каталог получен: категорий <b>{len(_cats)}</b>, "
+                      f"Apple-регионов в наличии <b>{len(_apple)}</b>.")
+            if not _apple:
+                _L.append("⚠️ <i>Apple-карт в наличии НЕТ — пополнение App Store "
+                          "клиентам сейчас недоступно, и это не поломка.</i>")
+            else:
+                _L.append("<i>" + _h_nc.escape(", ".join(
+                    str(c.get("category_name", "?")) for c in _apple[:8])) + "</i>")
+            if _err:
+                _L.append(f"\n<i>Последний сбой был {_ago // 60} мин назад: "
+                          f"<code>{_h_nc.escape(_err)}</code></i>")
+
+        try:
+            _bal = await rt.nsgifts_client.check_balance()
+            _L.append(f"\n💰 Баланс: <code>{_h_nc.escape(str(_bal))[:200]}</code>")
+        except Exception as _e_b:
+            _L.append(f"\n⚠️ Баланс не проверить: <code>"
+                      f"{_h_nc.escape(str(_e_b)[:150]) or type(_e_b).__name__}</code>")
+
+        await _wait.edit_text("\n".join(_L), parse_mode="HTML",
+                              disable_web_page_preview=True)
+    except Exception as _e_nc:
+        # Молчащая команда — худший исход: непонятно, сломана она или думает.
+        logging.error(f"/nsg_check: {_e_nc}", exc_info=True)
+        try:
+            await _wait.edit_text(
+                "⚠️ <b>Проверка упала</b>\n<code>"
+                + _h_nc.escape(f"{type(_e_nc).__name__}: {str(_e_nc)[:250]}")
+                + "</code>", parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @dp.callback_query(F.data == "nsg_shop")
