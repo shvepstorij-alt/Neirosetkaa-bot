@@ -19,6 +19,7 @@ from db import (
     add_order_msg, get_order_thread, get_user, get_linkpay_admin_msgs,
 )
 from keyboards import _eib, _btn_emoji_id
+from common import _who_user   # ник клиента в сообщениях админу
 
 
 # ══════════════════════════════════════════════════════════
@@ -214,7 +215,7 @@ async def cl_reply_send(message: Message, state: FSMContext):
     ])
     _head = (
         f"📨 <b>Ответ клиента по заказу</b>\n\n"
-        f"👤 {_tag} (<code>{message.from_user.id}</code>)\n"
+        f"👤 {_tag} ({await _who_user(message.from_user.id)})\n"
         f"📦 {order.get('service_name','')} · {order.get('plan_name') or '—'}\n"
         f"🆔 <code>{order_id}</code>"
     )
@@ -613,7 +614,7 @@ async def creds_password(message: Message, state: FSMContext):
     tag = f"@{uname}" if uname else f"id{order['user_id']}"
     admin_text = (
         f"🔐 <b>Заказ (вход в аккаунт)</b>\n\n"
-        f"👤 {tag} (<code>{order['user_id']}</code>)\n"
+        f"👤 {tag} ({await _who_user(order['user_id'])})\n"
         f"📦 {order['service_name']}\n"
         f"🎫 Тариф: <b>{order.get('plan_name') or '—'}</b>\n"
         f"💵 Оплачено: <b>{order['amount_rub']}₽</b>\n"

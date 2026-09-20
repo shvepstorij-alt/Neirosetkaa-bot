@@ -986,7 +986,7 @@ async def process_partner_earning(client_id: int, order_id: str, amount_rub) -> 
         await bot.send_message(
             ADMIN_ID,
             f"🏢 <b>Заказ от партнёра</b>\n\n"
-            f"👤 клиент <code>{client_id}</code> · партнёр <code>{ctx['partner_id']}</code>\n"
+            f"👤 клиент {await _who_user(client_id)} · партнёр <code>{ctx['partner_id']}</code>\n"
             f"📦 {(_s.get('name') or _svc)}\n"
             f"💳 оплачено {_paid:.0f} ₽ → тебе {_owner_sum:.0f} ₽, партнёру {_partner_sum:.0f} ₽",
             parse_mode="HTML")
@@ -1346,7 +1346,7 @@ async def claude_with_search(uid: int, user_text: str) -> str:
                 f"🚨 <b>AI-Консультант упал</b>\n\n"
                 f"<b>Диагноз:</b> {admin_diagnosis}\n"
                 f"<b>Что делать:</b> {admin_action}\n\n"
-                f"<b>Юзер:</b> <code>{uid}</code>\n"
+                f"<b>Юзер:</b> {await _who_user(uid)}\n"
                 f"<b>Ошибка:</b> <code>{err_snippet}</code>\n\n"
                 f"<i>Алерты приходят не чаще раза в 10 минут. Подробности - в Railway Logs.</i>",
                 parse_mode="HTML"
@@ -7578,7 +7578,8 @@ async def _run_activation_job(
                             f"👤 {_who_u} · {plan_name}\n"
                             f"🔑 <code>{code}</code>\n"
                             f"🆔 <code>{order_id}</code>\n\n"
-                            f"Первый iOS-код мог уже лечь на аккаунт клиента — "
+                            + _gpt_fail_why(result, code) +
+                            f"\nПервый iOS-код мог уже лечь на аккаунт клиента — "
                             f"второй добавил бы подписку поверх, за наши деньги. "
                             f"Проверь код на сайте и активируй вручную.",
                             parse_mode="HTML")
@@ -7723,6 +7724,7 @@ async def _run_activation_job(
                       f"📱 iOS <code>{code}</code> — "
                     + ("активация прошла" if _ok_ios else "тоже не вышло")
                     + f"\n🆔 <code>{order_id}</code>\n"
+                    + ("" if _ok_ios else _gpt_fail_why(result, code))
                     + await _fk_num_line(order_id),
                     parse_mode="HTML")
             except Exception:
@@ -8734,7 +8736,7 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
             await bot.send_message(
                 ADMIN_ID,
                 f"⏰ <b>Истекло окно активации ChatGPT</b>\n"
-                f"👤 {_nick} <code>{user_id}</code>  📦 {_plan_name}\n"
+                f"👤 {_nick} {await _who_user(user_id)}  📦 {_plan_name}\n"
                 f"🆔 <code>{_order_id}</code>\n"
                 f"{await _fk_num_line(_order_id)}\n"
                 f"Клиент нажал «Активировать», но срок вышел. Код автоматически "
@@ -8969,7 +8971,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                     await bot.send_message(
                         ADMIN_ID,
                         f"🚨 <b>ChatGPT — нет кодов нужного маршрута</b>\n"
-                        f"👤 <code>{user_id}</code>  🆔 <code>{order_id}</code>\n"
+                        f"👤 {await _who_user(user_id)}  🆔 <code>{order_id}</code>\n"
                         f"📦 Тариф: <b>{plan_name}</b>\n"
                         f"🧑‍💻 План аккаунта: <b>{_acc_plan or 'не определён'}</b>\n"
                         f"🧭 Нужен маршрут: <b>{_lbl}</b> — свободных нет.\n\n"
@@ -9336,7 +9338,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await bot.send_message(
                         ADMIN_ID,
                         f"🛍 <b>Заказ ChatGPT (ручная активация)</b>\n"
-                        f"👤 <code>{user_id}</code>  📦 {service_name}\n"
+                        f"👤 {await _who_user(user_id)}  📦 {service_name}\n"
                         f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
                         parse_mode="HTML"
                     )
@@ -9449,7 +9451,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await bot.send_message(
                         ADMIN_ID,
                         f"🛍 <b>Claude (ручная активация)</b>\n"
-                        f"👤 <code>{user_id}</code>  📦 {service_name}\n"
+                        f"👤 {await _who_user(user_id)}  📦 {service_name}\n"
                         f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
                         parse_mode="HTML"
                     )
@@ -9507,7 +9509,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     await bot.send_message(
                         ADMIN_ID,
                         f"🛍 <b>Perplexity (ручная активация)</b>\n"
-                        f"👤 <code>{user_id}</code>  📦 {service_name}\n"
+                        f"👤 {await _who_user(user_id)}  📦 {service_name}\n"
                         f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>",
                         parse_mode="HTML"
                     )
@@ -9562,7 +9564,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 <b>Perplexity: не удалось отправить кнопку активации</b>\n"
-                                f"👤 <code>{user_id}</code>  🆔 <code>{order_id}</code>\n"
+                                f"👤 {await _who_user(user_id)}  🆔 <code>{order_id}</code>\n"
                                 f"Код возвращён в пул. Проверь логи Railway.",
                                 parse_mode="HTML"
                             )
@@ -9918,7 +9920,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                                 ADMIN_ID,
                                 f"⚠️ <b>Магазин: сумма меньше ожидаемой</b>\n\n"
                                 f"Заказ: <code>{order_id}</code>\n"
-                                f"Юзер: <code>{user_id}</code>\n"
+                                f"Юзер: {await _who_user(user_id)}\n"
                                 f"Сервис: <code>{pack_info}</code>\n"
                                 f"Ожидали: <b>{expected_amount}₽</b>\n"
                                 f"Пришло: <b>{received_amount}₽</b>\n"
@@ -9941,7 +9943,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                                 ADMIN_ID,
                                 f"🚨 <b>Несовпадение суммы — КРЕДИТЫ</b>\n\n"
                                 f"Заказ: <code>{order_id}</code>\n"
-                                f"Юзер: <code>{user_id}</code>\n"
+                                f"Юзер: {await _who_user(user_id)}\n"
                                 f"Ожидали: <b>{expected_amount}₽</b>\n"
                                 f"Пришло: <b>{received_amount}₽</b>\n\n"
                                 f"🚫 Кредиты НЕ зачислены. Разберись вручную.",
@@ -11568,7 +11570,7 @@ async def gpt_order_mark_activated(order_id: str, user_id: int, code: str,
     except Exception:
         _who = f"id{user_id}"
     _txt = (f"✅ <b>Заказ активирован</b>\n\n"
-            f"👤 {_who} (<code>{user_id}</code>)\n"
+            f"👤 {_who} ({await _who_user(user_id)})\n"
             f"🔑 <code>{code}</code>\n"
             + (f"📧 <code>{email}</code>\n" if email else "")
             + (f"🏢 <code>{org}</code>\n" if org else "")
@@ -11845,7 +11847,7 @@ async def balance_report(user_id: int) -> str:
     _tag = ("@" + _u["username"]) if _u["username"] else (_u["full_name"] or "без ника")
     import html as _h_b
     _L = [f"💰 <b>Баланс клиента</b>\n"
-          f"👤 {_h_b.escape(str(_tag))} (<code>{_uid}</code>)\n"
+          f"👤 {_h_b.escape(str(_tag))} ({await _who_user(_uid)})\n"
           f"💵 Кредитов сейчас: <b>{int(_u['credits'] or 0)}</b>\n"
           f"🪙 Монеток сейчас: <b>{float(_u['coins'] or 0):.0f} ₽</b>"]
 
@@ -12644,7 +12646,7 @@ async def _claude_test_activation_job(fake_bpa: int, user_id: int, plan_name: st
         await bot.send_message(
             ADMIN_ID,
             f"🧪 <b>Claude тест завершён</b>\n"
-            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+            f"👤 {await _who_user(user_id)}  📦 {plan_name}\n"
             f"Это фейковая активация — реальный код не потрачен.",
             parse_mode="HTML"
         )
@@ -12880,7 +12882,7 @@ async def _claude_activation_polling_job(
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🔀 <b>Claude — авто-переключение сайта после неудачи</b>\n"
-                                f"👤 <code>{user_id}</code> ({plan_name})\n"
+                                f"👤 {await _who_user(user_id)} ({plan_name})\n"
                                 f"Прежний сайт не активировал — ушли на <b>{claude_provider_name(_np)}</b>.",
                                 parse_mode="HTML")
                         except Exception:
@@ -12908,7 +12910,7 @@ async def _claude_activation_polling_job(
                     try:
                         _caption_fail = (
                             f"❌ <b>Claude FAILED</b>\n"
-                            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                            f"👤 {await _who_user(user_id)}  📦 {plan_name}\n"
                             f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
                             f"❌ {_err[:300]}"
                             + f"\n♻️ {_fail_note}"
@@ -13021,7 +13023,7 @@ async def _claude_activation_polling_job(
         await bot.send_message(
             ADMIN_ID,
             f"⏰ <b>Claude TIMEOUT</b>\n"
-            f"👤 <code>{user_id}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
+            f"👤 {await _who_user(user_id)}  🔢 BPA: <code>{bpa_order_id}</code>\n"
             f"🔑 Код: <code>{code}</code>\n"
             f"10 минут — проверь вручную на bypriceactivate.pro\n"
             f"Код зарезервирован за клиентом — активируй вручную им же.",
@@ -13157,7 +13159,7 @@ async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_nam
             await bot.send_message(
                 ADMIN_ID,
                 f"❌ <b>Claude (6661231.xyz) — активация не прошла</b>\n"
-                f"👤 <code>{user_id}</code> · {plan_name}\n"
+                f"👤 {await _who_user(user_id)} · {plan_name}\n"
                 f"🔑 <code>{code}</code>\n"
                 f"🧩 <code>{org_id}</code>\n"
                 f"⚠️ {(_err)[:300]}",
@@ -13402,7 +13404,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             try:
                 await bot.send_message(ADMIN_ID,
                     f"🚨 <b>Claude — нет свободных кодов В ПУЛЕ бота</b> ({plan_name})\n"
-                    f"👤 <code>{user_id}</code>\n"
+                    f"👤 {await _who_user(user_id)}\n"
                     f"📦 Свободно по сайтам: {_counts_txt}\n"
                     f"<i>Похоже, коды на сайт не добавлены в пул бота (через админку). "
                     f"Сток на самом сайте бот не видит.</i>", parse_mode="HTML")
@@ -13529,7 +13531,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                             logging.error(f"claude needs_force_confirm msg: {_e_cf}")
                         _cf_mid = await _admin_fail_shot(
                             f"⚠️ <b>Claude {_site} — нужно подтверждение клиента</b>\n"
-                            f"👤 <code>{user_id}</code> · {plan_name}\n"
+                            f"👤 {await _who_user(user_id)} · {plan_name}\n"
                             f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n"
                             f"🆔 <code>{order_id}</code>\n"
                             + await _fk_num_line(order_id)
@@ -13557,7 +13559,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                             "plan_name": plan_name, "plan_key": plan_key, "provider": _prov,
                             "site": _site, "ref": ref}
                         _cap = (f"⚠️ <b>Claude {_site} — нужна проверка</b>\n"
-                                f"👤 <code>{user_id}</code> · {plan_name}\n"
+                                f"👤 {await _who_user(user_id)} · {plan_name}\n"
                                 f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n\n"
                                 f"Активация, вероятно, прошла, но бот не поймал подтверждение. "
                                 f"Проверь код по Org ID на сайте (Card Query), затем выбери:")
@@ -13711,7 +13713,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                       "❌ <b>Claude — активация не прошла НИ НА ОДНОМ сайте</b>")
         _fail_txt = (
             f"{_fail_head}\n"
-            f"👤 <code>{user_id}</code> · {plan_name}\n"
+            f"👤 {await _who_user(user_id)} · {plan_name}\n"
             f"🧩 Org ID: <code>{org_id}</code>\n\n"
             f"📦 <b>Кодов в пуле бота</b> (не сток сайта):\n{_counts_lines}\n\n"
             f"🧭 <b>Планировали обойти:</b> {_plan_line}\n"
@@ -13973,7 +13975,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                     await bot.send_message(
                         ADMIN_ID,
                         "⚠️ <b>Повторная активация Claude</b> (клиент предупреждён)\n\n"
-                        f"👤 {_uname} (<code>{user_id}</code>)\n"
+                        f"👤 {_uname} ({await _who_user(user_id)})\n"
                         f"🔑 Уже активирован: <code>{_recent['code']}</code>\n"
                         f"📦 Тариф: <b>{_recent['plan']}</b>\n"
                         f"⏱ Дата: <b>{_us}</b>\n"
@@ -14016,7 +14018,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                     await bot.send_message(
                         ADMIN_ID,
                         "✅ <b>Повторная активация Claude — подтверждена</b>\n\n"
-                        f"👤 {_uname} (<code>{user_id}</code>) активирует ещё раз (другой аккаунт).",
+                        f"👤 {_uname} ({await _who_user(user_id)}) активирует ещё раз (другой аккаунт).",
                         parse_mode="HTML"
                     )
                 except Exception:
@@ -14125,7 +14127,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 await bot.send_message(
                     ADMIN_ID,
                     f"🚨 <b>Claude — нет стока НА ВСЕХ сайтах!</b>\n"
-                    f"👤 <code>{user_id}</code> ({plan_name})\n"
+                    f"👤 {await _who_user(user_id)} ({plan_name})\n"
                     f"Пополни коды/сток на сайтах Claude.",
                     parse_mode="HTML"
                 )
@@ -14137,7 +14139,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             await bot.send_message(
                 ADMIN_ID,
                 f"❌ <b>Claude — активация не прошла</b>\n"
-                f"👤 <code>{user_id}</code> · {plan_name}\n"
+                f"👤 {await _who_user(user_id)} · {plan_name}\n"
                 f"🔧 Сайт: <b>{claude_provider_name(_last_prov)}</b>\n"
                 f"📄 Код: <code>{code}</code>\n"
                 f"🧩 Org ID: <code>{org_id}</code>\n"
@@ -15508,7 +15510,7 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
         await bot.send_message(
             ADMIN_ID,
             f"✅ <b>Apple Gift Card продан</b>\n\n"
-            f"👤 <code>{user_id}</code>\n"
+            f"👤 {await _who_user(user_id)}\n"
             f"📦 {service_name}\n"
             f"💵 {price_rub} ₽\n"
             f"🔑 {', '.join(pins)}"
@@ -15556,7 +15558,7 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
         await bot.send_message(
             ADMIN_ID,
             f"🚨 <b>NSGifts ОШИБКА выдачи</b>\n\n"
-            f"👤 <code>{user_id}</code>\n"
+            f"👤 {await _who_user(user_id)}\n"
             f"📦 {service_name}  (service_id={service_id})\n"
             f"💵 {price_rub} ₽\n"
             f"🆔 FK: <code>{fk_order_id}</code>\n\n"
@@ -15657,7 +15659,7 @@ async def _perplexity_test_activation_job(fake_bpa: int, user_id: int, plan_name
         await bot.send_message(
             ADMIN_ID,
             f"🧪 <b>Perplexity тест завершён</b>\n"
-            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+            f"👤 {await _who_user(user_id)}  📦 {plan_name}\n"
             f"Это фейковая активация — реальный код не потрачен.",
             parse_mode="HTML"
         )
@@ -15808,7 +15810,7 @@ async def _perplexity_activation_polling_job(
                     try:
                         _caption_fail = (
                             f"❌ <b>Perplexity FAILED</b>\n"
-                            f"👤 <code>{user_id}</code>  📦 {plan_name}\n"
+                            f"👤 {await _who_user(user_id)}  📦 {plan_name}\n"
                             f"🔑 <code>{code}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
                             f"❌ {_err[:300]}"
                             + f"\n♻️ {_fail_note}"
@@ -15921,7 +15923,7 @@ async def _perplexity_activation_polling_job(
         await bot.send_message(
             ADMIN_ID,
             f"⏰ <b>Perplexity TIMEOUT</b>\n"
-            f"👤 <code>{user_id}</code>  🔢 BPA: <code>{bpa_order_id}</code>\n"
+            f"👤 {await _who_user(user_id)}  🔢 BPA: <code>{bpa_order_id}</code>\n"
             f"🔑 Код: <code>{code}</code>\n"
             f"10 минут — проверь вручную на bypriceactivate.pro\n"
             f"Код зарезервирован за клиентом — активируй вручную им же.",
@@ -16116,7 +16118,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                     await bot.send_message(
                         ADMIN_ID,
                         "⚠️ <b>Повторная активация Perplexity</b> (клиент предупреждён)\n\n"
-                        f"👤 {_uname} (<code>{user_id}</code>)\n"
+                        f"👤 {_uname} ({await _who_user(user_id)})\n"
                         f"🔑 Уже активирован: <code>{_recent['code']}</code>\n"
                         f"📦 Тариф: <b>{_recent['plan']}</b>\n"
                         f"⏱ Дата: <b>{_us}</b>\n\n"
@@ -16138,7 +16140,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                     await bot.send_message(
                         ADMIN_ID,
                         "✅ <b>Повторная активация Perplexity — подтверждена</b>\n\n"
-                        f"👤 {_uname} (<code>{user_id}</code>) активирует ещё раз (другой аккаунт).",
+                        f"👤 {_uname} ({await _who_user(user_id)}) активирует ещё раз (другой аккаунт).",
                         parse_mode="HTML"
                     )
                 except Exception:
@@ -16195,7 +16197,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                             await bot.send_message(
                                 ADMIN_ID,
                                 f"🚨 <b>Perplexity — нет стока!</b>\n"
-                                f"👤 <code>{user_id}</code> ({plan_name})\n"
+                                f"👤 {await _who_user(user_id)} ({plan_name})\n"
                                 f"Пополни receipt'ы Perplexity на bypriceactivate.pro",
                                 parse_mode="HTML"
                             )
@@ -16352,7 +16354,7 @@ async def process_linkpay_link(user_id, text) -> bool:
         import html as _h_lp
         admin_text = (
             f"💳 <b>Заказ на оплату по ссылке</b>\n\n"
-            f"👤 {_h_lp.escape(tag)} (<code>{user_id}</code>)\n"
+            f"👤 {_h_lp.escape(tag)} ({await _who_user(user_id)})\n"
             f"📦 {_h_lp.escape(str(order['service_name']))}\n"
             f"🎫 Тариф: <b>{_h_lp.escape(str(order.get('plan_name') or '—'))}</b>\n"
             f"💵 Оплачено клиентом: <b>{order['amount_rub']}₽</b>\n"

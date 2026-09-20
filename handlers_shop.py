@@ -35,6 +35,7 @@ from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
 )
 from common import (
+    _who_user,
     shop_price_for, partner_tag, shop_price_pair,
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
 )
@@ -963,7 +964,7 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
             await bot.send_message(
                 ADMIN_ID,
                 f"🚨 <b>Оплата монетками: заказ НЕ записан в БД</b>\n"
-                f"👤 <code>{uid}</code>  🪙 {coins_used}₽\n"
+                f"👤 {await _who_user(uid)}  🪙 {coins_used}₽\n"
                 f"📦 {key}:{plan_idx}\n<code>{_e_fc}</code>",
                 parse_mode="HTML")
         except Exception:
@@ -1465,7 +1466,7 @@ async def payment_issue_handler(cb: CallbackQuery):
                 await bot.send_message(
                     ADMIN_ID,
                     f"📩 <b>Заявка на проверку платежа</b>\n\n"
-                    f"👤 {user_label} (<code>{uid}</code>)\n"
+                    f"👤 {user_label} ({await _who_user(uid)})\n"
                     f"⏰ {_time_module.strftime('%d.%m %H:%M')}{pending_info}\n\n"
                     f"<i>Авто-проверка не нашла оплаченных заказов. "
                     f"Возможно клиент платил через FK без orderId или платёж ещё в обработке.</i>\n\n"
@@ -1713,7 +1714,7 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             await bot.send_message(
                 ADMIN_ID,
                 f"🚨 <b>Заказ НЕ записан в БД</b>\n\n"
-                f"👤 <code>{uid}</code>\n💎 {p['credits']} кр · {amount}₽\n"
+                f"👤 {await _who_user(uid)}\n💎 {p['credits']} кр · {amount}₽\n"
                 f"🆔 <code>{order_id}</code>\n\n"
                 f"Если клиент оплатит, а бот перезапустится — начисли вручную: "
                 f"<code>/credit {order_id}</code>\n<code>{_db_err}</code>",
@@ -1948,7 +1949,7 @@ async def report_pay_handler(cb: CallbackQuery):
         await bot.send_message(
             ADMIN_ID,
             f"🚨 <b>Заявка от клиента: «оплатил, но не пришло»</b>\n\n"
-            f"👤 {user_label} (<code>{uid}</code>)\n"
+            f"👤 {user_label} ({await _who_user(uid)})\n"
             f"🆔 Заказ: <code>{order_id}</code>{order_info}\n\n"
             f"<b>Что делать:</b>\n"
             f"1. Проверить FreeKassa личный кабинет - есть ли платёж\n"

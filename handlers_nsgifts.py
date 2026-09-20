@@ -37,6 +37,7 @@ from keyboards import (
     _eib,
 )
 from common import (
+    _who_user,
     _nsg_markup, _nsg_threshold, _nsg_usd_rate, check_not_blocked, fk_check_order_status, nsgifts_fulfill_after_payment,
 )
 
@@ -843,7 +844,7 @@ async def nsg_full_coins(cb: CallbackQuery):
         await bot.send_message(
             ADMIN_ID,
             f"🪙 <b>App Store: оплачено монетками</b>\n"
-            f"👤 <code>{uid}</code>\n📦 {row['service_name']}\n"
+            f"👤 {await _who_user(uid)}\n📦 {row['service_name']}\n"
             f"🪙 {required} ₽  💳 СБП 0 ₽\n🆔 <code>{order_id}</code>",
             parse_mode="HTML")
     except Exception:
@@ -919,7 +920,7 @@ async def nsg_coins_sbp(cb: CallbackQuery):
         await bot.send_message(
             ADMIN_ID,
             f"🪙 <b>App Store: монетки + СБП</b>\n"
-            f"👤 <code>{uid}</code>\n📦 {row['service_name']}\n"
+            f"👤 {await _who_user(uid)}\n📦 {row['service_name']}\n"
             f"🪙 {coins_used} ₽  💳 СБП {rest} ₽\n🆔 <code>{order_id}</code>",
             parse_mode="HTML")
     except Exception:

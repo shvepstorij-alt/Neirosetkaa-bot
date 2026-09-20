@@ -41,6 +41,7 @@ from db import (
 from keyboards import (
     _eib,
 )
+from common import _who_user   # ник клиента в сообщениях админу
 
 @dp.message(F.text.startswith("/add_gpt_codes"), StateFilter("*"))
 async def admin_add_gpt_codes(message: Message):
@@ -270,7 +271,7 @@ async def cb_gpt_lost_apply(cb):
     if _r.get("ok"):
         _txt = (f"✅ <b>Записал активацию</b>\n"
                 f"🔑 <code>{_code}</code>\n"
-                f"👤 <code>{_r['user_id']}</code>\n"
+                f"👤 {await _who_user(_r['user_id'])}\n"
                 f"📧 <code>{_r.get('email') or '—'}</code>\n"
                 f"🆔 <code>{_r['order_id']}</code>\n\n"
                 f"Сообщение заказа поправил, клиенту написал.")
@@ -350,7 +351,7 @@ async def admin_gpt_lost_ok(message: Message):
         await message.answer(
             f"✅ <b>Записал активацию</b>\n"
             f"🔑 <code>{_code}</code>\n"
-            f"👤 <code>{_r['user_id']}</code>\n"
+            f"👤 {await _who_user(_r['user_id'])}\n"
             f"🆔 <code>{_r['order_id']}</code>\n\n"
             f"Сообщение заказа поправил, клиенту написал.", parse_mode="HTML")
     else:
@@ -392,7 +393,7 @@ async def admin_gpt_lost(message: Message):
         _m = _l.get("match")
         _t = ((("✅ <b>Похоже, активация всё-таки прошла</b>") if _m is True
                else "❓ <b>Код потрачен — чей аккаунт, не подтверждаю</b>") + "\n"
-              f"👤 {_l['user']} (<code>{_l['user_id']}</code>)\n"
+              f"👤 {_l['user']} ({await _who_user(_l['user_id'])})\n"
               f"🔑 <code>{_l['code']}</code> — сайт: {_l['status']}\n"
               f"📧 на сайте: <code>{_l['site_email'] or '—'}</code>\n"
               f"📧 у клиента: <code>{_l['client_email'] or '—'}</code>\n"
@@ -1052,7 +1053,7 @@ async def adm_gpt_pending_codes(cb: CallbackQuery):
         uname = r["username"] or r["full_name"] or (f"id{r['pa_uid']}" if r["pa_uid"] else "—")
         tg_str = f"@{uname}" if r["username"] else uname
         _site = gpt_provider_name(r["provider"] or "987ai")
-        lines.append(f"• <code>{r['code']}</code>  👤 {tg_str}  ⏱ {date_str}  🌐 {_site}")
+        lines.append(f"• {await _who_user(r['code'])}  👤 {tg_str}  ⏱ {date_str}  🌐 {_site}")
         code_btns.append([
             InlineKeyboardButton(
                 text=f"🔓 В пул",
@@ -1271,7 +1272,7 @@ async def cb_gpt_need_help(cb: CallbackQuery):
         await bot.send_message(
             ADMIN_ID,
             f"❓ <b>Клиент нажал «Нужна помощь»</b>\n\n"
-            f"👤 <code>{uid}</code>{code_info}\n\n"
+            f"👤 {await _who_user(uid)}{code_info}\n\n"
             f"Активируй вручную и попроси клиента нажать «Активировали тариф вручную».",
             parse_mode="HTML"
         )
@@ -1303,7 +1304,7 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
             await bot.send_message(
                 ADMIN_ID,
                 f"✅ <b>Ручная активация подтверждена клиентом</b>\n\n"
-                f"👤 <code>{uid}</code>\n"
+                f"👤 {await _who_user(uid)}\n"
                 f"🔑 Код: <code>{code}</code> — возвращён в пул\n"
                 f"📦 Тариф: <b>{plan_name}</b>",
                 parse_mode="HTML"

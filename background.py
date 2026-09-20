@@ -653,7 +653,7 @@ async def gpt_orphans_loop():
                     await bot.send_message(
                         ADMIN_ID,
                         f"❓ <b>Оборванная активация — проверь вручную</b>\n"
-                        f"👤 <code>{_u['user_id']}</code> · {_u['plan_name']}\n"
+                        f"👤 {await _who_user(_u['user_id'])} · {_u['plan_name']}\n"
                         f"🔑 <code>{_ew(_u['code'])}</code> — сайт: {_ew(_u['status'])}\n"
                         f"📧 на сайте: <code>{_ew(_u['site_email'] or '—')}</code>\n"
                         f"📧 у клиента: <code>{_ew(_u['client_email'] or '—')}</code>\n"
@@ -717,7 +717,7 @@ async def gpt_orphans_loop():
                          if _m is True else
                          "❓ <b>Код потрачен — чей аккаунт, не подтверждаю</b>")
                 _txt = (f"{_head}\n"
-                        f"👤 {_ew(_l['user'])} (<code>{_l['user_id']}</code>)\n"
+                        f"👤 {_ew(_l['user'])} ({await _who_user(_l['user_id'])})\n"
                         f"🔑 <code>{_ew(_l['code'])}</code> — сайт: {_ew(_l['status'])}\n"
                         f"📧 на сайте: <code>{_ew(_l['site_email'] or '—')}</code>\n"
                         f"📧 у клиента: <code>{_ew(_l['client_email'] or '—')}</code>\n"

@@ -28,11 +28,13 @@ from config import (
 from db import (
     add_credits_batch, ensure_user, fk_get_order, get_coins, get_credits, get_gen_count,
     get_pool, get_user, is_blocked, attach_partner_client,
+    mark_started, attach_referrer_late,
 )
 from keyboards import (
     _eib, kb_image_brands, kb_main, kb_reply, kb_video_brands, tg_emoji_ui,
 )
 from common import (
+    _who_user,
     _show_profile, fk_credit_paid_order,
 )
 
@@ -71,13 +73,20 @@ async def cmd_start(message: Message, state: FSMContext):
 
     existing = await get_user(uid)
     is_new = existing is None
+    # Строка в базе есть — это ещё не «старый клиент». Раньше её заводил вход
+    # в канал, и человек, подписавшийся раньше, чем открыл реф-ссылку,
+    # терял приглашение навсегда. started_at IS NULL — бота он не открывал,
+    # значит этот /start и есть его первый приход, и приглашение засчитываем.
+    _never_started = bool(existing) and existing.get("started_at") is None \
+        and not existing.get("referred_by") and not existing.get("partner_id")
+    _first_time = is_new or _never_started
 
     # ── Партнёрская ссылка (B2B) ────────────────────────────────────────────
     # Если пригласивший — ПАРТНЁР, клиент закрепляется за ним отдельной связью
     # (partner_id) и обычным рефералом НЕ становится: партнёру идёт только его
     # доля с наценки, никаких кредитов и монеток сверху. Закрепляем лишь новых.
     _partner_ref = None
-    if is_new and referred_by:
+    if _first_time and referred_by:
         try:
             _pu = await get_user(referred_by)
             if _pu and _pu.get("partner"):
@@ -92,6 +101,21 @@ async def cmd_start(message: Message, state: FSMContext):
         message.from_user.full_name,
         referred_by=referred_by if is_new else None
     )
+    # Строка была, но бота не открывали — досчитываем приглашение сейчас.
+    if referred_by and _never_started:
+        try:
+            if await attach_referrer_late(uid, referred_by):
+                logging.info(f"ref: приглашение {uid} ← {referred_by} засчитано постфактум")
+        except Exception as _e_lr:
+            logging.warning(f"ref: поздняя привязка {uid}: {_e_lr}")
+    elif referred_by and not is_new:
+        # Человек уже пользовался ботом — приглашение не считается (так и задумано).
+        # Пишем в лог: иначе на жалобу «друг пришёл, а не засчиталось» ответить нечем.
+        logging.info(f"ref: {uid} уже запускал бота — приглашение от {referred_by} не засчитано")
+    try:
+        await mark_started(uid)
+    except Exception as _e_ms:
+        logging.warning(f"mark_started {uid}: {_e_ms}")
     if _partner_ref:
         try:
             if await attach_partner_client(uid, _partner_ref):
@@ -296,7 +320,7 @@ async def cmd_credit(message: Message):
             if db_order["status"] == "paid":
                 await message.answer(
                     f"⚠️ Заказ уже зачислен ранее.\n"
-                    f"Юзер: <code>{db_order['user_id']}</code>\n"
+                    f"Юзер: {await _who_user(db_order['user_id'])}\n"
                     f"Кредитов: {db_order['credits']}",
                     parse_mode="HTML"
                 )
@@ -313,7 +337,7 @@ async def cmd_credit(message: Message):
             if success:
                 await message.answer(
                     f"✅ <b>Зачислено!</b>\n\n"
-                    f"Юзер: <code>{db_order['user_id']}</code>\n"
+                    f"Юзер: {await _who_user(db_order['user_id'])}\n"
                     f"Кредитов: {db_order['credits']}\n"
                     f"Сумма: {db_order['amount_rub']}₽",
                     parse_mode="HTML"
@@ -361,7 +385,7 @@ async def cmd_credit(message: Message):
 
         await message.answer(
             f"✅ <b>Зачислено!</b>\n\n"
-            f"Юзер: <code>{target_uid}</code>\n"
+            f"Юзер: {await _who_user(target_uid)}\n"
             f"Кредитов: +{credits_to_add}\n"
             f"Новый баланс: <b>{new_balance}</b>",
             parse_mode="HTML"
@@ -453,7 +477,18 @@ async def on_new_member(event: ChatMemberUpdated):
     user = event.new_chat_member.user
     if user.is_bot:
         return
-    await ensure_user(user.id)
+    # СТРОКУ В БАЗЕ ЗДЕСЬ НЕ ЗАВОДИМ. Раньше здесь стоял ensure_user(user.id),
+    # и это ломало рефералку насмерть: розыгрыш просит СНАЧАЛА подписаться
+    # на канал, и приглашённый друг попадал в users без referred_by ещё до того, как
+    # открывал реф-ссылку. Дальше /start видел «юзер уже есть» и приглашение
+    # терялось навсегда — счётчик в розыгрыше так и стоял на нуле.
+    # Тому, кто бота не запускал, Telegram всё равно не даст написать первым.
+    _u_row = await get_user(user.id)
+    if not _u_row:
+        logging.info(f"канал: {user.id} подписался, но бота не запускал — строку не заводим")
+        return
+    # Он уже в боте — просто освежаем имя и активность.
+    await ensure_user(user.id, user.username or '', user.full_name or '')
     try:
         await bot.send_message(
             chat_id=user.id,
@@ -463,8 +498,7 @@ async def on_new_member(event: ChatMemberUpdated):
                  f"🎥 Создать видео (Veo 3.1)\n"
                  f"💬 Разобраться в нейросетях\n"
                  f"💳 Оформить подписку - оплата в рублях\n\n"
-                 f"🎁 Тебе начислено <b>{FREE_CREDITS} бесплатных кредитов</b>!\n\n"
-                 f"Напиши /start чтобы начать 👇",
+                 f"Жми /start — баланс и все разделы внутри 👇",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [_eib("Главное меню", "back_main")],
                 [InlineKeyboardButton(text="💌 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],

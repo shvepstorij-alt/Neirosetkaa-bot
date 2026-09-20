@@ -47,6 +47,7 @@ from keyboards import (
     tg_emoji,
 )
 from common import (
+    _who_user,
     _build_stat_text, _show_activity_page, _show_payments_page, _show_users_page, _nsg_usd_rate, fk_check_order_status, show_admin_panel,
     gpt_resend_activation,
 )
@@ -110,7 +111,7 @@ async def cmd_test_fk(message: Message):
                 await message.answer(
                     f"📦 <b>Последний заказ в БД:</b>\n"
                     f"🆔 <code>{row['order_id']}</code>\n"
-                    f"👤 user: <code>{row['user_id']}</code>\n"
+                    f"👤 user: {await _who_user(row['user_id'])}\n"
                     f"💵 amount: {row['amount_rub']}₽ ({row['credits']} кр)\n"
                     f"📊 status: <b>{row['status']}</b>\n"
                     f"⏰ created: {row['created_at']}\n\n"
@@ -1199,7 +1200,7 @@ async def adm_bal_set_confirm(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"✅ <b>Баланс обновлён</b>\n\n"
-        f"👤 <code>{target_uid}</code>\n"
+        f"👤 {await _who_user(target_uid)}\n"
         f"Было: <b>{old_balance} кр</b>\n"
         f"Стало: <b>{new_balance} кр</b>\n"
         f"Разница: <b>{new_balance - old_balance:+d} кр</b>",
@@ -1238,7 +1239,7 @@ async def adm_bal_deduct_confirm(message: Message, state: FSMContext):
     actual_deducted = old_balance - new_balance
     await message.answer(
         f"✅ <b>Кредиты сняты</b>\n\n"
-        f"👤 <code>{target_uid}</code>\n"
+        f"👤 {await _who_user(target_uid)}\n"
         f"Было: <b>{old_balance} кр</b>\n"
         f"Запросил снять: {amount} кр\n"
         f"Снято: <b>{actual_deducted} кр</b>\n"
@@ -1498,7 +1499,7 @@ async def adm_get_user_id(message: Message, state: FSMContext):
         await state.set_state(AdminState.waiting_credits)
         await _adm_reply(
             message, state,
-            f"👤 ID: <code>{target_id}</code>\n"
+            f"👤 ID: {await _who_user(target_id)}\n"
             f"Статус: {status}\n"
             f"Баланс: <b>{credits_balance} кредитов</b>\n\n"
             f"Сколько кредитов начислить?",
@@ -1543,7 +1544,7 @@ async def adm_give_credits_confirm(message: Message, state: FSMContext):
     await _adm_reply(
         message, state,
         f"✨ <b>Кредиты начислены!</b>\n\n"
-        f"👤 ID: <code>{target_id}</code>\n"
+        f"👤 ID: {await _who_user(target_id)}\n"
         f"✨ Начислено: <b>{amount} кредитов</b>\n"
         f"💳 Новый баланс: <b>{new_balance} кредитов</b>",
         InlineKeyboardMarkup(inline_keyboard=[
@@ -1628,7 +1629,7 @@ async def adm_block_check_user(message: Message, state: FSMContext):
     status = "🚫 Заблокирован" if blocked else "✅ Активен"
     await state.clear()
     await message.answer(
-        f"👤 ID: <code>{target_id}</code>\n"
+        f"👤 ID: {await _who_user(target_id)}\n"
         f"Статус: {status}\n"
         f"Баланс: <b>{user['credits']} кредитов</b>",
         reply_markup=kb_block_actions(target_id, blocked),
@@ -4461,7 +4462,7 @@ async def adm_partner_clients(cb: CallbackQuery, state: FSMContext):
     _t_paid = sum(float(c.get("paid") or 0) for c in rows)
     _t_part = sum(float(c.get("partner_sum") or 0) for c in rows)
     _comm = _t_paid * _fee / 100.0
-    lines = [f"👥 <b>Клиенты партнёра</b> <code>{pid}</code>\n"]
+    lines = [f"👥 <b>Клиенты партнёра</b> {await _who_user(pid)}\n"]
     if not rows:
         lines.append("По его ссылке пока никто не пришёл.")
     else:
@@ -4935,7 +4936,7 @@ async def adm_resend_activation_ask(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Заказ не найден", show_alert=True); return
     await cb.message.answer(
         f"📨 <b>Отправить клиенту кнопку активации ещё раз?</b>\n\n"
-        f"👤 <code>{_uid}</code>" + (f" · {_plan}" if _plan else "") + "\n"
+        f"👤 {await _who_user(_uid)}" + (f" · {_plan}" if _plan else "") + "\n"
         f"🆔 <code>{_oid}</code>\n\n"
         f"Клиенту придёт новое сообщение с кнопкой. Код возьму тот, что уже "
         f"закреплён за заказом; если его нет — новый из пула.",
