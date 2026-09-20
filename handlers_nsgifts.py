@@ -176,6 +176,86 @@ def _nsg_brand_parent_cb(stock, brand: str) -> str:
     return f"nsg_type:{brand_bucket(stock, brand)}"
 
 
+@dp.message(F.text.startswith("/nsg_proxy"), StateFilter("*"))
+async def cmd_nsg_proxy(message: Message):
+    """Проверяет ЛЮБОЙ прокси ДО того, как ставить его в Railway.
+
+    /nsg_proxy http://логин:пароль@ip:порт — проверить новый;
+    /nsg_proxy                              — проверить тот, что стоит сейчас.
+
+    Смысл: без этой команды покупка нового прокси превращается в угадайку
+    «поменял переменную → Redeploy → /nsg_check → опять не то». Здесь всё
+    видно до изменения переменной. Проверяем ДВА адреса: нейтральный (жив ли
+    прокси вообще и с каким IP нас видит мир) и сам api.ns.gifts (пускает ли
+    он с этого адреса).
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+    import html as _h_pr, aiohttp as _ah_pr
+    _parts = (message.text or "").split(maxsplit=1)
+    _url = _parts[1].strip() if len(_parts) > 1 else (
+        getattr(rt.nsgifts_client, "proxy", "") or "" if rt.nsgifts_client else "")
+    if not _url:
+        await message.answer(
+            "Формат: <code>/nsg_proxy http://логин:пароль@ip:порт</code>\n\n"
+            "Без аргумента проверяет тот прокси, что стоит сейчас.",
+            parse_mode="HTML")
+        return
+    if not _url.startswith(("http://", "https://")):
+        await message.answer("Нужна схема: строка должна начинаться с "
+                             "<code>http://</code>", parse_mode="HTML")
+        return
+    # Пароль в ответ НЕ печатаем: сообщение может уйти дальше скриншотом.
+    _safe = _url
+    try:
+        from urllib.parse import urlparse as _up_pr
+        _u = _up_pr(_url)
+        _safe = f"{_u.hostname}:{_u.port}" + (" (с логином)" if _u.username else " (без логина)")
+    except Exception:
+        _safe = "—"
+
+    _wait = await message.answer(f"🛰 Проверяю прокси <code>{_h_pr.escape(_safe)}</code>…",
+                                 parse_mode="HTML")
+    _L = [f"🛰 <b>Проверка прокси</b>\n<code>{_h_pr.escape(_safe)}</code>\n"]
+    _ip = ""
+    try:
+        async with _ah_pr.ClientSession() as _s_pr:
+            async with _s_pr.get("https://api.ipify.org?format=json", proxy=_url,
+                                 timeout=_ah_pr.ClientTimeout(total=15)) as _r_pr:
+                _ip = str((await _r_pr.json()).get("ip", "?"))
+        _L.append(f"✅ Прокси работает. Внешний IP: <code>{_h_pr.escape(_ip)}</code>")
+    except Exception as _e_pr:
+        _L.append(f"🚨 <b>Прокси не работает</b> — <code>{type(_e_pr).__name__}</code>")
+        _L.append("<i>Нейтральный сайт через него не открылся. Такой прокси "
+                  "ставить в Railway нельзя — каталог опять ляжет.</i>")
+        await _wait.edit_text("\n".join(_L), parse_mode="HTML")
+        return
+
+    # Второй вопрос: пускает ли NS Gifts с этого адреса.
+    try:
+        async with _ah_pr.ClientSession() as _s2:
+            async with _s2.get("https://api.ns.gifts/api/v2/stock", proxy=_url,
+                               timeout=_ah_pr.ClientTimeout(total=15)) as _r2:
+                _st2 = _r2.status
+        if _st2 in (200, 401, 403):
+            _L.append(f"✅ api.ns.gifts отвечает через этот прокси (HTTP {_st2}).")
+            if _st2 == 403:
+                _L.append(f"⚠️ <i>403 — сайт жив, но адрес <code>{_h_pr.escape(_ip)}</code> "
+                          f"не в белом списке. Добавь его у NS Gifts.</i>")
+        else:
+            _L.append(f"⚠️ api.ns.gifts ответил HTTP {_st2}.")
+    except Exception as _e2:
+        _L.append(f"🚨 <b>api.ns.gifts через этот прокси не открывается</b> — "
+                  f"<code>{type(_e2).__name__}</code>")
+        _L.append("<i>Прокси живой, а до NS Gifts не достучаться: либо их сайт "
+                  "лежит, либо этот прокси у них заблокирован.</i>")
+
+    _L.append("\n<i>Если обе строки зелёные — можно ставить в NSGIFTS_PROXY "
+              "и делать Redeploy.</i>")
+    await _wait.edit_text("\n".join(_L), parse_mode="HTML",
+                          disable_web_page_preview=True)
+
+
 @dp.message(F.text.startswith("/nsg_check"), StateFilter("*"))
 async def cmd_nsg_check(message: Message):
     """Что именно не так с NS Gifts — одной командой, без похода в логи.
