@@ -1660,12 +1660,13 @@ async def _show_profile(message: Message, user, edit: bool = False):
             # \u0430\u0434\u043c\u0438\u043d\u043a\u0435: \u0434\u0440\u0443\u0433 \u0432 \u0437\u0430\u0447\u0451\u0442\u0435, \u0442\u043e\u043b\u044c\u043a\u043e \u0435\u0441\u043b\u0438 \u043f\u043e\u0434\u043f\u0438\u0441\u0430\u043d \u043d\u0430 \u043a\u0430\u043d\u0430\u043b. \u041f\u043e\u0442\u043e\u043b\u043e\u043a \u0432 10 \u2014
             # \u043f\u0440\u043e\u0444\u0438\u043b\u044c \u043e\u0442\u043a\u0440\u044b\u0432\u0430\u044e\u0442 \u0447\u0430\u0441\u0442\u043e, \u0430 \u043a\u0430\u0436\u0434\u044b\u0439 \u0434\u0440\u0443\u0433 \u2014 \u044d\u0442\u043e \u0437\u0430\u043f\u0440\u043e\u0441 \u043a Telegram.
             _gw_ok, _gw_nosub, _gw_murk = await _gw_split(uid, _gw_p["starts_at"], limit=10)
-            _gw_have = len(_gw_ok)
+            # Засчитываются все пришедшие по ссылке; подписка друга — подсказка.
+            _gw_have = len(_gw_ok) + len(_gw_nosub)
             _gw_ttl = strip_surrogates(str(_gw_p.get("title") or "\u0420\u043e\u0437\u044b\u0433\u0440\u044b\u0448"))
             _gw_block = (f"\n\n\U0001f381 <b>{_gw_ttl}</b>\n"
                          f"\u0414\u0440\u0443\u0437\u0435\u0439 \u043f\u043e \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0443: <b>{_gw_have}</b> \u0438\u0437 {_gw_need}")
             if _gw_nosub:
-                _gw_block += (f"\n\u23f3 \u041f\u0440\u0438\u0448\u043b\u0438, \u043d\u043e \u043d\u0435 \u043f\u043e\u0434\u043f\u0438\u0441\u0430\u043d\u044b \u043d\u0430 \u043a\u0430\u043d\u0430\u043b: {len(_gw_nosub)}")
+                _gw_block += (f"\n\U0001f4a1 \u0418\u0437 \u043d\u0438\u0445 \u043d\u0435 \u043f\u043e\u0434\u043f\u0438\u0441\u0430\u043d\u044b \u043d\u0430 \u043a\u0430\u043d\u0430\u043b: {len(_gw_nosub)} \u2014 \u043f\u043e\u0437\u043e\u0432\u0438 \u0438\u0445")
             _gw_btn = [[_eib("\u041c\u043e\u0451 \u0443\u0447\u0430\u0441\u0442\u0438\u0435 \u0432 \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0435", "gw_recheck")]]
     except Exception as _e_gw:
         import logging as _lg_gw
@@ -5213,6 +5214,7 @@ async def api_admin_giveaway_handler(request: web.Request) -> web.Response:
                 "sub": bool(p.get("subscribed")),
                 "refs": int(p.get("refs_ok") or 0),
                 "refsAll": int(p.get("refs_total") or 0),
+                "refsSub": int(p.get("refs_sub") or 0),
                 "susp": p.get("suspicious") or "",
                 "excluded": bool(p.get("excluded")),
                 "checked": bool(p.get("checked_at")),
@@ -5373,7 +5375,18 @@ async def api_admin_giveaway_action_handler(request: web.Request) -> web.Respons
                 return web.json_response({"ok": False, "stale": True, "msg":
                     f"Напоминание уже уходило {int(_ago_h * 60)} мин назад. "
                     f"Слать чаще раза в 6 часов не стоит — отпишутся."})
-            return web.json_response(await giveaway_remind(_gid))
+            if _gid in _GW_REMIND_RUNNING:
+                return web.json_response({"ok": False, "msg":
+                    "Напоминание уже отправляется. Отчёт придёт в бот."})
+            # ФОНОМ, а не внутри запроса. Раньше рассылка шла прямо здесь и
+            # занимала минуты: мини-апп отваливался по таймауту, Александр
+            # видел «ничего не произошло» и жал кнопку ещё раз — клиенты
+            # получали напоминание по два-три раза (20.09.2026).
+            _n_todo = (await giveaway_remind(_gid, dry=True)).get("todo", 0)
+            asyncio.create_task(giveaway_remind(_gid))
+            return web.json_response({"ok": True, "started": True, "todo": _n_todo,
+                                      "msg": f"Отправляю {_n_todo} участникам. "
+                                             f"Отчёт придёт в бот."})
 
         if _act == "text":
             if not _gid:
@@ -11105,17 +11118,24 @@ async def giveaway_refresh(gid: int) -> dict:
             _uid = int(_p["user_id"])
             _ok_sub = await _sub(_uid)
             _refs = await giveaway_refs(_uid, _since)
-            # Друг засчитывается, если он новый в боте (referred_by и так
-            # проставляется только новым) И подписан на канал сейчас.
-            _cnt, _murky = 0, (_ok_sub is None)
-            for _r in _refs:
-                _rs = await _sub(int(_r["user_id"]))
-                if _rs is True:
-                    _cnt += 1
-                elif _rs is None:
-                    _murky = True       # про друга не узнали — итог неполный
-                if _cnt >= _need:
-                    break
+            # ПРАВИЛО ЗАЧЁТА. Друг считается, если пришёл по ссылке и запустил
+            # бота после старта розыгрыша (referred_by проставляется только
+            # новым, так что повторно одного человека не засчитать).
+            #
+            # Подписка ДРУГА на канал на зачёт не влияет. Раньше влияла — и
+            # это расходилось с условиями конкурса, где сказано только
+            # «пригласить 2 друзей в бота». 20.09.2026 человек с тремя
+            # приглашёнными видел «1 из 2» и не понимал, за что.
+            _cnt = len(_refs)
+            _murky = (_ok_sub is None)
+            # Подписку друзей всё равно считаем, но ТОЛЬКО для показа в панели:
+            # так видно, кого стоит попросить подписаться. На вердикт это не
+            # влияет, и молчание Telegram про друга больше не оставляет
+            # участника непроверенным — раньше оставляло и блокировало розыгрыш.
+            _subbed = 0
+            for _r in _refs[:20]:
+                if await _sub(int(_r["user_id"])) is True:
+                    _subbed += 1
             _flags = _gw_suspicion(_refs)
             if _murky:
                 # Про кого-то не удалось спросить. Пишем что есть, но НЕ
@@ -11126,17 +11146,17 @@ async def giveaway_refresh(gid: int) -> dict:
                 async with pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE giveaway_comments SET subscribed=$3, refs_ok=$4, "
-                        "refs_total=$5, suspicious=$6, checked_at=NULL "
+                        "refs_total=$5, suspicious=$6, refs_sub=$7, checked_at=NULL "
                         "WHERE giveaway_id=$1 AND user_id=$2",
                         gid, _uid, (_ok_sub if _ok_sub is not None else None),
-                        _cnt, len(_refs), _flags)
+                        _cnt, len(_refs), _flags, _subbed)
             else:
                 async with pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE giveaway_comments SET subscribed=$3, refs_ok=$4, "
-                        "refs_total=$5, suspicious=$6, checked_at=NOW() "
+                        "refs_total=$5, suspicious=$6, refs_sub=$7, checked_at=NOW() "
                         "WHERE giveaway_id=$1 AND user_id=$2",
-                        gid, _uid, bool(_ok_sub), _cnt, len(_refs), _flags)
+                        gid, _uid, bool(_ok_sub), _cnt, len(_refs), _flags, _subbed)
             _done += 1
         await set_setting(f"gw_checked:{gid}", str(int(_time_module.time())))
         if _unknown:
@@ -11224,10 +11244,18 @@ async def giveaway_participants(gid: int) -> list:
             "       COALESCE(NULLIF(c.username,''), u.username, '') AS username, "
             "       COALESCE(NULLIF(c.full_name,''), u.full_name, '') AS full_name, "
             "       c.created_at, c.subscribed, c.refs_ok, c.refs_total, "
+            "       COALESCE(c.refs_sub,0) AS refs_sub, "
             "       c.suspicious, c.excluded, c.checked_at "
             "FROM giveaway_comments c LEFT JOIN users u ON u.user_id=c.user_id "
             "WHERE c.giveaway_id=$1 ORDER BY c.created_at", gid)
     return [dict(r) for r in rows]
+
+
+# По каким розыгрышам напоминание идёт прямо сейчас: {gid: когда начали}.
+# Не множество, а время старта — чтобы зависший замок (падение процесса,
+# неожиданное исключение) отпускался сам через два часа, а не держал
+# напоминание заблокированным до перезапуска бота.
+_GW_REMIND_RUNNING = {}
 
 
 async def giveaway_remind(gid: int, dry: bool = False) -> dict:
@@ -11256,6 +11284,28 @@ async def giveaway_remind(gid: int, dry: bool = False) -> dict:
              if not (p.get("subscribed") and int(p.get("refs_ok") or 0) >= _need)]
     if dry:
         return {"ok": True, "total": len(_pp), "todo": len(_todo)}
+
+    # ── Одно напоминание за раз ─────────────────────────────────────────
+    # 20.09.2026: клиенту и его подруге напоминание пришло ТРИ раза. Причина
+    # не в тексте и не в списке — в том, что рассылка шла прямо внутри
+    # HTTP-запроса и занимала минуты. Мини-апп столько не ждёт: запрос
+    # отваливался по таймауту, Александр видел «ничего не произошло» и жал
+    # ещё раз. Защита «не чаще раза в 6 часов» при этом не срабатывала:
+    # отметку времени ставили в САМОМ КОНЦЕ, и второй запуск читал ещё
+    # старое значение.
+    import time as _t_lock
+    _since = _GW_REMIND_RUNNING.get(gid, 0)
+    if _since and _t_lock.time() - _since < 7200:
+        logging.warning(f"giveaway_remind {gid}: уже идёт — второй запуск отклонён")
+        return {"ok": False, "busy": True,
+                "msg": "Напоминание уже отправляется. Дождись отчёта в боте."}
+    _GW_REMIND_RUNNING[gid] = _t_lock.time()
+    # Метку ставим СРАЗУ: она и есть защита от повторного запуска.
+    try:
+        import time as _t_gr0
+        await set_setting(f"gwremind_at:{gid}", str(int(_t_gr0.time())))
+    except Exception as _e_gr0:
+        logging.warning(f"giveaway_remind {gid}: метка времени не записалась: {_e_gr0}")
 
     _un = ""
     try:
@@ -11302,13 +11352,23 @@ async def giveaway_remind(gid: int, dry: bool = False) -> dict:
                 _failed += 1
                 break
         await asyncio.sleep(0.05)
-    try:
-        import time as _t_gr
-        await set_setting(f"gwremind_at:{gid}", str(int(_t_gr.time())))
-    except Exception:
-        pass
+    _GW_REMIND_RUNNING.pop(gid, None)
     logging.warning(f"giveaway_remind {gid}: отправлено {_sent}, "
                     f"заблокировали {_blocked}, ошибок {_failed}")
+    # Отчёт уходит в бот, а не только в мини-апп: рассылка идёт фоном, и
+    # к её концу панель может быть уже закрыта.
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"\U0001f4e3 <b>Напоминание участникам отправлено</b>\n\n"
+            f"\u2705 Доставлено: <b>{_sent}</b> из {len(_todo)}\n"
+            f"\U0001f6ab Заблокировали бота: {_blocked}\n"
+            f"\u274c Ошибки: {_failed}\n\n"
+            f"<i>Всего участников: {len(_pp)}. Тем, у кого всё закрыто, "
+            f"напоминание не слалось.</i>",
+            parse_mode="HTML")
+    except Exception:
+        pass
     return {"ok": True, "sent": _sent, "blocked": _blocked, "failed": _failed,
             "total": len(_pp), "todo": len(_todo)}
 

@@ -187,7 +187,10 @@ async def giveaway_status_text(user) -> tuple:
     _sub = await giveaway_is_subscribed(user.id)
     _nr = _gw.get("need_refs")
     _need = 2 if _nr is None else int(_nr)
-    _refs, _no_sub, _murky_ref = await giveaway_refs_split(user.id, _gw["starts_at"])
+    # Зачёт — по факту прихода в бота: подписки друга в условиях конкурса нет.
+    # Разбивка нужна только чтобы подсказать, кого позвать подписаться.
+    _subbed, _no_sub, _murky_ref = await giveaway_refs_split(user.id, _gw["starts_at"])
+    _refs = _subbed + _no_sub
     pool = await get_pool()
     async with pool.acquire() as conn:
         _commented = await conn.fetchval(
@@ -212,18 +215,16 @@ async def giveaway_status_text(user) -> tuple:
         _t += ("👥 <b>Засчитаны:</b>\n" + "\n".join(
             f"• {('@' + r['username']) if r.get('username') else (r.get('full_name') or 'без имени')}"
             for r in _refs[:10]) + "\n\n")
-    # Главная причина жалоб «друг пришёл, а не засчиталось»: пришёл, но
-    # на канал не подписался. Говорим прямо и сразу, кого подтолкнуть.
+    # Подсказка, а НЕ условие: эти друзья уже засчитаны. Просто полезно
+    # знать, кого позвать в канал — там же объявят итоги.
     if _no_sub:
-        _t += ("⏳ <b>Пришли по ссылке, но не подписаны на канал:</b>\n" + "\n".join(
+        _t += ("💡 <b>Эти друзья ещё не подписаны на канал:</b>\n" + "\n".join(
             f"• {('@' + r['username']) if r.get('username') else (r.get('full_name') or 'без имени')}"
             for r in _no_sub[:10])
-            + "\n<i>Попроси их подписаться — тогда засчитается.</i>\n\n")
-    if _murky_ref:
-        _t += ("❓ <i>Про кого-то из друзей Telegram не ответил — нажми "
-               "«Проверить ещё раз» через минуту.</i>\n\n")
+            + "\n<i>На твоё участие это не влияет — но итоги объявим в канале, "
+              "позови их туда.</i>\n\n")
     _t += (f"🔗 <b>Твоя ссылка:</b>\n<code>{_link}</code>\n"
-           f"<i>Друг должен открыть её и запустить бота — и подписаться на канал.\nЗасчитываются только те, кто раньше бота не запускал.</i>\n\n")
+           f"<i>Друг должен открыть её и запустить бота.\nЗасчитываются только те, кто раньше бота не запускал.</i>\n\n")
     _t += ("🎉 <b>Все условия выполнены — ты в списке!</b>"
            if _all else "Осталось закрыть пункты выше 👆")
 

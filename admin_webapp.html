@@ -2806,7 +2806,7 @@ function _gwRender(){
       +'<div style="font-size:13px;font-weight:700">'+esc(p.user)+(p.ok?' <span class="pos">— проходит</span>':'')+'</div>'
       +'<div class="sub" style="margin-top:4px">'
       +mark(p.sub)+' подписка &nbsp; '+mark(p.refs>=g.needRefs)+' друзья: '+p.refs+'/'+g.needRefs
-      +(p.refsAll>p.refs?(' <span style="opacity:.6">(всего привёл '+p.refsAll+')</span>'):'')
+      +((p.refsSub!=null&&p.refsSub<p.refs)?(' <span style="opacity:.6">(подписаны на канал: '+p.refsSub+')</span>'):'')
       +' &nbsp; ✅ комментарий'
       +(p.checked?'':' <span class="neg">— не проверен</span>')
       +'</div>'
@@ -3039,19 +3039,23 @@ function _gwRemind(){
       'Да, отправить', function(){ _gwRemindGo(false); });
   });
 }
+var _gwRemindBusy=false;
+/* Рассылка уходит фоном, поэтому ответ приходит сразу. Кнопку всё равно
+   блокируем: повторный тап 20.09.2026 присылал людям напоминание по три раза. */
 function _gwRemindGo(force){
   var g=(window._gw||{}).giveaway||{};
+  if(_gwRemindBusy){toast('Уже отправляю — второй раз не шлю');return;}
+  _gwRemindBusy=true;
   toast('Отправляю…');
   api('/api/admin/giveaway-action',{action:'remind',id:g.id,force:!!force}).then(function(d){
     if(d&&!d.ok&&d.stale){
+      _gwRemindBusy=false;
       _gwConfirm2('Слишком часто', d.msg||'', 'Всё равно отправить',
                   function(){ _gwRemindGo(true); });
       return;
     }
-    if(!d||!d.ok){toast((d&&d.msg)||'Ошибка');return;}
-    toast('Отправлено: '+(d.sent||0)
-          +((d.blocked||0)?' · заблокировали бота: '+d.blocked:'')
-          +((d.failed||0)?' · ошибок: '+d.failed:''));
+    if(!d||!d.ok){_gwRemindBusy=false;toast((d&&d.msg)||'Ошибка');return;}
+    toast(d.msg||('Отправляю '+(d.todo||0)+' участникам. Отчёт придёт в бот.'));
   });
 }
 

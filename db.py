@@ -381,6 +381,10 @@ async def init_db():
             ("suspicious",  "TEXT DEFAULT ''"),
             ("excluded",    "BOOLEAN DEFAULT FALSE"),
             ("checked_at",  "TIMESTAMPTZ"),
+            # Сколько из приглашённых подписано на канал. На зачёт НЕ влияет
+            # (в условиях конкурса подписки друга нет) — нужно только чтобы
+            # видеть в панели, кого стоит попросить подписаться.
+            ("refs_sub",    "INTEGER DEFAULT 0"),
         ):
             try:
                 await conn.execute(
