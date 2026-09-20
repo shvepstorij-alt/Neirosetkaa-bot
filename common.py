@@ -15078,6 +15078,58 @@ async def _appstore_markup_for(brand: str) -> float:
     return await _nsg_markup()
 
 
+_NSG_ALERT_AT = 0.0      # когда последний раз сообщали, что каталог не грузится
+
+
+async def nsg_catalog_problem(stock: dict, need_apple: bool = True) -> tuple:
+    """Почему каталог NS Gifts пуст. Возвращает (код, текст_клиенту) или ("", "").
+
+    Три совершенно разные причины выглядели снаружи одинаково — «Не удалось
+    загрузить регионы»:
+      unavailable — клиент не поднят (нет переменных окружения);
+      catalog     — поставщик не ответил, а аварийный кэш протух;
+      nostock     — поставщик ответил, но Apple-карт в наличии нет.
+    Первые две чинит Александр, третью — только ожидание. Раньше отличить их
+    можно было лишь по логам Railway, и клиент в это время видел красную
+    строку без единой подсказки, что делать.
+
+    Заодно предупреждаем Александра — но не чаще раза в 30 минут, иначе при
+    лежащем поставщике чат завалит одинаковыми сообщениями.
+    """
+    global _NSG_ALERT_AT
+    import time as _t_ns
+    import html as _h_ns
+    from ns_gifts import last_stock_error, get_apple_categories
+
+    if not rt.nsgifts_client:
+        return ("unavailable",
+                "Пополнение временно отключено. Напиши Александру — оформит вручную.")
+    if not stock:
+        _err, _ago = last_stock_error()
+        if _t_ns.time() - _NSG_ALERT_AT > 1800:
+            _NSG_ALERT_AT = _t_ns.time()
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    "⚠️ <b>Каталог NS Gifts не загружается</b>\n\n"
+                    "Клиенты видят «не удалось загрузить регионы» и купить не могут.\n\n"
+                    + (f"<i>Ответ поставщика:</i> <code>{_h_ns.escape(_err)}</code>\n"
+                       f"<i>{_ago // 60} мин назад</i>\n" if _err else
+                       "<i>Поставщик не ответил, подробностей нет.</i>\n")
+                    + "\nЧто проверить: жив ли api.ns.gifts, не истёк ли "
+                      "NSGIFTS_PROXY (у них доступ по белому списку IP) и на месте ли "
+                      "переменные NSGIFTS_*.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+        return ("catalog",
+                "Поставщик сейчас не отвечает. Напиши Александру — оформит вручную.")
+    if need_apple and not (get_apple_categories(stock) or []):
+        return ("nostock",
+                "Сейчас карт в наличии нет. Загляни через час или напиши Александру.")
+    return ("", "")
+
+
 async def api_appstore_regions_handler(request: web.Request) -> web.Response:
     """Регионы пополнения App Store/iCloud (Apple-категории NS Gifts). Auth по initData."""
     try:
@@ -15088,10 +15140,11 @@ async def api_appstore_regions_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
         if not uid:
             return web.json_response({"ok": False, "error": "auth"}, status=403)
-        if not rt.nsgifts_client:
-            return web.json_response({"ok": False, "error": "unavailable"})
         from ns_gifts import get_stock_cached, get_apple_categories, region_flag
-        stock = await get_stock_cached(rt.nsgifts_client)
+        stock = await get_stock_cached(rt.nsgifts_client) if rt.nsgifts_client else {}
+        _code, _msg = await nsg_catalog_problem(stock)
+        if _code:
+            return web.json_response({"ok": False, "error": _code, "msg": _msg})
         cats = get_apple_categories(stock) or []
         _out = []
         for cat in cats:
@@ -15117,12 +15170,15 @@ async def api_appstore_denoms_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
         if not uid:
             return web.json_response({"ok": False, "error": "auth"}, status=403)
-        if not rt.nsgifts_client:
-            return web.json_response({"ok": False, "error": "unavailable"})
         try:
             cat_id = int(body.get("catId"))
         except Exception:
             return web.json_response({"ok": False, "error": "bad"}, status=400)
+        from ns_gifts import get_stock_cached as _gsc0
+        _st0 = await _gsc0(rt.nsgifts_client) if rt.nsgifts_client else {}
+        _code, _msg = await nsg_catalog_problem(_st0)
+        if _code:
+            return web.json_response({"ok": False, "error": _code, "msg": _msg})
         from ns_gifts import (get_stock_cached, find_category, calc_price_rub,
                               get_folder_by_category, brand_of)
         stock = await get_stock_cached(rt.nsgifts_client)

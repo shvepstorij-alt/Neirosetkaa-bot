@@ -186,7 +186,12 @@ class NSGiftsClient:
 
 # ── Кеш каталога ───────────────────────────────────────────────────────────────
 
-_stock_cache: dict = {"data": None, "ts": 0.0}
+# err/err_at — ПОСЛЕДНЯЯ причина, по которой каталог не загрузился. Без неё
+# пустой каталог выглядел одинаково во всех трёх случаях: клиент не
+# инициализирован, поставщик не ответил, у поставщика нет товара. Клиент
+# видел «Не удалось загрузить регионы», Александр — ничего, и разобраться
+# можно было только в логах Railway (20.09.2026).
+_stock_cache: dict = {"data": None, "ts": 0.0, "err": "", "err_at": 0.0}
 _CACHE_TTL = 1800  # 30 минут
 
 
@@ -207,9 +212,12 @@ async def get_stock_cached(client: NSGiftsClient) -> dict:
         data = await client.get_stock()
         _stock_cache["data"] = data
         _stock_cache["ts"]   = time.time()
+        _stock_cache["err"]  = ""
         return data
     except Exception as e:
         logger.error(f"NSGifts get_stock failed: {e}")
+        _stock_cache["err"]    = f"{type(e).__name__}: {str(e)[:200]}"
+        _stock_cache["err_at"] = time.time()
         _age = time.time() - (_stock_cache["ts"] or 0)
         if _stock_cache["data"] and _age < _STALE_MAX:
             logger.warning(f"NSGifts: отдаю устаревший каталог ({_age/3600:.1f} ч)")
@@ -217,10 +225,26 @@ async def get_stock_cached(client: NSGiftsClient) -> dict:
         return {}   # каталог слишком старый — лучше пусто, чем продать «мёртвый» товар
 
 
+def last_stock_error() -> tuple:
+    """(текст последней ошибки каталога, сколько секунд назад). ("", 0) — ошибок не было."""
+    _e = _stock_cache.get("err") or ""
+    if not _e:
+        return "", 0
+    return _e, int(time.time() - (_stock_cache.get("err_at") or 0))
+
+
+def stock_age() -> int:
+    """Возраст кэша каталога в секундах. -1 — каталога нет вовсе."""
+    if not _stock_cache.get("data"):
+        return -1
+    return int(time.time() - (_stock_cache.get("ts") or 0))
+
+
 def invalidate_stock_cache():
     """Сбросить кеш вручную (например после изменения настроек)."""
     _stock_cache["data"] = None
     _stock_cache["ts"]   = 0.0
+    _stock_cache["err"]  = ""
 
 
 # ── Хелперы для Apple Gift Card ────────────────────────────────────────────────

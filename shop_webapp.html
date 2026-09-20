@@ -1174,7 +1174,11 @@ function openAppstore(){
   _showCard();
   _api('/api/appstore/regions').then(function(d){
     var el=document.getElementById('as-body'); if(!el)return;
-    if(!d||!d.ok||!d.regions||!d.regions.length){ el.innerHTML='<div class="pm-err">Не удалось загрузить регионы. Попробуй позже.</div>'; return; }
+    /* Сервер теперь называет причину: поставщик молчит, нет товара или
+       пополнение выключено. Раньше на все три случая была одна красная
+       строка без подсказки, что клиенту делать. */
+    if(!d||!d.ok||!d.regions||!d.regions.length){
+      el.innerHTML='<div class="pm-err">'+((d&&d.msg)?d.msg:'Не удалось загрузить регионы. Попробуй позже.')+'</div>'; return; }
     el.innerHTML='<div class="as-grid">'+d.regions.map(function(r){
       return '<div class="as-region" onclick="asDenoms('+r.catId+',\''+_esc1(r.name)+'\')"><span class="as-flag">'+(r.flag||'🌍')+'</span><span class="as-rname">'+r.name+'</span></div>';
     }).join('')+'</div>';
@@ -1186,7 +1190,8 @@ function asDenoms(catId,name){
     +'<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="openAppstore()">← Регионы</div>';
   _api('/api/appstore/denoms',{catId:catId}).then(function(d){
     var el=document.getElementById('as-body'); if(!el)return;
-    if(!d||!d.ok||!d.denoms||!d.denoms.length){ el.innerHTML='<div class="pm-err">Нет доступных номиналов.</div>'; return; }
+    if(!d||!d.ok||!d.denoms||!d.denoms.length){
+      el.innerHTML='<div class="pm-err">'+((d&&d.msg)?d.msg:'Нет доступных номиналов.')+'</div>'; return; }
     el.innerHTML=d.denoms.map(function(p){
       return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.nominal+'</div><div class="plan-p">'+p.priceRub+'₽</div></div>'
         +'<div class="plan-buy" onclick="asMethod(this,'+catId+','+p.serviceId+')">Оформить за '+p.priceRub+'₽</div></div>';

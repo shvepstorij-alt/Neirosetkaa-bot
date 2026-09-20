@@ -176,19 +176,83 @@ def _nsg_brand_parent_cb(stock, brand: str) -> str:
     return f"nsg_type:{brand_bucket(stock, brand)}"
 
 
+@dp.message(F.text.startswith("/nsg_check"), StateFilter("*"))
+async def cmd_nsg_check(message: Message):
+    """Что именно не так с NS Gifts — одной командой, без похода в логи.
+
+    20.09.2026 клиенты не могли пополнить App Store, а в мини-аппе была одна
+    красная строка «не удалось загрузить регионы». Причин у неё три, и
+    различить их можно было только по логам Railway.
+    """
+    if message.from_user.id != ADMIN_ID:
+        return
+    import html as _h_nc
+    from ns_gifts import (get_stock_cached, get_apple_categories,
+                          last_stock_error, stock_age, invalidate_stock_cache)
+    _L = ["🔎 <b>NS Gifts — проверка</b>\n"]
+    if not rt.nsgifts_client:
+        _L.append("🚨 <b>Клиент не инициализирован.</b>")
+        _L.append("<i>Значит при старте не хватило переменных: NSGIFTS_USER_ID, "
+                  "NSGIFTS_LOGIN, NSGIFTS_API_SECRET. Проверь их в Railway "
+                  "и сделай Redeploy.</i>")
+        await message.answer("\n".join(_L), parse_mode="HTML")
+        return
+    _L.append("✅ Клиент инициализирован.")
+
+    # Свежий запрос, а не кэш: смысл проверки в том, отвечает ли поставщик СЕЙЧАС.
+    invalidate_stock_cache()
+    _stock = await get_stock_cached(rt.nsgifts_client)
+    _err, _ago = last_stock_error()
+    if not _stock:
+        _L.append("\n🚨 <b>Каталог не загрузился.</b>")
+        _L.append(f"<i>Ответ поставщика:</i> <code>{_h_nc.escape(_err or '—')}</code>")
+        _L.append("\n<i>Что проверить: жив ли api.ns.gifts, не истёк ли прокси "
+                  "NSGIFTS_PROXY — у NS Gifts доступ по белому списку IP, и "
+                  "без фиксированного адреса Railway каждый раз приходит "
+                  "с нового.</i>")
+    else:
+        _cats = _stock.get("categories", []) or []
+        _apple = get_apple_categories(_stock) or []
+        _L.append(f"\n✅ Каталог получен: категорий <b>{len(_cats)}</b>, "
+                  f"Apple-регионов в наличии <b>{len(_apple)}</b>.")
+        if not _apple:
+            _L.append("⚠️ <i>Apple-карт в наличии НЕТ — пополнение App Store "
+                      "клиентам сейчас недоступно, и это не поломка.</i>")
+        else:
+            _L.append("<i>" + ", ".join(
+                str(c.get("category_name", "?")) for c in _apple[:8]) + "</i>")
+        if _err:
+            _L.append(f"\n<i>Последний сбой был {_ago // 60} мин назад: "
+                      f"<code>{_h_nc.escape(_err)}</code></i>")
+
+    try:
+        _bal = await rt.nsgifts_client.check_balance()
+        _L.append(f"\n💰 Баланс у поставщика: <code>{_h_nc.escape(str(_bal))[:200]}</code>")
+    except Exception as _e_b:
+        _L.append(f"\n⚠️ Баланс не проверить: <code>{_h_nc.escape(str(_e_b)[:150])}</code>")
+
+    await message.answer("\n".join(_L), parse_mode="HTML",
+                         disable_web_page_preview=True)
+
+
 @dp.callback_query(F.data == "nsg_shop")
 async def nsg_shop(cb: CallbackQuery):
     """Каталог «Гифт-карты и игры» — выбор типа (первый уровень)."""
     await cb.answer()
-    if not rt.nsgifts_client:
-        await cb.message.answer("⚠️ Сервис временно недоступен. Напиши @neirosetkaalex")
-        return
     await _nsg_prep()
     from ns_gifts import get_stock_cached, get_buckets_present, get_all_brands
-    stock   = await get_stock_cached(rt.nsgifts_client)
+    from common import nsg_catalog_problem
+    stock = await get_stock_cached(rt.nsgifts_client) if rt.nsgifts_client else {}
+    # need_apple=False: здесь общий каталог, а не только Apple-регионы.
+    _code, _msg = await nsg_catalog_problem(stock, need_apple=False)
+    if _code:
+        await cb.message.answer("⚠️ " + _msg)
+        return
     buckets = get_buckets_present(stock)
     if not buckets:
-        await cb.message.answer("⚠️ Каталог временно пуст. Попробуй позже.")
+        await cb.message.answer(
+            "⚠️ Каталог сейчас пуст — у поставщика нет товара в наличии. "
+            "Загляни через час или напиши @neirosetkaalex.")
         return
     total = len(get_all_brands(stock))
     rows = [[InlineKeyboardButton(text=f"{title} · {n}", callback_data=f"nsg_type:{key}")]
