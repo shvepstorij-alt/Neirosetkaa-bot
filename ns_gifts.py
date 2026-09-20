@@ -33,6 +33,16 @@ class NSGiftsClient:
         self.password   = (password or "").strip()
         self.api_secret = (api_secret or "").strip()
         self.proxy      = proxy or None     # None → без прокси
+        # Хост прокси БЕЗ логина и пароля: его не стыдно показать в сообщении
+        # админу, а целиком строку показывать нельзя — там учётные данные.
+        self.proxy_host = ""
+        if self.proxy:
+            try:
+                from urllib.parse import urlparse as _up
+                _pu = _up(self.proxy)
+                self.proxy_host = (_pu.hostname or "") + (f":{_pu.port}" if _pu.port else "")
+            except Exception:
+                self.proxy_host = "задан"
 
         self._token: Optional[str] = None
         self._token_expires: float = 0.0
@@ -88,6 +98,7 @@ class NSGiftsClient:
         # NS Gifts на не-белый IP отвечает 403 «Invalid login details». Креды верные →
         # повторяем логин с НОВЫМ соединением: другое соединение может уйти с белого IP.
         _last = "unknown"
+        _i = 0
         for _i in range(6):
             headers = self._make_headers("POST", path, "", body, token=None)  # ts обновляем каждый раз
             try:
@@ -95,21 +106,47 @@ class NSGiftsClient:
                     async with s.post(
                         BASE_URL + path, headers=headers, data=body,
                         proxy=self.proxy,
-                        timeout=aiohttp.ClientTimeout(total=30)
+                        # Было 30 с. Шесть попыток по 30 секунд — это три минуты
+                        # полного зависания на каждом обновлении каталога, пока
+                        # сайт или прокси молчат. Пятнадцати хватает с запасом:
+                        # живой ответ приходит за доли секунды.
+                        timeout=aiohttp.ClientTimeout(total=15)
                     ) as r:
-                        data = await r.json()
+                        try:
+                            data = await r.json()
+                        except Exception:
+                            data = (await r.text())[:200]
                         if r.status == 200:
                             self._token         = data["token"]
                             self._token_expires = time.time() + data.get("expires_in", 7200)
                             logger.info(f"NSGifts token refreshed (попытка {_i + 1})")
                             return
-                        _last = f"{r.status}: {data}"
+                        _last = f"HTTP {r.status}: {str(data)[:200]}"
                         if r.status != 403:
                             break   # не IP-проблема (напр. 400/500) — нет смысла повторять
             except Exception as _e:
-                _last = str(_e)
+                # ИМЯ КЛАССА ОБЯЗАТЕЛЬНО. У таймаутов и части ошибок aiohttp
+                # str() ПУСТОЙ, и раньше наружу уходило «NSGifts login failed »
+                # вообще без причины — отличить «не тот IP» от «прокси молчит»
+                # было нельзя (20.09.2026, пополнение App Store встало).
+                _last = f"{type(_e).__name__}: {str(_e)[:160]}".strip()
+                if isinstance(_e, (aiohttp.ClientProxyConnectionError,
+                                   aiohttp.ClientHttpProxyError)):
+                    # Прокси не отвечает или не пускает. Повторы бессмысленны:
+                    # они все пойдут через него же.
+                    _last += f" — прокси {self.proxy_host or '—'} не отвечает"
+                    break
+                if not isinstance(_e, (asyncio.TimeoutError,
+                                       aiohttp.ServerTimeoutError,
+                                       aiohttp.ClientConnectorError,
+                                       aiohttp.ServerDisconnectedError)):
+                    break       # не сетевая ошибка — повторять нечего
+                if _i >= 2:
+                    # Три обрыва подряд — это уже не «попали не на тот IP»,
+                    # а недоступность. Дальше только тянуть время.
+                    break
             await asyncio.sleep(0.7)
-        raise RuntimeError(f"NSGifts login failed {_last}")
+        raise RuntimeError(f"NSGifts login failed после {_i + 1} попыток — {_last}")
 
     # ── Базовый запрос ─────────────────────────────────────────────────────────
 

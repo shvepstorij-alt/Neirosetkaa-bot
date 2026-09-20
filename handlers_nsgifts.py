@@ -198,6 +198,11 @@ async def cmd_nsg_check(message: Message):
         await message.answer("\n".join(_L), parse_mode="HTML")
         return
     _L.append("✅ Клиент инициализирован.")
+    _L.append("🌐 Прокси: <code>" + _h_nc.escape(rt.nsgifts_client.proxy_host or "НЕ ЗАДАН") + "</code>"
+              + ("" if rt.nsgifts_client.proxy_host else
+                 "\n<i>Без прокси Railway ходит с одного из трёх общих IP, "
+                 "а у NS Gifts доступ по белому списку — логин будет падать "
+                 "с 403.</i>"))
 
     # Свежий запрос, а не кэш: смысл проверки в том, отвечает ли поставщик СЕЙЧАС.
     invalidate_stock_cache()
