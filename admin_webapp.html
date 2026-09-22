@@ -2572,31 +2572,69 @@ function loadSettings(cb){api('/api/admin/settings',{}).then(function(d){
 function saveWelcome(){var t=fv('wel_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'welcome',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 function saveInstall(){var t=fv('inst_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'gpt_install',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 
-var _bcAud='all';
-var _BC_AUD_NAMES={all:'всем пользователям',partners:'партнёрам',all_partner_clients:'всем клиентам от партнёров'};
+var _bcAud='all', _bcPid=0, _bcPtag='';
+var _BC_AUD_NAMES={all:'всем пользователям',partners:'партнёрам',all_partner_clients:'всем клиентам от партнёров',partner_clients:'клиентам партнёра'};
 /* Переключатель НЕ перерисовывает экран: иначе набранный текст рассылки
-   пропадал бы при каждом нажатии. Меняем только подсветку кнопок. */
+   пропадал бы при каждом нажатии. Меняем только подсветку кнопок, а список
+   партнёров рисуем в отдельный контейнер под ними. */
 function bcSetAud(a,el){
   _bcAud=a;
-  var p=el&&el.parentNode; if(!p)return;
-  var b=p.getElementsByTagName('button');
-  for(var i=0;i<b.length;i++) b[i].className='';
-  el.className='on';
+  if(a!=='partner_clients'){_bcPid=0;_bcPtag='';}
+  var p=el&&el.parentNode;
+  if(p){var b=p.getElementsByTagName('button');
+        for(var i=0;i<b.length;i++) b[i].className='';
+        el.className='on';}
+  bcRenderPicker();
+}
+function bcRenderPicker(){
+  var box=document.getElementById('bc_pick'); if(!box) return;
+  if(_bcAud!=='partner_clients'){ box.innerHTML=''; return; }
+  /* Список кэшируем: без кэша каждый тап по партнёру дёргал бы сервер
+     ещё раз только ради его имени. */
+  if(window._bcPartners){ bcDrawPicker(box, window._bcPartners); return; }
+  box.innerHTML='<div class="note">Загружаю партнёров…</div>';
+  api('/api/admin/partners',{}).then(function(d){
+    if(!d||!d.ok){box.innerHTML='<div class="pm-err">Не удалось загрузить партнёров.</div>';return;}
+    window._bcPartners=d.partners||[];
+    bcDrawPicker(box, window._bcPartners);
+  });
+}
+function bcDrawPicker(box, partners){
+    /* Партнёров без клиентов не показываем: выбрать такого — значит
+       запустить рассылку в пустоту, сервер её всё равно отклонит. */
+    var ps=(partners||[]).filter(function(x){return (x.clients||0)>0;});
+    if(!ps.length){box.innerHTML='<div class="pm-err">Нет партнёров с клиентами.</div>';return;}
+    box.innerHTML='<label class="fl">Чьим клиентам</label>'+ps.map(function(x){
+      var nm=x.username?('@'+x.username):(x.name||('ID '+x.id));
+      var on=(x.id===_bcPid);
+      return '<div class="plan-buy" style="margin:6px 0;text-align:left;'
+        +(on?'border:1px solid var(--accent);color:var(--accent)':'')+'" '
+        +'onclick="bcPickPartner('+x.id+')">'+(on?'✅ ':'')+esc(nm)+' · '+(x.clients||0)+' клиентов</div>';
+    }).join('');
+}
+function bcPickPartner(id){
+  _bcPid=id; _bcPtag='ID '+id;
+  (window._bcPartners||[]).forEach(function(x){
+    if(x.id===id) _bcPtag=x.username?('@'+x.username):(x.name||('ID '+x.id));
+  });
+  bcRenderPicker();
+  toast('Выбран '+_bcPtag);
 }
 SCREENS["Рассылка"]=function(){
-  var opts=[["all","Всем"],["partners","Партнёрам"],["all_partner_clients","Клиентам от партнёров"]];
-  var seg='<div class="seg">'+opts.map(function(o){
+  var opts=[["all","Всем"],["partners","Партнёрам"],["all_partner_clients","Клиентам от партнёров"],["partner_clients","Клиентам партнёра"]];
+  var seg='<div class="seg" style="flex-wrap:wrap">'+opts.map(function(o){
     return '<button class="'+(o[0]===_bcAud?'on':'')+'" onclick="bcSetAud(\''+o[0]+'\',this)">'+o[1]+'</button>';
   }).join('')+'</div>';
+  setTimeout(bcRenderPicker,0);
   return hdr("Рассылка")+'<div class="wrap">'+seg
+   +'<div id="bc_pick"></div>'
    +'<label class="fl">Текст сообщения (HTML)</label>'
    +'<textarea class="f" id="bc_txt" placeholder="Текст рассылки…"></textarea>'
    +'<button class="btn" onclick="sendBroadcast()">Отправить</button>'
    +'<div class="note">Уйдёт выбранной аудитории, кроме заблокированных. '
    +'Отчёт придёт в бот.<br><br>'
    +'<b>Нужно фото или видео?</b> Запускай из бота: <b>/admin → Рассылка</b> — '
-   +'там сообщение копируется целиком, с картинкой и подписью. Здесь только текст.<br>'
-   +'<b>Клиентам одного партнёра?</b> Открой карточку партнёра — там своя кнопка.</div></div>';
+   +'там сообщение копируется целиком, с картинкой и подписью. Здесь только текст.</div></div>';
 };
 var _bcBusy=false;
 /* Второй тап по кнопке запускал ВТОРУЮ полную рассылку — каждый клиент
@@ -2621,9 +2659,13 @@ function pBcStart(id){
 function sendBroadcast(){var t=fv('bc_txt');if(!t){toast('Введи текст');return;}
 if(_bcBusy){toast('Рассылка уже запущена — второй раз не отправляю');return;}
 var _an=_BC_AUD_NAMES[_bcAud]||'всем пользователям';
+if(_bcAud==='partner_clients'){
+  if(!_bcPid){toast('Выбери партнёра');return;}
+  _an='клиентам '+_bcPtag;
+}
 if(window.confirm&&!window.confirm('Отправить рассылку '+_an+'?'))return;
 _bcBusy=true;toast('Запускаю…');
-api('/api/admin/broadcast',{text:t,audience:_bcAud}).then(function(d){
+api('/api/admin/broadcast',{text:t,audience:_bcAud,partnerId:_bcPid}).then(function(d){
   if(d&&d.ok){toast('Рассылка '+(d.audience||_an)+' — '+d.count+' чел. Отчёт придёт в бот.');}
   else{_bcBusy=false;toast((d&&d.msg)?d.msg:'Ошибка');}
 });}

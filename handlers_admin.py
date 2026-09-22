@@ -2186,7 +2186,6 @@ async def adm_clprov_fo(cb: CallbackQuery):
 
 # ─── Рассылка ─────────────────────────────────────────────
 
-@dp.callback_query(F.data == "adm_broadcast")
 async def _bc_counts() -> dict:
     """Сколько человек в каждой аудитории — показываем ДО отправки.
 
@@ -2205,6 +2204,7 @@ async def _bc_counts() -> dict:
     return {"all": _all, "partners": _pa, "all_partner_clients": _pc}
 
 
+@dp.callback_query(F.data == "adm_broadcast")
 async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
