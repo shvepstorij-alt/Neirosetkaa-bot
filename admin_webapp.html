@@ -1919,6 +1919,7 @@ function pLoadOne2(id){
      + 'твоя партнёрская цена не меняется. Максимум для него: '+(p.promoMax||0)+'%.</div>'
      +'<button class="btn sec" onclick="pPromoEdit('+p.id+','+(p.promo||0)+',\''+(p.promoMode||'off')+'\','+(p.promoDays||7)+','+(p.promoMax||0)+')">🏷 Скидка для его клиентов</button>'
      +'<div class="note">Ссылка для его клиентов:<br><b>'+esc(link)+'</b></div>'
+     +'<button class="btn sec" onclick="pBcStart('+p.id+')">📢 Рассылка его клиентам ('+p.clients+')</button>'
      +'<button class="btn sec" onclick="pClients('+p.id+')">👥 Приведённые клиенты</button>'
      +'<button class="btn sec" onclick="pOrders('+p.id+',0)">🧾 Все заказы</button>'
      +'<button class="btn sec" onclick="pPayouts('+p.id+')">📜 История выплат</button>'
@@ -2571,20 +2572,59 @@ function loadSettings(cb){api('/api/admin/settings',{}).then(function(d){
 function saveWelcome(){var t=fv('wel_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'welcome',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 function saveInstall(){var t=fv('inst_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'gpt_install',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 
+var _bcAud='all';
+var _BC_AUD_NAMES={all:'всем пользователям',partners:'партнёрам',all_partner_clients:'всем клиентам от партнёров'};
+/* Переключатель НЕ перерисовывает экран: иначе набранный текст рассылки
+   пропадал бы при каждом нажатии. Меняем только подсветку кнопок. */
+function bcSetAud(a,el){
+  _bcAud=a;
+  var p=el&&el.parentNode; if(!p)return;
+  var b=p.getElementsByTagName('button');
+  for(var i=0;i<b.length;i++) b[i].className='';
+  el.className='on';
+}
 SCREENS["Рассылка"]=function(){
-  return hdr("Рассылка")+'<div class="wrap"><label class="fl">Текст сообщения (HTML)</label><textarea class="f" id="bc_txt" placeholder="Текст рассылки…"></textarea><button class="btn" onclick="sendBroadcast()">Отправить всем</button><div class="note">Отправится всем незаблокированным. По завершении придёт отчёт.</div></div>';
+  var opts=[["all","Всем"],["partners","Партнёрам"],["all_partner_clients","Клиентам от партнёров"]];
+  var seg='<div class="seg">'+opts.map(function(o){
+    return '<button class="'+(o[0]===_bcAud?'on':'')+'" onclick="bcSetAud(\''+o[0]+'\',this)">'+o[1]+'</button>';
+  }).join('')+'</div>';
+  return hdr("Рассылка")+'<div class="wrap">'+seg
+   +'<label class="fl">Текст сообщения (HTML)</label>'
+   +'<textarea class="f" id="bc_txt" placeholder="Текст рассылки…"></textarea>'
+   +'<button class="btn" onclick="sendBroadcast()">Отправить</button>'
+   +'<div class="note">Уйдёт выбранной аудитории, кроме заблокированных. '
+   +'Отчёт придёт в бот.<br><br>'
+   +'<b>Нужно фото или видео?</b> Запускай из бота: <b>/admin → Рассылка</b> — '
+   +'там сообщение копируется целиком, с картинкой и подписью. Здесь только текст.<br>'
+   +'<b>Клиентам одного партнёра?</b> Открой карточку партнёра — там своя кнопка.</div></div>';
 };
 var _bcBusy=false;
 /* Второй тап по кнопке запускал ВТОРУЮ полную рассылку — каждый клиент
    получал сообщение дважды (20.09.2026). На сервере теперь стоит замок,
    здесь — простая защита от дабл-клика и от повторного нажатия, пока
    ответ не пришёл. */
+var _pBcBusy=false;
+/* Рассылка клиентам конкретного партнёра. Текст и фото набираются в БОТЕ:
+   картинку в мини-апп не положишь, а рассылка без фото Александру не нужна.
+   Поэтому здесь только передаём эстафету — бот пришлёт сообщение с кнопкой,
+   и дальше работает обычный поток рассылки с уже выбранной аудиторией. */
+function pBcStart(id){
+  if(_pBcBusy){toast('Уже отправляю запрос');return;}
+  if(window.confirm&&!window.confirm('Подготовить рассылку клиентам этого партнёра?\n\nСообщение наберёшь в боте — можно с фото.'))return;
+  _pBcBusy=true;
+  api('/api/admin/partner-set',{action:'bcstart',uid:id}).then(function(d){
+    _pBcBusy=false;
+    if(d&&d.ok){toast('Открой бот — там кнопка «Написать сообщение» ('+d.count+' чел.)');}
+    else{toast((d&&d.msg)||'Ошибка');}
+  });
+}
 function sendBroadcast(){var t=fv('bc_txt');if(!t){toast('Введи текст');return;}
 if(_bcBusy){toast('Рассылка уже запущена — второй раз не отправляю');return;}
-if(window.confirm&&!window.confirm('Отправить рассылку всем пользователям?'))return;
+var _an=_BC_AUD_NAMES[_bcAud]||'всем пользователям';
+if(window.confirm&&!window.confirm('Отправить рассылку '+_an+'?'))return;
 _bcBusy=true;toast('Запускаю…');
-api('/api/admin/broadcast',{text:t}).then(function(d){
-  if(d&&d.ok){toast('Рассылка на '+d.count+' польз. Отчёт придёт в бот.');}
+api('/api/admin/broadcast',{text:t,audience:_bcAud}).then(function(d){
+  if(d&&d.ok){toast('Рассылка '+(d.audience||_an)+' — '+d.count+' чел. Отчёт придёт в бот.');}
   else{_bcBusy=false;toast((d&&d.msg)?d.msg:'Ошибка');}
 });}
 

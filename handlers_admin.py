@@ -2187,25 +2187,136 @@ async def adm_clprov_fo(cb: CallbackQuery):
 # ─── Рассылка ─────────────────────────────────────────────
 
 @dp.callback_query(F.data == "adm_broadcast")
+async def _bc_counts() -> dict:
+    """Сколько человек в каждой аудитории — показываем ДО отправки.
+
+    Без этих чисел выбор аудитории был бы вслепую: «клиентам партнёра» с
+    нулём получателей выглядит ровно как «всем», пока рассылка не кончится.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _all = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE is_blocked=0") or 0
+        _pa = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE is_blocked=0 AND partner=TRUE") or 0
+        _pc = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE is_blocked=0 "
+            "AND partner_id IS NOT NULL") or 0
+    return {"all": _all, "partners": _pa, "all_partner_clients": _pc}
+
+
 async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    _c = await _bc_counts()
+    await state.clear()
+    await cb.message.answer(
+        "📢 <b>Рассылка — кому отправляем?</b>\n\n"
+        "<i>Числа рядом — сколько человек получит сообщение.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"📢 Всем пользователям · {_c['all']}",
+                                  callback_data="bc_aud:all")],
+            [InlineKeyboardButton(text=f"🏢 Партнёрам · {_c['partners']}",
+                                  callback_data="bc_aud:partners")],
+            [InlineKeyboardButton(
+                text=f"👥 Всем клиентам от партнёров · {_c['all_partner_clients']}",
+                callback_data="bc_aud:all_partner_clients")],
+            [InlineKeyboardButton(text="🎯 Клиентам одного партнёра",
+                                  callback_data="bc_aud:pick")],
+            [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")],
+        ]),
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "bc_aud:pick")
+async def adm_bc_pick_partner(cb: CallbackQuery, state: FSMContext):
+    """Список партнёров с числом их клиентов."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     pool = await get_pool()
     async with pool.acquire() as conn:
-        total = await conn.fetchval("SELECT COUNT(*) FROM users WHERE is_blocked=0") or 0
+        _rows = await conn.fetch(
+            "SELECT u.user_id, COALESCE(u.username,'') AS username, "
+            "       COALESCE(u.full_name,'') AS full_name, "
+            "       (SELECT COUNT(*) FROM users c "
+            "        WHERE c.partner_id=u.user_id AND c.is_blocked=0) AS cl "
+            "FROM users u WHERE u.partner=TRUE ORDER BY cl DESC, u.user_id")
+    if not _rows:
+        await cb.answer("Партнёров пока нет", show_alert=True); return
+    _kb = []
+    for _r in _rows[:30]:
+        _tag = ("@" + _r["username"]) if _r["username"] else (
+            _r["full_name"] or f"id{_r['user_id']}")
+        _kb.append([InlineKeyboardButton(
+            text=f"{_tag} · {_r['cl']} клиентов",
+            callback_data=f"bc_pp:{_r['user_id']}")])
+    _kb.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm_broadcast")])
+    await cb.message.answer("🎯 <b>Чьим клиентам отправляем?</b>",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=_kb),
+                            parse_mode="HTML")
+    await cb.answer()
+
+
+async def _bc_ask_message(cb: CallbackQuery, state: FSMContext,
+                          audience: str, partner_id: int = 0, partner_tag: str = ""):
+    """Общий шаг: аудитория выбрана — просим сообщение."""
+    pool = await get_pool()
+    _, _where, _needs = BC_AUDIENCES[audience]
+    _sql = "SELECT COUNT(*) FROM users WHERE is_blocked=0 " + _where
+    async with pool.acquire() as conn:
+        _n = (await conn.fetchval(_sql, int(partner_id)) if _needs
+              else await conn.fetchval(_sql)) or 0
     await state.set_state(AdminState.waiting_broadcast)
+    await state.update_data(bc_aud=audience, bc_pid=int(partner_id or 0),
+                            bc_ptag=partner_tag or "")
+    _name = bc_audience_name(audience, partner_id, partner_tag)
+    if not _n:
+        await cb.message.answer(
+            f"⚠️ В аудитории «{_name}» никого нет — отправлять некому.",
+            parse_mode="HTML")
+        await state.clear()
+        await cb.answer(); return
     await cb.message.answer(
-        f"📢 <b>Рассылка</b>\n\n"
-        f"Получателей: <b>{total} пользователей</b>\n\n"
-        f"Отправь сообщение для рассылки — <b>текст, фото или видео</b> с любым "
-        f"форматированием.\nОформляй прямо в Telegram (жирный, курсив, эмодзи, "
-        f"картинка) — бот скопирует его всем как есть:",
+        f"📢 <b>Рассылка {_name}</b>\n\n"
+        f"Получателей: <b>{_n}</b>\n\n"
+        f"Отправь сообщение — <b>текст, фото или видео</b> с любым "
+        f"форматированием. Оформляй прямо в Telegram: бот скопирует его "
+        f"как есть, вместе с картинкой и подписью.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚫 Отмена", callback_data="adm_cancel")]
         ]),
-        parse_mode="HTML"
-    )
+        parse_mode="HTML")
     await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("bc_aud:"))
+async def adm_bc_audience(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    _aud = cb.data.split(":", 1)[1]
+    if _aud == "pick":
+        return                      # у «pick» свой хендлер, он и ответит
+    if _aud not in BC_AUDIENCES:
+        # Без ответа на callback кнопка в Telegram крутится до таймаута,
+        # и выглядит это как зависший бот.
+        await cb.answer("Не знаю такую аудиторию", show_alert=True)
+        return
+    await _bc_ask_message(cb, state, _aud)
+
+
+@dp.callback_query(F.data.startswith("bc_pp:"))
+async def adm_bc_partner_chosen(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        _pid = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не разобрал партнёра", show_alert=True); return
+    _u = await get_user(_pid)
+    _tag = ("@" + (_u or {}).get("username", "")) if (_u or {}).get("username") \
+        else ((_u or {}).get("full_name") or f"id{_pid}")
+    await _bc_ask_message(cb, state, "partner_clients", _pid, _tag)
 
 
 @dp.message(AdminState.waiting_broadcast)
@@ -2259,9 +2370,28 @@ def _bc_markup_from_spec(spec: dict):
     return None
 
 
+BC_AUDIENCES = {
+    # ключ: (человеческое имя, кусок WHERE, нужен ли partner_id)
+    "all":             ("всем пользователям",            "",                              False),
+    "partners":        ("партнёрам",                     "AND partner=TRUE",              False),
+    "partner_clients": ("клиентам партнёра",             "AND partner_id=$1",             True),
+    "all_partner_clients": ("всем клиентам от партнёров", "AND partner_id IS NOT NULL",    False),
+}
+
+
+def bc_audience_name(aud: str, partner_id: int = 0, partner_tag: str = "") -> str:
+    """Человеческое имя аудитории для сообщений и отчётов."""
+    _n = (BC_AUDIENCES.get(aud) or BC_AUDIENCES["all"])[0]
+    if aud == "partner_clients":
+        return _n + " " + (partner_tag or f"id{partner_id}")
+    return _n
+
+
 async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Message,
                         btn_spec: dict = None, bc_id: str = "",
-                        fingerprint: str = None, claimed: bool = False):
+                        fingerprint: str = None, claimed: bool = False,
+                        audience: str = "all", partner_id: int = 0,
+                        partner_tag: str = ""):
     """Единственная точка входа в рассылку. Следит, чтобы она была ОДНА.
 
     Отметки в broadcast_sent защищают от дублей только ВНУТРИ одной рассылки:
@@ -2276,7 +2406,11 @@ async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Messa
     """
     from common import broadcast_claim, broadcast_release
     if not claimed:
-        _fp = f"{src_chat}:{src_msg}" if fingerprint is None else fingerprint
+        # Отпечаток включает аудиторию: один и тот же текст, отправленный
+        # СНАЧАЛА всем, а потом клиентам партнёра, — это две разные рассылки,
+        # и вторую блокировать нельзя.
+        _fp = (f"{src_chat}:{src_msg}:{audience}:{partner_id}"
+               if fingerprint is None else fingerprint)
         _why = broadcast_claim(_fp)
         if _why:
             logging.warning(f"broadcast: запуск отклонён — {_why} (fp={_fp!r})")
@@ -2293,13 +2427,16 @@ async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Messa
             return
     try:
         return await _do_broadcast_inner(src_chat, src_msg, reply_markup,
-                                         notify, btn_spec, bc_id)
+                                         notify, btn_spec, bc_id,
+                                         audience, partner_id, partner_tag)
     finally:
         broadcast_release()
 
 
 async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify: Message,
-                              btn_spec: dict = None, bc_id: str = ""):
+                              btn_spec: dict = None, bc_id: str = "",
+                              audience: str = "all", partner_id: int = 0,
+                              partner_tag: str = ""):
     """Рассылка copy_message с учётом доставки по каждому человеку.
 
     Переписана 17.09.2026 после случая, когда рассылка на 3171 человека
@@ -2330,8 +2467,20 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
     async with pool.acquire() as conn:
         # ORDER BY обязателен: без него порядок строк — дело случая, и
         # «продолжить с того места» не к чему привязать.
-        users = [r["user_id"] for r in await conn.fetch(
-            "SELECT user_id FROM users WHERE is_blocked=0 ORDER BY user_id")]
+        # Аудитория. Условие берём из BC_AUDIENCES, а не склеиваем руками:
+        # так невозможно случайно отправить «всем» то, что предназначалось
+        # клиентам одного партнёра.
+        _aud = audience if audience in BC_AUDIENCES else "all"
+        _, _where, _needs_pid = BC_AUDIENCES[_aud]
+        _sql = ("SELECT user_id FROM users WHERE is_blocked=0 "
+                + _where + " ORDER BY user_id")
+        if _needs_pid:
+            if not partner_id:
+                await notify.answer("⛔️ Рассылка не запущена: не указан партнёр.")
+                return
+            users = [r["user_id"] for r in await conn.fetch(_sql, int(partner_id))]
+        else:
+            users = [r["user_id"] for r in await conn.fetch(_sql)]
         # Кому уже отправляли в рамках ЭТОЙ рассылки — пропускаем. Так
         # продолжение после обрыва никого не задевает по второму разу.
         done = set()
@@ -2352,11 +2501,26 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
         "bc_id": bc_id, "chat": src_chat, "msg": src_msg, "btn": btn_spec or {},
         "total": total, "started": int(_t_bc.time()),
         "notify_chat": notify.chat.id,
+        # Без аудитории досылка после обрыва ушла бы ВСЕМ: состояние
+        # восстанавливается по этому же словарю.
+        "aud": _aud, "pid": int(partner_id or 0), "ptag": partner_tag or "",
     }))
 
-    _head = ("📢 Рассылка запущена" if not done
-             else f"📢 Продолжаю рассылку (уже получили {len(done)})")
+    _aud_name = bc_audience_name(_aud, partner_id, partner_tag)
+    _head = (f"📢 Рассылка {_aud_name}" if not done
+             else f"📢 Продолжаю рассылку {_aud_name} (уже получили {len(done)})")
     status_msg = await notify.answer(f"{_head}… {sent}/{total}")
+    if not users:
+        # Состояние обязательно убрать: иначе через 10 минут бот предложит
+        # «дослать оставшимся» рассылку, у которой получателей не было вовсе.
+        try:
+            await set_setting(_BC_STATE, "")
+        except Exception:
+            pass
+        await status_msg.edit_text(
+            f"⚠️ <b>Некому отправлять</b>\n\nАудитория: {_aud_name} — 0 человек.",
+            parse_mode="HTML")
+        return
 
     async def _status(txt):
         """Правит счётчик, но не чаще раза в 5 секунд.
@@ -2437,7 +2601,8 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
     except Exception:
         pass
 
-    _txt = (f"✅ <b>Рассылка завершена!</b>\n\n"
+    _txt = (f"✅ <b>Рассылка завершена!</b>\n"
+            f"👥 Аудитория: {_aud_name}\n\n"
             f"✅ Доставлено: <b>{sent}</b> из {total}\n"
             f"🚫 Заблокировали бота: {blocked}\n"
             f"❌ Прочие ошибки: {failed}\n\n"
@@ -2475,7 +2640,10 @@ async def adm_broadcast_go(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer("⛔ Потерялось сообщение рассылки. Начни заново.")
         return
     await _do_broadcast(src_chat, src_msg, _bc_button_for(kind), cb.message,
-                        btn_spec={"kind": kind})
+                        btn_spec={"kind": kind},
+                        audience=data.get("bc_aud") or "all",
+                        partner_id=int(data.get("bc_pid") or 0),
+                        partner_tag=data.get("bc_ptag") or "")
 
 
 @dp.callback_query(F.data == "bc_custom", AdminState.waiting_broadcast_btn)
@@ -2510,7 +2678,10 @@ async def adm_broadcast_custom_send(message: Message, state: FSMContext):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=btn_text, url=url)]])
     await _do_broadcast(src_chat, src_msg, kb, message,
-                        btn_spec={"text": btn_text, "url": url})
+                        btn_spec={"text": btn_text, "url": url},
+                        audience=data.get("bc_aud") or "all",
+                        partner_id=int(data.get("bc_pid") or 0),
+                        partner_tag=data.get("bc_ptag") or "")
 
 
 # ─── Техобслуживание ──────────────────────────────────────
@@ -5101,10 +5272,15 @@ async def adm_broadcast_resume(cb: CallbackQuery):
         pass
     # fingerprint="" — досылка остатка это законный повтор того же сообщения,
     # от дублей её бережёт номер рассылки и отметки по каждому клиенту.
+    # Аудиторию восстанавливаем из состояния: без неё досылка остатка
+    # рассылки «клиентам партнёра» ушла бы ВСЕМ пользователям бота.
     await _do_broadcast(int(_st["chat"]), int(_st["msg"]),
                         _bc_markup_from_spec(_st.get("btn") or {}),
                         cb.message, btn_spec=_st.get("btn") or {}, bc_id=_bc,
-                        fingerprint="")
+                        fingerprint="",
+                        audience=_st.get("aud") or "all",
+                        partner_id=int(_st.get("pid") or 0),
+                        partner_tag=_st.get("ptag") or "")
 
 
 @dp.callback_query(F.data.startswith("bcdrop:"))

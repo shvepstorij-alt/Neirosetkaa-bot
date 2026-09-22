@@ -5815,6 +5815,42 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
         except Exception:
             _uid = 0
 
+        if _act == "bcstart":
+            # Рассылка С ФОТО из мини-аппа невозможна: картинку в текстовое
+            # поле не положишь. Поэтому мини-апп не шлёт сам, а ПЕРЕДАЁТ
+            # эстафету боту — присылает Александру сообщение с кнопкой,
+            # по которой открывается обычный поток рассылки с уже выбранной
+            # аудиторией. Один движок, фото и форматирование работают как
+            # везде, дублировать логику не пришлось.
+            if not _uid:
+                return web.json_response({"ok": False, "msg": "Не указан партнёр"})
+            _pu = await get_user(_uid)
+            _tag = ("@" + (_pu or {}).get("username", "")) if (_pu or {}).get("username") \
+                else ((_pu or {}).get("full_name") or f"id{_uid}")
+            _pl = await get_pool()
+            async with _pl.acquire() as _c_bc:
+                _n_bc = await _c_bc.fetchval(
+                    "SELECT COUNT(*) FROM users WHERE is_blocked=0 AND partner_id=$1",
+                    _uid) or 0
+            if not _n_bc:
+                return web.json_response(
+                    {"ok": False, "msg": f"У {_tag} пока нет клиентов"})
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"📢 <b>Рассылка клиентам {_tag}</b>\n"
+                    f"Получателей: <b>{_n_bc}</b>\n\n"
+                    f"Нажми кнопку и пришли сообщение — текст, фото или видео. "
+                    f"Уйдёт как есть, вместе с картинкой.",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✍️ Написать сообщение",
+                                             callback_data=f"bc_pp:{_uid}")]]))
+            except Exception as _e_bc:
+                logging.error(f"partner bcstart: {_e_bc}")
+                return web.json_response({"ok": False, "msg": "Не смог написать в бот"})
+            return web.json_response({"ok": True, "count": int(_n_bc), "tag": _tag})
+
         if _act == "add":
             if _uid <= 0:
                 return web.json_response({"ok": False, "error": "Введи Telegram ID"})
@@ -6979,9 +7015,6 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
         if not text:
             return web.json_response({"ok": False, "msg": "Пустой текст"})
         pool = await get_pool()
-        async with pool.acquire() as conn:
-            _cnt = await conn.fetchval(
-                "SELECT COUNT(*) FROM users WHERE is_blocked=0") or 0
 
         # Здесь была ВТОРАЯ, независимая рассылка: без номера, без отметок о
         # доставке, без защиты от повторного запуска и на send_message вместо
@@ -6994,8 +7027,36 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
         # текст сначала уходит Александру (он видит ровно то, что получат
         # клиенты), а дальше копируется всем — с отметкой по каждому,
         # переживанием флуд-лимита и возможностью дослать после обрыва.
+        # Аудитория из мини-аппа. Проверяем по справочнику движка, а не
+        # доверяем строке из браузера: неизвестное значение молча превратилось
+        # бы в «всем», и рассылка для клиентов одного партнёра ушла бы всей базе.
+        from handlers_admin import BC_AUDIENCES, bc_audience_name
+        _aud = str(body.get("audience") or "all")
+        if _aud not in BC_AUDIENCES:
+            return web.json_response({"ok": False, "msg": "Неизвестная аудитория"})
+        try:
+            _pid = int(body.get("partnerId") or 0)
+        except Exception:
+            _pid = 0
+        if BC_AUDIENCES[_aud][2] and not _pid:
+            return web.json_response({"ok": False, "msg": "Не указан партнёр"})
+        _ptag = ""
+        if _pid:
+            _pu = await get_user(_pid)
+            _ptag = ("@" + (_pu or {}).get("username", "")) if (_pu or {}).get("username") \
+                else ((_pu or {}).get("full_name") or f"id{_pid}")
+
+        _, _w_bc, _needs_bc = BC_AUDIENCES[_aud]
+        _sql_bc = "SELECT COUNT(*) FROM users WHERE is_blocked=0 " + _w_bc
+        async with pool.acquire() as conn:
+            _cnt = (await conn.fetchval(_sql_bc, _pid) if _needs_bc
+                    else await conn.fetchval(_sql_bc)) or 0
+        if not _cnt:
+            return web.json_response({"ok": False, "msg": "В этой аудитории никого нет"})
+
         import hashlib as _hl_bc
-        _fp = "webapp:" + _hl_bc.sha256(text.encode("utf-8")).hexdigest()[:16]
+        _fp = ("webapp:" + _aud + ":" + str(_pid) + ":"
+               + _hl_bc.sha256(text.encode("utf-8")).hexdigest()[:16])
         _why = broadcast_claim(_fp)
         if _why:
             logging.warning(f"broadcast(webapp): запуск отклонён — {_why}")
@@ -7008,8 +7069,10 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "msg": "Не смог отправить образец себе"})
         from handlers_admin import _do_broadcast
         asyncio.create_task(_do_broadcast(ADMIN_ID, _src.message_id, None, _src,
-                                          claimed=True))
-        return web.json_response({"ok": True, "count": int(_cnt)})
+                                          claimed=True, audience=_aud,
+                                          partner_id=_pid, partner_tag=_ptag))
+        return web.json_response({"ok": True, "count": int(_cnt),
+                                  "audience": bc_audience_name(_aud, _pid, _ptag)})
     except Exception as _e:
         logging.error(f"api_admin_broadcast: {_e}")
         return web.json_response({"ok": False}, status=500)
