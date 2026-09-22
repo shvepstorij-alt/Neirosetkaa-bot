@@ -2229,9 +2229,16 @@ async def adm_broadcast_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@dp.callback_query(F.data == "bc_aud:pick")
 async def adm_bc_pick_partner(cb: CallbackQuery, state: FSMContext):
-    """Список партнёров с числом их клиентов."""
+    """Список партнёров с числом их клиентов.
+
+    БЕЗ декоратора намеренно. Отдельный хендлер на «bc_aud:pick» работал бы
+    только пока он зарегистрирован РАНЬШЕ общего «bc_aud:»: aiogram
+    останавливается на первом подошедшем, и общий хендлер, оказавшись
+    первым, просто проглотил бы нажатие — кнопка бы не делала ничего.
+    Порядок здесь восстанавливается сортировкой в bot.py, и завязываться
+    на него не стоит. Поэтому вход один, а развилка — внутри него.
+    """
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     pool = await get_pool()
@@ -2296,7 +2303,7 @@ async def adm_bc_audience(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌", show_alert=True); return
     _aud = cb.data.split(":", 1)[1]
     if _aud == "pick":
-        return                      # у «pick» свой хендлер, он и ответит
+        return await adm_bc_pick_partner(cb, state)
     if _aud not in BC_AUDIENCES:
         # Без ответа на callback кнопка в Telegram крутится до таймаута,
         # и выглядит это как зависший бот.
@@ -2314,8 +2321,12 @@ async def adm_bc_partner_chosen(cb: CallbackQuery, state: FSMContext):
     except Exception:
         await cb.answer("Не разобрал партнёра", show_alert=True); return
     _u = await get_user(_pid)
+    # Имя партнёра уходит в сообщение с parse_mode=HTML — экранируем.
+    # Угловая скобка в имени рушит не строку, а ВСЁ сообщение: Telegram
+    # отклоняет его целиком, и рассылка выглядит как не запустившаяся.
+    import html as _h_pc
     _tag = ("@" + (_u or {}).get("username", "")) if (_u or {}).get("username") \
-        else ((_u or {}).get("full_name") or f"id{_pid}")
+        else _h_pc.escape(str((_u or {}).get("full_name") or "")) or f"id{_pid}"
     await _bc_ask_message(cb, state, "partner_clients", _pid, _tag)
 
 

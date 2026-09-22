@@ -5825,8 +5825,10 @@ async def api_admin_partner_set_handler(request: web.Request) -> web.Response:
             if not _uid:
                 return web.json_response({"ok": False, "msg": "Не указан партнёр"})
             _pu = await get_user(_uid)
+            import html as _h_bs
             _tag = ("@" + (_pu or {}).get("username", "")) if (_pu or {}).get("username") \
-                else ((_pu or {}).get("full_name") or f"id{_uid}")
+                else _h_bs.escape(strip_surrogates((_pu or {}).get("full_name") or "")) \
+                or f"id{_uid}"
             _pl = await get_pool()
             async with _pl.acquire() as _c_bc:
                 _n_bc = await _c_bc.fetchval(
@@ -7043,8 +7045,10 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
         _ptag = ""
         if _pid:
             _pu = await get_user(_pid)
+            import html as _h_pt
             _ptag = ("@" + (_pu or {}).get("username", "")) if (_pu or {}).get("username") \
-                else ((_pu or {}).get("full_name") or f"id{_pid}")
+                else _h_pt.escape(strip_surrogates((_pu or {}).get("full_name") or "")) \
+                or f"id{_pid}"
 
         _, _w_bc, _needs_bc = BC_AUDIENCES[_aud]
         _sql_bc = "SELECT COUNT(*) FROM users WHERE is_blocked=0 " + _w_bc
@@ -7199,10 +7203,19 @@ async def _who_user(uid) -> str:
         _u = None
     _n = ((_u or {}).get("username") or "").strip()
     if _n:
+        # Юзернейм Telegram — только буквы, цифры и подчёркивание, экранировать
+        # нечего. А вот ИМЯ пользователь пишет какое угодно.
         return f"@{_n} (<code>{uid}</code>)"
     _f = ((_u or {}).get("full_name") or "").strip()
     if _f:
-        return f"{strip_surrogates(_f)} (<code>{uid}</code>)"
+        # ОБЯЗАТЕЛЬНО экранируем. В имени Telegram допускает < > &, а все
+        # сообщения админу уходят с parse_mode=HTML: одна угловая скобка в
+        # имени клиента — и Telegram отклоняет ВСЁ сообщение целиком
+        # («can't parse entities»). Отправка обёрнута в try/except, поэтому
+        # уведомление просто не пришло бы, молча. strip_surrogates от этого
+        # не спасает: он чистит суррогаты, а не разметку.
+        import html as _h_wu
+        return f"{_h_wu.escape(strip_surrogates(_f))} (<code>{uid}</code>)"
     return f"<code>{uid}</code>"
 
 
@@ -8026,7 +8039,10 @@ async def _run_activation_job(
                     _full_name = _urow["full_name"] if _urow and _urow["full_name"] else ""
                 except Exception:
                     _username = _full_name = ""
-                _tg_name = (f"@{_username}" if _username else _full_name) or f"id{user_id}"
+                import html as _h_tgn
+                _tg_name = (f"@{_username}" if _username
+                            else _h_tgn.escape(strip_surrogates(_full_name or ""))) \
+                    or f"id{user_id}"
                 _caption = (
                     f"✅ <b>ChatGPT авто-активация OK</b>\n\n"
                     f"👤 Клиент: <b>{_tg_name}</b>  (<code>{user_id}</code>)\n"
@@ -8493,7 +8509,8 @@ async def _run_activation_job(
                     _fn2 = _urow2["full_name"] if _urow2 and _urow2["full_name"] else ""
                 except Exception:
                     _un2 = _fn2 = ""
-                _tg2 = (f"@{_un2}" if _un2 else _fn2) or f"id{user_id}"
+                import html as _h_tg2
+                _tg2 = (f"@{_un2}" if _un2 else _h_tg2.escape(strip_surrogates(_fn2 or ""))) or f"id{user_id}"
                 screenshot = result.get("screenshot")
                 txt = (
                     f"❌ <b>ChatGPT авто-активация НЕУДАЧА</b>\n\n"
