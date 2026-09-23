@@ -7179,7 +7179,8 @@ def _gpt_fail_why(result: dict, code: str = "") -> str:
     # Флаги решают, что бот сделает дальше, — их стоит видеть рядом с причиной.
     _flags = [_f for _f in ("code_already_used", "wrong_account", "token_invalid",
                             "has_plan", "out_of_stock", "site_paused",
-                            "site_claimed", "openai_blocked", "needs_check")
+                            "site_claimed", "openai_blocked", "needs_check",
+                            "site_payment_failed")
               if result.get(_f)]
     if _flags:
         _p.append("признаки: " + ", ".join(_flags))
@@ -7319,7 +7320,7 @@ async def _run_activation_job(
         _switch_msg_id = None
         _switch_text = ""
 
-        async def _safe_release(_c):
+        async def _safe_release(_c, dead_reason: str = ""):
             """Возврат кода в пул ТОЛЬКО с подтверждением сайта.
 
             Активация могла провалиться на нашей стороне, пока у сайта заказ по
@@ -7355,6 +7356,25 @@ async def _run_activation_job(
             if _v in _free_st:
                 await release_gpt_code(_c)
                 return True
+            # Исключение ровно на один случай: САЙТ САМ объявил заказ мёртвым и
+            # написал, что списания, hold и подписки нет (failed_precharge).
+            # Тогда молчание /query — это не «заказ ещё жив», а «кода в таблице
+            # нет, потому что он и не тратился»: филиппинские коды там не
+            # показываются вовсе. Держать такой код за клиентом значит терять
+            # его на ровном месте — ровно об этом Александр написал 23.09.2026.
+            # Ограничение жёсткое: любой «использованный» статус сайта (claimed
+            # / fulfilled / zoom_token_ready) отменяет исключение — там заказ
+            # действительно может дозреть позже.
+            try:
+                from chatgpt_activation import BPA_USED_STATUSES as _USED_SR
+            except Exception:
+                _USED_SR = ("claimed", "fulfilled", "zoom_token_ready")
+            if dead_reason and _v not in _USED_SR:
+                await release_gpt_code(_c)
+                logging.warning(
+                    f"_safe_release: {_c} возвращён в пул — {dead_reason}; "
+                    f"/query ответил: {_v or 'молчит'}")
+                return True
             _pool_sr = await get_pool()
             async with _pool_sr.acquire() as _cn_sr:
                 await _cn_sr.execute(
@@ -7384,6 +7404,17 @@ async def _run_activation_job(
             except Exception:
                 pass
             return False
+
+        def _dead_order_reason(_res) -> str:
+            """Сайт сам объявил заказ мёртвым и написал, что денег не брал.
+
+            Единственный случай, когда код можно вернуть в пул без «unused» от
+            /query: филиппинских кодов /query не показывает вовсе, и молчание
+            там ничего не доказывает — а вот failed_precharge со сверкой сайта
+            доказывает, что код не тратился.
+            """
+            return ("сайт подтвердил: платёж не прошёл, списания и подписки нет"
+                    if (_res or {}).get("site_payment_failed") else "")
 
         async def _burn_code(_c):
             """Помечаем использованный код навсегда — в пул не возвращаем."""
@@ -7714,11 +7745,13 @@ async def _run_activation_job(
                         or _res.get("needs_force_confirm")
                         or _res.get("site_paused"))
 
-        # ── ПЕРЕВОД НА iOS ПРИ БЛОКИРОВКЕ ПОКУПКИ OpenAI ───────────────────
-        # Филиппинский маршрут — это покупка на стороне сайта, и её иногда
-        # рубит антифрод самого OpenAI («деньги не списаны»). Смена САЙТА тут
-        # не поможет — помогает смена МАРШРУТА: через iOS (чек Apple) покупка
-        # проходит. Филиппинский код при этом цел, возвращаем его в пул.
+        # ── ПЕРЕВОД НА iOS, КОГДА НЕ ПРОХОДИТ САМА ПОКУПКА ────────────────
+        # Филиппинский маршрут — это покупка на стороне сайта, и она падает по
+        # трём причинам: её рубит антифрод OpenAI («деньги не списаны»), на
+        # аккаунте уже есть платный план, или у самого сайта не проходит его
+        # карта (failed_precharge). Смена САЙТА ни в одном случае не помогает —
+        # помогает смена МАРШРУТА: через iOS (чек Apple) покупка проходит.
+        # Филиппинский код при этом цел, возвращаем его в пул.
         _ios_rescue_done = False
 
         async def _ios_rescue():
@@ -7732,10 +7765,35 @@ async def _run_activation_job(
             # аккаунте не сработает никогда, а iOS сработает. Раньше ветка
             # ждала только openai_blocked, и 409 GPT_PLAN_ALREADY_ACTIVE
             # проходил мимо неё (20.09.2026, заказ #5456).
-            if not (result.get("openai_blocked") or result.get("has_plan")):
+            # site_payment_failed — у САЙТА не прошёл платёж по его карте
+            # (provider_status=failed_precharge). Филиппинский маршрут в эту
+            # карту и упирается, а iOS выдаёт чеки из запаса, без списания —
+            # значит переход решает заказ. Код при этом цел: сайт сам
+            # подтвердил, что списания и подписки не было.
+            if not (result.get("openai_blocked") or result.get("has_plan")
+                    or result.get("site_payment_failed")):
                 return None
             if gpt_route_for_code(code) != "ph":
                 return None      # уже iOS — переводить некуда
+            # Причина у трёх веток разная, и в сообщениях она должна быть
+            # разной. Раньше все три подписывались «OpenAI отклонил покупку» —
+            # и Александр читал это там, где на самом деле у САЙТА не прошла
+            # его карта. Считаем ДО повторной активации: ниже result
+            # перезаписывается результатом iOS-попытки.
+            if result.get("site_payment_failed"):
+                _why_short = "у сайта не прошёл платёж по его карте"
+                _why_long = ("сайт не смог оплатить заказ своей картой "
+                             "(provider_status=failed_precharge); по его сверке "
+                             "списания, hold и подписки по заказу нет")
+            elif result.get("has_plan"):
+                _why_short = "на аккаунте уже есть платный план"
+                _why_long = ("OpenAI ответил, что на аккаунте уже активен платный "
+                             "план — филиппинский код на таком аккаунте не сработает")
+            else:
+                _why_short = "OpenAI отклонил покупку"
+                _why_long = ("покупку заблокировала защита OpenAI, деньги "
+                             "не списаны")
+            _dead_reason = _dead_order_reason(result)
             _ios_rescue_done = True
             _new = await get_next_gpt_code(_plan_key, "bpa", "ios")
             if not _new:
@@ -7745,19 +7803,29 @@ async def _run_activation_job(
                 try:
                     # Код сайту уже отправляли — возвращаем только с его
                     # подтверждением, иначе отдадим следующему клиенту заказ,
-                    # который сайт ещё может дозавершить.
-                    await _safe_release(code)
+                    # который сайт ещё может дозавершить. Исключение —
+                    # _dead_reason: сайт сам написал, что заказ мёртв и денег
+                    # не брал.
+                    _rel_ok = bool(await _safe_release(code, _dead_reason))
                 except Exception as _e_rl:
+                    _rel_ok = False
                     logging.warning(f"_safe_release {code}: {_e_rl}")
                 await delete_pending_activation(user_id)
                 logging.warning(f"GPT ios rescue: uid={user_id} нет iOS-кодов, ручной режим")
+                # Писать «возвращён в пул» независимо от исхода нельзя: если
+                # сайт не подтвердил, что код цел, он остался за клиентом — и
+                # Александр должен видеть это, а не верить сообщению.
+                _rel_txt = ("возвращён в пул" if _rel_ok else
+                            "НЕ возвращён в пул — сайт не подтвердил, что код цел; "
+                            "проверь <code>/gpt_codes_recover</code>")
                 await _admin_fail_shot(
-                    f"🚨 <b>ChatGPT — OpenAI отклонил покупку, а iOS-кодов нет</b>\n"
+                    f"🚨 <b>ChatGPT — {_why_short}, а iOS-кодов нет</b>\n"
                     f"👤 {_who_u} · {plan_name}\n"
-                    f"🔑 <code>{code}</code> — возвращён в пул\n"
+                    f"🔑 <code>{code}</code> — {_rel_txt}\n"
+                    f"🔎 Причина: {_why_long}\n"
                     f"🆔 <code>{order_id}</code>\n"
                     f"{await _fk_num_line(order_id)}\n"
-                    f"Филиппинский маршрут заблокирован защитой OpenAI. "
+                    f"Перевести заказ на iOS нечем. "
                     f"Пополни iOS-коды или активируй вручную.")
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False,
@@ -7776,16 +7844,18 @@ async def _run_activation_job(
 
             _old_code = code
             try:
-                # То же самое: филиппинский код отбил антифрод OpenAI, но заказ
-                # на сайте мог остаться живым — возвращаем с подтверждением.
-                await _safe_release(_old_code)
+                # То же самое: заказ на сайте мог остаться живым — возвращаем
+                # с подтверждением сайта (или по его же признанию, что заказ
+                # мёртв, — _dead_reason).
+                _rel_ok2 = bool(await _safe_release(_old_code, _dead_reason))
             except Exception as _e_rl2:
+                _rel_ok2 = False
                 logging.warning(f"_safe_release {_old_code}: {_e_rl2}")
             code = _new
             _ios_sent += 1          # перевели на iOS — это и есть первый iOS-код
             await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, "bpa")
             logging.warning(
-                f"GPT ios rescue: uid={user_id} OpenAI отклонил покупку по {_old_code} "
+                f"GPT ios rescue: uid={user_id} {_why_short} по {_old_code} "
                 f"(ph) → повторяю через iOS {code}")
             result = await _do_activate(code)
             _ok_ios = bool(result.get("success"))
@@ -7795,8 +7865,9 @@ async def _run_activation_job(
                     ("✅ <b>ChatGPT — выручил iOS-маршрут</b>\n\n" if _ok_ios else
                      "🚨 <b>ChatGPT — не помог и iOS-маршрут</b>\n\n")
                     + f"👤 {_who_u} · {plan_name}\n"
-                      f"🇵🇭 Филиппинский <code>{_old_code}</code> — OpenAI отклонил "
-                      f"покупку, код возвращён в пул\n"
+                      f"🇵🇭 Филиппинский <code>{_old_code}</code> — {_why_short}; "
+                      f"{'код возвращён в пул' if _rel_ok2 else 'код в пул НЕ вернулся — сайт не подтвердил, что он цел'}\n"
+                      f"🔎 Причина: {_why_long}\n"
                       f"📱 iOS <code>{code}</code> — "
                     + ("активация прошла" if _ok_ios else "тоже не вышло")
                     + f"\n🆔 <code>{order_id}</code>\n"
@@ -7811,7 +7882,8 @@ async def _run_activation_job(
         if await _bpa_rescue() == "stop":
             return
 
-        # 0б) OpenAI отклонил покупку на филиппинском коде → пробуем iOS
+        # 0б) покупка на филиппинском коде не прошла (антифрод OpenAI, уже
+        #     есть план или не прошла карта САЙТА) → пробуем iOS-маршрут
         if await _ios_rescue() == "stop":
             return
 
@@ -7852,7 +7924,7 @@ async def _run_activation_job(
                 # в пул, чтобы он НЕ сгорел.
                 if (not result.get("code_already_used")) and (not _client_stop(result)):
                     try:
-                        await _safe_release(code)
+                        await _safe_release(code, _dead_order_reason(result))
                     except Exception:
                         pass
                 break  # сайтов с кодами больше нет
@@ -7864,7 +7936,7 @@ async def _run_activation_job(
             # остаться живым и завершиться позже.
             if not _was_used:
                 try:
-                    await _safe_release(code)
+                    await _safe_release(code, _dead_order_reason(result))
                 except Exception:
                     pass
             provider, code = _next

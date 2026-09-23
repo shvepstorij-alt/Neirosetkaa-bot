@@ -3014,6 +3014,21 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                            "provider_status": str(pd.get("provider_status") or "").strip(),
                            "site_message": str(msg)[:300]}
                     _ml = str(msg).lower()
+                    _ps = str(pd.get("provider_status") or "").strip().lower()
+                    # 0) ПЛАТЁЖ САЙТА НЕ ПРОШЁЛ — смотрим ДО текстовых веток.
+                    # provider_status отдаёт сам сайт машинным полем, и оно
+                    # однозначно. Текст же пишется для человека и может
+                    # случайно содержать слово из веток ниже («session»,
+                    # «уже»), после чего заказ уехал бы не туда. Машинное
+                    # поле старше текста.
+                    if (_ps in ("failed_precharge", "precharge_failed", "payment_failed")
+                            or "precharge" in _ps):
+                        logger.warning(
+                            f"bpa gpt: у сайта не прошёл платёж по карте "
+                            f"(provider_status={_ps}), код {code} ЦЕЛ — ухожу на iOS.")
+                        return {"success": False, "site_payment_failed": True, **_dg,
+                                "error": "У сайта не прошёл платёж по его карте — "
+                                         "код цел. " + str(msg)}
                     # 1) битая/просроченная сессия — стоп, клиент обновляет токен
                     if "session" in _ml or "token" in _ml or "expired" in _ml or "истёк" in _ml:
                         return {"success": False, "token_invalid": True, "error": str(msg), **_dg}
@@ -3034,6 +3049,32 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                             or "code used" in _ml or "already used" in _ml
                             or "код уже" in _ml or "код использ" in _ml):
                         return {"success": False, "code_already_used": True, "error": str(msg), **_dg}
+                    # 4) У САЙТА НЕ ПРОШЁЛ ПЛАТЁЖ ПО ЕГО КАРТЕ.
+                    # 23.09.2026, два заказа подряд: provider_status
+                    # «failed_precharge», текст — «Платёж по карте не прошёл.
+                    # Сверка подтвердила отсутствие списания, hold и
+                    # активированной подписки». То есть сайт САМ подтверждает:
+                    # денег не списали, подписки нет, КОД ЦЕЛ.
+                    #
+                    # Это сбой на стороне сайта, а не проблема кода и не
+                    # проблема аккаунта. Филиппинский маршрут упирается в
+                    # карту сайта, iOS — нет: там выдаются чеки из запаса,
+                    # без списания. Значит переход на iOS решает заказ прямо
+                    # сейчас, а филиппинский код должен вернуться в пул.
+                    # Раньше бот этого не различал: код оставался закреплён за
+                    # клиентом, а заказ уходил в ручной режим.
+                    # Запасной путь — по тексту: сайт не всегда заполняет
+                    # provider_status, а фразу про карту пишет всегда.
+                    if ("платёж по карте" in _ml or "платеж по карте" in _ml
+                            or "card declined" in _ml or "payment failed" in _ml
+                            or "не прошёл платёж" in _ml or "не прошел платеж" in _ml):
+                        logger.warning(
+                            f"bpa gpt: у сайта не прошёл платёж по карте "
+                            f"(по тексту, provider_status={_ps or 'пусто'}), "
+                            f"код {code} ЦЕЛ — ухожу на iOS.")
+                        return {"success": False, "site_payment_failed": True, **_dg,
+                                "error": "У сайта не прошёл платёж по его карте — "
+                                         "код цел. " + str(msg)}
                     logger.warning(f"bpa gpt failed: order={order_id} msg={str(msg)[:300]!r}")
                     return {"success": False, "error": str(msg), **_dg,
                             "openai_blocked": openai_purchase_blocked(str(msg))}
