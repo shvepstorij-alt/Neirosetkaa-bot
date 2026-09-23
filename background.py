@@ -465,7 +465,19 @@ async def db_cleanup_loop():
                 )
                 # События > 60 дней
                 r3 = await conn.execute(
-                    "DELETE FROM events WHERE created_at < NOW() - INTERVAL '60 days'"
+                    "DELETE FROM events WHERE created_at < NOW() - INTERVAL '60 days'")
+                # Ключи gpt_confirm_msg:<заказ> живут ровно до того, как
+                # сообщение о сбое перепишется в «активация прошла». Если
+                # этого не случилось, ключ бесполезен: Telegram не даёт
+                # править сообщения старше 48 часов. Чистим по ЗАКАЗУ —
+                # только когда он действительно старый; ключи заказов, для
+                # которых записи в fk_orders нет, не трогаем вовсе.
+                await conn.execute(
+                    """DELETE FROM settings
+                       WHERE key LIKE 'gpt_confirm_msg:%'
+                         AND EXISTS (SELECT 1 FROM fk_orders o
+                                      WHERE o.order_id = substring(settings.key from 17)
+                                        AND o.created_at < NOW() - INTERVAL '3 days')"""
                 )
                 # Брошенные состояния диалогов: клиент начал сценарий и ушёл.
                 # Без чистки таблица растёт бесконечно.
@@ -848,6 +860,12 @@ async def gpt_dead_order_release_loop():
                        FROM gpt_codes
                        WHERE provider = 'bpa'
                          AND flagged_reason LIKE 'ждём освобождения:%'
+                         -- Та же защита, что в gpt_codes_cleanup_loop: пока у
+                         -- клиента открыта активация по этому коду, отдавать
+                         -- его в пул нельзя — уйдёт второму, активирует один.
+                         AND NOT EXISTS (
+                             SELECT 1 FROM gpt_pending_activations p
+                             WHERE p.code = gpt_codes.code)
                        ORDER BY COALESCE(last_checked_at, '2000-01-01') ASC
                        LIMIT 20""")
             if not rows:

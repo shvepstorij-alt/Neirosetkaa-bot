@@ -432,6 +432,120 @@ async def admin_gpt_codes_recover(message: Message):
         await message.answer(_part, parse_mode="HTML")
 
 
+
+@dp.message(F.text.startswith("/gpt_double"), StateFilter("*"))
+async def cmd_gpt_double(message: Message):
+    """Двойные списания кодов: было ли, когда и на кого.
+
+    Вопрос Александра 23.09.2026: «проверь, чтобы на одну активацию или на
+    одного клиента не тратилось по два и более iOS-кода». По коду на это
+    можно ответить только «в таких-то ветках защита стоит» — а сколько
+    кодов ушло на самом деле, знает ТОЛЬКО база. Эта команда её и
+    спрашивает.
+
+    Три среза:
+      1) заказы, на которые списано больше одного кода (с разбивкой по
+         маршруту — два iOS на один заказ это прямые деньги);
+      2) клиенты, у кого iOS-кодов больше, чем заказов;
+      3) потраченные iOS-коды БЕЗ заказа — их не видно ни в прибыли, ни в
+         карточках, и именно они теряются молча.
+
+    «Потрачен» = есть used_at. Просто зарезервированный код (is_used=TRUE,
+    used_at пустой) сюда не попадает: он ещё ничей.
+
+    Окно по умолчанию 30 дней, можно задать: /gpt_double 90
+    """
+    if not is_admin(message.from_user.id):
+        return
+    _days = 30
+    for _p in (message.text or "").split()[1:]:
+        if _p.isdigit():
+            _days = max(1, min(365, int(_p)))
+    _wait = await message.answer(f"🔎 Смотрю списания кодов за {_days} дн…")
+    try:
+        _pool = await get_pool()
+        async with _pool.acquire() as _cn:
+            _multi = await _cn.fetch(
+                """SELECT order_id,
+                          COUNT(*) AS n,
+                          COUNT(*) FILTER (WHERE route = 'ios') AS ios,
+                          MIN(used_by) AS uid,
+                          MAX(used_at) AS last_at,
+                          string_agg(code || ' [' || COALESCE(route, '?') || ']',
+                                     ', ' ORDER BY used_at) AS codes
+                     FROM gpt_codes
+                    WHERE used_at IS NOT NULL
+                      AND COALESCE(order_id, '') <> ''
+                      AND used_at > NOW() - make_interval(days => $1)
+                    GROUP BY order_id
+                   HAVING COUNT(*) > 1
+                    ORDER BY MAX(used_at) DESC
+                    LIMIT 30""", _days)
+            _cli = await _cn.fetch(
+                """SELECT used_by,
+                          COUNT(*) AS ios_codes,
+                          COUNT(DISTINCT COALESCE(order_id, '')) AS orders
+                     FROM gpt_codes
+                    WHERE used_at IS NOT NULL AND route = 'ios'
+                      AND used_by IS NOT NULL
+                      AND used_at > NOW() - make_interval(days => $1)
+                    GROUP BY used_by
+                   HAVING COUNT(*) > COUNT(DISTINCT COALESCE(order_id, ''))
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 20""", _days)
+            _noord = await _cn.fetch(
+                """SELECT code, used_by, used_at
+                     FROM gpt_codes
+                    WHERE used_at IS NOT NULL AND route = 'ios'
+                      AND COALESCE(order_id, '') = ''
+                      AND used_at > NOW() - make_interval(days => $1)
+                    ORDER BY used_at DESC
+                    LIMIT 30""", _days)
+    except Exception as _e_gd:
+        await _wait.edit_text(f"❌ Не вышло: <code>{_e_gd}</code>", parse_mode="HTML")
+        return
+
+    _L = [f"🧾 <b>Списания кодов ChatGPT за {_days} дн.</b>", ""]
+    _ios_dbl = [r for r in _multi if (r["ios"] or 0) > 1]
+    if _ios_dbl:
+        _L.append(f"🚨 <b>Два и более iOS-кода на один заказ — {len(_ios_dbl)}</b>")
+        for r in _ios_dbl:
+            _L.append(f"• <code>{r['order_id']}</code> · {await _who_user(r['uid'])}\n"
+                      f"  {r['ios']} iOS из {r['n']}: {r['codes']}")
+        _L.append("")
+    _other = [r for r in _multi if (r["ios"] or 0) <= 1]
+    if _other:
+        _L.append(f"⚠️ <b>Больше одного кода на заказ (не iOS-дубль) — {len(_other)}</b>")
+        _L.append("<i>Обычно это перебор использованных кодов — деньги "
+                  "не потеряны, но посмотреть стоит.</i>")
+        for r in _other[:15]:
+            _L.append(f"• <code>{r['order_id']}</code> · {r['n']} шт: {r['codes']}")
+        _L.append("")
+    if _cli:
+        _L.append(f"⚠️ <b>Клиенты: iOS-кодов больше, чем заказов — {len(_cli)}</b>")
+        for r in _cli:
+            _L.append(f"• {await _who_user(r['used_by'])} — "
+                      f"{r['ios_codes']} iOS на {r['orders']} заказ(ов)")
+        _L.append("")
+    if _noord:
+        _L.append(f"❓ <b>Потраченные iOS-коды без заказа — {len(_noord)}</b>")
+        _L.append("<i>Не видны ни в прибыли, ни в карточках заказов.</i>")
+        for r in _noord[:15]:
+            _L.append(f"• <code>{r['code']}</code> · {await _who_user(r['used_by'])} · "
+                      f"{r['used_at'].strftime('%d.%m %H:%M') if r['used_at'] else '—'}")
+        _L.append("")
+    if not (_multi or _cli or _noord):
+        _L.append("✅ Чисто: ни одного заказа с двумя кодами, ни одного "
+                  "лишнего iOS-кода, ни одного потраченного iOS без заказа.")
+    else:
+        _L.append("Ничего не менял — это только отчёт. Вернуть зря "
+                  "сожжённые коды: <code>/gpt_codes_recover</code>")
+    from common import tg_chunks as _tgc
+    _parts = _tgc("\n".join(_L))
+    await _wait.edit_text(_parts[0], parse_mode="HTML")
+    for _p in _parts[1:]:
+        await message.answer(_p, parse_mode="HTML")
+
 @dp.message(F.text.startswith("/gpt_code_route"), StateFilter("*"))
 async def admin_gpt_code_route(message: Message):
     """Ручная разметка маршрута: /gpt_code_route КОД ios|ph"""

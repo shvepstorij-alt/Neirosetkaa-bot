@@ -7081,7 +7081,7 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
         logging.error(f"api_admin_broadcast: {_e}")
         return web.json_response({"ok": False}, status=500)
 
-async def _admin_fail_shot(text, screenshot=None):
+async def _admin_fail_shot(text, screenshot=None, order_id=None):
     """Шлёт админу текст о сбое и, если есть, скриншот сайта отдельным фото.
 
     Возвращает message_id отправленного текста (или None) — чтобы сообщение
@@ -7097,6 +7097,15 @@ async def _admin_fail_shot(text, screenshot=None):
             _mid = getattr(_m, "message_id", None)
         except Exception:
             pass
+    # Запоминаем сообщение о сбое по заказу: если активация всё-таки
+    # состоится — сама или сверкой — оно перепишется в «прошла», а не
+    # останется висеть неправдой. Александр попросил 23.09.2026, увидев
+    # «не помог и iOS-маршрут» по коду, который сайт как раз дозавершал.
+    if _mid and order_id:
+        try:
+            await set_setting(f"gpt_confirm_msg:{order_id}", str(_mid))
+        except Exception as _e_fs:
+            logging.warning(f"gpt confirm msg id: {_e_fs}")
     if screenshot:
         try:
             from aiogram.types import BufferedInputFile
@@ -7484,6 +7493,59 @@ async def _run_activation_job(
             return ("сайт подтвердил: платёж не прошёл, списания и подписки нет"
                     if (_res or {}).get("site_payment_failed") else "")
 
+        async def _settle_before_verdict(_c, _res) -> bool:
+            """Пауза и перепроверка, прежде чем называть активацию неудачей.
+
+            Сайт регулярно дозавершает покупку уже ПОСЛЕ того, как отдал нам
+            отказ, и код в этот момент стоит у него в «claimed» — то есть
+            заказ в работе, а не провален. Ровно этот разрыв Александр
+            закрывал руками кнопкой «Проверить сейчас».
+
+            В основном пути такая пауза есть с этапа 7. А повторная попытка по
+            iOS внутри _ios_rescue судила результат сразу — и 23.09.2026
+            прислала «не помог и iOS-маршрут» по коду GPTI-CNTC-VYQK-QEYT,
+            который сайт в ту же минуту держал в «claimed».
+
+            Порядок: 8 секунд → активация уже записана? → сверка → если код
+            всё ещё «claimed», ждём, пока дозреет до «fulfilled» (org ID и
+            почту сайт публикует только вместе с ним, иначе сверке нечего
+            подтверждать), и спрашиваем сверку ещё раз.
+
+            True — активация подтвердилась, неудачу объявлять нельзя.
+            """
+            if (_res.get("token_invalid") or _res.get("needs_force_confirm")
+                    or _res.get("out_of_stock") or _res.get("site_paused")):
+                return False      # ответ окончательный, ждать нечего
+            import asyncio as _aio_sv
+            await _aio_sv.sleep(8)
+            for _stage in range(2):
+                try:
+                    if await gpt_activation_already_done(_c, user_id, order_id):
+                        logging.warning(f"GPT: {_c} подтвердился за паузу — "
+                                        f"неудачу НЕ объявляю")
+                        return True
+                except Exception as _e_sv1:
+                    logging.warning(f"GPT: проверка в паузе {_c}: {_e_sv1}")
+                try:
+                    if (await gpt_reconcile_orphans(only_code=_c)).get("fixed"):
+                        logging.warning(f"GPT: {_c} закрыт сверкой за паузу")
+                        return True
+                except Exception as _e_sv2:
+                    logging.warning(f"GPT: сверка в паузе {_c}: {_e_sv2}")
+                if _stage:
+                    break
+                try:
+                    from chatgpt_activation import bpa_wait_fulfilled
+                    _st_sv, _ = await bpa_wait_fulfilled(_c, tries=4, pause=15.0)
+                    if _st_sv != "fulfilled":
+                        break      # не «claimed» — ждать больше нечего
+                    logging.warning(f"GPT: {_c} дозрел до fulfilled за паузу — "
+                                    f"спрашиваю сверку ещё раз")
+                except Exception as _e_sv3:
+                    logging.warning(f"GPT: ожидание fulfilled {_c}: {_e_sv3}")
+                    break
+            return False
+
         async def _burn_code(_c):
             """Помечаем использованный код навсегда — в пул не возвращаем."""
             try:
@@ -7843,6 +7905,16 @@ async def _run_activation_job(
                 return None
             if gpt_route_for_code(code) != "ph":
                 return None      # уже iOS — переводить некуда
+            # Второй iOS-код на один заказ не выдаём никогда. iOS ложится на
+            # ЛЮБОЙ аккаунт и стакается до пяти раз: лишний код — это прямые
+            # деньги, а клиенту вторая подписка поверх первой не нужна.
+            # Сейчас сюда и так не попасть с iOS-кодом (проверка маршрута
+            # выше), но инвариант должен держаться на месте, а не на порядке
+            # вызовов: однажды эту ветку позовут откуда-то ещё.
+            if _ios_sent >= 1:
+                logging.warning(f"GPT ios rescue: uid={user_id} iOS-код уже "
+                                f"отправляли — второй не беру")
+                return None
             # Причина у трёх веток разная, и в сообщениях она должна быть
             # разной. Раньше все три подписывались «OpenAI отклонил покупку» —
             # и Александр читал это там, где на самом деле у САЙТА не прошла
@@ -7892,7 +7964,7 @@ async def _run_activation_job(
                     f"🆔 <code>{order_id}</code>\n"
                     f"{await _fk_num_line(order_id)}\n"
                     f"Перевести заказ на iOS нечем. "
-                    f"Пополни iOS-коды или активируй вручную.")
+                    f"Пополни iOS-коды или активируй вручную.", order_id=order_id)
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False,
                     "error": "Активация займёт чуть больше времени — Александр "
@@ -7961,24 +8033,46 @@ async def _run_activation_job(
                 f"(ph) → повторяю через iOS {code}")
             result = await _do_activate(code)
             _ok_ios = bool(result.get("success"))
+            # Та же болезнь, что и в основном пути: сайт дозавершает покупку
+            # через несколько секунд после отказа. Ждём и перепроверяем,
+            # прежде чем писать «не помог».
+            _late_ok = False if _ok_ios else await _settle_before_verdict(code, result)
             _rel_line2 = _rel_phrase(_rel_ok2)
+            _mid_ios = None
             try:
-                await bot.send_message(
+                _m_ios = await bot.send_message(
                     ADMIN_ID,
                     ("✅ <b>ChatGPT — выручил iOS-маршрут</b>\n\n" if _ok_ios else
+                     "✅ <b>ChatGPT — iOS-маршрут выручил, подтвердилось "
+                     "с задержкой</b>\n\n" if _late_ok else
                      "🚨 <b>ChatGPT — не помог и iOS-маршрут</b>\n\n")
                     + f"👤 {_who_u} · {plan_name}\n"
                       f"🇵🇭 Филиппинский <code>{_old_code}</code> — {_why_short}; "
                       f"{_rel_line2}\n"
                       f"🔎 Причина: {_why_long}\n"
                       f"📱 iOS <code>{code}</code> — "
-                    + ("активация прошла" if _ok_ios else "тоже не вышло")
+                    + ("активация прошла" if _ok_ios else
+                       "активация прошла (подтвердилась после паузы)" if _late_ok
+                       else "тоже не вышло")
                     + f"\n🆔 <code>{order_id}</code>\n"
-                    + ("" if _ok_ios else _gpt_fail_why(result, code))
+                    + ("" if (_ok_ios or _late_ok) else _gpt_fail_why(result, code))
                     + await _fk_num_line(order_id),
                     parse_mode="HTML")
+                _mid_ios = getattr(_m_ios, "message_id", None)
             except Exception:
                 pass
+            # Сообщение о неудаче запоминаем: сверка может закрыть заказ
+            # позже, и тогда оно перепишется в «активация прошла».
+            if (not _ok_ios) and (not _late_ok) and _mid_ios and order_id:
+                try:
+                    await set_setting(f"gpt_confirm_msg:{order_id}", str(_mid_ios))
+                except Exception as _e_mi:
+                    logging.warning(f"gpt confirm msg id (ios): {_e_mi}")
+            if _late_ok:
+                # Активацию уже записали сверка или прошлый заход — второй раз
+                # проводить её по общему пути нельзя.
+                _activation_jobs[job_id] = {"status": "done", "success": True}
+                return "stop"
             return "ok" if _ok_ios else None
 
         # 0) 999uu без стока → тот же код на bypriceactivate (до всякого перебора)
@@ -8113,7 +8207,7 @@ async def _run_activation_job(
                     + str(result.get("error") or "—")[:300] + "</code>\n\n"
                     f"Коды в пуле есть — добавлять не нужно. Активируй вручную, "
                     f"а код проверь: <code>/gpt_check</code>",
-                    result.get("screenshot"))
+                    result.get("screenshot"), order_id=order_id)
                 logging.error(
                     f"GPT: перебор остановлен защитой uid={user_id} order={order_id} "
                     f"причина={_burn_stop['why']!r} сожжено={len(_gpt_used_codes)}")
@@ -8125,7 +8219,7 @@ async def _run_activation_job(
                     f"{_left_line}"
                     f"{_skipped}"
                     f"Добавь коды: /add_gpt_codes",
-                    result.get("screenshot"))
+                    result.get("screenshot"), order_id=order_id)
             # Клиенту тоже не врём. «Коды закончились» — правда только когда
             # пул действительно пуст; при остановке защитой коды есть, просто
             # выдать их автоматически нельзя.
@@ -8238,14 +8332,16 @@ async def _run_activation_job(
                     )
                 # Если было авто-переключение сайта — дописываем ИТОГ в то самое сообщение,
                 # чтобы в одном месте было видно: куда ушли и чем закончилось.
-                # Висящее «у аккаунта уже есть Plus» по этому заказу закрываем:
-                # клиент подтвердил и активация прошла.
+                # Висящее по этому заказу сообщение о сбое закрываем — любое,
+                # не только «у аккаунта уже есть Plus»: с 23.09.2026 свой
+                # message_id кладут сюда все сообщения о неудаче этой
+                # активации, чтобы ни одно не осталось висеть неправдой.
                 try:
                     _gf_key = f"gpt_confirm_msg:{order_id}"
                     _gf_mid2 = (await get_setting(_gf_key, "") or "").strip()
                     if _gf_mid2.isdigit():
                         _gf_txt = (
-                            f"✅ <b>ChatGPT — клиент подтвердил, активация прошла</b>\n\n"
+                            f"✅ <b>ChatGPT — активация прошла</b>\n\n"
                             f"👤 Клиент: <b>{_tg_name}</b> (<code>{user_id}</code>)\n"
                             f"📧 Email: <b>{_email or '—'}</b>\n"
                             f"🔑 Итоговый код: <code>{code}</code>\n"
@@ -8481,7 +8577,7 @@ async def _run_activation_job(
                     f"🔑 <code>{code}</code>\n"
                     f"{error_text}\n\n"
                     "Проверь на 6661231.xyz по email клиента ПЕРЕД повторной активацией (риск двойной).",
-                    result.get("screenshot"))
+                    result.get("screenshot"), order_id=order_id)
                 _activation_jobs[job_id] = {"status": "done", "success": False, "pending": True}
                 return
 
@@ -8661,7 +8757,7 @@ async def _run_activation_job(
                             + await _fk_num_line(order_id)
                             + f"⚠️ Ошибка: {error_text}\n\n"
                             "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
-                            result.get("screenshot")
+                            result.get("screenshot"), order_id=order_id
                         )
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
@@ -8714,12 +8810,21 @@ async def _run_activation_job(
                     InlineKeyboardButton(text="🔄 Проверить сейчас",
                                          callback_data=f"gptrc:{code}")]])
                 if screenshot:
-                    await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
-                                         caption=txt, parse_mode="HTML",
-                                         reply_markup=_kb_rc)
+                    _m_fin = await bot.send_photo(
+                        ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
+                        caption=txt, parse_mode="HTML", reply_markup=_kb_rc)
                 else:
-                    await bot.send_message(ADMIN_ID, txt, parse_mode="HTML",
-                                           reply_markup=_kb_rc)
+                    _m_fin = await bot.send_message(ADMIN_ID, txt, parse_mode="HTML",
+                                                    reply_markup=_kb_rc)
+                # Это сообщение Александр видит чаще всех. Если сверка потом
+                # закроет заказ, оно перепишется в «активация прошла».
+                # Фото не переписывается текстом — только обычное сообщение.
+                if (not screenshot) and order_id and getattr(_m_fin, "message_id", None):
+                    try:
+                        await set_setting(f"gpt_confirm_msg:{order_id}",
+                                          str(_m_fin.message_id))
+                    except Exception as _e_fin:
+                        logging.warning(f"gpt confirm msg id (final): {_e_fin}")
               except Exception:
                 pass
     except Exception as e:
@@ -11169,6 +11274,30 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
                 "Активация прошла, бот узнал о ней с задержкой — дописано сверкой.")
         except Exception as _e_om:
             logging.warning(f"reconcile: карточка заказа {r['order_id']}: {_e_om}")
+        # Висящее сообщение о неудаче по этому заказу переписываем. Иначе у
+        # Александра в чате остаётся «не помог и iOS-маршрут» (или «НЕУДАЧА»)
+        # при выданной подписке — он просил 23.09.2026, чтобы такие сообщения
+        # обновлялись сами, а не требовали сверять их с реальностью.
+        try:
+            if r["order_id"]:
+                _cm_key = f"gpt_confirm_msg:{r['order_id']}"
+                _cm_mid = (await get_setting(_cm_key, "") or "").strip()
+                if _cm_mid.isdigit():
+                    await bot.edit_message_text(
+                        f"✅ <b>ChatGPT — активация всё-таки прошла</b>\n\n"
+                        f"👤 {await _who_user(_uid)} · {r['plan_name']}\n"
+                        f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
+                        f"📧 {_email or '—'}\n"
+                        f"🆔 <code>{r['order_id']}</code>\n\n"
+                        f"Сообщение о неудаче было преждевременным: сайт "
+                        f"дозавершил заказ, сверка это подтвердила. "
+                        f"Делать ничего не нужно.",
+                        chat_id=ADMIN_ID, message_id=int(_cm_mid), parse_mode="HTML")
+                    await set_setting(_cm_key, "")
+                    logging.warning(f"reconcile: переписал сообщение о неудаче "
+                                    f"по заказу {r['order_id']}")
+        except Exception as _e_cm:
+            logging.info(f"reconcile: правка сообщения о неудаче: {_e_cm}")
         logging.warning(f"gpt_reconcile_orphans: дописал активацию {_code} "
                         f"uid={_uid} order={r['order_id']} статус={_v}")
     return {"ok": True, "checked": len(rows), "fixed": _fixed, "unsure": _unsure}
