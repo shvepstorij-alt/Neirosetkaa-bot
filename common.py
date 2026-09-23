@@ -7320,6 +7320,28 @@ async def _run_activation_job(
         _switch_msg_id = None
         _switch_text = ""
 
+        # Исход последнего возврата — чтобы сообщения не гадали, а писали
+        # по факту: вернули / сайт ещё держит / застрял.
+        _rel_last = {"state": "", "site": ""}
+
+        def _rel_phrase(_ok: bool) -> str:
+            """Фраза о судьбе кода — по факту возврата, а не по догадке.
+
+            Раньше вариант был один на всё («НЕ вернулся — сайт не
+            подтвердил»), и им подписывался в том числе случай, когда сайт
+            как раз ответил вполне определённо: подписку по коду он выдал.
+            """
+            if _ok:
+                return "код возвращён в пул"
+            _s = _rel_last.get("site") or ""
+            if _rel_last.get("state") == "awaiting":
+                return (f"сайт ещё держит его ({_s}) — верну в пул сам, "
+                        f"как освободится")
+            if _s in ("fulfilled", "zoom_token_ready"):
+                return f"код потрачен: сайт выдал по нему подписку ({_s})"
+            return ("код в пул НЕ вернулся — сайт не подтвердил, что он цел; "
+                    "проверь <code>/gpt_codes_recover</code>")
+
         async def _safe_release(_c, dead_reason: str = ""):
             """Возврат кода в пул ТОЛЬКО с подтверждением сайта.
 
@@ -7337,6 +7359,7 @@ async def _run_activation_job(
             # Если активация уже записана (сверка нас обогнала) — код и должен
             # остаться за клиентом, и тревожить незачем: «не вернул в пул»
             # звучит как проблема, а это ровно правильный исход.
+            _rel_last["state"], _rel_last["site"] = "", ""
             try:
                 if await gpt_activation_already_done(_c, user_id, order_id):
                     logging.info(f"_safe_release: {_c} — активация уже записана, молчу")
@@ -7353,8 +7376,10 @@ async def _run_activation_job(
             except Exception as _e_sr:
                 logging.warning(f"_safe_release {_c}: {_e_sr}")
                 _v = ""
+            _rel_last["site"] = _v
             if _v in _free_st:
                 await release_gpt_code(_c)
+                _rel_last["state"] = "released"
                 return True
             # Исключение ровно на один случай: САЙТ САМ объявил заказ мёртвым и
             # написал, что списания, hold и подписки нет (failed_precharge).
@@ -7371,16 +7396,43 @@ async def _run_activation_job(
                 _USED_SR = ("claimed", "fulfilled", "zoom_token_ready")
             if dead_reason and _v not in _USED_SR:
                 await release_gpt_code(_c)
+                _rel_last["state"] = "released"
                 logging.warning(
                     f"_safe_release: {_c} возвращён в пул — {dead_reason}; "
                     f"/query ответил: {_v or 'молчит'}")
                 return True
+            # Сайт признал заказ мёртвым, но код ещё держит в «claimed». Это
+            # не «код потрачен»: claimed — промежуточное состояние, и после
+            # провалившегося заказа сайт через несколько минут сам вернёт код
+            # в «unused». Отдавать его следующему клиенту ПРЯМО СЕЙЧАС нельзя
+            # (claimed может дозреть до fulfilled — так 10.09.2026 ушло пять
+            # кодов), но и бросать нельзя: ни одна фоновая задача помеченные
+            # коды не подбирает. Помечаем особой меткой — её ждёт
+            # gpt_dead_order_release_loop: он переспрашивает сайт каждые 10
+            # минут и возвращает код в пул сам, как только тот освободится.
+            # Ждать освобождения имеет смысл ТОЛЬКО для «claimed» — это и есть
+            # промежуточное состояние. «fulfilled» / «zoom_token_ready» значат,
+            # что сайт подписку ВЫДАЛ: код потрачен, ждать нечего, а само
+            # сочетание «заказ failed, а код fulfilled» — противоречие сайта,
+            # и звать Александра надо сразу, а не через десять минут.
+            _await_free = bool(dead_reason and _v == "claimed")
+            _site_spent = bool(dead_reason and _v in _USED_SR and not _await_free)
+            _rel_last["state"] = "awaiting" if _await_free else "stuck"
             _pool_sr = await get_pool()
             async with _pool_sr.acquire() as _cn_sr:
                 await _cn_sr.execute(
                     "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
                     "flagged_reason=$2 WHERE code=$1",
-                    _c, f"не возвращён в пул: сайт ответил {_v or '(молчит)'}")
+                    _c,
+                    (f"ждём освобождения: сайт держит {_v} после отказа ({dead_reason})"
+                     if _await_free else
+                     f"сайт выдал подписку ({_v}), хотя заказ провалился"
+                     if _site_spent else
+                     f"не возвращён в пул: сайт ответил {_v or '(молчит)'}"))
+            if _await_free:
+                logging.warning(
+                    f"_safe_release: {_c} — сайт держит {_v} после отказа "
+                    f"({dead_reason}); поставлен в очередь на авто-возврат.")
             logging.warning(
                 f"_safe_release: {_c} НЕ возвращён в пул — сайт: {_v or 'молчит'}")
             # Если сайт лежит, таких кодов будет много подряд — не заваливаем
@@ -7393,13 +7445,29 @@ async def _run_activation_job(
             try:
                 await bot.send_message(
                     ADMIN_ID,
-                    f"🔒 <b>Код не вернул в пул</b>\n"
-                    f"🔑 <code>{_c}</code> · сайт: <b>{_v or 'не ответил'}</b>\n"
-                    f"👤 {_who_u} · {plan_name}\n\n"
-                    f"Активация у нас не удалась, но у сайта заказ по этому коду "
-                    f"может быть ещё жив — вернуть его в пул значит отдать "
-                    f"следующему клиенту уже потраченный. Проверь: "
-                    f"<code>/gpt_codes_recover</code>",
+                    (f"⏳ <b>Код вернётся в пул сам</b>\n"
+                     f"🔑 <code>{_c}</code> · сайт держит: <b>{_v}</b>\n"
+                     f"👤 {_who_u} · {plan_name}\n\n"
+                     f"Заказ сайт признал мёртвым, но код ещё в «{_v}». Это "
+                     f"промежуточное состояние: после провалившегося заказа "
+                     f"сайт сам вернёт код в «unused». Буду переспрашивать "
+                     f"каждые 10 минут и верну в пул, как освободится. "
+                     f"Делать ничего не нужно."
+                     if _await_free else
+                     f"⚠️ <b>Сайт противоречит сам себе</b>\n"
+                     f"🔑 <code>{_c}</code> · заказ провалился, а код <b>{_v}</b>\n"
+                     f"👤 {_who_u} · {plan_name}\n\n"
+                     f"«{_v}» значит, что подписку по этому коду сайт ВЫДАЛ. "
+                     f"Возможно, она уже у клиента — проверь заказ, могли уйти "
+                     f"две. Код потрачен, в пул не вернул."
+                     if _site_spent else
+                     f"🔒 <b>Код не вернул в пул</b>\n"
+                     f"🔑 <code>{_c}</code> · сайт: <b>{_v or 'не ответил'}</b>\n"
+                     f"👤 {_who_u} · {plan_name}\n\n"
+                     f"Активация у нас не удалась, но у сайта заказ по этому коду "
+                     f"может быть ещё жив — вернуть его в пул значит отдать "
+                     f"следующему клиенту уже потраченный. Проверь: "
+                     f"<code>/gpt_codes_recover</code>"),
                     parse_mode="HTML")
             except Exception:
                 pass
@@ -7815,9 +7883,7 @@ async def _run_activation_job(
                 # Писать «возвращён в пул» независимо от исхода нельзя: если
                 # сайт не подтвердил, что код цел, он остался за клиентом — и
                 # Александр должен видеть это, а не верить сообщению.
-                _rel_txt = ("возвращён в пул" if _rel_ok else
-                            "НЕ возвращён в пул — сайт не подтвердил, что код цел; "
-                            "проверь <code>/gpt_codes_recover</code>")
+                _rel_txt = _rel_phrase(_rel_ok)
                 await _admin_fail_shot(
                     f"🚨 <b>ChatGPT — {_why_short}, а iOS-кодов нет</b>\n"
                     f"👤 {_who_u} · {plan_name}\n"
@@ -7851,6 +7917,42 @@ async def _run_activation_job(
             except Exception as _e_rl2:
                 _rel_ok2 = False
                 logging.warning(f"_safe_release {_old_code}: {_e_rl2}")
+            # Сайт ответил, что код fulfilled: подписку по нему он ВЫДАЛ.
+            # Прежде чем тратить iOS-код (а это прямые деньги: iOS ложится на
+            # любой аккаунт и стоит дороже), спросим сверку — кому именно она
+            # ушла. Подтвердится наш клиент — заказ закрыт, а iOS-код
+            # возвращаем нетронутым: сайту мы его даже не отправляли.
+            if _rel_last.get("site") in ("fulfilled", "zoom_token_ready"):
+                try:
+                    _rr_ios = await gpt_reconcile_orphans(only_code=_old_code)
+                except Exception as _e_rc2:
+                    _rr_ios = {}
+                    logging.warning(f"ios rescue: сверка {_old_code}: {_e_rc2}")
+                if _rr_ios.get("fixed"):
+                    try:
+                        await release_gpt_code(_new)   # даже не отправляли
+                    except Exception:
+                        pass
+                    await delete_pending_activation(user_id)
+                    _activation_jobs[job_id] = {"status": "done", "success": True}
+                    logging.warning(f"ios rescue: {_old_code} закрыт сверкой — "
+                                    f"iOS-код {_new} не потрачен.")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"✅ <b>ChatGPT — закрыто сверкой, iOS-код сэкономлен</b>\n\n"
+                            f"👤 {_who_u} · {plan_name}\n"
+                            f"🇵🇭 <code>{_old_code}</code> — сайт всё-таки выдал по нему "
+                            f"подписку, сверка подтвердила клиента\n"
+                            f"📱 <code>{_new}</code> — возвращён в пул, сайту не "
+                            f"отправляли\n"
+                            f"🆔 <code>{order_id}</code>",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    return "stop"
+                logging.warning(f"ios rescue: сверка по {_old_code} клиента не "
+                                f"подтвердила — продолжаю по iOS {_new}.")
             code = _new
             _ios_sent += 1          # перевели на iOS — это и есть первый iOS-код
             await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, "bpa")
@@ -7859,6 +7961,7 @@ async def _run_activation_job(
                 f"(ph) → повторяю через iOS {code}")
             result = await _do_activate(code)
             _ok_ios = bool(result.get("success"))
+            _rel_line2 = _rel_phrase(_rel_ok2)
             try:
                 await bot.send_message(
                     ADMIN_ID,
@@ -7866,7 +7969,7 @@ async def _run_activation_job(
                      "🚨 <b>ChatGPT — не помог и iOS-маршрут</b>\n\n")
                     + f"👤 {_who_u} · {plan_name}\n"
                       f"🇵🇭 Филиппинский <code>{_old_code}</code> — {_why_short}; "
-                      f"{'код возвращён в пул' if _rel_ok2 else 'код в пул НЕ вернулся — сайт не подтвердил, что он цел'}\n"
+                      f"{_rel_line2}\n"
                       f"🔎 Причина: {_why_long}\n"
                       f"📱 iOS <code>{code}</code> — "
                     + ("активация прошла" if _ok_ios else "тоже не вышло")

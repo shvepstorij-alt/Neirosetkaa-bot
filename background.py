@@ -810,6 +810,121 @@ async def _activation_jobs_cleanup_loop():
 
 # ── Помощь с активацией ChatGPT ──────────────────────────────────────────────
 
+
+async def gpt_dead_order_release_loop():
+    """Возвращает в пул коды, которые сайт держал «claimed» в момент отказа.
+
+    Зачем отдельная петля. Когда у сайта не проходит его карта
+    (provider_status=failed_precharge), заказ мёртв и код не потрачен — но на
+    странице /query он в этот момент ещё «claimed». Отдать его следующему
+    клиенту сразу нельзя: «claimed» — промежуточное состояние, и оно может
+    дозреть до «fulfilled» (так 10.09.2026 подряд ушло пять кодов). А бросить
+    нельзя тем более: gpt_codes_cleanup_loop помеченные коды пропускает
+    (check_status='error'), а речекер работает только по 987ai — то есть сам
+    такой код не освободится НИКОГДА и тихо выпадет из пула.
+
+    Поэтому _safe_release ставит метку «ждём освобождения: …», а эта петля раз
+    в 10 минут переспрашивает сайт по каждому такому коду:
+      • unused    → возвращаем в пул и снимаем метку;
+      • fulfilled → сайт всё-таки выдал подписку по этому коду. Код потрачен,
+                    и это важнее возврата: клиент мог уже получить активацию
+                    по iOS-коду. Шлём Александру отдельный сигнал;
+      • claimed   → ждём дальше, но не вечно: через 6 часов сдаёмся и зовём
+                    Александра руками.
+    """
+    await asyncio.sleep(300)          # первый заход через 5 минут после старта
+    while True:
+        try:
+            await asyncio.sleep(600)  # каждые 10 минут
+            from db import release_gpt_code as _rel_dl
+            from chatgpt_activation import (bpa_query_codes as _q_dl,
+                                            BPA_FREE_STATUSES as _FREE_DL)
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT code, used_by,
+                              (COALESCE(reserved_at, NOW())
+                               < NOW() - INTERVAL '6 hours') AS too_old
+                       FROM gpt_codes
+                       WHERE provider = 'bpa'
+                         AND flagged_reason LIKE 'ждём освобождения:%'
+                       ORDER BY COALESCE(last_checked_at, '2000-01-01') ASC
+                       LIMIT 20""")
+            if not rows:
+                continue
+            _freed, _spent, _gaveup = [], [], []
+            for _r in rows:
+                _c = _r["code"]
+                try:
+                    _st = ((await _q_dl([_c])).get(str(_c).strip().upper())
+                           or {}).get("status", "")
+                except Exception as _e_q:
+                    logging.warning(f"dead-order release: /query {_c}: {_e_q}")
+                    continue
+                _st = str(_st or "").strip().lower()
+                if not _st:
+                    continue          # сайт промолчал — вернёмся через 10 минут
+                async with pool.acquire() as conn:
+                    if _st in _FREE_DL:
+                        await _rel_dl(_c)
+                        await conn.execute(
+                            "UPDATE gpt_codes SET check_status='unchecked', "
+                            "flagged_reason=NULL, last_checked_at=NOW() WHERE code=$1", _c)
+                        _freed.append(_c)
+                        logging.warning(f"dead-order release: {_c} освободился "
+                                        f"на сайте — вернул в пул.")
+                    elif _st in ("fulfilled", "zoom_token_ready"):
+                        await conn.execute(
+                            "UPDATE gpt_codes SET check_status='used', last_checked_at=NOW(), "
+                            "flagged_reason=$2 WHERE code=$1",
+                            _c, f"сайт всё-таки выдал подписку по этому коду ({_st})")
+                        _spent.append((_c, _r["used_by"], _st))
+                        logging.error(f"dead-order release: {_c} у сайта стал {_st} "
+                                      f"ПОСЛЕ отказа — код потрачен.")
+                    elif _r["too_old"]:
+                        await conn.execute(
+                            "UPDATE gpt_codes SET last_checked_at=NOW(), flagged_reason=$2 "
+                            "WHERE code=$1", _c,
+                            f"не освободился за 6 ч: сайт держит {_st}")
+                        _gaveup.append((_c, _st))
+                    else:
+                        await conn.execute(
+                            "UPDATE gpt_codes SET last_checked_at=NOW() WHERE code=$1", _c)
+                await asyncio.sleep(3)      # не долбим сайт
+            try:
+                if _freed:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "🔑 <b>Коды сами вернулись в пул</b>\n"
+                        + "\n".join(f"• <code>{c}</code>" for c in _freed[:15])
+                        + "\n\nСайт освободил их после провалившегося заказа — "
+                          "делать ничего не нужно.",
+                        parse_mode="HTML")
+                for _c, _uid, _st in _spent[:5]:
+                    _who = await _who_user(_uid) if _uid else "—"
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ <b>Сайт всё-таки выдал подписку по коду</b>\n"
+                        f"🔑 <code>{_c}</code> · стал <b>{_st}</b> уже ПОСЛЕ отказа\n"
+                        f"👤 {_who}\n\n"
+                        f"Код потрачен, в пул не вернулся — это правильно. Но если "
+                        f"этому клиенту мы уже активировали подписку по iOS-коду, "
+                        f"то ушли две. Проверь заказ.",
+                        parse_mode="HTML")
+                if _gaveup:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        "🔒 <b>Коды не освободились за 6 часов</b>\n"
+                        + "\n".join(f"• <code>{c}</code> — сайт держит {s}"
+                                    for c, s in _gaveup[:15])
+                        + "\n\nБольше не переспрашиваю. Ничего не гасил: "
+                          "<code>/gpt_codes_recover</code>",
+                        parse_mode="HTML")
+            except Exception as _e_msg:
+                logging.warning(f"dead-order release: сообщение админу: {_e_msg}")
+        except Exception as e:
+            logging.error(f"gpt_dead_order_release_loop: {e}")
+
 async def gpt_code_rechecker_loop():
     """Раз в 2 часа проверяет свободные коды через Playwright.
     Помечает плохие (used/invalid) и хорошие (ok).
