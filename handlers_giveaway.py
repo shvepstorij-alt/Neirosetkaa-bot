@@ -16,7 +16,7 @@ from aiogram import F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import StateFilter
 
-from config import ADMIN_ID, CHANNEL_ID, bot, dp, is_admin
+from config import ADMIN_ID, CHANNEL_ID, bot, dp, is_admin, tg_name
 from db import (
     ensure_user, get_pool,
     giveaway_active, giveaway_add_comment,
@@ -213,13 +213,13 @@ async def giveaway_status_text(user) -> tuple:
           f"{_mark(bool(_commented))} Комментарий под постом\n\n")
     if _refs:
         _t += ("👥 <b>Засчитаны:</b>\n" + "\n".join(
-            f"• {('@' + r['username']) if r.get('username') else (r.get('full_name') or 'без имени')}"
+            f"• {('@' + r['username']) if r.get('username') else (tg_name(r.get('full_name')) or 'без имени')}"
             for r in _refs[:10]) + "\n\n")
     # Подсказка, а НЕ условие: эти друзья уже засчитаны. Просто полезно
     # знать, кого позвать в канал — там же объявят итоги.
     if _no_sub:
         _t += ("💡 <b>Эти друзья ещё не подписаны на канал:</b>\n" + "\n".join(
-            f"• {('@' + r['username']) if r.get('username') else (r.get('full_name') or 'без имени')}"
+            f"• {('@' + r['username']) if r.get('username') else (tg_name(r.get('full_name')) or 'без имени')}"
             for r in _no_sub[:10])
             + "\n<i>На твоё участие это не влияет — но итоги объявим в канале, "
               "позови их туда.</i>\n\n")
@@ -340,7 +340,7 @@ async def giveaway_why(message: Message):
     _mk = lambda v: "✅" if v is True else ("❓" if v is None else "❌")
 
     _who = ("@" + (_me_row["username"] or "")) if _me_row["username"] else (
-        _me_row["full_name"] or f"id{_uid}")
+        tg_name(_me_row["full_name"]) or f"id{_uid}")
     _t = [f"🔎 <b>{_who}</b> — <code>{_uid}</code>",
           f"🎁 Розыгрыш: <b>{_gw.get('title') or '—'}</b> (старт {_since_n:%d.%m %H:%M} UTC)",
           "",
@@ -353,7 +353,7 @@ async def giveaway_why(message: Message):
     _lines = []
     for _r in _all_refs:
         _rn = ("@" + (_r["username"] or "")) if _r["username"] else (
-            _r["full_name"] or f"id{_r['user_id']}")
+            tg_name(_r["full_name"]) or f"id{_r['user_id']}")
         if _r["created_at"] and _r["created_at"] < _since_n:
             _lines.append(f"• {_rn} — ⛔ пришёл ДО старта ({_r['created_at']:%d.%m %H:%M})")
             continue

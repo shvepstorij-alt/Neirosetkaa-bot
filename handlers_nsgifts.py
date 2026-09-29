@@ -772,12 +772,71 @@ async def nsg_check_payment(cb: CallbackQuery):
         if row and int(row["user_id"]) != int(uid):
             await cb.answer("Этот заказ принадлежит другому аккаунту.", show_alert=True)
             return
-        if row and row["status"] == "pending":
+        # Раньше ЛЮБОЙ статус кроме pending отвечал «заказ уже выполнен» —
+        # и клиент со сгоревшей выдачей (status='failed', кодов нет) получал
+        # бодрое «код должен быть выше в чате» и ждал впустую.
+        # Внешний аудит 29.09.2026, пункт №25.
+        _st = (row["status"] if row else "") or ""
+        _has_pins = bool(row and (row["pins_json"] or "").strip()) if row else False
+        if not row:
+            await cb.message.answer(
+                "⚠️ Оплата найдена, но заказ в базе не найден.\n"
+                f"Напиши @{PERSONAL_USERNAME} — разберёмся вручную.")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>App Store: оплата есть, заказа нет</b>\n"
+                    f"🆔 <code>{order_id}</code>\n👤 {await _who_user(uid)}",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+        elif _st in ("pending", "paying"):
             # Внутри fulfill стоит атомарный захват — параллельный вебхук
             # не сможет купить второй код.
             await nsgifts_fulfill_after_payment(order_id, uid)
+        elif _st == "processing":
+            # Если выдача идёт прямо сейчас — просто просим подождать. Если
+            # заказ висит давно (бота перезапустили посреди выдачи), пробуем
+            # разобрать: спросим поставщика про уже созданный заказ. Ничего
+            # не докупаем — только забираем то, что уже куплено.
+            _age = 0.0
+            try:
+                async with pool.acquire() as _c_age:
+                    _age = float(await _c_age.fetchval(
+                        "SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) "
+                        "FROM nsgifts_orders WHERE fk_order_id=$1", order_id) or 0)
+            except Exception:
+                _age = 0.0
+            if _age > 300:
+                await cb.message.answer("⏳ Проверяю заказ у поставщика — минутку…")
+                from common import nsgifts_recover_stuck
+                _res = await nsgifts_recover_stuck(order_id)
+                if _res not in ("delivered_local", "delivered_remote"):
+                    await cb.message.answer(
+                        "😔 Код пока не готов. Уже разбираюсь вручную — "
+                        f"напиши @{PERSONAL_USERNAME}, если не придёт в течение 15 минут.")
+            else:
+                await cb.message.answer(
+                    "⏳ Код уже получаем — это занимает несколько секунд.\n"
+                    "Он придёт сюда же сообщением. Если через 5 минут не пришёл — "
+                    f"напиши @{PERSONAL_USERNAME}.")
+        elif _st == "fulfilled" and _has_pins:
+            await cb.message.answer("✅ Заказ выполнен — код выше в этом чате.")
         else:
-            await cb.message.answer("✅ Заказ уже выполнен — код должен быть выше в чате.")
+            # failed, либо fulfilled без кодов — выдачи по факту не было.
+            await cb.message.answer(
+                "😔 Оплата прошла, но код автоматически не выдался.\n\n"
+                f"Напиши @{PERSONAL_USERNAME} — пришлю вручную в течение 15 минут! 🙏")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>App Store: клиент жмёт «проверить оплату», а выдачи нет</b>\n"
+                    f"🆔 <code>{order_id}</code>\n"
+                    f"👤 {await _who_user(uid)}\n"
+                    f"Статус заказа: <code>{_st or '—'}</code>",
+                    parse_mode="HTML")
+            except Exception:
+                pass
     else:
         await cb.answer(
             "Оплата пока не найдена. Если оплатил — подожди 1–2 минуты и попробуй снова.",
@@ -821,12 +880,16 @@ async def nsg_full_coins(cb: CallbackQuery):
         await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
-    # Фиксируем списанные монетки в заказе: если выдача кода сорвётся,
-    # фоновая задача вернёт их клиенту автоматически.
+    # Заказ ОПЛАЧЕН — монетками. Раньше статус оставался 'pending', и через
+    # сутки фоновый возврат отдавал монетки обратно, хотя код уже выдан:
+    # клиент оставался и с кодом, и с деньгами. Нашёл внешний аудит
+    # 29.09.2026. Возврат при СБОЕ выдачи никуда не делся — он теперь
+    # привязан к статусу самой выдачи (см. coins_refund_loop).
     try:
         async with pool.acquire() as _c_cs:
             await _c_cs.execute(
-                "UPDATE fk_orders SET coins_spent=$1 WHERE order_id=$2", required, order_id)
+                "UPDATE fk_orders SET coins_spent=$1, status='paid', paid_at=NOW() "
+                "WHERE order_id=$2", required, order_id)
     except Exception as _e_cs:
         logging.warning(f"nsg_full_coins coins_spent {order_id}: {_e_cs}")
     new_coins = await get_coins(uid)

@@ -185,6 +185,21 @@ function toast(t){var e=document.getElementById('toast');e.textContent=t;e.class
    тому же. Проверено: esc нигде не применяется дважды и никуда, кроме
    разметки, не уходит. */
 function esc(s){return(''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+/* Ссылка приходит ОТ КЛИЕНТА и раньше вставлялась в href как есть. Кавычка
+   в пути закрывала атрибут, и дальше можно было дописать обработчик события —
+   он выполнялся уже в админке владельца, где доступны initData и вызовы api.
+   Нашёл внешний аудит 29.09.2026.
+   Два рубежа: пускаем только http/https (иначе javascript: и data: сработали
+   бы даже без кавычки) и экранируем значение. Чужая схема показывается
+   текстом, а не ссылкой — информацию не теряем. */
+function safeHref(u){ u=(''+(u||'')).trim(); return /^https?:\/\//i.test(u) ? u : ''; }
+function linkRow(label,u){
+  var su=safeHref(u);
+  return '<div class="kv"><span class="k">'+label+'</span><span style="word-break:break-all">'
+    + (su ? '<a href="'+esc(su)+'" target="_blank" rel="noopener noreferrer" style="color:var(--acc);text-decoration:underline">Открыть ссылку ↗</a>'
+          : esc(u))
+    + '</span></div>';
+}
 function nf(n){return n.toLocaleString('ru')}
 function go(fn,push){if(push!==false)stack.push(fn);window._cur=fn;window.scrollTo(0,0);app.innerHTML=fn();syncBack();psInit()}
 
@@ -659,7 +674,11 @@ function doFind(){
   });
 }
 function userCardHtml(u){
-  var name=u.username?('@'+u.username):(u.name||('ID '+u.id));
+  /* Имя клиента человек пишет сам, а тут оно уходит в innerHTML. Без esc()
+     это тот же путь, что и с ссылкой в №2: разметка из имени выполняется
+     уже в панели владельца, где доступны initData и вызовы api.
+     Внешний аудит 29.09.2026, повторная проверка. */
+  var name=u.username?('@'+esc(u.username)):(u.name?esc(u.name):('ID '+esc(u.id)));
   return '<div class="block" style="margin-top:14px"><div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><div class="ic" style="width:44px;height:44px;font-size:20px"><i class="ti ti-user"></i></div><div><div style="font-size:15px;font-weight:600">'+name+'</div><div class="sub">ID '+u.id+(u.created?' · с '+u.created:'')+'</div></div></div>'+
     '<div class="kv"><span class="k">Баланс</span><span>'+nf(u.credits)+' кр</span></div>'+
     '<div class="kv"><span class="k">Покупок</span><span>'+u.purchases+' на '+nf(u.spent)+' ₽</span></div>'+
@@ -2280,7 +2299,7 @@ function loadBoard(){
       h+='<div class="glabel">'+(lab[k]||k)+' ('+grp[k].length+')</div>';
       grp[k].forEach(function(o){
         var tt=(o.service||'')+(o.plan?' '+o.plan:'');
-        h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+tt+'</div></div><span class="tag '+(done?'g':'a')+'">'+o.status+'</span></div>';
+        h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+esc(o.user)+'</div><div class="sub">'+tt+'</div></div><span class="tag '+(done?'g':'a')+'">'+o.status+'</span></div>';
       });
     });
     el.innerHTML=h;
@@ -2346,7 +2365,7 @@ function feedOrderView(id){
   if((o.isAuto||_isActSvc) && !o.activated){
     h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
   }
-  h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+o.username+'\')'):('tgLinkId(\''+(o.userId||'')+'\')'))+'">✍️ Написать клиенту</button>';
+  h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+String(o.username).replace(/[^A-Za-z0-9_]/g,'')+'\')'):('tgLinkId(\''+String(o.userId||'').replace(/[^0-9]/g,'')+'\')'))+'">✍️ Написать клиенту</button>';
   h+='<button class="btn sec" onclick="copyText(\''+(o.userId||'')+'\')" style="margin-top:8px">🆔 Копировать ID клиента ('+(o.userId||'')+')</button>';
   h+='<button class="btn danger" onclick="feedAct(\''+id+'\',\'cancel\')" style="margin-top:8px">🗑 Отменить заказ</button>';
   return h+'</div>';
@@ -2372,7 +2391,7 @@ function feedThread(id){
     var cd='';
     if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+(o.email||'').replace(/</g,'&lt;')+'</span></div>';
     if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+(o.passw||'').replace(/</g,'&lt;')+'</span></div>';
-    if(o.link)cd+='<div class="kv"><span class="k">🔗 Ссылка</span><span style="word-break:break-all"><a href="'+o.link+'" target="_blank" style="color:var(--acc);text-decoration:underline">Открыть ссылку ↗</a></span></div>';
+    if(o.link)cd+=linkRow('🔗 Ссылка',o.link);
     if(cd)h+='<div class="block" style="margin-top:8px">'+cd+'</div>';
     h+='<div class="glabel">💬 Переписка с клиентом</div>';
     if(!msgs.length){h+='<div class="note">Сообщений пока нет.</div>';}
@@ -2438,7 +2457,7 @@ function loadOrders(){
     d.orders.forEach(function(o){
       window._ordersData[o.id]=o;
       var tt=(o.service||'')+(o.plan?' '+o.plan:'');
-      h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+tt+' · '+o.status+'</div></div><span class="chev">›</span></div>';
+      h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+esc(o.user)+'</div><div class="sub">'+tt+' · '+o.status+'</div></div><span class="chev">›</span></div>';
     });
     el.innerHTML=h;
   });
@@ -2463,7 +2482,7 @@ function loadThread(id){
     if(o.uid)cd+='<div class="kv"><span class="k">ID клиента</span><span style="word-break:break-all">'+o.uid+'</span></div>';
     if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+o.email+'</span></div>';
     if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+o.passw+'</span></div>';
-    if(o.link)cd+='<div class="kv"><span class="k">🔗 Ссылка</span><span style="word-break:break-all"><a href="'+o.link+'" target="_blank" style="color:var(--acc);text-decoration:underline">Открыть ссылку ↗</a></span></div>';
+    if(o.link)cd+=linkRow('🔗 Ссылка',o.link);
     if(cd)h+='<div style="margin-top:8px">'+cd+'</div>';
     h+='</div>';
     h+='<div class="glabel">💬 Переписка</div>';
@@ -2562,7 +2581,7 @@ function loadShopOrders(){
     var h='';
     d.orders.forEach(function(o){
       window._shopOrders[o.id]=o;
-      h+='<div class="row" onclick="leaf(function(){return shopOrderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+o.user+'</div><div class="sub">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div></div><span class="tag '+soTag(o)+'">'+(o.status||'оплачен')+'</span></div>';
+      h+='<div class="row" onclick="leaf(function(){return shopOrderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+esc(o.user)+'</div><div class="sub">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div></div><span class="tag '+soTag(o)+'">'+(o.status||'оплачен')+'</span></div>';
     });
     el.innerHTML=h;
   });
@@ -2793,7 +2812,7 @@ function loadMiniApp(svc){
         +(dd.burned?(' · из них сожжено перебором: <b>'+dd.burned+'</b>'):'')+'</div>';}
       dd.recent.forEach(function(r){
         var _burn=(r.kind==='burn');
-        hh+='<div class="block" style="cursor:pointer'+(_burn?';border-left:3px solid '+C.red:'')+'" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+r.user+' · '+r.date+(_burn?' · <span class="neg">сожжён перебором</span>':'')+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
+        hh+='<div class="block" style="cursor:pointer'+(_burn?';border-left:3px solid '+C.red:'')+'" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+esc(r.user)+' · '+esc(r.date)+(_burn?' · <span class="neg">сожжён перебором</span>':'')+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
       });
       if(dd.burned)hh+='<div class="note" style="margin-top:8px">Красным — коды, помеченные использованными при переборе, без реальной активации. Проверить и вернуть целые: команда <code>/gpt_codes_recover</code> в боте.</div>';
       de.innerHTML=hh;
@@ -3284,7 +3303,7 @@ function loadPending(svc){
     Object.keys(bys).sort().forEach(function(s){
       h+='<div class="glabel">🌐 '+provName(svc,s)+' ('+bys[s].length+')</div>';
       bys[s].forEach(function(c){
-        h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+c.user+' · '+c.date+'</div>'+
+        h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+esc(c.user)+' · '+esc(c.date)+'</div>'+
            '<div class="sub" style="margin-top:4px">🔑 '+c.code+' · '+planLabel(svc,c.plan)+(c.org?'<br>🆔 '+c.org:'')+'</div>'+
            '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+c.code+'\',\'release\',\''+svc+'\')">↩️ В пул</button>'+
            '<button class="btn row2 danger" onclick="claudeCodeAction(\''+c.code+'\',\'delete\',\''+svc+'\')">🗑 Удалить</button></div></div>';

@@ -23,7 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import (
     ADMIN_ID, ADMIN_USERNAME, CHANNEL_ID, FREE_CREDITS, PERSONAL_USERNAME, REF_BONUS, REF_WELCOME_CREDITS,
     SHOP_CATALOG, WELCOME_BACK, WELCOME_NEW, bot, dp, is_admin,
-    strip_surrogates,
+    strip_surrogates, tg_name,
 )
 from db import (
     add_credits_batch, ensure_user, fk_get_order, get_coins, get_credits, get_gen_count,
@@ -403,7 +403,8 @@ async def noop_handler(cb: CallbackQuery):
 async def back_main(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     credits = await get_credits(cb.from_user.id)
-    _bm_text = f"👋 {cb.from_user.first_name}, баланс: <b>{credits} кредитов</b>\n\nВыбери действие 👇"
+    _bm_text = (f"👋 {tg_name(cb.from_user.first_name)}, баланс: "
+                f"<b>{credits} кредитов</b>\n\nВыбери действие 👇")
     try:
         await cb.message.edit_text(_bm_text, reply_markup=kb_main(), parse_mode="HTML")
     except Exception:
@@ -518,7 +519,8 @@ async def reply_main_menu(message: Message, state: FSMContext):
     await state.clear()
     credits = await get_credits(message.from_user.id)
     await message.answer(
-        f"👋 {message.from_user.first_name}, баланс: <b>{credits} кредитов</b>\n\nВыбери действие 👇",
+        f"👋 {tg_name(message.from_user.first_name)}, баланс: "
+        f"<b>{credits} кредитов</b>\n\nВыбери действие 👇",
         reply_markup=kb_main(), parse_mode="HTML"
     )
 

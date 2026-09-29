@@ -26,6 +26,7 @@ from config import (
     GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER, gpt_provider_name,
     GPT_ROUTE_LABELS, gpt_route_for_code, gpt_enabled_provider,
     GPT_ENABLED_PROVIDERS,
+    tg_name,
 )
 from runtime_state import (
     rt,
@@ -942,7 +943,7 @@ async def adm_gpt_history(cb: CallbackQuery):
         uid_str    = str(r["used_by"]) if r["used_by"] else "—"
         uname      = r["username"] or ""
         fname      = r["full_name"] or ""
-        tg_nick    = f"@{uname}" if uname else (fname if fname else f"id{uid_str}")
+        tg_nick    = f"@{uname}" if uname else (tg_name(fname) if fname else f"id{uid_str}")
         lines.append(
             f"\n{idx}. {tg_nick}  <i>{used_str}</i>\n"
             f"📧 {email_str}\n"
@@ -1165,9 +1166,12 @@ async def adm_gpt_pending_codes(cb: CallbackQuery):
         reserved = r["reserved_at"]
         date_str = reserved.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if reserved and hasattr(reserved, "strftime") else "—"
         uname = r["username"] or r["full_name"] or (f"id{r['pa_uid']}" if r["pa_uid"] else "—")
-        tg_str = f"@{uname}" if r["username"] else uname
+        tg_str = f"@{uname}" if r["username"] else tg_name(uname)
         _site = gpt_provider_name(r["provider"] or "987ai")
-        lines.append(f"• {await _who_user(r['code'])}  👤 {tg_str}  ⏱ {date_str}  🌐 {_site}")
+        # Здесь раньше стоял _who_user(r['code']) — помощник ждёт user_id, а ему
+        # давали код. Спасало только то, что int("GPTI-…") падает и он молча
+        # возвращает <code>…</code>. Пишем то же самое прямо и без запроса в БД.
+        lines.append(f"• <code>{r['code']}</code>  👤 {tg_str}  ⏱ {date_str}  🌐 {_site}")
         code_btns.append([
             InlineKeyboardButton(
                 text=f"🔓 В пул",

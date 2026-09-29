@@ -28,7 +28,7 @@ from config import (
     _anim_history, _check_hourly_limit, _classify_query_complexity, _claude_job_results, _get_conv, _gpt_retry_counts,
     _motion_history, _photo_history, _pool, _ref_bonus_for_count, _split_long_message, _strip_all_formatting,
     _verify_tg_init_data, _video_history, activate_chatgpt, bot, dp, build_system_prompt, claude_client,
-    clean_reply, pending_fk_payments, plan_name_to_key, strip_surrogates, _rand_sfx,
+    clean_reply, pending_fk_payments, plan_name_to_key, strip_surrogates, tg_name, _rand_sfx,
     CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER,
     claude_provider_base, claude_provider_name,
     GPT_PROVIDERS, GPT_PROVIDER_ORDER, GPT_DEFAULT_PROVIDER,
@@ -47,6 +47,7 @@ from db import (
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
+    webgen_job_start, webgen_job_finish,
     get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
     partner_stats, partner_recent_orders, list_partners, set_partner,
     set_partner_rate, add_partner_payout, partner_clients, partner_client_orders,
@@ -209,6 +210,99 @@ async def shop_price_pair(user_id: int, svc_key: str, base_price) -> tuple[int, 
     return _full, _pay, _pct, int(ctx.get("promo_left") or 0)
 
 
+# ── Техработы и блокировка для HTTP-запросов из мини-аппов ──────────────
+# Middleware aiogram (bot.py) видит только апдейты Telegram. Мини-апп ходит
+# в aiohttp напрямую, мимо неё: заблокированный клиент с ещё живым initData
+# продолжал запускать ПЛАТНЫЕ запросы к провайдеру, а включённые техработы
+# на мини-апп не действовали вовсе. Внешний аудит 29.09.2026, пункт №23.
+_maint_cache = {"val": "0", "ts": 0.0}
+
+
+async def maintenance_on() -> bool:
+    """Включён ли режим техработ. Значение из БД кэшируем на 10 секунд —
+    иначе каждый тап в мини-аппе тянул бы отдельный запрос в базу.
+    Этим же помощником пользуется middleware в bot.py, чтобы кэш был один
+    на весь процесс и режим включался/выключался везде одновременно."""
+    if _time_module.time() - _maint_cache["ts"] > 10:
+        try:
+            _maint_cache["val"] = await get_setting("maintenance", "0")
+        except Exception:
+            pass
+        _maint_cache["ts"] = _time_module.time()
+    return _maint_cache["val"] == "1"
+
+
+def maintenance_cache_reset() -> None:
+    """Сбросить кэш сразу после переключения режима из админки."""
+    _maint_cache["ts"] = 0.0
+
+
+async def _web_access_denied(uid, check_maintenance: bool = True):
+    """Можно ли дать ход пользовательскому запросу из мини-аппа.
+
+    Возвращает ("", "") — можно; иначе (код, текст для клиента).
+    check_maintenance=False — для ВЫДАЧИ уже оплаченного (активации):
+    деньги получены, и терять их из-за техработ нельзя; блокировка
+    клиента при этом продолжает действовать.
+    Админа шлюз не трогает никогда — иначе нечем будет чинить.
+    """
+    try:
+        _uid = int(uid)
+    except Exception:
+        return "auth", "Ошибка авторизации. Перезапусти мини-приложение."
+    if _uid == ADMIN_ID:
+        return "", ""
+    try:
+        if await is_blocked(_uid):
+            return "blocked", ("Доступ к боту закрыт. Если это ошибка — "
+                               f"напиши @{PERSONAL_USERNAME}.")
+    except Exception as _e_bl:
+        # База недоступна — не запираем клиента, но след оставляем.
+        logging.warning(f"_web_access_denied is_blocked uid={_uid}: {_e_bl}")
+    if check_maintenance:
+        try:
+            if await maintenance_on():
+                return "maintenance", "⚙️ Идут техработы. Загляни чуть позже 🙏"
+        except Exception as _e_mt:
+            logging.warning(f"_web_access_denied maintenance uid={_uid}: {_e_mt}")
+    return "", ""
+
+
+def _fk_body_preview(raw: str, limit: int = 200) -> str:
+    """Кусок тела вебхука для сообщения владельцу: без подписи и без разметки.
+
+    Тут было два изъяна сразу. Первый: тело вставлялось в HTML-сообщение как
+    есть — одна «<» в нём отменяла всё сообщение, и алерт о неизвестном IP
+    просто не приходил. Второй: в теле лежит SIGN, готовый аутентификатор
+    запроса. Внешний аудит 29.09.2026, пункты №22 и №28.
+    """
+    import re as _re_fb, html as _h_fb
+    _t = _re_fb.sub(r"(?i)(SIGN=)[^&\s]*", r"\1<скрыто>", str(raw or ""))
+    _t = _re_fb.sub(r'(?i)("SIGN"\s*:\s*")[^"]*"', r'\1<скрыто>"', _t)
+    return _h_fb.escape(strip_surrogates(_t[:limit]), quote=False)
+
+
+def _new_webgen_id() -> str:
+    """Короткий идентификатор оплаченной генерации (он же ключ в журнале)."""
+    import secrets as _sec_wg
+    return _sec_wg.token_urlsafe(10)
+
+
+def _webgen_err_resp(err: str):
+    """Один текст отказа на все четыре эндпоинта генерации."""
+    _msgs = {
+        "busy": "Уже запускаю — подожди пару секунд.",
+        "too_many": "Слишком много генераций одновременно. Дождись текущих.",
+        "blocked": ("Доступ к боту закрыт. Если это ошибка — "
+                    f"напиши @{PERSONAL_USERNAME}."),
+        "maintenance": "⚙️ Идут техработы. Загляни чуть позже 🙏",
+    }
+    _status = 403 if err == "blocked" else (503 if err == "maintenance" else 200)
+    return web.json_response({"ok": False, "error": err,
+                              "msg": _msgs.get(err, "Сейчас не получилось, попробуй ещё раз.")},
+                             status=_status)
+
+
 async def _webgen_guard(uid: int, kind: str, ttl: float = 45.0):
     """Защита платных генераций ИЗ МИНИ-АППА: двойной тап и лимит параллельных.
 
@@ -217,9 +311,15 @@ async def _webgen_guard(uid: int, kind: str, ttl: float = 45.0):
     дело на телефоне) списывал кредиты ДВАЖДЫ и запускал две генерации.
 
     Возвращает (ok, err, click_key). err: 'busy' — дубль клика,
-    'too_many' — уже идёт максимум параллельных генераций.
+    'too_many' — уже идёт максимум параллельных генераций,
+    'blocked' — клиент заблокирован, 'maintenance' — режим техработ.
     """
     _ck = f"webgen:{kind}:{uid}"
+    # Сначала право запускать вообще, и только потом замки: иначе отказ
+    # заблокированному оставлял бы за ним замок клика на 45 секунд.
+    _den, _ = await _web_access_denied(uid)
+    if _den:
+        return False, _den, _ck
     if not try_acquire_click(_ck, ttl=ttl):
         return False, "busy", _ck
     try:
@@ -291,28 +391,51 @@ async def _check_can_generate(cb_or_msg, uid: int, kind: str = "photo") -> bool:
 # Таблица active_generations надёжнее чем set в памяти - переживает перезапуски бота.
 # In-memory set оставлен для обратной совместимости старого кода.
 
+# Пространство ключей для блокировок PostgreSQL «на пользователя». Отдельное
+# число, чтобы наши блокировки не пересекались с чужими, если такие появятся.
+_GEN_LOCK_NS = 424242
+
+# Метка ЭТОГО запуска процесса. По ней разбор потерянных генераций отличает
+# «моя задача, идёт прямо сейчас» от «осталась от прошлого процесса, который
+# уже не вернётся». Внешний аудит 29.09.2026, пункт №11.
+_WORKER_ID = uuid.uuid4().hex[:12]
+
+
 async def mark_generation_active(user_id: int, kind: str = "photo") -> bool:
     """Помечает юзера как генерирующего. Допускает до MAX_CONCURRENT_GENS записей.
     Возвращает False если лимит исчерпан.
+
+    Счёт и вставка идут ПОД БЛОКИРОВКОЙ на этого пользователя. Раньше между
+    COUNT и INSERT был await, и два одновременных запроса (двойной тап в
+    мини-аппе, две вкладки, вебхук и кнопка) успевали оба увидеть «лимит не
+    исчерпан» и оба вставить строку. Лимит переставал быть лимитом, а каждая
+    лишняя параллельная генерация — это оплаченный запрос к провайдеру.
+    Блокировка живёт до конца транзакции и снимается сама, даже если процесс
+    упадёт посреди неё. Внешний аудит 29.09.2026, пункт №26.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "DELETE FROM active_generations WHERE user_id = $1 AND started_at < NOW() - INTERVAL '30 minutes'",
-            user_id
-        )
-        count = await conn.fetchval(
-            "SELECT COUNT(*) FROM active_generations WHERE user_id = $1",
-            user_id
-        ) or 0
-        if count >= MAX_CONCURRENT_GENS:
-            return False
-        await conn.execute(
-            "INSERT INTO active_generations (user_id, kind) VALUES ($1, $2)",
-            user_id, kind
-        )
-        _active_generations.add(user_id)
-        return True
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1::int, $2::int)",
+                _GEN_LOCK_NS, int(user_id) % 2147483647
+            )
+            await conn.execute(
+                "DELETE FROM active_generations WHERE user_id = $1 AND started_at < NOW() - INTERVAL '30 minutes'",
+                user_id
+            )
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM active_generations WHERE user_id = $1",
+                user_id
+            ) or 0
+            if count >= MAX_CONCURRENT_GENS:
+                return False
+            await conn.execute(
+                "INSERT INTO active_generations (user_id, kind) VALUES ($1, $2)",
+                user_id, kind
+            )
+    _active_generations.add(user_id)
+    return True
 
 
 async def unmark_generation_active(user_id: int):
@@ -413,7 +536,17 @@ async def fk_check_order_status(order_id: str) -> dict | None:
                         # endpoint'ы (они дадут тот же результат)
                         return None
 
-                    order = orders[0]
+                    # По одному нашему счёту у FreeKassa может лежать НЕСКОЛЬКО
+                    # попыток оплаты: клиент закрыл форму, вернулся, оплатил со
+                    # второго раза. Брать просто первую запись нельзя — если
+                    # первой окажется брошенная попытка, оплаченный заказ мы
+                    # посчитаем неоплаченным. Берём оплаченную, если она есть.
+                    # Внешний аудит 29.09.2026, рядом с пунктом №24.
+                    order = next((_o for _o in orders if _o.get("status") == 1), orders[0])
+                    if len(orders) > 1:
+                        logging.info(
+                            f"FK API {endpoint}: paymentId={order_id} — попыток оплаты "
+                            f"{len(orders)}, статусы {[_o.get('status') for _o in orders]}")
                     fk_int_status = order.get("status")
                     merchant_id_fk = order.get("merchant_order_id", "")
                     fk_internal_id = order.get("fk_order_id", "")
@@ -783,25 +916,32 @@ async def process_referral_bonus(user_id: int, order_amount: float = 0):
             return
         # Если реферер заблокирован - не платим бонус, но помечаем что «обработано»
         # чтобы не дёргать эту функцию каждый раз
-        # Атомарно захватываем «бонус ещё не выплачен» — защита от гонки двух параллельных платежей
-        _claim = await conn.execute(
-            "UPDATE users SET ref_bonus_paid=TRUE WHERE user_id=$1 AND ref_bonus_paid=FALSE", user_id
-        )
-        if _claim.split()[-1] == "0":
-            # уже обработано другим платежом/потоком — выходим без повторного начисления
-            return
-        # Если реферер заблокирован - бонус не платим (флаг уже установлен выше)
-        if await is_blocked(referrer_id):
-            logging.info(f"Ref bonus SKIPPED: referrer {referrer_id} is blocked")
-            return
-        # Считаем сколько у реферера уже было платящих (без текущего, который мы только что пометили)
-        paid_count = (await conn.fetchval(
-            "SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE",
-            referrer_id
-        ) or 1) - 1
-
-    bonus_amount = _ref_bonus_for_count(paid_count)
-    await add_credits_batch(referrer_id, bonus_amount, source="referral", days_valid=30)
+        # Захват флага и НАЧИСЛЕНИЕ — в одной транзакции. Раньше флаг
+        # коммитился сразу, а кредиты начислялись после выхода из блока:
+        # сбой между ними навсегда помечал бонус выплаченным, хотя его никто
+        # не получил, и повторить было нельзя. Внешний аудит 29.09.2026.
+        bonus_amount = 0
+        async with conn.transaction():
+            # Атомарно захватываем «бонус ещё не выплачен» — защита от гонки двух параллельных платежей
+            _claim = await conn.execute(
+                "UPDATE users SET ref_bonus_paid=TRUE WHERE user_id=$1 AND ref_bonus_paid=FALSE", user_id
+            )
+            if _claim.split()[-1] == "0":
+                # уже обработано другим платежом/потоком — выходим без повторного начисления
+                return
+            # Если реферер заблокирован - бонус не платим (флаг уже установлен выше).
+            # Выход отсюда КОММИТИТ флаг — так и задумано: больше не дёргаем.
+            if await is_blocked(referrer_id):
+                logging.info(f"Ref bonus SKIPPED: referrer {referrer_id} is blocked")
+                return
+            # Считаем сколько у реферера уже было платящих (без текущего, который мы только что пометили)
+            paid_count = (await conn.fetchval(
+                "SELECT COUNT(*) FROM users WHERE referred_by=$1 AND ref_bonus_paid=TRUE",
+                referrer_id
+            ) or 1) - 1
+            bonus_amount = _ref_bonus_for_count(paid_count)
+            await add_credits_batch(referrer_id, bonus_amount, source="referral",
+                                    days_valid=30, conn=conn)
 
     # Начисляем монетки - 10% от суммы покупки реферала.
     # Сумму берём из КОНКРЕТНОГО заказа, который сейчас оплачен: «последний
@@ -938,11 +1078,13 @@ async def process_partner_earning(client_id: int, order_id: str, amount_rub) -> 
         _idx = int(_parts[2]) if len(_parts) > 2 and _parts[2].isdigit() else 0
     except Exception:
         _idx = 0
-    _s = SHOP_CATALOG.get(_svc) or {}
+    # Тариф ищем по ИМЕНИ из заказа, индекс — запасной путь: каталог мог
+    # измениться между оплатой и расчётом доли партнёра.
+    _s, _p_ord = _plan_by_order(_svc, _idx, _pack_plan_name(_pack))
     _plans = _s.get("plans") or []
-    if not _plans or _idx >= len(_plans):
+    if not _p_ord:
         return
-    _base = int(_plans[_idx].get("price") or 0)
+    _base = int(_p_ord.get("price") or 0)
     if _base <= 0:
         return
     ctx = await partner_ctx(int(client_id), _svc)
@@ -975,7 +1117,7 @@ async def process_partner_earning(client_id: int, order_id: str, amount_rub) -> 
         await bot.send_message(
             int(ctx["partner_id"]),
             f"💰 <b>Продажа по твоей ссылке</b>\n\n"
-            f"📦 {(_s.get('name') or _svc)} · {_plans[_idx].get('name','')}\n"
+            f"📦 {(_s.get('name') or _svc)} · {_p_ord.get('name','')}\n"
             f"💳 Клиент оплатил: <b>{_paid:.0f} ₽</b>\n"
             f"🤝 Твоя доля: <b>{_partner_sum:.0f} ₽</b>\n\n"
             f"Всего к выплате: <b>{float(_st.get('balance') or 0):.0f} ₽</b>",
@@ -1621,7 +1763,9 @@ async def _show_profile(message: Message, user, edit: bool = False):
             pur_lines.append(f"  \u2022 {date_str} \u2014 {label} \u2014 <b>{amount}\u20bd</b>")
         purchases_block = "\n\n\ud83e\uddfe <b>\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a:</b>\n" + "\n".join(pur_lines)
 
-    safe_name = strip_surrogates(user.full_name or "")
+    # Имя идёт в HTML-текст профиля: без экранирования «<» в имени
+    # отменял всё сообщение и клиент вместо профиля видел ошибку.
+    safe_name = tg_name(user.full_name)
     # \u0411\u043b\u043e\u043a \u0440\u0435\u0444\u0435\u0440\u0430\u043b\u043e\u0432. \u0421\u0441\u044b\u043b\u043a\u0443 \u043f\u043e\u043a\u0430\u0437\u044b\u0432\u0430\u0435\u043c \u0412\u0421\u0415\u0413\u0414\u0410, \u0430 \u043d\u0435 \u0442\u043e\u043b\u044c\u043a\u043e \u0442\u0435\u043c, \u043a\u0442\u043e \u0443\u0436\u0435
     # \u043a\u043e\u0433\u043e-\u0442\u043e \u043f\u0440\u0438\u0432\u0451\u043b: \u0440\u0430\u043d\u044c\u0448\u0435 \u043d\u043e\u0432\u0438\u0447\u043e\u043a \u0432\u0438\u0434\u0435\u043b \u043f\u0443\u0441\u0442\u043e\u0442\u0443 \u0438 \u043d\u0435 \u043f\u043e\u043d\u0438\u043c\u0430\u043b, \u0433\u0434\u0435 \u0435\u0451 \u0432\u0437\u044f\u0442\u044c,
     # \u0430 \u0432\u043e \u0432\u0440\u0435\u043c\u044f \u043a\u043e\u043d\u043a\u0443\u0440\u0441\u0430 \u0441\u0441\u044b\u043b\u043a\u0430 \u043d\u0443\u0436\u043d\u0430 \u0432 \u043f\u0435\u0440\u0432\u0443\u044e \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438\u043c\u0435\u043d\u043d\u043e \u043d\u043e\u0432\u0438\u0447\u043a\u0443.
@@ -2012,7 +2156,7 @@ async def _show_users_page(cb: CallbackQuery, page: int):
         lines = []
         for r in rows:
             username = (r['username'] or "").strip()
-            full_name = (r['full_name'] or "").strip()
+            full_name = tg_name((r['full_name'] or "").strip())
             uid = r['user_id']
             if username:
                 uname = f"@{username}"
@@ -2148,7 +2292,7 @@ async def _show_payments_page(cb: CallbackQuery, page: int):
                 pay_lines = []
                 for r in rows:
                     username = (r['username'] or "").strip()
-                    full_name = (r['full_name'] or "").strip()
+                    full_name = tg_name((r['full_name'] or "").strip())
                     uid = r['user_id']
                     if username:
                         uname = f"@{username}"
@@ -4001,6 +4145,10 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data(_idata)
         if not uid:
             return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
+        _den, _den_msg = await _web_access_denied(uid)
+        if _den:
+            return web.json_response({"ok": False, "error": _den, "msg": _den_msg},
+                                     status=403 if _den == "blocked" else 503)
         key = str(body.get("key", "")).strip()
         try:
             idx = int(body.get("planIdx", 0))
@@ -4011,8 +4159,11 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         s = SHOP_CATALOG.get(key)
         if not s or not s.get("plans") or idx < 0 or idx >= len(s["plans"]):
             return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        # Снимок выбранного тарифа: имя уедет в заказ, чтобы выдача не
+        # зависела от того, не сдвинулись ли индексы в каталоге до оплаты.
+        _p_sel = s["plans"][idx]
         # Розничная цена и цена ЭТОГО клиента (у клиента партнёра — с наценкой).
-        _base_price = int(s["plans"][idx].get("price", 0) or 0)
+        _base_price = int(_p_sel.get("price", 0) or 0)
         price = await shop_price_for(int(uid), key, _base_price)
         if price <= 0:
             return web.json_response({"ok": False, "error": "price"}, status=400)
@@ -4068,21 +4219,25 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         import time as _t
         order_id = f"shop_{uid}_{int(_t.time())}{_rand_sfx()}"
 
-        if _coins_used > 0:
-            # Списываем монетки ДО создания заказа: если не хватило — заказ не создаём.
-            if not await deduct_coins(int(uid), _coins_used,
-                                      reason=f"оплата заказа {order_id}"):
-                return web.json_response({"ok": False, "error": "Недостаточно монеток"})
-
         pool = await get_pool()
         async with pool.acquire() as conn:
+          # Списание монеток и создание заказа — ОДНОЙ транзакцией. Раньше
+          # списание коммитилось отдельно и раньше вставки: при сбое между
+          # ними монетки уходили, заказа не возникало, и вернуть их было не
+          # по чему — фоновый возврат ищет именно заказ. Внешний аудит
+          # 29.09.2026.
+          async with conn.transaction():
+            if _coins_used > 0:
+                if not await deduct_coins(int(uid), _coins_used,
+                                          reason=f"оплата заказа {order_id}", conn=conn):
+                    return web.json_response({"ok": False, "error": "Недостаточно монеток"})
             if _coins_used > 0 and _rest == 0:
                 # Полностью оплачено монетками — заказ сразу оплачен.
                 await conn.execute(
                     "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
                     "promo_code, coins_spent, status, paid_at) "
                     "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
-                    order_id, int(uid), f"shop:{key}:{idx}", _promo_applied, _coins_used)
+                    order_id, int(uid), _pack_shop(key, idx, _p_sel.get("name","")), _promo_applied, _coins_used)
             else:
                 # coins_spent проставляем всегда: если клиент не доплатит,
                 # фоновая задача вернёт монетки через сутки.
@@ -4090,7 +4245,7 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                     "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
                     "promo_code, coins_spent) "
                     "VALUES ($1,$2,0,$3,$4,$5,$6) ON CONFLICT (order_id) DO NOTHING",
-                    order_id, int(uid), _rest, f"shop:{key}:{idx}", _promo_applied, _coins_used)
+                    order_id, int(uid), _rest, _pack_shop(key, idx, _p_sel.get("name","")), _promo_applied, _coins_used)
             try:
                 _num = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
             except Exception:
@@ -4985,6 +5140,13 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
         if action == "cancel":
             async with pool.acquire() as conn:
                 await conn.execute("UPDATE fk_orders SET status='cancelled' WHERE order_id=$1", oid)
+            # Отменённый заказ не должен оставлять живой резерв: по нему клиент
+            # мог запустить автоматическую активацию уже после отмены.
+            if uid:
+                try:
+                    await delete_pending_activation(int(uid), oid)
+                except Exception as _e_dc:
+                    logging.warning(f"cancel: резерв {oid}: {_e_dc}")
             try:
                 await set_linkpay_status(oid, "cancelled")  # если есть ручной заказ
             except Exception:
@@ -5013,6 +5175,17 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                     await set_linkpay_status(oid, "done")
                 except Exception:
                     pass
+            # Резерв ЭТОГО заказа закрываем: иначе клиент, открыв ранее
+            # выданную кнопку, запускал автоматическую активацию поверх уже
+            # выданной вручную подписки и тратил зарезервированный код.
+            # Отдельно: UPDATE выше ищет код по order_id, а у ещё не
+            # активированного резерва order_id обычно пуст — он бы и не
+            # сработал. Внешний аудит 29.09.2026.
+            if uid:
+                try:
+                    await delete_pending_activation(int(uid), oid)
+                except Exception as _e_dp:
+                    logging.warning(f"manual: резерв {oid}: {_e_dp}")
             await set_setting(f"order_done:{oid}", "1")
             if uid:
                 try:
@@ -5041,7 +5214,11 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                 # чтобы не потратить на один заказ второй код. Новый берём только если
                 # прежнего нет (pending истёк и код вернулся в пул).
                 _pend = await get_pending_activation(uid)
-                if _pend and _pend.get("code"):  # тот же выданный код, новый НЕ берём
+                # Резерв берём только если он ОТ ЭТОГО ЗАКАЗА. Он хранится по
+                # клиенту, и при двух оплаченных заказах подряд код второго
+                # мог быть перепривязан к первому. Внешний аудит 29.09.2026.
+                if (_pend and _pend.get("code")
+                        and str(_pend.get("order_id") or "") == str(oid)):
                     _code = _pend["code"]; _prov = _pend.get("provider") or "987ai"
                 else:
                     _code, _prov = await _gpt_pick_code(plan_key)
@@ -5506,6 +5683,17 @@ async def api_admin_shop_order_action_handler(request: web.Request) -> web.Respo
                     oid)
                 o = await conn.fetchrow("SELECT user_id FROM fk_orders WHERE order_id=$1", oid)
                 uid = o["user_id"] if o else None
+            # Резерв ЭТОГО заказа закрываем: иначе клиент, открыв ранее
+            # выданную кнопку, запускал автоматическую активацию поверх уже
+            # выданной вручную подписки и тратил зарезервированный код.
+            # Отдельно: UPDATE выше ищет код по order_id, а у ещё не
+            # активированного резерва order_id обычно пуст — он бы и не
+            # сработал. Внешний аудит 29.09.2026.
+            if uid:
+                try:
+                    await delete_pending_activation(int(uid), oid)
+                except Exception as _e_dp:
+                    logging.warning(f"manual: резерв {oid}: {_e_dp}")
             await set_setting(f"order_done:{oid}", "1")
             if uid:
                 try:
@@ -5671,27 +5859,38 @@ async def api_admin_balance_handler(request: web.Request) -> web.Response:
         except Exception: body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
-        from db import add_credits
+        from db import add_credits, admin_set_balance, admin_deduct_balance
         uid = int(body.get("id")); op = str(body.get("op", "")); amount = int(float(body.get("amount") or 0))
         pool = await get_pool()
         async with pool.acquire() as conn:
             _bal_before = await conn.fetchval("SELECT credits FROM users WHERE user_id=$1", uid) or 0
+        # «Установить» и «списать» идут через согласованную правку: раньше они
+        # меняли только users.credits, партии оставались нетронутыми и позже
+        # сгорали ЕЩЁ РАЗ, съедая уже купленные кредиты клиента.
+        # Внешний аудит 29.09.2026, пункт №19.
+        _sync = None
         if op == "set":
-            async with pool.acquire() as conn:
-                await conn.execute("UPDATE users SET credits=$1 WHERE user_id=$2", max(0, amount), uid)
+            _sync = await admin_set_balance(uid, max(0, amount))
         elif op == "add":
             await add_credits(uid, amount, source="admin_manual")
         elif op == "deduct":
-            await add_credits(uid, -amount)
+            _sync = await admin_deduct_balance(uid, amount)
         else:
             return web.json_response({"ok": False, "msg": "Неизвестная операция"})
+        if isinstance(_sync, dict) and _sync.get("error") == "no_user":
+            return web.json_response({"ok": False, "msg": "Такого клиента нет в базе"})
         async with pool.acquire() as conn:
             bal = await conn.fetchval("SELECT credits FROM users WHERE user_id=$1", uid)
         # След в журнале: раньше правка баланса через мини-апп не логировалась
         # вообще — при разборе спора опереться было не на что.
         try:
+            _extra = ""
+            if isinstance(_sync, dict):
+                _extra = (f" batches_before={_sync.get('batches_before')}"
+                          f" added={_sync.get('added')} taken={_sync.get('taken')}")
             await log_event(uid, "admin_balance",
-                            f"op={op} amount={amount} before={_bal_before} after={int(bal or 0)} by=miniapp")
+                            f"op={op} amount={amount} before={_bal_before} "
+                            f"after={int(bal or 0)} by=miniapp" + _extra)
         except Exception:
             pass
         return web.json_response({"ok": True, "balance": int(bal or 0)})
@@ -6527,6 +6726,7 @@ async def api_admin_setting_save_handler(request: web.Request) -> web.Response:
             await set_setting("gpt_install_text", str(body.get("text", "")))
         elif kind == "maintenance":
             await set_setting("maintenance", "1" if body.get("on") else "0")
+            maintenance_cache_reset()   # чтобы режим включился сразу, а не через 10 с
         elif kind == "appstore":
             if body.get("rate") is not None:
                 await set_setting("nsgifts_usd_rate", str(int(float(body["rate"]))))
@@ -7081,6 +7281,45 @@ async def api_admin_broadcast_handler(request: web.Request) -> web.Response:
         logging.error(f"api_admin_broadcast: {_e}")
         return web.json_response({"ok": False}, status=500)
 
+def _pack_shop(key, idx, plan_name: str = "") -> str:
+    """Строка заказа для колонки pack: shop:КЛЮЧ:ИНДЕКС:ИМЯ_ТАРИФА.
+
+    Четвёртый сегмент — СНИМОК имени тарифа на момент покупки. Раньше в
+    заказе жил только позиционный индекс в каталоге, и стоило удалить более
+    ранний тариф, как индексы съезжали: оплаченный заказ выдавал уже другой
+    товар по старой цене. Внешний аудит 29.09.2026.
+
+    Старые парсеры читают [1] и [2] и продолжают работать. Двоеточие из
+    имени убираем, чтобы не разъехалась разбивка.
+    """
+    _nm = str(plan_name or "").replace(":", " ").strip()
+    return f"shop:{key}:{idx}" + (f":{_nm}" if _nm else "")
+
+
+def _plan_by_order(shop_key: str, plan_idx: int, plan_name: str = ""):
+    """Возвращает (сервис, тариф) для заказа: сперва по ИМЕНИ, потом по индексу.
+
+    Имя — то, что клиент реально купил. Индекс остаётся запасным путём для
+    заказов, созданных до появления четвёртого сегмента.
+    """
+    _s = SHOP_CATALOG.get(shop_key, {}) or {}
+    _plans = _s.get("plans", []) or []
+    _nm = str(plan_name or "").strip()
+    if _nm:
+        for _p in _plans:
+            if str(_p.get("name", "")).strip() == _nm:
+                return _s, _p
+        logging.warning(f"заказ: тариф {_nm!r} у {shop_key!r} не найден в каталоге — "
+                        f"беру по индексу {plan_idx}")
+    return _s, (_plans[plan_idx] if 0 <= plan_idx < len(_plans) else {})
+
+
+def _pack_plan_name(pack: str) -> str:
+    """Имя тарифа из pack (4-й сегмент). Пусто — старый заказ."""
+    _pp = str(pack or "").split(":")
+    return _pp[3].strip() if len(_pp) > 3 else ""
+
+
 async def _admin_fail_shot(text, screenshot=None, order_id=None):
     """Шлёт админу текст о сбое и, если есть, скриншот сайта отдельным фото.
 
@@ -7255,7 +7494,7 @@ async def _run_activation_job(
         # ── Тестовый режим: код начинается с TEST → пропускаем Playwright ────
         if code.startswith("TEST-"):
             await asyncio.sleep(3)  # имитируем задержку активации
-            await delete_pending_activation(user_id)
+            await delete_pending_activation(user_id, order_id)
             _activation_jobs[job_id] = {"status": "done", "success": True}
             try:
                 await bot.send_message(
@@ -7950,7 +8189,7 @@ async def _run_activation_job(
                 except Exception as _e_rl:
                     _rel_ok = False
                     logging.warning(f"_safe_release {code}: {_e_rl}")
-                await delete_pending_activation(user_id)
+                await delete_pending_activation(user_id, order_id)
                 logging.warning(f"GPT ios rescue: uid={user_id} нет iOS-кодов, ручной режим")
                 # Писать «возвращён в пул» независимо от исхода нельзя: если
                 # сайт не подтвердил, что код цел, он остался за клиентом — и
@@ -8005,7 +8244,7 @@ async def _run_activation_job(
                         await release_gpt_code(_new)   # даже не отправляли
                     except Exception:
                         pass
-                    await delete_pending_activation(user_id)
+                    await delete_pending_activation(user_id, order_id)
                     _activation_jobs[job_id] = {"status": "done", "success": True}
                     logging.warning(f"ios rescue: {_old_code} закрыт сверкой — "
                                     f"iOS-код {_new} не потрачен.")
@@ -8240,7 +8479,7 @@ async def _run_activation_job(
         if result.get("success"):
             _email = result.get("email") or _extract_email_from_token(access_token)
             await mark_gpt_code_used(code, user_id, order_id, _email)
-            await delete_pending_activation(user_id)
+            await delete_pending_activation(user_id, order_id)
             # Номер заказа + FreeKassa для сообщений клиенту
             _ord_ok = await fk_get_order(order_id)
             _fkno_ok = (_ord_ok or {}).get("fk_intid") or ""
@@ -9078,7 +9317,8 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
                 return None
             _idx = int(_pack.split(":")[2]) if _pack.count(":") >= 2 and _pack.split(":")[2].isdigit() else 0
             _plans = _s.get("plans", [])
-            _plan_name = _plans[_idx]["name"] if 0 <= _idx < len(_plans) else "Plus"
+            _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(_pack))[1].get("name")
+                          or "Plus")
 
         # Клиент может жать кнопку много раз — шлём не чаще раза в 30 минут.
         try:
@@ -9152,6 +9392,20 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             _code_auth_fail(_ip_fb)
     if not user_id:
         return _resp({"success": False, "error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
+    # Выдача уже оплаченного: режим техработ тут не применяем (деньги
+    # получены), а вот заблокированному клиенту код не отдаём — и сразу
+    # говорим об этом владельцу, чтобы отказ не остался незамеченным.
+    _den, _den_msg = await _web_access_denied(user_id, check_maintenance=False)
+    if _den:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"\U0001f6ab <b>Заблокированный клиент пытался активировать ChatGPT</b>\n"
+                f"\U0001f464 {await _who_user(user_id)}",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return _resp({"success": False, "error": _den_msg}, 403)
     if not access_token.startswith("eyJ") or len(access_token) < 100:
         return _resp({"success": False, "error": "Некорректный токен. Скопируй текст со страницы ещё раз."})
 
@@ -9185,6 +9439,81 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     # У Claude и Perplexity предупреждение НЕ трогал — там оно про другое:
     # их коды дороже и выдаются штучно.
 
+
+    # ── ЗАМКИ И ПРОВЕРКИ СТАВИМ ДО ЛЮБЫХ ДЕЙСТВИЙ С КОДОМ ──────────────────
+    # Раньше этот блок стоял НИЖЕ: до него успевали отработать подмена сайта
+    # и смена маршрута, а обе возвращают прежний код в пул и переписывают
+    # резерв. Второй запрос клиента успевал отдать в общий пул код, которым
+    # первый прямо сейчас активирует подписку, и только потом получал
+    # «активация уже идёт». Внешний аудит 29.09.2026.
+
+    # Заказ мог быть ЗАКРЫТ владельцем: «Активировали вручную» или отмена.
+    # Резерв при этом оставался, и клиент, открыв старую кнопку, тратил
+    # зарезервированный код поверх уже выданной подписки.
+    _oid_pend = pending.get("order_id") or ""
+    if _oid_pend:
+        try:
+            if (await get_setting(f"order_done:{_oid_pend}", "") or "").strip() == "1":
+                await delete_pending_activation(user_id, _oid_pend)
+                logging.info(f"GPT: заказ {_oid_pend} закрыт вручную — активацию не запускаю")
+                return _resp({"success": False,
+                              "error": "Эта подписка уже активирована. Если что-то не так — "
+                                       f"напиши @{PERSONAL_USERNAME}."})
+            _ord_row = await fk_get_order(_oid_pend)
+            _ord_st = ((_ord_row or {}).get("status") or "").strip().lower()
+            if _ord_st in ("cancelled", "refunded"):
+                await delete_pending_activation(user_id, _oid_pend)
+                logging.info(f"GPT: заказ {_oid_pend} в статусе {_ord_st} — активацию не запускаю")
+                return _resp({"success": False,
+                              "error": f"Заказ закрыт. Напиши @{PERSONAL_USERNAME}."})
+        except Exception as _e_ord:
+            logging.warning(f"GPT: проверка состояния заказа {_oid_pend}: {_e_ord}")
+
+    # 1) Замок в памяти процесса: если активация уже крутится — отдаём ТОТ ЖЕ
+    #    job вместо запуска второго.
+    _prev_job = _gpt_job_active.get(user_id)
+    if _prev_job:
+        _pj = _activation_jobs.get(_prev_job)
+        if _pj and _pj.get("status") != "done":
+            logging.info(f"GPT activation dedupe: user={user_id} уже выполняется job={_prev_job}")
+            return _resp({"job_id": _prev_job, "status": "started"})
+
+    # 2) Кулдаун проверяем ДО захвата замка в БД. Раньше было наоборот: замок
+    #    брался, кулдаун отбивал запрос, обработчик выходил — и замок висел
+    #    десять минут при том, что задачи нет. Клиент видел «активация уже
+    #    выполняется» и ждал впустую. Внешний аудит 29.09.2026.
+    try:
+        _wait_s = await activation_cooldown(f"gptretry:{user_id}", seconds=60)
+    except Exception as _e_cd:
+        logging.warning(f"activation_cooldown uid={user_id}: {_e_cd}")
+        _wait_s = 0
+    if _wait_s:
+        logging.info(f"GPT: попытка чаще раза в минуту uid={user_id}, ждать {_wait_s} c")
+        return _resp({"success": False,
+                      "error": f"Подожди {_wait_s} сек — предыдущая попытка ещё обрабатывается. "
+                               f"Результат придёт в чат бота."})
+
+    # 3) Замок в БД: словарь выше живёт в памяти процесса и обнуляется при
+    #    каждом деплое, после чего два параллельных запуска забирали ДВА кода.
+    _claimed_lock = False
+    try:
+        if not await claim_gpt_activation(user_id):
+            logging.info(f"GPT activation dedupe (БД): user={user_id} активация уже идёт")
+            return _resp({"success": False,
+                          "error": "Активация уже выполняется. Подожди пару минут — "
+                                   "результат придёт в чат."})
+        _claimed_lock = True
+    except Exception as _e_claim:
+        logging.warning(f"claim_gpt_activation: {_e_claim}")
+
+    async def _drop_lock():
+        """Снять замок на РАННЕМ выходе: задача не создана, её finally не будет."""
+        if not _claimed_lock:
+            return
+        try:
+            await release_gpt_activation(user_id)
+        except Exception as _e_rl:
+            logging.warning(f"release_gpt_activation uid={user_id}: {_e_rl}")
 
     # Всегда используем pending["code"] — он актуальный даже после retry
     # URL-код от клиента игнорируем — pending является авторитетным источником
@@ -9236,6 +9565,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     # Для сайта aipro нужен полный Session JSON. Если клиент прислал сырой session — берём его,
     # иначе (старый клиент прислал только токен) для aipro активация невозможна.
     if provider in ("bpa", "aipro", "kkqq", "redeem") and not session_raw:
+        # Замок уже взят выше — снимаем, иначе клиент, вставивший не тот текст,
+        # десять минут будет получать «активация уже выполняется».
+        await _drop_lock()
         return _resp({"success": False, "error": "Обнови мини-приложение и вставь весь текст со страницы сессии заново."})
 
     # ── Выбор маршрута по плану аккаунта ────────────────────────────────────
@@ -9341,7 +9673,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                     await release_gpt_code(code)
                 except Exception:
                     pass
-                await delete_pending_activation(user_id)
+                await delete_pending_activation(user_id, order_id)
                 _lbl = GPT_ROUTE_LABELS.get(_need_route, _need_route)
                 try:
                     await bot.send_message(
@@ -9364,44 +9696,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                         parse_mode="HTML")
                 except Exception:
                     pass
+                await _drop_lock()
                 return _resp({"success": False,
                               "error": "Активация уйдёт вручную — Александр сделает в течение часа."})
-
-    # ЗАЩИТА ОТ ДВОЙНОЙ АКТИВАЦИИ: если у клиента уже крутится активация — возвращаем
-    # ТОТ ЖЕ job вместо запуска второго. Иначе два параллельных запуска берут по коду
-    # из пула, первый активирует Plus, а второй видит «на аккаунте уже есть подписка».
-    _prev_job = _gpt_job_active.get(user_id)
-    if _prev_job:
-        _pj = _activation_jobs.get(_prev_job)
-        if _pj and _pj.get("status") != "done":
-            logging.info(f"GPT activation dedupe: user={user_id} уже выполняется job={_prev_job}")
-            return _resp({"job_id": _prev_job, "status": "started"})
-
-    # Тот же замок, но в БД: словарь выше живёт в памяти процесса и обнуляется
-    # при каждом деплое, после чего два параллельных запуска забирали ДВА кода.
-    try:
-        if not await claim_gpt_activation(user_id):
-            logging.info(f"GPT activation dedupe (БД): user={user_id} активация уже идёт")
-            return _resp({"success": False,
-                          "error": "Активация уже выполняется. Подожди пару минут — "
-                                   "результат придёт в чат."})
-    except Exception as _e_claim:
-        logging.warning(f"claim_gpt_activation: {_e_claim}")
-
-    # Не чаще одной попытки в минуту на клиента. Раньше клиент мог долбить
-    # «Активировать»/«Попробовать снова» без пауз: каждое нажатие поднимало
-    # ПОЛНУЮ цепочку по сайтам (браузер, 5 минут опроса) и слало админу пачку
-    # алертов. Отметка живёт в БД и переживает рестарт.
-    try:
-        _wait_s = await activation_cooldown(f"gptretry:{user_id}", seconds=60)
-    except Exception as _e_cd:
-        logging.warning(f"activation_cooldown uid={user_id}: {_e_cd}")
-        _wait_s = 0
-    if _wait_s:
-        logging.info(f"GPT: попытка чаще раза в минуту uid={user_id}, ждать {_wait_s} c")
-        return _resp({"success": False,
-                      "error": f"Подожди {_wait_s} сек — предыдущая попытка ещё обрабатывается. "
-                               f"Результат придёт в чат бота."})
 
     job_id = str(uuid.uuid4())[:12]
     _activation_jobs[job_id] = {"status": "pending"}
@@ -9550,35 +9847,82 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             pass
 
     # 1. Атомарно помечаем заказ как paid - если уже было paid, mark_paid вернёт False
-    was_marked = await fk_mark_paid(order_id)
+    # Отметка об оплате и начисление кредитов — ОДНОЙ транзакцией.
+    # Раньше fk_mark_paid коммитился сам по себе, и рестарт Railway между ним
+    # и начислением оставлял клиента без денег и без кредитов, а заказ — уже
+    # 'paid', то есть невосстановимым: вебхук отвечает YES, ручная проверка
+    # говорит «уже зачислена», фоновая сверка берёт только 'pending'.
+    # Теперь при сбое откатывается ВСЁ: заказ остаётся 'pending' и его
+    # подхватит обычный путь восстановления. Внешний аудит 29.09.2026.
+    was_marked = False
+    try:
+        _pool_pay = await get_pool()
+        async with _pool_pay.acquire() as _c_pay:
+            async with _c_pay.transaction():
+                was_marked = await fk_mark_paid(order_id, conn=_c_pay)
+                if was_marked and int(credits or 0) > 0:
+                    await add_credits_batch(user_id, int(credits),
+                                            source="purchase", days_valid=0,
+                                            conn=_c_pay)
+    except Exception as _grant_err:
+        was_marked = False          # транзакция откатилась — заказ снова 'pending'
+        logging.error(f"FK: оплата+начисление откатились order={order_id}: {_grant_err}",
+                      exc_info=True)
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"\U0001f6a8 <b>Сбой зачисления — заказ НЕ помечен оплаченным</b>\n\n"
+                f"\U0001f464 {await _who_user(user_id)}\n"
+                f"\U0001f48e Кредитов: <b>{credits}</b>\n"
+                f"\U0001f4b5 Сумма: <b>{amount_rub}\u20bd</b>\n"
+                f"\U0001f194 <code>{order_id}</code>\n\n"
+                f"Ничего не начислено и не выдано, заказ остался «ждёт оплаты» — "
+                f"его подхватит авто-сверка. Если не подхватит: "
+                f"<code>/credit {order_id}</code>\n<code>{str(_grant_err)[:200]}</code>",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return False
     if not was_marked:
-        # Уже зачислено другим путём
-        logging.info(f"FK order {order_id} already paid (source={source})")
+        # Заказ не в состоянии «ждёт оплаты». Это либо уже зачтённая оплата
+        # (обычное дело), либо ДЕНЬГИ ПО ОТМЕНЁННОМУ/ВОЗВРАЩЁННОМУ ЗАКАЗУ —
+        # а это разные вещи, и второе нельзя пропускать молча.
+        try:
+            _st_row = await fk_get_order(order_id)
+            _st_now = ((_st_row or {}).get("status") or "").strip().lower()
+        except Exception:
+            _st_now = ""
+        if _st_now in ("cancelled", "refunded"):
+            logging.error(f"FK: оплата по заказу в статусе {_st_now}: {order_id}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"\U0001f6a8 <b>Оплата по закрытому заказу</b>\n\n"
+                    f"\U0001f194 <code>{order_id}</code>\n"
+                    f"Статус заказа: <b>{_st_now}</b>\n"
+                    f"\U0001f464 {await _who_user(user_id)}\n"
+                    f"\U0001f4b5 {amount_rub}\u20bd\n\n"
+                    f"Выдачу НЕ делал — заказ был закрыт. Реши вручную: "
+                    f"выдать товар или вернуть деньги.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+        else:
+            logging.info(f"FK order {order_id} already paid (source={source})")
         return False
 
     # Гасим кнопки оплаты в сообщении у клиента (первое подтверждение оплаты)
     await _disable_client_pay_msg(order_id)
 
-    # 2. Зачисляем кредиты партией (БЕЗ срока — купленные кредиты не сгорают) и логируем.
-    # Если начисление упало ПОСЛЕ mark_paid — деньги приняты, услуга не выдана:
-    # громко алертим админа (иначе сбой был бы «тихим» и невосстановимым).
+    # Кредиты уже начислены выше, в одной транзакции с отметкой об оплате.
+    # Журнал платежа пишем ОТДЕЛЬНО и его сбой не считаем провалом заказа:
+    # раньше исключение log_payment возвращало False уже ПОСЛЕ успешного
+    # начисления, и по такому ответу нельзя было понять, начислять вручную
+    # или нет. Это лог, а не деньги.
     try:
-        await add_credits_batch(user_id, credits, source="purchase", days_valid=0)
         await log_payment(user_id, credits, int(amount_rub), "freekassa")
-    except Exception as _grant_err:
-        logging.error(f"FK GRANT FAILED after mark_paid order={order_id}: {_grant_err}", exc_info=True)
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"\U0001f6a8 <b>СБОЙ ЗАЧИСЛЕНИЯ ПОСЛЕ ОПЛАТЫ</b>\n\n"
-                f"Заказ помечен оплаченным, но кредиты/лог не зачислились.\n"
-                f"\U0001f464 <code>{user_id}</code>\n\U0001f48e Кредитов: <b>{credits}</b>\n"
-                f"\U0001f4b5 Сумма: <b>{amount_rub}₽</b>\n\U0001f194 <code>{order_id}</code>\n\n"
-                f"Проверь и начисли вручную: <code>/credit {order_id}</code>",
-                parse_mode="HTML")
-        except Exception:
-            pass
-        return False
+    except Exception as _log_err:
+        logging.error(f"FK: не записал журнал платежа order={order_id}: {_log_err}")
     try:
         await process_referral_bonus(user_id, order_amount=float(amount_rub or 0))
         await process_premium_referral(user_id, order_id, amount_rub)
@@ -9603,14 +9947,25 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO promo_uses (code, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    promo_code, user_id
-                )
-                await conn.execute(
-                    "UPDATE promocodes SET used_count = used_count + 1 WHERE code=$1",
-                    promo_code
-                )
+                async with conn.transaction():
+                    # Счётчик растёт ТОЛЬКО если применение записалось впервые.
+                    # Раньше used_count увеличивался безусловно, и второй
+                    # оплаченный счёт того же клиента съедал ещё одно место в
+                    # лимите, хотя promo_uses его уже не принимал. Внешний
+                    # аудит 29.09.2026.
+                    _ins = await conn.execute(
+                        "INSERT INTO promo_uses (code, user_id) VALUES ($1, $2) "
+                        "ON CONFLICT DO NOTHING",
+                        promo_code, user_id
+                    )
+                    if str(_ins).split()[-1] == "1":
+                        await conn.execute(
+                            "UPDATE promocodes SET used_count = used_count + 1 WHERE code=$1",
+                            promo_code
+                        )
+                    else:
+                        logging.info(f"промокод {promo_code}: клиент {user_id} уже "
+                                     f"применял его — счётчик не трогаю")
             await log_event(user_id, "promo_used_purchase", f"code={promo_code}")
         except Exception as e:
             logging.error(f"promo apply on purchase: {e}")
@@ -9643,9 +9998,10 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             # Заказ из магазина - показываем информацию о товаре
             shop_key = pack_info.split(":")[1] if pack_info and ":" in pack_info else ""
             plan_idx = int(pack_info.split(":")[2]) if pack_info and pack_info.count(":") >= 2 else 0
-            s = SHOP_CATALOG.get(shop_key, {})
+            # По ИМЕНИ из заказа: удаление более раннего тарифа сдвигало
+            # индексы, и оплаченный заказ выдавал другой товар по старой цене.
+            s, p = _plan_by_order(shop_key, plan_idx, _pack_plan_name(pack_info))
             plans = s.get("plans", [])
-            p = plans[plan_idx] if plan_idx < len(plans) else {}
             _svc_em = tg_emoji({**s, "_key": shop_key}) if s else ""
             service_name = f"{_svc_em} {s.get('name', '')} - {p.get('name', '')}".strip() if s else "Товар из магазина"
 
@@ -10007,10 +10363,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
 
     # 4. Уведомляем админа
     try:
-        user_info = await get_user(user_id)
-        username = (user_info.get("username") or "").strip() if user_info else ""
-        full_name = (user_info.get("full_name") or "").strip() if user_info else ""
-        user_label = f"@{username}" if username else (full_name or f"ID {user_id}")
+        # Имя клиента идёт в HTML-сообщение владельцу. Без экранирования один
+        # «<» в имени Telegram отклоняет сообщение целиком, и уведомление об
+        # оплате просто не приходит — причём повтор шлёт тот же плохой HTML.
+        # Внешний аудит 29.09.2026. _who_user экранирует и сам подставляет id.
+        user_label = await _who_user(user_id)
 
         # Пробуем отредактировать существующее сообщение (если было при создании заказа)
         db_order_admin = await fk_get_order(order_id)
@@ -10049,13 +10406,13 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             plan_idx = int(pack_info.split(":")[2]) if pack_info.count(":") >= 2 else 0
             s_cat = SHOP_CATALOG.get(shop_key, {})
             plans = s_cat.get("plans", [])
-            p_cat = plans[plan_idx] if plan_idx < len(plans) else {}
+            p_cat = _plan_by_order(shop_key, plan_idx, _pack_plan_name(pack_info))[1]
             _svc_em = tg_emoji({**s_cat, "_key": shop_key}) if s_cat else ""
             service_name = f"{_svc_em} {s_cat.get('name', '')} {p_cat.get('name', '')}".strip() if s_cat else "Товар из магазина"
 
             admin_msg = (
                 f"\u2705 <b>Заказ оплачен!</b>\n\n"
-                f"\U0001f464 {user_label} (<code>{user_id}</code>)\n"
+                f"\U0001f464 {user_label}\n"
                 f"\U0001f4e6 {service_name}\n"
                 f"{_amount_block}"
                 f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: {_method_str}\n"
@@ -10066,7 +10423,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         else:
             admin_msg = (
                 f"\U0001f4b0 <b>\u041e\u043f\u043b\u0430\u0442\u0430 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u0430!</b>\n\n"
-                f"\U0001f464 {user_label} (<code>{user_id}</code>)\n"
+                f"\U0001f464 {user_label}\n"
                 f"{_amount_block}"
                 f"\U0001f48e \u041a\u0440\u0435\u0434\u0438\u0442\u043e\u0432: <b>{credits}</b>\n"
                 f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: {_method_str}\n"
@@ -10132,14 +10489,17 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
     except Exception:
         pass
 
-    # Логируем КАЖДЫЙ запрос к этому endpoint - для диагностики
+    # Логируем КАЖДЫЙ запрос к этому endpoint — но БЕЗ тела.
+    # В теле лежит SIGN: готовый аутентификатор, которым запрос можно
+    # повторить. Тому, кто читает логи (а логи Railway живут долго и видны
+    # шире, чем секреты), доставалась рабочая подпись.
+    # Внешний аудит 29.09.2026, пункт №28.
     logging.info(
         f"📥 FK webhook ВХОД: "
         f"method={request.method} "
         f"remote={request.remote} "
         f"x-forwarded-for={request.headers.get('X-Forwarded-For', 'NONE')} "
-        f"body_len={len(raw_body)} "
-        f"body={raw_body[:300]}"
+        f"body_len={len(raw_body)}"
     )
 
     try:
@@ -10176,7 +10536,7 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                         ADMIN_ID,
                         f"🚨 <b>Webhook заблокирован - неизвестный IP</b>\n\n"
                         f"IP: <code>{client_ip}</code>\n"
-                        f"Body: <code>{raw_body[:200]}</code>\n\n"
+                        f"Body: <code>{_fk_body_preview(raw_body)}</code>\n\n"
                         f"<b>Если это FreeKassa с новым IP</b> - установи в Railway "
                         f"переменную <code>FK_IP_CHECK=disabled</code> чтобы временно принимать "
                         f"платежи. Подпись webhook всё равно проверяется!",
@@ -10203,7 +10563,14 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
                 parsed = parse_qs(raw_body)
                 data = {k: v[0] if isinstance(v, list) and v else v for k, v in parsed.items()}
 
-        logging.info(f"FK webhook PARSED from {client_ip}: {data}")
+        # Разобранные поля — тоже без SIGN и без всего, чего мы не ждали:
+        # в лог идут только те поля, которые нам нужны для разбора проблем.
+        _safe_log = {_k: data.get(_k) for _k in
+                     ("MERCHANT_ID", "AMOUNT", "MERCHANT_ORDER_ID", "intid",
+                      "P_EMAIL", "CUR_ID", "us_pack")
+                     if data.get(_k) is not None}
+        logging.info(f"FK webhook PARSED from {client_ip}: {_safe_log} "
+                     f"(поля: {len(data)}, подпись в лог не пишем)")
 
         merchant_id = data.get("MERCHANT_ID", "")
         amount      = data.get("AMOUNT", "")
@@ -10224,7 +10591,14 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
             f"{FK_SHOP_ID}:{amount}:{FK_SECRET2}:{order_id}".encode()
         ).hexdigest()
         if recv_sign != expected_sign:
-            logging.warning(f"FK wrong sign. Got: {recv_sign}, expected: {expected_sign}")
+            # Ни полученную, ни — тем более — ПРАВИЛЬНУЮ подпись в журнал не
+            # пишем: expected_sign это готовая подпись для выбранных order_id
+            # и суммы, то есть обход FK_SECRET2 без знания самого секрета.
+            # Для разбора хватает order_id и того, была ли подпись вообще.
+            logging.warning(
+                f"FK wrong sign для order_id={order_id!r} amount={amount!r} "
+                f"ip={client_ip} (подпись {'есть' if recv_sign else 'отсутствует'}, "
+                f"длина {len(recv_sign)})")
             return web.Response(text="WRONG SIGN")
 
         # Сохраняем номер FreeKassa в заказ — чтобы показывать его в сообщениях админу
@@ -10472,12 +10846,23 @@ async def setup_webhook_server():
     app.router.add_post("/api/activate-chatgpt", api_activate_chatgpt_handler)
     app.router.add_get("/api/activate-status/{job_id}", api_activation_status_handler)
     logging.info("Mini App: /webapp/chatgpt + /api/activate-chatgpt + /api/activate-status")
-    port = int(os.getenv("FK_WEBHOOK_PORT", "8080"))
+    try:
+        port = int(os.getenv("FK_WEBHOOK_PORT", "8080"))
+    except Exception:
+        logging.error("FK_WEBHOOK_PORT задан не числом — беру 8080")
+        port = 8080
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     logging.info(f"✅ FK webhook сервер запущен на порту {port}")
+    # Отдаём runner наружу: без него нечем корректно закрыть порт при
+    # остановке, и главное — вызывающий теперь ДОЖИДАЕТСЯ этой функции и
+    # видит ошибку старта. Раньше она запускалась отдельной задачей, которую
+    # никто не ждал: падение слушателя проходило молча, бот продолжал
+    # отвечать в Telegram и выставлять счета, а вебхуки оплаты и мини-аппы
+    # этим процессом уже не обслуживались. Внешний аудит 29.09.2026, №27.
+    return runner
 
 
 
@@ -11054,13 +11439,15 @@ async def gpt_resend_activation(order_id: str) -> tuple:
         return False, "Эта кнопка только для ChatGPT"
     _cat = SHOP_CATALOG.get(_svc, {}) or {}
     _plans = _cat.get("plans", [])
-    _plan_name = _plans[_idx]["name"] if 0 <= _idx < len(_plans) else "Plus"
+    _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(pack))[1].get("name") or "Plus")
     _plan_key = plan_name_to_key(_plan_name)
 
     # Код, уже закреплённый за заказом, переиспользуем: иначе на один заказ
     # уйдёт второй код. Новый берём, только если прежнего не осталось.
     _pend = await get_pending_activation(uid)
-    if _pend and _pend.get("code"):
+    # Только резерв ЭТОГО заказа: см. выше, резерв адресуется по клиенту.
+    if (_pend and _pend.get("code")
+            and str(_pend.get("order_id") or "") == str(_oid)):
         _code = _pend["code"]
         _prov = _pend.get("provider") or "bpa"
         _reused = True
@@ -11253,7 +11640,9 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
             continue
         try:
             await mark_gpt_code_used(_code, _uid, r["order_id"], _email)
-            await delete_pending_activation(_uid)
+            # Именно этого заказа: у клиента мог появиться новый резерв по
+            # другой оплате, и снос «любого» резерва оставлял его без выдачи.
+            await delete_pending_activation(_uid, r["order_id"])
         except Exception as _e_mk:
             logging.error(f"gpt_reconcile_orphans {_code}: {_e_mk}")
             continue
@@ -11892,7 +12281,7 @@ def giveaway_post_text(gw: dict, winners: list) -> str:
 
     def _name(x):
         return ("@" + x["username"]) if x.get("username") else (
-            x.get("full_name") or f"id{x['user_id']}")
+            tg_name(x.get("full_name")) or f"id{x['user_id']}")
 
     _t = (f"🏆 <b>Итоги розыгрыша</b>\n"
           f"{gw.get('title') or ''}\n\n"
@@ -13185,7 +13574,7 @@ async def _claude_activation_polling_job(
                     _fn = (_ur["full_name"] if _ur else "") or ""
                 except Exception:
                     _un = _fn = ""
-                _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+                _tg = (f"@{_un}" if _un else tg_name(_fn)) or f"id{user_id}"
 
                 # Заменяем сообщение клиента на поздравление, убираем «Нужна помощь»
                 import datetime as _dt_end_cl
@@ -13505,7 +13894,7 @@ async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_nam
                 _fn = (_ur["full_name"] if _ur else "") or ""
             except Exception:
                 _un = _fn = ""
-            _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+            _tg = (f"@{_un}" if _un else tg_name(_fn)) or f"id{user_id}"
 
             _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
             _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
@@ -13652,7 +14041,7 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
         _fn = (_ur["full_name"] if _ur else "") or ""
     except Exception:
         _un = _fn = ""
-    _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+    _tg = (f"@{_un}" if _un else tg_name(_fn)) or f"id{user_id}"
 
     _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
     _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
@@ -14321,6 +14710,21 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             pass
         return _resp({"error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
 
+    # Выдача уже оплаченного: режим техработ тут не применяем (деньги
+    # получены), а вот заблокированному клиенту код не отдаём — и сразу
+    # говорим об этом владельцу, чтобы отказ не остался незамеченным.
+    _den, _den_msg = await _web_access_denied(user_id, check_maintenance=False)
+    if _den:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"\U0001f6ab <b>Заблокированный клиент пытался активировать Claude</b>\n"
+                f"\U0001f464 {await _who_user(user_id)}",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return _resp({"error": _den_msg}, 403)
+
     if not _re.match(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', org_id
     ):
@@ -14453,128 +14857,6 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     logging.info(f"Claude activation chain started: ref={_ref} user={user_id} plan={plan_key} force={_force_cl}")
     return _resp({"order_id": _ref, "status": "queued"})
 
-    # ── (устар.) прежний пофайловый redeem-цикл ниже больше НЕ выполняется ──
-    try:
-        _order_all = await _claude_provider_order()
-        if await _claude_failover_on():
-            _try_order = [provider] + [p for p in _order_all if p != provider]
-        else:
-            _try_order = [provider]
-
-        _last = None
-        _last_msg = ""
-        _last_prov = provider
-        for _prov in _try_order:
-            # браузерные сайты (6661231.xyz) не участвуют в синхронном redeem-фолбэке
-            if CLAUDE_PROVIDERS.get(_prov, {}).get("api") == "browser":
-                continue
-            # для запасного сайта берём код из ЕГО пула (у каждого сайта свои коды)
-            if _prov != provider:
-                _newcode = await get_next_claude_code(plan_key, _prov)
-                if not _newcode:
-                    continue
-                try:
-                    await release_claude_code(code)   # вернём неиспользованный код прежнего сайта
-                except Exception:
-                    pass
-                code = _newcode
-                provider = _prov
-                _pool_sw = await get_pool()
-                async with _pool_sw.acquire() as _csw:
-                    await _csw.execute(
-                        "UPDATE claude_pending_activations SET code=$1, provider=$2 WHERE user_id=$3",
-                        code, provider, user_id)
-                try:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"🔀 <b>Claude — фолбэк при активации</b>\n"
-                        f"Ушли на <b>{claude_provider_name(_prov)}</b> (на прежнем сайте нет стока).",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
-
-            _res = await _claude_redeem_via(provider, code, org_id, order_id)
-            if _res.get("ok"):
-                _ref = _res["ref"]
-                _is_bpa = CLAUDE_PROVIDERS.get(provider, {}).get("api", "bpa") == "bpa"
-                _pool3 = await get_pool()
-                async with _pool3.acquire() as _c3:
-                    if _is_bpa:
-                        await _c3.execute(
-                            "UPDATE claude_pending_activations "
-                            "SET org_id=$1, bpa_order_id=$2, provider=$3 WHERE user_id=$4",
-                            org_id, int(_ref), provider, user_id)
-                    else:
-                        # partner: order_no — строка, в INTEGER-колонку не пишем
-                        await _c3.execute(
-                            "UPDATE claude_pending_activations "
-                            "SET org_id=$1, bpa_order_id=NULL, provider=$2 WHERE user_id=$3",
-                            org_id, provider, user_id)
-                asyncio.create_task(_claude_activation_polling_job(
-                    _ref, code, user_id, order_id, plan_name, org_id, provider))
-                logging.info(f"Claude activation via {provider}: ref={_ref} user={user_id} code={code}")
-                return _resp({"order_id": _ref, "status": "queued"})
-
-            _kind = _res.get("err_kind", "other")
-            if _kind == "already_claimed":
-                return _resp({"error": "Код уже активирован. Напиши Александру."})
-            if _kind == "not_found":
-                return _resp({"error": "Код не найден. Напиши Александру."})
-            if _kind == "bad_org":
-                return _resp({"error": "Неверный Organization ID — проверь и попробуй снова."})
-            if _kind == "out_of_stock":
-                _last = "out_of_stock"
-                continue   # пробуем следующий сайт (если фолбэк вкл)
-            # network / other — пробуем следующий сайт
-            logging.error(f"Claude redeem {provider}: {_res.get('err_msg')}")
-            _last = _kind
-            _last_msg = _res.get("err_msg") or _kind
-            _last_prov = provider
-            continue
-
-        # все доступные сайты исчерпаны
-        if _last == "out_of_stock":
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"🚨 <b>Claude — нет стока НА ВСЕХ сайтах!</b>\n"
-                    f"👤 {await _who_user(user_id)} ({plan_name})\n"
-                    f"Пополни коды/сток на сайтах Claude.",
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-            return _resp({"error": "Временно нет активаций. Александр активирует вручную."})
-        # диагностика: сообщаем админу ТОЧНУЮ причину отказа сайта
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"❌ <b>Claude — активация не прошла</b>\n"
-                f"👤 {await _who_user(user_id)} · {plan_name}\n"
-                f"🔧 Сайт: <b>{claude_provider_name(_last_prov)}</b>\n"
-                f"📄 Код: <code>{code}</code>\n"
-                f"🧩 Org ID: <code>{org_id}</code>\n"
-                f"⚠️ Причина: <code>{(_last_msg or _last or 'unknown')}</code>",
-                parse_mode="HTML")
-        except Exception:
-            pass
-        return _resp({"error": "Не удалось активировать. Попробуй ещё раз или напиши Александру."})
-
-    except aiohttp.ClientError as _e:
-        logging.error(f"Claude activate network: {_e}")
-        return _resp({"error": "Нет связи с сервисом. Попробуй ещё раз."})
-    except Exception as _e:
-        logging.error(f"Claude activate error: {_e}", exc_info=True)
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"⚠️ <b>Claude activate exception</b>\n"
-                f"user=<code>{user_id}</code> code=<code>{code}</code>\n"
-                f"{type(_e).__name__}: {str(_e)[:300]}",
-                parse_mode="HTML")
-        except Exception:
-            pass
-        return _resp({"error": "Внутренняя ошибка. Напиши Александру."})
 
 
 async def api_activate_claude_status_handler(request: web.Request) -> web.Response:
@@ -14750,9 +15032,7 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "photo")
         if not _g_ok:
-            return web.json_response({"ok": False, "error": _g_err, "msg": (
-                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
-                else "Слишком много генераций одновременно. Дождись текущих.")})
+            return _webgen_err_resp(_g_err)
         try:
             if not await _deduct(int(uid), _cost):
                 await _webgen_done(int(uid), _g_ck)
@@ -14760,19 +15040,28 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
         except Exception:
             await _webgen_done(int(uid), _g_ck)
             raise
+        # Оплаченная генерация попадает в долговечный журнал ДО обращения к
+        # поставщику: если процесс остановят прямо сейчас, кредиты вернёт
+        # разбор потерянных задач, а не «никто». Аудит 29.09.2026, №11.
+        _wjob = _new_webgen_id()
+        await webgen_job_start(_wjob, int(uid), "photo", _key, _cost,
+                               params=_prompt[:200], worker=_WORKER_ID)
         try:
             from generation_api import api_generate_image as _gen
             _img = await _gen(_prompt, m["model_id"], _aspect, m.get("api", "imagen"),
                               quality=m.get("quality", "medium"))
         except Exception as _ge:
-            await _add_cr(int(uid), _cost)
+            if await webgen_job_finish(_wjob, "error", str(_ge)[:200], refunded=True):
+                await _add_cr(int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_image gen: {_ge}")
             return web.json_response({"ok": False, "error": "gen_failed"})
         await _webgen_done(int(uid), _g_ck)
         if not _img:
-            await _add_cr(int(uid), _cost)
+            if await webgen_job_finish(_wjob, "error", "пустой ответ поставщика", refunded=True):
+                await _add_cr(int(uid), _cost)
             return web.json_response({"ok": False, "error": "empty"})
+        await webgen_job_finish(_wjob, "done")
         try:
             await _log_gen(int(uid), "image", _key, _cost)
         except Exception:
@@ -14846,11 +15135,20 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
             _tok = _genimg_put(vid, "video/mp4")
         _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url, "fid": _fid,
                                      "size_mb": round(size_mb, 1), "credits": await _get_cr(int(uid))})
+        if not await webgen_job_finish(job_id, "done"):
+            # Задачу уже успели разобрать как потерянную и вернуть кредиты —
+            # результат всё равно отдаём, но след в логе оставляем.
+            logging.warning(f"webgen job {job_id}: результат пришёл ПОСЛЕ возврата кредитов")
     except Exception as _e:
-        try:
-            await _add_cr(int(uid), cost)
-        except Exception:
-            pass
+        # Кредиты возвращаем, только если запись журнала ещё за нами: если
+        # задачу уже разобрали как потерянную и вернули за неё деньги, второй
+        # возврат был бы подарком. Аудит 29.09.2026, пункт №11.
+        _mine = await webgen_job_finish(job_id, "error", str(_e)[:200], refunded=True)
+        if _mine:
+            try:
+                await _add_cr(int(uid), cost)
+            except Exception:
+                pass
         logging.error(f"video job {job_id}: {_e}")
         _cr = 0
         try:
@@ -14907,9 +15205,7 @@ async def api_gen_video_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "video")
         if not _g_ok:
-            return web.json_response({"ok": False, "error": _g_err, "msg": (
-                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
-                else "Слишком много генераций одновременно. Дождись текущих.")})
+            return _webgen_err_resp(_g_err)
         try:
             if not await _deduct(int(uid), _cost):
                 await _webgen_done(int(uid), _g_ck)
@@ -14921,6 +15217,9 @@ async def api_gen_video_handler(request: web.Request) -> web.Response:
         _job = _sec.token_urlsafe(10)
         _genvid_gc()
         _GENVID_JOBS[_job] = {"status": "pending", "ts": _t.time()}
+        await webgen_job_start(_job, int(uid), "video", _key, _cost,
+                               params=f"{_prompt[:160]} | {_aspect} | {_dur}с",
+                               worker=_WORKER_ID)
         asyncio.create_task(_run_video_job(_job, int(uid), _key, m, _prompt, _aspect, _dur, _cost))
         return web.json_response({"ok": True, "job": _job, "cost": _cost, "credits": await _get_cr(int(uid))})
     except Exception as _e:
@@ -14997,9 +15296,7 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "photo")
         if not _g_ok:
-            return web.json_response({"ok": False, "error": _g_err, "msg": (
-                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
-                else "Слишком много генераций одновременно. Дождись текущих.")})
+            return _webgen_err_resp(_g_err)
         try:
             if not await _deduct(int(uid), _cost):
                 await _webgen_done(int(uid), _g_ck)
@@ -15007,6 +15304,9 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         except Exception:
             await _webgen_done(int(uid), _g_ck)
             raise
+        _wjob = _new_webgen_id()
+        await webgen_job_start(_wjob, int(uid), "edit", _key, _cost,
+                               params=_prompt[:200], worker=_WORKER_ID)
         try:
             if (m.get("api") or "gemini") == "fal" and m.get("model_id"):
                 from generation_api import api_fal_edit_image as _fedit
@@ -15015,14 +15315,17 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
                 from generation_api import api_edit_image as _edit
                 _out = await _edit(_img_in, _prompt)
         except Exception as _ge:
-            await _add_cr(int(uid), _cost)
+            if await webgen_job_finish(_wjob, "error", str(_ge)[:200], refunded=True):
+                await _add_cr(int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_edit gen: {_ge}")
             return web.json_response({"ok": False, "error": "gen_failed"})
         await _webgen_done(int(uid), _g_ck)
         if not _out:
-            await _add_cr(int(uid), _cost)
+            if await webgen_job_finish(_wjob, "error", "пустой ответ поставщика", refunded=True):
+                await _add_cr(int(uid), _cost)
             return web.json_response({"ok": False, "error": "empty"})
+        await webgen_job_finish(_wjob, "done")
         try:
             await _log_gen(int(uid), "edit", _key, _cost)
         except Exception:
@@ -15089,11 +15392,17 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
             _tok = _genimg_put(vid, "video/mp4")
         _GENVID_JOBS[job_id].update({"status": "done", "token": _tok, "url": _url, "fid": _fid,
                                      "size_mb": round(size_mb, 1), "credits": await _get_cr(int(uid))})
+        if not await webgen_job_finish(job_id, "done"):
+            # Задачу уже успели разобрать как потерянную и вернуть кредиты —
+            # результат всё равно отдаём, но след в логе оставляем.
+            logging.warning(f"webgen job {job_id}: результат пришёл ПОСЛЕ возврата кредитов")
     except Exception as _e:
-        try:
-            await _add_cr(int(uid), cost)
-        except Exception:
-            pass
+        _mine = await webgen_job_finish(job_id, "error", str(_e)[:200], refunded=True)
+        if _mine:
+            try:
+                await _add_cr(int(uid), cost)
+            except Exception:
+                pass
         logging.error(f"anim job {job_id}: {_e}")
         _cr = 0
         try:
@@ -15143,9 +15452,7 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "anim")
         if not _g_ok:
-            return web.json_response({"ok": False, "error": _g_err, "msg": (
-                "Уже запускаю — подожди пару секунд." if _g_err == "busy"
-                else "Слишком много генераций одновременно. Дождись текущих.")})
+            return _webgen_err_resp(_g_err)
         try:
             if not await _deduct(int(uid), _cost):
                 await _webgen_done(int(uid), _g_ck)
@@ -15157,6 +15464,8 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
         _job = _sec.token_urlsafe(10)
         _genvid_gc()
         _GENVID_JOBS[_job] = {"status": "pending", "ts": _t.time()}
+        await webgen_job_start(_job, int(uid), "anim", _key, _cost,
+                               params=f"{_prompt[:160]} | {_aspect}", worker=_WORKER_ID)
         asyncio.create_task(_run_anim_job(_job, int(uid), _key, m, _prompt, _img_in, _aspect, _cost))
         return web.json_response({"ok": True, "job": _job, "cost": _cost, "credits": await _get_cr(int(uid))})
     except Exception as _e:
@@ -15689,6 +15998,10 @@ async def api_appstore_pay_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
         if not uid:
             return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _den, _den_msg = await _web_access_denied(uid)
+        if _den:
+            return web.json_response({"ok": False, "error": _den, "msg": _den_msg},
+                                     status=403 if _den == "blocked" else 503)
         if not rt.nsgifts_client:
             return web.json_response({"ok": False, "error": "unavailable"})
         try:
@@ -15776,6 +16089,158 @@ async def _nsg_threshold() -> float:
 #  Если вставляешь в конец файла — переименуй callback_data в меню на "nsg_start"
 #  (см. ниже menu_shop_nsg_override — он заменит стандартную кнопку appstore)
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _nsg_pins_from(resp) -> list:
+    """Вытаскивает пин-коды из ответа поставщика, как бы он их ни завернул."""
+    if not isinstance(resp, dict):
+        return []
+    for _k in ("pins", "codes", "keys"):
+        _v = resp.get(_k)
+        if isinstance(_v, list) and _v:
+            return [str(_x) for _x in _v]
+    for _k in ("order", "data", "result"):
+        _inner = resp.get(_k)
+        if isinstance(_inner, dict):
+            _v = _nsg_pins_from(_inner)
+            if _v:
+                return _v
+    return []
+
+
+async def nsgifts_send_pins(fk_order_id: str, user_id: int, service_name: str, pins: list):
+    """Отправляет клиенту готовые коды. Вынесено отдельно, чтобы тем же текстом
+    пользовалась и обычная выдача, и восстановление застрявшего заказа."""
+    pins_text = "\n".join(f"<code>{p}</code>" for p in pins)
+    _oref_ns = await _order_ref_line(fk_order_id)
+    await bot.send_message(
+        user_id,
+        f"🎉 <b>Вот твой код!</b>\n\n"
+        f"📦 <b>{service_name}</b>\n"
+        f"{_oref_ns}\n\n"
+        f"🔑 <b>Код активации:</b>\n{pins_text}\n\n"
+        f"📲 <b>Как активировать:</b>\n"
+        f"1. Открой <b>App Store</b> на iPhone/iPad\n"
+        f"2. Нажми на свой <b>аватар</b> (вверху справа)\n"
+        f"3. Выбери <b>«Погасить подарочную карту или код»</b>\n"
+        f"4. Нажми <b>«Ввести код вручную»</b> и вставь код выше\n"
+        f"5. Готово — баланс пополнится 🎉\n\n"
+        f"⚠️ <b>Важно:</b> код работает только на Apple ID того же региона, "
+        f"что и карта (например, код 🇺🇸 USA — только на американском Apple ID).\n\n"
+        f"Если код не активируется — пиши @{PERSONAL_USERNAME} 🙌",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌍 Как сменить регион Apple ID",
+                                  callback_data="nsg_region_help")]
+        ])
+    )
+
+
+async def nsgifts_recover_stuck(fk_order_id: str) -> str:
+    """Разбирает заказ App Store, застрявший в 'processing'.
+
+    Захват заказа делает статус 'processing', и повторная выдача его уже не
+    принимает — это защита от покупки второго кода. Но если процесс упал или
+    Railway перезапустил бота посреди выдачи, заказ оставался в 'processing'
+    НАВСЕГДА: вебхук больше ничего не делал, кнопка отвечала «уже выполнен»,
+    а деньги у поставщика могли быть уже списаны.
+    Внешний аудит 29.09.2026, пункт №18.
+
+    Правило то же, что и везде: сами вслепую НИЧЕГО не докупаем. Спрашиваем у
+    поставщика про УЖЕ созданный заказ и действуем только по его ответу.
+    Возвращает короткий код исхода — для логов и отчёта.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1", fk_order_id)
+    if not row or row["status"] != "processing":
+        return "not_stuck"
+
+    _uid = int(row["user_id"])
+    _name = row["service_name"]
+    _custom = (row["ns_custom_id"] or "").strip()
+
+    async def _alert(text):
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🧯 <b>App Store: зависший заказ</b>\n\n"
+                f"👤 {await _who_user(_uid)}\n"
+                f"📦 {_name}\n"
+                f"🆔 FK: <code>{fk_order_id}</code>\n"
+                f"🆔 NS: <code>{_custom or '—'}</code>\n\n" + text,
+                parse_mode="HTML")
+        except Exception as _e_a:
+            logging.warning(f"NSGifts recover: алерт {fk_order_id}: {_e_a}")
+
+    async def _deliver(pins, source):
+        import json as _json
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE nsgifts_orders SET status='fulfilled', pins_json=$1, "
+                "error_msg=$2 WHERE fk_order_id=$3",
+                _json.dumps(pins), f"восстановлен ({source})", fk_order_id)
+        try:
+            await nsgifts_send_pins(fk_order_id, _uid, _name, pins)
+            await _alert(f"✅ Код нашёлся ({source}) и отправлен клиенту:\n"
+                         f"<code>{', '.join(pins)}</code>")
+        except Exception as _e_s:
+            await _alert(f"✅ Код нашёлся ({source}), но отправить клиенту не вышло "
+                         f"(<code>{str(_e_s)[:150]}</code>). Перешли вручную:\n"
+                         f"<code>{', '.join(pins)}</code>")
+        await log_event(_uid, "nsgifts_recovered", f"fk={fk_order_id} src={source}")
+
+    # 1. Коды уже лежат у нас — упала только доставка.
+    _local = (row["pins_json"] or "").strip()
+    if _local:
+        try:
+            import json as _json2
+            _pins = _json2.loads(_local)
+        except Exception:
+            _pins = []
+        if _pins:
+            await _deliver([str(p) for p in _pins], "из нашей базы")
+            return "delivered_local"
+
+    # 2. Заказ у поставщика создан — спрашиваем, чем кончилось.
+    if _custom and rt.nsgifts_client:
+        try:
+            info = await rt.nsgifts_client.order_info(_custom)
+        except Exception as _e_i:
+            logging.warning(f"NSGifts recover: order_info {_custom}: {_e_i}")
+            return "api_error"
+        _pins = _nsg_pins_from(info)
+        if _pins:
+            await _deliver(_pins, "у поставщика")
+            return "delivered_remote"
+        _st = str((info or {}).get("status") or "").lower()
+        if _st in ("refunded", "insufficient", "canceled", "cancelled", "failed"):
+            # Покупка НЕ состоялась — заказ можно снова сделать выдаваемым.
+            # Сами при этом ничего не покупаем: следующую попытку запускает
+            # вебхук или кнопка клиента.
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE nsgifts_orders SET status='pending', error_msg=$1 "
+                    "WHERE fk_order_id=$2 AND status='processing'",
+                    f"поставщик: {_st} — покупка не состоялась", fk_order_id)
+            await _alert(f"↩️ У поставщика заказ в статусе <code>{_st}</code> — "
+                         f"покупка не состоялась, код НЕ куплен.\n"
+                         f"Заказ снова готов к выдаче, второй код не тратится.")
+            return "reopened"
+        await _alert(f"⏳ У поставщика заказ в статусе <code>{_st or '—'}</code>, "
+                     f"кодов пока нет.\n"
+                     f"Деньги у поставщика МОГЛИ быть списаны — проверь в кабинете "
+                     f"wholesale.ns.gifts по номеру NS выше, прежде чем покупать ещё раз.")
+        return "unknown_remote"
+
+    # 3. Заказа у поставщика нет (упали до create_order — или после, но не
+    #    успели записать номер). Вслепую не покупаем: решает владелец.
+    await _alert("❓ Номера заказа у поставщика нет — мы упали в самом начале "
+                 "выдачи.\nСкорее всего ничего не куплено, но проверь кабинет "
+                 "по времени заказа. Если покупки не было — нажми «Выдать» "
+                 "в админке или попроси клиента нажать «Проверить оплату».")
+    return "no_custom_id"
+
 
 async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
     """
@@ -15888,48 +16353,42 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
                 custom_id, _json.dumps(pins), fk_order_id
             )
 
-        # Формируем красивое сообщение с кодом
-        pins_text = "\n".join(f"<code>{p}</code>" for p in pins)
-        _oref_ns = await _order_ref_line(fk_order_id)
-        await bot.send_message(
-            user_id,
-            f"🎉 <b>Вот твой код!</b>\n\n"
-            f"📦 <b>{service_name}</b>\n"
-            f"{_oref_ns}\n\n"
-            f"🔑 <b>Код активации:</b>\n{pins_text}\n\n"
-            f"📲 <b>Как активировать:</b>\n"
-            f"1. Открой <b>App Store</b> на iPhone/iPad\n"
-            f"2. Нажми на свой <b>аватар</b> (вверху справа)\n"
-            f"3. Выбери <b>«Погасить подарочную карту или код»</b>\n"
-            f"4. Нажми <b>«Ввести код вручную»</b> и вставь код выше\n"
-            f"5. Готово — баланс пополнится 🎉\n\n"
-            f"⚠️ <b>Важно:</b> код работает только на Apple ID того же региона, "
-            f"что и карта (например, код 🇺🇸 USA — только на американском Apple ID).\n\n"
-            f"Если код не активируется — пиши @{PERSONAL_USERNAME} 🙌",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🌍 Как сменить регион Apple ID",
-                                      callback_data="nsg_region_help")]
-            ])
-        )
+        # Текст выдачи — один на все пути (обычная выдача и восстановление
+        # зависшего заказа), чтобы они не разъезжались со временем.
+        await nsgifts_send_pins(fk_order_id, user_id, service_name, pins)
 
-        # Алерт администратору
-        balance = await rt.nsgifts_client.check_balance()
-        threshold = await _nsg_threshold()
-        balance_warn = f"\n⚠️ <b>Баланс NS Gifts: ${balance:.2f}</b> — пора пополнить!" \
-                       if balance < threshold else f"\nБаланс NS Gifts: ${balance:.2f}"
-        await bot.send_message(
-            ADMIN_ID,
-            f"✅ <b>Apple Gift Card продан</b>\n\n"
-            f"👤 {await _who_user(user_id)}\n"
-            f"📦 {service_name}\n"
-            f"💵 {price_rub} ₽\n"
-            f"🔑 {', '.join(pins)}"
-            f"{balance_warn}",
-            parse_mode="HTML"
-        )
-        await log_event(user_id, "nsgifts_fulfilled",
-                        f"fk={fk_order_id} ns={custom_id} pins={len(pins)}")
+        # ── Код клиенту УЖЕ ушёл. Дальше только служебное ────────────────
+        # Раньше это лежало внутри общего try, и обычный таймаут при запросе
+        # баланса у поставщика бросал клиенту вдогонку «при выдаче кода
+        # возникла ошибка» — человек с рабочим кодом на руках шёл в поддержку.
+        # Внешний аудит 29.09.2026, пункт №25.
+        try:
+            balance = await rt.nsgifts_client.check_balance()
+            threshold = await _nsg_threshold()
+            balance_warn = f"\n⚠️ <b>Баланс NS Gifts: ${balance:.2f}</b> — пора пополнить!" \
+                           if balance < threshold else f"\nБаланс NS Gifts: ${balance:.2f}"
+        except Exception as _e_bal:
+            logging.warning(f"NSGifts: баланс после выдачи {fk_order_id}: {_e_bal}")
+            balance_warn = "\n⚠️ Баланс NS Gifts узнать не удалось — посмотри в кабинете."
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"✅ <b>Apple Gift Card продан</b>\n\n"
+                f"👤 {await _who_user(user_id)}\n"
+                f"📦 {service_name}\n"
+                f"💵 {price_rub} ₽\n"
+                f"🔑 {', '.join(pins)}"
+                f"{balance_warn}",
+                parse_mode="HTML"
+            )
+        except Exception as _e_adm:
+            logging.warning(f"NSGifts: алерт о продаже {fk_order_id}: {_e_adm}")
+        try:
+            await log_event(user_id, "nsgifts_fulfilled",
+                            f"fk={fk_order_id} ns={custom_id} pins={len(pins)}")
+        except Exception:
+            pass
+        return
 
     except Exception as e:
         logging.error(f"NSGifts fulfill failed for {fk_order_id}: {e}", exc_info=True)
@@ -15945,12 +16404,17 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
                 ("fulfilled" if _has_pins else "failed"), str(e)[:500], fk_order_id
             )
 
-        # Сообщение пользователю
-        await bot.send_message(
-            user_id,
-            "😔 Оплата прошла, но при выдаче кода возникла ошибка.\n\n"
-            f"Напиши @{PERSONAL_USERNAME} — код пришлю вручную в течение 15 минут! 🙏"
-        )
+        # Сообщение пользователю — по фактическому этапу сбоя, а не одно на всё.
+        try:
+            await bot.send_message(
+                user_id,
+                ("😔 Оплата прошла, код куплен, но отправить его не получилось.\n\n"
+                 if _has_pins else
+                 "😔 Оплата прошла, но при выдаче кода возникла ошибка.\n\n")
+                + f"Напиши @{PERSONAL_USERNAME} — код пришлю вручную в течение 15 минут! 🙏"
+            )
+        except Exception as _e_cl:
+            logging.warning(f"NSGifts: сообщение клиенту о сбое {fk_order_id}: {_e_cl}")
 
         # Алерт администратору с деталями.
         # Если код уже куплен — НЕ покупать повторно, а переслать имеющийся.
@@ -16126,7 +16590,7 @@ async def _perplexity_activation_polling_job(
                     _fn = (_ur["full_name"] if _ur else "") or ""
                 except Exception:
                     _un = _fn = ""
-                _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+                _tg = (f"@{_un}" if _un else tg_name(_fn)) or f"id{user_id}"
 
                 # Заменяем сообщение клиента на поздравление, убираем «Нужна помощь»
                 import datetime as _dt_end_cl
@@ -16371,7 +16835,7 @@ async def _perplexity_notify_success(code, user_id, order_id, plan_name, org_id)
         _fn = (_ur["full_name"] if _ur else "") or ""
     except Exception:
         _un = _fn = ""
-    _tg = (f"@{_un}" if _un else _fn) or f"id{user_id}"
+    _tg = (f"@{_un}" if _un else tg_name(_fn)) or f"id{user_id}"
     _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
     _prof_kw_cl = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
     _oref_px2 = await _order_ref_line(order_id)
@@ -16465,6 +16929,21 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
         except Exception:
             pass
         return _resp({"error": "Ошибка авторизации. Перезапусти мини-приложение."}, 403)
+
+    # Выдача уже оплаченного: режим техработ тут не применяем (деньги
+    # получены), а вот заблокированному клиенту код не отдаём — и сразу
+    # говорим об этом владельцу, чтобы отказ не остался незамеченным.
+    _den, _den_msg = await _web_access_denied(user_id, check_maintenance=False)
+    if _den:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"\U0001f6ab <b>Заблокированный клиент пытался активировать Perplexity</b>\n"
+                f"\U0001f464 {await _who_user(user_id)}",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return _resp({"error": _den_msg}, 403)
 
     if not _re.match(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', org_id
@@ -16741,7 +17220,10 @@ async def process_linkpay_link(user_id, text) -> bool:
         if not row:
             return False
         order = dict(row)
-        m = _re.search(r"https?://\S+", txt)
+        # \S+ захватывал кавычки и угловые скобки — ровно то, чем ломалась
+        # админка (аудит 29.09.2026). Ссылка не может содержать этих символов,
+        # поэтому просто не пускаем их в базу.
+        m = _re.search(r"https?://[^\s\"'<>`]+", txt)
         if not m:
             return False  # нет ссылки — пусть обработает консультант
         link = m.group(0)

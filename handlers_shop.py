@@ -23,6 +23,7 @@ from aiogram.fsm.state import State, StatesGroup
 from config import (
     ADMIN_ID, CREDIT_PACKS, IMAGE_MODELS, PERSONAL_USERNAME, SHOP_CATALOG, SHOP_CATEGORIES,
     VIDEO_MODELS, _rand_sfx, _ref_bonus_for_count, bot, dp, fk_pay_url, pending_fk_payments,
+    tg_name,
 )
 from states import (
     PromoState, ShopPromoState,
@@ -35,7 +36,7 @@ from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
 )
 from common import (
-    _who_user,
+    _who_user, _pack_shop,
     shop_price_for, partner_tag, shop_price_pair,
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
 )
@@ -623,7 +624,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
             VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (order_id) DO NOTHING
         """, order_id, uid, 0, price_for_link if price_for_link > 0 else p["price"],
-            f"shop:{key}:{plan_idx}",
+            _pack_shop(key, plan_idx, p.get("name","")),
             (_promo_code.strip().upper() if (promo_final and promo_final < p["price"] and _promo_code) else None))
         try:
             _onum = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
@@ -715,7 +716,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
         admin_msg = await bot.send_message(
             ADMIN_ID,
             f"🛍 <b>Новый заказ {_onum_str}</b>\n\n"
-            f"👤 @{username} (<code>{uid}</code>)\n"
+            f"👤 {await _who_user(uid)}\n"
             f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"💵 Сумма: <b>{final_shop_price if final_shop_price > 0 else p['price']}₽</b>\n"
             f"💳 Способ: СБП\n"
@@ -864,11 +865,32 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
     rest = max(0, _price - coins_used)
 
     if rest == 0:
-        ok = await deduct_coins(uid, coins_used)
-        if not ok:
-            await cb.answer("Недостаточно монеток.", show_alert=True)
+        # Списание и начисление — одной транзакцией, плюс ЗДЕСЬ ЖЕ фиксируем
+        # применение промокода. Раньше полная оплата монетками применяла
+        # скидку, но не записывала promo_uses: одноразовый код можно было
+        # использовать сколько угодно раз. Внешний аудит 29.09.2026.
+        _pool_cs = await get_pool()
+        try:
+            async with _pool_cs.acquire() as _c_cs:
+                async with _c_cs.transaction():
+                    if not await deduct_coins(uid, coins_used, conn=_c_cs):
+                        await cb.answer("Недостаточно монеток.", show_alert=True)
+                        return
+                    await add_credits_batch(uid, p["credits"], source="purchase",
+                                            days_valid=0, conn=_c_cs)
+                    if _promo_code:
+                        _ins_cs = await _c_cs.execute(
+                            "INSERT INTO promo_uses (code, user_id) VALUES ($1, $2) "
+                            "ON CONFLICT DO NOTHING", _promo_code.strip().upper(), uid)
+                        if str(_ins_cs).split()[-1] == "1":
+                            await _c_cs.execute(
+                                "UPDATE promocodes SET used_count = used_count + 1 "
+                                "WHERE code=$1", _promo_code.strip().upper())
+        except Exception as _e_cs:
+            logging.error(f"оплата монетками uid={uid}: {_e_cs}", exc_info=True)
+            await cb.answer("Не получилось провести оплату. Попробуй ещё раз.",
+                            show_alert=True)
             return
-        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=0)
         new_cr = await get_credits(uid)
         new_coins = await get_coins(uid)
         await cb.message.edit_text(
@@ -955,7 +977,7 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
                 "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
                 "coins_spent, promo_code, status, paid_at) "
                 "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
-                order_id, uid, f"shop:{key}:{plan_idx}", coins_used,
+                order_id, uid, _pack_shop(key, plan_idx, p.get("name","")), coins_used,
                 (_promo_code.strip().upper() if _promo_code else None))
             _onum = await _c_fc.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
     except Exception as _e_fc:
@@ -989,7 +1011,7 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
         await bot.send_message(
             ADMIN_ID,
             f"\U0001fa99 <b>Заказ оплачен монетками (магазин)</b>\n\n"
-            f"\U0001f464 @{username} (ID: {uid})\n"
+            f"\U0001f464 {await _who_user(uid)}\n"
             f"\U0001f4e6 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
             f"\U0001f4b5 СБП: 0\u20bd\n"
@@ -1039,7 +1061,7 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
         await conn.execute(
             "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, coins_spent) "
             "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (order_id) DO NOTHING",
-            order_id, uid, 0, rest, f"shop:{key}:{plan_idx}", coins_used
+            order_id, uid, 0, rest, _pack_shop(key, plan_idx, p.get("name","")), coins_used
         )
         try:
             _onum = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
@@ -1072,7 +1094,7 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
         _amsg_cs = await bot.send_message(
             ADMIN_ID,
             f"\U0001fa99 <b>Заказ (монетки + СБП)</b>\n\n"
-            f"\U0001f464 @{username} (ID: {uid})\n"
+            f"\U0001f464 {await _who_user(uid)}\n"
             f"\U0001f4e6 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
             f"\U0001f4b5 СБП: {rest}\u20bd\n"
@@ -1143,7 +1165,7 @@ async def shop_pay_stars(cb: CallbackQuery):
         await bot.send_message(
             ADMIN_ID,
             f"🛍 <b>Заказ из магазина (Stars)</b>\n\n"
-            f"👤 @{username} (ID: {uid})\n"
+            f"👤 {await _who_user(uid)}\n"
             f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"⭐ {p['stars']} Stars",
             parse_mode="HTML"
@@ -1165,6 +1187,16 @@ async def on_successful_payment(message: Message):
     payload = message.successful_payment.invoice_payload
     uid = message.from_user.id
     username = message.from_user.username or message.from_user.full_name
+    # Один платёж — одна выдача. Раньше повторно доставленное сообщение
+    # successful_payment начисляло кредиты ещё раз: ни charge_id, ни статуса
+    # заказа здесь не было. Захватываем платёж по его идентификатору от
+    # Telegram ДО любых начислений и выдач.
+    from db import claim_stars_payment as _claim_stars
+    _charge = getattr(message.successful_payment, "telegram_payment_charge_id", "") or ""
+    _stars_amt = int(getattr(message.successful_payment, "total_amount", 0) or 0)
+    if not await _claim_stars(_charge, uid, payload, _stars_amt):
+        logging.warning(f"stars: повтор платежа {_charge} uid={uid} payload={payload} — пропускаю")
+        return
 
     # === 1. Магазин подписок (shop:SERVICE:PLAN_IDX) ===
     if payload.startswith("shop:"):
@@ -1194,7 +1226,7 @@ async def on_successful_payment(message: Message):
             await bot.send_message(
                 ADMIN_ID,
                 f"💰 <b>Stars оплачено!</b>\n\n"
-                f"👤 @{username} (ID: {uid})\n"
+                f"👤 {await _who_user(uid)}\n"
                 f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
                 f"⭐ {p['stars']} Stars получено - активируй подписку!",
                 parse_mode="HTML"
@@ -1232,7 +1264,7 @@ async def on_successful_payment(message: Message):
             await bot.send_message(
                 ADMIN_ID,
                 f"💰 <b>Stars: пакет кредитов куплен</b>\n\n"
-                f"👤 @{username} (ID: <code>{uid}</code>)\n"
+                f"👤 {await _who_user(uid)}\n"
                 f"📦 {p['name']} - {p['credits']} кр\n"
                 f"⭐ {p['stars']} Stars",
                 parse_mode="HTML"
@@ -1299,7 +1331,7 @@ async def menu_ref(cb: CallbackQuery):
     # Строим список последних приглашённых
     friends_lines = []
     for i, r in enumerate(recent_refs, 1):
-        name = r["full_name"] or "Пользователь"
+        name = tg_name(r["full_name"]) or "Пользователь"
         username = f" (@{r['username']})" if r["username"] else ""
         status = "✅ Купил" if r["ref_bonus_paid"] else "⏳ Не купил"
         joined = r["joined"].strftime("%d.%m") if r["joined"] else ""
@@ -1458,7 +1490,10 @@ async def payment_issue_handler(cb: CallbackQuery):
                 user_info = await get_user(uid)
                 username = (user_info.get("username") or "").strip() if user_info else ""
                 full_name = (user_info.get("full_name") or "").strip() if user_info else ""
-                user_label = f"@{username}" if username else (full_name or f"ID {uid}")
+                # Имя клиента вставляется в HTML-сообщение. Без экранирования
+                # один «<» в имени заставляет Telegram отклонить сообщение
+                # целиком, и заказ до владельца не доходит. Аудит 29.09.2026.
+                user_label = await _who_user(uid)
 
                 pending_count = len(pending_rows) if pending_rows else 0
                 pending_info = f"\nPending заказов в БД: <b>{pending_count}</b>" if pending_count else ""
@@ -1721,6 +1756,21 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML")
         except Exception:
             pass
+        # И ПРЕКРАЩАЕМ оформление. Раньше ссылка выдавалась всё равно, и
+        # проблема была не только «после рестарта»: fk_mark_paid не находит
+        # строку, возвращает «не обновлено», и зачисления не происходит уже
+        # при первом же вебхуке. Клиент платил в никуда. Внешний аудит
+        # 29.09.2026. Лучше честный отказ, чем принятые деньги без товара.
+        pending_fk_payments.pop(order_id, None)
+        try:
+            await cb.message.answer(
+                "\u26a0\ufe0f <b>Не получилось создать счёт</b>\n\n"
+                "Попробуй ещё раз через минуту. Если повторится — напиши "
+                f"@{PERSONAL_USERNAME}, он поможет.",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return
 
     wait_msg = None
     try:
@@ -1750,7 +1800,7 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
             admin_msg = await bot.send_message(
                 ADMIN_ID,
                 f"\U0001f4b0 <b>\u041d\u043e\u0432\u044b\u0439 \u0437\u0430\u043a\u0430\u0437</b>\n\n"
-                f"\U0001f464 @{username} (<code>{uid}</code>)\n"
+                f"\U0001f464 {await _who_user(uid)}\n"
                 f"\U0001f4e6 {p['credits']} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432\n"
                 f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount}\u20bd</b>\n"
                 f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
@@ -1934,7 +1984,10 @@ async def report_pay_handler(cb: CallbackQuery):
         user_info = await get_user(uid)
         username = (user_info.get("username") or "").strip() if user_info else ""
         full_name = (user_info.get("full_name") or "").strip() if user_info else ""
-        user_label = f"@{username}" if username else (full_name or f"ID {uid}")
+        # Имя клиента вставляется в HTML-сообщение. Без экранирования один
+        # символ «<» в имени заставляет Telegram отклонить сообщение целиком,
+        # и заказ до владельца просто не доходит. Внешний аудит 29.09.2026.
+        user_label = await _who_user(uid)
 
         order_info = ""
         if db_order:

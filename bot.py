@@ -36,11 +36,12 @@ from keyboards import (
 from common import (
     _ensure_playwright_browser, claude_with_search, setup_webhook_server, process_linkpay_link,
     load_miniapp_toggles, _assistant_enabled, ASSISTANT_OFF_TEXT, _assistant_off_kb,
+    maintenance_on as _maintenance_on,
 )
 from background import (
     _activation_jobs_cleanup_loop, _claude_job_results_cleanup_loop, _memory_cleanup_loop, auto_recover_lost_videos_loop, claude_codes_cleanup_loop, cleanup_stale_generations_loop,
-    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, gpt_dead_order_release_loop, gpt_orphans_loop, gpt_pool_audit_loop, models_desc_refresh_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
-    reminders_loop, subscription_reminder_loop,
+    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, nsgifts_stuck_orders_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, gpt_dead_order_release_loop, gpt_orphans_loop, gpt_pool_audit_loop, models_desc_refresh_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
+    reminders_loop, subscription_reminder_loop, webgen_lost_jobs_loop,
 )
 from _registration_order import ORIG_ORDER as _ORIG_ORDER
 
@@ -163,17 +164,9 @@ _restore_handler_order()
 # ── Техобслуживание: блокируем НЕ-админов для ВСЕХ апдейтов, пока включён режим ──
 # Раньше проверка была только в handle_message (консультант) и не трогала кнопки/команды,
 # поэтому режим выглядел «нерабочим». Теперь — единый шлюз на весь бот (кроме админа).
-import time as _maint_time
-_maint_cache = {"val": "0", "ts": 0.0}
-
-async def _maintenance_on() -> bool:
-    if _maint_time.time() - _maint_cache["ts"] > 10:
-        try:
-            _maint_cache["val"] = await get_setting("maintenance", "0")
-        except Exception:
-            pass
-        _maint_cache["ts"] = _maint_time.time()
-    return _maint_cache["val"] == "1"
+# Сам помощник живёт в common.py — там же он нужен эндпоинтам мини-аппов,
+# и кэш должен быть ОДИН на процесс: иначе включение режима доходило бы до
+# бота и до мини-аппа в разное время (аудит 29.09.2026, пункт №23).
 
 @dp.update.outer_middleware()
 async def _maintenance_guard(handler, event, data):
@@ -352,7 +345,35 @@ async def main():
     await init_db()
     await load_prices_from_db()
     await load_miniapp_toggles()
-    asyncio.create_task(setup_webhook_server())
+    # HTTP-сервер (вебхуки оплаты + все мини-аппы) поднимаем СИНХРОННО и до
+    # начала обычной работы. Раньше он уходил в отдельную задачу, которую
+    # никто не ждал: если порт занят или FK_WEBHOOK_PORT задан не числом,
+    # задача молча падала — бот продолжал отвечать в Telegram и выставлять
+    # счета, но подтверждения оплаты до него уже не доходили, а мини-аппы не
+    # открывались. Внешний аудит 29.09.2026, пункт №27.
+    _http_runner = None
+    for _try in range(1, 4):
+        try:
+            _http_runner = await setup_webhook_server()
+            break
+        except Exception as _e_http:
+            logging.exception(f"💥 HTTP-сервер не поднялся (попытка {_try}/3): {_e_http}")
+            if _try < 3:
+                await asyncio.sleep(5)
+                continue
+            # Молча работать дальше нельзя: клиенты будут платить в пустоту.
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    "🚨 <b>HTTP-сервер не запустился</b>\n\n"
+                    "Вебхуки FreeKassa и мини-приложения не работают — "
+                    "оплаты не будут подтверждаться.\n"
+                    f"Причина: <code>{type(_e_http).__name__}: {str(_e_http)[:200]}</code>\n\n"
+                    "Проверь переменную FK_WEBHOOK_PORT и перезапусти деплой.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            raise
     _spawn_bg(cleanup_stale_generations_loop, "cleanup_stale_generations_loop")
     _spawn_bg(auto_recover_lost_videos_loop, "auto_recover_lost_videos_loop")
     _spawn_bg(fk_auto_check_loop, "fk_auto_check_loop")
@@ -375,6 +396,7 @@ async def main():
     _spawn_bg(coins_refund_loop, "coins_refund_loop")
     _spawn_bg(models_desc_refresh_loop, "models_desc_refresh_loop")
     _spawn_bg(_claude_job_results_cleanup_loop, "_claude_job_results_cleanup_loop")
+    _spawn_bg(webgen_lost_jobs_loop, "webgen_lost_jobs_loop")
     # NS Gifts: инициализируем клиент и фоновые задачи
 
     if NSGIFTS_USER_ID and NSGIFTS_LOGIN and NSGIFTS_API_SECRET:
@@ -391,6 +413,7 @@ async def main():
         )
         logging.info("✅ NS Gifts client initialized")
         _spawn_bg(nsgifts_balance_alert_loop, "nsgifts_balance_alert_loop")
+        _spawn_bg(nsgifts_stuck_orders_loop, "nsgifts_stuck_orders_loop")
     else:
         logging.warning("⚠️  NS Gifts: env-переменные не заданы — App Store отключён")
 
@@ -402,7 +425,16 @@ async def main():
     except Exception as _e_gw:
         logging.warning(f"giveaway button on start: {_e_gw}")
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # Корректно отпускаем порт, иначе перезапуск внутри того же
+        # контейнера натыкается на «address already in use».
+        if _http_runner is not None:
+            try:
+                await _http_runner.cleanup()
+            except Exception as _e_cl:
+                logging.warning(f"HTTP runner cleanup: {_e_cl}")
 
 
 # ─── /myip — текущий исходящий IP сервера (Railway) ──────────────────────────

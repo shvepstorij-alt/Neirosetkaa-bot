@@ -105,6 +105,7 @@ async def init_db():
             ("coins_spent",    "INTEGER DEFAULT 0"), # монетки, списанные под доплату СБП (для возврата)
             ("client_msg_id",  "BIGINT"),   # ID сообщения оплаты у КЛИЕНТА (гасим кнопки после оплаты)
             ("fk_intid",       "TEXT"),     # номер платежа В САМОЙ FreeKassa (intid) — по нему ищется платёж
+            ("last_checked_at", "TIMESTAMP"), # когда автосверка последний раз спрашивала FK про этот счёт
         ]:
             try:
                 await conn.execute(f"ALTER TABLE fk_orders ADD COLUMN {col} {dfn}")
@@ -215,6 +216,15 @@ async def init_db():
                 "ON fk_orders(paid_at) WHERE status='paid'")
         except Exception as _e_ix2:
             logging.warning(f"индекс idx_fk_orders_paid_at не создался: {_e_ix2}")
+        # Автосверка FreeKassa обходит неоплаченные счета по кругу — от самых
+        # давно не проверенных. Индекс ровно под этот порядок.
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fk_orders_pending_check "
+                "ON fk_orders(last_checked_at NULLS FIRST, created_at DESC) "
+                "WHERE status='pending'")
+        except Exception as _e_ix3:
+            logging.warning(f"индекс idx_fk_orders_pending_check не создался: {_e_ix3}")
         # Таблица событий - для аудита критичных операций
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS events (
@@ -316,6 +326,15 @@ async def init_db():
             await conn.execute("ALTER TABLE promocodes ADD COLUMN service_key TEXT")
         except Exception:
             pass
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS stars_payments (
+                charge_id   TEXT PRIMARY KEY,
+                user_id     BIGINT NOT NULL,
+                payload     TEXT,
+                amount      INTEGER,
+                created_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS promo_uses (
                 id          SERIAL PRIMARY KEY,
@@ -474,6 +493,25 @@ async def init_db():
         """)
         # Активные генерации - для защиты от двойного запуска.
         # Переживает рестарт бота (в отличие от set'а в памяти).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS webgen_jobs (
+                job_id      TEXT PRIMARY KEY,
+                user_id     BIGINT NOT NULL,
+                kind        TEXT NOT NULL,          -- photo/video/edit/anim
+                model_key   TEXT,
+                cost        INTEGER NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL DEFAULT 'running',  -- running|done|error|lost
+                refunded    INTEGER NOT NULL DEFAULT 0,
+                worker      TEXT,                   -- метка процесса, который её запустил
+                params      TEXT,
+                err         TEXT,
+                created_at  TIMESTAMP DEFAULT NOW(),
+                finished_at TIMESTAMP
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_webgen_running ON webgen_jobs(created_at) "
+            "WHERE status='running'")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS active_generations (
                 id         SERIAL PRIMARY KEY,
@@ -1285,10 +1323,23 @@ async def get_pending_activation_by_code(code: str):
             "ORDER BY created_at DESC LIMIT 1", code)
     return dict(row) if row else None
 
-async def delete_pending_activation(user_id: int):
+async def delete_pending_activation(user_id: int, order_id: str | None = None):
+    """Удаляет резерв активации клиента.
+
+    order_id — удалять ТОЛЬКО резерв этого заказа. Резерв хранится по
+    user_id (одна строка на клиента), поэтому задача, завершившая заказ A,
+    сносила резерв заказа B, если клиент успел оплатить второй: покупатель B
+    получал «время активации истекло» при свежей оплате. Внешний аудит
+    29.09.2026. Там, где заказ известен, всегда передаём его.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM gpt_pending_activations WHERE user_id=$1", user_id)
+        if order_id:
+            await conn.execute(
+                "DELETE FROM gpt_pending_activations WHERE user_id=$1 AND order_id=$2",
+                user_id, str(order_id))
+        else:
+            await conn.execute("DELETE FROM gpt_pending_activations WHERE user_id=$1", user_id)
 
 
 # ── МОНЕТКИ ────────────────────────────────────────────────────────────────────
@@ -1590,7 +1641,24 @@ async def get_coins(user_id: int) -> float:
 # восстановить картину невозможно в принципе — ни клиенту объяснить, ни свою
 # правоту проверить. Строка в events стоит доли миллисекунды и живёт вечно.
 
-async def add_coins(user_id: int, amount: float, reason: str = ""):
+async def add_coins(user_id: int, amount: float, reason: str = "", conn=None):
+    """conn — выполнить в уже открытой транзакции вызывающего (см.
+    add_credits_batch: начисление и право на него должны быть неразделимы)."""
+    if conn is not None:
+        await conn.execute(
+            "UPDATE users SET coins = COALESCE(coins, 0) + $1 WHERE user_id=$2",
+            round(amount, 2), user_id
+        )
+        logging.info(f"add_coins uid={user_id} +{amount:.2f} reason={reason} (в транзакции)")
+        # Журнал ведём и здесь — иначе движение монеток в этой ветке нигде не
+        # видно. Пишется отдельным соединением, поэтому при откате внешней
+        # транзакции запись останется: для лога это допустимо, для денег нет.
+        try:
+            await log_event(user_id, "coins",
+                            f"+{round(amount, 2)} ₽" + (f" — {reason}" if reason else ""))
+        except Exception:
+            pass
+        return
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -1604,16 +1672,30 @@ async def add_coins(user_id: int, amount: float, reason: str = ""):
     except Exception:
         pass
 
-async def deduct_coins(user_id: int, amount: float, reason: str = "") -> bool:
+async def deduct_coins(user_id: int, amount: float, reason: str = "", conn=None) -> bool:
+    """conn — списать в уже открытой транзакции вызывающего.
+
+    Нужно, чтобы списание и создание заказа были неразделимы: иначе монетки
+    уходят, заказа нет, и вернуть их не по чему (внешний аудит 29.09.2026).
+    """
     # SECURITY: 0 или отрицательное списание недопустимо (иначе обход оплаты монетками)
     if amount is None or amount <= 0:
         return False
+    _q = ("UPDATE users SET coins = coins - $1 "
+          "WHERE user_id=$2 AND COALESCE(coins,0) >= $1")
+    if conn is not None:
+        _ok = int((await conn.execute(_q, round(amount, 2), user_id)).split()[-1]) > 0
+        if _ok:
+            logging.info(f"deduct_coins uid={user_id} -{amount:.2f} reason={reason} (в транзакции)")
+            try:
+                await log_event(user_id, "coins",
+                                f"−{round(amount, 2)} ₽" + (f" — {reason}" if reason else ""))
+            except Exception:
+                pass
+        return _ok
     pool = await get_pool()
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            "UPDATE users SET coins = coins - $1 WHERE user_id=$2 AND COALESCE(coins,0) >= $1",
-            round(amount, 2), user_id
-        )
+        result = await conn.execute(_q, round(amount, 2), user_id)
         _ok = int(result.split()[-1]) > 0
     if _ok:
         try:
@@ -1705,11 +1787,17 @@ async def check_promo_for_user(code: str, user_id: int) -> tuple[bool, str, dict
         try:
             pool = await get_pool()
             async with pool.acquire() as conn:
+                # Считаем РАЗНЫХ клиентов, и СЕБЯ тоже. Раньше свои же
+                # неоплаченные счета исключались: один клиент выписывал
+                # несколько счетов с одноразовой скидкой и потом оплачивал их
+                # все. COUNT(DISTINCT user_id) при этом не мешает переоформить
+                # счёт: несколько своих счетов считаются как одна бронь.
+                # Внешний аудит 29.09.2026.
                 _reserved = await conn.fetchval(
-                    "SELECT COUNT(*) FROM fk_orders "
-                    "WHERE promo_code=$1 AND status='pending' AND user_id <> $2 "
+                    "SELECT COUNT(DISTINCT user_id) FROM fk_orders "
+                    "WHERE promo_code=$1 AND status='pending' "
                     "AND created_at > NOW() - INTERVAL '30 minutes'",
-                    code.strip().upper(), user_id
+                    code.strip().upper()
                 ) or 0
             if p["used_count"] + int(_reserved) >= p["max_uses"]:
                 return False, "Промокод сейчас занят — лимит применений исчерпан", None
@@ -1781,8 +1869,13 @@ async def redeem_promo(code: str, user_id: int) -> tuple[bool, str]:
                 code_upper
             )
 
-    # Начисляем кредиты ВНЕ транзакции (т.к. add_credits_batch сам открывает свою)
-    await add_credits_batch(user_id, p["value"], source="promo", days_valid=30)
+            # 7. Начисляем кредиты ЗДЕСЬ ЖЕ, в этой транзакции.
+            # Раньше начисление шло после выхода из неё: promo_uses и
+            # used_count уже закоммичены, а если процесс падал до начисления,
+            # клиент получал «ты уже применял этот промокод» с нулевым
+            # балансом и без возможности повторить. Внешний аудит 29.09.2026.
+            await add_credits_batch(user_id, p["value"], source="promo",
+                                    days_valid=30, conn=conn)
     await log_event(user_id, "promo_redeem", f"code={code_upper} value={p['value']}")
     return True, f"Начислено {p['value']} кредитов!"
 
@@ -1812,29 +1905,44 @@ async def deactivate_promo(code: str) -> bool:
 
 # ─── Партии кредитов с истечением ────────────────────────
 
-async def add_credits_batch(user_id: int, credits: int, source: str = "purchase", days_valid: int = 30):
+async def add_credits_batch(user_id: int, credits: int, source: str = "purchase",
+                            days_valid: int = 30, conn=None):
     """Начисляет кредиты отдельной партией. Партия сгорает через days_valid дней.
-    Также обновляет основной баланс пользователя для совместимости."""
+    Также обновляет основной баланс пользователя для совместимости.
+
+    conn — выполнить в УЖЕ ОТКРЫТОЙ транзакции вызывающего, без своей.
+    Нужно там, где право на начисление и само начисление обязаны быть
+    неразделимы: иначе «использовано» коммитится, процесс падает, и клиент
+    остаётся и без кредитов, и без возможности повторить. Внешний аудит
+    29.09.2026 нашёл это в промокодах, реферальном бонусе и оплате.
+    """
+    async def _grant(_c):
+        if days_valid > 0:
+            await _c.execute(
+                f"INSERT INTO credit_batches (user_id, credits_init, credits_left, source, expires_at) "
+                f"VALUES ($1, $2, $2, $3, NOW() + ($4 || ' days')::INTERVAL)",
+                user_id, credits, source, str(days_valid)
+            )
+        else:
+            await _c.execute(
+                "INSERT INTO credit_batches (user_id, credits_init, credits_left, source) "
+                "VALUES ($1, $2, $2, $3)",
+                user_id, credits, source
+            )
+        await _c.execute(
+            "UPDATE users SET credits = credits + $1 WHERE user_id=$2",
+            credits, user_id
+        )
+
+    if conn is not None:
+        # Транзакцией владеет вызывающий — своей не открываем.
+        await _grant(conn)
+        return
     pool = await get_pool()
     async with pool.acquire() as conn:
         # Партия и баланс — в одной транзакции (чтобы не разъехались при сбое между ними)
         async with conn.transaction():
-            if days_valid > 0:
-                await conn.execute(
-                    f"INSERT INTO credit_batches (user_id, credits_init, credits_left, source, expires_at) "
-                    f"VALUES ($1, $2, $2, $3, NOW() + ($4 || ' days')::INTERVAL)",
-                    user_id, credits, source, str(days_valid)
-                )
-            else:
-                await conn.execute(
-                    "INSERT INTO credit_batches (user_id, credits_init, credits_left, source) "
-                    "VALUES ($1, $2, $2, $3)",
-                    user_id, credits, source
-                )
-            await conn.execute(
-                "UPDATE users SET credits = credits + $1 WHERE user_id=$2",
-                credits, user_id
-            )
+            await _grant(conn)
     await log_event(user_id, f"batch_add_{source}", f"credits={credits} days={days_valid}")
 
 
@@ -2094,6 +2202,181 @@ async def deduct(user_id: int, amount: int) -> bool:
     await log_event(user_id, "deduct", f"amount={amount}")
     return True
 
+async def webgen_job_start(job_id: str, user_id: int, kind: str, model_key: str,
+                           cost: int, params: str = "", worker: str = "") -> None:
+    """Записывает ОПЛАЧЕННУЮ генерацию в долговечный журнал.
+
+    Кредиты списываются до запуска, а сама задача жила только в памяти
+    процесса: перезапуск Railway посреди генерации — и клиент остаётся без
+    результата и без кредитов, а связать оплату с запросом у поставщика не по
+    чему (в active_generations только user_id, вид и время).
+    Внешний аудит 29.09.2026, пункт №11.
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO webgen_jobs (job_id, user_id, kind, model_key, cost, "
+                "status, worker, params) VALUES ($1,$2,$3,$4,$5,'running',$6,$7) "
+                "ON CONFLICT (job_id) DO NOTHING",
+                job_id, int(user_id), kind, model_key, int(cost), worker, (params or "")[:500])
+    except Exception as e:
+        # Журнал — страховка, а не условие работы: падать из-за него нельзя.
+        logging.error(f"webgen_job_start {job_id}: {e}")
+
+
+async def webgen_job_finish(job_id: str, status: str, err: str = "",
+                            refunded: bool = False) -> bool:
+    """Закрывает запись журнала. status: done | error.
+
+    Возвращает True, если запись ЕЩЁ БЫЛА за нами (была 'running'). Это и есть
+    право вернуть кредиты: если разбор потерянных задач уже забрал её и вернул
+    за неё деньги, второй раз возвращать нельзя.
+    Если база не ответила — считаем, что право есть: лучше вернуть клиенту
+    лишний раз, чем оставить его без кредитов и без результата.
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            _r = await conn.execute(
+                "UPDATE webgen_jobs SET status=$1, err=$2, refunded=$3, finished_at=NOW() "
+                "WHERE job_id=$4 AND status='running'",
+                status, (err or "")[:500], 1 if refunded else 0, job_id)
+        return str(_r).split()[-1] != "0"
+    except Exception as e:
+        logging.error(f"webgen_job_finish {job_id}: {e}")
+        return True
+
+
+async def webgen_jobs_take_lost(worker: str, older_than_min: int,
+                                other_workers_only: bool = True) -> list:
+    """Забирает зависшие оплаченные генерации, чтобы вернуть за них кредиты.
+
+    Пометка и выдача — ОДНИМ запросом с RETURNING: даже если два процесса
+    начнут разбор одновременно, строку заберёт только один и кредиты
+    вернутся ровно один раз.
+    """
+    try:
+        pool = await get_pool()
+        _cond = "AND COALESCE(worker,'') <> $1" if other_workers_only else "AND COALESCE(worker,'') = $1"
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "UPDATE webgen_jobs SET status='lost', refunded=1, finished_at=NOW(), "
+                "err=COALESCE(NULLIF(err,''),'процесс остановлен во время генерации') "
+                "WHERE job_id IN (SELECT job_id FROM webgen_jobs "
+                "                 WHERE status='running' AND refunded=0 "
+                f"                  {_cond} "
+                "                   AND created_at < NOW() - ($2 || ' minutes')::INTERVAL "
+                "                 ORDER BY created_at ASC LIMIT 50 FOR UPDATE SKIP LOCKED) "
+                "RETURNING job_id, user_id, kind, model_key, cost",
+                worker, str(int(older_than_min)))
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logging.error(f"webgen_jobs_take_lost: {e}")
+        return []
+
+
+async def admin_set_balance(user_id: int, target: int) -> dict:
+    """Ручная правка баланса из админки — СРАЗУ и в users, и в партиях.
+
+    Баланс живёт в двух местах: `users.credits` (быстрое число) и партии
+    `credit_batches` (из них списывается по FIFO и из них же сгорают бонусы).
+    Раньше «установить баланс» и «списать» меняли только `users.credits`.
+    Партии оставались нетронутыми — и позже честно сгорали ещё раз:
+
+      у клиента 100 промокредитов → владелец ставит баланс 0 → клиент
+      покупает 100 бессрочных → промопартия истекает и expire_old_batches
+      списывает ещё 100. Клиент теряет КУПЛЕННЫЕ кредиты.
+
+    Теперь обе стороны приводятся к одному числу в одной транзакции:
+    не хватает — добавляем бессрочную партию 'admin_manual', лишнее —
+    гасим из партий тем же порядком, что и обычное списание (сначала те,
+    что скоро сгорят). Заодно чинится и старый рассинхрон, если он уже
+    накопился. Внешний аудит 29.09.2026, пункт №19.
+
+    Возвращает {"before": …, "after": …, "batches_before": …, "added": …,
+    "taken": …} — для понятного ответа в админке.
+    """
+    target = max(0, int(target))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT credits FROM users WHERE user_id=$1 FOR UPDATE", user_id)
+            if not row:
+                return {"error": "no_user"}
+            _before = int(row["credits"] or 0)
+            # СНАЧАЛА разбираемся с уже истёкшими партиями, которые сгорание
+            # ещё не успело обработать (оно ходит раз в час). Иначе получалась
+            # ровно та же беда, ради которой всё это и делается: мы привели
+            # баланс к числу, не видя истёкшую партию, а через сорок минут
+            # сгорание вычло её остаток из users.credits — и клиент снова в
+            # минусе относительно своих партий.
+            #   • бонусные (promo/referral/free) — гасим прямо сейчас, они
+            #     всё равно обречены;
+            #   • купленные и начисленные вручную НЕ сгорают никогда: если у
+            #     такой партии почему-то стоит срок, снимаем срок, а не
+            #     деньги (так же, как это делает миграция при старте).
+            _dead = int(await conn.fetchval(
+                "SELECT COALESCE(SUM(credits_left),0) FROM credit_batches "
+                "WHERE user_id = $1 AND credits_left > 0 "
+                "  AND expires_at IS NOT NULL AND expires_at <= NOW() "
+                "  AND COALESCE(source,'') NOT IN ('purchase','admin_manual')", user_id) or 0)
+            await conn.execute(
+                "UPDATE credit_batches SET credits_left = 0 "
+                "WHERE user_id = $1 AND credits_left > 0 "
+                "  AND expires_at IS NOT NULL AND expires_at <= NOW() "
+                "  AND COALESCE(source,'') NOT IN ('purchase','admin_manual')", user_id)
+            await conn.execute(
+                "UPDATE credit_batches SET expires_at = NULL "
+                "WHERE user_id = $1 AND credits_left > 0 "
+                "  AND expires_at IS NOT NULL AND expires_at <= NOW() "
+                "  AND COALESCE(source,'') IN ('purchase','admin_manual')", user_id)
+            batches = await conn.fetch(
+                """SELECT id, credits_left FROM credit_batches
+                   WHERE user_id = $1 AND credits_left > 0
+                     AND (expires_at IS NULL OR expires_at > NOW())
+                   ORDER BY expires_at ASC NULLS LAST, id ASC
+                   FOR UPDATE""", user_id)
+            _bsum = sum(int(b["credits_left"]) for b in batches)
+            _added = _taken = 0
+            if target > _bsum:
+                _added = target - _bsum
+                await conn.execute(
+                    "INSERT INTO credit_batches (user_id, credits_init, credits_left, source) "
+                    "VALUES ($1, $2, $2, 'admin_manual')", user_id, _added)
+            elif target < _bsum:
+                _need = _bsum - target
+                for b in batches:
+                    if _need <= 0:
+                        break
+                    _take = min(_need, int(b["credits_left"]))
+                    await conn.execute(
+                        "UPDATE credit_batches SET credits_left = credits_left - $1 WHERE id=$2",
+                        _take, b["id"])
+                    _need -= _take
+                    _taken += _take
+            await conn.execute(
+                "UPDATE users SET credits = $1 WHERE user_id = $2", target, user_id)
+    await log_event(user_id, "admin_balance_sync",
+                    f"before={_before} batches={_bsum} target={target} "
+                    f"added={_added} taken={_taken} dead_burned={_dead}")
+    return {"before": _before, "after": target, "batches_before": _bsum,
+            "added": _added, "taken": _taken, "dead_burned": _dead}
+
+
+async def admin_deduct_balance(user_id: int, amount: int) -> dict:
+    """Ручное списание из админки — через ту же согласованную правку."""
+    amount = max(0, int(amount))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _cur = await conn.fetchval(
+            "SELECT credits FROM users WHERE user_id=$1", user_id)
+    if _cur is None:
+        return {"error": "no_user"}
+    return await admin_set_balance(user_id, max(0, int(_cur) - amount))
+
+
 async def add_credits(user_id: int, amount: int, source: str = "refund"):
     """Начисление/возврат кредитов.
 
@@ -2107,13 +2390,11 @@ async def add_credits(user_id: int, amount: int, source: str = "refund"):
         await add_credits_batch(user_id, int(amount), source=source, days_valid=0)
         await log_event(user_id, "refund_or_add", f"amount={amount}")
         return
-    # Отрицательная сумма (админское списание) — прежнее поведение
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET credits = GREATEST(0, credits + $1) WHERE user_id = $2",
-            amount, user_id
-        )
+    # Отрицательная сумма (ручное списание). Раньше менялся только
+    # users.credits, а партии оставались с прежним остатком и позже сгорали
+    # ещё раз. Идём через согласованную правку. Аудит 29.09.2026, №19.
+    if amount and int(amount) < 0:
+        await admin_deduct_balance(user_id, abs(int(amount)))
     await log_event(user_id, "refund_or_add", f"amount={amount}")
 
 async def block_user(user_id: int):
@@ -2166,28 +2447,67 @@ async def fk_get_order(order_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def fk_mark_paid(order_id: str) -> bool:
+async def claim_stars_payment(charge_id: str, user_id: int,
+                              payload: str = "", amount: int = 0) -> bool:
+    """Атомарно «занимает» платёж Stars. True — этот платёж ещё не обработан.
+
+    У Stars нет своего заказа в fk_orders и нет статуса, поэтому защиты от
+    повторной обработки не было вообще: каждое повторное сообщение
+    successful_payment начисляло кредиты заново. Нашёл внешний аудит
+    29.09.2026. Telegram даёт уникальный telegram_payment_charge_id — по нему
+    и различаем платежи.
+
+    Пустой charge_id (теоретически) не должен блокировать выдачу оплаченного
+    товара, поэтому в этом случае пропускаем — но пишем в лог.
+    """
+    _cid = (charge_id or "").strip()
+    if not _cid:
+        logging.warning("stars: пустой charge_id — пропускаю защиту от повтора")
+        return True
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        r = await conn.execute(
+            "INSERT INTO stars_payments (charge_id, user_id, payload, amount) "
+            "VALUES ($1,$2,$3,$4) ON CONFLICT (charge_id) DO NOTHING",
+            _cid, int(user_id), str(payload or "")[:200], int(amount or 0))
+    return str(r).split()[-1] == "1"
+
+
+async def fk_mark_paid(order_id: str, conn=None) -> bool:
     """Атомарно помечает заказ как оплаченный.
 
     Returns:
-        True если статус был успешно изменён с 'pending' на 'paid' (это первое зачисление)
-        False если заказ уже был paid (защита от повторного зачисления)
+        True — статус изменён с 'pending' на 'paid' (это первое зачисление);
+        False — заказ не в состоянии «ждёт оплаты» (уже оплачен, отменён,
+        возвращён или его нет).
+
+    ТОЛЬКО из 'pending'. Раньше условие было «любой статус, кроме paid», и
+    отменённый заказ снова становился оплачиваемым: владелец отменял заказ
+    (status='cancelled'), приходил повтор вебхука — и выдача шла второй раз,
+    без новых денег от клиента. Нашёл внешний аудит 29.09.2026. Статусы у
+    fk_orders: pending, paid, cancelled, refunded — платить можно только по
+    первому.
+
+    conn — выполнить в УЖЕ ОТКРЫТОЙ транзакции вызывающего, чтобы отметка об
+    оплате и выдача кредитов были неразделимы: иначе рестарт между ними
+    оставляет клиента без денег и без товара, а заказ — «оплаченным», то
+    есть невосстановимым ни вебхуком, ни фоновой сверкой.
     """
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Атомарный UPDATE с условием - если уже paid, ничего не меняем
-        # ROWCOUNT покажет 1 если изменили, 0 если уже было paid
-        result = await conn.execute(
-            "UPDATE fk_orders SET status='paid', paid_at=NOW() "
-            "WHERE order_id=$1 AND status != 'paid'",
-            order_id
-        )
+    _q_mp = ("UPDATE fk_orders SET status='paid', paid_at=NOW() "
+             "WHERE order_id=$1 AND COALESCE(status,'pending') = 'pending'")
+
+    def _ok(_res):
         # asyncpg возвращает строку вида "UPDATE 1" или "UPDATE 0"
         try:
-            updated_count = int(result.split()[-1]) if result else 0
-        except (ValueError, AttributeError):
-            updated_count = 0
-        return updated_count > 0
+            return int(str(_res).split()[-1]) > 0
+        except (ValueError, AttributeError, IndexError):
+            return False
+
+    if conn is not None:
+        return _ok(await conn.execute(_q_mp, order_id))
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return _ok(await conn.execute(_q_mp, order_id))
 
 
 # ══════════════════════════════════════════════════════════
@@ -2806,10 +3126,22 @@ async def log_premium_ref(referrer_id: int, referee_id: int, order_id: str,
         async with conn.transaction():
             try:
                 if cap and cap > 0:
+                    # PostgreSQL НЕ разрешает FOR UPDATE вместе с агрегатом:
+                    # «FOR UPDATE is not allowed with aggregate functions».
+                    # Запрос падал, исключение ниже гасилось как «уже
+                    # начисляли», и при включённом месячном лимите премиум-
+                    # рефералка переставала платить ВООБЩЕ — молча, с записью
+                    # «лимит или дубль» в лог. Проверено выполнением на
+                    # PostgreSQL 16, внешний аудит 29.09.2026.
+                    #
+                    # Блокировку, ради которой это писалось, ставим на строку
+                    # самого реферера: она существует всегда и сериализует две
+                    # одновременные оплаты не хуже.
+                    await conn.execute(
+                        "SELECT 1 FROM users WHERE user_id=$1 FOR UPDATE", referrer_id)
                     _earned = await conn.fetchval(
                         """SELECT COALESCE(SUM(coins),0) FROM ref_premium_log
-                           WHERE referrer_id=$1 AND created_at >= date_trunc('month', NOW())
-                           FOR UPDATE""",
+                           WHERE referrer_id=$1 AND created_at >= date_trunc('month', NOW())""",
                         referrer_id
                     ) or 0
                     _remaining = float(cap) - float(_earned)
@@ -2823,8 +3155,15 @@ async def log_premium_ref(referrer_id: int, referee_id: int, order_id: str,
                     referrer_id, referee_id, order_id, round(amount_rub, 2), round(coins, 2)
                 )
                 return round(float(coins), 2)
-            except Exception:
-                return 0.0  # UNIQUE(order_id) — уже начисляли
+            except asyncpg.UniqueViolationError:
+                return 0.0  # UNIQUE(order_id) — по этому заказу уже начисляли
+            except Exception as _e_prem:
+                # Раньше сюда же попадала ЛЮБАЯ ошибка SQL и выглядела как
+                # обычный дубль. Именно так и пряталась поломка с FOR UPDATE.
+                logging.error(f"log_premium_ref: сбой начисления "
+                              f"referrer={referrer_id} order={order_id}: {_e_prem}",
+                              exc_info=True)
+                return 0.0
 
 
 # ── Perplexity коды (копия Claude) ───────────────────────────────────────────

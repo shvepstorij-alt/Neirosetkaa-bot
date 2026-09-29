@@ -657,6 +657,25 @@ def strip_surrogates(s: str) -> str:
     """Удаляет суррогатные символы из строки (могут приходить из Telegram full_name или БД)."""
     return s.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
 
+
+def tg_name(s) -> str:
+    """Имя клиента, готовое к вставке в сообщение с parse_mode="HTML".
+
+    Имя в Telegram человек пишет какое угодно, включая «<», «>» и «&», а все
+    наши сообщения уходят с parse_mode=HTML и обёрнуты в try/except. Поэтому
+    одна угловая скобка в имени не ломала бота заметно — она отменяла ВСЁ
+    сообщение целиком («can't parse entities»), и уведомление об оплате или
+    об ошибке активации просто молча не приходило. strip_surrogates от этого
+    не спасает: он чистит суррогаты, а не разметку.
+
+    Кавычки намеренно не трогаем (quote=False): Telegram понимает только
+    &lt; &gt; &amp; &quot;, а имя вставляется в текст сообщения, не в атрибут
+    тега — &#x27; он показал бы клиенту как есть.
+    Внешний аудит 29.09.2026, пункт №22.
+    """
+    import html as _h_tn
+    return _h_tn.escape(strip_surrogates(str(s or "")), quote=False)
+
 WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "")
 
 
@@ -1926,7 +1945,9 @@ _WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ch
 
 def _verify_tg_init_data(init_data: str) -> int | None:
     try:
-        from urllib.parse import parse_qsl, unquote
+        # unquote намеренно НЕ импортируем: см. комментарий ниже — второе
+        # декодирование здесь ломает проверку подписи.
+        from urllib.parse import parse_qsl
         import json as _json
         params = dict(parse_qsl(init_data, keep_blank_values=True))
         recv_hash = params.pop("hash", None)
@@ -1954,8 +1975,41 @@ def _verify_tg_init_data(init_data: str) -> int | None:
                 return None
         except Exception:
             pass
-        user_data = _json.loads(unquote(params.get("user", "{}")))
-        return user_data.get("id")
+        # ВТОРОГО unquote ЗДЕСЬ БЫТЬ НЕ ДОЛЖНО.
+        # parse_qsl выше уже раскодировал значения. Повторное декодирование
+        # МЕНЯЕТ подписанный JSON: последовательности %22 внутри имени
+        # превращаются в кавычки, и в объект дописывается второй "id".
+        # json.loads берёт последний — сервер начинает работать от чужого
+        # идентификатора при верной подписи.
+        # Проверено 29.09.2026: подписанный id 111111 превращался в 222222,
+        # а это давало права владельца во всех админских HTTP-методах, потому
+        # что все они сравнивают с ADMIN_ID результат ИМЕННО этой функции.
+        _raw_user = params.get("user", "{}")
+
+        def _no_dupes(_pairs):
+            """Запрещаем повторяющиеся ключи в user.
+
+            Подстраховка на случай, если где-то ещё появится лишнее
+            декодирование: json.loads по умолчанию молча берёт последнее
+            значение, и подмена прошла бы незаметно.
+            """
+            _seen = {}
+            for _k, _v in _pairs:
+                if _k in _seen:
+                    raise ValueError("повторяющийся ключ %r в user" % _k)
+                _seen[_k] = _v
+            return _seen
+
+        user_data = _json.loads(_raw_user, object_pairs_hook=_no_dupes)
+        if not isinstance(user_data, dict):
+            logging.warning("initData verify: user не объект")
+            return None
+        _uid = user_data.get("id")
+        # bool — подкласс int, поэтому проверяем его отдельно.
+        if isinstance(_uid, bool) or not isinstance(_uid, int) or not (0 < _uid < (1 << 53)):
+            logging.warning("initData verify: некорректный id в user")
+            return None
+        return _uid
     except Exception as _e:
         logging.warning(f"initData verify: {_e}")
         return None

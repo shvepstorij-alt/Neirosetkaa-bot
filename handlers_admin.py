@@ -27,6 +27,7 @@ from config import (
     FK_SHOP_ID, FK_WEBHOOK_URL, IMAGE_MODELS, SHOP_CATALOG, VIDEO_MODELS, WEBAPP_BASE_URL, _BOT_TZ,
     bot, dp,
     CLAUDE_PROVIDERS, CLAUDE_PROVIDER_ORDER, CLAUDE_DEFAULT_PROVIDER, claude_provider_name,
+    tg_name,
 )
 from states import (
     AdmPromoState, AdminEditState, AdminState,
@@ -446,9 +447,15 @@ async def cmd_set_credits(message: Message):
             await message.answer(f"❌ Юзер {target_uid} не найден")
             return
         old_credits = old_row["credits"]
-        await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", new_amount, target_uid)
 
-    await log_event(target_uid, "admin_set_credits", f"from={old_credits} to={new_amount} by_admin={message.from_user.id}")
+    # Правим баланс и партии кредитов одной согласованной операцией —
+    # иначе партии сгорят ещё раз поверх ручной правки (аудит 29.09.2026, №19).
+    from db import admin_set_balance
+    _sync = await admin_set_balance(target_uid, new_amount)
+    await log_event(target_uid, "admin_set_credits",
+                    f"from={old_credits} to={new_amount} by_admin={message.from_user.id} "
+                    f"batches_before={_sync.get('batches_before')} "
+                    f"added={_sync.get('added')} taken={_sync.get('taken')}")
     await message.answer(
         f"✅ Баланс юзера <code>{target_uid}</code> изменён:\n"
         f"Было: <b>{old_credits} кр</b>\n"
@@ -1191,11 +1198,19 @@ async def adm_bal_set_confirm(message: Message, state: FSMContext):
     target_uid = data.get("target_uid")
     old_balance = data.get("current_balance", 0)
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", new_balance, target_uid)
+    # Правим баланс И партии кредитов одной операцией: раньше здесь менялся
+    # только users.credits, а партии оставались нетронутыми и позже сгорали
+    # ещё раз, съедая уже купленные клиентом кредиты.
+    # Внешний аудит 29.09.2026, пункт №19.
+    from db import admin_set_balance
+    _sync = await admin_set_balance(target_uid, new_balance)
+    if _sync.get("error") == "no_user":
+        await message.answer("⛔ Такого клиента нет в базе")
+        return
     await log_event(target_uid, "admin_set_credits",
-                    f"from={old_balance} to={new_balance} by_admin={message.from_user.id}")
+                    f"from={old_balance} to={new_balance} by_admin={message.from_user.id} "
+                    f"batches_before={_sync.get('batches_before')} "
+                    f"added={_sync.get('added')} taken={_sync.get('taken')}")
 
     await state.clear()
     await message.answer(
@@ -1229,11 +1244,15 @@ async def adm_bal_deduct_confirm(message: Message, state: FSMContext):
     old_balance = data.get("current_balance", 0)
     new_balance = max(0, old_balance - amount)  # не уходим в минус
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET credits = $1 WHERE user_id = $2", new_balance, target_uid)
+    from db import admin_set_balance
+    _sync = await admin_set_balance(target_uid, new_balance)
+    if _sync.get("error") == "no_user":
+        await message.answer("⛔ Такого клиента нет в базе")
+        return
     await log_event(target_uid, "admin_deduct_credits",
-                    f"from={old_balance} to={new_balance} amount={amount} by_admin={message.from_user.id}")
+                    f"from={old_balance} to={new_balance} amount={amount} "
+                    f"by_admin={message.from_user.id} "
+                    f"batches_before={_sync.get('batches_before')} taken={_sync.get('taken')}")
 
     await state.clear()
     actual_deducted = old_balance - new_balance
@@ -1936,7 +1955,9 @@ async def adm_find_user(message: Message, state: FSMContext):
         )
     blocked = "🚫 Да" if user.get("is_blocked") else "✅ Нет"
     username = (user.get("username") or "").strip()
-    full_name = (user.get("full_name") or "").strip()
+    # Карточка уходит с parse_mode="HTML": имя клиента экранируем сразу при
+    # чтении, иначе «<» в имени отменял всё сообщение и карточка не открывалась.
+    full_name = tg_name((user.get("full_name") or "").strip())
     uname = f"@{username}" if username else (full_name or "-")
     last_active = str(user.get("last_active", ""))[:16].replace("T", " ")
     created_at = str(user.get("created_at", ""))[:10]
@@ -2705,6 +2726,10 @@ async def adm_maintenance(cb: CallbackQuery):
         current = await get_setting("maintenance", "0")
         new_val = "0" if current == "1" else "1"
         await set_setting("maintenance", new_val)
+        # Режим кэшируется на 10 секунд — сбрасываем кэш, чтобы он
+        # применился сразу и в боте, и в мини-аппах.
+        from common import maintenance_cache_reset
+        maintenance_cache_reset()
         status = "🔴 ВКЛЮЧЁН" if new_val == "1" else "🟢 ВЫКЛЮЧЕН"
         await cb.message.answer(
             f"🔧 <b>Техобслуживание {status}</b>\n\n"
@@ -4182,7 +4207,7 @@ async def _partners_menu():
     if not rows:
         lines.append("Партнёров пока нет.")
     for r in rows:
-        _nm = ("@" + r["username"]) if r.get("username") else (r.get("full_name") or "без ника")
+        _nm = ("@" + r["username"]) if r.get("username") else (tg_name(r.get("full_name")) or "без ника")
         _bal = float(r.get("earned") or 0) - float(r.get("paid") or 0)
         lines.append(
             f"• <b>{_nm}</b> <code>{r['user_id']}</code>\n"
@@ -4447,7 +4472,7 @@ async def adm_partner_one(cb: CallbackQuery, state: FSMContext):
     st = await partner_stats(pid)
     rates = await list_partner_rates(pid)
     _u = await get_user(pid) or {}
-    _nm = ("@" + _u["username"]) if _u.get("username") else (_u.get("full_name") or str(pid))
+    _nm = ("@" + _u["username"]) if _u.get("username") else (tg_name(_u.get("full_name")) or str(pid))
     _disc = float(_u.get("partner_discount_pct") or 0)
     _mark = float(_u.get("partner_markup_pct") or 0)
     _promo = float(_u.get("partner_promo_pct") or 0)
@@ -4891,7 +4916,7 @@ async def adm_partner_off(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌ Нет доступа", show_alert=True); return
     pid = int(cb.data.split(":")[1])
     _u = await get_user(pid) or {}
-    _nm = ("@" + _u["username"]) if _u.get("username") else (_u.get("full_name") or str(pid))
+    _nm = ("@" + _u["username"]) if _u.get("username") else (tg_name(_u.get("full_name")) or str(pid))
     try:
         st = await partner_stats(pid)
     except Exception:
@@ -4925,7 +4950,7 @@ async def adm_partner_off_confirm(cb: CallbackQuery, state: FSMContext):
         await cb.answer("❌ Нет доступа", show_alert=True); return
     pid = int(cb.data.split(":")[1])
     _u = await get_user(pid) or {}
-    _nm = ("@" + _u["username"]) if _u.get("username") else (_u.get("full_name") or str(pid))
+    _nm = ("@" + _u["username"]) if _u.get("username") else (tg_name(_u.get("full_name")) or str(pid))
     await set_partner(pid, False, 0, 0)
     logging.info(f"admin: партнёр {pid} ({_nm}) убран из партнёров")
     await cb.answer("Партнёр отключён", show_alert=True)

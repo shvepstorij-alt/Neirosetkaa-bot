@@ -33,8 +33,132 @@ from db import (
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
     gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report, tg_chunks,
-    _who_user,
+    _who_user, nsgifts_recover_stuck, _WORKER_ID,
 )
+
+
+async def webgen_lost_jobs_loop():
+    """Возвращает кредиты за оплаченные генерации, оборванные остановкой бота.
+
+    Кредиты списываются ДО обращения к поставщику, а сама задача жила только в
+    памяти процесса. Деплой или падение посреди генерации — и клиент остаётся
+    без результата и без кредитов: возврат из except задачи не выполнялся, а
+    очистка active_generations просто удаляла строку.
+    Теперь каждая оплаченная генерация пишется в журнал webgen_jobs, и эта
+    петля закрывает незавершённые. Внешний аудит 29.09.2026, пункт №11.
+
+    Два прохода:
+    • задачи ЧУЖОГО процесса старше 3 минут — их точно никто не доделает;
+    • свои собственные старше 45 минут — зависшие (любая наша генерация
+      укладывается в единицы минут).
+    Пометка и выдача идут одним запросом с RETURNING, поэтому кредиты за одну
+    задачу возвращаются ровно один раз, даже если процессов окажется два.
+    """
+    from db import webgen_jobs_take_lost, add_credits as _add_cr
+    # Небольшая фора на случай, если старый процесс ещё доживает свои секунды
+    # после деплоя: не хочется вернуть кредиты за генерацию, которая как раз
+    # доделывается.
+    await asyncio.sleep(90)
+    _KIND_RU = {"photo": "фото", "video": "видео", "anim": "анимации", "edit": "редактирования"}
+    while True:
+        try:
+            _lost = await webgen_jobs_take_lost(_WORKER_ID, 3, other_workers_only=True)
+            _lost += await webgen_jobs_take_lost(_WORKER_ID, 45, other_workers_only=False)
+            if _lost:
+                _sum = 0
+                for j in _lost:
+                    _uid, _cost = int(j["user_id"]), int(j["cost"] or 0)
+                    if _cost <= 0:
+                        continue
+                    try:
+                        await _add_cr(_uid, _cost, source="refund")
+                        _sum += _cost
+                    except Exception as _e_rf:
+                        logging.error(f"webgen refund uid={_uid} job={j['job_id']}: {_e_rf}")
+                        continue
+                    try:
+                        await bot.send_message(
+                            _uid,
+                            f"⚠️ Генерация {_KIND_RU.get(j['kind'], j['kind'])} прервалась "
+                            f"из-за перезапуска сервиса.\n"
+                            f"Кредиты вернули: <b>+{_cost}</b>. Извини — можно запускать заново.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    logging.warning(f"webgen lost job {j['job_id']} uid={_uid} "
+                                    f"kind={j['kind']} refund={_cost}")
+                if _sum:
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"♻️ <b>Возврат за оборванные генерации</b>\n\n"
+                            f"Задач: <b>{len(_lost)}</b>\n"
+                            f"Возвращено: <b>{_sum} кр</b>\n"
+                            f"Скорее всего это перезапуск сервиса во время генерации.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"webgen_lost_jobs_loop: {e}")
+        await asyncio.sleep(300)
+
+
+async def nsgifts_stuck_orders_loop():
+    """Раз в 5 минут разбирает заказы App Store, застрявшие в 'processing'.
+
+    Захват заказа ставит 'processing', и повторная выдача его не принимает —
+    это защита от покупки второго кода. Но если Railway перезапустил бота
+    посреди выдачи, заказ оставался в 'processing' НАВСЕГДА: вебхук больше
+    ничего не делал, кнопка клиента отвечала «уже выполнен», а деньги у
+    поставщика могли быть уже списаны. Владелец, не видя результата, мог
+    купить второй код вручную. Внешний аудит 29.09.2026, пункт №18.
+
+    Сами вслепую ничего не покупаем: спрашиваем поставщика про УЖЕ созданный
+    заказ и либо отдаём найденный код, либо зовём владельца.
+    """
+    await asyncio.sleep(180)
+    while True:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT fk_order_id, COALESCE(error_msg,'') AS em FROM nsgifts_orders "
+                    "WHERE status='processing' "
+                    "  AND created_at < NOW() - INTERVAL '10 minutes' "
+                    "  AND created_at > NOW() - INTERVAL '14 days' "
+                    "ORDER BY created_at ASC LIMIT 20")
+            for r in rows:
+                _oid = r["fk_order_id"]
+                # Счётчик попыток в error_msg: после часа бесплодных попыток
+                # перестаём дёргать поставщика — владелец уже предупреждён.
+                _tries = 0
+                if r["em"].startswith("stuck:"):
+                    try:
+                        _tries = int(r["em"].split(":")[1])
+                    except Exception:
+                        _tries = 0
+                if _tries >= 12:
+                    continue
+                try:
+                    _res = await nsgifts_recover_stuck(_oid)
+                except Exception as _e_rc:
+                    logging.error(f"nsgifts_recover_stuck {_oid}: {_e_rc}")
+                    _res = "exception"
+                logging.info(f"NSGifts stuck {_oid}: {_res}")
+                if _res in ("delivered_local", "delivered_remote", "reopened", "not_stuck"):
+                    continue
+                # Не разобрались — запоминаем попытку, чтобы не ходить вечно.
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE nsgifts_orders SET error_msg=$1 "
+                            "WHERE fk_order_id=$2 AND status='processing'",
+                            f"stuck:{_tries + 1}", _oid)
+                except Exception as _e_up:
+                    logging.warning(f"NSGifts stuck отметка {_oid}: {_e_up}")
+        except Exception as e:
+            logging.error(f"nsgifts_stuck_orders_loop: {e}")
+        await asyncio.sleep(300)
 
 async def cleanup_stale_generations_loop():
     """Раз в 5 минут чистит зависшие записи (старше 30 мин).
@@ -200,38 +324,74 @@ async def auto_recover_lost_videos_loop():
 
 # ─── Авто-проверка платежей FreeKassa ────────────────────
 async def fk_auto_check_loop():
-    """Каждые 5 минут проверяет FK API: ищет оплаченные заказы у которых в нашей БД
-    статус всё ещё 'pending'. Это значит webhook не дошёл - зачисляем сами.
+    """Каждые 5 минут спрашивает у FreeKassa, не оплачен ли счёт, который у нас
+    всё ещё 'pending'. Это страховка на случай, если вебхук не дошёл.
 
-    Проверяем заказы за последний час, чтобы охватить случаи когда webhook
-    задержался или не пришёл вообще."""
+    Порядок обхода — от самых давно не проверенных (ОЧЕРЕДЬ, а не «новейшие»).
+    Раньше выборка каждый раз брала новейшие 50 счетов за сутки. Брошенные
+    счета остаются pending навсегда, и стоило им накопиться полсотни, как
+    старый РЕАЛЬНО оплаченный заказ с потерянным вебхуком не проверялся уже
+    никогда: он просто не попадал в эти 50, а потом выходил из суточного окна.
+    Клиент ждал обещанного восстановления, которое не наступало.
+    Теперь у каждого счёта есть отметка last_checked_at, сортировка идёт по
+    ней (непроверенные — первыми), окно расширено до 7 суток, а отметка
+    ставится ДО запроса в FK — иначе счёт, на котором API стабильно падает,
+    навсегда занимал бы место в очереди. Внешний аудит 29.09.2026, пункт №24.
+    """
     await asyncio.sleep(120)  # Первый запуск через 2 минуты после старта
+    _warned_backlog = 0.0
     while True:
         try:
-            # 1. Получаем pending заказы за последний час из нашей БД
+            # 1. Берём ПОРЦИЮ давно не проверенных pending-счетов
             pool = await get_pool()
             async with pool.acquire() as conn:
                 pending_rows = await conn.fetch(
                     "SELECT order_id, user_id, credits, amount_rub, payment_method, promo_code "
                     "FROM fk_orders "
                     "WHERE status = 'pending' "
-                    "  AND created_at > NOW() - INTERVAL '24 hours' "
+                    "  AND created_at > NOW() - INTERVAL '7 days' "
                     "  AND created_at < NOW() - INTERVAL '2 minutes' "
-                    "ORDER BY created_at DESC "
+                    "ORDER BY last_checked_at ASC NULLS FIRST, created_at DESC "
                     "LIMIT 50"
                 )
+                _total_pending = await conn.fetchval(
+                    "SELECT COUNT(*) FROM fk_orders "
+                    "WHERE status = 'pending' "
+                    "  AND created_at > NOW() - INTERVAL '7 days' "
+                    "  AND created_at < NOW() - INTERVAL '2 minutes'"
+                ) or 0
 
             if not pending_rows:
                 await asyncio.sleep(300)  # 5 минут до следующей проверки
                 continue
 
-            logging.info(f"🔍 FK auto-check: {len(pending_rows)} pending заказов за последний час")
+            logging.info(f"🔍 FK auto-check: проверяю {len(pending_rows)} из {_total_pending} "
+                         f"неоплаченных счетов за 7 дней")
+            # Если очередь большая, полный круг занимает заметное время —
+            # пусть это будет видно в логах, но не чаще раза в час.
+            if _total_pending > 50:
+                _now_bl = _time_module.time()
+                if _now_bl - _warned_backlog > 3600:
+                    _warned_backlog = _now_bl
+                    logging.warning(
+                        f"FK auto-check: в очереди {_total_pending} счетов, полный круг "
+                        f"≈{int((_total_pending / 50.0) * 5)} мин")
 
             # 2. Для каждого pending заказа спрашиваем FK API его статус
             recovered = 0
             for row in pending_rows:
                 order_id = row["order_id"]
                 try:
+                    # Отметку ставим ДО запроса: если FK стабильно отвечает
+                    # ошибкой именно на этот счёт, он не должен навечно
+                    # застрять в начале очереди и закрывать собой остальные.
+                    try:
+                        async with pool.acquire() as _c_mk:
+                            await _c_mk.execute(
+                                "UPDATE fk_orders SET last_checked_at = NOW() "
+                                "WHERE order_id = $1", order_id)
+                    except Exception as _e_mk:
+                        logging.warning(f"FK auto-check: отметка {order_id}: {_e_mk}")
                     fk_status = await fk_check_order_status(order_id)
                     if fk_status and fk_status.get("status") == "paid":
                         # FK подтвердил оплату - зачисляем
@@ -1046,10 +1206,26 @@ async def claude_codes_cleanup_loop():
             await asyncio.sleep(1800)  # 30 минут
             pool = await get_pool()
             async with pool.acquire() as conn:
-                # 1) Удаляем ПРОСРОЧЕННЫЕ резервы (pending истёк — клиент не активировал за 2ч).
-                #    Иначе мёртвая запись «висит» в «Ждущих» и код при JOIN двоится.
+                # ПРАВИЛО: бот сам решает судьбу кода только тогда, когда
+                # точно знает, что код никуда не уходил. Резерв, по которому
+                # активация УЖЕ НАЧИНАЛАСЬ (есть bpa_order_id или org_id),
+                # трогать нельзя: поставщик мог довести её до конца, а бот об
+                # этом не узнать — процесс упал между ответом поставщика и
+                # записью mark_..._code_used. Такой код молча уходил
+                # следующему клиенту уже потраченным. Внешний аудит 29.09.2026.
+                #
+                # Поэтому истёкшие резервы удаляем ВЫБОРОЧНО: только те, где
+                # активацию даже не пробовали. Остальные остаются в таблице —
+                # и код из-за NOT EXISTS ниже в пул не возвращается, и сам
+                # резерв видно в админке на экране «Ждущие коды», где есть
+                # кнопки «В пул» и «Удалить». Решение — за Александром.
                 await conn.execute(
-                    "DELETE FROM claude_pending_activations WHERE expires_at < NOW()")
+                    "DELETE FROM claude_pending_activations WHERE expires_at < NOW() "
+                    "  AND bpa_order_id IS NULL AND COALESCE(org_id,'') = ''")
+                _stuck_cl = await conn.fetch(
+                    "SELECT code, user_id FROM claude_pending_activations "
+                    "WHERE expires_at < NOW() "
+                    "  AND (bpa_order_id IS NOT NULL OR COALESCE(org_id,'') <> '')")
                 # 2) Возвращаем в пул коды, что зарезервированы (is_used, used_by=NULL),
                 #    но больше не привязаны ни к одному ЖИВОМУ резерву.
                 released = await conn.execute(
@@ -1062,6 +1238,22 @@ async def claude_codes_cleanup_loop():
                              WHERE p.code = claude_codes.code
                          )"""
                 )
+                if _stuck_cl:
+                    logging.warning(f"claude: {len(_stuck_cl)} кодов с начатой активацией "
+                                    f"оставлены за клиентами — решает Александр")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            "\u23f3 <b>Claude — коды с незавершённой активацией</b>\n\n"
+                            + "\n".join(f"\U0001f511 <code>{_r['code']}</code> · "
+                                       f"{await _who_user(_r['user_id'])}"
+                                       for _r in _stuck_cl[:10])
+                            + "\n\nАктивация начиналась, но подтверждения нет. В пул сам "
+                              "НЕ возвращаю: поставщик мог её довести. Реши в админке — "
+                              "раздел «Ждущие коды».",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
                 if released and released != "UPDATE 0":
                     logging.info(f"🔑 claude_codes cleanup: {released}")
                     try:
@@ -1086,8 +1278,26 @@ async def perplexity_codes_cleanup_loop():
             await asyncio.sleep(1800)  # 30 минут
             pool = await get_pool()
             async with pool.acquire() as conn:
+                # ПРАВИЛО: бот сам решает судьбу кода только тогда, когда
+                # точно знает, что код никуда не уходил. Резерв, по которому
+                # активация УЖЕ НАЧИНАЛАСЬ (есть bpa_order_id или org_id),
+                # трогать нельзя: поставщик мог довести её до конца, а бот об
+                # этом не узнать — процесс упал между ответом поставщика и
+                # записью mark_..._code_used. Такой код молча уходил
+                # следующему клиенту уже потраченным. Внешний аудит 29.09.2026.
+                #
+                # Поэтому истёкшие резервы удаляем ВЫБОРОЧНО: только те, где
+                # активацию даже не пробовали. Остальные остаются в таблице —
+                # и код из-за NOT EXISTS ниже в пул не возвращается, и сам
+                # резерв видно в админке на экране «Ждущие коды», где есть
+                # кнопки «В пул» и «Удалить». Решение — за Александром.
                 await conn.execute(
-                    "DELETE FROM perplexity_pending_activations WHERE expires_at < NOW()")
+                    "DELETE FROM perplexity_pending_activations WHERE expires_at < NOW() "
+                    "  AND bpa_order_id IS NULL AND COALESCE(org_id,'') = ''")
+                _stuck_px = await conn.fetch(
+                    "SELECT code, user_id FROM perplexity_pending_activations "
+                    "WHERE expires_at < NOW() "
+                    "  AND (bpa_order_id IS NOT NULL OR COALESCE(org_id,'') <> '')")
                 released = await conn.execute(
                     """UPDATE perplexity_codes
                        SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
@@ -1098,6 +1308,22 @@ async def perplexity_codes_cleanup_loop():
                              WHERE p.code = perplexity_codes.code
                          )"""
                 )
+                if _stuck_px:
+                    logging.warning(f"perplexity: {len(_stuck_px)} кодов с начатой активацией "
+                                    f"оставлены за клиентами — решает Александр")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            "\u23f3 <b>Perplexity — коды с незавершённой активацией</b>\n\n"
+                            + "\n".join(f"\U0001f511 <code>{_r['code']}</code> · "
+                                       f"{await _who_user(_r['user_id'])}"
+                                       for _r in _stuck_px[:10])
+                            + "\n\nАктивация начиналась, но подтверждения нет. В пул сам "
+                              "НЕ возвращаю: поставщик мог её довести. Проверь у поставщика "
+                              "и реши вручную.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
                 if released and released != "UPDATE 0":
                     logging.info(f"\U0001f511 perplexity_codes cleanup: {released}")
                     try:
@@ -1122,15 +1348,36 @@ async def coins_refund_loop():
             await asyncio.sleep(3600)  # 1 час
             pool = await get_pool()
             async with pool.acquire() as conn:
+                # Возврат решался ТОЛЬКО по статусу fk_orders, и это отдавало
+                # монетки за успешно выданный товар: App Store, оплаченный
+                # целиком монетками, оставался в 'pending', через сутки
+                # клиенту возвращали деньги, а код у него уже был. Нашёл
+                # внешний аудит 29.09.2026.
+                #
+                # Теперь возвращаем, только когда товар НЕ выдан:
+                #   • выдача не начиналась или провалилась, И
+                #   • заказ либо вообще не оплачен, либо выдача помечена failed.
+                # Статусы выдачи fulfilled / processing / paying исключены:
+                # при них закупка у поставщика состоялась или ещё идёт.
                 cands = await conn.fetch(
-                    "SELECT order_id, user_id, coins_spent FROM fk_orders "
-                    "WHERE status != 'paid' AND coins_spent > 0 "
-                    "AND created_at < NOW() - INTERVAL '24 hours'")
+                    """SELECT f.order_id, f.user_id, f.coins_spent,
+                              COALESCE(f.status,'pending') AS ostatus,
+                              COALESCE(n.status,'')        AS nstatus
+                         FROM fk_orders f
+                         LEFT JOIN nsgifts_orders n ON n.fk_order_id = f.order_id
+                        WHERE f.coins_spent > 0
+                          AND f.created_at < NOW() - INTERVAL '24 hours'
+                          AND COALESCE(n.status,'') NOT IN ('fulfilled','processing','paying')
+                          AND (COALESCE(f.status,'pending') <> 'paid'
+                               OR COALESCE(n.status,'') = 'failed')""")
                 for r in cands:
-                    # атомарно «забираем» возврат, чтобы не вернуть дважды
+                    # Атомарно «забираем» возврат, чтобы не вернуть дважды, и
+                    # сразу закрываем заказ: иначе старая платёжная ссылка на
+                    # уменьшенную доплату остаётся рабочей, и клиент получает
+                    # товар за часть цены (та же находка аудита).
                     claim = await conn.execute(
-                        "UPDATE fk_orders SET coins_spent=0 "
-                        "WHERE order_id=$1 AND coins_spent=$2 AND status != 'paid'",
+                        "UPDATE fk_orders SET coins_spent=0, status='refunded' "
+                        "WHERE order_id=$1 AND coins_spent=$2",
                         r["order_id"], r["coins_spent"])
                     if claim.split()[-1] != "1":
                         continue
@@ -1143,15 +1390,38 @@ async def coins_refund_loop():
                     except Exception as _ce:
                         logging.error(f"coins_refund add_coins fail {r['order_id']}: {_ce}")
                         continue
-                    logging.info(f"\U0001fa99 coins refund {_amt} uid={r['user_id']} order={r['order_id']}")
+                    _failed = (r["nstatus"] == "failed")
+                    logging.info(f"\U0001fa99 coins refund {_amt} uid={r['user_id']} "
+                                 f"order={r['order_id']} причина="
+                                 f"{'сбой выдачи' if _failed else 'не оплачен'}")
                     try:
                         await bot.send_message(
                             r["user_id"],
-                            f"\U0001fa99 <b>Монетки возвращены</b>\n\n"
-                            f"Заказ не был оплачен в течение суток — вернули <b>{_amt}\u20bd</b> монетками на баланс.",
+                            (f"\U0001fa99 <b>Монетки возвращены</b>\n\n"
+                             f"Выдача по заказу не удалась — вернули "
+                             f"<b>{_amt}\u20bd</b> монетками на баланс."
+                             if _failed else
+                             f"\U0001fa99 <b>Монетки возвращены</b>\n\n"
+                             f"Заказ не был оплачен в течение суток — вернули "
+                             f"<b>{_amt}\u20bd</b> монетками на баланс."),
                             parse_mode="HTML")
                     except Exception:
                         pass
+                    if _failed:
+                        # Провал выдачи — это работа для владельца, а не
+                        # рядовой возврат: клиент заплатил и ничего не получил.
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"\U0001fa99 <b>Вернул монетки за несостоявшуюся выдачу</b>\n\n"
+                                f"\U0001f194 <code>{r['order_id']}</code>\n"
+                                f"\U0001f464 {await _who_user(r['user_id'])}\n"
+                                f"\U0001fa99 {_amt}\u20bd\n\n"
+                                f"Заказ закрыт как возвращённый. Если товар всё-таки "
+                                f"был выдан — разберись вручную.",
+                                parse_mode="HTML")
+                        except Exception:
+                            pass
         except Exception as e:
             logging.error(f"coins_refund_loop: {e}")
 

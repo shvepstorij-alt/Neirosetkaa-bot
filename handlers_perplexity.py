@@ -22,6 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, PERSONAL_USERNAME, WEBAPP_BASE_URL, bot, dp,
+    tg_name,
 )
 from runtime_state import (
     rt,
@@ -262,7 +263,7 @@ async def adm_perplexity_history(cb: CallbackQuery):
         uid_str = str(r["used_by"]) if r["used_by"] else "—"
         uname = r["username"] or ""
         fname = r["full_name"] or ""
-        tg_nick = f"@{uname}" if uname else (fname if fname else f"id{uid_str}")
+        tg_nick = f"@{uname}" if uname else (tg_name(fname) if fname else f"id{uid_str}")
         org = (r["org_id"] or "—")[:18]
         lines.append(
             f"\n{idx}. {tg_nick}  <i>{used_str}</i>\n"
@@ -445,7 +446,7 @@ async def adm_perplexity_pending_codes(cb: CallbackQuery):
         if r["p_uid"]:
             uname = r["username"] or ""
             fname = r["full_name"] or ""
-            who = f"@{uname}" if uname else (fname or f"id{r['p_uid']}")
+            who = f"@{uname}" if uname else (tg_name(fname) or f"id{r['p_uid']}")
             exp = r["expires_at"]
             if exp and hasattr(exp, "timestamp") and exp.timestamp() > _t_pend.time():
                 status = f"{who} — ждёт ввод Org ID (истекает {exp.strftime('%H:%M')})"
