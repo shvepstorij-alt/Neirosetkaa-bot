@@ -2029,27 +2029,48 @@ async def expire_old_batches() -> int:
     pool = await get_pool()
     total_expired = 0
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            rows = await conn.fetch(
-                "SELECT id, user_id, credits_left FROM credit_batches "
-                "WHERE credits_left > 0 AND expires_at IS NOT NULL AND expires_at <= NOW() "
-                "AND COALESCE(source,'') NOT IN ('purchase','admin_manual')"
-            )
-            for r in rows:
-                await conn.execute(
-                    "UPDATE users SET credits = GREATEST(0, credits - $1) WHERE user_id=$2",
-                    r["credits_left"], r["user_id"]
-                )
-                await conn.execute(
-                    "UPDATE credit_batches SET credits_left = 0 WHERE id=$1", r["id"]
-                )
-                total_expired += r["credits_left"]
-                # conn= обязателен: мы ВНУТРИ транзакции, и журнал без него
-                # брал бы вторую коннекцию из пула на КАЖДУЮ сгоревшую партию.
-                # Почасовая чистка сгоняет их пачкой — пул кончался быстрее
-                # всего именно здесь. См. комментарий в log_event.
-                await log_event(r["user_id"], "batch_expired",
-                                f"credits={r['credits_left']}", conn=conn)
+        # Список только ИДЕНТИФИКАТОРОВ. Остаток берём заново, уже под
+        # блокировкой: раньше он читался здесь и вычитался из баланса
+        # минутой позже, а между этим ручная правка баланса из админки могла
+        # обнулить ту же партию и выставить новый баланс. Тогда сгорание
+        # вычитало устаревшие 100 из уже правильного баланса, и купленные
+        # кредиты пропадали. Повторный внешний аудит 30.09.2026, пункт №31.
+        _ids = await conn.fetch(
+            "SELECT id, user_id FROM credit_batches "
+            "WHERE credits_left > 0 AND expires_at IS NOT NULL AND expires_at <= NOW() "
+            "AND COALESCE(source,'') NOT IN ('purchase','admin_manual')"
+        )
+        for r in _ids:
+            _done = 0
+            try:
+                async with conn.transaction():
+                    # Порядок блокировок ТОТ ЖЕ, что в admin_set_balance:
+                    # сначала пользователь, потом партия. Иначе две эти
+                    # операции встанут друг против друга намертво.
+                    await conn.fetchval(
+                        "SELECT credits FROM users WHERE user_id=$1 FOR UPDATE",
+                        r["user_id"])
+                    _left = int(await conn.fetchval(
+                        "SELECT credits_left FROM credit_batches WHERE id=$1 FOR UPDATE",
+                        r["id"]) or 0)
+                    if _left <= 0:
+                        # Партию уже обнулили, пока мы ждали блокировку.
+                        continue
+                    await conn.execute(
+                        "UPDATE credit_batches SET credits_left = 0 WHERE id=$1", r["id"])
+                    await conn.execute(
+                        "UPDATE users SET credits = GREATEST(0, credits - $1) "
+                        "WHERE user_id=$2", _left, r["user_id"])
+                    # conn= обязателен: мы ВНУТРИ транзакции, и журнал без него
+                    # брал бы вторую коннекцию из пула на КАЖДУЮ партию.
+                    await log_event(r["user_id"], "batch_expired",
+                                    f"credits={_left}", conn=conn)
+                    _done = _left
+            except Exception as _e_exp:
+                logging.error(f"expire_old_batches: партия {r['id']} "
+                              f"uid={r['user_id']}: {_e_exp}")
+                continue
+            total_expired += _done
     return total_expired
 
 
@@ -2328,6 +2349,41 @@ async def webgen_job_finish(job_id: str, status: str, err: str = "",
         return True
 
 
+async def webgen_job_finish_refund(job_id: str, err: str, user_id: int, cost: int,
+                                   status: str = "error") -> bool:
+    """Закрывает задачу генерации И возвращает за неё кредиты — в ОДНОЙ
+    транзакции. True — возврат сделали мы, False — задачу уже закрыл кто-то.
+
+    Раньше на обычной ошибке генерации это были два отдельных действия:
+    сначала webgen_job_finish ставил refunded=1, и только потом начислялись
+    кредиты. Падение между ними оставляло задачу помеченной «возвращено»
+    БЕЗ возврата — а фоновая компенсация ищет только running/refunded=0,
+    значит такую задачу не подбирал уже никто, и клиент терял кредиты
+    молча. Повторный внешний аудит 30.09.2026, пункт №11.
+    """
+    _cost = int(cost or 0)
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                _r = await conn.execute(
+                    "UPDATE webgen_jobs SET status=$1, err=$2, refunded=1, "
+                    "finished_at=NOW() WHERE job_id=$3 AND status='running'",
+                    status, (err or "")[:500], job_id)
+                if str(_r).split()[-1] == "0":
+                    return False
+                if _cost > 0:
+                    # Возврат не сгорает: это деньги клиента.
+                    await add_credits_batch(int(user_id), _cost, source="refund",
+                                            days_valid=0, conn=conn)
+        return True
+    except Exception as e:
+        # БД недоступна — вернуть нечем и некуда. Кричим в лог: эта задача
+        # останется running и её подберёт фоновая компенсация.
+        logging.error(f"webgen_job_finish_refund {job_id}: {e}")
+        return False
+
+
 async def webgen_refund_one_lost(worker: str, older_than_min: int,
                                  kinds: tuple = (), other_workers_only: bool = True):
     """Забирает ОДНУ потерянную оплаченную генерацию и тут же возвращает за неё
@@ -2590,17 +2646,32 @@ async def fk_get_order(order_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def mark_stars_delivered(charge_id: str) -> None:
-    """Отмечает, что по платежу Stars выдача реально состоялась."""
+async def mark_stars_delivered(charge_id: str, conn=None) -> None:
+    """Отмечает, что по платежу Stars выдача реально состоялась.
+
+    conn — отметить в транзакции вызывающего. Для ПАКЕТА КРЕДИТОВ «выдача»
+    и есть начисление, поэтому отметка обязана коммититься вместе с ним.
+    Раньше она ставилась после commit: рестарт между этими действиями
+    оставлял delivered_at пустым, и моя же тревога просила владельца выдать
+    вручную уже начисленное — то есть подталкивала к двойному начислению.
+    Повторный внешний аудит 30.09.2026, пункт №14.
+
+    В ветке с conn ошибку НЕ глушим: пусть падает вся транзакция. Тогда
+    платёж не будет захвачен, кредиты не начислены, а владелец получит
+    точное «оплата получена, кредиты НЕ начислены». Это честнее, чем
+    начислить и промолчать об отметке."""
     _cid = (charge_id or "").strip()
     if not _cid:
         return
+    _sql = ("UPDATE stars_payments SET delivered_at=NOW() "
+            "WHERE charge_id=$1 AND delivered_at IS NULL")
+    if conn is not None:
+        await conn.execute(_sql, _cid)
+        return
     try:
         pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE stars_payments SET delivered_at=NOW() "
-                "WHERE charge_id=$1 AND delivered_at IS NULL", _cid)
+        async with pool.acquire() as _c_sd:
+            await _c_sd.execute(_sql, _cid)
     except Exception as e:
         logging.warning(f"stars delivered {_cid}: {e}")
 
@@ -2615,6 +2686,11 @@ async def stars_undelivered(minutes: int = 5, limit: int = 20) -> list:
                 "WHERE delivered_at IS NULL "
                 "  AND created_at < NOW() - ($1 || ' minutes')::INTERVAL "
                 "  AND created_at > NOW() - INTERVAL '7 days' "
+                # Уже разобранные отсекаем ЗДЕСЬ, до LIMIT: иначе двадцать
+                # старых уведомлений навсегда закрывали очередь для новых.
+                "  AND NOT EXISTS (SELECT 1 FROM settings s "
+                "                   WHERE s.key = 'starsnf:' || charge_id "
+                "                     AND s.value = '1') "
                 "ORDER BY created_at ASC LIMIT $2",
                 str(int(minutes)), int(limit))
             return [dict(r) for r in rows]

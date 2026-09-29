@@ -11,6 +11,45 @@ import datetime as _dt_tz
 # Самопроверка после повторного аудита, 29.09.2026.
 class _NoCoins(Exception):
     pass
+
+
+def _plan_hash(name) -> str:
+    """Короткий отпечаток НАЗВАНИЯ тарифа для payload Telegram Stars.
+
+    В payload раньше лежал только номер позиции в каталоге: shop:сервис:2.
+    Счёт живёт долго — клиент может оплатить его через неделю. Если за это
+    время тариф удалили или переставили, оплата читала «того, кто теперь
+    стоит вторым», и клиент получал не то, за что заплатил. А если каталог
+    стал короче — обработчик падал на IndexError ДО захвата платежа: деньги
+    получены, записи нет нигде, тревоги нет.
+
+    Отпечаток фиксированной длины решает обе беды: тариф ищется по имени,
+    а не по месту, и в 128 байт payload влезает любое название.
+    Повторный внешний аудит 30.09.2026, пункт №9.
+    """
+    import hashlib as _hl
+    return _hl.sha1(str(name or "").strip().encode("utf-8")).hexdigest()[:8]
+
+
+async def _stars_manual_alert(uid: int, payload: str, amount: int, why: str):
+    """Платёж Stars получен, но товар определить нельзя — зовём владельца.
+
+    Сами ничего не подбираем и не выдаём. Платёж уже записан в
+    stars_payments без отметки выдачи, поэтому о нём ещё и напомнит
+    почасовая сводка «Stars: оплачено, выдачи не было»."""
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"🚨 <b>Stars: оплачено, товар не определён</b>\n\n"
+            f"👤 {await _who_user(uid)}\n"
+            f"⭐ {amount} Stars\n"
+            f"payload: <code>{payload}</code>\n"
+            f"Причина: {why}\n\n"
+            f"Тариф из счёта в каталоге не найден — подбирать замену по "
+            f"номеру позиции нельзя, клиент оплатил другое. Выдай вручную.",
+            parse_mode="HTML")
+    except Exception as _e_sma:
+        logging.error(f"stars manual alert uid={uid}: {_e_sma}")
 import time as _time_module
 import asyncpg
 import aiohttp
@@ -1013,7 +1052,18 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
                 # с лимитом применялся монетками без ограничений.
                 if _promo_code:
                     await mark_promo_used(_promo_code, uid, _c_fc)
-            _onum = await _c_fc.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+            # Оплата УЖЕ ЗАФИКСИРОВАНА: транзакция выше закоммичена. Номер
+            # заказа — украшение, без него покажем order_id. Раньше ошибка
+            # этого SELECT попадала во внешний except, и тот сообщал клиенту
+            # «монетки не списаны, попробуй ещё раз» — хотя они списаны, и
+            # клиент платил второй раз. Повторный аудит 30.09.2026, №32.
+            try:
+                _onum = await _c_fc.fetchval(
+                    "SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+            except Exception as _e_num:
+                logging.error(f"shop_full_coins: номер заказа {order_id} "
+                              f"не прочитан (оплата прошла): {_e_num}")
+                _onum = None
     except _NoCoins:
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
@@ -1197,7 +1247,9 @@ async def shop_pay_stars(cb: CallbackQuery):
             chat_id=uid,
             title=f"{s['name']} {p['name']}",
             description=p["desc"],
-            payload=f"shop:{key}:{plan_idx}",
+            # Отпечаток НАЗВАНИЯ тарифа: по нему оплата найдёт именно то,
+            # что купили, даже если каталог с тех пор переставили.
+            payload=f"shop:{key}:{plan_idx}:{_plan_hash(p.get('name',''))}",
             currency="XTR",
             prices=[LabeledPrice(label=f"{s['name']} {p['name']} - 1 мес", amount=p["stars"])],
         )
@@ -1259,17 +1311,43 @@ async def on_successful_payment(message: Message):
     # и клиент остаётся без кредитов навсегда, потому что повтор отбивается
     # по charge_id. Повторный внешний аудит 29.09.2026, пункт №14.
 
-    # === 1. Магазин подписок (shop:SERVICE:PLAN_IDX) ===
+    # === 1. Магазин подписок (shop:SERVICE:PLAN_IDX[:ОТПЕЧАТОК]) ===
     if payload.startswith("shop:"):
         parts = payload.split(":")
-        key = parts[1]
-        plan_idx = int(parts[2])
+        key = parts[1] if len(parts) > 1 else ""
+        try:
+            plan_idx = int(parts[2]) if len(parts) > 2 else -1
+        except Exception:
+            plan_idx = -1
+        _phash = parts[3] if len(parts) > 3 else ""
         s = SHOP_CATALOG.get(key)
         if not s:
             if await _claim_stars(_charge, uid, payload, _stars_amt):
                 logging.error(f"stars: неизвестный сервис {key!r} payload={payload}")
+            await _stars_manual_alert(uid, payload, _stars_amt,
+                                      "сервиса нет в каталоге")
             return
-        p = s["plans"][plan_idx]
+        # Тариф ищем ПО ОТПЕЧАТКУ ИМЕНИ, а не по номеру позиции: счёт мог
+        # пролежать неделю, а каталог за это время изменился. У старых
+        # счетов отпечатка нет — для них остаётся номер, но уже с проверкой
+        # границ: раньше выход за край ронял обработчик ДО захвата платежа,
+        # и оплата пропадала бесследно. Аудит 30.09.2026, пункт №9.
+        _plans = s.get("plans", []) or []
+        p = None
+        if _phash:
+            for _i_pl, _p_pl in enumerate(_plans):
+                if _plan_hash(_p_pl.get("name", "")) == _phash:
+                    p, plan_idx = _p_pl, _i_pl
+                    break
+        elif 0 <= plan_idx < len(_plans):
+            p = _plans[plan_idx]
+        if not p:
+            if await _claim_stars(_charge, uid, payload, _stars_amt):
+                logging.error(f"stars: тариф не найден payload={payload}")
+            await _stars_manual_alert(
+                uid, payload, _stars_amt,
+                "тариф удалён или переставлен" if _phash else "номер тарифа вне каталога")
+            return
 
         # Подписка за Stars НЕ попадала в fk_orders вообще: её не было ни в
         # админке, ни в отчётах, ни в истории клиента — единственным следом
@@ -1361,6 +1439,9 @@ async def on_successful_payment(message: Message):
                         return
                     await add_credits_batch(uid, p["credits"], source="purchase",
                                             days_valid=0, conn=_c_pk)
+                    # Отметка выдачи — В ЭТОЙ ЖЕ транзакции: для пакета
+                    # кредитов начисление и есть выдача. Аудит 30.09.2026, №14.
+                    await mark_stars_delivered(_charge, conn=_c_pk)
         except Exception as _e_pk:
             logging.error(f"stars pack: начисление не прошло uid={uid}: {_e_pk}", exc_info=True)
             try:
@@ -1375,7 +1456,6 @@ async def on_successful_payment(message: Message):
             except Exception:
                 pass
             return
-        await mark_stars_delivered(_charge)
         await log_payment(uid, p["credits"], p["stars"], "stars")
         await process_referral_bonus(uid)
         cr = await get_credits(uid)

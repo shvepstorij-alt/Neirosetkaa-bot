@@ -30,7 +30,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, NSGIFTS_API_SECRET, NSGIFTS_LOGIN, NSGIFTS_PASSWORD, NSGIFTS_USER_ID,
-    PERSONAL_USERNAME, WEBSHARE_PROXY, bot, dp, fk_pay_url,
+    PERSONAL_USERNAME, WEBSHARE_PROXY, bot, dp, fk_pay_url, tg_name,
 )
 from runtime_state import (
     rt,
@@ -799,6 +799,39 @@ async def nsg_check_payment(cb: CallbackQuery):
             except Exception:
                 pass
         elif _st in ("pending", "paying"):
+            # ПЕРЕД закупкой смотрим ФИНАНСОВЫЙ статус заказа, а не только
+            # статус выдачи. Возврат монеток закрывает fk_orders (refunded),
+            # но nsgifts_orders остаётся в pending/paying. Если клиент после
+            # этого оплатит старую ссылку на уменьшенную доплату и нажмёт
+            # «Проверить оплату», бот покупал ПОЛНЫЙ товар по заказу, деньги
+            # за который уже вернули. Повторный внешний аудит 30.09.2026, №4.
+            _fk_st = "__error__"
+            try:
+                async with pool.acquire() as _c_fs:
+                    _fk_st = (await _c_fs.fetchval(
+                        "SELECT COALESCE(status,'') FROM fk_orders WHERE order_id=$1",
+                        order_id) or "")
+            except Exception as _e_fs:
+                logging.error(f"nsg_check: не прочитал статус заказа {order_id}: {_e_fs}")
+            if _fk_st in ("refunded", "cancelled", "__error__"):
+                await cb.message.answer(
+                    "⚠️ Оплата найдена, но заказ уже закрыт — деньги по нему "
+                    "возвращались.\n\nСам ничего не выдаю: написал "
+                    f"@{PERSONAL_USERNAME}, он разберётся и выдаст вручную.")
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 <b>App Store: оплата по ЗАКРЫТОМУ заказу</b>\n\n"
+                        f"👤 {await _who_user(uid)}\n"
+                        f"📦 {tg_name(row['service_name'])}\n"
+                        f"🆔 <code>{order_id}</code>\n"
+                        f"Статус заказа: <code>{_fk_st}</code>\n\n"
+                        f"Клиент оплатил старую ссылку уже после возврата "
+                        f"монеток. Ничего не докупаю — реши вручную.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                return
             # Внутри fulfill стоит атомарный захват — параллельный вебхук
             # не сможет купить второй код.
             await nsgifts_fulfill_after_payment(order_id, uid)

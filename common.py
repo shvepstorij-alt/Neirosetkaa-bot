@@ -47,7 +47,7 @@ from db import (
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
     save_claude_pending_activation, save_pending_activation, mark_promo_used,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
-    webgen_job_start, webgen_job_finish,
+    webgen_job_start, webgen_job_finish, webgen_job_finish_refund,
     get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
     partner_stats, partner_recent_orders, list_partners, set_partner,
     set_partner_rate, add_partner_payout, partner_clients, partner_client_orders,
@@ -15108,15 +15108,15 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
             _img = await _gen(_prompt, m["model_id"], _aspect, m.get("api", "imagen"),
                               quality=m.get("quality", "medium"))
         except Exception as _ge:
-            if await webgen_job_finish(_wjob, "error", str(_ge)[:200], refunded=True):
-                await _add_cr(int(uid), _cost)
+            # Закрытие задачи и возврат кредитов — одной транзакцией.
+            await webgen_job_finish_refund(_wjob, str(_ge)[:200], int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_image gen: {_ge}")
             return web.json_response({"ok": False, "error": "gen_failed"})
         await _webgen_done(int(uid), _g_ck)
         if not _img:
-            if await webgen_job_finish(_wjob, "error", "пустой ответ поставщика", refunded=True):
-                await _add_cr(int(uid), _cost)
+            await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
+                                           int(uid), _cost)
             return web.json_response({"ok": False, "error": "empty"})
         await webgen_job_finish(_wjob, "done")
         try:
@@ -15200,12 +15200,10 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
         # Кредиты возвращаем, только если запись журнала ещё за нами: если
         # задачу уже разобрали как потерянную и вернули за неё деньги, второй
         # возврат был бы подарком. Аудит 29.09.2026, пункт №11.
-        _mine = await webgen_job_finish(job_id, "error", str(_e)[:200], refunded=True)
-        if _mine:
-            try:
-                await _add_cr(int(uid), cost)
-            except Exception:
-                pass
+        # Закрытие задачи и возврат — одной транзакцией: раньше отметка
+        # refunded=1 коммитилась ДО начисления, и сбой между ними прятал
+        # задачу от фоновой компенсации навсегда. Аудит 30.09.2026, №11.
+        await webgen_job_finish_refund(job_id, str(_e)[:200], int(uid), cost)
         logging.error(f"video job {job_id}: {_e}")
         _cr = 0
         try:
@@ -15372,15 +15370,15 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
                 from generation_api import api_edit_image as _edit
                 _out = await _edit(_img_in, _prompt)
         except Exception as _ge:
-            if await webgen_job_finish(_wjob, "error", str(_ge)[:200], refunded=True):
-                await _add_cr(int(uid), _cost)
+            # Закрытие задачи и возврат кредитов — одной транзакцией.
+            await webgen_job_finish_refund(_wjob, str(_ge)[:200], int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_edit gen: {_ge}")
             return web.json_response({"ok": False, "error": "gen_failed"})
         await _webgen_done(int(uid), _g_ck)
         if not _out:
-            if await webgen_job_finish(_wjob, "error", "пустой ответ поставщика", refunded=True):
-                await _add_cr(int(uid), _cost)
+            await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
+                                           int(uid), _cost)
             return web.json_response({"ok": False, "error": "empty"})
         await webgen_job_finish(_wjob, "done")
         try:
@@ -15454,12 +15452,10 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
             # результат всё равно отдаём, но след в логе оставляем.
             logging.warning(f"webgen job {job_id}: результат пришёл ПОСЛЕ возврата кредитов")
     except Exception as _e:
-        _mine = await webgen_job_finish(job_id, "error", str(_e)[:200], refunded=True)
-        if _mine:
-            try:
-                await _add_cr(int(uid), cost)
-            except Exception:
-                pass
+        # Закрытие задачи и возврат — одной транзакцией: раньше отметка
+        # refunded=1 коммитилась ДО начисления, и сбой между ними прятал
+        # задачу от фоновой компенсации навсегда. Аудит 30.09.2026, №11.
+        await webgen_job_finish_refund(job_id, str(_e)[:200], int(uid), cost)
         logging.error(f"anim job {job_id}: {_e}")
         _cr = 0
         try:
@@ -17163,14 +17159,37 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     # уже потратить. Код уходил следующему клиенту пустым.
     # У Claude та же отметка стоит с самого начала, Perplexity под неё не
     # подвели. Повторный внешний аудит 29.09.2026, пункт №15.
+    # Отметка ОБЯЗАТЕЛЬНА. Раньше её ошибка только писалась в лог, и запрос
+    # к поставщику уходил всё равно — то есть код мог быть потрачен, а следа
+    # об этом не оставалось, и фоновая чистка возвращала его в пул пустым.
+    # Считаем и UPDATE 0 строк: резерв мог исчезнуть, пока клиент заполнял
+    # форму. Повторный внешний аудит 30.09.2026, пункт №15.
+    _px_marked = False
     try:
         _pool_px_mark = await get_pool()
         async with _pool_px_mark.acquire() as _c_px_mark:
-            await _c_px_mark.execute(
+            _r_px_mark = await _c_px_mark.execute(
                 "UPDATE perplexity_pending_activations SET org_id=$1 WHERE user_id=$2",
                 org_id, user_id)
+        _px_marked = str(_r_px_mark).split()[-1] != "0"
     except Exception as _e_px_mark:
         logging.error(f"perplexity: не отметил начало активации uid={user_id}: {_e_px_mark}")
+    if not _px_marked:
+        # Код НЕ отправляем: непотраченный код дороже одной неудачной попытки.
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 <b>Perplexity: активация остановлена ДО отправки кода</b>\n\n"
+                f"👤 {await _who_user(user_id)}\n"
+                f"🆔 <code>{order_id}</code>\n\n"
+                f"Не удалось отметить начало активации в базе (сбой БД либо "
+                f"резерв уже исчез). Код поставщику НЕ отправлен и не "
+                f"потрачен. Нужна ручная выдача.",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        return _resp({"error": "Не получилось начать активацию. "
+                               f"Напиши @{PERSONAL_USERNAME} — активирует вручную."})
 
     try:
         async with aiohttp.ClientSession(

@@ -377,59 +377,13 @@ async def fk_auto_check_loop():
                     "  AND created_at < NOW() - INTERVAL '2 minutes'"
                 ) or 0
 
-            if not pending_rows:
-                await asyncio.sleep(300)  # 5 минут до следующей проверки
-                continue
-
-            logging.info(f"🔍 FK auto-check: проверяю {len(pending_rows)} из {_total_pending} "
-                         f"неоплаченных счетов за 7 дней")
-            # Если очередь большая, полный круг занимает заметное время —
-            # пусть это будет видно в логах, но не чаще раза в час.
-            if _total_pending > 50:
-                _now_bl = _time_module.time()
-                if _now_bl - _warned_backlog > 3600:
-                    _warned_backlog = _now_bl
-                    logging.warning(
-                        f"FK auto-check: в очереди {_total_pending} счетов, полный круг "
-                        f"≈{int((_total_pending / 50.0) * 5)} мин")
-
-            # 2. Для каждого pending заказа спрашиваем FK API его статус
-            recovered = 0
-            for row in pending_rows:
-                order_id = row["order_id"]
-                try:
-                    # Отметку ставим ДО запроса: если FK стабильно отвечает
-                    # ошибкой именно на этот счёт, он не должен навечно
-                    # застрять в начале очереди и закрывать собой остальные.
-                    try:
-                        async with pool.acquire() as _c_mk:
-                            await _c_mk.execute(
-                                "UPDATE fk_orders SET last_checked_at = NOW() "
-                                "WHERE order_id = $1", order_id)
-                    except Exception as _e_mk:
-                        logging.warning(f"FK auto-check: отметка {order_id}: {_e_mk}")
-                    fk_status = await fk_check_order_status(order_id)
-                    if fk_status and fk_status.get("status") == "paid":
-                        # FK подтвердил оплату - зачисляем
-                        payment = {
-                            "user_id": row["user_id"],
-                            "credits": row["credits"],
-                            "amount":  row["amount_rub"],
-                            "promo_code": row["promo_code"],
-                        }
-                        success = await fk_credit_paid_order(order_id, payment, source="auto_check")
-                        if success:
-                            recovered += 1
-                            logging.warning(
-                                f"FK auto-check: ВОССТАНОВЛЕН заказ {order_id} "
-                                f"user={row['user_id']} amount={row['amount_rub']}₽"
-                            )
-                except Exception as e:
-                    logging.error(f"FK auto-check error for order {order_id}: {e}")
-
-            if recovered > 0:
-                logging.warning(f"🚨 FK auto-check: восстановлено {recovered} платежей")
-
+            # ── СВОДКИ ИДУТ ДО раннего выхода по пустой очереди ────────
+            # Обе проверки ниже стояли ПОСЛЕ «if not pending_rows: continue».
+            # То есть при пустой очереди неоплаченных счетов они не
+            # запускались вовсе — а это ровно тот случай, ради которого они
+            # и написаны: единственный заказ отмечен оплаченным, выдачи не
+            # было, новых pending нет. Моя ошибка, нашёл повторный внешний
+            # аудит 30.09.2026, пункт №6.
             # ── Оплачено, но НЕ выдано ─────────────────────────────────
             # Рестарт между «paid» и выдачей оставлял клиента без товара, и
             # найти такой заказ было нечем: вебхук отвечает «уже оплачен»,
@@ -443,6 +397,12 @@ async def fk_auto_check_loop():
                         "WHERE status='paid' AND fulfilled_at IS NULL "
                         "  AND paid_at < NOW() - INTERVAL '15 minutes' "
                         "  AND paid_at > NOW() - INTERVAL '7 days' "
+                        # Отсев уже разобранных — в SQL, а НЕ в Python после
+                        # LIMIT 20: двадцать давно уведомлённых заказов
+                        # навсегда закрывали очередь для новых.
+                        "  AND NOT EXISTS (SELECT 1 FROM settings s "
+                        "                   WHERE s.key = 'nofulfil:' || fk_orders.order_id "
+                        "                     AND s.value = '1') "
                         "ORDER BY paid_at ASC LIMIT 20")
                 for _nf in _nofill:
                     _oid = _nf["order_id"]
@@ -499,6 +459,60 @@ async def fk_auto_check_loop():
                         logging.error(f"stars nofulfil alert {_cid}: {_e_sp}")
             except Exception as _e_sp2:
                 logging.error(f"stars nofulfil sweep: {_e_sp2}")
+
+            if not pending_rows:
+                await asyncio.sleep(300)  # 5 минут до следующей проверки
+                continue
+
+            logging.info(f"🔍 FK auto-check: проверяю {len(pending_rows)} из {_total_pending} "
+                         f"неоплаченных счетов за 7 дней")
+            # Если очередь большая, полный круг занимает заметное время —
+            # пусть это будет видно в логах, но не чаще раза в час.
+            if _total_pending > 50:
+                _now_bl = _time_module.time()
+                if _now_bl - _warned_backlog > 3600:
+                    _warned_backlog = _now_bl
+                    logging.warning(
+                        f"FK auto-check: в очереди {_total_pending} счетов, полный круг "
+                        f"≈{int((_total_pending / 50.0) * 5)} мин")
+
+            # 2. Для каждого pending заказа спрашиваем FK API его статус
+            recovered = 0
+            for row in pending_rows:
+                order_id = row["order_id"]
+                try:
+                    # Отметку ставим ДО запроса: если FK стабильно отвечает
+                    # ошибкой именно на этот счёт, он не должен навечно
+                    # застрять в начале очереди и закрывать собой остальные.
+                    try:
+                        async with pool.acquire() as _c_mk:
+                            await _c_mk.execute(
+                                "UPDATE fk_orders SET last_checked_at = NOW() "
+                                "WHERE order_id = $1", order_id)
+                    except Exception as _e_mk:
+                        logging.warning(f"FK auto-check: отметка {order_id}: {_e_mk}")
+                    fk_status = await fk_check_order_status(order_id)
+                    if fk_status and fk_status.get("status") == "paid":
+                        # FK подтвердил оплату - зачисляем
+                        payment = {
+                            "user_id": row["user_id"],
+                            "credits": row["credits"],
+                            "amount":  row["amount_rub"],
+                            "promo_code": row["promo_code"],
+                        }
+                        success = await fk_credit_paid_order(order_id, payment, source="auto_check")
+                        if success:
+                            recovered += 1
+                            logging.warning(
+                                f"FK auto-check: ВОССТАНОВЛЕН заказ {order_id} "
+                                f"user={row['user_id']} amount={row['amount_rub']}₽"
+                            )
+                except Exception as e:
+                    logging.error(f"FK auto-check error for order {order_id}: {e}")
+
+            if recovered > 0:
+                logging.warning(f"🚨 FK auto-check: восстановлено {recovered} платежей")
+
 
         except Exception as e:
             logging.error(f"FK auto-check loop error: {e}")
@@ -1494,21 +1508,30 @@ async def coins_refund_loop():
                     # прийти вебхук об оплате. Без проверки возврат перетирал
                     # уже оплаченный заказ на refunded и отдавал монетки поверх
                     # выданного товара. Повторный аудит 29.09.2026, пункт №4.
-                    claim = await conn.execute(
-                        "UPDATE fk_orders SET coins_spent=0, status='refunded' "
-                        "WHERE order_id=$1 AND coins_spent=$2 "
-                        "  AND (COALESCE(status,'pending') <> 'paid' OR $3::bool)",
-                        r["order_id"], r["coins_spent"], (r["nstatus"] == "failed"))
-                    if claim.split()[-1] != "1":
-                        continue
                     _amt = int(r["coins_spent"] or 0)
                     if _amt <= 0:
                         continue
+                    # Захват возврата и НАЧИСЛЕНИЕ — одной транзакцией.
+                    # Раньше UPDATE коммитился сам по себе, а add_coins шёл
+                    # отдельным соединением. Сбой между ними оставлял заказ
+                    # с coins_spent=0 и статусом refunded, но БЕЗ монеток на
+                    # балансе — и в следующую выборку он уже не попадал
+                    # никогда. Клиент терял деньги молча.
+                    # Повторный внешний аудит 30.09.2026, пункт №10.
                     try:
-                        await add_coins(r["user_id"], float(_amt),
-                                        reason=f"refund unpaid {r['order_id']}")
+                        async with conn.transaction():
+                            claim = await conn.execute(
+                                "UPDATE fk_orders SET coins_spent=0, status='refunded' "
+                                "WHERE order_id=$1 AND coins_spent=$2 "
+                                "  AND (COALESCE(status,'pending') <> 'paid' OR $3::bool)",
+                                r["order_id"], r["coins_spent"], (r["nstatus"] == "failed"))
+                            if claim.split()[-1] != "1":
+                                continue
+                            await add_coins(r["user_id"], float(_amt),
+                                            reason=f"refund unpaid {r['order_id']}",
+                                            conn=conn)
                     except Exception as _ce:
-                        logging.error(f"coins_refund add_coins fail {r['order_id']}: {_ce}")
+                        logging.error(f"coins_refund {r['order_id']}: {_ce}")
                         continue
                     _failed = (r["nstatus"] == "failed")
                     logging.info(f"\U0001fa99 coins refund {_amt} uid={r['user_id']} "
