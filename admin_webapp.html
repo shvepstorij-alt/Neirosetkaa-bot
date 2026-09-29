@@ -2389,15 +2389,15 @@ function feedThread(id){
     if(!hasConv){el.innerHTML='';return;}
     var h='';
     var cd='';
-    if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+(o.email||'').replace(/</g,'&lt;')+'</span></div>';
-    if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+(o.passw||'').replace(/</g,'&lt;')+'</span></div>';
+    if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+esc(o.email)+'</span></div>';
+    if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+esc(o.passw)+'</span></div>';
     if(o.link)cd+=linkRow('🔗 Ссылка',o.link);
     if(cd)h+='<div class="block" style="margin-top:8px">'+cd+'</div>';
     h+='<div class="glabel">💬 Переписка с клиентом</div>';
     if(!msgs.length){h+='<div class="note">Сообщений пока нет.</div>';}
     msgs.forEach(function(m){
       var me=m.sender==='admin';
-      h+='<div class="block" style="margin-bottom:8px;'+(me?'border-color:rgba(226,74,130,.4)':'')+'"><div style="font-size:11.5px;color:var(--txt2);margin-bottom:4px">'+(me?'🛠 Ты':'👤 Клиент')+' · '+m.date+'</div><div style="font-size:13px;white-space:pre-wrap">'+(m.text||'').replace(/</g,'&lt;')+'</div></div>';
+      h+='<div class="block" style="margin-bottom:8px;'+(me?'border-color:rgba(226,74,130,.4)':'')+'"><div style="font-size:11.5px;color:var(--txt2);margin-bottom:4px">'+(me?'🛠 Ты':'👤 Клиент')+' · '+m.date+'</div><div style="font-size:13px;white-space:pre-wrap">'+esc(m.text)+'</div></div>';
     });
     h+='<label class="fl">Написать клиенту (уточнение)</label><textarea class="f" id="ow_msg" placeholder="Текст или код…"></textarea><button class="btn" onclick="feedClarify(\''+id+'\')">Отправить клиенту</button>';
     el.innerHTML=h;
@@ -2480,8 +2480,12 @@ function loadThread(id){
     if(o.id)cd+='<div class="kv"><span class="k">🆔 Заказ</span><span style="word-break:break-all">'+o.id+'</span></div>';
     if(o.date)cd+='<div class="kv"><span class="k">🗓 Создан</span><span>'+o.date+'</span></div>';
     if(o.uid)cd+='<div class="kv"><span class="k">ID клиента</span><span style="word-break:break-all">'+o.uid+'</span></div>';
-    if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+o.email+'</span></div>';
-    if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+o.passw+'</span></div>';
+    /* Почта и пароль приходят ОТ КЛИЕНТА: он присылает их боту сам. Тут они
+       уходили в innerHTML как есть — вместо пароля можно было прислать тег с
+       обработчиком события, и он выполнялся в панели владельца. Тот же вход,
+       что и в №2, только через другое поле. Внешний аудит, повторный проход. */
+    if(o.email)cd+='<div class="kv"><span class="k">📧 Email</span><span style="word-break:break-all">'+esc(o.email)+'</span></div>';
+    if(o.passw)cd+='<div class="kv"><span class="k">🔑 Пароль</span><span style="word-break:break-all">'+esc(o.passw)+'</span></div>';
     if(o.link)cd+=linkRow('🔗 Ссылка',o.link);
     if(cd)h+='<div style="margin-top:8px">'+cd+'</div>';
     h+='</div>';
@@ -2489,7 +2493,7 @@ function loadThread(id){
     if(!d.messages.length){h+='<div class="note">Сообщений пока нет.</div>';}
     d.messages.forEach(function(m){
       var me=m.sender==='admin';
-      h+='<div class="block" style="margin-bottom:8px;'+(me?'border-color:rgba(226,74,130,.4)':'')+'"><div style="font-size:11.5px;color:var(--txt2);margin-bottom:4px">'+(me?'🛠 Ты':'👤 Клиент')+' · '+m.date+'</div><div style="font-size:13px;white-space:pre-wrap">'+(m.text||'').replace(/</g,'&lt;')+'</div></div>';
+      h+='<div class="block" style="margin-bottom:8px;'+(me?'border-color:rgba(226,74,130,.4)':'')+'"><div style="font-size:11.5px;color:var(--txt2);margin-bottom:4px">'+(me?'🛠 Ты':'👤 Клиент')+' · '+m.date+'</div><div style="font-size:13px;white-space:pre-wrap">'+esc(m.text)+'</div></div>';
     });
     el.innerHTML=h;
   });

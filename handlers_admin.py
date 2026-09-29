@@ -1241,14 +1241,19 @@ async def adm_bal_deduct_confirm(message: Message, state: FSMContext):
 
     data = await state.get_data()
     target_uid = data.get("target_uid")
-    old_balance = data.get("current_balance", 0)
-    new_balance = max(0, old_balance - amount)  # не уходим в минус
+    _shown_balance = data.get("current_balance", 0)   # только для текста
 
-    from db import admin_set_balance
-    _sync = await admin_set_balance(target_uid, new_balance)
-    if _sync.get("error") == "no_user":
+    # Считаем «снять N», а не «поставить X». Баланс в FSM записан в момент
+    # открытия карточки: пока владелец набирал число, клиент мог купить
+    # пакет — и абсолютная цель стирала эту покупку вместе с партией.
+    # Повторный внешний аудит 29.09.2026, пункт №19.
+    from db import admin_deduct_balance
+    _sync = await admin_deduct_balance(target_uid, amount)
+    if _sync.get("error"):
         await message.answer("⛔ Такого клиента нет в базе")
         return
+    old_balance = int(_sync.get("before", _shown_balance) or 0)
+    new_balance = int(_sync.get("after", old_balance) or 0)
     await log_event(target_uid, "admin_deduct_credits",
                     f"from={old_balance} to={new_balance} amount={amount} "
                     f"by_admin={message.from_user.id} "
@@ -1256,6 +1261,7 @@ async def adm_bal_deduct_confirm(message: Message, state: FSMContext):
 
     await state.clear()
     actual_deducted = old_balance - new_balance
+    _stale = (int(_shown_balance or 0) != old_balance)
     await message.answer(
         f"✅ <b>Кредиты сняты</b>\n\n"
         f"👤 {await _who_user(target_uid)}\n"
@@ -1263,7 +1269,11 @@ async def adm_bal_deduct_confirm(message: Message, state: FSMContext):
         f"Запросил снять: {amount} кр\n"
         f"Снято: <b>{actual_deducted} кр</b>\n"
         f"Стало: <b>{new_balance} кр</b>"
-        + (f"\n\n<i>ℹ️ Снято меньше т.к. баланс не уходит в минус</i>" if actual_deducted < amount else ""),
+        + (f"\n\n<i>ℹ️ Снято меньше т.к. баланс не уходит в минус</i>"
+           if actual_deducted < amount else "")
+        + (f"\n\n<i>ℹ️ На экране было {int(_shown_balance or 0)} кр — баланс "
+           f"изменился, пока ты вводил сумму. Снял от актуального.</i>"
+           if _stale else ""),
         reply_markup=kb_balance_menu(),
         parse_mode="HTML"
     )

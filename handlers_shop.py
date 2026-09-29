@@ -3,6 +3,14 @@
 import asyncio, logging, os, re, uuid, base64, hashlib, hmac, json, time
 import datetime
 import datetime as _dt_tz
+
+# Нехватка монеток обнаруживается ВНУТРИ транзакции, а ответить клиенту нужно
+# СНАРУЖИ: cb.answer() — это HTTP-запрос в Telegram, и раньше он выполнялся с
+# открытой транзакцией, удерживая коннекцию пула всё время запроса. Исключение
+# выходит из транзакции (откатывая её) и отвечает уже без коннекции.
+# Самопроверка после повторного аудита, 29.09.2026.
+class _NoCoins(Exception):
+    pass
 import time as _time_module
 import asyncpg
 import aiohttp
@@ -30,13 +38,14 @@ from states import (
 )
 from db import (
     add_credits_batch, check_promo_for_user, deduct_coins, fk_get_order, fk_save_order, get_coins,
+    mark_promo_used, mark_stars_delivered,
     get_credits, get_pool, get_user, log_payment, redeem_promo, get_order_num, get_setting,
 )
 from keyboards import (
     _btn_emoji_id, _eib, kb_buy, pay_btn_kwargs, tg_emoji, tg_emoji_ui,
 )
 from common import (
-    _who_user, _pack_shop,
+    _who_user, _pack_shop, _mark_order_fulfilled,
     shop_price_for, partner_tag, shop_price_pair,
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
 )
@@ -874,8 +883,7 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
             async with _pool_cs.acquire() as _c_cs:
                 async with _c_cs.transaction():
                     if not await deduct_coins(uid, coins_used, conn=_c_cs):
-                        await cb.answer("Недостаточно монеток.", show_alert=True)
-                        return
+                        raise _NoCoins()
                     await add_credits_batch(uid, p["credits"], source="purchase",
                                             days_valid=0, conn=_c_cs)
                     if _promo_code:
@@ -886,6 +894,9 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
                             await _c_cs.execute(
                                 "UPDATE promocodes SET used_count = used_count + 1 "
                                 "WHERE code=$1", _promo_code.strip().upper())
+        except _NoCoins:
+            await cb.answer("Недостаточно монеток.", show_alert=True)
+            return
         except Exception as _e_cs:
             logging.error(f"оплата монетками uid={uid}: {_e_cs}", exc_info=True)
             await cb.answer("Не получилось провести оплату. Попробуй ещё раз.",
@@ -905,19 +916,32 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
             ])
         )
     else:
-        ok = await deduct_coins(uid, coins_used)
-        if not ok:
-            await cb.answer("Недостаточно монеток.", show_alert=True)
-            return
         import time as _t
         order_id = f"cr_{uid}_{int(_t.time())}{_rand_sfx()}"
-        await fk_save_order(order_id, uid, p["credits"], rest, key)
+        # Списание монеток, заказ и отметка coins_spent — одной транзакцией.
+        # Раньше это были три отдельные операции: сбой после первой уносил
+        # монетки без заказа, сбой после второй — оставлял заказ без отметки,
+        # и фоновый возврат его не находил.
+        # Повторный внешний аудит 29.09.2026, пункт №10.
         try:
-            _pool_cs = await get_pool()
-            async with _pool_cs.acquire() as _c_cs:
-                await _c_cs.execute("UPDATE fk_orders SET coins_spent=$1 WHERE order_id=$2", coins_used, order_id)
-        except Exception:
-            pass
+            _pool_cs2 = await get_pool()
+            async with _pool_cs2.acquire() as _c_cs2:
+                async with _c_cs2.transaction():
+                    if not await deduct_coins(uid, coins_used, conn=_c_cs2):
+                        raise _NoCoins()
+                    await _c_cs2.execute(
+                        "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
+                        "coins_spent) VALUES ($1,$2,$3,$4,$5,$6) "
+                        "ON CONFLICT (order_id) DO NOTHING",
+                        order_id, uid, p["credits"], rest, key, coins_used)
+        except _NoCoins:
+            await cb.answer("Недостаточно монеток.", show_alert=True)
+            return
+        except Exception as _e_cs2:
+            logging.error(f"pay_coins_credits: {_e_cs2}", exc_info=True)
+            await cb.answer("Не получилось провести оплату. Попробуй ещё раз.",
+                            show_alert=True)
+            return
         pay_url = fk_pay_url(rest, order_id)
         await cb.message.edit_text(
             "\U0001fa99 <b>\u041c\u043e\u043d\u0435\u0442\u043a\u0438 \u043f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u044b!</b>\n\n"
@@ -959,38 +983,63 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
     coins_used = int(required)
-    ok = await deduct_coins(uid, coins_used)
-    if not ok:
-        await cb.answer("Недостаточно монеток.", show_alert=True)
-        return
 
     # ФИКСИРУЕМ ЗАКАЗ В БД. Раньше оплата монетками не создавала никакой записи:
     # единственным следом было сообщение админу — если оно терялось, клиент
     # оставался без подписки, а заказа не было ни в админке, ни в отчётах.
+    # Списание монеток теперь в ТОЙ ЖЕ транзакции, что и заказ: раньше оно
+    # коммитилось отдельно и раньше вставки, и сбой между ними уносил монетки
+    # без заказа — вернуть их было не по чему, фоновый возврат ищет заказ.
+    # Повторный внешний аудит 29.09.2026, пункт №10.
     import time as _t_fc
     order_id = f"shop_{uid}_{int(_t_fc.time())}{_rand_sfx()}"
     _onum = None
+    _paid_ok = False
     try:
         _pool_fc = await get_pool()
         async with _pool_fc.acquire() as _c_fc:
-            await _c_fc.execute(
-                "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
-                "coins_spent, promo_code, status, paid_at) "
-                "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
-                order_id, uid, _pack_shop(key, plan_idx, p.get("name","")), coins_used,
-                (_promo_code.strip().upper() if _promo_code else None))
+            async with _c_fc.transaction():
+                if not await deduct_coins(uid, coins_used, conn=_c_fc):
+                    raise _NoCoins()
+                _paid_ok = True
+                await _c_fc.execute(
+                    "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
+                    "coins_spent, promo_code, status, paid_at) "
+                    "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
+                    order_id, uid, _pack_shop(key, plan_idx, p.get("name","")), coins_used,
+                    (_promo_code.strip().upper() if _promo_code else None))
+                # Промокод отмечаем ЗДЕСЬ: у заказа, оплаченного монетками,
+                # вебхука не будет, а отметку ставил только он. Скидочный код
+                # с лимитом применялся монетками без ограничений.
+                if _promo_code:
+                    await mark_promo_used(_promo_code, uid, _c_fc)
             _onum = await _c_fc.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+    except _NoCoins:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
     except Exception as _e_fc:
         logging.error(f"shop_full_coins: не удалось записать заказ {order_id}: {_e_fc}")
+        # Транзакция откатилась целиком — монетки НЕ списаны, клиент ничего
+        # не потерял. Говорим ему об этом честно и выходим, а не делаем вид,
+        # что заказ оформлен.
+        try:
+            await cb.answer("Не получилось провести оплату. Попробуй ещё раз.",
+                            show_alert=True)
+        except Exception:
+            pass
         try:
             await bot.send_message(
                 ADMIN_ID,
-                f"🚨 <b>Оплата монетками: заказ НЕ записан в БД</b>\n"
+                f"🚨 <b>Оплата монетками не прошла</b>\n"
                 f"👤 {await _who_user(uid)}  🪙 {coins_used}₽\n"
-                f"📦 {key}:{plan_idx}\n<code>{_e_fc}</code>",
+                f"📦 {key}:{plan_idx}\n<code>{_e_fc}</code>\n\n"
+                f"Монетки не списаны — транзакция откатилась целиком.",
                 parse_mode="HTML")
         except Exception:
             pass
+        return
+    if not _paid_ok:
+        return
 
     new_coins = await get_coins(uid)
     username = cb.from_user.username or cb.from_user.full_name
@@ -1050,23 +1099,33 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
     if coins_used <= 0:
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
-    ok = await deduct_coins(uid, coins_used)
-    if not ok:
-        await cb.answer("Недостаточно монеток.", show_alert=True)
-        return
     import time as _t
     order_id = f"shop_{uid}_{int(_t.time())}{_rand_sfx()}"
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, coins_spent) "
-            "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (order_id) DO NOTHING",
-            order_id, uid, 0, rest, _pack_shop(key, plan_idx, p.get("name","")), coins_used
-        )
-        try:
-            _onum = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
-        except Exception:
-            _onum = None
+    # Списание монеток и создание заказа — одной транзакцией: иначе при сбое
+    # между ними монетки уходят, заказа нет, и возвращать не по чему.
+    # Повторный внешний аудит 29.09.2026, пункт №10.
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if not await deduct_coins(uid, coins_used, conn=conn):
+                    raise _NoCoins()
+                # promo_code в заказе не сохранялся вовсе: вебхук его не видел,
+                # отметку об использовании не ставил, и в отчётах скидка пропадала.
+                await conn.execute(
+                    "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
+                    "coins_spent, promo_code) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (order_id) DO NOTHING",
+                    order_id, uid, 0, rest, _pack_shop(key, plan_idx, p.get("name","")), coins_used,
+                    (_promo_code.strip().upper() if _promo_code else None)
+                )
+                try:
+                    _onum = await conn.fetchval("SELECT num FROM fk_orders WHERE order_id=$1", order_id)
+                except Exception:
+                    _onum = None
+    except _NoCoins:
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
     _onum_str = f"#{_onum}" if _onum else order_id
     pay_url = fk_pay_url(rest, order_id)
     username = cb.from_user.username or cb.from_user.full_name
@@ -1194,9 +1253,11 @@ async def on_successful_payment(message: Message):
     from db import claim_stars_payment as _claim_stars
     _charge = getattr(message.successful_payment, "telegram_payment_charge_id", "") or ""
     _stars_amt = int(getattr(message.successful_payment, "total_amount", 0) or 0)
-    if not await _claim_stars(_charge, uid, payload, _stars_amt):
-        logging.warning(f"stars: повтор платежа {_charge} uid={uid} payload={payload} — пропускаю")
-        return
+
+    # Захват платежа теперь делается ВНУТРИ транзакции выдачи, а не до неё.
+    # Раньше он коммитился отдельно: падение между захватом и начислением —
+    # и клиент остаётся без кредитов навсегда, потому что повтор отбивается
+    # по charge_id. Повторный внешний аудит 29.09.2026, пункт №14.
 
     # === 1. Магазин подписок (shop:SERVICE:PLAN_IDX) ===
     if payload.startswith("shop:"):
@@ -1205,8 +1266,46 @@ async def on_successful_payment(message: Message):
         plan_idx = int(parts[2])
         s = SHOP_CATALOG.get(key)
         if not s:
+            if await _claim_stars(_charge, uid, payload, _stars_amt):
+                logging.error(f"stars: неизвестный сервис {key!r} payload={payload}")
             return
         p = s["plans"][plan_idx]
+
+        # Подписка за Stars НЕ попадала в fk_orders вообще: её не было ни в
+        # админке, ни в отчётах, ни в истории клиента — единственным следом
+        # было сообщение владельцу, и если оно терялось, заказа не
+        # существовало нигде. Теперь заказ пишется, и он же связывает платёж
+        # с выдачей.
+        import time as _t_st
+        _order_st = f"shop_{uid}_{int(_t_st.time())}{_rand_sfx()}"
+        try:
+            _pool_st = await get_pool()
+            async with _pool_st.acquire() as _c_st:
+                async with _c_st.transaction():
+                    if not await _claim_stars(_charge, uid, payload, _stars_amt, conn=_c_st):
+                        logging.warning(f"stars: повтор платежа {_charge} uid={uid} — пропускаю")
+                        return
+                    await _c_st.execute(
+                        "INSERT INTO fk_orders (order_id, user_id, credits, amount_rub, pack, "
+                        "payment_method, status, paid_at) "
+                        "VALUES ($1,$2,0,$3,$4,'stars','paid',NOW()) "
+                        "ON CONFLICT (order_id) DO NOTHING",
+                        _order_st, uid, int(p.get("price") or 0),
+                        _pack_shop(key, plan_idx, p.get("name", "")))
+        except Exception as _e_st:
+            logging.error(f"stars shop: заказ не записан {_order_st}: {_e_st}", exc_info=True)
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>Stars: оплата получена, заказ НЕ записан</b>\n\n"
+                    f"👤 {await _who_user(uid)}\n"
+                    f"📦 {s['name']} {p['name']}\n"
+                    f"⭐ {_stars_amt} Stars\n"
+                    f"<code>{_e_st}</code>\n\nВыдай вручную.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            return
 
         await message.answer(
             f"✅ <b>Оплата прошла успешно!</b>\n\n"
@@ -1228,11 +1327,18 @@ async def on_successful_payment(message: Message):
                 f"💰 <b>Stars оплачено!</b>\n\n"
                 f"👤 {await _who_user(uid)}\n"
                 f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
-                f"⭐ {p['stars']} Stars получено - активируй подписку!",
+                f"⭐ {p['stars']} Stars получено - активируй подписку!\n"
+                f"🆔 <code>{_order_st}</code>",
                 parse_mode="HTML"
             )
-        except Exception:
-            pass
+            # Выдача подписки за Stars — ручная, и «состоялась» она ровно
+            # тогда, когда клиент получил инструкцию, а владелец — заказ.
+            # Отметку ставим только после успешной отправки: иначе заказ
+            # правильно попадёт в разбор «оплачено, но выдачи не было».
+            await mark_stars_delivered(_charge)
+            await _mark_order_fulfilled(_order_st)
+        except Exception as _e_adm_st:
+            logging.error(f"stars shop: не уведомил владельца {_order_st}: {_e_adm_st}")
         return
 
     # === 2. Пакеты кредитов (pack:KEY и stars:KEY:UID — оба ведут на пакет кредитов) ===
@@ -1241,10 +1347,35 @@ async def on_successful_payment(message: Message):
         key = parts[1]
         p = CREDIT_PACKS.get(key)
         if not p:
-            logging.warning(f"Unknown pack key in payment: {key} (payload={payload})")
+            if await _claim_stars(_charge, uid, payload, _stars_amt):
+                logging.error(f"stars: неизвестный пакет {key!r} payload={payload}")
             return
 
-        await add_credits_batch(uid, p["credits"], source="purchase", days_valid=0)
+        # Захват платежа и начисление кредитов — ОДНОЙ транзакцией.
+        try:
+            _pool_pk = await get_pool()
+            async with _pool_pk.acquire() as _c_pk:
+                async with _c_pk.transaction():
+                    if not await _claim_stars(_charge, uid, payload, _stars_amt, conn=_c_pk):
+                        logging.warning(f"stars: повтор платежа {_charge} uid={uid} — пропускаю")
+                        return
+                    await add_credits_batch(uid, p["credits"], source="purchase",
+                                            days_valid=0, conn=_c_pk)
+        except Exception as _e_pk:
+            logging.error(f"stars pack: начисление не прошло uid={uid}: {_e_pk}", exc_info=True)
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>Stars: оплата получена, кредиты НЕ начислены</b>\n\n"
+                    f"👤 {await _who_user(uid)}\n"
+                    f"📦 {p['name']} — {p['credits']} кр\n"
+                    f"⭐ {_stars_amt} Stars\n"
+                    f"<code>{_e_pk}</code>\n\nНачисли вручную.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            return
+        await mark_stars_delivered(_charge)
         await log_payment(uid, p["credits"], p["stars"], "stars")
         await process_referral_bonus(uid)
         cr = await get_credits(uid)
@@ -1273,7 +1404,21 @@ async def on_successful_payment(message: Message):
             pass
         return
 
-    logging.warning(f"Unknown successful_payment payload: {payload}")
+    # Payload не распознан — деньги получены, а что выдавать, неизвестно.
+    # Записываем платёж (он останется без отметки выдачи) и зовём владельца.
+    if await _claim_stars(_charge, uid, payload, _stars_amt):
+        logging.error(f"stars: неизвестный payload {payload!r} uid={uid}")
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🚨 <b>Stars: непонятный платёж</b>\n\n"
+                f"👤 {await _who_user(uid)}\n"
+                f"⭐ {_stars_amt} Stars\n"
+                f"payload: <code>{payload}</code>\n\n"
+                f"Бот не понял, что выдавать. Разберись вручную.",
+                parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @dp.callback_query(F.data == "menu_ref")

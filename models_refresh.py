@@ -133,10 +133,43 @@ async def refresh_all_descriptions(notify: bool = True) -> str:
     _fail = 0     # сколько провалилось (ошибка API/парсинга)
     _no_search = 0  # сколько обработано БЕЗ веб-поиска (резервный режим)
     _errors: list = []
+    # Ключ кончился или недействителен — это НЕ «ошибка одного сервиса».
+    # Смысла перебирать остальные 30 нет: каждый даст по шесть одинаковых
+    # отказов, и логи Railway на несколько минут превращаются в стену из
+    # «credit balance is too low», за которой не видно ни старта бота, ни
+    # настоящих ошибок. Ловим такое на первом же сервисе и выходим сразу.
+    _FATAL = ("credit balance is too low", "authentication_error", "invalid x-api-key",
+              "permission_error", "your account is not authorized")
+    def _is_fatal(_lst):
+        for _, _, _txt in _lst:
+            _t = (_txt or "").lower()
+            if any(_f in _t for _f in _FATAL):
+                return _txt
+        return ""
+
     for key, svc in _refreshable_services():
         data, _used_search = await _rewrite_one(key, svc, _errors)
         if not data:
             _fail += 1
+            _why = _is_fatal(_errors)
+            if _why:
+                logger.warning(f"models_refresh: прекращаю обход — {_why[:200]}")
+                if notify:
+                    import html as _h_fa
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            "⚠️ <b>Обновление описаний не запустилось</b>\n\n"
+                            "Ключ Anthropic не отвечает — дальше не иду, чтобы не "
+                            "забивать логи.\n\n"
+                            f"<code>{_h_fa.escape(str(_why)[:300])}</code>\n\n"
+                            "Описания тарифов сейчас берутся из файла, командой "
+                            "<code>/apply_desc</code> — бот от этого не страдает.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                return ("Обновление описаний остановлено: ключ Anthropic не отвечает "
+                        f"({str(_why)[:120]})")
             continue
         _ok += 1
         if not _used_search:

@@ -45,7 +45,7 @@ from db import (
     get_next_gpt_code, get_pending_activation, get_pool, get_setting, set_setting, get_user, is_blocked,
     count_claude_free_by_provider, count_claude_free_by_provider_plan, count_gpt_free_by_provider,
     log_event, log_payment, mark_claude_code_used, mark_gpt_code_used, release_claude_code, release_gpt_code,
-    save_claude_pending_activation, save_pending_activation,
+    save_claude_pending_activation, save_pending_activation, mark_promo_used,
     get_ref_premium, premium_ref_earned_this_month, log_premium_ref,
     webgen_job_start, webgen_job_finish,
     get_partner_of, get_partner_rate, partner_prices, log_partner_earning, list_partner_rates,
@@ -931,7 +931,7 @@ async def process_referral_bonus(user_id: int, order_amount: float = 0):
                 return
             # Если реферер заблокирован - бонус не платим (флаг уже установлен выше).
             # Выход отсюда КОММИТИТ флаг — так и задумано: больше не дёргаем.
-            if await is_blocked(referrer_id):
+            if await is_blocked(referrer_id, conn=conn):
                 logging.info(f"Ref bonus SKIPPED: referrer {referrer_id} is blocked")
                 return
             # Считаем сколько у реферера уже было платящих (без текущего, который мы только что пометили)
@@ -1183,7 +1183,9 @@ async def process_premium_referral(referee_id: int, order_id: str, amount_rub: f
         if not reward or reward <= 0:
             logging.info(f"premium ref пропущен (лимит или дубль) order={order_id}")
             return
-        await add_coins(referrer_id, reward, reason=f"ref_premium order={order_id}")
+        # Монетки уже начислены внутри log_premium_ref — одной транзакцией с
+        # записью в лог. Отдельного начисления здесь больше нет: именно разрыв
+        # между ними терял выплату при рестарте (аудит 29.09.2026, пункт №17).
         try:
             new_coins = await get_coins(referrer_id)
             await bot.send_message(
@@ -4238,6 +4240,10 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                     "promo_code, coins_spent, status, paid_at) "
                     "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
                     order_id, int(uid), _pack_shop(key, idx, _p_sel.get("name","")), _promo_applied, _coins_used)
+                # Вебхука по такому заказу не будет — промокод отмечаем сами,
+                # в той же транзакции. Повторный аудит 29.09.2026, пункт №13.
+                if _promo_applied:
+                    await mark_promo_used(_promo_applied, int(uid), conn)
             else:
                 # coins_spent проставляем всегда: если клиент не доплатит,
                 # фоновая задача вернёт монетки через сутки.
@@ -7309,8 +7315,16 @@ def _plan_by_order(shop_key: str, plan_idx: int, plan_name: str = ""):
         for _p in _plans:
             if str(_p.get("name", "")).strip() == _nm:
                 return _s, _p
-        logging.warning(f"заказ: тариф {_nm!r} у {shop_key!r} не найден в каталоге — "
-                        f"беру по индексу {plan_idx}")
+        # Имя в заказе есть, а такого тарифа в каталоге больше нет — значит
+        # его удалили после оформления счёта. Брать «того, кто теперь стоит
+        # под этим номером» НЕЛЬЗЯ: клиент оплатил одно, а получил бы другое.
+        # Возвращаем пусто — вызывающий отправит заказ на ручную выдачу.
+        # Повторный внешний аудит 29.09.2026, пункт №9.
+        logging.warning(f"заказ: тариф {_nm!r} у {shop_key!r} исчез из каталога — "
+                        f"подбирать замену по индексу {plan_idx} не буду")
+        return _s, {}
+    # Имени нет — это заказ, созданный до появления имени в pack. Для него
+    # индекс остаётся единственным, что есть.
     return _s, (_plans[plan_idx] if 0 <= plan_idx < len(_plans) else {})
 
 
@@ -9318,7 +9332,7 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
             _idx = int(_pack.split(":")[2]) if _pack.count(":") >= 2 and _pack.split(":")[2].isdigit() else 0
             _plans = _s.get("plans", [])
             _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(_pack))[1].get("name")
-                          or "Plus")
+                          or _pack_plan_name(_pack) or "Plus")
 
         # Клиент может жать кнопку много раз — шлём не чаще раза в 30 минут.
         try:
@@ -9795,6 +9809,25 @@ async def _disable_client_pay_msg(order_id: str):
         logging.error(f"disable client pay msg {order_id}: {_e}")
 
 
+async def _mark_order_fulfilled(order_id: str) -> None:
+    """Отмечает, что по оплаченному заказу выдача РЕАЛЬНО состоялась.
+
+    Статус 'paid' ставится раньше выдачи. Рестарт между ними — и заказ
+    остаётся оплаченным, но без товара: повтор вебхука отвечает «уже
+    оплачен», а автосверка смотрит только на pending. По этой отметке
+    фоновая проверка находит такие заказы и зовёт владельца.
+    Повторный внешний аудит 29.09.2026, пункт №6.
+    """
+    try:
+        _p_mf = await get_pool()
+        async with _p_mf.acquire() as _c_mf:
+            await _c_mf.execute(
+                "UPDATE fk_orders SET fulfilled_at=NOW() "
+                "WHERE order_id=$1 AND fulfilled_at IS NULL", order_id)
+    except Exception as _e_mf:
+        logging.warning(f"fulfilled_at {order_id}: {_e_mf}")
+
+
 async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webhook") -> bool:
     """Зачисляет кредиты по оплаченному заказу.
 
@@ -9989,6 +10022,9 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         # NS Gifts (App Store / iCloud) — мгновенная доставка кода
         if order_id.startswith("nsg_"):
             await nsgifts_fulfill_after_payment(order_id, user_id)
+            # Выдача App Store живёт по своему состоянию в nsgifts_orders и
+            # имеет собственный разбор — для заказа FreeKassa этого хватает.
+            await _mark_order_fulfilled(order_id)
             return True
 
         is_shop_order = order_id.startswith("shop_")
@@ -10044,7 +10080,22 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 _svc_kind = None
             logging.info(f"[shop-pay] order={order_id} shop_key={shop_key!r} name={s.get('name','') if isinstance(s,dict) else ''!r} -> kind={_svc_kind}")
 
-            if await _is_manual_plan(shop_key, plan_idx):
+            if not p:
+                # Тариф из заказа исчез из каталога. Ничего не подбираем —
+                # зовём Александра с именем того, что реально купили.
+                try:
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ <b>Тариф из заказа исчез из каталога</b>\n\n"
+                        f"👤 {await _who_user(user_id)}\n"
+                        f"🆔 <code>{order_id}</code>\n"
+                        f"📦 {shop_key} · <b>{tg_name(_pack_plan_name(pack_info))}</b>\n\n"
+                        f"Заказ отправлен на ручную выдачу: подбирать замену "
+                        f"по номеру позиции нельзя — клиент оплатил другое.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+            if not p or await _is_manual_plan(shop_key, plan_idx, p):
                 await _send_manual_order(
                     user_id=user_id, shop_key=shop_key,
                     service_name=service_name, plan_name=p.get("name", ""),
@@ -10077,6 +10128,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     # True — оплата обработана (услуга уйдёт вручную). Раньше здесь
                     # был голый return: вызывающий получал None и показывал клиенту
                     # «оплата уже зачислена» вместо «оплата найдена».
+                    await _mark_order_fulfilled(order_id)
                     return True
                 _plan_key  = plan_name_to_key(_plan_name)
                 _code, _gpt_prov = await _gpt_pick_code(_plan_key)
@@ -10357,6 +10409,10 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     [_eib("Главное меню", "back_main")],
                 ])
             )
+        # Досюда доходим, только если ветка выдачи отработала без исключения:
+        # клиенту ушла кнопка активации, сообщение о ручной выдаче или
+        # зачисление кредитов. Это и есть «выдача состоялась».
+        await _mark_order_fulfilled(order_id)
         logging.info(f"FK payment success ({source}): user={user_id} credits=+{credits} balance={old_balance}→{new_balance} order={order_id}")
     except Exception as e:
         logging.error(f"FK notify user error ({source}): {e}")
@@ -11439,7 +11495,8 @@ async def gpt_resend_activation(order_id: str) -> tuple:
         return False, "Эта кнопка только для ChatGPT"
     _cat = SHOP_CATALOG.get(_svc, {}) or {}
     _plans = _cat.get("plans", [])
-    _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(pack))[1].get("name") or "Plus")
+    _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(pack))[1].get("name")
+                  or _pack_plan_name(pack) or "Plus")
     _plan_key = plan_name_to_key(_plan_name)
 
     # Код, уже закреплённый за заказом, переиспользуем: иначе на один заказ
@@ -13558,7 +13615,7 @@ async def _claude_activation_polling_job(
             # ── Успех ──────────────────────────────────────────
             if status == "done":
                 await mark_claude_code_used(code, user_id, order_id, org_id)
-                await delete_claude_pending_activation(user_id)
+                await delete_claude_pending_activation(user_id, order_id)
                 _claude_job_results[bpa_order_id] = {"status": "done", "success": True}
 
                 import datetime as _dt2
@@ -13881,7 +13938,7 @@ async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_nam
         # ── Успех ──
         if result.get("success"):
             await mark_claude_code_used(code, user_id, order_id, org_id)
-            await delete_claude_pending_activation(user_id)
+            await delete_claude_pending_activation(user_id, order_id)
             _claude_job_results[ref] = {"status": "done", "success": True}
 
             import datetime as _dt2
@@ -14028,7 +14085,7 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
     """Помечает код, чистит pending, уведомляет клиента и админа (общий блок успеха).
     used_codes — список кодов, пропущенных как «уже использованные» (для отчёта админу)."""
     await mark_claude_code_used(code, user_id, order_id, org_id)
-    await delete_claude_pending_activation(user_id)
+    await delete_claude_pending_activation(user_id, order_id)
     _claude_job_results[ref] = {"status": "done", "success": True}
 
     import datetime as _dt2
@@ -15788,14 +15845,24 @@ async def api_order_status_handler(request: web.Request) -> web.Response:
                 _svc = _pack.split(":")[1] if _pack.startswith("shop:") and ":" in _pack else ""
                 if _svc == "chatgpt":
                     _pend = await get_pending_activation(int(uid))
-                    if _pend:
+                    # Резерв хранится ОДИН на клиента: если он успел оплатить
+                    # второй заказ, тут лежит код от ДРУГОГО заказа. Отдавать
+                    # его как код этого заказа нельзя — клиент активировал бы
+                    # не то, что открыл. Повторный аудит 29.09.2026, №12.
+                    if _pend and str(_pend.get("order_id") or "") == _oid:
                         _act = {"service": "chatgpt", "code": _pend.get("code", ""),
                                 "plan": _pend.get("plan_name", "")}
+                    elif _pend:
+                        logging.info(f"order_status: резерв клиента {uid} принадлежит "
+                                     f"заказу {_pend.get('order_id')!r}, а спрашивают {_oid!r}")
                 elif _svc == "claude":
                     _pend = await get_claude_pending_activation(int(uid))
-                    if _pend:
+                    if _pend and str(_pend.get("order_id") or "") == _oid:
                         _act = {"service": "claude", "code": _pend.get("code", ""),
                                 "plan": _pend.get("plan_name", "")}
+                    elif _pend:
+                        logging.info(f"order_status: резерв Claude клиента {uid} — заказ "
+                                     f"{_pend.get('order_id')!r}, спрашивают {_oid!r}")
             except Exception as _ae:
                 logging.error(f"api_order_status activate: {_ae}")
         return web.json_response({"ok": True, "paid": _paid, "activate": _act})
@@ -16108,8 +16175,14 @@ def _nsg_pins_from(resp) -> list:
 
 
 async def nsgifts_send_pins(fk_order_id: str, user_id: int, service_name: str, pins: list):
-    """Отправляет клиенту готовые коды. Вынесено отдельно, чтобы тем же текстом
-    пользовалась и обычная выдача, и восстановление застрявшего заказа."""
+    """Отправляет клиенту готовые коды и отмечает факт доставки.
+
+    Вынесено отдельно, чтобы тем же текстом пользовалась и обычная выдача, и
+    восстановление застрявшего заказа. Отметка delivered_at ставится ТОЛЬКО
+    после успешной отправки: по ней разбор отличает «код куплен и отдан» от
+    «куплен, сохранён, но клиент его не видел».
+    Повторный внешний аудит 29.09.2026, пункт №18.
+    """
     pins_text = "\n".join(f"<code>{p}</code>" for p in pins)
     _oref_ns = await _order_ref_line(fk_order_id)
     await bot.send_message(
@@ -16133,6 +16206,15 @@ async def nsgifts_send_pins(fk_order_id: str, user_id: int, service_name: str, p
                                   callback_data="nsg_region_help")]
         ])
     )
+    # Сообщение ушло — только теперь заказ считается доставленным.
+    try:
+        _p_dl = await get_pool()
+        async with _p_dl.acquire() as _c_dl:
+            await _c_dl.execute(
+                "UPDATE nsgifts_orders SET delivered_at=NOW() WHERE fk_order_id=$1",
+                fk_order_id)
+    except Exception as _e_dl:
+        logging.warning(f"nsgifts delivered_at {fk_order_id}: {_e_dl}")
 
 
 async def nsgifts_recover_stuck(fk_order_id: str) -> str:
@@ -16153,7 +16235,17 @@ async def nsgifts_recover_stuck(fk_order_id: str) -> str:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM nsgifts_orders WHERE fk_order_id=$1", fk_order_id)
-    if not row or row["status"] != "processing":
+    # Берём не только 'processing'. Второе окно: код КУПЛЕН, пины сохранены,
+    # статус уже 'fulfilled' — и на этом процесс убили, до отправки клиенту.
+    # Такой заказ не подбирал никто: петля смотрела только на 'processing', а
+    # кнопка клиента отвечала «код выше в чате», хотя кода он не видел.
+    # Повторный внешний аудит 29.09.2026, пункт №18.
+    if not row:
+        return "not_stuck"
+    _undelivered = (row["status"] == "fulfilled"
+                    and (row["pins_json"] or "").strip()
+                    and row["delivered_at"] is None)
+    if row["status"] != "processing" and not _undelivered:
         return "not_stuck"
 
     _uid = int(row["user_id"])
@@ -16180,8 +16272,10 @@ async def nsgifts_recover_stuck(fk_order_id: str) -> str:
                 "UPDATE nsgifts_orders SET status='fulfilled', pins_json=$1, "
                 "error_msg=$2 WHERE fk_order_id=$3",
                 _json.dumps(pins), f"восстановлен ({source})", fk_order_id)
+        _sent = False
         try:
             await nsgifts_send_pins(fk_order_id, _uid, _name, pins)
+            _sent = True
             await _alert(f"✅ Код нашёлся ({source}) и отправлен клиенту:\n"
                          f"<code>{', '.join(pins)}</code>")
         except Exception as _e_s:
@@ -16189,6 +16283,11 @@ async def nsgifts_recover_stuck(fk_order_id: str) -> str:
                          f"(<code>{str(_e_s)[:150]}</code>). Перешли вручную:\n"
                          f"<code>{', '.join(pins)}</code>")
         await log_event(_uid, "nsgifts_recovered", f"fk={fk_order_id} src={source}")
+        # Важно вернуть РАЗНОЕ: если клиент заблокировал бота, отправка будет
+        # падать всегда, delivered_at так и останется пустым — и петля брала
+        # бы этот заказ каждые пять минут и слала алерт снова и снова.
+        # Разный исход включает счётчик попыток в петле.
+        return _sent
 
     # 1. Коды уже лежат у нас — упала только доставка.
     _local = (row["pins_json"] or "").strip()
@@ -16199,8 +16298,8 @@ async def nsgifts_recover_stuck(fk_order_id: str) -> str:
         except Exception:
             _pins = []
         if _pins:
-            await _deliver([str(p) for p in _pins], "из нашей базы")
-            return "delivered_local"
+            _ok_d = await _deliver([str(p) for p in _pins], "из нашей базы")
+            return "delivered_local" if _ok_d else "delivered_not_sent"
 
     # 2. Заказ у поставщика создан — спрашиваем, чем кончилось.
     if _custom and rt.nsgifts_client:
@@ -16211,8 +16310,8 @@ async def nsgifts_recover_stuck(fk_order_id: str) -> str:
             return "api_error"
         _pins = _nsg_pins_from(info)
         if _pins:
-            await _deliver(_pins, "у поставщика")
-            return "delivered_remote"
+            _ok_d2 = await _deliver(_pins, "у поставщика")
+            return "delivered_remote" if _ok_d2 else "delivered_not_sent"
         _st = str((info or {}).get("status") or "").lower()
         if _st in ("refunded", "insufficient", "canceled", "cancelled", "failed"):
             # Покупка НЕ состоялась — заказ можно снова сделать выдаваемым.
@@ -16574,7 +16673,7 @@ async def _perplexity_activation_polling_job(
             # ── Успех ──────────────────────────────────────────
             if status == "done":
                 await mark_perplexity_code_used(code, user_id, order_id, org_id)
-                await delete_perplexity_pending_activation(user_id)
+                await delete_perplexity_pending_activation(user_id, order_id)
                 _perplexity_job_results[bpa_order_id] = {"status": "done", "success": True}
 
                 import datetime as _dt2
@@ -17038,6 +17137,41 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     except Exception as _dbl_e:
         logging.error(f"perplexity double-activation check: {_dbl_e}")
 
+    async def _px_unmark():
+        """Снять отметку начала активации.
+
+        Зовём только там, где поставщик ЯВНО сказал, что кода не касался:
+        неверный UUID клиента, нет стока, код у него не найден. Тогда резерв
+        снова обычный, и по истечении окна код сам вернётся в пул, как было.
+        Во всех неясных случаях (сеть, таймаут, 5xx, исключение) отметку
+        ОСТАВЛЯЕМ: там поставщик мог код потратить, и решать должен Александр.
+        """
+        try:
+            _p_un = await get_pool()
+            async with _p_un.acquire() as _c_un:
+                await _c_un.execute(
+                    "UPDATE perplexity_pending_activations SET org_id='' WHERE user_id=$1",
+                    user_id)
+        except Exception as _e_un:
+            logging.warning(f"perplexity unmark uid={user_id}: {_e_un}")
+
+    # ОТМЕЧАЕМ НАЧАЛО АКТИВАЦИИ ДО запроса к поставщику.
+    # Без этой отметки резерв Perplexity выглядел как «активацию даже не
+    # пробовали»: org_id у него не заполнялся НИКОГДА, а bpa_order_id у
+    # синхронного эндпоинта не бывает по определению. Поэтому фоновая чистка
+    # удаляла такой резерв и возвращала код в пул — хотя поставщик мог его
+    # уже потратить. Код уходил следующему клиенту пустым.
+    # У Claude та же отметка стоит с самого начала, Perplexity под неё не
+    # подвели. Повторный внешний аудит 29.09.2026, пункт №15.
+    try:
+        _pool_px_mark = await get_pool()
+        async with _pool_px_mark.acquire() as _c_px_mark:
+            await _c_px_mark.execute(
+                "UPDATE perplexity_pending_activations SET org_id=$1 WHERE user_id=$2",
+                org_id, user_id)
+    except Exception as _e_px_mark:
+        logging.error(f"perplexity: не отметил начало активации uid={user_id}: {_e_px_mark}")
+
     try:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
@@ -17060,7 +17194,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                         await mark_perplexity_code_used(code, user_id, order_id, org_id)
                     except Exception:
                         pass
-                    await delete_perplexity_pending_activation(user_id)
+                    await delete_perplexity_pending_activation(user_id, order_id)
                     _perplexity_double_warned.discard(user_id)
                     import random as _rnd_px
                     _ref = _rnd_px.randint(9000000, 9999999)
@@ -17093,13 +17227,17 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                             )
                         except Exception:
                             pass
+                        await _px_unmark()   # стока нет — код не тронут
                         return _resp({"error": "Временно нет активаций. Александр активирует вручную."})
                     return _resp({"error": _rd.get("detail") or "Ошибка кода."})
 
                 elif _r.status == 404:
+                    await _px_unmark()   # поставщик такого кода не знает — не тратил
                     return _resp({"error": "Код не найден. Напиши Александру."})
 
                 elif _r.status == 400:
+                    # Запрос отвергнут на входе — до кода дело не дошло.
+                    await _px_unmark()
                     _det4 = (_rd.get("detail") or "").lower()
                     if "user_id" in _det4 or "uuid" in _det4:
                         return _resp({"error": "Неверный Perplexity User ID — нужен UUID со страницы perplexity.ai/api/auth/session (поле id)."})
@@ -17344,10 +17482,35 @@ def _lp_kb(order_id, full=True):
     ])
 
 
-async def _is_manual_plan(shop_key, plan_idx) -> bool:
+async def _is_manual_plan(shop_key, plan_idx, plan: dict = None) -> bool:
+    """Выдавать этот заказ вручную?
+
+    plan — тариф, НАЙДЕННЫЙ ПО ИМЕНИ из заказа. Раньше функция принимала
+    только номер позиции в каталоге, и решение расходилось с товаром:
+    тариф брали по имени, а «автомат или вручную» считали по номеру.
+    Достаточно было удалить один тариф в админке — номера схлопывались, и
+    дорогой Pro 20× мог уйти в автоматическую выдачу по коду от Plus.
+    Повторный внешний аудит 29.09.2026, пункт №9.
+    """
+    _all = (SHOP_CATALOG.get(shop_key, {}) or {}).get("plans", []) or []
+    # Настоящий номер тарифа в текущем каталоге — по имени. Переключатель
+    # «Ручная выдача» в админке хранится по номеру, и без этого он
+    # относился бы к соседнему тарифу.
+    _idx = plan_idx
+    if isinstance(plan, dict) and plan.get("name"):
+        _nm_p = str(plan.get("name", "")).strip()
+        for _i, _pp in enumerate(_all):
+            if str(_pp.get("name", "")).strip() == _nm_p:
+                _idx = _i
+                break
+    _p = plan if isinstance(plan, dict) and plan else (
+        _all[_idx] if 0 <= _idx < len(_all) else {})
+    # Тариф из заказа в каталоге не найден — сами не выдаём, решает Александр.
+    if not _p:
+        return True
     # 1) Явный переключатель «Ручная выдача» в админке
     try:
-        if (await get_setting(f"manual:{shop_key}:{plan_idx}", "0") or "0") == "1":
+        if (await get_setting(f"manual:{shop_key}:{_idx}", "0") or "0") == "1":
             return True
     except Exception:
         pass
@@ -17357,21 +17520,16 @@ async def _is_manual_plan(shop_key, plan_idx) -> bool:
     #     привёл к резерву кода под тариф, который бот всё равно не активирует.
     try:
         if shop_key == "chatgpt":
-            _pl = (SHOP_CATALOG.get(shop_key, {}) or {}).get("plans", []) or []
-            if 0 <= plan_idx < len(_pl):
-                if plan_name_to_key(_pl[plan_idx].get("name", "")) not in GPT_AUTO_PLANS:
-                    return True
+            if plan_name_to_key(_p.get("name", "")) not in GPT_AUTO_PLANS:
+                return True
     except Exception as _e_ap:
         logging.warning(f"_is_manual_plan auto-plans: {_e_ap}")
     # 2) Недельные тарифы всегда выдаём вручную (авто-активация — только для месячных).
     #    Коды в пуле — месячные; недельную подписку оформляет Александр сам.
     try:
-        _s = SHOP_CATALOG.get(shop_key, {}) or {}
-        _plans = _s.get("plans", []) or []
-        if 0 <= plan_idx < len(_plans):
-            _nm = (_plans[plan_idx].get("name", "") or "").lower()
-            if "недел" in _nm or "week" in _nm:
-                return True
+        _nm = (_p.get("name", "") or "").lower()
+        if "недел" in _nm or "week" in _nm:
+            return True
     except Exception:
         pass
     return False

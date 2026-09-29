@@ -3,6 +3,14 @@
 import asyncio, logging, os, re, uuid, base64, hashlib, hmac, json, time
 import datetime
 import datetime as _dt_tz
+
+# Нехватка монеток обнаруживается ВНУТРИ транзакции, а ответить клиенту нужно
+# СНАРУЖИ: cb.answer() — это HTTP-запрос в Telegram, и раньше он выполнялся с
+# открытой транзакцией, удерживая коннекцию пула всё время запроса. Исключение
+# выходит из транзакции (откатывая её) и отвечает уже без коннекции.
+# Самопроверка после повторного аудита, 29.09.2026.
+class _NoCoins(Exception):
+    pass
 import time as _time_module
 import asyncpg
 import aiohttp
@@ -820,6 +828,14 @@ async def nsg_check_payment(cb: CallbackQuery):
                     "⏳ Код уже получаем — это занимает несколько секунд.\n"
                     "Он придёт сюда же сообщением. Если через 5 минут не пришёл — "
                     f"напиши @{PERSONAL_USERNAME}.")
+        elif _st == "fulfilled" and _has_pins and row["delivered_at"] is None:
+            # Код куплен и сохранён, но клиенту он не уходил: процесс убили
+            # между сохранением и отправкой. Раньше тут отвечали «код выше в
+            # чате» — клиент искал несуществующее сообщение.
+            # Это переотправка СВОЕГО кода, а не покупка нового.
+            await cb.message.answer("⏳ Секунду, досылаю код…")
+            from common import nsgifts_recover_stuck
+            await nsgifts_recover_stuck(order_id)
         elif _st == "fulfilled" and _has_pins:
             await cb.message.answer("✅ Заказ выполнен — код выше в этом чате.")
         else:
@@ -876,22 +892,31 @@ async def nsg_full_coins(cb: CallbackQuery):
         await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
-    if not await deduct_coins(uid, required):
-        await _rollback()
-        await cb.answer("Недостаточно монеток.", show_alert=True)
-        return
     # Заказ ОПЛАЧЕН — монетками. Раньше статус оставался 'pending', и через
     # сутки фоновый возврат отдавал монетки обратно, хотя код уже выдан:
     # клиент оставался и с кодом, и с деньгами. Нашёл внешний аудит
     # 29.09.2026. Возврат при СБОЕ выдачи никуда не делся — он теперь
     # привязан к статусу самой выдачи (см. coins_refund_loop).
+    # Списание и отметка оплаты — ОДНОЙ транзакцией: сбой между ними уносил
+    # монетки, а заказ оставался неоплаченным. Повторный аудит, пункт №10.
     try:
         async with pool.acquire() as _c_cs:
-            await _c_cs.execute(
-                "UPDATE fk_orders SET coins_spent=$1, status='paid', paid_at=NOW() "
-                "WHERE order_id=$2", required, order_id)
+            async with _c_cs.transaction():
+                if not await deduct_coins(uid, required, conn=_c_cs):
+                    raise _NoCoins()
+                await _c_cs.execute(
+                    "UPDATE fk_orders SET coins_spent=$1, status='paid', paid_at=NOW() "
+                    "WHERE order_id=$2", required, order_id)
+    except _NoCoins:
+        await _rollback()
+        await cb.answer("Недостаточно монеток.", show_alert=True)
+        return
     except Exception as _e_cs:
-        logging.warning(f"nsg_full_coins coins_spent {order_id}: {_e_cs}")
+        logging.error(f"nsg_full_coins оплата {order_id}: {_e_cs}")
+        await _rollback()
+        await cb.answer("Не получилось провести оплату. Попробуй ещё раз.",
+                        show_alert=True)
+        return
     new_coins = await get_coins(uid)
     try:
         await cb.message.edit_text(
@@ -946,22 +971,53 @@ async def nsg_coins_sbp(cb: CallbackQuery):
         await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
+    # Списание монеток и отметка в заказе — ОДНОЙ транзакцией. Раньше это
+    # были две отдельные операции: сбой между ними уносил монетки, а в заказе
+    # не оставалось coins_spent — фоновый возврат ищет заказы именно по нему и
+    # такой заказ не находил. Повторный внешний аудит 29.09.2026, пункт №10.
     if rest <= 0:
-        if not await deduct_coins(uid, full):
+        try:
+            async with pool.acquire() as _c_fp:
+                async with _c_fp.transaction():
+                    if not await deduct_coins(uid, full, conn=_c_fp):
+                        raise _NoCoins()
+                    await _c_fp.execute(
+                        "UPDATE fk_orders SET coins_spent=$1, amount_rub=0, "
+                        "status='paid', paid_at=NOW() WHERE order_id=$2",
+                        full, order_id)
+        except _NoCoins:
             await _rollback()
             await cb.answer("Недостаточно монеток.", show_alert=True)
             return
+        except Exception as _e_fp:
+            logging.error(f"nsg_coins_sbp: оплата монетками {order_id}: {_e_fp}")
+            await _rollback()
+            await cb.answer("Не получилось провести оплату. Попробуй ещё раз.",
+                            show_alert=True)
+            return
         await nsgifts_fulfill_after_payment(order_id, uid)
         return
-    if not await deduct_coins(uid, coins_used):
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if not await deduct_coins(uid, coins_used, conn=conn):
+                    raise _NoCoins()
+                # Остаток к оплате через FK: фиксируем ожидаемую сумму = rest
+                # (валидация вебхука) и записываем списанные монетки для
+                # авто-возврата, если клиент не доплатит.
+                await conn.execute(
+                    "UPDATE fk_orders SET amount_rub=$1, coins_spent=$2 WHERE order_id=$3",
+                    rest, coins_used, order_id)
+    except _NoCoins:
         await _rollback()
         await cb.answer("Недостаточно монеток.", show_alert=True)
         return
-    # Остаток к оплате через FK: фиксируем ожидаемую сумму = rest (валидация вебхука)
-    # и записываем списанные монетки для авто-возврата, если клиент не доплатит.
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE fk_orders SET amount_rub=$1, coins_spent=$2 WHERE order_id=$3",
-                           rest, coins_used, order_id)
+    except Exception as _e_cs:
+        logging.error(f"nsg_coins_sbp: {order_id}: {_e_cs}")
+        await _rollback()
+        await cb.answer("Не получилось применить монетки. Попробуй ещё раз.",
+                        show_alert=True)
+        return
     pay_url = fk_pay_url(rest, order_id)
     new_coins = await get_coins(uid)
     try:
