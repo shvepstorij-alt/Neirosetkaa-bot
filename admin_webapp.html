@@ -87,6 +87,10 @@ input.f:focus,textarea.f:focus{border-color:var(--acc)}textarea.f{min-height:96p
 .tabbar{position:fixed;left:0;right:0;bottom:0;max-width:430px;margin:0 auto;display:flex;background:var(--surface);border-top:1px solid var(--line);padding:8px 0 calc(8px + env(safe-area-inset-bottom))}
 .tabbar a{flex:1;text-align:center;color:var(--txt3);font-size:10px;text-decoration:none;cursor:pointer}
 .tabbar a i{display:block;font-size:20px;margin-bottom:3px}.tabbar a.on{color:var(--acc)}
+/* Пока открыта клавиатура, нижняя панель разделов не нужна: она всплывает
+   прямо над клавиатурой и закрывает поле, в которое печатаешь. Прячем её на
+   время ввода и возвращаем, как только фокус ушёл. */
+body.kb-open .tabbar{display:none}
 .search{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:9px 12px;margin-bottom:12px}
 .search input{flex:1;background:transparent;border:0;outline:none;color:var(--txt);font-size:13.5px}
 /* Живой поиск по странице. Появляется сам там, где есть что искать, — списки
@@ -112,6 +116,50 @@ input.f:focus,textarea.f:focus{border-color:var(--acc)}textarea.f{min-height:96p
 </div>
 <div class="toast" id="toast"></div>
 <script>
+/* ── Клавиатура и нижняя панель ─────────────────────────────────────────
+   Панель разделов приклеена к низу экрана (position:fixed). Когда на
+   телефоне открывается клавиатура, она остаётся видимой и наезжает на поле
+   ввода — 29.09.2026 Александр прислал ровно такой экран. Снимаем её, пока
+   идёт ввод.
+
+   Считаем по фокусу, а не по высоте экрана: изменение высоты на разных
+   телефонах и в Telegram WebApp срабатывает по-разному, а фокус в поле —
+   признак однозначный. visualViewport оставлен запасным сигналом: если
+   клавиатуру закрыли жестом, фокус может остаться в поле, и панель иначе
+   не вернулась бы. */
+(function(){
+  var _kb = false;
+  function _isField(el){
+    if (!el) return false;
+    var t = (el.tagName || '').toUpperCase();
+    return t === 'INPUT' || t === 'TEXTAREA' || el.isContentEditable === true;
+  }
+  function _set(on){
+    on = !!on;
+    if (on === _kb) return;
+    _kb = on;
+    try { document.body.classList.toggle('kb-open', on); } catch (e) {}
+  }
+  document.addEventListener('focusin', function(e){
+    if (_isField(e.target)) _set(true);
+  }, true);
+  document.addEventListener('focusout', function(){
+    // Небольшая пауза: при переходе между двумя полями фокус на миг пустой,
+    // и панель успевала мигнуть.
+    setTimeout(function(){ if (!_isField(document.activeElement)) _set(false); }, 80);
+  }, true);
+  if (window.visualViewport){
+    var _base = window.visualViewport.height;
+    window.visualViewport.addEventListener('resize', function(){
+      var h = window.visualViewport.height;
+      if (h > _base) _base = h;            // экран вырос — это новая норма
+      // Клавиатура съедает заметную часть экрана. Вернулась высота —
+      // значит клавиатуры нет, даже если фокус остался в поле.
+      if (_base - h < 100) _set(false);
+      else if (_isField(document.activeElement)) _set(true);
+    });
+  }
+})();
 /* ===== mock state ===== */
 var S={toggles:{Suno:1,Kling:1,HeyGen:0,Higgsfield:1,Zoom:1,Krea:1,YouTube:0,
   "ChatGPT Mini App":1,"Claude Mini App":1,"Perplexity Mini App":1,Техработы:0,"Авто-исправление":1,

@@ -9302,8 +9302,24 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             _has_sub = gpt_has_subscription(_acc_plan)
         except Exception as _e_pl:
             logging.warning(f"GPT plan detect uid={user_id}: {_e_pl}")
-            _acc_plan, _plan_src, _has_sub = "", "", True
-        _need_route = "ios" if (_pk_rt == "go" or _has_sub) else "ph"
+            _acc_plan, _plan_src, _has_sub = "", "", False
+        # ПРИОРИТЕТ ФИЛИППИНСКОГО МАРШРУТА.
+        # iOS берём только там, где он действительно нужен: тариф Go (иначе
+        # никак) и аккаунт, про который ТОЧНО известно, что платный план уже
+        # есть — филиппинский код такой аккаунт не примет.
+        #
+        # Раньше «план не определён» тоже уводило на iOS «на всякий случай».
+        # Цена этой осторожности обратная задуманной: филиппинский код при
+        # отказе НЕ сгорает и возвращается в пул, а iOS ложится на любой
+        # аккаунт и тратится безвозвратно. То есть страховка стоила денег
+        # ровно в тех случаях, когда она была не нужна. 29.09.2026 Александр
+        # это и заметил: «приоритетными должны быть филиппинские».
+        #
+        # Если филиппинский всё-таки отобьётся (уже есть план, отказ сайта) —
+        # заказ подхватит _ios_rescue и переведёт его на iOS сам, прислав
+        # сообщение. Порядок ровно тот, который он описал.
+        _plan_known = bool((_acc_plan or "").strip())
+        _need_route = "ios" if (_pk_rt == "go" or (_plan_known and _has_sub)) else "ph"
         _cur_route = gpt_route_for_code(code)
         logging.info(
             f"GPT route: uid={user_id} тариф={_pk_rt} план={_acc_plan or '(не определён)'} "
@@ -12924,10 +12940,21 @@ async def _gpt_pick_code(plan: str):
         logging.warning("_gpt_pick_code: нет доступных сайтов (все на паузе)")
         return None, None
     active = order[0]
-    _route = "ios" if plan == "go" else None
+    # Go активируется только через iOS. Всем остальным тарифам сперва ищем
+    # ФИЛИППИНСКИЙ код и лишь потом любой: резерв происходит сразу после
+    # оплаты, когда план аккаунта ещё неизвестен, и брать в этот момент iOS
+    # значит тратить дорогой код там, где хватило бы дешёвого. Маршрут при
+    # необходимости уточнится в момент активации, когда придёт session.
+    _route = "ios" if plan == "go" else "ph"
     for prov in order:
-        code = await get_next_gpt_code(plan, prov, _route) if prov == "bpa" \
-            else await get_next_gpt_code(plan, prov)
+        if prov == "bpa":
+            code = await get_next_gpt_code(plan, prov, _route)
+            if not code and _route == "ph":
+                # Филиппинских не осталось — берём любой, иначе клиент
+                # останется без кода при полном пуле iOS.
+                code = await get_next_gpt_code(plan, prov)
+        else:
+            code = await get_next_gpt_code(plan, prov)
         if code:
             if prov != active:
                 try:
