@@ -34,8 +34,14 @@ def _refreshable_services():
     return out
 
 
-async def _rewrite_one(key: str, svc: dict):
-    """Возвращает dict {'service_desc': str, 'plans': {имя: desc}} или None."""
+async def _rewrite_one(key: str, svc: dict, errors: list | None = None):
+    """Возвращает dict {'service_desc': str, 'plans': {имя: desc}} или None.
+
+    errors — необязательный список, куда складываются НАСТОЯЩИЕ причины отказа
+    в виде (модель, режим, текст). Без него сводка говорила только «ошибок:
+    31», и понять, что именно сломалось — кончился ключ, нет доступа к модели
+    или к веб-поиску, — можно было лишь по логам Railway.
+    """
     from common import claude_client
 
     _plans_txt = "\n".join(
@@ -76,6 +82,8 @@ async def _rewrite_one(key: str, svc: dict):
             break
         except Exception as e:
             logger.warning(f"models_refresh {key} [{_m}] web_search: {type(e).__name__}: {str(e)[:200]}")
+            if errors is not None:
+                errors.append((_m, "веб-поиск", f"{type(e).__name__}: {str(e)[:200]}"))
             continue
     # Только если веб-поиск не отработал НИ на одной модели — резерв без него (с пометкой).
     if resp is None:
@@ -86,6 +94,8 @@ async def _rewrite_one(key: str, svc: dict):
                 break
             except Exception as e:
                 logger.warning(f"models_refresh {key} [{_m}] no-search: {type(e).__name__}: {str(e)[:200]}")
+                if errors is not None:
+                    errors.append((_m, "без поиска", f"{type(e).__name__}: {str(e)[:200]}"))
                 continue
     if resp is None:
         return None, _used_search
@@ -97,11 +107,17 @@ async def _rewrite_one(key: str, svc: dict):
     m = re.search(r"\{.*\}", _txt, re.S)
     if not m:
         logger.warning(f"models_refresh {key}: JSON не найден в ответе")
+        if errors is not None:
+            errors.append(("—", "разбор ответа",
+                           "модель ответила, но JSON в ответе не найден: "
+                           + (_txt[:160].replace("\n", " ") or "(пустой ответ)")))
         return None, _used_search
     try:
         data = json.loads(m.group(0))
     except Exception as e:
         logger.warning(f"models_refresh {key}: битый JSON: {e}")
+        if errors is not None:
+            errors.append(("—", "разбор ответа", f"битый JSON: {str(e)[:160]}"))
         return None, _used_search
     return (data if isinstance(data, dict) else None), _used_search
 
@@ -116,8 +132,9 @@ async def refresh_all_descriptions(notify: bool = True) -> str:
     _ok = 0       # сколько сервисов реально обработала модель
     _fail = 0     # сколько провалилось (ошибка API/парсинга)
     _no_search = 0  # сколько обработано БЕЗ веб-поиска (резервный режим)
+    _errors: list = []
     for key, svc in _refreshable_services():
-        data, _used_search = await _rewrite_one(key, svc)
+        data, _used_search = await _rewrite_one(key, svc, _errors)
         if not data:
             _fail += 1
             continue
@@ -144,10 +161,27 @@ async def refresh_all_descriptions(notify: bool = True) -> str:
 
     if not drafts:
         if _ok == 0:
+            # Показываем САМУ причину, а не отсылаем в логи. Одинаковых
+            # ошибок тут десятки — оставляем разные, по одной каждого вида.
+            import html as _h_dw
+            _seen, _uniq = set(), []
+            for _m_e, _mode_e, _txt_e in _errors:
+                _kk = (_txt_e or "").split(":")[0] + "|" + str(_m_e)
+                if _kk in _seen:
+                    continue
+                _seen.add(_kk)
+                _uniq.append(f"• <b>{_h_dw.escape(str(_m_e))}</b> ({_mode_e})\n"
+                             f"  <code>{_h_dw.escape(str(_txt_e)[:220])}</code>")
+                if len(_uniq) >= 4:
+                    break
             summary = ("♻️ <b>Обновление описаний тарифов</b>\n\n"
-                       f"⚠️ Не удалось обновить: модель не ответила ни по одному сервису "
-                       f"(ошибок: {_fail}). Похоже на проблему с моделью/веб-поиском — проверь логи "
-                       f"(<code>models_refresh</code>).")
+                       f"⚠️ Ни один сервис не обработан (ошибок: {_fail}).\n\n"
+                       + ("<b>Что ответил API:</b>\n" + "\n".join(_uniq)
+                          if _uniq else "Причина не записалась — смотри логи "
+                                        "<code>models_refresh</code>.")
+                       + "\n\n<i>Если это «credit balance too low» — деньги "
+                         "на API-ключе. Описания можно обновить и без API: "
+                         "<code>/apply_desc</code></i>")
         else:
             _ns = (f"\n⚠️ Из них {_no_search} — без веб-поиска (инструмент был недоступен)."
                    if _no_search else "")
