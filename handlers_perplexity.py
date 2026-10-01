@@ -91,6 +91,12 @@ async def cb_perplexity_manual_activated(cb: CallbackQuery):
         # активация идёт другим кодом, а этот остаётся целым.
         await release_perplexity_code(code)
         await delete_perplexity_pending_activation(uid)
+        # Гасим таймер — см. комментарий в handlers_claude.py.
+        try:
+            from common import stop_activation_timer as _stop_t
+            _stop_t(uid, "perplexity")
+        except Exception as _e_st:
+            logging.warning(f"perplexity manual: таймер uid={uid}: {_e_st}")
         await log_event(uid, "perplexity_manual_activated", f"code={code} plan={plan_name}")
         await cb.message.answer(
             "\u2705 <b>Готово!</b>\n\n"

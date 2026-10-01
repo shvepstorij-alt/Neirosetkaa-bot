@@ -444,6 +444,11 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     # упасть (flood-control 429, сообщение удалено), и раньше исключение уходило
     # наверх уже ПОСЛЕ списания: кредиты пропадали без возврата и без ответа.
     img_refunded = False
+    # Оригинал уже у клиента? Объявляем ЗДЕСЬ, до try: иначе при обычном
+    # провале генерации (а это и есть частый случай) except читал бы
+    # необъявленную переменную и падал САМ, вместо того чтобы вернуть
+    # кредиты. Поймано самопроверкой 02.10.2026.
+    _img_delivered = False
 
     async def img_refund_once(reason: str = ""):
         nonlocal img_refunded
@@ -512,6 +517,14 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
             op_name=f"img_document_{key}",
         )
+        # Картинка У КЛИЕНТА. Дальше возвращать кредиты уже нельзя: превью —
+        # это удобство, а не товар. У Telegram к фото свои ограничения, каких
+        # нет у документа (вес, сумма сторон, соотношение), и на тяжёлых
+        # моделях превью падает ВОСПРОИЗВОДИМО — то есть клиент получал
+        # оригинал и полный возврат, и так сколько угодно раз.
+        # Так же сделано в видео и анимации (флаг video_sent).
+        # Широкий разбор 02.10.2026.
+        _img_delivered = True
         # Затем превью с кнопками - с retry
         await safe_send_media(
             cb.message.answer_photo,
@@ -526,6 +539,21 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         except Exception:
             pass
     except Exception as e:
+        if _img_delivered:
+            # Оригинал клиент получил — это и есть товар. Возврата нет.
+            logging.error(f"go_image: превью не ушло, но оригинал доставлен "
+                          f"uid={cb.from_user.id} model={key}: {e}")
+            try:
+                await cb.message.answer(
+                    "✅ Готово! Оригинал выше — он без сжатия, в полном качестве.\n"
+                    "<i>Превью показать не вышло, но файл у тебя.</i>",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            await notify_admin_error(
+                f"Превью фото не ушло (оригинал ДОСТАВЛЕН, возврата нет) "
+                f"uid={cb.from_user.id} model={key}", e, prompt=prompt)
+            return
         await img_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e, prompt=prompt)
         try:
@@ -2171,6 +2199,9 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
     # Возврат объявляем ДО отправки статус-сообщения: его сбой раньше уводил
     # исключение наверх уже после списания кредитов.
     edit_refunded = False
+    # Тот же флаг, что в go_image: оригинал доставлен — возврата нет.
+    # Объявлен ДО try намеренно (см. комментарий в go_image).
+    _edit_delivered = False
 
     async def edit_refund_once(reason: str = ""):
         nonlocal edit_refunded
@@ -2346,6 +2377,8 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
             op_name="edit_document",
         )
+        # Картинка У КЛИЕНТА. Превью — удобство, а не товар.
+        _edit_delivered = True
         await safe_send_media(
             cb.message.answer_photo,
             BufferedInputFile(result_bytes, "edited.png"),
@@ -2359,6 +2392,20 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         except Exception:
             pass
     except Exception as e:
+        if _edit_delivered:
+            logging.error(f"go_edit: превью не ушло, но оригинал доставлен "
+                          f"uid={uid} model={model_key}: {e}")
+            try:
+                await cb.message.answer(
+                    "✅ Готово! Оригинал выше — он без сжатия, в полном качестве.\n"
+                    "<i>Превью показать не вышло, но файл у тебя.</i>",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            await notify_admin_error(
+                f"Превью редактирования не ушло (оригинал ДОСТАВЛЕН, возврата нет) "
+                f"uid={uid} model={model_key}", e, prompt=prompt)
+            return
         await edit_refund_once(f"exception:{type(e).__name__}")
         await notify_admin_error(f"Редактирование фото uid={uid} model={model_key}", e, prompt=prompt)
         try:

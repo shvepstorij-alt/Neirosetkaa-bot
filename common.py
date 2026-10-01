@@ -7699,6 +7699,42 @@ async def _run_activation_job(
                 f"_safe_release: {_c} НЕ возвращён в пул — сайт: {_v or 'молчит'}")
             # Если сайт лежит, таких кодов будет много подряд — не заваливаем
             # админа одинаковыми сообщениями, одного в 15 минут достаточно.
+            # Код в «claimed» с ЖИВЫМ резервом: сверка возьмёт его на слежение,
+            # а следом уйдёт карточка «авто-активация НЕУДАЧА» с тем же кодом,
+            # тем же клиентом и кнопкой «Проверить сейчас». Отдельное сообщение
+            # здесь — третий рассказ об одном событии, да ещё и с советом
+            # /gpt_codes_recover, который делать не надо. Пометку на коде
+            # оставляем: именно она защищает пул. Александр 02.10.2026.
+            if _v == "claimed":
+                _has_pend_sr = False
+                try:
+                    async with _pool_sr.acquire() as _c_pc:
+                        _has_pend_sr = bool(await _c_pc.fetchval(
+                            "SELECT 1 FROM gpt_pending_activations "
+                            "WHERE UPPER(code)=$1", str(_c).strip().upper()))
+                except Exception as _e_pc:
+                    logging.warning(f"_safe_release: резерв по {_c}: {_e_pc}")
+                if _has_pend_sr:
+                    # НЕ просто молчим. Между этим местом и отправкой карточки
+                    # «НЕУДАЧА» — одиннадцать точек выхода из задачи, то есть
+                    # карточка приходит НЕ всегда, и молчание оставило бы
+                    # Александра вообще без сообщения. Поэтому ставим код на
+                    # слежение: оно гарантированно скажет «активация идёт» в
+                    # течение минуты, и текст там полезнее, чем «код не вернул
+                    # в пул» с советом /gpt_codes_recover, который тут вреден.
+                    # Нашёл при самопроверке 02.10.2026.
+                    try:
+                        _k_sr = f"gptclaim:{str(_c).strip().upper()}"
+                        if not (await get_setting(_k_sr, "") or "").strip():
+                            import time as _t_sr2
+                            await set_setting(
+                                _k_sr,
+                                f"{user_id}|{order_id or ''}|{int(_t_sr2.time())}|")
+                    except Exception as _e_sr2:
+                        logging.warning(f"_safe_release: слежение за {_c}: {_e_sr2}")
+                    logging.info(f"_safe_release: {_c} в claimed — поставил на "
+                                 f"слежение, отдельное сообщение не шлю.")
+                    return False
             global _SAFE_REL_ALERT_AT
             import time as _t_sr
             if _t_sr.time() - _SAFE_REL_ALERT_AT < 900:
@@ -9078,6 +9114,21 @@ async def _run_activation_job(
                                           str(_m_fin.message_id))
                     except Exception as _e_fin:
                         logging.warning(f"gpt confirm msg id (final): {_e_fin}")
+                # Карточка — это и есть объявление «активация не удалась, код
+                # в claimed, разбираюсь». Значит петле слежения повторять
+                # «активация идёт» уже не нужно: ставим ей флаг «объявлено».
+                try:
+                    _k_card = f"gptclaim:{str(code).strip().upper()}"
+                    _v_card = (await get_setting(_k_card, "") or "").strip()
+                    if _v_card:
+                        _pc = _v_card.split("|")
+                        while len(_pc) < 4:
+                            _pc.append("")
+                        if "a" not in _pc[3]:
+                            _pc[3] += "a"
+                            await set_setting(_k_card, "|".join(_pc[:4]))
+                except Exception as _e_card:
+                    logging.warning(f"gpt: флаг объявления по {code}: {_e_card}")
               except Exception:
                 pass
     except Exception as e:
@@ -9174,6 +9225,36 @@ _claude_oos_retry: dict = {}   # (оставлено на будущее; авт
 _claude_replaced_orders: set = set()
 _perplexity_double_warned: set = set()
 _perplexity_act_msg: dict = {}
+
+
+def stop_activation_timer(user_id, service: str = "") -> None:
+    """Гасит таймер на сообщении активации.
+
+    Таймер живёт, пока в хранилище лежит id его сообщения, и по истечении
+    срока переписывает это сообщение в «можно активировать сейчас» (с живой
+    кнопкой) либо «время активации истекло». После УСПЕШНОЙ активации это
+    прямое противоречие: клиент уже получил «Подписка активирована», а через
+    час бот зовёт активировать снова — и кнопка приводит в «время сессии
+    истекло», потому что резерв давно удалён. Клиент идёт разбираться.
+
+    Автоматические пути метку снимают (_claude_act_msg.pop), ручные
+    подтверждения — не снимали ни одно. Александр 02.10.2026.
+
+    service: "gpt" / "claude" / "perplexity"; пусто — гасим во всех трёх.
+    """
+    if service == "gpt":
+        _stores = (_gpt_act_msg,)
+    elif service == "claude":
+        _stores = (_claude_act_msg,)
+    elif service == "perplexity":
+        _stores = (_perplexity_act_msg,)
+    else:
+        _stores = (_gpt_act_msg, _claude_act_msg, _perplexity_act_msg)
+    for _st in _stores:
+        try:
+            _st.pop(int(user_id), None)
+        except Exception:
+            pass
 _perplexity_replaced_orders: set = set()
 _perplexity_job_results: dict = {}
 _PERPLEXITY_WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perplexity_webapp.html")
@@ -11791,6 +11872,12 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
                         f"Делать ничего не нужно.",
                         chat_id=ADMIN_ID, message_id=int(_cm_mid), parse_mode="HTML")
                     await set_setting(_cm_key, "")
+                    # Помечаем, что карточка этого заказа УЖЕ обновлена. По этой
+                    # метке слежение и отчёт кнопки молчат вместо того, чтобы
+                    # рассказывать о том же событии второй и третий раз.
+                    # Александр 02.10.2026: пять сообщений на одну активацию.
+                    if _fixed:
+                        _fixed[-1]["card_updated"] = True
                     logging.warning(f"reconcile: переписал сообщение о неудаче "
                                     f"по заказу {r['order_id']}")
         except Exception as _e_cm:
@@ -12978,7 +13065,30 @@ async def gpt_recheck_report(code: str = "") -> str:
         return ("🔍 Проверил — закрывать нечего.\n\n"
                 "<i>Либо сайт ещё не считает код потраченным, либо строки "
                 "ожидания по нему нет. Подробности: /gpt_why КОД</i>")
+    # Если сверка ПЕРЕПИСАЛА карточку заказа, повторять то же самое отдельным
+    # сообщением незачем: кнопка «Проверить сейчас» висит на самой карточке,
+    # и она обновляется прямо под пальцем. Александр 02.10.2026.
+    _fx = [_f for _f in _fx if not _f.get("card_updated")]
+    if not _fx and not _un and not _ip:
+        return ""        # вызывающий не отправляет ничего
     _L = []
+    # Про «активация идёт» Александру сейчас расскажет ЭТОТ отчёт — значит
+    # петля слежения об этом уже не пишет. Ставим ей флаг «объявлено» сами:
+    # иначе через минуту придёт второе сообщение ровно о том же.
+    # Александр 02.10.2026.
+    for _p in _ip:
+        try:
+            _k_ann = f"gptclaim:{str(_p['code']).strip().upper()}"
+            _v_ann = (await get_setting(_k_ann, "") or "").strip()
+            if _v_ann:
+                _pp = _v_ann.split("|")
+                while len(_pp) < 4:
+                    _pp.append("")
+                if "a" not in _pp[3]:
+                    _pp[3] += "a"
+                    await set_setting(_k_ann, "|".join(_pp[:4]))
+        except Exception as _e_ann:
+            logging.warning(f"recheck: флаг объявления {_p.get('code')}: {_e_ann}")
     for _p in _ip:
         _L.append(f"⏳ <b>Активация ИДЁТ — подписки ещё нет</b>\n"
                   f"👤 {await _who_user(_p['user_id'])} · {_p.get('plan_name') or '—'}\n"
@@ -14925,6 +15035,9 @@ async def clfail_manual_handler(cb: CallbackQuery):
         await cb.answer("Контекст устарел (бот перезапускался).", show_alert=True); return
     try:
         await delete_claude_pending_activation(_ctx["user_id"])
+        # И таймер — иначе он позже позовёт клиента активировать то, что уже
+        # активировано, а резерва под кнопкой больше нет.
+        stop_activation_timer(_ctx["user_id"], "claude")
     except Exception:
         pass
     _claude_job_results[_ctx["ref"]] = {"status": "done", "success": True}
@@ -16429,6 +16542,17 @@ async def nsgifts_send_pins(fk_order_id: str, user_id: int, service_name: str, p
                 fk_order_id)
     except Exception as _e_dl:
         logging.warning(f"nsgifts delivered_at {fk_order_id}: {_e_dl}")
+    # И отметка в САМОМ ЗАКАЗЕ. Без неё заказ App Store, оплаченный монетками,
+    # навсегда оставался с пустым fulfilled_at — и моя же почасовая сводка
+    # через 15 минут присылала «🚨 Оплачено, но выдачи не было… выдай из
+    # админки» по заказу, код которого клиент уже получил. Послушавшись,
+    # Александр закупил бы ВТОРОЙ код в убыток. Ставим здесь, а не в каждом
+    # обработчике оплаты: сюда сходятся все пути — монетки, СБП и вебхук.
+    # Широкий разбор 02.10.2026.
+    try:
+        await _mark_order_fulfilled(fk_order_id)
+    except Exception as _e_mf:
+        logging.warning(f"nsgifts fulfilled_at {fk_order_id}: {_e_mf}")
 
 
 async def nsgifts_recover_stuck(fk_order_id: str) -> str:
@@ -17427,11 +17551,37 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
 
                 if _r.status == 200 and _rd.get("ok"):
                     # Успех — оформляем сразу (синхронно)
+                    _px_marked_used = False
                     try:
                         await mark_perplexity_code_used(code, user_id, order_id, org_id)
-                    except Exception:
-                        pass
-                    await delete_perplexity_pending_activation(user_id, order_id)
+                        _px_marked_used = True
+                    except Exception as _e_pxm:
+                        logging.error(f"perplexity: НЕ отметил код {code} "
+                                      f"использованным uid={user_id}: {_e_pxm}")
+                    # Резерв сносим ТОЛЬКО если отметка прошла. Иначе код
+                    # оставался is_used=TRUE с пустым used_by и без резерва —
+                    # а фоновая чистка через полчаса считает такой код
+                    # свободным и отдаёт ВТОРОМУ клиенту. Подписка по нему уже
+                    # выдана: второй платит за мёртвый код.
+                    # Широкий разбор 02.10.2026.
+                    if _px_marked_used:
+                        await delete_perplexity_pending_activation(user_id, order_id)
+                    else:
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                f"🚨 <b>Perplexity: подписка выдана, но код не "
+                                f"отмечен</b>\n\n"
+                                f"👤 {await _who_user(user_id)}\n"
+                                f"🔑 <code>{code}</code>\n"
+                                f"🆔 <code>{order_id}</code>\n\n"
+                                f"Поставщик активацию подтвердил, а записать это "
+                                f"в базу не вышло (сбой БД). Резерв НЕ снимаю — "
+                                f"иначе код ушёл бы второму клиенту пустым. "
+                                f"Отметь выдачу вручную.",
+                                parse_mode="HTML")
+                        except Exception:
+                            pass
                     _perplexity_double_warned.discard(user_id)
                     import random as _rnd_px
                     _ref = _rnd_px.randint(9000000, 9999999)

@@ -1466,6 +1466,11 @@ async def cb_gpt_recheck_now(cb: CallbackQuery):
         logging.warning(f"gptrc {_code}: {_e}")
         await cb.message.answer(f"⚠️ Не смог проверить: {_e}")
         return
+    # Пусто — значит всё, что нужно было сказать, уже написано в самой
+    # карточке, на которой эта кнопка и висит. Телеграм пустое сообщение
+    # всё равно не примет.
+    if not (_t or "").strip():
+        return
     await cb.message.answer(_t, parse_mode="HTML")
 
 
@@ -1483,6 +1488,10 @@ async def admin_gpt_check(message: Message):
     except Exception as _e:
         logging.warning(f"/gpt_check: {_e}")
         await message.answer(f"⚠️ Не смог проверить: {_e}")
+        return
+    if not (_t or "").strip():
+        await message.answer("✅ Готово — карточки заказов обновлены, "
+                             "добавить нечего.")
         return
     for _chunk in tg_chunks(_t):
         await message.answer(_chunk, parse_mode="HTML")

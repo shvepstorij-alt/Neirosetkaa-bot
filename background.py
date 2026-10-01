@@ -914,6 +914,14 @@ async def gpt_orphans_loop():
         try:
             _r = await gpt_reconcile_orphans()
             for _f in (_r.get("fixed") or []):
+                if _f.get("card_updated"):
+                    # Карточка этого заказа уже переписана сверкой в «активация
+                    # всё-таки прошла»: тот же клиент, код и заказ. Это самый
+                    # частый путь — Александр кнопку не нажимает, заказ
+                    # закрывает фон, — и именно здесь дубль был заметнее всего.
+                    logging.warning(f"orphans: {_f['code']} закрыт, карточка "
+                                    f"заказа обновлена — отдельное сообщение не шлю.")
+                    continue
                 try:
                     await bot.send_message(
                         ADMIN_ID,
@@ -1192,6 +1200,31 @@ async def gpt_claimed_watch_loop():
                     except Exception as _e_rm:
                         logging.warning(f"claimed-watch: снятие метки {_code}: {_e_rm}")
 
+                # ── Заказ уже закрыт ДРУГИМ кодом ──────────────────────
+                # Бывает при переборе и при iOS-спасении: активация прошла
+                # вторым кодом, а первый остался в claimed и под слежением.
+                # Сказать про него «активация не прошла, нужна повторная этим
+                # же кодом» — прямая дезинформация: подписка у клиента уже
+                # есть, и Александр выдал бы вторую. Молча снимаем слежение:
+                # по этому заказу докладывать нечего, он закрыт.
+                # Нашёл при самопроверке до деплоя, 02.10.2026.
+                if _oid:
+                    _closed_by = None
+                    try:
+                        async with pool.acquire() as _c_oc:
+                            _closed_by = await _c_oc.fetchval(
+                                "SELECT code FROM gpt_codes WHERE order_id=$1 "
+                                "  AND UPPER(code) <> $2 LIMIT 1",
+                                _oid, _code.strip().upper())
+                    except Exception as _e_oc:
+                        logging.warning(f"claimed-watch: заказ {_oid}: {_e_oc}")
+                    if _closed_by:
+                        await _stop_watch()
+                        logging.warning(f"claimed-watch: заказ {_oid} закрыт кодом "
+                                        f"{_closed_by} — слежение за {_code} снимаю, "
+                                        f"сообщать нечего.")
+                        continue
+
                 # ── Подписка выдана ────────────────────────────────────
                 if _v in ("fulfilled", "zoom_token_ready"):
                     logging.warning(f"claimed-watch: {_code} дозрел до {_v} "
@@ -1200,10 +1233,12 @@ async def gpt_claimed_watch_loop():
                     # слежение. Наоборот было опасно: сбой между снятием метки и
                     # сверкой оставил бы код без присмотра и без записанной
                     # активации — то есть молча потерянной подпиской.
-                    _done = False
+                    _done = _card_done = False
                     try:
                         _rc = await gpt_reconcile_orphans(only_code=_code)
-                        _done = bool(_rc.get("fixed"))
+                        _fx_rc = _rc.get("fixed") or []
+                        _done = bool(_fx_rc)
+                        _card_done = any(_f.get("card_updated") for _f in _fx_rc)
                     except Exception as _e_rc:
                         logging.error(f"claimed-watch: сверка {_code}: {_e_rc}")
                     if not _done:
@@ -1218,6 +1253,14 @@ async def gpt_claimed_watch_loop():
                         except Exception as _e_ok:
                             logging.warning(f"claimed-watch: проверка записи {_code}: {_e_ok}")
                     await _stop_watch()
+                    if _done and _card_done:
+                        # Карточка «НЕУДАЧА» уже переписана сверкой в «активация
+                        # всё-таки прошла» — там тот же клиент, код и заказ.
+                        # Отдельное сообщение об одном и том же событии не
+                        # добавляет ничего, кроме шума.
+                        logging.warning(f"claimed-watch: {_code} закрыт, карточка "
+                                        f"заказа обновлена — второе сообщение не шлю.")
+                        continue
                     _who = await _who_user(_uid) if _uid else "—"
                     _kb_done = None
                     if not _done:

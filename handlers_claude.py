@@ -94,6 +94,14 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
         # использованным — то есть при каждой ручной активации сгорал целый код.
         await release_claude_code(code)
         await delete_claude_pending_activation(uid)
+        # Гасим таймер: иначе он позже перепишет сообщение активации в
+        # «можно активировать сейчас» и будет спорить с тем «Подписка
+        # активирована», которое уходит строкой ниже.
+        try:
+            from common import stop_activation_timer as _stop_t
+            _stop_t(uid, "claude")
+        except Exception as _e_st:
+            logging.warning(f"claude manual: таймер uid={uid}: {_e_st}")
         await log_event(uid, "claude_manual_activated", f"code={code} plan={plan_name}")
         await cb.message.answer(
             "\u2705 <b>Готово!</b>\n\n"
