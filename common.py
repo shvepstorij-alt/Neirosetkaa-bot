@@ -12632,6 +12632,101 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
     return out
 
 
+async def _gpt_apply_from_pending(code: str, force: bool = False):
+    """Записывает активацию по ЖИВОЙ строке ожидания — только по команде человека.
+
+    Зачем отдельный путь. gpt_lost_activations_scan по построению ищет коды
+    БЕЗ строки ожидания (её затирает следующий код) — поэтому коды, у которых
+    строка жива, он не возвращает вовсе. А слежение за «claimed» создаёт ровно
+    такой случай: код дозрел до fulfilled, сверка личность подтвердить не
+    смогла (у тарифа Go сайт не показывает ни почту, ни Organization ID),
+    строку ожидания она НЕ удаляет — и кнопка «Записать активацию» под её
+    сообщением вела в тупик «Условия изменились: на сайте сейчас fulfilled».
+    Поймал Александр 01.10.2026 на GPTGO-1FP6-KSLN-21BI.
+
+    Возвращает None, если строки ожидания нет (тогда работает обычный путь).
+    Бот сам сюда не заходит: только кнопка или /gpt_lost_ok.
+    """
+    from chatgpt_activation import (bpa_query_codes, BPA_DONE_STATUSES,
+                                    _same_email, same_org, _org_norm)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _p = await conn.fetchrow(
+            "SELECT user_id, order_id, plan_name FROM gpt_pending_activations "
+            "WHERE UPPER(code)=$1", code.strip().upper())
+    if not _p:
+        return None
+    _q = await bpa_query_codes([code])
+    if not _q:
+        return {"ok": False, "msg": "Сайт не ответил — попробуй позже."}
+    _info = _q.get(code.strip().upper()) or {}
+    _v = str(_info.get("status") or "").strip().lower()
+    if _v not in BPA_DONE_STATUSES:
+        _tail = ("\n\nСайт отпустил код — активация не прошла. Нужна повторная "
+                 "активация ЭТИМ ЖЕ кодом; сам я её не запускаю."
+                 if _v == "unused" else
+                 f"\n\nРазбор: <code>/gpt_why {code}</code>")
+        return {"ok": False,
+                "msg": f"На сайте сейчас «{_v or '?'}» — подписка ещё не выдана. "
+                       f"Записывать нечего." + _tail}
+    _uid = int(_p["user_id"])
+    _oid = (_p["order_id"] or "").strip()
+    if not _oid:
+        return {"ok": False,
+                "msg": "В строке ожидания нет номера заказа — записывать не к чему."}
+    _site_mail = _info.get("email") or ""
+    _site_org = _info.get("org") or ""
+    async with pool.acquire() as conn:
+        _u = await conn.fetchrow(
+            "SELECT gpt_email, gpt_org, gpt_org_hint FROM users WHERE user_id=$1", _uid)
+    _cl_mail = ((_u["gpt_email"] if _u else "") or "")
+    _cl_org = ((_u["gpt_org"] if _u else "") or "")
+    _hint = ((_u["gpt_org_hint"] if _u else "") or "")
+    # Тот же порядок, что в сверке: сперва Organization ID, потом почта.
+    _m = same_org(_site_org, _cl_org)
+    if _m is None and _site_org and _hint:
+        if _org_norm(_site_org) in [_org_norm(x) for x in _hint.split(",") if x.strip()]:
+            _m = True
+    if _m is None and _site_mail and _cl_mail:
+        _m = bool(_same_email(_site_mail, _cl_mail))
+    if _m is False:
+        return {"ok": False,
+                "msg": "Аккаунт на сайте и аккаунт клиента РАЗНЫЕ — записывать "
+                       "активацию этому клиенту нельзя."}
+    if _m is None and not force:
+        return {"ok": False,
+                "msg": ("Подписка на сайте выдана, но ЧЕЙ это аккаунт — "
+                        "подтвердить нечем: сайт не показал ни почту, ни "
+                        "Organization ID. Для тарифа Go это обычное дело.\n\n"
+                        f"Если проверил сам: <code>/gpt_lost_ok {code}</code>")}
+    await mark_gpt_code_used(code, _uid, _oid, _site_mail or _cl_mail)
+    # Именно ЭТОГО заказа: у клиента мог появиться резерв по другой оплате.
+    try:
+        await delete_pending_activation(_uid, _oid)
+    except Exception as _e_dp:
+        logging.warning(f"apply_from_pending: не закрыл строку ожидания {code}: {_e_dp}")
+    try:
+        await gpt_order_mark_activated(
+            _oid, _uid, code, _site_mail or _cl_mail, _site_org,
+            "Подписка на сайте выдана; записано по твоему подтверждению.")
+    except Exception as _e_oc:
+        logging.warning(f"apply_from_pending: карточка заказа {_oid}: {_e_oc}")
+    try:
+        await bot.send_message(
+            _uid,
+            "✅ <b>Подписка всё-таки активна</b>\n\n"
+            "Мы перепроверили: активация прошла, хотя бот сообщил об ошибке. "
+            "Загляни в ChatGPT — подписка уже должна быть на месте.\n\n"
+            "Извини за путаницу 🙌",
+            parse_mode="HTML")
+    except Exception as _e_cl:
+        logging.info(f"apply_from_pending: клиенту {_uid} не написалось: {_e_cl}")
+    logging.warning(f"apply_from_pending: записал активацию {code} → uid={_uid} "
+                    f"заказ={_oid} (статус сайта {_v})")
+    return {"ok": True, "user_id": _uid, "order_id": _oid,
+            "email": _site_mail or _cl_mail}
+
+
 async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
     """Записывает найденную активацию — ТОЛЬКО по команде человека.
 
@@ -12674,7 +12769,32 @@ async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
             _found = _f
             break
     if not _found:
-        # Мог уже быть записан, возвращён в пул или сайт передумал.
+        # Сначала пробуем ЖИВУЮ строку ожидания: разбор потерянных активаций
+        # такие коды не возвращает вовсе, и без этой ветки кнопка «Записать
+        # активацию» под сообщением слежения вела в тупик.
+        _by_pending = await _gpt_apply_from_pending(code, force=force)
+        if _by_pending is not None:
+            return _by_pending
+        # Код УЖЕ записан — самый частый случай второго нажатия. Раньше он
+        # сваливался в «условия изменились», и выглядело это как сбой, хотя
+        # всё в порядке. Проверка матрицей «точка входа × состояние кода»,
+        # 01.10.2026.
+        try:
+            _pool_al = await get_pool()
+            async with _pool_al.acquire() as _c_al:
+                _al = await _c_al.fetchrow(
+                    "SELECT order_id, used_by, email FROM gpt_codes "
+                    "WHERE UPPER(code)=$1", code.strip().upper())
+            if _al and (_al["order_id"] or "").strip():
+                return {"ok": False,
+                        "msg": (f"Эта активация уже записана: код привязан к "
+                                f"заказу <code>{_al['order_id']}</code>"
+                                + (f", почта <code>{_al['email']}</code>" if _al["email"] else "")
+                                + ".\n\nДелать ничего не нужно. Разбор: "
+                                  f"<code>/gpt_why {code}</code>")}
+        except Exception as _e_al:
+            logging.warning(f"gpt_lost_activation_apply: проверка записи {code}: {_e_al}")
+        # Мог быть возвращён в пул или сайт передумал.
         _st = await bpa_query_codes([code])
         if not _st:
             return {"ok": False, "msg": "Сайт не ответил — попробуй позже."}
