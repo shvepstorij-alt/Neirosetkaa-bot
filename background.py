@@ -748,6 +748,16 @@ async def db_cleanup_loop():
                                       WHERE o.order_id = substring(settings.key from 10)
                                         AND o.created_at < NOW() - INTERVAL '14 days')"""
                 )
+                # Метки слежения за claimed: чистим совсем старые.
+                # Регулярка — защита от кривого значения, иначе
+                # приведение типа уронило бы весь проход чистки.
+                await conn.execute(
+                    """DELETE FROM settings
+                       WHERE key LIKE 'gptclaim:%'
+                         AND split_part(value, '|', 3) ~ '^[0-9]+$'
+                         AND to_timestamp(split_part(value, '|', 3)::bigint)
+                             < NOW() - INTERVAL '30 days'"""
+                )
                 await conn.execute(
                     """DELETE FROM settings
                        WHERE key LIKE 'starsnf:%'
@@ -1097,6 +1107,262 @@ async def _activation_jobs_cleanup_loop():
 
 
 # ── Помощь с активацией ChatGPT ──────────────────────────────────────────────
+
+
+async def gpt_claimed_watch_loop():
+    """Следит РАЗ В МИНУТУ за кодами, которые сайт держит в «claimed».
+
+    Зачем. «claimed» — не результат активации, а её середина: код привязан
+    к аккаунту, подписки ещё нет. Раньше сверка считала этот статус
+    завершённой активацией — записывала подписку, сносила резерв, писала
+    клиенту «подписка активирована» и правила карточку заказа. На деле
+    активация в этот момент только началась и могла не состояться.
+    Александр поймал это 01.10.2026 на коде GPTP-XU3F-P2M2-BMVI.
+
+    Чем кончается ожидание:
+      • fulfilled / zoom_token_ready — подписка ВЫДАНА. Дописываем активацию
+        обычной сверкой: она же напишет клиенту и поправит карточку заказа.
+      • unused — активация НЕ прошла, сайт отпустил код. Сам не делаю
+        НИЧЕГО: ни повторной активации, ни возврата в пул. Это решение
+        Александра, бот только зовёт его.
+      • claimed — ждём дальше. Через 2 часа говорю, что затянулось; через
+        сутки снимаю со слежения, тоже с сообщением. Молча не бросаю.
+    """
+    await asyncio.sleep(90)            # первый заход через полторы минуты
+    while True:
+        try:
+            await asyncio.sleep(60)    # Александр просил раз в минуту
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                # Лимит с запасом: сайт принимает до 300 кодов за один
+                # запрос, а здесь всё равно один запрос на весь проход.
+                # Было 25 с сортировкой по алфавиту — и при большем числе
+                # кодов в claimed те, что дальше по алфавиту, не
+                # проверялись бы НИКОГДА. Ровно та же ошибка, что аудит
+                # нашёл в сводке «оплачено, но выдачи не было».
+                # Надгробия (флаг «x») отсеиваем В SQL, ДО LIMIT. Отсев их в
+                # Python ПОСЛЕ выборки — та же беда, только с другого боку:
+                # накопившиеся за месяц надгробия вытеснили бы живые коды.
+                _rows = await conn.fetch(
+                    "SELECT key, value FROM settings WHERE key LIKE 'gptclaim:%' "
+                    "  AND COALESCE(split_part(value, '|', 4), '') NOT LIKE '%x%' "
+                    "ORDER BY key LIMIT 200")
+            if not _rows:
+                continue
+            # Ключ надгробия НЕ удаляем: иначе ближайшая сверка завела бы
+            # слежение заново, и после «снимаю со слежения» тут же приходило
+            # бы «активация идёт» — вечный круг каждые пять минут.
+            _codes = [r["key"].split(":", 1)[1] for r in _rows if ":" in r["key"]]
+            if not _codes:
+                continue
+            from chatgpt_activation import bpa_query_codes as _q_cw
+            try:
+                _st = await _q_cw(_codes)
+            except Exception as _e_qcw:
+                logging.warning(f"claimed-watch: сайт не ответил: {_e_qcw}")
+                continue
+            if not _st:
+                continue
+            for _r in _rows:
+                if ":" not in _r["key"]:
+                    continue
+                _code = _r["key"].split(":", 1)[1]
+                _p = (_r["value"] or "").split("|")
+                _uid = int(_p[0]) if _p and _p[0].strip().isdigit() else 0
+                _oid = _p[1].strip() if len(_p) > 1 else ""
+                try:
+                    _since = float(_p[2]) if len(_p) > 2 and _p[2].strip() else 0.0
+                except Exception:
+                    _since = 0.0
+                _flags = _p[3] if len(_p) > 3 else ""
+                _v = str((_st.get(_code.upper()) or {}).get("status") or "").strip().lower()
+                if not _v:
+                    continue           # сайт промолчал именно про этот код
+                _age = (_time_module.time() - _since) if _since else 0.0
+                # Имя клиента читаем ТОЛЬКО когда реально пишем сообщение.
+                # Раньше оно читалось для каждого кода на каждом проходе — при
+                # двух сотнях кодов это две сотни походов в базу в минуту
+                # на ровном месте.
+
+                async def _stop_watch():
+                    try:
+                        async with pool.acquire() as _c_rm:
+                            await _c_rm.execute(
+                                "DELETE FROM settings WHERE key=$1", _r["key"])
+                    except Exception as _e_rm:
+                        logging.warning(f"claimed-watch: снятие метки {_code}: {_e_rm}")
+
+                # ── Подписка выдана ────────────────────────────────────
+                if _v in ("fulfilled", "zoom_token_ready"):
+                    logging.warning(f"claimed-watch: {_code} дозрел до {_v} "
+                                    f"за ~{int(_age)} с — дописываю активацию.")
+                    # ПОРЯДОК ВАЖЕН: сначала дописываем, и только потом снимаем
+                    # слежение. Наоборот было опасно: сбой между снятием метки и
+                    # сверкой оставил бы код без присмотра и без записанной
+                    # активации — то есть молча потерянной подпиской.
+                    _done = False
+                    try:
+                        _rc = await gpt_reconcile_orphans(only_code=_code)
+                        _done = bool(_rc.get("fixed"))
+                    except Exception as _e_rc:
+                        logging.error(f"claimed-watch: сверка {_code}: {_e_rc}")
+                    if not _done:
+                        # Либо сверка уже закрыла этот код раньше (повторный
+                        # проход после сбоя), либо строки ожидания нет вовсе —
+                        # так бывает у кодов из разбора потерянных активаций.
+                        try:
+                            async with pool.acquire() as _c_ok:
+                                _done = bool(await _c_ok.fetchval(
+                                    "SELECT COALESCE(order_id,'') <> '' "
+                                    "FROM gpt_codes WHERE code=$1", _code))
+                        except Exception as _e_ok:
+                            logging.warning(f"claimed-watch: проверка записи {_code}: {_e_ok}")
+                    await _stop_watch()
+                    _who = await _who_user(_uid) if _uid else "—"
+                    _kb_done = None
+                    if not _done:
+                        # Сам НЕ записываю: у таких кодов решение за Александром.
+                        _kb_done = InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="✅ Записать активацию",
+                                                 callback_data=f"gptlost:{_code}")]])
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"✅ <b>ChatGPT — активация ЗАВЕРШЕНА</b>\n\n"
+                            f"👤 {_who}\n"
+                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
+                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
+                            + f"\nКод дозрел из «claimed» за "
+                              f"{int(_age // 60)} мин. Подписка выдана."
+                            + ("\nАктивацию записал, клиенту сообщил."
+                               if _done else
+                               "\n\n⚠️ Записать активацию сам не могу — строки "
+                               "ожидания по коду нет. Жми кнопку ниже, тогда "
+                               "подписка пропишется и клиент получит сообщение.\n"
+                               "Разбор: <code>/gpt_why " + _code + "</code>"),
+                            parse_mode="HTML", reply_markup=_kb_done)
+                    except Exception as _e_m1:
+                        logging.error(f"claimed-watch: сообщение {_code}: {_e_m1}")
+                    continue
+
+                # ── Сайт отпустил код: активации не было ───────────────
+                if _v == "unused":
+                    await _stop_watch()
+                    logging.error(f"claimed-watch: {_code} вернулся в unused — "
+                                  f"активация НЕ прошла, uid={_uid}")
+                    _who = await _who_user(_uid) if _uid else "—"
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🔴 <b>ChatGPT — активация НЕ прошла</b>\n\n"
+                            f"👤 {_who}\n"
+                            f"🔑 <code>{_code}</code> · сайт: <b>unused</b>\n"
+                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
+                            + f"\nКод был в «claimed», но сайт его отпустил — "
+                              f"подписка не выдана. Нужна <b>повторная "
+                              f"активация ЭТИМ ЖЕ кодом</b>.\n\n"
+                              f"Сам ничего не делаю: ни активации, ни возврата "
+                              f"в пул. Код закреплён за клиентом и помечен, "
+                              f"чужому не уйдёт.",
+                            parse_mode="HTML")
+                    except Exception as _e_m2:
+                        logging.error(f"claimed-watch: сообщение {_code}: {_e_m2}")
+                    continue
+
+                # ── Ни «идёт», ни результат: failed, not_in_db и прочее ─
+                # Раньше такой код проваливался в ветку ожидания и получал
+                # сообщение «сайт: claimed» — то есть бот писал неправду о
+                # том, что видит, и ждал ещё сутки впустую.
+                if _v not in ("claimed", "zoom_preparing"):
+                    await _stop_watch()
+                    _who = await _who_user(_uid) if _uid else "—"
+                    logging.error(f"claimed-watch: {_code} стал {_v} — "
+                                  f"ни выдача, ни освобождение, uid={_uid}")
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ <b>ChatGPT — непонятный статус кода</b>\n\n"
+                            f"👤 {_who}\n"
+                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
+                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
+                            + f"\nБыл «claimed», стал «{_v}» — это не выдача "
+                              f"подписки и не освобождение кода. Сам ничего не "
+                              f"делаю и со слежения снимаю, чтобы не ждать "
+                              f"впустую.\n\nРазбор: <code>/gpt_why {_code}</code>",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    continue
+
+                # ── Всё ещё идёт ───────────────────────────────────────
+                if _age > 86400:                      # сутки
+                    # Ключ оставляем с флагом «x» — как надгробие. Удалить его
+                    # нельзя: сверка завела бы слежение заново.
+                    try:
+                        await set_setting(
+                            _r["key"], f"{_uid}|{_oid}|{int(_since)}|{_flags}x")
+                    except Exception as _e_tomb:
+                        logging.warning(f"claimed-watch: надгробие {_code}: {_e_tomb}")
+                    _who = await _who_user(_uid) if _uid else "—"
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ <b>ChatGPT — снимаю код со слежения</b>\n\n"
+                            f"👤 {_who}\n"
+                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
+                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
+                            + f"\nСутки в «claimed» — так не бывает. Подписки "
+                              f"нет, но и код сайт не отпустил. Разберись "
+                              f"руками: <code>/gpt_why {_code}</code>\n\n"
+                              f"Код остаётся помеченным, в пул не уйдёт.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                    continue
+                _new_flags = _flags
+                if "a" not in _flags:
+                    _new_flags += "a"
+                    _who = await _who_user(_uid) if _uid else "—"
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⏳ <b>ChatGPT — активация идёт</b>\n\n"
+                            f"👤 {_who}\n"
+                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
+                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
+                            + f"\nКод привязан к аккаунту, подписка ещё НЕ "
+                              f"выдана. Ничего не записываю и резерв не трогаю.\n"
+                              f"Проверяю каждую минуту и напишу, когда станет "
+                              f"<b>fulfilled</b> (подписка выдана) или "
+                              f"<b>unused</b> (не прошло — нужна повторная "
+                              f"активация этим же кодом).",
+                            parse_mode="HTML")
+                    except Exception as _e_m3:
+                        logging.warning(f"claimed-watch: сообщение {_code}: {_e_m3}")
+                elif _age > 7200 and "w" not in _flags:     # 2 часа
+                    _new_flags += "w"
+                    _who = await _who_user(_uid) if _uid else "—"
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ <b>ChatGPT — активация затянулась</b>\n\n"
+                            f"👤 {_who}\n"
+                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
+                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
+                            + f"\nДва часа в «claimed». Обычно дозревает за "
+                              f"минуты. Слежу дальше, но стоит посмотреть "
+                              f"самому: <code>/gpt_why {_code}</code>",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                if _new_flags != _flags:
+                    try:
+                        await set_setting(
+                            _r["key"], f"{_uid}|{_oid}|{int(_since)}|{_new_flags}")
+                    except Exception as _e_sf:
+                        logging.warning(f"claimed-watch: метка {_code}: {_e_sf}")
+        except Exception as e:
+            logging.error(f"gpt_claimed_watch_loop: {e}")
 
 
 async def gpt_dead_order_release_loop():

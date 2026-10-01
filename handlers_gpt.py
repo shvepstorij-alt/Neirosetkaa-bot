@@ -392,15 +392,19 @@ async def admin_gpt_lost(message: Message):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     for _l in _rows:
         _m = _l.get("match")
-        _t = ((("✅ <b>Похоже, активация всё-таки прошла</b>") if _m is True
+        _t = (("⏳ <b>Активация ИДЁТ — подписки ещё нет</b>" if _l.get("in_progress")
+               else ("✅ <b>Похоже, активация всё-таки прошла</b>") if _m is True
                else "❓ <b>Код потрачен — чей аккаунт, не подтверждаю</b>") + "\n"
               f"👤 {_l['user']} ({await _who_user(_l['user_id'])})\n"
               f"🔑 <code>{_l['code']}</code> — сайт: {_l['status']}\n"
               f"📧 на сайте: <code>{_l['site_email'] or '—'}</code>\n"
               f"📧 у клиента: <code>{_l['client_email'] or '—'}</code>\n"
               + (f"🆔 <code>{_l['order_id']}</code>\n" if _l.get("order_id") else ""))
+        if _l.get("in_progress"):
+            _t += ("\n«claimed» — код привязан, подписка ещё не выдана. Слежу "
+                   "за ним каждую минуту и напишу, чем кончится.")
         _kb = None
-        if _m is True:
+        if _m is True and not _l.get("in_progress"):
             _kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="✅ Записать активацию",
                                      callback_data=f"gptlost:{_l['code']}")]])

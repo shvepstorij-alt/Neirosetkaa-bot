@@ -11616,13 +11616,48 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
         return {"ok": False, "checked": 0, "fixed": [],
                 "error": "Сайт проверки не ответил."}
 
-    _fixed, _unsure = [], []
+    _fixed, _unsure, _inprog = [], [], []
     for r in rows:
         _info = _st.get((r["code"] or "").strip().upper()) or {}
         _v = _info.get("status", "")
         if _v not in BPA_USED_STATUSES:
             continue                      # активации не было — pending оставляем
         _uid, _code = int(r["user_id"]), r["code"]
+        # ── «claimed» — это НЕ результат, это середина активации ─────────
+        # Код привязан к аккаунту, подписки ЕЩЁ НЕТ. Дальше он станет либо
+        # fulfilled (подписка выдана), либо unused (не прошло, нужна
+        # повторная активация тем же кодом). Записывать подписку сейчас —
+        # значит соврать и клиенту, и в карточке заказа.
+        # Поэтому: ничего не записываем, резерв НЕ сносим, клиенту НЕ
+        # пишем. Ставим код на слежение — раз в минуту переспрашиваем сайт.
+        # Александр 01.10.2026, код GPTP-XU3F-P2M2-BMVI.
+        if _v == "claimed":
+            try:
+                _k_cl = f"gptclaim:{str(_code).strip().upper()}"
+                if not (await get_setting(_k_cl, "") or "").strip():
+                    import time as _t_cl
+                    await set_setting(
+                        _k_cl, f"{_uid}|{r['order_id'] or ''}|{int(_t_cl.time())}|")
+                    # Из первой очереди выдачи код убираем: он занят. Пометка
+                    # обратимая, в пул код сам не вернётся и не сгорит.
+                    async with pool.acquire() as _c_cl:
+                        # Пометку «ждём освобождения:…» НЕ затираем: по ней
+                        # работает gpt_dead_order_release_loop, и если сейчас
+                        # её переписать, то после закрытия резерва код выпал бы
+                        # из той петли и не вернулся бы в пул никогда.
+                        await _c_cl.execute(
+                            "UPDATE gpt_codes SET check_status='error', "
+                            "last_checked_at=NOW(), flagged_reason = CASE "
+                            "  WHEN COALESCE(flagged_reason,'') LIKE 'ждём освобождения:%' "
+                            "  THEN flagged_reason ELSE $2 END "
+                            "WHERE code=$1",
+                            _code, "активация идёт: сайт держит claimed")
+            except Exception as _e_cl:
+                logging.warning(f"reconcile: метка слежения {_code}: {_e_cl}")
+            _inprog.append({"user_id": _uid, "code": _code,
+                            "order_id": r["order_id"] or "",
+                            "plan_name": r["plan_name"], "status": _v})
+            continue
         _email = ""
         try:
             _email = _email_from_session(r["session_raw"] or "")
@@ -11762,7 +11797,8 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
             logging.info(f"reconcile: правка сообщения о неудаче: {_e_cm}")
         logging.warning(f"gpt_reconcile_orphans: дописал активацию {_code} "
                         f"uid={_uid} order={r['order_id']} статус={_v}")
-    return {"ok": True, "checked": len(rows), "fixed": _fixed, "unsure": _unsure}
+    return {"ok": True, "checked": len(rows), "fixed": _fixed,
+            "unsure": _unsure, "in_progress": _inprog}
 
 
 # Что проверяем на bypriceactivate: таблица кодов, таблица «в процессе»,
@@ -12485,7 +12521,7 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
         except Exception as _e_sk:
             logging.warning(f"lostact: не прочитал пометки: {_e_sk}")
 
-    out = []
+    out, _arm = [], []
     # Одно соединение на весь проход. Раньше каждая строка брала своё —
     # при 200 находках это 200 захватов пула подряд.
     async with pool.acquire() as conn2:
@@ -12560,10 +12596,17 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
             if _match is None and _site_mail and _mine:
                 _match = bool(_same_email(_site_mail, _mine))
                 _by = "email"
+            # «claimed» — активация ещё идёт, подписки нет. Предлагать её
+            # записать нельзя: кнопка «Записать активацию» сделала бы ровно
+            # ту ошибку, из-за которой всё это и правится. Аудит 01.10.2026.
+            _ip_row = (_v == "claimed")
+            if _ip_row:
+                _match = None
             out.append({
                 "code": r["code"], "user_id": _uid,
                 "user": ("@" + r["username"]) if r["username"] else f"id{_uid}",
                 "status": _v, "site_email": _site_mail, "client_email": _mine,
+                "in_progress": _ip_row,
                 "match": _match,                  # True / False / None (не с чем сверить)
                 "by": _by,                        # по чему сверили: org | email | ''
                 "site_org": _site_org, "client_org": _mine_org,
@@ -12571,6 +12614,21 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
                 "site_when": _info.get("when", ""),
                 "order_id": (_ord or {}).get("order_id") or "",
             })
+            if _ip_row:
+                _arm.append((r["code"], _uid, (_ord or {}).get("order_id") or ""))
+    # Слежение заводим ПОСЛЕ выхода из блока с conn2: брать вторую коннекцию,
+    # держа первую, — прямой путь к исчерпанию пула (см. log_event).
+    # Без этого обещание «слежу за ним каждую минуту» было бы ложью: у кодов
+    # из этого разбора строки ожидания НЕТ (её затёр следующий код), поэтому
+    # сверка их не видит и слежение само не заводится.
+    for _c_arm, _u_arm, _o_arm in _arm:
+        try:
+            _k_arm = f"gptclaim:{str(_c_arm).strip().upper()}"
+            if not (await get_setting(_k_arm, "") or "").strip():
+                import time as _t_arm
+                await set_setting(_k_arm, f"{_u_arm}|{_o_arm}|{int(_t_arm.time())}|")
+        except Exception as _e_arm:
+            logging.warning(f"lostscan: слежение за {_c_arm}: {_e_arm}")
     return out
 
 
@@ -12594,6 +12652,22 @@ async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
     code = (code or "").strip()
     if not code:
         return {"ok": False, "msg": "Пустой код"}
+    # Сообщение с кнопкой могло пролежать в чате час. Спрашиваем сайт ЗАНОВО
+    # именно про claimed: записывать активацию, которой ещё нет, нельзя ни по
+    # кнопке, ни по команде. Аудит 01.10.2026.
+    try:
+        _v_now = str(((await bpa_query_codes([code])).get(code.upper())
+                      or {}).get("status") or "").strip().lower()
+        if _v_now == "claimed":
+            return {"ok": False,
+                    "msg": ("Сайт держит код в «claimed» — это значит, что код "
+                            "привязан к аккаунту, а подписка ещё НЕ выдана. "
+                            "Записывать нечего.\n\nСлежу за ним каждую минуту и "
+                            "напишу, когда станет fulfilled (подписка выдана) или "
+                            "unused (не прошло, нужна повторная активация тем же "
+                            "кодом).")}
+    except Exception as _e_cq:
+        logging.warning(f"gpt_lost_activation_apply: /query {code}: {_e_cq}")
     _found = None
     for _f in await gpt_lost_activations_scan(hours=24 * 30, only_new=False):
         if _f["code"].upper() == code.upper():
@@ -12779,11 +12853,22 @@ async def gpt_recheck_report(code: str = "") -> str:
     if not _r.get("ok") and _r.get("error"):
         return f"⚠️ {_r['error']}"
     _fx, _un = _r.get("fixed") or [], _r.get("unsure") or []
-    if not _fx and not _un:
+    _ip = _r.get("in_progress") or []
+    if not _fx and not _un and not _ip:
         return ("🔍 Проверил — закрывать нечего.\n\n"
                 "<i>Либо сайт ещё не считает код потраченным, либо строки "
                 "ожидания по нему нет. Подробности: /gpt_why КОД</i>")
     _L = []
+    for _p in _ip:
+        _L.append(f"⏳ <b>Активация ИДЁТ — подписки ещё нет</b>\n"
+                  f"👤 {await _who_user(_p['user_id'])} · {_p.get('plan_name') or '—'}\n"
+                  f"🔑 <code>{_p['code']}</code> · сайт: <b>claimed</b>\n"
+                  + (f"🆔 <code>{_p['order_id']}</code>\n" if _p.get("order_id") else "")
+                  + "\n«claimed» значит, что код привязан к аккаунту, а подписка "
+                    "ещё не выдана. Ничего не записываю и резерв не трогаю.\n"
+                    "Слежу за кодом каждую минуту и напишу, когда станет "
+                    "<b>fulfilled</b> (подписка выдана) или <b>unused</b> "
+                    "(не прошло — понадобится повторная активация этим же кодом).")
     for _f in _fx:
         _L.append(f"✅ <b>Активация записана</b>\n"
                   f"👤 {await _who_user(_f['user_id'])} · {_f.get('plan_name') or '—'}\n"
@@ -12997,7 +13082,9 @@ async def gpt_why(code: str) -> str:
         _L.append("  Сайт не считает код потраченным — трогать нечего.")
     elif not _p and _c and _c["is_used"] and _c["used_by"] and not (_c["order_id"] or ""):
         _L.append("  Это случай для второго прохода (потерянные активации):")
-        _L.append("  " + ("пришлю с кнопкой «Записать активацию»." if _om is True
+        _L.append("  " + ("⏳ активация ИДЁТ (claimed) — покажу как «идёт», "
+                          "кнопки записи не будет." if _site_st == "claimed"
+                          else "пришлю с кнопкой «Записать активацию»." if _om is True
                           else "пришлю как «проверь вручную», сам не запишу."))
     elif _p:
         _age = float(_p["age_min"] or 0)
@@ -13006,6 +13093,17 @@ async def gpt_why(code: str) -> str:
         if not _ready:
             _wait = (10 - float(_p["act_min"] or 0)) if _act is not None else (7 - _age)
             _L.append(f"  Ещё рано — сверка возьмёт его через ~{max(0, _wait):.0f} мин.")
+        elif _site_st == "claimed":
+            # Диагностика обязана говорить правду. После 01.10.2026 сверка на
+            # claimed НИЧЕГО не дописывает: это середина активации, подписки
+            # ещё нет. Прежний текст обещал «допишет сам» и расходился с
+            # поведением — хуже, чем молчание.
+            _L.append("  ⏳ Сайт держит код в «claimed» — активация ИДЁТ, "
+                      "подписки ещё нет.")
+            _L.append("  Сверка тут ничего не запишет и резерв не тронет.")
+            _L.append("  Код под слежением: проверяю раз в минуту и сообщу, "
+                      "когда станет fulfilled (подписка выдана) или unused "
+                      "(не прошло — нужна повторная активация этим же кодом).")
         elif _om is True:
             _L.append("  Допишет активацию сам и поправит карточку заказа.")
             if _c and not (_c["order_id"] or ""):
