@@ -3303,12 +3303,22 @@ function loadPending(svc){
     var p=d.pending||[];
     if(!p.length){el.innerHTML='<div class="note">Нет кодов в ожидании активации.</div>';return;}
     var bys={};p.forEach(function(c){var s=c.provider||'';(bys[s]=bys[s]||[]).push(c);});
+    var nw=0;p.forEach(function(c){if(c.warn)nw++;});
     var h='<div class="sub" style="margin:0 0 10px">Выданы клиенту, но активация не завершена. Верни в пул или удали.</div>';
+    if(nw)h+='<div class="note neg" style="margin:0 0 10px">⚠️ Строк, требующих внимания: '+nw
+           +'. Это резервы, у которых код уже не «ждёт»: вернулся в пул, записан или исчез. '
+           +'Раньше их тут не было видно вовсе.</div>';
     Object.keys(bys).sort().forEach(function(s){
       h+='<div class="glabel">🌐 '+provName(svc,s)+' ('+bys[s].length+')</div>';
       bys[s].forEach(function(c){
-        h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+esc(c.user)+' · '+esc(c.date)+'</div>'+
-           '<div class="sub" style="margin-top:4px">🔑 '+c.code+' · '+planLabel(svc,c.plan)+(c.org?'<br>🆔 '+c.org:'')+'</div>'+
+        h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+esc(c.user)
+          +(c.uid?' <span class="sub">('+c.uid+')</span>':'')+' · '+esc(c.date)+'</div>'+
+           '<div class="sub" style="margin-top:4px">🔑 '+esc(c.code)+' · '+planLabel(svc,c.plan)
+          +(c.planName?' · '+esc(c.planName):'')
+          +'<br><span'+(c.warn?' class="neg"':' class="pos"')+'>● '+esc(c.state||'')+'</span>'
+          +(c.left?' · '+esc(c.left):'')
+          +(c.order?'<br>🆔 '+esc(c.order):'')
+          +(c.org?'<br>🏢 '+esc(c.org):'')+'</div>'+
            '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+c.code+'\',\'release\',\''+svc+'\')">↩️ В пул</button>'+
            '<button class="btn row2 danger" onclick="claudeCodeAction(\''+c.code+'\',\'delete\',\''+svc+'\')">🗑 Удалить</button></div></div>';
       });

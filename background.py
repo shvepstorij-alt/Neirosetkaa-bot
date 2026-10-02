@@ -35,6 +35,7 @@ from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
     gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report, tg_chunks,
     _who_user, nsgifts_recover_stuck, _WORKER_ID,
+    gpt_watch_card, gpt_watch_msg_remember, gpt_watch_msg_resolve,
 )
 
 
@@ -1133,6 +1134,10 @@ async def _activation_jobs_cleanup_loop():
 # ── Помощь с активацией ChatGPT ──────────────────────────────────────────────
 
 
+class _SkipLiveCard(Exception):
+    """Живая карточка по коду уже отправлена — второй не нужно."""
+
+
 async def gpt_claimed_watch_loop():
     """Следит РАЗ В МИНУТУ за кодами, которые сайт держит в «claimed».
 
@@ -1294,6 +1299,24 @@ async def gpt_claimed_watch_loop():
                             logging.warning(f"claimed-watch: проверка записи {_code}: {_e_ok}")
                     if not await _stop_watch():
                         continue          # метка жива — доложим на следующем проходе
+                    # Сначала — переписать живую карточку «идёт» в итог. Это
+                    # и есть ответ на «почему сообщение не обновляется».
+                    _resolved = False
+                    try:
+                        _resolved = await gpt_watch_msg_resolve(
+                            _code, await gpt_watch_card(
+                                _code, _uid, _oid, _v, stage="done", since_ts=_since,
+                                note=("Подписка выдана, активацию записал, клиенту "
+                                      "сообщил." if _done else
+                                      "Подписка выдана, но записать активацию сам не "
+                                      "могу — строки ожидания нет. Нажми «Записать "
+                                      "активацию» в сообщении ниже.")))
+                    except Exception as _e_rs1:
+                        logging.warning(f"claimed-watch: правка карточки {_code}: {_e_rs1}")
+                    if _resolved and _done:
+                        logging.warning(f"claimed-watch: {_code} закрыт, живая "
+                                        f"карточка переписана в итог.")
+                        continue
                     if _done and _card_done:
                         # Карточка «НЕУДАЧА» уже переписана сверкой в «активация
                         # всё-таки прошла» — там тот же клиент, код и заказ.
@@ -1336,23 +1359,37 @@ async def gpt_claimed_watch_loop():
                         continue
                     logging.error(f"claimed-watch: {_code} вернулся в unused — "
                                   f"активация НЕ прошла, uid={_uid}")
-                    _who = await _who_user(_uid) if _uid else "—"
+                    _resolved_u = False
                     try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"🔴 <b>ChatGPT — активация НЕ прошла</b>\n\n"
-                            f"👤 {_who}\n"
-                            f"🔑 <code>{_code}</code> · сайт: <b>unused</b>\n"
-                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
-                            + f"\nСайт показывает код свободным — подписка по "
-                              f"нему НЕ выдана. Нужна <b>повторная активация "
-                              f"ЭТИМ ЖЕ кодом</b>.\n\n"
-                              f"Сам ничего не делаю: ни активации, ни возврата "
-                              f"в пул. Код закреплён за клиентом и помечен, "
-                              f"чужому не уйдёт.",
-                            parse_mode="HTML")
-                    except Exception as _e_m2:
-                        logging.error(f"claimed-watch: сообщение {_code}: {_e_m2}")
+                        _resolved_u = await gpt_watch_msg_resolve(
+                            _code, await gpt_watch_card(
+                                _code, _uid, _oid, _v, stage="failed", since_ts=_since,
+                                note="Сайт показывает код свободным — подписка по нему "
+                                     "НЕ выдана. Нужна <b>повторная активация ЭТИМ ЖЕ "
+                                     "кодом</b>.\n\nСам ничего не делаю: ни активации, "
+                                     "ни возврата в пул. Код закреплён за клиентом и "
+                                     "помечен, чужому не уйдёт."))
+                    except Exception as _e_rs2:
+                        logging.warning(f"claimed-watch: правка карточки {_code}: {_e_rs2}")
+                    # Новое сообщение шлём ТОЛЬКО если живой карточки не было
+                    # (или Telegram не дал её править) — иначе это второй
+                    # рассказ об одном и том же событии.
+                    if not _resolved_u:
+                        _who = await _who_user(_uid) if _uid else "—"
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                await gpt_watch_card(
+                                    _code, _uid, _oid, "unused", stage="failed",
+                                    since_ts=_since,
+                                    note="Сайт показывает код свободным — подписка по "
+                                         "нему НЕ выдана. Нужна <b>повторная активация "
+                                         "ЭТИМ ЖЕ кодом</b>.\n\nСам ничего не делаю: ни "
+                                         "активации, ни возврата в пул. Код закреплён за "
+                                         "клиентом и помечен, чужому не уйдёт."),
+                                parse_mode="HTML")
+                        except Exception as _e_m2:
+                            logging.error(f"claimed-watch: сообщение {_code}: {_e_m2}")
                     # И КЛИЕНТУ. Он мог остаться на экране «бот следит и
                     # напишет» — промолчать здесь значит обмануть его.
                     # Самопроверка 02.10.2026.
@@ -1377,23 +1414,30 @@ async def gpt_claimed_watch_loop():
                     _waiting_o = await _client_waiting()
                     if not await _stop_watch():
                         continue
-                    _who = await _who_user(_uid) if _uid else "—"
                     logging.error(f"claimed-watch: {_code} стал {_v} — "
                                   f"ни выдача, ни освобождение, uid={_uid}")
+                    _note_odd = (f"Был «claimed», стал «{_v}» — это не выдача подписки "
+                                 f"и не освобождение кода. Сам ничего не делаю и со "
+                                 f"слежения снимаю, чтобы не ждать впустую.\n\n"
+                                 f"Разбор: <code>/gpt_why {_code}</code>")
+                    _resolved_o = False
                     try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"⚠️ <b>ChatGPT — непонятный статус кода</b>\n\n"
-                            f"👤 {_who}\n"
-                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
-                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
-                            + f"\nБыл «claimed», стал «{_v}» — это не выдача "
-                              f"подписки и не освобождение кода. Сам ничего не "
-                              f"делаю и со слежения снимаю, чтобы не ждать "
-                              f"впустую.\n\nРазбор: <code>/gpt_why {_code}</code>",
-                            parse_mode="HTML")
-                    except Exception:
-                        pass
+                        _resolved_o = await gpt_watch_msg_resolve(
+                            _code, await gpt_watch_card(
+                                _code, _uid, _oid, _v, stage="odd",
+                                since_ts=_since, note=_note_odd))
+                    except Exception as _e_rs3:
+                        logging.warning(f"claimed-watch: правка карточки {_code}: {_e_rs3}")
+                    if not _resolved_o:
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                await gpt_watch_card(
+                                    _code, _uid, _oid, _v, stage="odd",
+                                    since_ts=_since, note=_note_odd),
+                                parse_mode="HTML")
+                        except Exception:
+                            pass
                     # И КЛИЕНТУ. Слежение закончилось без результата, а экран у
                     # него так и остался «идёт активация, напишу» — промолчать
                     # значит оставить его ждать вечно. Самопроверка 02.10.2026.
@@ -1424,21 +1468,28 @@ async def gpt_claimed_watch_loop():
                         logging.warning(f"claimed-watch: надгробие {_code}: {_e_tomb}")
                     if not _tomb_ok:
                         continue
-                    _who = await _who_user(_uid) if _uid else "—"
+                    _note_gu = (f"Сутки в «claimed» — так не бывает. Подписки нет, но "
+                                f"и код сайт не отпустил. Разберись руками: "
+                                f"<code>/gpt_why {_code}</code>\n\n"
+                                f"Код остаётся помеченным, в пул не уйдёт.")
+                    _resolved_g = False
                     try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"⚠️ <b>ChatGPT — снимаю код со слежения</b>\n\n"
-                            f"👤 {_who}\n"
-                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
-                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
-                            + f"\nСутки в «claimed» — так не бывает. Подписки "
-                              f"нет, но и код сайт не отпустил. Разберись "
-                              f"руками: <code>/gpt_why {_code}</code>\n\n"
-                              f"Код остаётся помеченным, в пул не уйдёт.",
-                            parse_mode="HTML")
-                    except Exception:
-                        pass
+                        _resolved_g = await gpt_watch_msg_resolve(
+                            _code, await gpt_watch_card(
+                                _code, _uid, _oid, _v, stage="gaveup",
+                                since_ts=_since, note=_note_gu))
+                    except Exception as _e_rs4:
+                        logging.warning(f"claimed-watch: правка карточки {_code}: {_e_rs4}")
+                    if not _resolved_g:
+                        try:
+                            await bot.send_message(
+                                ADMIN_ID,
+                                await gpt_watch_card(
+                                    _code, _uid, _oid, _v, stage="gaveup",
+                                    since_ts=_since, note=_note_gu),
+                                parse_mode="HTML")
+                        except Exception:
+                            pass
                     # И КЛИЕНТУ — по той же причине, что и выше.
                     if _uid and await _client_waiting():
                         try:
@@ -1452,21 +1503,35 @@ async def gpt_claimed_watch_loop():
                 _new_flags = _flags
                 if "a" not in _flags:
                     _new_flags += "a"
-                    _who = await _who_user(_uid) if _uid else "—"
+                    # ЖИВАЯ карточка: запоминаем её id, чтобы итог пришёл НА ЭТО
+                    # ЖЕ место, а не отдельным сообщением. Раньше «идёт» висело
+                    # в чате навсегда. Александр 02.10.2026.
+                    #
+                    # Если карточка по коду УЖЕ есть — второй не шлём. Флаг «a»
+                    # пишется отдельным запросом ниже, и при его сбое следующий
+                    # проход прислал бы вторую карточку, а первая осталась бы
+                    # висеть «идёт» навсегда. Ключ карточки — более надёжный
+                    # признак, чем флаг. Самопроверка перед деплоем 02.10.2026.
+                    _has_card = ""
                     try:
-                        await bot.send_message(
-                            ADMIN_ID,
-                            f"⏳ <b>ChatGPT — активация идёт</b>\n\n"
-                            f"👤 {_who}\n"
-                            f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
-                            + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
-                            + f"\nКод привязан к аккаунту, подписка ещё НЕ "
-                              f"выдана. Ничего не записываю и резерв не трогаю.\n"
-                              f"Проверяю каждую минуту и напишу, когда станет "
-                              f"<b>fulfilled</b> (подписка выдана) или "
-                              f"<b>unused</b> (не прошло — нужна повторная "
-                              f"активация этим же кодом).",
-                            parse_mode="HTML")
+                        _has_card = (await get_setting(
+                            f"gptwatchmsg:{str(_code).strip().upper()}", "") or "").strip()
+                    except Exception:
+                        _has_card = ""
+                    try:
+                        if _has_card:
+                            raise _SkipLiveCard
+                        _txt_live = await gpt_watch_card(
+                            _code, _uid, _oid, _v, stage="live", since_ts=_since,
+                            note="Код привязан к аккаунту, подписка ещё НЕ выдана. "
+                                 "Ничего не записываю и резерв не трогаю.\n"
+                                 "Проверяю каждую минуту — это сообщение само "
+                                 "станет итоговым, когда активация завершится.")
+                        _m_live = await bot.send_message(ADMIN_ID, _txt_live,
+                                                         parse_mode="HTML")
+                        await gpt_watch_msg_remember(_code, _m_live.message_id)
+                    except _SkipLiveCard:
+                        logging.info(f"claimed-watch: живая карточка по {_code} уже есть")
                     except Exception as _e_m3:
                         logging.warning(f"claimed-watch: сообщение {_code}: {_e_m3}")
                 elif _age > 7200 and "w" not in _flags:     # 2 часа

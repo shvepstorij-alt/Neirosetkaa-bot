@@ -6438,24 +6438,52 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
             free_total = await conn.fetchval(f"SELECT COUNT(*) FROM {tbl} WHERE is_used=FALSE") or 0
             # «Ждущие» коды: выданы клиенту (is_used), но активация ещё не завершена (used_by IS NULL)
             pending = []
+            # Раньше список строился ОТ ТАБЛИЦЫ КОДОВ: is_used=TRUE и
+            # used_by IS NULL. Из-за этого резерв, у которого код цепочка
+            # вернула в пул (is_used=FALSE), в раздел не попадал ВООБЩЕ —
+            # а уведомление «коды с незавершённой активацией» про него
+            # писало, потому что считает по строкам ожидания. Александр
+            # видел сообщение и пустой экран. 02.10.2026.
+            #
+            # Теперь источник — ОБЕ стороны: и строки ожидания, и коды,
+            # зарезервированные в пуле. FULL OUTER JOIN показывает всё, а
+            # состояние каждой строки считаем ниже и выводим явно.
             if svc == "claude":
                 pending = await conn.fetch(
-                    "SELECT c.code, c.plan, c.provider, p.user_id, p.org_id, p.created_at, "
-                    "       p.plan_name, u.username "
+                    "SELECT COALESCE(c.code, p.code) AS code, "
+                    "       COALESCE(c.plan, p.plan) AS plan, "
+                    "       COALESCE(c.provider, p.provider) AS provider, "
+                    "       p.user_id, p.org_id, p.plan_name, p.order_id, "
+                    "       p.expires_at, u.username, "
+                    "       COALESCE(p.created_at, c.used_at) AS created_at, "
+                    "       (c.code IS NOT NULL) AS in_pool, "
+                    "       COALESCE(c.is_used, FALSE) AS is_used, c.used_by, "
+                    "       (p.code IS NOT NULL) AS has_pending "
                     "FROM claude_codes c "
-                    "LEFT JOIN claude_pending_activations p ON p.code=c.code "
+                    "FULL OUTER JOIN claude_pending_activations p ON p.code=c.code "
                     "LEFT JOIN users u ON u.user_id=p.user_id "
-                    "WHERE c.is_used=TRUE AND c.used_by IS NULL "
-                    "ORDER BY c.id DESC LIMIT 100")
+                    "WHERE (c.is_used=TRUE AND c.used_by IS NULL) "
+                    "   OR p.code IS NOT NULL "
+                    "ORDER BY COALESCE(p.created_at, c.used_at) DESC NULLS LAST "
+                    "LIMIT 100")
             elif svc == "chatgpt":
                 pending = await conn.fetch(
-                    "SELECT c.code, c.plan, c.provider, p.user_id, c.reserved_at AS created_at, "
-                    "       p.plan_name, u.username "
+                    "SELECT COALESCE(c.code, p.code) AS code, "
+                    "       COALESCE(c.plan, p.plan) AS plan, "
+                    "       COALESCE(c.provider, p.provider) AS provider, "
+                    "       p.user_id, ''::text AS org_id, p.plan_name, p.order_id, "
+                    "       p.expires_at, u.username, "
+                    "       COALESCE(p.created_at, c.reserved_at) AS created_at, "
+                    "       (c.code IS NOT NULL) AS in_pool, "
+                    "       COALESCE(c.is_used, FALSE) AS is_used, c.used_by, "
+                    "       (p.code IS NOT NULL) AS has_pending "
                     "FROM gpt_codes c "
-                    "LEFT JOIN gpt_pending_activations p ON p.code=c.code "
+                    "FULL OUTER JOIN gpt_pending_activations p ON p.code=c.code "
                     "LEFT JOIN users u ON u.user_id=p.user_id "
-                    "WHERE c.is_used=TRUE AND c.used_by IS NULL "
-                    "ORDER BY c.id DESC LIMIT 100")
+                    "WHERE (c.is_used=TRUE AND c.used_by IS NULL) "
+                    "   OR p.code IS NOT NULL "
+                    "ORDER BY COALESCE(p.created_at, c.reserved_at) DESC NULLS LAST "
+                    "LIMIT 100")
         rec = []
         for r in recent:
             ua = r["used_at"]
@@ -6517,13 +6545,38 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
             resp["activeProvider"] = active
             resp["failover"] = failover
             pend = []
+            import time as _t_pend
             for r in pending:
                 ca = r["created_at"]
+                # Состояние строки — главное, чего раньше не было видно.
+                if not r["in_pool"]:
+                    _state, _warn = "нет в пуле", True
+                elif not r["is_used"]:
+                    _state, _warn = "код вернулся в пул", True
+                elif r["used_by"]:
+                    _state, _warn = "активация записана", True
+                elif r["has_pending"]:
+                    _state, _warn = "ждёт активации", False
+                else:
+                    _state, _warn = "в резерве, без клиента", True
+                _exp = r["expires_at"]
+                _left = ""
+                if _exp:
+                    try:
+                        _m = (_exp.timestamp() - _t_pend.time()) / 60.0
+                        _left = (f"ещё {int(_m)} мин" if _m > 0
+                                 else f"срок вышел {int(-_m)} мин назад")
+                    except Exception:
+                        _left = ""
                 pend.append({
                     "code": r["code"], "plan": r["plan"],
-                    "provider": r["provider"], "providerName": _pname(r["provider"]),
+                    "provider": r["provider"] or "", "providerName": _pname(r["provider"] or ""),
                     "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"]) if r["user_id"] else "—"),
+                    "uid": int(r["user_id"]) if r["user_id"] else 0,
                     "org": (r["org_id"] if svc == "claude" else "") or "",
+                    "order": r["order_id"] or "",
+                    "planName": r["plan_name"] or "",
+                    "state": _state, "warn": bool(_warn), "left": _left,
                     "date": ca.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ca else "",
                 })
             resp["pending"] = pend
@@ -10058,6 +10111,183 @@ async def _fk_num_line(order_id: str) -> str:
         return "\U0001f9fe " + " \u00b7 ".join(_parts) + "\n"
     except Exception:
         return ""
+
+
+# ─── Единая карточка слежения за активацией ChatGPT ──────────────────────
+# Раньше каждое сообщение о ходе активации собиралось на месте и своим
+# набором полей: где-то не было тарифа, где-то суммы, где-то почты. Когда
+# таких сообщений по одному коду приходит несколько, сравнивать их глазами
+# невозможно. Один сборщик на все случаи. Александр 02.10.2026.
+
+GPT_WATCH_STAGES = {
+    "live":   ("\u23f3", "ChatGPT — активация идёт"),
+    "done":   ("\u2705", "ChatGPT — подписка ВЫДАНА"),
+    "failed": ("\U0001f534", "ChatGPT — активация НЕ прошла"),
+    "odd":    ("\u26a0\ufe0f", "ChatGPT — непонятный статус кода"),
+    "gaveup": ("\u26a0\ufe0f", "ChatGPT — снимаю код со слежения"),
+}
+
+
+async def gpt_watch_card(code: str, user_id: int, order_id: str = "",
+                         site_status: str = "", stage: str = "live",
+                         since_ts: float = 0.0, note: str = "") -> str:
+    """Карточка с ПОЛНЫМИ данными клиента и активации.
+
+    Ничего не падает наружу: любое поле, которого нет, просто не выводится.
+    Всё, что приходит извне (почта, org, имя), экранируется — иначе одна
+    угловая скобка ломает parse_mode=HTML и сообщение не доходит вовсе.
+    """
+    import html as _h_c
+    import time as _t_c
+
+    def _e(v):
+        return _h_c.escape(str(v if v is not None else ""))
+
+    _ic, _ttl = GPT_WATCH_STAGES.get(stage, GPT_WATCH_STAGES["live"])
+    _code = str(code or "").strip().upper()
+    _L = [f"{_ic} <b>{_ttl}</b>", ""]
+
+    # ── Клиент ───────────────────────────────────────────────────────────
+    _plan = _email = _org = ""
+    _cr = None
+    try:
+        _pool_c = await get_pool()
+        async with _pool_c.acquire() as _c_c:
+            _pr = await _c_c.fetchrow(
+                "SELECT plan_name, order_id, created_at, provider "
+                "FROM gpt_pending_activations WHERE UPPER(code)=$1", _code)
+            _ur = await _c_c.fetchrow(
+                "SELECT COALESCE(gpt_email,'') AS em, COALESCE(gpt_org,'') AS og "
+                "FROM users WHERE user_id=$1", int(user_id or 0))
+            # Запасной источник тарифа. К моменту ИТОГОВОЙ карточки строки
+            # ожидания уже нет: сверка удаляет её, когда записывает активацию.
+            # Без этого запроса в самой важной карточке («подписка ВЫДАНА»)
+            # тариф пропадал. Нашёл самопроверкой перед деплоем 02.10.2026.
+            _cr = await _c_c.fetchrow(
+                "SELECT COALESCE(plan,'') AS pl FROM gpt_codes WHERE UPPER(code)=$1",
+                _code)
+        if _pr:
+            _plan = _pr["plan_name"] or ""
+            if not order_id:
+                order_id = _pr["order_id"] or ""
+        if not _plan and _cr and _cr["pl"]:
+            _plan = {"plus": "Plus", "go": "Go", "pro": "Pro",
+                     "pro5": "Pro 5×", "pro20": "Pro 20×"}.get(
+                         str(_cr["pl"]).strip().lower(), str(_cr["pl"]))
+        if _ur:
+            _email, _org = _ur["em"], _ur["og"]
+    except Exception as _e_c1:
+        logging.warning(f"gpt_watch_card: данные по {_code}: {_e_c1}")
+
+    _who = await _who_user(user_id) if user_id else "\u2014"
+    _L.append(f"\U0001f464 {_who}" + (f" \u00b7 <b>{_e(_plan)}</b>" if _plan else ""))
+
+    # ── Оплата ───────────────────────────────────────────────────────────
+    if order_id:
+        try:
+            _o = await fk_get_order(order_id) or {}
+            _amt = _o.get("amount_rub")
+            _pm = {"sbp": "СБП", "card": "карта"}.get(
+                (_o.get("payment_method") or "").strip().lower(), "")
+            _paid = _o.get("paid_at")
+            _bits = []
+            if _amt:
+                _bits.append(f"<b>{int(_amt)} \u20bd</b>")
+            if _pm:
+                _bits.append(_pm)
+            if _paid:
+                try:
+                    _bits.append("оплачен " + _paid.astimezone(_BOT_TZ).strftime("%d.%m %H:%M"))
+                except Exception:
+                    pass
+            if _o.get("promo_code"):
+                _bits.append("промокод " + _e(_o["promo_code"]))
+            if _bits:
+                _L.append("\U0001f4b3 " + " \u00b7 ".join(_bits))
+        except Exception as _e_c2:
+            logging.warning(f"gpt_watch_card: заказ {order_id}: {_e_c2}")
+
+    # ── Код и сайт ───────────────────────────────────────────────────────
+    _line = f"\U0001f511 <code>{_e(_code)}</code>"
+    if site_status:
+        _line += f" \u00b7 сайт: <b>{_e(site_status)}</b>"
+    _L.append(_line)
+
+    if _email:
+        _L.append(f"\U0001f4e7 {_e(_email)}")
+    if _org:
+        _L.append(f"\U0001f3e2 <code>{_e(_org)}</code>")
+
+    # ── Заказ ────────────────────────────────────────────────────────────
+    if order_id:
+        _L.append(f"\U0001f194 <code>{_e(order_id)}</code>")
+        _ref = await _fk_num_line(order_id)
+        if _ref:
+            _L.append(_ref.rstrip("\n"))
+
+    # ── Сколько идёт ─────────────────────────────────────────────────────
+    if since_ts:
+        try:
+            _mins = int((_t_c.time() - float(since_ts)) / 60.0)
+            import datetime as _dt_c
+            _started = _dt_c.datetime.fromtimestamp(
+                float(since_ts), _BOT_TZ).strftime("%d.%m %H:%M")
+            _L.append(f"\u23f1 {_mins} мин (с {_started})")
+        except Exception:
+            pass
+
+    if note:
+        _L.append("")
+        _L.append(note)
+    return "\n".join(_L)
+
+
+async def gpt_watch_msg_remember(code: str, message_id) -> None:
+    """Запоминает ЖИВУЮ карточку, чтобы потом переписать её в итог."""
+    try:
+        await set_setting(f"gptwatchmsg:{str(code).strip().upper()}",
+                          str(int(message_id)))
+    except Exception as _e_wm:
+        logging.warning(f"gptwatchmsg {code}: {_e_wm}")
+
+
+async def gpt_watch_msg_resolve(code: str, text: str) -> bool:
+    """Переписывает живую карточку в итоговую. True — получилось.
+
+    Зачем: сообщение «активация идёт» висело в чате навсегда. Когда код
+    дозревал, бот либо молчал (карточку заказа уже поправила сверка), либо
+    слал ЕЩЁ одно сообщение — и последним в чате всё равно оставалось
+    «идёт». Теперь итог приходит НА МЕСТО «идёт». Александр 02.10.2026.
+
+    False — карточки нет или Telegram не дал её править (старше 48 часов):
+    тогда вызывающий шлёт обычное новое сообщение, и ничего не теряется.
+    """
+    _code = str(code or "").strip().upper()
+    _key = f"gptwatchmsg:{_code}"
+    try:
+        _mid = (await get_setting(_key, "") or "").strip()
+    except Exception as _e_g:
+        logging.warning(f"gptwatchmsg get {_code}: {_e_g}")
+        return False
+    if not _mid.isdigit():
+        return False
+    try:
+        await bot.edit_message_text(text, chat_id=ADMIN_ID,
+                                    message_id=int(_mid), parse_mode="HTML")
+        _ok = True
+    except Exception as _e_ed:
+        # «message is not modified» — текст совпал, и это успех, а не сбой.
+        _ok = "not modified" in str(_e_ed).lower()
+        if not _ok:
+            logging.info(f"gptwatchmsg edit {_code}: {_e_ed}")
+    # Отдельного помощника на удаление в db нет — удаляем запросом.
+    try:
+        _pool_d = await get_pool()
+        async with _pool_d.acquire() as _c_d:
+            await _c_d.execute("DELETE FROM settings WHERE key=$1", _key)
+    except Exception as _e_d:
+        logging.warning(f"gptwatchmsg del {_code}: {_e_d}")
+    return _ok
 
 
 async def _order_ref_line(order_id: str) -> str:
