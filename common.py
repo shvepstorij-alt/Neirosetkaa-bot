@@ -9054,7 +9054,35 @@ async def _run_activation_job(
                     }
                     return  # выходим, не перезаписываем job ниже
 
-            _activation_jobs[job_id] = {"status": "done", "success": False, "error": error_text}
+            # ── Сайт не назвал причину — значит исход НЕИЗВЕСТЕН ──────────
+            # Это не «не получилось», это «мы не знаем». В такие моменты
+            # активация у сайта часто ещё ИДЁТ и дозревает через минуту-другую,
+            # а клиент уже видел красное «Не получилось» и считал, что
+            # подписки нет. Теперь задача остаётся В РАБОТЕ: мини-апп
+            # продолжает крутить, а бот следит за кодом до конечного
+            # состояния — fulfilled или unused. Александр 02.10.2026.
+            if not (result.get("error") or "").strip():
+                import time as _t_job
+                _activation_jobs[job_id] = {
+                    "status": "pending", "watching": True,
+                    "code": str(code), "user_id": int(user_id),
+                    "order_id": str(order_id or ""),
+                    "since": int(_t_job.time()),
+                    "note": "Сайт обрабатывает запрос — слежу за активацией."}
+                try:
+                    _k_nw = f"gptclaim:{str(code).strip().upper()}"
+                    if not (await get_setting(_k_nw, "") or "").strip():
+                        import time as _t_nw
+                        await set_setting(
+                            _k_nw,
+                            f"{user_id}|{order_id or ''}|{int(_t_nw.time())}|")
+                except Exception as _e_nw:
+                    logging.warning(f"GPT: слежение за {code}: {_e_nw}")
+                logging.warning(f"GPT: {code} — сайт не объяснил причину, "
+                                f"клиенту ошибку НЕ показываю, слежу за кодом.")
+            else:
+                _activation_jobs[job_id] = {"status": "done", "success": False,
+                                            "error": error_text}
             if _fail_should_alert("gpt", user_id):
               try:
                 import datetime as _dt
@@ -9573,6 +9601,142 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             logging.info(f"GPT activation dedupe: user={user_id} уже выполняется job={_prev_job}")
             return _resp({"job_id": _prev_job, "status": "started"})
 
+    # 1b) Код УЖЕ ПОД СЛЕЖЕНИЕМ — вторую активацию не запускаем.
+    #     Когда сайт не называет причину, задача уходит в «слежу» и
+    #     ЗАВЕРШАЕТСЯ — а её finally снимает ОБА замка: и в памяти, и в БД.
+    #     Дальше клиент закрывает мини-приложение, через минуту открывает
+    #     заново, жмёт «Активировать» — и запускает ВТОРУЮ активацию тем же
+    #     кодом поверх идущей первой. Ретрай при этом умеет вернуть код в пул
+    #     и сменить маршрут, то есть выдернуть код из-под активации, которая
+    #     вот-вот дозреет до fulfilled. Метка слежения — единственное, что
+    #     живёт всё это время, по ней и запираем. Самопроверка 02.10.2026.
+    #
+    #     После «unused» метка снимается — и клиент снова может активировать
+    #     ТЕМ ЖЕ кодом. Так и нужно: сайт отпустил код, повторная активация
+    #     им же и есть правильное восстановление.
+    _code_pend = str(pending.get("code") or "").strip().upper()
+    if _code_pend:
+        _watch_pend = ""
+        try:
+            _watch_pend = (await get_setting(f"gptclaim:{_code_pend}", "") or "").strip()
+        except Exception as _e_wp:
+            logging.warning(f"GPT: проверка слежения {_code_pend}: {_e_wp}")
+        _tomb_pend = "x" in (_watch_pend.split("|")[3] if len(_watch_pend.split("|")) > 3 else "")
+        if _watch_pend and _tomb_pend:
+            # НАДГРОБИЕ: слежение брошено сутки назад, никто уже не следит.
+            # Запереть тут значило бы врать клиенту «бот напишет» и держать
+            # заказ закрытым до чистки через 30 суток — выхода у него нет
+            # вообще. Метку снимаем (кода это не касается: он остаётся
+            # помеченным и за клиентом), чтобы сверка снова могла взять код
+            # на слежение, и пропускаем активацию. Александру — одно
+            # сообщение, решение всё равно его. Самопроверка 02.10.2026.
+            logging.warning(f"GPT: у {_code_pend} надгробие слежения — снимаю "
+                            f"метку и пропускаю активацию.")
+            try:
+                _pool_tb = await get_pool()
+                async with _pool_tb.acquire() as _c_tb:
+                    await _c_tb.execute("DELETE FROM settings WHERE key=$1",
+                                        f"gptclaim:{_code_pend}")
+            except Exception as _e_tb:
+                logging.warning(f"GPT: снятие надгробия {_code_pend}: {_e_tb}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"\u2139\ufe0f <b>ChatGPT — активация после брошенного слежения</b>\n\n"
+                    f"\U0001f464 {await _who_user(user_id)}\n"
+                    f"\U0001f511 <code>{_code_pend}</code>\n"
+                    + (f"\U0001f194 <code>{_oid_pend}</code>\n" if _oid_pend else "")
+                    + f"\nЭтот код сутки висел в «claimed», слежение я бросил. "
+                      f"Клиент нажал «активировать» снова — пропускаю, иначе "
+                      f"заказ не закрыть никак.\n\n"
+                      f"Если по коду подписка всё-таки выдана, второй активации "
+                      f"быть не должно: <code>/gpt_why {_code_pend}</code>",
+                    parse_mode="HTML")
+            except Exception as _e_tbm:
+                logging.warning(f"GPT: сообщение о надгробии: {_e_tbm}")
+            _watch_pend = ""
+        if _watch_pend:
+            # Задача ещё в памяти — отдаём ЕЁ: клиент снова видит крутилку,
+            # а не запускает активацию.
+            for _jid_w, _jb_w in list(_activation_jobs.items()):
+                if (_jb_w.get("watching")
+                        and str(_jb_w.get("code") or "").strip().upper() == _code_pend
+                        and int(_jb_w.get("user_id") or 0) == int(user_id)):
+                    logging.info(f"GPT: {_code_pend} под слежением — отдаю job={_jid_w}")
+                    return _resp({"job_id": _jid_w, "status": "started"})
+            # Задачи нет (был деплой) — мягкое «идёт», без красного экрана.
+            logging.info(f"GPT: {_code_pend} под слежением, задачи в памяти нет")
+            return _resp({"success": False, "processing": True,
+                          "error": "Активация этого кода ещё идёт на стороне сайта. "
+                                   "Бот следит за ней и напишет, когда закончится — "
+                                   "повторять ничего не нужно."})
+
+    # 1в) По ЭТОМУ ЗАКАЗУ под слежением ДРУГОЙ код — вторую активацию не
+    #     запускаем. Путь к двойной подписке за один оплаченный заказ:
+    #     _safe_release вешает метку на старый код и ОСТАВЛЯЕТ его за клиентом,
+    #     задача берёт новый код и перезаписывает строку ожидания. Если дальше
+    #     задача падает с внятной причиной, клиент видит «Попробовать снова»,
+    #     жмёт — и активируется ВТОРОЙ код, пока первый дозревает. Дозреют оба —
+    #     две подписки, деньги за одну. Замок по коду выше это пропускает,
+    #     потому что код в строке ожидания уже ДРУГОЙ.
+    #     Сами ничего не трогаем: ни кодов, ни меток — решение за Александром,
+    #     ему и пишем. Самопроверка 02.10.2026.
+    if _oid_pend and _code_pend:
+        _dup_row = None
+        try:
+            _pool_dup = await get_pool()
+            async with _pool_dup.acquire() as _c_dup:
+                _dup_row = await _c_dup.fetchrow(
+                    "SELECT key, value FROM settings "
+                    " WHERE key LIKE 'gptclaim:%' "
+                    "   AND split_part(value, '|', 2) = $1 "
+                    "   AND UPPER(split_part(key, ':', 2)) <> $2 "
+                    # Надгробие — брошенное слежение, им запирать нельзя:
+                    # иначе выданный заново код не активировать 30 суток.
+                    "   AND COALESCE(split_part(value, '|', 4), '') NOT LIKE '%x%' "
+                    " LIMIT 1", _oid_pend, _code_pend)
+        except Exception as _e_dup:
+            logging.warning(f"GPT: проверка слежения по заказу {_oid_pend}: {_e_dup}")
+        if _dup_row:
+            _busy_code = str(_dup_row["key"]).split(":", 1)[1]
+            logging.error(f"GPT: по заказу {_oid_pend} под слежением код "
+                          f"{_busy_code}, а в резерве {_code_pend} — вторую "
+                          f"активацию НЕ запускаю, чтобы не выдать две подписки.")
+            # Одно сообщение на заказ, а не на каждое нажатие клиента.
+            try:
+                # Раньше ключ ставился в «1» навсегда — и ВТОРОЙ раз по тому
+                # же заказу Александр не узнавал уже никогда, а клиент получал
+                # «он доводит вручную». Молчаливый тупик. Теперь по времени.
+                _k_dup = f"gptdup:{_oid_pend}"
+                import time as _t_dup
+                _prev_dup = (await get_setting(_k_dup, "") or "").strip()
+                try:
+                    _prev_ts = float(_prev_dup) if _prev_dup.isdigit() else 0.0
+                except Exception:
+                    _prev_ts = 0.0
+                if _t_dup.time() - _prev_ts > 21600:          # 6 часов
+                    await set_setting(_k_dup, str(int(_t_dup.time())))
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"\u26d4 <b>ChatGPT — остановил вторую активацию</b>\n\n"
+                        f"\U0001f464 {await _who_user(user_id)}\n"
+                        f"\U0001f511 под слежением: <code>{_busy_code}</code>\n"
+                        f"\U0001f511 в резерве сейчас: <code>{_code_pend}</code>\n"
+                        f"\U0001f194 <code>{_oid_pend}</code>\n\n"
+                        f"Клиент нажал «активировать», а по этому заказу уже "
+                        f"дозревает ДРУГОЙ код. Запусти я активацию — вышли бы "
+                        f"<b>две подписки за один оплаченный заказ</b>.\n\n"
+                        f"Сам ничего не делаю: ни активации, ни возврата в пул. "
+                        f"Реши, каким кодом закрываем заказ: "
+                        f"<code>/gpt_why {_busy_code}</code>",
+                        parse_mode="HTML")
+            except Exception as _e_dupm:
+                logging.warning(f"GPT: сообщение о двойной активации: {_e_dupm}")
+            return _resp({"success": False, "processing": True,
+                          "error": "Активация по этому заказу уже идёт. "
+                                   "Александр доводит её вручную — повторять "
+                                   "ничего не нужно, сообщение придёт в чат."})
+
     # 2) Кулдаун проверяем ДО захвата замка в БД. Раньше было наоборот: замок
     #    брался, кулдаун отбивал запрос, обработчик выходил — и замок висел
     #    десять минут при том, что задачи нет. Клиент видел «активация уже
@@ -9584,9 +9748,13 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         _wait_s = 0
     if _wait_s:
         logging.info(f"GPT: попытка чаще раза в минуту uid={user_id}, ждать {_wait_s} c")
-        return _resp({"success": False,
-                      "error": f"Подожди {_wait_s} сек — предыдущая попытка ещё обрабатывается. "
-                               f"Результат придёт в чат бота."})
+        # processing: активация РЕАЛЬНО идёт. Без этого флага мини-апп
+        # рисовал красное «Не получилось» с кнопкой «Попробовать снова» —
+        # то есть сам приглашал клиента запустить вторую активацию.
+        # Сюда же попадает автоповтор POST из _fetchR. Самопроверка 02.10.2026.
+        return _resp({"success": False, "processing": True,
+                      "error": f"Активация уже идёт — подожди {_wait_s} сек. "
+                               f"Результат придёт в чат бота, повторять не нужно."})
 
     # 3) Замок в БД: словарь выше живёт в памяти процесса и обнуляется при
     #    каждом деплое, после чего два параллельных запуска забирали ДВА кода.
@@ -9594,9 +9762,9 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     try:
         if not await claim_gpt_activation(user_id):
             logging.info(f"GPT activation dedupe (БД): user={user_id} активация уже идёт")
-            return _resp({"success": False,
+            return _resp({"success": False, "processing": True,
                           "error": "Активация уже выполняется. Подожди пару минут — "
-                                   "результат придёт в чат."})
+                                   "результат придёт в чат, повторять не нужно."})
         _claimed_lock = True
     except Exception as _e_claim:
         logging.warning(f"claim_gpt_activation: {_e_claim}")
@@ -9822,6 +9990,46 @@ async def api_activation_status_handler(request: web.Request) -> web.Response:
             text=_json.dumps({"status": "not_found", "error": "Задача не найдена"}),
             content_type="application/json", status=404
         )
+    # Задача «слежу»: сайт не назвал причину, и мы ждём, чем кончится.
+    # Смотрим в БАЗУ, а не в память: активацию дописывает сверка (её зовёт
+    # петля слежения за claimed), и о job_id она ничего не знает. Признак
+    # записанной активации один — у кода проставлен заказ.
+    # Александр 02.10.2026.
+    if job.get("watching") and job.get("code"):
+        try:
+            _code_st = str(job["code"]).strip().upper()
+            _oid_st = str(job.get("order_id") or "").strip()
+            _pool_st = await get_pool()
+            async with _pool_st.acquire() as _c_st:
+                # Успех ищем ПО ЗАКАЗУ, а не по коду: при переборе заказ мог
+                # закрыть другой код, и тогда подписка у клиента ЕСТЬ, хотя
+                # у этого кода заказа не будет. Без заказа — по самому коду.
+                if _oid_st:
+                    _ok_st = await _c_st.fetchval(
+                        "SELECT 1 FROM gpt_codes WHERE order_id=$1 LIMIT 1", _oid_st)
+                else:
+                    _ok_st = await _c_st.fetchval(
+                        "SELECT 1 FROM gpt_codes WHERE UPPER(code)=$1 "
+                        "  AND COALESCE(order_id,'') <> '' LIMIT 1", _code_st)
+                # Слежение ещё идёт? Метку ставит та же активация.
+                _watch_st = await _c_st.fetchval(
+                    "SELECT 1 FROM settings WHERE key=$1", f"gptclaim:{_code_st}")
+            job = dict(job)
+            if _ok_st:
+                job.update({"status": "done", "success": True})
+                _activation_jobs[job_id] = job
+            elif not _watch_st:
+                # Слежение кончилось, а активации так и нет. Молчать нельзя:
+                # клиент ждёт «бот напишет». Говорим мягко и без красного
+                # «не получилось» — повторять ему ничего не надо.
+                job.update({
+                    "status": "done", "success": False, "pending": True,
+                    "error": "Активация не завершилась автоматически. "
+                             "Александр уже знает и активирует вручную — "
+                             "повторять ничего не нужно."})
+                _activation_jobs[job_id] = job
+        except Exception as _e_st:
+            logging.warning(f"activate-status {job_id}: {_e_st}")
     return web.Response(text=_json.dumps(job, ensure_ascii=False), content_type="application/json")
 
 

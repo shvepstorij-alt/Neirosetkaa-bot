@@ -2012,6 +2012,16 @@ async def add_credits_batch(user_id: int, credits: int, source: str = "purchase"
     if conn is not None:
         # Транзакцией владеет вызывающий — своей не открываем.
         await _grant(conn)
+        # Журнал писали ТОЛЬКО в ветке без conn — то есть начисления из
+        # промокода, реферального бонуса и оплаты (они все идут с conn)
+        # в журнал не попадали вовсе. Это именно те начисления, по которым
+        # потом разбираются споры о деньгах. Пишем на коннекции вызывающего,
+        # внутри SAVEPOINT (см. log_event). Самопроверка 02.10.2026.
+        try:
+            await log_event(user_id, f"batch_add_{source}",
+                            f"credits={credits} days={days_valid}", conn=conn)
+        except Exception:
+            pass
         return
     pool = await get_pool()
     async with pool.acquire() as conn:

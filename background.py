@@ -758,6 +758,15 @@ async def db_cleanup_loop():
                          AND to_timestamp(split_part(value, '|', 3)::bigint)
                              < NOW() - INTERVAL '30 days'"""
                 )
+                # Отметки «остановил вторую активацию по заказу» — по тому же
+                # правилу, что nofulfil, иначе копятся навсегда.
+                await conn.execute(
+                    """DELETE FROM settings
+                       WHERE key LIKE 'gptdup:%'
+                         AND EXISTS (SELECT 1 FROM fk_orders o
+                                      WHERE o.order_id = substring(settings.key from 8)
+                                        AND o.created_at < NOW() - INTERVAL '14 days')"""
+                )
                 await conn.execute(
                     """DELETE FROM settings
                        WHERE key LIKE 'starsnf:%'
@@ -1105,7 +1114,14 @@ async def _activation_jobs_cleanup_loop():
     """Каждый час удаляет завершённые задачи из _activation_jobs."""
     while True:
         await asyncio.sleep(3600)
-        done_keys = [k for k, v in list(_activation_jobs.items()) if v.get("status") == "done"]
+        import time as _t_cl
+        _now_cl = _t_cl.time()
+        # «done» — как и раньше. Плюс задачи слежения, висящие больше суток:
+        # они остаются в статусе pending и сами по себе из памяти не уходят.
+        done_keys = [k for k, v in list(_activation_jobs.items())
+                     if v.get("status") == "done"
+                     or (v.get("watching")
+                         and _now_cl - float(v.get("since") or 0) > 86400)]
         for k in done_keys:
             del _activation_jobs[k]
         if done_keys:
@@ -1193,12 +1209,36 @@ async def gpt_claimed_watch_loop():
                 # на ровном месте.
 
                 async def _stop_watch():
+                    """True — метка снята. False — НЕ снята, и тогда звать
+                    никого нельзя: фильтр не отсечёт код на следующем проходе
+                    и сообщение уйдёт снова, каждую минуту. Молчим и пробуем
+                    через минуту. Самопроверка 02.10.2026."""
                     try:
                         async with pool.acquire() as _c_rm:
                             await _c_rm.execute(
                                 "DELETE FROM settings WHERE key=$1", _r["key"])
+                        return True
                     except Exception as _e_rm:
                         logging.warning(f"claimed-watch: снятие метки {_code}: {_e_rm}")
+                        return False
+
+                async def _client_waiting():
+                    """Клиент ДЕЙСТВИТЕЛЬНО ждёт эту активацию?
+
+                    Метку заводит не только активация клиента, но и разбор
+                    потерянных активаций — у тех кодов строки ожидания нет
+                    вовсе. Писать такому клиенту «активация ещё не завершена»
+                    значит пугать его активацией, которой он не запускал (а
+                    подписку, может, давно получил другим кодом). Живая строка
+                    ожидания — ровно признак «ждёт». Самопроверка 02.10.2026."""
+                    try:
+                        async with pool.acquire() as _c_cw:
+                            return bool(await _c_cw.fetchval(
+                                "SELECT 1 FROM gpt_pending_activations "
+                                "WHERE UPPER(code)=$1", str(_code).strip().upper()))
+                    except Exception as _e_cw:
+                        logging.warning(f"claimed-watch: резерв {_code}: {_e_cw}")
+                        return False
 
                 # ── Заказ уже закрыт ДРУГИМ кодом ──────────────────────
                 # Бывает при переборе и при iOS-спасении: активация прошла
@@ -1252,7 +1292,8 @@ async def gpt_claimed_watch_loop():
                                     "FROM gpt_codes WHERE code=$1", _code))
                         except Exception as _e_ok:
                             logging.warning(f"claimed-watch: проверка записи {_code}: {_e_ok}")
-                    await _stop_watch()
+                    if not await _stop_watch():
+                        continue          # метка жива — доложим на следующем проходе
                     if _done and _card_done:
                         # Карточка «НЕУДАЧА» уже переписана сверкой в «активация
                         # всё-таки прошла» — там тот же клиент, код и заказ.
@@ -1290,7 +1331,9 @@ async def gpt_claimed_watch_loop():
 
                 # ── Сайт отпустил код: активации не было ───────────────
                 if _v == "unused":
-                    await _stop_watch()
+                    _waiting_u = await _client_waiting()
+                    if not await _stop_watch():
+                        continue
                     logging.error(f"claimed-watch: {_code} вернулся в unused — "
                                   f"активация НЕ прошла, uid={_uid}")
                     _who = await _who_user(_uid) if _uid else "—"
@@ -1301,15 +1344,29 @@ async def gpt_claimed_watch_loop():
                             f"👤 {_who}\n"
                             f"🔑 <code>{_code}</code> · сайт: <b>unused</b>\n"
                             + (f"🆔 <code>{_oid}</code>\n" if _oid else "")
-                            + f"\nКод был в «claimed», но сайт его отпустил — "
-                              f"подписка не выдана. Нужна <b>повторная "
-                              f"активация ЭТИМ ЖЕ кодом</b>.\n\n"
+                            + f"\nСайт показывает код свободным — подписка по "
+                              f"нему НЕ выдана. Нужна <b>повторная активация "
+                              f"ЭТИМ ЖЕ кодом</b>.\n\n"
                               f"Сам ничего не делаю: ни активации, ни возврата "
                               f"в пул. Код закреплён за клиентом и помечен, "
                               f"чужому не уйдёт.",
                             parse_mode="HTML")
                     except Exception as _e_m2:
                         logging.error(f"claimed-watch: сообщение {_code}: {_e_m2}")
+                    # И КЛИЕНТУ. Он мог остаться на экране «бот следит и
+                    # напишет» — промолчать здесь значит обмануть его.
+                    # Самопроверка 02.10.2026.
+                    if _uid and _waiting_u:
+                        try:
+                            await bot.send_message(
+                                _uid,
+                                "⏳ <b>Активация не завершилась автоматически</b>\n\n"
+                                "Сайт не довёл её до конца. Александр уже знает "
+                                "и активирует подписку вручную — повторять "
+                                "ничего не нужно, я напишу, когда будет готово.",
+                                parse_mode="HTML")
+                        except Exception as _e_cl2:
+                            logging.info(f"claimed-watch: клиенту {_uid}: {_e_cl2}")
                     continue
 
                 # ── Ни «идёт», ни результат: failed, not_in_db и прочее ─
@@ -1317,7 +1374,9 @@ async def gpt_claimed_watch_loop():
                 # сообщение «сайт: claimed» — то есть бот писал неправду о
                 # том, что видит, и ждал ещё сутки впустую.
                 if _v not in ("claimed", "zoom_preparing"):
-                    await _stop_watch()
+                    _waiting_o = await _client_waiting()
+                    if not await _stop_watch():
+                        continue
                     _who = await _who_user(_uid) if _uid else "—"
                     logging.error(f"claimed-watch: {_code} стал {_v} — "
                                   f"ни выдача, ни освобождение, uid={_uid}")
@@ -1335,17 +1394,36 @@ async def gpt_claimed_watch_loop():
                             parse_mode="HTML")
                     except Exception:
                         pass
+                    # И КЛИЕНТУ. Слежение закончилось без результата, а экран у
+                    # него так и остался «идёт активация, напишу» — промолчать
+                    # значит оставить его ждать вечно. Самопроверка 02.10.2026.
+                    if _uid and _waiting_o:
+                        try:
+                            await bot.send_message(
+                                _uid,
+                                "⏳ <b>Активация ещё не завершена</b>\n\nСайт не довёл её до конца автоматически. Александр уже знает и доведёт подписку вручную — повторять ничего не нужно, я напишу, когда будет готово.",
+                                parse_mode="HTML")
+                        except Exception as _e_cl3:
+                            logging.info(f"claimed-watch: клиенту {_uid}: {_e_cl3}")
                     continue
 
                 # ── Всё ещё идёт ───────────────────────────────────────
                 if _age > 86400:                      # сутки
                     # Ключ оставляем с флагом «x» — как надгробие. Удалить его
                     # нельзя: сверка завела бы слежение заново.
+                    # Сообщения шлём ТОЛЬКО если надгробие записалось. Иначе
+                    # фильтр не отсечёт этот код на следующем проходе и
+                    # сообщение уйдёт снова — каждую минуту, и мне, и клиенту.
+                    # Самопроверка 02.10.2026.
+                    _tomb_ok = False
                     try:
                         await set_setting(
                             _r["key"], f"{_uid}|{_oid}|{int(_since)}|{_flags}x")
+                        _tomb_ok = True
                     except Exception as _e_tomb:
                         logging.warning(f"claimed-watch: надгробие {_code}: {_e_tomb}")
+                    if not _tomb_ok:
+                        continue
                     _who = await _who_user(_uid) if _uid else "—"
                     try:
                         await bot.send_message(
@@ -1361,6 +1439,15 @@ async def gpt_claimed_watch_loop():
                             parse_mode="HTML")
                     except Exception:
                         pass
+                    # И КЛИЕНТУ — по той же причине, что и выше.
+                    if _uid and await _client_waiting():
+                        try:
+                            await bot.send_message(
+                                _uid,
+                                "⏳ <b>Активация ещё не завершена</b>\n\nСайт не довёл её до конца автоматически. Александр уже знает и доведёт подписку вручную — повторять ничего не нужно, я напишу, когда будет готово.",
+                                parse_mode="HTML")
+                        except Exception as _e_cl4:
+                            logging.info(f"claimed-watch: клиенту {_uid}: {_e_cl4}")
                     continue
                 _new_flags = _flags
                 if "a" not in _flags:

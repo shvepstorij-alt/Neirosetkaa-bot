@@ -1374,6 +1374,21 @@ async function pollResult(jobId) {
     try {
       var r    = await fetch('/api/activate-status/' + jobId);
       var data = await r.json();
+      // Пока бот следит — подсказываем, что это нормально и ждать можно.
+      if (data.status === 'pending' && data.watching) {
+        // Был селектор '#s3 .sub' — такого класса в разметке НЕТ, строка
+        // не показывалась вообще. Класс loader-sub. Самопроверка 02.10.2026.
+        var _sub = document.querySelector('#s3 .loader-sub');
+        if (_sub) _sub.textContent = data.note
+          || 'Сайт обрабатывает запрос — это занимает до нескольких минут.';
+      }
+      // Задача исчезла из памяти (был деплой) — крутить 6 минут впустую
+      // незачем, да и каждый 404 расходует лимит запросов.
+      if (data.status === 'not_found') {
+        showProcessing('Активация продолжается на стороне сайта. Результат придёт '
+                     + 'в чат бота — повторять ничего не нужно.');
+        return;
+      }
       if (data.status === 'done') {
         if (data.success) {
           if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
@@ -1389,7 +1404,11 @@ async function pollResult(jobId) {
       }
     } catch(e) {}
   }
-  showError('Активация занимает слишком долго. Напиши Александру — он поможет!');
+  // Опрос кончился, а ответа нет. Это НЕ ошибка: активация у сайта могла
+  // ещё идти. Красный экран тут пугал зря — клиент думал, что подписки нет,
+  // и шёл активировать повторно (риск двойной). Александр 02.10.2026.
+  showProcessing('Активация ещё идёт на стороне сайта. Бот следит за ней и '
+               + 'напишет, когда закончится — повторять ничего не нужно.');
 }
 
 // ─── Запуск активации ────────────────────────────────────────────
@@ -1409,6 +1428,21 @@ async function startActivation() {
 
   showScreen('s3');
 
+  // force — РАЗОВОЕ подтверждение. Раньше флаг не сбрасывался нигде: один
+  // раз подтвердив принудительную активацию, клиент дальше молча отправлял
+  // force=1 при каждой попытке, без экрана предупреждения.
+  var _forceOnce = forceMode;
+  forceMode = false;
+
+  // Возвращаем исходный текст под крутилкой: иначе на второй попытке клиент
+  // видит пояснение от прошлой («слежу за активацией»), хотя всё только
+  // началось.
+  try {
+    var _sub0 = document.querySelector('#s3 .loader-sub');
+    if (_sub0 && _sub0.dataset.orig === undefined) _sub0.dataset.orig = _sub0.innerHTML;
+    if (_sub0 && _sub0.dataset.orig !== undefined) _sub0.innerHTML = _sub0.dataset.orig;
+  } catch (_e_sub) {}
+
   try {
     var resp = await _fetchR('/api/activate-chatgpt', {
       method: 'POST',
@@ -1418,7 +1452,7 @@ async function startActivation() {
         raw_token: tokenRaw,
         code:      code,
         init_data: tg ? tg.initData : '',
-        force:     forceMode ? 1 : 0
+        force:     _forceOnce ? 1 : 0
       })
     }, 4);
 
@@ -1430,7 +1464,12 @@ async function startActivation() {
     }
 
     var res = await resp.json();
-    if (!res.job_id) { showError(res.error || 'Не удалось запустить активацию.'); return; }
+    if (!res.job_id) {
+      // processing — активация этого кода уже идёт. Это НЕ ошибка: красный
+      // экран тут погнал бы клиента активировать повторно.
+      if (res.processing) { showProcessing(res.error); return; }
+      showError(res.error || 'Не удалось запустить активацию.'); return;
+    }
     await pollResult(res.job_id);
   } catch(e) {
     showError('⏳ Сервер сейчас обновляется. Подожди минуту и нажми «Попробовать снова» — код действителен, ничего не потеряется.');
