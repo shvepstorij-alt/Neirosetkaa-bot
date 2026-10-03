@@ -759,6 +759,14 @@ async def db_cleanup_loop():
                          AND to_timestamp(split_part(value, '|', 3)::bigint)
                              < NOW() - INTERVAL '30 days'"""
                 )
+                # Журнал попыток активации — по тому же правилу.
+                await conn.execute(
+                    """DELETE FROM settings
+                       WHERE key LIKE 'gptlog:%'
+                         AND EXISTS (SELECT 1 FROM fk_orders o
+                                      WHERE o.order_id = substring(settings.key from 8)
+                                        AND o.created_at < NOW() - INTERVAL '30 days')"""
+                )
                 # Отметки «остановил вторую активацию по заказу» — по тому же
                 # правилу, что nofulfil, иначе копятся навсегда.
                 await conn.execute(

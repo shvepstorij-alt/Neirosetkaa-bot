@@ -7544,6 +7544,17 @@ async def _run_activation_job(
     provider: '987ai' (текущий, по access_token) | 'aipro' (6661231.xyz, по Session JSON).
     force=True — клиент подтвердил принудительную активацию поверх уже активной подписки."""
     async def _do_activate(_code):
+        # Каждая попытка активации проходит ровно здесь. Пишем по строке в
+        # журнал заказа: код, сайт, чем кончилось. Потом карточки показывают
+        # «с какой попытки прошло и что мешало». Александр 04.10.2026.
+        _res_at = await _do_activate_raw(_code)
+        try:
+            await _gpt_log_attempt(order_id, _code, provider, _res_at)
+        except Exception as _e_at:
+            logging.warning(f"журнал попыток {order_id}: {_e_at}")
+        return _res_at
+
+    async def _do_activate_raw(_code):
         if provider == "bpa":
             from chatgpt_activation import activate_chatgpt_bpa
             return await activate_chatgpt_bpa(_code, session_raw or access_token, force=force)
@@ -8654,15 +8665,41 @@ async def _run_activation_job(
                 _tg_name = (f"@{_username}" if _username
                             else _h_tgn.escape(strip_surrogates(_full_name or ""))) \
                     or f"id{user_id}"
+                # Оплата, промокод и журнал попыток: без них по сообщению не
+                # понять ни выручку, ни то, с какой попытки прошло.
+                # Александр 04.10.2026.
+                _pay_ok = _promo_ok = ""
+                try:
+                    _o_ok = await fk_get_order(order_id) or {}
+                    _b_ok = []
+                    if _o_ok.get("amount_rub"):
+                        _b_ok.append(f"<b>{int(_o_ok['amount_rub'])} \u20bd</b>")
+                    _pm_ok = {"sbp": "СБП", "card": "карта"}.get(
+                        (_o_ok.get("payment_method") or "").strip().lower(), "")
+                    if _pm_ok:
+                        _b_ok.append(_pm_ok)
+                    if _o_ok.get("paid_at"):
+                        try:
+                            _b_ok.append(_o_ok["paid_at"].astimezone(_BOT_TZ).strftime("%d.%m %H:%M"))
+                        except Exception:
+                            pass
+                    _pay_ok = " \u00b7 ".join(_b_ok)
+                    _promo_ok = (_o_ok.get("promo_code") or "").strip()
+                except Exception as _e_ok:
+                    logging.warning(f"авто-активация OK: заказ {order_id}: {_e_ok}")
+                _att_ok = await gpt_attempts_block(order_id)
                 _caption = (
                     f"✅ <b>ChatGPT авто-активация OK</b>\n\n"
                     f"👤 Клиент: <b>{_tg_name}</b>  (<code>{user_id}</code>)\n"
-                    f"📧 Email: <b>{_email or '—'}</b>\n"
-                    f"🔑 Итоговый код: <code>{code}</code>\n"
                     f"📦 Тариф: <b>{plan_name}</b>\n"
-                    f"⏱ Время: <b>{_used_at}</b>\n"
-                    f"🆔 Order: <code>{order_id}</code>\n"
+                    + (f"💳 Оплата: {_pay_ok}\n" if _pay_ok else "")
+                    + (f"🎟 Промокод: <b>{_h_tgn.escape(_promo_ok)}</b>\n" if _promo_ok else "")
+                    + f"🔑 Итоговый код: <code>{code}</code>\n"
+                    + f"📧 Email: <b>{_email or '—'}</b>\n"
+                    + f"⏱ Время: <b>{_used_at}</b>\n"
+                    + f"🆔 Order: <code>{order_id}</code>\n"
                     + await _fk_num_line(order_id)
+                    + (f"\n{_att_ok}\n" if _att_ok else "")
                 )
                 # принудительное продление поверх уже активной подписки
                 if result.get("forced"):
@@ -10125,6 +10162,10 @@ GPT_WATCH_STAGES = {
     "failed": ("\U0001f534", "ChatGPT — активация НЕ прошла"),
     "odd":    ("\u26a0\ufe0f", "ChatGPT — непонятный статус кода"),
     "gaveup": ("\u26a0\ufe0f", "ChatGPT — снимаю код со слежения"),
+    # Отдельный заголовок, а не «подписка ВЫДАНА»: это ИСПРАВЛЕНИЕ прежнего
+    # сообщения о неудаче. Если оба назвать одинаково, два сообщения об одной
+    # активации станут неотличимы. Поймано тестами при самопроверке 04.10.2026.
+    "late":   ("\u2705", "ChatGPT — активация всё-таки прошла"),
 }
 
 
@@ -10149,7 +10190,7 @@ async def gpt_watch_card(code: str, user_id: int, order_id: str = "",
 
     # ── Клиент ───────────────────────────────────────────────────────────
     _plan = _email = _org = ""
-    _cr = None
+    _cr = _pr = None
     try:
         _pool_c = await get_pool()
         async with _pool_c.acquire() as _c_c:
@@ -10171,18 +10212,29 @@ async def gpt_watch_card(code: str, user_id: int, order_id: str = "",
             if not order_id:
                 order_id = _pr["order_id"] or ""
         if not _plan and _cr and _cr["pl"]:
-            _plan = {"plus": "Plus", "go": "Go", "pro": "Pro",
-                     "pro5": "Pro 5×", "pro20": "Pro 20×"}.get(
-                         str(_cr["pl"]).strip().lower(), str(_cr["pl"]))
+            _plan = GPT_PLAN_TITLES.get(
+                str(_cr["pl"]).strip().lower(), str(_cr["pl"]))
         if _ur:
             _email, _org = _ur["em"], _ur["og"]
     except Exception as _e_c1:
         logging.warning(f"gpt_watch_card: данные по {_code}: {_e_c1}")
 
-    _who = await _who_user(user_id) if user_id else "\u2014"
-    _L.append(f"\U0001f464 {_who}" + (f" \u00b7 <b>{_e(_plan)}</b>" if _plan else ""))
+    # ── Клиент: подпись у каждого значения, значение — жирным ────────────
+    # Раньше строка была «@ник (id) · Plus» без подписей, и в потоке сообщений
+    # приходилось вспоминать, что есть что. Александр 04.10.2026.
+    _un = _fn = ""
+    try:
+        _u_c = await get_user(int(user_id or 0))
+        _un = ((_u_c or {}).get("username") or "").strip()
+        _fn = ((_u_c or {}).get("full_name") or "").strip()
+    except Exception:
+        pass
+    _nick = ("@" + _un) if _un else (_e(strip_surrogates(_fn)) or f"id{user_id}")
+    _L.append(f"\U0001f464 Клиент: <b>{_nick}</b>  (<code>{int(user_id or 0)}</code>)")
+    if _plan:
+        _L.append(f"\U0001f4e6 Тариф: <b>{_e(_plan)}</b>")
 
-    # ── Оплата ───────────────────────────────────────────────────────────
+    # ── Оплата и промокод ────────────────────────────────────────────────
     if order_id:
         try:
             _o = await fk_get_order(order_id) or {}
@@ -10197,30 +10249,45 @@ async def gpt_watch_card(code: str, user_id: int, order_id: str = "",
                 _bits.append(_pm)
             if _paid:
                 try:
-                    _bits.append("оплачен " + _paid.astimezone(_BOT_TZ).strftime("%d.%m %H:%M"))
+                    _bits.append(_paid.astimezone(_BOT_TZ).strftime("%d.%m %H:%M"))
                 except Exception:
                     pass
-            if _o.get("promo_code"):
-                _bits.append("промокод " + _e(_o["promo_code"]))
             if _bits:
-                _L.append("\U0001f4b3 " + " \u00b7 ".join(_bits))
+                _L.append("\U0001f4b3 Оплата: " + " \u00b7 ".join(_bits))
+            # Промокод отдельной строкой: в карточке заказа его не было вовсе,
+            # а при разборе выручки он нужен первым делом.
+            if _o.get("promo_code"):
+                _L.append(f"\U0001f39f Промокод: <b>{_e(_o['promo_code'])}</b>")
         except Exception as _e_c2:
             logging.warning(f"gpt_watch_card: заказ {order_id}: {_e_c2}")
 
-    # ── Код и сайт ───────────────────────────────────────────────────────
-    _line = f"\U0001f511 <code>{_e(_code)}</code>"
-    if site_status:
-        _line += f" \u00b7 сайт: <b>{_e(site_status)}</b>"
-    _L.append(_line)
-
+    # ── Код, сайт, аккаунт ───────────────────────────────────────────────
+    _L.append(f"\U0001f511 Код: <code>{_e(_code)}</code>")
+    _site = ""
+    try:
+        _site = ((_pr["provider"] if _pr else "") or "").strip()
+        if not _site:
+            # Строки ожидания уже нет (активация записана) — сайт берём у кода.
+            _pool_s = await get_pool()
+            async with _pool_s.acquire() as _c_s:
+                _site = ((await _c_s.fetchval(
+                    "SELECT COALESCE(provider,'') FROM gpt_codes WHERE UPPER(code)=$1",
+                    _code)) or "").strip()
+    except Exception:
+        _site = _site or ""
+    if _site:
+        _L.append(f"\U0001f310 Сайт: <b>{_e(gpt_provider_name(_site))}</b>"
+                  + (f" \u00b7 статус: <b>{_e(site_status)}</b>" if site_status else ""))
+    elif site_status:
+        _L.append(f"\U0001f310 Статус на сайте: <b>{_e(site_status)}</b>")
     if _email:
-        _L.append(f"\U0001f4e7 {_e(_email)}")
+        _L.append(f"\U0001f4e7 Email: <b>{_e(_email)}</b>")
     if _org:
-        _L.append(f"\U0001f3e2 <code>{_e(_org)}</code>")
+        _L.append(f"\U0001f3e2 Organization: <code>{_e(_org)}</code>")
 
     # ── Заказ ────────────────────────────────────────────────────────────
     if order_id:
-        _L.append(f"\U0001f194 <code>{_e(order_id)}</code>")
+        _L.append(f"\U0001f194 Order: <code>{_e(order_id)}</code>")
         _ref = await _fk_num_line(order_id)
         if _ref:
             _L.append(_ref.rstrip("\n"))
@@ -10232,14 +10299,197 @@ async def gpt_watch_card(code: str, user_id: int, order_id: str = "",
             import datetime as _dt_c
             _started = _dt_c.datetime.fromtimestamp(
                 float(since_ts), _BOT_TZ).strftime("%d.%m %H:%M")
-            _L.append(f"\u23f1 {_mins} мин (с {_started})")
+            _L.append(f"\u23f1 Длительность: <b>{_mins} мин</b> (с {_started})")
         except Exception:
             pass
+
+    # ── Попытки ──────────────────────────────────────────────────────────
+    _att = await gpt_attempts_block(order_id)
+    if _att:
+        _L.append("")
+        _L.append(_att)
 
     if note:
         _L.append("")
         _L.append(note)
     return "\n".join(_L)
+
+
+GPT_PLAN_TITLES = {"plus": "Plus", "go": "Go", "pro": "Pro",
+                   "pro5": "Pro 5\u00d7", "pro20": "Pro 20\u00d7"}
+
+
+async def _gpt_plan_of_code(code: str) -> str:
+    """Тариф по коду: сперва строка ожидания, потом сам пул кодов.
+
+    Нужен там, где строки ожидания уже нет: сверка удаляет её, когда
+    записывает активацию, а тариф в карточке видеть надо.
+    """
+    _c = str(code or "").strip().upper()
+    if not _c:
+        return ""
+    try:
+        _pool_p = await get_pool()
+        async with _pool_p.acquire() as _c_p:
+            _r = await _c_p.fetchrow(
+                "SELECT COALESCE(plan_name,'') AS pn FROM gpt_pending_activations "
+                "WHERE UPPER(code)=$1", _c)
+            if _r and _r["pn"]:
+                return _r["pn"]
+            _r2 = await _c_p.fetchrow(
+                "SELECT COALESCE(plan,'') AS pl FROM gpt_codes WHERE UPPER(code)=$1", _c)
+        if _r2 and _r2["pl"]:
+            _k = str(_r2["pl"]).strip().lower()
+            return GPT_PLAN_TITLES.get(_k, str(_r2["pl"]))
+    except Exception as _e_pc:
+        logging.warning(f"_gpt_plan_of_code {_c}: {_e_pc}")
+    return ""
+
+
+async def gpt_attempts_block(order_id: str) -> str:
+    """«С какой попытки прошло, каким кодом и что мешало» — одним блоком.
+
+    Две части правды, и блок их СВОДИТ:
+      • журнал попыток — что бот видел в момент каждой попытки
+        (пишется в settings, переживает деплой; см. _gpt_log_attempt);
+      • запись активации в gpt_codes — что в итоге оказалось на самом деле.
+    Без сверки журнал врал бы в самом частом случае: попытка закончилась
+    «claimed» или молчанием сайта, а через минуты код дозрел. Тогда в
+    карточке «подписка ВЫДАНА» стояла бы последней неудачная попытка.
+    Александр 04.10.2026: «сообщения должны отображать реальность».
+    """
+    import html as _h_a
+    _oid = str(order_id or "").strip()
+    if not _oid:
+        return ""
+    try:
+        _raw = (await get_setting(f"gptlog:{_oid}", "") or "").strip()
+    except Exception as _e_a:
+        logging.warning(f"gpt_attempts_block {_oid}: {_e_a}")
+        return ""
+    _rows = [r for r in _raw.split("\n") if r.strip()]
+
+    # Что записано НА САМОМ ДЕЛЕ: коды, которыми закрыт этот заказ.
+    _recorded = []
+    try:
+        _pool_a = await get_pool()
+        async with _pool_a.acquire() as _c_a:
+            _rec = await _c_a.fetch(
+                "SELECT UPPER(code) AS c FROM gpt_codes WHERE order_id=$1 "
+                "ORDER BY used_at NULLS LAST", _oid)
+        _recorded = [r["c"] for r in _rec]
+    except Exception as _e_a2:
+        logging.warning(f"gpt_attempts_block запись {_oid}: {_e_a2}")
+
+    # Журнала нет — значит мы НЕ ЗНАЕМ, как шли попытки (например, заказ
+    # начался до того, как журнал появился). Писать в этом случае «записан
+    # без попытки бота» было бы неправдой: бот пробовал, просто не записывал.
+    # Нет данных — нет блока. Самопроверка перед деплоем 04.10.2026.
+    if not _rows:
+        return ""
+
+    # _win — номер РЕАЛЬНОЙ попытки, а не строки: строка с ×3 — это три
+    # попытки. Иначе «три захода на техработах, успех с четвёртого» дало бы
+    # в карточке «удалась 2-я». Самопроверка 04.10.2026.
+    _lines, _win, _seen, _acc = [], 0, set(), 0
+    for _i, _r in enumerate(_rows, 1):
+        _p = _r.split("|")
+        _c = (_p[0] if _p else "").strip().upper()
+        _s = _p[1].strip() if len(_p) > 1 else ""
+        _o = _p[2].strip() if len(_p) > 2 else ""
+        try:
+            _n = int(_p[3]) if len(_p) > 3 and _p[3].strip().isdigit() else 1
+        except Exception:
+            _n = 1
+        _seen.add(_c)
+        _acc += _n
+        if _o == "ok":
+            _o = "успех"
+            _win = _acc
+        elif _c in _recorded and _i == max(
+                [j for j, rr in enumerate(_rows, 1)
+                 if rr.split("|")[0].strip().upper() == _c] or [0]):
+            # Попытка выглядела неудачной, но этим кодом заказ В ИТОГЕ закрыт —
+            # значит активация дозрела позже. Пишем обе половины правды.
+            _o = f"{_o} → позже дозрела, подписка выдана"
+            _win = _acc
+        _sn = gpt_provider_name(_s) if _s else ""
+        _lines.append(f"  {_i}. <code>{_h_a.escape(_c)}</code>"
+                      + (f" \u00b7 {_h_a.escape(_sn)}" if _sn else "")
+                      + (f" — {_h_a.escape(_o)}" if _o else "")
+                      + (f" <b>\u00d7{_n}</b>" if _n > 1 else ""))
+    # Код, которым закрыт заказ, а бот его не пробовал (активировали вручную
+    # или запись сделала сверка по чужой попытке) — тоже правда, показываем.
+    for _c in _recorded:
+        if _c not in _seen:
+            _lines.append(f"  \u2022 <code>{_h_a.escape(_c)}</code> — записан без "
+                          f"попытки бота (вручную или сверкой)")
+    _total = sum(int(r.split("|")[3]) if len(r.split("|")) > 3
+                 and r.split("|")[3].strip().isdigit() else 1 for r in _rows)
+    _head = f"\U0001f9ed Попытки: <b>{_total}</b>"
+    if _win:
+        _head += f" \u00b7 удалась <b>{_win}-я</b>"
+    elif _recorded:
+        _head += " \u00b7 итог записан вне попыток бота"
+    else:
+        _head += " \u00b7 <b>успешной нет</b>"
+    return _head + "\n" + "\n".join(_lines)
+
+
+async def _gpt_log_attempt(order_id: str, code: str, provider: str,
+                           result: dict) -> None:
+    """Пишет строку на КАЖДУЮ попытку активации. Ошибки наружу не пускает.
+
+    Повтор той же попытки подряд (тот же код, сайт и итог — например, три
+    захода на техработах) не теряется: у строки растёт счётчик ×N. Раньше
+    такие повторы схлопывались в одну строку, и попыток в карточке
+    оказывалось меньше, чем было на деле. Самопроверка 04.10.2026.
+    """
+    _oid = str(order_id or "").strip()
+    if not _oid:
+        return
+    try:
+        if isinstance(result, dict) and result.get("success"):
+            _out = "ok"
+        else:
+            _out = ""
+            if isinstance(result, dict):
+                _out = str(result.get("error") or "").strip()
+                if not _out:
+                    for _f, _t in (("code_already_used", "код уже использован"),
+                                   ("wrong_account", "чужой аккаунт"),
+                                   ("token_invalid", "токен недействителен"),
+                                   ("has_plan", "на аккаунте уже есть подписка"),
+                                   ("out_of_stock", "на сайте нет мест"),
+                                   ("site_paused", "сайт на техработах"),
+                                   ("site_claimed", "сайт держит код в «claimed» — активация шла"),
+                                   ("openai_blocked", "OpenAI заблокировал"),
+                                   ("needs_check", "подтверждения нет"),
+                                   ("site_payment_failed", "у сайта не прошла оплата")):
+                        if result.get(_f):
+                            _out = _t
+                            break
+                # Статус кода на сайте — в скобках, если он есть: «claimed»
+                # и «fulfilled» говорят о реальном положении дел больше текста.
+                _sst = str(result.get("site_status") or "").strip()
+                if _sst and _sst not in _out:
+                    _out = (_out + f" (сайт: {_sst})") if _out else f"сайт: {_sst}"
+            _out = (_out or "сайт не назвал причину").replace("|", "/").replace("\n", " ")[:140]
+        _base = f"{str(code or '').strip().upper()}|{str(provider or '').strip()}|{_out}"
+        _key = f"gptlog:{_oid}"
+        _prev = (await get_setting(_key, "") or "").strip()
+        _rows = [r for r in _prev.split("\n") if r.strip()]
+        if _rows:
+            _lp = _rows[-1].split("|")
+            if "|".join(_lp[:3]) == _base:
+                _cnt = int(_lp[3]) if len(_lp) > 3 and _lp[3].isdigit() else 1
+                _rows[-1] = f"{_base}|{_cnt + 1}"
+                await set_setting(_key, "\n".join(_rows[-12:]))
+                return
+        _rows.append(f"{_base}|1")
+        await set_setting(_key, "\n".join(_rows[-12:]))
+    except Exception as _e_la:
+        logging.warning(f"_gpt_log_attempt {_oid}: {_e_la}")
 
 
 async def gpt_watch_msg_remember(code: str, message_id) -> None:
@@ -12299,16 +12549,16 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
                 _cm_key = f"gpt_confirm_msg:{r['order_id']}"
                 _cm_mid = (await get_setting(_cm_key, "") or "").strip()
                 if _cm_mid.isdigit():
+                    # Тот же подписанный вид, что и у остальных карточек,
+                    # плюс журнал попыток. Александр 04.10.2026.
+                    _txt_rc = await gpt_watch_card(
+                        _code, _uid, r["order_id"], _v, stage="late",
+                        note=("Сообщение о неудаче было преждевременным: сайт "
+                              "дозавершил заказ, сверка это подтвердила. "
+                              "Делать ничего не нужно."))
                     await bot.edit_message_text(
-                        f"✅ <b>ChatGPT — активация всё-таки прошла</b>\n\n"
-                        f"👤 {await _who_user(_uid)} · {r['plan_name']}\n"
-                        f"🔑 <code>{_code}</code> · сайт: <b>{_v}</b>\n"
-                        f"📧 {_email or '—'}\n"
-                        f"🆔 <code>{r['order_id']}</code>\n\n"
-                        f"Сообщение о неудаче было преждевременным: сайт "
-                        f"дозавершил заказ, сверка это подтвердила. "
-                        f"Делать ничего не нужно.",
-                        chat_id=ADMIN_ID, message_id=int(_cm_mid), parse_mode="HTML")
+                        _txt_rc, chat_id=ADMIN_ID, message_id=int(_cm_mid),
+                        parse_mode="HTML")
                     await set_setting(_cm_key, "")
                     # Помечаем, что карточка этого заказа УЖЕ обновлена. По этой
                     # метке слежение и отчёт кнопки молчат вместо того, чтобы
@@ -12969,20 +13219,55 @@ async def gpt_order_mark_activated(order_id: str, user_id: int, code: str,
     _amid = (_ord or {}).get("admin_msg_id")
     if not _amid:
         return False
-    _who = ""
+    # Ник печатался ДВАЖДЫ: сначала «@ник», следом _who_user(), который сам
+    # возвращает «@ник (id)». В чат уходило «@Ruslik81 (@Ruslik81 (116211210))».
+    # Нашёл по скриншоту Александра 04.10.2026.
+    import html as _h_om
+    _un = _fn = ""
     try:
         _u = await get_user(user_id)
-        _un = (_u or {}).get("username") or ""
-        _who = ("@" + _un) if _un else f"id{user_id}"
+        _un = ((_u or {}).get("username") or "").strip()
+        _fn = ((_u or {}).get("full_name") or "").strip()
     except Exception:
-        _who = f"id{user_id}"
+        pass
+    _nick = ("@" + _un) if _un else (_h_om.escape(strip_surrogates(_fn)) or f"id{user_id}")
+    # Тариф и оплата — из заказа: в этой карточке их не было вовсе.
+    _plan_om = _pay_om = _promo_om = ""
+    try:
+        _o_om = await fk_get_order(order_id) or {}
+        _amt_om = _o_om.get("amount_rub")
+        _pm_om = {"sbp": "СБП", "card": "карта"}.get(
+            (_o_om.get("payment_method") or "").strip().lower(), "")
+        _bits_om = []
+        if _amt_om:
+            _bits_om.append(f"<b>{int(_amt_om)} \u20bd</b>")
+        if _pm_om:
+            _bits_om.append(_pm_om)
+        if _o_om.get("paid_at"):
+            try:
+                _bits_om.append(_o_om["paid_at"].astimezone(_BOT_TZ).strftime("%d.%m %H:%M"))
+            except Exception:
+                pass
+        _pay_om = " \u00b7 ".join(_bits_om)
+        _promo_om = (_o_om.get("promo_code") or "").strip()
+    except Exception as _e_om:
+        logging.warning(f"order_mark: заказ {order_id}: {_e_om}")
+    try:
+        _pl_om = await _gpt_plan_of_code(code)
+    except Exception:
+        _pl_om = ""
+    _att_om = await gpt_attempts_block(order_id)
     _txt = (f"✅ <b>Заказ активирован</b>\n\n"
-            f"👤 {_who} ({await _who_user(user_id)})\n"
-            f"🔑 <code>{code}</code>\n"
-            + (f"📧 <code>{email}</code>\n" if email else "")
-            + (f"🏢 <code>{org}</code>\n" if org else "")
-            + f"🆔 <code>{order_id}</code>\n"
-            + f"{await _fk_num_line(order_id)}\n"
+            f"👤 Клиент: <b>{_nick}</b>  (<code>{user_id}</code>)\n"
+            + (f"📦 Тариф: <b>{_h_om.escape(_pl_om)}</b>\n" if _pl_om else "")
+            + (f"💳 Оплата: {_pay_om}\n" if _pay_om else "")
+            + (f"🎟 Промокод: <b>{_h_om.escape(_promo_om)}</b>\n" if _promo_om else "")
+            + f"🔑 Код: <code>{code}</code>\n"
+            + (f"📧 Email: <b>{_h_om.escape(str(email))}</b>\n" if email else "")
+            + (f"🏢 Organization: <code>{_h_om.escape(str(org))}</code>\n" if org else "")
+            + f"🆔 Order: <code>{order_id}</code>\n"
+            + f"{await _fk_num_line(order_id)}"
+            + (f"\n{_att_om}\n" if _att_om else "")
             + (f"\n<i>{note}</i>" if note else ""))
     try:
         await bot.edit_message_text(_txt, chat_id=ADMIN_ID, message_id=_amid,
