@@ -741,7 +741,7 @@
       <div class="step-ico">1️⃣</div>
       <div class="step-body">
         <div class="sh">Зайди на сайт chatgpt.com</div>
-        <div class="sp">Открой в Google Chrome или Safari</div>
+        <div class="sp">В браузере: Chrome, Safari, Opera, Яндекс или Firefox — не в приложении ChatGPT</div>
       </div>
     </div>
 
@@ -763,7 +763,7 @@
     <div class="lc-box">
       <a class="lc-url" id="sess-link" href="https://chatgpt.com/api/auth/session"
          target="_blank" rel="noopener">https://chatgpt.com/api/auth/session</a>
-      <div class="lc-sub">Открой её в том браузере, где ты вошёл в ChatGPT — в Chrome или Safari</div>
+      <div class="lc-sub">Открой её в том браузере, где ты вошёл в ChatGPT. Видишь только <code>{}</code> — значит, в этом браузере ты не вошёл.</div>
       <div class="lc-btns">
         <button type="button" class="lc-btn primary" id="sess-copy">📋 Скопировать ссылку</button>
         <button type="button" class="lc-btn" id="sess-open">↗ Открыть</button>
@@ -897,7 +897,7 @@
     <div class="error-emoji">😔</div>
     <div class="error-title">Не получилось</div>
     <div class="error-sub" id="err-detail">
-      Возможно токен истёк или скопирован неверно. Напиши Александру — помогу в течение 10 минут!
+      Оплата сохранена, код за тобой. Скорее всего токен устарел или скопирован не целиком — войди в ChatGPT в другом браузере и скопируй весь текст заново. Не выходит — напиши Александру, активирует вручную за 15–30 минут.
     </div>
 
     <div class="btn-wrap-inline">
@@ -1331,7 +1331,7 @@ function showError(msg) {
   var again = document.querySelector('#s5 .btn-green');
   if (again) { again.style.display = ''; again.textContent = 'Попробовать снова'; again.onclick = function(){ showScreen('s2'); }; }
   var el = document.getElementById('err-detail');
-  if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
+  if (el) el.textContent = msg || 'Ошибка активации. Оплата сохранена, код за тобой — напиши Александру, активирует вручную.';
   showScreen('s5');
 }
 
@@ -1639,9 +1639,9 @@ function _initChatgptWebApp() {
     json:'<div class="ms-json"><span class="cpy">Копировать всё</span>{"WARNING":"...",<br>"user":{"email":"...","name":"..."},<br><span class="ms-hl">"accessToken":"eyJhbGciOi..."</span>,<br>"expires":"2026-..","..."}}}</div>'
   };
   var _INSTR_STEPS=[
-    {t:'Открой браузер',d:'Запусти Google Chrome или Safari. Не приложение ChatGPT, а именно браузер.',s:'icons'},
+    {t:'Открой браузер',d:'Запусти Chrome, Safari, Opera, Яндекс или Firefox. Не приложение ChatGPT и не браузер внутри Telegram, а именно обычный браузер.',s:'icons'},
     {t:'Зайди на chatgpt.com и авторизуйся',d:'Набери chatgpt.com в адресной строке и войди в свой аккаунт (Google, Apple, телефон или email).',s:'login'},
-    {t:'Открой ссылку с токеном',d:'Скопируй ссылку chatgpt.com/api/auth/session и перейди по ней в ТОМ ЖЕ браузере.',s:'url'},
+    {t:'Открой ссылку с токеном',d:'Скопируй ссылку chatgpt.com/api/auth/session и перейди по ней в ТОМ ЖЕ браузере. Если видишь только {} — ты не вошёл в ChatGPT в этом браузере.',s:'url'},
     {t:'Скопируй весь текст и вставь в бота',d:'Выдели и скопируй ВЕСЬ текст со страницы (от {"WARNING до false}}}), вернись в бота и вставь в поле.',s:'json'}
   ];
   function _buildInstr(){

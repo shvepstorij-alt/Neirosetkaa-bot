@@ -6665,11 +6665,7 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                     pass
                 await set_setting(f"order_done:{oid}", "1")
             if uid:
-                try:
-                    await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌",
-                                           parse_mode="HTML")
-                except Exception:
-                    pass
+                await _notify_manual_done(uid, svc_key)
             return web.json_response({"ok": True, "msg": _msg_fm})
 
         if action == "resend":
@@ -7256,10 +7252,7 @@ async def api_admin_shop_order_action_handler(request: web.Request) -> web.Respo
             if not _ok_m:
                 return web.json_response({"ok": False, "msg": _msg_m})
             if uid:
-                try:
-                    await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌", parse_mode="HTML")
-                except Exception:
-                    pass
+                await _notify_manual_done(uid, svc)
             return web.json_response({"ok": True, "msg": _msg_m})
         return web.json_response({"ok": False})
     except Exception as _e:
@@ -10243,9 +10236,11 @@ async def _run_activation_job(
                         f"\U0001f511 \u041a\u043b\u044e\u0447: <code>{code}</code>\n"
                         f"{_ordline_ok}\n"
                         f"\U0001f4c5 \u0414\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0434\u043e: <b>{_end}</b>\n\n"
-                        "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043f\u043e\u043a\u0443\u043f\u043a\u0443! \U0001f64c",
+                        "💡 Если Plus не видно — выйди из ChatGPT и зайди снова (или обнови страницу).\n\n"
+                        "Спасибо за покупку! 🙌",
                         chat_id=user_id, message_id=_mid, parse_mode="HTML",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="Открыть ChatGPT ↗", url="https://chatgpt.com")],
                             [InlineKeyboardButton(text="\u041c\u043e\u0439 \u043f\u0440\u043e\u0444\u0438\u043b\u044c", callback_data="menu_profile", **_prof_kw)],
                             [_eib("\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e", "back_main")],
                         ])
@@ -10266,14 +10261,17 @@ async def _run_activation_job(
                         f"🔑 Ключ: <code>{code}</code>\n"
                         f"{_ordline_ok}\n"
                         f"📅 Действует до: <b>{_end2}</b>\n\n"
+                        "💡 Если Plus не видно — выйди из ChatGPT и зайди снова (или обнови страницу).\n\n"
                         "Спасибо за покупку! 🙌",
                         parse_mode="HTML",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="Открыть ChatGPT ↗", url="https://chatgpt.com")],
                             [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile")],
                             [_eib("Главное меню", "back_main")],
                         ]))
                 except Exception as _e2:
                     logging.error(f"gpt success new msg: {_e2}")
+            schedule_channel_invite(user_id, "ChatGPT")
             try:
                 import datetime as _dt
                 _used_at = _dt.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
@@ -10598,21 +10596,27 @@ async def _run_activation_job(
                 try:
                     await bot.send_message(
                         user_id,
-                        "❌ <b>Токен недействителен или истёк</b>\n\n"
-                        "Токен нужно скопировать заново — он обновляется после каждого входа в ChatGPT.\n\n"
-                        "<b>Как получить новый токен:</b>\n"
-                        "1. Зайди на <b>chatgpt.com</b> и войди в аккаунт\n"
-                        "2. Открой <b>chatgpt.com/api/auth/session</b>\n"
-                        "3. Скопируй весь текст целиком и вставь в форму\n\n"
-                        "👇 Нажми кнопку ниже и попробуй снова",
+                        "⚠️ <b>Активация не прошла — сайт не принял токен</b>\n\n"
+                        "💳 <b>Оплата сохранена, код за тобой</b> — ничего не потеряно, "
+                        "повторять можно сколько угодно.\n\n"
+                        "<b>Почему так бывает:</b> токен устарел (он меняется после каждого "
+                        "входа в ChatGPT) или скопирован не целиком. Чаще всего помогает "
+                        "войти в ChatGPT <b>в другом браузере</b>.\n\n"
+                        "<b>Что сделать:</b>\n"
+                        "1️⃣ Открой другой браузер — Chrome, Safari, Opera, Яндекс или Firefox "
+                        "(не приложение ChatGPT и не браузер внутри Telegram)\n"
+                        "2️⃣ Зайди на <b>chatgpt.com</b> и войди в <b>тот же</b> аккаунт\n"
+                        "3️⃣ В этом же браузере открой <code>chatgpt.com/api/auth/session</code>\n"
+                        "4️⃣ Скопируй <b>ВЕСЬ</b> текст страницы и нажми «Повторить»\n\n"
+                        "💡 Если на странице только <code>{}</code> — значит, в этом браузере "
+                        "ты не вошёл в ChatGPT.",
                         parse_mode="HTML",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(
-                                text="🔄 Ввести токен заново",
+                                text="🔄 Повторить", style="success",
                                 web_app=_WebAppInfo(url=_same_url)
-                            )],
-                            [InlineKeyboardButton(
-                                text="❓ Нужна помощь", style="primary",
+                            ), InlineKeyboardButton(
+                                text="💬 Поддержка", style="primary",
                                 callback_data="gpt_need_help"
                             )],
                         ])
@@ -10692,6 +10696,11 @@ async def _run_activation_job(
                     "status": "done", "success": False,
                     "error": "Временно нет свободных мест. Александр активирует вручную 🙌"}
                 return
+            elif not (result.get("error") or "").strip():
+                # Сайт не назвал причину — исход неизвестен, ниже бот следит
+                # за кодом. Раньше сюда же падала «Попытка N не удалась»: клиент
+                # получал ошибку, а через минуту — «Подписка активирована».
+                pass
             else:
                 # Другая ошибка (таймаут, сеть, неизвестное) — код остаётся тем же
                 # Считаем попытки только для не-токенных ошибок
@@ -10709,19 +10718,22 @@ async def _run_activation_job(
                         await bot.send_message(
                             user_id,
                             f"⚠️ <b>Попытка {attempt} из {MAX_RETRIES} не удалась</b>\n\n"
-                            f"{error_text}\n\n"
-                            f"💡 Частая причина — устаревший токен/сессия: открой "
-                            f"<b>chatgpt.com/api/auth/session</b>, скопируй ВЕСЬ текст заново и вставь. "
-                            f"И проверь, что аккаунт на бесплатном плане.\n\n"
+                            f"Ответ сайта: <i>{_html_esc_fail(error_text)}</i>\n\n"
+                            f"💳 <b>Оплата сохранена, код за тобой</b> — повторять безопасно.\n\n"
+                            f"<b>Перед повтором проверь:</b>\n"
+                            f"• аккаунт ChatGPT на <b>бесплатном</b> плане (без Plus/Team)\n"
+                            f"• токен свежий: открой <code>chatgpt.com/api/auth/session</code>, "
+                            f"скопируй <b>ВЕСЬ</b> текст заново\n"
+                            f"• не помогает — войди в ChatGPT в <b>другом браузере</b> "
+                            f"(Chrome, Safari, Opera) и возьми токен там\n\n"
                             f"Попробуй ещё раз 👇",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                 [InlineKeyboardButton(
-                                    text="🔄 Повторить активацию",
+                                    text="🔄 Повторить", style="success",
                                     web_app=_WebAppInfo(url=_same_url)
-                                )],
-                                [InlineKeyboardButton(
-                                    text="❓ Нужна помощь", style="primary",
+                                ), InlineKeyboardButton(
+                                    text="💬 Поддержка", style="primary",
                                     callback_data="gpt_need_help"
                                 )],
                             ])
@@ -10737,16 +10749,25 @@ async def _run_activation_job(
                     try:
                         await bot.send_message(
                             user_id,
-                            f"😔 <b>Не удалось активировать после {MAX_RETRIES} попыток</b>\n\n"
-                            f"💡 Чаще всего помогает: заново скопировать токен со страницы "
-                            f"chatgpt.com/api/auth/session (он обновляется после каждого входа) "
-                            f"и убедиться, что аккаунт на бесплатном плане.\n\n"
-                            f"Если не выходит — напиши Александру, активирую вручную в течение 15–30 минут!",
+                            f"😔 <b>Автоматически активировать не вышло ({MAX_RETRIES} попытки)</b>\n\n"
+                            f"💳 <b>Оплата сохранена, код закреплён за тобой</b> — деньги не "
+                            f"пропадут, подписку активируем.\n\n"
+                            f"🙋 Я уже передал Александру твой код и заказ — он активирует "
+                            f"вручную, обычно за 15–30 минут. Напиши ему, если хочешь ускорить "
+                            f"или уточнить почту аккаунта.\n\n"
+                            f"💡 Можно ещё раз попробовать самому: войди в ChatGPT в "
+                            f"<b>другом браузере</b>, открой <code>chatgpt.com/api/auth/session</code> "
+                            f"и скопируй <b>ВЕСЬ</b> текст. Аккаунт должен быть на бесплатном плане.",
                             parse_mode="HTML",
                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                 [InlineKeyboardButton(
                                     text="💬 Написать Александру",
                                     url=f"https://t.me/{PERSONAL_USERNAME}"
+                                )],
+                                [InlineKeyboardButton(
+                                    text="🔄 Попробовать ещё раз",
+                                    web_app=_WebAppInfo(url=webapp_url(
+                                        "/webapp/chatgpt", plan=plan_name, code=code))
                                 )],
                             ])
                         )
@@ -10767,7 +10788,9 @@ async def _run_activation_job(
                         )
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
-                        "error": f"Не удалось после {MAX_RETRIES} попыток. Напиши @{PERSONAL_USERNAME}"
+                        "error": f"Автоматически не вышло. Оплата сохранена, код за тобой — "
+                                 f"Александр уже получил заказ и активирует вручную "
+                                 f"(обычно 15–30 минут). Ускорить: @{PERSONAL_USERNAME}"
                     }
                     return  # выходим, не перезаписываем job ниже
 
@@ -10797,6 +10820,13 @@ async def _run_activation_job(
                     logging.warning(f"GPT: слежение за {code}: {_e_nw}")
                 logging.warning(f"GPT: {code} — сайт не объяснил причину, "
                                 f"клиенту ошибку НЕ показываю, слежу за кодом.")
+            elif _token_invalid:
+                _activation_jobs[job_id] = {
+                    "status": "done", "success": False, "token_invalid": True,
+                    "error": "Сайт не принял токен. Оплата сохранена, код за тобой. "
+                             "Войди в ChatGPT в другом браузере (Chrome, Safari, Opera), "
+                             "открой chatgpt.com/api/auth/session, скопируй ВЕСЬ текст "
+                             "заново и нажми «Попробовать снова»."}
             else:
                 _activation_jobs[job_id] = {"status": "done", "success": False,
                                             "error": error_text}
@@ -10952,6 +10982,98 @@ def _fail_should_alert(service: str, user_id: int, window: int = 900) -> bool:
     return False
 def _fail_clear(service: str, user_id: int):
     _fail_alert_at.pop((service, user_id), None)
+
+
+def _html_esc_fail(t) -> str:
+    import html as _h_ef
+    return _h_ef.escape(str(t or ""))
+
+
+# ── Приглашение в канал после успешной активации ─────────────────────────
+# Шлём отдельным сообщением через пару секунд после поздравления, чтобы оно
+# не терялось внутри карточки заказа. Не чаще раза в 30 дней на клиента и
+# не тем, кто уже в канале (если бот админ канала и может это проверить).
+_CHANNEL_INVITE_EVERY = 30 * 24 * 3600
+
+
+def _channel_url() -> str:
+    from config import ADMIN_USERNAME as _ch_un
+    return f"https://t.me/{_ch_un}" if _ch_un else ""
+
+
+async def _send_channel_invite(user_id: int, service: str = "", delay: float = 4.0):
+    import time as _t_ci
+    _url = _channel_url()
+    if not user_id or not _url:
+        return
+    _key = f"chinv:{int(user_id)}"
+    try:
+        _last = int((await get_setting(_key, "") or "0").strip() or 0)
+        if _t_ci.time() - _last < _CHANNEL_INVITE_EVERY:
+            return
+    except Exception:
+        pass
+    try:
+        from config import CHANNEL_ID as _ch_id
+        if _ch_id:
+            _m = await bot.get_chat_member(_ch_id, int(user_id))
+            if getattr(_m, "status", "") in ("member", "administrator", "creator"):
+                return
+    except Exception:
+        pass  # бот не админ канала — проверить нельзя, просто приглашаем
+    await asyncio.sleep(delay)
+    _svc = f" из <b>{service}</b>" if service else " из нейросетей"
+    try:
+        await bot.send_message(
+            int(user_id),
+            "📣 <b>Ты с нами — добро пожаловать!</b>\n\n"
+            f"В канале <b>Александр ИИ</b> рассказываю, как выжать максимум{_svc}:\n\n"
+            "⚡️ свежие фишки и обновления — раньше, чем о них напишут другие\n"
+            "🧠 готовые промпты и разборы под реальные задачи\n"
+            "🎁 розыгрыши подписок — только для подписчиков канала\n\n"
+            "Подписывайся, чтобы не пропустить 👇",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📣 Подписаться на канал", url=_url)],
+            ]))
+        await set_setting(_key, str(int(_t_ci.time())))
+    except Exception as _e_ci:
+        logging.warning(f"channel invite uid={user_id}: {_e_ci}")
+
+
+_SVC_TITLES = {"chatgpt": ("ChatGPT", "https://chatgpt.com"),
+               "claude": ("Claude", "https://claude.ai"),
+               "perplexity": ("Perplexity", "https://perplexity.ai")}
+
+
+async def _notify_manual_done(uid: int, svc_key: str = ""):
+    """Клиенту: заказ закрыт вручную из админки — подписка активна."""
+    _title, _site = _SVC_TITLES.get((svc_key or "").lower(), ("", ""))
+    _rows = []
+    if _site:
+        _rows.append([InlineKeyboardButton(text=f"Открыть {_title} ↗", url=_site)])
+    _rows.append([InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{PERSONAL_USERNAME}")])
+    try:
+        await bot.send_message(
+            uid,
+            f"🎉 <b>Подписка{(' ' + _title) if _title else ''} активирована!</b>\n\n"
+            "Всё готово — можно пользоваться 🙌\n"
+            "💡 Если подписку не видно — выйди из аккаунта и зайди снова.\n\n"
+            "Остались вопросы — жми «Поддержка», ответим.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=_rows))
+    except Exception:
+        pass
+    schedule_channel_invite(uid, _title)
+
+
+def schedule_channel_invite(user_id: int, service: str = ""):
+    """Не блокирует вызывающего: приглашение уходит фоном через пару секунд."""
+    try:
+        asyncio.create_task(_send_channel_invite(user_id, service))
+    except Exception as _e_sci:
+        logging.warning(f"schedule channel invite uid={user_id}: {_e_sci}")
 
 # message_id активационного сообщения клиента (чтобы заменить на поздравление после успеха)
 _gpt_act_msg: dict = {}
@@ -12631,7 +12753,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         await bot.send_message(
                             user_id,
                             "📋 <b>Инструкция по активации ChatGPT</b>\n\n"
-                            "1️⃣ Зайди на <b>chatgpt.com</b> и авторизуйся (в Chrome или Safari).\n"
+                            "1️⃣ Зайди на <b>chatgpt.com</b> и авторизуйся в обычном браузере — Chrome, Safari, Opera, Яндекс или Firefox.\n"
                             "2️⃣ В том же браузере открой страницу с токеном:\n"
                             "<code>chatgpt.com/api/auth/session</code>\n"
                             "3️⃣ Скопируй <b>весь</b> текст страницы целиком.\n"
@@ -16195,7 +16317,7 @@ async def _send_claude_webapp_to_user(
             await bot.send_message(
                 user_id,
                 "📋 <b>Инструкция по активации Claude</b>\n\n"
-                "1️⃣ Зайди на <b>claude.ai</b> и авторизуйся (в Chrome или Safari).\n"
+                "1️⃣ Зайди на <b>claude.ai</b> и авторизуйся в обычном браузере — Chrome, Safari, Opera, Яндекс или Firefox.\n"
                 "2️⃣ Открой настройки аккаунта:\n"
                 "<code>claude.ai/settings/account</code>\n"
                 "3️⃣ Прокрути до «Organization ID» и скопируй UUID.\n"
@@ -16969,7 +17091,9 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
         f"🔑 Ключ: <code>{code}</code>\n"
         f"{_oref_cl2}\n"
         f"📅 Действует до: <b>{_end_cl}</b>\n\n"
-        "Подписка появится в Claude в течение 5–10 минут. Спасибо за покупку! 🙌"
+        "⏱ Подписка появится в Claude в течение 5–10 минут.\n"
+        "💡 Если Pro не видно — выйди из Claude и зайди снова.\n\n"
+        "Спасибо за покупку! 🙌"
     )
     _kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
@@ -16989,6 +17113,7 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
             await bot.send_message(user_id, _congrats, parse_mode="HTML", reply_markup=_kb)
         except Exception:
             pass
+    schedule_channel_invite(user_id, "Claude")
 
     try:
         _caption = (
@@ -19554,7 +19679,7 @@ async def _send_perplexity_webapp_to_user(
             await bot.send_message(
                 user_id,
                 "📋 <b>Инструкция по активации Perplexity</b>\n\n"
-                "1️⃣ Зайди на <b>perplexity.ai</b> и авторизуйся (в Chrome или Safari).\n"
+                "1️⃣ Зайди на <b>perplexity.ai</b> и авторизуйся в обычном браузере — Chrome, Safari, Opera, Яндекс или Firefox.\n"
                 "2️⃣ Открой страницу сессии:\n"
                 "<code>perplexity.ai/api/auth/session</code>\n"
                 "3️⃣ Скопируй значение поля «id» (UUID).\n"
@@ -19916,6 +20041,7 @@ async def _perplexity_notify_success(code, user_id, order_id, plan_name, org_id)
             await bot.send_message(user_id, _congrats_cl, parse_mode="HTML", reply_markup=_kb_cl)
         except Exception:
             pass
+    schedule_channel_invite(user_id, "Perplexity")
     try:
         _caption_ok = (
             f"✅ <b>Perplexity авто-активация OK</b>\n\n"

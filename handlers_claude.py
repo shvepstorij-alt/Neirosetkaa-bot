@@ -106,12 +106,15 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
         await cb.message.answer(
             "\u2705 <b>Готово!</b>\n\n"
             "Подписка активирована. Можешь заходить в Claude и пользоваться \U0001f389\n\n"
-            "Если возникнут вопросы — пиши @neirosetkaalex",
+            f"Если возникнут вопросы — пиши @{PERSONAL_USERNAME}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
                 [_eib("Главное меню", "back_main")]
             ])
         )
+        from common import schedule_channel_invite as _sci
+        _sci(uid, "Claude")
         try:
             await bot.send_message(
                 ADMIN_ID,
@@ -735,7 +738,7 @@ async def test_claude_webapp(message: Message):
     )
     await message.answer(
         "📋 <b>Инструкция по активации Claude</b>\n\n"
-        "1️⃣ Зайди на <b>claude.ai</b> и авторизуйся (в Chrome или Safari).\n"
+        "1️⃣ Зайди на <b>claude.ai</b> и авторизуйся в обычном браузере — Chrome, Safari, Opera, Яндекс или Firefox.\n"
         "2️⃣ Открой настройки аккаунта:\n"
         "<code>claude.ai/settings/account</code>\n"
         "3️⃣ Прокрути до «Organization ID» и скопируй UUID.\n"

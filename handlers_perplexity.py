@@ -101,12 +101,15 @@ async def cb_perplexity_manual_activated(cb: CallbackQuery):
         await cb.message.answer(
             "\u2705 <b>Готово!</b>\n\n"
             "Подписка активирована. Можешь заходить в Perplexity и пользоваться \U0001f389\n\n"
-            "Если возникнут вопросы — пиши @neirosetkaalex",
+            f"Если возникнут вопросы — пиши @{PERSONAL_USERNAME}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Открыть Perplexity ↗", url="https://perplexity.ai")],
                 [_eib("Главное меню", "back_main")]
             ])
         )
+        from common import schedule_channel_invite as _sci
+        _sci(uid, "Perplexity")
         try:
             await bot.send_message(
                 ADMIN_ID,
@@ -694,7 +697,7 @@ async def test_perplexity_webapp(message: Message):
     )
     await message.answer(
         "📋 <b>Инструкция по активации Perplexity</b>\n\n"
-        "1️⃣ Зайди на <b>perplexity.ai</b> и авторизуйся (в Chrome или Safari).\n"
+        "1️⃣ Зайди на <b>perplexity.ai</b> и авторизуйся в обычном браузере — Chrome, Safari, Opera, Яндекс или Firefox.\n"
         "2️⃣ Открой страницу сессии:\n"
         "<code>perplexity.ai/api/auth/session</code>\n"
         "3️⃣ Скопируй значение поля «id» (UUID).\n"

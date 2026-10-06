@@ -1353,14 +1353,15 @@ async def test_gpt_webapp(message: Message):
     )
     await message.answer(
         "📋 <b>Инструкция по активации ChatGPT</b>\n\n"
-        "1️⃣ Зайди на <b>chatgpt.com</b> и авторизуйся (в Chrome или Safari).\n"
+        "1️⃣ Зайди на <b>chatgpt.com</b> и авторизуйся в обычном браузере — Chrome, Safari, Opera, Яндекс или Firefox.\n"
         "2️⃣ В том же браузере открой страницу с токеном:\n"
         "<code>chatgpt.com/api/auth/session</code>\n"
         "3️⃣ Скопируй <b>весь</b> текст страницы целиком.\n"
         "4️⃣ Вернись в мини-приложение (кнопка «Активировать подписку»), "
         "вставь токен — подписка активируется автоматически за 1–2 минуты.\n\n"
         f"🎟 Код активации: <code>{code}</code>\n"
-        "⚠️ Аккаунт должен быть на бесплатном плане.",
+        "⚠️ Аккаунт должен быть на бесплатном плане.\n"
+        "💡 Если на странице только <code>{}</code> — ты не вошёл в ChatGPT в этом браузере.",
         parse_mode="HTML")
 
 
@@ -1371,7 +1372,9 @@ async def cb_gpt_need_help(cb: CallbackQuery):
     await ensure_user(uid, cb.from_user.username or '', cb.from_user.full_name)
     await cb.message.answer(
         "❓ <b>Нужна помощь с активацией?</b>\n\n"
-        "Напиши Александру — он активирует вручную в течение 15–30 минут.\n\n"
+        "💳 Оплата сохранена, код за тобой — ничего не потеряется.\n"
+        "Напиши Александру — он активирует вручную в течение 15–30 минут. "
+        "Чтобы было быстрее, укажи почту аккаунта ChatGPT.\n\n"
         "После того как Александр активировал твою подписку — нажми кнопку ниже 👇",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1414,14 +1417,19 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
         await delete_pending_activation(uid)
         await log_event(uid, "manual_activated", f"code={code} plan={plan_name}")
         await cb.message.answer(
-            "✅ <b>Готово!</b>\n\n"
-            "Сессия закрыта. Можешь заходить в ChatGPT и пользоваться 🎉\n\n"
-            "Если возникнут вопросы — пиши @neirosetkaalex",
+            "🎉 <b>Подписка ChatGPT активирована!</b>\n\n"
+            f"📦 Тариф: <b>{plan_name}</b>\n\n"
+            "Заходи в ChatGPT и пользуйся 🙌\n"
+            "💡 Если Plus не видно — выйди из аккаунта и зайди снова.\n\n"
+            f"Остались вопросы — пиши @{PERSONAL_USERNAME}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Открыть ChatGPT ↗", url="https://chatgpt.com")],
                 [_eib("Главное меню", "back_main")]
             ])
         )
+        from common import schedule_channel_invite as _sci
+        _sci(uid, "ChatGPT")
         try:
             await bot.send_message(
                 ADMIN_ID,
