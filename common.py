@@ -3318,6 +3318,15 @@ async def api_admin_profit_handler(request: web.Request) -> web.Response:
             since, until = today - _dt_pf.timedelta(days=29), today + _dt_pf.timedelta(days=1)
         else:
             since = today - _dt_pf.timedelta(days=day_off); until = since + _dt_pf.timedelta(days=1)
+        # Экран шлёт выбранную дату, а сервер её не читал: заголовок показывал
+        # выбранный день, а цифры приходили за сегодня. Самопроверка 06.10.2026.
+        _d_pick = str(body.get("date") or "").strip()
+        if _d_pick and period not in ("week", "month"):
+            try:
+                since = _dt_pf.date.fromisoformat(_d_pick[:10])
+                until = since + _dt_pf.timedelta(days=1)
+            except Exception:
+                pass
         rate = float(await get_setting("cost_usd_rate", "90") or "90")
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -3432,7 +3441,7 @@ async def api_admin_profit_handler(request: web.Request) -> web.Response:
             logging.error(f"profit routes: {_e_rt}")
             _routes = {}
         _RU = {"ph": "Филиппинские", "ios": "iOS",
-               "unknown": "Маршрут не определён", "manual": "Код не привязан",
+               "unknown": "Маршрут не определён", "manual": "Без записанного кода",
                "multi": "Ушло несколько кодов"}
         gpt_routes = [{
             "plan": _pn,
@@ -3508,6 +3517,1456 @@ async def api_admin_profit_handler(request: web.Request) -> web.Response:
     except Exception as _e:
         logging.error(f"api_admin_profit: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_gpt_unbound_handler(request: web.Request) -> web.Response:
+    """Каждый оплаченный заказ ChatGPT без записанного кода — с причиной.
+
+    В «Прибыли» такие заказы шли одной строкой «Код не привязан» с подписью
+    «активирован вручную мимо бота». Это была догадка, а не факт: причин
+    несколько, и часть из них — деньги клиента без подписки. Здесь по каждому
+    заказу причина определяется по данным, а не предполагается.
+    Александр 06.10.2026: «важно знать и понимать каждый код».
+    """
+    import datetime as _dt_ub
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        # Окно — то же, что у «Денег» (по Алматы), иначе число в строке
+        # «Без записанного кода» и длина этого списка расходились бы.
+        period = str(body.get("period") or "today")
+        if period == "day" and str(body.get("dayOffset") or "0").strip() == "1":
+            period = "yesterday"
+        _rg = _fin_range(period, str(body.get("date") or ""))
+        since, until = _rg["since"], _rg["until"]
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            _off = await _fin_db_offset(conn)
+            _kv_ub = (await _fin_cfg(conn))["kv"]
+            rows = await conn.fetch(
+                "SELECT f.order_id, f.user_id, f.pack, f.amount_rub, f.paid_at, f.num, f.status, "
+                "       f.promo_code, f.payment_method, u.username, u.full_name, NULL::text AS nst "
+                "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+                "WHERE f.status='paid' AND f.pack LIKE 'shop:chatgpt:%' "
+                "  AND f.paid_at>=$1 AND f.paid_at<$2 "
+                "  AND NOT EXISTS (SELECT 1 FROM gpt_codes g "
+                "                   WHERE g.order_id=f.order_id AND g.used_at IS NOT NULL) "
+                "ORDER BY f.paid_at DESC", _fin_to_db(_rg["a"], _off), _fin_to_db(_rg["b"], _off))
+            # Причина — по ТОМУ ЖЕ правилу, что в «Выдаче» и «Заказах»
+            # (_adm_order_states): раньше здесь была своя логика, и ручной
+            # тариф без выдачи тут был «нормой», а в «Выдаче» — «ждёт тебя».
+            _st_ub = await _adm_order_states(conn, rows, _kv_ub, _off)
+            _logs = {}
+            if rows:
+                for x in await conn.fetch(
+                        "SELECT key, value FROM settings WHERE key = ANY($1::text[])",
+                        [f"gptlog:{r['order_id']}" for r in rows]):
+                    _logs[x["key"][7:]] = x["value"] or ""
+            # состояние → (вид для этого экрана, уровень, пояснение)
+            _MAP = {"done_manual": ("closed_manual", "ok"), "work": ("manual_plan", "warn"),
+                    "work_client": ("manual_plan", "wait"), "checking": ("claimed", "wait"),
+                    "waiting": ("not_activated", "wait"), "expired": ("expired", "warn"),
+                    "held": ("held", "warn"), "no_trace": ("no_trace", "warn"),
+                    "stuck": ("stuck", "warn"), "stalled": ("stalled", "warn")}
+            out, counts = [], {}
+            for r in rows:
+                _oid = r["order_id"]
+                _k0, _n0, _e0, _idx, _pname = _fin_pack(r["pack"])
+                _s = _st_ub.get(_oid) or {"key": "no_trace", "label": "нет данных", "code": ""}
+                _k, _lvl = _MAP.get(_s["key"], (_s["key"], "warn"))
+                _why = _s["label"]
+                if _s["key"] == "done_manual":
+                    _why = "закрыт кнопкой «Активировали вручную»"
+                _log = (_logs.get(_oid) or "").strip()
+                _last = ""
+                if _log:
+                    _lp = _log.split("\n")[-1].split("|")
+                    _last = (_lp[2] if len(_lp) > 2 else "")
+                    _last = "успех" if _last == "ok" else _last
+                counts[_k] = counts.get(_k, 0) + 1
+                _pa = r["paid_at"]
+                _is_st = (r["payment_method"] or "").lower() == "stars"
+                out.append({
+                    "order": _oid, "num": r["num"],
+                    "user": ("@" + r["username"]) if r["username"] else (
+                        strip_surrogates(r["full_name"] or "") or f"id{r['user_id']}"),
+                    "uid": int(r["user_id"] or 0),
+                    "plan": _pname, "amount": 0 if _is_st else int(r["amount_rub"] or 0),
+                    "promo": r["promo_code"] or "",
+                    "pm": ("звёзды (цена каталога " + str(int(r["amount_rub"] or 0)) + " ₽)") if _is_st else
+                          ("FreeKassa" if int(r["amount_rub"] or 0) > 0 else "монетки"),
+                    "paid": (_fin_from_db(_pa, _off).strftime("%d.%m %H:%M") if _pa else ""),
+                    "code": _s.get("code") or "", "lastTry": _last,
+                    "kind": _k, "level": _lvl, "why": _why})
+        return web.json_response({"ok": True, "items": out, "counts": counts,
+                                  "since": str(since), "until": str(until)})
+    except Exception as _e:
+        logging.error(f"api_admin_gpt_unbound: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+# ═══════════════ Единый расчёт денег для админ-панели ═══════════════════════
+# До 06.10.2026 выручку считали пять экранов, и каждый по-своему:
+#   • Главная и Статистика — сумма amount_rub по ВСЕМ оплаченным заказам:
+#     туда попадали подписки за Stars по рублёвой цене каталога (рублей не
+#     было) и App Store, оплаченный монетками целиком (по одному из двух путей
+#     оплаты сумма оставалась полной);
+#   • Прибыль и Продажи — App Store из другой таблицы (nsgifts_orders), по дате
+#     создания, а не оплаты, и тоже вместе с монетками;
+#   • комиссия 2% снималась и с оплат Stars, которые идут мимо FreeKassa;
+#   • день везде считался по UTC: заказ в 03:00 по Алматы уходил во вчера.
+# Отсюда расхождения между экранами. Теперь все экраны с деньгами берут цифры
+# ТОЛЬКО отсюда: одна выборка, одно правило на каждый вид оплаты.
+
+def _fin_f(v) -> float:
+    try:
+        return float(str(v).replace(",", ".")) if v not in (None, "") else 0.0
+    except Exception:
+        return 0.0
+
+
+def _fin_range(period: str = "today", date_s: str = ""):
+    """Окно отчёта по часам АЛМАТЫ и равное ему прошлое окно для сравнения.
+
+    Если окно включает текущий день, прошлое берётся «к этому же моменту»:
+    сегодня до 14:00 сравнивается со вчера до 14:00, а не с целыми сутками —
+    иначе утром любой день выглядел бы провалом.
+    """
+    _td = datetime.timedelta
+    now = datetime.datetime.now(_BOT_TZ)
+    today = now.date()
+    p = {"day": "today", "week": "7d", "month30": "30d"}.get((period or "").strip(), (period or "today").strip())
+    d_pick = None
+    if date_s:
+        try:
+            d_pick = datetime.date.fromisoformat(str(date_s).strip()[:10])
+            p = "date"
+        except Exception:
+            d_pick = None
+    _MON = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+            "августа", "сентября", "октября", "ноября", "декабря"]
+    if p == "date" and d_pick:
+        s, e, lab = d_pick, d_pick + _td(days=1), d_pick.strftime("%d.%m.%Y")
+    elif p == "yesterday":
+        s, e, lab = today - _td(days=1), today, "Вчера"
+    elif p == "7d":
+        s, e, lab = today - _td(days=6), today + _td(days=1), "7 дней"
+    elif p == "30d":
+        s, e, lab = today - _td(days=29), today + _td(days=1), "30 дней"
+    elif p == "month":
+        s, e = today.replace(day=1), today + _td(days=1)
+        lab = f"С 1 {_MON[today.month - 1]}"
+    else:
+        p = "today"
+        s, e, lab = today, today + _td(days=1), "Сегодня"
+    if s > today:                      # дата из будущего — пустое окно, без сюрпризов
+        e = s
+    n_days = max(1, (e - s).days)
+    a = datetime.datetime.combine(s, datetime.time(0, 0), _BOT_TZ)
+    b = datetime.datetime.combine(e, datetime.time(0, 0), _BOT_TZ)
+    live = b > now                     # окно ещё идёт
+    if p == "month":
+        pa_d = (s - _td(days=1)).replace(day=1)
+    else:
+        pa_d = s - _td(days=n_days)
+    pa = datetime.datetime.combine(pa_d, datetime.time(0, 0), _BOT_TZ)
+    if live:
+        pb = pa + (now - a)
+        b_eff = now
+    else:
+        pb = pa + (b - a)
+        b_eff = b
+    # Прошлое окно не может залезать в текущее: 31-го числа «прошлый месяц
+    # за те же дни» иначе доезжал до 1-го числа текущего. Ревью 06.10.2026.
+    if pb > a:
+        pb = a
+    prev_lab = {"today": "вчера к этому времени", "yesterday": "позавчера",
+                "7d": "прошлые 7 дней", "30d": "прошлые 30 дней",
+                "month": "прошлый месяц за те же дни", "date": "день до этого"}.get(p, "прошлый период")
+    return {"period": p, "label": lab, "since": s, "until": e, "a": a, "b": b, "b_eff": b_eff,
+            "pa": pa, "pb": pb, "prevLabel": prev_lab, "days": n_days, "live": live}
+
+
+async def _fin_db_offset(conn):
+    """Часовой пояс, в котором записаны колонки TIMESTAMP (без зоны).
+
+    Такие колонки заполняет NOW() в поясе сессии базы. Чтобы не гадать, в
+    каком он поясе на Railway, спрашиваем у самой базы. Возвращаем сам пояс
+    (zoneinfo), а не текущий сдвиг: у поясов с летним временем сдвиг зимой и
+    летом разный, и старые даты уезжали бы на час. Если имя пояса не
+    распознаётся — фиксированный текущий сдвиг (как запасной вариант)."""
+    v = await conn.fetchval(
+        "SELECT EXTRACT(EPOCH FROM (LOCALTIMESTAMP - (NOW() AT TIME ZONE 'UTC')))")
+    fixed = datetime.timedelta(seconds=round(_fin_f(v)))
+    try:
+        name = str(await conn.fetchval("SELECT current_setting('TimeZone')") or "").strip()
+        if name and name.upper() not in ("UTC", "ETC/UTC", "GMT", "Z"):
+            import zoneinfo as _zi
+            tz = _zi.ZoneInfo(name)
+            # Проверка: пояс должен давать тот же сдвиг, что база прямо сейчас.
+            if datetime.datetime.now(tz).utcoffset() == fixed:
+                return tz
+    except Exception:
+        pass
+    return fixed
+
+
+def _fin_to_db(dt_aware, off):
+    """Момент (с зоной) → значение для сравнения с колонкой TIMESTAMP."""
+    if isinstance(off, datetime.timedelta):
+        return dt_aware.astimezone(datetime.timezone.utc).replace(tzinfo=None) + off
+    return dt_aware.astimezone(off).replace(tzinfo=None)
+
+
+def _fin_from_db(naive, off):
+    """Значение колонки → момент по Алматы. Колонки с зоной — как есть."""
+    if naive is None:
+        return None
+    if getattr(naive, "tzinfo", None) is not None:
+        return naive.astimezone(_BOT_TZ)
+    if isinstance(off, datetime.timedelta):
+        return (naive - off).replace(tzinfo=datetime.timezone.utc).astimezone(_BOT_TZ)
+    return naive.replace(tzinfo=off).astimezone(_BOT_TZ)
+
+
+async def _fin_cfg(conn) -> dict:
+    """Все настройки, нужные расчёту, одним запросом — без вложенных
+    соединений из пула (get_setting берёт своё соединение)."""
+    rows = await conn.fetch(
+        "SELECT key, value FROM settings WHERE key LIKE 'cost_usd%' OR key LIKE 'manual:%' "
+        "OR key IN ('fk_fee_pct','fin_stars_rub')")
+    kv = {r["key"]: r["value"] for r in rows}
+    rate = _fin_f(kv.get("cost_usd_rate")) or 90.0
+    # Комиссия FreeKassa — ОДНА настройка на всю панель (та же, что в
+    # «Партнёрах»). Пока не задана — 2%, как считала прежняя «Прибыль».
+    fee_raw = kv.get("fk_fee_pct")
+    fee = _fin_f(fee_raw) if fee_raw not in (None, "") else 2.0
+    return {"kv": kv, "rate": rate, "fee": fee, "feeSet": fee_raw not in (None, ""),
+            "stars_rub": _fin_f(kv.get("fin_stars_rub"))}
+
+
+def _fin_unit(cfg, key, idx, route=None):
+    """Закуп одной единицы в рублях: (рубли, точно_по_маршруту)."""
+    kv, rate = cfg["kv"], cfg["rate"]
+    if route in ("ph", "ios"):
+        v = _fin_f(kv.get(f"cost_usd:{key}:{idx}:{route}"))
+        if v > 0:
+            return round(v * rate), True
+    v = _fin_f(kv.get(f"cost_usd:{key}:{idx}"))
+    return (round(v * rate) if v > 0 else 0), False
+
+
+def _fin_pack(pack, credits=0, nsg_name=""):
+    """(ключ_сервиса, имя_сервиса, эмодзи, индекс_тарифа, имя_тарифа) из pack."""
+    p = pack or ""
+    if p.startswith("shop:"):
+        pp = p.split(":")
+        k = pp[1] if len(pp) > 1 else ""
+        idx = int(pp[2]) if len(pp) > 2 and pp[2].isdigit() else 0
+        cat = SHOP_CATALOG.get(k, {}) or {}
+        plans = cat.get("plans", []) or []
+        # Имя тарифа — снимок на момент покупки (4-й сегмент), иначе по индексу.
+        snap = ":".join(pp[3:]).strip() if len(pp) > 3 else ""
+        pn = snap or (plans[idx]["name"] if 0 <= idx < len(plans) else f"#{idx}")
+        return k, cat.get("name", k or "Магазин"), cat.get("emoji", "🛍"), idx, pn
+    if p.startswith("nsg:"):
+        return "appstore", "App Store", "🍎", 0, (nsg_name or "App Store")
+    try:
+        from config import CREDIT_PACKS as _CP
+        _pk = (_CP.get(p) or {}).get("name", "")
+    except Exception:
+        _pk = ""
+    return "credits", "Кредиты", "💳", 0, (_pk or (f"{int(credits)} кр" if credits else "Пакет"))
+
+
+def _fin_match_stars(orders, stars, window_s: int = 300, exclude=None) -> dict:
+    """Связать заказ магазина, оплаченный Stars, с его платежом в журнале.
+
+    Заказ и запись журнала пишутся в ОДНОЙ транзакции (handlers_shop.py), так
+    что время у них совпадает. Ищем платёж того же клиента, того же сервиса,
+    в пределах window_s секунд, ближайший по времени; каждый платёж — одному
+    заказу. orders: [(order_id, user_id, svc_key, paid_at_aware)];
+    stars: [(i, user_id, payload, amount, when_aware)] → {order_id: i}."""
+    out, taken = {}, set(exclude or ())
+    # Индекс по (клиент, сервис): иначе сравнение «каждый с каждым» на
+    # тысячах Stars-оплат занимало секунды. Ревью 06.10.2026.
+    idx = {}
+    for (i, su, pl, _amt, sw) in stars:
+        _pp = str(pl or "").split(":")
+        if len(_pp) > 1 and _pp[0] == "shop" and sw is not None:
+            idx.setdefault((int(su or 0), _pp[1]), []).append((i, sw))
+    for oid, uid, k, pa in sorted(orders, key=lambda x: x[3] or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)):
+        if pa is None:
+            continue
+        best, bd = None, None
+        for (i, sw) in idx.get((int(uid or 0), k), ()):
+            if i in taken:
+                continue
+            d = abs((sw - pa).total_seconds())
+            if d <= window_s and (bd is None or d < bd):
+                best, bd = i, d
+        if best is not None:
+            taken.add(best)
+            out[oid] = best
+    return out
+
+
+async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True) -> dict:
+    """Все деньги за окно [a_dt, b_dt) (aware). Единственный источник цифр.
+
+    Правила (одни для всех экранов):
+      • «Деньги» — рубли, пришедшие через FreeKassa: amount_rub оплаченного
+        заказа. Оплата Stars сюда НЕ входит (рублей не было). App Store,
+        оплаченный монетками, — тоже нет (см. поправку ниже).
+      • Монетки — отдельно, справочно: это не новые деньги.
+      • Stars — в звёздах, из журнала платежей Stars. В рубли переводятся
+        только по курсу, который задал Александр (fin_stars_rub).
+      • Закуп — по каждому оплаченному заказу; если на заказ ушло несколько
+        кодов, учитывается каждый. App Store — только выданный.
+      • Комиссия — % только с рублей FreeKassa.
+      • Доля партнёра (partner_earnings.partner_sum) — вычитается: эти
+        деньги пришли тебе, но принадлежат партнёру. Ревью 06.10.2026.
+    Прибыль = выручка − закуп − комиссия − доля партнёров.
+    Если часть данных не прочиталась — это попадает в warnings и в
+    подсказки на экране, а не молча превращается в ноль."""
+    _td = datetime.timedelta
+    A, B = _fin_to_db(a_dt, off), _fin_to_db(b_dt, off)
+    warnings = []
+    rows = await conn.fetch(
+        "SELECT f.order_id, f.user_id, f.pack, f.credits, f.amount_rub, "
+        "       COALESCE(f.coins_spent,0) AS coins, LOWER(COALESCE(f.payment_method,'')) AS pm, "
+        "       f.paid_at, n.status AS nst, n.price_rub AS nprice, n.price_usd AS nusd, "
+        "       n.service_name AS nname "
+        "FROM fk_orders f LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+        "WHERE f.status='paid' AND f.paid_at>=$1 AND f.paid_at<$2", A, B)
+    ids_all = [r["order_id"] for r in rows]
+    ids_by = {"chatgpt": [], "claude": [], "perplexity": []}
+    for r in rows:
+        k = _fin_pack(r["pack"])[0]
+        if k in ids_by:
+            ids_by[k].append(r["order_id"])
+    used = {}          # order_id -> [route|None, ...] по реально потраченным кодам
+    for k, tbl in (("chatgpt", "gpt_codes"), ("claude", "claude_codes"), ("perplexity", "perplexity_codes")):
+        if not ids_by[k]:
+            continue
+        rcol = "route" if k == "chatgpt" else "NULL::text"
+        try:
+            for x in await conn.fetch(
+                    f"SELECT order_id, {rcol} AS route FROM {tbl} "
+                    f"WHERE order_id = ANY($1::text[]) AND used_at IS NOT NULL", ids_by[k]):
+                used.setdefault(x["order_id"], []).append(x["route"])
+        except Exception as _e_u:
+            logging.error(f"fin: коды {tbl}: {_e_u}")
+            warnings.append(f"Не прочитались коды {k} — закуп и маршруты по {k} могут быть неточными.")
+    partner = {}
+    if ids_all:
+        try:
+            for x in await conn.fetch(
+                    "SELECT order_id, COALESCE(partner_sum,0) AS ps FROM partner_earnings "
+                    "WHERE order_id = ANY($1::text[])", ids_all):
+                partner[x["order_id"]] = int(round(_fin_f(x["ps"])))
+        except Exception as _e_pe:
+            logging.error(f"fin: partner_earnings: {_e_pe}")
+            warnings.append("Не прочитались доли партнёров — прибыль может быть завышена на их сумму.")
+
+    # ── Stars: журнал stars_payments (с 29.09.2026) + старые записи payments ──
+    stars_rows = []
+    try:
+        _first = await conn.fetchval("SELECT MIN(created_at) FROM stars_payments")
+        for x in await conn.fetch(
+                "SELECT user_id, payload, COALESCE(amount,0) AS amount, created_at "
+                "FROM stars_payments WHERE created_at>=$1 AND created_at<$2",
+                a_dt.astimezone(datetime.timezone.utc), b_dt.astimezone(datetime.timezone.utc)):
+            stars_rows.append((x["user_id"], x["payload"] or "", int(x["amount"] or 0),
+                               x["created_at"].astimezone(_BOT_TZ)))
+        # Пакеты кредитов за Stars до появления журнала писались в payments
+        # (method='stars', в amount_rub — число звёзд). После — пишутся в оба
+        # места, поэтому берём payments только ДО первой записи журнала.
+        _lq = ("SELECT user_id, COALESCE(amount_rub,0) AS amount, created_at FROM payments "
+               "WHERE method='stars' AND created_at>=$1 AND created_at<$2")
+        _largs = [A, B]
+        if _first is not None:
+            _lq += " AND created_at<$3"
+            _largs.append(_fin_to_db(_first, off))
+        for x in await conn.fetch(_lq, *_largs):
+            stars_rows.append((x["user_id"], "pack:legacy", int(x["amount"] or 0),
+                               _fin_from_db(x["created_at"], off)))
+    except Exception as _e_st:
+        logging.error(f"fin: stars: {_e_st}")
+        warnings.append("Не прочитался журнал Stars — звёзды за период не показаны.")
+
+    stars_rate = cfg["stars_rub"]
+    fee_pct = cfg["fee"]
+    # Звёзды конкретного заказа: тогда они попадают в его тариф, маршрут
+    # ChatGPT и час/день — и прибыль по маршрутам сходится с сервисом.
+    _st_idx = [(i, x[0], x[1], x[2], x[3]) for i, x in enumerate(stars_rows)]
+    _st_ord = []
+    for r in rows:
+        if (r["pm"] or "") == "stars":
+            _k0 = _fin_pack(r["pack"])[0]
+            _st_ord.append((r["order_id"], r["user_id"], _k0, _fin_from_db(r["paid_at"], off)))
+    # Stars-заказы, отменённые после оплаты: их звёзды в выручку не идут —
+    # как и рубли отменённых заказов FreeKassa (раньше платёж такого заказа
+    # оставался «непривязанным» и попадал в выручку). Ревью 06.10.2026.
+    # Сначала платежи получают ОПЛАЧЕННЫЕ заказы, и только из оставшихся —
+    # отменённые: отменённый заказ без своей записи в журнале не должен
+    # забрать платёж соседа. Отменённые берём строго внутри периода — иначе
+    # вчерашняя отмена в 23:58 забирала сегодняшний платёж в 00:02.
+    _st_match = _fin_match_stars(_st_ord, _st_idx)
+    _st_cx_ord = []
+    try:
+        for x in await conn.fetch(
+                "SELECT order_id, user_id, pack, paid_at FROM fk_orders "
+                "WHERE status IN ('cancelled','refunded') AND LOWER(COALESCE(payment_method,''))='stars' "
+                "AND paid_at>=$1 AND paid_at<$2", A, B):
+            _st_cx_ord.append((x["order_id"], x["user_id"], _fin_pack(x["pack"])[0], _fin_from_db(x["paid_at"], off)))
+    except Exception as _e_sc:
+        logging.error(f"fin: отменённые Stars: {_e_sc}")
+        warnings.append("Не прочитались отменённые Stars-заказы — их звёзды могли попасть в выручку.")
+    _st_cx_match = _fin_match_stars(_st_cx_ord, _st_idx, exclude=set(_st_match.values()))
+    _st_used = set(_st_match.values()) | set(_st_cx_match.values())
+    # звёзды каждого отменённого Stars-заказа — для подсказки в «Деньгах»
+    stars_cx = {oid: stars_rows[i][2] for oid, i in _st_cx_match.items()}
+    days = []
+    _d = a_dt.date()
+    while _d < b_dt.date():
+        days.append(_d)
+        _d = _d + _td(days=1)
+    hourly = len(days) == 1
+    _z = lambda: {"money": 0, "stars": 0, "cost": 0, "fee": 0, "partner": 0, "orders": 0}
+    buckets = {h: _z() for h in range(24)} if hourly else {d: _z() for d in days}
+
+    def _bk(dt_local):
+        return dt_local.hour if hourly else dt_local.date()
+
+    T = {"money": 0, "moneyOrders": 0, "orders": 0, "cost": 0, "fee": 0, "partner": 0,
+         "partnerOrders": 0, "coins": 0, "coinsOrders": 0, "stars": 0, "starsN": 0,
+         "starsRub": 0, "starsOrders": 0, "appstoreUndelivered": 0, "costMissing": 0,
+         "creditsNoCost": 0}
+    payers = set()
+    svc = {}
+    # Способ (СБП/карта) у большинства заказов не записывается — бот ставит
+    # 'sbp' по умолчанию или не ставит ничего. Делить FreeKassa на «СБП» и
+    # «карту» значило бы показывать выдуманную разбивку. Ревью 06.10.2026.
+    src = {"fk": {"n": 0, "rub": 0}, "coins": {"n": 0, "rub": 0},
+           "stars": {"n": 0, "stars": 0, "rub": 0}}
+    routes = {}
+    missing_plans = set()
+
+    def _svc(k, name, emoji):
+        return svc.setdefault(k, {"key": k, "name": name, "emoji": emoji, "cnt": 0, "money": 0,
+                                  "stars": 0, "starsRub": 0, "coins": 0, "cost": 0, "fee": 0,
+                                  "partner": 0, "missing": False, "plans": {}})
+
+    def _plan(S, pname):
+        return S["plans"].setdefault(pname, {"name": pname, "cnt": 0, "money": 0, "coins": 0,
+                                             "cost": 0, "fee": 0, "partner": 0, "stars": 0,
+                                             "starsRub": 0, "missing": False})
+
+    for r in rows:
+        oid = r["order_id"]
+        k, name, emoji, idx, pname = _fin_pack(r["pack"], r["credits"] or 0, r["nname"] or "")
+        pm = r["pm"] or ""
+        coins = int(r["coins"] or 0)
+        is_stars = (pm == "stars")
+        money = 0 if is_stars else int(r["amount_rub"] or 0)
+        # Поправка App Store: при оплате ЦЕЛИКОМ монетками один из путей
+        # оставлял amount_rub = полной цене. Деньгами считаем только то, что
+        # не покрыто монетками.
+        if k == "appstore" and coins > 0 and r["nprice"] is not None:
+            money = min(money, max(0, int(r["nprice"] or 0) - coins))
+        # Закуп
+        cost = 0
+        miss = False
+        if k not in ("appstore", "credits"):
+            # Подписки магазина: по кодам, если они есть (ChatGPT/Claude/
+            # Perplexity), иначе одна единица закупа по тарифу.
+            codes = used.get(oid) or []
+            if codes:
+                for _rt in codes:
+                    u, _ex = _fin_unit(cfg, k, idx, _rt)
+                    cost += u
+                    if u == 0:
+                        miss = True
+            else:
+                u, _ex = _fin_unit(cfg, k, idx)
+                cost = u
+                miss = (u == 0)
+        elif k == "appstore":
+            if (r["nst"] or "") == "fulfilled":
+                cost = round(_fin_f(r["nusd"]) * cfg["rate"])
+            else:
+                T["appstoreUndelivered"] += 1
+        else:
+            T["creditsNoCost"] += 1
+        fee = round(money * fee_pct / 100) if money > 0 else 0
+        psum = partner.get(oid, 0)
+        dt_l = _fin_from_db(r["paid_at"], off)
+        _si = _st_match.get(oid)
+        st_amt = stars_rows[_si][2] if _si is not None else 0
+        st_rub = round(st_amt * stars_rate) if (st_amt and stars_rate > 0) else 0
+        if _si is not None:
+            T["stars"] += st_amt
+            T["starsN"] += 1
+            T["starsRub"] += st_rub
+            src["stars"]["n"] += 1
+            src["stars"]["stars"] += st_amt
+            src["stars"]["rub"] += st_rub
+
+        T["orders"] += 1
+        T["money"] += money
+        T["cost"] += cost
+        T["fee"] += fee
+        T["partner"] += psum
+        if psum:
+            T["partnerOrders"] += 1
+        if money > 0:
+            T["moneyOrders"] += 1
+            src["fk"]["n"] += 1
+            src["fk"]["rub"] += money
+        if coins > 0:
+            T["coins"] += coins
+            T["coinsOrders"] += 1
+            src["coins"]["n"] += 1
+            src["coins"]["rub"] += coins
+        if is_stars:
+            T["starsOrders"] += 1
+        if miss and k not in ("appstore", "credits"):
+            T["costMissing"] += 1
+            missing_plans.add(f"{name} · {pname}")
+        if money > 0 or is_stars or coins > 0:
+            payers.add(int(r["user_id"] or 0))
+        bk = _bk(dt_l) if dt_l else None
+        if bk in buckets:
+            for _f, _v in (("money", money), ("cost", cost), ("fee", fee), ("partner", psum),
+                           ("stars", st_rub)):
+                buckets[bk][_f] += _v
+            buckets[bk]["orders"] += 1
+        S = _svc(k, name, emoji)
+        P = _plan(S, pname)
+        for X in (S, P):
+            X["cnt"] += 1
+            X["money"] += money
+            X["coins"] += coins
+            X["cost"] += cost
+            X["fee"] += fee
+            X["partner"] += psum
+            X["stars"] += st_amt
+            X["starsRub"] += st_rub
+            if miss and k not in ("appstore", "credits"):
+                X["missing"] = True
+
+        # ChatGPT по маршруту кода
+        if k == "chatgpt":
+            codes = used.get(oid) or []
+            rts = sorted({x for x in codes if x})
+            if not codes:
+                rk = "manual"
+            elif len(codes) > 1:
+                rk = "multi"
+            elif not rts:
+                rk = "unknown"
+            else:
+                rk = rts[0]
+            exact = all(_fin_unit(cfg, k, idx, x)[1] for x in codes) if codes and rk in ("ph", "ios") else False
+            R = routes.setdefault(pname, {}).setdefault(
+                rk, {"cnt": 0, "codes": 0, "money": 0, "cost": 0, "fee": 0, "partner": 0,
+                     "exact": True, "stars": 0, "starsAmt": 0, "starsRub": 0, "starsNoLink": 0})
+            R["cnt"] += 1
+            if is_stars:
+                R["stars"] += 1
+                R["starsAmt"] += st_amt
+                R["starsRub"] += st_rub
+                if _si is None:
+                    R["starsNoLink"] += 1
+            R["codes"] += len(codes)
+            R["money"] += money
+            R["cost"] += cost
+            R["fee"] += fee
+            R["partner"] += psum
+            if not exact:
+                R["exact"] = False
+
+    # Stars — по журналу платежей
+    for _i_st, (_uid, _payload, _amt, _when) in enumerate(stars_rows):
+        if _i_st in _st_used:
+            continue          # уже учтён в своём заказе выше
+        T["stars"] += _amt
+        T["starsN"] += 1
+        payers.add(int(_uid or 0))
+        _rub = round(_amt * stars_rate) if stars_rate > 0 else 0
+        T["starsRub"] += _rub
+        src["stars"]["n"] += 1
+        src["stars"]["stars"] += _amt
+        src["stars"]["rub"] += _rub
+        _is_shop = _payload.startswith("shop:")
+        if _is_shop:
+            _k2, _n2, _e2, _i2, _p2 = _fin_pack(_payload)
+            # имя тарифа в payload Stars — отпечаток, не имя; берём по индексу
+            _cat2 = SHOP_CATALOG.get(_k2, {}) or {}
+            _pl2 = _cat2.get("plans", []) or []
+            _p2 = _pl2[_i2]["name"] if 0 <= _i2 < len(_pl2) else f"#{_i2}"
+        else:
+            _k2, _n2, _e2, _p2 = "credits", "Кредиты", "💳", "за Stars"
+            T["orders"] += 1          # пакет кредитов за Stars: заказа в fk_orders нет
+        S = _svc(_k2, _n2, _e2)
+        P = _plan(S, _p2)
+        for X in (S, P):
+            X["stars"] += _amt
+            X["starsRub"] += _rub
+            if not _is_shop:
+                X["cnt"] += 1
+        if _when is not None:
+            bk = _bk(_when)
+            if bk in buckets:
+                buckets[bk]["stars"] += _rub
+                if not _is_shop:
+                    buckets[bk]["orders"] += 1
+
+    rev = T["money"] + T["starsRub"]
+    T["revenue"] = rev
+    T["profit"] = rev - T["cost"] - T["fee"] - T["partner"]
+    T["margin"] = round(T["profit"] / rev * 100) if rev else 0
+    T["avgCheck"] = round(T["money"] / T["moneyOrders"]) if T["moneyOrders"] else 0
+    T["payers"] = len(payers - {0})
+    T["feePct"] = fee_pct
+    T["starsRate"] = stars_rate
+    out = {"totals": T, "warnings": warnings, "starsCancelledMap": stars_cx}
+    if not detail:
+        return out
+
+    pts = []
+    _WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    for bk, v in buckets.items():
+        _rv = v["money"] + v["stars"]
+        if hourly:
+            lab, key = f"{bk:02d}", f"{bk:02d}:00"
+        else:
+            lab, key = bk.strftime("%d.%m"), bk.isoformat()
+        pts.append({"key": key, "label": lab,
+                    "wd": ("" if hourly else _WD[bk.weekday()]),
+                    "money": v["money"], "starsRub": v["stars"], "revenue": _rv,
+                    "cost": v["cost"], "fee": v["fee"], "partner": v["partner"],
+                    "profit": _rv - v["cost"] - v["fee"] - v["partner"], "orders": v["orders"]})
+    out["series"] = {"unit": "hour" if hourly else "day", "points": pts}
+
+    services = []
+    for S in svc.values():
+        _rv = S["money"] + S["starsRub"]
+        plans = []
+        for P in S["plans"].values():
+            _prv = P["money"] + P["starsRub"]
+            plans.append({**P, "revenue": _prv, "profit": _prv - P["cost"] - P["fee"] - P["partner"]})
+        plans.sort(key=lambda x: (-x["revenue"], -x["cnt"]))
+        services.append({**{k2: v2 for k2, v2 in S.items() if k2 != "plans"},
+                         "revenue": _rv, "profit": _rv - S["cost"] - S["fee"] - S["partner"],
+                         "plans": plans})
+    services.sort(key=lambda x: (-x["revenue"], -x["cnt"]))
+    out["services"] = services
+
+    _SRC = [("fk", "FreeKassa (СБП / карта)"), ("stars", "Telegram Stars"), ("coins", "Монетки (не деньги)")]
+    out["sources"] = [{"key": k3, "label": l3, **src[k3]} for k3, l3 in _SRC if src[k3]["n"]]
+
+    _RU = {"ph": "Филиппинские", "ios": "iOS", "unknown": "Маршрут не определён",
+           "manual": "Без записанного кода", "multi": "Ушло несколько кодов"}
+    gr = []
+    for pn, rv in routes.items():
+        rows2 = [{"key": rk, "label": _RU.get(rk, rk), "cnt": v["cnt"], "codes": v["codes"],
+                  "rev": v["money"] + v["starsRub"], "money": v["money"], "cost": v["cost"],
+                  "fee": v["fee"], "partner": v["partner"],
+                  "starsCnt": v["stars"], "starsAmt": v["starsAmt"], "starsRub": v["starsRub"],
+                  "starsNoLink": v["starsNoLink"],
+                  "profit": v["money"] + v["starsRub"] - v["cost"] - v["fee"] - v["partner"],
+                  "exact": bool(v["exact"])}
+                 for rk, v in rv.items()]
+        rows2.sort(key=lambda x: (-x["rev"], -x["cnt"]))
+        gr.append({"plan": pn, "rows": rows2})
+    gr.sort(key=lambda g: -sum(x["rev"] for x in g["rows"]))
+    out["gptRoutes"] = gr
+    out["unbound"] = sum(v.get("manual", {}).get("cnt", 0) for v in routes.values())
+    out["missingPlans"] = sorted(missing_plans)
+    return out
+
+
+async def _fin_users(conn, a_dt, b_dt, off) -> int:
+    """Новые клиенты: появились в базе в этот период И запускали бота.
+
+    Строку в users заводит и вход в канал — такие люди бота не открывали, их
+    отсекает started_at IS NOT NULL. Считаем по дате появления (created_at),
+    а не по started_at: у старых клиентов, запускавших бота до появления этой
+    колонки, started_at пустой, и при следующем /start они «рождались» бы
+    новыми в тот день. Ревью 06.10.2026."""
+    return int(await conn.fetchval(
+        "SELECT COUNT(*) FROM users WHERE created_at>=$1 AND created_at<$2 AND started_at IS NOT NULL",
+        _fin_to_db(a_dt, off), _fin_to_db(b_dt, off)) or 0)
+
+
+async def api_admin_fin_handler(request: web.Request) -> web.Response:
+    """Деньги за период — единый источник для «Сводки» и «Деньги»."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        rg = _fin_range(str(body.get("period") or "today"), str(body.get("date") or ""))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            off = await _fin_db_offset(conn)
+            cfg = await _fin_cfg(conn)
+            cur = await _fin_collect(conn, rg["a"], rg["b"], off, cfg, detail=True)
+            prv = await _fin_collect(conn, rg["pa"], rg["pb"], off, cfg, detail=False)
+            nu = await _fin_users(conn, rg["a"], rg["b"], off)
+            nu_p = await _fin_users(conn, rg["pa"], rg["pb"], off)
+            # Деньги, которые НЕ вошли в выручку, но о которых надо знать:
+            #  • отменён после оплаты — ты отменил оплаченный заказ;
+            #  • монетки вернул фон, а доплата рублями через FreeKassa осталась;
+            #  • оплата пришла по заказу, который уже отменён/возвращён
+            #    (вебхук пишет номер FreeKassa, но заказ оплаченным не делает).
+            # Монетки — не рубли: у App Store, оплаченного ими, деньги = цена − монетки.
+            # «Разобрался» (order_resolved:) убирает заказ из предупреждений.
+            _cxr = await conn.fetch(
+                "SELECT f.order_id, f.status, f.amount_rub, COALESCE(f.coins_spent,0) AS coins, "
+                "       n.price_rub AS nprice, f.pack, COALESCE(f.fk_intid,'') AS fki, f.paid_at, "
+                "       EXISTS(SELECT 1 FROM settings st WHERE st.key='order_resolved:'||f.order_id) AS rs "
+                "       , LOWER(COALESCE(f.payment_method,''))='stars' AS st "
+                "FROM fk_orders f LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+                "WHERE f.status IN ('cancelled','refunded') "
+                "AND COALESCE(f.paid_at, f.created_at)>=$1 AND COALESCE(f.paid_at, f.created_at)<$2",
+                _fin_to_db(rg["a"], off), _fin_to_db(rg["b"], off))
+        T = cur["totals"]
+        T["newUsers"] = nu
+        for _kz in ("cancelledPaid", "cancelledPaidRub", "cancelledPaidStars", "refundRub", "refundRubN",
+                    "latePaid", "latePaidRub"):
+            T[_kz] = 0
+        for _x in _cxr:
+            if _x["rs"]:
+                continue          # отмечен «Разобрался»
+            _m = 0 if _x["st"] else int(_x["amount_rub"] or 0)
+            if (_x["pack"] or "").startswith("nsg:") and _x["nprice"] is not None and int(_x["coins"] or 0) > 0:
+                _m = min(_m, max(0, int(_x["nprice"] or 0) - int(_x["coins"] or 0)))
+            if _x["paid_at"] is None:
+                if _x["fki"] and not _x["st"]:
+                    T["latePaid"] += 1
+                    T["latePaidRub"] += int(_x["amount_rub"] or 0)
+                continue
+            if _x["status"] == "cancelled":
+                T["cancelledPaid"] += 1
+                T["cancelledPaidRub"] += _m
+                if _x["st"]:
+                    T["cancelledPaidStars"] += 1
+                    T["starsCancelled"] = T.get("starsCancelled", 0) + int(
+                        (cur.get("starsCancelledMap") or {}).get(_x["order_id"], 0))
+            elif _m > 0 and _x["fki"]:
+                # Рубли были, только если платёж прошёл через FreeKassa (есть
+                # её номер). У оплаты целиком монетками amount_rub бывает равен
+                # цене, а coins_spent фон при возврате обнуляет.
+                T["refundRubN"] += 1
+                T["refundRub"] += _m
+        P = prv["totals"]
+        notes = []
+        if T["stars"] and not T["starsRate"]:
+            notes.append(f"Stars: {T['stars']} ⭐ ({T['starsN']} оплат) не входят в выручку и прибыль — "
+                         "не задан курс звезды в рублях. Закуп по этим заказам в затратах учтён.")
+        if T["costMissing"]:
+            notes.append(f"У {T['costMissing']} заказов не задан закуп — прибыль по ним завышена: "
+                         + ", ".join(cur.get("missingPlans", [])[:6]))
+        if T["appstoreUndelivered"]:
+            notes.append(f"App Store: {T['appstoreUndelivered']} оплаченных заказов ещё не выдано — "
+                         "закупа по ним нет, в затратах их нет.")
+        if T["creditsNoCost"]:
+            notes.append("Пакеты кредитов: стоимость генераций (API нейросетей) в затраты не входит.")
+        if T["partner"]:
+            notes.append(f"Доля партнёров: {T['partner']} ₽ по {T['partnerOrders']} заказ(ам) — вычтена "
+                         "из прибыли (эти деньги принадлежат партнёрам).")
+        if T["refundRubN"]:
+            notes.append(f"Заказ не выдан, монетки вернулись, а доплата рублями осталась: "
+                         f"{T['refundRubN']} заказ(ов) на {T['refundRub']} ₽ — в выручку не входят. "
+                         "Верни клиентам или выдай вручную (в «Выдаче» — «нужно действие»).")
+        if T["latePaid"]:
+            notes.append(f"Оплата пришла по уже отменённому заказу: {T['latePaid']} шт, ожидалось "
+                         f"{T['latePaidRub']} ₽ — в выручку не входит. Разберись (в «Выдаче» — «нужно действие»). "
+                         "Такие заказы считаются в день СОЗДАНИЯ заказа: дату самой оплаты бот не записывает.")
+        for _w in cur.get("warnings") or []:
+            notes.append("⚠️ " + _w)
+        if T["cancelledPaid"]:
+            notes.append(f"Отменены после оплаты: {T['cancelledPaid']} на {T['cancelledPaidRub']} ₽"
+                         + (f" (из них за Stars: {T['cancelledPaidStars']}"
+                            + (f", {T['starsCancelled']} ⭐" if T.get("starsCancelled") else "") + ")"
+                            if T["cancelledPaidStars"] else "")
+                         + " — в выручку не входят. Проверь, вернулись ли деньги, и отметь «Разобрался» "
+                         "в карточке заказа (в «Выдаче» — «нужно действие»).")
+        return web.json_response({
+            "ok": True, "period": rg["period"], "label": rg["label"],
+            "since": rg["since"].isoformat(), "until": rg["until"].isoformat(),
+            "live": rg["live"], "prevLabel": rg["prevLabel"],
+            "asOf": datetime.datetime.now(_BOT_TZ).strftime("%d.%m %H:%M"),
+            "totals": T,
+            "prev": {"revenue": P["revenue"], "money": P["money"], "profit": P["profit"],
+                     "partner": P["partner"],
+                     "orders": P["orders"], "newUsers": nu_p, "payers": P["payers"]},
+            "series": cur["series"], "services": cur["services"], "sources": cur["sources"],
+            "gptRoutes": cur["gptRoutes"], "unbound": cur["unbound"],
+            "rate": cfg["rate"], "feeSet": cfg["feeSet"], "notes": notes})
+    except Exception as _e:
+        logging.error(f"api_admin_fin: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_fin_settings_handler(request: web.Request) -> web.Response:
+    """Комиссия FreeKassa (%) и курс звезды (₽ за 1 ⭐) для расчёта денег."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        _out = {}
+        for _k, _key, _lo, _hi in (("fee", "fk_fee_pct", 0.0, 30.0), ("stars", "fin_stars_rub", 0.0, 100.0)):
+            if _k in body and body.get(_k) is not None:
+                _raw = str(body.get(_k)).strip().replace(",", ".")
+                try:
+                    _v = float(_raw) if _raw else 0.0
+                except Exception:
+                    return web.json_response({"ok": False, "msg": "Нужно число"})
+                if not (_lo <= _v <= _hi):
+                    return web.json_response({"ok": False, "msg": f"Допустимо от {_lo:g} до {_hi:g}"})
+                await set_setting(_key, (f"{_v:g}" if _raw else ""))
+                _out[_k] = _v
+        return web.json_response({"ok": True, **_out})
+    except Exception as _e:
+        logging.error(f"api_admin_fin_settings: {_e}")
+        return web.json_response({"ok": False}, status=500)
+
+
+# ═══════════════ Состояние заказа — одно правило для «Заказов» и «Выдачи» ════
+# Раньше «Лента заказов» и «Заказы по типам» решали, выдан ли заказ, каждая
+# по-своему, а «сессия истекла» в «Заказах по типам» считалась от времени
+# ОПЛАТЫ по общей константе — хотя окно активации у каждого сервиса своё и
+# хранится у резерва (expires_at). Здесь состояние берётся из фактов: код
+# записан, резерв жив/истёк, отметка «Активировали вручную», ручной заказ,
+# выдача App Store.
+
+# Деньги одного заказа по тем же правилам, что _fin_collect, — для мест, где
+# нужна сумма прямо в SQL (карточка клиента, «Кого привёл»). Алиасы: f — fk_orders,
+# n — nsgifts_orders (LEFT JOIN по fk_order_id).
+_FIN_MONEY_SQL = ("(CASE WHEN LOWER(COALESCE(f.payment_method,''))='stars' THEN 0 "
+                  "WHEN f.pack LIKE 'nsg:%' AND COALESCE(f.coins_spent,0)>0 AND n.price_rub IS NOT NULL "
+                  "THEN LEAST(f.amount_rub, GREATEST(0, n.price_rub - f.coins_spent)) "
+                  "ELSE COALESCE(f.amount_rub,0) END)")
+
+_ADM_CODE_SVC = {"chatgpt": ("gpt_codes", "gpt_pending_activations", "email"),
+                 "claude": ("claude_codes", "claude_pending_activations", "org_id"),
+                 "perplexity": ("perplexity_codes", "perplexity_pending_activations", "org_id")}
+_ADM_LP_RU = {"awaiting_link": "ждёт ссылку от клиента", "awaiting_payment": "ждёт оплаты у тебя",
+              "awaiting_creds": "ждёт данные от клиента", "awaiting_setup": "оформляешь ты"}
+
+
+_ADM_LP_WAIT_CLIENT = ("awaiting_link", "awaiting_creds")      # ждём клиента
+_ADM_LP_WAIT_OWNER = ("awaiting_payment", "awaiting_setup")     # ждём тебя
+
+
+async def _adm_order_states(conn, rows, kv, off=None) -> dict:
+    """order_id → состояние. rows: order_id, pack, status, nst (статус App Store),
+    paid_at, amount_rub, fk_intid, pm/payment_method, ndel (delivered_at App Store) —
+    чего нет в выборке, считается пустым.
+
+    level: done — выдано; wait — идёт, от тебя ничего не нужно;
+           act — нужно твоё действие; off — не оплачен/отменён/разобран.
+    lp=True — состояние взято из ручного заказа (он же виден во вкладке «Ручные»)."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if off is None:
+        off = await _fin_db_offset(conn)
+
+    def _g(r, key, default=None):
+        try:
+            return r[key] if key in r.keys() else default
+        except Exception:
+            return default
+
+    ids = [r["order_id"] for r in rows]
+    by_svc = {}
+    for r in rows:
+        by_svc.setdefault(_fin_pack(r["pack"])[0], []).append(r["order_id"])
+    used, held, pend = {}, {}, {}
+    for k, (tbl, ptbl, acc) in _ADM_CODE_SVC.items():
+        lst = by_svc.get(k) or []
+        if not lst:
+            continue
+        for x in await conn.fetch(
+                f"SELECT order_id, code, {acc} AS acc, used_at FROM {tbl} "
+                f"WHERE order_id = ANY($1::text[])", lst):
+            (used if x["used_at"] is not None else held).setdefault(x["order_id"], []).append(
+                (x["code"], x["acc"] or ""))
+        _oc = "org_id" if k != "chatgpt" else "NULL::text"
+        # activating_at есть только у ChatGPT: метка «активация запущена».
+        _ac = "activating_at" if k == "chatgpt" else "NULL::timestamptz"
+        for x in await conn.fetch(
+                f"SELECT order_id, code, expires_at, {_oc} AS org, {_ac} AS act_at FROM {ptbl} "
+                f"WHERE order_id = ANY($1::text[])", lst):
+            pend[x["order_id"]] = (x["code"], x["expires_at"], x["org"] or "", x["act_at"])
+    lp = {}
+    flags = {}
+    claims = {}          # order_id -> [(вид, значение)] слежений по этому заказу
+    if ids:
+        for x in await conn.fetch(
+                "SELECT fk_order_id, status, kind FROM linkpay_orders WHERE fk_order_id = ANY($1::text[])", ids):
+            lp[x["fk_order_id"]] = (x["status"] or "", x["kind"] or "")
+        _keys = [f"order_done:{i}" for i in ids] + [f"order_resolved:{i}" for i in ids]
+        for x in await conn.fetch("SELECT key, value FROM settings WHERE key = ANY($1::text[])", _keys):
+            flags[x["key"]] = x["value"] or ""
+        # Слежение ищем по НОМЕРУ ЗАКАЗА (2-я часть значения), а не по коду
+        # из резерва: резерв удаляет фоновая чистка после окна, а слежение и
+        # его «надгробие» живут дольше. Ревью 06.10.2026.
+        for x in await conn.fetch(
+                "SELECT key, value FROM settings "
+                "WHERE (key LIKE 'gptclaim:%' OR key LIKE 'claudecheck:%') "
+                "AND split_part(value, '|', 2) = ANY($1::text[])", ids):
+            _parts = (x["value"] or "").split("|")
+            _kd0, _cc0 = x["key"].split(":", 1)
+            claims.setdefault(_parts[1] if len(_parts) > 1 else "", []).append(
+                (_kd0, x["value"] or "", _cc0.strip().upper()))
+        # …и по коду резерва/закреплённого кода: у старых меток номер заказа
+        # мог быть пустым («uid||ts|»). Оба поиска дополняют друг друга.
+        _code_of = {}
+        for _o, _v in pend.items():
+            if _v[0]:
+                _code_of.setdefault(str(_v[0]).strip().upper(), set()).add(_o)
+        for _o, _lst in held.items():
+            for _c, _a in _lst:
+                if _c:
+                    _code_of.setdefault(str(_c).strip().upper(), set()).add(_o)
+        if _code_of:
+            _ck = [f"gptclaim:{c}" for c in _code_of] + [f"claudecheck:{c}" for c in _code_of]
+            for x in await conn.fetch("SELECT key, value FROM settings WHERE key = ANY($1::text[])", _ck):
+                _kd, _cc = x["key"].split(":", 1)
+                for _o in _code_of.get(_cc, ()):
+                    _item = (_kd, x["value"] or "", _cc.strip().upper())
+                    if _item not in claims.setdefault(_o, []):
+                        claims[_o].append(_item)
+
+    def _lp_state(st_lp):
+        if st_lp in _ADM_LP_WAIT_CLIENT:
+            return {"key": "work_client", "label": "ручная выдача: " + _ADM_LP_RU[st_lp], "level": "wait", "lp": True}
+        return {"key": "work", "label": "ручная выдача: " + _ADM_LP_RU[st_lp], "level": "act", "lp": True}
+
+    out = {}
+    for r in rows:
+        oid = r["order_id"]
+        st = (r["status"] or "").lower()
+        k, _n, _e, idx, _pn = _fin_pack(r["pack"])
+        code, acc = "", ""
+        _pa_raw = _g(r, "paid_at")
+        _paid_at = _fin_from_db(_pa_raw, off) if _pa_raw else None
+        _age = (now - _paid_at).total_seconds() if _paid_at else 0
+        _fki = (_g(r, "fk_intid") or "")
+        _pm = (_g(r, "pm") or _g(r, "payment_method") or "").lower()
+        _resolved = (flags.get(f"order_resolved:{oid}") or "").strip() == "1"
+        if st == "pending":
+            out[oid] = {"key": "unpaid", "label": "не оплачен", "level": "off"}
+            continue
+        if st in ("refunded", "cancelled"):
+            _amt = int(_g(r, "amount_rub") or 0)
+            if _paid_at is None and _fki:
+                # Оплата пришла, когда заказ уже был отменён/возвращён: вебхук
+                # записал номер FreeKassa, но оплаченным заказ не сделал.
+                out[oid] = ({"key": "resolved", "label": "оплата после отмены — разобрано", "level": "off"}
+                            if _resolved else
+                            {"key": "late_paid", "level": "act",
+                             "label": f"деньги пришли по уже отменённому заказу (ожидалось {_amt} ₽) — разберись"})
+            elif st == "refunded" and _paid_at and _amt > 0 and _fki:
+                # Монетки вернул фон, а рубли, доплаченные через FreeKassa, —
+                # нет: их возврат делается руками.
+                out[oid] = ({"key": "resolved", "label": "возврат рублей — разобрано", "level": "off"}
+                            if _resolved else
+                            {"key": "refund_rub", "level": "act",
+                             "label": f"монетки возвращены, но {_amt} ₽ рублями остались — верни клиенту или выдай"})
+            elif st == "refunded":
+                out[oid] = {"key": "refunded", "label": "монетки возвращены", "level": "off"}
+            elif _paid_at is not None:
+                # Отменён ПОСЛЕ оплаты (кнопкой «Отменить» или отменой ручного
+                # заказа). Деньги сами не возвращаются — это действие за тобой,
+                # пока не отметишь «Разобрался». Ревью 06.10.2026.
+                out[oid] = ({"key": "resolved", "label": "отменён после оплаты — разобрано", "level": "off"}
+                            if _resolved else
+                            {"key": "cancelled_paid", "level": "act",
+                             "label": "отменён после оплаты — проверь, вернул ли деньги"})
+            else:
+                out[oid] = {"key": "cancelled", "label": "отменён", "level": "off"}
+            continue
+        if st != "paid":
+            out[oid] = {"key": "cancelled", "label": st or "отменён", "level": "off"}
+            continue
+        _lp = lp.get(oid)
+        _done_flag = (flags.get(f"order_done:{oid}") or "").strip() == "1"
+        if k in _ADM_CODE_SVC:
+            u = used.get(oid) or []
+            h = held.get(oid) or []
+            p = pend.get(oid)
+            if u:
+                code, acc = u[-1]
+                s = {"key": "done", "label": "активирован" + (f" · кодов: {len(u)}" if len(u) > 1 else ""),
+                     "level": "done"}
+            elif _done_flag:
+                s = {"key": "done_manual", "label": "закрыт: «Активировали вручную»", "level": "done"}
+            elif _lp and _lp[0] == "done":
+                s = {"key": "done_manual", "label": "выполнен вручную", "level": "done", "lp": True}
+            elif _lp and _lp[0] in _ADM_LP_RU:
+                s = _lp_state(_lp[0])
+            elif (kv.get(f"manual:{k}:{idx}") or "0") == "1" and not p and not h:
+                s = {"key": "work", "label": "тариф с ручной выдачей — ждёт тебя", "level": "act"}
+            else:
+                _c = (p[0] if p else "") or (h[0][0] if h else "")
+                code = _c or ""
+                _cl = claims.get(oid) or []
+                _cu = code.strip().upper()
+
+                def _is_tomb(_kd, _v):
+                    return _kd == "gptclaim" and "x" in (_v.split("|")[3] if len(_v.split("|")) > 3 else "")
+                # Надгробие считается, только если оно на ТЕКУЩЕМ коде заказа
+                # (или текущего кода нет вовсе). Надгробие старого кода не
+                # должно перекрывать новую выдачу того же заказа. Ревью 06.10.2026.
+                _tomb = any(_is_tomb(_kd, _v) and (not _cu or _c3 == _cu) for _kd, _v, _c3 in _cl)
+                _watch = any(_kd == "gptclaim" and not _is_tomb(_kd, _v) for _kd, _v, _c3 in _cl)
+                # claudecheck — неясный исход Claude: бот спросил ТЕБЯ (кнопки в
+                # чате), сам он ничего не решит.
+                _ccheck = any(_kd == "claudecheck" for _kd, _v, _c3 in _cl)
+                _act_at = p[3] if p else None
+                if _ccheck:
+                    s = {"key": "checking", "level": "act",
+                         "label": "неясный исход активации — решение за тобой (кнопки в чате бота)"}
+                elif _watch:
+                    s = {"key": "checking", "label": "активация идёт / проверка у поставщика", "level": "wait"}
+                elif _tomb:
+                    s = {"key": "stuck", "level": "act",
+                         "label": "сутки в «claimed», слежение брошено — разберись руками"}
+                elif _act_at is not None and p and _paid_at and _act_at >= _paid_at \
+                        and (now - _act_at).total_seconds() > 900:
+                    # Активация уходила поставщику больше 15 минут назад, а
+                    # код не записан и слежения нет: исход неясный, клиенту
+                    # в таких случаях обещана ручная активация. Метка — именно
+                    # этого заказа (поставлена после его оплаты), а не
+                    # перешедшая с прошлой покупки.
+                    s = {"key": "stalled", "level": "act",
+                         "label": "активация запускалась, но не записана — проверь"}
+                elif p and p[1] and p[1] > now:
+                    s = {"key": "waiting",
+                         "label": "ждёт клиента · окно до " + p[1].astimezone(_BOT_TZ).strftime("%d.%m %H:%M"),
+                         "level": "wait"}
+                elif p:
+                    s = {"key": "expired", "label": "окно активации истекло — нужна повторная выдача",
+                         "level": "act"}
+                elif h:
+                    s = {"key": "held", "label": "код закреплён, но активация не записана", "level": "act"}
+                elif _pm == "stars":
+                    s = {"key": "work", "label": "оплачен Stars — активируешь ты вручную", "level": "act"}
+                else:
+                    s = {"key": "no_trace", "label": "нет ни резерва, ни записанного кода — проверь",
+                         "level": "act"}
+                if p and k == "perplexity" and p[2] and s["key"] in ("expired", "held", "no_trace"):
+                    s["label"] += " (активация уже запускалась)"
+        elif k == "appstore":
+            ns = (_g(r, "nst") or "").lower()
+            _has_del = "ndel" in r.keys()
+            if ns == "fulfilled" and (not _has_del or _g(r, "ndel") is not None):
+                s = {"key": "delivered", "label": "выдано", "level": "done"}
+            elif _done_flag:
+                s = {"key": "done_manual", "label": "выдано вручную", "level": "done"}
+            elif ns == "fulfilled":
+                # Код куплен, но отметки «ушёл клиенту» нет: статус fulfilled
+                # ставится ДО отправки. Аудит №18, ревью 06.10.2026.
+                s = {"key": "undelivered", "level": "act",
+                     "label": "код куплен, но клиенту не доставлен — отправь"}
+            elif ns in ("failed", "error"):
+                s = {"key": "failed", "label": "сбой выдачи — проверь", "level": "act"}
+            elif ns and _age > 1800:
+                s = {"key": "stalled", "label": f"выдача не завершилась за 30 мин ({ns}) — проверь", "level": "act"}
+            elif ns:
+                s = {"key": "work", "label": f"выдаётся ({ns})", "level": "wait"}
+            else:
+                s = {"key": "no_trace", "label": "нет записи о выдаче", "level": "act"}
+        elif k == "credits":
+            s = {"key": "delivered", "label": "кредиты начислены", "level": "done"}
+        else:
+            if _done_flag or (_lp and _lp[0] == "done"):
+                s = {"key": "done_manual", "label": "выполнен", "level": "done", "lp": bool(_lp)}
+            elif _lp and _lp[0] in _ADM_LP_RU:
+                s = _lp_state(_lp[0])
+            elif _lp and _lp[0] == "cancelled":
+                s = ({"key": "resolved", "label": "ручной заказ отменён — разобрано", "level": "off"}
+                     if _resolved else
+                     {"key": "cancelled", "label": "ручной заказ отменён — проверь, вернул ли деньги",
+                      "level": "act"})
+            else:
+                s = {"key": "work", "label": "оплачен — ждёт выдачи (ручного заказа нет)", "level": "act"}
+        s["code"], s["acc"] = code, acc
+        out[oid] = s
+    return out
+
+
+async def _adm_stars_amounts(conn, rows, off) -> dict:
+    """Звёзды по каждому заказу магазина, оплаченному Stars (для списков).
+    Тем же правилом, что в «Деньгах» (_fin_match_stars)."""
+    ords = []
+    for r in rows:
+        try:
+            _pm = (r["pm"] if "pm" in r.keys() else r["payment_method"]) or ""
+        except Exception:
+            _pm = ""
+        if str(_pm).lower() == "stars" and (r["pack"] or "").startswith("shop:") and r["paid_at"]:
+            ords.append((r["order_id"], r["user_id"], _fin_pack(r["pack"])[0], _fin_from_db(r["paid_at"], off),
+                         (r["status"] or "") == "paid"))
+    if not ords:
+        return {}
+    lo = min(o[3] for o in ords) - datetime.timedelta(minutes=10)   # запас только для поиска платежей
+    hi = max(o[3] for o in ords) + datetime.timedelta(minutes=10)
+    try:
+        st = await conn.fetch(
+            "SELECT user_id, payload, COALESCE(amount,0) AS amount, created_at FROM stars_payments "
+            "WHERE user_id = ANY($1::bigint[]) AND payload LIKE 'shop:%' "
+            "AND created_at>=$2 AND created_at<$3",
+            list({int(o[1] or 0) for o in ords}), lo, hi)
+    except Exception as _e_sa:
+        logging.error(f"stars amounts: {_e_sa}")
+        return {}
+    lst = [(i, x["user_id"], x["payload"], int(x["amount"] or 0), x["created_at"]) for i, x in enumerate(st)]
+    # как в «Деньгах»: сначала оплаченные заказы, потом отменённые — из остатка
+    m = _fin_match_stars([o[:4] for o in ords if o[4]], lst)
+    m.update(_fin_match_stars([o[:4] for o in ords if not o[4]], lst, exclude=set(m.values())))
+    return {oid: lst[i][3] for oid, i in m.items()}
+
+
+_FEED_LIMIT = 20000   # больше заказов за период — список честно помечается обрезанным
+
+_ADM_FEED_FILTERS = {"act": "Нужно действие", "wait": "В процессе", "done": "Выдано",
+                     "off": "Не оплачены и отменённые"}
+
+
+async def api_admin_orders_feed_handler(request: web.Request) -> web.Response:
+    """«Заказы»: одна лента вместо «Ленты заказов» и «Истории платежей».
+
+    Видно и деньги (способ, промокод, монетки, Stars), и выдачу (состояние по
+    фактам). Время — по Алматы. Сводка денег сверху считается тем же
+    _fin_collect, что и «Деньги», поэтому за одинаковый период цифры совпадают."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        flt = str(body.get("filter") or "all")
+        q = str(body.get("q") or "").strip()
+        try:
+            page = max(0, int(body.get("page") or 0))
+        except Exception:
+            page = 0
+        try:
+            days = max(1, min(int(body.get("days") or 30), 3650))
+        except Exception:
+            days = 30
+        date_s = str(body.get("date") or "").strip()
+        PAGE = 30
+        now_l = datetime.datetime.now(_BOT_TZ)
+        if date_s:
+            try:
+                _d = datetime.date.fromisoformat(date_s[:10])
+            except Exception:
+                _d = now_l.date()
+            a = datetime.datetime.combine(_d, datetime.time(0, 0), _BOT_TZ)
+            b = a + datetime.timedelta(days=1)
+            plabel = _d.strftime("%d.%m.%Y")
+        else:
+            a = datetime.datetime.combine(now_l.date() - datetime.timedelta(days=days - 1),
+                                          datetime.time(0, 0), _BOT_TZ)
+            b = datetime.datetime.combine(now_l.date() + datetime.timedelta(days=1),
+                                          datetime.time(0, 0), _BOT_TZ)
+            plabel = "всё время" if days >= 3650 else f"{days} дн."
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            off = await _fin_db_offset(conn)
+            cfg = await _fin_cfg(conn)
+            where = ["COALESCE(f.paid_at, f.created_at) >= $1", "COALESCE(f.paid_at, f.created_at) < $2"]
+            args = [_fin_to_db(a, off), _fin_to_db(b, off)]
+            if q:
+                _qq = q.lstrip("#@")
+                args += [q, _qq, f"%{q}%", f"%{_qq}%"]
+                n = len(args)
+                where.append(f"(f.fk_intid = ${n-3} OR CAST(f.num AS TEXT) = ${n-2} "
+                             f"OR f.order_id ILIKE ${n-1} OR u.username ILIKE ${n} "
+                             f"OR CAST(f.user_id AS TEXT) = ${n-2})")
+            rows = await conn.fetch(
+                "SELECT f.order_id, f.num, f.user_id, f.amount_rub, f.pack, f.credits, f.status, "
+                "       LOWER(COALESCE(f.payment_method,'')) AS pm, f.promo_code, "
+                "       COALESCE(f.coins_spent,0) AS coins, f.paid_at, f.created_at, f.fk_intid, "
+                "       COALESCE(u.username,'') AS username, COALESCE(u.full_name,'') AS full_name, "
+                "       n.status AS nst, n.price_rub AS nprice, n.service_name AS nname, "
+                "       n.delivered_at AS ndel "
+                "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+                "LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+                f"WHERE {' AND '.join(where)} "
+                f"ORDER BY COALESCE(f.paid_at, f.created_at) DESC LIMIT {_FEED_LIMIT}", *args)
+            states = await _adm_order_states(conn, rows, cfg["kv"], off)
+            _stamt = await _adm_stars_amounts(conn, rows, off)
+            money = None
+            if not q:
+                money = (await _fin_collect(conn, a, b, off, cfg, detail=False))["totals"]
+            # Пакеты кредитов за Stars заказа в fk_orders не имеют — без этого
+            # их не было бы в списке, хотя в «Деньгах» они есть.
+            star_rows = []
+            try:
+                _first = await conn.fetchval("SELECT MIN(created_at) FROM stars_payments")
+                for x in await conn.fetch(
+                        "SELECT s.charge_id AS id, s.user_id, s.payload, COALESCE(s.amount,0) AS amount, "
+                        "       s.created_at AS ts, COALESCE(u.username,'') AS username, "
+                        "       COALESCE(u.full_name,'') AS full_name "
+                        "FROM stars_payments s LEFT JOIN users u ON u.user_id=s.user_id "
+                        "WHERE s.created_at>=$1 AND s.created_at<$2 AND COALESCE(s.payload,'') NOT LIKE 'shop:%' "
+                        "ORDER BY s.created_at DESC",
+                        a.astimezone(datetime.timezone.utc), b.astimezone(datetime.timezone.utc)):
+                    star_rows.append(dict(x))
+                _lq = ("SELECT 'legacy'||p.id AS id, p.user_id, 'pack:legacy' AS payload, "
+                       "       COALESCE(p.amount_rub,0) AS amount, p.created_at AS ts, "
+                       "       COALESCE(u.username,'') AS username, COALESCE(u.full_name,'') AS full_name "
+                       "FROM payments p LEFT JOIN users u ON u.user_id=p.user_id "
+                       "WHERE p.method='stars' AND p.created_at>=$1 AND p.created_at<$2")
+                _la = [_fin_to_db(a, off), _fin_to_db(b, off)]
+                if _first is not None:
+                    _lq += " AND p.created_at<$3"
+                    _la.append(_fin_to_db(_first, off))
+                for x in await conn.fetch(_lq, *_la):
+                    star_rows.append(dict(x))
+            except Exception as _e_sr:
+                logging.error(f"orders_feed: stars: {_e_sr}")
+        if q:
+            _qq = q.lstrip("#@").lower()
+            star_rows = [x for x in star_rows
+                         if _qq and (_qq == str(x["user_id"]) or _qq == (x["username"] or "").lower())]
+        counts = {"all": len(rows) + len(star_rows), "act": 0, "wait": 0, "done": len(star_rows), "off": 0}
+        items = []
+        try:
+            from config import CREDIT_PACKS as _CP2
+        except Exception:
+            _CP2 = {}
+        if flt in ("all", "done"):
+            for x in star_rows:
+                _pk = (x["payload"] or "").split(":")
+                _pkn = ((_CP2.get(_pk[1]) or {}).get("name", "") if len(_pk) > 1 else "") or "Пакет кредитов"
+                _w = _fin_from_db(x["ts"], off)
+                items.append({
+                    "id": "stars:" + str(x["id"]), "virtual": True, "num": None,
+                    "user": ("@" + x["username"]) if x["username"] else (
+                        strip_surrogates(x["full_name"] or "") or f"id{x['user_id']}"),
+                    "userId": x["user_id"], "username": x["username"] or "",
+                    "service": "Кредиты", "emoji": "💳", "svc": "credits", "plan": _pkn, "idx": 0,
+                    "amount": 0, "stars": True, "starsAmount": int(x["amount"] or 0), "catalogRub": 0,
+                    "coins": 0, "method": "Stars", "promo": "", "fk": "", "status": "paid",
+                    "date": _w.strftime("%d.%m %H:%M") if _w else "", "_ts": _w,
+                    "paid": True, "stage": "кредиты начислены", "stageKey": "delivered", "level": "done",
+                    "activated": True, "isAuto": False, "code": "", "acc": ""})
+        for r in rows:
+            s = states.get(r["order_id"]) or {"key": "?", "label": "?", "level": "act"}
+            counts[s["level"]] = counts.get(s["level"], 0) + 1
+            if flt != "all" and s["level"] != flt:
+                continue
+            k, name, emoji, idx, pname = _fin_pack(r["pack"], r["credits"] or 0, r["nname"] or "")
+            coins = int(r["coins"] or 0)
+            is_stars = (r["pm"] == "stars")
+            amt = 0 if is_stars else int(r["amount_rub"] or 0)
+            if k == "appstore" and coins > 0 and r["nprice"] is not None:
+                amt = min(amt, max(0, int(r["nprice"] or 0) - coins))
+            when = _fin_from_db(r["paid_at"] or r["created_at"], off)
+            items.append({
+                "_ts": when,
+                "id": r["order_id"], "num": r["num"],
+                "user": ("@" + r["username"]) if r["username"] else (
+                    strip_surrogates(r["full_name"] or "") or f"id{r['user_id']}"),
+                "userId": r["user_id"], "username": r["username"] or "",
+                "service": name, "emoji": emoji, "svc": k, "plan": pname, "idx": idx,
+                "amount": amt, "stars": is_stars,
+                "catalogRub": int(r["amount_rub"] or 0) if is_stars else 0,
+                "starsAmount": _stamt.get(r["order_id"], 0),
+                "coins": coins,
+                "method": ("Stars" if is_stars else ("Монетки" if (amt == 0 and coins > 0) else
+                           ("FreeKassa" + (" + монетки" if coins > 0 else "") if amt > 0 else ""))),
+                "promo": r["promo_code"] or "", "fk": r["fk_intid"] or "",
+                "status": r["status"] or "",
+                "date": when.strftime("%d.%m %H:%M") if when else "",
+                "paid": bool(r["paid_at"]) and (r["status"] or "") == "paid",
+                "stage": s["label"], "stageKey": s["key"], "level": s["level"],
+                "activated": s["level"] == "done",
+                "isAuto": k in _ADM_CODE_SVC, "code": s.get("code", ""), "acc": s.get("acc", ""),
+            })
+        _far = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+        items.sort(key=lambda x: x.get("_ts") or _far, reverse=True)
+        for _it in items:
+            _it.pop("_ts", None)
+        total = len(items)
+        pages = max(1, (total + PAGE - 1) // PAGE)
+        page = min(page, pages - 1)
+        return web.json_response({
+            "ok": True, "orders": items[page * PAGE:(page + 1) * PAGE], "total": total,
+            "page": page, "pages": pages, "counts": counts, "period": plabel,
+            "money": money, "truncated": len(rows) >= _FEED_LIMIT, "limit": _FEED_LIMIT})
+    except Exception as _e:
+        logging.error(f"api_admin_orders_feed: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+_ADM_DLV_DAYS = 30
+
+
+async def _adm_delivery_rows(conn, svc, off):
+    """Оплаченные заказы сервиса за последние 30 дней (по Алматы) — одна
+    выборка и для «Выдачи», и для плашки «Нужно действие»: числа совпадают.
+    Плюс заказы, где монетки вернули, а рубли остались (status='refunded')."""
+    since = datetime.datetime.combine(
+        datetime.datetime.now(_BOT_TZ).date() - datetime.timedelta(days=_ADM_DLV_DAYS - 1),
+        datetime.time(0, 0), _BOT_TZ)
+    if svc == "appstore":
+        cond, args = "f.pack LIKE 'nsg:%'", []
+    elif svc == "other":
+        # Прочие сервисы магазина + пакеты кредитов, но кредиты — только
+        # проблемные (не 'paid'): обычная покупка кредитов выдаётся сразу и
+        # засоряла бы вкладку. Ревью 06.10.2026.
+        cond = ("((f.pack LIKE 'shop:%' AND f.pack NOT LIKE 'shop:chatgpt:%' "
+                "AND f.pack NOT LIKE 'shop:claude:%' AND f.pack NOT LIKE 'shop:perplexity:%') "
+                "OR (COALESCE(f.pack,'') NOT LIKE 'shop:%' AND COALESCE(f.pack,'') NOT LIKE 'nsg:%' "
+                "    AND f.status<>'paid'))")
+        args = []
+    else:
+        cond, args = "f.pack LIKE $2", [f"shop:{svc}:%"]
+    return await conn.fetch(
+        "SELECT f.order_id, f.num, f.user_id, f.amount_rub, f.pack, f.credits, f.status, "
+        "       LOWER(COALESCE(f.payment_method,'')) AS pm, COALESCE(f.coins_spent,0) AS coins, "
+        "       f.paid_at, f.promo_code, COALESCE(u.username,'') AS username, "
+        "       COALESCE(u.full_name,'') AS full_name, n.status AS nst, n.price_rub AS nprice, "
+        "       n.service_name AS nname, n.pins_json, n.delivered_at AS ndel, f.fk_intid, "
+        "       f.payment_method "
+        "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+        "LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+        f"WHERE {cond} AND COALESCE(f.paid_at, f.created_at) >= $1 "
+        "  AND (f.status='paid' "
+        # монетки вернули, а рубли через FreeKassa остались
+        "       OR (f.status='refunded' AND f.paid_at IS NOT NULL AND COALESCE(f.amount_rub,0)>0 "
+        "           AND COALESCE(f.fk_intid,'')<>'') "
+        # оплата пришла по уже отменённому/возвращённому заказу
+        "       OR (f.status IN ('cancelled','refunded') AND f.paid_at IS NULL "
+        "           AND COALESCE(f.fk_intid,'')<>'') "
+        # отменён ПОСЛЕ оплаты — деньги могли не вернуться
+        "       OR (f.status='cancelled' AND f.paid_at IS NOT NULL)) "
+        "ORDER BY COALESCE(f.paid_at, f.created_at) DESC LIMIT 3000", _fin_to_db(since, off), *args)
+
+
+async def api_admin_delivery_handler(request: web.Request) -> web.Response:
+    """«Выдача» по сервису: последние оплаченные заказы с состоянием по фактам.
+    Сверху — то, где нужно твоё действие."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        svc = str(body.get("svc") or "")
+        if svc not in ("chatgpt", "claude", "perplexity", "appstore", "other"):
+            return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            off = await _fin_db_offset(conn)
+            cfg = await _fin_cfg(conn)
+            rows = await _adm_delivery_rows(conn, svc, off)
+            states = await _adm_order_states(conn, rows, cfg["kv"], off)
+            _stamt = await _adm_stars_amounts(conn, rows, off)
+        out, counts = [], {"act": 0, "wait": 0, "done": 0, "off": 0, "manual": 0}
+        for r in rows:
+            s = dict(states.get(r["order_id"]) or {"key": "?", "label": "?", "level": "act"})
+            # Заказ ведётся ручным заказом — его действие во вкладке «Ручные»,
+            # здесь не считаем второй раз (иначе плашка и вкладки разойдутся).
+            if s.get("lp") and s["level"] == "act":
+                s["level"] = "manual"
+            counts[s["level"]] = counts.get(s["level"], 0) + 1
+            k, name, emoji, idx, pname = _fin_pack(r["pack"], r["credits"] or 0, r["nname"] or "")
+            coins = int(r["coins"] or 0)
+            is_stars = (r["pm"] == "stars")
+            amt = 0 if is_stars else int(r["amount_rub"] or 0)
+            if k == "appstore" and coins > 0 and r["nprice"] is not None:
+                amt = min(amt, max(0, int(r["nprice"] or 0) - coins))
+            when = _fin_from_db(r["paid_at"], off)
+            out.append({
+                "id": r["order_id"], "num": r["num"],
+                "user": ("@" + r["username"]) if r["username"] else (
+                    strip_surrogates(r["full_name"] or "") or f"id{r['user_id']}"),
+                "userId": r["user_id"], "username": r["username"] or "",
+                "service": name, "emoji": emoji, "svc": k, "plan": pname, "idx": idx,
+                "amount": amt, "stars": is_stars, "coins": coins,
+                "catalogRub": int(r["amount_rub"] or 0) if is_stars else 0,
+                "starsAmount": _stamt.get(r["order_id"], 0),
+                "status": r["status"] or "", "fk": "",
+                "method": ("Stars" if is_stars else ("Монетки" if (amt == 0 and coins > 0) else
+                           ("FreeKassa" + (" + монетки" if coins > 0 else "") if amt > 0 else ""))),
+                "promo": r["promo_code"] or "",
+                "date": when.strftime("%d.%m %H:%M") if when else "",
+                "stage": s["label"], "stageKey": s["key"], "level": s["level"],
+                "activated": s["level"] == "done", "isAuto": k in _ADM_CODE_SVC,
+                "code": s.get("code", "") or ((r["pins_json"] or "")[:120] if k == "appstore" else ""),
+                "acc": s.get("acc", ""),
+                "manual": (cfg["kv"].get(f"manual:{k}:{idx}") or "0") == "1",
+                "lp": bool(s.get("lp")),
+            })
+        _ord = {"act": 0, "manual": 1, "wait": 2, "done": 3, "off": 4}
+        out.sort(key=lambda x: _ord.get(x["level"], 9))      # стабильная: внутри группы — новые сверху
+        return web.json_response({"ok": True, "orders": out, "counts": counts,
+                                  "truncated": len(rows) >= 3000})
+    except Exception as _e:
+        logging.error(f"api_admin_delivery: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_attention_handler(request: web.Request) -> web.Response:
+    """Плашка «Нужно действие» на Сводке. Каждое число — кликабельно и
+    совпадает с тем, что покажет экран, куда ведёт клик."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        items = []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            cfg = await _fin_cfg(conn)
+            # Выдача по сервисам — та же выборка, что у «Выдачи» (30 дней).
+            # Заказ, который ведётся ручным заказом, считается во вкладке
+            # «Ручные», а не второй раз здесь.
+            off = await _fin_db_offset(conn)
+            for svc, nm, em in (("chatgpt", "ChatGPT", "✨"), ("claude", "Claude", "⚡"),
+                                ("perplexity", "Perplexity", "🔍"), ("appstore", "App Store", "🍎"),
+                                ("other", "Другие сервисы", "🛍")):
+                rows = await _adm_delivery_rows(conn, svc, off)
+                st = await _adm_order_states(conn, rows, cfg["kv"], off)
+                n_act = sum(1 for v in st.values() if v["level"] == "act" and not v.get("lp"))
+                if n_act:
+                    items.append({"key": f"dlv_{svc}", "icon": em, "n": n_act, "level": "act",
+                                  "label": f"{nm}: заказы ждут твоего действия"
+                                           + (" (считаю по последним 3000 заказам за 30 дней — их больше)"
+                                              if len(rows) >= 3000 else ""),
+                                  "go": svc})
+            n_lp = await conn.fetchval(
+                "SELECT COUNT(*) FROM linkpay_orders WHERE status = ANY($1::text[])",
+                list(_ADM_LP_WAIT_OWNER)) or 0
+            if n_lp:
+                items.append({"key": "manual", "icon": "🔗", "n": int(n_lp), "level": "act",
+                              "label": "Ручные заказы ждут тебя (оплатить / оформить)", "go": "manual"})
+            for svc, nm, tbl in (("chatgpt", "ChatGPT", "gpt_codes"), ("claude", "Claude", "claude_codes"),
+                                 ("perplexity", "Perplexity", "perplexity_codes")):
+                try:
+                    _free = int(await conn.fetchval(f"SELECT COUNT(*) FROM {tbl} WHERE is_used=FALSE") or 0)
+                except Exception:
+                    continue
+                if _free < 10:
+                    items.append({"key": f"pool_{svc}", "icon": "🔑", "n": _free,
+                                  "level": "act" if _free == 0 else "wait",
+                                  "label": f"{nm}: свободных кодов в пуле", "go": f"pool:{svc}"})
+        return web.json_response({"ok": True, "items": items})
+    except Exception as _e:
+        logging.error(f"api_admin_attention: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
 
 
 async def api_admin_prices_handler(request: web.Request) -> web.Response:
@@ -4336,8 +5795,10 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
 
 
 async def api_admin_stats_handler(request: web.Request) -> web.Response:
-    """Статистика за период. Admin-only."""
-    import datetime as _dt_st
+    """Генерации и новые клиенты за период (по Алматы). Admin-only.
+
+    Деньги отсюда больше не берутся: выручку считает только _fin_collect.
+    Поля orders/revenue оставлены для совместимости и тоже идут оттуда."""
     try:
         try:
             body = await request.json()
@@ -4345,56 +5806,50 @@ async def api_admin_stats_handler(request: web.Request) -> web.Response:
             body = {}
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
-        period = body.get("period") or "day"
-        today = _dt_st.date.today()
-        anchor = today
-        _ds = body.get("date")
-        if _ds:
-            try:
-                anchor = _dt_st.date.fromisoformat(str(_ds)); period = "day"
-            except Exception:
-                anchor = today
-        if period == "week":
-            since = anchor - _dt_st.timedelta(days=6); until = anchor + _dt_st.timedelta(days=1)
-        elif period == "month":
-            since = anchor - _dt_st.timedelta(days=29); until = anchor + _dt_st.timedelta(days=1)
-        else:
-            since = anchor; until = anchor + _dt_st.timedelta(days=1)
+        rg = _fin_range(str(body.get("period") or "today"), str(body.get("date") or ""))
         pool = await get_pool()
         async with pool.acquire() as conn:
-            o = await conn.fetchrow(
-                "SELECT COUNT(*) AS c, COALESCE(SUM(amount_rub),0) AS r FROM fk_orders "
-                "WHERE status='paid' AND paid_at>=$1 AND paid_at<$2", since, until)
-            new_users = await conn.fetchval(
-                "SELECT COUNT(*) FROM users WHERE created_at>=$1 AND created_at<$2", since, until) or 0
+            off = await _fin_db_offset(conn)
+            cfg = await _fin_cfg(conn)
+            A, B = _fin_to_db(rg["a"], off), _fin_to_db(rg["b"], off)
+            fin = (await _fin_collect(conn, rg["a"], rg["b"], off, cfg, detail=False))["totals"]
+            new_users = await _fin_users(conn, rg["a"], rg["b"], off)
             g = await conn.fetchrow(
-                "SELECT COUNT(*) AS c, COALESCE(SUM(credits),0) AS cr FROM generations "
-                "WHERE created_at>=$1 AND created_at<$2", since, until)
+                "SELECT COUNT(*) AS c, COALESCE(SUM(credits),0) AS cr, COUNT(DISTINCT user_id) AS u "
+                "FROM generations WHERE created_at>=$1 AND created_at<$2", A, B)
             by_type = await conn.fetch(
-                "SELECT type, COUNT(*) AS c FROM generations WHERE created_at>=$1 AND created_at<$2 "
-                "GROUP BY type ORDER BY c DESC", since, until)
+                "SELECT type, COUNT(*) AS c, COALESCE(SUM(credits),0) AS cr FROM generations "
+                "WHERE created_at>=$1 AND created_at<$2 GROUP BY type ORDER BY c DESC", A, B)
+            by_model = await conn.fetch(
+                "SELECT model, COUNT(*) AS c, COALESCE(SUM(credits),0) AS cr FROM generations "
+                "WHERE created_at>=$1 AND created_at<$2 GROUP BY model ORDER BY c DESC LIMIT 8", A, B)
+            # ряд за 14 дней по Алматы, заканчивая последним днём окна
+            _end = rg["b"] if not rg["live"] else datetime.datetime.combine(
+                datetime.datetime.now(_BOT_TZ).date() + datetime.timedelta(days=1), datetime.time(0, 0), _BOT_TZ)
+            _beg = _end - datetime.timedelta(days=14)
             ser = await conn.fetch(
-                "SELECT date_trunc('day', paid_at) AS d, COUNT(*) AS c FROM fk_orders "
-                "WHERE status='paid' AND paid_at>=$1 AND paid_at<$2 GROUP BY d ORDER BY d",
-                anchor - _dt_st.timedelta(days=6), anchor + _dt_st.timedelta(days=1))
+                "SELECT created_at FROM generations WHERE created_at>=$1 AND created_at<$2",
+                _fin_to_db(_beg, off), _fin_to_db(_end, off))
         wd = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
         smap = {}
         for r in ser:
-            dd = r["d"]; dd = dd.date() if hasattr(dd, "date") else dd
-            smap[dd] = int(r["c"] or 0)
+            _d = _fin_from_db(r["created_at"], off).date()
+            smap[_d] = smap.get(_d, 0) + 1
         series = []
-        for i in range(7):
-            day = anchor - _dt_st.timedelta(days=6 - i)
-            series.append({"label": wd[day.weekday()], "value": smap.get(day, 0), "date": day.isoformat()})
+        for i in range(14):
+            day = (_beg + datetime.timedelta(days=i)).date()
+            series.append({"label": day.strftime("%d.%m"), "wd": wd[day.weekday()],
+                           "value": smap.get(day, 0), "date": day.isoformat()})
         return web.json_response({
-            "ok": True, "orders": int(o["c"] or 0), "revenue": int(o["r"] or 0),
+            "ok": True, "orders": fin["orders"], "revenue": fin["revenue"],
             "newUsers": int(new_users), "gens": int(g["c"] or 0), "creditsSpent": int(g["cr"] or 0),
-            "anchor": anchor.isoformat(), "period": period,
+            "genUsers": int(g["u"] or 0), "label": rg["label"], "period": rg["period"],
             "series": series,
-            "byType": [{"label": (r["type"] or "?"), "val": int(r["c"] or 0)} for r in by_type],
+            "byType": [{"label": (r["type"] or "?"), "val": int(r["c"] or 0), "cr": int(r["cr"] or 0)} for r in by_type],
+            "byModel": [{"label": (r["model"] or "?"), "val": int(r["c"] or 0), "cr": int(r["cr"] or 0)} for r in by_model],
         })
     except Exception as _e:
-        logging.error(f"api_admin_stats: {_e}")
+        logging.error(f"api_admin_stats: {_e}", exc_info=True)
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
@@ -4520,19 +5975,23 @@ async def api_admin_analytics_handler(request: web.Request) -> web.Response:
                 "SELECT g.user_id, u.username, COUNT(*) AS c FROM generations g "
                 "LEFT JOIN users u ON g.user_id=u.user_id GROUP BY g.user_id, u.username "
                 "ORDER BY c DESC LIMIT 6")
+            # Дни — по Алматы, как и во всей панели (раньше — по UTC).
+            _off_an = await _fin_db_offset(conn)
+            _rg_an = _fin_range("today")
+            today = _rg_an["since"]
             act = await conn.fetch(
-                "SELECT date_trunc('day', created_at) AS d, COUNT(*) AS c FROM generations "
-                "WHERE created_at>=$1 GROUP BY d ORDER BY d", today - _dt_an.timedelta(days=8))
+                "SELECT created_at FROM generations WHERE created_at>=$1",
+                _fin_to_db(_rg_an["a"] - _dt_an.timedelta(days=8), _off_an))
             total = await conn.fetchval("SELECT COUNT(*) FROM users") or 0
             active30 = await conn.fetchval(
                 "SELECT COUNT(DISTINCT user_id) FROM generations WHERE created_at>=$1",
-                today - _dt_an.timedelta(days=30)) or 0
-            new_today = await conn.fetchval("SELECT COUNT(*) FROM users WHERE created_at>=CURRENT_DATE") or 0
+                _fin_to_db(_rg_an["a"] - _dt_an.timedelta(days=29), _off_an)) or 0
+            new_today = await _fin_users(conn, _rg_an["a"], _rg_an["b"], _off_an)
             with_buy = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM fk_orders WHERE status='paid'") or 0
         amap = {}
         for r in act:
-            dd = r["d"]; dd = dd.date() if hasattr(dd, "date") else dd
-            amap[dd] = int(r["c"] or 0)
+            dd = _fin_from_db(r["created_at"], _off_an).date()
+            amap[dd] = amap.get(dd, 0) + 1
         activity = [amap.get(today - _dt_an.timedelta(days=8 - i), 0) for i in range(9)]
         return web.json_response({
             "ok": True,
@@ -4827,7 +6286,8 @@ async def api_admin_orders_handler(request: web.Request) -> web.Response:
             out.append({"id": r.get("fk_order_id"), "service": r.get("service_name"),
                         "plan": r.get("plan_name"), "kind": r.get("kind"),
                         "user": ("@" + r["username"]) if r.get("username") else ("id" + str(r.get("user_id"))),
-                        "status": st.get(r.get("status"), r.get("status")), "link": r.get("payment_link")})
+                        "status": st.get(r.get("status"), r.get("status")), "raw": r.get("status") or "",
+                        "link": r.get("payment_link")})
         return web.json_response({"ok": True, "orders": out})
     except Exception as _e:
         logging.error(f"api_admin_orders: {_e}")
@@ -5131,9 +6591,17 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
         oid = str(body.get("id", "")); action = str(body.get("action", ""))
         pool = await get_pool()
         async with pool.acquire() as conn:
-            o = await conn.fetchrow("SELECT user_id, pack FROM fk_orders WHERE order_id=$1", oid)
+            o = await conn.fetchrow("SELECT user_id, pack, status FROM fk_orders WHERE order_id=$1", oid)
         if not o:
             return web.json_response({"ok": False, "msg": "Заказ не найден"})
+        if action == "resolve":
+            # «Разобрался»: деньги вернул / выдал вручную — убрать заказ из
+            # «Нужно действие». Клиенту ничего не пишем, статус заказа и коды
+            # не трогаем: это только отметка для панели. 06.10.2026
+            await set_setting(f"order_resolved:{oid}", "1")
+            return web.json_response({"ok": True, "msg": "Отмечено: разобрано"})
+        if action in ("manual", "resend") and (o["status"] or "") != "paid":
+            return web.json_response({"ok": False, "msg": "Заказ не в статусе «оплачен» — это действие для него недоступно"})
         uid = o["user_id"]; pack = o["pack"] or ""
         svc_key = ""; idx = 0
         if pack.startswith("shop:"):
@@ -5153,6 +6621,22 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                     await delete_pending_activation(int(uid), oid)
                 except Exception as _e_dc:
                     logging.warning(f"cancel: резерв {oid}: {_e_dc}")
+            # Резерв Claude/Perplexity лежит в своих таблицах: без этого клиент
+            # мог активировать подписку по уже отменённому заказу. Резерв НЕ
+            # удаляем, а делаем просроченным: клиенту он больше не выдаётся
+            # (бот берёт только expires_at > NOW()), а фоновая чистка дальше
+            # действует по своему правилу — если активацию даже не начинали,
+            # код вернётся в пул; если начинали (bpa_order_id / org_id), код
+            # остаётся за заказом и приходит тебе в «Ждущие коды». Удаление
+            # резерва отдавало в пул и код с начатой активацией. Ревью 06.10.2026.
+            for _ptbl_c in ("claude_pending_activations", "perplexity_pending_activations"):
+                try:
+                    async with pool.acquire() as _c_cx:
+                        await _c_cx.execute(
+                            f"UPDATE {_ptbl_c} SET expires_at = NOW() - INTERVAL '1 second' "
+                            f"WHERE order_id=$1 AND expires_at > NOW()", oid)
+                except Exception as _e_cx:
+                    logging.warning(f"cancel: резерв {_ptbl_c} {oid}: {_e_cx}")
             try:
                 await set_linkpay_status(oid, "cancelled")  # если есть ручной заказ
             except Exception:
@@ -5168,38 +6652,25 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
             return web.json_response({"ok": True})
 
         if action == "manual":
-            _tblmap = {"chatgpt": "gpt_codes", "claude": "claude_codes", "perplexity": "perplexity_codes"}
-            _tbl = _tblmap.get(svc_key)
-            if _tbl:
-                _acc = "email" if svc_key == "chatgpt" else "org_id"
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        f"UPDATE {_tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, "
-                        f"used_at=NULL, {_acc}=NULL WHERE order_id=$1", oid)
+            _msg_fm = ""
+            if svc_key in ("chatgpt", "claude", "perplexity"):
+                _ok_fm, _msg_fm, _ = await _admin_manual_close(
+                    svc_key, oid, uid, str(body.get("fate") or ""))
+                if not _ok_fm:
+                    return web.json_response({"ok": False, "msg": _msg_fm})
             else:
                 try:
                     await set_linkpay_status(oid, "done")
                 except Exception:
                     pass
-            # Резерв ЭТОГО заказа закрываем: иначе клиент, открыв ранее
-            # выданную кнопку, запускал автоматическую активацию поверх уже
-            # выданной вручную подписки и тратил зарезервированный код.
-            # Отдельно: UPDATE выше ищет код по order_id, а у ещё не
-            # активированного резерва order_id обычно пуст — он бы и не
-            # сработал. Внешний аудит 29.09.2026.
-            if uid:
-                try:
-                    await delete_pending_activation(int(uid), oid)
-                except Exception as _e_dp:
-                    logging.warning(f"manual: резерв {oid}: {_e_dp}")
-            await set_setting(f"order_done:{oid}", "1")
+                await set_setting(f"order_done:{oid}", "1")
             if uid:
                 try:
                     await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌",
                                            parse_mode="HTML")
                 except Exception:
                     pass
-            return web.json_response({"ok": True})
+            return web.json_response({"ok": True, "msg": _msg_fm})
 
         if action == "resend":
             if svc_key not in ("chatgpt", "claude", "perplexity"):
@@ -5653,6 +7124,94 @@ async def api_admin_shop_orders_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+async def _admin_manual_close(svc: str, oid: str, uid, fate: str):
+    """«Активировали вручную»: судьбу закреплённого кода решает Александр.
+
+    Было: UPDATE … SET is_used=FALSE … WHERE order_id=заказ — то есть в пул
+    уходил ЛЮБОЙ код заказа, в том числе уже ИСПОЛЬЗОВАННЫЙ: бот активировал
+    заказ кодом X, Александр потом жал «Активировали вручную» — и потраченный
+    X доставался следующему покупателю. А если он активировал вручную ТЕМ ЖЕ
+    закреплённым кодом, тот тоже числился свободным. Предупреждение «код
+    вернётся в пул» висело на window.confirm, который в Telegram не виден.
+    В «Ленте» к тому же резерв снимался только из таблицы ChatGPT — у Claude
+    и Perplexity клиент мог запустить автоактивацию поверх ручной.
+
+    Теперь:
+      • использованный код (used_at стоит) не трогается НИКОГДА;
+      • fate='spent'  — закреплённый код потрачен: записываем его на заказ;
+      • fate='intact' — код цел: возвращаем в пул, если его не держит
+                        резерв другого клиента;
+      • без выбора — отказ: молча решать судьбу кода бот не должен;
+      • резерв снимается из таблицы ИМЕННО этого сервиса.
+    06.10.2026
+    """
+    _T = {"chatgpt": ("gpt_codes", "gpt_pending_activations", "email"),
+          "claude": ("claude_codes", "claude_pending_activations", "org_id"),
+          "perplexity": ("perplexity_codes", "perplexity_pending_activations", "org_id")}.get(svc)
+    if not _T:
+        return False, "Для этого сервиса нет пула кодов.", {}
+    if fate not in ("spent", "intact"):
+        return False, "Выбери, что с кодом: потрачен или цел.", {}
+    _tbl, _ptbl, _acc = _T
+    _pool_mc = await get_pool()
+    async with _pool_mc.acquire() as _c:
+        async with _c.transaction():
+            _recorded = [r["code"] for r in await _c.fetch(
+                f"SELECT code FROM {_tbl} WHERE order_id=$1 AND used_at IS NOT NULL", oid)]
+            _reserved = []
+            for r in await _c.fetch(f"SELECT code FROM {_ptbl} WHERE order_id=$1", oid):
+                if r["code"] and r["code"] not in _reserved:
+                    _reserved.append(r["code"])
+            for r in await _c.fetch(
+                    f"SELECT code FROM {_tbl} WHERE order_id=$1 AND used_at IS NULL", oid):
+                if r["code"] and r["code"] not in _reserved:
+                    _reserved.append(r["code"])
+            _reserved = [c for c in _reserved if c not in _recorded]
+            _done = []
+            for _cd in _reserved:
+                if fate == "spent":
+                    _r = await _c.execute(
+                        f"UPDATE {_tbl} SET is_used=TRUE, used_by=$2, order_id=$3, used_at=NOW() "
+                        f"WHERE code=$1 AND used_at IS NULL", _cd, int(uid) if uid else None, oid)
+                else:
+                    _other = await _c.fetchval(
+                        f"SELECT 1 FROM {_ptbl} WHERE code=$1 AND order_id<>$2 LIMIT 1", _cd, oid)
+                    if _other:
+                        continue
+                    _r = await _c.execute(
+                        f"UPDATE {_tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, "
+                        f"used_at=NULL, {_acc}=NULL WHERE code=$1 AND used_at IS NULL", _cd)
+                if str(_r).split()[-1] != "0":
+                    _done.append(_cd)
+            await _c.execute(f"DELETE FROM {_ptbl} WHERE order_id=$1", oid)
+    # Слежение и неясные исходы по этим кодам больше не нужны — решение принято.
+    for _cd in _reserved:
+        try:
+            if svc == "chatgpt":
+                async with _pool_mc.acquire() as _c2:
+                    await _c2.execute(
+                        "DELETE FROM settings WHERE key = ANY($1::text[])",
+                        [f"gptclaim:{_cd.upper()}", f"gptwatchmsg:{_cd.upper()}"])
+            elif svc == "claude":
+                await _claude_check_clear(_cd)
+                await _claude_decision_taken(_cd)
+        except Exception as _e_mk:
+            logging.warning(f"manual close: метки {_cd}: {_e_mk}")
+    await set_setting(f"order_done:{oid}", "1")
+    try:
+        await log_event(int(uid) if uid else None, "admin_manual",
+                        f"svc={svc} order={oid} fate={fate} reserved={_reserved} "
+                        f"done={_done} recorded_untouched={_recorded}")
+    except Exception:
+        pass
+    _msg = ("Заказ закрыт. " + (
+        (f"Код {', '.join(_done)} записан на заказ как потраченный." if fate == "spent"
+         else f"Код {', '.join(_done)} возвращён в пул.") if _done
+        else "Закреплённого кода у заказа не было.")
+        + (f" Использованный код {', '.join(_recorded)} не тронут." if _recorded else ""))
+    return True, _msg, {"reserved": _reserved, "done": _done, "recorded": _recorded}
+
+
 async def api_admin_shop_order_action_handler(request: web.Request) -> web.Response:
     """Действия по заказу авто-активации: ручная активация (другим кодом), возврат кода в пул, удаление. Admin-only."""
     try:
@@ -5666,6 +7225,11 @@ async def api_admin_shop_order_action_handler(request: web.Request) -> web.Respo
         pool = await get_pool()
         if action == "delete":
             async with pool.acquire() as conn:
+                _st_del = await conn.fetchval("SELECT status FROM fk_orders WHERE order_id=$1", oid)
+                if (_st_del or "") == "paid":
+                    # Оплаченный заказ из истории не удаляем: вместе с ним из
+                    # «Денег» задним числом пропадала оплата. Ревью 06.10.2026.
+                    return web.json_response({"ok": False, "msg": "Оплаченный заказ не удаляется — его можно отменить"})
                 if svc == "appstore":
                     await conn.execute("DELETE FROM nsgifts_orders WHERE fk_order_id=$1", oid)
                 else:
@@ -5676,37 +7240,27 @@ async def api_admin_shop_order_action_handler(request: web.Request) -> web.Respo
             return web.json_response({"ok": False, "msg": "Для этого сервиса доступно только удаление"})
         acccol = "email" if svc == "chatgpt" else "org_id"
         if action == "release":
+            # Использованный код (used_at стоит) в пул не уходит НИКОГДА.
             async with pool.acquire() as conn:
                 await conn.execute(
-                    f"UPDATE {tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, used_at=NULL, {acccol}=NULL WHERE order_id=$1",
+                    f"UPDATE {tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, used_at=NULL, {acccol}=NULL "
+                    f"WHERE order_id=$1 AND used_at IS NULL",
                     oid)
             return web.json_response({"ok": True})
         if action == "manual":
-            # Ручная активация: возвращаем закреплённый за заказом код в пул + помечаем заказ выполненным
             async with pool.acquire() as conn:
-                await conn.execute(
-                    f"UPDATE {tbl} SET is_used=FALSE, used_by=NULL, order_id=NULL, used_at=NULL, {acccol}=NULL WHERE order_id=$1",
-                    oid)
                 o = await conn.fetchrow("SELECT user_id FROM fk_orders WHERE order_id=$1", oid)
-                uid = o["user_id"] if o else None
-            # Резерв ЭТОГО заказа закрываем: иначе клиент, открыв ранее
-            # выданную кнопку, запускал автоматическую активацию поверх уже
-            # выданной вручную подписки и тратил зарезервированный код.
-            # Отдельно: UPDATE выше ищет код по order_id, а у ещё не
-            # активированного резерва order_id обычно пуст — он бы и не
-            # сработал. Внешний аудит 29.09.2026.
-            if uid:
-                try:
-                    await delete_pending_activation(int(uid), oid)
-                except Exception as _e_dp:
-                    logging.warning(f"manual: резерв {oid}: {_e_dp}")
-            await set_setting(f"order_done:{oid}", "1")
+            uid = o["user_id"] if o else None
+            _ok_m, _msg_m, _info_m = await _admin_manual_close(
+                svc, oid, uid, str(body.get("fate") or ""))
+            if not _ok_m:
+                return web.json_response({"ok": False, "msg": _msg_m})
             if uid:
                 try:
                     await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌", parse_mode="HTML")
                 except Exception:
                     pass
-            return web.json_response({"ok": True})
+            return web.json_response({"ok": True, "msg": _msg_m})
         return web.json_response({"ok": False})
     except Exception as _e:
         logging.error(f"api_admin_shop_order_action: {_e}")
@@ -5735,9 +7289,12 @@ async def api_admin_user_find_handler(request: web.Request) -> web.Response:
             if not row:
                 return web.json_response({"ok": False, "msg": "Пользователь не найден"})
             u = dict(row); uid = u["user_id"]
+            # «Покупок на N ₽» — только реальные рубли (без цены каталога у
+            # Stars и без App Store, оплаченного монетками). 06.10.2026
             pur = await conn.fetchrow(
-                "SELECT COUNT(*) AS c, COALESCE(SUM(amount_rub),0) AS s FROM fk_orders "
-                "WHERE user_id=$1 AND status='paid'", uid)
+                f"SELECT COUNT(*) AS c, COALESCE(SUM({_FIN_MONEY_SQL}),0) AS s FROM fk_orders f "
+                "LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+                "WHERE f.user_id=$1 AND f.status='paid'", uid)
             # Рефералка: кто привёл этого клиента и скольких привёл он сам.
             # Данные были в базе с первого дня (users.referred_by), но ни один
             # админский эндпоинт к ним не обращался — в панели этого не было видно.
@@ -5802,8 +7359,9 @@ async def api_admin_referrals_handler(request: web.Request) -> web.Response:
                     "       COALESCE(r.full_name,'') AS full_name, r.created_at, "
                     "       COALESCE(o.cnt,0) AS orders, COALESCE(o.rub,0) AS rub "
                     "FROM users r "
-                    "LEFT JOIN (SELECT user_id, COUNT(*) AS cnt, SUM(amount_rub) AS rub "
-                    "           FROM fk_orders WHERE status='paid' GROUP BY user_id) o "
+                    f"LEFT JOIN (SELECT f.user_id, COUNT(*) AS cnt, SUM({_FIN_MONEY_SQL}) AS rub "
+                    "           FROM fk_orders f LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+                    "           WHERE f.status='paid' GROUP BY f.user_id) o "
                     "       ON o.user_id = r.user_id "
                     "WHERE r.referred_by=$1 ORDER BY r.created_at DESC LIMIT 500", _uid)
             return web.json_response({"ok": True, "kids": [{
@@ -6312,11 +7870,19 @@ async def api_admin_referral_handler(request: web.Request) -> web.Response:
         pool = await get_pool()
         async with pool.acquire() as conn:
             parts = await conn.fetch("SELECT user_id, username, ref_premium_pct FROM users WHERE ref_premium=TRUE")
-            earned = await conn.fetch("SELECT referrer_id, COALESCE(SUM(amount_rub),0) AS s FROM ref_premium_log GROUP BY referrer_id")
-        emap = {r["referrer_id"]: float(r["s"] or 0) for r in earned}
+            # Раньше «начислено» было SUM(amount_rub) — это ОБОРОТ приглашённых
+            # (сумма их заказов), а не то, что получил партнёр. Начисления — в
+            # колонке coins. Отдаём оба числа под своими именами. 06.10.2026
+            earned = await conn.fetch(
+                "SELECT referrer_id, COALESCE(SUM(amount_rub),0) AS t, COALESCE(SUM(coins),0) AS c, "
+                "COUNT(*) AS n FROM ref_premium_log GROUP BY referrer_id")
+        emap = {r["referrer_id"]: (float(r["t"] or 0), float(r["c"] or 0), int(r["n"] or 0)) for r in earned}
         partners = [{"id": r["user_id"], "username": r["username"] or "",
                      "pct": (r["ref_premium_pct"] if r["ref_premium_pct"] is not None else pct),
-                     "earned": round(emap.get(r["user_id"], 0))} for r in parts]
+                     "turnover": round(emap.get(r["user_id"], (0, 0, 0))[0]),
+                     "coins": round(emap.get(r["user_id"], (0, 0, 0))[1], 2),
+                     "orders": emap.get(r["user_id"], (0, 0, 0))[2],
+                     "earned": round(emap.get(r["user_id"], (0, 0, 0))[1])} for r in parts]
         return web.json_response({"ok": True, "globalPct": pct, "cap": cap, "partners": partners})
     except Exception as _e:
         logging.error(f"api_admin_referral: {_e}")
@@ -6458,7 +8024,9 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                     "       COALESCE(p.created_at, c.used_at) AS created_at, "
                     "       (c.code IS NOT NULL) AS in_pool, "
                     "       COALESCE(c.is_used, FALSE) AS is_used, c.used_by, "
-                    "       (p.code IS NOT NULL) AS has_pending "
+                    "       (p.code IS NOT NULL) AS has_pending, "
+                    "       EXISTS (SELECT 1 FROM settings s WHERE s.key = "
+                    "               'claudecheck:' || UPPER(COALESCE(c.code, p.code))) AS checking "
                     "FROM claude_codes c "
                     "FULL OUTER JOIN claude_pending_activations p ON p.code=c.code "
                     "LEFT JOIN users u ON u.user_id=p.user_id "
@@ -6483,6 +8051,26 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                     "WHERE (c.is_used=TRUE AND c.used_by IS NULL) "
                     "   OR p.code IS NOT NULL "
                     "ORDER BY COALESCE(p.created_at, c.reserved_at) DESC NULLS LAST "
+                    "LIMIT 100")
+            elif svc == "perplexity":
+                # У Perplexity раздела «Ждущие коды» не было вовсе. Сайт один,
+                # колонки provider и reserved_at у таблиц нет. Александр 06.10.2026.
+                pending = await conn.fetch(
+                    "SELECT COALESCE(c.code, p.code) AS code, "
+                    "       COALESCE(c.plan, p.plan) AS plan, "
+                    "       ''::text AS provider, "
+                    "       p.user_id, p.org_id, p.plan_name, p.order_id, "
+                    "       p.expires_at, u.username, p.bpa_order_id, "
+                    "       COALESCE(p.created_at, c.used_at) AS created_at, "
+                    "       (c.code IS NOT NULL) AS in_pool, "
+                    "       COALESCE(c.is_used, FALSE) AS is_used, c.used_by, "
+                    "       (p.code IS NOT NULL) AS has_pending "
+                    "FROM perplexity_codes c "
+                    "FULL OUTER JOIN perplexity_pending_activations p ON p.code=c.code "
+                    "LEFT JOIN users u ON u.user_id=p.user_id "
+                    "WHERE (c.is_used=TRUE AND c.used_by IS NULL) "
+                    "   OR p.code IS NOT NULL "
+                    "ORDER BY COALESCE(p.created_at, c.used_at) DESC NULLS LAST "
                     "LIMIT 100")
         rec = []
         for r in recent:
@@ -6544,43 +8132,59 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                  "disabled": (p in _dis_set)} for p in _order]
             resp["activeProvider"] = active
             resp["failover"] = failover
-            pend = []
-            import time as _t_pend
-            for r in pending:
-                ca = r["created_at"]
-                # Состояние строки — главное, чего раньше не было видно.
-                if not r["in_pool"]:
-                    _state, _warn = "нет в пуле", True
-                elif not r["is_used"]:
-                    _state, _warn = "код вернулся в пул", True
-                elif r["used_by"]:
-                    _state, _warn = "активация записана", True
-                elif r["has_pending"]:
-                    _state, _warn = "ждёт активации", False
-                else:
-                    _state, _warn = "в резерве, без клиента", True
-                _exp = r["expires_at"]
-                _left = ""
-                if _exp:
-                    try:
-                        _m = (_exp.timestamp() - _t_pend.time()) / 60.0
-                        _left = (f"ещё {int(_m)} мин" if _m > 0
-                                 else f"срок вышел {int(-_m)} мин назад")
-                    except Exception:
-                        _left = ""
-                pend.append({
-                    "code": r["code"], "plan": r["plan"],
-                    "provider": r["provider"] or "", "providerName": _pname(r["provider"] or ""),
-                    "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"]) if r["user_id"] else "—"),
-                    "uid": int(r["user_id"]) if r["user_id"] else 0,
-                    "org": (r["org_id"] if svc == "claude" else "") or "",
-                    "order": r["order_id"] or "",
-                    "planName": r["plan_name"] or "",
-                    "state": _state, "warn": bool(_warn), "left": _left,
-                    "date": ca.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ca else "",
-                })
-            resp["pending"] = pend
-            resp["pendingCount"] = len(pend)
+        # Ждущие коды отдаём ДЛЯ ВСЕХ сервисов. Раньше этот кусок жил внутри
+        # «if has_prov» — у Perplexity сайт один, и список не отдавался вовсе,
+        # даже будучи посчитанным. Александр 06.10.2026.
+        if not has_prov:
+            _pname = (lambda _p: "Perplexity")
+        pend = []
+        import time as _t_pend
+        for r in pending:
+            ca = r["created_at"]
+            # Состояние строки — главное, чего раньше не было видно.
+            if "checking" in r.keys() and r["checking"]:
+                # Неясный исход: код мог быть активирован, бот остановился и
+                # ждёт решения Александра. Показывать это как обычное «ждёт
+                # активации» значило бы прятать главное. 06.10.2026
+                _state, _warn = "неясный исход — ждёт твоего решения", True
+            elif not r["in_pool"]:
+                _state, _warn = "нет в пуле", True
+            elif not r["is_used"]:
+                _state, _warn = "код вернулся в пул", True
+            elif r["used_by"]:
+                _state, _warn = "активация записана", True
+            elif r["has_pending"]:
+                _state, _warn = "ждёт активации", False
+            else:
+                _state, _warn = "в резерве, без клиента", True
+            _exp = r["expires_at"]
+            _left = ""
+            if _exp:
+                try:
+                    _m = (_exp.timestamp() - _t_pend.time()) / 60.0
+                    _left = (f"ещё {int(_m)} мин" if _m > 0
+                             else f"срок вышел {int(-_m)} мин назад")
+                except Exception:
+                    _left = ""
+            pend.append({
+                "code": r["code"], "plan": r["plan"],
+                "provider": r["provider"] or "", "providerName": _pname(r["provider"] or ""),
+                "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"]) if r["user_id"] else "—"),
+                "uid": int(r["user_id"]) if r["user_id"] else 0,
+                "org": (r["org_id"] if svc == "claude" else "") or "",
+                "order": r["order_id"] or "",
+                "planName": r["plan_name"] or "",
+                "state": _state, "warn": bool(_warn), "left": _left,
+                # Активация уже уходила поставщику (есть org_id или номер
+                # заказа сайта): код, вернувшийся в пул, может оказаться
+                # уже потраченным. Это видно в подтверждении «В пул».
+                "started": bool(("checking" in r.keys() and r["checking"])
+                                or (r["org_id"] if "org_id" in r.keys() else "")
+                                or (r["bpa_order_id"] if "bpa_order_id" in r.keys() else None)),
+                "date": ca.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ca else "",
+            })
+        resp["pending"] = pend
+        resp["pendingCount"] = len(pend)
         return web.json_response(resp)
     except Exception as _e:
         logging.error(f"api_admin_miniapp_detail: {_e}")
@@ -6666,6 +8270,15 @@ async def api_admin_claude_code_action_handler(request: web.Request) -> web.Resp
             _codes_tbl, _pend_tbl = "gpt_codes", "gpt_pending_activations"
             _release = ("UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
                         "order_id=NULL, reserved_at=NULL WHERE code=$1")
+        elif svc == "perplexity":
+            # Раньше Perplexity проваливался в ветку Claude: «В пул» шёл в
+            # таблицы Claude, ничего не находил — а панель отвечала «Возвращён
+            # в пул». Кнопка врала. Александр 06.10.2026.
+            _codes_tbl, _pend_tbl = "perplexity_codes", "perplexity_pending_activations"
+            _release = ("UPDATE perplexity_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
+                        "order_id=NULL, org_id=NULL WHERE code=$1")
+        elif svc != "claude":
+            return web.json_response({"ok": False, "msg": "Неизвестный сервис"})
         else:
             _codes_tbl, _pend_tbl = "claude_codes", "claude_pending_activations"
             _release = ("UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
@@ -6673,13 +8286,27 @@ async def api_admin_claude_code_action_handler(request: web.Request) -> web.Resp
         pool = await get_pool()
         async with pool.acquire() as conn:
             # снимаем pending-привязку в любом случае (клиент потеряет старую сессию)
-            await conn.execute(f"DELETE FROM {_pend_tbl} WHERE code=$1", code)
-            if action == "release":
-                await conn.execute(_release, code)
-            elif action == "delete":
-                await conn.execute(f"DELETE FROM {_codes_tbl} WHERE code=$1", code)
-            else:
+            if action not in ("release", "delete"):
                 return web.json_response({"ok": False, "msg": "Неизвестное действие"})
+            async with conn.transaction():
+                _rp = await conn.execute(f"DELETE FROM {_pend_tbl} WHERE code=$1", code)
+                if action == "release":
+                    _rc = await conn.execute(_release, code)
+                else:
+                    _rc = await conn.execute(f"DELETE FROM {_codes_tbl} WHERE code=$1", code)
+        # «Возвращён в пул» говорим, только если хоть что-то РЕАЛЬНО изменилось.
+        # Раньше ответ был ok всегда — даже когда код не нашёлся вовсе.
+        def _n(_s):
+            _t = str(_s).split()
+            return int(_t[-1]) if _t and _t[-1].isdigit() else 0
+        if _n(_rp) + _n(_rc) == 0:
+            return web.json_response({"ok": False, "msg": "Код не найден — ничего не изменено"})
+        logging.warning(f"code-action {svc} {action} {code}: резерв {_rp}, код {_rc}")
+        if svc == "claude":
+            # Решение по коду принял Александр — метка неясного исхода больше не
+            # нужна, и кнопки по этому коду в чате должны погаснуть.
+            await _claude_check_clear(code)
+            await _claude_decision_taken(code)
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_claude_code_action: {_e}")
@@ -9506,32 +11133,48 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
     """
     try:
         pool = await get_pool()
+        _order_id = _pack = _skey = ""
+        _plan_name = ""
         async with pool.acquire() as conn:
-            _ord = await conn.fetchrow(
+            # Берём НЕСКОЛЬКО последних оплаченных заказов и ищем среди них
+            # ChatGPT, а не смотрим только на самый свежий. Раньше: клиент
+            # купил ChatGPT, потом Claude — функция видела Claude, решала «это
+            # не ChatGPT» и молчала, хотя заказ ChatGPT висел неактивированным.
+            # Самопроверка 06.10.2026.
+            _ords = await conn.fetch(
                 "SELECT order_id, pack FROM fk_orders "
                 "WHERE user_id=$1 AND status='paid' AND pack LIKE 'shop:%' "
                 "  AND paid_at > NOW() - INTERVAL '7 days' "
-                "ORDER BY paid_at DESC LIMIT 1",
+                "ORDER BY paid_at DESC LIMIT 10",
                 user_id)
-            if not _ord:
-                return None
-            _order_id = _ord["order_id"]
-            _pack = _ord["pack"] or ""
-            # Только заказы ChatGPT
-            _skey = _pack.split(":")[1] if _pack.count(":") >= 1 else ""
-            _s = SHOP_CATALOG.get(_skey, {}) or {}
-            _sname = (_s.get("name", "") or "").lower()
-            if "chatgpt" not in _skey.lower() and "chatgpt" not in _sname and _skey.lower() != "gpt":
-                return None
-            # Код по этому заказу уже активирован? Тогда восстанавливать нечего.
-            _used = await conn.fetchval(
-                "SELECT 1 FROM gpt_codes WHERE order_id=$1 AND used_by IS NOT NULL", _order_id)
-            if _used:
+            for _o in _ords:
+                _pk = _o["pack"] or ""
+                _sk = _pk.split(":")[1] if _pk.count(":") >= 1 else ""
+                _s = SHOP_CATALOG.get(_sk, {}) or {}
+                _sn = (_s.get("name", "") or "").lower()
+                if "chatgpt" not in _sk.lower() and "chatgpt" not in _sn and _sk.lower() != "gpt":
+                    continue
+                # Код по этому заказу уже активирован? Тогда восстанавливать нечего.
+                if await conn.fetchval(
+                        "SELECT 1 FROM gpt_codes WHERE order_id=$1 AND used_by IS NOT NULL",
+                        _o["order_id"]):
+                    continue
+                _order_id, _pack, _skey = _o["order_id"], _pk, _sk
+                break
+            if not _order_id:
                 return None
             _idx = int(_pack.split(":")[2]) if _pack.count(":") >= 2 and _pack.split(":")[2].isdigit() else 0
-            _plans = _s.get("plans", [])
-            _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(_pack))[1].get("name")
+            # Было _plan_by_order(_svc, …) — переменной _svc в этой функции НЕТ.
+            # Функция падала с NameError на КАЖДОМ нажатии клиента, ошибка
+            # уходила в лог, и сообщение с кнопкой повторной выдачи не
+            # приходило НИКОГДА. Нашёл по жалобе Александра 06.10.2026;
+            # pyflakes по всему проекту показал, что это единственное такое место.
+            _plan_name = (_plan_by_order(_skey, _idx, _pack_plan_name(_pack))[1].get("name")
                           or _pack_plan_name(_pack) or "Plus")
+            # Какой код сейчас закреплён за заказом — повторная выдача возьмёт его.
+            _held = await conn.fetchval(
+                "SELECT code FROM gpt_codes WHERE order_id=$1 AND used_by IS NULL "
+                "ORDER BY reserved_at DESC NULLS LAST LIMIT 1", _order_id)
 
         # Клиент может жать кнопку много раз — шлём не чаще раза в 30 минут.
         try:
@@ -9540,27 +11183,57 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
         except Exception as _e_cd2:
             logging.warning(f"cooldown gptexpired uid={user_id}: {_e_cd2}")
 
+        import html as _h_ex
         _u = await get_user(user_id) or {}
-        _nick = ("@" + _u["username"]) if _u.get("username") else (
-            (_u.get("full_name") or "без ника").replace("&", "&amp;")
-            .replace("<", "&lt;").replace(">", "&gt;"))
+        _un = (_u.get("username") or "").strip()
+        _nick = ("@" + _un) if _un else (
+            _h_ex.escape(strip_surrogates(_u.get("full_name") or "")) or f"id{user_id}")
+        # Оплата и промокод — как в остальных карточках.
+        _pay_ex = _promo_ex = ""
+        try:
+            _o_ex = await fk_get_order(_order_id) or {}
+            _b_ex = []
+            if _o_ex.get("amount_rub"):
+                _b_ex.append(f"<b>{int(_o_ex['amount_rub'])} \u20bd</b>")
+            _pm_ex = {"sbp": "СБП", "card": "карта"}.get(
+                (_o_ex.get("payment_method") or "").strip().lower(), "")
+            if _pm_ex:
+                _b_ex.append(_pm_ex)
+            if _o_ex.get("paid_at"):
+                try:
+                    _b_ex.append(_o_ex["paid_at"].astimezone(_BOT_TZ).strftime("%d.%m %H:%M"))
+                except Exception:
+                    pass
+            _pay_ex = " \u00b7 ".join(_b_ex)
+            _promo_ex = (_o_ex.get("promo_code") or "").strip()
+        except Exception as _e_ex:
+            logging.warning(f"истёкшее окно: заказ {_order_id}: {_e_ex}")
+        _att_ex = await gpt_attempts_block(_order_id)
         logging.info(f"GPT pending истёк uid={user_id} order={_order_id} — жду ручной выдачи")
         try:
             await bot.send_message(
                 ADMIN_ID,
-                f"⏰ <b>Истекло окно активации ChatGPT</b>\n"
-                f"👤 {_nick} {await _who_user(user_id)}  📦 {_plan_name}\n"
-                f"🆔 <code>{_order_id}</code>\n"
-                f"{await _fk_num_line(_order_id)}\n"
-                f"Клиент нажал «Активировать», но срок вышел. Код автоматически "
-                f"<b>не выдан</b>.\n\n"
-                f"Можно выдать повторно прямо отсюда 👇",
+                f"⏰ <b>Истекло окно активации ChatGPT</b>\n\n"
+                f"👤 Клиент: <b>{_nick}</b>  (<code>{user_id}</code>)\n"
+                f"📦 Тариф: <b>{_h_ex.escape(_plan_name)}</b>\n"
+                + (f"💳 Оплата: {_pay_ex}\n" if _pay_ex else "")
+                + (f"🎟 Промокод: <b>{_h_ex.escape(_promo_ex)}</b>\n" if _promo_ex else "")
+                + (f"🔑 Закреплён код: <code>{_h_ex.escape(str(_held))}</code>\n" if _held else
+                   "🔑 Закреплённого кода нет — при повторной выдаче возьму новый из пула\n")
+                + f"🆔 Order: <code>{_order_id}</code>\n"
+                + f"{await _fk_num_line(_order_id)}"
+                + (f"\n{_att_ex}\n" if _att_ex else "")
+                + f"\nКлиент нажал «Активировать», но срок вышел. Код автоматически "
+                  f"<b>не выдан</b>.\n\n"
+                  f"Можно выдать повторно прямо отсюда 👇",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="📨 Отправить повторно",
                                          callback_data=f"adm_resend:{_order_id}")]]))
-        except Exception:
-            pass
+        except Exception as _e_send:
+            # Раньше здесь был молчаливый pass — именно так эта функция и
+            # «не работала» незаметно. Обязательное сообщение: отказ в лог.
+            logging.error(f"истёкшее окно: не отправил сообщение {_order_id}: {_e_send}")
         return None
     except Exception as _e_r:
         logging.error(f"_notify_gpt_pending_expired uid={user_id}: {_e_r}")
@@ -11564,6 +13237,12 @@ async def setup_webhook_server():
     app.router.add_get("/webapp/admin", webapp_admin_handler)
     app.router.add_post("/api/admin/overview", api_admin_overview_handler)
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)
+    app.router.add_post("/api/admin/gpt-unbound", api_admin_gpt_unbound_handler)
+    app.router.add_post("/api/admin/fin", api_admin_fin_handler)
+    app.router.add_post("/api/admin/fin-settings", api_admin_fin_settings_handler)
+    app.router.add_post("/api/admin/orders-feed", api_admin_orders_feed_handler)
+    app.router.add_post("/api/admin/delivery", api_admin_delivery_handler)
+    app.router.add_post("/api/admin/attention", api_admin_attention_handler)
     app.router.add_post("/api/admin/shophead", api_admin_shophead_handler)
     app.router.add_get("/media/{key}", genmedia_handler)
     app.router.add_post("/api/admin/actmedia", api_admin_actmedia_handler)
@@ -15132,11 +16811,140 @@ async def _claude_wait_result(provider: str, ref) -> str:
     return "timeout"
 
 
+# ─── Claude: неясный исход активации ──────────────────────────────────────
+# Когда сайт принял код, а подтверждения нет (needs_check у браузерных сайтов,
+# таймаут у API-сайтов), код мог быть уже активирован. Раньше цепочка просто
+# завершалась, её finally снимал оба замка, и следующее нажатие клиента
+# НАЧИНАЛОСЬ с возврата этого кода в пул и брало второй: две подписки за один
+# заказ плюс пустой код следующему покупателю. А кнопки решения хранили
+# контекст только в памяти и после деплоя отвечали «Контекст устарел».
+# Теперь: метка в settings (переживает деплой), цепочка по такому коду НЕ
+# стартует, решение — только за Александром. 06.10.2026.
+
+async def _claude_check_mark(code: str, user_id: int, order_id: str, site: str = "") -> None:
+    import time as _t_cm
+    try:
+        await set_setting(f"claudecheck:{str(code).strip().upper()}",
+                          f"{int(user_id)}|{order_id or ''}|{int(_t_cm.time())}|{site or ''}")
+    except Exception as _e_cm:
+        logging.error(f"claudecheck mark {code}: {_e_cm}")
+
+
+async def _claude_check_get(code: str) -> str:
+    try:
+        return (await get_setting(f"claudecheck:{str(code).strip().upper()}", "") or "").strip()
+    except Exception as _e_cg:
+        logging.warning(f"claudecheck get {code}: {_e_cg}")
+        # Не смогли прочитать — считаем, что метка ЕСТЬ: безопаснее не
+        # запускать вторую активацию, чем отдать потраченный код в пул.
+        return "?"
+
+
+async def _claude_check_clear(code: str) -> None:
+    try:
+        _pool_cc = await get_pool()
+        async with _pool_cc.acquire() as _c_cc:
+            await _c_cc.execute("DELETE FROM settings WHERE key=$1",
+                                f"claudecheck:{str(code).strip().upper()}")
+    except Exception as _e_cc:
+        logging.warning(f"claudecheck clear {code}: {_e_cc}")
+
+
+async def _claude_nc_save(tok: str, ctx: dict) -> None:
+    """Контекст кнопок «активирована / не активировалась» — и в память, и в базу."""
+    import json as _j_ns
+    _claude_needcheck[tok] = ctx
+    try:
+        await set_setting(f"claudenc:{tok}", _j_ns.dumps(ctx, ensure_ascii=False, default=str))
+    except Exception as _e_ns:
+        logging.warning(f"claudenc save {tok}: {_e_ns}")
+
+
+async def _claude_nc_load(tok: str):
+    """Достаёт и УДАЛЯЕТ контекст кнопки. Память — потом база (после деплоя)."""
+    import json as _j_nl
+    _ctx = _claude_needcheck.pop(tok, None)
+    _raw = ""
+    try:
+        _raw = (await get_setting(f"claudenc:{tok}", "") or "").strip()
+        _pool_nl = await get_pool()
+        async with _pool_nl.acquire() as _c_nl:
+            await _c_nl.execute("DELETE FROM settings WHERE key=$1", f"claudenc:{tok}")
+    except Exception as _e_nl:
+        logging.warning(f"claudenc load {tok}: {_e_nl}")
+    if _ctx is None and _raw:
+        try:
+            _ctx = _j_nl.loads(_raw)
+        except Exception:
+            _ctx = None
+    return _ctx
+
+
+async def _claude_decision_taken(code: str) -> None:
+    """Решение по коду принято — гасим ВСЕ остальные кнопки по нему.
+
+    По одному коду бывает несколько сообщений с кнопками (исходное и
+    напоминание после повторного нажатия клиента). Нажал «активирована» в
+    одном — второе оставалось живым, и «не активировалась — другой сайт» в нём
+    запускало новую цепочку по уже выданной подписке: вторая активация.
+    Самопроверка 06.10.2026.
+    """
+    _c = str(code or "").strip()
+    if not _c:
+        return
+    for _k in [k for k, v in list(_claude_needcheck.items())
+               if str((v or {}).get("code") or "").strip() == _c]:
+        _claude_needcheck.pop(_k, None)
+    try:
+        _pool_dt = await get_pool()
+        async with _pool_dt.acquire() as _c_dt:
+            await _c_dt.execute(
+                "DELETE FROM settings WHERE key LIKE 'claudenc:%' AND value LIKE $1",
+                f'%"code": "{_c}"%')
+    except Exception as _e_dt:
+        logging.warning(f"claude decision cleanup {_c}: {_e_dt}")
+
+
+async def _claude_ask_admin_check(ref, user_id, order_id, code, org_id, plan_name,
+                                  plan_key, prov, site, why: str, shot=None) -> None:
+    """Сообщение Александру с кнопками решения по неясному исходу."""
+    import uuid as _uuid_ak
+    _tok = _uuid_ak.uuid4().hex[:12]
+    await _claude_nc_save(_tok, {
+        "user_id": user_id, "order_id": order_id, "code": code, "org_id": org_id,
+        "plan_name": plan_name, "plan_key": plan_key, "provider": prov,
+        "site": site, "ref": ref})
+    _cap = (f"⚠️ <b>Claude {site} — нужна проверка</b>\n"
+            f"👤 Клиент: {await _who_user(user_id)} · <b>{plan_name}</b>\n"
+            f"🔑 Код: <code>{code}</code>\n🧩 Org: <code>{org_id}</code>\n"
+            + (f"🆔 Order: <code>{order_id}</code>\n" if order_id else "")
+            + f"\n{why}\n\n"
+            f"Код помечен и сам в пул НЕ вернётся, второй активации бот не "
+            f"запустит. Проверь код на сайте по Org ID, затем выбери:")
+    _kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подписка активирована", callback_data=f"clnc_ok:{_tok}")],
+        [InlineKeyboardButton(text="🔄 Не активировалась — другой сайт", callback_data=f"clnc_next:{_tok}")],
+    ])
+    try:
+        if shot:
+            from aiogram.types import BufferedInputFile as _BIF_ak
+            await bot.send_photo(ADMIN_ID, _BIF_ak(shot, filename="claude_check.png"),
+                                 caption=_cap[:1020], parse_mode="HTML", reply_markup=_kb)
+        else:
+            await bot.send_message(ADMIN_ID, _cap, parse_mode="HTML", reply_markup=_kb)
+    except Exception:
+        try:
+            await bot.send_message(ADMIN_ID, _cap, parse_mode="HTML", reply_markup=_kb)
+        except Exception as _e_ak:
+            logging.error(f"claude check ask {code}: {_e_ak}")
+
+
 async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id, site_name="", used_codes=None):
     """Помечает код, чистит pending, уведомляет клиента и админа (общий блок успеха).
     used_codes — список кодов, пропущенных как «уже использованные» (для отчёта админу)."""
     await mark_claude_code_used(code, user_id, order_id, org_id)
     await delete_claude_pending_activation(user_id, order_id)
+    await _claude_check_clear(code)
     _claude_job_results[ref] = {"status": "done", "success": True}
 
     import datetime as _dt2
@@ -15276,13 +17084,47 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
     _bpa_stock_cache = {}   # {product: available} — чтобы не дёргать /api/stock на каждый код
     _oos_total = 0          # сколько раз получили «нет стока» (для решения об автоповторе)
     try:
-        # предварительно зарезервированный при покупке код вернём в пул — выбор честный по стоку
+        # Предварительно зарезервированный при покупке код вернём в пул — выбор
+        # честный по стоку. НО ТОЛЬКО если это действительно нетронутый резерв:
+        #  • по коду неясный исход (метка claudecheck) — НЕ запускаем вовсе:
+        #    код мог быть активирован, решает Александр;
+        #  • код уже держит ДРУГОЙ клиент — не трогаем: после bad_org код уходил
+        #    в пул, а строка ожидания этого клиента продолжала на него
+        #    ссылаться, и повтор снимал резерв у постороннего. 06.10.2026.
         try:
             _pend0 = await get_claude_pending_activation(user_id)
-            if _pend0 and _pend0.get("code"):
-                await release_claude_code(_pend0["code"])
-        except Exception:
-            pass
+            _c0 = ((_pend0 or {}).get("code") or "").strip()
+            if _c0:
+                if await _claude_check_get(_c0):
+                    logging.warning(f"Claude chain {ref}: по {_c0} неясный исход — "
+                                    f"вторую активацию НЕ запускаю, uid={user_id}")
+                    _claude_job_results[ref] = {
+                        "status": "done", "success": False, "pending": True,
+                        "error": ("Активация обрабатывается. Александр проверяет её "
+                                  "вручную — повторять ничего не нужно, сообщение "
+                                  "придёт в чат.")}
+                    try:
+                        if not await activation_cooldown(f"claudechk:{user_id}", seconds=1800):
+                            await _claude_ask_admin_check(
+                                ref, user_id, order_id, _c0, org_id, plan_name, plan_key,
+                                (_pend0 or {}).get("provider") or "", "",
+                                "Клиент снова нажал «Активировать», а по этому коду исход "
+                                "прошлой активации так и не подтверждён.")
+                    except Exception as _e_ck:
+                        logging.error(f"claude check notify {_c0}: {_e_ck}")
+                    return
+                _pool_0 = await get_pool()
+                async with _pool_0.acquire() as _c_0:
+                    _other = await _c_0.fetchval(
+                        "SELECT 1 FROM claude_pending_activations "
+                        "WHERE code=$1 AND user_id<>$2 LIMIT 1", _c0, int(user_id))
+                if _other:
+                    logging.warning(f"Claude chain {ref}: {_c0} держит другой клиент — "
+                                    f"в пул не возвращаю")
+                else:
+                    await release_claude_code(_c0)
+        except Exception as _e_st0:
+            logging.error(f"Claude chain {ref}: старт, резерв клиента: {_e_st0}")
 
         # порядок сайтов по числу свободных кодов этого тарифа
         try:
@@ -15356,6 +17198,13 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                 # проходит успешно (сайт докупает по ходу и сам ретраит внутри заказа).
                 # Единственная правда — ответ на конкретную попытку активации.
                 _attempt += 1
+                # Замок живёт 20 минут с момента взятия, а цепочка может идти
+                # дольше (до 12 попыток, по 7 минут ожидания на API-сайте). Без
+                # освежения после деплоя второй запуск проходил бы посреди первой.
+                try:
+                    await claim_activation(_claim_key, stale_minutes=0)
+                except Exception as _e_hb:
+                    logging.warning(f"Claude chain {ref}: освежить замок: {_e_hb}")
                 try:
                     await save_claude_pending_activation(user_id, _code, order_id, plan_key, plan_name, _prov)
                     _pool_u = await get_pool()
@@ -15462,10 +17311,14 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                             "error": "Активация обрабатывается. Подписка появится в течение 5–10 минут. Если не появится — напиши Александру."}
                         import uuid as _uuid_nc
                         _tok = _uuid_nc.uuid4().hex[:12]
-                        _claude_needcheck[_tok] = {
+                        # Метка неясного исхода и контекст кнопок — в базу: иначе после
+                        # деплоя код уйдёт в пул при первом же повторе клиента, а
+                        # кнопки ответят «Контекст устарел». 06.10.2026
+                        await _claude_check_mark(_code, user_id, order_id, _site)
+                        await _claude_nc_save(_tok, {
                             "user_id": user_id, "order_id": order_id, "code": _code, "org_id": org_id,
                             "plan_name": plan_name, "plan_key": plan_key, "provider": _prov,
-                            "site": _site, "ref": ref}
+                            "site": _site, "ref": ref})
                         _cap = (f"⚠️ <b>Claude {_site} — нужна проверка</b>\n"
                                 f"👤 {await _who_user(user_id)} · {plan_name}\n"
                                 f"🔑 <code>{_code}</code>\n🧩 Org: <code>{org_id}</code>\n\n"
@@ -15524,9 +17377,30 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         if _wait == "success":
                             await _claude_notify_success(ref, _code, user_id, order_id, plan_name, org_id, _site, _used_codes)
                             return
-                        # сайт принял код, но не завершил — код израсходован; СМЕНА сайта
+                        if _wait == "timeout":
+                            # Сайт принял код и не сказал ни «успех», ни «отказ». Код мог
+                            # дозреть позже. Раньше бот уходил на следующий сайт со ВТОРЫМ
+                            # кодом — дозрей первый, у клиента две подписки за один заказ.
+                            # Теперь это неясный исход: стоп, метка, решает Александр.
+                            # 06.10.2026
+                            logging.warning(f"Claude chain {ref}: {_prov} timeout по {_code} — "
+                                            f"неясный исход, на другой сайт НЕ ухожу")
+                            await _claude_check_mark(_code, user_id, order_id, _site)
+                            _claude_job_results[ref] = {
+                                "status": "done", "success": False, "pending": True,
+                                "error": ("Активация обрабатывается. Подписка появится в "
+                                          "течение 5–10 минут. Если не появится — напиши "
+                                          "Александру.")}
+                            await _claude_ask_admin_check(
+                                ref, user_id, order_id, _code, org_id, plan_name, plan_key,
+                                _prov, _site,
+                                "Сайт принял код, но за отведённое время не ответил ни "
+                                "«успех», ни «отказ». Активация могла пройти позже.")
+                            return
+                        # Сайт ЯВНО ответил «failed» — код израсходован, подписки нет;
+                        # переход на следующий сайт оставляем как было.
                         logging.warning(f"Claude chain {ref}: {_prov} activation {_wait} — фолбэк")
-                        _report.append(f"{_site}: активация {_wait} (сайт принял код, но не завершил за 3 мин)")
+                        _report.append(f"{_site}: активация {_wait} (сайт принял код и ответил отказом)")
                         break
                     _kind = _res.get("err_kind", "other")
                     if _kind == "bad_org":
@@ -15604,10 +17478,12 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
         # кнопки: повторить автоактивацию / отметить, что активировал вручную
         import uuid as _uuid_f
         _ftok = _uuid_f.uuid4().hex[:12]
-        _claude_needcheck[_ftok] = {
+        # Контекст кнопок — в базу тоже: после деплоя «Повторить» и
+        # «Активировал вручную» иначе отвечали «Контекст устарел». 06.10.2026
+        await _claude_nc_save(_ftok, {
             "user_id": user_id, "order_id": order_id, "code": "", "org_id": org_id,
             "plan_name": plan_name, "plan_key": plan_key, "provider": "",
-            "site": "", "ref": ref}
+            "site": "", "ref": ref})
         _kb_fail = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Повторить автоактивацию", callback_data=f"clfail_retry:{_ftok}")],
             [InlineKeyboardButton(text="✅ Активировал вручную", callback_data=f"clfail_manual:{_ftok}")],
@@ -15668,9 +17544,14 @@ async def clnc_ok_handler(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     _tok = cb.data.split(":", 1)[1]
-    _ctx = _claude_needcheck.pop(_tok, None)
+    _ctx = await _claude_nc_load(_tok)
     if not _ctx:
-        await cb.answer("Контекст устарел (бот перезапускался). Помети код вручную.", show_alert=True); return
+        await cb.answer("Кнопка уже использована или устарела. Проверь код в «Ждущих кодах».",
+                        show_alert=True); return
+    if _ctx.get("code") and not await _claude_check_get(_ctx["code"]):
+        await cb.answer("Решение по этому коду уже принято — второй раз не применяю.",
+                        show_alert=True); return
+    await _claude_decision_taken(_ctx.get("code"))
     try:
         await _claude_notify_success(_ctx["ref"], _ctx["code"], _ctx["user_id"], _ctx["order_id"],
                                      _ctx["plan_name"], _ctx["org_id"], _ctx["site"], used_codes=None)
@@ -15692,10 +17573,18 @@ async def clnc_next_handler(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
     _tok = cb.data.split(":", 1)[1]
-    _ctx = _claude_needcheck.pop(_tok, None)
+    _ctx = await _claude_nc_load(_tok)
     if not _ctx:
-        await cb.answer("Контекст устарел (бот перезапускался). Активируй вручную.", show_alert=True); return
+        await cb.answer("Кнопка уже использована или устарела. Проверь код в «Ждущих кодах».",
+                        show_alert=True); return
+    if _ctx.get("code") and not await _claude_check_get(_ctx["code"]):
+        await cb.answer("Решение по этому коду уже принято — второй раз не применяю.",
+                        show_alert=True); return
     await cb.answer("Переношу на другой сайт…")
+    # Решение принято — метку неясного исхода снимаем, иначе новая цепочка
+    # сама себя заблокирует на старте. И гасим остальные кнопки по коду.
+    await _claude_check_clear(_ctx["code"])
+    await _claude_decision_taken(_ctx["code"])
     # Активация НЕ прошла → возвращаем старый код в пул (он не израсходован), чтобы он
     # достался другому клиенту. Новый код возьмётся из пула ДРУГОГО сайта (текущий пропускаем).
     try:
@@ -15726,9 +17615,10 @@ async def clfail_retry_handler(cb: CallbackQuery):
     """Финальный сбой → админ жмёт «Повторить автоактивацию» (напр. после пополнения стока)."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
-    _ctx = _claude_needcheck.pop(cb.data.split(":", 1)[1], None)
+    _ctx = await _claude_nc_load(cb.data.split(":", 1)[1])
     if not _ctx:
-        await cb.answer("Контекст устарел (бот перезапускался). Запусти активацию заново.", show_alert=True); return
+        await cb.answer("Кнопка уже использована или устарела. Запусти активацию заново.",
+                        show_alert=True); return
     await cb.answer("Запускаю активацию заново…")
     import uuid as _uuid_r
     _new_ref = _uuid_r.uuid4().hex[:16]
@@ -15753,9 +17643,9 @@ async def clfail_manual_handler(cb: CallbackQuery):
     """Финальный сбой → админ активировал подписку вручную: закрываем заказ и уведомляем клиента."""
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
-    _ctx = _claude_needcheck.pop(cb.data.split(":", 1)[1], None)
+    _ctx = await _claude_nc_load(cb.data.split(":", 1)[1])
     if not _ctx:
-        await cb.answer("Контекст устарел (бот перезапускался).", show_alert=True); return
+        await cb.answer("Кнопка уже использована или устарела.", show_alert=True); return
     try:
         await delete_claude_pending_activation(_ctx["user_id"])
         # И таймер — иначе он позже позовёт клиента активировать то, что уже
@@ -18051,6 +19941,99 @@ async def _perplexity_notify_success(code, user_id, order_id, plan_name, org_id)
         pass
 
 
+# ─── Perplexity: защита от повторной отправки кода поставщику ─────────────
+# Отметка org_id в строке ожидания ставится ДО отправки кода и снимается
+# только когда поставщик ЯВНО сказал «кода не касался». Но ставилась она
+# безусловно — и двойной тап, и повтор после таймаута отправляли код
+# поставщику снова. Теперь отметка атомарная: выигрывает только первый
+# запрос, а при неясном исходе решает Александр. 06.10.2026.
+_px_inflight: dict = {}       # user_id → время отправки (запрос ещё идёт)
+
+
+async def _px_ask_admin_unclear(user_id: int, code: str, order_id: str,
+                                org_id: str, why: str) -> None:
+    """Сообщение Александру: исход неясен, код помечен, решать ему."""
+    try:
+        if await activation_cooldown(f"pxunclear:{user_id}", seconds=1800):
+            return
+    except Exception as _e_pc:
+        logging.warning(f"pxunclear cooldown {user_id}: {_e_pc}")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚠️ <b>Perplexity — исход активации неясен</b>\n\n"
+            f"👤 Клиент: {await _who_user(user_id)}\n"
+            f"🔑 Код: <code>{code}</code>\n"
+            f"🆔 Аккаунт Perplexity: <code>{org_id or '—'}</code>\n"
+            + (f"🧾 Order: <code>{order_id}</code>\n" if order_id else "")
+            + f"{await _fk_num_line(order_id) if order_id else ''}"
+            + f"\n{why}\n\n"
+            f"Код ушёл поставщику, а ответа «успех» или «отказ» нет — он мог "
+            f"быть потрачен. Повторно код бот НЕ отправит.\n\n"
+            f"Проверь у поставщика. Если код цел — разреши клиенту повторить:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔄 Код цел — разрешить повтор",
+                                     callback_data=f"pxallow:{int(user_id)}")]]))
+    except Exception as _e_pa:
+        logging.error(f"pxunclear notify {user_id}: {_e_pa}")
+
+
+@dp.callback_query(F.data.startswith("pxallow:"))
+async def px_allow_ask(cb: CallbackQuery):
+    """Первый шаг: точно разрешить повтор? Повтор отправит код поставщику снова."""
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    _uid = cb.data.split(":", 1)[1]
+    await cb.message.answer(
+        "🔄 <b>Разрешить клиенту повторить активацию Perplexity?</b>\n\n"
+        f"👤 {await _who_user(int(_uid))}\n\n"
+        "Повтор отправит ТОТ ЖЕ код поставщику ещё раз. Делай это, только если "
+        "проверил у поставщика, что код не потрачен.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, код цел — разрешить",
+                                  callback_data=f"pxallow2:{_uid}")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data="noop")]]))
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("pxallow2:"))
+async def px_allow_do(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("❌", show_alert=True); return
+    try:
+        _uid = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("Не разобрал клиента", show_alert=True); return
+    _n = 0
+    try:
+        _p_al = await get_pool()
+        async with _p_al.acquire() as _c_al:
+            _r_al = await _c_al.execute(
+                "UPDATE perplexity_pending_activations SET org_id='' WHERE user_id=$1", _uid)
+        _n = int(str(_r_al).split()[-1]) if str(_r_al).split()[-1].isdigit() else 0
+    except Exception as _e_al:
+        logging.error(f"pxallow {_uid}: {_e_al}")
+    _px_inflight.pop(_uid, None)
+    if not _n:
+        await cb.answer("Резерва клиента нет — разрешать нечего.", show_alert=True)
+        return
+    logging.warning(f"pxallow: Александр разрешил повтор Perplexity uid={_uid}")
+    try:
+        await bot.send_message(
+            _uid,
+            "✅ Можно повторить активацию Perplexity — открой мини-приложение "
+            "кнопкой активации выше и нажми «Активировать» ещё раз.")
+    except Exception:
+        pass
+    try:
+        await cb.message.edit_text("✅ Повтор разрешён, клиенту написал.")
+    except Exception:
+        pass
+    await cb.answer("Готово")
+
+
 async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     """POST /api/activate-perplexity"""
     import json as _j, re as _re
@@ -18233,12 +20216,39 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     try:
         _pool_px_mark = await get_pool()
         async with _pool_px_mark.acquire() as _c_px_mark:
+            # ТОЛЬКО если отметки ещё нет. Раньше UPDATE был безусловным: двойной
+            # тап и повтор после таймаута отправляли код поставщику второй раз.
             _r_px_mark = await _c_px_mark.execute(
-                "UPDATE perplexity_pending_activations SET org_id=$1 WHERE user_id=$2",
+                "UPDATE perplexity_pending_activations SET org_id=$1 "
+                "WHERE user_id=$2 AND COALESCE(org_id,'')=''",
                 org_id, user_id)
-        _px_marked = str(_r_px_mark).split()[-1] != "0"
+            _px_marked = str(_r_px_mark).split()[-1] != "0"
+            _px_prev_org = ""
+            if not _px_marked:
+                _px_prev_org = (await _c_px_mark.fetchval(
+                    "SELECT COALESCE(org_id,'') FROM perplexity_pending_activations "
+                    "WHERE user_id=$1", user_id)) or ""
     except Exception as _e_px_mark:
         logging.error(f"perplexity: не отметил начало активации uid={user_id}: {_e_px_mark}")
+        _px_prev_org = ""
+    if not _px_marked and _px_prev_org:
+        # Код уже отправлялся поставщику. Либо запрос идёт прямо сейчас (двойной
+        # тап), либо прошлый закончился неясно. В обоих случаях второй раз НЕ шлём.
+        import time as _t_pxi
+        if _t_pxi.time() - _px_inflight.get(user_id, 0) < 75:
+            logging.info(f"perplexity: запрос uid={user_id} уже идёт — второй не шлю")
+            return _resp({"processing": True,
+                          "error": "Активация уже выполняется — подожди минуту, "
+                                   "результат придёт в чат."})
+        logging.warning(f"perplexity: по коду {code} uid={user_id} исход прошлой "
+                        f"попытки неясен — повторно код НЕ отправляю")
+        await _px_ask_admin_unclear(
+            user_id, code, order_id, _px_prev_org,
+            "Клиент нажал «Активировать» снова, а прошлая отправка этого кода "
+            "так и не получила ответа.")
+        return _resp({"processing": True,
+                      "error": "Активация обрабатывается. Александр проверяет её — "
+                               "повторять ничего не нужно, сообщение придёт в чат."})
     if not _px_marked:
         # Код НЕ отправляем: непотраченный код дороже одной неудачной попытки.
         try:
@@ -18256,6 +20266,8 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
         return _resp({"error": "Не получилось начать активацию. "
                                f"Напиши @{PERSONAL_USERNAME} — активирует вручную."})
 
+    import time as _t_pxs
+    _px_inflight[user_id] = _t_pxs.time()
     try:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
@@ -18354,12 +20366,31 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                     return _resp({"error": _rd.get("detail") or "Ошибка запроса."})
 
                 else:
+                    # 5xx и прочее: поставщик мог код принять. Отметка остаётся,
+                    # повтор бот не допустит — значит и «попробуй ещё раз» писать
+                    # нельзя. Решает Александр. 06.10.2026
                     logging.error(f"bypriceactivate.pro perplexity HTTP {_r.status}: {str(_rd)[:200]}")
-                    return _resp({"error": f"Ошибка ({_r.status}). Попробуй ещё раз."})
+                    _px_inflight.pop(user_id, None)
+                    await _px_ask_admin_unclear(
+                        user_id, code, order_id, org_id,
+                        f"Поставщик ответил HTTP {_r.status}: "
+                        f"{str(_rd.get('detail') or '')[:150] or 'без пояснения'}.")
+                    return _resp({"processing": True,
+                                  "error": "Активация обрабатывается. Александр проверяет её — "
+                                           "повторять ничего не нужно, сообщение придёт в чат."})
 
     except aiohttp.ClientError as _e:
+        # Обрыв сети или таймаут 30 с: код мог дойти до поставщика. Раньше
+        # клиенту писали «попробуй ещё раз» — и повтор отправлял код снова.
         logging.error(f"Perplexity activate network: {_e}")
-        return _resp({"error": "Нет связи с сервисом. Попробуй ещё раз."})
+        _px_inflight.pop(user_id, None)
+        await _px_ask_admin_unclear(
+            user_id, code, order_id, org_id,
+            f"Связь с поставщиком оборвалась или он не ответил за 30 секунд "
+            f"({type(_e).__name__}).")
+        return _resp({"processing": True,
+                      "error": "Активация обрабатывается. Александр проверяет её — "
+                               "повторять ничего не нужно, сообщение придёт в чат."})
     except Exception as _e:
         logging.error(f"Perplexity activate error: {_e}", exc_info=True)
         try:
@@ -18371,7 +20402,10 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                 parse_mode="HTML")
         except Exception:
             pass
-        return _resp({"error": "Внутренняя ошибка. Напиши Александру."})
+        _px_inflight.pop(user_id, None)
+        return _resp({"processing": True,
+                      "error": "Активация обрабатывается. Александр проверяет её — "
+                               "повторять ничего не нужно, сообщение придёт в чат."})
 
 
 async def api_activate_perplexity_status_handler(request: web.Request) -> web.Response:

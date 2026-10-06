@@ -2834,14 +2834,29 @@ async def count_claude_free_by_provider_plan(plan: str) -> dict:
 
 
 async def release_claude_code(code: str):
-    """Возвращает код в пул при неудачной активации."""
+    """Возвращает код в пул при неудачной активации.
+
+    Код, записанный как АКТИВИРОВАННЫЙ (used_by проставлен), сюда больше не
+    возвращается ни при каком раскладе: такой код потрачен, и отдать его
+    следующему покупателю — прямая потеря денег. Раньше условия не было, и
+    любой путь, позвавший release по коду, мог вернуть в пул выданную подписку.
+    Решение по таким кодам — только за Александром (админка «В пул»).
+    06.10.2026
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
+        _r = await conn.execute(
             "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, "
-            "used_at=NULL, order_id=NULL, org_id=NULL WHERE code=$1",
+            "used_at=NULL, order_id=NULL, org_id=NULL "
+            "WHERE code=$1 AND used_by IS NULL",
             code
         )
+        if str(_r).split()[-1] == "0":
+            _held = await conn.fetchval(
+                "SELECT used_by FROM claude_codes WHERE code=$1", code)
+            if _held:
+                logging.error(f"release_claude_code: {code} записан как активированный "
+                              f"(used_by={_held}) — в пул НЕ возвращаю")
 
 
 async def mark_claude_code_used(code: str, user_id: int, order_id: str, org_id: str = ""):

@@ -7,8 +7,6 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.7.0/tabler-icons.min.css"/>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/hammerjs/2.0.8/hammer.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
 <style>
 :root{
   --bg:#0d0e12; --surface:#14161c; --card:#1a1d25; --card2:#23262f;
@@ -102,16 +100,44 @@ body.kb-open .tabbar{display:none}
 .psbar .psn{font-size:11.5px;color:var(--txt2);white-space:nowrap}
 .psbar .psx{cursor:pointer;color:var(--txt2);font-size:15px;padding:0 2px}
 .pshit{background:rgba(240,180,41,.28);border-radius:3px}
+/* ── Объединённые разделы: анимации, фильтры, уровни состояния ── */
+.sub{font-size:11.5px;color:var(--txt2);line-height:1.45}.lbl2{font-size:13.5px;line-height:1.3}
+.hb .sub{margin-top:3px}.row .tag,.block .tag{display:inline-block;line-height:1.45;white-space:normal}.kv{gap:10px}.kv>span{min-width:0;overflow-wrap:anywhere}.kv>span.k{flex-shrink:1}.hsub,.htitle{overflow-wrap:anywhere}.hdr>div:last-child{min-width:0}.lbl2,.sub{overflow-wrap:anywhere}#gwcfm .sub{font-size:13px;line-height:1.5}
+.fx{animation:fxIn .32s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fxIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+#app>.wrap,#app .wrap{animation:fxIn .22s ease both}
+.sk{background:linear-gradient(90deg,var(--card) 0%,var(--card2) 50%,var(--card) 100%);background-size:200% 100%;animation:skM 1.15s linear infinite;border-radius:12px}
+@keyframes skM{from{background-position:200% 0}to{background-position:-200% 0}}
+.hb-f{transition:width .7s cubic-bezier(.2,.8,.2,1)}
+.chiprow{display:flex;gap:6px;overflow-x:auto;padding:2px 0 6px;margin-bottom:10px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.chiprow::-webkit-scrollbar{display:none}
+.fchip{flex:0 0 auto;border:1px solid var(--line);background:var(--card);color:var(--txt2);font-size:12px;font-weight:600;padding:7px 11px;border-radius:20px;cursor:pointer;white-space:nowrap;transition:.15s}
+.fchip.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.fchip b{margin-left:6px;font-weight:700}.fchip.on b{color:#fff}
+.lvl-act{border-left:3px solid var(--red)!important}.lvl-wait{border-left:3px solid var(--amber)!important}
+.lvl-done{border-left:3px solid var(--green)!important}.lvl-manual{border-left:3px solid var(--amber)!important}.lvl-off{border-left:3px solid var(--txt3)!important;opacity:.8}
+.att{display:flex;align-items:center;gap:10px;padding:10px;margin-top:8px;background:var(--card2);border-radius:var(--r2);cursor:pointer;transition:.12s}
+.att:active{transform:scale(.985)}.att .ic{width:32px;height:32px;font-size:17px}
+.vbars{display:flex;align-items:flex-end;gap:3px;margin:6px 0 20px;position:relative}
+.vbars .vb{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;position:relative;cursor:pointer}
+.vbars .vb i{display:block;background:#3987e5;border-radius:4px 4px 0 0;min-height:2px;transition:height .6s cubic-bezier(.2,.8,.2,1)}
+.vbars .vb.hi i{background:var(--acc)}.vbars .vb:active i{filter:brightness(1.3)}
+.vbars .vb em{position:absolute;bottom:-17px;left:-6px;right:-6px;text-align:center;font-size:9.5px;color:var(--txt3);font-style:normal;white-space:nowrap}
+.vtip{position:fixed;z-index:200;background:#fff;color:#111;font-size:12px;line-height:1.45;padding:7px 10px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.45);display:none;max-width:240px}
+.vtip-a{display:inline-block;margin-top:4px;color:#c2185b;font-weight:700;cursor:pointer}
+.mval .cu{font-variant-numeric:tabular-nums}
+.tabbar a{transition:color .15s}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <div class="phone">
   <div id="app"></div>
   <div class="tabbar">
-    <a class="on" onclick="goHome()"><i class="ti ti-layout-grid"></i>Разделы</a>
-    <a onclick="open2('Статистика')"><i class="ti ti-chart-bar"></i>Статистика</a>
-    <a onclick="open2('История платежей')"><i class="ti ti-receipt"></i>Заказы</a>
-    <a onclick="open2('Прибыль')"><i class="ti ti-coin"></i>Прибыль</a>
+    <a class="on" data-s="home" onclick="tabGo('home')"><i class="ti ti-layout-dashboard"></i>Сводка</a>
+    <a data-s="Деньги" onclick="tabGo('Деньги')"><i class="ti ti-coin"></i>Деньги</a>
+    <a data-s="Заказы" onclick="tabGo('Заказы')"><i class="ti ti-receipt"></i>Заказы</a>
+    <a data-s="Выдача" onclick="tabGo('Выдача')"><i class="ti ti-package"></i>Выдача</a>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -200,8 +226,8 @@ function linkRow(label,u){
           : esc(u))
     + '</span></div>';
 }
-function nf(n){return n.toLocaleString('ru')}
-function go(fn,push){if(push!==false)stack.push(fn);window._cur=fn;window.scrollTo(0,0);app.innerHTML=fn();syncBack();psInit()}
+function nf(n){n=Number(n);return (isFinite(n)?n:0).toLocaleString('ru')}
+function go(fn,push){if(window._apiStale)return;window._navN++;if(push!==false)stack.push(fn);window._cur=fn;try{_tipHide();window._vtips=[];}catch(e){}window.scrollTo(0,0);app.innerHTML=fn();syncBack();psInit();try{syncTabs()}catch(e){}}
 
 /* ── Живой поиск по странице ───────────────────────────────────────────────
    Фильтрует то, что уже нарисовано, — без запросов к серверу. Ищем по
@@ -274,11 +300,56 @@ function psApply(v){
   var n1=document.getElementById('psn');
   if(n1)n1.textContent=q?(shown+' из '+items.length):'';
 }
-function back(){stack.pop();var fn=stack[stack.length-1]||home;window._cur=fn;window._lastScreen=null;window.scrollTo(0,0);app.innerHTML=fn();syncBack()}
+/* «Назад» (кнопка в шапке и системная кнопка Telegram).
+   1) Если открыто окно поверх экрана — закрываем ТОЛЬКО его. Раньше экран
+      уходил, а окно оставалось, и кнопка в нём («Записать выплату») потом
+      срабатывала уже не там. Ревью 06.10.2026.
+   2) Экрану возвращаем его имя (fn._scr): иначе следующий open2 того же
+      раздела считал его новым и клал в стек второй раз — «назад» приходилось
+      жать дважды, а нижняя панель подсвечивала не тот раздел. */
+function _closeModal(){
+  var m=[['gwcfm',null],['shcropov','_shCropCancel'],['cropov','_cropCancel'],['bcropov','_bcCancel']];
+  for(var i=0;i<m.length;i++){var el=document.getElementById(m[i][0]);
+    if(el){ if(m[i][1]&&typeof window[m[i][1]]==='function'){try{window[m[i][1]]();}catch(e){}}
+            var el2=document.getElementById(m[i][0]); if(el2)try{el2.remove();}catch(e){}
+            return true; } }
+  return false;
+}
+function back(){
+  if(window._apiStale)return;          // опоздавший ответ: ты уже на другом экране
+  if(_closeModal())return;
+  window._navN++;
+  stack.pop(); if(!stack.length)stack=[home];
+  var fn=stack[stack.length-1]||home;
+  window._cur=fn;window._lastScreen=(fn===home)?'home':(fn._scr||null);
+  try{_tipHide();window._vtips=[];}catch(e){}
+  window.scrollTo(0,0);app.innerHTML=fn();syncBack();try{syncTabs();fxRun(app)}catch(e){}
+  if(fn===home)try{ovReload(true)}catch(e){}
+}
 function syncBack(){var b=window.Telegram&&window.Telegram.WebApp&&window.Telegram.WebApp.BackButton;if(!b)return;try{if(window._cur&&window._cur!==home){b.show()}else{b.hide()}}catch(e){}}
-function leaf(fn){window._lastScreen=null;go(fn)}
-function open2(n){var same=(window._lastScreen===n);window._lastScreen=n;go(function(){return SCREENS[n]?SCREENS[n]():stub(n)}, !same)}
-function goHome(){stack=[home];window._lastScreen="home";window._cur=home;window.scrollTo(0,0);app.innerHTML=home();syncBack()}
+function leaf(fn){if(window._apiStale)return;window._lastScreen=null;go(fn)}
+function open2(n){
+  if(window._apiStale)return;          // опоздавший ответ не открывает экраны
+  if(window._ALIAS&&_ALIAS[n]){ if(n==='Все заказы')window._dvTab='manual'; n=_ALIAS[n]; }
+  var same=(window._lastScreen===n);window._lastScreen=n;
+  var f=function(){return SCREENS[n]?SCREENS[n]():stub(n)}; f._scr=n;
+  go(f, !same);
+}
+/* Нижняя панель — переход между РАЗДЕЛАМИ: стек начинается заново со
+   Сводки, а не растёт на каждое нажатие. */
+function tabGo(n){
+  _closeModal();
+  if(n==='home'){goHome();return;}
+  /* Вкладка открывает раздел «как обычно», а не с периодом, оставшимся от
+     перехода из «Денег» или «Открыть этот день». */
+  if(n==='Заказы'){window._ofDate='';window._ofDays=7;window._ofQ='';window._ofPage=0;}
+  if(n==='Деньги'){window._mDate='';if(window._mP==='date')window._mP='today';}
+  stack=[home];window._lastScreen=null;open2(n);
+}
+function goHome(){if(window._apiStale)return;window._navN++;stack=[home];window._lastScreen="home";window._cur=home;try{_tipHide();window._vtips=[];}catch(e){}window.scrollTo(0,0);app.innerHTML=home();syncBack();try{syncTabs();fxRun(app)}catch(e){}
+  /* Показываем то, что есть, и тихо обновляем: после действий с заказами
+     числа на Сводке иначе оставались старыми до смены периода. */
+  try{ovReload(true)}catch(e){}}
 function hdr(t,s){return '<div class="hdr"><div class="back" onclick="back()"><i class="ti ti-chevron-left"></i></div><div><div class="htitle">'+esc(t)+'</div>'+(s?'<div class="hsub">'+esc(s)+'</div>':'')+'</div></div>'
   +'<div class="psbar" id="psbar"><i class="ti ti-search muted"></i>'
   +'<input id="psq" placeholder="Поиск по странице" oninput="psApply(this.value)" autocomplete="off"/>'
@@ -300,201 +371,90 @@ function spark(vals,color){var w=320,h=64,mx=Math.max.apply(0,vals),mn=Math.min.
   var pts=vals.map(function(v,i){return [(i/(vals.length-1)*w),(h-((v-mn)/rng)*(h-10)-5)]});
   var d='M'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1)}).join(' L');
   return '<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" preserveAspectRatio="none"><path d="'+d+' L'+w+','+h+' L0,'+h+' Z" fill="'+color+'22"/><path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="2.5" stroke-linejoin="round"/></svg>'}
-function kpi(lab,val,delta){var up=delta>=0;return '<div class="mcard"><div class="mlab">'+esc(lab)+'</div><div class="mval">'+val+'</div><div class="delta '+(up?'pos':'neg')+'">'+(up?'▲':'▼')+' '+Math.abs(delta)+'% к вчера</div></div>'}
-
-/* ===== HOME ===== */
-function home(){
-  var ov=OVERVIEW||{};
-  var _ovOk=(OV_STATE==='ok');
-  /* Никаких подстановок по умолчанию: пока не пришёл ответ — «…», при сбое —
-     прочерк и явное сообщение. Выдуманных чисел на дашборде больше нет. */
-  var _dash=function(v,suf){return _ovOk?(nf(v||0)+(suf||'')):(OV_STATE==='load'?'…':'—');};
-  var _ord=ov.orders,_rev=ov.revenue,_nu=ov.newUsers;
-  var _week=(_ovOk&&ov.week&&ov.week.length)?ov.week:[];
-  var _pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
-  var _bysvc=((_ovOk&&ov.byService&&ov.byService.length)?ov.byService:[])
-    .map(function(x,i){return {label:x.label,val:x.val,color:_pal[i%_pal.length]}});
-  var _wvals=_week.map(function(x){return (x&&x.value!=null)?x.value:x});
-  var _wmx=Math.max.apply(0,_wvals.length?_wvals:[1])||1;
-  var _wksum=_wvals.reduce(function(a,b){return a+(b||0)},0);
-  var groups=[
-   ["📊","Аналитика и финансы",[["📊","Статистика","Статистика"],["📈","Аналитика","Аналитика"],["🔥","Аналитика Каталога","Аналитика Каталога"],["💰","Прибыль","Прибыль"],["🛍️","Продажи","Продажи магазина"],["🧾","История платежей","История платежей",1]]],
-   ["👥","Пользователи",[["🔎","Найти по ID","Найти по ID"],["👥","Рефералы","Рефералы"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки",1]]],
-   ["🛒","Каталог и цены",[["🏷️","Шапка магазина","Шапка магазина"],["🎁","NS Gifts","NS Gifts каталог",1],["🎟️","Промокоды","Промокоды"],["🤖","Модели","Модели"],["💵","Редактор цен","Редактор цен"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры"],["🤝","Рефералка","Премиум-рефералка"],["🏢","Партнёры (наценка)","Партнёры"]]],
-   ["📦","Выдача заказов",[["🧾","Лента заказов","Лента заказов",1],["📋","Очередь заказов","Все заказы",1],["📦","Заказы по типам","Заказы",1]]],
-   ["⚙️","Управление",[["🎁","Розыгрыш","Розыгрыш"],["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание",1]]],
-   ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🖼","Фото/видео активации","Медиа активации"],["🍎","App Store","Настройка App Store"]]]
-  ];
-  var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
-  h+='<div class="hero"><div class="hi">🎛️</div><h1>Панель управления</h1><p>Сегодня · '+(new Date()).toLocaleDateString('ru')+'</p></div>';
-  h+='<div class="chips"><div class="chip"><div class="v">'+_dash(_ord)+'</div><div class="l">заказов</div></div>'
-    +'<div class="chip"><div class="v">'+_dash(_rev,'₽')+'</div><div class="l">выручка</div></div>'
-    +'<div class="chip"><div class="v">'+_dash(_nu)+'</div><div class="l">новых юзеров</div></div></div>';
-  /* Сбой загрузки виден как сбой, а не как «сегодня тихо». С кнопкой повтора:
-     чаще всего это просто перезапуск сервера после деплоя. */
-  if(OV_STATE==='err'){
-    h+='<div class="block"><div class="sub neg">⚠️ Не удалось загрузить сводку — цифры выше не показаны намеренно, '
-      +'чтобы не принять старое за сегодняшнее.</div>'
-      +'<button class="btn sec" style="margin-top:10px" onclick="ovReload()">🔄 Повторить</button></div>';
-  }
-  var _wbh=_week.length
-    ? '<div class="bars">'+_week.map(function(x){var v=(x&&x.value!=null)?x.value:x,dt=(x&&x.date)?x.date:'',lb=(x&&x.label)?x.label:'';return '<div class="b" style="height:'+Math.max(3,Math.round(v/_wmx*100))+'%;cursor:pointer" onclick="window._stDate=\''+dt+'\';open2(\'Статистика\')"><span>'+nf(v)+'</span><i>'+lb+'</i></div>'}).join('')+'</div>'
-    : '<div class="note">'+(OV_STATE==='load'?'Загружаю…':(OV_STATE==='err'?'Данные не загрузились.':'За последние 7 дней оплат не было.'))+'</div>';
-  h+='<div class="block"><h4>📈 Выручка за 7 дней'+(_week.length?' <span class="muted" style="font-size:11px;font-weight:400">— нажми на день</span>':'')+'</h4>'+_wbh
-    +(_week.length?'<div class="kv" style="margin-top:14px"><span class="k">Итого за неделю</span><span>'+nf(_wksum)+' ₽</span></div>':'')+'</div>';
-  h+='<div class="block"><h4>🥧 Выручка по сервисам (сегодня)</h4>'
-    +(_bysvc.length?donut(_bysvc)
-      :'<div class="note">'+(OV_STATE==='load'?'Загружаю…':(OV_STATE==='err'?'Данные не загрузились.':'Сегодня оплат ещё не было.'))+'</div>')+'</div>';
-  groups.forEach(function(g){h+='<div class="glabel">'+g[0]+' '+g[1]+'</div><div class="grid">';g[2].forEach(function(c){h+='<div class="card'+(c[3]?' full':'')+'" onclick="open2(\''+c[2]+'\')"><span class="ic">'+c[0]+'</span><span class="lbl">'+c[1]+'</span></div>'});h+='</div>'});
-  return h+'</div>';
-}
-
 
 var SCREENS={};
 
-/* Статистика */
-SCREENS["Статистика"]=function(){
-  var per=window._stP||"day", date=window._stDate||"";
-  setTimeout(function(){loadStats(per,date)},0);
-  var seg='<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per&&!date?'on':'')+'" onclick="window._stP=\''+k+'\';window._stDate=\'\';open2(\'Статистика\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>';
-  var dp='<input class="f" type="date" value="'+date+'" onchange="window._stDate=this.value;open2(\'Статистика\')" style="margin-bottom:14px"/>';
-  var sub=date?date:(per==="week"?"7 дней":per==="month"?"30 дней":"Сегодня");
-  return hdr("Статистика",sub)+'<div class="wrap">'+seg+dp+'<div id="stbody"><div class="note">Загружаю…</div></div></div>';
-};
-function loadStats(per,date){
-  api('/api/admin/stats',{period:per,date:date||null}).then(function(d){
-    var el=document.getElementById('stbody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    var h='<div class="mgrid"><div class="mcard"><div class="mlab">Заказы</div><div class="mval">'+d.orders+'</div></div><div class="mcard"><div class="mlab">Выручка</div><div class="mval">'+nf(d.revenue)+'₽</div></div><div class="mcard"><div class="mlab">Новые юзеры</div><div class="mval">'+d.newUsers+'</div></div><div class="mcard"><div class="mlab">Расход кредитов</div><div class="mval">'+nf(d.creditsSpent)+'</div></div></div>';
-    var mx=Math.max.apply(0,d.series.map(function(y){return y.value}))||1;
-    var bh='<div class="bars">'+d.series.map(function(x){return '<div class="b'+(x.date===d.anchor?' hi':'')+'" style="height:'+Math.max(3,Math.round(x.value/mx*100))+'%;cursor:pointer" onclick="window._stDate=\''+x.date+'\';open2(\'Статистика\')"><span>'+x.value+'</span><i>'+x.label+'</i></div>'}).join('')+'</div>';
-    h+='<div class="block"><h4>📊 Заказы по дням <span class="muted" style="font-size:11px;font-weight:400">— нажми на столбец</span></h4>'+bh+'</div>';
-    if(d.byType&&d.byType.length){h+='<div class="block"><h4>🧩 Генерации по типам</h4>'+hbars(d.byType.map(function(x,i){return {label:x.label,val:x.val,color:[C.pink,C.purple,C.teal,C.amber,C.blue][i%5]}}))+'</div>';}
-    el.innerHTML=h;
-  });
+/* Ответ сервера может прийти, когда ты уже ушёл с экрана. Многие действия
+   после успеха делают back() — и опоздавший ответ «выкидывал» с того экрана,
+   куда ты успел перейти. Поэтому каждый ответ знает, был ли переход после
+   запроса (window._apiStale), и back() в таком ответе ничего не делает.
+   Ревью 06.10.2026. */
+window._navN=0;window._apiStale=false;
+/* Действия, которые МЕНЯЮТ данные. Повторный тап, пока первый запрос ещё
+   идёт, раньше отправлял второй такой же запрос: «Добавить тариф» трижды —
+   три одинаковых тарифа, «Начислить» дважды — двойное начисление, «Записать
+   выплату» дважды — две выплаты. Теперь такой же запрос, пока первый не
+   вернулся, не отправляется. Чтения (загрузка экранов) не трогаем.
+   Ревью 06.10.2026. */
+var _MUT_RE=/\/api\/admin\/(promo-create|promo-deactivate|plan-add|plan-delete|service-add|service-delete|balance|block|referral-set|feed-order-action|order-action|order-delete|shop-order-action|add-codes|release-codes|code-delete|claude-code-action|broadcast|prices-save|recs-save|shopcats-save|shopdisplay-save|catsmeta-save|logo-save|logo-del|banners-save|banner-media|packs-save|model-price|setting-save|svc-save|claude-provider|nsg-product|nsg-bulk|giveaway-action|fin-settings)$/;
+var _MUT_PARTNER=['add','remove','payout','promo_set','fee_set','rate_set','bcstart'];
+var _inflight={};
+function _isMut(path,body){
+  /* Переключатели (вкл/выкл) не блокируем: экран переключается сразу, и
+     заблокированный запрос оставил бы вид и сервер в разных положениях. */
+  if(body&&(typeof body.on==='boolean'||typeof body.off==='boolean'||typeof body.enabled==='boolean'))return false;
+  if(_MUT_RE.test(path))return true;
+  if(path==='/api/admin/partner-set')return _MUT_PARTNER.indexOf(body.action)>=0;
+  return !!(body&&(body.save||body.reset));
 }
-
-SCREENS["Аналитика"]=function(){
-  setTimeout(loadAnalytics,0);
-  return hdr("Аналитика")+'<div class="wrap"><div id="anbody"><div class="note">Загружаю…</div></div></div>';
-};
-function loadAnalytics(){
-  api('/api/admin/analytics',{}).then(function(d){
-    var el=document.getElementById('anbody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    var pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
-    var h='<div class="block"><h4>🔥 Топ моделей</h4>'+(d.topModels.length?hbars(d.topModels.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%6]}})):'<span class="muted" style="font-size:12px">нет данных</span>')+'</div>';
-    h+='<div class="block"><h4>👑 Топ юзеров</h4>'+(d.topUsers.length?hbars(d.topUsers.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%6]}}),' ген'):'<span class="muted" style="font-size:12px">нет данных</span>')+'</div>';
-    h+='<div class="block"><h4>📈 Активность (9 дней)</h4>'+spark(d.activity,C.purple)+'</div>';
-    var u=d.users;
-    h+='<div class="mgrid"><div class="mcard"><div class="mlab">Всего</div><div class="mval">'+nf(u.total)+'</div></div><div class="mcard"><div class="mlab">Активные 30д</div><div class="mval">'+nf(u.active30)+'</div></div><div class="mcard"><div class="mlab">Новые сегодня</div><div class="mval">'+u.newToday+'</div></div><div class="mcard"><div class="mlab">С покупками</div><div class="mval">'+nf(u.withBuy)+'</div></div></div>';
-    el.innerHTML=h;
-  });
-}
-
-function api(path,body){var tg=window.Telegram&&window.Telegram.WebApp;body=body||{};body.initData=tg?tg.initData:"";return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});}
-
-SCREENS["Прибыль"]=function(){
-  var per=window._pPer||"day", off=window._pOff||0, dts=window._pDate||"";
-  var seg='<div class="seg">'+[["day","Сегодня"],["week","7 дней"],["month","30 дней"]].map(function(x){return '<button class="'+(x[0]===per&&!dts?'on':'')+'" onclick="window._pPer=\''+x[0]+'\';window._pOff=0;window._pDate=\'\';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>';
-  var dayPick = (per==="day"&&!dts) ? '<div class="seg" style="margin-top:-8px">'+[["0","Сегодня"],["1","Вчера"],["2","Позавчера"]].map(function(x){return '<button class="'+(+x[0]===off?'on':'')+'" style="font-size:11.5px" onclick="window._pOff='+x[0]+';open2(\'Прибыль\')">'+x[1]+'</button>'}).join('')+'</div>' : '';
-  var dp='<input class="f" type="date" value="'+dts+'" onchange="window._pDate=this.value;open2(\'Прибыль\')" style="margin-bottom:12px"/>';
-  var sub = dts?dts:(per==="day"?["Сегодня","Вчера","Позавчера"][off]:(per==="week"?"7 дней":"30 дней"));
-  setTimeout(function(){loadProfit(per,off,dts)},0);
-  return hdr("Прибыль / себестоимость",sub)+'<div class="wrap">'+seg+dayPick+dp+'<div id="pbody"><div class="note">Загружаю данные…</div></div><button class="btn sec" onclick="leaf(profitCosts)" style="margin-top:16px">⚙️ Себестоимость и цены</button></div>';
-};
-function loadProfit(per,off,date){
-  api('/api/admin/profit',{period:per,dayOffset:off,date:date||null}).then(function(d){
-    var el=document.getElementById('pbody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка загрузки.</div>';return;}
-    var t=d.totals,h='';
-    var share=d.services.filter(function(s){return s.profit>0}).map(function(s,i){return {label:s.name,val:s.profit,color:[C.pink,C.purple,C.teal,C.amber,C.blue,C.green][i%6]}});
-    h+='<div class="block"><div class="mgrid" style="margin:0"><div class="mcard"><div class="mlab">Выручка</div><div class="mval">'+nf(t.rev)+' ₽</div></div><div class="mcard"><div class="mlab">Прибыль · '+t.margin+'%</div><div class="mval pos">+'+nf(t.profit)+' ₽</div></div><div class="mcard"><div class="mlab">Затраты (закуп)</div><div class="mval">'+nf(t.cost)+' ₽</div></div><div class="mcard"><div class="mlab">Комиссия 2%</div><div class="mval neg">−'+nf(t.commission)+' ₽</div></div></div></div>';
-    var _ser=d.series||[];
-    if(_ser.length>1){
-      h+='<div class="block"><h4>📈 Выручка и прибыль по дням '
-        +'<span class="muted" style="font-size:11px;font-weight:400">— тяни / зумь</span> '
-        +'<span onclick="resetProfitZoom()" style="float:right;font-size:11px;color:var(--txt2);cursor:pointer">↺ сброс</span></h4>'
-        +'<div style="height:240px;position:relative"><canvas id="profitChart"></canvas></div></div>';
+function api(path,body){var tg=window.Telegram&&window.Telegram.WebApp;body=body||{};
+  var mkey=null;
+  if(_isMut(path,body)){
+    try{mkey=path+'|'+JSON.stringify(body);}catch(e){mkey=null;}
+    if(mkey&&_inflight[mkey]){
+      try{toast('Уже отправляю — дождись ответа');}catch(e){}
+      return {then:function(){return new Promise(function(){});}};
     }
-    h+='<div class="block"><h4>📊 Маржа и структура</h4><div style="display:flex;align-items:center;gap:18px">'+ring(t.margin,C.green,"маржа")+'<div class="legend">'+(share.length?share.map(function(s){return '<div class="lg"><span class="dot" style="background:'+s.color+'"></span>'+s.label+'<b>+'+nf(s.val)+'₽</b></div>'}).join(''):'<span class="muted" style="font-size:12px">нет продаж за период</span>')+'</div></div></div>';
-    d.services.forEach(function(s){
-      var pls=s.plans.map(function(pp){
-        var hasFin=(pp.rev!=null);
-        if(!hasFin){return '<div class="kv"><span class="k">'+pp.name+' × '+pp.cnt+'</span></div>';}
-        var prof=(pp.profit!=null?pp.profit:(pp.rev-(pp.cost||0)));
-        return '<div class="kv"><span class="k">'+pp.name+' × '+pp.cnt+' · '+nf(pp.rev)+' ₽ − '+nf(pp.cost||0)+' ₽'+(pp.missing?' ⚠️':'')+'</span><span class="'+(prof>=0?'pos':'muted')+'">'+(prof>=0?'+':'')+nf(prof)+' ₽</span></div>';
-      }).join('');
-      h+='<div class="block"><h4>'+s.name+' · '+s.cnt+' шт'+(s.missing?' <span class="tag a">себест. не задана</span>':'')+'</h4>'+pls+'<div class="kv"><span class="k">'+nf(s.rev)+' ₽ − '+nf(s.cost)+' ₽</span><span class="pos">+'+nf(s.profit)+' ₽</span></div></div>';
-    });
-    if(d.credits&&d.credits.cnt){h+='<div class="block"><h4>💳 Кредиты · '+d.credits.cnt+' шт</h4><div class="kv"><span class="k">'+nf(d.credits.rev)+' ₽</span><span class="muted">себест. AI не учит.</span></div></div>';}
+    if(mkey)_inflight[mkey]=1;
+  }
+  body.initData=tg?tg.initData:"";
+  var n0=window._navN;
+  var P=fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}})
+    .then(function(d){if(mkey)delete _inflight[mkey];return d;});
+  return {then:function(f,g){return P.then(function(d){
+    var prev=window._apiStale;window._apiStale=(window._navN!==n0);
+    try{return f?f(d):d;}finally{window._apiStale=prev;}
+  },g);}};
+}
 
-    /* ChatGPT по маршруту кода: филиппинские против iOS. Маршрут берётся из
-       префикса самого кода, поэтому разбивка честна за всю историю, включая
-       заказы до появления этой колонки. Три «особые» строки показываем
-       отдельно, а не растворяем в общей куче. */
-    var gr=d.gptRoutes||[];
-    if(gr.length){
-      var inexact=false;
-      h+='<div class="glabel" style="margin-top:16px">ChatGPT по маршруту кода</div>';
-      gr.forEach(function(g){
-        var tot=g.rows.reduce(function(a,r){return a+r.cnt;},0);
-        h+='<div class="block"><h4>'+esc(g.plan)+' · '+tot+' шт</h4>';
-        g.rows.forEach(function(r){
-          var special=(r.key!=='ph'&&r.key!=='ios');
-          if(!r.exact&&!special)inexact=true;
-          h+='<div class="kv"><span class="k">'+esc(r.label)+' × '+r.cnt
-            +' · '+nf(r.rev)+' ₽ − '+nf(r.cost)+' ₽'
-            +((!r.exact&&!special)?' <span class="muted">(себест. общая)</span>':'')
-            +'</span><span class="'+(special?'neg':(r.profit>=0?'pos':'muted'))+'">'
-            +(r.profit>=0?'+':'')+nf(r.profit)+' ₽</span></div>';
+/* Каждый заказ ChatGPT без записанного кода — с причиной. */
+function unboundScreen(per,off,date){
+  setTimeout(function(){
+    api('/api/admin/gpt-unbound',{period:per,dayOffset:off,date:date||null}).then(function(d){
+      var el=document.getElementById('ubbody'); if(!el)return;
+      if(!d.ok){el.innerHTML='<div class="note neg">⚠️ Не удалось загрузить — это сбой, а не пустой список.</div>';return;}
+      var it=d.items||[];
+      if(!it.length){el.innerHTML='<div class="note">За этот период таких заказов нет.</div>';return;}
+      var lv={warn:[],wait:[],ok:[]};it.forEach(function(x){(lv[x.level]||lv.warn).push(x);});
+      var h='<div class="mgrid" style="margin:0 0 12px">'
+        +'<div class="mcard"><div class="mlab">Требуют внимания</div><div class="mval'+(lv.warn.length?' neg':'')+'">'+lv.warn.length+'</div></div>'
+        +'<div class="mcard"><div class="mlab">Ещё в процессе</div><div class="mval">'+lv.wait.length+'</div></div>'
+        +'<div class="mcard"><div class="mlab">Объяснимо, норма</div><div class="mval pos">'+lv.ok.length+'</div></div></div>';
+      function sec(title,arr,cls){
+        if(!arr.length)return '';
+        var s='<div class="glabel">'+title+' ('+arr.length+')</div>';
+        arr.forEach(function(x){
+          s+='<div class="block"'+(cls?' style="border-left:3px solid '+cls+'"':'')+'>'
+            +'<div style="font-size:12.5px;font-weight:600">'+esc(x.user)+(x.uid?' <span class="sub">('+x.uid+')</span>':'')+' · '+esc(x.paid)+'</div>'
+            +'<div class="sub" style="margin-top:4px">'
+            +'📦 '+esc(x.plan)+' · <b>'+nf(x.amount)+' ₽</b>'+(x.pm?' · '+esc(x.pm):'')
+            +(x.promo?'<br>🎟 Промокод: <b>'+esc(x.promo)+'</b>':'')
+            +'<br>🧾 Заказ #'+esc(String(x.num||''))+' · <span style="word-break:break-all">'+esc(x.order)+'</span>'
+            +(x.code?'<br>🔑 Код: '+esc(x.code):'')
+            +(x.lastTry?'<br>🧭 Последняя попытка: '+esc(x.lastTry):'')
+            +'<br><b>'+esc(x.why)+'</b></div></div>';
         });
-        h+='</div>';
-      });
-      if(inexact){
-        h+='<div class="note">Себестоимость по маршрутам пока одна на тариф — '
-          +'прибыль в этих строках посчитана по ней, и разница между филиппинскими '
-          +'и iOS видна только по выручке и количеству. Чтобы считалось точно, '
-          +'задай отдельные значения в «Себестоимости» ниже.</div>';
+        return s;
       }
-      h+='<div class="note"><b>Код не привязан</b> — заказ активирован вручную мимо бота. '
-        +'<b>Маршрут не определён</b> — префикс кода незнаком, разметь: <code>/gpt_code_route КОД ios|ph</code>. '
-        +'<b>Ушло несколько кодов</b> — на заказ потрачен не один код.</div>';
-    }
-    el.innerHTML=h;
-    if(_ser.length>1) setTimeout(function(){renderProfitChart(_ser)},0);
-  });
+      h+=sec('⚠️ Требуют внимания',lv.warn,C.red)+sec('⏳ Ещё в процессе',lv.wait,C.amber)+sec('✅ Объяснимо',lv.ok,'');
+      h+='<div class="note" style="margin-top:10px">Причина определяется по данным: флаг ручной выдачи тарифа, '
+        +'отметка «Активировали вручную», живой резерв и его срок, слежение за кодом, журнал попыток. '
+        +'Журнал попыток ведётся с 04.10.2026 — у более старых заказов строки «последняя попытка» нет.</div>';
+      el.innerHTML=h;
+    });
+  },0);
+  return hdr('Заказы без записанного кода','ChatGPT')+'<div class="wrap"><div id="ubbody"><div class="note">Загружаю…</div></div></div>';
 }
-var _profitChart=null;
-function renderProfitChart(series){
-  var cv=document.getElementById('profitChart'); if(!cv||!window.Chart)return;
-  try{ var _zp=window.ChartZoom||window['chartjs-plugin-zoom']; if(_zp&&Chart.register){ Chart.register(_zp); } }catch(e){}
-  if(_profitChart){try{_profitChart.destroy()}catch(e){}}
-  var labels=series.map(function(s){return s.label});
-  var rev=series.map(function(s){return s.rev});
-  var prof=series.map(function(s){return s.profit});
-  _profitChart=new Chart(cv.getContext('2d'),{
-    type:'line',
-    data:{labels:labels,datasets:[
-      {label:'Выручка',data:rev,borderColor:C.blue,backgroundColor:'rgba(59,130,246,.12)',borderWidth:2,fill:true,tension:.3,pointRadius:2},
-      {label:'Прибыль',data:prof,borderColor:C.green,backgroundColor:'rgba(16,185,129,.12)',borderWidth:2,fill:true,tension:.3,pointRadius:2}
-    ]},
-    options:{
-      responsive:true,maintainAspectRatio:false,
-      interaction:{mode:'index',intersect:false},
-      plugins:{
-        legend:{labels:{color:'#9aa0ad',boxWidth:12}},
-        tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+nf(c.parsed.y)+' ₽'}}},
-        zoom:{pan:{enabled:true,mode:'x'},zoom:{wheel:{enabled:true},pinch:{enabled:true},mode:'x'}}
-      },
-      scales:{
-        x:{ticks:{color:'#9aa0ad',maxRotation:0,autoSkip:true,maxTicksLimit:8},grid:{color:'rgba(255,255,255,.05)'}},
-        y:{ticks:{color:'#9aa0ad',callback:function(v){return nf(v)}},grid:{color:'rgba(255,255,255,.05)'}}
-      }
-    }
-  });
-}
-function resetProfitZoom(){ if(_profitChart&&_profitChart.resetZoom){try{_profitChart.resetZoom()}catch(e){}} }
 function profitCosts(){
   setTimeout(loadPrices,0);
   return hdr("Себестоимость и цены","Все сервисы и тарифы")+'<div class="wrap"><div id="cbody"><div class="note">Загружаю…</div></div></div>';
@@ -539,118 +499,6 @@ function savePrices(){
   var rate=(document.getElementById('costrate')||{}).value;
   toast('Сохраняю…');
   api('/api/admin/prices-save',{rate:rate,items:items}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка сохранения');});
-}
-
-/* Продажи */
-SCREENS["Продажи магазина"]=function(){
-  var per=window._sP||"day", dts=window._sDate||"";
-  setTimeout(function(){loadSales(per,dts)},0);
-  var seg='<div class="seg">'+["day:Сегодня","week:7 дней","month:30 дней"].map(function(x){var k=x.split(":")[0];return '<button class="'+(k===per&&!dts?'on':'')+'" onclick="window._sP=\''+k+'\';window._sDate=\'\';open2(\'Продажи магазина\')">'+x.split(":")[1]+'</button>'}).join('')+'</div>';
-  var dp='<input class="f" type="date" value="'+dts+'" onchange="window._sDate=this.value;open2(\'Продажи магазина\')" style="margin-bottom:12px"/>';
-  var sub=dts?dts:(per==="week"?"7 дней":per==="month"?"30 дней":"Сегодня");
-  return hdr("Продажи магазина",sub)+'<div class="wrap">'+seg+dp+'<div id="sbody"><div class="note">Загружаю…</div></div></div>';
-};
-function loadSales(per,date){
-  api('/api/admin/sales',{period:per,date:date||null}).then(function(d){
-    var el=document.getElementById('sbody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    if(!d.services.length){el.innerHTML='<div class="note">Продаж за период нет.</div>';return;}
-    window._salesData=d.services;
-    var pal=[C.pink,C.purple,C.teal,C.amber,C.blue,C.green];
-    var h='<div class="block"><h4>🥧 Доля выручки · '+nf(d.total)+' ₽</h4>'+donut(d.services.map(function(x,i){return {label:x.name,val:x.rev||1,color:pal[i%6]}}))+'</div>';
-    d.services.forEach(function(s,i){
-      var has=s.plans&&s.plans.length;
-      h+='<div class="row" '+(has?'onclick="leaf(function(){return salesPlans('+i+')})"':'style="cursor:default"')+'><span class="ic">'+(s.emoji||"🛍️")+'</span><div><div class="lbl2">'+s.name+'</div><div class="sub">'+s.cnt+' шт · '+nf(s.rev)+' ₽</div></div>'+(has?'<span class="chev">›</span>':'')+'</div>';
-    });
-    el.innerHTML=h;
-  });
-}
-function salesPlans(i){var s=(window._salesData||[])[i]||{name:'',plans:[]};return hdr(s.name,"продажи по тарифам")+'<div class="wrap"><div class="block">'+hbars((s.plans||[]).map(function(p,j){return {label:p.name,val:p.cnt,color:[C.pink,C.purple,C.teal,C.amber][j%4]}}),' шт')+'</div></div>'}
-
-/* История платежей */
-/* История платежей — ДЕНЬГИ, а не выдача.
-   Раньше экран был макетом: пять выдуманных строк с придуманными никами
-   и пончик из четырёх констант, сервер не дёргался вообще. Теперь всё живое.
-   От «Ленты заказов» отличается тем, что показывает способ оплаты, промокод,
-   списанные монетки и неоплаченные/отменённые — там про выдачу, здесь про деньги. */
-SCREENS["История платежей"]=function(){setTimeout(_payLoad,30);
-  return hdr("История платежей","оплаты, способы, промокоды")
-    +'<div class="wrap"><div id="paybody"><div class="note">Загружаю…</div></div></div>';};
-
-function _payLoad(){
-  var st=window._pay||{};
-  api('/api/admin/payments',{page:st.page||0,q:st.q||'',filter:st.filter||'all',days:st.days||30})
-   .then(function(d){
-     var el=document.getElementById('paybody');if(!el)return;
-     if(!d||!d.ok){el.innerHTML='<div class="block"><div class="sub neg">⚠️ Не удалось загрузить платежи.</div>'
-        +'<button class="btn sec" style="margin-top:10px" onclick="_payLoad()">🔄 Повторить</button></div>';return;}
-     window._payD=d;_payRender();
-   });
-}
-
-function _paySet(k,v){window._pay=window._pay||{};window._pay[k]=v;
-  if(k!=='page')window._pay.page=0;_payLoad();}
-
-function _payRender(){
-  var el=document.getElementById('paybody');if(!el)return;
-  var d=window._payD||{},st=window._pay||{},h='';
-  var PAL={paid:C.green,pending:C.amber,cancelled:C.red};
-  var _stats=(d.stats||[]).filter(function(x){return x.n>0;});
-
-  h+='<div class="block"><h4>💰 За '+(d.days||30)+' дн.</h4>';
-  if(_stats.length){
-    h+=donut(_stats.map(function(x){return {label:x.label,val:x.n,color:PAL[x.key]||C.blue};}));
-    _stats.forEach(function(x){
-      h+='<div class="kv"><span class="k">'+esc(x.label)+'</span><span>'+x.n+' · '+nf(x.rub)+' ₽</span></div>';
-    });
-    h+='<div class="kv"><span class="k"><b>Получено деньгами</b></span><span class="pos"><b>'+nf(d.paidSum||0)+' ₽</b></span></div>';
-  } else {
-    h+='<div class="note">За этот период платежей не было — ни одного, даже неоплаченного.</div>';
-  }
-  h+='</div>';
-
-  /* Период и фильтр статуса: то, ради чего сюда обычно и заходят. */
-  /* Переключатели — тем же .seg, что и на «Статистике»: своих классов .tabs/.tab
-     в панели нет, и они бы просто не нарисовались. */
-  h+='<div class="seg">'+[[7,'7 дн'],[30,'30 дн'],[90,'90 дн'],[3650,'всё время']].map(function(x){
-      return '<button class="'+(((st.days||30)===x[0])?'on':'')+'" onclick="_paySet(\'days\','+x[0]+')">'+x[1]+'</button>';
-    }).join('')+'</div>';
-  h+='<div class="seg">'+[['all','Все'],['paid','Оплачены'],['pending','Не оплачены'],['cancelled','Отменены']].map(function(x){
-      return '<button class="'+(((st.filter||'all')===x[0])?'on':'')+'" onclick="_paySet(\'filter\',\''+x[0]+'\')">'+x[1]+'</button>';
-    }).join('')+'</div>';
-
-  h+='<div class="search"><i class="ti ti-search muted"></i>'
-    +'<input id="pay_q" placeholder="@ник, ID клиента, № заказа" value="'+esc(st.q||'')+'" '
-    +'onchange="_paySet(\'q\',this.value)"/></div>';
-
-  var rows=d.rows||[];
-  if(!rows.length){
-    h+='<div class="note">'+(st.q?'По запросу «'+esc(st.q)+'» ничего не найдено.'
-        :'Платежей с такими условиями нет.')+'</div>';
-  }
-  rows.forEach(function(r){
-    var sub=r.what+(r.method?(' · '+r.method):'')
-      +(r.promo?(' · промокод '+esc(r.promo)):'')
-      +(r.coins?(' · монетками '+r.coins):'');
-    h+='<div class="row"><div><div class="lbl2">'+esc(r.user)+(r.num?(' <span class="muted">#'+r.num+'</span>'):'')+'</div>'
-      +'<div class="sub">'+esc(sub)+'</div>'
-      +'<div class="sub muted">'+_payWhen(r.when)
-      +(r.fk?(' · FK '+esc(r.fk)):'')
-      +(r.orderId?(' · <code>'+esc(r.orderId)+'</code>'):'')+'</div></div>'
-      +'<div style="margin-left:auto;text-align:right">'
-      +'<div style="font-size:13px;font-weight:600">'+nf(r.amount)+' ₽</div>'
-      +'<span class="tag '+r.tag+'">'+esc(r.statusRu)+'</span></div></div>';
-  });
-
-  if((d.pages||1)>1){
-    h+='<div class="btns2" style="margin-top:10px">'
-      +'<button class="btn row2 sec"'+((d.page||0)<=0?' disabled':'')+' onclick="_paySet(\'page\','+((d.page||0)-1)+')">← Раньше</button>'
-      +'<button class="btn row2 sec"'+((d.page||0)>=(d.pages-1)?' disabled':'')+' onclick="_paySet(\'page\','+((d.page||0)+1)+')">Позже →</button></div>'
-      +'<div class="note">Стр. '+((d.page||0)+1)+' из '+d.pages+' · всего '+nf(d.total||0)+' платежей</div>';
-  } else if(rows.length){
-    h+='<div class="note">Всего '+nf(d.total||0)+' платежей за период.</div>';
-  }
-  el.innerHTML=h;
 }
 
 function _payWhen(iso){
@@ -867,7 +715,10 @@ function loadPromos(){
     el.innerHTML=h;
   });
 }
-function copyText(t){try{navigator.clipboard.writeText(t).then(function(){toast('Скопировано ✓')});}catch(e){var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand('copy');toast('Скопировано ✓')}catch(_){}document.body.removeChild(ta);}}
+function _copyOld(t){var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();var ok=false;try{ok=document.execCommand('copy');}catch(_){}document.body.removeChild(ta);toast(ok?'Скопировано ✓':'Не скопировалось — выдели и скопируй вручную: '+t);}
+/* Если браузер отказал в доступе к буферу, раньше ошибка улетала молча —
+   ни тоста, ни копии. Теперь — запасной способ. */
+function copyText(t){t=''+t;try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){toast('Скопировано ✓')},function(){_copyOld(t)});return;}}catch(e){}_copyOld(t);}
 function deactPromo(code){toast('…');api('/api/admin/promo-deactivate',{code:code}).then(function(d){toast(d.ok?'Деактивирован':'Ошибка');open2('Промокоды')});}
 function fv(id){var e=document.getElementById(id);return e?e.value:'';}
 function promoCreate(){
@@ -884,7 +735,7 @@ function createPromo(){
 /* Модели */
 SCREENS["Модели"]=function(){
   setTimeout(loadModels,0);
-  return hdr("Модели","вкл/выкл")+'<div class="wrap"><div id="mdbody"><div class="note">Загружаю…</div></div></div>';
+  return hdr("Модели и стоимость","вкл/выкл · цена в кредитах")+'<div class="wrap"><div id="mdbody">'+skel(5,56)+'</div></div>';
 };
 function loadModels(){
   api('/api/admin/models',{}).then(function(d){
@@ -895,11 +746,21 @@ function loadModels(){
       var on=sec.models.filter(function(m){return m.enabled}).length;
       h+='<div class="glabel">'+sec.title+' · '+on+'/'+sec.models.length+'</div>';
       sec.models.forEach(function(m){
-        h+='<div class="row" style="cursor:default"><div><div class="lbl2">'+m.name+'</div><div class="sub">'+m.credits+' кр</div></div><span class="sw'+(m.enabled?' on':'')+'" onclick="toggleModel(this,\''+m.key+'\',\''+sec.section+'\')"><b></b></span></div>';
+        var _mid='md_'+sec.section+'_'+m.key.replace(/[^A-Za-z0-9_]/g,'_');
+        h+='<div class="row fx" style="cursor:default'+(m.enabled?'':';opacity:.6')+'"><div style="flex:1;min-width:0"><div class="lbl2">'+esc(m.name)+'</div>'
+          +'<div style="display:flex;align-items:center;gap:6px;margin-top:6px"><input class="f" id="'+_mid+'" type="number" min="0" value="'+m.credits+'" style="width:84px;padding:6px 8px;font-size:13px"/><span class="sub">кр за генерацию</span>'
+          +'<button class="btn row2 sec" style="width:auto;margin:0;padding:6px 10px;font-size:11px" onclick="_mdPrice(\''+esc(sec.section)+'\',\''+esc(m.key)+'\',\''+_mid+'\')">💾</button></div></div>'
+          +'<span class="sw'+(m.enabled?' on':'')+'" onclick="toggleModel(this,\''+m.key+'\',\''+sec.section+'\')"><b></b></span></div>';
       });
     });
     el.innerHTML=h;
   });
+}
+function _mdPrice(section,key,inputId){
+  var e=document.getElementById(inputId);if(!e)return;
+  toast('Сохраняю…');
+  api('/api/admin/model-price',{section:section,key:key,credits:e.value}).then(function(d){
+    toast(d&&d.ok?'Цена сохранена ✅':((d&&d.msg)||'Не сохранилось'));});
 }
 function toggleModel(elm,key,section){
   var on=!elm.classList.contains('on'); elm.classList.toggle('on');
@@ -910,7 +771,8 @@ function toggleModel(elm,key,section){
 SCREENS["Редактор цен"]=function(){return hdr("Редактор цен")+'<div class="wrap">'+
   rowItem("ti-tag","Тарифы магазина","сервисы, тарифы, ручная выдача","",'leaf(priceShop)')+
   rowItem("ti-coins","Пакеты кредитов","6 пакетов","",'leaf(pricePacks)')+
-  rowItem("ti-photo","Настройки генерации","стоимость фото/видео/правок","",'leaf(priceGen)')+'</div>'};
+  rowItem("ti-coin","Себестоимость (закуп $)","для расчёта прибыли в «Деньгах»","",'leaf(profitCosts)')+
+  rowItem("ti-photo","Модели и стоимость генераций","вкл/выкл и цена в кредитах","",'open2(\'Модели\')')+'</div>'};
 
 /* Лента рекомендаций — курирование первой пятёрки */
 SCREENS["Лента рекомендаций"]=function(){setTimeout(_loadRecs,30);
@@ -1206,11 +1068,10 @@ function _caRender(){
   el.innerHTML=h;
 }
 function _caReset(){
-  if(window.confirm&&!window.confirm('Обнулить статистику Каталога? Отчёт начнёт считаться заново с этого момента (просмотры + покупки).'))return;
-  if(window.confirm&&!window.confirm('Точно обнулить? Это действие необратимо — старые данные больше не будут показываться в отчёте.'))return;
+  _gwConfirm2('Подтверди действие','Обнулить статистику Каталога? Отчёт начнёт считаться заново с этого момента (просмотры + покупки).'+'\n\n'+'Точно обнулить? Это действие необратимо — старые данные больше не будут показываться в отчёте.','Да, обнулить',function(){
   toast('Сбрасываю…');
   api('/api/admin/catalog-analytics',{reset:true}).then(function(d){toast(d&&d.ok?'Обнулено ✅':'Ошибка');if(d&&d.ok){window._caDate='';window._caPer='month';open2('Аналитика Каталога');}});
-}
+});}
 
 /* Время жизни сессии активации */
 SCREENS["Время активации"]=function(){
@@ -1644,12 +1505,12 @@ function bulkApply(){
   var d=window._pricesData||{services:[]};var st=bulkStats();
   if(!st.svc){toast('Выбери сервисы');return;}
   if(isNaN(st.mk)||!(st.rate>0)){toast('Впиши курс и наценку');return;}
-  if(window.confirm&&!window.confirm('Применить наценку '+st.mk+'% к '+st.tar+' тариф(ам) в '+st.svc+' сервис(ах)? Цены сохранятся сразу.'))return;
+  _gwConfirm2('Подтверди действие','Применить наценку '+st.mk+'% к '+st.tar+' тариф(ам) в '+st.svc+' сервис(ах)? Цены сохранятся сразу.','Да, применить',function(){
   var items=[];
   d.services.forEach(function(s){if(!window._bulkSel[s.key])return;s.plans.forEach(function(p){var cost=p.costUsd||0;if(cost>0){items.push({key:s.key,idx:p.idx,name:p.name,price:nicePrice(cost,st.rate,st.mk,window._bulkMode||'round')});}});});
   toast('Применяю…');
   api('/api/admin/prices-save',{rate:st.rate,items:items}).then(function(r){toast(r.ok?('Готово ✓ ('+items.length+' тариф.)'):'Ошибка');if(r.ok){api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;});}});
-}
+});}
 function planEdit(key){
   var d=window._pricesData||{services:[]};
   var s=d.services.filter(function(x){return x.key===key})[0];
@@ -1718,11 +1579,11 @@ function savePlanEdit(key){
   api('/api/admin/prices-save',{items:items,svcKey:key,svcDesc:sd}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});
 }
 function planAdd(key){return hdr("Новый тариф")+'<div class="wrap"><label class="fl">Название тарифа</label><input class="f" id="pa_name" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="pa_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doPlanAdd(\''+key+'\')">Создать</button></div>';}
-function doPlanAdd(key){var name=fv('pa_name'),price=fv('pa_price');if(!name||!price){toast('Название и цена');return;}toast('Создаю…');api('/api/admin/plan-add',{key:key,name:name,price:price}).then(function(d){toast(d.ok?'Тариф добавлен ✓':(d.msg||'Ошибка'));if(d.ok)api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;back();});});}
-function delPlan(key,name){if(window.confirm&&!window.confirm('Удалить тариф '+name+'?'))return;api('/api/admin/plan-delete',{key:key,name:name}).then(function(d){if(d.ok){api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;app.innerHTML=planEdit(key);});}else toast('Ошибка');});}
+function doPlanAdd(key){var name=fv('pa_name'),price=fv('pa_price');if(!name||!price){toast('Название и цена');return;}toast('Создаю…');api('/api/admin/plan-add',{key:key,name:name,price:price}).then(function(d){toast(d.ok?'Тариф добавлен ✓':(d.msg||'Ошибка'));if(d.ok){var _st=window._apiStale;api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;if(!_st)back();});}});}
+function delPlan(key,name){_gwConfirm2('Подтверди действие','Удалить тариф '+name+'?','Да, удалить',function(){api('/api/admin/plan-delete',{key:key,name:name}).then(function(d){if(d.ok){api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;app.innerHTML=planEdit(key);});}else toast('Ошибка');});});}
 function serviceAdd(){return hdr("Новый сервис")+'<div class="wrap"><label class="fl">Название</label><input class="f" id="sv_name" placeholder="Например: Notion"/><label class="fl">Эмодзи (необязательно)</label><input class="f" id="sv_em" placeholder="📝"/><label class="fl">Первый тариф — название</label><input class="f" id="sv_plan" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="sv_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doServiceAdd()">Создать</button><div class="note">Тарифы и закуп можно изменить после создания.</div></div>';}
 function doServiceAdd(){var name=fv('sv_name'),price=fv('sv_price');if(!name||!price){toast('Название и цена обязательны');return;}toast('Создаю…');api('/api/admin/service-add',{name:name,emoji:fv('sv_em'),planName:fv('sv_plan'),price:price}).then(function(d){toast(d.ok?'Сервис добавлен ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
-function delService(key){if(window.confirm&&!window.confirm('Удалить сервис целиком?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/service-delete',{key:key}).then(function(d){toast(d.ok?'Удалён':(d.msg||'Ошибка'));if(d.ok)back();});}
+function delService(key){_gwConfirm2('Подтверди действие','Удалить сервис целиком?'+'\n\n'+'Точно удалить безвозвратно?','Да, удалить',function(){api('/api/admin/service-delete',{key:key}).then(function(d){toast(d.ok?'Удалён':(d.msg||'Ошибка'));if(d.ok)back();});});}
 /* Пакеты кредитов — НАСТОЯЩИЕ, из bot_credit_packs.
    Раньше здесь было шесть строк, зашитых в HTML, и кнопка «Сохранить», которая
    показывала «Сохранено» и не отправляла ничего. Цены при этом давно живут в
@@ -1859,25 +1720,34 @@ function _gpSave(section,key,inputId){
 /* Рефералка */
 SCREENS["Премиум-рефералка"]=function(){
   setTimeout(loadReferral,0);
-  return hdr("Премиум-рефералка")+'<div class="wrap"><div id="refbody"><div class="note">Загружаю…</div></div></div>';
+  return hdr("Премиум-рефералы","% с покупок приглашённых — монетками")+'<div class="wrap"><div class="note" style="margin:0 0 12px">Здесь — кому и сколько процентов начисляется с покупок их приглашённых. Кто кого привёл — в «Кто кого привёл». Партнёры с наценкой (B2B) — отдельный раздел.</div><div id="refbody">'+skel(3,60)+'</div></div>';
 };
 function loadReferral(){
   api('/api/admin/referral',{}).then(function(d){
     var el=document.getElementById('refbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     var h='<div class="mgrid"><div class="mcard"><div class="mlab">Глобальный %</div><div class="mval">'+d.globalPct+'%</div></div><div class="mcard"><div class="mlab">Лимит/мес</div><div class="mval">'+(d.cap?nf(d.cap)+' ₽':'∞')+'</div></div></div>';
-    h+='<div class="btns2"><button class="btn row2 sec" onclick="refEdit(\'global_pct\',\'Глобальный %\','+d.globalPct+')">Изменить %</button><button class="btn row2 sec" onclick="refEdit(\'cap\',\'Лимит ₽/мес\','+d.cap+')">Лимит</button></div>';
+    h+='<div class="btns2"><button class="btn row2 sec" onclick="refEdit(\'global_pct\',\'Глобальный %\','+d.globalPct+')">Изменить %</button><button class="btn row2 sec" onclick="refEdit(\'cap\',\'Лимит ₽/мес\','+d.cap+')">Лимит</button></div><div id="refedit"></div>';
     h+='<div class="glabel" style="margin-top:16px">🤝 Партнёры ('+d.partners.length+')</div>';
     if(!d.partners.length){h+='<div class="note">Пока нет партнёров.</div>';}
     d.partners.forEach(function(pr){
       var nm=pr.username?('@'+pr.username):('ID '+pr.id);
-      h+='<div class="row" style="cursor:default"><span class="ic">🤝</span><div><div class="lbl2">'+nm+' · '+pr.pct+'%</div><div class="sub">начислено '+nf(pr.earned)+' ₽</div></div><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="refRemove('+pr.id+')">✕</button></div>';
+      h+='<div class="row" style="cursor:default"><span class="ic">🤝</span><div><div class="lbl2">'+esc(nm)+' · '+pr.pct+'%</div><div class="sub">начислено <b>'+nf(pr.coins!=null?pr.coins:pr.earned)+' 🪙</b> · с покупок на '+nf(pr.turnover||0)+' ₽ ('+(pr.orders||0)+' шт)</div></div><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="refRemove('+pr.id+')">✕</button></div>';
     });
     h+='<button class="btn" onclick="leaf(refAdd)">➕ Добавить партнёра</button>';
     el.innerHTML=h;
   });
 }
-function refEdit(action,label,cur){var t=(window.prompt?window.prompt(label+':',cur):'');if(t==null||t==='')return;api('/api/admin/referral-set',{action:action,value:t}).then(function(d){toast(d.ok?'Сохранено':'Ошибка');if(d.ok)open2('Премиум-рефералка');});}
+/* Было window.prompt — во встроенном браузере Telegram он ненадёжен (как и
+   confirm): окно могло не появиться вовсе. Теперь поле прямо на экране. */
+function refEdit(action,label,cur){
+  var box=document.getElementById('refedit');if(!box)return;
+  box.innerHTML='<div class="block fx" style="margin-top:10px"><label class="fl" style="margin-top:0">'+esc(label)+'</label>'
+    +'<input class="f" id="ref_val" inputmode="decimal" value="'+esc(cur)+'"/>'
+    +'<div class="btns2"><button class="btn row2" onclick="_refSave(\''+action+'\')">💾 Сохранить</button><button class="btn row2 sec" onclick="document.getElementById(\'refedit\').innerHTML=\'\'">Отмена</button></div></div>';
+  var i=document.getElementById('ref_val');if(i)i.focus();
+}
+function _refSave(action){var t=fv('ref_val');if(t===''){toast('Введи число');return;}api('/api/admin/referral-set',{action:action,value:t}).then(function(d){toast(d.ok?'Сохранено':'Ошибка');if(d.ok)loadReferral();});}
 function refRemove(id){api('/api/admin/referral-set',{action:'remove',uid:id}).then(function(d){toast(d.ok?'Убран':'Ошибка');if(d.ok)loadReferral();});}
 function refAdd(){return hdr("Добавить партнёра")+'<div class="wrap"><label class="fl">Telegram ID партнёра</label><input class="f" id="rp_uid" inputmode="numeric" placeholder="431818619"/><label class="fl">Его % (пусто = глобальный)</label><input class="f" id="rp_pct" inputmode="numeric" placeholder="15"/><button class="btn" onclick="doRefAdd()">Добавить</button></div>';}
 function doRefAdd(){var uid=fv('rp_uid');if(!uid){toast('Введи ID');return;}api('/api/admin/referral-set',{action:'add',uid:uid,pct:fv('rp_pct')}).then(function(d){toast(d.ok?'Добавлен ✓':'Ошибка');if(d.ok)back();});}
@@ -1998,7 +1868,6 @@ function pLoadOne2(id){
   });
 }
 function pEditBase(id,d0,m0,promo){
-  var d=(window.prompt?window.prompt('Уступка, % (твоя доля ниже розницы):',d0):null); if(d==null)return;
   /* Наценка и скидка перемножаются — подсказываем готовые значения,
      иначе «30 минус 15» читается как +15%, а на деле +10.5%. */
   var hint='Наценка, % для его клиентов:';
@@ -2010,7 +1879,8 @@ function pEditBase(id,d0,m0,promo){
       +'Чтобы итог к рознице был:\n'+t.join('\n');
   }
   if(pr>0) hint+='\n\nИли задай сразу нужный итог: напиши =15 — наценку подберёт бот.';
-  var m=(window.prompt?window.prompt(hint,m0):null); if(m==null)return;
+  _askForm('Общие % партнёра',hint,[{label:'Уступка, % (твоя доля ниже розницы)',value:d0,num:1},{label:'Наценка, % (или =итог)',value:m0}],'Сохранить',function(v){
+  var d=v[0],m=v[1]; if(d===''||m===''){toast('Заполни оба поля — ничего не сохранено');return;}
   /* «=15» или «итог 15» — это желаемый ИТОГ, наценку считает сервер:
      формулу в JS не дублируем, иначе разойдётся с ботом. */
   var raw=String(m).trim().toLowerCase().replace(/\s+/g,'');
@@ -2020,12 +1890,14 @@ function pEditBase(id,d0,m0,promo){
   api('/api/admin/partner-set',body).then(function(r){
     toast(r.ok?('Сохранено'+(mt?(' · наценка '+fpct(r.markup)+'%'):'')):(r.error||'Ошибка'));
     if(r.ok) pLoadOne(id); });
+  });
 }
 function pPayout(id,bal){
-  var a=(window.prompt?window.prompt('Сумма выплаты, ₽ (к выплате '+bal+'):',bal):null); if(a==null||a==='')return;
-  var n=(window.prompt?window.prompt('Комментарий (необязательно):',''):'')||'';
-  api('/api/admin/partner-set',{action:'payout',uid:id,amount:a,note:n}).then(function(r){
-    toast(r.ok?'Записано ✓':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
+  _askForm('Отметить выплату','К выплате сейчас: '+bal+' ₽',[{label:'Сумма выплаты, ₽',value:bal,num:1},{label:'Комментарий (необязательно)',value:''}],'Записать выплату',function(v){
+    var a=v[0],n=v[1]||''; if(a===''){toast('Сумма не указана — выплата не записана');return;}
+    api('/api/admin/partner-set',{action:'payout',uid:id,amount:a,note:n}).then(function(r){
+      toast(r.ok?'Записано ✓':(r.error||'Ошибка')); if(r.ok) pLoadOne(id); });
+  });
 }
 /* Удаление партнёра — двойное подтверждение: первое с последствиями,
    второе короткое. Действие не удаляет историю, но сразу меняет цены
@@ -2038,11 +1910,10 @@ function pRemove(id,nick,clients,balance){
     +'• история заказов и выплат сохранится\n'
     +'• привязка клиентов останется — вернёшь в партнёры, всё заработает как раньше';
   if(balance>0) msg+='\n\n⚠️ За тобой долг '+Math.round(balance)+' ₽ — сначала отметь выплату.';
-  if(window.confirm&&!window.confirm(msg))return;
-  if(window.confirm&&!window.confirm('Последнее подтверждение: убрать '+who+' из партнёров?'))return;
+  _gwConfirm2('Подтверди действие',msg+'\n\n'+'Последнее подтверждение: убрать '+who+' из партнёров?','Да, убрать',function(){
   api('/api/admin/partner-set',{action:'remove',uid:id}).then(function(r){
     toast(r.ok?'Убран':'Ошибка'); if(r.ok) back(); });
-}
+});}
 /* Итог к рознице: (1+наценка)*(1-скидка)-1. Только для показа —
    цены считает сервер, здесь формулу не дублируем. */
 /* Процент без лишних нулей: 35 → «35», 35.29 → «35.29». */
@@ -2067,36 +1938,35 @@ function pNetMoved(id,r){
   var b=Number(r.netBefore), a=Number(r.netAfter);
   if(Math.abs(b-a)<0.1)return;
   var t=(Math.abs(b-Math.round(b))<0.15)?Math.round(b):Math.round(b*100)/100;
-  if(window.alert)window.alert(
+  _infoBox('Итог для клиента изменился',
     'Итог для клиента был '+(b>=0?'+':'')+b.toFixed(1)+'%, стал '+(a>=0?'+':'')+a.toFixed(1)+'%.\n'
     +'Наценку я не трогал.\n\nЧтобы вернуть прежний итог: «Изменить общие %» → '
     +'в поле «Наценка» введи =' + fpct(t));
 }
 function pPromoEdit(id,cur,mode,days,max){
-  var t=(window.prompt?window.prompt(
-    'Скидка для клиентов партнёра, % (максимум '+max+'%, пусто = выключить):',cur||''):null);
-  if(t==null)return;
+  _askForm('Скидка для клиентов партнёра','Максимум '+max+'%. Пусто или 0 — выключить скидку.\nУсловие: число дней после перехода или слово «первая» — только на первый заказ.',
+    [{label:'Скидка, %',value:cur||'',num:1},{label:'Условие: дней или «первая»',value:(mode==='first'?'первая':(days||7))}],'Сохранить',function(v){
+  var t=v[0],m=v[1];
   if(t===''||Number(t)<=0){
     api('/api/admin/partner-set',{action:'promo_set',uid:id,pct:0,mode:'off'}).then(function(r){
       toast(r.ok?'Скидка убрана':'Ошибка'); if(r.ok){ pNetMoved(id,r); pLoadOne(id); } });
     return;
   }
-  var m=(window.prompt?window.prompt(
-    'Условие: введи число дней после перехода, либо слово «первая» — скидка только на первый заказ:',
-    (mode==='first'?'первая':(days||7))):null);
-  if(m==null)return;
+  if(m===''){toast('Укажи условие: дней или «первая» — ничего не сохранено');return;}
   var mm=String(m).trim().toLowerCase();
   var body={action:'promo_set',uid:id,pct:t};
   if(mm.indexOf('перв')===0||mm==='first'){ body.mode='first'; }
   else { body.mode='days'; body.days=mm; }
   api('/api/admin/partner-set',body).then(function(r){
     toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok){ pNetMoved(id,r); pLoadOne(id); } });
+  });
 }
 function pFeeEdit(){
-  var f=(window.prompt?window.prompt('Комиссия FreeKassa, % (0–30):',window._pFee||0):null);
-  if(f==null||f==='')return;
-  api('/api/admin/partner-set',{action:'fee_set',fee:f}).then(function(r){
-    toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) loadPartners(); });
+  _askForm('Комиссия FreeKassa','Одна настройка на всю панель: по ней же «Деньги» считают прибыль.',[{label:'Комиссия, % (0–30)',value:window._pFee||0,num:1}],'Сохранить',function(v){
+    var f=v[0]; if(f===''){toast('Пусто — ничего не сохранено');return;}
+    api('/api/admin/partner-set',{action:'fee_set',fee:f}).then(function(r){
+      toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) loadPartners(); });
+  });
 }
 function pOrders(id,off){
   leaf(function(){ setTimeout(function(){pLoadOrders(id,off||0)},0);
@@ -2222,12 +2092,14 @@ function pLoadRates(id){
   });
 }
 function pRateEdit(id,svc,d0,m0){
-  var d=(window.prompt?window.prompt('Уступка, % (пусто = вернуть общие):',d0):null); if(d==null)return;
-  if(d===''){ api('/api/admin/partner-set',{action:'rate_set',uid:id,svc:svc,reset:1}).then(function(r){
-    toast(r.ok?'Вернул общие':'Ошибка'); if(r.ok) pLoadRates(id); }); return; }
-  var m=(window.prompt?window.prompt('Наценка, %:',m0):null); if(m==null)return;
-  api('/api/admin/partner-set',{action:'rate_set',uid:id,svc:svc,discount:d,markup:m}).then(function(r){
-    toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) pLoadRates(id); });
+  _askForm('Ставка по сервису','Пустая уступка — вернуть общие % партнёра.',[{label:'Уступка, %',value:d0,num:1},{label:'Наценка, %',value:m0,num:1}],'Сохранить',function(v){
+    var d=v[0],m=v[1];
+    if(d===''){ api('/api/admin/partner-set',{action:'rate_set',uid:id,svc:svc,reset:1}).then(function(r){
+      toast(r.ok?'Вернул общие':'Ошибка'); if(r.ok) pLoadRates(id); }); return; }
+    if(m===''){toast('Укажи наценку — ничего не сохранено');return;}
+    api('/api/admin/partner-set',{action:'rate_set',uid:id,svc:svc,discount:d,markup:m}).then(function(r){
+      toast(r.ok?'Сохранено ✓':(r.error||'Ошибка')); if(r.ok) pLoadRates(id); });
+  });
 }
 
 /* Оплата по ссылке */
@@ -2276,108 +2148,61 @@ function credEdit(key){
   return hdr(s.name,"инструкция")+'<div class="wrap"><label class="fl">Пошаговая инструкция для клиента</label><textarea class="f" id="cr_instr" style="min-height:180px">'+instr+'</textarea><button class="btn" onclick="saveCr(\''+key+'\')">Сохранить</button></div>';
 }
 function saveCr(key){toast('Сохраняю…');api('/api/admin/svc-save',{kind:'creds',key:key,instructions:fv('cr_instr')}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
-function ordersBoard(status){
-  if(status)window._obStatus=status;
-  var st=window._obStatus||'work';
-  setTimeout(loadBoard,0);
-  var seg='<div class="seg">'+[["work","В работе"],["done","Выполненные"]].map(function(x){return '<button class="'+(x[0]===st?'on':'')+'" onclick="window._obStatus=\''+x[0]+'\';go(function(){return ordersBoard()},false)">'+x[1]+'</button>'}).join('')+'</div>';
-  return hdr("Все заказы","очередь")+'<div class="wrap">'+seg+'<div id="obbody"><div class="note">Загружаю…</div></div></div>';
-}
-function loadBoard(){
-  api('/api/admin/orders',{status:window._obStatus||'work'}).then(function(d){
-    var el=document.getElementById('obbody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    if(!d.orders.length){el.innerHTML='<div class="note">'+((window._obStatus==='done')?'Выполненных заказов нет.':'Заказов в работе нет.')+'</div>';return;}
-    window._ordersData=window._ordersData||{};
-    var grp={creds:[],linkpay:[],manual:[]};
-    d.orders.forEach(function(o){window._ordersData[o.id]=o;(grp[o.kind]=grp[o.kind]||[]).push(o);});
-    var lab={creds:'🔐 Вход в аккаунт',linkpay:'🔗 Оплата по ссылке',manual:'🧾 Ручные'};
-    var done=(window._obStatus==='done');
-    var h='';
-    Object.keys(grp).forEach(function(k){
-      if(!grp[k]||!grp[k].length)return;
-      h+='<div class="glabel">'+(lab[k]||k)+' ('+grp[k].length+')</div>';
-      grp[k].forEach(function(o){
-        var tt=(o.service||'')+(o.plan?' '+o.plan:'');
-        h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+esc(o.user)+'</div><div class="sub">'+tt+'</div></div><span class="tag '+(done?'g':'a')+'">'+o.status+'</span></div>';
-      });
-    });
-    el.innerHTML=h;
-  });
-}
-SCREENS["Все заказы"]=function(){return ordersBoard();};
-SCREENS["Лента заказов"]=function(){
-  if(window._aoPage===undefined)window._aoPage=0;if(window._aoQ===undefined)window._aoQ='';if(window._aoDate===undefined)window._aoDate='';if(window._aoFilter===undefined)window._aoFilter='all';
-  setTimeout(loadAllOrders,0);
-  return hdr("Лента заказов","все оплаты · поиск · по дням")+'<div class="wrap">'+
-    '<div class="seg" id="ao_seg">'+aoSegInner()+'</div>'+
-    '<input class="f" id="ao_q" placeholder="Поиск: № FreeKassa / № заказа / order_id" value="'+(window._aoQ||'')+'" style="margin:8px 0 6px"/>'+
-    '<div style="display:flex;gap:8px"><button class="btn sec" style="flex:1" onclick="window._aoQ=(document.getElementById(\'ao_q\')||{}).value||\'\';window._aoPage=0;loadAllOrders()">🔍 Найти</button><button class="btn sec" style="flex:1" onclick="aoReset()">Сброс</button></div>'+
-    '<div class="mlab" style="margin-top:8px">Показать за день (необязательно)</div><input class="f" type="date" id="ao_date" value="'+(window._aoDate||'')+'" onchange="window._aoDate=this.value;window._aoPage=0;loadAllOrders()"/>'+
-    '<div id="aobody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
-};
-function aoSegInner(){
-  return [['all','Все'],['done','Активированы'],['work','В процессе'],['cancelled','Отменённые']].map(function(x){
-    return '<button class="'+(x[0]===window._aoFilter?'on':'')+'" onclick="aoSetFilter(\''+x[0]+'\')">'+x[1]+'</button>';
-  }).join('');
-}
-function aoSetFilter(f){window._aoFilter=f;window._aoPage=0;var s=document.getElementById('ao_seg');if(s)s.innerHTML=aoSegInner();loadAllOrders();}
-function aoReset(){window._aoQ='';window._aoDate='';window._aoPage=0;var q=document.getElementById('ao_q');if(q)q.value='';var dt=document.getElementById('ao_date');if(dt)dt.value='';loadAllOrders();}
-function loadAllOrders(){
-  api('/api/admin/all-orders',{page:window._aoPage||0,q:window._aoQ||'',date:window._aoDate||'',filter:window._aoFilter||'all'}).then(function(d){
-    var el=document.getElementById('aobody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    window._feedOrders=window._feedOrders||{};
-    var h='';
-    (d.orders||[]).forEach(function(o){
-      window._feedOrders[o.id]=o;
-      var col=(o.stageKey==='done')?'g':(o.stageKey==='cancelled'?'r':'a');
-      var num=o.num?('#'+o.num+' · '):'';
-      var svcline=(o.service||'')+(o.plan?(' · '+o.plan):'');
-      h+='<div class="block" style="margin-bottom:8px;cursor:pointer" onclick="leaf(function(){return feedOrderView(\''+o.id+'\')})">'+
-         '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+svcline+'</span><span class="tag '+col+'">'+(o.stage||'')+'</span></div>'+
-         '<div class="sub">'+num+(o.user||'')+' · '+(o.date||'')+'</div>'+
-         '<div class="sub" style="margin-top:2px">'+nf(o.amount)+' ₽'+(o.fk?(' · 🧾 FK '+o.fk):'')+'</div></div>';
-    });
-    if(!h)h='<div class="note">Ничего не найдено.</div>';
-    var nav='';
-    if(d.pages>1){nav='<div class="seg" style="margin-top:6px">'+(d.page>0?'<button onclick="window._aoPage='+(d.page-1)+';loadAllOrders()">‹</button>':'')+'<button class="on">'+(d.page+1)+'/'+d.pages+'</button>'+(d.page<d.pages-1?'<button onclick="window._aoPage='+(d.page+1)+';loadAllOrders()">›</button>':'')+'</div>';}
-    el.innerHTML='<div class="note">Всего заказов: '+(d.total||0)+'</div>'+h+nav;
-  });
-}
-function feedOrderView(id){
-  setTimeout(function(){feedThread(id)},0);
-  var o=(window._feedOrders||{})[id]||{};
-  var col=(o.stageKey==='done')?'g':'a';
-  var h=hdr("Заказ",(o.service||'')+(o.plan?(' · '+o.plan):''))+'<div class="wrap"><div class="block">'+
-    '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag '+col+'">'+(o.stage||'')+'</span></div>'+
-    '<div class="kv"><span class="k">Сервис</span><span>'+(o.service||'')+(o.plan?(' · '+o.plan):'')+'</span></div>'+
-    '<div class="kv"><span class="k">Сумма</span><span>'+nf(o.amount)+' ₽</span></div>'+
-    '<div class="kv"><span class="k">Дата оплаты</span><span>'+(o.date||'')+'</span></div>'+
-    (o.num?'<div class="kv"><span class="k">Номер</span><span>#'+o.num+'</span></div>':'')+
-    (o.fk?'<div class="kv" style="cursor:pointer" onclick="copyText(\''+o.fk+'\')"><span class="k">FreeKassa</span><span>'+o.fk+' 📋</span></div>':'')+
-    '<div class="kv" style="cursor:pointer" onclick="copyText(\''+id+'\')"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+id+' 📋</span></div></div>';
-  h+='<div id="feedthread"></div>';
-  if(!o.activated){
-    h+='<button class="btn" onclick="feedAct(\''+id+'\',\'manual\')">✅ Активировали вручную</button>';
-  }
-  var _isActSvc = /chatgpt|claude|perplexity/i.test(''+(o.svc||'')+' '+(o.service||''));
-  if((o.isAuto||_isActSvc) && !o.activated){
-    h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
-  }
-  h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+String(o.username).replace(/[^A-Za-z0-9_]/g,'')+'\')'):('tgLinkId(\''+String(o.userId||'').replace(/[^0-9]/g,'')+'\')'))+'">✍️ Написать клиенту</button>';
-  h+='<button class="btn sec" onclick="copyText(\''+(o.userId||'')+'\')" style="margin-top:8px">🆔 Копировать ID клиента ('+(o.userId||'')+')</button>';
-  h+='<button class="btn danger" onclick="feedAct(\''+id+'\',\'cancel\')" style="margin-top:8px">🗑 Отменить заказ</button>';
-  return h+'</div>';
+/* «Активировали вручную»: что стало с закреплённым кодом — решаешь ты.
+   Раньше кнопка молча возвращала в пул ЛЮБОЙ код заказа, даже уже
+   использованный, а предупреждение висело на window.confirm, который в
+   Telegram не виден. 06.10.2026 */
+function _fateAsk(onFate){
+  var prev=document.getElementById('gwcfm'); if(prev)prev.remove();
+  var ov=document.createElement('div'); ov.id='gwcfm';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:20px';
+  function close(){try{ov.remove();}catch(e){}}
+  ov.innerHTML='<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:360px;width:100%">'
+    +'<div style="font-weight:700;font-size:16px;margin-bottom:10px">Активировали вручную — что с кодом?</div>'
+    +'<div class="sub" style="white-space:pre-wrap">Если за заказом закреплён код:\n\n'
+    +'• «Активировал ЭТИМ кодом» — код потрачен, запишу его на заказ.\n'
+    +'• «Код цел» — активировал без него, код вернётся в пул.\n\n'
+    +'Уже использованный код не трогаю ни в каком случае.</div>'
+    +'<button class="btn" style="margin-top:14px" id="ff_spent" disabled>🔑 Активировал ЭТИМ кодом</button>'
+    +'<button class="btn sec" style="margin-top:8px" id="ff_intact" disabled>↩️ Код цел — вернуть в пул</button>'
+    +'<button class="btn sec" style="margin-top:8px" id="ff_no">Отмена</button></div>';
+  document.body.appendChild(ov);
+  document.getElementById('ff_no').onclick=close;
+  var a=document.getElementById('ff_spent'),b=document.getElementById('ff_intact');
+  setTimeout(function(){a.disabled=false;b.disabled=false;},500);
+  a.onclick=function(){close();onFate('spent');};
+  b.onclick=function(){close();onFate('intact');};
 }
 function feedAct(id,action){
-  if(action==='cancel'&&window.confirm&&!window.confirm('Отменить заказ? Клиент получит уведомление.'))return;
-  if(action==='resend'&&window.confirm&&!window.confirm('Отправить клиенту кнопку активации ещё раз? Будет ТОТ ЖЕ код (новый берётся только если прежний уже недоступен).'))return;
-  toast('…');
-  api('/api/admin/feed-order-action',{id:id,action:action}).then(function(d){
-    toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));
-    if(d.ok)back();
-  });
+  var _fo=(window._feedOrders||{})[id]||{};
+  if(action==='manual'&&_fo.svc&&!/^(chatgpt|claude|perplexity)$/.test(_fo.svc)){
+    _gwConfirm2('Заказ выполнен?','Отмечу заказ выполненным, клиенту придёт сообщение «Подписка активирована».','Да, выполнен',function(){
+      toast('…');
+      api('/api/admin/feed-order-action',{id:id,action:'manual'}).then(function(d){
+        toast(d&&d.ok?'Готово ✓':((d&&d.msg)||'Ошибка — ничего не изменено'));if(d&&d.ok)back();});
+    });
+    return;
+  }
+  if(action==='manual'){
+    _fateAsk(function(fate){
+      toast('…');
+      api('/api/admin/feed-order-action',{id:id,action:'manual',fate:fate}).then(function(d){
+        toast(d&&d.ok?(d.msg||'Готово ✓'):((d&&d.msg)||'Ошибка — ничего не изменено'));
+        if(d&&d.ok)back();
+      });
+    });
+    return;
+  }
+  var _run=function(){
+    toast('…');
+    api('/api/admin/feed-order-action',{id:id,action:action}).then(function(d){
+      toast(d.ok?(d.msg||'Готово ✓'):(d.msg||'Ошибка'));
+      if(d.ok)back();
+    });
+  };
+  if(action==='cancel'){_gwConfirm2('Отменить заказ?','Клиент получит уведомление об отмене.\n\nОплата перестанет считаться в выручке. Деньги клиенту бот НЕ возвращает, выданные коды и кредиты не забирает — это делаешь ты.','Да, отменить',_run);return;}
+  if(action==='resend'){_gwConfirm2('Выдать повторно?','Клиенту уйдёт кнопка активации ещё раз. Будет ТОТ ЖЕ код (новый — только если прежний уже недоступен).','Да, отправить',_run);return;}
+  _run();
 }
 function feedThread(id){
   api('/api/admin/order-thread',{id:id}).then(function(d){
@@ -2424,51 +2249,13 @@ function tgLinkId(uid){
   try{window.location.href=url;}catch(e){}
   setTimeout(function(){copyText(''+uid);toast('Если чат не открылся — ID скопирован, найди по нему');},300);
 }
-SCREENS["Заказы"]=function(){
-  return hdr("Заказы","выбери раздел")+'<div class="wrap">'+
-    '<div class="row" onclick="open2(\'Все заказы\')"><span class="ic">📋</span><div><div class="lbl2">Очередь заказов</div><div class="sub">все активные — что нужно сделать</div></div><span class="chev">›</span></div>'+
-    '<div class="glabel">📂 По типу</div>'+
-    '<div class="row" onclick="leaf(function(){return ordersWork(\'link\')})"><span class="ic">🔗</span><div><div class="lbl2">Оплата по ссылке</div><div class="sub">заказы по ссылке</div></div><span class="chev">›</span></div>'+
-    '<div class="row" onclick="leaf(function(){return ordersWork(\'creds\')})"><span class="ic">🔐</span><div><div class="lbl2">Вход в аккаунт</div><div class="sub">заказы логин/пароль</div></div><span class="chev">›</span></div>'+
-    '<div class="glabel">🤖 Авто-активация</div>'+
-    '<div class="row" onclick="leaf(function(){return shopOrders(\'chatgpt\')})"><span class="ic">✨</span><div><div class="lbl2">ChatGPT</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
-    '<div class="row" onclick="leaf(function(){return shopOrders(\'claude\')})"><span class="ic">⚡</span><div><div class="lbl2">Claude</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
-    '<div class="row" onclick="leaf(function(){return shopOrders(\'perplexity\')})"><span class="ic">🔍</span><div><div class="lbl2">Perplexity</div><div class="sub">заказы и активации</div></div><span class="chev">›</span></div>'+
-    '<div class="row" onclick="leaf(function(){return shopOrders(\'appstore\')})"><span class="ic">🍎</span><div><div class="lbl2">App Store</div><div class="sub">заказы NS Gifts</div></div><span class="chev">›</span></div>'+
-    '</div>';
-};
-function ordersWork(kind){
-  if(kind)window._owKind=(kind==='creds')?'creds':'link';
-  var k=window._owKind||'link', st=window._owStatus||'work';
-  setTimeout(loadOrders,0);
-  var title=(k==='creds')?'Вход в аккаунт':'Оплата по ссылке';
-  var seg='<div class="seg">'+[["work","В работе"],["done","Выполненные"]].map(function(x){return '<button class="'+(x[0]===st?'on':'')+'" onclick="window._owStatus=\''+x[0]+'\';go(function(){return ordersWork()},false)">'+x[1]+'</button>'}).join('')+'</div>';
-  var setName=(k==='creds')?'Вход в аккаунт':'Оплата по ссылке';
-  return hdr(title,"заказы")+'<div class="wrap">'+seg+'<div id="owbody"><div class="note">Загружаю…</div></div><button class="btn sec" onclick="open2(\''+setName+'\')">⚙️ Настройка сервиса</button></div>';
-}
-function loadOrders(){
-  var kinds=(window._owKind==='creds')?['creds']:['linkpay','manual'];
-  api('/api/admin/orders',{kinds:kinds,status:window._owStatus||'work'}).then(function(d){
-    var el=document.getElementById('owbody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    if(!d.orders.length){el.innerHTML='<div class="note">'+((window._owStatus==='done')?'Выполненных заказов нет.':'Заказов в работе нет.')+'</div>';return;}
-    window._ordersData=window._ordersData||{};
-    var h='';
-    d.orders.forEach(function(o){
-      window._ordersData[o.id]=o;
-      var tt=(o.service||'')+(o.plan?' '+o.plan:'');
-      h+='<div class="row" onclick="leaf(function(){return orderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+esc(o.user)+'</div><div class="sub">'+tt+' · '+o.status+'</div></div><span class="chev">›</span></div>';
-    });
-    el.innerHTML=h;
-  });
-}
 function orderView(id){
   setTimeout(function(){loadThread(id)},0);
   var o=(window._ordersData||{})[id]||{};
   var tt=(o.service||'')+(o.plan?' '+o.plan:'');
   return hdr("Заказ",tt||id)+'<div class="wrap"><div id="thbody"><div class="note">Загружаю переписку…</div></div>'+
     '<label class="fl">Написать клиенту (уточнение)</label><textarea class="f" id="ow_msg" placeholder="Текст или код…"></textarea><button class="btn" onclick="orderClarify(\''+id+'\')">Отправить клиенту</button>'+
-    '<div class="btns2"><button class="btn row2" onclick="orderAction(\''+id+'\',\'done\')">✅ Выполнен</button><button class="btn row2 danger" onclick="orderAction(\''+id+'\',\'cancel\')">🚫 Отмена</button></div><button class="btn danger" onclick="delOrder(\''+id+'\')">🗑 Удалить заказ из истории</button></div>';
+    '<div class="btns2"><button class="btn row2" onclick="orderAction(\''+id+'\',\'done\')">✅ Выполнен</button><button class="btn row2 danger" onclick="orderAction(\''+id+'\',\'cancel\')">🚫 Отмена</button></div><button class="btn danger" onclick="delOrder(\''+id+'\')">🗑 Убрать из очереди ручных заказов</button><div class="note">Удалится только ручной заказ и переписка по нему. Оплата останется в «Заказах» и «Деньгах».</div></div>';
 }
 function loadThread(id){
   api('/api/admin/order-thread',{id:id}).then(function(d){
@@ -2502,7 +2289,7 @@ function nsgEsc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 SCREENS["NS Gifts каталог"]=function(){
   if(window._nsgB===undefined)window._nsgB='';if(window._nsgPage===undefined)window._nsgPage=0;if(window._nsgQ===undefined)window._nsgQ='';if(window._nsgHidden===undefined)window._nsgHidden=false;
   setTimeout(loadNsg,0);
-  return hdr("NS Gifts каталог","скрытие · топ · наценка")+'<div class="wrap"><div id="nsgglob"></div><div class="seg" id="nsgseg">'+nsgSegInner()+'</div>'+
+  return hdr("App Store · NS Gifts","скрытие · топ · наценка")+'<div class="wrap"><div id="nsgglob"></div><div class="seg" id="nsgseg">'+nsgSegInner()+'</div>'+
     '<input class="f" id="nsgq" placeholder="Поиск по названию…" value="'+nsgEsc(window._nsgQ||'')+'" style="margin:8px 0"/>'+
     '<button class="btn sec" onclick="window._nsgQ=(document.getElementById(\'nsgq\')||{}).value||\'\';window._nsgPage=0;loadNsg()">🔍 Найти</button>'+
     '<div id="nsgbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';
@@ -2532,7 +2319,11 @@ function nsgBulk(a){var keys=nsgSelKeys();if(!keys.length){toast('Ничего �
 function nsgRender(){
   var d=window._nsgLast||{};
   var g=document.getElementById('nsgglob');
-  if(g){g.innerHTML=d.ok?('<div class="block"><div class="kv" style="border:0"><span class="k">Курс USD</span><input class="f" id="nsgrate" value="'+d.rate+'" style="width:90px;text-align:right"/></div><div class="kv"><span class="k">Наценка %</span><input class="f" id="nsgmk" value="'+d.markup+'" style="width:90px;text-align:right"/></div><button class="btn" onclick="nsgSaveGlobal()" style="margin-top:8px">💾 Сохранить курс/наценку</button><div class="note">Скрыто: '+(d.hiddenCount||0)+' · В топе: '+(d.featuredCount||0)+'</div></div>'):'';}
+  /* Блок курса/наценки/порога рисуем один раз на экран: раньше он
+     перерисовывался при каждом тапе по товару и стирал то, что ты ввёл. */
+  if(g&&d.ok&&document.getElementById('nsgrate')){g=null;var _nc=document.getElementById('nsgcnt');if(_nc)_nc.textContent='Скрыто: '+(d.hiddenCount||0)+' · В топе: '+(d.featuredCount||0);}
+  if(g&&d.ok)setTimeout(_nsgThr,0);
+  if(g){g.innerHTML=d.ok?('<div class="block"><div class="kv" style="border:0"><span class="k">Курс USD</span><input class="f" id="nsgrate" value="'+d.rate+'" style="width:90px;text-align:right"/></div><div class="kv"><span class="k">Наценка %</span><input class="f" id="nsgmk" value="'+d.markup+'" style="width:90px;text-align:right"/></div><div class="kv"><span class="k">Порог остатка для алерта, $</span><input class="f" id="nsgthr" value="" placeholder="…" style="width:90px;text-align:right"/></div><button class="btn" onclick="nsgSaveGlobal()" style="margin-top:8px">💾 Сохранить</button><div class="note" id="nsgcnt">Скрыто: '+(d.hiddenCount||0)+' · В топе: '+(d.featuredCount||0)+'</div></div>'):'';}
   var el=document.getElementById('nsgbody'); if(!el)return;
   if(!d.ok){el.innerHTML='<div class="note">'+(d.msg||'Ошибка')+'</div>';return;}
   window._nsgProds=window._nsgProds||{}; window._nsgSel=window._nsgSel||{};
@@ -2550,7 +2341,8 @@ function nsgRender(){
   if(d.pages>1){nav='<div class="seg" style="margin-top:10px">'+(d.page>0?'<button onclick="window._nsgPage='+(d.page-1)+';loadNsg()">‹</button>':'')+'<button class="on">'+(d.page+1)+'/'+d.pages+'</button>'+(d.page<d.pages-1?'<button onclick="window._nsgPage='+(d.page+1)+';loadNsg()">›</button>':'')+'</div>';}
   el.innerHTML=bar+(h||'<div class="note">Ничего не найдено.</div>')+nav;
 }
-function nsgSaveGlobal(){var r=(document.getElementById('nsgrate')||{}).value,m=(document.getElementById('nsgmk')||{}).value;toast('…');api('/api/admin/setting-save',{kind:'appstore',rate:r,markup:m}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
+function nsgSaveGlobal(){var r=(document.getElementById('nsgrate')||{}).value,m=(document.getElementById('nsgmk')||{}).value,t=(document.getElementById('nsgthr')||{}).value;var b={kind:'appstore',rate:r,markup:m};if(t!==''&&t!=null)b.threshold=t;toast('…');api('/api/admin/setting-save',b).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
+function _nsgThr(){api('/api/admin/settings',{}).then(function(d){var e=document.getElementById('nsgthr');if(e&&d&&d.ok&&d.appstore)e.value=(d.appstore.threshold!=null?d.appstore.threshold:'');});}
 function nsgProd(k){k=decodeURIComponent(k);var p=(window._nsgProds||{})[k]||{};var ek=encodeURIComponent(k);
   var h=hdr("Товар",nsgEsc(p.name||''))+'<div class="wrap"><div class="block">'+
     '<div class="kv" style="border:0"><span class="k">Тип</span><span>'+(p.bucket||'')+'</span></div>'+
@@ -2567,61 +2359,8 @@ function nsgAct(k,a){k=decodeURIComponent(k);toast('…');api('/api/admin/nsg-pr
 function nsgActV(k,a,v){k=decodeURIComponent(k);toast('…');api('/api/admin/nsg-product',{key:k,action:a,value:v}).then(function(d){toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));if(d.ok){window._nsgProds={};back();setTimeout(loadNsg,60);}});}
 function orderAction(id,action){toast('…');api('/api/admin/order-action',{id:id,action:action}).then(function(d){toast(d.ok?'Готово ✓':'Ошибка');if(d.ok)back();});}
 function orderClarify(id){var t=(document.getElementById('ow_msg')||{}).value;if(!t){toast('Введи текст');return;}toast('Отправляю…');api('/api/admin/order-action',{id:id,action:'clarify',text:t}).then(function(d){toast(d.ok?'Отправлено ✓':'Ошибка');if(d.ok){var m=document.getElementById('ow_msg');if(m)m.value='';loadThread(id);}});}
-function delOrder(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/order-delete',{id:id}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}
+function delOrder(id){_gwConfirm2('Убрать ручной заказ?','Удалю ручной заказ и переписку по нему безвозвратно. Сама оплата останется в «Заказах» и «Деньгах».','Да, убрать',function(){api('/api/admin/order-delete',{id:id}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});});}
 function planLabel(svc,plan){var m={chatgpt:{plus:'Plus',pro_5x:'Pro 5×',go:'Go'},claude:{pro:'Pro',max_5x:'Max 5×',max_20x:'Max 20×'},perplexity:{pro:'Pro'}};return (m[svc]||{})[plan]||plan;}
-function soTag(o){return o.state==='done'?'g':(o.state==='expired'?'r':'a');}
-function shopOrders(svc){
-  window._soSvc=svc;
-  setTimeout(loadShopOrders,0);
-  var t={chatgpt:'ChatGPT',claude:'Claude',perplexity:'Perplexity',appstore:'App Store'}[svc]||svc;
-  return hdr(t,"заказы")+'<div class="wrap"><div id="sobody"><div class="note">Загружаю…</div></div></div>';
-}
-function loadShopOrders(){
-  api('/api/admin/shop-orders',{svc:window._soSvc}).then(function(d){
-    var el=document.getElementById('sobody'); if(!el)return;
-    if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
-    if(!d.orders.length){el.innerHTML='<div class="note">Заказов нет.</div>';return;}
-    window._shopOrders={};
-    var h='';
-    d.orders.forEach(function(o){
-      window._shopOrders[o.id]=o;
-      h+='<div class="row" onclick="leaf(function(){return shopOrderView(\''+o.id+'\')})"><span class="ic">📦</span><div><div class="lbl2">'+esc(o.user)+'</div><div class="sub">'+(o.plan||'')+' · '+nf(o.amount)+' ₽ · '+o.date+'</div></div><span class="tag '+soTag(o)+'">'+(o.status||'оплачен')+'</span></div>';
-    });
-    el.innerHTML=h;
-  });
-}
-function shopOrderView(id){
-  var o=(window._shopOrders||{})[id]||{};
-  var svc=window._soSvc, accLbl=(svc==='chatgpt')?'Email':(svc==='appstore'?'Выдано':'Org/ID');
-  // Ручной заказ в процессе → полноценный экран с перепиской (отправить сообщение + заказ готов)
-  if(o.manual && !o.activated && svc!=='appstore'){ return orderView(id); }
-  var h=hdr("Заказ",o.plan||svc)+'<div class="wrap"><div class="block">'+
-    '<div class="kv" style="border:0;padding-bottom:4px"><span style="font-weight:600">'+(o.user||'')+'</span><span class="tag '+soTag(o)+'">'+(o.status||'оплачен')+'</span></div>'+
-    '<div class="kv"><span class="k">Тариф</span><span>'+(o.plan||'')+'</span></div>'+
-    '<div class="kv"><span class="k">Сумма</span><span>'+nf(o.amount)+' ₽</span></div>'+
-    '<div class="kv"><span class="k">Дата</span><span>'+(o.date||'')+'</span></div>'+
-    (o.acc?'<div class="kv"><span class="k">'+accLbl+'</span><span style="word-break:break-all">'+o.acc+'</span></div>':'')+
-    (o.code?'<div class="kv" style="cursor:pointer" onclick="copyText(\''+o.code+'\')"><span class="k">'+(svc==='appstore'?'Выдано':'Код')+'</span><span style="word-break:break-all">'+o.code+' 📋</span></div>':'')+
-    '<div class="kv"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+id+'</span></div></div>';
-  if(o.activated){
-    // Успешно активирован клиентом — без кнопок
-    h+='<div class="note">✅ Заказ успешно активирован — действия не требуются.</div>';
-  } else if(svc==='appstore'){
-    h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button>';
-  } else {
-    // Авто-сервис, ещё не активирован клиентом
-    h+='<button class="btn" onclick="soManual(\''+id+'\')">✅ Активировали вручную</button>';
-    if(svc==='chatgpt'||svc==='claude'||svc==='perplexity'){
-      h+='<button class="btn sec" onclick="feedAct(\''+id+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
-    }
-    h+='<div class="note">Код заказа вернётся в пул автоматически.</div>';
-    h+='<button class="btn danger" onclick="soDelete(\''+id+'\')">🗑 Удалить заказ из истории</button>';
-  }
-  return h+'</div>';
-}
-function soManual(id){if(window.confirm&&!window.confirm('Отметить активированным вручную? Код вернётся в пул.'))return;toast('Сохраняю…');api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'manual'}).then(function(d){toast(d.ok?'Готово ✓':(d.msg||'Ошибка'));if(d.ok)back();});}
-function soRelease(id){if(window.confirm&&!window.confirm('Вернуть код заказа в пул?'))return;api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'release'}).then(function(d){toast(d.ok?'Код возвращён в пул ✓':'Ошибка');if(d.ok)back();});}
-function soDelete(id){if(window.confirm&&!window.confirm('Удалить заказ из истории?'))return;if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;api('/api/admin/shop-order-action',{svc:window._soSvc,id:id,action:'delete'}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)back();});}
 
 /* Управление */
 SCREENS["Приветствие"]=function(){
@@ -2719,14 +2458,14 @@ var _pBcBusy=false;
    и дальше работает обычный поток рассылки с уже выбранной аудиторией. */
 function pBcStart(id){
   if(_pBcBusy){toast('Уже отправляю запрос');return;}
-  if(window.confirm&&!window.confirm('Подготовить рассылку клиентам этого партнёра?\n\nСообщение наберёшь в боте — можно с фото.'))return;
+  _gwConfirm2('Подтверди действие','Подготовить рассылку клиентам этого партнёра?\n\nСообщение наберёшь в боте — можно с фото.','Да, подготовить',function(){
   _pBcBusy=true;
   api('/api/admin/partner-set',{action:'bcstart',uid:id}).then(function(d){
     _pBcBusy=false;
     if(d&&d.ok){toast('Открой бот — там кнопка «Написать сообщение» ('+d.count+' чел.)');}
     else{toast((d&&d.msg)||'Ошибка');}
   });
-}
+});}
 function sendBroadcast(){var t=fv('bc_txt');if(!t){toast('Введи текст');return;}
 if(_bcBusy){toast('Рассылка уже запущена — второй раз не отправляю');return;}
 var _an=_BC_AUD_NAMES[_bcAud]||'всем пользователям';
@@ -2734,12 +2473,12 @@ if(_bcAud==='partner_clients'){
   if(!_bcPid){toast('Выбери партнёра');return;}
   _an='клиентам '+_bcPtag;
 }
-if(window.confirm&&!window.confirm('Отправить рассылку '+_an+'?'))return;
+_gwConfirm2('Подтверди действие','Отправить рассылку '+_an+'?','Да, отправить',function(){
 _bcBusy=true;toast('Запускаю…');
 api('/api/admin/broadcast',{text:t,audience:_bcAud,partnerId:_bcPid}).then(function(d){
   if(d&&d.ok){toast('Рассылка '+(d.audience||_an)+' — '+d.count+' чел. Отчёт придёт в бот.');}
   else{_bcBusy=false;toast((d&&d.msg)?d.msg:'Ошибка');}
-});}
+});});}
 
 SCREENS["Техобслуживание"]=function(){
   setTimeout(function(){loadSettings(function(d){var e=document.getElementById('maint_sw');if(e&&d.ok){if(d.maintenance)e.classList.add('on');else e.classList.remove('on');}})},0);
@@ -2773,7 +2512,9 @@ function loadMiniApp(svc){
           +prog(Math.min(100,_cn*2),_cn<10?C.red:C.green))
       +'</div></div>';
     h+='<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return addCodes(\''+svc+'\')})">➕ Коды</button><button class="btn row2 sec" onclick="leaf(function(){return codesPool(\''+svc+'\')})">🗂 Пул</button></div>';
-    if(svc==='claude'||svc==='chatgpt'){h+='<button class="btn sec" style="margin-top:10px" onclick="leaf(function(){return pendingScreen(\''+svc+'\')})">⏳ Ждущие коды</button>';}
+    /* «Ждущие коды» — у всех трёх сервисов. У Perplexity раздела не было
+       вовсе. Счётчик дописывается, когда придут детали. 06.10.2026 */
+    h+='<button class="btn sec" style="margin-top:10px" id="pendbtn_'+svc+'" onclick="leaf(function(){return pendingScreen(\''+svc+'\')})">⏳ Ждущие коды</button>';
     if(svc==='claude'||svc==='chatgpt'){h+='<div id="clprov_'+svc+'" style="margin-top:14px"></div>';}
     h+='<div id="madet_'+svc+'"><div class="note">Загружаю активации…</div></div>';
     el.innerHTML=h;
@@ -2784,6 +2525,10 @@ function loadMiniApp(svc){
       if(!dd.ok){de.innerHTML='<div class="note neg">⚠️ Не удалось загрузить активации — '
         +'это сбой загрузки, а не пустой список.</div>';return;}
       var byp={};(dd.free||[]).forEach(function(c){byp[c.plan]=(byp[c.plan]||0)+1});
+      /* Счётчик на кнопке «Ждущие коды»: сколько всего и сколько требуют внимания. */
+      var _pb=document.getElementById('pendbtn_'+svc);
+      if(_pb&&dd.pending){var _pw=0;dd.pending.forEach(function(x){if(x.warn)_pw++;});
+        _pb.innerHTML='⏳ Ждущие коды · '+dd.pending.length+(_pw?(' · <span class="neg">⚠️ '+_pw+'</span>'):'');}
       var cb=document.getElementById('codesbk_'+svc);
       if(cb){var tot=(typeof dd.freeCount==='number'?dd.freeCount:(dd.free?dd.free.length:0));
         var bh='<div class="kv" style="border:0;padding-bottom:6px"><span class="k">Всего в пуле</span><span>'+tot+' шт</span></div>'+prog(Math.min(100,tot*2),tot<10?C.red:C.green);
@@ -2816,7 +2561,11 @@ function loadMiniApp(svc){
         +(dd.burned?(' · из них сожжено перебором: <b>'+dd.burned+'</b>'):'')+'</div>';}
       dd.recent.forEach(function(r){
         var _burn=(r.kind==='burn');
-        hh+='<div class="block" style="cursor:pointer'+(_burn?';border-left:3px solid '+C.red:'')+'" onclick="copyText(\''+r.code+'\')"><div style="font-size:12.5px;font-weight:600">'+esc(r.user)+' · '+esc(r.date)+(_burn?' · <span class="neg">сожжён перебором</span>':'')+'</div><div class="sub" style="margin-top:4px">🔑 '+r.code+' 📋'+(r.acc?'<br>📧 '+r.acc:'')+(r.order?'<br>🆔 '+r.order:'')+'</div></div>';
+        /* У ChatGPT в этом поле почта, у Claude — Organization ID, у
+           Perplexity — ID аккаунта Perplexity. Раньше всё подписывалось 📧,
+           и UUID выглядел как почта. 06.10.2026 */
+        var _accL={chatgpt:'📧 Email: ',claude:'🏢 Organization: ',perplexity:'🆔 Аккаунт Perplexity: '}[svc]||'👤 Аккаунт: ';
+        hh+='<div class="block" style="cursor:pointer'+(_burn?';border-left:3px solid '+C.red:'')+'" onclick="copyText(\''+esc(r.code)+'\')"><div style="font-size:12.5px;font-weight:600">'+esc(r.user)+' · '+esc(r.date)+(_burn?' · <span class="neg">сожжён перебором</span>':'')+'</div><div class="sub" style="margin-top:4px">🔑 '+esc(r.code)+' 📋'+(r.acc?'<br>'+_accL+esc(r.acc):'')+(r.order?'<br>🧾 Order: '+esc(r.order):'')+'</div></div>';
       });
       if(dd.burned)hh+='<div class="note" style="margin-top:8px">Красным — коды, помеченные использованными при переборе, без реальной активации. Проверить и вернуть целые: команда <code>/gpt_codes_recover</code> в боте.</div>';
       de.innerHTML=hh;
@@ -3019,6 +2768,39 @@ function _gwBox(k,title,badge,inner,dflt){
    «Да, <действие>». Случайно пройти оба подряд нельзя. Второй шаг открывается
    не сразу, а через полсекунды — чтобы палец, уже летящий вниз, не попал по
    нему по инерции. */
+/* Окно ввода вместо window.prompt / window.alert. Во встроенном браузере
+   Telegram системные окна ненадёжны (то же было с confirm): ввод мог не
+   появиться вовсе, а у «Отметить выплату» это деньги партнёра. 06.10.2026
+   fields: [{label, value, ph, num}] → cb([значения]). Отмена — ничего. */
+function _askForm(title,hint,fields,okText,cb){
+  var prev=document.getElementById('gwcfm'); if(prev)prev.remove();
+  var ov=document.createElement('div'); ov.id='gwcfm';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto';
+  var h='<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:360px;width:100%">'
+    +'<div style="font-weight:700;font-size:16px;margin-bottom:8px">'+esc(title)+'</div>'
+    +(hint?'<div class="sub" style="white-space:pre-wrap;margin-bottom:6px">'+esc(hint)+'</div>':'');
+  fields.forEach(function(f,i){
+    h+='<label class="fl">'+esc(f.label)+'</label><input class="f" id="askf_'+i+'" value="'+esc(f.value==null?'':f.value)+'" placeholder="'+esc(f.ph||'')+'"'+(f.num?' inputmode="decimal"':'')+'/>';
+  });
+  h+='<div style="display:flex;gap:10px;margin-top:16px"><button class="btn sec" style="flex:1;margin-top:0" id="askno">Отмена</button>'
+    +'<button class="btn" style="flex:1;margin-top:0" id="askok">'+esc(okText||'Сохранить')+'</button></div></div>';
+  ov.innerHTML=h;document.body.appendChild(ov);
+  function close(){try{ov.remove();}catch(e){}}
+  document.getElementById('askno').onclick=close;
+  document.getElementById('askok').onclick=function(){
+    var v=fields.map(function(f,i){var e=document.getElementById('askf_'+i);return e?String(e.value).trim():'';});
+    close();try{cb(v);}catch(e){}
+  };
+  var f0=document.getElementById('askf_0');if(f0)setTimeout(function(){try{f0.focus()}catch(e){}},50);
+}
+function _infoBox(title,text){
+  var prev=document.getElementById('gwcfm'); if(prev)prev.remove();
+  var ov=document.createElement('div'); ov.id='gwcfm';
+  ov.style.cssText='position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML='<div style="background:var(--surface);border-radius:16px;padding:20px;max-width:360px;width:100%"><div style="font-weight:700;font-size:16px;margin-bottom:8px">'+esc(title)+'</div>'
+    +'<div class="sub" style="white-space:pre-wrap">'+esc(text)+'</div><button class="btn" id="infok">Понятно</button></div>';
+  document.body.appendChild(ov);document.getElementById('infok').onclick=function(){try{ov.remove();}catch(e){}};
+}
 function _gwConfirm2(title, text, okText, cb){
   var prev=document.getElementById('gwcfm'); if(prev)prev.remove();
   var ov=document.createElement('div'); ov.id='gwcfm';
@@ -3309,7 +3091,7 @@ function loadPending(svc){
            +'. Это резервы, у которых код уже не «ждёт»: вернулся в пул, записан или исчез. '
            +'Раньше их тут не было видно вовсе.</div>';
     Object.keys(bys).sort().forEach(function(s){
-      h+='<div class="glabel">🌐 '+provName(svc,s)+' ('+bys[s].length+')</div>';
+      h+='<div class="glabel">🌐 '+(s?provName(svc,s):({perplexity:'Perplexity'}[svc]||'Без сайта'))+' ('+bys[s].length+')</div>';
       bys[s].forEach(function(c){
         h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+esc(c.user)
           +(c.uid?' <span class="sub">('+c.uid+')</span>':'')+' · '+esc(c.date)+'</div>'+
@@ -3319,17 +3101,34 @@ function loadPending(svc){
           +(c.left?' · '+esc(c.left):'')
           +(c.order?'<br>🆔 '+esc(c.order):'')
           +(c.org?'<br>🏢 '+esc(c.org):'')+'</div>'+
-           '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+c.code+'\',\'release\',\''+svc+'\')">↩️ В пул</button>'+
-           '<button class="btn row2 danger" onclick="claudeCodeAction(\''+c.code+'\',\'delete\',\''+svc+'\')">🗑 Удалить</button></div></div>';
+           (c.started?'<div class="note neg" style="margin-top:6px">⚠️ Активация уже уходила поставщику — код мог быть потрачен.</div>':'')+
+           '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+esc(c.code)+'\',\'release\',\''+svc+'\','+(c.started?1:0)+')">↩️ В пул</button>'+
+           '<button class="btn row2 danger" onclick="claudeCodeAction(\''+esc(c.code)+'\',\'delete\',\''+svc+'\','+(c.started?1:0)+')">🗑 Удалить</button></div></div>';
       });
     });
     el.innerHTML=h;
   });
 }
-function claudeCodeAction(code,action,svc){
-  var msg=action==='release'?('Вернуть код '+code+' в пул? Клиентская сессия слетит.'):('Удалить код '+code+' безвозвратно?');
-  if(window.confirm&&!window.confirm(msg))return;
-  api('/api/admin/claude-code-action',{code:code,action:action,service:svc}).then(function(d){toast(d.ok?(action==='release'?'Возвращён в пул':'Удалён'):'Ошибка');if(d.ok)loadPending(svc);});
+/* Было window.confirm. Во встроенном браузере Telegram он не работает
+   (пометка об этом есть в коде розыгрыша), и возврат кода в пул мог пройти
+   без подтверждения. Теперь то же двухшаговое окно, что у розыгрыша, и честный
+   ответ сервера: «Возвращён в пул» — только если код реально нашёлся.
+   06.10.2026 */
+function claudeCodeAction(code,action,svc,started){
+  var t,ok;
+  if(action==='release'){
+    t='Вернуть код '+code+' в пул?\n\nРезерв клиента снимется, код станет доступен следующему покупателю.';
+    if(started)t+='\n\n⚠️ Активация по этому коду уже уходила поставщику. Если она прошла, код потрачен — и следующий клиент получит пустой код. Проверь у поставщика перед возвратом.';
+    ok='Да, вернуть в пул';
+  }else{
+    t='Удалить код '+code+' безвозвратно?\n\nКод исчезнет из пула и из резерва клиента.';
+    ok='Да, удалить';
+  }
+  _gwConfirm2(action==='release'?'Вернуть в пул?':'Удалить код?',t,ok,function(){
+    api('/api/admin/claude-code-action',{code:code,action:action,service:svc}).then(function(d){
+      if(d&&d.ok){toast(action==='release'?'Возвращён в пул':'Удалён');loadPending(svc);}
+      else toast((d&&d.msg)||'Ошибка — ничего не изменено');});
+  });
 }
 function codesPool(svc){
   setTimeout(function(){loadPool(svc)},0);
@@ -3382,10 +3181,9 @@ function loadPool(svc){
   });
 }
 function delCode(svc,code){
-  if(window.confirm&&!window.confirm('Удалить код '+code+'?'))return;
-  if(window.confirm&&!window.confirm('Точно удалить безвозвратно?'))return;
+  _gwConfirm2('Подтверди действие','Удалить код '+code+'?'+'\n\n'+'Точно удалить безвозвратно?','Да, удалить',function(){
   api('/api/admin/code-delete',{service:svc,code:code}).then(function(d){toast(d.ok?'Удалён':'Ошибка');if(d.ok)loadPool(svc);});
-}
+});}
 function toggleMiniApp(elm,svc){var on=!elm.classList.contains('on');elm.classList.toggle('on');api('/api/admin/miniapp-toggle',{key:svc,enabled:on}).then(function(d){if(!d.ok){elm.classList.toggle('on');toast('Ошибка');}else{toast(on?'Включено':'Выключено');}});}
 SCREENS["ChatGPT Mini App"]=miniApp("ChatGPT Mini App","chatgpt");
 SCREENS["Claude Mini App"]=miniApp("Claude Mini App","claude");
@@ -3410,6 +3208,9 @@ function doReleaseCodes(svc){
   toast('Возвращаю в пул…');
   api('/api/admin/release-codes',{service:svc,codes:codes}).then(function(d){
     if(!d.ok){toast(d.msg||'Ошибка');return;}
+    /* Ответ пришёл, когда ты уже ушёл с экрана: экран не открываем, но итог
+       не теряем — показываем окном поверх того, где ты сейчас. */
+    if(window._apiStale){_infoBox('Возврат кодов в пул ('+svc+')','Прислано: '+(d.total||0)+'\nВозвращено: '+(d.released||0));return;}
     leaf(function(){return hdr("Возврат кодов",svc)+'<div class="wrap"><div class="block">'
       +'<h4>♻️ Коды возвращены в пул</h4>'
       +'<div class="kv"><span class="k">Прислано кодов</span><span>'+(d.total||0)+'</span></div>'
@@ -3425,6 +3226,13 @@ function doAddCodes(svc){
   toast('Добавляю…');
   api('/api/admin/add-codes',pl).then(function(d){
     if(!d.ok){toast(d.msg||'Ошибка');return;}
+    if(window._apiStale){
+      var t='Прислано: '+(d.total||0)+'\nДобавлено новых: '+(d.added||0)
+        +(d.dupes?('\nУже были в базе: '+d.dupes):'')+(d.skipped?('\nНе похоже на код: '+d.skipped):'');
+      if(d.spent&&d.spent.length){t+='\n\n🚨 Уже потрачены ('+d.spent.length+'):\n'+d.spent.map(function(x){return x.code+' — '+x.status;}).join('\n');}
+      if(d.noRoute&&d.noRoute.length){t+='\n\n⚠️ Незнакомый префикс (автоактивация их не возьмёт):\n'+d.noRoute.join('\n');}
+      _infoBox('Коды добавлены'+(d.provider?(' → '+d.provider):''),t);return;
+    }
     /* Показываем ПОЛНЫЙ разбор: куда делись коды, если добавилось меньше присланного */
     var h='<div class="block"><h4>✅ Коды добавлены'+(d.provider?(' → '+d.provider):'')+'</h4>'
       +'<div class="kv"><span class="k">Прислано строк/кодов</span><span>'+(d.total||0)+'</span></div>'
@@ -3486,6 +3294,596 @@ function loadAppstore(){
 }
 function saveAppstore(){toast('Сохраняю…');api('/api/admin/setting-save',{kind:'appstore',rate:fv('as_rate'),markup:fv('as_markup'),threshold:fv('as_thr')}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ОБЪЕДИНЁННЫЕ РАЗДЕЛЫ (06.10.2026)
+   Сводка   = Главная + Статистика
+   Деньги   = Прибыль + Продажи
+   Заказы   = Лента заказов + История платежей
+   Выдача   = Очередь заказов + Заказы по типам
+   Все суммы денег приходят с сервера из ОДНОГО расчёта (_fin_collect), поэтому
+   одинаковый период на любом экране даёт одинаковые цифры. Дни — по Алматы.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Цвет сервиса закреплён за сервисом, а не за местом в рейтинге: ChatGPT
+   всегда одного цвета, сколько бы сервисов ни было на экране. Набор проверен
+   на различимость (в т.ч. при дальтонизме) на тёмном фоне панели. */
+var SVC_COL={chatgpt:'#199e70',claude:'#d95926',perplexity:'#3987e5',appstore:'#9085e9',credits:'#c98500'};
+var SVC_EXTRA=['#d55181','#008300','#e66767'];
+function svcColor(k){
+  if(SVC_COL[k])return SVC_COL[k];
+  var h=0;k=''+(k||'');for(var i=0;i<k.length;i++){h=(h*31+k.charCodeAt(i))>>>0;}
+  return SVC_EXTRA[h%SVC_EXTRA.length];
+}
+function rub(n){return nf(Math.round(n||0))+' ₽';}
+function sgn(n){return (n>0?'+':'')+nf(Math.round(n||0));}
+
+/* Подсказка-«пузырь» для столбиков: показываем точное значение по нажатию. */
+function _tipShow(el,txt){
+  var t=document.getElementById('vtip');
+  if(!t){t=document.createElement('div');t.id='vtip';t.className='vtip';document.body.appendChild(t);}
+  t.innerHTML=txt;t.style.display='block';
+  var r=el.getBoundingClientRect();
+  var x=r.left+r.width/2, y=r.top-8;
+  t.style.left=Math.max(8,Math.min(window.innerWidth-t.offsetWidth-8,x-t.offsetWidth/2))+'px';
+  t.style.top=Math.max(8,y-t.offsetHeight)+'px';
+  clearTimeout(t._h);t._h=setTimeout(function(){t.style.display='none';},4000);
+}
+function _tipHide(){var t=document.getElementById('vtip');if(t){t.style.display='none';clearTimeout(t._h);}}
+
+/* Анимации: числа «досчитываются», полосы и столбики вырастают. Всё это
+   отключается, если на телефоне включено «уменьшить движение». */
+var _RM=false;try{_RM=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;}catch(e){}
+function fxRun(root){
+  root=root||document;
+  var cus=root.querySelectorAll('.cu[data-v]');
+  cus.forEach(function(el){
+    var v=parseFloat(el.getAttribute('data-v'))||0, suf=el.getAttribute('data-suf')||'', pre=el.getAttribute('data-pre')||'';
+    if(_RM||Math.abs(v)<2){el.textContent=pre+nf(Math.round(v))+suf;return;}
+    var t0=null,dur=650;
+    function step(ts){if(!t0)t0=ts;var p=Math.min(1,(ts-t0)/dur);var e=1-Math.pow(1-p,3);
+      el.textContent=pre+nf(Math.round(v*e))+suf;if(p<1)requestAnimationFrame(step);}
+    requestAnimationFrame(step);
+  });
+  var ws=root.querySelectorAll('[data-w]');
+  requestAnimationFrame(function(){requestAnimationFrame(function(){
+    ws.forEach(function(el){el.style.width=el.getAttribute('data-w');});
+    root.querySelectorAll('[data-h]').forEach(function(el){el.style.height=el.getAttribute('data-h');});
+  });});
+}
+
+/* Изменение к прошлому периоду. Если в прошлом было 0 — процент не считаем
+   (деление на ноль дало бы «+∞%»), пишем как есть. */
+function deltaHtml(cur,prev,lab,money){
+  cur=cur||0;prev=prev||0;
+  if(!prev&&!cur)return '<div class="delta muted">'+esc(lab)+': тоже 0</div>';
+  if(!prev)return '<div class="delta pos">▲ было 0 · '+esc(lab)+'</div>';
+  /* От отрицательной базы процент бессмыслен (рост с −30 до 773 — это не
+     «+2677%»): пишем, сколько было. */
+  if(prev<0)return '<div class="delta '+(cur>=prev?'pos':'neg')+'">'+(cur>=prev?'▲':'▼')+' было '+(money?rub(prev):nf(prev))+' · '+esc(lab)+'</div>';
+  var p=Math.round((cur-prev)/Math.abs(prev)*100);
+  var up=cur>=prev;
+  return '<div class="delta '+(cur===prev?'muted':(up?'pos':'neg'))+'" title="'+esc(lab)+'">'
+    +(cur===prev?'= ':(up?'▲ ':'▼ '))+Math.abs(p)+'% · '+(money?rub(prev):nf(prev))+' '+esc(lab)+'</div>';
+}
+function kpiCard(lab,val,suf,deltaH,cls,sub){
+  return '<div class="mcard fx"><div class="mlab">'+esc(lab)+'</div>'
+    +'<div class="mval '+(cls||'')+'"><span class="cu" data-v="'+(val||0)+'" data-suf="'+(suf||'')+'">'+nf(Math.round(val||0))+(suf||'')+'</span></div>'
+    +(sub?'<div class="delta muted">'+sub+'</div>':'')+(deltaH||'')+'</div>';
+}
+function skel(n,h){var s='';for(var i=0;i<(n||3);i++)s+='<div class="sk" style="height:'+(h||64)+'px;margin-bottom:10px"></div>';return s;}
+function errBox(retry){return '<div class="block"><div class="sub neg">⚠️ Не загрузилось — это сбой связи или сервера, а не «пусто». Цифры намеренно не показаны.</div>'
+  +(retry?'<button class="btn sec" style="margin-top:10px" onclick="'+retry+'">🔄 Повторить</button>':'')+'</div>';}
+
+/* Вертикальные столбики (SVG не нужен): выручка по часам/дням. Нажатие —
+   точное значение; у дней — переход в «Деньги» за этот день. */
+function vbars(points,key,opts){
+  opts=opts||{};
+  if(!points||!points.length)return '<div class="note">Нет данных за период.</div>';
+  window._vtips=window._vtips||[];
+  var mx=Math.max.apply(0,points.map(function(p){return p[key]||0;}))||1;
+  var n=points.length, showEvery=n>10?Math.ceil(n/7):1;
+  var h='<div class="vbars" style="height:'+(opts.h||120)+'px">';
+  points.forEach(function(p,i){
+    var v=p[key]||0, pct=Math.max(v>0?4:1.5,Math.round(v/mx*100));
+    var tip=esc(p.label+(p.wd?(' '+p.wd):''))+': <b>'+(opts.money?rub(v):nf(v))+'</b>'
+      +(p.orders!=null?('<br>заказов: '+p.orders):'')
+      +(p.profit!=null&&opts.money?('<br>прибыль: '+sgn(p.profit)+' ₽'):'');
+    if(opts.dayClick&&p.key&&p.key.length===10){
+      tip+='<br><a class="vtip-a" onclick="window._mP=\'date\';window._mDate=\''+p.key+'\';document.getElementById(\'vtip\').style.display=\'none\';open2(\'Деньги\')">Открыть этот день ›</a>';
+    }
+    var ti=window._vtips.push(tip)-1;
+    h+='<div class="vb'+(opts.hi&&p.key===opts.hi?' hi':'')+'" onclick="event.stopPropagation();_tipShow(this,window._vtips['+ti+'])">'
+      +'<i style="height:0" data-h="'+pct+'%"></i>'
+      +'<em>'+((i%showEvery===0)?esc(p.label):'')+'</em></div>';
+  });
+  return h+'</div>';
+}
+/* Горизонтальные полосы с подписями: сервисы, источники. */
+function hbars2(items,fmt){
+  if(!items.length)return '<div class="note">Нет данных.</div>';
+  var mx=Math.max.apply(0,items.map(function(i){return Math.abs(i.val)}))||1;
+  return items.map(function(i){
+    return '<div class="hb"'+(i.onclick?' style="cursor:pointer" onclick="'+i.onclick+'"':'')+'><div class="hb-l"><span style="color:var(--txt)"><span class="dot" style="display:inline-block;margin-right:6px;background:'+(i.color||'var(--acc)')+'"></span>'+esc(i.label)+'</span><span>'+(fmt?fmt(i):nf(i.val))+'</span></div>'
+      +'<div class="hb-t"><div class="hb-f" style="width:0;background:'+(i.color||'var(--acc)')+'" data-w="'+Math.max(2,Math.round(Math.abs(i.val)/mx*100))+'%"></div></div>'
+      +(i.sub?'<div class="sub" style="margin-top:3px">'+i.sub+'</div>':'')+'</div>';
+  }).join('');
+}
+
+var _PERIODS=[['today','Сегодня'],['yesterday','Вчера'],['7d','7 дней'],['30d','30 дней']];
+function periodSeg(cur,fnName,list){
+  return '<div class="seg">'+(list||_PERIODS).map(function(x){
+    return '<button class="'+(x[0]===cur?'on':'')+'" onclick="'+fnName+'(\''+x[0]+'\')">'+x[1]+'</button>';}).join('')+'</div>';
+}
+
+/* ═════════════════════════ СВОДКА (главная) ═════════════════════════════ */
+var ATT=null, ATT_STATE='load';
+function _hSet(p){window._hP=p;ovReload();}
+/* Счётчик запросов на экран: ответ на СТАРЫЙ запрос (прежний период,
+   прежняя вкладка) не рисуется поверх нового. Ревью 06.10.2026. */
+var _SEQ={};
+function _seq(k){_SEQ[k]=(_SEQ[k]||0)+1;return _SEQ[k];}
+function _seqOk(k,v){return _SEQ[k]===v;}
+function home(){
+  var d=OVERVIEW||{}, ok=(OV_STATE==='ok'), T=d.totals||{}, P=d.prev||{};
+  var per=window._hP||'today';
+  var h='<div class="brandbar"><div class="brand">Neirosetka<span> admin</span></div><div class="av">🛡️</div></div><div class="wrap">';
+  h+='<div class="hero fx" style="text-align:left;margin:4px 2px 10px"><h1>Сводка</h1><p>'+(ok?('Данные на '+esc(d.asOf||'')+' (Алматы) · сравнение: '+esc(d.prevLabel||'')):'Дни считаются по времени Алматы')+'</p></div>';
+  h+=periodSeg(per,'_hSet');
+  if(OV_STATE==='load'){h+='<div class="mgrid">'+skel(4,78).replace(/margin-bottom:10px/g,'margin:0')+'</div>'+skel(1,150);}
+  else if(OV_STATE==='err'){h+=errBox('ovReload()');}
+  else{
+    var lab=d.prevLabel||'';
+    h+='<div class="mgrid">'
+      +kpiCard('Выручка',T.revenue,' ₽',deltaHtml(T.revenue,P.revenue,lab,true),'',(T.starsRub?'вкл. Stars '+rub(T.starsRub):''))
+      +kpiCard('Прибыль · '+(T.margin||0)+'%',T.profit,' ₽',deltaHtml(T.profit,P.profit,lab,true),(T.profit>=0?'pos':'neg'))
+      +kpiCard('Заказов',T.orders,'',deltaHtml(T.orders,P.orders,lab,false))
+      +kpiCard('Новых клиентов',T.newUsers,'',deltaHtml(T.newUsers,P.newUsers,lab,false))
+      +'</div>';
+    var sx=(d.series||{}).points||[];
+    h+='<div class="block fx"><h4>📈 Выручка '+(((d.series||{}).unit==='hour')?'по часам':'по дням')
+      +' <span class="muted" style="font-size:11px;font-weight:400;margin-left:auto">нажми на столбик</span></h4>'
+      +vbars(sx,'revenue',{money:true,dayClick:true})
+      +'<div class="kv" style="margin-top:6px"><span class="k">Деньгами (FreeKassa)</span><span>'+rub(T.money)+'</span></div>'
+      +(T.stars?'<div class="kv"><span class="k">Telegram Stars</span><span>'+nf(T.stars)+' ⭐'+(T.starsRub?(' ≈ '+rub(T.starsRub)):' · курс не задан')+'</span></div>':'')
+      +(T.coins?'<div class="kv"><span class="k">Монетками (не деньги)</span><span class="muted">'+rub(T.coins)+'</span></div>':'')
+      +'<button class="btn sec" style="margin-top:10px" onclick="window._mP=\''+per+'\';window._mDate=\'\';open2(\'Деньги\')">💰 Подробно: прибыль, закуп, сервисы ›</button></div>';
+    var sv=(d.services||[]).filter(function(s){return s.revenue>0||s.cnt>0;}).slice(0,6);
+    if(sv.length){
+      h+='<div class="block fx"><h4>🧩 По сервисам</h4>'+hbars2(sv.map(function(s){return {label:(s.emoji?s.emoji+' ':'')+s.name,val:s.revenue,color:svcColor(s.key),sub:s.cnt+' шт · прибыль '+sgn(s.profit)+' ₽'+(s.missing?' · ⚠️ закуп не задан':'')};}),function(i){return rub(i.val);})+'</div>';
+    }
+  }
+  /* «Нужно действие» — каждое число ведёт на экран, где видно то же самое число. */
+  h+='<div class="block fx"><h4>🔔 Нужно действие</h4>';
+  if(ATT_STATE==='load'){h+=skel(2,40);}
+  else if(ATT_STATE==='err'){h+='<div class="sub neg">⚠️ Не загрузилось.</div>';}
+  else{
+    var it=(ATT&&ATT.items)||[];
+    if(!it.length){h+='<div class="sub pos">✅ Всё выдано: ничего не ждёт твоего действия, пул кодов в норме.</div>';}
+    it.forEach(function(x){
+      h+='<div class="att '+(x.level==='act'?'lvl-act':'lvl-wait')+'" onclick="_attGo(\''+esc(x.go)+'\')"><span class="ic">'+x.icon+'</span>'
+        +'<div style="flex:1"><div class="lbl2">'+esc(x.label)+'</div></div><b class="'+(x.level==='act'?'neg':'')+'" style="font-size:17px">'+x.n+'</b><span class="chev">›</span></div>';
+    });
+  }
+  h+='</div>';
+  var groups=[
+   ["💰","Деньги и заказы",[["💰","Деньги","Деньги"],["🧾","Заказы","Заказы"],["📦","Выдача","Выдача",1]]],
+   ["📈","Аналитика",[["🎨","Генерации и аудитория","Аналитика"],["🔥","Аналитика Каталога","Аналитика Каталога"]]],
+   ["👥","Клиенты",[["🔎","Найти по ID","Найти по ID"],["👥","Кто кого привёл","Рефералы"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки"],["🤝","Премиум-рефералы (%)","Премиум-рефералка"],["🏢","Партнёры B2B","Партнёры"]]],
+   ["🛒","Каталог и цены",[["💵","Цены и себестоимость","Редактор цен"],["🤖","Модели и стоимость","Модели"],["🎟️","Промокоды","Промокоды"],["🍎","App Store (NS Gifts)","NS Gifts каталог"],["🏷️","Шапка магазина","Шапка магазина"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры",1]]],
+   ["⚙️","Управление",[["🎁","Розыгрыш","Розыгрыш"],["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание"]]],
+   ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🖼","Фото/видео активации","Медиа активации"]]]
+  ];
+  groups.forEach(function(g){h+='<div class="glabel">'+g[0]+' '+g[1]+'</div><div class="grid">';g[2].forEach(function(c){h+='<div class="card'+(c[3]?' full':'')+'" onclick="open2(\''+c[2]+'\')"><span class="ic">'+c[0]+'</span><span class="lbl">'+c[1]+'</span></div>'});h+='</div>'});
+  return h+'</div>';
+}
+function _attGo(g){
+  if(g==='manual'){window._dvTab='manual';open2('Выдача');return;}
+  if(g.indexOf('pool:')===0){var s=g.split(':')[1];leaf(function(){return codesPool(s)});return;}
+  window._dvTab=g;open2('Выдача');
+}
+
+/* ═════════════════════════════ ДЕНЬГИ ═══════════════════════════════════ */
+var _M_PERIODS=[['today','Сегодня'],['yesterday','Вчера'],['7d','7 дн'],['30d','30 дн'],['month','Месяц']];
+function _mSet(p){window._mP=p;window._mDate='';open2('Деньги');}
+SCREENS["Деньги"]=function(){
+  var per=window._mP||'today', dts=window._mDate||'';
+  if(per==='date'&&!dts)per='today';
+  setTimeout(function(){_mLoad(per,dts)},0);
+  return hdr("Деньги","выручка · закуп · прибыль · сервисы")+'<div class="wrap">'
+    +periodSeg(dts?'':per,'_mSet',_M_PERIODS)
+    +'<input class="f" type="date" value="'+dts+'" onchange="window._mP=\'date\';window._mDate=this.value;open2(\'Деньги\')" style="margin:-4px 0 12px"/>'
+    +'<div id="mbody">'+skel(1,170)+skel(3,60)+'</div></div>';
+};
+function _mLoad(per,dts){
+  var q=_seq('m');
+  api('/api/admin/fin',{period:per,date:dts||null}).then(function(d){
+    if(!_seqOk('m',q))return;
+    var el=document.getElementById('mbody'); if(!el)return;
+    if(!d||!d.ok||!d.totals){el.innerHTML=errBox("_mLoad('"+per+"','"+(dts||'')+"')");return;}
+    window._mD=d;
+    var T=d.totals,P=d.prev||{},lab=d.prevLabel||'',h='';
+    h+='<div class="note fx" style="margin:0 0 12px">📅 <b>'+esc(d.label)+'</b>'+(d.live?' · на '+esc(d.asOf):'')+' · время Алматы</div>';
+    h+='<div class="mgrid">'
+      +kpiCard('Выручка',T.revenue,' ₽',deltaHtml(T.revenue,P.revenue,lab,true))
+      +kpiCard('Прибыль · маржа '+(T.margin||0)+'%',T.profit,' ₽',deltaHtml(T.profit,P.profit,lab,true),T.profit>=0?'pos':'neg')
+      +kpiCard('Закуп',T.cost,' ₽','','', T.costMissing?('⚠️ не задан у '+T.costMissing+' зак.'):'по каждому заказу')
+      +kpiCard('Комиссия FK · '+(T.feePct)+'%',T.fee,' ₽','','neg','только с рублей FreeKassa')
+      +'</div>';
+    h+='<div class="block fx"><div class="kv" style="border:0"><span class="k">Заказов оплачено</span><span>'+nf(T.orders)+'</span></div>'
+      +'<div class="kv"><span class="k">Платящих клиентов</span><span>'+nf(T.payers)+'</span></div>'
+      +'<div class="kv"><span class="k">Средний чек (рублями)</span><span>'+rub(T.avgCheck)+'</span></div>'
+      +(T.partner?'<div class="kv"><span class="k">Доля партнёров ('+T.partnerOrders+' зак.)</span><span class="neg">−'+rub(T.partner)+'</span></div>':'')
+      +'<div class="kv" style="flex-wrap:wrap;gap:4px"><span class="k">Итог</span><span><b>'+rub(T.revenue)+'</b> − закуп '+rub(T.cost)+' − комиссия '+rub(T.fee)+(T.partner?(' − партнёрам '+rub(T.partner)):'')+' = <b class="'+(T.profit>=0?'pos':'neg')+'">'+rub(T.profit)+'</b></span></div></div>';
+    var pts=(d.series||{}).points||[];
+    if(pts.length>1){
+      h+='<div class="block fx"><h4>📈 Выручка и прибыль '+((d.series.unit==='hour')?'по часам':'по дням')+'</h4>'
+        +'<div style="height:230px;position:relative"><canvas id="finChart"></canvas></div>'
+        +'<div class="sub" style="margin-top:6px">Нажми на столбик — покажу выручку, закуп, комиссию и число заказов.</div></div>';
+    }
+    /* Откуда пришли деньги */
+    var srcs=(d.sources||[]);
+    if(srcs.length){
+      var SCOL={fk:'#3987e5',stars:'#c98500',coins:'#9085e9'};
+      h+='<div class="block fx"><h4>💳 Откуда</h4>'+hbars2(srcs.map(function(s){
+          var v=(s.key==='stars')?(s.rub||s.stars):s.rub;
+          return {label:s.label,val:v,color:SCOL[s.key]||'#9aa0ad',key:s.key,n:s.n,stars:s.stars,rub:s.rub};
+        }),function(i){
+          if(i.key==='stars')return nf(i.stars)+' ⭐'+(i.rub?(' ≈ '+rub(i.rub)):'')+' · '+i.n;
+          return rub(i.val)+' · '+i.n;})
+        +'<div class="sub">Монетки — не деньги: в выручку не входят, показаны для справки. Stars входят в выручку, только если задан курс (внизу). СБП и карту бот у большинства заказов не различает, поэтому FreeKassa — одной строкой.</div></div>';
+    }
+    /* Сервисы: нажатие раскрывает тарифы */
+    var sv=d.services||[];
+    h+='<div class="glabel">🧩 По сервисам и тарифам</div>';
+    if(!sv.length)h+='<div class="note">За этот период продаж нет.</div>';
+    sv.forEach(function(s,i){
+      var col=svcColor(s.key);
+      h+='<div class="block fx" style="border-left:3px solid '+col+'">'
+        +'<div onclick="_mTog('+i+')" style="cursor:pointer"><div class="kv" style="border:0;padding:0 0 6px"><span style="font-weight:600">'+(s.emoji?s.emoji+' ':'')+esc(s.name)+' · '+s.cnt+' шт'+(s.missing?' <span class="tag a">закуп не задан</span>':'')+'</span><span class="'+(s.profit>=0?'pos':'neg')+'">'+sgn(s.profit)+' ₽ ›</span></div>'
+        +'<div class="sub">выручка '+rub(s.revenue)+(s.stars?(' (⭐ '+nf(s.stars)+')'):'')+' − закуп '+rub(s.cost)+' − комиссия '+rub(s.fee)+(s.partner?(' − партнёрам '+rub(s.partner)):'')+(s.coins?(' · монетками '+rub(s.coins)):'')+'</div></div>'
+        +'<div id="mpl_'+i+'" style="display:none;margin-top:8px">'
+        +s.plans.map(function(p){
+          return '<div class="kv"><span class="k">'+esc(p.name)+' × '+p.cnt+(p.missing?' ⚠️':'')+'<br><span style="font-size:11px">'+rub(p.revenue)+(p.stars?(' (⭐'+nf(p.stars)+')'):'')+' − '+rub(p.cost)+' − '+rub(p.fee)+(p.partner?(' − партн. '+rub(p.partner)):'')+(p.coins?(' · 🪙'+nf(p.coins)):'')+'</span></span><span class="'+(p.profit>=0?'pos':'neg')+'">'+sgn(p.profit)+' ₽</span></div>';
+        }).join('')+'</div></div>';
+    });
+    /* ChatGPT по маршруту кода (из бывшей «Прибыли») */
+    var gr=d.gptRoutes||[];
+    if(gr.length){
+      var inexact=false;
+      h+='<div class="glabel">✨ ChatGPT по маршруту кода</div>';
+      gr.forEach(function(g){
+        var tot=g.rows.reduce(function(a,r){return a+r.cnt;},0);
+        h+='<div class="block fx"><h4>'+esc(g.plan)+' · '+tot+' шт</h4>';
+        g.rows.forEach(function(r){
+          var special=(r.key!=='ph'&&r.key!=='ios');
+          if(!r.exact&&!special)inexact=true;
+          var clk=(r.key==='manual')?(' style="cursor:pointer" onclick="leaf(function(){return unboundScreen(\''+(per==='date'?'today':per)+'\',0,\''+(dts||'')+'\')})"'):'';
+          h+='<div class="kv"'+clk+'><span class="k">'+esc(r.label)+(r.key==='manual'?' ›':'')+' × '+r.cnt
+            +(r.key==='multi'?(' · кодов '+r.codes):'')
+            +'<br><span style="font-size:11px">'+rub(r.rev)+' − '+rub(r.cost)+' − '+rub(r.fee)+(r.partner?(' − партн. '+rub(r.partner)):'')
+            +((!r.exact&&!special)?' (закуп общий)':'')
+            +(r.starsCnt?('<br>⭐ за Stars: '+r.starsCnt+' шт'+(r.starsAmt?(' · '+nf(r.starsAmt)+' ⭐'):'')
+                +(r.starsRub?(' ≈ '+rub(r.starsRub)+' (в выручке строки)'):' — курс звезды не задан, в выручку не входят')
+                +(r.starsNoLink?(' · '+r.starsNoLink+' без записи платежа'):'')):'')
+            +'</span></span><span class="'+(r.profit>=0?'pos':'neg')+'">'+sgn(r.profit)+' ₽</span></div>';
+        });
+        h+='</div>';
+      });
+      h+='<div class="note">'+(inexact?'Закуп по маршрутам у части тарифов один на тариф — для точности задай «Филиппины» и «iOS» в себестоимости. ':'')
+        +'<b>Без записанного кода</b> — оплачен, но потраченный код не записан: нажми строку, увижу каждую причину. '
+        +'<b>Ушло несколько кодов</b> — в закупе учтён каждый код.</div>';
+    }
+    if(d.notes&&d.notes.length){
+      h+='<div class="block fx" style="border-color:rgba(240,180,41,.35)"><h4>⚠️ Что важно знать про эти цифры</h4>'
+        +d.notes.map(function(n){return '<div class="sub" style="margin:6px 0">• '+esc(n)+'</div>';}).join('')+'</div>';
+    }
+    h+='<div class="block fx"><h4>⚙️ Как считать</h4>'
+      +'<label class="fl" style="margin-top:0">Комиссия FreeKassa, % '+(d.feeSet?'':'<span class="neg">— не задана, считаю 2% как раньше</span>')+'</label><input class="f" id="fs_fee" inputmode="decimal" value="'+(d.feeSet?T.feePct:'')+'" placeholder="2"/>'
+      +'<div class="sub" style="margin-top:4px">Одна настройка на всю панель — та же, что в «Партнёрах».'+(d.feeSet?'':' Пока не задана: здесь считается 2% (как в прежней «Прибыли»), а «Партнёры» считают 0%. Задай значение — и везде будет одинаково.')+'</div>'
+      +'<label class="fl">Сколько рублей ты получаешь за 1 ⭐ (пусто — Stars не входят в выручку)</label><input class="f" id="fs_st" inputmode="decimal" value="'+(T.starsRate||'')+'" placeholder="например 1.2"/>'
+      +'<button class="btn" onclick="_mSaveSet()">💾 Сохранить и пересчитать</button></div>';
+    h+='<button class="btn sec" onclick="leaf(profitCosts)">💵 Закуп и цены по тарифам</button>';
+    var _nd=Math.round((new Date(d.until)-new Date(d.since))/864e5)||1;
+    var _ofd=(_nd===1)?d.since:'';
+    h+='<button class="btn sec" style="margin-top:8px" onclick="window._ofDate=\''+_ofd+'\';window._ofDays='+_nd+';window._ofF=\'all\';window._ofQ=\'\';open2(\'Заказы\')">🧾 Эти же заказы списком</button>';
+    el.innerHTML=h;fxRun(el);
+    if(pts.length>1)setTimeout(function(){_finChart(pts,d.series.unit)},0);
+  });
+}
+function _mTog(i){var e=document.getElementById('mpl_'+i);if(e)e.style.display=(e.style.display==='none'?'':'none');}
+function _mSaveSet(){
+  var fee=(document.getElementById('fs_fee')||{}).value, st=(document.getElementById('fs_st')||{}).value;
+  toast('Сохраняю…');
+  api('/api/admin/fin-settings',{fee:fee,stars:st}).then(function(d){
+    if(d&&d.ok){toast('Сохранено — пересчитываю');open2('Деньги');}else toast((d&&d.msg)||'Не сохранилось');});
+}
+var _finCh=null;
+function _finChart(pts,unit){
+  var cv=document.getElementById('finChart'); if(!cv||!window.Chart)return;
+  if(_finCh){try{_finCh.destroy()}catch(e){}}
+  _finCh=new Chart(cv.getContext('2d'),{
+    data:{labels:pts.map(function(p){return p.label+(p.wd?(' '+p.wd):'')}),datasets:[
+      {type:'bar',label:'Выручка',data:pts.map(function(p){return p.revenue}),backgroundColor:'#3987e5',borderRadius:4,maxBarThickness:22,order:2},
+      {type:'line',label:'Прибыль',data:pts.map(function(p){return p.profit}),borderColor:'#199e70',backgroundColor:'#199e70',borderWidth:2,pointRadius:pts.length>16?0:3,pointHoverRadius:5,tension:.25,order:1}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,animation:_RM?false:{duration:700,easing:'easeOutCubic'},
+      interaction:{mode:'index',intersect:false},
+      plugins:{legend:{labels:{color:'#9aa0ad',boxWidth:12}},
+        tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+nf(c.parsed.y)+' ₽'},
+          afterBody:function(items){var p=pts[items[0].dataIndex];var L=['Закуп: '+nf(p.cost)+' ₽','Комиссия: '+nf(p.fee)+' ₽'];if(p.partner)L.push('Доля партнёров: '+nf(p.partner)+' ₽');L.push('Заказов: '+p.orders);return L;}}}},
+      scales:{x:{ticks:{color:'#9aa0ad',maxRotation:0,autoSkip:true,maxTicksLimit:8},grid:{display:false}},
+              y:{ticks:{color:'#9aa0ad',callback:function(v){return nf(v)}},grid:{color:'rgba(255,255,255,.05)'}}}}
+  });
+}
+
+/* ═════════════════════════════ ЗАКАЗЫ ═══════════════════════════════════ */
+var _OF_DAYS=[[1,'Сегодня'],[7,'7 дн'],[30,'30 дн'],[90,'90 дн'],[3650,'Всё']];
+var _OF_F=[['all','Все'],['act','⚠️ Нужно действие'],['wait','⏳ В процессе'],['done','✅ Выдано'],['off','Не оплачены / отменены']];
+SCREENS["Заказы"]=function(){
+  if(window._ofDays===undefined)window._ofDays=7;
+  if(window._ofF===undefined)window._ofF='all';
+  if(window._ofQ===undefined)window._ofQ='';
+  if(window._ofDate===undefined)window._ofDate='';
+  window._ofPage=0;
+  setTimeout(_ofLoad,0);
+  return hdr("Заказы","оплаты и выдача в одном списке")+'<div class="wrap">'
+    +'<div class="seg" id="of_days">'+_ofDaysInner()+'</div>'
+    +'<input class="f" type="date" id="of_date" value="'+(window._ofDate||'')+'" onchange="window._ofDate=this.value;window._ofPage=0;_ofLoad()" style="margin:-4px 0 10px"/>'
+    +'<div class="search"><i class="ti ti-search muted"></i><input id="of_q" placeholder="@ник, ID клиента, № заказа или FreeKassa" value="'+esc(window._ofQ||'')+'" onchange="window._ofQ=this.value;window._ofPage=0;var x=document.getElementById(\'of_qx\');if(x)x.style.display=this.value?\'\':\'none\';_ofLoad()"/>'
+    +'<span class="psx" id="of_qx" style="'+(window._ofQ?'':'display:none')+'" onclick="window._ofQ=\'\';window._ofPage=0;document.getElementById(\'of_q\').value=\'\';this.style.display=\'none\';_ofLoad()">✕</span></div>'
+    +'<div id="ofbody">'+skel(5,62)+'</div></div>';
+};
+function _ofDaysInner(){
+  /* Период пришёл из «Денег» (например, 6 дней с начала месяца) — показываем
+     его отдельной активной кнопкой, чтобы было видно, за что список. */
+  var std=_OF_DAYS.some(function(x){return x[0]===window._ofDays;});
+  var extra=(!window._ofDate&&!std)?('<button class="on">'+window._ofDays+' дн</button>'):'';
+  return extra+_OF_DAYS.map(function(x){return '<button class="'+((!window._ofDate&&window._ofDays===x[0])?'on':'')+'" onclick="window._ofDays='+x[0]+';window._ofDate=\'\';var dd=document.getElementById(\'of_date\');if(dd)dd.value=\'\';window._ofPage=0;document.getElementById(\'of_days\').innerHTML=_ofDaysInner();_ofLoad()">'+x[1]+'</button>';}).join('');
+}
+function _ofLoad(){
+  var b={filter:window._ofF||'all',q:window._ofQ||'',days:window._ofDays||7,date:window._ofDate||'',page:window._ofPage||0};
+  var q=_seq('of');
+  api('/api/admin/orders-feed',b).then(function(d){
+    if(!_seqOk('of',q))return;
+    var el=document.getElementById('ofbody'); if(!el)return;
+    if(!d||!d.ok||!d.orders){el.innerHTML=errBox('_ofLoad()');return;}
+    window._feedOrders=window._feedOrders||{};
+    var h='';
+    if(d.money){
+      var M=d.money;
+      h+='<div class="block fx"><div class="kv" style="border:0;padding-top:0"><span class="k">За '+esc(d.period)+' · оплачено заказов</span><span><b>'+nf(M.orders)+'</b></span></div>'
+        +'<div class="kv"><span class="k">Деньгами (FreeKassa)</span><span><b>'+rub(M.money)+'</b></span></div>'
+        +(M.stars?'<div class="kv"><span class="k">Stars</span><span>'+nf(M.stars)+' ⭐'+(M.starsRub?(' ≈ '+rub(M.starsRub)):'')+'</span></div>':'')
+        +(M.coins?'<div class="kv"><span class="k">Монетками (не деньги)</span><span class="muted">'+rub(M.coins)+'</span></div>':'')
+        +'<div class="sub" style="margin-top:4px">Считается тем же расчётом, что и «Деньги» — за тот же период цифры совпадают.</div></div>';
+    }
+    var c=d.counts||{};
+    h+='<div class="sub" style="margin:-2px 2px 8px">«Нужно действие» здесь включает и ручные заказы, которые ждут тебя — на Сводке они отдельной строкой «Ручные».</div>';
+    h+='<div class="chiprow">'+_OF_F.map(function(x){
+      var n=(x[0]==='all')?c.all:c[x[0]];
+      return '<span class="fchip'+((window._ofF||'all')===x[0]?' on':'')+'" onclick="window._ofF=\''+x[0]+'\';window._ofPage=0;_ofLoad()">'+x[1]+'<b>'+(n||0)+'</b></span>';
+    }).join('')+'</div>';
+    var rows=d.orders||[];
+    if(!rows.length)h+='<div class="note">'+(window._ofQ?('По запросу «'+esc(window._ofQ)+'» ничего нет.'):'Заказов с такими условиями нет.')+'</div>';
+    rows.forEach(function(o){window._feedOrders[o.id]=o;h+=_ofRow(o);});
+    if((d.pages||1)>1){
+      h+='<div class="btns2" style="margin-top:10px">'
+        +'<button class="btn row2 sec"'+(d.page<=0?' disabled':'')+' onclick="window._ofPage='+(d.page-1)+';_ofLoad();window.scrollTo(0,0)">← Новее</button>'
+        +'<button class="btn row2 sec"'+(d.page>=d.pages-1?' disabled':'')+' onclick="window._ofPage='+(d.page+1)+';_ofLoad();window.scrollTo(0,0)">Старее →</button></div>'
+        +'<div class="note">Стр. '+(d.page+1)+' из '+d.pages+' · всего '+d.total+'</div>';
+    }
+    if(d.truncated)h+='<div class="note neg">Заказов за период больше '+nf(d.limit||20000)+' — показаны последние, и счётчики фильтров посчитаны по ним. Сузь период или найди поиском.</div>';
+    el.innerHTML=h;fxRun(el);
+  });
+}
+function _resolveOrder(id){
+  _gwConfirm2('Отметить как разобранный?','Заказ уйдёт из «Нужно действие». Клиенту ничего не отправится, деньги и коды бот не трогает.','Да, разобрался',function(){
+    api('/api/admin/feed-order-action',{id:id,action:'resolve'}).then(function(d){
+      toast(d&&d.ok?'Отмечено ✓':((d&&d.msg)||'Ошибка — ничего не изменено'));
+      if(d&&d.ok){ATT=null;back();}
+    });
+  });
+}
+function _amtHtml(o){
+  o=o||{};
+  if(o.stars)return '<div style="font-size:13px;font-weight:600">⭐ '+(o.starsAmount?nf(o.starsAmount):'Stars')+'</div>'+(o.catalogRub?'<div class="sub">каталог '+rub(o.catalogRub)+'</div>':'');
+  if(!o.amount&&o.coins)return '<div style="font-size:13px;font-weight:600">🪙 '+nf(o.coins)+'</div><div class="sub">монетками</div>';
+  return '<div style="font-size:13px;font-weight:600">'+rub(o.amount)+'</div>'+(o.coins?'<div class="sub">+🪙 '+nf(o.coins)+'</div>':'');
+}
+var _LVL_TAG={act:'r',wait:'a',done:'g',off:'n',manual:'a'};
+function _ofRow(o){
+  return '<div class="row fx lvl-'+o.level+'" onclick="leaf(function(){return orderCard(\''+esc(o.id)+'\')})">'
+    +'<span class="ic" style="background:'+svcColor(o.svc)+'26;color:'+svcColor(o.svc)+'">'+(o.emoji||'📦')+'</span>'
+    +'<div style="min-width:0;flex:1"><div class="lbl2">'+esc(o.service)+(o.plan?(' · '+esc(o.plan)):'')+'</div>'
+    +'<div class="sub">'+esc(o.user)+(o.num?(' · #'+o.num):'')+' · '+esc(o.date)+(o.method?(' · '+esc(o.method)):'')+(o.promo?(' · 🎟 '+esc(o.promo)):'')+'</div>'
+    +'<div style="margin-top:4px"><span class="tag '+(_LVL_TAG[o.level]||'n')+'">'+esc(o.stage)+'</span></div></div>'
+    +'<div style="margin-left:8px;text-align:right;flex-shrink:0">'+_amtHtml(o)+'</div></div>';
+}
+/* Карточка заказа — одна для «Заказов» и «Выдачи». */
+function orderCard(id){
+  var o=(window._feedOrders||{})[id]||{};
+  if(!o.id)return hdr("Заказ")+'<div class="wrap"><div class="note">Открой заказ из списка заново.</div></div>';
+  setTimeout(function(){if(!o.virtual)feedThread(id)},0);
+  var accL={chatgpt:'📧 Email',claude:'🏢 Organization',perplexity:'🆔 Аккаунт'}[o.svc]||'Аккаунт';
+  var h=hdr("Заказ",(o.service||'')+(o.plan?(' · '+o.plan):''))+'<div class="wrap"><div class="block fx lvl-'+o.level+'">'
+    +'<div style="font-weight:600;overflow-wrap:anywhere">'+esc(o.user||'')+'</div>'
+    +'<div style="margin:6px 0 4px"><span class="tag '+(_LVL_TAG[o.level]||'n')+'">'+esc(o.stage||'')+'</span></div>'
+    +'<div class="kv"><span class="k">Сервис</span><span>'+esc(o.service||'')+(o.plan?(' · '+esc(o.plan)):'')+'</span></div>'
+    +'<div class="kv"><span class="k">Деньгами</span><span>'+(o.stars?'— (Stars)':rub(o.amount))+'</span></div>'
+    +(o.stars?'<div class="kv"><span class="k">Stars</span><span>'+(o.starsAmount?nf(o.starsAmount)+' ⭐':'оплата звёздами')+(o.catalogRub?(' · каталог '+rub(o.catalogRub)):'')+'</span></div>':'')
+    +(o.coins?'<div class="kv"><span class="k">Монетками</span><span>'+nf(o.coins)+'</span></div>':'')
+    +(o.method?'<div class="kv"><span class="k">Способ</span><span>'+esc(o.method)+'</span></div>':'')
+    +(o.promo?'<div class="kv"><span class="k">Промокод</span><span>'+esc(o.promo)+'</span></div>':'')
+    +'<div class="kv"><span class="k">Дата (Алматы)</span><span>'+esc(o.date||'')+'</span></div>'
+    +(o.num?'<div class="kv"><span class="k">Номер</span><span>#'+o.num+'</span></div>':'')
+    +(o.fk?'<div class="kv" style="cursor:pointer" onclick="copyText(\''+esc(o.fk)+'\')"><span class="k">FreeKassa</span><span>'+esc(o.fk)+' 📋</span></div>':'')
+    +(o.code?'<div class="kv" style="cursor:pointer" onclick="copyText(\''+esc(o.code)+'\')"><span class="k">'+(o.svc==='appstore'?'Выдано':'🔑 Код')+'</span><span style="word-break:break-all">'+esc(o.code)+' 📋</span></div>':'')
+    +(o.acc?'<div class="kv"><span class="k">'+accL+'</span><span style="word-break:break-all">'+esc(o.acc)+'</span></div>':'')
+    +(o.virtual?'':'<div class="kv" style="cursor:pointer" onclick="copyText(\''+esc(id)+'\')"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+esc(id)+' 📋</span></div>')
+    +'</div>';
+  if(o.virtual){
+    h+='<div class="note">Пакет кредитов за Stars — кредиты начислены сразу при оплате. Отдельного заказа у такой покупки нет, действий не требуется.</div>';
+    return h+'</div>';
+  }
+  h+='<div id="feedthread"></div>';
+  var paid=(o.status==='paid');
+  /* Деньги остались у тебя, а заказ не выдан/отменён (возврат монеток при
+     сбое, оплата после отмены, отменённый ручной заказ): верни деньги или
+     выдай — и отметь, чтобы заказ ушёл из «Нужно действие». */
+  if(o.level==='act'&&(o.stageKey==='refund_rub'||o.stageKey==='late_paid'||o.stageKey==='cancelled_paid'||(o.stageKey==='cancelled'&&paid))){
+    h+='<button class="btn" onclick="_resolveOrder(\''+esc(id)+'\')">✅ Разобрался — деньги вернул / выдал</button>'
+      +'<div class="note">Только отметка для панели: клиенту ничего не уйдёт, коды и статус заказа не меняются.</div>';
+  }
+  if(paid&&!o.activated&&o.stageKey!=='cancelled'){
+    h+='<button class="btn" onclick="feedAct(\''+esc(id)+'\',\'manual\')">✅ '+(o.isAuto?'Активировали вручную':'Выполнено')+'</button>';
+    if(o.isAuto)h+='<button class="btn sec" onclick="feedAct(\''+esc(id)+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
+  }
+  h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+String(o.username).replace(/[^A-Za-z0-9_]/g,'')+'\')'):('tgLinkId(\''+String(o.userId||'').replace(/[^0-9]/g,'')+'\')'))+'">✍️ Написать клиенту</button>';
+  h+='<button class="btn sec" onclick="copyText(\''+(o.userId||'')+'\')" style="margin-top:8px">🆔 Копировать ID клиента ('+(o.userId||'')+')</button>';
+  if(paid)h+='<button class="btn danger" onclick="feedAct(\''+esc(id)+'\',\'cancel\')" style="margin-top:8px">🗑 Отменить заказ</button>';
+  return h+'</div>';
+}
+
+/* ═════════════════════════════ ВЫДАЧА ═══════════════════════════════════ */
+var _DV_TABS=[['manual','🔗 Ручные'],['chatgpt','✨ ChatGPT'],['claude','⚡ Claude'],['perplexity','🔍 Perplexity'],['appstore','🍎 App Store'],['other','🛍 Другие']];
+SCREENS["Выдача"]=function(){
+  var t=window._dvTab||'chatgpt';
+  setTimeout(function(){_dvLoad(t)},0);
+  /* Счётчики на вкладках — свежие при каждом входе: после действия с заказом
+     старые числа иначе висели до перезапуска панели. */
+  api('/api/admin/attention',{}).then(function(a){if(a&&a.ok){ATT=a;ATT_STATE='ok';var r=document.getElementById('dv_tabs');if(r)r.innerHTML=_dvTabsInner();}});
+  return hdr("Выдача","что выдать и что ждёт")+'<div class="wrap"><div class="chiprow" id="dv_tabs">'+_dvTabsInner()+'</div><div id="dvbody">'+skel(4,62)+'</div></div>';
+};
+function _dvTabsInner(){
+  var badge={};((ATT&&ATT.items)||[]).forEach(function(x){if(x.key.indexOf('dlv_')===0)badge[x.go]=x.n;if(x.key==='manual')badge.manual=x.n;});
+  var t=window._dvTab||'chatgpt';
+  return _DV_TABS.map(function(x){return '<span class="fchip'+(t===x[0]?' on':'')+'" onclick="window._dvTab=\''+x[0]+'\';open2(\'Выдача\')">'+x[1]+(badge[x[0]]?('<b class="neg">'+badge[x[0]]+'</b>'):'')+'</span>';}).join('');
+}
+function _dvLoad(t){
+  var el=document.getElementById('dvbody'); if(!el)return;
+  var q=_seq('dv');
+  if(t==='manual'){
+    var st=window._owStatus||'work';
+    api('/api/admin/orders',{status:st}).then(function(d){
+      if(!_seqOk('dv',q))return;
+      var el2=document.getElementById('dvbody'); if(!el2)return;
+      if(!d||!d.ok||!d.orders){el2.innerHTML=errBox("_dvLoad('manual')");return;}
+      var h='<div class="seg">'+[["work","В работе"],["done","Выполненные"]].map(function(x){return '<button class="'+(x[0]===st?'on':'')+'" onclick="window._owStatus=\''+x[0]+'\';_dvLoad(\'manual\')">'+x[1]+'</button>'}).join('')+'</div>';
+      if(!d.orders.length)h+='<div class="note">'+(st==='done'?'Выполненных ручных заказов нет.':'Ручных заказов в работе нет — всё сделано.')+'</div>';
+      window._ordersData=window._ordersData||{};
+      var lab={creds:'🔐 вход в аккаунт',linkpay:'🔗 оплата по ссылке',manual:'🧾 ручная выдача тарифа'};
+      /* Делим по тому, КТО сейчас должен действовать: число «ждут тебя» —
+         то же, что на плашке «Нужно действие» и на вкладке. */
+      var OWN={awaiting_payment:1,awaiting_setup:1};
+      var G2=(st==='done')?[['done','✅ Выполненные',function(){return true;}]]
+        :[['own','⚠️ Ждут тебя (оплатить / оформить)',function(o){return OWN[o.raw];}],
+          ['cli','⏳ Ждут клиента (ссылку / данные)',function(o){return !OWN[o.raw];}]];
+      G2.forEach(function(g){
+        var arr=d.orders.filter(g[2]);
+        if(!arr.length)return;
+        h+='<div class="glabel">'+g[1]+' ('+arr.length+')</div>';
+        arr.forEach(function(o){
+          window._ordersData[o.id]=o;
+          var lv=(st==='done')?'done':(g[0]==='own'?'act':'wait');
+          h+='<div class="row fx lvl-'+lv+'" onclick="leaf(function(){return orderView(\''+esc(o.id)+'\')})"><span class="ic">📦</span><div style="min-width:0;flex:1"><div class="lbl2">'+esc(o.user)+'</div><div class="sub">'+esc((o.service||'')+(o.plan?' · '+o.plan:''))+' · '+(lab[o.kind]||esc(o.kind||''))+'</div></div><span class="tag '+(_LVL_TAG[lv]||'n')+'" style="margin-left:8px">'+esc(o.status)+'</span></div>';
+        });
+      });
+      h+='<div class="btns2"><button class="btn row2 sec" onclick="open2(\'Оплата по ссылке\')">⚙️ Сервисы «по ссылке»</button><button class="btn row2 sec" onclick="open2(\'Вход в аккаунт\')">⚙️ «Вход в аккаунт»</button></div>';
+      el2.innerHTML=h;fxRun(el2);
+    });
+    return;
+  }
+  api('/api/admin/delivery',{svc:t}).then(function(d){
+    if(!_seqOk('dv',q))return;
+    var el2=document.getElementById('dvbody'); if(!el2)return;
+    if(!d||!d.ok||!d.orders){el2.innerHTML=errBox("_dvLoad('"+t+"')");return;}
+    window._feedOrders=window._feedOrders||{};
+    var c=d.counts||{},h='';
+    h+='<div class="mgrid" style="grid-template-columns:repeat(3,1fr)">'
+      +'<div class="mcard fx"><div class="mlab">Нужно действие</div><div class="mval '+(c.act?'neg':'')+'"><span class="cu" data-v="'+(c.act||0)+'">'+(c.act||0)+'</span></div></div>'
+      +'<div class="mcard fx"><div class="mlab">В процессе</div><div class="mval"><span class="cu" data-v="'+(c.wait||0)+'">'+(c.wait||0)+'</span></div></div>'
+      +'<div class="mcard fx"><div class="mlab">Выдано</div><div class="mval pos"><span class="cu" data-v="'+(c.done||0)+'">'+(c.done||0)+'</span></div></div></div>';
+    h+='<div class="sub" style="margin:-4px 2px 10px">Оплаченные за последние 30 дней. Состояние — по фактам: записанный код, живой или истёкший резерв, ручное закрытие, выдача App Store.</div>';
+    if(d.truncated)h+='<div class="note neg">Показаны последние 3000 заказов за 30 дней — более ранние ищи в «Заказах».</div>';
+    var G={act:'⚠️ Нужно твоё действие',manual:'🔗 Ведётся ручным заказом — действие во вкладке «Ручные»',wait:'⏳ Идёт — от тебя ничего не нужно',done:'✅ Выдано'};
+    ['act','manual','wait','done'].forEach(function(lv){
+      var arr=(d.orders||[]).filter(function(o){return o.level===lv;});
+      if(!arr.length)return;
+      h+='<div class="glabel">'+G[lv]+' ('+arr.length+')</div>';
+      arr.forEach(function(o){window._feedOrders[o.id]=o;h+=_ofRow(o);});
+    });
+    if(!(d.orders||[]).length)h+='<div class="note">Оплаченных заказов этого сервиса нет.</div>';
+    if(t==='other'){
+      h+='<div class="note">Сервисы магазина без автоактивации. Обычно у такого заказа есть ручной заказ (вкладка «Ручные»); если его нет — заказ здесь в «Нужно действие».</div>';
+    } else if(t!=='appstore'){
+      var mn={chatgpt:'ChatGPT Mini App',claude:'Claude Mini App',perplexity:'Perplexity Mini App'}[t];
+      h+='<div class="btns3"><button class="btn row2 sec" style="font-size:12px" onclick="leaf(function(){return pendingScreen(\''+t+'\')})">⏳ Ждущие коды</button>'
+        +'<button class="btn row2 sec" style="font-size:12px" onclick="leaf(function(){return codesPool(\''+t+'\')})">🗂 Пул</button>'
+        +'<button class="btn row2 sec" style="font-size:12px" onclick="open2(\''+mn+'\')">⚙️ Mini App</button></div>';
+    } else {
+      h+='<button class="btn sec" onclick="open2(\'NS Gifts каталог\')">⚙️ Каталог и наценка App Store</button>';
+    }
+    el2.innerHTML=h;fxRun(el2);
+  });
+}
+
+/* ═══════════════════ ГЕНЕРАЦИИ И АУДИТОРИЯ (была «Аналитика») ═════════════ */
+var _AN_P=[['today','Сегодня'],['7d','7 дней'],['30d','30 дней']];
+function _anSet(p){window._anP=p;open2('Аналитика');}
+SCREENS["Аналитика"]=function(){
+  var p=window._anP||'7d';
+  setTimeout(function(){_anLoad(p)},0);
+  return hdr("Генерации и аудитория","что создают и кто")+'<div class="wrap">'+periodSeg(p,'_anSet',_AN_P)+'<div id="anbody">'+skel(1,150)+skel(2,90)+'</div></div>';
+};
+function _anLoad(p){
+  var q=_seq('an');
+  Promise.all([api('/api/admin/stats',{period:p}),api('/api/admin/analytics',{})]).then(function(r){
+    if(!_seqOk('an',q))return;
+    var el=document.getElementById('anbody'); if(!el)return;
+    var s=r[0],a=r[1];
+    if(!s||!s.ok||!s.series){el.innerHTML=errBox("_anLoad('"+p+"')");return;}
+    var h='<div class="mgrid">'
+      +kpiCard('Генераций',s.gens,'')+kpiCard('Списано кредитов',s.creditsSpent,'')
+      +kpiCard('Генерировали людей',s.genUsers,'')+kpiCard('Новых клиентов',s.newUsers,'')+'</div>';
+    h+='<div class="block fx"><h4>📊 Генерации за 14 дней</h4>'+vbars(s.series,'value',{})+'</div>';
+    var pal=['#3987e5','#d95926','#199e70','#c98500','#d55181','#008300','#9085e9','#e66767'];
+    if(s.byType&&s.byType.length)h+='<div class="block fx"><h4>🧩 По типам · '+esc(s.label)+'</h4>'+hbars2(s.byType.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%8],sub:nf(x.cr)+' кр'};}),function(i){return nf(i.val);})+'</div>';
+    if(s.byModel&&s.byModel.length)h+='<div class="block fx"><h4>🤖 Модели · '+esc(s.label)+'</h4>'+hbars2(s.byModel.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%8],sub:nf(x.cr)+' кр'};}),function(i){return nf(i.val);})+'</div>';
+    if(a&&a.ok&&a.users){
+      var u=a.users;
+      h+='<div class="glabel">👥 Аудитория (всё время)</div><div class="mgrid">'
+        +kpiCard('Всего в боте',u.total,'')+kpiCard('Генерировали за 30 дн',u.active30,'')
+        +kpiCard('Пришли сегодня',u.newToday,'')+kpiCard('Хоть раз платили',u.withBuy,'')+'</div>';
+      if(a.topUsers&&a.topUsers.length)h+='<div class="block fx"><h4>👑 Больше всех генерировали (всё время)</h4>'+hbars2(a.topUsers.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%8]};}),function(i){return nf(i.val)+' ген';})+'</div>';
+    }
+    el.innerHTML=h;fxRun(el);
+  });
+}
+
+/* ═══════════════ Старые названия ведут в новые разделы ═══════════════════
+   Чтобы ни одна старая кнопка или ссылка не вела в тупик. */
+var _ALIAS={"Статистика":"Деньги","Прибыль":"Деньги","Продажи магазина":"Деньги",
+         "История платежей":"Заказы","Лента заказов":"Заказы",
+         "Все заказы":"Выдача","Настройка App Store":"NS Gifts каталог"};
+/* На случай прямого вызова SCREENS[старое имя] — тоже ведём в новый раздел
+   (open2 переводит имя раньше, см. выше). */
+Object.keys(_ALIAS).forEach(function(k){
+  var to=_ALIAS[k];
+  SCREENS[k]=function(){ if(k==="Все заказы")window._dvTab='manual'; return SCREENS[to](); };
+});
+
+/* Нижняя панель: подсвечиваем текущий раздел (раньше подсветка была
+   зашита на «Разделы» и не менялась). */
+function syncTabs(){
+  /* Вложенные экраны (карточка заказа и т.п.) подсветку не меняют —
+     остаётся раздел, из которого пришли. */
+  var n=window._lastScreen;
+  if(n==='home'||n==='Деньги'||n==='Заказы'||n==='Выдача')window._tab=n;
+  if(window._cur===home)window._tab='home';
+  var t=window._tab||'home';
+  document.querySelectorAll('.tabbar a').forEach(function(a){a.classList.toggle('on',a.getAttribute('data-s')===t);});
+}
+
 function denied(){app.innerHTML='<div style="padding:70px 24px;text-align:center"><div style="font-size:48px">🔒</div><h1 style="font-size:18px;margin:10px 0 4px">Доступ только для администратора</h1><p style="color:var(--txt2);font-size:13px">Открой панель из своего аккаунта в боте.</p></div>';}
 function boot(){
   var tg=window.Telegram&&window.Telegram.WebApp;
@@ -3500,20 +3898,31 @@ function boot(){
 /* Загрузка сводки дашборда. Вынесена из boot(), чтобы кнопка «Повторить»
    вызывала ровно то же самое. Пустого .catch больше нет: любой сбой переводит
    экран в состояние «не загрузилось», а не оставляет его с чем попало. */
-function ovReload(){
-  OV_STATE='load';
-  if(stack.length<=1)go(home,false);
-  fetch('/api/admin/overview',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({initData:window._ovInit||''})})
+/* silent=true — данные уже на экране: не показываем скелетон и не дёргаем
+   прокрутку, просто подменяем числа, когда придёт ответ. */
+function _homeRedraw(){
+  if(stack.length<=1&&window._cur===home){app.innerHTML=home();try{syncTabs();fxRun(app)}catch(e){}}
+}
+function ovReload(silent){
+  if(!(silent&&OV_STATE==='ok')){ OV_STATE='load'; ATT_STATE='load'; if(stack.length<=1)go(home,false); }
+  var seq=(window._ovSeq=(window._ovSeq||0)+1);
+  fetch('/api/admin/fin',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({initData:window._ovInit||'',period:window._hP||'today'})})
    .then(function(r){return r.json().then(function(d){return {s:r.status,d:d}},
                                           function(){return {s:r.status,d:null}})})
    .then(function(x){
+     if(seq!==window._ovSeq)return;            // пока грузили, выбрали другой период
      if(x.s===403){ denied(); return; }
-     if(!x.d||!x.d.ok){ OV_STATE='err'; }
+     if(!x.d||!x.d.ok||!x.d.totals){ if(!(silent&&OV_STATE==='ok'))OV_STATE='err'; }
      else { OVERVIEW=x.d; OV_STATE='ok'; }
-     if(stack.length<=1){ go(home,false); }
+     _homeRedraw();
    })
-   .catch(function(){ OV_STATE='err'; if(stack.length<=1){ go(home,false); } });
+   .catch(function(){ if(seq!==window._ovSeq)return; if(!(silent&&OV_STATE==='ok'))OV_STATE='err'; _homeRedraw(); });
+  api('/api/admin/attention',{}).then(function(a){
+    if(seq!==window._ovSeq)return;
+    if(a&&a.ok){ATT=a;ATT_STATE='ok';}else if(!(silent&&ATT_STATE==='ok')){ATT_STATE='err';}
+    _homeRedraw();
+  });
 }
 boot();
 </script>

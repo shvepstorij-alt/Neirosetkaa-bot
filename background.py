@@ -719,9 +719,13 @@ async def db_cleanup_loop():
                 r1 = await conn.execute(
                     "DELETE FROM generations WHERE created_at < NOW() - INTERVAL '180 days'"
                 )
-                # Завершённые fk_orders > 90 дней
+                # Старые fk_orders > 90 дней. ОПЛАЧЕННЫЕ больше не удаляем:
+                # вместе с ними из «Денег», карточки клиента и рефералки
+                # пропадала история оплат (выручка за прошлые месяцы
+                # становилась нулём). Ревью 06.10.2026. Удаляем только
+                # служебные статусы, которые оплатой не являются.
                 r2 = await conn.execute(
-                    "DELETE FROM fk_orders WHERE status IN ('paid','completed','failed') "
+                    "DELETE FROM fk_orders WHERE status IN ('completed','failed') "
                     "AND created_at < NOW() - INTERVAL '90 days'"
                 )
                 # События > 60 дней
@@ -758,6 +762,27 @@ async def db_cleanup_loop():
                          AND split_part(value, '|', 3) ~ '^[0-9]+$'
                          AND to_timestamp(split_part(value, '|', 3)::bigint)
                              < NOW() - INTERVAL '30 days'"""
+                )
+                # Claude: метки неясного исхода и контекст кнопок решения.
+                # Метка — 30 суток (как у слежения ChatGPT). Кнопки удаляем,
+                # когда по их коду метки больше нет: решение принято, и кнопка
+                # ничего уже не сделает. Кнопки финального сбоя (без кода) этим
+                # правилом не трогаются.
+                await conn.execute(
+                    """DELETE FROM settings
+                       WHERE key LIKE 'claudecheck:%'
+                         AND split_part(value, '|', 3) ~ '^[0-9]+$'
+                         AND to_timestamp(split_part(value, '|', 3)::bigint)
+                             < NOW() - INTERVAL '30 days'"""
+                )
+                await conn.execute(
+                    """DELETE FROM settings
+                       WHERE key LIKE 'claudenc:%'
+                         AND NOT EXISTS (SELECT 1 FROM settings s2
+                                          WHERE s2.key = 'claudecheck:' ||
+                                                UPPER(substring(settings.value from '"code": "([^"]*)"')))
+                         AND substring(settings.value from '"code": "([^"]*)"') IS NOT NULL
+                         AND substring(settings.value from '"code": "([^"]*)"') <> ''"""
                 )
                 # Журнал попыток активации — по тому же правилу.
                 await conn.execute(
@@ -1813,6 +1838,10 @@ async def claude_codes_cleanup_loop():
                     "  AND (bpa_order_id IS NOT NULL OR COALESCE(org_id,'') <> '')")
                 # 2) Возвращаем в пул коды, что зарезервированы (is_used, used_by=NULL),
                 #    но больше не привязаны ни к одному ЖИВОМУ резерву.
+                # Код с меткой неясного исхода (claudecheck) в пул не отдаём
+                # никогда: бот спросил Александра, активирован ли он, и ответа
+                # ещё нет. Раньше защищала только строка резерва и её org_id —
+                # без них такой код уходил в пул. Ревью 06.10.2026.
                 released = await conn.execute(
                     """UPDATE claude_codes
                        SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
@@ -1821,6 +1850,10 @@ async def claude_codes_cleanup_loop():
                          AND NOT EXISTS (
                              SELECT 1 FROM claude_pending_activations p
                              WHERE p.code = claude_codes.code
+                         )
+                         AND NOT EXISTS (
+                             SELECT 1 FROM settings s
+                             WHERE s.key = 'claudecheck:' || UPPER(TRIM(claude_codes.code))
                          )"""
                 )
                 if _stuck_cl:

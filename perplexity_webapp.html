@@ -691,8 +691,24 @@ var _sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); 
 
 function showError(msg) {
   if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('error'); } catch(e) {}
+  // Сброс к обычному виду — на случай, если до этого показывали «обрабатывается».
+  var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '😔';
+  var tt = document.querySelector('#s5 .error-title'); if (tt) tt.textContent = 'Не получилось';
+  var rb = document.querySelector('#s5 .btn-orange'); if (rb) rb.style.display = '';
   var el = document.getElementById('err-detail');
   if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
+  showScreen('s5');
+}
+
+// Активация УЖЕ ушла поставщику, исход неясен. Это не ошибка: красный экран
+// с «Попробовать снова» звал клиента отправить код второй раз. Кнопку повтора
+// прячем. 06.10.2026
+function showProcessing(msg) {
+  var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '⏳';
+  var tt = document.querySelector('#s5 .error-title'); if (tt) tt.textContent = 'Активация обрабатывается';
+  var rb = document.querySelector('#s5 .btn-orange'); if (rb) rb.style.display = 'none';
+  var el = document.getElementById('err-detail');
+  if (el) el.textContent = msg || 'Александр проверяет активацию — повторять ничего не нужно.';
   showScreen('s5');
 }
 
@@ -754,7 +770,10 @@ async function startActivation() {
     }
 
     var body = await resp.json();
-    if (!body.order_id) { showError(body.error || 'Не удалось запустить активацию.'); return; }
+    if (!body.order_id) {
+      if (body.processing) { showProcessing(body.error); return; }
+      showError(body.error || 'Не удалось запустить активацию.'); return;
+    }
     await pollStatus(body.order_id);
   } catch(e) {
     showError('Нет соединения с сервером. Проверь интернет и попробуй снова.');
