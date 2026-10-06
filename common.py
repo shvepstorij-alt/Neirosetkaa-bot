@@ -6665,11 +6665,8 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                     pass
                 await set_setting(f"order_done:{oid}", "1")
             if uid:
-                try:
-                    await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌",
-                                           parse_mode="HTML")
-                except Exception:
-                    pass
+                # Было «Готово, пользуйся» без сервиса, срока и номера заказа.
+                await client_success_for_order(uid, oid, svc_key)
             return web.json_response({"ok": True, "msg": _msg_fm})
 
         if action == "resend":
@@ -7256,10 +7253,7 @@ async def api_admin_shop_order_action_handler(request: web.Request) -> web.Respo
             if not _ok_m:
                 return web.json_response({"ok": False, "msg": _msg_m})
             if uid:
-                try:
-                    await bot.send_message(uid, "🎉 <b>Подписка активирована!</b>\n\nГотово, пользуйся 🙌", parse_mode="HTML")
-                except Exception:
-                    pass
+                await client_success_for_order(uid, oid, svc)
             return web.json_response({"ok": True, "msg": _msg_m})
         return web.json_response({"ok": False})
     except Exception as _e:
@@ -10227,53 +10221,20 @@ async def _run_activation_job(
             _num_ok = (_ord_ok or {}).get("num")
             _onum_ok = f"#{_num_ok}" if _num_ok else order_id
             _ordline_ok = f"🧾 Заказ {_onum_ok}" + (f" · FreeKassa {_fkno_ok}" if _fkno_ok else "")
-            # Заменяем сообщение клиента на поздравление и убираем кнопку «Нужна помощь»
+            # Заменяем сообщение клиента на поздравление и убираем кнопку «Нужна помощь».
+            # Единый вид успеха (client_success_text). Если сообщения активации
+            # нет (force-повтор через новый веб-апп) или правка не удалась —
+            # уходит НОВОЕ сообщение: раньше при неудачной правке клиент не
+            # получал подтверждения вовсе. 06.10.2026
             _mid = _gpt_act_msg.pop(user_id, None)
-            if _mid:
-                try:
-                    import datetime as _dt_end
-                    _end = (_dt_end.datetime.now(_BOT_TZ) + _dt_end.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
-                    _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]}
-                                if UI_EMOJI_IDS.get("menu_profile") else {})
-                    _email_disp = _email or "\u2014"
-                    await bot.edit_message_text(
-                        "\U0001f389 <b>\u041f\u043e\u0434\u043f\u0438\u0441\u043a\u0430 ChatGPT \u0430\u043a\u0442\u0438\u0432\u0438\u0440\u043e\u0432\u0430\u043d\u0430!</b>\n\n"
-                        f"\U0001f4e6 \u0422\u0430\u0440\u0438\u0444: <b>{plan_name}</b>\n"
-                        f"\U0001f4e7 \u0410\u043a\u043a\u0430\u0443\u043d\u0442: <b>{_email_disp}</b>\n"
-                        f"\U0001f511 \u041a\u043b\u044e\u0447: <code>{code}</code>\n"
-                        f"{_ordline_ok}\n"
-                        f"\U0001f4c5 \u0414\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0434\u043e: <b>{_end}</b>\n\n"
-                        "\u0421\u043f\u0430\u0441\u0438\u0431\u043e \u0437\u0430 \u043f\u043e\u043a\u0443\u043f\u043a\u0443! \U0001f64c",
-                        chat_id=user_id, message_id=_mid, parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="\u041c\u043e\u0439 \u043f\u0440\u043e\u0444\u0438\u043b\u044c", callback_data="menu_profile", **_prof_kw)],
-                            [_eib("\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e", "back_main")],
-                        ])
-                    )
-                except Exception as _ee:
-                    logging.warning(f"edit gpt activation msg failed: {_ee}")
-            else:
-                # _gpt_act_msg не было (напр. force-повтор через новый веб-апп) — шлём НОВОЕ
-                # сообщение, иначе клиент не получит подтверждение в чате (жаловался клиент).
-                try:
-                    import datetime as _dt_e2
-                    _end2 = (_dt_e2.datetime.now(_BOT_TZ) + _dt_e2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
-                    await bot.send_message(
-                        user_id,
-                        "🎉 <b>Подписка ChatGPT активирована!</b>\n\n"
-                        f"📦 Тариф: <b>{plan_name}</b>\n"
-                        f"📧 Аккаунт: <b>{_email or '—'}</b>\n"
-                        f"🔑 Ключ: <code>{code}</code>\n"
-                        f"{_ordline_ok}\n"
-                        f"📅 Действует до: <b>{_end2}</b>\n\n"
-                        "Спасибо за покупку! 🙌",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile")],
-                            [_eib("Главное меню", "back_main")],
-                        ]))
-                except Exception as _e2:
-                    logging.error(f"gpt success new msg: {_e2}")
+            await client_success_deliver(
+                user_id,
+                client_success_text("chatgpt", plan_name, account=_email or "",
+                                    end=client_end_date(plan_name), order_line=_ordline_ok),
+                client_success_kb("chatgpt"), edit_mid=_mid)
+            # Счётчик попыток — с нуля: иначе следующий заказ того же клиента
+            # начинался с «Попытка 2 из 3».
+            _gpt_retry_counts.pop(user_id, None)
             try:
                 import datetime as _dt
                 _used_at = _dt.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
@@ -10596,26 +10557,18 @@ async def _run_activation_job(
                     webapp_url("/webapp/chatgpt", plan=plan_name, code=code)
                 )
                 try:
+                    # Текст Александра 06.10.2026: что случилось, что с деньгами,
+                    # одно действие. Кнопка «Поддержка» — ссылка на Александра.
                     await bot.send_message(
                         user_id,
-                        "❌ <b>Токен недействителен или истёк</b>\n\n"
-                        "Токен нужно скопировать заново — он обновляется после каждого входа в ChatGPT.\n\n"
-                        "<b>Как получить новый токен:</b>\n"
-                        "1. Зайди на <b>chatgpt.com</b> и войди в аккаунт\n"
-                        "2. Открой <b>chatgpt.com/api/auth/session</b>\n"
-                        "3. Скопируй весь текст целиком и вставь в форму\n\n"
-                        "👇 Нажми кнопку ниже и попробуй снова",
+                        _GPT_TOKEN_FAIL_TEXT,
                         parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(
-                                text="🔄 Ввести токен заново",
-                                web_app=_WebAppInfo(url=_same_url)
-                            )],
-                            [InlineKeyboardButton(
-                                text="❓ Нужна помощь", style="primary",
-                                callback_data="gpt_need_help"
-                            )],
-                        ])
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="🔄 Повторить",
+                                                 web_app=_WebAppInfo(url=_same_url)),
+                            InlineKeyboardButton(text="💬 Поддержка",
+                                                 url=f"https://t.me/{PERSONAL_USERNAME}"),
+                        ]])
                     )
                 except Exception as _te:
                     logging.error(f"Token invalid message failed: {_te}")
@@ -10706,25 +10659,26 @@ async def _run_activation_job(
                         webapp_url("/webapp/chatgpt", plan=plan_name, code=code)
                     )
                     try:
+                        # Сырой ответ сайта клиенту больше не показываем: бывал
+                        # английским, с кодами HTTP, а символ «<» в нём срывал
+                        # отправку всего сообщения (HTML). Он уходит Александру.
+                        # «Бесплатный план» тоже убран: Go и iOS-коды ложатся на
+                        # любой аккаунт, совет отпугивал. 06.10.2026
                         await bot.send_message(
                             user_id,
-                            f"⚠️ <b>Попытка {attempt} из {MAX_RETRIES} не удалась</b>\n\n"
-                            f"{error_text}\n\n"
-                            f"💡 Частая причина — устаревший токен/сессия: открой "
-                            f"<b>chatgpt.com/api/auth/session</b>, скопируй ВЕСЬ текст заново и вставь. "
-                            f"И проверь, что аккаунт на бесплатном плане.\n\n"
-                            f"Попробуй ещё раз 👇",
+                            f"⚠️ <b>Активация не прошла — сайт активации вернул ошибку</b> "
+                            f"(попытка {attempt} из {MAX_RETRIES}).\n\n"
+                            f"💳 Оплата сохранена, код за тобой.\n"
+                            f"👉 Подожди минуту и нажми «Повторить». Если снова не выйдет — "
+                            f"открой <b>chatgpt.com/api/auth/session</b> в другом браузере — "
+                            f"{_GPT_BROWSERS}, скопируй ВЕСЬ текст заново и вставь.",
                             parse_mode="HTML",
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(
-                                    text="🔄 Повторить активацию",
-                                    web_app=_WebAppInfo(url=_same_url)
-                                )],
-                                [InlineKeyboardButton(
-                                    text="❓ Нужна помощь", style="primary",
-                                    callback_data="gpt_need_help"
-                                )],
-                            ])
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                                InlineKeyboardButton(text="🔄 Повторить",
+                                                     web_app=_WebAppInfo(url=_same_url)),
+                                InlineKeyboardButton(text="💬 Поддержка",
+                                                     url=f"https://t.me/{PERSONAL_USERNAME}"),
+                            ]])
                         )
                     except Exception as _re:
                         logging.error(f"Retry message failed: {_re}")
@@ -10737,18 +10691,17 @@ async def _run_activation_job(
                     try:
                         await bot.send_message(
                             user_id,
-                            f"😔 <b>Не удалось активировать после {MAX_RETRIES} попыток</b>\n\n"
-                            f"💡 Чаще всего помогает: заново скопировать токен со страницы "
-                            f"chatgpt.com/api/auth/session (он обновляется после каждого входа) "
-                            f"и убедиться, что аккаунт на бесплатном плане.\n\n"
-                            f"Если не выходит — напиши Александру, активирую вручную в течение 15–30 минут!",
+                            f"😔 <b>Активация не прошла автоматически</b> "
+                            f"(все {MAX_RETRIES} попытки).\n\n"
+                            f"💳 Оплата сохранена, код за тобой.\n"
+                            f"👉 Ничего больше делать не нужно — Александр уже получил "
+                            f"уведомление и активирует подписку вручную этим же кодом. "
+                            f"Хочешь быстрее — нажми «Поддержка».",
                             parse_mode="HTML",
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(
-                                    text="💬 Написать Александру",
-                                    url=f"https://t.me/{PERSONAL_USERNAME}"
-                                )],
-                            ])
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                                InlineKeyboardButton(text="💬 Поддержка",
+                                                     url=f"https://t.me/{PERSONAL_USERNAME}"),
+                            ]])
                         )
                     except Exception:
                         pass
@@ -10767,7 +10720,8 @@ async def _run_activation_job(
                         )
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
-                        "error": f"Не удалось после {MAX_RETRIES} попыток. Напиши @{PERSONAL_USERNAME}"
+                        "error": ("Активация не прошла автоматически. Оплата сохранена, код за тобой — "
+                                  "Александр уже знает и активирует вручную, повторять не нужно.")
                     }
                     return  # выходим, не перезаписываем job ниже
 
@@ -10798,8 +10752,12 @@ async def _run_activation_job(
                 logging.warning(f"GPT: {code} — сайт не объяснил причину, "
                                 f"клиенту ошибку НЕ показываю, слежу за кодом.")
             else:
+                # Клиенту в мини-приложении — человеческий текст, а не сырой
+                # ответ сайта (бывал английским, с кодами HTTP). Сам текст
+                # ошибки уходит Александру ниже. 06.10.2026
                 _activation_jobs[job_id] = {"status": "done", "success": False,
-                                            "error": error_text}
+                                            "error": (_GPT_TOKEN_FAIL_WEB if _token_invalid
+                                                      else _GPT_SITE_FAIL_WEB)}
             if _fail_should_alert("gpt", user_id):
               try:
                 import datetime as _dt
@@ -11008,6 +10966,23 @@ _ADMIN_WEBAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)
 # ── Таймер 2 часов на сообщение самостоятельной активации (GPT/Claude) ──
 ACTIVATION_WINDOW_MIN = 120
 
+# Тексты неуспеха ChatGPT для клиента (Александр 06.10.2026): что случилось →
+# что с деньгами → одно действие. Сырой ответ сайта клиенту не показываем.
+_GPT_BROWSERS = "Google Chrome, Safari, Opera"
+_GPT_TOKEN_FAIL_TEXT = (
+    "⚠️ <b>Активация не прошла — сайт не принял токен.</b> "
+    "Нужно перезайти в аккаунт в другом браузере.\n\n"
+    "💳 Оплата сохранена, код за тобой.\n"
+    f"👉 Открой <b>chatgpt.com/api/auth/session</b> в другом браузере — {_GPT_BROWSERS}, "
+    "скопируй ВЕСЬ текст заново и нажми «Повторить».")
+_GPT_TOKEN_FAIL_WEB = (
+    "Сайт не принял токен. Оплата сохранена, код за тобой. "
+    f"Перезайди в аккаунт в другом браузере ({_GPT_BROWSERS}), открой "
+    "chatgpt.com/api/auth/session, скопируй ВЕСЬ текст заново и попробуй снова.")
+_GPT_SITE_FAIL_WEB = (
+    "Сайт активации вернул ошибку. Оплата сохранена, код за тобой. "
+    "Подожди минуту и попробуй снова — если не выйдет, нажми «Написать Александру».")
+
 def _activation_timer_line(deadline) -> str:
     import datetime as _dtt
     rem = int((deadline - _dtt.datetime.now(_BOT_TZ)).total_seconds() // 60)
@@ -11059,6 +11034,10 @@ def _subscription_days(plan_name: str) -> int:
     _n = (plan_name or "").lower()
     if any(k in _n for k in ("год", "year", "annual", "ежегод", "12 мес", "12мес")):
         return 365
+    # Недельные тарифы (бывают в каталоге после правки описаний — «SuperGrok на
+    # неделю»): раньше им писали «действует до» через 30 дней. 06.10.2026
+    if any(k in _n for k in ("недел", "week", "7 дн")):
+        return 7
     return 30
 
 
@@ -12224,6 +12203,235 @@ async def _order_ref_line(order_id: str) -> str:
         return f"\U0001f9fe Заказ {_onum}" + (f" · FreeKassa {_fk}" if _fk else "")
     except Exception:
         return f"\U0001f9fe Заказ {order_id}"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  СООБЩЕНИЯ КЛИЕНТУ: УСПЕХ ВЫДАЧИ И ПРИГЛАШЕНИЕ В КАНАЛ
+# ══════════════════════════════════════════════════════════════════════
+# Раньше у каждого сервиса и у каждого пути (авто, сверка, ручное закрытие из
+# админки, ссылка-оплата) было своё «успешно» — от полного сообщения со сроком
+# до голого «Готово, пользуйся» без сервиса и даты. Теперь один вид для всех:
+# что активировано, на какой аккаунт, до какой даты, номер заказа, что делать
+# дальше и кнопка поддержки. Александр 06.10.2026.
+
+# сервис → (как назвать, куда открыть, первый шаг «что дальше»)
+_CLIENT_SVC_INFO = {
+    "chatgpt": ("ChatGPT", "https://chatgpt.com",
+                "Обнови <b>chatgpt.com</b> или перезайди в приложение — "
+                "{plan} появится сразу, иногда через 5–10 минут."),
+    "claude": ("Claude", "https://claude.ai",
+               "Обнови <b>claude.ai</b> или перезайди в приложение — "
+               "{plan} появится в течение 5–10 минут."),
+    "perplexity": ("Perplexity", "https://www.perplexity.ai",
+                   "Открой Perplexity и перезайди в аккаунт или нажми "
+                   "«Restore Purchases» в приложении — {plan} подтянется."),
+}
+
+
+def client_success_text(svc: str, plan: str = "", *, title_name: str = "",
+                        account_label: str = "", account: str = "",
+                        end: str = "", order_line: str = "", note: str = "",
+                        done_word: str = "") -> str:
+    """Единый текст «подписка активирована» для клиента.
+
+    svc — chatgpt / claude / perplexity, для остального (ручные сервисы)
+    передай title_name — название сервиса как его видит клиент.
+    note — необязательная строка-пояснение (например, «подтверждение дошло с
+    задержкой»), ставится перед «Что дальше».
+    """
+    import html as _h_cs
+    _info = _CLIENT_SVC_INFO.get(svc)
+    _name = (title_name or (_info[0] if _info else "") or "").strip()
+    _plan = (plan or "").strip()
+    # «ChatGPT Plus», но не «Midjourney Midjourney Pro»
+    if _plan and _name and _name.lower() in _plan.lower():
+        _full = _plan
+    elif _plan and _name and re.search(r"(?<!\w)" + re.escape(_plan.lower()) + r"(?!\w)", _name.lower()):
+        # ручные заказы: имя уже «🎨 Midjourney - Pro»
+        _full = _name
+    else:
+        _full = " ".join(x for x in (_name, _plan) if x)
+    _full_h = _h_cs.escape(_full or "Подписка")
+    _head = (f"🎉 <b>{done_word}</b>\n\n📦 <b>{_full_h}</b>" if done_word
+             else f"🎉 <b>Подписка {_full_h} активирована!</b>")
+    _lines = [_head, ""]
+    if account:
+        _lines.append(f"{account_label or '📧 Аккаунт'}: <b>{_h_cs.escape(str(account))}</b>")
+    if end:
+        _lines.append(f"📅 Действует до: <b>{_h_cs.escape(end)}</b>")
+    if order_line:
+        _lines.append(order_line)
+    if note:
+        _lines += ["", note]
+    if _info:
+        _step1 = _info[2].format(plan=_h_cs.escape(_plan or _name))
+    else:
+        _step1 = "Зайди в сервис — подписка уже на твоём аккаунте."
+    _lines += ["", "<b>Что дальше:</b>",
+               f"1. {_step1}",
+               "2. Когда срок подойдёт к концу — продлить можно здесь же, в боте.",
+               "", "Что-то не так? Нажми «Поддержка» — отвечу лично."]
+    return "\n".join(_lines)
+
+
+def client_success_kb(svc: str = "", open_url: str = "", open_name: str = "") -> InlineKeyboardMarkup:
+    """Кнопки под сообщением об успехе: открыть сервис, поддержка, меню."""
+    _info = _CLIENT_SVC_INFO.get(svc)
+    _url = open_url or (_info[1] if _info else "")
+    _nm = open_name or (_info[0] if _info else "")
+    _sup = InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{PERSONAL_USERNAME}")
+    _row1 = ([InlineKeyboardButton(text=f"↗ Открыть {_nm}", url=_url), _sup]
+             if _url and _nm else [_sup])
+    return InlineKeyboardMarkup(inline_keyboard=[_row1, [_eib("Главное меню", "back_main")]])
+
+
+def client_end_date(plan: str) -> str:
+    """Дата окончания: сегодня (по Алматы) + срок тарифа."""
+    import datetime as _dt_ce
+    return (_dt_ce.datetime.now(_BOT_TZ)
+            + _dt_ce.timedelta(days=_subscription_days(plan))).strftime("%d.%m.%Y")
+
+
+async def client_success_deliver(user_id, text: str, kb, edit_mid=None, invite: bool = True) -> bool:
+    """Доставляет сообщение об успехе: правит сообщение активации, а если
+    править нечего или правка не удалась — шлёт новое. Раньше при неудачной
+    правке клиент не получал подтверждения вовсе (было только warning в лог).
+    После доставки — приглашение в канал (см. client_channel_invite)."""
+    _ok = False
+    if edit_mid:
+        try:
+            await bot.edit_message_text(text, chat_id=user_id, message_id=edit_mid,
+                                        parse_mode="HTML", reply_markup=kb,
+                                        disable_web_page_preview=True)
+            _ok = True
+        except Exception as _e_ed:
+            logging.warning(f"успех: правка сообщения {edit_mid} у {user_id} не удалась "
+                            f"({_e_ed}) — шлю новое")
+    if not _ok:
+        try:
+            await bot.send_message(user_id, text, parse_mode="HTML", reply_markup=kb,
+                                   disable_web_page_preview=True)
+            _ok = True
+        except Exception as _e_sd:
+            logging.error(f"успех: не доставил сообщение клиенту {user_id}: {_e_sd}")
+    if _ok and invite:
+        client_channel_invite(user_id)
+    return _ok
+
+
+_CH_INVITE_TASKS: set = set()
+_CH_INVITE_EVERY_S = 30 * 86400   # не чаще раза в 30 дней на клиента
+
+
+def client_channel_invite(user_id, delay: float = 3.0) -> None:
+    """Через пару секунд после успеха зовёт клиента в канал — отдельным
+    сообщением, чтобы не теряться в поздравлении.
+
+    Не зовём: тех, кто уже подписан (проверка та же, что в розыгрыше);
+    одного и того же клиента чаще раза в 30 дней (отметка в activation_claims,
+    переживает рестарт). Если подписку проверить не удалось (бот не админ
+    канала, лимит Telegram) — зовём, но всё равно не чаще раза в 30 дней.
+    Ничего не ждёт и не бросает исключений: успех клиента от этого не зависит.
+    """
+    async def _run():
+        try:
+            await asyncio.sleep(delay)
+            from config import ADMIN_USERNAME as _ch_name
+            _ch = (_ch_name or "").strip().lstrip("@")
+            if not _ch:
+                return
+            _sub = None
+            try:
+                from handlers_giveaway import giveaway_is_subscribed as _gis
+                _sub = await _gis(int(user_id))
+            except Exception as _e_gs:
+                logging.warning(f"приглашение в канал: подписку {user_id} не проверил: {_e_gs}")
+            if _sub is True:
+                return
+            if await activation_cooldown(f"chinvite:{int(user_id)}", seconds=_CH_INVITE_EVERY_S):
+                return
+            await bot.send_message(
+                int(user_id),
+                "📢 <b>Ещё кое-что</b>\n\n"
+                "В моём канале — разборы новых нейросетей, гайды по ним и "
+                "розыгрыши подписок. Загляни, там полезно 🙌",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="📢 Подписаться на канал",
+                                         url=f"https://t.me/{_ch}")]]))
+        except Exception as _e_ci:
+            logging.warning(f"приглашение в канал {user_id}: {_e_ci}")
+    try:
+        _t = asyncio.get_running_loop().create_task(_run())
+        _CH_INVITE_TASKS.add(_t)
+        _t.add_done_callback(_CH_INVITE_TASKS.discard)
+    except Exception as _e_ct:
+        logging.warning(f"приглашение в канал: задача не создана {user_id}: {_e_ct}")
+
+
+async def client_success_for_order(user_id, order_id: str, svc_key: str = "") -> bool:
+    """Сообщение об успехе по заказу, закрытому ВРУЧНУЮ (админ-панель).
+
+    Было «🎉 Подписка активирована! Готово, пользуйся» — без сервиса, срока и
+    номера заказа. Здесь всё берём из заказа: сервис и тариф из pack, аккаунт —
+    из записанного за заказом кода (если записан), срок — по тарифу.
+    """
+    try:
+        _o = await fk_get_order(order_id) or {}
+        _pack = _o.get("pack") or ""
+        _sk = svc_key
+        _idx = 0
+        if _pack.startswith("shop:"):
+            _pp = _pack.split(":")
+            _sk = _sk or (_pp[1] if len(_pp) > 1 else "")
+            _idx = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+        _oline = await _order_ref_line(order_id)
+        if _sk == "appstore" or _pack.startswith("nsg:"):
+            _txt = client_success_text("", "", title_name="Заказ App Store",
+                                       order_line=_oline, done_word="Заказ выполнен!")
+            return await client_success_deliver(user_id, _txt, client_success_kb())
+        _svc_cat = SHOP_CATALOG.get(_sk, {}) or {}
+        _svc_name = _svc_cat.get("name") or _sk
+        try:
+            _plan = (_plan_by_order(_sk, _idx, _pack_plan_name(_pack))[1].get("name")
+                     or _pack_plan_name(_pack) or "")
+        except Exception:
+            _plan = _pack_plan_name(_pack) or ""
+        _acc = ""
+        _acc_lbl = ""
+        _tbl = {"chatgpt": ("gpt_codes", "email", "📧 Аккаунт"),
+                "claude": ("claude_codes", "org_id", "🏢 Organization ID"),
+                "perplexity": ("perplexity_codes", "org_id", "🆔 Аккаунт Perplexity")}.get(_sk)
+        if _tbl:
+            try:
+                _pl = await get_pool()
+                async with _pl.acquire() as _c_cs:
+                    _acc = await _c_cs.fetchval(
+                        f"SELECT {_tbl[1]} FROM {_tbl[0]} WHERE order_id=$1 "
+                        f"AND used_by IS NOT NULL AND COALESCE({_tbl[1]},'')<>'' "
+                        f"ORDER BY used_at DESC NULLS LAST LIMIT 1", order_id) or ""
+                _acc_lbl = _tbl[2]
+            except Exception as _e_acc:
+                logging.warning(f"успех вручную: аккаунт по {order_id}: {_e_acc}")
+            # таймер на старом сообщении активации — гасим, иначе через пару
+            # часов он позовёт «активировать сейчас» уже выданную подписку
+            stop_activation_timer(user_id, {"chatgpt": "gpt"}.get(_sk, _sk))
+        _txt = client_success_text(
+            _sk if _sk in _CLIENT_SVC_INFO else "", _plan,
+            title_name=("" if _sk in _CLIENT_SVC_INFO else _svc_name),
+            account_label=_acc_lbl, account=_acc,
+            end=client_end_date(_plan), order_line=_oline)
+        return await client_success_deliver(
+            user_id, _txt, client_success_kb(_sk if _sk in _CLIENT_SVC_INFO else ""))
+    except Exception as _e_cso:
+        logging.error(f"успех вручную {order_id}: {_e_cso}")
+        try:
+            await bot.send_message(user_id, "🎉 <b>Подписка активирована!</b>\n\n"
+                                            "Что-то не так? Нажми «Поддержка» — отвечу лично.",
+                                   parse_mode="HTML", reply_markup=client_success_kb())
+            return True
+        except Exception:
+            return False
 
 
 async def _disable_client_pay_msg(order_id: str):
@@ -14198,18 +14406,22 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
             logging.warning(
                 f"gpt_reconcile_orphans: {_code} записан клиенту {_uid} БЕЗ заказа "
                 f"— в строке ожидания order_id пуст")
+        # Единый вид успеха + пояснение про задержку. Таймер на старом
+        # сообщении активации гасим: иначе он потом позовёт «активировать
+        # сейчас» уже выданную подписку. 06.10.2026
         try:
-            await bot.send_message(
+            stop_activation_timer(_uid, "gpt")
+            await client_success_deliver(
                 _uid,
-                "🎉 <b>Подписка ChatGPT активирована!</b>\n\n"
-                f"📦 Тариф: <b>{r['plan_name']}</b>\n"
-                + (f"📧 Аккаунт: <b>{_email}</b>\n" if _email else "")
-                + "\nАктивация прошла, но подтверждение дошло до бота с "
-                  "задержкой — поэтому сообщение приходит не сразу. Подписка "
-                  "уже работает, ничего делать не нужно 🙌",
-                parse_mode="HTML")
-        except Exception:
-            pass
+                client_success_text(
+                    "chatgpt", r["plan_name"] or "", account=_email or "",
+                    end=client_end_date(r["plan_name"] or ""),
+                    order_line=(await _order_ref_line(r["order_id"])) if r["order_id"] else "",
+                    note="Активация прошла, но подтверждение дошло до бота с задержкой — "
+                         "поэтому сообщение приходит не сразу. Подписка уже работает 🙌"),
+                client_success_kb("chatgpt"))
+        except Exception as _e_rs:
+            logging.warning(f"reconcile: успех клиенту {_uid}: {_e_rs}")
         # Карточка заказа у админа — в «активирован». Раньше этот путь её не
         # трогал, и в чате оставалось «оплачен» или «НЕУДАЧА» при выданной
         # подписке.
@@ -16959,36 +17171,16 @@ async def _claude_notify_success(ref, code, user_id, order_id, plan_name, org_id
         _un = _fn = ""
     _tg = (f"@{_un}" if _un else tg_name(_fn)) or f"id{user_id}"
 
-    _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
-    _prof_kw = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
     _oref_cl2 = await _order_ref_line(order_id)
-    _congrats = (
-        "🎉 <b>Подписка Claude активирована!</b>\n\n"
-        f"📦 Тариф: <b>{plan_name}</b>\n"
-        f"🏢 Organization ID: <code>{org_id}</code>\n"
-        f"🔑 Ключ: <code>{code}</code>\n"
-        f"{_oref_cl2}\n"
-        f"📅 Действует до: <b>{_end_cl}</b>\n\n"
-        "Подписка появится в Claude в течение 5–10 минут. Спасибо за покупку! 🙌"
-    )
-    _kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть Claude ↗", url="https://claude.ai")],
-        [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", **_prof_kw)],
-        [_eib("Главное меню", "back_main")],
-    ])
+    # Единый вид успеха; правка сообщения активации, иначе новое сообщение,
+    # затем приглашение в канал. 06.10.2026
     _mid = _claude_act_msg.pop(user_id, None)
-    _edited = False
-    if _mid:
-        try:
-            await bot.edit_message_text(_congrats, chat_id=user_id, message_id=_mid, parse_mode="HTML", reply_markup=_kb)
-            _edited = True
-        except Exception:
-            pass
-    if not _edited:
-        try:
-            await bot.send_message(user_id, _congrats, parse_mode="HTML", reply_markup=_kb)
-        except Exception:
-            pass
+    await client_success_deliver(
+        user_id,
+        client_success_text("claude", plan_name, account_label="🏢 Organization ID",
+                            account=org_id or "", end=client_end_date(plan_name),
+                            order_line=_oref_cl2),
+        client_success_kb("claude"), edit_mid=_mid)
 
     try:
         _caption = (
@@ -17654,14 +17846,16 @@ async def clfail_manual_handler(cb: CallbackQuery):
     except Exception:
         pass
     _claude_job_results[_ctx["ref"]] = {"status": "done", "success": True}
+    # Единый вид успеха (было без срока, номера заказа и кнопок). 06.10.2026
     try:
-        await bot.send_message(
+        await client_success_deliver(
             _ctx["user_id"],
-            f"🎉 <b>Подписка Claude активирована!</b>\n\n"
-            f"📦 Тариф: <b>{_ctx['plan_name']}</b>\n"
-            f"🧩 Org ID: <code>{_ctx['org_id']}</code>\n\n"
-            f"Проверь на claude.ai — если что-то не так, напиши Александру.",
-            parse_mode="HTML")
+            client_success_text(
+                "claude", _ctx.get("plan_name") or "",
+                account_label="🏢 Organization ID", account=_ctx.get("org_id") or "",
+                end=client_end_date(_ctx.get("plan_name") or ""),
+                order_line=(await _order_ref_line(_ctx["order_id"])) if _ctx.get("order_id") else ""),
+            client_success_kb("claude"))
     except Exception as _e:
         logging.error(f"clfail_manual notify: {_e}")
     try:
@@ -19147,6 +19341,9 @@ async def nsgifts_send_pins(fk_order_id: str, user_id: int, service_name: str, p
         ])
     )
     # Сообщение ушло — только теперь заказ считается доставленным.
+    # Код у клиента — зовём в канал (не чаще раза в 30 дней, подписчиков не
+    # трогаем). Ничего не ждёт и не мешает отметкам ниже. 06.10.2026
+    client_channel_invite(user_id)
     try:
         _p_dl = await get_pool()
         async with _p_dl.acquire() as _c_dl:
@@ -19887,35 +20084,15 @@ async def _perplexity_notify_success(code, user_id, order_id, plan_name, org_id)
         _un = _fn = ""
     _tg = (f"@{_un}" if _un else tg_name(_fn)) or f"id{user_id}"
     _end_cl = (_dt2.datetime.now(_BOT_TZ) + _dt2.timedelta(days=_subscription_days(plan_name))).strftime("%d.%m.%Y")
-    _prof_kw_cl = ({"icon_custom_emoji_id": UI_EMOJI_IDS["menu_profile"]} if UI_EMOJI_IDS.get("menu_profile") else {})
     _oref_px2 = await _order_ref_line(order_id)
-    _congrats_cl = (
-        "🎉 <b>Подписка Perplexity активирована!</b>\n\n"
-        f"📦 Тариф: <b>{plan_name}</b>\n"
-        f"🔑 Ключ: <code>{code}</code>\n"
-        f"{_oref_px2}\n"
-        f"📅 Действует до: <b>{_end_cl}</b>\n\n"
-        "Готово! Открой Perplexity, сделай «Restore Purchases» в приложении или просто перезайди — Pro подтянется. Спасибо за покупку! 🙌"
-    )
-    _kb_cl = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Открыть Perplexity ↗", url="https://perplexity.ai")],
-        [InlineKeyboardButton(text="Мой профиль", callback_data="menu_profile", **_prof_kw_cl)],
-        [_eib("Главное меню", "back_main")],
-    ])
+    # Единый вид успеха + приглашение в канал. 06.10.2026
     _mid_cl = _perplexity_act_msg.pop(user_id, None)
-    _edited = False
-    if _mid_cl:
-        try:
-            await bot.edit_message_text(_congrats_cl, chat_id=user_id, message_id=_mid_cl,
-                                        parse_mode="HTML", reply_markup=_kb_cl)
-            _edited = True
-        except Exception:
-            pass
-    if not _edited:
-        try:
-            await bot.send_message(user_id, _congrats_cl, parse_mode="HTML", reply_markup=_kb_cl)
-        except Exception:
-            pass
+    await client_success_deliver(
+        user_id,
+        client_success_text("perplexity", plan_name, account_label="🆔 Аккаунт Perplexity",
+                            account=org_id or "", end=client_end_date(plan_name),
+                            order_line=_oref_px2),
+        client_success_kb("perplexity"), edit_mid=_mid_cl)
     try:
         _caption_ok = (
             f"✅ <b>Perplexity авто-активация OK</b>\n\n"

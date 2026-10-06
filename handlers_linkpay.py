@@ -20,6 +20,8 @@ from db import (
 )
 from keyboards import _eib, _btn_emoji_id
 from common import _who_user   # ник клиента в сообщениях админу
+from common import (client_success_text, client_success_kb, client_success_deliver,
+                    client_end_date, _order_ref_line)   # единый вид «успешно»
 
 
 # ══════════════════════════════════════════════════════════
@@ -96,17 +98,16 @@ async def lp_done(cb: CallbackQuery):
         await cb.answer("Заказ не найден", show_alert=True)
         return
     await set_linkpay_status(order_id, "done")
+    # Единый вид успеха: сервис, срок, номер заказа, что дальше, поддержка,
+    # затем приглашение в канал. Было «Подписка оформлена! Спасибо». 06.10.2026
     try:
-        await bot.send_message(
+        _plan_lp = (order.get("plan_name") or "").strip()
+        await client_success_deliver(
             order["user_id"],
-            f"🎉 <b>Подписка оформлена!</b>\n\n📦 {order['service_name']}\n\n"
-            f"Спасибо за покупку! 🙌",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [_eib("Мой профиль", "menu_profile")],
-                [_eib("Главное меню", "back_main")],
-            ])
-        )
+            client_success_text("", _plan_lp, title_name=order.get("service_name") or "",
+                                end=client_end_date(_plan_lp),
+                                order_line=await _order_ref_line(order_id)),
+            client_success_kb())
     except Exception as e:
         logging.error(f"lp_done notify: {e}")
     try:
