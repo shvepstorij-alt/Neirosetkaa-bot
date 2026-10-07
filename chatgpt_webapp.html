@@ -837,7 +837,7 @@
     </div>
 
     <div class="loader-title">Активируем...</div>
-    <div class="loader-sub">Подключаемся к ChatGPT.<br>Не закрывай приложение — займёт 15–30 сек.</div>
+    <div class="loader-sub">Подключаемся к ChatGPT.<br>Не закрывай приложение — обычно 1–3 минуты.</div>
     <div class="prog-dots">
       <div class="prog-dot"></div>
       <div class="prog-dot"></div>
@@ -864,7 +864,7 @@
     <div class="success-title">Готово!</div>
     <div class="success-sub-title" id="success-plan">ChatGPT Plus активирован</div>
     <div class="success-sub">
-      Подписка подключена к твоему аккаунту. Можешь заходить в ChatGPT и пользоваться прямо сейчас — я всегда на связи!
+      Подписка подключена к твоему аккаунту. Обычно тариф появляется сразу, но иногда — с задержкой до 10–15 минут: обнови chatgpt.com или перезайди в аккаунт. Повторять активацию не нужно — я всегда на связи!
     </div>
 
     <!-- Live-лента рекомендаций (наполняется из renderRecs) -->
@@ -897,7 +897,7 @@
     <div class="error-emoji">😔</div>
     <div class="error-title">Не получилось</div>
     <div class="error-sub" id="err-detail">
-      Возможно токен истёк или скопирован неверно. Напиши Александру — помогу в течение 10 минут!
+      Возможно, текст со страницы сессии устарел или скопирован не целиком. Оплата сохранена, код за тобой — попробуй ещё раз или напиши Александру.
     </div>
 
     <div class="btn-wrap-inline">
@@ -1339,15 +1339,19 @@ function showError(msg) {
 function showForceConfirm(account, until) {
   if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('warning'); } catch(e) {}
   var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '⚠️';
-  var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'Аккаунт уже Plus'; tt.style.color = ''; }
+  var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'На аккаунте уже есть подписка'; tt.style.color = ''; }
   var el = document.getElementById('err-detail');
-  if (el) el.innerHTML = 'На аккаунте' + (account ? ' <b>' + account + '</b>' : '')
-    + ' уже есть активная подписка Plus' + (until ? ' (до <b>' + until + '</b>)' : '') + '.<br><br>'
-    + 'Принудительная активация начнёт <b>новый месяц</b> — остаток текущей подписки может <b>сгореть</b>. Продолжить?';
+  // textContent-экранирование: почта и дата приходят с сайта
+  var _esc = function(x){ var d=document.createElement('div'); d.textContent=String(x||''); return d.innerHTML; };
+  if (el) el.innerHTML = 'На аккаунте' + (account ? ' <b>' + _esc(account) + '</b>' : '')
+    + ' уже есть действующая подписка ChatGPT' + (until ? ' (до <b>' + _esc(until) + '</b>)' : '') + '.<br><br>'
+    + 'Оплата сохранена, код за тобой. Выбери:<br>'
+    + '• <b>Активировать поверх</b> — новая подписка начнётся сейчас, остаток текущей может <b>сгореть</b>.<br>'
+    + '• <b>Другой аккаунт</b> — войди в ChatGPT в аккаунт без подписки и вставь текст со страницы сессии заново (кнопка в чате бота).';
   var again = document.querySelector('#s5 .btn-green');
   if (again) {
     again.style.display = '';
-    again.textContent = '⚡ Активировать принудительно';
+    again.textContent = '⚡ Активировать поверх';
     again.onclick = function(){ forceMode = true; showScreen('s2'); };  // назад к вставке Session JSON, но уже в режиме force
   }
   showScreen('s5');
@@ -1361,9 +1365,25 @@ function showProcessing(msg) {
   var tt = document.querySelector('#s5 .error-title');
   if (tt) { tt.textContent = 'Активация обрабатывается'; tt.style.color = 'var(--text)'; }
   var el = document.getElementById('err-detail');
-  if (el) el.textContent = msg || 'Сайт принял запрос — подписка появится в течение 5–10 минут. Если не появится, напиши Александру.';
+  if (el) el.textContent = msg || 'Сайт принял запрос — подписка обычно появляется в течение 10–15 минут. Повторять ничего не нужно, результат придёт в чат бота.';
   var again = document.querySelector('#s5 .btn-green');
   if (again) again.style.display = 'none';   // без «Попробовать снова» — чтобы не активировать дважды
+  showScreen('s5');
+}
+
+// Нейтральный экран «активирует Александр»: ошибки у клиента нет, повторять
+// бесполезно (нет мест на сайте, коды кончились, проблема с кодом у нас).
+// Раньше это показывалось красным «Не получилось» с «Попробовать снова» —
+// клиент жал повтор и упирался в «время истекло». 07.10.2026
+function showManual(msg) {
+  var em = document.querySelector('#s5 .error-emoji');
+  if (em) em.textContent = '🛠';
+  var tt = document.querySelector('#s5 .error-title');
+  if (tt) { tt.textContent = 'Активацию завершит Александр'; tt.style.color = 'var(--text)'; }
+  var el = document.getElementById('err-detail');
+  if (el) el.textContent = msg || 'Оплата сохранена, код за тобой. Александр активирует вручную — сообщение придёт в чат бота.';
+  var again = document.querySelector('#s5 .btn-green');
+  if (again) again.style.display = 'none';
   showScreen('s5');
 }
 
@@ -1397,6 +1417,8 @@ async function pollResult(jobId) {
           showForceConfirm(data.account, data.until);
         } else if (data.pending) {
           showProcessing(data.error);
+        } else if (data.manual) {
+          showManual(data.error);
         } else {
           showError(data.error);
         }
@@ -1468,6 +1490,7 @@ async function startActivation() {
       // processing — активация этого кода уже идёт. Это НЕ ошибка: красный
       // экран тут погнал бы клиента активировать повторно.
       if (res.processing) { showProcessing(res.error); return; }
+      if (res.manual) { showManual(res.error); return; }
       showError(res.error || 'Не удалось запустить активацию.'); return;
     }
     await pollResult(res.job_id);
