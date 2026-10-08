@@ -1405,6 +1405,7 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             locale="en-US")
         page = await context.new_page()
+        _submitted = False
         try:
             await page.goto(url, timeout=45_000, wait_until="networkidle")
             await asyncio.sleep(1.5)
@@ -1492,6 +1493,10 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
                     clicked = False
             if not clicked:
                 return {"success": False, "error": "Кнопка активации Claude не найдена.", "screenshot": await _aipro_ss(page)}
+            # С этого момента код УШЁЛ на сайт: любой неясный исход — не «сбой,
+            # код цел», а «код мог активироваться». Цепочка не вернёт его в пул
+            # и не пойдёт на другой сайт, решает Александр. 08.10.2026
+            _submitted = True
 
             # Ждём итог: 充值处理中 → 充值成功 / 已激活. Опрос ЧАЩЕ, чтобы не пропустить баннер успеха.
             # ВАЖНО: на странице ВСЕГДА есть статичные метки тарифов «Sold by» (Max 5x) и
@@ -1558,10 +1563,12 @@ async def activate_claude_aipro(cdk_code: str, org_id: str, plan: str = "pro") -
                 return {"success": False, "needs_check": True,
                         "error": "Активация, вероятно, прошла (была обработка), но подтверждение не поймано за 5 мин. Проверь на 6661231.xyz по Org ID.",
                         "screenshot": await _aipro_ss(page)}
-            return {"success": False, "error": "Активация Claude не завершилась за 5 мин — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
+            return {"success": False, "unclear": True, "submitted": True,
+                    "error": "Активация Claude не завершилась за 5 мин — проверь вручную на 6661231.xyz.", "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_claude_aipro error: {e}", exc_info=True)
-            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
+            return {"success": False, "unclear": _submitted, "submitted": _submitted,
+                    "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
         finally:
             try:
                 await browser.close()
@@ -1597,6 +1604,7 @@ async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             locale="en-US")
         page = await context.new_page()
+        _submitted = False
         try:
             await page.goto(url, timeout=45_000, wait_until="networkidle")
             await asyncio.sleep(1.5)
@@ -1660,6 +1668,7 @@ async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -
 
             if not await _aipro_click(page, ["Confirm Recharge", "确认充值", "Confirm"]):
                 return {"success": False, "error": "Кнопка «Confirm Recharge» не найдена.", "screenshot": await _aipro_ss(page)}
+            _submitted = True   # код ушёл на сайт — дальше неясный исход не «код цел» (08.10.2026)
 
             # ── Ожидание результата (до ~3 мин) ───────────────────────────────
             _saw_processing = False
@@ -1708,11 +1717,13 @@ async def activate_claude_ipiap(cdk_code: str, org_id: str, plan: str = "pro") -
                 return {"success": False, "needs_check": True,
                         "error": "Активация не подтвердилась за 3 мин, но сайт был в процессе. Проверь на ipiap.com по Org ID.",
                         "screenshot": await _aipro_ss(page)}
-            return {"success": False, "error": "Активация Claude на ipiap.com не завершилась — проверь вручную.",
+            return {"success": False, "unclear": True, "submitted": True,
+                    "error": "Активация Claude на ipiap.com не завершилась — проверь вручную.",
                     "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_claude_ipiap error: {e}", exc_info=True)
-            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
+            return {"success": False, "unclear": _submitted, "submitted": _submitted,
+                    "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
         finally:
             try:
                 await browser.close()
@@ -1748,6 +1759,7 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             locale="en-US")
         page = await context.new_page()
+        _submitted = False
         try:
             await page.goto(url, timeout=45_000, wait_until="networkidle")
             await asyncio.sleep(1.5)
@@ -1821,6 +1833,7 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
             if not await _aipro_click(page, ["Confirm Organization ID & Activate", "Confirm Organization ID",
                                              "Confirm & Activate", "确认组织ID并激活", "确认"]):
                 return {"success": False, "error": "Кнопка «Confirm Organization ID & Activate» не найдена.", "screenshot": await _aipro_ss(page)}
+            _submitted = True   # код ушёл на сайт — дальше неясный исход не «код цел» (08.10.2026)
 
             # ── Ожидание результата (до ~3 мин) ───────────────────────────────
             _saw_processing = False
@@ -1860,11 +1873,13 @@ async def activate_claude_vip666(cdk_code: str, org_id: str, plan: str = "pro") 
                 return {"success": False, "needs_check": True,
                         "error": "Активация не подтвердилась за 3 мин, но сайт был в процессе. Проверь на vip666ai.com по Org ID.",
                         "screenshot": await _aipro_ss(page)}
-            return {"success": False, "error": "Активация Claude на vip666ai.com не завершилась — проверь вручную.",
+            return {"success": False, "unclear": True, "submitted": True,
+                    "error": "Активация Claude на vip666ai.com не завершилась — проверь вручную.",
                     "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_claude_vip666 error: {e}", exc_info=True)
-            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
+            return {"success": False, "unclear": _submitted, "submitted": _submitted,
+                    "error": f"Ошибка активации: {str(e)[:200]}", "screenshot": await _aipro_ss(page)}
         finally:
             try:
                 await browser.close()
@@ -1900,6 +1915,7 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             locale="ru-RU")
         page = await context.new_page()
+        _submitted = False
         try:
             await page.goto(url, timeout=45_000, wait_until="networkidle")
             await asyncio.sleep(1.5)
@@ -1940,6 +1956,7 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
             if not await _aipro_click(page, ["Активировать", "Activate", "激活"]):
                 return {"success": False, "error": "Кнопка «Активировать» не найдена.",
                         "screenshot": await _aipro_ss(page)}
+            _submitted = True   # код ушёл на сайт — дальше неясный исход не «код цел» (08.10.2026)
 
             # ── Ждём результат: running → done (сайт сам ретраит, до ~8 мин) ──
             _saw_processing = False
@@ -2008,18 +2025,21 @@ async def activate_claude_bpa(cdk_code: str, org_id: str, plan: str = "pro", for
                             "error": "Сайт отклонил Organization ID — проверь и попробуй снова.",
                             "screenshot": await _aipro_ss(page)}
                 if "failed" in tl or "не удалось" in tl or "ошибка активации" in tl:
-                    return {"success": False, "error": "Сайт сообщил об ошибке активации.",
+                    return {"success": False, "submitted": True,
+                            "error": "Сайт сообщил об ошибке активации.",
                             "screenshot": await _aipro_ss(page)}
             if _saw_processing:
                 return {"success": False, "needs_check": True,
                         "error": "Активация не подтвердилась за 8 мин, но сайт был в процессе. "
                                  "Проверь на bypriceactivate.pro (Проверить код).",
                         "screenshot": await _aipro_ss(page)}
-            return {"success": False, "error": "Активация на bypriceactivate.pro не завершилась.",
+            return {"success": False, "unclear": True, "submitted": True,
+                    "error": "Активация на bypriceactivate.pro не завершилась.",
                     "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_claude_bpa error: {e}", exc_info=True)
-            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}",
+            return {"success": False, "unclear": _submitted, "submitted": _submitted,
+                    "error": f"Ошибка активации: {str(e)[:200]}",
                     "screenshot": await _aipro_ss(page)}
         finally:
             try:
@@ -2598,6 +2618,7 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             locale="ru-RU")
         page = await context.new_page()
+        _submitted = False
         try:
             # ── Открываем сайт (при недоступности — зеркало) ──────────────────
             _opened = False
@@ -2719,6 +2740,7 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
             if not await _aipro_click(page, ["Подтвердить пополнение", "确认充值", "Confirm"]):
                 return {"success": False, "error": "Кнопка «Подтвердить пополнение» не найдена.",
                         "screenshot": await _aipro_ss(page)}
+            _submitted = True   # код ушёл на сайт — дальше неясный исход не «код цел» (08.10.2026)
 
             # ── Ждём результат (до ~4 мин) ───────────────────────────────────
             _saw_processing = False
@@ -2754,18 +2776,21 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
                             "error": "Сайт отклонил ID пользователя — проверь, что это ID аккаунта, а не команды.",
                             "screenshot": await _aipro_ss(page)}
                 if "не удалось" in tl or "ошибка" in tl or "失败" in txt:
-                    return {"success": False, "error": "Сайт сообщил об ошибке пополнения.",
+                    return {"success": False, "submitted": True,
+                            "error": "Сайт сообщил об ошибке пополнения.",
                             "screenshot": await _aipro_ss(page)}
             if _saw_processing:
                 return {"success": False, "needs_check": True,
                         "error": "Пополнение не подтвердилось за 4 мин, но сайт был в обработке. "
                                  "Проверь на ios.891014.best.",
                         "screenshot": await _aipro_ss(page)}
-            return {"success": False, "error": "Активация на ios.891014.best не завершилась.",
+            return {"success": False, "unclear": True, "submitted": True,
+                    "error": "Активация на ios.891014.best не завершилась.",
                     "screenshot": await _aipro_ss(page)}
         except Exception as e:
             logger.error(f"activate_claude_ios891 error: {e}", exc_info=True)
-            return {"success": False, "error": f"Ошибка активации: {str(e)[:200]}",
+            return {"success": False, "unclear": _submitted, "submitted": _submitted,
+                    "error": f"Ошибка активации: {str(e)[:200]}",
                     "screenshot": await _aipro_ss(page)}
         finally:
             try:

@@ -29,13 +29,14 @@ from runtime_state import (
 )
 from db import (
     expire_old_batches, get_pool, log_event, add_coins, activation_hours,
-    get_setting, set_setting,
+    get_setting, set_setting, activation_cooldown,
 )
 from common import (
     _check_one_gpt_code, _nsg_threshold, fk_check_order_status, fk_credit_paid_order, send_reminder,
     gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report, tg_chunks,
     _who_user, nsgifts_recover_stuck, _WORKER_ID,
     gpt_watch_card, gpt_watch_msg_remember, gpt_watch_msg_resolve,
+    claude_watch_tick, _adm_claude_ctx,
 )
 
 
@@ -1833,7 +1834,7 @@ async def claude_codes_cleanup_loop():
                     "DELETE FROM claude_pending_activations WHERE expires_at < NOW() "
                     "  AND bpa_order_id IS NULL AND COALESCE(org_id,'') = ''")
                 _stuck_cl = await conn.fetch(
-                    "SELECT code, user_id FROM claude_pending_activations "
+                    "SELECT code, user_id, order_id, org_id, plan_name FROM claude_pending_activations "
                     "WHERE expires_at < NOW() "
                     "  AND (bpa_order_id IS NOT NULL OR COALESCE(org_id,'') <> '')")
                 # 2) Возвращаем в пул коды, что зарезервированы (is_used, used_by=NULL),
@@ -1842,7 +1843,7 @@ async def claude_codes_cleanup_loop():
                 # никогда: бот спросил Александра, активирован ли он, и ответа
                 # ещё нет. Раньше защищала только строка резерва и её org_id —
                 # без них такой код уходил в пул. Ревью 06.10.2026.
-                released = await conn.execute(
+                released = await conn.fetch(
                     """UPDATE claude_codes
                        SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
                        WHERE is_used=TRUE
@@ -1854,8 +1855,24 @@ async def claude_codes_cleanup_loop():
                          AND NOT EXISTS (
                              SELECT 1 FROM settings s
                              WHERE s.key = 'claudecheck:' || UPPER(TRIM(claude_codes.code))
-                         )"""
+                         )
+                         -- Сайт ответил «использован / не найден / отказ после
+                         -- отправки» — такой код в пул НЕ отдаём: раньше через
+                         -- 30 минут он доставался следующему клиенту. 08.10.2026
+                         AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid','error')
+                       RETURNING code"""
                 )
+                # Напоминание о каждом таком коде — раз в 12 часов, а не каждые
+                # 30 минут: строка висит, пока Александр не решит, и раньше
+                # одно и то же сообщение приходило 48 раз в сутки. 08.10.2026
+                _stuck_new = []
+                for _r in _stuck_cl:
+                    try:
+                        if not await activation_cooldown(f"clstuck:{_r['code']}", seconds=43200):
+                            _stuck_new.append(_r)
+                    except Exception:
+                        _stuck_new.append(_r)
+                _stuck_cl = _stuck_new
                 if _stuck_cl:
                     logging.warning(f"claude: {len(_stuck_cl)} кодов с начатой активацией "
                                     f"оставлены за клиентами — решает Александр")
@@ -1866,13 +1883,18 @@ async def claude_codes_cleanup_loop():
                     # никогда. Внешний аудит 29.09.2026, пункт №30.
                     _lines_cl = []
                     for _r in _stuck_cl[:10]:
-                        _lines_cl.append(f"\U0001f511 <code>{_r['code']}</code> · "
-                                         f"{await _who_user(_r['user_id'])}")
+                        try:
+                            _lines_cl.append(await _adm_claude_ctx(
+                                _r["order_id"] or "", _r["code"], "", _r["org_id"] or "",
+                                _r["plan_name"] or "", uid=_r["user_id"]))
+                        except Exception:
+                            _lines_cl.append(f"\U0001f511 <code>{_r['code']}</code> · "
+                                             f"{await _who_user(_r['user_id'])}")
                     try:
                         await bot.send_message(
                             ADMIN_ID,
                             "\u23f3 <b>Claude — коды с незавершённой активацией</b>\n\n"
-                            + "\n".join(_lines_cl)
+                            + "\n\n".join(_lines_cl)
                             + "\n\nАктивация начиналась, но подтверждения нет. В пул сам "
                               "НЕ возвращаю: поставщик мог её довести. Реши в админке — "
                               "раздел «Ждущие коды».",
@@ -1881,20 +1903,37 @@ async def claude_codes_cleanup_loop():
                         # Молча глотать отказ нельзя: это обязательное
                         # уведомление, из-за него код остаётся за клиентом.
                         logging.error(f"claude stuck notify: {_e_cl_n}")
-                if released and released != "UPDATE 0":
-                    logging.info(f"🔑 claude_codes cleanup: {released}")
+                if released:
+                    _rel_codes = [r["code"] for r in released]
+                    logging.info(f"🔑 claude_codes cleanup: вернул {len(_rel_codes)}: {_rel_codes[:20]}")
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🔑 <b>Коды Claude возвращены в пул</b>\n"
-                            f"Клиенты оплатили но не активировали в течение 2 часов.\n"
-                            f"<i>{released}</i>",
+                            f"🔑 <b>Коды Claude возвращены в пул</b> ({len(_rel_codes)})\n"
+                            f"Резерв истёк, активацию по ним не начинали (или сайт отказал "
+                            f"до списания) — коды целы.\n"
+                            + "\n".join(f"   • <code>{c}</code>" for c in _rel_codes[:20])
+                            + (f"\n   … и ещё {len(_rel_codes) - 20}" if len(_rel_codes) > 20 else ""),
                             parse_mode="HTML"
                         )
-                    except Exception:
-                        pass
+                    except Exception as _e_rl:
+                        logging.warning(f"claude released notify: {_e_rl}")
         except Exception as e:
             logging.error(f"claude_codes_cleanup_loop: {e}")
+
+
+async def claude_watch_loop():
+    """Каждые 3 минуты: оборванные рестартом активации Claude и проверка
+    неясных исходов по API сайта (см. common.claude_watch_tick). 08.10.2026"""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            _r = await claude_watch_tick()
+            if any(_r.get(k) for k in ("orphans", "succeeded", "failed")):
+                logging.warning(f"claude_watch: {_r}")
+        except Exception as e:
+            logging.error(f"claude_watch_loop: {e}", exc_info=True)
+        await asyncio.sleep(180)
 
 
 async def perplexity_codes_cleanup_loop():

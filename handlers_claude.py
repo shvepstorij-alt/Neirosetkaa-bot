@@ -41,6 +41,8 @@ from keyboards import (
 )
 from common import (
     _send_claude_webapp_to_user, _claude_pick_code,
+    _adm_claude_ctx, _claude_check_get, _claude_log_attempt, _notify_claude_pending_expired,
+    _claude_check_mark,
 )
 
 @dp.callback_query(F.data == "claude_need_help")
@@ -66,19 +68,28 @@ async def cb_claude_need_help(cb: CallbackQuery):
     )
     try:
         pending = await get_claude_pending_activation(uid)
-        code_info = (
-            f"\n\U0001f511 Код: <code>{pending['code']}</code>"
-            f"\n\U0001f4e6 Тариф: <b>{pending.get('plan_name', '?')}</b>"
-        ) if pending else ""
+        # Раньше здесь был только номер клиента — ни ника, ни заказа, ни
+        # FreeKassa, ни Org ID: заказ приходилось искать руками. 08.10.2026
+        if pending:
+            _ctx_h = await _adm_claude_ctx(
+                pending.get("order_id") or "", pending.get("code") or "",
+                "", pending.get("org_id") or "", pending.get("plan_name") or "", uid=uid)
+            _chk_h = ("\n\n⚠️ По коду неясный исход прошлой активации — сначала проверь его."
+                      if await _claude_check_get(pending.get("code") or "") else "")
+        else:
+            from common import _who_user as _wu_h
+            _ctx_h = (f"\U0001f464 Клиент: {await _wu_h(uid)}\n"
+                      "Активного резерва нет (окно активации истекло или заказ закрыт).")
+            _chk_h = ""
         await bot.send_message(
             ADMIN_ID,
             "❓ <b>Клиент нажал «Нужна помощь» — Claude</b>\n\n"
-            f"\U0001f464 <code>{uid}</code>{code_info}\n\n"
+            f"{_ctx_h}{_chk_h}\n\n"
             "Активируй Claude вручную и попроси клиента нажать «Александр уже активировал».",
             parse_mode="HTML"
         )
-    except Exception:
-        pass
+    except Exception as _e_nh:
+        logging.error(f"claude need_help notify uid={uid}: {_e_nh}")
 
 
 @dp.callback_query(F.data == "claude_manual_activated")
@@ -89,11 +100,59 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
     if pending:
         code = pending["code"]
         plan_name = pending.get("plan_name", "?")
+        order_id = pending.get("order_id") or ""
         # Код ВОЗВРАЩАЕМ в пул. Ручная активация делается ДРУГИМ кодом (админ
         # выдаёт новый из панели), а этот остаётся целым. Раньше он помечался
         # использованным — то есть при каждой ручной активации сгорал целый код.
-        await release_claude_code(code)
-        await delete_claude_pending_activation(uid)
+        # НО: если по коду неясный исход (его могли активировать) — в пул не
+        # отдаём, решение за Александром; и не трогаем, если код держит другой
+        # клиент. Пометку сайта («использован») соблюдает сам release. 08.10.2026
+        _chk = await _claude_check_get(code)
+        _other = None
+        _busy = None
+        try:
+            _pool_ma = await get_pool()
+            async with _pool_ma.acquire() as _c_ma:
+                _other = await _c_ma.fetchval(
+                    "SELECT 1 FROM claude_pending_activations WHERE code=$1 AND user_id<>$2 LIMIT 1",
+                    code, uid)
+                _busy = await _c_ma.fetchval(
+                    "SELECT 1 FROM activation_claims WHERE key=$1 "
+                    "AND claimed_at > NOW() - INTERVAL '25 minutes'", f"claude:{uid}")
+        except Exception as _e_ma:
+            logging.warning(f"claude manual: проверка резерва {code}: {_e_ma}")
+        if _busy:
+            # Автоактивация идёт прямо сейчас: код может быть у сайта. Ничего не
+            # трогаем — итог придёт в чат сам. 08.10.2026
+            await cb.message.answer(
+                "⏳ <b>Автоматическая активация сейчас идёт.</b>\n\n"
+                "Дождись её результата — он придёт сюда через несколько минут. "
+                "Если Александр уже активировал вручную — напиши ему, он закроет заказ.",
+                parse_mode="HTML")
+            return
+        # org_id у резерва = попытка начиналась и итог не записан (код мог уйти
+        # на сайт) — такой код в пул тоже не отдаём, решает Александр.
+        _started = bool((pending.get("org_id") or "").strip())
+        _released = False
+        if not _chk and not _other and not _started:
+            await release_claude_code(code)
+            _released = True
+        elif _started and not _chk and not _other:
+            # Без резерва фоновая чистка вернула бы такой код в пул через полчаса —
+            # ставим метку неясного исхода: код ждёт решения Александра.
+            await _claude_check_mark(code, uid, order_id, "", pending.get("provider") or "", "",
+                       pending.get("org_id") or "", plan_name, pending.get("plan") or "")
+        await delete_claude_pending_activation(uid, order_id or None)
+        if order_id:
+            try:
+                from db import set_setting as _ss_ma
+                await _ss_ma(f"claude_client_said_done:{order_id}", "1")
+            except Exception:
+                pass
+        try:
+            await _claude_log_attempt(order_id, code, "", "клиент: «Александр уже активировал»")
+        except Exception:
+            pass
         # Гасим таймер: иначе он позже перепишет сообщение активации в
         # «можно активировать сейчас» и будет спорить с тем «Подписка
         # активирована», которое уходит строкой ниже.
@@ -113,16 +172,28 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
             ])
         )
         try:
+            _ctx_m = await _adm_claude_ctx(order_id, code, "", pending.get("org_id") or "",
+                                           plan_name, uid=uid)
+            if _released:
+                _fate = "Код возвращён в пул (ручная активация — другим кодом)."
+            elif _chk:
+                _fate = ("⚠️ Код в пул НЕ возвращён: по нему неясный исход активации — "
+                         "реши в сообщении с кнопками или в «Ждущих кодах».")
+            elif _started:
+                _fate = ("⚠️ Код в пул НЕ возвращён: по нему начиналась автоактивация, итог "
+                         "не записан — код мог уйти на сайт. Проверь его и реши в «Ждущих кодах».")
+            else:
+                _fate = "Код в пул НЕ возвращён: его держит резерв другого клиента."
             await bot.send_message(
                 ADMIN_ID,
-                "\u2705 <b>Ручная активация Claude подтверждена клиентом</b>\n\n"
-                f"\U0001f464 <code>{uid}</code>\n"
-                f"\U0001f511 Код: <code>{code}</code>\n"
-                f"\U0001f4e6 Тариф: <b>{plan_name}</b>",
+                "\u2705 <b>Клиент нажал «Александр уже активировал» — Claude</b>\n\n"
+                f"{_ctx_m}\n\n{_fate}\n"
+                "<i>Это слова клиента — заказ в боте НЕ закрыт. Если активировал ты — "
+                "закрой его в карточке заказа.</i>",
                 parse_mode="HTML"
             )
-        except Exception:
-            pass
+        except Exception as _e_mn:
+            logging.error(f"claude manual notify uid={uid}: {_e_mn}")
     else:
         await cb.message.answer(
             "\u2139\ufe0f Активная сессия не найдена — возможно уже завершена ранее.",
@@ -142,10 +213,17 @@ async def claude_reopen_webapp(cb: CallbackQuery):
     uid = cb.from_user.id
     pending = await get_claude_pending_activation(uid)
     if not pending:
-        await cb.answer(
-            "⚠️ Сессия истекла. Напиши Александру для нового кода.",
-            show_alert=True
-        )
+        # Как в мини-приложении: Александру — уведомление с кнопкой повторной
+        # выдачи, клиенту — что делать ничего не нужно. 08.10.2026
+        if await _notify_claude_pending_expired(uid):
+            await cb.answer(
+                "⏰ Время на самостоятельную активацию истекло. Оплата сохранена — "
+                "Александр уже получил уведомление и пришлёт новую кнопку сюда.",
+                show_alert=True)
+        else:
+            await cb.answer(
+                "Активная активация не найдена. Если подписка уже активирована — всё в "
+                "порядке. Если нет — напиши Александру.", show_alert=True)
         return
     import urllib.parse as _up3
     from aiogram.types import WebAppInfo as _WAI3

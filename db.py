@@ -2862,28 +2862,62 @@ async def release_claude_code(code: str):
     Решение по таким кодам — только за Александром (админка «В пул»).
     06.10.2026
     """
+    # Код, про который САЙТ сказал «уже использован» / «не найден» / «отказ
+    # после отправки» (check_status used/invalid, ставит цепочка активации),
+    # тоже не возвращаем: раньше такие коды через полчаса уходили следующему
+    # клиенту, и тот снова упирался в «код использован». Решение по ним —
+    # только за Александром (админка «Ждущие коды» → «В пул»). 08.10.2026
     pool = await get_pool()
     async with pool.acquire() as conn:
         _r = await conn.execute(
             "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, "
             "used_at=NULL, order_id=NULL, org_id=NULL "
-            "WHERE code=$1 AND used_by IS NULL",
+            "WHERE UPPER(code)=UPPER($1) AND used_by IS NULL "
+            "  AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid')",
             code
         )
         if str(_r).split()[-1] == "0":
-            _held = await conn.fetchval(
-                "SELECT used_by FROM claude_codes WHERE code=$1", code)
-            if _held:
+            _row = await conn.fetchrow(
+                "SELECT used_by, check_status FROM claude_codes WHERE UPPER(code)=UPPER($1)", code)
+            if _row and _row["used_by"]:
                 logging.error(f"release_claude_code: {code} записан как активированный "
-                              f"(used_by={_held}) — в пул НЕ возвращаю")
+                              f"(used_by={_row['used_by']}) — в пул НЕ возвращаю")
+            elif _row and (_row["check_status"] or "") in ("used", "invalid"):
+                logging.warning(f"release_claude_code: {code} помечен сайтом "
+                                f"({_row['check_status']}) — в пул НЕ возвращаю")
+
+
+async def flag_claude_code(code: str, status: str, reason: str) -> None:
+    """Помечает код Claude по ответу сайта: status 'used' | 'invalid'.
+
+    Код остаётся зарезервированным (is_used=TRUE, used_by=NULL) и в пул сам не
+    вернётся: ни release_claude_code, ни фоновая чистка такие коды не трогают.
+    Он виден в админке в «Ждущих кодах» с причиной — решает Александр.
+    Записанный как активированный код (used_by) не трогаем. 08.10.2026
+    """
+    if status not in ("used", "invalid"):
+        status = "used"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE claude_codes SET check_status=$2, last_checked_at=NOW(), "
+            "flagged_reason=$3 WHERE UPPER(code)=UPPER($1) AND used_by IS NULL",
+            code, status, (reason or "")[:300])
 
 
 async def mark_claude_code_used(code: str, user_id: int, order_id: str, org_id: str = ""):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
+            # is_used=TRUE обязательно: активированный код, оставшийся «свободным»
+            # (например, его успели вернуть в пул, пока сайт дозревал), иначе
+            # выдался бы следующему клиенту. 08.10.2026
             "UPDATE claude_codes "
-            "SET used_by=$1, order_id=$2, org_id=$3, used_at=NOW() WHERE code=$4",
+            # Регистр кода не важен: метка неясного исхода хранит код ЗАГЛАВНЫМИ,
+            # а в пуле он мог быть записан строчными — запись молча не находила
+            # строку, и активированный код позже уходил в пул. 08.10.2026
+            "SET is_used=TRUE, used_by=$1, order_id=$2, org_id=$3, used_at=NOW() "
+            "WHERE UPPER(code)=UPPER($4)",
             user_id, order_id, org_id, code
         )
 
