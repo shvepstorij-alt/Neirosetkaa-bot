@@ -38,7 +38,7 @@ from keyboards import (
     _eib,
 )
 from common import (
-    _send_perplexity_webapp_to_user,
+    _send_perplexity_webapp_to_user, _notify_perplexity_pending_expired, _who_user, _adm_gpt_ctx,
 )
 
 @dp.callback_query(F.data == "perplexity_need_help")
@@ -46,37 +46,52 @@ async def cb_perplexity_need_help(cb: CallbackQuery):
     await cb.answer()
     uid = cb.from_user.id
     await ensure_user(uid, cb.from_user.username or '', cb.from_user.full_name)
-    await cb.message.answer(
-        "❓ <b>Нужна помощь с активацией Perplexity?</b>\n\n"
-        "Напиши Александру — активирует вручную в течение 15\u201330 минут.\n\n"
-        "После того как Александр активировал твою подписку — нажми кнопку ниже \U0001f447",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="\u2705 Александр уже активировал",
-                callback_data="perplexity_manual_activated"
-            )],
-            [InlineKeyboardButton(
-                text="\U0001f4ac Написать Александру",
-                url=f"https://t.me/{PERSONAL_USERNAME}"
-            )],
-        ])
-    )
+    pending = None
     try:
         pending = await get_perplexity_pending_activation(uid)
-        code_info = (
-            f"\n\U0001f511 Код: <code>{pending['code']}</code>"
-            f"\n\U0001f4e6 Тариф: <b>{pending.get('plan_name', '?')}</b>"
-        ) if pending else ""
+    except Exception as _e_ph:
+        logging.warning(f"perplexity need_help pending uid={uid}: {_e_ph}")
+    # Кнопка активации остаётся и в сообщении помощи. Александр 08.10.2026
+    _rows = []
+    if pending and pending.get("code"):
+        from aiogram.types import WebAppInfo as _WAI_h
+        from config import webapp_url as _wa_h
+        _rows.append([InlineKeyboardButton(
+            text="⚡ Активировать Perplexity", style="success",
+            web_app=_WAI_h(url=_wa_h("/webapp/perplexity", plan=pending.get("plan_name") or "",
+                                     code=pending["code"])))])
+    _rows += [
+        [InlineKeyboardButton(text="\u2705 Александр уже активировал", callback_data="perplexity_manual_activated")],
+        [InlineKeyboardButton(text="\U0001f4ac Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
+    ]
+    await cb.message.answer(
+        "❓ <b>Нужна помощь с активацией Perplexity?</b>\n\n"
+        + ("Можно попробовать ещё раз самому — кнопка «⚡ Активировать Perplexity» ниже.\n"
+           "Или напиши Александру — активирует вручную в течение 15\u201330 минут.\n\n"
+           if pending else
+           "Напиши Александру — активирует вручную в течение 15\u201330 минут.\n\n")
+        + "После того как Александр активировал твою подписку — нажми «Александр уже активировал» \U0001f447",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=_rows)
+    )
+    try:
+        if pending:
+            _ctx_p = (await _adm_gpt_ctx(pending.get("order_id") or "", show_site=False,
+                                         show_route=False) or "")
+            code_info = (f"\n\U0001f511 Код: <code>{pending['code']}</code>"
+                         f"\n\U0001f4e6 Тариф: <b>{pending.get('plan_name', '?')}</b>"
+                         f"\n\U0001f194 Order: <code>{pending.get('order_id') or '—'}</code>\n" + _ctx_p)
+        else:
+            code_info = "\nАктивного резерва нет (окно активации истекло или заказ закрыт).\n"
         await bot.send_message(
             ADMIN_ID,
             "❓ <b>Клиент нажал «Нужна помощь» — Perplexity</b>\n\n"
-            f"\U0001f464 <code>{uid}</code>{code_info}\n\n"
+            f"\U0001f464 {await _who_user(uid)}{code_info}\n"
             "Активируй Perplexity вручную и попроси клиента нажать «Александр уже активировал».",
             parse_mode="HTML"
         )
-    except Exception:
-        pass
+    except Exception as _e_nh:
+        logging.error(f"perplexity need_help notify uid={uid}: {_e_nh}")
 
 
 @dp.callback_query(F.data == "perplexity_manual_activated")
@@ -137,10 +152,16 @@ async def perplexity_reopen_webapp(cb: CallbackQuery):
     uid = cb.from_user.id
     pending = await get_perplexity_pending_activation(uid)
     if not pending:
-        await cb.answer(
-            "⚠️ Сессия истекла. Напиши Александру для нового кода.",
-            show_alert=True
-        )
+        # Как у ChatGPT и Claude: Александру — кнопка повторной выдачи. 08.10.2026
+        if await _notify_perplexity_pending_expired(uid):
+            await cb.answer(
+                "⏰ Время на самостоятельную активацию истекло. Оплата сохранена — "
+                "Александр уже получил уведомление и пришлёт новую кнопку сюда.",
+                show_alert=True)
+        else:
+            await cb.answer(
+                "Активная активация не найдена. Если подписка уже активирована — всё в "
+                "порядке. Если нет — напиши Александру.", show_alert=True)
         return
     import urllib.parse as _up3
     from aiogram.types import WebAppInfo as _WAI3

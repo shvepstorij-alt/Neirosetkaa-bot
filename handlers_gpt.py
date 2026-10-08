@@ -1369,37 +1369,56 @@ async def cb_gpt_need_help(cb: CallbackQuery):
     await cb.answer()
     uid = cb.from_user.id
     await ensure_user(uid, cb.from_user.username or '', cb.from_user.full_name)
-    await cb.message.answer(
-        "❓ <b>Нужна помощь с активацией?</b>\n\n"
-        "Напиши Александру — он активирует вручную в течение 15–30 минут.\n\n"
-        "После того как Александр активировал твою подписку — нажми кнопку ниже 👇",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="💬 Написать Александру",
-                url=f"https://t.me/{PERSONAL_USERNAME}"
-            )],
-            [InlineKeyboardButton(
-                text="✅ Активировали тариф вручную",
-                callback_data="gpt_manual_activated"
-            )],
-        ])
-    )
+    pending = None
     try:
         pending = await get_pending_activation(uid)
-        code_info = (
-            f"\n🔑 Код: <code>{pending['code']}</code>"
-            f"\n📦 Тариф: <b>{pending.get('plan_name', '?')}</b>"
-        ) if pending else ""
+    except Exception as _e_ph:
+        logging.warning(f"gpt need_help pending uid={uid}: {_e_ph}")
+    # Кнопка активации остаётся и в сообщении помощи: сообщение с ней уезжает
+    # вверх, и клиент видел только «Написать Александру». Александр 08.10.2026
+    _rows = []
+    if pending and pending.get("code"):
+        from aiogram.types import WebAppInfo as _WAI_h
+        from config import webapp_url as _wa_h
+        _rows.append([InlineKeyboardButton(
+            text="⚡ Активировать подписку", style="success",
+            web_app=_WAI_h(url=_wa_h("/webapp/chatgpt", plan=pending.get("plan_name") or "",
+                                     code=pending["code"])))])
+    _rows += [
+        [InlineKeyboardButton(text="💬 Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
+        [InlineKeyboardButton(text="✅ Активировали тариф вручную", callback_data="gpt_manual_activated")],
+    ]
+    await cb.message.answer(
+        "❓ <b>Нужна помощь с активацией?</b>\n\n"
+        + ("Можно попробовать ещё раз самому — кнопка «⚡ Активировать подписку» ниже.\n"
+           "Или напиши Александру — он активирует вручную в течение 15–30 минут.\n\n"
+           if pending else
+           "Напиши Александру — он активирует вручную в течение 15–30 минут.\n\n")
+        + "После того как Александр активировал твою подписку — нажми «Активировали тариф вручную» 👇",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=_rows)
+    )
+    try:
+        from common import _adm_gpt_ctx as _ctx_h
+        if pending:
+            _ctx_txt = (await _ctx_h(pending.get("order_id") or "", pending.get("code") or "",
+                                     pending.get("provider") or "",
+                                     token=pending.get("session_raw") or "", uid=uid) or "")
+            _code_info = (f"\n🔑 Код: <code>{pending['code']}</code>"
+                          f"\n📦 Тариф: <b>{pending.get('plan_name', '?')}</b>"
+                          f"\n🆔 Order: <code>{pending.get('order_id') or '—'}</code>\n"
+                          + _ctx_txt)
+        else:
+            _code_info = "\nАктивного резерва нет (окно активации истекло или заказ закрыт).\n"
         await bot.send_message(
             ADMIN_ID,
-            f"❓ <b>Клиент нажал «Нужна помощь»</b>\n\n"
-            f"👤 {await _who_user(uid)}{code_info}\n\n"
+            f"❓ <b>Клиент нажал «Нужна помощь» — ChatGPT</b>\n\n"
+            f"👤 {await _who_user(uid)}{_code_info}\n"
             f"Активируй вручную и попроси клиента нажать «Активировали тариф вручную».",
             parse_mode="HTML"
         )
-    except Exception:
-        pass
+    except Exception as _e_nh:
+        logging.error(f"gpt need_help notify uid={uid}: {_e_nh}")
 
 
 @dp.callback_query(F.data == "gpt_manual_activated")

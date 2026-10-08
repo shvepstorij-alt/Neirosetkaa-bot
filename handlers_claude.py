@@ -50,24 +50,35 @@ async def cb_claude_need_help(cb: CallbackQuery):
     await cb.answer()
     uid = cb.from_user.id
     await ensure_user(uid, cb.from_user.username or '', cb.from_user.full_name)
-    await cb.message.answer(
-        "❓ <b>Нужна помощь с активацией Claude?</b>\n\n"
-        "Напиши Александру — активирует вручную в течение 15\u201330 минут.\n\n"
-        "После того как Александр активировал твою подписку — нажми кнопку ниже \U0001f447",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="\u2705 Александр уже активировал",
-                callback_data="claude_manual_activated"
-            )],
-            [InlineKeyboardButton(
-                text="\U0001f4ac Написать Александру",
-                url=f"https://t.me/{PERSONAL_USERNAME}"
-            )],
-        ])
-    )
+    pending = None
     try:
         pending = await get_claude_pending_activation(uid)
+    except Exception as _e_ph:
+        logging.warning(f"claude need_help pending uid={uid}: {_e_ph}")
+    # Кнопка активации остаётся и в сообщении помощи. Александр 08.10.2026
+    _rows = []
+    if pending and pending.get("code"):
+        from aiogram.types import WebAppInfo as _WAI_h
+        from config import webapp_url as _wa_h
+        _rows.append([InlineKeyboardButton(
+            text="⚡ Активировать Claude", style="success",
+            web_app=_WAI_h(url=_wa_h("/webapp/claude", plan=pending.get("plan_name") or "",
+                                     code=pending["code"])))])
+    _rows += [
+        [InlineKeyboardButton(text="\u2705 Александр уже активировал", callback_data="claude_manual_activated")],
+        [InlineKeyboardButton(text="\U0001f4ac Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
+    ]
+    await cb.message.answer(
+        "❓ <b>Нужна помощь с активацией Claude?</b>\n\n"
+        + ("Можно попробовать ещё раз самому — кнопка «⚡ Активировать Claude» ниже.\n"
+           "Или напиши Александру — активирует вручную в течение 15\u201330 минут.\n\n"
+           if pending else
+           "Напиши Александру — активирует вручную в течение 15\u201330 минут.\n\n")
+        + "После того как Александр активировал твою подписку — нажми «Александр уже активировал» \U0001f447",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=_rows)
+    )
+    try:
         # Раньше здесь был только номер клиента — ни ника, ни заказа, ни
         # FreeKassa, ни Org ID: заказ приходилось искать руками. 08.10.2026
         if pending:

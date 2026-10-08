@@ -7357,15 +7357,10 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
                 if not _ok_cr:
                     return web.json_response({"ok": False, "msg": re.sub(r"<[^>]+>", "", str(_msg_cr))})
             else:
-                _pend = await get_perplexity_pending_activation(uid)
-                if _pend and _pend.get("code"):  # тот же выданный код, новый НЕ берём
-                    _code = _pend["code"]
-                else:
-                    _code = await get_next_perplexity_code(plan_key)
-                    if not _code:
-                        return web.json_response({"ok": False, "msg": "Нет свободных кодов Perplexity"})
-                if not await _send_perplexity_webapp_to_user(uid, _code, oid, plan_key, plan_name):
-                    return web.json_response({"ok": False, "msg": "Не удалось отправить кнопку Perplexity"})
+                # Резерв переиспользуем только ОТ ЭТОГО заказа. 08.10.2026
+                _ok_pr, _msg_pr = await perplexity_resend_activation(oid)
+                if not _ok_pr:
+                    return web.json_response({"ok": False, "msg": re.sub(r"<[^>]+>", "", str(_msg_pr))})
             await set_setting(f"order_done:{oid}", "0")
             return web.json_response({"ok": True})
 
@@ -15226,8 +15221,10 @@ async def gpt_resend_activation(order_id: str) -> tuple:
     if _svc == "claude":
         # Кнопка «Отправить повторно» под «Истекло окно активации Claude».
         return await claude_resend_activation(_oid)
+    if _svc == "perplexity":
+        return await perplexity_resend_activation(_oid)
     if _svc != "chatgpt":
-        return False, "Эта кнопка только для ChatGPT и Claude"
+        return False, "Эта кнопка только для ChatGPT, Claude и Perplexity"
     _cat = SHOP_CATALOG.get(_svc, {}) or {}
     _plans = _cat.get("plans", [])
     _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(pack))[1].get("name")
@@ -19925,6 +19922,121 @@ async def claude_resend_activation(order_id: str) -> tuple:
                      if _reused else "\n<i>Прежнего кода не было — выдан новый.</i>"))
 
 
+# ─── Perplexity: истёкшее окно и повторная выдача — как у ChatGPT и Claude ──
+# Раньше клиент с истёкшим окном видел «Время сессии истекло, напиши
+# Александру», а сам Александр не узнавал ничего. 08.10.2026
+
+async def _perplexity_open_order(user_id: int):
+    """Последний оплаченный и НЕ активированный заказ Perplexity (7 дней)."""
+    _pool_o = await get_pool()
+    async with _pool_o.acquire() as _c_o:
+        _ords = await _c_o.fetch(
+            "SELECT order_id, pack FROM fk_orders "
+            "WHERE user_id=$1 AND status='paid' AND pack LIKE 'shop:%' "
+            "  AND paid_at > NOW() - INTERVAL '7 days' "
+            "ORDER BY paid_at DESC LIMIT 10", int(user_id))
+        for _o in _ords:
+            _pk = _o["pack"] or ""
+            _sk = _pk.split(":")[1] if _pk.count(":") >= 1 else ""
+            if _sk != "perplexity":
+                continue
+            if await _c_o.fetchval(
+                    "SELECT 1 FROM perplexity_codes WHERE order_id=$1 AND used_by IS NOT NULL",
+                    _o["order_id"]):
+                continue
+            if (await get_setting(f"order_done:{_o['order_id']}", "") or "").strip() == "1":
+                continue
+            _idx = int(_pk.split(":")[2]) if _pk.count(":") >= 2 and _pk.split(":")[2].isdigit() else 0
+            _pn = (_plan_by_order("perplexity", _idx, _pack_plan_name(_pk))[1].get("name")
+                   or _pack_plan_name(_pk) or "Pro")
+            return {"order_id": _o["order_id"], "plan_name": _pn}
+    return None
+
+
+async def _notify_perplexity_pending_expired(user_id: int) -> bool:
+    """Окно активации Perplexity истекло, клиент нажал «Активировать» —
+    Александру сообщение с кнопкой «Отправить повторно». Код сами НЕ выдаём.
+    True — по клиенту есть оплаченный неактивированный заказ Perplexity."""
+    try:
+        _o = await _perplexity_open_order(user_id)
+        if not _o:
+            return False
+        if await activation_cooldown(f"pxexpired:{user_id}", seconds=1800):
+            return True
+        import html as _h_px
+        _ctx = (await _adm_gpt_ctx(_o["order_id"], show_site=False, show_route=False) or "").rstrip("\n")
+        await _claude_admin_send(
+            "⏰ <b>Истекло окно активации Perplexity</b>\n\n"
+            f"👤 Клиент: {await _who_user(user_id)}\n"
+            f"📦 Тариф: <b>Perplexity {_h_px.escape(str(_o['plan_name']))}</b>\n"
+            + (f"{_ctx}\n" if _ctx else "")
+            + f"🆔 Order: <code>{_o['order_id']}</code>\n\n"
+            "Клиент нажал «Активировать», но срок резерва вышел. Код автоматически "
+            "<b>не выдан</b>. Можно выдать повторно прямо отсюда 👇",
+            InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📨 Отправить повторно",
+                                     callback_data=f"adm_resend:{_o['order_id']}")]]))
+        return True
+    except Exception as _e_pe:
+        logging.error(f"_notify_perplexity_pending_expired uid={user_id}: {_e_pe}")
+        return False
+
+
+async def perplexity_resend_activation(order_id: str) -> tuple:
+    """Повторно шлёт клиенту кнопку активации Perplexity по заказу.
+    Код, закреплённый ИМЕННО за этим заказом, переиспользуем; иначе — новый."""
+    _oid = str(order_id or "").strip()
+    if not _oid:
+        return False, "Пустой номер заказа"
+    _pool_r = await get_pool()
+    async with _pool_r.acquire() as _c_r:
+        _o = await _c_r.fetchrow("SELECT user_id, pack, status FROM fk_orders WHERE order_id=$1", _oid)
+        _rec = await _c_r.fetchval(
+            "SELECT code FROM perplexity_codes WHERE order_id=$1 AND used_by IS NOT NULL LIMIT 1", _oid)
+    if not _o:
+        return False, "Заказ не найден"
+    _uid = _o["user_id"]
+    _pk = _o["pack"] or ""
+    _pp = _pk.split(":")
+    if not _pk.startswith("shop:") or (_pp[1] if len(_pp) > 1 else "") != "perplexity":
+        return False, "Это не заказ Perplexity"
+    if _rec:
+        return False, f"Заказ уже активирован (код {_rec}) — повторно не выдаю."
+    if str(_o["status"] or "") in ("cancelled", "refunded", "lost"):
+        return False, f"Заказ в статусе «{_o['status']}» — повторно не выдаю."
+    _idx = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+    _pn = (_plan_by_order("perplexity", _idx, _pack_plan_name(_pk))[1].get("name")
+           or _pack_plan_name(_pk) or "Pro")
+    _pend = await get_perplexity_pending_activation(_uid)
+    if _pend and _pend.get("code") and str(_pend.get("order_id") or "") == _oid:
+        _code, _reused = _pend["code"], True
+    else:
+        if _pend and _pend.get("code"):
+            return False, (f"У клиента активен резерв ДРУГОГО заказа "
+                           f"({_pend.get('order_id')}) — сначала закрой его.")
+        _code = await get_next_perplexity_code("pro")
+        _reused = False
+        if not _code:
+            return False, "Нет свободных кодов Perplexity"
+    if not await _send_perplexity_webapp_to_user(_uid, _code, _oid, "pro", _pn):
+        if not _reused:
+            try:
+                await delete_perplexity_pending_activation(_uid)
+                await release_perplexity_code(_code)
+            except Exception as _e_rp:
+                logging.error(f"perplexity resend: откат {_code}: {_e_rp}")
+        return False, "Не удалось отправить кнопку клиенту"
+    try:
+        await set_setting(f"order_done:{_oid}", "0")
+    except Exception:
+        pass
+    logging.info(f"perplexity_resend_activation: order={_oid} uid={_uid} code={_code} "
+                 f"{'прежний' if _reused else 'новый'}")
+    return True, (f"Кнопка отправлена клиенту.\n🔑 Код: <code>{_code}</code>"
+                  + ("\n<i>Тот же код, что был закреплён за заказом.</i>"
+                     if _reused else "\n<i>Прежнего кода не было — выдан новый.</i>"))
+
+
 async def api_activate_claude_handler(request: web.Request) -> web.Response:
     """POST /api/activate-claude"""
     import json as _j, re as _re
@@ -22546,9 +22658,15 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
 
     pending = await get_perplexity_pending_activation(user_id)
     if not pending:
-        return _resp({
-            "error": f"Время сессии истекло. Напиши @{PERSONAL_USERNAME} для нового кода."
-        })
+        # Как у ChatGPT и Claude: Александру — кнопка повторной выдачи. 08.10.2026
+        if await _notify_perplexity_pending_expired(user_id):
+            return _resp({"error": (
+                "Время на самостоятельную активацию истекло. Оплата сохранена — "
+                "Александр уже получил уведомление и пришлёт новую кнопку активации "
+                "в чат бота. Ничего делать не нужно.")})
+        return _resp({"error": (
+            "Активная активация не найдена. Если подписка уже активирована — всё в "
+            f"порядке. Если нет — напиши @{PERSONAL_USERNAME}, поможет.")})
 
     code      = pending["code"]
     order_id  = pending["order_id"]
