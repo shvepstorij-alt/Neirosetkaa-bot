@@ -9808,6 +9808,80 @@ async def _who_user(uid) -> str:
     return f"<code>{uid}</code>"
 
 
+async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="",
+                               access_token="", why: str = "") -> None:
+    """Отдельное сообщение Александру со всем, что нужно для РУЧНОЙ активации
+    ChatGPT: код и токен клиента. Токен — в свёрнутой цитате (раскрывается
+    стрелкой), внутри — моноширинный текст: одно нажатие копирует его целиком.
+    Александр 09.10.2026: «должен отправлять мне токен клиента одним
+    сообщением и код активации».
+
+    Не чаще раза в 30 минут на заказ+код: повторы клиента не плодят копии.
+    Текст сессии длиннее лимита Telegram (4096) — пробуем только accessToken,
+    не влезает и он — файлом session_<id>.txt.
+    """
+    import html as _h_tk
+    _tok = str(session_raw or access_token or "").strip()
+    if not _tok:
+        return
+    try:
+        if await activation_cooldown(f"gpttok:{order_id or user_id}:{code or '-'}", seconds=1800):
+            return
+    except Exception as _e_cd:
+        logging.warning(f"gpt token msg cooldown: {_e_cd}")
+    try:
+        _who = await _who_user(user_id)
+    except Exception:
+        _who = f"<code>{user_id}</code>"
+    try:
+        _fk = (await _fk_num_line(order_id) or "") if order_id else ""
+    except Exception:
+        _fk = ""
+
+    def _head(lbl):
+        return (f"🔐 <b>ChatGPT — данные для ручной активации</b>\n"
+                f"👤 {_who}  ·  📦 {_h_tk.escape(str(plan_name or ''))}\n"
+                + (f"🔑 Код: <code>{_h_tk.escape(str(code))}</code>\n" if code else
+                   "🔑 Закреплённого кода нет — возьми код из пула\n")
+                + (f"🆔 <code>{_h_tk.escape(str(order_id))}</code>\n" if order_id else "")
+                + _fk
+                + (f"❗ {_h_tk.escape(why)}\n" if why else "")
+                + f"\n👇 Токен клиента — {lbl}. Свёрнут: раскрой стрелкой; "
+                  f"нажми на текст — скопируется целиком.\n")
+
+    _label = ("текст сессии (chatgpt.com/api/auth/session)" if _tok.startswith("{")
+              else "accessToken")
+    _variants = [(_tok, _label)]
+    if _tok.startswith("{"):
+        try:
+            _at = str((json.loads(_tok) or {}).get("accessToken") or access_token or "").strip()
+        except Exception:
+            _at = str(access_token or "").strip()
+        if _at and _at != _tok:
+            _variants.append((_at, "только accessToken (полный текст сессии не влез в сообщение)"))
+    for _t, _lbl in _variants:
+        _txt = (_head(_lbl) + "<blockquote expandable><code>" + _h_tk.escape(_t)
+                + "</code></blockquote>")
+        if len(re.sub(r"<[^>]+>", "", _txt)) > 4000:
+            continue
+        try:
+            await bot.send_message(ADMIN_ID, _txt, parse_mode="HTML",
+                                   disable_web_page_preview=True)
+            return
+        except Exception as _e_tm:
+            logging.error(f"gpt token msg send: {_e_tm}")
+            break
+    # Не влез ни в каком виде (или Telegram отказал) — файлом.
+    try:
+        from aiogram.types import BufferedInputFile as _BIF_tk
+        _cap = _head(_label).split("\n👇")[0] + "\n\n📎 Токен клиента — в файле."
+        await bot.send_document(
+            ADMIN_ID, _BIF_tk(_tok.encode("utf-8"), filename=f"session_{user_id}.txt"),
+            caption=_cap[:1020], parse_mode="HTML")
+    except Exception as _e_td:
+        logging.error(f"gpt token doc send: {_e_td}")
+
+
 async def _run_activation_job(
     job_id: str, code: str, access_token: str,
     user_id: int, order_id: str, plan_name: str,
@@ -10259,6 +10333,7 @@ async def _run_activation_job(
                 # Обычный сбой: пусть цепочка добьёт остальные сайты своими кодами.
                 # Полный стоп делаем только когда стока нет — там перебор бессмыслен.
                 return "next"
+            await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "на сайте нет свободных мест")
             _activation_jobs[job_id] = {
                 "status": "done", "success": False, "manual": True,
                 "error": _gpt_wait_web("на сайте активации временно нет свободных мест")}
@@ -10599,6 +10674,7 @@ async def _run_activation_job(
                 _why_cl = ("для твоего аккаунта нужен другой тип кода"
                            if result.get("has_plan") or result.get("openai_blocked")
                            else "у сайта активации не прошёл платёж с его стороны")
+                await _gpt_admin_token_msg(user_id, None, order_id, plan_name, session_raw, access_token, "сайт отклонил аккаунт / у сайта не прошёл платёж — код возвращён")
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False, "manual": True,
                     "error": _gpt_wait_web(_why_cl, "Александр активирует вручную в течение часа",
@@ -10860,6 +10936,7 @@ async def _run_activation_job(
             # выдать их автоматически нельзя.
             _why_co = ("автоматическая активация остановлена для проверки"
                        if _burn_stop["why"] else "коды временно закончились")
+            await _gpt_admin_token_msg(user_id, None, order_id, plan_name, session_raw, access_token, "автоактивация остановлена / коды закончились")
             _activation_jobs[job_id] = {
                 "status": "done", "success": False, "manual": True,
                 "error": _gpt_wait_web(_why_co, "Александр активирует вручную в течение часа",
@@ -11293,6 +11370,7 @@ async def _run_activation_job(
                             parse_mode="HTML")
                     except Exception:
                         pass
+                await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "сайт активации на техобслуживании")
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False, "manual": True,
                     "error": _gpt_wait_web("сайт активации на техобслуживании",
@@ -11325,6 +11403,7 @@ async def _run_activation_job(
                             parse_mode="HTML")
                     except Exception:
                         pass
+                await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "на сайте нет свободных мест")
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False, "manual": True,
                     "error": _gpt_wait_web("на сайте активации сейчас нет свободных мест")}
@@ -11414,6 +11493,7 @@ async def _run_activation_job(
                             "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
                             result.get("screenshot"), order_id=order_id
                         )
+                    await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "все автоматические попытки не прошли")
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
                         "manual": True,   # без «Попробовать снова» — текст говорит «не повторяй»
