@@ -972,6 +972,25 @@ async def init_db():
                 "INSERT INTO settings(key, value) VALUES($1,$2) ON CONFLICT DO NOTHING",
                 _k, _v
             )
+        # Индексы «по клиенту» для карточки клиента и списков админки
+        # (08.10.2026). Без них каждый запрос по одному клиенту читал таблицу
+        # целиком: на 100 тыс. заказов список новых клиентов за 30 дней шёл
+        # больше минуты. Каждый — отдельно: упавший не мешает остальным.
+        for _ixn, _ixq in [
+            ("idx_fk_orders_user", "ON fk_orders(user_id)"),
+            ("idx_generations_user", "ON generations(user_id)"),
+            ("idx_stars_payments_user", "ON stars_payments(user_id)"),
+            ("idx_gpt_codes_used_by", "ON gpt_codes(used_by) WHERE used_by IS NOT NULL"),
+            ("idx_claude_codes_used_by", "ON claude_codes(used_by) WHERE used_by IS NOT NULL"),
+            ("idx_perplexity_codes_used_by", "ON perplexity_codes(used_by) WHERE used_by IS NOT NULL"),
+            ("idx_users_partner_id", "ON users(partner_id) WHERE partner_id IS NOT NULL"),
+            ("idx_users_created", "ON users(created_at)"),
+            ("idx_promo_uses_user", "ON promo_uses(user_id)"),
+        ]:
+            try:
+                await conn.execute(f"CREATE INDEX IF NOT EXISTS {_ixn} {_ixq}")
+            except Exception as _e_ixu:
+                logging.warning(f"индекс {_ixn} не создался: {_e_ixu}")
     logging.info("✅ PostgreSQL инициализирован")
 
 

@@ -125,6 +125,7 @@ body.kb-open .tabbar{display:none}
 .vbars .vb em{position:absolute;bottom:-17px;left:-6px;right:-6px;text-align:center;font-size:9.5px;color:var(--txt3);font-style:normal;white-space:nowrap}
 .vtip{position:fixed;z-index:200;background:#fff;color:#111;font-size:12px;line-height:1.45;padding:7px 10px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.45);display:none;max-width:240px}
 .vtip-a{display:inline-block;margin-top:4px;color:#c2185b;font-weight:700;cursor:pointer}
+.lnk{color:var(--blue);cursor:pointer;font-weight:600;text-decoration:none}.mcard.clk{cursor:pointer}.mcard.clk .mlab:after{content:" ›";opacity:.6}
 .mval .cu{font-variant-numeric:tabular-nums}
 .tabbar a{transition:color .15s}
 @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
@@ -435,7 +436,7 @@ function unboundScreen(per,off,date){
         var s='<div class="glabel">'+title+' ('+arr.length+')</div>';
         arr.forEach(function(x){
           s+='<div class="block"'+(cls?' style="border-left:3px solid '+cls+'"':'')+'>'
-            +'<div style="font-size:12.5px;font-weight:600">'+esc(x.user)+(x.uid?' <span class="sub">('+x.uid+')</span>':'')+' · '+esc(x.paid)+'</div>'
+            +'<div style="font-size:12.5px;font-weight:600">'+(x.uid?('<a class="lnk" onclick="userOpen('+(parseInt(x.uid,10)||0)+')">'+esc(x.user)+' ›</a>'):esc(x.user))+(x.uid?' <span class="sub">('+x.uid+')</span>':'')+' · '+esc(x.paid)+'</div>'
             +'<div class="sub" style="margin-top:4px">'
             +'📦 '+esc(x.plan)+' · <b>'+nf(x.amount)+' ₽</b>'+(x.pm?' · '+esc(x.pm):'')
             +(x.promo?'<br>🎟 Промокод: <b>'+esc(x.promo)+'</b>':'')
@@ -518,7 +519,8 @@ function doFind(){
   api('/api/admin/user-find',{q:q}).then(function(d){
     var el=document.getElementById('findres'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">'+(d.msg||'Не найдено')+'</div>';return;}
-    window._curUser=d.user; el.innerHTML=userCardHtml(d.user);
+    /* Найденного — сразу в полную карточку клиента (она в стеке «назад»). */
+    window._curUser=d.user; el.innerHTML=''; userOpen(d.user.id);
   });
 }
 function userCardHtml(u){
@@ -635,7 +637,7 @@ function _refKids(uid){
             +'<div class="kv"><span class="k">Всего оплатили</span><span>'+nf(rub)+' ₽</span></div></div>';
         }
         ks.forEach(function(k){
-          h+='<div class="row"><div><div class="lbl2">'+esc(k.user)+'</div>'
+          h+='<div class="row" onclick="userOpen('+(parseInt(k.id,10)||0)+')"><div><div class="lbl2">'+esc(k.user)+'</div>'
             +'<div class="sub">ID '+k.id+(k.when?(' · пришёл '+_payWhen(k.when)):'')+'</div></div>'
             +'<div style="margin-left:auto;text-align:right">'
             +(k.orders?('<div style="font-size:13px;font-weight:600">'+nf(k.rub)+' ₽</div>'
@@ -686,7 +688,7 @@ function loadBlocks(){
     var h='<div class="glabel">🚫 Заблокированные ('+d.blocked.length+')</div>';
     d.blocked.forEach(function(b){
       var nm=b.username?('@'+b.username):('ID '+b.id);
-      h+='<div class="row" style="cursor:default"><span class="ic">🚫</span><div><div class="lbl2">'+nm+'</div><div class="sub">ID '+b.id+'</div></div><button class="btn row2 sec" style="width:auto;margin:0;padding:7px 12px;font-size:12px" onclick="unblock('+b.id+')">Разбан</button></div>';
+      h+='<div class="row" onclick="userOpen('+(parseInt(b.id,10)||0)+')"><span class="ic">🚫</span><div><div class="lbl2">'+esc(nm)+'</div><div class="sub">ID '+b.id+'</div></div><button class="btn row2 sec" style="width:auto;margin:0;padding:7px 12px;font-size:12px" onclick="event.stopPropagation();unblock('+b.id+')">Разбан</button></div>';
     });
     el.innerHTML=h;
   });
@@ -1982,9 +1984,9 @@ function pLoadOrders(id,off){
     var h='';
     o.forEach(function(x){
       var nm=x.username?('@'+x.username):('ID '+x.client);
-      h+='<div class="row" style="cursor:default"><span class="ic">🧾</span><div style="flex:1">'
+      h+='<div class="row" onclick="orderOpen(\''+_idjs(x.order)+'\')"><span class="ic">🧾</span><div style="flex:1">'
        + '<div class="lbl2">'+esc(x.svc)+(x.plan?(' · '+esc(x.plan)):'')+'</div>'
-       + '<div class="sub">'+esc(x.date)+' · '+esc(nm)+'</div>'
+       + '<div class="sub">'+esc(x.date)+' · '+(x.client?('<a class="lnk" onclick="event.stopPropagation();userOpen('+(parseInt(x.client,10)||0)+')">'+esc(nm)+'</a>'):esc(nm))+'</div>'
        + '<div class="sub">розница '+nf(Math.round(x.base))+' → показано '+nf(Math.round(x.shown))
        + ' → оплачено <b>'+nf(Math.round(x.paid))+' ₽</b></div>'
        + '<div class="sub">тебе '+nf(Math.round(x.owner))+' ₽ · партнёру '+nf(Math.round(x.partner))+' ₽</div>'
@@ -2059,10 +2061,10 @@ function pLoadClientOrders(cid,pid){
     var el=document.getElementById('pcobody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Ошибка.</div>';return;}
     var o=d.orders||[];
-    if(!o.length){el.innerHTML='<div class="note">Покупок нет.</div>';return;}
-    var h='';
+    var h='<button class="btn sec" style="margin-bottom:10px" onclick="userOpen('+(parseInt(cid,10)||0)+')">👤 Карточка клиента</button>';
+    if(!o.length){el.innerHTML=h+'<div class="note">Покупок через партнёра нет.</div>';return;}
     o.forEach(function(x){
-      h+='<div class="row" style="cursor:default"><span class="ic">🧾</span><div style="flex:1">'
+      h+='<div class="row" onclick="orderOpen(\''+_idjs(x.order)+'\')"><span class="ic">🧾</span><div style="flex:1">'
        + '<div class="lbl2">'+esc(x.svc)+(x.plan?(' · '+esc(x.plan)):'')+'</div>'
        + '<div class="sub">'+esc(x.date)+' · оплачено <b>'+nf(Math.round(x.paid))+' ₽</b> · партнёру '+nf(Math.round(x.partner))+' ₽</div>'
        + '<div class="sub">'+esc(x.order)+'</div></div></div>';
@@ -3093,7 +3095,7 @@ function loadPending(svc){
     Object.keys(bys).sort().forEach(function(s){
       h+='<div class="glabel">🌐 '+(s?provName(svc,s):({perplexity:'Perplexity'}[svc]||'Без сайта'))+' ('+bys[s].length+')</div>';
       bys[s].forEach(function(c){
-        h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+esc(c.user)
+        h+='<div class="block"><div style="font-size:12.5px;font-weight:600">'+(c.uid?('<a class="lnk" onclick="userOpen('+(parseInt(c.uid,10)||0)+')">'+esc(c.user)+' ›</a>'):esc(c.user))
           +(c.uid?' <span class="sub">('+c.uid+')</span>':'')+' · '+esc(c.date)+'</div>'+
            '<div class="sub" style="margin-top:4px">🔑 '+esc(c.code)+' · '+planLabel(svc,c.plan)
           +(c.planName?' · '+esc(c.planName):'')
@@ -3365,8 +3367,8 @@ function deltaHtml(cur,prev,lab,money){
   return '<div class="delta '+(cur===prev?'muted':(up?'pos':'neg'))+'" title="'+esc(lab)+'">'
     +(cur===prev?'= ':(up?'▲ ':'▼ '))+Math.abs(p)+'% · '+(money?rub(prev):nf(prev))+' '+esc(lab)+'</div>';
 }
-function kpiCard(lab,val,suf,deltaH,cls,sub){
-  return '<div class="mcard fx"><div class="mlab">'+esc(lab)+'</div>'
+function kpiCard(lab,val,suf,deltaH,cls,sub,onclk){
+  return '<div class="mcard fx'+(onclk?' clk" onclick="'+onclk:'')+'"><div class="mlab">'+esc(lab)+'</div>'
     +'<div class="mval '+(cls||'')+'"><span class="cu" data-v="'+(val||0)+'" data-suf="'+(suf||'')+'">'+nf(Math.round(val||0))+(suf||'')+'</span></div>'
     +(sub?'<div class="delta muted">'+sub+'</div>':'')+(deltaH||'')+'</div>';
 }
@@ -3388,6 +3390,11 @@ function vbars(points,key,opts){
     var tip=esc(p.label+(p.wd?(' '+p.wd):''))+': <b>'+(opts.money?rub(v):nf(v))+'</b>'
       +(p.orders!=null?('<br>заказов: '+p.orders):'')
       +(p.profit!=null&&opts.money?('<br>прибыль: '+sgn(p.profit)+' ₽'):'');
+    if(opts.ctx&&(p.orders||p.revenue)){
+      var _ci=_rg({view:'money',period:opts.ctx.period,date:opts.ctx.date||'',bucket:p.key,
+                   sub:(p.key.length===10?('день '+p.label+(p.wd?(' '+p.wd):'')):('час '+p.label+':00–'+p.label+':59'))});
+      tip+='<br><a class="vtip-a" onclick="_tipHide();finList(window._RG['+_ci+'])">Заказы '+(p.key.length===10?'этого дня':'этого часа')+' ›</a>';
+    }
     if(opts.dayClick&&p.key&&p.key.length===10){
       tip+='<br><a class="vtip-a" onclick="window._mP=\'date\';window._mDate=\''+p.key+'\';document.getElementById(\'vtip\').style.display=\'none\';open2(\'Деньги\')">Открыть этот день ›</a>';
     }
@@ -3434,22 +3441,22 @@ function home(){
   else{
     var lab=d.prevLabel||'';
     h+='<div class="mgrid">'
-      +kpiCard('Выручка',T.revenue,' ₽',deltaHtml(T.revenue,P.revenue,lab,true),'',(T.starsRub?'вкл. Stars '+rub(T.starsRub):''))
-      +kpiCard('Прибыль · '+(T.margin||0)+'%',T.profit,' ₽',deltaHtml(T.profit,P.profit,lab,true),(T.profit>=0?'pos':'neg'))
-      +kpiCard('Заказов',T.orders,'',deltaHtml(T.orders,P.orders,lab,false))
-      +kpiCard('Новых клиентов',T.newUsers,'',deltaHtml(T.newUsers,P.newUsers,lab,false))
+      +kpiCard('Выручка',T.revenue,' ₽',deltaHtml(T.revenue,P.revenue,lab,true),'',(T.starsRub?'вкл. Stars '+rub(T.starsRub):''),'finList(window._RG['+_rg({view:'money',period:per,expect:{revenue:T.revenue}})+'])')
+      +kpiCard('Прибыль · '+(T.margin||0)+'%',T.profit,' ₽',deltaHtml(T.profit,P.profit,lab,true),(T.profit>=0?'pos':'neg'),'','finList(window._RG['+_rg({view:'money',mode:'profit',period:per,expect:{profit:T.profit}})+'])')
+      +kpiCard('Заказов',T.orders,'',deltaHtml(T.orders,P.orders,lab,false),'','','finList(window._RG['+_rg({view:'orders',period:per,expect:{orders:T.orders}})+'])')
+      +kpiCard('Новых клиентов',T.newUsers,'',deltaHtml(T.newUsers,P.newUsers,lab,false),'','','usersNew(window._RG['+_rg({period:per})+'])')
       +'</div>';
     var sx=(d.series||{}).points||[];
     h+='<div class="block fx"><h4>📈 Выручка '+(((d.series||{}).unit==='hour')?'по часам':'по дням')
       +' <span class="muted" style="font-size:11px;font-weight:400;margin-left:auto">нажми на столбик</span></h4>'
-      +vbars(sx,'revenue',{money:true,dayClick:true})
+      +vbars(sx,'revenue',{money:true,dayClick:true,ctx:{period:per,date:''}})
       +'<div class="kv" style="margin-top:6px"><span class="k">Деньгами (FreeKassa)</span><span>'+rub(T.money)+'</span></div>'
       +(T.stars?'<div class="kv"><span class="k">Telegram Stars</span><span>'+nf(T.stars)+' ⭐'+(T.starsRub?(' ≈ '+rub(T.starsRub)):' · курс не задан')+'</span></div>':'')
       +(T.coins?'<div class="kv"><span class="k">Монетками (не деньги)</span><span class="muted">'+rub(T.coins)+'</span></div>':'')
       +'<button class="btn sec" style="margin-top:10px" onclick="window._mP=\''+per+'\';window._mDate=\'\';open2(\'Деньги\')">💰 Подробно: прибыль, закуп, сервисы ›</button></div>';
     var sv=(d.services||[]).filter(function(s){return s.revenue>0||s.cnt>0;}).slice(0,6);
     if(sv.length){
-      h+='<div class="block fx"><h4>🧩 По сервисам</h4>'+hbars2(sv.map(function(s){return {label:(s.emoji?s.emoji+' ':'')+s.name,val:s.revenue,color:svcColor(s.key),sub:s.cnt+' шт · прибыль '+sgn(s.profit)+' ₽'+(s.missing?' · ⚠️ закуп не задан':'')};}),function(i){return rub(i.val);})+'</div>';
+      h+='<div class="block fx"><h4>🧩 По сервисам <span class="muted" style="font-size:11px;font-weight:400;margin-left:auto">нажми — заказы</span></h4>'+hbars2(sv.map(function(s){return {label:(s.emoji?s.emoji+' ':'')+s.name,val:s.revenue,color:svcColor(s.key),sub:s.cnt+' шт · прибыль '+sgn(s.profit)+' ₽'+(s.missing?' · ⚠️ закуп не задан':''),onclick:'finList(window._RG['+_rg({view:'money',period:per,svc:s.key,sub:s.name})+'])'};}),function(i){return rub(i.val);})+'</div>';
     }
   }
   /* «Нужно действие» — каждое число ведёт на экран, где видно то же самое число. */
@@ -3503,14 +3510,16 @@ function _mLoad(per,dts){
     window._mD=d;
     var T=d.totals,P=d.prev||{},lab=d.prevLabel||'',h='';
     h+='<div class="note fx" style="margin:0 0 12px">📅 <b>'+esc(d.label)+'</b>'+(d.live?' · на '+esc(d.asOf):'')+' · время Алматы</div>';
+    var _ctx={period:per,date:dts||''};
+    var _fl=function(o){return 'finList(window._RG['+_rg(Object.assign({},_ctx,o))+'])';};
     h+='<div class="mgrid">'
-      +kpiCard('Выручка',T.revenue,' ₽',deltaHtml(T.revenue,P.revenue,lab,true))
-      +kpiCard('Прибыль · маржа '+(T.margin||0)+'%',T.profit,' ₽',deltaHtml(T.profit,P.profit,lab,true),T.profit>=0?'pos':'neg')
-      +kpiCard('Закуп',T.cost,' ₽','','', T.costMissing?('⚠️ не задан у '+T.costMissing+' зак.'):'по каждому заказу')
-      +kpiCard('Комиссия FK · '+(T.feePct)+'%',T.fee,' ₽','','neg','только с рублей FreeKassa')
+      +kpiCard('Выручка',T.revenue,' ₽',deltaHtml(T.revenue,P.revenue,lab,true),'','',_fl({view:'money',expect:{revenue:T.revenue}}))
+      +kpiCard('Прибыль · маржа '+(T.margin||0)+'%',T.profit,' ₽',deltaHtml(T.profit,P.profit,lab,true),T.profit>=0?'pos':'neg','',_fl({view:'money',mode:'profit',expect:{profit:T.profit}}))
+      +kpiCard('Закуп',T.cost,' ₽','','', T.costMissing?('⚠️ не задан у '+T.costMissing+' зак.'):'по каждому заказу',_fl({view:'money'}))
+      +kpiCard('Комиссия FK · '+(T.feePct)+'%',T.fee,' ₽','','neg','только с рублей FreeKassa',_fl({view:'money',src:'fk',sub:'оплаты через FreeKassa'}))
       +'</div>';
-    h+='<div class="block fx"><div class="kv" style="border:0"><span class="k">Заказов оплачено</span><span>'+nf(T.orders)+'</span></div>'
-      +'<div class="kv"><span class="k">Платящих клиентов</span><span>'+nf(T.payers)+'</span></div>'
+    h+='<div class="block fx"><div class="kv" style="border:0;cursor:pointer" onclick="'+_fl({view:'orders',expect:{orders:T.orders}})+'"><span class="k">Заказов оплачено ›</span><span>'+nf(T.orders)+'</span></div>'
+      +'<div class="kv" style="cursor:pointer" onclick="'+_fl({view:'payers',expect:{payers:T.payers}})+'"><span class="k">Платящих клиентов ›</span><span>'+nf(T.payers)+'</span></div>'
       +'<div class="kv"><span class="k">Средний чек (рублями)</span><span>'+rub(T.avgCheck)+'</span></div>'
       +(T.partner?'<div class="kv"><span class="k">Доля партнёров ('+T.partnerOrders+' зак.)</span><span class="neg">−'+rub(T.partner)+'</span></div>':'')
       +'<div class="kv" style="flex-wrap:wrap;gap:4px"><span class="k">Итог</span><span><b>'+rub(T.revenue)+'</b> − закуп '+rub(T.cost)+' − комиссия '+rub(T.fee)+(T.partner?(' − партнёрам '+rub(T.partner)):'')+' = <b class="'+(T.profit>=0?'pos':'neg')+'">'+rub(T.profit)+'</b></span></div></div>';
@@ -3518,7 +3527,7 @@ function _mLoad(per,dts){
     if(pts.length>1){
       h+='<div class="block fx"><h4>📈 Выручка и прибыль '+((d.series.unit==='hour')?'по часам':'по дням')+'</h4>'
         +'<div style="height:230px;position:relative"><canvas id="finChart"></canvas></div>'
-        +'<div class="sub" style="margin-top:6px">Нажми на столбик — покажу выручку, закуп, комиссию и число заказов.</div></div>';
+        +'<div class="sub" style="margin-top:6px">Нажми на столбик — покажу выручку, закуп, комиссию, а нажми ещё раз — откроются заказы этого '+((d.series.unit==='hour')?'часа':'дня')+'.</div></div>';
     }
     /* Откуда пришли деньги */
     var srcs=(d.sources||[]);
@@ -3526,7 +3535,8 @@ function _mLoad(per,dts){
       var SCOL={fk:'#3987e5',stars:'#c98500',coins:'#9085e9'};
       h+='<div class="block fx"><h4>💳 Откуда</h4>'+hbars2(srcs.map(function(s){
           var v=(s.key==='stars')?(s.rub||s.stars):s.rub;
-          return {label:s.label,val:v,color:SCOL[s.key]||'#9aa0ad',key:s.key,n:s.n,stars:s.stars,rub:s.rub};
+          return {label:s.label,val:v,color:SCOL[s.key]||'#9aa0ad',key:s.key,n:s.n,stars:s.stars,rub:s.rub,
+                  onclick:_fl({view:'money',src:s.key,sub:s.label})};
         }),function(i){
           if(i.key==='stars')return nf(i.stars)+' ⭐'+(i.rub?(' ≈ '+rub(i.rub)):'')+' · '+i.n;
           return rub(i.val)+' · '+i.n;})
@@ -3542,8 +3552,9 @@ function _mLoad(per,dts){
         +'<div onclick="_mTog('+i+')" style="cursor:pointer"><div class="kv" style="border:0;padding:0 0 6px"><span style="font-weight:600">'+(s.emoji?s.emoji+' ':'')+esc(s.name)+' · '+s.cnt+' шт'+(s.missing?' <span class="tag a">закуп не задан</span>':'')+'</span><span class="'+(s.profit>=0?'pos':'neg')+'">'+sgn(s.profit)+' ₽ ›</span></div>'
         +'<div class="sub">выручка '+rub(s.revenue)+(s.stars?(' (⭐ '+nf(s.stars)+')'):'')+' − закуп '+rub(s.cost)+' − комиссия '+rub(s.fee)+(s.partner?(' − партнёрам '+rub(s.partner)):'')+(s.coins?(' · монетками '+rub(s.coins)):'')+'</div></div>'
         +'<div id="mpl_'+i+'" style="display:none;margin-top:8px">'
+        +'<div class="kv" style="cursor:pointer" onclick="'+_fl({view:'money',svc:s.key,sub:s.name})+'"><span class="k"><b>Все заказы '+esc(s.name)+' ›</b></span><span></span></div>'
         +s.plans.map(function(p){
-          return '<div class="kv"><span class="k">'+esc(p.name)+' × '+p.cnt+(p.missing?' ⚠️':'')+'<br><span style="font-size:11px">'+rub(p.revenue)+(p.stars?(' (⭐'+nf(p.stars)+')'):'')+' − '+rub(p.cost)+' − '+rub(p.fee)+(p.partner?(' − партн. '+rub(p.partner)):'')+(p.coins?(' · 🪙'+nf(p.coins)):'')+'</span></span><span class="'+(p.profit>=0?'pos':'neg')+'">'+sgn(p.profit)+' ₽</span></div>';
+          return '<div class="kv" style="cursor:pointer" onclick="'+_fl({view:'money',svc:s.key,plan:p.name,sub:s.name+' · '+p.name})+'"><span class="k">'+esc(p.name)+' ›  × '+p.cnt+(p.missing?' ⚠️':'')+'<br><span style="font-size:11px">'+rub(p.revenue)+(p.stars?(' (⭐'+nf(p.stars)+')'):'')+' − '+rub(p.cost)+' − '+rub(p.fee)+(p.partner?(' − партн. '+rub(p.partner)):'')+(p.coins?(' · 🪙'+nf(p.coins)):'')+'</span></span><span class="'+(p.profit>=0?'pos':'neg')+'">'+sgn(p.profit)+' ₽</span></div>';
         }).join('')+'</div></div>';
     });
     /* ChatGPT по маршруту кода (из бывшей «Прибыли») */
@@ -3587,7 +3598,7 @@ function _mLoad(per,dts){
     var _ofd=(_nd===1)?d.since:'';
     h+='<button class="btn sec" style="margin-top:8px" onclick="window._ofDate=\''+_ofd+'\';window._ofDays='+_nd+';window._ofF=\'all\';window._ofQ=\'\';open2(\'Заказы\')">🧾 Эти же заказы списком</button>';
     el.innerHTML=h;fxRun(el);
-    if(pts.length>1)setTimeout(function(){_finChart(pts,d.series.unit)},0);
+    if(pts.length>1)setTimeout(function(){_finChart(pts,d.series.unit,_ctx)},0);
   });
 }
 function _mTog(i){var e=document.getElementById('mpl_'+i);if(e)e.style.display=(e.style.display==='none'?'':'none');}
@@ -3598,7 +3609,7 @@ function _mSaveSet(){
     if(d&&d.ok){toast('Сохранено — пересчитываю');open2('Деньги');}else toast((d&&d.msg)||'Не сохранилось');});
 }
 var _finCh=null;
-function _finChart(pts,unit){
+function _finChart(pts,unit,ctx){
   var cv=document.getElementById('finChart'); if(!cv||!window.Chart)return;
   if(_finCh){try{_finCh.destroy()}catch(e){}}
   _finCh=new Chart(cv.getContext('2d'),{
@@ -3607,6 +3618,13 @@ function _finChart(pts,unit){
       {type:'line',label:'Прибыль',data:pts.map(function(p){return p.profit}),borderColor:'#199e70',backgroundColor:'#199e70',borderWidth:2,pointRadius:pts.length>16?0:3,pointHoverRadius:5,tension:.25,order:1}
     ]},
     options:{responsive:true,maintainAspectRatio:false,animation:_RM?false:{duration:700,easing:'easeOutCubic'},
+      /* Нажатие на столбик — заказы этого часа/дня (тот же расчёт). */
+      /* Первое касание — подсказка с выручкой и закупом; второе касание того же
+         столбика — его заказы. На телефоне иначе подсказку не увидеть. */
+      onClick:function(ev,els){ if(!ctx||!els||!els.length)return; var i=els[0].index, p=pts[i]; if(!p||!(p.orders||p.revenue))return;
+        if(window._fcLast!==i){window._fcLast=i;return;}
+        window._fcLast=null;
+        finList({view:'money',period:ctx.period,date:ctx.date||'',bucket:p.key,sub:(p.key.length===10?('день '+p.label):('час '+p.label+':00–'+p.label+':59'))}); },
       interaction:{mode:'index',intersect:false},
       plugins:{legend:{labels:{color:'#9aa0ad',boxWidth:12}},
         tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+nf(c.parsed.y)+' ₽'},
@@ -3702,11 +3720,14 @@ function _ofRow(o){
 /* Карточка заказа — одна для «Заказов» и «Выдачи». */
 function orderCard(id){
   var o=(window._feedOrders||{})[id]||{};
-  if(!o.id)return hdr("Заказ")+'<div class="wrap"><div class="note">Открой заказ из списка заново.</div></div>';
+  /* Нет в памяти (открыли из карточки клиента, партнёров, после «назад») —
+     берём с сервера по номеру. Раньше было «Открой заказ из списка заново». */
+  if(!o.id){var _nv=window._navN;setTimeout(function(){_ocFetch(id,_nv)},0);
+    return hdr("Заказ")+'<div class="wrap" id="ocwrap">'+skel(1,220)+skel(2,48)+'</div>';}
   setTimeout(function(){if(!o.virtual)feedThread(id)},0);
   var accL={chatgpt:'📧 Email',claude:'🏢 Organization',perplexity:'🆔 Аккаунт'}[o.svc]||'Аккаунт';
   var h=hdr("Заказ",(o.service||'')+(o.plan?(' · '+o.plan):''))+'<div class="wrap"><div class="block fx lvl-'+o.level+'">'
-    +'<div style="font-weight:600;overflow-wrap:anywhere">'+esc(o.user||'')+'</div>'
+    +'<div style="font-weight:600;overflow-wrap:anywhere">'+(o.userId?('<a class="lnk" onclick="userOpen('+String(o.userId).replace(/[^0-9]/g,'')+')">'+esc(o.user||'')+' ›</a>'):esc(o.user||''))+'</div>'
     +'<div style="margin:6px 0 4px"><span class="tag '+(_LVL_TAG[o.level]||'n')+'">'+esc(o.stage||'')+'</span></div>'
     +'<div class="kv"><span class="k">Сервис</span><span>'+esc(o.service||'')+(o.plan?(' · '+esc(o.plan)):'')+'</span></div>'
     +'<div class="kv"><span class="k">Деньгами</span><span>'+(o.stars?'— (Stars)':rub(o.amount))+'</span></div>'
@@ -3722,7 +3743,10 @@ function orderCard(id){
     +(o.virtual?'':'<div class="kv" style="cursor:pointer" onclick="copyText(\''+esc(id)+'\')"><span class="k">Заказ</span><span style="font-size:11px;word-break:break-all">'+esc(id)+' 📋</span></div>')
     +'</div>';
   if(o.virtual){
-    h+='<div class="note">Пакет кредитов за Stars — кредиты начислены сразу при оплате. Отдельного заказа у такой покупки нет, действий не требуется.</div>';
+    h+=(o.shopStars
+      ?'<div class="note neg">Оплата Stars за подписку пришла, но заказ к ней не найден. Проверь, выдана ли подписка клиенту — в «Деньгах» эти звёзды учтены в выручке.</div>'
+      :'<div class="note">Пакет кредитов за Stars — кредиты начислены сразу при оплате. Отдельного заказа у такой покупки нет, действий не требуется.</div>');
+    if(o.userId)h+='<button class="btn sec" onclick="userOpen('+String(o.userId).replace(/[^0-9]/g,'')+')">👤 Карточка клиента</button>';
     return h+'</div>';
   }
   h+='<div id="feedthread"></div>';
@@ -3738,10 +3762,248 @@ function orderCard(id){
     h+='<button class="btn" onclick="feedAct(\''+esc(id)+'\',\'manual\')">✅ '+(o.isAuto?'Активировали вручную':'Выполнено')+'</button>';
     if(o.isAuto)h+='<button class="btn sec" onclick="feedAct(\''+esc(id)+'\',\'resend\')" style="margin-top:8px">🔔 Повторно выдать активацию</button>';
   }
+  if(o.userId)h+='<button class="btn sec" style="margin-top:8px" onclick="userOpen('+String(o.userId).replace(/[^0-9]/g,'')+')">👤 Карточка клиента</button>';
   h+='<button class="btn sec" style="margin-top:8px" onclick="'+(o.username?('tgLink(\''+String(o.username).replace(/[^A-Za-z0-9_]/g,'')+'\')'):('tgLinkId(\''+String(o.userId||'').replace(/[^0-9]/g,'')+'\')'))+'">✍️ Написать клиенту</button>';
   h+='<button class="btn sec" onclick="copyText(\''+(o.userId||'')+'\')" style="margin-top:8px">🆔 Копировать ID клиента ('+(o.userId||'')+')</button>';
   if(paid)h+='<button class="btn danger" onclick="feedAct(\''+esc(id)+'\',\'cancel\')" style="margin-top:8px">🗑 Отменить заказ</button>';
   return h+'</div>';
+}
+
+/* ═══════════════ ГЛУБИНА: списки по клику, карточка клиента ═══════════════
+   Правило: список, открытый с цифры, считается сервером ТЕМ ЖЕ расчётом, что и
+   цифра (fin-items / users-list). Наверху каждого списка — итог, и он равен
+   цифре, с которой пришёл. 08.10.2026 */
+function _rg(x){(window._RG=window._RG||[]).push(x);return window._RG.length-1;}
+function _idjs(s){return String(s==null?'':s).replace(/[^A-Za-z0-9_:\-\.]/g,'');}
+/* Открыть заказ откуда угодно: из кэша или запросом по id. */
+function orderOpen(id){id=String(id||'');if(!id)return;leaf(function(){return orderCard(id)});}
+function _ocFetch(id,nav){
+  api('/api/admin/order-get',{id:id}).then(function(d){
+    if(window._navN!==nav)return;
+    var el=document.getElementById('ocwrap'); if(!el)return;
+    if(!d||!d.ok||!d.order){el.innerHTML='<div class="note neg">⚠️ '+esc((d&&d.msg)||'Заказ не загрузился — это сбой связи или сервера.')+'</div>';return;}
+    window._feedOrders=window._feedOrders||{};window._feedOrders[id]=d.order;
+    app.innerHTML=orderCard(id);syncBack();try{fxRun(app)}catch(e){}
+  });
+}
+function userOpen(uid){uid=String(uid||'').replace(/[^0-9]/g,'');if(!uid){toast('Нет ID клиента');return;}leaf(function(){return userCard(uid)});}
+
+/* ── Список записей «Денег»: заказы / выручка / прибыль / платящие ── */
+var _FL_TITLES={orders:'Оплаченные заказы',money:'Из чего сложилась выручка',profit:'Прибыль по заказам',payers:'Платящие клиенты'};
+function finList(o){o=o||{};o.page=o.page||0;leaf(function(){
+  setTimeout(function(){_flLoad(o)},0);
+  var t=o.title||_FL_TITLES[o.mode||o.view]||'Список';
+  return hdr(t,o.sub||'')+'<div class="wrap"><div id="flbody">'+skel(1,120)+skel(4,62)+'</div></div>';});}
+function _flLoad(o){
+  var q=_seq('fl');
+  api('/api/admin/fin-items',{period:o.period||'today',date:o.date||'',view:o.view||'orders',bucket:o.bucket||'',
+      svc:o.svc||'',plan:o.plan||'',src:o.src||'',page:o.page||0,sort:((o.mode==='profit')?'profit':'')}).then(function(d){
+    if(!_seqOk('fl',q))return;
+    var el=document.getElementById('flbody'); if(!el)return;
+    if(!d||!d.ok){el.innerHTML=errBox('_flLoad(window._RG['+_rg(o)+'])');return;}
+    var T=d.totals||{},h='',mode=o.mode||o.view;
+    h+='<div class="note fx" style="margin:0 0 10px">📅 <b>'+esc(d.label||'')+'</b>'+(o.sub?' · '+esc(o.sub):'')+' · время Алматы</div>';
+    h+='<div class="block fx">'
+      +'<div class="kv" style="border:0;padding-top:0"><span class="k">Заказов</span><span><b>'+nf(T.orders)+'</b></span></div>'
+      +'<div class="kv"><span class="k">Выручка</span><span><b>'+rub(T.revenue)+'</b></span></div>'
+      +(T.money!==T.revenue?'<div class="kv"><span class="k">· деньгами (FreeKassa)</span><span>'+rub(T.money)+'</span></div>':'')
+      +(T.stars?'<div class="kv"><span class="k">· Stars</span><span>'+nf(T.stars)+' ⭐'+(T.starsRub?(' ≈ '+rub(T.starsRub)):' · курс не задан')+'</span></div>':'')
+      +'<div class="kv"><span class="k">Закуп</span><span>−'+rub(T.cost)+'</span></div>'
+      +'<div class="kv"><span class="k">Комиссия FK</span><span>−'+rub(T.fee)+'</span></div>'
+      +(T.partner?'<div class="kv"><span class="k">Доля партнёров</span><span>−'+rub(T.partner)+'</span></div>':'')
+      +'<div class="kv"><span class="k">Прибыль</span><span><b class="'+(T.profit>=0?'pos':'neg')+'">'+sgn(T.profit)+' ₽</b></span></div>'
+      +(T.coins?'<div class="kv"><span class="k">Монетками (не деньги)</span><span class="muted">'+rub(T.coins)+'</span></div>':'')
+      +'<div class="kv"><span class="k">Платящих клиентов</span><span>'+nf(T.payers)+'</span></div>'
+      +'<div class="sub" style="margin-top:6px">Считается тем же расчётом, что и плитка, с которой ты пришёл, — на момент открытия списка.</div></div>';
+    /* Пока список открывался, мог прийти новый заказ: честно говорим, что
+       цифра на плитке уже устарела (сервер считает заново в момент клика). */
+    if(o.expect&&d.all){Object.keys(o.expect).forEach(function(k){
+      if(d.all[k]!=null&&d.all[k]!==o.expect[k])h+='<div class="note">🔄 С момента открытия Сводки данные обновились: '
+        +({orders:'заказов',revenue:'выручка',profit:'прибыль',payers:'платящих'}[k]||k)+' сейчас <b>'+(k==='orders'||k==='payers'?nf(d.all[k]):rub(d.all[k]))+'</b>, на плитке было '+(k==='orders'||k==='payers'?nf(o.expect[k]):rub(o.expect[k]))+'. Список — по свежим данным.</div>';});}
+    if((d.warnings||[]).length)h+='<div class="note neg">'+d.warnings.map(esc).join('<br>')+'</div>';
+    if(d.missing)h+='<div class="note neg">⚠️ '+d.missing+' зап. не нашлись по номеру (могли удалить) — в итоге выше они учтены.</div>';
+    if(mode==='payers'){
+      var ps=d.payers||[];
+      if(!ps.length)h+='<div class="note">Платящих за период нет.</div>';
+      h+=(ps.length?'<div class="glabel">👥 Клиенты ('+nf(d.total)+') — по выручке</div>':'');
+      ps.forEach(function(p){
+        h+='<div class="row fx" onclick="userOpen('+p.uid+')"><span class="ic">👤</span>'
+          +'<div style="min-width:0;flex:1"><div class="lbl2">'+esc(p.user)+'</div>'
+          +'<div class="sub">заказов '+p.orders+(p.coins?(' · 🪙 '+nf(p.coins)):'')+(p.stars?(' · ⭐ '+nf(p.stars)):'')+'</div></div>'
+          +'<div style="text-align:right;margin-left:8px"><div style="font-size:13px;font-weight:600">'+rub(p.revenue)+'</div>'
+          +'<div class="sub '+(p.profit>=0?'pos':'neg')+'">'+sgn(p.profit)+' ₽</div></div></div>';
+      });
+    }else{
+      var rows=d.orders||[];
+      if(!rows.length)h+='<div class="note">Записей нет.</div>';
+      window._feedOrders=window._feedOrders||{};
+      if(rows.length)h+='<div class="glabel">🧾 '+(mode==='orders'?'Заказы':'Записи')+' ('+nf(d.total)+')'+(mode==='profit'?' — от самых убыточных':'')+'</div>';
+      rows.forEach(function(x){window._feedOrders[x.id]=x;h+=_flRow(x,mode);});
+    }
+    if((d.pages||1)>1){
+      var _oi=_rg(o);
+      h+='<div class="btns2" style="margin-top:10px">'
+        +'<button class="btn row2 sec"'+(d.page<=0?' disabled':'')+' onclick="_flPage(window._RG['+_oi+'],'+((d.page||0)-1)+')">← Назад</button>'
+        +'<button class="btn row2 sec"'+(d.page>=d.pages-1?' disabled':'')+' onclick="_flPage(window._RG['+_oi+'],'+((d.page||0)+1)+')">Дальше →</button></div>'
+        +'<div class="note">Стр. '+((d.page||0)+1)+' из '+d.pages+' · всего '+nf(d.total)+'</div>';
+    }
+    el.innerHTML=h;fxRun(el);
+  });
+}
+/* Страница запоминается в самом объекте списка — «назад» из карточки заказа
+   вернёт на ту же страницу, а не на первую. */
+function _flPage(o,pg){o.page=Math.max(0,pg||0);window.scrollTo(0,0);_flLoad(o);}
+function _flRow(x,mode){
+  var f=x.fin||{};
+  var right=(mode==='profit')
+    ?('<div style="font-size:13px;font-weight:600" class="'+(f.profit>=0?'pos':'neg')+'">'+sgn(f.profit)+' ₽</div><div class="sub">из '+rub(f.rev)+'</div>')
+    :('<div style="font-size:13px;font-weight:600">'+rub(f.rev)+'</div>'+(f.profit!=null?'<div class="sub '+(f.profit>=0?'pos':'neg')+'">'+sgn(f.profit)+' ₽</div>':''));
+  return '<div class="row fx lvl-'+x.level+'" onclick="orderOpen(\''+_idjs(x.id)+'\')">'
+    +'<span class="ic" style="background:'+svcColor(x.svc)+'26;color:'+svcColor(x.svc)+'">'+(x.emoji||'📦')+'</span>'
+    +'<div style="min-width:0;flex:1"><div class="lbl2">'+esc(x.service)+(x.plan?(' · '+esc(x.plan)):'')+'</div>'
+    +'<div class="sub">'+esc(x.user)+(x.num?(' · #'+x.num):'')+' · '+esc(x.date)+(x.method?(' · '+esc(x.method)):'')+'</div>'
+    +'<div class="sub">'+(f.shopNoOrder?'⭐ Stars без найденного заказа · ':'')+'закуп '+rub(f.cost)+' · комиссия '+rub(f.fee)+(f.partner?(' · партнёру '+rub(f.partner)):'')+'</div>'
+    +'<div style="margin-top:4px"><span class="tag '+(_LVL_TAG[x.level]||'n')+'">'+esc(x.stage)+'</span></div></div>'
+    +'<div style="margin-left:8px;text-align:right;flex-shrink:0">'+right+'</div></div>';
+}
+
+/* ── Новые клиенты за период (ровно те, кого считает плитка) ── */
+var _SRC_RU={organic:'пришёл сам',ref:'по реф-ссылке',partner:'от партнёра'};
+function usersNew(o){o=o||{};leaf(function(){
+  setTimeout(function(){_unLoad(o)},0);
+  return hdr('Новые клиенты',o.sub||'')+'<div class="wrap"><div id="unbody">'+skel(1,100)+skel(5,58)+'</div></div>';});}
+function _unLoad(o){
+  var q=_seq('un');
+  api('/api/admin/users-list',{period:o.period||'today',date:o.date||''}).then(function(d){
+    if(!_seqOk('un',q))return;
+    var el=document.getElementById('unbody'); if(!el)return;
+    if(!d||!d.ok){el.innerHTML=errBox('_unLoad(window._RG['+_rg(o)+'])');return;}
+    var us=d.users||[],S=d.bySrc||{},h='';
+    h+='<div class="note fx" style="margin:0 0 10px">📅 <b>'+esc(d.label||'')+'</b> · время Алматы</div>';
+    h+='<div class="mgrid">'
+      +'<div class="mcard"><div class="mlab">Новых клиентов</div><div class="mval">'+nf(d.count)+'</div></div>'
+      +'<div class="mcard"><div class="mlab">Купили в этот же период</div><div class="mval'+(d.bought?' pos':'')+'">'+nf(d.bought)+'</div>'
+        +'<div class="delta muted">'+(d.count?Math.round(d.bought/d.count*100):0)+'% конверсия</div></div>'
+      +'<div class="mcard"><div class="mlab">Пришли сами</div><div class="mval">'+nf(S.organic||0)+'</div></div>'
+      +'<div class="mcard"><div class="mlab">Реф-ссылка / партнёр</div><div class="mval">'+nf(S.ref||0)+' / '+nf(S.partner||0)+'</div></div></div>';
+    h+='<div class="sub" style="margin:0 2px 10px">Новый = появился в базе в этот период и запускал бота (как на плитке). Кто только вступил в канал и бота не открывал — не считается.</div>';
+    if(d.truncated)h+='<div class="note neg">Показаны последние '+us.length+' из '+nf(d.count)+' — сузь период.</div>';
+    if(!us.length)h+='<div class="note">Новых клиентов за период нет.</div>';
+    us.forEach(function(u){
+      var tag=u.paid?('<span class="tag g">'+u.paid+' пок. · '+rub(u.rub)+'</span>'):'<span class="tag n">не покупал</span>';
+      h+='<div class="row fx" onclick="userOpen('+u.id+')"><span class="ic">'+(u.paid?'💰':'👤')+'</span>'
+        +'<div style="min-width:0;flex:1"><div class="lbl2">'+esc(u.user)+(u.blocked?' <span class="tag r">блок</span>':'')+'</div>'
+        +'<div class="sub">'+esc(u.created)+' · '+esc(_SRC_RU[u.src]||u.src)+(u.via?(' '+esc(u.via)):'')+'</div>'
+        +'<div class="sub">'+(u.firstPaid?('первая покупка '+esc(u.firstPaid)+(u.boughtInPeriod?' (в этот период)':'')):'')+(u.gens?((u.firstPaid?' · ':'')+'генераций '+u.gens):'')+'</div>'
+        +'<div style="margin-top:4px">'+tag+'</div></div><span class="chev">›</span></div>';
+    });
+    el.innerHTML=h;fxRun(el);
+  });
+}
+
+/* ── Карточка клиента ── */
+var _SVC_EM={chatgpt:'✨',claude:'⚡',perplexity:'🔍'};
+var _SVC_RU={chatgpt:'ChatGPT',claude:'Claude',perplexity:'Perplexity'};
+function userCard(uid){
+  var nav=window._navN;
+  setTimeout(function(){_ucLoad(uid,nav)},0);
+  return hdr('Клиент','ID '+uid)+'<div class="wrap" id="ucwrap">'+skel(1,110)+skel(1,120)+skel(4,60)+'</div>';
+}
+function _ucLoad(uid,nav){
+  api('/api/admin/user-card',{id:uid}).then(function(d){
+    if(window._navN!==nav)return;
+    var el=document.getElementById('ucwrap'); if(!el)return;
+    if(!d||!d.ok){el.innerHTML=(d&&d.msg)?'<div class="note">'+esc(d.msg)+'</div>':errBox('_ucLoad(\''+_idjs(uid)+'\','+nav+')');return;}
+    window._uc=d;
+    var u=d.user||{},M=d.money||{},h='';
+    var tags=(u.blocked?'<span class="tag r">заблокирован</span> ':'')+(u.isPartner?'<span class="tag b">партнёр</span> ':'')
+      +(u.refPremium?'<span class="tag a">премиум-реферал'+(u.refPct!=null?(' '+u.refPct+'%'):'')+'</span> ':'')
+      +(M.paid?'<span class="tag g">клиент</span>':'<span class="tag n">не покупал</span>');
+    h+='<div class="block fx"><div style="display:flex;align-items:center;gap:12px">'
+      +'<div class="ic" style="width:46px;height:46px;font-size:21px">👤</div><div style="min-width:0">'
+      +'<div style="font-size:16px;font-weight:700;overflow-wrap:anywhere">'+esc(u.nick)+'</div>'
+      +(u.name&&u.username?'<div class="sub">'+esc(u.name)+'</div>':'')
+      +'<div class="sub" style="cursor:pointer" onclick="copyText(\''+u.id+'\')">ID '+u.id+' 📋</div></div></div>'
+      +'<div style="margin-top:8px">'+tags+'</div></div>';
+    /* Деньги */
+    h+='<div class="mgrid">'
+      +'<div class="mcard fx"><div class="mlab">Потратил рублями</div><div class="mval">'+rub(M.rub||0)+'</div><div class="delta muted">средний чек '+rub(M.avg||0)+'</div></div>'
+      +'<div class="mcard fx"><div class="mlab">Оплаченных заказов</div><div class="mval">'+nf(M.paid||0)+'</div>'+(M.cancelled||M.unpaid?'<div class="delta muted">отменено '+(M.cancelled||0)+' · не оплачено '+(M.unpaid||0)+'</div>':'')+'</div>'
+      +'<div class="mcard fx"><div class="mlab">Баланс</div><div class="mval">'+nf(u.credits)+' кр</div><div class="delta muted">🪙 '+nf(u.coins)+' монет</div></div>'
+      +'<div class="mcard fx"><div class="mlab">Stars / монетками</div><div class="mval">'+nf(M.stars||0)+' ⭐</div><div class="delta muted">'+(M.starsRub?('≈ '+rub(M.starsRub)+' · '):'')+'монетками оплачено '+nf(M.coins||0)+'</div></div></div>';
+    h+='<div class="block fx"><h4>🧭 Откуда и когда</h4>'
+      +'<div class="kv"><span class="k">Пришёл</span><span>'+(u.partnerOf?('от партнёра <a class="lnk" onclick="pOpen('+u.partnerOf.id+')">'+esc(u.partnerOf.user)+' ›</a>'):
+          (u.invitedBy?('по ссылке <a class="lnk" onclick="userOpen('+u.invitedBy.id+')">'+esc(u.invitedBy.user)+' ›</a>'):'сам'))+'</span></div>'
+      +(u.partnerOf&&u.invitedBy?'<div class="kv"><span class="k">Пригласил</span><span><a class="lnk" onclick="userOpen('+u.invitedBy.id+')">'+esc(u.invitedBy.user)+' ›</a></span></div>':'')
+      +'<div class="kv"><span class="k">Появился в базе</span><span>'+esc(u.created||'—')+'</span></div>'
+      +'<div class="kv"><span class="k">Запустил бота</span><span>'+esc(u.started||'не запускал')+'</span></div>'
+      +'<div class="kv"><span class="k">Последняя активность</span><span>'+esc(u.lastActive||'—')+'</span></div>'
+      +(M.first?'<div class="kv"><span class="k">Первая / последняя покупка</span><span>'+esc(M.first)+'<br>'+esc(M.last)+'</span></div>':'')
+      +'</div>';
+    /* Подписки и коды */
+    var subs=d.subs||[],pend=(d.pending||[]).filter(function(p){return p.live;});
+    if(subs.length||pend.length||u.gptEmail||u.gptOrg){
+      h+='<div class="block fx"><h4>🔑 Подписки и коды</h4>';
+      if(u.gptEmail||u.gptOrg)h+='<div class="kv"><span class="k">ChatGPT-аккаунт</span><span style="word-break:break-all;text-align:right">'+esc(u.gptEmail||'—')+(u.gptOrg?('<br><span class="sub" style="cursor:pointer" onclick="copyText(\''+_idjs(u.gptOrg)+'\')">org '+esc(u.gptOrg)+' 📋</span>'):'')+'</span></div>';
+      pend.forEach(function(p){
+        h+='<div class="kv"'+(p.orderId?' style="cursor:pointer" onclick="orderOpen(\''+_idjs(p.orderId)+'\')"':'')+'><span class="k">⏳ '+(_SVC_RU[p.svc]||p.svc)+': ждёт активации</span><span style="text-align:right">'+esc(p.code)+'<br><span class="sub">до '+esc(p.expires)+'</span></span></div>';
+      });
+      subs.forEach(function(s){
+        h+='<div class="kv"'+(s.orderId?' style="cursor:pointer" onclick="orderOpen(\''+_idjs(s.orderId)+'\')"':'')+'><span class="k">'+(_SVC_EM[s.svc]||'')+' '+(_SVC_RU[s.svc]||s.svc)+' · '+esc(s.plan||'')+(s.route?(' · '+esc(s.route)):'')
+          +'<br><span style="font-size:11px">'+esc(s.usedAt||'')+'</span></span><span style="text-align:right;word-break:break-all;max-width:58%">'+esc(s.code)+(s.acc?('<br><span class="sub">'+esc(s.acc)+'</span>'):'')+(s.orderId?' ›':'')+'</span></div>';
+      });
+      if(!subs.length&&!pend.length)h+='<div class="sub">Активированных кодов нет.</div>';
+      h+='</div>';
+    }
+    /* Заказы */
+    var os=d.orders||[];
+    window._feedOrders=window._feedOrders||{};
+    h+='<div class="glabel">🧾 Заказы ('+os.length+(M.ordersTotal&&M.ordersTotal>os.length?(' из '+M.ordersTotal):'')+')</div>';
+    if(M.ordersTotal&&M.ordersTotal>os.length)h+='<div class="note">Показаны последние '+os.length+' — остальные найдёшь в «Заказах» поиском по ID '+u.id+'. «Оплаченных заказов» выше посчитано по всем.</div>';
+    if(!os.length)h+='<div class="note">Заказов нет.</div>';
+    os.forEach(function(o,i){window._feedOrders[o.id]=o;h+='<div class="ucord"'+(i>=15?' style="display:none"':'')+'>'+_ofRow(o)+'</div>';});
+    if(os.length>15)h+='<button class="btn sec" id="ucmore" onclick="document.querySelectorAll(\'.ucord\').forEach(function(e){e.style.display=\'\'});this.remove()">Показать все '+os.length+'</button>';
+    /* Генерации */
+    var G=d.gens||{};
+    if(G.n){
+      h+='<div class="block fx"><h4>🎨 Генерации</h4>'
+        +'<div class="kv"><span class="k">Всего</span><span>'+nf(G.n)+' · '+nf(G.credits)+' кр</span></div>'
+        +'<div class="kv"><span class="k">За 30 дней</span><span>'+nf(G.n30)+'</span></div>'
+        +'<div class="kv"><span class="k">Последняя</span><span>'+esc(G.last||'—')+'</span></div>'
+        +(G.byType||[]).map(function(t){return '<div class="kv"><span class="k">· '+esc(t.t)+'</span><span>'+nf(t.n)+'</span></div>';}).join('')
+        +'</div>';
+    }
+    /* Рефералы */
+    var R=d.refs||{};
+    if(R.count||R.coins||R.partnerClients){
+      h+='<div class="block fx"><h4>👥 Привёл</h4>'
+        +(R.count?'<div class="kv" style="cursor:pointer" onclick="_refKids('+u.id+')"><span class="k">По реф-ссылке</span><span>'+R.count+(R.paid?(' · купили '+R.paid):'')+' ›</span></div>':'')
+        +(R.coins?'<div class="kv"><span class="k">Заработал монеток (премиум)</span><span>'+nf(R.coins)+'</span></div>':'')
+        +(R.partnerClients?'<div class="kv" style="cursor:pointer" onclick="pClients('+u.id+')"><span class="k">Клиенты как партнёра</span><span>'+R.partnerClients+' ›</span></div>':'')
+        +'</div>';
+    }
+    if((d.promos||[]).length){
+      h+='<div class="block fx"><h4>🎟 Промокоды</h4>'+d.promos.map(function(p){return '<div class="kv"><span class="k">'+esc(p.code)+'</span><span>'+esc(p.when)+'</span></div>';}).join('')+'</div>';
+    }
+    if((d.events||[]).length){
+      h+='<div class="block fx"><h4>🕓 История (последние '+d.events.length+')</h4>'+d.events.map(function(e){
+        return '<div class="kv"><span class="k">'+esc(e.label)+'<br><span style="font-size:11px">'+esc(e.when)+'</span></span><span style="text-align:right;word-break:break-word;max-width:55%;font-size:12px">'+esc(e.data)+'</span></div>';}).join('')+'</div>';
+    }
+    if((d.warnings||[]).length)h+='<div class="note neg">⚠️ '+d.warnings.map(esc).join('<br>')+'</div>';
+    /* Действия */
+    h+='<button class="btn" onclick="'+(u.username?('tgLink(\''+String(u.username).replace(/[^A-Za-z0-9_]/g,'')+'\')'):('tgLinkId(\''+u.id+'\')'))+'">✍️ Написать</button>'
+      +'<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return balForm(\'add\',\''+u.id+'\')})">💰 Начислить</button>'
+      +'<button class="btn row2 '+(u.blocked?'sec':'danger')+'" onclick="_ucBlock('+u.id+','+(u.blocked?'false':'true')+')">'+(u.blocked?'Разблокировать':'Заблокировать')+'</button></div>';
+    el.innerHTML=h;fxRun(el);
+  });
+}
+function _ucBlock(id,block){
+  _gwConfirm2(block?'Заблокировать клиента?':'Разблокировать клиента?',block?'Бот перестанет ему отвечать и не выдаст подписки.':'Клиент снова сможет пользоваться ботом.',block?'Да, заблокировать':'Да, разблокировать',function(){
+    api('/api/admin/block',{id:id,block:block}).then(function(d){
+      toast(d&&d.ok?(block?'Заблокирован':'Разблокирован'):'Ошибка — ничего не изменено');
+      if(d&&d.ok){var el=document.getElementById('ucwrap');if(el)_ucLoad(String(id),window._navN);}
+    });
+  });
 }
 
 /* ═════════════════════════════ ВЫДАЧА ═══════════════════════════════════ */
@@ -3844,7 +4106,7 @@ function _anLoad(p){
     if(!s||!s.ok||!s.series){el.innerHTML=errBox("_anLoad('"+p+"')");return;}
     var h='<div class="mgrid">'
       +kpiCard('Генераций',s.gens,'')+kpiCard('Списано кредитов',s.creditsSpent,'')
-      +kpiCard('Генерировали людей',s.genUsers,'')+kpiCard('Новых клиентов',s.newUsers,'')+'</div>';
+      +kpiCard('Генерировали людей',s.genUsers,'')+kpiCard('Новых клиентов',s.newUsers,'','','','','usersNew(window._RG['+_rg({period:p})+'])')+'</div>';
     h+='<div class="block fx"><h4>📊 Генерации за 14 дней</h4>'+vbars(s.series,'value',{})+'</div>';
     var pal=['#3987e5','#d95926','#199e70','#c98500','#d55181','#008300','#9085e9','#e66767'];
     if(s.byType&&s.byType.length)h+='<div class="block fx"><h4>🧩 По типам · '+esc(s.label)+'</h4>'+hbars2(s.byType.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%8],sub:nf(x.cr)+' кр'};}),function(i){return nf(i.val);})+'</div>';
@@ -3853,8 +4115,8 @@ function _anLoad(p){
       var u=a.users;
       h+='<div class="glabel">👥 Аудитория (всё время)</div><div class="mgrid">'
         +kpiCard('Всего в боте',u.total,'')+kpiCard('Генерировали за 30 дн',u.active30,'')
-        +kpiCard('Пришли сегодня',u.newToday,'')+kpiCard('Хоть раз платили',u.withBuy,'')+'</div>';
-      if(a.topUsers&&a.topUsers.length)h+='<div class="block fx"><h4>👑 Больше всех генерировали (всё время)</h4>'+hbars2(a.topUsers.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%8]};}),function(i){return nf(i.val)+' ген';})+'</div>';
+        +kpiCard('Пришли сегодня',u.newToday,'','','','','usersNew(window._RG['+_rg({period:'today'})+'])')+kpiCard('Хоть раз платили',u.withBuy,'')+'</div>';
+      if(a.topUsers&&a.topUsers.length)h+='<div class="block fx"><h4>👑 Больше всех генерировали (всё время)</h4>'+hbars2(a.topUsers.map(function(x,i){return {label:x.label,val:x.val,color:pal[i%8],onclick:(x.id?('userOpen('+(parseInt(x.id,10)||0)+')'):'')};}),function(i){return nf(i.val)+' ген';})+'</div>';
     }
     el.innerHTML=h;fxRun(el);
   });

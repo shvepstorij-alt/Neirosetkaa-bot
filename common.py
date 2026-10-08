@@ -3813,7 +3813,8 @@ def _fin_match_stars(orders, stars, window_s: int = 300, exclude=None) -> dict:
     return out
 
 
-async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True) -> dict:
+async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True,
+                       items: list = None) -> dict:
     """Все деньги за окно [a_dt, b_dt) (aware). Единственный источник цифр.
 
     Правила (одни для всех экранов):
@@ -3830,7 +3831,12 @@ async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True) -> dict:
         деньги пришли тебе, но принадлежат партнёру. Ревью 06.10.2026.
     Прибыль = выручка − закуп − комиссия − доля партнёров.
     Если часть данных не прочиталась — это попадает в warnings и в
-    подсказки на экране, а не молча превращается в ноль."""
+    подсказки на экране, а не молча превращается в ноль.
+
+    items — если передан список, в него складывается КАЖДАЯ учтённая запись
+    (заказ или платёж Stars) с теми же суммами, что пошли в итоги. По нему
+    строятся списки «по клику» на плитках: сумма списка = цифре на плитке по
+    построению, а не по совпадению. 08.10.2026"""
     _td = datetime.timedelta
     A, B = _fin_to_db(a_dt, off), _fin_to_db(b_dt, off)
     warnings = []
@@ -3873,18 +3879,20 @@ async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True) -> dict:
 
     # ── Stars: журнал stars_payments (с 29.09.2026) + старые записи payments ──
     stars_rows = []
+    stars_ids = []       # параллельно stars_rows: id для «заказа по id»
     try:
         _first = await conn.fetchval("SELECT MIN(created_at) FROM stars_payments")
         for x in await conn.fetch(
-                "SELECT user_id, payload, COALESCE(amount,0) AS amount, created_at "
+                "SELECT charge_id, user_id, payload, COALESCE(amount,0) AS amount, created_at "
                 "FROM stars_payments WHERE created_at>=$1 AND created_at<$2",
                 a_dt.astimezone(datetime.timezone.utc), b_dt.astimezone(datetime.timezone.utc)):
             stars_rows.append((x["user_id"], x["payload"] or "", int(x["amount"] or 0),
                                x["created_at"].astimezone(_BOT_TZ)))
+            stars_ids.append("stars:" + str(x["charge_id"]))
         # Пакеты кредитов за Stars до появления журнала писались в payments
         # (method='stars', в amount_rub — число звёзд). После — пишутся в оба
         # места, поэтому берём payments только ДО первой записи журнала.
-        _lq = ("SELECT user_id, COALESCE(amount_rub,0) AS amount, created_at FROM payments "
+        _lq = ("SELECT id, user_id, COALESCE(amount_rub,0) AS amount, created_at FROM payments "
                "WHERE method='stars' AND created_at>=$1 AND created_at<$2")
         _largs = [A, B]
         if _first is not None:
@@ -3893,6 +3901,7 @@ async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True) -> dict:
         for x in await conn.fetch(_lq, *_largs):
             stars_rows.append((x["user_id"], "pack:legacy", int(x["amount"] or 0),
                                _fin_from_db(x["created_at"], off)))
+            stars_ids.append("stars:legacy" + str(x["id"]))
     except Exception as _e_st:
         logging.error(f"fin: stars: {_e_st}")
         warnings.append("Не прочитался журнал Stars — звёзды за период не показаны.")
@@ -4058,6 +4067,18 @@ async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True) -> dict:
             if miss and k not in ("appstore", "credits"):
                 X["missing"] = True
 
+        if items is not None:
+            items.append({
+                "kind": "fk", "id": oid, "uid": int(r["user_id"] or 0), "svc": k, "ts": dt_l,
+                "plan": pname, "bk": (None if bk is None else
+                                      (f"{bk:02d}:00" if hourly else bk.isoformat())),
+                "money": money, "coins": coins, "starsAmt": st_amt, "starsRub": st_rub,
+                "cost": cost, "fee": fee, "partner": psum,
+                "profit": money + st_rub - cost - fee - psum,
+                "order": True, "payer": bool(money > 0 or is_stars or coins > 0),
+                "src": ([("fk")] if money > 0 else []) + (["coins"] if coins > 0 else [])
+                       + (["stars"] if _si is not None else [])})
+
         # ChatGPT по маршруту кода
         if k == "chatgpt":
             codes = used.get(oid) or []
@@ -4118,12 +4139,24 @@ async def _fin_collect(conn, a_dt, b_dt, off, cfg, detail: bool = True) -> dict:
             X["starsRub"] += _rub
             if not _is_shop:
                 X["cnt"] += 1
+        _bk_s = None
         if _when is not None:
             bk = _bk(_when)
+            _bk_s = (f"{bk:02d}:00" if hourly else bk.isoformat())
             if bk in buckets:
                 buckets[bk]["stars"] += _rub
                 if not _is_shop:
                     buckets[bk]["orders"] += 1
+        if items is not None:
+            items.append({
+                "kind": "stars", "id": stars_ids[_i_st] if _i_st < len(stars_ids) else "", "ts": _when,
+                "uid": int(_uid or 0), "svc": _k2, "plan": _p2, "bk": _bk_s,
+                "money": 0, "coins": 0, "starsAmt": _amt, "starsRub": _rub,
+                "cost": 0, "fee": 0, "partner": 0, "profit": _rub,
+                # Stars за подписку без найденного заказа: в выручке есть,
+                # отдельным заказом не считается (заказ посчитан как fk).
+                "order": not _is_shop, "payer": True, "src": ["stars"],
+                "shopNoOrder": _is_shop})
 
     rev = T["money"] + T["starsRub"]
     T["revenue"] = rev
@@ -4642,6 +4675,611 @@ _ADM_FEED_FILTERS = {"act": "Нужно действие", "wait": "В проц�
                      "off": "Не оплачены и отменённые"}
 
 
+# ── Строка заказа для админки: одна сборка на «Заказы», карточку клиента,
+#    списки по плиткам Сводки/Денег и «заказ по id». Одинаковые поля везде —
+#    иначе карточка заказа, открытая из разных мест, показывала бы разное.
+#    08.10.2026
+_ADM_FEED_SELECT = (
+    "SELECT f.order_id, f.num, f.user_id, f.amount_rub, f.pack, f.credits, f.status, "
+    "       LOWER(COALESCE(f.payment_method,'')) AS pm, f.promo_code, "
+    "       COALESCE(f.coins_spent,0) AS coins, f.paid_at, f.created_at, f.fk_intid, "
+    "       COALESCE(u.username,'') AS username, COALESCE(u.full_name,'') AS full_name, "
+    "       n.status AS nst, n.price_rub AS nprice, n.service_name AS nname, "
+    "       n.delivered_at AS ndel "
+    "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
+    "LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id ")
+
+
+def _adm_nick(username, full_name, uid) -> str:
+    return ("@" + username) if username else (strip_surrogates(full_name or "") or f"id{uid}")
+
+
+def _adm_feed_item(r, s, off, stamt: dict) -> dict:
+    """Строка fk_orders (из _ADM_FEED_SELECT) + её состояние → объект заказа."""
+    k, name, emoji, idx, pname = _fin_pack(r["pack"], r["credits"] or 0, r["nname"] or "")
+    coins = int(r["coins"] or 0)
+    is_stars = (r["pm"] == "stars")
+    amt = 0 if is_stars else int(r["amount_rub"] or 0)
+    if k == "appstore" and coins > 0 and r["nprice"] is not None:
+        amt = min(amt, max(0, int(r["nprice"] or 0) - coins))
+    when = _fin_from_db(r["paid_at"] or r["created_at"], off)
+    return {
+        "_ts": when,
+        "id": r["order_id"], "num": r["num"],
+        "user": _adm_nick(r["username"], r["full_name"], r["user_id"]),
+        "userId": r["user_id"], "username": r["username"] or "",
+        "service": name, "emoji": emoji, "svc": k, "plan": pname, "idx": idx,
+        "amount": amt, "stars": is_stars,
+        "catalogRub": int(r["amount_rub"] or 0) if is_stars else 0,
+        "starsAmount": stamt.get(r["order_id"], 0),
+        "coins": coins,
+        "method": ("Stars" if is_stars else ("Монетки" if (amt == 0 and coins > 0) else
+                   ("FreeKassa" + (" + монетки" if coins > 0 else "") if amt > 0 else ""))),
+        "promo": r["promo_code"] or "", "fk": r["fk_intid"] or "",
+        "status": r["status"] or "",
+        "date": when.strftime("%d.%m %H:%M") if when else "",
+        "paid": bool(r["paid_at"]) and (r["status"] or "") == "paid",
+        "stage": s["label"], "stageKey": s["key"], "level": s["level"],
+        "activated": s["level"] == "done",
+        "isAuto": k in _ADM_CODE_SVC, "code": s.get("code", ""), "acc": s.get("acc", ""),
+    }
+
+
+def _adm_star_item(x, off) -> dict:
+    """Платёж Stars без строки в fk_orders → объект заказа.
+
+    Два случая. Пакет кредитов (payload pack:…) — обычная покупка, заказа у
+    неё и не бывает. Оплата подписки (payload shop:…), к которой заказ не
+    нашёлся, — это НЕ пакет кредитов: деньги за подписку пришли, а заказа
+    нет; такую запись показываем как подписку и просим проверить.
+    Ревью 08.10.2026."""
+    _pl = x["payload"] or ""
+    _w = _fin_from_db(x["ts"], off)
+    if _pl.startswith("shop:"):
+        _k, _nm, _em, _ix, _pn = _fin_pack(_pl)
+        _cat = SHOP_CATALOG.get(_k, {}) or {}
+        _pls = _cat.get("plans", []) or []
+        _pn = _pls[_ix]["name"] if 0 <= _ix < len(_pls) else _pn
+        return {
+            "_ts": _w,
+            "id": "stars:" + str(x["id"]), "virtual": True, "shopStars": True, "num": None,
+            "user": _adm_nick(x["username"], x["full_name"], x["user_id"]),
+            "userId": x["user_id"], "username": x["username"] or "",
+            "service": _nm, "emoji": _em, "svc": _k, "plan": _pn, "idx": _ix,
+            "amount": 0, "stars": True, "starsAmount": int(x["amount"] or 0), "catalogRub": 0,
+            "coins": 0, "method": "Stars", "promo": "", "fk": "", "status": "paid",
+            "date": _w.strftime("%d.%m %H:%M") if _w else "",
+            "paid": True, "stage": "Stars за подписку — заказ не найден, проверь выдачу",
+            "stageKey": "stars_no_order", "level": "act",
+            "activated": False, "isAuto": False, "code": "", "acc": ""}
+    try:
+        from config import CREDIT_PACKS as _CP3
+    except Exception:
+        _CP3 = {}
+    _pk = _pl.split(":")
+    _pkn = ((_CP3.get(_pk[1]) or {}).get("name", "") if len(_pk) > 1 else "") or "Пакет кредитов"
+    return {
+        "_ts": _w,
+        "id": "stars:" + str(x["id"]), "virtual": True, "num": None,
+        "user": _adm_nick(x["username"], x["full_name"], x["user_id"]),
+        "userId": x["user_id"], "username": x["username"] or "",
+        "service": "Кредиты", "emoji": "💳", "svc": "credits", "plan": _pkn, "idx": 0,
+        "amount": 0, "stars": True, "starsAmount": int(x["amount"] or 0), "catalogRub": 0,
+        "coins": 0, "method": "Stars", "promo": "", "fk": "", "status": "paid",
+        "date": _w.strftime("%d.%m %H:%M") if _w else "",
+        "paid": True, "stage": "кредиты начислены", "stageKey": "delivered", "level": "done",
+        "activated": True, "isAuto": False, "code": "", "acc": ""}
+
+
+async def _adm_items_for_orders(conn, order_ids, off, cfg) -> dict:
+    """order_id → объект заказа (с состоянием выдачи)."""
+    if not order_ids:
+        return {}
+    rows = await conn.fetch(_ADM_FEED_SELECT + "WHERE f.order_id = ANY($1::text[])",
+                            list(order_ids))
+    states = await _adm_order_states(conn, rows, cfg["kv"], off)
+    stamt = await _adm_stars_amounts(conn, rows, off)
+    out = {}
+    for r in rows:
+        s = states.get(r["order_id"]) or {"key": "?", "label": "?", "level": "act"}
+        out[r["order_id"]] = _adm_feed_item(r, s, off, stamt)
+    return out
+
+
+async def _adm_items_for_stars(conn, star_ids, off) -> dict:
+    """«stars:<charge_id>» / «stars:legacy<id>» → объект заказа."""
+    charges = [x[6:] for x in star_ids if x.startswith("stars:") and not x.startswith("stars:legacy")]
+    legacy = []
+    for x in star_ids:
+        if x.startswith("stars:legacy"):
+            try:
+                legacy.append(int(x[len("stars:legacy"):]))
+            except Exception:
+                pass
+    out = {}
+    if charges:
+        for x in await conn.fetch(
+                "SELECT s.charge_id AS id, s.user_id, s.payload, COALESCE(s.amount,0) AS amount, "
+                "       s.created_at AS ts, COALESCE(u.username,'') AS username, "
+                "       COALESCE(u.full_name,'') AS full_name "
+                "FROM stars_payments s LEFT JOIN users u ON u.user_id=s.user_id "
+                "WHERE s.charge_id = ANY($1::text[])", charges):
+            it = _adm_star_item(x, off)
+            out[it["id"]] = it
+    if legacy:
+        for x in await conn.fetch(
+                "SELECT 'legacy'||p.id AS id, p.user_id, 'pack:legacy' AS payload, "
+                "       COALESCE(p.amount_rub,0) AS amount, p.created_at AS ts, "
+                "       COALESCE(u.username,'') AS username, COALESCE(u.full_name,'') AS full_name "
+                "FROM payments p LEFT JOIN users u ON u.user_id=p.user_id "
+                "WHERE p.id = ANY($1::int[])", legacy):
+            it = _adm_star_item(x, off)
+            out[it["id"]] = it
+    return out
+
+# ══════════════════════════════════════════════════════════════════════
+#  ГЛУБИНА АДМИНКИ: списки «по клику» и карточка клиента (08.10.2026)
+# ══════════════════════════════════════════════════════════════════════
+# Правило: список, открытый с плитки, считается ТЕМ ЖЕ кодом, что и плитка.
+#  • «Заказов», «Выручка», «Прибыль», «Платящих», столбик часа/дня, сервис,
+#    тариф, источник — из _fin_collect(items=…): каждая учтённая запись с её
+#    суммами. Сумма списка = цифре на плитке по построению.
+#  • «Новых клиентов» — тот же WHERE, что в _fin_users.
+
+def _adm_int(v, d=0):
+    try:
+        return int(v)
+    except Exception:
+        return d
+
+
+async def api_admin_fin_items_handler(request: web.Request) -> web.Response:
+    """Записи, из которых сложены цифры «Денег»/«Сводки» за период.
+
+    body: period, date, view (orders | money | payers), bucket ("HH:00" или
+    "YYYY-MM-DD" — столбик графика), svc, plan, src (fk | stars | coins),
+    page."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        rg = _fin_range(str(body.get("period") or "today"), str(body.get("date") or ""))
+        view = str(body.get("view") or "orders")
+        if view not in ("orders", "money", "payers"):
+            view = "orders"
+        f_bk = str(body.get("bucket") or "").strip()
+        f_svc = str(body.get("svc") or "").strip()
+        f_plan = str(body.get("plan") or "").strip()
+        f_src = str(body.get("src") or "").strip()
+        page = max(0, _adm_int(body.get("page"), 0))
+        PAGE = 40
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            off = await _fin_db_offset(conn)
+            cfg = await _fin_cfg(conn)
+            its = []
+            res = await _fin_collect(conn, rg["a"], rg["b"], off, cfg, detail=False, items=its)
+            T0 = res["totals"]
+            flt = [it for it in its
+                   if (not f_bk or it.get("bk") == f_bk)
+                   and (not f_svc or it.get("svc") == f_svc)
+                   and (not f_plan or it.get("plan") == f_plan)
+                   and (not f_src or f_src in (it.get("src") or []))]
+            tot = {"orders": sum(1 for it in flt if it["order"]),
+                   "money": sum(it["money"] for it in flt),
+                   "starsRub": sum(it["starsRub"] for it in flt),
+                   "stars": sum(it["starsAmt"] for it in flt),
+                   "coins": sum(it["coins"] for it in flt),
+                   "cost": sum(it["cost"] for it in flt),
+                   "fee": sum(it["fee"] for it in flt),
+                   "partner": sum(it["partner"] for it in flt)}
+            tot["revenue"] = tot["money"] + tot["starsRub"]
+            tot["profit"] = tot["revenue"] - tot["cost"] - tot["fee"] - tot["partner"]
+            tot["payers"] = len({it["uid"] for it in flt if it["payer"] and it["uid"]})
+            out = {"ok": True, "label": rg["label"], "view": view, "totals": tot,
+                   "all": {"orders": T0["orders"], "revenue": T0["revenue"],
+                           "profit": T0["profit"], "payers": T0["payers"]},
+                   "warnings": res.get("warnings") or []}
+            if view == "payers":
+                g = {}
+                for it in flt:
+                    if not (it["payer"] and it["uid"]):
+                        continue
+                    x = g.setdefault(it["uid"], {"uid": it["uid"], "orders": 0, "revenue": 0,
+                                                 "money": 0, "coins": 0, "stars": 0, "profit": 0})
+                    x["orders"] += 1 if it["order"] else 0
+                    x["money"] += it["money"]
+                    x["revenue"] += it["money"] + it["starsRub"]
+                    x["coins"] += it["coins"]
+                    x["stars"] += it["starsAmt"]
+                    x["profit"] += it["profit"]
+                lst = sorted(g.values(), key=lambda x: (-x["revenue"], -x["orders"], -x["coins"]))
+                if lst:
+                    for u in await conn.fetch(
+                            "SELECT user_id, COALESCE(username,'') AS username, "
+                            "COALESCE(full_name,'') AS full_name FROM users WHERE user_id = ANY($1::bigint[])",
+                            [x["uid"] for x in lst]):
+                        x = g.get(u["user_id"])
+                        if x is not None:
+                            x["user"] = _adm_nick(u["username"], u["full_name"], u["user_id"])
+                for x in lst:
+                    x.setdefault("user", f"id{x['uid']}")
+                pages = max(1, (len(lst) + PAGE - 1) // PAGE)
+                page = min(page, pages - 1)
+                out.update({"payers": lst[page * PAGE:(page + 1) * PAGE], "total": len(lst),
+                            "page": page, "pages": pages})
+                return web.json_response(out)
+            sel = [it for it in flt if it["order"]] if view == "orders" else flt
+            # Сортируем и режем на страницы ДО сборки строк: собирать нужно
+            # только видимые 40, а не все записи периода (на 75 тыс. заказов
+            # это было 4 с).
+            _far = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+            sel.sort(key=lambda it: it.get("ts") or _far, reverse=True)
+            if str(body.get("sort") or "") == "profit":
+                # «Прибыль»: от самых убыточных — по ВСЕМ записям периода.
+                sel.sort(key=lambda it: (it["profit"], -(it["money"] + it["starsRub"])))
+            pages = max(1, (len(sel) + PAGE - 1) // PAGE)
+            page = min(page, pages - 1)
+            pg_items = sel[page * PAGE:(page + 1) * PAGE]
+            fk_ids = [it["id"] for it in pg_items if it["kind"] == "fk"]
+            st_ids = [it["id"] for it in pg_items if it["kind"] == "stars" and it["id"]]
+            objs = await _adm_items_for_orders(conn, fk_ids, off, cfg)
+            objs.update(await _adm_items_for_stars(conn, st_ids, off))
+        lst = []
+        for it in pg_items:
+            o = objs.get(it["id"])
+            if not o:
+                continue
+            o = dict(o)
+            o.pop("_ts", None)
+            o["fin"] = {"rev": it["money"] + it["starsRub"], "cost": it["cost"], "fee": it["fee"],
+                        "partner": it["partner"], "profit": it["profit"], "order": it["order"],
+                        "shopNoOrder": bool(it.get("shopNoOrder"))}
+            lst.append(o)
+        # Если какая-то запись не нашлась по id (удалили между запросами) —
+        # говорим об этом, а не молча показываем меньше строк.
+        out["missing"] = len(pg_items) - len(lst)
+        out.update({"orders": lst, "total": len(sel), "page": page, "pages": pages})
+        return web.json_response(out)
+    except Exception as _e:
+        logging.error(f"api_admin_fin_items: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_order_get_handler(request: web.Request) -> web.Response:
+    """Один заказ по id — чтобы карточку заказа можно было открыть из любого
+    места (карточка клиента, партнёры, списки), а не только из «Заказов»."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        oid = str(body.get("id") or "").strip()
+        if not oid:
+            return web.json_response({"ok": False, "msg": "Нет номера заказа"})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            off = await _fin_db_offset(conn)
+            cfg = await _fin_cfg(conn)
+            if oid.startswith("stars:"):
+                m = await _adm_items_for_stars(conn, [oid], off)
+            else:
+                m = await _adm_items_for_orders(conn, [oid], off, cfg)
+        o = m.get(oid)
+        if not o:
+            return web.json_response({"ok": False, "msg": "Заказ не найден"})
+        o = dict(o)
+        o.pop("_ts", None)
+        return web.json_response({"ok": True, "order": o})
+    except Exception as _e:
+        logging.error(f"api_admin_order_get: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+async def api_admin_users_list_handler(request: web.Request) -> web.Response:
+    """Список клиентов за период. kind=new — ровно те, кого считает плитка
+    «Новых клиентов» (тот же WHERE, что в _fin_users)."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        rg = _fin_range(str(body.get("period") or "today"), str(body.get("date") or ""))
+        LIM = 2000
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            off = await _fin_db_offset(conn)
+            A, B = _fin_to_db(rg["a"], off), _fin_to_db(rg["b"], off)
+            cnt = await _fin_users(conn, rg["a"], rg["b"], off)
+            _first_j = await conn.fetchval("SELECT MIN(created_at) FROM stars_payments")
+            # Покупки — по всем источникам, как в карточке клиента: оплаченные
+            # заказы FreeKassa/Stars/монетки + пакеты кредитов за Stars + старые
+            # записи Stars (до журнала). Всё одним проходом по каждой таблице,
+            # а не подзапросом на каждого клиента (ревью: 70 с на большой базе).
+            rows = await conn.fetch(
+                "WITH nu AS (SELECT user_id FROM users WHERE created_at>=$1 AND created_at<$2 "
+                "            AND started_at IS NOT NULL), "
+                f"fo AS (SELECT f.user_id, COUNT(*) AS n, COALESCE(SUM({_FIN_MONEY_SQL}),0) AS rub, "
+                "        MIN(f.paid_at) AS fp FROM fk_orders f "
+                "        LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+                "        WHERE f.status='paid' AND f.user_id IN (SELECT user_id FROM nu) GROUP BY 1), "
+                "sp AS (SELECT user_id, COUNT(*) AS n, MIN(created_at) AS fp FROM stars_payments "
+                "        WHERE COALESCE(payload,'') NOT LIKE 'shop:%' AND user_id IN (SELECT user_id FROM nu) GROUP BY 1), "
+                "lp AS (SELECT user_id, COUNT(*) AS n, MIN(created_at) AS fp FROM payments "
+                "        WHERE method='stars' AND ($3::timestamp IS NULL OR created_at < $3::timestamp) "
+                "        AND user_id IN (SELECT user_id FROM nu) GROUP BY 1), "
+                "ge AS (SELECT user_id, COUNT(*) AS n FROM generations "
+                "        WHERE user_id IN (SELECT user_id FROM nu) GROUP BY 1) "
+                "SELECT u.user_id, COALESCE(u.username,'') AS username, "
+                "       COALESCE(u.full_name,'') AS full_name, u.created_at, "
+                "       u.referred_by, u.partner_id, COALESCE(u.is_blocked,0) AS blk, "
+                "       COALESCE(r.username,'') AS r_un, COALESCE(r.full_name,'') AS r_fn, "
+                "       COALESCE(pp.username,'') AS p_un, COALESCE(pp.full_name,'') AS p_fn, "
+                "       COALESCE(fo.n,0) AS fo_n, COALESCE(fo.rub,0) AS rub, fo.fp AS fo_fp, "
+                "       COALESCE(sp.n,0) AS sp_n, sp.fp AS sp_fp, COALESCE(lp.n,0) AS lp_n, lp.fp AS lp_fp, "
+                "       COALESCE(ge.n,0) AS gens "
+                "FROM users u JOIN nu ON nu.user_id=u.user_id "
+                "LEFT JOIN users r ON r.user_id=u.referred_by "
+                "LEFT JOIN users pp ON pp.user_id=u.partner_id "
+                "LEFT JOIN fo ON fo.user_id=u.user_id LEFT JOIN sp ON sp.user_id=u.user_id "
+                "LEFT JOIN lp ON lp.user_id=u.user_id LEFT JOIN ge ON ge.user_id=u.user_id "
+                "ORDER BY u.created_at DESC",
+                A, B, (_fin_to_db(_first_j, off) if _first_j is not None else None))
+        lst = []
+        bought = 0
+        by_src = {"organic": 0, "ref": 0, "partner": 0}
+        for r in rows:
+            cr = _fin_from_db(r["created_at"], off)
+            _fps = [x for x in (_fin_from_db(r["fo_fp"], off) if r["fo_fp"] else None,
+                                r["sp_fp"].astimezone(_BOT_TZ) if r["sp_fp"] else None,
+                                _fin_from_db(r["lp_fp"], off) if r["lp_fp"] else None) if x]
+            fp = min(_fps) if _fps else None
+            in_win = bool(fp and rg["a"] <= fp < rg["b"])
+            if in_win:
+                bought += 1
+            src = ("partner" if r["partner_id"] else ("ref" if r["referred_by"] else "organic"))
+            by_src[src] += 1
+            if len(lst) >= LIM:
+                continue          # итоги считаем по всем, строк показываем не больше LIM
+            lst.append({
+                "id": r["user_id"], "user": _adm_nick(r["username"], r["full_name"], r["user_id"]),
+                "username": r["username"], "created": cr.strftime("%d.%m %H:%M") if cr else "",
+                "src": src,
+                "via": (_adm_nick(r["p_un"], r["p_fn"], r["partner_id"]) if r["partner_id"] else
+                        (_adm_nick(r["r_un"], r["r_fn"], r["referred_by"]) if r["referred_by"] else "")),
+                "viaId": r["partner_id"] or r["referred_by"] or None,
+                "paid": int(r["fo_n"] or 0) + int(r["sp_n"] or 0) + int(r["lp_n"] or 0),
+                "rub": int(r["rub"] or 0),
+                "firstPaid": fp.strftime("%d.%m %H:%M") if fp else "", "boughtInPeriod": in_win,
+                "gens": int(r["gens"] or 0), "blocked": bool(r["blk"])})
+        return web.json_response({"ok": True, "label": rg["label"], "count": cnt, "users": lst,
+                                  "truncated": cnt > len(lst), "bought": bought, "bySrc": by_src})
+    except Exception as _e:
+        logging.error(f"api_admin_users_list: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
+
+_ADM_EV_LABELS = {
+    "coins": "🪙 Монетки", "admin_balance": "🛠 Баланс изменён вручную", "payment": "💳 Оплата",
+    "promo_redeem": "🎟 Промокод", "promo_used_purchase": "🎟 Промокод в покупке",
+    "manual_activated": "✅ Активировано вручную (клиент нажал)",
+    "claude_manual_activated": "✅ Claude: вручную (клиент нажал)",
+    "batch_expired": "⌛ Сгорели кредиты", "ref_bonus": "👥 Реферальный бонус",
+}
+
+
+async def api_admin_user_card_handler(request: web.Request) -> web.Response:
+    """Карточка клиента: профиль, откуда пришёл, деньги, все заказы, подписки
+    и коды, генерации, рефералы, промокоды, история баланса.
+
+    Каждый блок читается отдельно: если один не прочитался, остальные
+    показываются, а на экране пишется, что именно не загрузилось."""
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        uid = _adm_int(str(body.get("id") or "").strip().lstrip("@"), 0)
+        q = str(body.get("q") or "").strip()
+        warn = []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            off = await _fin_db_offset(conn)
+            cfg = await _fin_cfg(conn)
+            if not uid and q:
+                if q.startswith("@"):
+                    uid = _adm_int(await conn.fetchval(
+                        "SELECT user_id FROM users WHERE lower(username)=lower($1)", q[1:]), 0)
+                else:
+                    uid = _adm_int(q, 0)
+            u = await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", uid) if uid else None
+            if not u:
+                return web.json_response({"ok": False, "msg": "Пользователь не найден"})
+            u = dict(u)
+
+            def _w(dt):
+                x = _fin_from_db(dt, off) if dt else None
+                return x.strftime("%d.%m.%Y %H:%M") if x else ""
+
+            async def _nick_of(_id):
+                if not _id:
+                    return None
+                r = await conn.fetchrow(
+                    "SELECT user_id, COALESCE(username,'') AS un, COALESCE(full_name,'') AS fn "
+                    "FROM users WHERE user_id=$1", int(_id))
+                return ({"id": int(r["user_id"]), "user": _adm_nick(r["un"], r["fn"], r["user_id"])}
+                        if r else {"id": int(_id), "user": f"id{_id}"})
+
+            prof = {
+                "id": uid, "username": u.get("username") or "", "name": strip_surrogates(u.get("full_name") or ""),
+                "nick": _adm_nick(u.get("username") or "", u.get("full_name") or "", uid),
+                "created": _w(u.get("created_at")), "started": _w(u.get("started_at")),
+                "lastActive": _w(u.get("last_active")),
+                "blocked": bool(u.get("is_blocked")), "credits": int(u.get("credits") or 0),
+                "coins": round(_fin_f(u.get("coins")), 2),
+                "refPremium": bool(u.get("ref_premium")), "refPct": u.get("ref_premium_pct"),
+                "isPartner": bool(u.get("partner")),
+                "gptEmail": u.get("gpt_email") or "", "gptOrg": u.get("gpt_org") or "",
+                "invitedBy": await _nick_of(u.get("referred_by")),
+                "partnerOf": await _nick_of(u.get("partner_id")),
+            }
+
+            money = {}
+            try:
+                m = await conn.fetchrow(
+                    f"SELECT COUNT(*) FILTER (WHERE f.status='paid') AS paid, "
+                    f"       COALESCE(SUM({_FIN_MONEY_SQL}) FILTER (WHERE f.status='paid'),0) AS rub, "
+                    "       COALESCE(SUM(COALESCE(f.coins_spent,0)) FILTER (WHERE f.status='paid'),0) AS coins, "
+                    "       COUNT(*) FILTER (WHERE f.status='paid' AND LOWER(COALESCE(f.payment_method,''))<>'stars' "
+                    f"                        AND {_FIN_MONEY_SQL}>0) AS rub_n, "
+                    "       COUNT(*) FILTER (WHERE f.status IN ('cancelled','refunded')) AS cx, "
+                    "       COUNT(*) FILTER (WHERE f.status NOT IN ('paid','cancelled','refunded')) AS unpaid, "
+                    "       MIN(f.paid_at) FILTER (WHERE f.status='paid') AS first, "
+                    "       MAX(f.paid_at) FILTER (WHERE f.status='paid') AS last "
+                    "FROM fk_orders f LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+                    "WHERE f.user_id=$1", uid)
+                st = await conn.fetchrow(
+                    "SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS a, "
+                    "       COUNT(*) FILTER (WHERE COALESCE(payload,'') NOT LIKE 'shop:%') AS packs "
+                    "FROM stars_payments WHERE user_id=$1", uid)
+                rub_n = int(m["rub_n"] or 0)
+                _lpn = await conn.fetchval(
+                    "SELECT COUNT(*) FROM payments WHERE user_id=$1 AND method='stars' "
+                    "AND ($2::timestamp IS NULL OR created_at < $2::timestamp)", uid,
+                    (_fin_to_db(await conn.fetchval("SELECT MIN(created_at) FROM stars_payments"), off)
+                     if await conn.fetchval("SELECT MIN(created_at) FROM stars_payments") is not None else None))
+                money = {"paid": int(m["paid"] or 0) + int(st["packs"] or 0) + int(_lpn or 0),
+                         "rub": int(m["rub"] or 0), "coins": int(m["coins"] or 0),
+                         "stars": int(st["a"] or 0), "starsN": int(st["n"] or 0),
+                         "starsRub": round(int(st["a"] or 0) * cfg["stars_rub"]) if cfg["stars_rub"] > 0 else 0,
+                         "avg": round(int(m["rub"] or 0) / rub_n) if rub_n else 0,
+                         "cancelled": int(m["cx"] or 0), "unpaid": int(m["unpaid"] or 0),
+                         "first": _w(m["first"]), "last": _w(m["last"])}
+            except Exception as _e1:
+                logging.error(f"user-card money {uid}: {_e1}")
+                warn.append("Деньги клиента не прочитались.")
+
+            orders = []
+            try:
+                ids = [r["order_id"] for r in await conn.fetch(
+                    "SELECT order_id FROM fk_orders WHERE user_id=$1 "
+                    "ORDER BY COALESCE(paid_at, created_at) DESC LIMIT 300", uid)]
+                objs = await _adm_items_for_orders(conn, ids, off, cfg)
+                sids = ["stars:" + str(r["charge_id"]) for r in await conn.fetch(
+                    "SELECT charge_id FROM stars_payments WHERE user_id=$1 "
+                    "AND COALESCE(payload,'') NOT LIKE 'shop:%' ORDER BY created_at DESC LIMIT 100", uid)]
+                # Старые записи Stars (до журнала) — как в «Деньгах»: только
+                # раньше первой записи журнала, иначе одна покупка дважды.
+                _fj = await conn.fetchval("SELECT MIN(created_at) FROM stars_payments")
+                _lq = "SELECT id FROM payments WHERE user_id=$1 AND method='stars'"
+                _la = [uid]
+                if _fj is not None:
+                    _lq += " AND created_at < $2"
+                    _la.append(_fin_to_db(_fj, off))
+                sids += ["stars:legacy" + str(r["id"]) for r in await conn.fetch(_lq + " ORDER BY id DESC LIMIT 100", *_la)]
+                objs.update(await _adm_items_for_stars(conn, sids, off))
+                orders = list(objs.values())
+                money["ordersShown"] = len(orders)
+                money["ordersTotal"] = int(await conn.fetchval(
+                    "SELECT COUNT(*) FROM fk_orders WHERE user_id=$1", uid) or 0) + len(sids)
+                # Stars — так же, как в «Деньгах»: звёзды ОПЛАЧЕННЫХ заказов и
+                # пакетов. Звёзды отменённого заказа сюда не идут.
+                money["stars"] = sum(int(o.get("starsAmount") or 0) for o in orders
+                                     if (o.get("status") == "paid") and not o.get("shopStars"))
+                money["starsRub"] = (round(money["stars"] * cfg["stars_rub"]) if cfg["stars_rub"] > 0 else 0)
+                _far = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+                orders.sort(key=lambda x: x.get("_ts") or _far, reverse=True)
+                for x in orders:
+                    x.pop("_ts", None)
+            except Exception as _e2:
+                logging.error(f"user-card orders {uid}: {_e2}", exc_info=True)
+                warn.append("Заказы клиента не прочитались.")
+
+            subs, pend = [], []
+            for svc_k, (tbl, ptbl, acol) in _ADM_CODE_SVC.items():
+                try:
+                    rcol = "route" if svc_k == "chatgpt" else "NULL::text"
+                    for r in await conn.fetch(
+                            f"SELECT code, plan, COALESCE({acol},'') AS acc, used_at, order_id, "
+                            f"{rcol} AS route FROM {tbl} WHERE used_by=$1 ORDER BY used_at DESC NULLS LAST LIMIT 50",
+                            uid):
+                        ua = r["used_at"]
+                        subs.append({"svc": svc_k, "code": r["code"], "plan": r["plan"] or "",
+                                     "acc": r["acc"], "orderId": r["order_id"] or "",
+                                     "route": GPT_ROUTE_LABELS.get(r["route"] or "", ""),
+                                     "usedAt": ua.astimezone(_BOT_TZ).strftime("%d.%m.%Y %H:%M")
+                                     if getattr(ua, "tzinfo", None) else _w(ua)})
+                    for r in await conn.fetch(
+                            f"SELECT code, order_id, expires_at FROM {ptbl} WHERE user_id=$1", uid):
+                        ex = r["expires_at"]
+                        _exs = (ex.astimezone(_BOT_TZ).strftime("%d.%m %H:%M")
+                                if getattr(ex, "tzinfo", None) else _w(ex)) if ex else ""
+                        pend.append({"svc": svc_k, "code": r["code"], "orderId": r["order_id"] or "",
+                                     "expires": _exs,
+                                     "live": bool(ex and ((ex if getattr(ex, "tzinfo", None)
+                                                           else _fin_from_db(ex, off))
+                                                          > datetime.datetime.now(_BOT_TZ)))})
+                except Exception as _e3:
+                    logging.error(f"user-card codes {svc_k} {uid}: {_e3}")
+                    warn.append(f"Коды {svc_k} не прочитались.")
+
+            gens = {}
+            try:
+                g = await conn.fetchrow(
+                    "SELECT COUNT(*) AS n, COALESCE(SUM(credits),0) AS cr, MAX(created_at) AS last, "
+                    "       COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') AS n30 "
+                    "FROM generations WHERE user_id=$1", uid)
+                bt = await conn.fetch(
+                    "SELECT COALESCE(type,'?') AS t, COUNT(*) AS n FROM generations WHERE user_id=$1 "
+                    "GROUP BY 1 ORDER BY 2 DESC LIMIT 6", uid)
+                gens = {"n": int(g["n"] or 0), "credits": int(g["cr"] or 0), "n30": int(g["n30"] or 0),
+                        "last": _w(g["last"]), "byType": [{"t": r["t"], "n": int(r["n"])} for r in bt]}
+            except Exception as _e4:
+                logging.error(f"user-card gens {uid}: {_e4}")
+                warn.append("Генерации не прочитались.")
+
+            refs = {}
+            try:
+                refs["count"] = int(await conn.fetchval(
+                    "SELECT COUNT(*) FROM users WHERE referred_by=$1", uid) or 0)
+                refs["paid"] = int(await conn.fetchval(
+                    "SELECT COUNT(*) FROM users r WHERE r.referred_by=$1 AND EXISTS("
+                    "  SELECT 1 FROM fk_orders o WHERE o.user_id=r.user_id AND o.status='paid')", uid) or 0)
+                refs["coins"] = round(_fin_f(await conn.fetchval(
+                    "SELECT COALESCE(SUM(coins),0) FROM ref_premium_log WHERE referrer_id=$1", uid)), 2)
+                if prof["isPartner"]:
+                    refs["partnerClients"] = int(await conn.fetchval(
+                        "SELECT COUNT(*) FROM users WHERE partner_id=$1", uid) or 0)
+            except Exception as _e5:
+                logging.error(f"user-card refs {uid}: {_e5}")
+                warn.append("Рефералы не прочитались.")
+
+            promos, events = [], []
+            try:
+                for r in await conn.fetch(
+                        "SELECT code, used_at FROM promo_uses WHERE user_id=$1 ORDER BY used_at DESC LIMIT 20", uid):
+                    promos.append({"code": r["code"], "when": _w(r["used_at"])})
+            except Exception as _e6:
+                logging.error(f"user-card promos {uid}: {_e6}")
+                warn.append("Промокоды не прочитались.")
+            try:
+                for r in await conn.fetch(
+                        "SELECT kind, COALESCE(data,'') AS data, created_at FROM events "
+                        "WHERE user_id=$1 AND kind NOT LIKE 'gen_%' ORDER BY created_at DESC LIMIT 30", uid):
+                    events.append({"when": _w(r["created_at"]), "kind": r["kind"],
+                                   "label": _ADM_EV_LABELS.get(r["kind"], r["kind"]),
+                                   "data": str(r["data"])[:200]})
+            except Exception as _e7:
+                logging.error(f"user-card events {uid}: {_e7}")
+                warn.append("История событий не прочиталась.")
+        return web.json_response({"ok": True, "user": prof, "money": money, "orders": orders,
+                                  "subs": subs, "pending": pend, "gens": gens, "refs": refs,
+                                  "promos": promos, "events": events, "warnings": warn})
+    except Exception as _e:
+        logging.error(f"api_admin_user_card: {_e}", exc_info=True)
+        return web.json_response({"ok": False}, status=500)
+
 async def api_admin_orders_feed_handler(request: web.Request) -> web.Response:
     """«Заказы»: одна лента вместо «Ленты заказов» и «Истории платежей».
 
@@ -4694,14 +5332,7 @@ async def api_admin_orders_feed_handler(request: web.Request) -> web.Response:
                              f"OR f.order_id ILIKE ${n-1} OR u.username ILIKE ${n} "
                              f"OR CAST(f.user_id AS TEXT) = ${n-2})")
             rows = await conn.fetch(
-                "SELECT f.order_id, f.num, f.user_id, f.amount_rub, f.pack, f.credits, f.status, "
-                "       LOWER(COALESCE(f.payment_method,'')) AS pm, f.promo_code, "
-                "       COALESCE(f.coins_spent,0) AS coins, f.paid_at, f.created_at, f.fk_intid, "
-                "       COALESCE(u.username,'') AS username, COALESCE(u.full_name,'') AS full_name, "
-                "       n.status AS nst, n.price_rub AS nprice, n.service_name AS nname, "
-                "       n.delivered_at AS ndel "
-                "FROM fk_orders f LEFT JOIN users u ON u.user_id=f.user_id "
-                "LEFT JOIN nsgifts_orders n ON n.fk_order_id=f.order_id "
+                _ADM_FEED_SELECT +
                 f"WHERE {' AND '.join(where)} "
                 f"ORDER BY COALESCE(f.paid_at, f.created_at) DESC LIMIT {_FEED_LIMIT}", *args)
             states = await _adm_order_states(conn, rows, cfg["kv"], off)
@@ -4742,59 +5373,15 @@ async def api_admin_orders_feed_handler(request: web.Request) -> web.Response:
                          if _qq and (_qq == str(x["user_id"]) or _qq == (x["username"] or "").lower())]
         counts = {"all": len(rows) + len(star_rows), "act": 0, "wait": 0, "done": len(star_rows), "off": 0}
         items = []
-        try:
-            from config import CREDIT_PACKS as _CP2
-        except Exception:
-            _CP2 = {}
         if flt in ("all", "done"):
             for x in star_rows:
-                _pk = (x["payload"] or "").split(":")
-                _pkn = ((_CP2.get(_pk[1]) or {}).get("name", "") if len(_pk) > 1 else "") or "Пакет кредитов"
-                _w = _fin_from_db(x["ts"], off)
-                items.append({
-                    "id": "stars:" + str(x["id"]), "virtual": True, "num": None,
-                    "user": ("@" + x["username"]) if x["username"] else (
-                        strip_surrogates(x["full_name"] or "") or f"id{x['user_id']}"),
-                    "userId": x["user_id"], "username": x["username"] or "",
-                    "service": "Кредиты", "emoji": "💳", "svc": "credits", "plan": _pkn, "idx": 0,
-                    "amount": 0, "stars": True, "starsAmount": int(x["amount"] or 0), "catalogRub": 0,
-                    "coins": 0, "method": "Stars", "promo": "", "fk": "", "status": "paid",
-                    "date": _w.strftime("%d.%m %H:%M") if _w else "", "_ts": _w,
-                    "paid": True, "stage": "кредиты начислены", "stageKey": "delivered", "level": "done",
-                    "activated": True, "isAuto": False, "code": "", "acc": ""})
+                items.append(_adm_star_item(x, off))
         for r in rows:
             s = states.get(r["order_id"]) or {"key": "?", "label": "?", "level": "act"}
             counts[s["level"]] = counts.get(s["level"], 0) + 1
             if flt != "all" and s["level"] != flt:
                 continue
-            k, name, emoji, idx, pname = _fin_pack(r["pack"], r["credits"] or 0, r["nname"] or "")
-            coins = int(r["coins"] or 0)
-            is_stars = (r["pm"] == "stars")
-            amt = 0 if is_stars else int(r["amount_rub"] or 0)
-            if k == "appstore" and coins > 0 and r["nprice"] is not None:
-                amt = min(amt, max(0, int(r["nprice"] or 0) - coins))
-            when = _fin_from_db(r["paid_at"] or r["created_at"], off)
-            items.append({
-                "_ts": when,
-                "id": r["order_id"], "num": r["num"],
-                "user": ("@" + r["username"]) if r["username"] else (
-                    strip_surrogates(r["full_name"] or "") or f"id{r['user_id']}"),
-                "userId": r["user_id"], "username": r["username"] or "",
-                "service": name, "emoji": emoji, "svc": k, "plan": pname, "idx": idx,
-                "amount": amt, "stars": is_stars,
-                "catalogRub": int(r["amount_rub"] or 0) if is_stars else 0,
-                "starsAmount": _stamt.get(r["order_id"], 0),
-                "coins": coins,
-                "method": ("Stars" if is_stars else ("Монетки" if (amt == 0 and coins > 0) else
-                           ("FreeKassa" + (" + монетки" if coins > 0 else "") if amt > 0 else ""))),
-                "promo": r["promo_code"] or "", "fk": r["fk_intid"] or "",
-                "status": r["status"] or "",
-                "date": when.strftime("%d.%m %H:%M") if when else "",
-                "paid": bool(r["paid_at"]) and (r["status"] or "") == "paid",
-                "stage": s["label"], "stageKey": s["key"], "level": s["level"],
-                "activated": s["level"] == "done",
-                "isAuto": k in _ADM_CODE_SVC, "code": s.get("code", ""), "acc": s.get("acc", ""),
-            })
+            items.append(_adm_feed_item(r, s, off, _stamt))
         _far = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
         items.sort(key=lambda x: x.get("_ts") or _far, reverse=True)
         for _it in items:
@@ -5996,7 +6583,8 @@ async def api_admin_analytics_handler(request: web.Request) -> web.Response:
         return web.json_response({
             "ok": True,
             "topModels": [{"label": (r["model"] or "?"), "val": int(r["c"] or 0)} for r in tm],
-            "topUsers": [{"label": ("@" + r["username"]) if r["username"] else ("ID " + str(r["user_id"])), "val": int(r["c"] or 0)} for r in tu],
+            "topUsers": [{"label": ("@" + r["username"]) if r["username"] else ("ID " + str(r["user_id"])), "val": int(r["c"] or 0),
+                          "id": int(r["user_id"])} for r in tu],
             "activity": activity,
             "users": {"total": int(total), "active30": int(active30), "newToday": int(new_today), "withBuy": int(with_buy)},
         })
@@ -9261,7 +9849,7 @@ async def _run_activation_job(
         async def _actx(_cd=None, show_site=True, show_route=True):
             return await _adm_gpt_ctx(order_id, _cd or code, provider,
                                       session_raw or access_token, show_site=show_site,
-                                      show_route=show_route)
+                                      show_route=show_route, uid=user_id)
         _gpt_used_codes = []        # все сожжённые использованные коды (для отчёта)
         _tried_sites = [provider]   # сайты, где уже пробовали
         # Почему перебор кодов прекратили ДОБРОВОЛЬНО. Пустая строка — не
@@ -10913,7 +11501,7 @@ async def _run_activation_job(
                 f"🧨 <b>ChatGPT — внутренняя ошибка активации</b>\n"
                 f"👤 {await _who_user(user_id)} · {plan_name}\n"
                 f"🔑 <code>{code}</code>\n"
-                + await _adm_gpt_ctx(order_id, code, provider, session_raw or access_token)
+                + await _adm_gpt_ctx(order_id, code, provider, session_raw or access_token, uid=user_id)
                 + f"❗ <code>{_h_ie.escape((type(e).__name__ + ': ' + str(e))[:300])}</code>\n\n"
                   f"Код за клиентом. Клиенту показано: «внутренняя ошибка, напиши Александру».",
                 parse_mode="HTML")
@@ -11979,7 +12567,7 @@ async def api_activation_status_handler(request: web.Request) -> web.Response:
 
 async def _adm_gpt_ctx(order_id: str, code: str = "", provider: str = "",
                        token: str = "", show_site: bool = True,
-                       show_route: bool = True) -> str:
+                       show_route: bool = True, uid=None) -> str:
     """Контекст заказа для сообщений Александру о сбоях активации ChatGPT.
 
     Александр 07.10.2026: в «Код не вернул в пул» и «авто-активация НЕУДАЧА»
@@ -12038,8 +12626,48 @@ async def _adm_gpt_ctx(order_id: str, code: str = "", provider: str = "",
                 _em_ac = ((_j_ac.get("user") or {}).get("email") or "") if isinstance(_j_ac, dict) else ""
             except Exception:
                 _em_ac = ""
+        # Organization ID и план аккаунта — из того же текста сессии, что
+        # прислал клиент (тем же разбором, которым пользуется сверка), чтобы
+        # сравнивать с «Привязан к Organization ID» на сайте. Александр 08.10.2026
+        _org_ac, _plan_ac, _org_src = "", "", ""
+        try:
+            from chatgpt_activation import gpt_org_from_session as _gofs
+            _t_ac = str(token or "").strip()
+            _at_ac = _t_ac if _t_ac.startswith("eyJ") else ""
+            if _t_ac.startswith("{") and not _at_ac:
+                try:
+                    _at_ac = str((json.loads(_t_ac) or {}).get("accessToken") or "")
+                except Exception:
+                    _at_ac = ""
+            # Тот же вызов, что при сохранении users.gpt_org (session + токен)
+            _org_ac = _gofs(_t_ac if _t_ac.startswith("{") else "", _at_ac) or ""
+        except Exception:
+            _org_ac = ""
+        if not _org_ac and uid:
+            # В присланном тексте не нашёлся — тот, что бот сохранил у клиента
+            # раньше тем же разбором (users.gpt_org).
+            try:
+                _pl_ac = await get_pool()
+                async with _pl_ac.acquire() as _c_ac:
+                    _org_ac = (await _c_ac.fetchval(
+                        "SELECT COALESCE(gpt_org,'') FROM users WHERE user_id=$1", int(uid))) or ""
+                if _org_ac:
+                    _org_src = " (сохранён ранее)"
+            except Exception:
+                _org_ac = ""
+        try:
+            _j2 = json.loads(token) if str(token).strip().startswith("{") else {}
+            _acc2 = (_j2.get("account") or {}) if isinstance(_j2, dict) else {}
+            _plan_ac = str(_acc2.get("planType") or _acc2.get("plan_type") or "").strip()
+        except Exception:
+            _plan_ac = ""
         if _em_ac:
-            _ls.append(f"📧 Аккаунт клиента: <b>{_h_ac.escape(_em_ac)}</b>")
+            _ls.append(f"📧 Аккаунт клиента: <b>{_h_ac.escape(_em_ac)}</b>"
+                       + (f" · план: {_h_ac.escape(_plan_ac)}" if _plan_ac else ""))
+        elif _plan_ac:
+            _ls.append(f"📧 План аккаунта: {_h_ac.escape(_plan_ac)}")
+        _ls.append(f"🏢 Organization ID: <code>{_h_ac.escape(_org_ac)}</code>{_org_src}" if _org_ac
+                   else "🏢 Organization ID: в тексте сессии не найден")
     return ("\n".join(_ls) + "\n") if _ls else ""
 
 
@@ -13771,6 +14399,10 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/fin", api_admin_fin_handler)
     app.router.add_post("/api/admin/fin-settings", api_admin_fin_settings_handler)
     app.router.add_post("/api/admin/orders-feed", api_admin_orders_feed_handler)
+    app.router.add_post("/api/admin/fin-items", api_admin_fin_items_handler)
+    app.router.add_post("/api/admin/order-get", api_admin_order_get_handler)
+    app.router.add_post("/api/admin/users-list", api_admin_users_list_handler)
+    app.router.add_post("/api/admin/user-card", api_admin_user_card_handler)
     app.router.add_post("/api/admin/delivery", api_admin_delivery_handler)
     app.router.add_post("/api/admin/attention", api_admin_attention_handler)
     app.router.add_post("/api/admin/shophead", api_admin_shophead_handler)
