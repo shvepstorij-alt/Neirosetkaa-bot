@@ -6123,7 +6123,7 @@ async def api_shop_promo_handler(request: web.Request) -> web.Response:
         if not (0 < _val <= 100):
             return web.json_response({"ok": False, "error": "Некорректный промокод"})
         return web.json_response({"ok": True, "percent": _val, "oldPrice": base,
-                                  "newPrice": max(1, round(base * (100 - _val) / 100))})
+                                  "newPrice": max(1, int(base * (100 - _val) / 100 + 0.5))})
     except Exception as _e:
         logging.error(f"api_shop_promo: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
@@ -6179,6 +6179,35 @@ async def api_shop_prices_handler(request: web.Request) -> web.Response:
     except Exception as _e:
         logging.error(f"api_shop_prices: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def _web_pay_rollback(order_id: str, uid: int, coins: int, nsg: bool = False) -> int:
+    """Ссылку на оплату картой создать не удалось — заказ из мини-приложения
+    отменяем и СРАЗУ возвращаем списанные под него монетки. Раньше они
+    висели сутки до фонового возврата, а следующая кнопка «N₽ + СБП M₽»
+    показывала неверные суммы. Ревью 08.10.2026. Возвращает, сколько вернули."""
+    try:
+        _pool_rb = await get_pool()
+        async with _pool_rb.acquire() as _c_rb:
+            async with _c_rb.transaction():
+                _row = await _c_rb.fetchrow(
+                    "UPDATE fk_orders SET status='cancelled', coins_spent=0 "
+                    "WHERE order_id=$1 AND COALESCE(status,'pending')='pending' "
+                    "RETURNING 1", order_id)
+                if not _row:
+                    return 0
+                if nsg:
+                    await _c_rb.execute(
+                        "UPDATE nsgifts_orders SET status='cancelled' "
+                        "WHERE fk_order_id=$1 AND status='pending'", order_id)
+                if coins > 0:
+                    await add_coins(int(uid), int(coins),
+                                    reason=f"возврат: не создалась оплата картой {order_id}",
+                                    conn=_c_rb)
+        return int(coins)
+    except Exception as _e_rb:
+        logging.error(f"web pay rollback {order_id}: {_e_rb} — монетки вернёт фоновый возврат")
+        return 0
 
 
 async def api_shop_pay_handler(request: web.Request) -> web.Response:
@@ -6240,18 +6269,32 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         _promo_code = str(body.get("promo", "")).strip().upper()[:32]
         _promo_applied = None
         if _promo_code:
+            # Клиент видел цену СО скидкой. Если промокод больше не проходит
+            # (лимит, срок, занят его же неоплаченным заказом) — НЕ списываем
+            # молча полную цену, а говорим почему. Раньше монетками могла
+            # уйти сумма больше показанной. Ревью 08.10.2026
+            _perr = "Промокод больше не действует"
             try:
                 from db import check_promo_for_user as _chk
                 _okp, _msgp, _pr = await _chk(_promo_code, int(uid))
                 _psvc = (_pr or {}).get("service_key")
-                if (_okp and _pr and _pr.get("kind") == "percent"
-                        and (not _psvc or _psvc == key)):
+                if not _okp:
+                    _perr = _msgp or _perr
+                elif not _pr or _pr.get("kind") != "percent":
+                    _perr = "Этот промокод не даёт скидку на покупки"
+                elif _psvc and _psvc != key:
+                    _perr = "Промокод действует для другого сервиса"
+                else:
                     _val = int(_pr.get("value") or 0)
                     if 0 < _val <= 100:
-                        price = max(1, round(price * (100 - _val) / 100))
+                        # Округление как в мини-приложении (половина вверх).
+                        price = max(1, int(price * (100 - _val) / 100 + 0.5))
                         _promo_applied = _promo_code
             except Exception as _pe:
                 logging.warning(f"api_shop_pay promo: {_pe}")
+                _perr = "Не удалось проверить промокод — попробуй ещё раз"
+            if not _promo_applied:
+                return web.json_response({"ok": False, "error": "promo", "msg": _perr})
         # Монетки (кэшбек). Раньше в мини-аппе их применить было нельзя вообще —
         # клиент с балансом монеток мог потратить их только через меню бота.
         # Считаем всё на сервере: клиенту доверяем только факт «хочу применить».
@@ -6311,7 +6354,9 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                 url = await fk_create_order(float(_rest), order_id, int(uid), payment_id=36)
             except Exception as _ce:
                 logging.error(f"api_shop_pay card order={order_id}: {_ce}")
-                return web.json_response({"ok": False, "error": "card_failed"})
+                _back = await _web_pay_rollback(order_id, int(uid), _coins_used)
+                return web.json_response({"ok": False, "error": "card_failed",
+                                          "coinsBack": _back})
         else:
             from config import fk_pay_url as _fk_pay_url
             url = _fk_pay_url(_rest, order_id)
@@ -14473,6 +14518,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/gen/anim", api_gen_anim_handler)
     app.router.add_post("/api/appstore/regions", api_appstore_regions_handler)
     app.router.add_post("/api/appstore/denoms", api_appstore_denoms_handler)
+    app.router.add_post("/api/appstore/promo", api_appstore_promo_handler)
     app.router.add_post("/api/appstore/pay", api_appstore_pay_handler)
     app.router.add_post("/api/admin/stats", api_admin_stats_handler)
     app.router.add_post("/api/admin/sales", api_admin_sales_handler)
@@ -21136,6 +21182,113 @@ async def nsg_catalog_problem(stock: dict, need_apple: bool = True) -> tuple:
     return ("", "")
 
 
+async def _nsg_web_prep() -> None:
+    """Настройки каталога App Store (скрытые товары, наценка на товар,
+    переименования, слияния) — те же, что применяет чат бота перед показом.
+
+    Без этого вызова каталог в мини-приложении жил на том, что осталось в
+    памяти процесса: после перезапуска бота — без твоих настроек, пока кто-то
+    не откроет App Store в чате. Цена в каталоге могла расходиться с ценой в
+    чате. 08.10.2026
+    """
+    import json as _j_wp
+    import ns_gifts as _ng_wp
+    def _p(v, d):
+        try:
+            return _j_wp.loads(v) if v else d
+        except Exception:
+            return d
+    try:
+        _ng_wp.set_overrides({
+            "hidden":   _p(await get_setting("nsg_hidden", ""), []),
+            "featured": _p(await get_setting("nsg_featured", ""), []),
+            "markup":   _p(await get_setting("nsg_markup_map", ""), {}),
+            "rename":   _p(await get_setting("nsg_rename_map", ""), {}),
+            "merge":    _p(await get_setting("nsg_merge_map", ""), {}),
+        })
+    except Exception as _e_wp:
+        logging.warning(f"nsg web prep: {_e_wp}")
+
+
+async def _appstore_markup_web(stock, cat_id: int, cat: dict) -> float:
+    """Наценка как в чате бота: на конкретный товар → по бренду → общая."""
+    from ns_gifts import get_folder_by_category, brand_of
+    folder = get_folder_by_category(stock, cat_id)
+    if folder and folder.get("markup") is not None:
+        try:
+            return float(folder["markup"])
+        except Exception:
+            pass
+    brand = folder["brand"] if folder else brand_of((cat or {}).get("category_name", ""))
+    return await _appstore_markup_for(brand)
+
+
+async def _appstore_promo_pct(code: str, uid: int) -> tuple:
+    """Промокод для App Store: (процент, ошибка). Подходит скидочный код без
+    привязки к сервису или привязанный к App Store."""
+    _c = str(code or "").strip().upper()[:32]
+    if not _c:
+        return 0, "Введи промокод"
+    from db import check_promo_for_user as _chk_as
+    _okp, _msgp, _pr = await _chk_as(_c, int(uid))
+    if not _okp:
+        return 0, (_msgp or "Промокод недействителен")
+    if not _pr or _pr.get("kind") != "percent":
+        return 0, "Этот промокод не даёт скидку на покупки"
+    _psvc = _pr.get("service_key")
+    if _psvc and _psvc != "appstore":
+        _svcn = (SHOP_CATALOG.get(_psvc, {}) or {}).get("name", _psvc)
+        return 0, f"Промокод действует только для {_svcn}"
+    _val = int(_pr.get("value") or 0)
+    if not (0 < _val <= 100):
+        return 0, "Некорректный промокод"
+    return _val, ""
+
+
+def _appstore_apply_promo(price_rub: int, pct: int, price_usd: float, usd_rate: float,
+                          fee_pct: float = 2.0) -> int:
+    """Цена со скидкой, но НЕ ниже закупки плюс комиссия FreeKassa (цена
+    поставщика × курс × (1 + комиссия)): иначе скидка на пополнение App Store
+    с маленькой наценкой ушла бы в минус. Округление — как в мини-приложении
+    (половина вверх), чтобы показанное и списанное совпадали."""
+    import math as _m_ap
+    if pct <= 0:
+        return int(price_rub)
+    _disc = max(1, int(price_rub * (100 - pct) / 100 + 0.5))
+    _cost = int(_m_ap.ceil(float(price_usd or 0) * float(usd_rate or 0)
+                           * (1 + max(0.0, float(fee_pct or 0)) / 100)))
+    return int(min(int(price_rub), max(_disc, _cost)))
+
+
+async def _appstore_fee_pct() -> float:
+    """Комиссия FreeKassa из «Денег» (fk_fee_pct), по умолчанию 2%."""
+    try:
+        _v = (await get_setting("fk_fee_pct", "") or "").strip().replace(",", ".")
+        return float(_v) if _v else 2.0
+    except Exception:
+        return 2.0
+
+
+async def api_appstore_promo_handler(request: web.Request) -> web.Response:
+    """Проверка промокода для App Store в мини-приложении. Auth по initData."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        uid = _verify_tg_init_data((body.get("initData") if isinstance(body, dict) else None) or "")
+        if not uid:
+            return web.json_response({"ok": False, "error": "auth"}, status=403)
+        _pct, _err = await _appstore_promo_pct(body.get("code"), int(uid))
+        if not _pct:
+            return web.json_response({"ok": False, "error": _err})
+        return web.json_response({"ok": True, "percent": _pct,
+                                  "code": str(body.get("code") or "").strip().upper()[:32]})
+    except Exception as _e:
+        logging.error(f"api_appstore_promo: {_e}")
+        return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
 async def api_appstore_regions_handler(request: web.Request) -> web.Response:
     """Регионы пополнения App Store/iCloud (Apple-категории NS Gifts). Auth по initData."""
     try:
@@ -21147,6 +21300,7 @@ async def api_appstore_regions_handler(request: web.Request) -> web.Response:
         if not uid:
             return web.json_response({"ok": False, "error": "auth"}, status=403)
         from ns_gifts import get_stock_cached, get_apple_categories, region_flag
+        await _nsg_web_prep()
         stock = await get_stock_cached(rt.nsgifts_client) if rt.nsgifts_client else {}
         _code, _msg = await nsg_catalog_problem(stock)
         if _code:
@@ -21185,16 +21339,21 @@ async def api_appstore_denoms_handler(request: web.Request) -> web.Response:
         _code, _msg = await nsg_catalog_problem(_st0)
         if _code:
             return web.json_response({"ok": False, "error": _code, "msg": _msg})
-        from ns_gifts import (get_stock_cached, find_category, calc_price_rub,
-                              get_folder_by_category, brand_of)
+        from ns_gifts import get_stock_cached, find_category, calc_price_rub
+        await _nsg_web_prep()
         stock = await get_stock_cached(rt.nsgifts_client)
         cat = find_category(stock, cat_id)
         if not cat:
             return web.json_response({"ok": False, "error": "not_found"}, status=404)
-        folder = get_folder_by_category(stock, cat_id)
-        brand = folder["brand"] if folder else brand_of(cat.get("category_name", ""))
         usd_rate = await _nsg_usd_rate()
-        markup = await _appstore_markup_for(brand)
+        markup = await _appstore_markup_web(stock, cat_id, cat)
+        # Промокод (если клиент его ввёл) — цены сразу со скидкой, посчитанной
+        # сервером: показываем ровно то, что будет списано.
+        _pct = 0
+        _perr = ""
+        if str(body.get("promo") or "").strip():
+            _pct, _perr = await _appstore_promo_pct(body.get("promo"), int(uid))
+        _fee = await _appstore_fee_pct()
         services = sorted([s for s in cat.get("services", []) if s.get("in_stock", 0) > 0],
                           key=lambda s: s["price"])
         _out = []
@@ -21202,15 +21361,25 @@ async def api_appstore_denoms_handler(request: web.Request) -> web.Response:
             _pr = int(calc_price_rub(svc["price"], usd_rate, markup))
             _parts = svc.get("service_name", "").split("|")
             _nom = _parts[-1].strip() if _parts else svc.get("service_name", "")
-            _out.append({"serviceId": svc["service_id"], "nominal": _nom, "priceRub": _pr})
-        return web.json_response({"ok": True, "denoms": _out})
+            _row = {"serviceId": svc["service_id"], "nominal": _nom, "priceRub": _pr}
+            if _pct:
+                _np = _appstore_apply_promo(_pr, _pct, svc["price"], usd_rate, _fee)
+                if _np < _pr:
+                    _row["oldPrice"] = _pr
+                    _row["priceRub"] = _np
+            _out.append(_row)
+        return web.json_response({"ok": True, "denoms": _out, "promoPct": _pct,
+                                  "promoError": _perr})
     except Exception as _e:
         logging.error(f"api_appstore_denoms: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
 async def api_appstore_pay_handler(request: web.Request) -> web.Response:
-    """Создание заказа App Store и ссылка на оплату (СБП/Карта). Цена считается на сервере."""
+    """Заказ App Store из мини-приложения: СБП/карта, промокод и монетки.
+    Цена, скидка и списание монеток — только на сервере. 08.10.2026: добавлены
+    промокод и монетки (раньше в мини-приложении их для App Store не было, хотя
+    в чате бота монетки работали)."""
     try:
         try:
             body = await request.json()
@@ -21231,8 +21400,9 @@ async def api_appstore_pay_handler(request: web.Request) -> web.Response:
         except Exception:
             return web.json_response({"ok": False, "error": "bad"}, status=400)
         method = str(body.get("method", "sbp")).strip().lower()
-        from ns_gifts import (get_stock_cached, find_category, calc_price_rub,
-                              get_folder_by_category, brand_of)
+        _use_coins = bool(body.get("useCoins"))
+        from ns_gifts import get_stock_cached, find_category, calc_price_rub
+        await _nsg_web_prep()
         stock = await get_stock_cached(rt.nsgifts_client)
         cat = find_category(stock, cat_id)
         service = None
@@ -21240,52 +21410,136 @@ async def api_appstore_pay_handler(request: web.Request) -> web.Response:
             service = next((s for s in cat.get("services", []) if s["service_id"] == service_id), None)
         if not service or service.get("in_stock", 0) <= 0:
             return web.json_response({"ok": False, "error": "not_found"}, status=404)
-        folder = get_folder_by_category(stock, cat_id)
-        brand = folder["brand"] if folder else brand_of(cat.get("category_name", ""))
         usd_rate = await _nsg_usd_rate()
-        markup = await _appstore_markup_for(brand)
+        markup = await _appstore_markup_web(stock, cat_id, cat)
         price_rub = int(calc_price_rub(service["price"], usd_rate, markup))
         if price_rub <= 0:
             return web.json_response({"ok": False, "error": "price"}, status=400)
+        # Промокод: считаем на сервере. Недействительный — не молча без
+        # скидки, а с причиной: клиент видел цену со скидкой.
+        _promo_code = str(body.get("promo") or "").strip().upper()[:32]
+        _promo_applied = None
+        if _promo_code:
+            _pct, _perr = await _appstore_promo_pct(_promo_code, int(uid))
+            if not _pct:
+                return web.json_response({"ok": False, "error": "promo", "msg": _perr})
+            _np = _appstore_apply_promo(price_rub, _pct, service["price"], usd_rate,
+                                        await _appstore_fee_pct())
+            if _np < price_rub:
+                price_rub = _np
+                _promo_applied = _promo_code
+        # Цена, которую клиент видел на экране. Расходится (курс/наценка
+        # поменялись, страница старая) — просим обновить, а не списываем другое.
+        try:
+            _exp = int(body.get("expPrice")) if body.get("expPrice") is not None else None
+        except Exception:
+            _exp = None
+        if _exp is not None and _exp != price_rub:
+            logging.info(f"api_appstore_pay stale uid={uid} svc={service_id} "
+                         f"показано={_exp} актуально={price_rub}")
+            return web.json_response({"ok": False, "error": "stale", "price": price_rub})
+        _coins_used = 0
+        if _use_coins:
+            try:
+                _bal = int(await get_coins(int(uid)))
+            except Exception:
+                _bal = 0
+            if _bal >= 1:
+                _coins_used = int(min(_bal, price_rub))
+        _rest = max(0, price_rub - _coins_used)
+        _full_coins = _coins_used > 0 and _rest == 0
+
         import time as _t
-        order_id = f"nsg_{service_id}_{uid}_{int(_t.time())}"
+        # Суффикс обязателен: два заказа одного номинала в одну секунду (двойное
+        # нажатие) получали один номер, второй молча не записывался — а монетки
+        # за него списывались. Поймано тестом 08.10.2026.
+        order_id = f"nsg_{service_id}_{uid}_{int(_t.time())}{_rand_sfx()}"
         pool = await get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO nsgifts_orders (user_id, fk_order_id, service_id, service_name, "
-                "quantity, price_usd, price_rub, status) VALUES ($1,$2,$3,$4,1,$5,$6,'pending') "
-                "ON CONFLICT (fk_order_id) DO NOTHING",
-                int(uid), order_id, service_id, service.get("service_name", ""),
-                service["price"], price_rub)
-            await conn.execute(
-                "INSERT INTO fk_orders (order_id,user_id,credits,amount_rub,pack) "
-                "VALUES ($1,$2,0,$3,$4) ON CONFLICT (order_id) DO NOTHING",
-                order_id, int(uid), price_rub, f"nsg:{service_id}")
-        if method == "card":
-            try:
-                url = await fk_create_order(float(price_rub), order_id, int(uid), payment_id=36)
-            except Exception as _ce:
-                logging.error(f"api_appstore_pay card {order_id}: {_ce}")
-                return web.json_response({"ok": False, "error": "card_failed"})
-        else:
-            from config import fk_pay_url as _fk_pay_url
-            url = _fk_pay_url(price_rub, order_id)
+            # Списание монеток, заказ поставщику и заказ оплаты — ОДНОЙ
+            # транзакцией: сбой посередине не должен уносить монетки без заказа.
+            async with conn.transaction():
+                if _coins_used > 0:
+                    if not await deduct_coins(int(uid), _coins_used,
+                                              reason=f"оплата заказа {order_id}", conn=conn):
+                        return web.json_response({"ok": False, "error": "coins",
+                                                  "msg": "Недостаточно монеток"})
+                _ins_n = await conn.execute(
+                    "INSERT INTO nsgifts_orders (user_id, fk_order_id, service_id, service_name, "
+                    "quantity, price_usd, price_rub, status) VALUES ($1,$2,$3,$4,1,$5,$6,'pending') "
+                    "ON CONFLICT (fk_order_id) DO NOTHING",
+                    int(uid), order_id, service_id, service.get("service_name", ""),
+                    service["price"], price_rub)
+                if str(_ins_n).split()[-1] != "1":
+                    # Заказ с таким номером уже есть — откатываем всё, включая монетки.
+                    raise RuntimeError(f"заказ {order_id} уже существует")
+                if _full_coins:
+                    _ins_f = await conn.execute(
+                        "INSERT INTO fk_orders (order_id,user_id,credits,amount_rub,pack,"
+                        "promo_code,coins_spent,status,paid_at) "
+                        "VALUES ($1,$2,0,0,$3,$4,$5,'paid',NOW()) ON CONFLICT (order_id) DO NOTHING",
+                        order_id, int(uid), f"nsg:{service_id}", _promo_applied, _coins_used)
+                    if str(_ins_f).split()[-1] != "1":
+                        raise RuntimeError(f"заказ оплаты {order_id} уже существует")
+                    # Вебхука не будет — промокод отмечаем сами, в той же транзакции.
+                    if _promo_applied:
+                        await mark_promo_used(_promo_applied, int(uid), conn)
+                else:
+                    # coins_spent — всегда: не доплатит — фоновый возврат вернёт
+                    # монетки; промокод отметит вебхук при оплате.
+                    _ins_p = await conn.execute(
+                        "INSERT INTO fk_orders (order_id,user_id,credits,amount_rub,pack,"
+                        "promo_code,coins_spent) VALUES ($1,$2,0,$3,$4,$5,$6) "
+                        "ON CONFLICT (order_id) DO NOTHING",
+                        order_id, int(uid), _rest, f"nsg:{service_id}", _promo_applied, _coins_used)
+                    if str(_ins_p).split()[-1] != "1":
+                        raise RuntimeError(f"заказ оплаты {order_id} уже существует")
+        url = None
+        if not _full_coins:
+            if method == "card":
+                try:
+                    url = await fk_create_order(float(_rest), order_id, int(uid), payment_id=36)
+                except Exception as _ce:
+                    logging.error(f"api_appstore_pay card {order_id}: {_ce}")
+                    _back = await _web_pay_rollback(order_id, int(uid), _coins_used, nsg=True)
+                    return web.json_response({"ok": False, "error": "card_failed",
+                                              "coinsBack": _back})
+            else:
+                from config import fk_pay_url as _fk_pay_url
+                url = _fk_pay_url(_rest, order_id)
         try:
             _parts = service.get("service_name", "").split("|")
             _nom = _parts[-1].strip() if _parts else ""
             await bot.send_message(
                 ADMIN_ID,
-                f"🍎 <b>App Store заказ</b> (мини-апп)\n"
-                f"{service.get('service_name', _nom)}\n"
-                f"💵 <b>{price_rub}₽</b> · {'Карта' if method == 'card' else 'СБП'}\n"
-                f"🆔 <code>{order_id}</code>\n⏳ Ожидает оплаты",
+                f"🍎 <b>App Store заказ</b> (мини-приложение)\n"
+                f"👤 {await _who_user(uid)}\n"
+                f"📦 {_h_esc_ns(service.get('service_name', _nom))}\n"
+                f"💵 <b>{price_rub}₽</b>"
+                + (f" · 🎟 {_promo_applied}" if _promo_applied else "") + "\n"
+                + (f"🪙 Монетками: <b>{_coins_used}₽</b>\n" if _coins_used else "")
+                + (f"💳 {'Карта' if method == 'card' else 'СБП'}: <b>{_rest}₽</b>\n" if _rest else "")
+                + f"🆔 <code>{order_id}</code>\n"
+                + ("✅ Оплачен монетками — выдаю код" if _full_coins else "⏳ Ожидает оплаты"),
                 parse_mode="HTML")
-        except Exception:
-            pass
-        return web.json_response({"ok": True, "url": url, "orderId": order_id})
+        except Exception as _e_an:
+            logging.warning(f"api_appstore_pay admin msg {order_id}: {_e_an}")
+        if _full_coins:
+            # Как в чате: оплата монетками сразу запускает выдачу кода (код
+            # придёт клиенту в чат бота). В фоне — ответ мини-приложению не ждёт
+            # поставщика.
+            asyncio.create_task(nsgifts_fulfill_after_payment(order_id, int(uid)))
+        return web.json_response({"ok": True, "url": url, "orderId": order_id,
+                                  "coinsUsed": _coins_used, "rest": _rest,
+                                  "price": price_rub, "paidByCoins": _full_coins})
     except Exception as _e:
-        logging.error(f"api_appstore_pay: {_e}")
+        logging.error(f"api_appstore_pay: {_e}", exc_info=True)
         return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+def _h_esc_ns(v) -> str:
+    import html as _h_ns2
+    return _h_ns2.escape(str(v or ""))
 
 
 async def _nsg_usd_rate() -> float:

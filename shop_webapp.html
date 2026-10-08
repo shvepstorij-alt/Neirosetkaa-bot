@@ -994,10 +994,13 @@ function payVia(el,key,idx,method,useCoins){
       var _err=(d&&d.error)||'';
       var m;
       if(_err.indexOf('auth')===0){ m='Приложение открылось без данных Telegram.<br><br>1) Закрой это мини-приложение (кнопка «Закрыть» вверху)<br>2) В боте напиши команду <b>/start</b><br>3) Снова открой «🛒 Каталог» и повтори оплату.'; }
-      else if(_err==='card_failed'){ m='Картой не удалось — попробуй СБП'; }
+      else if(_err==='card_failed'){ m='Картой не удалось — попробуй СБП'+((d&&d.coinsBack)?('.<br>🪙 '+d.coinsBack+'₽ монетками вернулись на баланс.'):''); }
+      else if(_err==='promo'){ m=_h((d&&d.msg)||'Промокод больше не действует')+'<br>Цена без промокода — '+((CATALOG[key]&&((CATALOG[key].plans||[]).filter(function(p){return p.idx===idx;})[0]||{}).price)||'')+'₽.'; window._shopPromo=null; }
       else if(_err==='stale'){ m='Тарифы обновились 🔄<br><br>Закрой это мини-приложение и открой «🛒 Каталог» заново — покажу актуальные цены.'; }
       else { m=_err?('Ошибка: '+_err):'Не получилось. Попробуй ещё раз'; }
-      row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'; }
+      row.innerHTML='<div class="pm-err">'+m+'</div>'+(_err==='promo'
+        ? '<div class="plan-buy" style="margin-top:8px" onclick="openCard(\''+_esc1(key)+'\',true)">Показать цены без промокода</div>'
+        : '<div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>'); }
   });
 }
 function _openPay(enc){ var url=decodeURIComponent(enc); try{if(tg&&tg.openLink){tg.openLink(url);return;}}catch(e){} try{window.open(url,'_blank');}catch(e){} }
@@ -1180,35 +1183,94 @@ function openAppstore(){
     if(!d||!d.ok||!d.regions||!d.regions.length){
       el.innerHTML='<div class="pm-err">'+((d&&d.msg)?d.msg:'Не удалось загрузить регионы. Попробуй позже.')+'</div>'; return; }
     el.innerHTML='<div class="as-grid">'+d.regions.map(function(r){
-      return '<div class="as-region" onclick="asDenoms('+r.catId+',\''+_esc1(r.name)+'\')"><span class="as-flag">'+(r.flag||'🌍')+'</span><span class="as-rname">'+_h(r.name)+'</span></div>';
+      window._asNames[r.catId]=r.name;
+      return '<div class="as-region" onclick="asDenoms('+(parseInt(r.catId,10)||0)+')"><span class="as-flag">'+(r.flag||'🌍')+'</span><span class="as-rname">'+_h(r.name)+'</span></div>';
     }).join('')+'</div>';
   });
 }
+/* App Store: промокод и монетки — как в карточке обычного сервиса.
+   Цены со скидкой считает СЕРВЕР (/api/appstore/denoms с promo), здесь
+   только показываем и отправляем показанную цену для сверки. 08.10.2026 */
+window._asPromo=null;           /* {code, pct} — действует на весь App Store */
+window._asLast=null;            /* {catId,name} — чтобы перерисовать после промокода */
+window._asNames={};             /* catId → название региона (без кавычек в onclick) */
 function asDenoms(catId,name){
+  name = (name!==undefined && name!==null) ? name : ((window._asNames||{})[catId]||'');
   var body=document.getElementById('card-body'); if(!body) return;
-  body.innerHTML=_asHead('Регион: '+name)+'<div class="card-plans-h">Сумма пополнения</div><div id="as-body"><div class="pm-wait">Загружаю номиналы…</div></div>'
+  window._asLast={catId:catId,name:name};
+  if(window._coins===undefined){ _loadCoins(function(){ asDenoms(catId,name); }); return; }
+  var P=window._asPromo;
+  var promoBlock = P
+    ? '<div class="promo-box on"><span>🎟 <b>'+_h(P.code)+'</b> — скидка '+P.pct+'%</span><span class="promo-clr" onclick="asClearPromo()">убрать</span></div>'
+    : '<div class="promo-box"><input id="as-promo-inp" class="promo-inp" placeholder="Промокод" autocapitalize="characters"><div class="promo-btn" onclick="asApplyPromo()">Применить</div></div><div id="as-promo-status" class="promo-status"></div>';
+  var coinsLine = (window._coins>0)
+    ? '<div class="promo-box on" style="margin-top:8px"><span>🪙 У тебя <b>'+Math.floor(window._coins)+'₽</b> монетками — можно оплатить ими</span></div>'
+    : '';
+  body.innerHTML=_asHead('Регион: '+_h(name))
+    +'<div class="card-plans-h">🎟 Промокод</div>'+promoBlock+coinsLine
+    +'<div class="card-plans-h">Сумма пополнения</div><div id="as-body"><div class="pm-wait">Загружаю номиналы…</div></div>'
     +'<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="openAppstore()">← Регионы</div>';
-  _api('/api/appstore/denoms',{catId:catId}).then(function(d){
+  _api('/api/appstore/denoms',{catId:catId,promo:(P?P.code:'')}).then(function(d){
     var el=document.getElementById('as-body'); if(!el)return;
     if(!d||!d.ok||!d.denoms||!d.denoms.length){
       el.innerHTML='<div class="pm-err">'+((d&&d.msg)?d.msg:'Нет доступных номиналов.')+'</div>'; return; }
+    if(P && d.promoError){ window._asPromo=null; asDenoms(catId,name);
+      setTimeout(function(){ var st=document.getElementById('as-promo-status'); if(st) st.innerHTML='<span style="color:#e5484d">'+_h(d.promoError)+'</span>'; },50); return; }
     el.innerHTML=d.denoms.map(function(p){
-      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.nominal+'</div><div class="plan-p">'+p.priceRub+'₽</div></div>'
-        +'<div class="plan-buy" onclick="asMethod(this,'+catId+','+p.serviceId+')">Оформить за '+p.priceRub+'₽</div></div>';
+      var pr = p.oldPrice ? ('<s style="color:var(--text3);font-size:13px">'+p.oldPrice+'₽</s> '+p.priceRub+'₽') : (p.priceRub+'₽');
+      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+_h(p.nominal)+'</div><div class="plan-p">'+pr+'</div></div>'
+        +'<div class="plan-buy" onclick="asMethod(this,'+catId+','+p.serviceId+','+p.priceRub+')">Оформить за '+p.priceRub+'₽</div></div>';
     }).join('');
   });
 }
-function asMethod(btn,catId,serviceId){
+function asApplyPromo(){
+  var inp=document.getElementById('as-promo-inp'); var code=((inp&&inp.value)||'').trim();
+  var st=document.getElementById('as-promo-status');
+  if(!code){ if(st)st.innerHTML='<span style="color:var(--text2)">Введи промокод</span>'; return; }
+  if(st)st.textContent='Проверяю…';
+  _api('/api/appstore/promo',{code:code}).then(function(d){
+    if(d&&d.ok){ window._asPromo={code:(d.code||code.toUpperCase()),pct:d.percent};
+      if(window._asLast) asDenoms(window._asLast.catId,window._asLast.name); }
+    else{ if(st)st.innerHTML='<span style="color:#e5484d">'+_h((d&&d.error)||'Промокод недействителен')+'</span>'; }
+  });
+}
+function asClearPromo(){ window._asPromo=null; if(window._asLast) asDenoms(window._asLast.catId,window._asLast.name); }
+function asMethod(btn,catId,serviceId,price){
   if(!btn)return; var w=document.createElement('div'); w.className='pay-methods';
-  w.innerHTML='<div class="pm sbp" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\')">⚡ СБП</div>'
-    +'<div class="pm card" onclick="asPay(this,'+catId+','+serviceId+',\'card\')">💳 Картой</div>';
+  var coins=Math.floor(window._coins||0); var html='';
+  if(coins>=1 && price>0){
+    if(coins>=price){
+      html+='<div class="pm" style="background:var(--green);color:#fff" onclick="asPay(this,'+catId+','+serviceId+',\'coins\','+price+',1)">🪙 Монетками '+price+'₽</div>';
+    } else {
+      html+='<div class="pm" style="background:var(--green);color:#fff" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\','+price+',1)">🪙 '+coins+'₽ + СБП '+(price-coins)+'₽</div>';
+    }
+  }
+  html+='<div class="pm sbp" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\','+price+')">⚡ СБП</div>'
+    +'<div class="pm card" onclick="asPay(this,'+catId+','+serviceId+',\'card\','+price+')">💳 Картой</div>';
+  w.innerHTML=html;
   btn.parentNode.replaceChild(w,btn);
 }
-function asPay(el,catId,serviceId,method){
-  var row=el.parentNode; row.innerHTML='<div class="pm-wait">Создаю ссылку на оплату…</div>';
-  _api('/api/appstore/pay',{catId:catId,serviceId:serviceId,method:method}).then(function(d){
-    if(d&&d.ok&&d.url){ _afterPay(row,d.url,d.orderId); }
-    else{ var m=(d&&d.error==='card_failed')?'Картой не удалось — попробуй СБП':(d&&d.error==='unavailable')?'Сервис временно недоступен':((d&&d.error)?('Ошибка: '+d.error):'Не получилось. Попробуй ещё раз'); row.innerHTML='<div class="pm-err">'+m+'</div>'; }
+function asPay(el,catId,serviceId,method,price,useCoins){
+  var row=el.parentNode; row.innerHTML='<div class="pm-wait">'+(useCoins?'Списываю монетки…':'Создаю ссылку на оплату…')+'</div>';
+  var P=window._asPromo;
+  _api('/api/appstore/pay',{catId:catId,serviceId:serviceId,method:method,useCoins:!!useCoins,
+                            promo:(P?P.code:''),expPrice:price}).then(function(d){
+    if(d&&d.ok&&d.paidByCoins){
+      window._coins=Math.max(0,(window._coins||0)-(d.coinsUsed||0));
+      row.innerHTML='<div class="pm-wait" style="color:var(--green)">🪙 Оплачено монетками ('+(d.coinsUsed||0)+'₽)!<br>Код пополнения придёт в чат бота через несколько секунд.</div>';
+      return;
+    }
+    if(d&&d.ok&&d.url){ if(d.coinsUsed){ window._coins=Math.max(0,(window._coins||0)-d.coinsUsed); } _afterPay(row,d.url,d.orderId); return; }
+    var m;
+    if(d&&d.error==='card_failed') m='Картой не удалось — попробуй СБП'+(d.coinsBack?('. 🪙 '+d.coinsBack+'₽ монетками вернулись на баланс.'):'');
+    else if(d&&d.error==='unavailable') m='Сервис временно недоступен';
+    else if(d&&d.error==='stale') m='Цена обновилась 🔄 — открой номиналы заново.';
+    else if(d&&(d.error==='promo'||d.error==='coins')) m=_h(d.msg||'Не получилось');
+    if(d&&d.error==='promo'){ window._asPromo=null;
+      row.innerHTML='<div class="pm-err">'+m+'</div><div class="plan-buy" style="margin-top:8px" onclick="asDenoms('+(parseInt(catId,10)||0)+')">Показать цены без промокода</div>'; return; }
+    else m=(d&&d.error)?('Ошибка: '+_h(d.error)):'Не получилось. Попробуй ещё раз';
+    row.innerHTML='<div class="pm-err">'+m+'</div>'
+      +(d&&d.error==='stale'&&window._asLast?'<div class="plan-buy" style="margin-top:8px" onclick="asDenoms('+(parseInt(catId,10)||0)+')">Обновить цены</div>':'');
   });
 }
 

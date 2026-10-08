@@ -1802,7 +1802,8 @@ async def buy_pack(cb: CallbackQuery, state: FSMContext):
 
     if promo_code:
         ok_p, _, promo = await check_promo_for_user(promo_code, uid)
-        if ok_p and promo["kind"] == "percent":
+        # Код, привязанный к сервису магазина, на пакеты кредитов не действует.
+        if ok_p and promo["kind"] == "percent" and not promo.get("service_key"):
             promo_discount = promo["value"]
             promo_text = f"\n🎟 Промокод <b>{promo_code}</b>: -{promo_discount}%"
 
@@ -1887,6 +1888,13 @@ async def promo_code_input(message: Message, state: FSMContext):
     ok, msg_err, promo = await check_promo_for_user(code, uid)
     if not ok:
         await message.answer(f"❌ {msg_err}")
+        return
+
+    if promo["kind"] == "percent" and promo.get("service_key"):
+        # Скидка привязана к сервису магазина (ChatGPT, App Store…) — на
+        # пакеты кредитов не действует. Раньше применялась. 08.10.2026
+        _svcn = (SHOP_CATALOG.get(promo["service_key"], {}) or {}).get("name", promo["service_key"])
+        await message.answer(f"❌ Этот промокод действует только для {_svcn}")
         return
 
     if promo["kind"] == "percent":

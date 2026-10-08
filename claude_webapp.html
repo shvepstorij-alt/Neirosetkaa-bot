@@ -843,10 +843,40 @@ function _isAppStore(key, name){
   var s = ((key||'') + ' ' + (name||'')).toLowerCase().replace(/[^a-z]/g,'');
   return s.indexOf('appstore') >= 0 || s.indexOf('icloud') >= 0;
 }
-function openCard(key){
+/* Каталог «Часто берут вместе»: промокод, монетки и цены клиента партнёра —
+   как в основном каталоге. Всё, что касается денег, считает сервер. 08.10.2026 */
+var _ctPromo = {};          /* key → {code, pct} */
+var _ctCoins;               /* баланс монеток; undefined — ещё не загружен */
+var _ctPricesLoaded = false;
+function _ctH(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function _ctBox(on){ return 'style="display:flex;gap:8px;align-items:center;justify-content:space-between;'
+  + (on ? 'background:rgba(34,197,94,.08);border:1px solid #22c55e;border-radius:12px;padding:10px 12px;font-size:13px;margin-bottom:6px' : 'margin-bottom:6px') + '"'; }
+function _ctLoad(cb){
+  var n = 0, need = 0;
+  function done(){ n++; if (n >= need && cb) cb(); }
+  if (_ctCoins === undefined){ need++;
+    _api('/api/cabinet').then(function(d){ _ctCoins = (d && d.ok && d.coins) ? Math.floor(d.coins) : 0; done(); }); }
+  if (!_ctPricesLoaded){ need++;
+    _api('/api/shop/prices').then(function(d){
+      _ctPricesLoaded = !!(d && d.ok);
+      try {
+        if (d && d.ok && d.partner && d.prices){
+          var C = window.__CATALOG__ || {};
+          for (var k in d.prices){
+            var arr = d.prices[k]; var pl = (C[k] && C[k].plans) || [];
+            for (var i = 0; i < pl.length; i++){
+              var np = arr[pl[i].idx]; if (np === undefined || np === null) continue;
+              if (typeof np === 'object'){ pl[i].price = np[0]; pl[i].full = np[1]; } else { pl[i].price = np; }
+            }
+          }
+        }
+      } catch(e) {}
+      done(); }); }
+  if (!need && cb) cb();
+}
+function openCard(key, _again){
   var c = (window.__CATALOG__ || {})[key];
   var _nm = (c && c.name) || key;
-  // App Store / iCloud — пополнение через NS Gifts требует выбора региона: ведём в бота
   if (_isAppStore(key, _nm)) { openAppstore(); return; }
   var body = document.getElementById('svc-card-body');
   if (!body) return;
@@ -856,44 +886,102 @@ function openCard(key){
     try { window.open(url, '_blank'); } catch(e) {}
     return;
   }
+  if (!_again && (_ctCoins === undefined || !_ctPricesLoaded)){
+    body.innerHTML = '<div class="pm-wait">Загружаю…</div>'; showScreen('svc-card');
+    _ctLoad(function(){ openCard(key, true); }); return;
+  }
+  var P = (_ctPromo[key] && _ctPromo[key].pct) || 0;
   var plans = (c.plans||[]).slice().sort(function(a,b){return a.price-b.price;});
   var plansHtml = plans.map(function(p){
+    var disc = P > 0 ? Math.max(1, Math.round(p.price*(100-P)/100)) : p.price;
+    var priceHtml = P > 0 ? ('<s style="opacity:.55;font-size:13px">'+p.price+'₽</s> '+disc+'₽<span>/мес</span>') : (p.price+'₽<span>/мес</span>');
     return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.name+'</div>'
-      + '<div class="plan-p">'+p.price+'₽<span>/мес</span></div></div>'
+      + '<div class="plan-p">'+priceHtml+'</div></div>'
       + (p.desc?('<div class="plan-d">'+p.desc+'</div>'):'')
-      + '<div class="plan-buy" onclick="chooseMethod(this,\''+_esc1(key)+'\','+p.idx+')">Оформить за '+p.price+'₽</div></div>';
+      + '<div class="plan-buy" onclick="chooseMethod(this,\''+_esc1(key)+'\','+p.idx+')">Оформить за '+disc+'₽</div></div>';
   }).join('');
+  var promoBlock = P > 0
+    ? '<div '+_ctBox(true)+'><span>🎟 <b>'+_ctH(_ctPromo[key].code)+'</b> — скидка '+P+'%</span><span style="text-decoration:underline;cursor:pointer;opacity:.7" onclick="ctClearPromo(\''+_esc1(key)+'\')">убрать</span></div>'
+    : '<div '+_ctBox(false)+'><input id="ct-promo-inp" placeholder="Промокод" autocapitalize="characters" style="flex:1;min-width:0;border:1px solid rgba(128,128,128,.35);border-radius:10px;padding:10px 12px;font-size:14px;background:transparent;color:inherit;text-transform:uppercase">'
+      + '<div onclick="ctApplyPromo(\''+_esc1(key)+'\')" style="background:#22c55e;color:#fff;font-weight:700;font-size:13px;padding:10px 14px;border-radius:10px;cursor:pointer;white-space:nowrap">Применить</div></div>'
+      + '<div id="ct-promo-status" style="font-size:12px;margin-bottom:6px"></div>';
+  var coinsLine = (_ctCoins > 0)
+    ? '<div '+_ctBox(true)+'><span>🪙 У тебя <b>'+_ctCoins+'₽</b> монетками — можно оплатить ими</span></div>' : '';
   body.innerHTML =
     '<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(key, c.logo)+'">'+_iconHtml(c.logo, c.name)+'</div>'
     + '<div class="card-name">'+c.name+'</div></div>'
     + (c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
+    + '<div class="card-plans-h">🎟 Промокод</div>' + promoBlock + coinsLine
     + '<div class="card-plans-h">Тарифы</div>' + plansHtml
     + '<button class="btn btn-outline" style="margin-top:14px" onclick="showScreen(\'s4\')">← Назад</button>';
   showScreen('svc-card');
 }
+function ctApplyPromo(key){
+  var inp = document.getElementById('ct-promo-inp'); var code = ((inp && inp.value) || '').trim();
+  var st = document.getElementById('ct-promo-status');
+  if (!code){ if (st) st.textContent = 'Введи промокод'; return; }
+  if (st) st.textContent = 'Проверяю…';
+  var pl = ((window.__CATALOG__||{})[key] || {}).plans || []; var firstIdx = (pl[0] && pl[0].idx) || 0;
+  _api('/api/shop/promo', {key:key, planIdx:firstIdx, code:code}).then(function(d){
+    if (d && d.ok){ _ctPromo[key] = {code: code.toUpperCase(), pct: d.percent}; openCard(key, true); }
+    else if (st){ st.innerHTML = '<span style="color:#e5484d">'+_ctH((d && d.error) || 'Промокод недействителен')+'</span>'; }
+  });
+}
+function ctClearPromo(key){ delete _ctPromo[key]; openCard(key, true); }
+
 // Оплата ПОЛНОСТЬЮ в мини-аппке: выбор способа → создание заказа → ссылка на оплату
 function chooseMethod(btn, key, idx){
   if(!btn) return;
+  var P = (_ctPromo[key] && _ctPromo[key].pct) || 0;
+  var pl = (((window.__CATALOG__||{})[key] || {}).plans || []).filter(function(p){ return p.idx === idx; })[0] || {};
+  var price = P > 0 ? Math.max(1, Math.round((pl.price||0)*(100-P)/100)) : (pl.price||0);
+  var coins = Math.floor(_ctCoins || 0);
+  var html = '';
+  if (coins >= 1 && price > 0){
+    html += (coins >= price)
+      ? '<div class="pm" style="background:#22c55e;color:#fff" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'coins\',1)">🪙 Монетками '+price+'₽</div>'
+      : '<div class="pm" style="background:#22c55e;color:#fff" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\',1)">🪙 '+coins+'₽ + СБП '+(price-coins)+'₽</div>';
+  }
   var wrap = document.createElement('div');
   wrap.className = 'pay-methods';
-  wrap.innerHTML = '<div class="pm sbp" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\')">⚡ СБП</div>'
+  wrap.innerHTML = html + '<div class="pm sbp" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'sbp\')">⚡ СБП</div>'
     + '<div class="pm card" onclick="payVia(this,\''+_esc1(key)+'\','+idx+',\'card\')">💳 Картой</div>';
   btn.parentNode.replaceChild(wrap, btn);
 }
-function payVia(el, key, idx, method){
+
+function payVia(el, key, idx, method, useCoins){
   var row = el.parentNode;
-  row.innerHTML = '<div class="pm-wait">Создаю ссылку на оплату…</div>';
-  _api('/api/shop/pay', {key:key, planIdx:idx, method:method}).then(function(d){
+  row.innerHTML = '<div class="pm-wait">'+(useCoins ? 'Списываю монетки…' : 'Создаю ссылку на оплату…')+'</div>';
+  var _pl = (((window.__CATALOG__||{})[key] || {}).plans || []).filter(function(p){ return p.idx === idx; })[0] || {};
+  _api('/api/shop/pay', {key:key, planIdx:idx, method:method, useCoins:!!useCoins,
+                         promo:(_ctPromo[key] ? _ctPromo[key].code : ''),
+                         expPrice:(_pl.price||0), expName:(_pl.name||'')}).then(function(d){
+    if (d && d.ok && d.paidByCoins){
+      _ctCoins = Math.max(0, (_ctCoins||0) - (d.coinsUsed||0));
+      row.innerHTML = '<div class="pm-wait" style="color:#22c55e">🪙 Оплачено монетками ('+(d.coinsUsed||0)+'₽)!<br>'
+        + 'Заказ '+(d.num ? ('#'+d.num) : '')+' принят — подтверждение пришло в чат бота.</div>';
+      return;
+    }
     if (d && d.ok && d.url){
+      if (d.coinsUsed){ _ctCoins = Math.max(0, (_ctCoins||0) - d.coinsUsed); }
       row.innerHTML = '<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>';
       _openPay(encodeURIComponent(d.url));
     } else {
-      var msg = (d && d.error==='card_failed') ? 'Картой не удалось — попробуй СБП' : 'Не получилось. Попробуй ещё раз';
+      var e = (d && d.error) || '';
+      if (e === 'promo'){ delete _ctPromo[key]; }
+      var msg = e === 'card_failed' ? ('Картой не удалось — попробуй СБП' + (d.coinsBack ? ('. 🪙 '+d.coinsBack+'₽ монетками вернулись на баланс.') : ''))
+              : e === 'promo' ? (_ctH(d.msg || 'Промокод больше не действует') + ' — открой тариф заново, цена будет без промокода.')
+              : e === 'stale' ? 'Цены обновились 🔄 — закрой и открой мини-приложение заново.'
+              : e === 'Недостаточно монеток' ? 'Недостаточно монеток'
+              : 'Не получилось. Попробуй ещё раз';
       row.innerHTML = '<div class="pm-err">'+msg+'</div>'
-        + '<div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>';
+        + (e === 'promo'
+           ? '<div class="plan-buy" style="margin-top:8px" onclick="openCard(\''+_esc1(key)+'\', true)">Показать цены без промокода</div>'
+           : '<div class="plan-buy" style="margin-top:8px" onclick="chooseMethod(this,\''+_esc1(key)+'\','+idx+')">Выбрать способ снова</div>');
     }
   });
 }
+
 function _openPay(enc){
   var url = decodeURIComponent(enc);
   try { if (tg && tg.openLink){ tg.openLink(url); return; } } catch(e) {}
@@ -950,45 +1038,99 @@ function openAppstore(){
       return;
     }
     el.innerHTML = '<div class="as-grid">' + d.regions.map(function(r){
-      return '<div class="as-region" onclick="asDenoms('+r.catId+',\''+_esc1(r.name)+'\')">'
+      _ctAsNames[r.catId] = r.name;
+      return '<div class="as-region" onclick="asDenoms('+(parseInt(r.catId,10)||0)+')">'
         + '<span class="as-flag">'+(r.flag||'🌍')+'</span><span class="as-rname">'+r.name+'</span></div>';
     }).join('') + '</div>';
   });
 }
-function asDenoms(catId, name){
+var _ctAsPromo = null, _ctAsLast = null;
+var _ctAsNames = {};   /* catId → название региона (без кавычек в onclick) */
+function asDenoms(catId, name, _again){
+  if (name === undefined || name === null) name = _ctAsNames[catId] || '';
   var body = document.getElementById('svc-card-body'); if(!body) return;
-  body.innerHTML = _asHead('Регион: '+name) + '<div class="card-plans-h">Сумма пополнения</div>'
+  _ctAsLast = {catId:catId, name:name};
+  if (!_again && _ctCoins === undefined){ _ctLoad(function(){ asDenoms(catId, name, true); }); return; }
+  var P = _ctAsPromo;
+  var promoBlock = P
+    ? '<div '+_ctBox(true)+'><span>🎟 <b>'+_ctH(P.code)+'</b> — скидка '+P.pct+'%</span><span style="text-decoration:underline;cursor:pointer;opacity:.7" onclick="ctAsClearPromo()">убрать</span></div>'
+    : '<div '+_ctBox(false)+'><input id="ct-as-promo-inp" placeholder="Промокод" autocapitalize="characters" style="flex:1;min-width:0;border:1px solid rgba(128,128,128,.35);border-radius:10px;padding:10px 12px;font-size:14px;background:transparent;color:inherit;text-transform:uppercase">'
+      + '<div onclick="ctAsApplyPromo()" style="background:#22c55e;color:#fff;font-weight:700;font-size:13px;padding:10px 14px;border-radius:10px;cursor:pointer;white-space:nowrap">Применить</div></div>'
+      + '<div id="ct-as-promo-status" style="font-size:12px;margin-bottom:6px"></div>';
+  var coinsLine = (_ctCoins > 0)
+    ? '<div '+_ctBox(true)+'><span>🪙 У тебя <b>'+_ctCoins+'₽</b> монетками — можно оплатить ими</span></div>' : '';
+  body.innerHTML = _asHead('Регион: '+_ctH(name))
+    + '<div class="card-plans-h">🎟 Промокод</div>' + promoBlock + coinsLine
+    + '<div class="card-plans-h">Сумма пополнения</div>'
     + '<div id="as-body"><div class="pm-wait">Загружаю номиналы…</div></div>'
     + '<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="openAppstore()">← Регионы</div>';
-  _api('/api/appstore/denoms', {catId:catId}).then(function(d){
+  _api('/api/appstore/denoms', {catId:catId, promo:(P ? P.code : '')}).then(function(d){
     var el = document.getElementById('as-body'); if(!el) return;
     if(!d || !d.ok || !d.denoms || !d.denoms.length){
       el.innerHTML = '<div class="pm-err">Нет доступных номиналов. Попробуй другой регион.</div>';
       return;
     }
+    if (P && d.promoError){
+      _ctAsPromo = null; asDenoms(catId, name, true);
+      setTimeout(function(){ var st = document.getElementById('ct-as-promo-status'); if (st) st.innerHTML = '<span style="color:#e5484d">'+_ctH(d.promoError)+'</span>'; }, 50);
+      return;
+    }
     el.innerHTML = d.denoms.map(function(p){
-      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+p.nominal+'</div>'
-        + '<div class="plan-p">'+p.priceRub+'₽</div></div>'
-        + '<div class="plan-buy" onclick="asMethod(this,'+catId+','+p.serviceId+')">Оформить за '+p.priceRub+'₽</div></div>';
+      var pr = p.oldPrice ? ('<s style="opacity:.55;font-size:13px">'+p.oldPrice+'₽</s> '+p.priceRub+'₽') : (p.priceRub+'₽');
+      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+_ctH(p.nominal)+'</div>'
+        + '<div class="plan-p">'+pr+'</div></div>'
+        + '<div class="plan-buy" onclick="asMethod(this,'+catId+','+p.serviceId+','+p.priceRub+')">Оформить за '+p.priceRub+'₽</div></div>';
     }).join('');
   });
 }
-function asMethod(btn, catId, serviceId){
+function ctAsApplyPromo(){
+  var inp = document.getElementById('ct-as-promo-inp'); var code = ((inp && inp.value) || '').trim();
+  var st = document.getElementById('ct-as-promo-status');
+  if (!code){ if (st) st.textContent = 'Введи промокод'; return; }
+  if (st) st.textContent = 'Проверяю…';
+  _api('/api/appstore/promo', {code:code}).then(function(d){
+    if (d && d.ok){ _ctAsPromo = {code:(d.code || code.toUpperCase()), pct:d.percent}; if (_ctAsLast) asDenoms(_ctAsLast.catId, _ctAsLast.name, true); }
+    else if (st){ st.innerHTML = '<span style="color:#e5484d">'+_ctH((d && d.error) || 'Промокод недействителен')+'</span>'; }
+  });
+}
+function ctAsClearPromo(){ _ctAsPromo = null; if (_ctAsLast) asDenoms(_ctAsLast.catId, _ctAsLast.name, true); }
+
+function asMethod(btn, catId, serviceId, price){
   if(!btn) return;
+  var coins = Math.floor(_ctCoins || 0); var html = '';
+  if (coins >= 1 && price > 0){
+    html += (coins >= price)
+      ? '<div class="pm" style="background:#22c55e;color:#fff" onclick="asPay(this,'+catId+','+serviceId+',\'coins\','+price+',1)">🪙 Монетками '+price+'₽</div>'
+      : '<div class="pm" style="background:#22c55e;color:#fff" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\','+price+',1)">🪙 '+coins+'₽ + СБП '+(price-coins)+'₽</div>';
+  }
   var wrap = document.createElement('div'); wrap.className='pay-methods';
-  wrap.innerHTML = '<div class="pm sbp" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\')">⚡ СБП</div>'
-    + '<div class="pm card" onclick="asPay(this,'+catId+','+serviceId+',\'card\')">💳 Картой</div>';
+  wrap.innerHTML = html + '<div class="pm sbp" onclick="asPay(this,'+catId+','+serviceId+',\'sbp\','+price+')">⚡ СБП</div>'
+    + '<div class="pm card" onclick="asPay(this,'+catId+','+serviceId+',\'card\','+price+')">💳 Картой</div>';
   btn.parentNode.replaceChild(wrap, btn);
 }
-function asPay(el, catId, serviceId, method){
-  var row = el.parentNode; row.innerHTML = '<div class="pm-wait">Создаю ссылку на оплату…</div>';
-  _api('/api/appstore/pay', {catId:catId, serviceId:serviceId, method:method}).then(function(d){
+
+function asPay(el, catId, serviceId, method, price, useCoins){
+  var row = el.parentNode; row.innerHTML = '<div class="pm-wait">'+(useCoins ? 'Списываю монетки…' : 'Создаю ссылку на оплату…')+'</div>';
+  _api('/api/appstore/pay', {catId:catId, serviceId:serviceId, method:method, useCoins:!!useCoins,
+                             promo:(_ctAsPromo ? _ctAsPromo.code : ''), expPrice:price}).then(function(d){
+    if (d && d.ok && d.paidByCoins){
+      _ctCoins = Math.max(0, (_ctCoins||0) - (d.coinsUsed||0));
+      row.innerHTML = '<div class="pm-wait" style="color:#22c55e">🪙 Оплачено монетками ('+(d.coinsUsed||0)+'₽)!<br>Код пополнения придёт в чат бота через несколько секунд.</div>';
+      return;
+    }
     if(d && d.ok && d.url){
+      if (d.coinsUsed){ _ctCoins = Math.max(0, (_ctCoins||0) - d.coinsUsed); }
       row.innerHTML = '<div class="plan-buy" onclick="_openPay(\''+encodeURIComponent(d.url)+'\')">Перейти к оплате ↗</div>';
       _openPay(encodeURIComponent(d.url));
     } else {
-      var msg = (d && d.error==='card_failed') ? 'Картой не удалось — попробуй СБП'
-              : (d && d.error==='unavailable') ? 'Сервис временно недоступен' : 'Не получилось. Попробуй ещё раз';
+      var e = (d && d.error) || '';
+      var msg = e==='card_failed' ? ('Картой не удалось — попробуй СБП' + (d.coinsBack ? ('. 🪙 '+d.coinsBack+'₽ монетками вернулись на баланс.') : ''))
+              : e==='unavailable' ? 'Сервис временно недоступен'
+              : e==='stale' ? 'Цена обновилась 🔄 — открой номиналы заново.'
+              : (e==='promo' || e==='coins') ? _ctH(d.msg || 'Не получилось')
+              : 'Не получилось. Попробуй ещё раз';
+      if (e === 'promo'){ _ctAsPromo = null;
+        row.innerHTML = '<div class="pm-err">'+msg+'</div><div class="plan-buy" style="margin-top:8px" onclick="asDenoms('+(parseInt(catId,10)||0)+', null, true)">Показать цены без промокода</div>'; return; }
       row.innerHTML = '<div class="pm-err">'+msg+'</div>';
     }
   });

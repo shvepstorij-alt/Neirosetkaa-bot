@@ -3693,6 +3693,12 @@ async def adm_promo_days(cb: CallbackQuery, state: FSMContext):
                 rows.append(_row); _row = []
         if _row:
             rows.append(_row)
+        # App Store в каталоге без тарифов (номиналы приходят от поставщика),
+        # поэтому выше он не попадал — а код «только для App Store» нужен
+        # для веб-каталога. 08.10.2026
+        if "appstore" not in [b.callback_data.split(":", 1)[1] for r in rows for b in r]:
+            rows.append([InlineKeyboardButton(text="🍎 App Store / iCloud",
+                                              callback_data="admp_svc:appstore")])
         rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="adm_promos")])
         await cb.message.answer(
             "На какой сервис действует скидка?\n"
