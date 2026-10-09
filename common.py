@@ -9815,15 +9815,90 @@ def _esc_adm(v) -> str:
     return _h_ea.escape(str(v if v is not None else ""))
 
 
+_TOKEN_MARK_COLORS = {"email": "#2a7cf6", "id": "#1f9d55", "plan": "#e8590c"}
+_TOKEN_MARK_LABELS = {"email": "Почта", "id": "ID аккаунта", "plan": "Тариф аккаунта"}
+
+
+def _gpt_token_marks(tok: str) -> list:
+    """Где в присланном тексте почта, ID аккаунта и тариф аккаунта.
+
+    [(start, end, kind), …] — позиции ЗНАЧЕНИЙ в исходной строке, сам текст не
+    меняется. Александр 10.10.2026: «в токене должны выделяться другим цветом
+    почта, id и тариф аккаунта, чтобы я мог быстро проверить».
+    """
+    _t = str(tok or "")
+    _out = []
+    for _kind, _rx in (
+            ("email", r'"email"\s*:\s*"([^"\\]*)"'),
+            ("id", r'"account"\s*:\s*\{[^{}]*?"id"\s*:\s*"([^"\\]*)"'),
+            ("plan", r'"planType"\s*:\s*"([^"\\]*)"')):
+        _m = re.search(_rx, _t)
+        if _m and _m.group(1):
+            _out.append((_m.start(1), _m.end(1), _kind))
+    _out.sort()
+    # Пересечения невозможны по построению, но на всякий случай — отбрасываем.
+    _clean, _end = [], -1
+    for _a, _b, _k in _out:
+        if _a >= _end:
+            _clean.append((_a, _b, _k))
+            _end = _b
+    return _clean
+
+
+def _gpt_token_html_file(tok: str, title: str = "") -> bytes:
+    """HTML-файл с ТОЧНЫМ текстом клиента и цветной подсветкой почты, ID и
+    тарифа. Текст не меняется: только экранирование и <mark> вокруг значений.
+    Кнопка в файле копирует исходную строку целиком."""
+    import html as _h
+    import json as _j
+    _t = str(tok or "")
+    _marks = _gpt_token_marks(_t)
+    _parts, _pos = [], 0
+    for _a, _b, _k in _marks:
+        _parts.append(_h.escape(_t[_pos:_a]))
+        _parts.append(f'<mark class="{_k}">{_h.escape(_t[_a:_b])}</mark>')
+        _pos = _b
+    _parts.append(_h.escape(_t[_pos:]))
+    _legend = "".join(
+        f'<div><span class="dot {_k}"></span>{_TOKEN_MARK_LABELS[_k]}: '
+        f'<b class="{_k}t">{_h.escape(_t[_a:_b])}</b></div>' for _a, _b, _k in _marks
+    ) or "<div>Почту, ID и тариф в тексте найти не удалось.</div>"
+    _js_t = _j.dumps(_t).replace("</", "<\\/")
+    _c = _TOKEN_MARK_COLORS
+    return ("""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Токен клиента</title>
+<style>
+:root{color-scheme:light dark}
+body{margin:0;padding:16px;font:15px/1.5 -apple-system,system-ui,sans-serif;background:#fff;color:#111}
+@media (prefers-color-scheme:dark){body{background:#17181c;color:#eee}pre{background:#23252b!important}}
+h1{font-size:18px;margin:0 0 8px}.lg{margin:0 0 12px;font-size:14px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+pre{background:#f2f2f4;border-radius:10px;padding:10px;font:12px/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
+mark{color:#fff;border-radius:4px;padding:0 2px;font-weight:700}
+button{width:100%;border:0;border-radius:12px;padding:12px;font-size:16px;font-weight:600;background:#2a7cf6;color:#fff;margin:0 0 12px}
+""" + "".join(f".{k}{{background:{v}}}.{k}t{{color:{v}}}" for k, v in _c.items()) + """
+</style></head><body><h1>🔐 Токен клиента</h1>
+<div class="lg">""" + (_h.escape(title) + "<br>" if title else "") + _legend + f"<div>Длина: {len(_t)} симв.</div>" + """</div>
+<button id="c">📋 Скопировать целиком</button>
+<pre>""" + "".join(_parts) + """</pre>
+<script>var T=""" + _js_t + """;document.getElementById('c').onclick=function(){var b=this;
+function ok(){b.textContent='✅ Скопировано ('+T.length+' симв.)';}
+if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(T).then(ok,fb);}else fb();
+function fb(){var a=document.createElement('textarea');a.value=T;document.body.appendChild(a);a.select();
+try{document.execCommand('copy');ok();}catch(e){b.textContent='Выдели текст вручную';}document.body.removeChild(a);}};</script>
+</body></html>""").encode("utf-8")
+
+
 async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="",
-                               access_token="", why: str = "") -> None:
+                               access_token="", why: str = "", provider: str = "") -> None:
     """Отдельное сообщение Александру со всем, что нужно для РУЧНОЙ активации
     ChatGPT: код и токен клиента — РОВНО тот текст, что клиент вставил на 2-м
     шаге (session_raw — без обрезки и без «выжимки» accessToken).
 
     Короткий текст — прямо в сообщении, в свёрнутой цитате (стрелка раскрывает;
     нажатие на текст копирует его целиком). Длинный (лимит сообщения Telegram —
-    4096 символов, а полный текст сессии обычно длиннее) — файлом .txt и
+    4096 символов, а полный текст сессии обычно длиннее) — файлом .html (почта,
+    ID и тариф аккаунта подсвечены цветом, текст не меняется) и
     кнопкой «Скопировать токен целиком»: она открывает страницу, где весь текст
     копируется одним нажатием. Раньше длинный текст молча подменялся одним
     accessToken — Александр 09.10.2026: «должен быть полностью как вставил
@@ -9864,8 +9939,38 @@ async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="
     except Exception as _e_ks:
         logging.warning(f"gpt token key save: {_e_ks}")
         _kb = None
-    _src = ("текст со страницы chatgpt.com/api/auth/session" if _tok.startswith("{")
-            else "accessToken")
+    # Сайт активации и маршрут кода (Александр 10.10.2026: «нужно указывать
+    # сайт активации»). Сайт берём у самого кода: по ходу активации заказ мог
+    # уйти на другой сайт.
+    _site_ln = ""
+    try:
+        _prov_tk = ""
+        if code:
+            _pl_tk = await get_pool()
+            async with _pl_tk.acquire() as _c_tk:
+                _prov_tk = (await _c_tk.fetchval(
+                    "SELECT provider FROM gpt_codes WHERE UPPER(code)=UPPER($1)", str(code))) or ""
+        _prov_tk = _prov_tk or provider or ""
+        _rt_tk = GPT_ROUTE_LABELS.get(gpt_route_for_code(code or ""), "") if code else ""
+        if _prov_tk:
+            _site_ln = (f"🌐 <b>Сайт:</b> {_h_tk.escape(gpt_provider_name(_prov_tk))}"
+                        + (f" · маршрут: {_rt_tk}" if _rt_tk else "") + "\n")
+        elif _rt_tk:
+            _site_ln = f"🧭 <b>Маршрут кода:</b> {_rt_tk}\n"
+    except Exception as _e_st:
+        logging.warning(f"gpt token msg site: {_e_st}")
+    # Почта / ID / тариф аккаунта — те же, что подсвечены в файле.
+    _acc_ln = ""
+    try:
+        _mk = {k: _tok[a:b] for a, b, k in _gpt_token_marks(_tok)}
+        if _mk.get("email") or _mk.get("plan"):
+            _acc_ln += ("📧 <b>Аккаунт:</b> " + _h_tk.escape(_mk.get("email") or "—")
+                        + (f" · план: <b>{_h_tk.escape(_mk['plan'])}</b>" if _mk.get("plan") else "")
+                        + "\n")
+        if _mk.get("id"):
+            _acc_ln += f"🏢 <b>ID аккаунта:</b> <code>{_h_tk.escape(_mk['id'])}</code>\n"
+    except Exception as _e_mk:
+        logging.warning(f"gpt token msg marks: {_e_mk}")
     _head = (f"🔐 <b>ChatGPT · данные для ручной активации</b>\n\n"
              f"👤 <b>Клиент:</b> {_who}\n"
              f"📦 <b>Тариф:</b> {_h_tk.escape(str(plan_name or '—'))}\n"
@@ -9873,11 +9978,11 @@ async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="
                 "🔑 <b>Код:</b> <i>закреплённого нет — возьми из пула</i>\n")
              + _fk
              + (f"🆔 <code>{_h_tk.escape(str(order_id))}</code>\n" if order_id else "")
-             + (f"❗ <b>Причина:</b> <i>{_h_tk.escape(why)}</i>\n" if why else "")
-             + f"\n🔐 <b>Токен клиента</b> — <i>ровно то, что он вставил на шаге 2</i> "
-               f"({_src}, {len(_tok)} симв.)\n")
-    _txt = (_head + "<i>Нажми на текст — скопируется целиком; стрелка раскрывает и "
-            "сворачивает.</i>\n<blockquote expandable><code>" + _h_tk.escape(_tok)
+             + _site_ln + _acc_ln
+             + (f"❗ <b>Причина:</b> <i>{_h_tk.escape(why)}</i>\n" if why else ""))
+    # Александр 10.10.2026: пояснение «Токен клиента — ровно то, что…» убрано;
+    # короткий текст — свёрнутой цитатой, длинный — файлом и кнопкой.
+    _txt = (_head + "\n🔐 <b>Токен:</b>\n<blockquote expandable><code>" + _h_tk.escape(_tok)
             + "</code></blockquote>")
     if len(re.sub(r"<[^>]+>", "", _txt)) <= 4000:
         try:
@@ -9888,15 +9993,14 @@ async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="
             logging.error(f"gpt token msg send: {_e_tm}")
     # Целиком в одно сообщение Telegram не влезает — файл с ТОЧНЫМ текстом и
     # кнопка копирования. Ничего не обрезаем и не подменяем.
-    _cap = (_head + "<i>Текст длиннее лимита сообщения Telegram — он целиком в файле "
-            "и по кнопке «Скопировать токен целиком» (одно нажатие на странице).</i>")
+    _cap = _head
     if len(re.sub(r"<[^>]+>", "", _cap)) > 1020:
         _cap = _head[:900]
     try:
         from aiogram.types import BufferedInputFile as _BIF_tk
         await bot.send_document(
-            ADMIN_ID, _BIF_tk(_tok.encode("utf-8"),
-                              filename=f"token_{user_id}_{str(code or '').replace('/', '_')}.txt"),
+            ADMIN_ID, _BIF_tk(_gpt_token_html_file(_tok, re.sub(r"<[^>]+>", "", _who)),
+                              filename=f"token_{user_id}_{re.sub(r'[^A-Za-z0-9-]', '_', str(code or ''))}.html"),
             caption=_cap, parse_mode="HTML", reply_markup=_kb)
     except Exception as _e_td:
         logging.error(f"gpt token doc send: {_e_td}")
@@ -9918,9 +10022,12 @@ pre.open{max-height:none}
 button{display:block;width:100%;border:0;border-radius:12px;padding:14px;font-size:16px;font-weight:600;margin-top:12px;cursor:pointer}
 .b1{background:var(--acc);color:#fff}.b2{background:var(--box);color:var(--fg)}
 .ok{color:var(--ok);text-align:center;margin-top:10px;min-height:20px;font-weight:600}
+.lg{font-size:14px;margin:0 0 10px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+mark{color:#fff;border-radius:4px;padding:0 2px;font-weight:700}
+.email{background:#2a7cf6}.emailt{color:#2a7cf6}.id{background:#1f9d55}.idt{color:#1f9d55}.plan{background:#e8590c}.plant{color:#e8590c}
 </style></head><body><div class="w">
 <h1>🔐 Токен клиента</h1><div class="m" id="m">Загружаю…</div>
-<pre id="t"></pre>
+<div id="lg" class="lg"></div><pre id="t"></pre>
 <button class="b1" id="c">📋 Скопировать целиком</button>
 <button class="b2" id="x">Показать полностью</button>
 <div class="ok" id="ok"></div></div>
@@ -9930,7 +10037,7 @@ var K=new URLSearchParams(location.search).get('k')||'', T='';
 fetch('/api/admin/token',{method:'POST',headers:{'Content-Type':'application/json'},
  body:JSON.stringify({k:K,initData:tg?tg.initData:''})}).then(function(r){return r.json()}).then(function(d){
  if(!d||!d.ok){document.getElementById('m').textContent=(d&&d.msg)||'Нет доступа или ссылка устарела';return;}
- T=d.t;document.getElementById('t').textContent=T;
+ T=d.t;var P=document.getElementById('t'),pos=0,L={email:'Почта',id:'ID аккаунта',plan:'Тариф аккаунта'},lg=document.getElementById('lg');(d.marks||[]).forEach(function(m){P.appendChild(document.createTextNode(T.slice(pos,m[0])));var e=document.createElement('mark');e.className=m[2];e.textContent=T.slice(m[0],m[1]);P.appendChild(e);pos=m[1];var r=document.createElement('div');var dt=document.createElement('span');dt.className='dot '+m[2];r.appendChild(dt);r.appendChild(document.createTextNode((L[m[2]]||m[2])+': '));var bb=document.createElement('b');bb.className=m[2]+'t';bb.textContent=T.slice(m[0],m[1]);r.appendChild(bb);lg.appendChild(r);});P.appendChild(document.createTextNode(T.slice(pos)));
  document.getElementById('m').textContent=(d.who||'')+(d.code?(' · код '+d.code):'')+' · '+T.length+' симв.';
 }).catch(function(){document.getElementById('m').textContent='Не удалось загрузить';});
 function done(ok){var o=document.getElementById('ok');o.textContent=ok?'✅ Скопировано целиком ('+T.length+' симв.)':'Не получилось — выдели текст вручную';
@@ -9976,8 +10083,10 @@ async def api_admin_token_handler(request: web.Request) -> web.Response:
             _who = re.sub(r"<[^>]+>", "", await _who_user(int(_d.get("uid") or 0)))
         except Exception:
             pass
-        return web.json_response({"ok": True, "t": _d.get("t") or "", "code": _d.get("code") or "",
-                                  "who": _who})
+        _t_api = _d.get("t") or ""
+        return web.json_response({"ok": True, "t": _t_api, "code": _d.get("code") or "",
+                                  "who": _who,
+                                  "marks": [[a, b, k] for a, b, k in _gpt_token_marks(_t_api)]})
     except Exception as _e:
         logging.error(f"api_admin_token: {_e}")
         return web.json_response({"ok": False, "msg": "Ошибка сервера"}, status=500)
@@ -10434,7 +10543,7 @@ async def _run_activation_job(
                 # Обычный сбой: пусть цепочка добьёт остальные сайты своими кодами.
                 # Полный стоп делаем только когда стока нет — там перебор бессмыслен.
                 return "next"
-            await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "на сайте нет свободных мест")
+            await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "на сайте нет свободных мест", provider=provider)
             _activation_jobs[job_id] = {
                 "status": "done", "success": False, "manual": True,
                 "error": _gpt_wait_web("на сайте активации временно нет свободных мест")}
@@ -10775,7 +10884,7 @@ async def _run_activation_job(
                 _why_cl = ("для твоего аккаунта нужен другой тип кода"
                            if result.get("has_plan") or result.get("openai_blocked")
                            else "у сайта активации не прошёл платёж с его стороны")
-                await _gpt_admin_token_msg(user_id, None, order_id, plan_name, session_raw, access_token, "сайт отклонил аккаунт / у сайта не прошёл платёж — код возвращён")
+                await _gpt_admin_token_msg(user_id, None, order_id, plan_name, session_raw, access_token, "сайт отклонил аккаунт / у сайта не прошёл платёж — код возвращён", provider=provider)
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False, "manual": True,
                     "error": _gpt_wait_web(_why_cl, "Александр активирует вручную в течение часа",
@@ -11045,7 +11154,7 @@ async def _run_activation_job(
             # выдать их автоматически нельзя.
             _why_co = ("автоматическая активация остановлена для проверки"
                        if _burn_stop["why"] else "коды временно закончились")
-            await _gpt_admin_token_msg(user_id, None, order_id, plan_name, session_raw, access_token, "автоактивация остановлена / коды закончились")
+            await _gpt_admin_token_msg(user_id, None, order_id, plan_name, session_raw, access_token, "автоактивация остановлена / коды закончились", provider=provider)
             _activation_jobs[job_id] = {
                 "status": "done", "success": False, "manual": True,
                 "error": _gpt_wait_web(_why_co, "Александр активирует вручную в течение часа",
@@ -11481,7 +11590,7 @@ async def _run_activation_job(
                             parse_mode="HTML")
                     except Exception:
                         pass
-                await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "сайт активации на техобслуживании")
+                await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "сайт активации на техобслуживании", provider=provider)
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False, "manual": True,
                     "error": _gpt_wait_web("сайт активации на техобслуживании",
@@ -11517,7 +11626,7 @@ async def _run_activation_job(
                             parse_mode="HTML")
                     except Exception:
                         pass
-                await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "на сайте нет свободных мест")
+                await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "на сайте нет свободных мест", provider=provider)
                 _activation_jobs[job_id] = {
                     "status": "done", "success": False, "manual": True,
                     "error": _gpt_wait_web("на сайте активации сейчас нет свободных мест")}
@@ -11609,7 +11718,7 @@ async def _run_activation_job(
                             "<i>Токен клиента — следующим сообщением.</i>",
                             result.get("screenshot"), order_id=order_id
                         )
-                    await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "все автоматические попытки не прошли")
+                    await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "все автоматические попытки не прошли", provider=provider)
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
                         "manual": True,   # без «Попробовать снова» — текст говорит «не повторяй»
