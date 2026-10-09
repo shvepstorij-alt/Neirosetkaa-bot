@@ -9808,19 +9808,33 @@ async def _who_user(uid) -> str:
     return f"<code>{uid}</code>"
 
 
+def _esc_adm(v) -> str:
+    """Экранирует ответ сайта для HTML-сообщения Александру: символ «<» в
+    тексте сайта иначе срывал отправку всего сообщения."""
+    import html as _h_ea
+    return _h_ea.escape(str(v if v is not None else ""))
+
+
 async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="",
                                access_token="", why: str = "") -> None:
     """Отдельное сообщение Александру со всем, что нужно для РУЧНОЙ активации
-    ChatGPT: код и токен клиента. Токен — в свёрнутой цитате (раскрывается
-    стрелкой), внутри — моноширинный текст: одно нажатие копирует его целиком.
-    Александр 09.10.2026: «должен отправлять мне токен клиента одним
-    сообщением и код активации».
+    ChatGPT: код и токен клиента — РОВНО тот текст, что клиент вставил на 2-м
+    шаге (session_raw — без обрезки и без «выжимки» accessToken).
+
+    Короткий текст — прямо в сообщении, в свёрнутой цитате (стрелка раскрывает;
+    нажатие на текст копирует его целиком). Длинный (лимит сообщения Telegram —
+    4096 символов, а полный текст сессии обычно длиннее) — файлом .txt и
+    кнопкой «Скопировать токен целиком»: она открывает страницу, где весь текст
+    копируется одним нажатием. Раньше длинный текст молча подменялся одним
+    accessToken — Александр 09.10.2026: «должен быть полностью как вставил
+    клиент».
 
     Не чаще раза в 30 минут на заказ+код: повторы клиента не плодят копии.
-    Текст сессии длиннее лимита Telegram (4096) — пробуем только accessToken,
-    не влезает и он — файлом session_<id>.txt.
     """
     import html as _h_tk
+    import json as _j_tk
+    import time as _t_tk
+    import uuid as _u_tk
     _tok = str(session_raw or access_token or "").strip()
     if not _tok:
         return
@@ -9837,49 +9851,136 @@ async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="
         _fk = (await _fk_num_line(order_id) or "") if order_id else ""
     except Exception:
         _fk = ""
-
-    def _head(lbl):
-        return (f"🔐 <b>ChatGPT — данные для ручной активации</b>\n"
-                f"👤 {_who}  ·  📦 {_h_tk.escape(str(plan_name or ''))}\n"
-                + (f"🔑 Код: <code>{_h_tk.escape(str(code))}</code>\n" if code else
-                   "🔑 Закреплённого кода нет — возьми код из пула\n")
-                + (f"🆔 <code>{_h_tk.escape(str(order_id))}</code>\n" if order_id else "")
-                + _fk
-                + (f"❗ {_h_tk.escape(why)}\n" if why else "")
-                + f"\n👇 Токен клиента — {lbl}. Свёрнут: раскрой стрелкой; "
-                  f"нажми на текст — скопируется целиком.\n")
-
-    _label = ("текст сессии (chatgpt.com/api/auth/session)" if _tok.startswith("{")
-              else "accessToken")
-    _variants = [(_tok, _label)]
-    if _tok.startswith("{"):
-        try:
-            _at = str((json.loads(_tok) or {}).get("accessToken") or access_token or "").strip()
-        except Exception:
-            _at = str(access_token or "").strip()
-        if _at and _at != _tok:
-            _variants.append((_at, "только accessToken (полный текст сессии не влез в сообщение)"))
-    for _t, _lbl in _variants:
-        _txt = (_head(_lbl) + "<blockquote expandable><code>" + _h_tk.escape(_t)
-                + "</code></blockquote>")
-        if len(re.sub(r"<[^>]+>", "", _txt)) > 4000:
-            continue
+    # Ключ для страницы копирования: текст лежит в базе, по ссылке — только ключ.
+    _key = _u_tk.uuid4().hex
+    from aiogram.types import WebAppInfo
+    try:
+        await set_setting(f"admtok:{_key}", _j_tk.dumps(
+            {"t": _tok, "uid": int(user_id or 0), "code": str(code or ""),
+             "order": str(order_id or ""), "ts": int(_t_tk.time())}, ensure_ascii=False))
+        _kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="📋 Скопировать токен целиком",
+            web_app=WebAppInfo(url=webapp_url("/webapp/token", k=_key)))]])
+    except Exception as _e_ks:
+        logging.warning(f"gpt token key save: {_e_ks}")
+        _kb = None
+    _src = ("текст со страницы chatgpt.com/api/auth/session" if _tok.startswith("{")
+            else "accessToken")
+    _head = (f"🔐 <b>ChatGPT · данные для ручной активации</b>\n\n"
+             f"👤 <b>Клиент:</b> {_who}\n"
+             f"📦 <b>Тариф:</b> {_h_tk.escape(str(plan_name or '—'))}\n"
+             + (f"🔑 <b>Код:</b> <code>{_h_tk.escape(str(code))}</code>\n" if code else
+                "🔑 <b>Код:</b> <i>закреплённого нет — возьми из пула</i>\n")
+             + _fk
+             + (f"🆔 <code>{_h_tk.escape(str(order_id))}</code>\n" if order_id else "")
+             + (f"❗ <b>Причина:</b> <i>{_h_tk.escape(why)}</i>\n" if why else "")
+             + f"\n🔐 <b>Токен клиента</b> — <i>ровно то, что он вставил на шаге 2</i> "
+               f"({_src}, {len(_tok)} симв.)\n")
+    _txt = (_head + "<i>Нажми на текст — скопируется целиком; стрелка раскрывает и "
+            "сворачивает.</i>\n<blockquote expandable><code>" + _h_tk.escape(_tok)
+            + "</code></blockquote>")
+    if len(re.sub(r"<[^>]+>", "", _txt)) <= 4000:
         try:
             await bot.send_message(ADMIN_ID, _txt, parse_mode="HTML",
-                                   disable_web_page_preview=True)
+                                   disable_web_page_preview=True, reply_markup=_kb)
             return
         except Exception as _e_tm:
             logging.error(f"gpt token msg send: {_e_tm}")
-            break
-    # Не влез ни в каком виде (или Telegram отказал) — файлом.
+    # Целиком в одно сообщение Telegram не влезает — файл с ТОЧНЫМ текстом и
+    # кнопка копирования. Ничего не обрезаем и не подменяем.
+    _cap = (_head + "<i>Текст длиннее лимита сообщения Telegram — он целиком в файле "
+            "и по кнопке «Скопировать токен целиком» (одно нажатие на странице).</i>")
+    if len(re.sub(r"<[^>]+>", "", _cap)) > 1020:
+        _cap = _head[:900]
     try:
         from aiogram.types import BufferedInputFile as _BIF_tk
-        _cap = _head(_label).split("\n👇")[0] + "\n\n📎 Токен клиента — в файле."
         await bot.send_document(
-            ADMIN_ID, _BIF_tk(_tok.encode("utf-8"), filename=f"session_{user_id}.txt"),
-            caption=_cap[:1020], parse_mode="HTML")
+            ADMIN_ID, _BIF_tk(_tok.encode("utf-8"),
+                              filename=f"token_{user_id}_{str(code or '').replace('/', '_')}.txt"),
+            caption=_cap, parse_mode="HTML", reply_markup=_kb)
     except Exception as _e_td:
         logging.error(f"gpt token doc send: {_e_td}")
+
+
+_TOKEN_PAGE_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Токен клиента</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#fff;--fg:#111;--mut:#6b6b6b;--box:#f2f2f4;--acc:#2a7cf6;--ok:#1f9d55}
+@media (prefers-color-scheme:dark){:root{--bg:#17181c;--fg:#f2f2f2;--mut:#9a9aa0;--box:#23252b;--acc:#5aa2ff;--ok:#41c27a}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,sans-serif}
+.w{padding:16px}
+h1{font-size:18px;margin:0 0 4px}
+.m{color:var(--mut);font-size:13px;margin-bottom:12px}
+pre{background:var(--box);border-radius:10px;padding:10px;font:12px/1.45 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;margin:0}
+pre.open{max-height:none}
+button{display:block;width:100%;border:0;border-radius:12px;padding:14px;font-size:16px;font-weight:600;margin-top:12px;cursor:pointer}
+.b1{background:var(--acc);color:#fff}.b2{background:var(--box);color:var(--fg)}
+.ok{color:var(--ok);text-align:center;margin-top:10px;min-height:20px;font-weight:600}
+</style></head><body><div class="w">
+<h1>🔐 Токен клиента</h1><div class="m" id="m">Загружаю…</div>
+<pre id="t"></pre>
+<button class="b1" id="c">📋 Скопировать целиком</button>
+<button class="b2" id="x">Показать полностью</button>
+<div class="ok" id="ok"></div></div>
+<script>
+var tg=window.Telegram&&Telegram.WebApp; try{tg&&tg.ready();tg&&tg.expand();}catch(e){}
+var K=new URLSearchParams(location.search).get('k')||'', T='';
+fetch('/api/admin/token',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({k:K,initData:tg?tg.initData:''})}).then(function(r){return r.json()}).then(function(d){
+ if(!d||!d.ok){document.getElementById('m').textContent=(d&&d.msg)||'Нет доступа или ссылка устарела';return;}
+ T=d.t;document.getElementById('t').textContent=T;
+ document.getElementById('m').textContent=(d.who||'')+(d.code?(' · код '+d.code):'')+' · '+T.length+' симв.';
+}).catch(function(){document.getElementById('m').textContent='Не удалось загрузить';});
+function done(ok){var o=document.getElementById('ok');o.textContent=ok?'✅ Скопировано целиком ('+T.length+' симв.)':'Не получилось — выдели текст вручную';
+ try{tg&&tg.HapticFeedback&&tg.HapticFeedback.notificationOccurred(ok?'success':'error');}catch(e){}}
+function fb(){try{var a=document.createElement('textarea');a.value=T;a.setAttribute('readonly','');a.style.position='absolute';a.style.left='-9999px';
+ document.body.appendChild(a);a.select();a.setSelectionRange(0,T.length);var ok=document.execCommand('copy');document.body.removeChild(a);done(ok);}catch(e){done(false);}}
+document.getElementById('c').onclick=function(){if(!T)return;
+ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(T).then(function(){done(true)},fb);}else fb();};
+document.getElementById('x').onclick=function(){var p=document.getElementById('t');p.classList.toggle('open');
+ this.textContent=p.classList.contains('open')?'Свернуть':'Показать полностью';};
+</script></body></html>"""
+
+
+async def webapp_token_handler(request: web.Request) -> web.Response:
+    """Страница копирования токена клиента (только для Александра — проверка в API)."""
+    return web.Response(text=_TOKEN_PAGE_HTML, content_type="text/html", charset="utf-8",
+                        headers=_NO_CACHE_HEADERS)
+
+
+async def api_admin_token_handler(request: web.Request) -> web.Response:
+    """Отдаёт сохранённый токен клиента по ключу. Admin-only (initData).
+    Ссылки живут 14 дней."""
+    import json as _j_at
+    import time as _t_at
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False, "msg": "Только для администратора"}, status=403)
+        _k = re.sub(r"[^0-9a-f]", "", str(body.get("k") or ""))[:40]
+        if not _k:
+            return web.json_response({"ok": False, "msg": "Нет ключа"})
+        _raw = (await get_setting(f"admtok:{_k}", "") or "").strip()
+        if not _raw:
+            return web.json_response({"ok": False, "msg": "Ссылка устарела или токен удалён"})
+        _d = _j_at.loads(_raw)
+        if _t_at.time() - float(_d.get("ts") or 0) > 14 * 86400:
+            return web.json_response({"ok": False, "msg": "Ссылка устарела (старше 14 дней)"})
+        _who = ""
+        try:
+            _who = re.sub(r"<[^>]+>", "", await _who_user(int(_d.get("uid") or 0)))
+        except Exception:
+            pass
+        return web.json_response({"ok": True, "t": _d.get("t") or "", "code": _d.get("code") or "",
+                                  "who": _who})
+    except Exception as _e:
+        logging.error(f"api_admin_token: {_e}")
+        return web.json_response({"ok": False, "msg": "Ошибка сервера"}, status=500)
 
 
 async def _run_activation_job(
@@ -11357,16 +11458,18 @@ async def _run_activation_job(
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"⏸ <b>ChatGPT — сайт на техобслуживании</b>\n"
-                            f"👤 {_who_u} · {plan_name}\n"
-                            f"🔑 <code>{code}</code>\n"
+                            f"⏸ <b>ChatGPT · сайт на техобслуживании</b>\n\n"
+                            f"👤 <b>Клиент:</b> {_who_u}\n"
+                            f"📦 <b>Тариф:</b> {plan_name}\n"
+                            f"🔑 <b>Код:</b> <code>{code}</code>\n"
                             f"🆔 <code>{order_id}</code>\n"
                             + await _actx()
-                            + f"❗ {error_text}\n\n"
-                            f"Пробовал сам 3 раза с паузой в минуту — сайт всё "
-                            f"ещё закрыт. Код ЦЕЛ и закреплён за клиентом, "
-                            f"в пул не возвращён. Как оживёт — активируй его "
-                            f"или дай клиенту нажать «Активировать» заново.",
+                            + f"\n❗ <b>Ответ сайта:</b> <i>{_esc_adm(error_text)}</i>\n\n"
+                            f"🔁 <i>Пробовал сам 3 раза с паузой в минуту — сайт всё ещё закрыт.</i>\n"
+                            f"✅ <b>Код цел</b> и закреплён за клиентом, в пул не возвращён.\n"
+                            f"👉 <b>Что сделать:</b> как сайт оживёт — активируй этим кодом "
+                            f"или дай клиенту нажать «Активировать» заново. "
+                            f"<i>Токен клиента — следующим сообщением.</i>",
                             parse_mode="HTML")
                     except Exception:
                         pass
@@ -11393,13 +11496,16 @@ async def _run_activation_job(
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🚨 <b>ChatGPT — на сайте нет мест</b>\n"
-                            f"👤 {_who_u} · {plan_name}\n"
-                            f"🔑 <code>{code}</code>\n"
+                            f"🚨 <b>ChatGPT · на сайте нет мест</b>\n\n"
+                            f"👤 <b>Клиент:</b> {_who_u}\n"
+                            f"📦 <b>Тариф:</b> {plan_name}\n"
+                            f"🔑 <b>Код:</b> <code>{code}</code>\n"
                             f"🆔 <code>{order_id}</code>\n"
                             + await _actx()
-                            + f"❗ {error_text}\n\n"
-                            f"Код за клиентом, не сожжён. Активируй вручную.",
+                            + f"\n❗ <b>Ответ сайта:</b> <i>{_esc_adm(error_text)}</i>\n\n"
+                            f"✅ <b>Код за клиентом</b>, не сожжён.\n"
+                            f"👉 <b>Что сделать:</b> активируй вручную. "
+                            f"<i>Токен клиента — следующим сообщением.</i>",
                             parse_mode="HTML")
                     except Exception:
                         pass
@@ -11483,14 +11589,16 @@ async def _run_activation_job(
                     # Уведомляем Александра С КОДОМ — чтобы активировал вручную (не чаще 1/15 мин на клиента)
                     if _fail_should_alert("gpt", user_id):
                         await _admin_fail_shot(
-                            "🚨 <b>Авто-активация ChatGPT не удалась</b>\n\n"
-                            f"👤 {_who_u}\n"
-                            f"🔑 Код: <code>{code}</code>\n"
-                            f"📦 Тариф: <b>{plan_name}</b>\n"
-                            f"🆔 Заказ: <code>{order_id}</code>\n"
+                            "🚨 <b>ChatGPT · авто-активация не удалась</b>\n\n"
+                            f"👤 <b>Клиент:</b> {_who_u}\n"
+                            f"📦 <b>Тариф:</b> {plan_name}\n"
+                            f"🔑 <b>Код:</b> <code>{code}</code>\n"
+                            f"🆔 <code>{order_id}</code>\n"
                             + await _actx()
-                            + f"⚠️ Ошибка: {error_text}\n\n"
-                            "Код зарезервирован за клиентом — активируй вручную ИМ ЖЕ.",
+                            + f"\n❗ <b>Ответ сайта:</b> <i>{_esc_adm(error_text)}</i>\n\n"
+                            "✅ <b>Код зарезервирован за клиентом.</b>\n"
+                            "👉 <b>Что сделать:</b> активируй вручную <b>этим же кодом</b>. "
+                            "<i>Токен клиента — следующим сообщением.</i>",
                             result.get("screenshot"), order_id=order_id
                         )
                     await _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw, access_token, "все автоматические попытки не прошли")
@@ -14538,6 +14646,8 @@ async def setup_webhook_server():
     app.router.add_get("/webapp/chatgpt", webapp_chatgpt_handler)
     app.router.add_get("/webapp/shop", webapp_shop_handler)
     app.router.add_get("/webapp/admin", webapp_admin_handler)
+    app.router.add_get("/webapp/token", webapp_token_handler)
+    app.router.add_post("/api/admin/token", api_admin_token_handler)
     app.router.add_post("/api/admin/overview", api_admin_overview_handler)
     app.router.add_post("/api/admin/profit", api_admin_profit_handler)
     app.router.add_post("/api/admin/gpt-unbound", api_admin_gpt_unbound_handler)

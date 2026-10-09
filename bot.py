@@ -61,6 +61,10 @@ import handlers_desc
 
 # ── Premium-эмодзи: middleware подменяет обычные эмодзи на custom во всех
 # исходящих сообщениях (HTML-текст → <tg-emoji>, инлайн-кнопки → иконка). ──
+# Единое оформление сообщений в админ-чат (жирные подписи, курсив пояснений).
+# Регистрируется ПЕРВЫМ — видит обычные эмодзи до премиум-замены. 09.10.2026
+from admin_format import AdminFormatMiddleware
+bot.session.middleware(AdminFormatMiddleware(ADMIN_ID))
 from premium_emoji import PremiumEmojiMiddleware
 bot.session.middleware(PremiumEmojiMiddleware())
 
