@@ -10838,6 +10838,14 @@ async def _run_activation_job(
             code = _new
             _ios_sent += 1          # перевели на iOS — это и есть первый iOS-код
             await save_pending_activation(user_id, code, order_id, _plan_key, plan_name, "bpa")
+            # Запоминаем: по этому заказу сайт филиппинский уже отбил. Иначе
+            # повторное нажатие «Активировать» (например, после техобслуживания)
+            # снова потащило бы заказ на филиппинский — правило «сначала
+            # филиппинский» в api_activate. Александр 09.10.2026.
+            try:
+                await set_setting(f"gpt_ios_after_ph:{order_id}", _why_short[:120])
+            except Exception as _e_mk:
+                logging.warning(f"ios rescue: не записал отметку {order_id}: {_e_mk}")
             logging.warning(
                 f"GPT ios rescue: uid={user_id} {_why_short} по {_old_code} "
                 f"(ph) → повторяю через iOS {code}")
@@ -12694,13 +12702,52 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         # Если филиппинский всё-таки отобьётся (уже есть план, отказ сайта) —
         # заказ подхватит _ios_rescue и переведёт его на iOS сам, прислав
         # сообщение. Порядок ровно тот, который он описал.
-        _plan_known = bool((_acc_plan or "").strip())
-        _need_route = "ios" if (_pk_rt == "go" or (_plan_known and _has_sub)) else "ph"
+        # ВСЕГДА СНАЧАЛА ФИЛИППИНСКИЙ (Александр 09.10.2026, заказ #7164).
+        # Раньше план аккаунта решал маршрут: «подписка есть» → сразу iOS. Но
+        # план читается из двух мест (session.planType и JWT), и при их
+        # расхождении бот считал, что подписка ЕСТЬ. Клиент на free получил
+        # iOS-код, хотя в карточке Александр видел «план: free».
+        # Теперь iOS сразу — только тариф Go. Plus всегда идёт сначала
+        # филиппинским; если сайт его отобьёт (уже есть план / антифрод / не
+        # прошёл платёж сайта) — _ios_rescue сам переведёт заказ на iOS, а
+        # филиппинский вернёт в пул только с подтверждением сайта.
+        # План по-прежнему читаем — для лога и карточки.
+        _need_route = "ios" if _pk_rt == "go" else "ph"
+        _why_route = "тариф Go" if _pk_rt == "go" else "сначала филиппинский"
+        if _need_route == "ph":
+            # По этому заказу сайт филиппинский уже отбил — не ходим по кругу.
+            try:
+                _mk_ios = await get_setting(f"gpt_ios_after_ph:{order_id}", "")
+            except Exception:
+                _mk_ios = ""
+            if _mk_ios:
+                _need_route, _why_route = "ios", f"филиппинский уже отбит: {_mk_ios}"
         _cur_route = gpt_route_for_code(code)
         logging.info(
             f"GPT route: uid={user_id} тариф={_pk_rt} план={_acc_plan or '(не определён)'} "
-            f"({_plan_src or '-'}) нужен={_need_route} код={code} маршрут_кода={_cur_route or '(нет)'}")
-        if _cur_route != _need_route:
+            f"({_plan_src or '-'}) нужен={_need_route} ({_why_route}) код={code} "
+            f"маршрут_кода={_cur_route or '(нет)'}")
+        _swap_ok = True
+        if _cur_route and _cur_route != _need_route:
+            # Прежний код мог уже уходить сайту (техобслуживание, «нужна
+            # проверка»…). Вслепую в пул его не возвращаем: только если сайт
+            # подтвердил, что код свободен и активация не записана. Иначе
+            # оставляем клиенту его код — как было до смены правила.
+            _swap_ok = False
+            try:
+                if not await gpt_activation_already_done(code, user_id, order_id):
+                    from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
+                    _qs = await bpa_query_codes([code])
+                    _sts = str(((_qs or {}).get(str(code).strip().upper()) or {})
+                               .get("status") or "").strip().lower()
+                    _swap_ok = bool(_sts) and _sts in BPA_FREE_STATUSES
+                    if not _swap_ok:
+                        logging.warning(f"GPT route: {code} не меняю — сайт ответил "
+                                        f"«{_sts or 'ничего'}», вслепую в пул не верну")
+            except Exception as _e_sw:
+                logging.warning(f"GPT route: проверка {code} на сайте: {_e_sw}")
+                _swap_ok = False
+        if _cur_route != _need_route and _swap_ok:
             _new_code = await get_next_gpt_code(_pk_rt, "bpa", _need_route)
             if _new_code:
                 try:
@@ -12710,6 +12757,16 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 logging.info(f"GPT route swap: uid={user_id} {code} -> {_new_code} ({_need_route})")
                 code = _new_code
                 await save_pending_activation(user_id, code, order_id, _pk_rt, plan_name, "bpa")
+            elif (_need_route == "ph" and _cur_route == "ios"
+                  and (_acc_plan or "").strip() and _has_sub
+                  and "расхождение" not in (_plan_src or "")):
+                # Филиппинских нет, а на аккаунте ТОЧНО есть платный план —
+                # филиппинский сайт всё равно бы отбил, и заказ ушёл бы на iOS.
+                # Активируем уже закреплённым iOS-кодом, без ручного режима.
+                # «ТОЧНО» = источники плана согласны. При расхождении (как в
+                # заказе #7164: session — free, JWT — другое) iOS не тратим.
+                logging.info(f"GPT route: uid={user_id} филиппинских нет, план "
+                             f"{_acc_plan} — оставляю iOS {code}")
             else:
                 # Нужного маршрута нет — активацию НЕ делаем: чужим маршрутом
                 # либо сожжём филиппинский код, либо потратим iOS не по делу.
