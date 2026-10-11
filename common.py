@@ -7319,38 +7319,13 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
             else:
                 plan_key = plan_name_to_key(plan_name)
             if svc_key == "chatgpt":
-                # ВАЖНО: переиспользуем УЖЕ закреплённый за этим заказом код (из pending),
-                # чтобы не потратить на один заказ второй код. Новый берём только если
-                # прежнего нет (pending истёк и код вернулся в пул).
-                _pend = await get_pending_activation(uid)
-                # Резерв берём только если он ОТ ЭТОГО ЗАКАЗА. Он хранится по
-                # клиенту, и при двух оплаченных заказах подряд код второго
-                # мог быть перепривязан к первому. Внешний аудит 29.09.2026.
-                if (_pend and _pend.get("code")
-                        and str(_pend.get("order_id") or "") == str(oid)):
-                    _code = _pend["code"]; _prov = _pend.get("provider") or "987ai"
-                else:
-                    _code, _prov = await _gpt_pick_code(plan_key)
-                    if not _code:
-                        return web.json_response({"ok": False, "msg": "Нет свободных кодов ChatGPT"})
-                await save_pending_activation(uid, _code, oid, plan_key, plan_name, _prov)
-                import urllib.parse as _uq
-                from aiogram.types import WebAppInfo as _WAI
-                _url = webapp_url("/webapp/chatgpt", plan=plan_name, code=_code)
-                try:
-                    await bot.send_message(
-                        uid,
-                        f"🔔 <b>Активация подписки ChatGPT</b>\n\n"
-                        f"📦 {scat.get('name','ChatGPT')} {plan_name}\n"
-                        f"🎟 Код: <code>{_code}</code>\n\n"
-                        f"Нажми кнопку ниже, чтобы активировать 👇",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text="✨ Активировать подписку", web_app=_WAI(url=_url))],
-                            [InlineKeyboardButton(text="❓ Нужна помощь", callback_data="gpt_need_help")],
-                        ]))
-                except Exception as _se:
-                    return web.json_response({"ok": False, "msg": f"Не удалось отправить: {_se}"})
+                # Та же логика, что у кнопки «Отправить повторно» в чате: резерв
+                # этого заказа, Plus — сначала филиппинский. 11.10.2026
+                _ok_gr, _msg_gr = await gpt_resend_activation(oid)
+                if not _ok_gr:
+                    return web.json_response({"ok": False, "msg": re.sub(r"<[^>]+>", "", str(_msg_gr))})
+                await set_setting(f"order_done:{oid}", "0")
+                return web.json_response({"ok": True, "msg": re.sub(r"<[^>]+>", "", str(_msg_gr))})
             elif svc_key == "claude":
                 # Резерв переиспользуем только ОТ ЭТОГО заказа; неясный исход,
                 # уже активированный заказ — отказ с причиной. 08.10.2026
@@ -10837,6 +10812,11 @@ async def _run_activation_job(
             # и Александр читал это там, где на самом деле у САЙТА не прошла
             # его карта. Считаем ДО повторной активации: ниже result
             # перезаписывается результатом iOS-попытки.
+            # Запоминать «филиппинский по заказу отбит» стоит только при
+            # причине, которая повторится: на аккаунте уже есть план или
+            # защита OpenAI. Сбой платежа самого сайта — разовый, следующая
+            # попытка снова начнётся с филиппинского. Александр 11.10.2026.
+            _mark_ios_persist = bool(result.get("has_plan") or result.get("openai_blocked"))
             if result.get("site_payment_failed"):
                 _why_short = "у сайта не прошёл платёж по его карте"
                 _why_long = ("сайт не смог оплатить заказ своей картой "
@@ -10852,7 +10832,39 @@ async def _run_activation_job(
                              "не списаны")
             _dead_reason = _dead_order_reason(result)
             _ios_rescue_done = True
-            _new = await get_next_gpt_code(_plan_key, "bpa", "ios")
+            _new = None
+            _new_held = False     # _new — отложенный iOS этого заказа (не подтверждён сайтом)
+            _held_gone = ""       # отложенный был, но его уже разобрали вручную
+            # За заказом уже есть iOS, снятый без подтверждения сайта (повторная
+            # выдача / смена маршрута)? Берём ЕГО, а не новый: если он уже лёг на
+            # аккаунт, сайт так и скажет и защита «второй iOS не выдаю» остановит
+            # заказ. Новый iOS здесь мог бы дать клиенту вторую подписку.
+            try:
+                _held = (await get_setting(f"gpt_ios_held:{order_id}", "") or "").strip()
+                if _held:
+                    _p_hd = await get_pool()
+                    async with _p_hd.acquire() as _c_hd:
+                        _hr = await _c_hd.fetchrow(
+                            "UPDATE gpt_codes SET check_status='unchecked', flagged_reason=NULL "
+                            "WHERE code=$1 AND is_used=TRUE AND check_status='error' "
+                            "AND flagged_reason LIKE $2 RETURNING code",
+                            _held, f"снят с заказа {order_id}:%")
+                    if _hr:
+                        _new, _new_held = _hr["code"], True
+                        logging.warning(f"GPT ios rescue: беру отложенный iOS {_new} заказа {order_id}")
+                    else:
+                        _held_gone = _held
+                    try:
+                        await set_setting(f"gpt_ios_held:{order_id}", "")
+                    except Exception as _e_hc:
+                        logging.warning(f"GPT ios rescue: не снял отметку {order_id}: {_e_hc}")
+            except Exception as _e_hd:
+                logging.warning(f"GPT ios rescue held {order_id}: {_e_hd}")
+            # Отложенный iOS уже разобран вручную (возвращён / списан): новый
+            # iOS НЕ берём — если прежний успел лечь на аккаунт, новый дал бы
+            # вторую подписку. Ручной режим (ветка «iOS-кодов нет» ниже).
+            if not _new and not _held_gone:
+                _new = await get_next_gpt_code(_plan_key, "bpa", "ios")
             if not _new:
                 # iOS-кодов нет: филиппинский вернём в пул и уйдём в ручной
                 # режим. Пробовать тем же маршрутом ещё раз бессмысленно —
@@ -10874,14 +10886,19 @@ async def _run_activation_job(
                 # Александр должен видеть это, а не верить сообщению.
                 _rel_txt = _rel_phrase(_rel_ok)
                 await _admin_fail_shot(
-                    f"🚨 <b>ChatGPT — {_why_short}, а iOS-кодов нет</b>\n"
+                    (f"🚨 <b>ChatGPT — {_why_short}; новый iOS не беру</b>\n"
+                     f"📌 По заказу уже был iOS <code>{_held_gone}</code> (снят без подтверждения "
+                     f"сайта, ты его уже разобрал). Если он лёг на аккаунт — новый iOS дал бы "
+                     f"вторую подписку.\n" if _held_gone else
+                     f"🚨 <b>ChatGPT — {_why_short}, а iOS-кодов нет</b>\n") +
                     f"👤 {_who_u} · {plan_name}\n"
                     f"🔑 <code>{code}</code> — {_rel_txt}\n"
                     f"🔎 Причина: {_why_long}\n"
                     f"🆔 <code>{order_id}</code>\n"
                     f"{await _actx()}\n"
-                    f"Перевести заказ на iOS нечем. "
-                    f"Пополни iOS-коды или активируй вручную.", order_id=order_id)
+                    + ("Проверь тот код и активируй вручную." if _held_gone else
+                       "Перевести заказ на iOS нечем. Пополни iOS-коды или активируй вручную."),
+                    order_id=order_id)
                 _why_cl = ("для твоего аккаунта нужен другой тип кода"
                            if result.get("has_plan") or result.get("openai_blocked")
                            else "у сайта активации не прошёл платёж с его стороны")
@@ -10922,7 +10939,18 @@ async def _run_activation_job(
                     logging.warning(f"ios rescue: сверка {_old_code}: {_e_rc2}")
                 if _rr_ios.get("fixed"):
                     try:
-                        await release_gpt_code(_new)   # даже не отправляли
+                        if _new_held:
+                            # Отложенный iOS сайт свободным не подтверждал —
+                            # возвращаем ему пометку, в пул НЕ кладём.
+                            _p_rh = await get_pool()
+                            async with _p_rh.acquire() as _c_rh:
+                                await _c_rh.execute(
+                                    "UPDATE gpt_codes SET check_status='error', flagged_reason=$2 "
+                                    "WHERE code=$1", _new,
+                                    f"снят с заказа {order_id}: заказ закрыт сверкой; "
+                                    f"сайт не подтвердил, что код свободен")
+                        else:
+                            await release_gpt_code(_new)   # даже не отправляли
                     except Exception:
                         pass
                     await delete_pending_activation(user_id, order_id)
@@ -10953,7 +10981,8 @@ async def _run_activation_job(
             # снова потащило бы заказ на филиппинский — правило «сначала
             # филиппинский» в api_activate. Александр 09.10.2026.
             try:
-                await set_setting(f"gpt_ios_after_ph:{order_id}", _why_short[:120])
+                if _mark_ios_persist:
+                    await set_setting(f"gpt_ios_after_ph:{order_id}", _why_short[:120])
             except Exception as _e_mk:
                 logging.warning(f"ios rescue: не записал отметку {order_id}: {_e_mk}")
             logging.warning(
@@ -12862,31 +12891,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                           and "расхождение" not in (_plan_src or ""))
 
         async def _hold_old(_c, _why_h):
-            """Прежний код сайт не подтвердил свободным — в пул НЕ возвращаем,
-            помечаем (фоновая чистка помеченные не трогает) и говорим
-            Александру: решение по коду за ним."""
-            try:
-                _p_h = await get_pool()
-                async with _p_h.acquire() as _c_h:
-                    await _c_h.execute(
-                        "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
-                        "flagged_reason=$2 WHERE code=$1", _c,
-                        f"снят с заказа {order_id}: {_why_h}; сайт не подтвердил, что код свободен")
-            except Exception as _e_h:
-                logging.warning(f"GPT route hold {_c}: {_e_h}")
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"📌 <b>ChatGPT — код снят с заказа, в пул НЕ вернул</b>\n\n"
-                    f"👤 <b>Клиент:</b> {await _who_user(user_id)}\n"
-                    f"🔑 <b>Код:</b> <code>{_c}</code> ({GPT_ROUTE_LABELS.get(gpt_route_for_code(_c), '?')})\n"
-                    f"🆔 <b>Order:</b> <code>{order_id}</code>\n"
-                    f"❗ <b>Причина:</b> {_why_h}\n\n"
-                    f"Сайт не подтвердил, что код свободен (мог уже уходить сайту). "
-                    f"Код помечен и ждёт тебя: проверь на сайте и верни в пул или спиши.",
-                    parse_mode="HTML")
-            except Exception:
-                pass
+            await _gpt_hold_code(user_id, order_id, _c, _why_h)
 
         if _cur_route != _need_route:
             _new_code = await get_next_gpt_code(_pk_rt, "bpa", _need_route)
@@ -15614,6 +15619,96 @@ async def _gpt_provider_order() -> list:
     return order
 
 
+async def _gpt_code_free_on_site(code: str, user_id: int, order_id: str) -> bool:
+    """True — сайт подтвердил, что код свободен и активация по нему не
+    записана. Любая неясность (сайт молчит, техобслуживание) — False."""
+    try:
+        if await gpt_activation_already_done(code, user_id, order_id):
+            return False
+        from chatgpt_activation import bpa_query_codes, BPA_FREE_STATUSES
+        _qs = await bpa_query_codes([code])
+        _sts = str(((_qs or {}).get(str(code).strip().upper()) or {})
+                   .get("status") or "").strip().lower()
+        if not (_sts and _sts in BPA_FREE_STATUSES):
+            logging.warning(f"GPT route: {code} — сайт ответил «{_sts or 'ничего'}», "
+                            f"вслепую в пул не верну")
+        return bool(_sts) and _sts in BPA_FREE_STATUSES
+    except Exception as _e_fs:
+        logging.warning(f"GPT route: проверка {code} на сайте: {_e_fs}")
+        return False
+
+
+async def _gpt_hold_code(user_id: int, order_id: str, code: str, why: str) -> None:
+    """Код снят с заказа, но сайт не подтвердил, что он свободен: в пул НЕ
+    возвращаем, помечаем (фоновая чистка помеченные не трогает) и говорим
+    Александру — решение по коду за ним."""
+    try:
+        _p_h = await get_pool()
+        async with _p_h.acquire() as _c_h:
+            await _c_h.execute(
+                "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
+                "flagged_reason=$2 WHERE code=$1", code,
+                f"снят с заказа {order_id}: {why}; сайт не подтвердил, что код свободен")
+        # Запоминаем за заказом: если филиппинский потом отобьют, _ios_rescue
+        # возьмёт ЭТОТ iOS, а не новый — иначе на один аккаунт могли бы уйти
+        # два iOS (первый мог уже лечь, просто сайт не ответил). Ревью 11.10.
+        if gpt_route_for_code(code) == "ios" and order_id:
+            await set_setting(f"gpt_ios_held:{order_id}", str(code))
+    except Exception as _e_h:
+        logging.warning(f"GPT route hold {code}: {_e_h}")
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"📌 <b>ChatGPT — код снят с заказа, в пул НЕ вернул</b>\n\n"
+            f"👤 <b>Клиент:</b> {await _who_user(user_id)}\n"
+            f"🔑 <b>Код:</b> <code>{code}</code> ({GPT_ROUTE_LABELS.get(gpt_route_for_code(code), '?')})\n"
+            f"🆔 <b>Order:</b> <code>{order_id}</code>\n"
+            f"❗ <b>Причина:</b> {why}\n\n"
+            f"Сайт не подтвердил, что код свободен (мог уже уходить сайту). "
+            f"Код помечен и ждёт тебя: проверь на сайте и верни в пул или спиши.",
+            parse_mode="HTML")
+    except Exception:
+        pass
+
+
+async def _gpt_prefer_ph(user_id: int, order_id: str, code: str, plan_key: str,
+                         plan_name: str = "Plus") -> tuple:
+    """Повторная выдача ChatGPT: Plus ВСЕГДА начинается с филиппинского.
+
+    Если за заказом закреплён iOS-код — меняем его на свободный филиппинский.
+    Прежний iOS: сайт подтвердил «свободен» → в пул, иначе → помечен за
+    Александром. Филиппинских нет — оставляем iOS (при активации бесплатный
+    аккаунт уйдёт в ручной режим, iOS на него не тратится).
+    Возвращает (код, пояснение для Александра или "").
+    Александр 11.10.2026, заказ #7168: «выдал повторную активацию, а ему
+    выдался код iOS, а не филиппинский».
+    """
+    if (plan_key or "") == "go" or gpt_route_for_code(code or "") != "ios":
+        return code, ""
+    _new = await get_next_gpt_code(plan_key, "bpa", "ph")
+    if not _new:
+        return code, ("🇵🇭 Филиппинских кодов нет — оставил iOS. На бесплатном "
+                      "аккаунте активация уйдёт в ручной режим.")
+    _free = await _gpt_code_free_on_site(code, user_id, order_id)
+    # Сначала резерв на новый код, потом судьба прежнего: упади запись
+    # резерва — прежний останется за заказом, а не окажется в пуле.
+    await save_pending_activation(user_id, _new, order_id, plan_key, plan_name, "bpa")
+    if _free:
+        try:
+            await release_gpt_code(code)
+            _note = f"📱 iOS <code>{code}</code> заменён на филиппинский, iOS возвращён в пул."
+        except Exception as _e_rl:
+            logging.warning(f"_gpt_prefer_ph release {code}: {_e_rl}")
+            await _gpt_hold_code(user_id, order_id, code, "не удалось вернуть в пул")
+            _note = f"📱 iOS <code>{code}</code> заменён на филиппинский; вернуть в пул не удалось — помечен."
+    else:
+        await _gpt_hold_code(user_id, order_id, code, "повторная выдача: Plus идёт филиппинским")
+        _note = (f"📱 iOS <code>{code}</code> заменён на филиппинский; iOS НЕ возвращён "
+                 f"(сайт не подтвердил) — помечен, ждёт тебя.")
+    logging.info(f"GPT resend: order={order_id} {code} -> {_new} (филиппинский)")
+    return _new, _note
+
+
 async def gpt_resend_activation(order_id: str) -> tuple:
     """Повторно шлёт клиенту кнопку активации ChatGPT по заказу.
 
@@ -15655,17 +15750,82 @@ async def gpt_resend_activation(order_id: str) -> tuple:
     # уйдёт второй код. Новый берём, только если прежнего не осталось.
     _pend = await get_pending_activation(uid)
     # Только резерв ЭТОГО заказа: см. выше, резерв адресуется по клиенту.
-    if (_pend and _pend.get("code")
-            and str(_pend.get("order_id") or "") == str(_oid)):
+    # Двойное нажатие / лента и чат одновременно — второй вызов не нужен.
+    try:
+        if await activation_cooldown(f"gptresend:{_oid}", seconds=15):
+            return False, "Повторная выдача по этому заказу уже выполняется — подожди пару секунд."
+    except Exception as _e_cd:
+        logging.warning(f"gpt_resend cooldown: {_e_cd}")
+    _own = (_pend and _pend.get("code")
+            and str(_pend.get("order_id") or "") == str(_oid))
+    if _own:
+        # Активация по заказу идёт прямо сейчас — код не трогаем: задача
+        # работает именно с ним (ревью 11.10.2026: иначе код мог вернуться
+        # в пул посреди активации и уйти второму клиенту).
+        _busy = ""
+        _jb = _gpt_job_active.get(uid)
+        if _jb and (_activation_jobs.get(_jb) or {}).get("status") not in (None, "done"):
+            _busy = "задача активации ещё работает"
+        try:
+            if not _busy and (await get_setting(
+                    f"gptclaim:{str(_pend['code']).strip().upper()}", "") or "").strip():
+                _busy = "сайт держит код (идёт активация, бот следит)"
+            _act_at = _pend.get("activating_at")
+            if not _busy and _act_at is not None:
+                import datetime as _dt_rs
+                if (_dt_rs.datetime.now(_dt_rs.timezone.utc) - _act_at).total_seconds() < 600:
+                    _busy = "активация запущена меньше 10 минут назад"
+        except Exception as _e_bz:
+            logging.warning(f"gpt_resend busy check: {_e_bz}")
+        if _busy:
+            return False, (f"Активация по заказу идёт прямо сейчас ({_busy}). "
+                           f"Код не меняю — дождись результата.")
+        try:
+            if await gpt_activation_already_done(_pend["code"], uid, _oid):
+                return False, ("Активация по этому коду уже записана — заказ выполнен, "
+                               "повторная выдача не нужна.")
+        except Exception as _e_ad:
+            logging.warning(f"gpt_resend already_done: {_e_ad}")
+    _route_note = ""
+    if _own:
         _code = _pend["code"]
         _prov = _pend.get("provider") or "bpa"
         _reused = True
+        if _prov == "bpa" and _plan_key != "go" and gpt_route_for_code(_code) == "ios":
+            # Замок активации на время замены: пока ходим на сайт, клиент не
+            # должен успеть запустить активацию этим же iOS (ревью 11.10.2026).
+            if not await claim_gpt_activation(uid):
+                return False, ("Клиент как раз запускает активацию — код не меняю. "
+                               "Повтори через пару минут.")
+            try:
+                _c2, _route_note = await _gpt_prefer_ph(uid, _oid, _code, _plan_key, _plan_name)
+            finally:
+                try:
+                    await release_gpt_activation(uid)
+                except Exception as _e_rga:
+                    logging.warning(f"gpt_resend release lock: {_e_rga}")
+            if _c2 != _code:
+                _code, _reused = _c2, False
     else:
         _code, _prov = await _gpt_pick_code(_plan_key)
         _reused = False
         if not _code:
             return False, f"Нет свободных кодов ChatGPT ({_plan_key})"
+        if _plan_key != "go" and gpt_route_for_code(_code) == "ios":
+            _route_note = ("🇵🇭 Филиппинских кодов нет — выдан iOS. На бесплатном "
+                           "аккаунте активация уйдёт в ручной режим.")
     await save_pending_activation(uid, _code, _oid, _plan_key, _plan_name, _prov)
+    # Повторную выдачу делает Александр — это новый старт. Отметку «по заказу
+    # филиппинский уже отбит» снимаем, только если заказ ДЕЙСТВИТЕЛЬНО получил
+    # филиппинский: иначе (филиппинских нет) отметка по-прежнему ведёт его
+    # на iOS без лишнего ручного режима. Если сайт отобьёт филиппинский снова —
+    # заказ сам уйдёт на iOS (ревью 11.10.2026).
+    if gpt_route_for_code(_code) == "ph":
+        try:
+            if (await get_setting(f"gpt_ios_after_ph:{_oid}", "") or "").strip():
+                await set_setting(f"gpt_ios_after_ph:{_oid}", "")
+        except Exception as _e_mk:
+            logging.warning(f"gpt_resend: отметка маршрута {_oid}: {_e_mk}")
 
     from aiogram.types import WebAppInfo as _WAI
     _url = webapp_url("/webapp/chatgpt", plan=_plan_name, code=_code)
@@ -15689,9 +15849,13 @@ async def gpt_resend_activation(order_id: str) -> tuple:
         pass
     logging.info(f"gpt_resend_activation: order={_oid} uid={uid} code={_code} "
                  f"{'прежний' if _reused else 'новый'}")
+    _rt_lbl = GPT_ROUTE_LABELS.get(gpt_route_for_code(_code), "")
     return True, (f"Кнопка отправлена клиенту.\n🎟 Код: <code>{_code}</code>"
+                  + (f" · {_rt_lbl}" if _rt_lbl else "")
                   + ("\n<i>Это тот же код, что был закреплён за заказом.</i>"
-                     if _reused else "\n<i>Прежнего кода не было — выдан новый.</i>"))
+                     if _reused else
+                     "" if _route_note else "\n<i>Прежнего кода не было — выдан новый.</i>")
+                  + (f"\n{_route_note}" if _route_note else ""))
 
 
 async def gpt_reconcile_orphans(only_code: str = "") -> dict:
