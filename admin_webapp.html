@@ -47,7 +47,7 @@ html,body{margin:0;background:#000;color:var(--txt);font-family:-apple-system,Bl
 .mgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
 .mcard{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:12px}
 .mlab{font-size:11.5px;color:var(--txt2)}.mval{font-size:20px;font-weight:700;margin-top:3px}
-.delta{font-size:11px;margin-top:3px}.pos{color:var(--green)}.neg{color:var(--red)}
+.usd{font-size:12px;font-weight:600;color:var(--txt2);margin-top:1px}.delta{font-size:11px;margin-top:3px}.pos{color:var(--green)}.neg{color:var(--red)}
 .seg{display:flex;background:var(--card);border:1px solid var(--line);border-radius:11px;padding:3px;margin-bottom:14px;gap:2px}
 .seg button{flex:1;border:0;background:transparent;color:var(--txt2);font-size:12.5px;padding:8px 4px;border-radius:8px;cursor:pointer;font-weight:600}
 .seg button.on{background:var(--acc);color:#fff}
@@ -3318,6 +3318,13 @@ function svcColor(k){
 }
 function rub(n){return nf(Math.round(n||0))+' ₽';}
 function sgn(n){return (n>0?'+':'')+nf(Math.round(n||0));}
+/* Доллары по курсу Александра («Курс $» в ценах = cost_usd_rate). 10.10.2026:
+   «нужно добавить конвертацию в $ по моему курсу в таких разделах». */
+window._usdRate=0;
+function _setUsd(d){var r=d&&Number(d.rate);if(r>0)window._usdRate=r;}
+function usd(n){var r=window._usdRate;if(!(r>0))return '';var v=(n||0)/r;var a=Math.abs(v);
+  return (v<0?'−':'')+'$'+(a>=100?nf(Math.round(a)):a.toFixed(a>=10?1:2).replace('.',','));}
+function usdTail(n){var u=usd(n);return u?' <span class="muted" style="font-size:12px">≈ '+u+'</span>':'';}
 
 /* Подсказка-«пузырь» для столбиков: показываем точное значение по нажатию. */
 function _tipShow(el,txt){
@@ -3370,6 +3377,7 @@ function deltaHtml(cur,prev,lab,money){
 function kpiCard(lab,val,suf,deltaH,cls,sub,onclk){
   return '<div class="mcard fx'+(onclk?' clk" onclick="'+onclk:'')+'"><div class="mlab">'+esc(lab)+'</div>'
     +'<div class="mval '+(cls||'')+'"><span class="cu" data-v="'+(val||0)+'" data-suf="'+(suf||'')+'">'+nf(Math.round(val||0))+(suf||'')+'</span></div>'
+    +((suf===' ₽'&&usd(val))?'<div class="usd">≈ '+usd(val)+'</div>':'')
     +(sub?'<div class="delta muted">'+sub+'</div>':'')+(deltaH||'')+'</div>';
 }
 function skel(n,h){var s='';for(var i=0;i<(n||3);i++)s+='<div class="sk" style="height:'+(h||64)+'px;margin-bottom:10px"></div>';return s;}
@@ -3507,9 +3515,9 @@ function _mLoad(per,dts){
     if(!_seqOk('m',q))return;
     var el=document.getElementById('mbody'); if(!el)return;
     if(!d||!d.ok||!d.totals){el.innerHTML=errBox("_mLoad('"+per+"','"+(dts||'')+"')");return;}
-    window._mD=d;
+    window._mD=d; _setUsd(d);
     var T=d.totals,P=d.prev||{},lab=d.prevLabel||'',h='';
-    h+='<div class="note fx" style="margin:0 0 12px">📅 <b>'+esc(d.label)+'</b>'+(d.live?' · на '+esc(d.asOf):'')+' · время Алматы</div>';
+    h+='<div class="note fx" style="margin:0 0 12px">📅 <b>'+esc(d.label)+'</b>'+(d.live?' · на '+esc(d.asOf):'')+' · время Алматы'+(window._usdRate>0?' · $ по курсу '+nf(window._usdRate)+' ₽':'')+'</div>';
     var _ctx={period:per,date:dts||''};
     var _fl=function(o){return 'finList(window._RG['+_rg(Object.assign({},_ctx,o))+'])';};
     h+='<div class="mgrid">'
@@ -3520,9 +3528,9 @@ function _mLoad(per,dts){
       +'</div>';
     h+='<div class="block fx"><div class="kv" style="border:0;cursor:pointer" onclick="'+_fl({view:'orders',expect:{orders:T.orders}})+'"><span class="k">Заказов оплачено ›</span><span>'+nf(T.orders)+'</span></div>'
       +'<div class="kv" style="cursor:pointer" onclick="'+_fl({view:'payers',expect:{payers:T.payers}})+'"><span class="k">Платящих клиентов ›</span><span>'+nf(T.payers)+'</span></div>'
-      +'<div class="kv"><span class="k">Средний чек (рублями)</span><span>'+rub(T.avgCheck)+'</span></div>'
-      +(T.partner?'<div class="kv"><span class="k">Доля партнёров ('+T.partnerOrders+' зак.)</span><span class="neg">−'+rub(T.partner)+'</span></div>':'')
-      +'<div class="kv" style="flex-wrap:wrap;gap:4px"><span class="k">Итог</span><span><b>'+rub(T.revenue)+'</b> − закуп '+rub(T.cost)+' − комиссия '+rub(T.fee)+(T.partner?(' − партнёрам '+rub(T.partner)):'')+' = <b class="'+(T.profit>=0?'pos':'neg')+'">'+rub(T.profit)+'</b></span></div></div>';
+      +'<div class="kv"><span class="k">Средний чек (рублями)</span><span>'+rub(T.avgCheck)+usdTail(T.avgCheck)+'</span></div>'
+      +(T.partner?'<div class="kv"><span class="k">Доля партнёров ('+T.partnerOrders+' зак.)</span><span class="neg">−'+rub(T.partner)+usdTail(-T.partner)+'</span></div>':'')
+      +'<div class="kv" style="flex-wrap:wrap;gap:4px"><span class="k">Итог</span><span><b>'+rub(T.revenue)+'</b> − закуп '+rub(T.cost)+' − комиссия '+rub(T.fee)+(T.partner?(' − партнёрам '+rub(T.partner)):'')+' = <b class="'+(T.profit>=0?'pos':'neg')+'">'+rub(T.profit)+'</b>'+usdTail(T.profit)+'</span></div></div>';
     var pts=(d.series||{}).points||[];
     if(pts.length>1){
       h+='<div class="block fx"><h4>📈 Выручка и прибыль '+((d.series.unit==='hour')?'по часам':'по дням')+'</h4>'
@@ -3801,17 +3809,17 @@ function _flLoad(o){
     if(!_seqOk('fl',q))return;
     var el=document.getElementById('flbody'); if(!el)return;
     if(!d||!d.ok){el.innerHTML=errBox('_flLoad(window._RG['+_rg(o)+'])');return;}
-    var T=d.totals||{},h='',mode=o.mode||o.view;
+    var T=d.totals||{},h='',mode=o.mode||o.view; _setUsd(d);
     h+='<div class="note fx" style="margin:0 0 10px">📅 <b>'+esc(d.label||'')+'</b>'+(o.sub?' · '+esc(o.sub):'')+' · время Алматы</div>';
     h+='<div class="block fx">'
       +'<div class="kv" style="border:0;padding-top:0"><span class="k">Заказов</span><span><b>'+nf(T.orders)+'</b></span></div>'
-      +'<div class="kv"><span class="k">Выручка</span><span><b>'+rub(T.revenue)+'</b></span></div>'
+      +'<div class="kv"><span class="k">Выручка</span><span><b>'+rub(T.revenue)+'</b>'+usdTail(T.revenue)+'</span></div>'
       +(T.money!==T.revenue?'<div class="kv"><span class="k">· деньгами (FreeKassa)</span><span>'+rub(T.money)+'</span></div>':'')
       +(T.stars?'<div class="kv"><span class="k">· Stars</span><span>'+nf(T.stars)+' ⭐'+(T.starsRub?(' ≈ '+rub(T.starsRub)):' · курс не задан')+'</span></div>':'')
-      +'<div class="kv"><span class="k">Закуп</span><span>−'+rub(T.cost)+'</span></div>'
-      +'<div class="kv"><span class="k">Комиссия FK</span><span>−'+rub(T.fee)+'</span></div>'
+      +'<div class="kv"><span class="k">Закуп</span><span>−'+rub(T.cost)+usdTail(-T.cost)+'</span></div>'
+      +'<div class="kv"><span class="k">Комиссия FK</span><span>−'+rub(T.fee)+usdTail(-T.fee)+'</span></div>'
       +(T.partner?'<div class="kv"><span class="k">Доля партнёров</span><span>−'+rub(T.partner)+'</span></div>':'')
-      +'<div class="kv"><span class="k">Прибыль</span><span><b class="'+(T.profit>=0?'pos':'neg')+'">'+sgn(T.profit)+' ₽</b></span></div>'
+      +'<div class="kv"><span class="k">Прибыль</span><span><b class="'+(T.profit>=0?'pos':'neg')+'">'+sgn(T.profit)+' ₽</b>'+usdTail(T.profit)+'</span></div>'
       +(T.coins?'<div class="kv"><span class="k">Монетками (не деньги)</span><span class="muted">'+rub(T.coins)+'</span></div>':'')
       +'<div class="kv"><span class="k">Платящих клиентов</span><span>'+nf(T.payers)+'</span></div>'
       +'<div class="sub" style="margin-top:6px">Считается тем же расчётом, что и плитка, с которой ты пришёл, — на момент открытия списка.</div></div>';
@@ -4176,7 +4184,7 @@ function ovReload(silent){
      if(seq!==window._ovSeq)return;            // пока грузили, выбрали другой период
      if(x.s===403){ denied(); return; }
      if(!x.d||!x.d.ok||!x.d.totals){ if(!(silent&&OV_STATE==='ok'))OV_STATE='err'; }
-     else { OVERVIEW=x.d; OV_STATE='ok'; }
+     else { OVERVIEW=x.d; OV_STATE='ok'; _setUsd(x.d); }
      _homeRedraw();
    })
    .catch(function(){ if(seq!==window._ovSeq)return; if(!(silent&&OV_STATE==='ok'))OV_STATE='err'; _homeRedraw(); });

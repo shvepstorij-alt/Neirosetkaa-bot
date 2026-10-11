@@ -4879,6 +4879,7 @@ async def api_admin_fin_items_handler(request: web.Request) -> web.Response:
             tot["profit"] = tot["revenue"] - tot["cost"] - tot["fee"] - tot["partner"]
             tot["payers"] = len({it["uid"] for it in flt if it["payer"] and it["uid"]})
             out = {"ok": True, "label": rg["label"], "view": view, "totals": tot,
+                   "rate": cfg["rate"],
                    "all": {"orders": T0["orders"], "revenue": T0["revenue"],
                            "profit": T0["profit"], "payers": T0["payers"]},
                    "warnings": res.get("warnings") or []}
@@ -12856,19 +12857,58 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             except Exception as _e_sw:
                 logging.warning(f"GPT route: проверка {code} на сайте: {_e_sw}")
                 _swap_ok = False
-        if _cur_route != _need_route and _swap_ok:
+        # Платный план ТОЧНО: оба источника плана в присланном тексте согласны.
+        _paid_sure = bool((_acc_plan or "").strip() and _has_sub
+                          and "расхождение" not in (_plan_src or ""))
+
+        async def _hold_old(_c, _why_h):
+            """Прежний код сайт не подтвердил свободным — в пул НЕ возвращаем,
+            помечаем (фоновая чистка помеченные не трогает) и говорим
+            Александру: решение по коду за ним."""
+            try:
+                _p_h = await get_pool()
+                async with _p_h.acquire() as _c_h:
+                    await _c_h.execute(
+                        "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
+                        "flagged_reason=$2 WHERE code=$1", _c,
+                        f"снят с заказа {order_id}: {_why_h}; сайт не подтвердил, что код свободен")
+            except Exception as _e_h:
+                logging.warning(f"GPT route hold {_c}: {_e_h}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"📌 <b>ChatGPT — код снят с заказа, в пул НЕ вернул</b>\n\n"
+                    f"👤 <b>Клиент:</b> {await _who_user(user_id)}\n"
+                    f"🔑 <b>Код:</b> <code>{_c}</code> ({GPT_ROUTE_LABELS.get(gpt_route_for_code(_c), '?')})\n"
+                    f"🆔 <b>Order:</b> <code>{order_id}</code>\n"
+                    f"❗ <b>Причина:</b> {_why_h}\n\n"
+                    f"Сайт не подтвердил, что код свободен (мог уже уходить сайту). "
+                    f"Код помечен и ждёт тебя: проверь на сайте и верни в пул или спиши.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+
+        if _cur_route != _need_route:
             _new_code = await get_next_gpt_code(_pk_rt, "bpa", _need_route)
             if _new_code:
-                try:
-                    await release_gpt_code(code)   # прежний код не тронут — вернём в пул
-                except Exception as _e_rel:
-                    logging.warning(f"release_gpt_code {code}: {_e_rel}")
+                # Нужный маршрут есть — переходим на него ВСЕГДА. Раньше при
+                # неподтверждённом сайтом прежнем коде бот оставлял клиенту
+                # iOS (#7173: сайт на техобслуживании не ответил — и
+                # бесплатный аккаунт снова получил iOS). Теперь прежний код
+                # либо возвращается в пул (сайт подтвердил), либо остаётся
+                # помеченным за Александром.
+                if _swap_ok:
+                    try:
+                        await release_gpt_code(code)   # прежний код не тронут — вернём в пул
+                    except Exception as _e_rel:
+                        logging.warning(f"release_gpt_code {code}: {_e_rel}")
+                else:
+                    await _hold_old(code, f"заказу нужен маршрут "
+                                          f"{GPT_ROUTE_LABELS.get(_need_route, _need_route)}")
                 logging.info(f"GPT route swap: uid={user_id} {code} -> {_new_code} ({_need_route})")
                 code = _new_code
                 await save_pending_activation(user_id, code, order_id, _pk_rt, plan_name, "bpa")
-            elif (_need_route == "ph" and _cur_route == "ios"
-                  and (_acc_plan or "").strip() and _has_sub
-                  and "расхождение" not in (_plan_src or "")):
+            elif _need_route == "ph" and _cur_route == "ios" and _paid_sure:
                 # Филиппинских нет, а на аккаунте ТОЧНО есть платный план —
                 # филиппинский сайт всё равно бы отбил, и заказ ушёл бы на iOS.
                 # Активируем уже закреплённым iOS-кодом, без ручного режима.
@@ -12879,24 +12919,48 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             else:
                 # Нужного маршрута нет — активацию НЕ делаем: чужим маршрутом
                 # либо сожжём филиппинский код, либо потратим iOS не по делу.
-                try:
-                    await release_gpt_code(code)
-                except Exception:
-                    pass
-                await delete_pending_activation(user_id, order_id)
                 _lbl = GPT_ROUTE_LABELS.get(_need_route, _need_route)
+                if _swap_ok:
+                    try:
+                        await release_gpt_code(code)
+                    except Exception:
+                        pass
+                    _old_txt = f"Прежний код <code>{code}</code> возвращён в пул (сайт подтвердил, что свободен)."
+                else:
+                    await _hold_old(code, f"нет кодов маршрута {_lbl}")
+                    _old_txt = f"Прежний код <code>{code}</code> НЕ возвращён — помечен, ждёт тебя."
+                await delete_pending_activation(user_id, order_id)
+                _stock = ""
+                try:
+                    from db import count_gpt_free_by_route
+                    _rows_st = await count_gpt_free_by_route()
+                    _stock = ", ".join(
+                        f"{GPT_ROUTE_LABELS.get(r['route'], r['route'] or 'без маршрута')} "
+                        f"{r['plan']}: {r['free']}" for r in _rows_st) or "свободных нет совсем"
+                except Exception as _e_st:
+                    logging.warning(f"GPT route stock: {_e_st}")
                 try:
                     await bot.send_message(
                         ADMIN_ID,
-                        f"🚨 <b>ChatGPT — нет кодов нужного маршрута</b>\n"
-                        f"👤 {await _who_user(user_id)}  🆔 <code>{order_id}</code>\n"
-                        f"📦 Тариф: <b>{plan_name}</b>\n"
-                        f"🧑‍💻 План аккаунта: <b>{_acc_plan or 'не определён'}</b>\n"
-                        f"🧭 Нужен маршрут: <b>{_lbl}</b> — свободных нет.\n\n"
-                        f"Активируй вручную. Прежний код возвращён в пул.",
+                        f"🚨 <b>ChatGPT — нет кодов нужного маршрута</b>\n\n"
+                        f"👤 <b>Клиент:</b> {await _who_user(user_id)}\n"
+                        f"🆔 <b>Order:</b> <code>{order_id}</code>\n"
+                        f"📦 <b>Тариф:</b> {plan_name}\n"
+                        f"🧑‍💻 <b>План аккаунта:</b> {_acc_plan or 'не определён'}"
+                        + (" (источники разошлись)" if "расхождение" in (_plan_src or "") else "") + "\n"
+                        f"🧭 <b>Нужен маршрут:</b> {_lbl} — свободных нет\n"
+                        + (f"📦 <b>Свободно в пуле:</b> {_stock}\n" if _stock else "")
+                        + f"\n{_old_txt}\nАктивируй вручную или пополни {_lbl}-коды. "
+                        f"Токен клиента — следующим сообщением.",
                         parse_mode="HTML")
                 except Exception:
                     pass
+                try:
+                    await _gpt_admin_token_msg(user_id, None, order_id, plan_name, session_raw,
+                                               access_token, f"нет кодов маршрута {_lbl}",
+                                               provider="bpa")
+                except Exception as _e_tk:
+                    logging.warning(f"GPT route token msg: {_e_tk}")
                 try:
                     await bot.send_message(
                         user_id,
@@ -17773,6 +17837,23 @@ async def _gpt_pick_code(plan: str):
                 # Филиппинских не осталось — берём любой, иначе клиент
                 # останется без кода при полном пуле iOS.
                 code = await get_next_gpt_code(plan, prov)
+                # Александр 10.10.2026: заказы Plus снова получали iOS, и было
+                # непонятно почему. Причина — пустой филиппинский пул; теперь
+                # о нём сразу сообщение (не чаще раза в час). При активации
+                # бесплатный аккаунт на такой iOS-код не пойдёт — ручной режим.
+                try:
+                    if not await activation_cooldown(f"gpt_ph_empty:{plan}", seconds=3600):
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🇵🇭 <b>Филиппинские коды ChatGPT закончились</b>\n\n"
+                            f"📦 <b>Тариф:</b> {plan}\n"
+                            f"Новый заказ получил "
+                            + (f"iOS-код <code>{code}</code>" if code else "— ничего, кодов нет совсем")
+                            + ".\n<i>На бесплатном аккаунте клиента активация пойдёт в ручной режим "
+                            "(iOS на free не трачу). Пополни филиппинские коды.</i>",
+                            parse_mode="HTML")
+                except Exception as _e_phe:
+                    logging.warning(f"ph empty alert: {_e_phe}")
         else:
             code = await get_next_gpt_code(plan, prov)
         if code:
