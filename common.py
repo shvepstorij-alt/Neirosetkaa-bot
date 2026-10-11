@@ -457,6 +457,132 @@ async def unmark_generation_active(user_id: int):
         _active_generations.discard(user_id)
 
 
+FK_CARD_PENDING = "🧾 <b>FreeKassa:</b> <i>номер появится, когда клиент откроет оплату</i>"
+
+
+async def fk_card_line(order_id: str) -> str:
+    """Строка с номером FreeKassa для карточки НОВОГО заказа.
+
+    Александр 12.10.2026: «даже на новых заказах должен писать номер
+    FreeKassa — в самой FreeKassa он есть на всех заказах». Номер у FreeKassa
+    появляется в момент, когда заказ создан у неё: при оплате картой — сразу
+    (ссылку создаёт API), при СБП — когда клиент открыл форму оплаты. До этого
+    номера не существует нигде, поэтому строка-заглушка, а фоновая проверка
+    (fk_intid_watch) допишет номер в карточку, как только он появится.
+    """
+    try:
+        _o = await fk_get_order(order_id) or {}
+        _fk = (_o.get("fk_intid") or "").strip()
+    except Exception:
+        _fk = ""
+    if _fk:
+        return f"🧾 <b>FreeKassa:</b> <code>{_fk}</code>\n"
+    return FK_CARD_PENDING + "\n"
+
+
+async def fk_note_intid(order_id: str, fk_no) -> None:
+    """Запомнить номер FreeKassa заказа, как только он стал известен, и
+    дописать его в карточку «ожидает оплаты» у Александра.
+
+    Пишем только в пустое поле: номер из вебхука об оплате (intid) главнее —
+    вебхук перезаписывает поле сам.
+    """
+    import json as _j_fn
+    _fk = str(fk_no or "").strip()
+    if not order_id or not _fk or _fk in ("0", "None", "null"):
+        return
+    try:
+        _p = await get_pool()
+        async with _p.acquire() as _c:
+            _r = await _c.fetchrow(
+                "UPDATE fk_orders SET fk_intid=$2 WHERE order_id=$1 "
+                "AND COALESCE(fk_intid,'')='' RETURNING status, admin_msg_id",
+                str(order_id), _fk)
+        if not _r:
+            return
+        logging.info(f"FK: номер FreeKassa {_fk} для {order_id} (до оплаты)")
+        if (_r["status"] or "pending") != "pending":
+            return        # оплачен/отменён — карточку уже переписала оплата
+        _raw = (await get_setting(f"admcard:{order_id}", "") or "").strip()
+        if not _raw:
+            return
+        _d = _j_fn.loads(_raw)
+        _t = str(_d.get("t") or "")
+        if FK_CARD_PENDING not in _t or not _d.get("m"):
+            return
+        _new = _t.replace(FK_CARD_PENDING, f"🧾 <b>FreeKassa:</b> <code>{_fk}</code>")
+        # Перепроверка прямо перед правкой: оплата могла прийти только что и
+        # уже переписать карточку — тогда старый текст поверх не кладём.
+        if ((await fk_get_order(order_id)) or {}).get("status", "pending") != "pending":
+            return
+        try:
+            await bot.edit_message_text(chat_id=ADMIN_ID, message_id=int(_d["m"]),
+                                        text=_new, parse_mode="HTML",
+                                        disable_web_page_preview=True)
+        except Exception as _e_ed:
+            logging.warning(f"FK: карточка {order_id} не обновилась: {_e_ed}")
+        await set_setting(f"admcard:{order_id}", "")
+    except Exception as _e_fn:
+        logging.warning(f"fk_note_intid {order_id}: {_e_fn}")
+
+
+async def admin_order_card_track(order_id: str, message_id: int, text: str) -> None:
+    """Карточка «ожидает оплаты» отправлена: запоминаем её текст и следим,
+    когда у FreeKassa появится номер заказа, чтобы дописать его."""
+    import json as _j_tr
+    if FK_CARD_PENDING not in (text or ""):
+        return
+    try:
+        await set_setting(f"admcard:{order_id}", _j_tr.dumps(
+            {"m": int(message_id), "t": text}, ensure_ascii=False))
+    except Exception as _e_tr:
+        logging.warning(f"admin_order_card_track {order_id}: {_e_tr}")
+        return
+    asyncio.create_task(fk_intid_watch(order_id))
+
+
+async def fk_intid_watch(order_id: str, minutes: int = 30, every: int = 30) -> None:
+    """Пока заказ не оплачен и номера FreeKassa нет — раз в `every` секунд
+    спрашиваем FreeKassa. Номер появится, как только клиент откроет оплату;
+    fk_check_order_status сам его запишет (fk_note_intid)."""
+    for _i in range(max(1, (minutes * 60) // every)):
+        await asyncio.sleep(every)
+        try:
+            _o = await fk_get_order(order_id) or {}
+            if not _o or (_o.get("status") or "pending") != "pending":
+                return        # оплачен / отменён / возвращён — карточку перепишут другие
+            if (_o.get("fk_intid") or "").strip():
+                # Номер уже есть (вебхук, карта через API) — допишем в карточку.
+                await fk_note_card_only(order_id, _o["fk_intid"])
+                return
+            await fk_check_order_status(order_id)
+        except Exception as _e_w:
+            logging.warning(f"fk_intid_watch {order_id}: {_e_w}")
+
+
+async def fk_note_card_only(order_id: str, fk_no: str) -> None:
+    """Номер уже записан в заказ (до того, как карточку начали отслеживать) —
+    просто дописать его в карточку."""
+    import json as _j_nc
+    try:
+        _raw = (await get_setting(f"admcard:{order_id}", "") or "").strip()
+        if not _raw:
+            return
+        _o = await fk_get_order(order_id) or {}
+        if (_o.get("status") or "pending") != "pending":
+            return
+        _d = _j_nc.loads(_raw)
+        _t = str(_d.get("t") or "")
+        if FK_CARD_PENDING in _t:
+            await bot.edit_message_text(
+                chat_id=ADMIN_ID, message_id=int(_d["m"]),
+                text=_t.replace(FK_CARD_PENDING, f"🧾 <b>FreeKassa:</b> <code>{fk_no}</code>"),
+                parse_mode="HTML", disable_web_page_preview=True)
+        await set_setting(f"admcard:{order_id}", "")
+    except Exception as _e_nc:
+        logging.warning(f"fk_note_card_only {order_id}: {_e_nc}")
+
+
 async def fk_check_order_status(order_id: str) -> dict | None:
     """Запрашивает у FreeKassa API статус заказа по нашему MERCHANT_ORDER_ID.
 
@@ -552,6 +678,10 @@ async def fk_check_order_status(order_id: str) -> dict | None:
                     merchant_id_fk = order.get("merchant_order_id", "")
                     fk_internal_id = order.get("fk_order_id", "")
                     amount = order.get("amount", 0)
+                    # Номер FreeKassa есть у заказа сразу, как клиент открыл
+                    # оплату, — показываем его Александру ещё до оплаты.
+                    if fk_internal_id:
+                        await fk_note_intid(order_id, fk_internal_id)
 
                     logging.info(
                         f"FK API {endpoint}: paymentId={order_id} → "
@@ -571,7 +701,7 @@ async def fk_check_order_status(order_id: str) -> dict | None:
                     elif fk_int_status == 9:
                         return {"status": "cancelled"}
                     else:
-                        return {"status": "new"}
+                        return {"status": "new", "fk_order_id": fk_internal_id}
 
         except asyncio.TimeoutError:
             logging.warning(f"FK API {endpoint} TIMEOUT for paymentId={order_id} - пробуем следующий")
@@ -668,6 +798,9 @@ async def fk_create_order(amount: float, order_id: str, user_id: int,
             logging.info(f"FK API create order response: {data}")
             if data.get("type") == "success":
                 _loc = data.get("location", "")
+                # Номер заказа у FreeKassa приходит сразу — сохраняем.
+                if data.get("orderId"):
+                    await fk_note_intid(order_id, data.get("orderId"))
                 # Оплата картой (i=36): FK иногда отдаёт ссылку с /qr/ — это страница СБП
                 # (выбор банка), а не ввод карты. Убираем /qr/ → открывается форма карты.
                 if int(payment_id) == 36 and _loc and "/qr/" in _loc:
@@ -6373,8 +6506,7 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
             except Exception:
                 _uname = ""
             _who = (f"@{_uname}" if _uname else "без username") + f" (<code>{uid}</code>)"
-            _amsg = await bot.send_message(
-                ADMIN_ID,
+            _amsg_text_src = (
                 f"🛒 <b>Новый заказ {_onum}</b>\n\n"
                 f"👤 {_who}\n"
                 f"📦 {s.get('name', key)} {_pl}\n"
@@ -6383,12 +6515,18 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
                 + (f"💳 Способ: {'Карта' if method == 'card' else 'СБП'} — <b>{_rest}₽</b>\n"
                    if _rest > 0 else "💳 Способ: только монетки\n")
                 + f"🧾 Заказ: <code>{_onum}</code>\n"
-                f"🆔 <code>{order_id}</code>\n\n"
+                f"🆔 <code>{order_id}</code>\n"
+                + (await fk_card_line(order_id) if _rest > 0 else "")
+                + "\n"
                 + ("✅ <b>Статус: ОПЛАЧЕН монетками</b>\n" if _rest == 0 and _coins_used
                    else "⏳ <b>Статус: ожидает оплаты</b>\n")
                 + f"<i>Оформлено через мини-приложение</i>"
-                + await partner_tag(uid),
-                parse_mode="HTML")
+                + await partner_tag(uid))
+            _amsg = await bot.send_message(ADMIN_ID, _amsg_text_src, parse_mode="HTML")
+            try:
+                await admin_order_card_track(order_id, _amsg.message_id, _amsg_text_src)
+            except Exception:
+                pass
             # Сохраняем message_id, чтобы при оплате сообщение обновилось, а не дублировалось
             try:
                 async with pool.acquire() as _c3:
@@ -14750,6 +14888,11 @@ async def fk_webhook_handler(request: web.Request) -> web.Response:
             try:
                 _pool_fk = await get_pool()
                 async with _pool_fk.acquire() as _c_fk:
+                    _prev_fk = await _c_fk.fetchval(
+                        "SELECT COALESCE(fk_intid,'') FROM fk_orders WHERE order_id=$1", order_id)
+                    if _prev_fk and str(_prev_fk) != str(fk_intid):
+                        logging.warning(f"FK: номер до оплаты {_prev_fk} ≠ intid вебхука "
+                                        f"{fk_intid} ({order_id}) — беру из вебхука")
                     await _c_fk.execute(
                         "UPDATE fk_orders SET fk_intid=$1 WHERE order_id=$2", fk_intid, order_id)
             except Exception as _e_fk:
@@ -22611,6 +22754,7 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
                 f"👤 {await _who_user(user_id)}\n"
                 f"📦 {service_name}\n"
                 f"💵 {price_rub} ₽\n"
+                + await _fk_num_line(fk_order_id) +
                 f"🔑 {', '.join(pins)}"
                 f"{balance_warn}",
                 parse_mode="HTML"
@@ -22670,7 +22814,8 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
             f"👤 {await _who_user(user_id)}\n"
             f"📦 {service_name}  (service_id={service_id})\n"
             f"💵 {price_rub} ₽\n"
-            f"🆔 FK: <code>{fk_order_id}</code>\n\n"
+            + await _fk_num_line(fk_order_id) +
+            f"🆔 <code>{fk_order_id}</code>\n\n"
             f"❌ Ошибка: <code>{str(e)[:300]}</code>"
             + (_pins_note if _has_pins else
                "\n\nАктивируй вручную через кабинет wholesale.ns.gifts"),

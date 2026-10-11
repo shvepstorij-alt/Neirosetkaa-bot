@@ -87,6 +87,7 @@ from common import (
     _who_user, _pack_shop, _mark_order_fulfilled,
     shop_price_for, partner_tag, shop_price_pair,
     check_not_blocked, fk_check_order_status, fk_create_order, fk_credit_paid_order, fk_monitor_order, process_referral_bonus,
+    fk_card_line, admin_order_card_track,
 )
 
 # Старые дубликаты сервисов из БД, которые надо скрыть из магазина (по названию).
@@ -761,20 +762,19 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
     # Уведомить Александра - одно сообщение, которое обновится при оплате
     username = cb.from_user.username or cb.from_user.full_name
     try:
-        admin_msg = await bot.send_message(
-            ADMIN_ID,
+        # Номер заказа — в заголовке (#N), FreeKassa — отдельной строкой: раньше
+        # «Номер заказа» дублировал технический id, а FreeKassa не было вовсе.
+        _adm_text = (
             f"🛍 <b>Новый заказ {_onum_str}</b>\n\n"
             f"👤 {await _who_user(uid)}\n"
             f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"💵 Сумма: <b>{final_shop_price if final_shop_price > 0 else p['price']}₽</b>\n"
             f"💳 Способ: СБП\n"
-            f"🧾 Номер заказа: <code>{_num_disp}</code>\n"
-            f"🆔 Заказ: <code>{order_id}</code>\n\n"
-            f"⏳ <b>Статус: ожидает оплаты</b>\n"
-            f"<i>Номер FreeKassa (intid) появится после оплаты.</i>"
-            + await partner_tag(uid),
-            parse_mode="HTML"
-        )
+            f"🆔 Заказ: <code>{order_id}</code>\n"
+            + await fk_card_line(order_id)
+            + f"\n⏳ <b>Статус: ожидает оплаты</b>"
+            + await partner_tag(uid))
+        admin_msg = await bot.send_message(ADMIN_ID, _adm_text, parse_mode="HTML")
         # Сохраняем message_id в БД для последующего редактирования
         pool2 = await get_pool()
         async with pool2.acquire() as conn2:
@@ -782,6 +782,7 @@ async def shop_pay_sbp(cb: CallbackQuery, state: FSMContext):
                 "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
                 admin_msg.message_id, order_id
             )
+        await admin_order_card_track(order_id, admin_msg.message_id, _adm_text)
     except Exception:
         pass
     await cb.answer()
@@ -1200,23 +1201,23 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
         ])
     )
     try:
-        _amsg_cs = await bot.send_message(
-            ADMIN_ID,
+        _cs_text = (
             f"\U0001fa99 <b>Заказ (монетки + СБП)</b>\n\n"
             f"\U0001f464 {await _who_user(uid)}\n"
             f"\U0001f4e6 {tg_emoji(s)} {s['name']} {p['name']}\n"
             f"\U0001fa99 Монетки: {coins_used}\u20bd\n"
             f"\U0001f4b5 СБП: {rest}\u20bd\n"
-            f"\U0001f194 Заказ: <code>{order_id}</code>\n\n"
-            f"\u23f3 <b>Статус: ожидает оплаты</b>",
-            parse_mode="HTML"
-        )
+            f"\U0001f194 Заказ: <code>{order_id}</code>\n"
+            + await fk_card_line(order_id)
+            + f"\n\u23f3 <b>Статус: ожидает оплаты</b>")
+        _amsg_cs = await bot.send_message(ADMIN_ID, _cs_text, parse_mode="HTML")
         try:
             _pool_cs2 = await get_pool()
             async with _pool_cs2.acquire() as _c_cs:
                 await _c_cs.execute(
                     "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
                     _amsg_cs.message_id, order_id)
+            await admin_order_card_track(order_id, _amsg_cs.message_id, _cs_text)
         except Exception:
             pass
     except Exception:
@@ -2030,23 +2031,23 @@ async def pay_fk(cb: CallbackQuery, state: FSMContext):
         # (после этого блока запустим мониторинг)
         try:
             username = cb.from_user.username or cb.from_user.full_name
-            admin_msg = await bot.send_message(
-                ADMIN_ID,
+            _cr_text = (
                 f"\U0001f4b0 <b>\u041d\u043e\u0432\u044b\u0439 \u0437\u0430\u043a\u0430\u0437</b>\n\n"
                 f"\U0001f464 {await _who_user(uid)}\n"
                 f"\U0001f4e6 {p['credits']} \u043a\u0440\u0435\u0434\u0438\u0442\u043e\u0432\n"
                 f"\U0001f4b5 \u0421\u0443\u043c\u043c\u0430: <b>{amount}\u20bd</b>\n"
-                f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: \u0421\u0411\u041f\n"
-                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n\n"
-                f"\u23f3 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b</b>",
-                parse_mode="HTML"
-            )
+                f"💳 \u0421\u043f\u043e\u0441\u043e\u0431: {'Карта' if method == 'card' else 'СБП'}\n"
+                f"\U0001f194 \u0417\u0430\u043a\u0430\u0437: <code>{order_id}</code>\n"
+                + await fk_card_line(order_id)
+                + f"\n\u23f3 <b>\u0421\u0442\u0430\u0442\u0443\u0441: \u043e\u0436\u0438\u0434\u0430\u0435\u0442 \u043e\u043f\u043b\u0430\u0442\u044b</b>")
+            admin_msg = await bot.send_message(ADMIN_ID, _cr_text, parse_mode="HTML")
             pool3 = await get_pool()
             async with pool3.acquire() as conn3:
                 await conn3.execute(
                     "UPDATE fk_orders SET admin_msg_id=$1 WHERE order_id=$2",
                     admin_msg.message_id, order_id
                 )
+            await admin_order_card_track(order_id, admin_msg.message_id, _cr_text)
         except Exception as _adm_err:
             logging.error(f"pay_fk admin notify error: {_adm_err}")
 

@@ -47,6 +47,7 @@ from keyboards import (
 from common import (
     _who_user,
     _nsg_markup, _nsg_threshold, _nsg_usd_rate, check_not_blocked, fk_check_order_status, nsgifts_fulfill_after_payment,
+    _fk_num_line, fk_card_line, admin_order_card_track,
 )
 
 @dp.message(F.text == "/nsg_dump")
@@ -794,6 +795,7 @@ async def nsg_check_payment(cb: CallbackQuery):
                 await bot.send_message(
                     ADMIN_ID,
                     f"🚨 <b>App Store: оплата есть, заказа нет</b>\n"
+                    + await _fk_num_line(order_id) +
                     f"🆔 <code>{order_id}</code>\n👤 {await _who_user(uid)}",
                     parse_mode="HTML")
             except Exception:
@@ -824,6 +826,7 @@ async def nsg_check_payment(cb: CallbackQuery):
                         f"🚨 <b>App Store: оплата по ЗАКРЫТОМУ заказу</b>\n\n"
                         f"👤 {await _who_user(uid)}\n"
                         f"📦 {tg_name(row['service_name'])}\n"
+                        + await _fk_num_line(order_id) +
                         f"🆔 <code>{order_id}</code>\n"
                         f"Статус заказа: <code>{_fk_st}</code>\n\n"
                         f"Клиент оплатил старую ссылку уже после возврата "
@@ -880,6 +883,7 @@ async def nsg_check_payment(cb: CallbackQuery):
                 await bot.send_message(
                     ADMIN_ID,
                     f"🚨 <b>App Store: клиент жмёт «проверить оплату», а выдачи нет</b>\n"
+                    + await _fk_num_line(order_id) +
                     f"🆔 <code>{order_id}</code>\n"
                     f"👤 {await _who_user(uid)}\n"
                     f"Статус заказа: <code>{_st or '—'}</code>",
@@ -1069,12 +1073,16 @@ async def nsg_coins_sbp(cb: CallbackQuery):
     except Exception:
         pass
     try:
-        await bot.send_message(
-            ADMIN_ID,
+        _as_text = (
             f"🪙 <b>App Store: монетки + СБП</b>\n"
             f"👤 {await _who_user(uid)}\n📦 {row['service_name']}\n"
-            f"🪙 {coins_used} ₽  💳 СБП {rest} ₽\n🆔 <code>{order_id}</code>",
-            parse_mode="HTML")
+            f"🪙 {coins_used} ₽  💳 СБП {rest} ₽\n🆔 <code>{order_id}</code>\n"
+            + await fk_card_line(order_id))
+        _as_msg = await bot.send_message(ADMIN_ID, _as_text, parse_mode="HTML")
+        try:
+            await admin_order_card_track(order_id, _as_msg.message_id, _as_text)
+        except Exception as _e_as:
+            logging.warning(f"App Store карточка {order_id}: {_e_as}")
     except Exception:
         pass
 
