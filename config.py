@@ -169,6 +169,40 @@ def claude_provider_base(provider: str) -> str:
         provider, CLAUDE_PROVIDERS[CLAUDE_DEFAULT_PROVIDER]
     )["base"]
 
+# Страницы активации, которые ПОДСТАВЛЯЮТ код из ссылки (?code=…).
+# Проверено на живом сайте 12.10.2026: поле «Код активации» приходит уже
+# заполненным. Для остальных сайтов подстановки нет — открываем сайт, а код
+# админка кладёт в буфер обмена.
+_ACT_PREFILL = {
+    ("claude", "bpa"):      "https://bypriceactivate.pro/activate?code=",
+    ("chatgpt", "bpa"):     "https://bypriceactivate.pro/gpt?code=",
+    ("perplexity", "bpa"):  "https://bypriceactivate.pro/perplexity?code=",
+    ("perplexity", ""):     "https://bypriceactivate.pro/perplexity?code=",
+}
+
+
+def activation_site_url(service: str, provider: str, code: str) -> tuple:
+    """(ссылка на страницу активации, подставлен ли код в форму).
+
+    Кнопка «Активировать» в пуле кодов админ-панели. Александр 12.10.2026.
+    """
+    import urllib.parse as _up
+    _svc = (service or "").strip().lower()
+    _prov = (provider or "").strip()
+    _code = (code or "").strip()
+    _pre = _ACT_PREFILL.get((_svc, _prov))
+    if _pre and _code:
+        return _pre + _up.quote(_code, safe="-"), True
+    _base = ""
+    if _svc == "claude":
+        _base = (CLAUDE_PROVIDERS.get(_prov) or {}).get("base", "")
+        if _prov == "aipro" and _base:
+            _base += "/#/claude"
+    elif _svc == "chatgpt":
+        _base = (GPT_PROVIDERS.get(_prov) or {}).get("base", "")
+    return (_base or ""), False
+
+
 def claude_provider_name(provider: str) -> str:
     return CLAUDE_PROVIDERS.get(
         provider, CLAUDE_PROVIDERS[CLAUDE_DEFAULT_PROVIDER]

@@ -3138,12 +3138,22 @@ function codesPool(svc){
 }
 function loadPool(svc){
   api('/api/admin/miniapp-detail',{service:svc}).then(function(d){
+    window._ACT=[];
     var el=document.getElementById('poolbody'); if(!el)return;
     if(!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
     if(!d.free.length){el.innerHTML='<div class="note">Свободных кодов нет.</div>';return;}
     function poolRow(c){
       var _rt=(svc==='chatgpt')?({ios:' · 📱 iOS',ph:' · 🇵🇭 Филиппины'}[c.route||'']||' · ⚠️ без маршрута'):'';
-      return '<div class="row" style="cursor:pointer" onclick="copyText(\''+c.code+'\')"><span class="ic">🔑</span><div><div class="lbl2" style="font-size:12.5px">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+_rt+' · нажми, чтобы скопировать</div></div><button class="btn row2 sec" style="width:auto;margin:0 6px 0 auto;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();copyText(\''+c.code+'\')">📋</button><button class="btn row2 danger" style="width:auto;margin:0;padding:7px 10px;font-size:12px" onclick="event.stopPropagation();delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button></div>';
+      /* Кнопки — отдельной строкой под кодом: в одну строку с «Активировать»
+         код на телефоне сжимался в столбик по 4 буквы. */
+      var _b='padding:8px 10px;font-size:12.5px;margin:0';
+      return '<div class="row" style="cursor:pointer;flex-wrap:wrap" onclick="copyText(\''+c.code+'\')"><span class="ic">🔑</span>'
+        +'<div style="flex:1;min-width:0"><div class="lbl2" style="font-size:12.5px;word-break:break-all">'+c.code+'</div><div class="sub">'+planLabel(svc,c.plan)+_rt+' · нажми, чтобы скопировать</div></div>'
+        +'<div style="flex-basis:100%;display:flex;gap:6px;margin-top:8px">'
+        +(c.act?'<button class="btn row2" style="flex:1;'+_b+'" onclick="event.stopPropagation();actOpen(window._ACT['+_actReg(c)+'])">⚡ Активировать</button>':'')
+        +'<button class="btn row2 sec" style="width:auto;'+_b+'" onclick="event.stopPropagation();copyText(\''+c.code+'\')">📋</button>'
+        +'<button class="btn row2 danger" style="width:auto;'+_b+'" onclick="event.stopPropagation();delCode(\''+svc+'\',\''+c.code+'\')">Удалить</button>'
+        +'</div></div>';
     }
     var h='';
     if(svc==='claude'||svc==='chatgpt'){
@@ -3181,6 +3191,21 @@ function loadPool(svc){
     }
     el.innerHTML=h;
   });
+}
+/* «⚡ Активировать» в пуле: открывает страницу активации сайта с уже
+   подставленным кодом (bypriceactivate.pro — проверено), для остальных сайтов —
+   страница сайта, а код в буфере обмена. Ссылку строит сервер. 12.10.2026 */
+window._ACT=window._ACT||[];
+function _actReg(c){window._ACT.push({url:c.act,code:c.code,fill:!!c.actFill});return window._ACT.length-1;}
+function actOpen(a){
+  if(!a||!a.url)return;
+  /* Код всегда кладём в буфер (тихо), подсказку — одну и честную. */
+  var _ok=false;
+  try{ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(a.code);_ok=true;} }catch(e){}
+  toast(a.fill?'Открываю сайт — код уже подставлен':(_ok?'Код скопирован — вставь его на сайте':'Скопируй код и вставь его на сайте'));
+  var tg=window.Telegram&&window.Telegram.WebApp;
+  try{ if(tg&&tg.openLink){tg.openLink(a.url);return;} }catch(e){}
+  window.open(a.url,'_blank','noopener');
 }
 function delCode(svc,code){
   _gwConfirm2('Подтверди действие','Удалить код '+code+'?'+'\n\n'+'Точно удалить безвозвратно?','Да, удалить',function(){

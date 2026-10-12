@@ -8823,10 +8823,13 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                         "date": ua.astimezone(_BOT_TZ).strftime("%d.%m %H:%M") if ua else "",
                         "order": r["order_id"] or "", "acc": r["acc"] or "",
                         "kind": "ok" if _real else "burn"})
-        freec = [dict({"code": r["code"], "plan": r["plan"]},
-                      **({"provider": r["provider"]} if has_prov else {}),
-                      **({"route": r["route"]} if svc == "chatgpt" else {}))
-                 for r in free]
+        from config import activation_site_url as _act_url
+        freec = []
+        for r in free:
+            _au, _af = _act_url(svc, (r["provider"] if has_prov else "") or "", r["code"])
+            freec.append(dict({"code": r["code"], "plan": r["plan"], "act": _au, "actFill": _af},
+                              **({"provider": r["provider"]} if has_prov else {}),
+                              **({"route": r["route"]} if svc == "chatgpt" else {})))
         resp = {"ok": True, "recent": rec, "free": freec, "days": _days,
                 "burned": sum(1 for _r in rec if _r.get("kind") == "burn"),
                 "freeCount": int(free_total), "freeShown": len(freec)}
@@ -18791,7 +18794,72 @@ async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_nam
                                     "error": "Ошибка активации. Напиши Александру."}
 
 
-async def _claude_query_once(provider: str, ref) -> str:
+async def _claude_bpa_code_status(code: str, org: str = "", since_ts: float = 0,
+                                  pre: dict = None) -> str:
+    """Статус Claude-кода на bypriceactivate.pro ПО САМОМУ КОДУ (страница
+    /query — та же, что у ChatGPT; Claude-коды она тоже знает, проверено
+    12.10.2026). Нужна потому, что Claude на этом сайте активируется через
+    форму в браузере и номера заказа для API статуса у бота нет — раньше
+    неясный исход здесь не проверялся вовсе, и клиент не узнавал об успехе,
+    пока Александр не нажмёт кнопку.
+
+    'success'  — код выдан (fulfilled / zoom_token_ready) И на сайте у него
+                 Organization ID клиента;
+    'mismatch' — выдан, но на ДРУГОЙ Organization ID;
+    'noorg'    — выдан, но сайт не показал Organization ID — сами не закрываем;
+    'failed'   — сайт: неудача (failed / zoom_failed);
+    'free'     — код на сайте свободен (активации нет) — но только если с
+                 момента неясного исхода прошло 30+ минут: «claimed» умеет
+                 откатываться в «unused», раньше это не окончательный ответ;
+    'pending'  — ещё в работе;
+    'unknown'  — сайт не ответил или кода не знает.
+    pre — уже полученная строка /query (пакетный запрос в слежении).
+    """
+    import time as _t_bs
+    try:
+        _c = str(code or "").strip().upper()
+        if not _c:
+            return "unknown"
+        from chatgpt_activation import BPA_DONE_STATUSES
+        if pre is None:
+            from chatgpt_activation import bpa_query_codes
+            _q = await bpa_query_codes([_c])
+            _i = (_q or {}).get(_c) or {}
+        else:
+            _i = pre or {}
+        _st = str(_i.get("status") or "").strip().lower()
+        if not _st or _st == "not_in_db":
+            return "unknown"
+        if _st in BPA_DONE_STATUSES:
+            # Organization ID на сайте: UUID в любой ячейке строки (колонка
+            # может быть с префиксом). «Успех» — только если среди них есть
+            # Org клиента: правило «успех клиенту — только по ЕГО аккаунту».
+            _cells = " ".join(str(x) for x in (_i.get("cells") or [])) + " " + str(_i.get("org") or "")
+            _uuids = {u.lower() for u in re.findall(
+                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", _cells)}
+            _org = str(org or "").strip().lower()
+            if not _uuids or not _org:
+                return "noorg"
+            if _org not in _uuids:
+                logging.error(f"claude bpa {_c}: выдан на другой Org ID ({_uuids} ≠ {_org})")
+                return "mismatch"
+            return "success"
+        if _st in ("failed", "zoom_failed"):
+            return "failed"
+        if _st == "unused":
+            try:
+                _age = _t_bs.time() - float(since_ts or 0)
+            except Exception:
+                _age = 0
+            return "free" if (since_ts and _age >= 1800) else "pending"
+        return "pending"
+    except Exception as _e_bs:
+        logging.warning(f"claude bpa status {code}: {_e_bs}")
+        return "unknown"
+
+
+async def _claude_query_once(provider: str, ref, code: str = "", org: str = "",
+                             since_ts: float = 0) -> str:
     """ОДИН запрос статуса активации на API-сайте.
 
     'success' | 'failed' | 'review' | 'pending' | 'unknown' (сайт не ответил /
@@ -18801,6 +18869,9 @@ async def _claude_query_once(provider: str, ref) -> str:
     cfg = CLAUDE_PROVIDERS.get(provider, {})
     api = cfg.get("api", "bpa")
     base = cfg.get("base", "")
+    if (provider or "") == "bpa" and api == "browser" and code:
+        # Форма сайта в браузере: номера заказа нет — спрашиваем по коду.
+        return await _claude_bpa_code_status(code, org, since_ts)
     if api == "browser" or not ref:
         return "unknown"
     try:
@@ -19369,8 +19440,13 @@ async def _claude_flag(code: str, status: str, reason: str, flagged: list, site:
 
 
 def _claude_can_recheck(prov: str, site_ref: str) -> bool:
-    """Есть ли у сайта API статуса, по которому бот может сам проверить код."""
-    _api = (CLAUDE_PROVIDERS.get(prov or "", {}) or {}).get("api", "")
+    """Есть ли у сайта API статуса, по которому бот может сам проверить код.
+    bypriceactivate.pro (форма в браузере) проверяется по самому коду — номер
+    заказа не нужен (12.10.2026)."""
+    _cfg = CLAUDE_PROVIDERS.get(prov or "", {}) or {}
+    _api = _cfg.get("api", "")
+    if (prov or "") == "bpa" and _api == "browser":
+        return True
     return bool(site_ref) and _api in ("partner", "order", "agent", "bpa")
 
 
@@ -20195,7 +20271,11 @@ async def clrc_handler(cb: CallbackQuery):
         await cb.answer("Кнопка уже использована или устарела.", show_alert=True); return
     if _ctx.get("code") and not await _claude_check_get(_ctx["code"]):
         await cb.answer("Решение по этому коду уже принято.", show_alert=True); return
-    _st = await _claude_query_once(_ctx.get("provider") or "", _ctx.get("site_ref") or "")
+    _mk_rc = _claude_check_parse(await _claude_check_get(_ctx.get("code") or "")) if _ctx.get("code") else {}
+    _st = await _claude_query_once(_ctx.get("provider") or "", _ctx.get("site_ref") or "",
+                                   code=_ctx.get("code") or "",
+                                   org=(_mk_rc.get("org") or _ctx.get("org_id") or ""),
+                                   since_ts=float(_mk_rc.get("ts") or 0))
     if _st == "success":
         _ctx2 = await _claude_nc_load(_tok) or _ctx
         await _claude_decision_taken(_ctx2.get("code"))
@@ -20214,6 +20294,13 @@ async def clrc_handler(cb: CallbackQuery):
                       "выбери «Не активировалась»: код цел или потрачен.",
             "review": "Сайт: активация на ручной проверке (review). Подожди.",
             "pending": "Сайт: ещё в обработке. Бот проверит снова сам.",
+            "mismatch": "Сайт: код ВЫДАН, но на другой Organization ID, не тот, что "
+                        "указал клиент. Сам не закрываю — проверь на сайте.",
+            "noorg": "Сайт: код ВЫДАН, но Organization ID не показал — не могу "
+                     "подтвердить, что это аккаунт клиента. Проверь на сайте и нажми "
+                     "«Подписка активирована».",
+            "free": "Сайт: код СВОБОДЕН — активации по нему нет. Можно выбрать "
+                    "«код цел».",
             }.get(_st, "Сайт не ответил на запрос статуса. Попробуй позже.")
     await cb.answer(_txt, show_alert=True)
 
@@ -20488,13 +20575,33 @@ async def claude_watch_tick() -> dict:
     except Exception as _e_w3:
         logging.warning(f"claude watch marks: {_e_w3}")
         _marks = []
+    # bypriceactivate (Claude через форму сайта): один пакетный запрос /query
+    # на все метки за тик, а не по запросу на каждую.
+    _bpa_pre = None
+    try:
+        _bpa_codes = [_m["key"].split(":", 1)[1] for _m in _marks
+                      if _claude_check_parse(_m["value"])["prov"] == "bpa"
+                      and (CLAUDE_PROVIDERS.get("bpa") or {}).get("api") == "browser"]
+        if _bpa_codes:
+            from chatgpt_activation import bpa_query_codes as _bq_w
+            _bpa_pre = await _bq_w(_bpa_codes) or {}
+    except Exception as _e_bq:
+        logging.warning(f"claude watch bpa query: {_e_bq}")
+        _bpa_pre = {}
     for _m in _marks:
         _mk = _claude_check_parse(_m["value"])
         if not _claude_can_recheck(_mk["prov"], _mk["ref"]):
             continue
         _out["checked"] += 1
-        _st = await _claude_query_once(_mk["prov"], _mk["ref"])
-        if _st not in ("success", "failed"):
+        _kc = _m["key"].split(":", 1)[1]
+        if _bpa_pre is not None and _mk["prov"] == "bpa" \
+                and (CLAUDE_PROVIDERS.get("bpa") or {}).get("api") == "browser":
+            _st = await _claude_bpa_code_status(
+                _kc, _mk["org"], float(_mk["ts"] or 0), pre=_bpa_pre.get(_kc.upper()) or {})
+        else:
+            _st = await _claude_query_once(_mk["prov"], _mk["ref"], code=_kc, org=_mk["org"],
+                                           since_ts=float(_mk["ts"] or 0))
+        if _st not in ("success", "failed", "free", "mismatch", "noorg"):
             continue
         try:
             # Код — как он записан в пуле (регистр!), а не как в ключе метки.
@@ -20508,6 +20615,23 @@ async def claude_watch_tick() -> dict:
             # Пока ждали ответ сайта, Александр мог уже решить по коду (метка
             # снята, код в пуле или у новой цепочки) — тогда не вмешиваемся.
             if (await _claude_check_get(_code)) != (_m["value"] or "").strip():
+                continue
+            if _st in ("mismatch", "noorg"):
+                # Выдан, но не подтверждено, что на аккаунт клиента — сами не
+                # закрываем, говорим раз в сутки.
+                if not await activation_cooldown(f"clw{_st}:{_code.upper()}", seconds=86400):
+                    await _claude_ask_admin_check(
+                        "", int(_mk["uid"] or 0), _mk["order"], _code, _mk["org"],
+                        _mk["plan_name"], _mk["plan_key"], _mk["prov"], _mk["site"],
+                        ("Бот спросил сайт сам: код ВЫДАН, но на сайте у него другой "
+                         "Organization ID, не тот, что указал клиент. Проверь, чей это аккаунт."
+                         if _st == "mismatch" else
+                         "Бот спросил сайт сам: код ВЫДАН, но сайт не показал Organization ID — "
+                         "не могу подтвердить, что подписка ушла на аккаунт клиента. Если на "
+                         "сайте Org клиента — нажми «Подписка активирована»."),
+                        site_ref=_mk["ref"],
+                        head=("Claude — код выдан на другой Org ID" if _st == "mismatch"
+                              else "Claude — код выдан, нужен твой взгляд"))
                 continue
             if _st == "success":
                 if _row["used_by"] and int(_row["used_by"]) != int(_mk["uid"] or 0):
@@ -20530,10 +20654,15 @@ async def claude_watch_tick() -> dict:
                 await _claude_ask_admin_check(
                     "", int(_mk["uid"] or 0), _mk["order"], _code, _mk["org"],
                     _mk["plan_name"], _mk["plan_key"], _mk["prov"], _mk["site"],
-                    "Бот спросил сайт сам: сайт ответил ОТКАЗ — подписки по этому коду нет. "
-                    "Код мог списаться: если сайт его списал — «код потрачен», если "
-                    "код на сайте свободен — «код цел».",
-                    site_ref=_mk["ref"], head="Claude — сайт ответил отказом")
+                    ("Бот спросил сайт сам: код на сайте СВОБОДЕН уже 30+ минут после "
+                     "отправки — активации по нему нет. Если хочешь — «код цел»."
+                     if _st == "free" else
+                     "Бот спросил сайт сам: сайт ответил ОТКАЗ — подписки по этому коду нет. "
+                     "Код мог списаться: если сайт его списал — «код потрачен», если "
+                     "код на сайте свободен — «код цел»."),
+                    site_ref=_mk["ref"],
+                    head=("Claude — код на сайте свободен" if _st == "free"
+                          else "Claude — сайт ответил отказом"))
         except Exception as _e_w4:
             logging.error(f"claude watch {_m['key']}: {_e_w4}", exc_info=True)
     return _out
