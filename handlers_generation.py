@@ -24,7 +24,7 @@ from config import (
     IMAGE_BRAND_TITLES, IMAGE_MODELS, MOTION_MODEL_ID, MOTION_PRICES, UI_EMOJI_IDS, UPSCALE_CREDIT_COST,
     VIDEO_BRAND_MODELS, VIDEO_BRAND_TITLES, VIDEO_MODELS, _anim_history, _motion_history, _photo_history,
     _record_generation, _veo_semaphore, _video_history, bot, claude_client, dp,
-    friendly_error, model_title_n, validate_gen_prompt,
+    PERSONAL_USERNAME, client_error_text, friendly_error, model_title_n, validate_gen_prompt,
 )
 from states import (
     AnimState, EditState, ImgState, ImproveState, MotionState, UpscaleState,
@@ -39,7 +39,8 @@ from keyboards import (
     kb_video_brands, kb_video_models_for_brand, tg_emoji_ui,
 )
 from generation_api import (
-    _tg_file_public_url, _with_retry, api_animate_image, api_edit_image, api_generate_fal_image, api_generate_image,
+    _tg_file_public_url, _with_retry, api_animate_by_model, api_animate_image, api_edit_by_model, api_edit_image,
+    api_generate_fal_image, api_generate_image,
     api_generate_video, api_kling_motion_control, upload_large_file,
 )
 from common import (
@@ -191,7 +192,6 @@ async def menu_image(cb: CallbackQuery, state: FSMContext):
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
         f'{tg_emoji_ui("iband_gptimg", "🤖")} <b>GPT Image</b> - OpenAI, #1 в Image Arena\n'
-        f'{tg_emoji_ui("iband_imagen", "🌟")} <b>Imagen</b> - флагман Google\n'
         f'{tg_emoji_ui("iband_nano", "🍌")} <b>Nano Banana</b> - Gemini, быстро и качественно\n'
         f'{tg_emoji_ui("iband_flux", "🎭")} <b>Flux</b> - художественный фотореализм\n'
         f'{tg_emoji_ui("iband_ideogram", "✒️")} <b>Ideogram</b> - идеальный текст в картинке\n'
@@ -283,7 +283,7 @@ async def choose_alt_img_model(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
     # Переиспользуем основной flow выбора модели
-    cb.data = f"imodel:{key}"
+    cb = cb.model_copy(update={"data": f"imodel:{key}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await choose_img_model(cb, state)
 
 
@@ -294,7 +294,7 @@ async def retry_img_model(cb: CallbackQuery, state: FSMContext):
     if key not in IMAGE_MODELS or key in DISABLED_MODELS:
         await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
-    cb.data = f"imodel:{key}"
+    cb = cb.model_copy(update={"data": f"imodel:{key}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await choose_img_model(cb, state)
 
 
@@ -402,6 +402,14 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     prompt = data.get("prompt", "")
     uid = cb.from_user.id
+    # Состояние сбросилось (перезапуск бота, старая кнопка) — промта нет.
+    # Раньше кредиты списывались, модель получала пустой промт и падала.
+    if not (prompt or "").strip():
+        await cb.answer("Промт потерян — начни заново и напиши его ещё раз.", show_alert=True)
+        return
+    # Цена фиксируется в момент списания: возврат и чек — ровно эта сумма,
+    # даже если Александр поменяет цену, пока идёт генерация.
+    _img_cost = int(m["credits"])
 
     # Защита от двойного клика: тот же тап не должен списать кредиты дважды
     _click_key = f"gen:img:{uid}:{cb.message.message_id}"
@@ -414,7 +422,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         release_click(_click_key)
         return
 
-    ok = await deduct(uid, m["credits"])
+    ok = await deduct(uid, _img_cost)
     if not ok:
         release_click(_click_key)
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
@@ -425,7 +433,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
     # проскакивали оба. Если лимит исчерпан — возвращаем кредиты.
     if not await mark_generation_active(uid, "photo"):
         try:
-            await add_credits(uid, m["credits"])
+            await add_credits(uid, _img_cost)
         except Exception:
             pass
         release_click(_click_key)
@@ -456,8 +464,8 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
             logging.warning(f"img_refund_once SKIPPED uid={uid} reason={reason}")
             return
         img_refunded = True
-        await add_credits(uid, m["credits"])
-        logging.info(f"img_refund_once EXECUTED uid={uid} credits={m['credits']} reason={reason}")
+        await add_credits(uid, _img_cost)
+        logging.info(f"img_refund_once EXECUTED uid={uid} credits={_img_cost} reason={reason}")
 
     _wait_text = f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{_esc(prompt[:80])}</i>"
     try:
@@ -482,8 +490,8 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         # Callback для уведомления юзера между попытками retry (особенно важно при 503)
         async def notify_retry(attempt, delay, err):
             err_low = str(err).lower()
-            is_overload = ("503" in str(err) or "unavailable" in err_low
-                           or "high demand" in err_low)
+            is_overload = (getattr(err, "kind", "") == "overload" or "503" in str(err)
+                           or "unavailable" in err_low or "high demand" in err_low)
             if is_overload:
                 wait_msg = f"⏳ Модель перегружена, жду {int(delay)} сек и пробую ещё раз ({attempt}/3)..."
             else:
@@ -499,13 +507,14 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         img_bytes = await _with_retry(
             lambda: api_generate_image(
                 prompt, m["model_id"], aspect,
-                m.get("api", "imagen"),
+                m.get("api", "gemini"),
                 quality=m.get("quality", "medium"),
+                model_name=_re_clean_name(m["name"]),
             ),
-            max_attempts=3, op_name=f"Imagen/Gemini {key}",
+            max_attempts=3, op_name=f"Image {key}",
             on_retry=notify_retry
         )
-        await log_gen(uid, "image", key, m["credits"])
+        await log_gen(uid, "image", key, _img_cost)
         _record_generation(uid, _photo_history)
         await check_expiring_credits(uid)
         cr = await get_credits(uid)
@@ -529,7 +538,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await safe_send_media(
             cb.message.answer_photo,
             BufferedInputFile(img_bytes, "image.png"),
-            caption=f"🎉 Готово! {model_title_n(m['name'])}\n💸 Списано {m['credits']} кредитов | Остаток: {cr} кредитов",
+            caption=f"🎉 Готово! {model_title_n(m['name'])}\n💸 Списано {_img_cost} кредитов | Остаток: {cr} кредитов",
             parse_mode="HTML",
             reply_markup=kb_after("image", key),
             op_name=f"img_photo_{key}",
@@ -558,13 +567,13 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e, prompt=prompt)
         try:
             await cb.message.edit_text(
-                f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+                f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
                 reply_markup=kb_error_with_alt("img", key),
                 parse_mode="HTML"
             )
         except Exception:
             await cb.message.answer(
-                f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+                f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
                 reply_markup=kb_error_with_alt("img", key),
                 parse_mode="HTML"
             )
@@ -749,7 +758,11 @@ def _vid_cost_and_duration(m: dict, data: dict) -> tuple[int, int]:
         if dur not in durations:
             dur = min(durations)                 # самая короткая = базовая цена
         return int(durations[dur][0]), int(dur)
-    return int(data.get("credits_override") or m["credits"]), int(data.get("duration_sec") or 8)
+    # Модель без выбора длительности: цена — ВСЕГДА текущая цена этой модели.
+    # Раньше брался credits_override из состояния: после ошибки Kling Pro (741 кр)
+    # кнопка «Попробовать Gemini Omni» списывала 741 вместо 249, а после
+    # дешёвой модели — наоборот, недобирала. Длительность у таких моделей фиксирована.
+    return int(m["credits"]), int(m.get("duration") or 8)
 
 
 @dp.callback_query(F.data == "menu_video")
@@ -760,7 +773,7 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Veo</b> - до 4K + аудио, от 239 кр\n'
+        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Gemini Omni</b> - Google, до 4K + аудио, от 239 кр\n'
         f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от 109 кр\n'
         f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от 99 кр\n'
         f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от 80 кр\n'
@@ -928,7 +941,7 @@ async def choose_alt_vid_model(cb: CallbackQuery, state: FSMContext):
     if key not in VIDEO_MODELS or key in DISABLED_MODELS:
         await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
-    cb.data = f"vmodel:{key}"
+    cb = cb.model_copy(update={"data": f"vmodel:{key}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await choose_vid_model(cb, state)
 
 
@@ -939,7 +952,7 @@ async def retry_vid_model(cb: CallbackQuery, state: FSMContext):
     if key not in VIDEO_MODELS or key in DISABLED_MODELS:
         await cb.answer("Эта модель сейчас недоступна — выбери другую в меню.", show_alert=True)
         return
-    cb.data = f"vmodel:{key}"
+    cb = cb.model_copy(update={"data": f"vmodel:{key}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await choose_vid_model(cb, state)
 
 
@@ -950,6 +963,9 @@ async def choose_vid_aspect(cb: CallbackQuery, state: FSMContext):
     ratio = ":".join(parts[2:])  # "9:16", "16:9" etc
     m = await _model_or_none(cb, VIDEO_MODELS, key)
     if not m:
+        return
+    if m.get("aspects") and ratio not in m["aspects"]:
+        await cb.answer("Эта модель делает только " + " и ".join(m["aspects"]) + ".", show_alert=True)
         return
     labels = {"16:9": "Горизонталь 16:9", "9:16": "Вертикаль 9:16", "1:1": "Квадрат 1:1"}
     await state.update_data(model_key=key, aspect_ratio=ratio)
@@ -1051,6 +1067,9 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     prompt = data.get("prompt", "")
     uid = cb.from_user.id
+    if not (prompt or "").strip():
+        await cb.answer("Промт потерян — начни заново и напиши его ещё раз.", show_alert=True)
+        return
 
     # Цена и длительность считаются вместе — иначе они расходятся (см. хелпер)
     credits_cost, duration_sec = _vid_cost_and_duration(m, data)
@@ -1255,13 +1274,21 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
 
             async with _veo_semaphore:
                 vid_bytes = await _with_retry(
-                    lambda: api_generate_video(prompt, m["model_id"], aspect, api_type, duration_sec),
+                    lambda: api_generate_video(prompt, m["model_id"], aspect, api_type, duration_sec,
+                                               resolution=m.get("resolution", ""),
+                                               model_name=_re_clean_name(m["name"])),
                     max_attempts=2, base_delay=5.0, op_name=f"Veo {key}",
                     on_retry=_veo_retry_note
                 )
         else:
-            # Для fal.ai - без retry, т.к. одна попытка уже до 25 минут
-            vid_bytes = await api_generate_video(prompt, m["model_id"], aspect, api_type, duration_sec)
+            # fal.ai: повтор только если задача даже не встала в очередь
+            # (перегрузка/лимит — такие запросы fal не выполнял и не списывал).
+            vid_bytes = await _with_retry(
+                lambda: api_generate_video(prompt, m["model_id"], aspect, api_type, duration_sec,
+                                           resolution=m.get("resolution", ""),
+                                           model_name=_re_clean_name(m["name"]),
+                                           fallback_model_id=m.get("fallback_model_id", "")),
+                max_attempts=2, base_delay=10.0, op_name=f"fal video {key}")
         size_mb = len(vid_bytes) / 1024 / 1024
         logging.info(f"Video ready: {len(vid_bytes)} bytes ({size_mb:.1f} MB), duration={duration_sec}s")
         await log_gen(uid, "video", key, credits_cost)
@@ -1312,7 +1339,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                     await refund_once("upload_failed")
                     await cb.message.answer(
                         f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не удалось доставить.\n"
-                        f"Кредиты возвращены 💳\nНапиши @neirosetkaalex.",
+                        f"Кредиты возвращены 💳\nНапиши @{PERSONAL_USERNAME}.",
                         reply_markup=kb_back(),
                     )
             except Exception as up_err:
@@ -1323,7 +1350,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 try:
                     await cb.message.answer(
                         f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не удалось его доставить.\n"
-                        f"💳 Кредиты возвращены.\n\nНапиши @neirosetkaalex — пришлём файл напрямую.",
+                        f"💳 Кредиты возвращены.\n\nНапиши @{PERSONAL_USERNAME} — пришлём файл напрямую.",
                         reply_markup=kb_back(),
                     )
                 except Exception:
@@ -1362,7 +1389,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
             try:
                 await cb.message.answer(
                     f"⚠️ <b>Видео не загрузилось в Telegram</b>\n\n"
-                    f"Кредиты возвращены 💳\nНапиши @neirosetkaalex.",
+                    f"Кредиты возвращены 💳\nНапиши @{PERSONAL_USERNAME}.",
                     parse_mode="HTML",
                     reply_markup=kb_back()
                 )
@@ -1418,7 +1445,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
                 else:
                     await cb.message.answer(
                         f"📁 Оригинал ({size_mb:.1f} МБ) - слишком большой для Telegram.\n"
-                        f"Напиши @neirosetkaalex - пришлём файл напрямую."
+                        f"Напиши @{PERSONAL_USERNAME} - пришлём файл напрямую."
                     )
             except Exception as up_err:
                 logging.error(f"upload_large_file failed for video: {up_err}")
@@ -1427,7 +1454,7 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         await notify_admin_error(f"Генерация видео uid={uid} model={key} dur={duration_sec}s", e, prompt=prompt)
         try:
             await cb.message.answer(
-                f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+                f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
                 reply_markup=kb_error_with_alt("vid", key),
                 parse_mode="HTML"
             )
@@ -1566,7 +1593,8 @@ async def do_upscale(message: Message, state: FSMContext):
         # Конвертируем фото в base64 data URI - fal.ai принимает напрямую
         import base64 as _b64
         img_b64 = _b64.b64encode(img_bytes).decode("utf-8")
-        image_data_uri = f"data:image/jpeg;base64,{img_b64}"
+        _up_mime = "image/png" if img_bytes[:4] == b"\x89PNG" else "image/jpeg"
+        image_data_uri = f"data:{_up_mime};base64,{img_b64}"
 
         # Запускаем апскейл через Clarity Upscaler
         upscale_headers = {
@@ -1581,57 +1609,82 @@ async def do_upscale(message: Message, state: FSMContext):
             "prompt": "masterpiece, best quality, highres, detailed",
             "negative_prompt": "(worst quality, low quality, normal quality:2)",
         }
+        from gen_errors import fal_error as _fal_err, GenError as _GErr
         async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
             async with s.post(
                 "https://fal.run/fal-ai/clarity-upscaler",
                 headers=upscale_headers,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=120)
+                timeout=aiohttp.ClientTimeout(total=180)
             ) as r:
-                if r.content_type and "json" in r.content_type:
-                    result = await r.json()
-                else:
-                    raw = await r.text()
-                    raise Exception(f"Upscale non-JSON response: {raw[:200]}")
+                _ub = await r.text()
+                if r.status != 200:
+                    # Причина — из ответа fal (слишком большое фото, отказ и т.п.)
+                    raise _fal_err(r.status, _ub, "Улучшение фото", "fal-ai/clarity-upscaler",
+                                   stage="upscale")
+                try:
+                    result = json.loads(_ub)
+                except Exception:
+                    raise _GErr("provider", "⚠️ Сервис улучшения фото ответил непонятно. Попробуй ещё раз.",
+                                raw=f"non-JSON: {_ub[:300]}", provider="fal.ai",
+                                model="fal-ai/clarity-upscaler")
 
-        out_url = result.get("image", {}).get("url")
+        out_url = (result.get("image") or {}).get("url") if isinstance(result, dict) else None
         if not out_url:
-            raise Exception(f"Upscale failed: {str(result)[:200]}")
+            raise _fal_err(0, json.dumps(result, ensure_ascii=False)[:1200], "Улучшение фото",
+                           "fal-ai/clarity-upscaler", stage="upscale")
 
-        # Скачиваем результат
+        # Скачиваем результат (с проверкой статуса — раньше текст ошибки
+        # мог уйти клиенту как «картинка»)
         async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-            async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=60)) as r:
+            async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=90)) as r:
+                if r.status != 200:
+                    raise _GErr("provider", "⚠️ Фото улучшено, но не скачалось. Попробуй ещё раз.",
+                                raw=f"download HTTP {r.status}", provider="fal.ai",
+                                model="fal-ai/clarity-upscaler")
                 out_bytes = await r.read()
 
         # Кредиты уже списаны ДО вызова API (см. выше)
         new_cr = await get_credits(uid)
-        await wait.delete()
-        await message.answer_photo(
-            BufferedInputFile(out_bytes, "upscaled_4x.jpg"),
-            caption=(
-                f"✅ <b>Фото улучшено!</b>\n"
-                f"💸 Списано {UPSCALE_CREDIT_COST} кр | Остаток: {new_cr} кр"
-            ),
+        # СНАЧАЛА оригинал документом: 4x-фото часто больше лимитов Telegram для
+        # превью (10 МБ, сумма сторон). Раньше первым шло превью — оно падало,
+        # и клиент получал «ошибку» и возврат за уже оплаченный нами апскейл.
+        await safe_send_media(
+            message.answer_document,
+            BufferedInputFile(out_bytes, "upscaled_4x.png"),
+            caption=(f"✅ <b>Фото улучшено!</b> 📁 Оригинал без сжатия\n"
+                     f"💸 Списано {UPSCALE_CREDIT_COST} кр | Остаток: {new_cr} кр"),
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale"),
-                 _eib("Главное меню", "back_main")],
-                [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
-                 _eib("Купить кредиты", "menu_buy")],
-            ])
+            op_name="upscale_document",
         )
-        # Результат доставлен — дальше возврат кредитов уже НЕ нужен
-        # (иначе сбой при отправке документа делал бы апскейл бесплатным).
+        # Результат доставлен — дальше возврат кредитов уже НЕ нужен.
         _deducted = False
-
-        # Отправляем документом для скачивания в оригинале
         try:
-            await message.answer_document(
-                BufferedInputFile(out_bytes, "upscaled_4x.png"),
-                caption="📁 Оригинал без сжатия",
+            await wait.delete()
+        except Exception:
+            pass
+        try:
+            await message.answer_photo(
+                BufferedInputFile(out_bytes, "upscaled_4x.jpg"),
+                caption="👀 Превью",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale"),
+                     _eib("Главное меню", "back_main")],
+                    [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
+                     _eib("Купить кредиты", "menu_buy")],
+                ])
             )
-        except Exception as _doc_err:
-            logging.warning(f"upscale send_document failed uid={uid}: {_doc_err}")
+        except Exception as _pv_err:
+            logging.warning(f"upscale preview failed uid={uid}: {_pv_err}")
+            try:
+                await message.answer("Превью не показать — фото слишком большое для Telegram, "
+                                     "но оригинал выше 👆",
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                         [InlineKeyboardButton(text="🔍 Улучшить ещё фото",
+                                                               callback_data="menu_upscale"),
+                                          _eib("Главное меню", "back_main")]]))
+            except Exception:
+                pass
         # Пишем и в generations — иначе апскейлы не видны в статистике и отчётах
         await log_gen(uid, "upscale", "clarity_4x", UPSCALE_CREDIT_COST)
         _record_generation(uid, _photo_history)
@@ -1640,23 +1693,26 @@ async def do_upscale(message: Message, state: FSMContext):
 
     except Exception as e:
         logging.error(f"Upscale error uid={uid}: {e}")
+        # _deducted сбрасывается сразу после отправки оригинала: если он False,
+        # фото уже у клиента и сбой лишь в учёте — «ошибку» не показываем.
         if _deducted:
+            await notify_admin_error(f"Улучшение фото uid={uid}", e)
             try:
                 await add_credits(uid, UPSCALE_CREDIT_COST)
             except Exception:
                 pass
-        try:
-            await wait.delete()
-        except Exception:
-            pass
-        await message.answer(
-            f"⚠️ {friendly_error(e)}" + ("\n\n💳 Кредиты возвращены." if _deducted else ""),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔍 Попробовать снова", callback_data="menu_upscale")],
-                [_eib("Главное меню", "back_main")],
-            ])
-        )
+            try:
+                await wait.delete()
+            except Exception:
+                pass
+            await message.answer(
+                f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔍 Попробовать снова", callback_data="menu_upscale")],
+                    [_eib("Главное меню", "back_main")],
+                ])
+            )
     finally:
         release_click(_click_key)
         await unmark_generation_active(uid)
@@ -1796,10 +1852,16 @@ async def do_improve_prompt(message: Message, state: FSMContext):
             f"Выбери модель для генерации 👇",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Imagen Fast - 7 кр",  callback_data="improve_gen:img_fast",    **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_imagen"]} if UI_EMOJI_IDS.get("iband_imagen") else {})],
-                [InlineKeyboardButton(text="GPT Image - 10 кр",   callback_data="improve_gen:gptimg_fast", **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_gptimg"]} if UI_EMOJI_IDS.get("iband_gptimg") else {})],
-                [InlineKeyboardButton(text="Nano Banana - 13 кр", callback_data="improve_gen:nb_flash",    **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_nano"]} if UI_EMOJI_IDS.get("iband_nano") else {})],
-                [InlineKeyboardButton(text="Flux Pro - 12 кр",    callback_data="improve_gen:flux_pro",    **{"icon_custom_emoji_id": UI_EMOJI_IDS["iband_flux"]} if UI_EMOJI_IDS.get("iband_flux") else {})],
+                # Кнопки собираются из живых моделей с ТЕКУЩЕЙ ценой: раньше здесь
+                # были зашиты «Imagen Fast - 7 кр» (Imagen отключён Google) и цены,
+                # которые не менялись вместе с админкой.
+                *[[InlineKeyboardButton(
+                    text=f"{_re_clean_name(IMAGE_MODELS[_ik]['name'])} - {IMAGE_MODELS[_ik]['credits']} кр",
+                    callback_data=f"improve_gen:{_ik}",
+                    **({"icon_custom_emoji_id": UI_EMOJI_IDS[_ie]} if UI_EMOJI_IDS.get(_ie) else {}))]
+                  for _ik, _ie in (("gptimg_fast", "iband_gptimg"), ("nb_flash", "iband_nano"),
+                                   ("nb_2", "iband_nano"), ("flux_pro", "iband_flux"))
+                  if _ik in IMAGE_MODELS and _ik not in DISABLED_MODELS],
                 [InlineKeyboardButton(text="✏️ Изменить промт",      callback_data="menu_improve")],
                 [_eib("Главное меню", "back_main")],
             ])
@@ -1860,7 +1922,20 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
         return
 
-    await mark_generation_active(uid, "photo")
+    # Лимит одновременных генераций (атомарно, как в go_image). Раньше результат
+    # не проверялся: два быстрых клика по разным подтверждениям запускали
+    # параллельные платные генерации сверх лимита.
+    if not await mark_generation_active(uid, "photo"):
+        try:
+            await add_credits(uid, m["credits"])
+        except Exception:
+            pass
+        release_click(_click_key)
+        try:
+            await cb.answer("⏳ Дождись завершения текущих генераций. Кредиты возвращены.", show_alert=True)
+        except Exception:
+            pass
+        return
     await state.clear()
     try:
         wait = await cb.message.answer(
@@ -1880,7 +1955,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
         img_bytes = await _with_retry(
             lambda: api_generate_image(
                 improved_prompt, m["model_id"], data.get("aspect_ratio", "1:1"), m["api"],
-                quality=m.get("quality", "medium")),
+                quality=m.get("quality", "medium"), model_name=_re_clean_name(m["name"])),
             max_attempts=3, op_name=f"ImproveGen {model_key}")
 
         new_cr = await get_credits(uid)
@@ -1909,18 +1984,24 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
 
     except Exception as e:
         logging.error(f"improve_gen error uid={uid} model={model_key}: {e}")
-        if _charged:
-            try:
-                await add_credits(uid, m["credits"])
-                logging.info(f"improve_gen refund uid={uid} credits={m['credits']}")
-            except Exception:
-                pass
+        if not _charged:
+            # Картинка уже у клиента (_charged сброшен после отправки) — сбой лишь
+            # в учёте. Раньше клиент получал «ошибку» и «кредиты возвращены»,
+            # хотя ничего не возвращалось.
+            return
+        try:
+            await add_credits(uid, m["credits"])
+            logging.info(f"improve_gen refund uid={uid} credits={m['credits']}")
+        except Exception:
+            pass
+        await notify_admin_error(f"Генерация фото (промт-ассистент) uid={uid} model={model_key}",
+                                 e, prompt=improved_prompt)
         try:
             await wait.delete()
         except Exception:
             pass
         await cb.message.answer(
-            f"⚠️ {friendly_error(e)}\n\n💳 Кредиты возвращены.",
+            f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✨ Попробовать снова", callback_data="menu_improve")],
@@ -2014,8 +2095,8 @@ async def menu_edit(cb: CallbackQuery, state: FSMContext):
 async def edit_model_select(cb: CallbackQuery, state: FSMContext):
     model_key = cb.data.split(":")[1]
     m = EDIT_MODELS.get(model_key)
-    if not m:
-        await cb.answer("Ошибка", show_alert=True)
+    if not m or model_key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую.", show_alert=True)
         return
     cr = await get_credits(cb.from_user.id)
     if cr < m["credits"]:
@@ -2147,6 +2228,12 @@ async def improve_edit_prompt(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("go_edit:"))
 async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
     model_key = cb.data.split(":")[1]
+    # Модель могли выключить, пока клиент писал промт (или кнопка из старого
+    # сообщения) — не списываем кредиты за заведомо недоступную модель.
+    if model_key not in EDIT_MODELS or model_key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую в меню редактирования.",
+                        show_alert=True)
+        return
     data = await state.get_data()
     prompt = data.get("edit_prompt", "")
     # Фото качаем по file_id прямо сейчас (в состоянии лежит только идентификатор)
@@ -2189,7 +2276,20 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer("⛔ Ошибка списания.")
         return
 
-    await mark_generation_active(uid, "photo")
+    # Лимит одновременных генераций (атомарно, как в go_image). Раньше результат
+    # не проверялся: два быстрых клика по разным подтверждениям запускали
+    # параллельные платные генерации сверх лимита.
+    if not await mark_generation_active(uid, "photo"):
+        try:
+            await add_credits(uid, edit_cost)
+        except Exception:
+            pass
+        release_click(_click_key)
+        try:
+            await cb.answer("⏳ Дождись завершения текущих генераций. Кредиты возвращены.", show_alert=True)
+        except Exception:
+            pass
+        return
     await state.clear()
     try:
         await cb.answer()
@@ -2227,143 +2327,13 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         return
 
     try:
-        if m["api"] == "gemini":
-            result_bytes = await _with_retry(
-                lambda: api_edit_image(photo_bytes, prompt),
-                max_attempts=3, op_name="Edit image Gemini"
-            )
-        else:
-            # fal.ai редактирование (Grok, GPT Image, Flux Kontext)
-            import base64 as _b64
-            img_b64 = _b64.b64encode(photo_bytes).decode("utf-8")
-            image_data_uri = f"data:image/jpeg;base64,{img_b64}"
-            fal_headers = {
-                "Authorization": f"Key {FAL_API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-            # Разные модели требуют разные поля
-            if "gpt-image" in m['model_id']:
-                # GPT Image 2 edit: image_urls (массив), не image_url
-                payload = {
-                    "prompt": prompt,
-                    "image_urls": [image_data_uri],
-                }
-            elif "flux-kontext" in m['model_id']:
-                # Flux Kontext: image_url + prompt
-                payload = {
-                    "prompt": prompt,
-                    "image_url": image_data_uri,
-                }
-            else:
-                # Grok и другие: image_url + prompt
-                payload = {
-                    "prompt": prompt,
-                    "image_url": image_data_uri,
-                }
-            async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-                # Все edit модели через queue (они могут быть медленными)
-                async with s.post(
-                    f"https://queue.fal.run/{m['model_id']}",
-                    headers=fal_headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60)
-                ) as r:
-                    # Разбор HTTP-статуса ДО парсинга JSON: раньше 401/422/500
-                    # молча уходили в "fal submit failed: {...}" без объяснения,
-                    # клиент видел общее "техническая проблемка".
-                    if r.status in (401, 403):
-                        raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
-                    if r.status == 422:
-                        _e = (await r.text())[:400]; _l = _e.lower()
-                        if any(w in _l for w in ("safety", "moderation", "policy", "nsfw", "violat", "flagged", "blocked")):
-                            raise Exception(
-                                "🛡 Запрос отклонён фильтром безопасности.\n"
-                                "Попробуй другое фото или переформулируй задачу."
-                            )
-                        logging.error(f"fal edit 422 model={m['model_id']}: {_e}")
-                        raise Exception("⚠️ Ошибка параметров редактирования. Попробуй другое фото или выбери другую модель.")
-                    if r.status >= 500:
-                        _e = (await r.text())[:300]
-                        logging.error(f"fal edit HTTP {r.status} model={m['model_id']}: {_e}")
-                        raise Exception("Модель редактирования временно недоступна. Попробуй через минуту или выбери другую модель.")
-                    if not (r.content_type and "json" in r.content_type):
-                        raw = await r.text()
-                        logging.error(f"fal edit submit non-JSON HTTP {r.status}: {raw[:300]}")
-                        raise Exception("Модель редактирования временно недоступна. Попробуй через минуту или выбери другую модель.")
-                    submit = await r.json()
-                    request_id = submit.get("request_id")
-                    if not request_id:
-                        logging.error(f"fal edit submit HTTP {r.status}: {str(submit)[:300]}")
-                        raise Exception(f"fal submit failed: {str(submit)[:200]}")
-                status_url = submit.get("status_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
-                response_url = submit.get("response_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
-                logging.info(f"fal edit submitted: {request_id} status_url={status_url[:80]} response_url={response_url[:80]}")
-                for poll_i in range(60):
-                    await asyncio.sleep(5)
-                    try:
-                        async with s.get(
-                            status_url,
-                            headers={"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"},
-                            timeout=aiohttp.ClientTimeout(total=15)
-                        ) as sr:
-                            if sr.status in (401, 403):
-                                raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
-                            if sr.content_type and "json" in sr.content_type:
-                                st = await sr.json()
-                            else:
-                                raw = await sr.text()
-                                logging.warning(f"fal edit poll non-JSON: {raw[:200]}")
-                                continue
-                            if st.get("status") == "COMPLETED":
-                                break
-                            if st.get("status") == "FAILED":
-                                raise Exception(f"fal edit failed: {st}")
-                    except aiohttp.ContentTypeError:
-                        logging.warning(f"fal edit poll ContentTypeError attempt {poll_i}")
-                        continue
-                else:
-                    raise Exception("fal edit timeout 5 min")
-                # Get result - с retry
-                result = None
-                _res_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
-                urls_to_try = [response_url]
-                if "queue.fal.run" in response_url:
-                    urls_to_try.append(response_url.replace("queue.fal.run", "fal.run"))
-                elif "fal.run" in response_url:
-                    urls_to_try.append(response_url.replace("fal.run", "queue.fal.run"))
-
-                for try_url in urls_to_try:
-                    for res_attempt in range(5):
-                        try:
-                            async with s.get(try_url, headers=_res_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
-                                if rr.content_type and "json" in rr.content_type:
-                                    result = await rr.json()
-                                    break
-                                else:
-                                    logging.warning(f"fal edit result non-JSON url={try_url[:60]} attempt {res_attempt}/5")
-                                    await asyncio.sleep(5)
-                        except aiohttp.ContentTypeError:
-                            logging.warning(f"fal edit result CTE attempt {res_attempt}/5")
-                            await asyncio.sleep(5)
-                    if result:
-                        break
-                if not result:
-                    raise Exception("fal edit result: не удалось получить JSON")
-                out_url = (result.get("images") or [{}])[0].get("url")
-                if not out_url:
-                    out_url = result.get("image", {}).get("url")
-                if not out_url:
-                    result_str = str(result).lower()
-                    if "content_policy_violation" in result_str or "flagged by a content" in result_str:
-                        raise Exception(
-                            "🛡 Контент заблокирован моделью.\n\n"
-                            "Модель отклонила запрос по правилам безопасности.\n"
-                            "Попробуй переформулировать."
-                        )
-                    raise Exception(f"No image URL: {str(result)[:200]}")
-                async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=60)) as dr:
-                    result_bytes = await dr.read()
+        # Часть 35: один путь для всех моделей (generation_api.api_edit_by_model).
+        # Раньше здесь была своя копия fal-очереди: ошибка из ответа result
+        # читалась как «результат», а скачивание не проверяло HTTP-статус.
+        result_bytes = await _with_retry(
+            lambda: api_edit_by_model(m, photo_bytes, prompt),
+            max_attempts=2, base_delay=4.0, op_name=f"Edit {model_key}"
+        )
 
         await log_gen(uid, "edit", model_key, edit_cost)
         _record_generation(uid, _photo_history)
@@ -2410,7 +2380,7 @@ async def go_edit_confirmed(cb: CallbackQuery, state: FSMContext):
         await notify_admin_error(f"Редактирование фото uid={uid} model={model_key}", e, prompt=prompt)
         try:
             await wait.edit_text(
-                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                f"{client_error_text(e)}\n\nКредиты возвращены.",
                 parse_mode="HTML",
                 reply_markup=kb_back()
             )
@@ -2503,12 +2473,22 @@ async def menu_anim(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
+def _anim_aspect_kb(model_key: str) -> InlineKeyboardMarkup:
+    """Форматы анимации — только те, что модель умеет (Gemini Omni: 16:9 и 9:16)."""
+    _allowed = (ANIM_MODELS.get(model_key) or {}).get("aspects") or ["16:9", "9:16", "1:1"]
+    _all = [("16:9 Горизонталь", "16:9"), ("9:16 Вертикаль", "9:16"), ("1:1 Квадрат", "1:1")]
+    rows = [[InlineKeyboardButton(text=t, callback_data=f"anim_aspect:{r}")]
+            for t, r in _all if r in _allowed]
+    rows.append([_eib("Главное меню", "back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @dp.callback_query(F.data.startswith("anim_model:"))
 async def anim_model_select(cb: CallbackQuery, state: FSMContext):
     model_key = cb.data.split(":")[1]
     m = ANIM_MODELS.get(model_key)
-    if not m:
-        await cb.answer("Ошибка", show_alert=True)
+    if not m or model_key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую.", show_alert=True)
         return
     cr = await get_credits(cb.from_user.id)
     if cr < m["credits"]:
@@ -2528,12 +2508,7 @@ async def anim_model_select(cb: CallbackQuery, state: FSMContext):
             f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
             f"✅ Фото уже загружено. Выбери формат видео:"
         )
-        _kb_am = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
-            [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
-            [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
-            [_eib("Главное меню", "back_main")],
-        ])
+        _kb_am = _anim_aspect_kb(model_key)
         try:
             await cb.message.edit_text(_txt_am, reply_markup=_kb_am, parse_mode="HTML")
         except Exception:
@@ -2541,8 +2516,8 @@ async def anim_model_select(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    # Veo поддерживает два кадра, остальные - только один
-    if model_key == "anim_veo":
+    # Два кадра (начальный и конечный) умеют Gemini Omni и Kling — флаг в конфиге
+    if m.get("two_frames"):
         text = (
             f"<b>{model_title_n(m['name'])}</b> - {m['desc']}\n\n"
             f"💵 Стоимость: <b>{m['credits']} кр</b>\n\n"
@@ -2604,12 +2579,7 @@ async def anim_first_photo(message: Message, state: FSMContext):
         await state.set_state(AnimState.waiting_aspect)
         await message.answer(
             "✅ Фото получено! Выбери формат видео:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
-                [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
-                [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
-                [_eib("Главное меню", "back_main")],
-            ])
+            reply_markup=_anim_aspect_kb(data.get("anim_model_key", ""))
         )
 
 
@@ -2623,12 +2593,7 @@ async def anim_last_photo(message: Message, state: FSMContext):
     await state.set_state(AnimState.waiting_aspect)
     await message.answer(
         "✅ Оба кадра получены! Выбери формат видео:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="16:9 Горизонталь", callback_data="anim_aspect:16:9")],
-            [InlineKeyboardButton(text="9:16 Вертикаль",   callback_data="anim_aspect:9:16")],
-            [InlineKeyboardButton(text="1:1 Квадрат",      callback_data="anim_aspect:1:1")],
-            [_eib("Главное меню", "back_main")],
-        ])
+        reply_markup=_anim_aspect_kb((await state.get_data()).get("anim_model_key", ""))
     )
 
 
@@ -2637,6 +2602,12 @@ async def anim_aspect(cb: CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
     ratio = ":".join(parts[1:])
     labels = {"16:9": "Горизонталь 16:9", "9:16": "Вертикаль 9:16", "1:1": "Квадрат 1:1"}
+    _mk_a = (await state.get_data()).get("anim_model_key", "")
+    _allowed_a = (ANIM_MODELS.get(_mk_a) or {}).get("aspects")
+    if _allowed_a and ratio not in _allowed_a:
+        await cb.answer("Эта модель делает только " + " и ".join(_allowed_a) + " — выбери формат ниже.",
+                        show_alert=True)
+        return
     await state.update_data(aspect_ratio=ratio)
     await state.set_state(AnimState.waiting_prompt)
     await cb.message.answer(
@@ -2735,6 +2706,10 @@ async def improve_anim_prompt(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("go_anim:"))
 async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
     model_key = cb.data.split(":")[1]
+    if model_key not in ANIM_MODELS or model_key in DISABLED_MODELS:
+        await cb.answer("Эта модель сейчас недоступна — выбери другую в меню анимации.",
+                        show_alert=True)
+        return
     data = await state.get_data()
     prompt = data.get("anim_prompt_text", "")
     first_bytes = await _state_photo_bytes(data, "first_photo", "first_photo_id")
@@ -2779,7 +2754,20 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer("❌ Ошибка списания.")
         return
 
-    await mark_generation_active(uid, "anim")
+    # Лимит одновременных генераций (атомарно, как в go_image). Раньше результат
+    # не проверялся: два быстрых клика по разным подтверждениям запускали
+    # параллельные платные генерации сверх лимита.
+    if not await mark_generation_active(uid, "anim"):
+        try:
+            await add_credits(uid, anim_cost)
+        except Exception:
+            pass
+        release_click(_click_key)
+        try:
+            await cb.answer("⏳ Дождись завершения текущих генераций. Кредиты возвращены.", show_alert=True)
+        except Exception:
+            pass
+        return
     await state.clear()
     try:
         await cb.answer()
@@ -2815,136 +2803,14 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         return
 
     try:
-        # Генерация в зависимости от модели
-        if m["api"] == "veo_anim":
-            async with _veo_semaphore:
-                vid_bytes = await _with_retry(
-                    lambda: api_animate_image(first_bytes, prompt, aspect, last_bytes),
-                    max_attempts=2, base_delay=5.0, op_name="Veo animate"
-                )
-        else:
-            # fal.ai модели (Grok, Kling, Wan)
-            import base64 as _b64
-            img_b64 = _b64.b64encode(first_bytes).decode("utf-8")
-            image_data_uri = f"data:image/jpeg;base64,{img_b64}"
-
-            fal_headers = {
-                "Authorization": f"Key {FAL_API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-            # Payload как в text-to-video: duration строкой, у Wan — num_frames.
-            # Раньше здесь уходило число и «duration» для Wan — часть моделей
-            # отвечала 422, а клиент видел «промт заблокирован фильтром».
-            _dur_a = int(m.get("duration", 5) or 5)
-            fal_payload = {
-                "image_url": image_data_uri,
-                "prompt": prompt,
-                "aspect_ratio": aspect,
-            }
-            if "wan" in (m.get("model_id") or ""):
-                fal_payload["num_frames"] = _dur_a * 16
-                fal_payload["resolution"] = "720p"
-            else:
-                fal_payload["duration"] = str(_dur_a)
-
-            async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-                # Submit
-                async with s.post(
-                    f"https://queue.fal.run/{m['model_id']}",
-                    headers=fal_headers,
-                    json=fal_payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as r:
-                    if r.status == 422:
-                        _e422 = (await r.text())[:400]
-                        _l422 = _e422.lower()
-                        if any(w in _l422 for w in ("safety", "moderation", "policy",
-                                                    "nsfw", "violat", "flagged")):
-                            raise Exception(
-                                "🛡 Контент заблокирован моделью.\n"
-                                "Попробуй другое фото или переформулируй промт.")
-                        logging.error(f"fal anim 422 model={m['model_id']} payload_keys={list(fal_payload)} resp={_e422}")
-                        raise Exception(
-                            "⚠️ Ошибка параметров модели. Попробуй другой формат "
-                            "или другую модель анимации.")
-                    if r.status in (401, 403):
-                        raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
-                    submit = await r.json()
-                    request_id = submit.get("request_id")
-                    if not request_id:
-                        raise Exception(f"fal submit failed: {str(submit)[:200]}")
-
-                # Poll
-                poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
-                status_url = submit.get("status_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}/status"
-                response_url = submit.get("response_url") or f"https://queue.fal.run/{m['model_id']}/requests/{request_id}"
-                logging.info(f"fal anim submitted: {request_id} status_url={status_url[:80]} response_url={response_url[:80]}")
-                for poll_i in range(180):
-                    await asyncio.sleep(5)
-                    try:
-                        async with s.get(status_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
-                            if sr.content_type and "json" in sr.content_type:
-                                st = await sr.json()
-                            else:
-                                logging.warning(f"fal anim poll non-JSON attempt {poll_i}")
-                                continue
-                            if st.get("status") == "COMPLETED":
-                                break
-                            if st.get("status") == "FAILED":
-                                raise Exception(f"fal failed: {st}")
-                    except aiohttp.ContentTypeError:
-                        continue
-                else:
-                    raise Exception("fal timeout 15min")
-
-                # Get result - с retry и fallback URLs
-                result = None
-                # Пробуем разные форматы URL - fal иногда использует разные домены
-                urls_to_try = [response_url]
-                if f"queue.fal.run" in response_url:
-                    alt = response_url.replace("queue.fal.run", "fal.run")
-                    urls_to_try.append(alt)
-                elif f"fal.run" in response_url:
-                    alt = response_url.replace("fal.run", "queue.fal.run")
-                    urls_to_try.append(alt)
-                # Также пробуем gateway
-                urls_to_try.append(f"https://gateway.fal.ai/{m['model_id']}/requests/{request_id}")
-
-                for url_attempt, try_url in enumerate(urls_to_try):
-                    for res_attempt in range(5):
-                        try:
-                            async with s.get(try_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
-                                if rr.content_type and "json" in rr.content_type:
-                                    result = await rr.json()
-                                    break
-                                else:
-                                    logging.warning(f"fal anim result non-JSON url={try_url[:60]} attempt {res_attempt}/5: {rr.content_type}")
-                                    await asyncio.sleep(5)
-                        except aiohttp.ContentTypeError:
-                            logging.warning(f"fal anim result CTE url={try_url[:60]} attempt {res_attempt}/5")
-                            await asyncio.sleep(5)
-                    if result:
-                        break
-                if not result:
-                    raise Exception(f"fal result: не удалось получить JSON. URLs tried: {[u[:60] for u in urls_to_try]}")
-
-                video_url = (result.get("video") or {}).get("url")
-                if not video_url:
-                    # Проверяем - это content policy violation?
-                    result_str = str(result).lower()
-                    if "content_policy_violation" in result_str or "flagged by a content" in result_str:
-                        raise Exception(
-                            "🛡 Контент заблокирован моделью.\n\n"
-                            "Модель отклонила запрос по правилам безопасности.\n"
-                            "Попробуй переформулировать - избегай NSFW, насилия или знаменитостей."
-                        )
-                    raise Exception(f"No video URL: {str(result)[:200]}")
-
-                # Download
-                async with s.get(video_url, timeout=aiohttp.ClientTimeout(total=120)) as dv:
-                    vid_bytes = await dv.read()
-
+        # Часть 35: один путь для всех моделей (generation_api.api_animate_by_model):
+        # правильный payload под каждую модель, разбор ошибок fal/Google и резерв
+        # на Veo для Gemini Omni. Раньше здесь была своя копия fal-очереди.
+        _last_for_api = last_bytes if mode == "two" else None
+        vid_bytes = await _with_retry(
+            lambda: api_animate_by_model(m, first_bytes, prompt, aspect, _last_for_api),
+            max_attempts=2, base_delay=5.0, op_name=f"Animate {model_key}"
+        )
         size_mb = len(vid_bytes) / 1024 / 1024
         logging.info(f"Animation ready ({m['name']}): {size_mb:.1f} MB")
         await log_gen(uid, "animate", model_key, anim_cost)
@@ -2989,7 +2855,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                     await anim_refund_once("upload_failed")
                     await cb.message.answer(
                         f"⚠️ Анимация создана ({size_mb:.1f} МБ), но не удалось доставить.\n"
-                        f"Кредиты возвращены 💳\nНапиши @neirosetkaalex.",
+                        f"Кредиты возвращены 💳\nНапиши @{PERSONAL_USERNAME}.",
                         reply_markup=kb_back(),
                     )
             except Exception as up_err:
@@ -2998,7 +2864,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 try:
                     await cb.message.answer(
                         f"⚠️ Анимация создана ({size_mb:.1f} МБ), но не удалось её доставить.\n"
-                        f"💳 Кредиты возвращены.\n\nНапиши @neirosetkaalex — пришлём файл напрямую.",
+                        f"💳 Кредиты возвращены.\n\nНапиши @{PERSONAL_USERNAME} — пришлём файл напрямую.",
                         reply_markup=kb_back(),
                     )
                 except Exception:
@@ -3035,7 +2901,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 await cb.message.answer(
                     f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не отправилось в Telegram.\n"
                     f"Кредиты возвращены 💳\n"
-                    f"Напиши @neirosetkaalex - пришлём файл напрямую.",
+                    f"Напиши @{PERSONAL_USERNAME} - пришлём файл напрямую.",
                     reply_markup=kb_back(),
                     parse_mode="HTML"
                 )
@@ -3072,7 +2938,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
                 else:
                     await cb.message.answer(
                         f"📁 Оригинал ({size_mb:.1f} МБ) - слишком большой для Telegram.\n"
-                        f"Напиши @neirosetkaalex - пришлём файл напрямую."
+                        f"Напиши @{PERSONAL_USERNAME} - пришлём файл напрямую."
                     )
             except Exception as up_err:
                 logging.error(f"upload_large_file anim failed: {up_err}")
@@ -3081,7 +2947,7 @@ async def go_anim_confirmed(cb: CallbackQuery, state: FSMContext):
         await notify_admin_error(f"Анимация фото uid={uid}", e, prompt=prompt)
         try:
             await wait.edit_text(
-                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                f"{client_error_text(e)}\n\nКредиты возвращены.",
                 parse_mode="HTML",
                 reply_markup=kb_back()
             )
@@ -3159,7 +3025,7 @@ async def mot_start(cb: CallbackQuery, state: FSMContext):
 
     # Проверка что EvoLink API настроен
     if not EVOLINK_API_KEY:
-        await cb.answer("⚙️ Функция временно недоступна. Напиши @neirosetkaalex", show_alert=True)
+        await cb.answer(f"⚙️ Функция временно недоступна. Напиши @{PERSONAL_USERNAME}", show_alert=True)
         return
 
     await state.set_state(MotionState.waiting_image)
@@ -3568,7 +3434,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                     await msg_obj.answer(
                         f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не удалось доставить.\n"
                         f"Кредиты возвращены 💳\n"
-                        f"Напиши @neirosetkaalex - пришлём файл напрямую.",
+                        f"Напиши @{PERSONAL_USERNAME} - пришлём файл напрямую.",
                         reply_markup=kb_back(),
                     )
             except Exception as up_err:
@@ -3576,7 +3442,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 await motion_refund_once("upload_exception")
                 await msg_obj.answer(
                     f"⚠️ Не удалось доставить видео. Кредиты возвращены 💳\n"
-                    f"Напиши @neirosetkaalex - разберёмся.",
+                    f"Напиши @{PERSONAL_USERNAME} - разберёмся.",
                     reply_markup=kb_back(),
                 )
             return  # Дальше не идём - документ уже обработан выше
@@ -3611,7 +3477,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 await msg_obj.answer(
                     f"⚠️ Видео сгенерировано ({size_mb:.1f} МБ), но не отправилось в Telegram.\n"
                     f"Кредиты возвращены 💳\n"
-                    f"Напиши @neirosetkaalex - пришлём файл напрямую.",
+                    f"Напиши @{PERSONAL_USERNAME} - пришлём файл напрямую.",
                     reply_markup=kb_back(),
                     parse_mode="HTML"
                 )
@@ -3648,7 +3514,7 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
                 else:
                     await msg_obj.answer(
                         f"📁 Оригинал ({size_mb:.1f} МБ) - слишком большой для Telegram.\n"
-                        f"Напиши @neirosetkaalex - пришлём файл напрямую."
+                        f"Напиши @{PERSONAL_USERNAME} - пришлём файл напрямую."
                     )
             except Exception as up_err:
                 logging.error(f"upload_large_file motion failed: {up_err}")
@@ -3658,14 +3524,14 @@ async def _mot_confirm_and_run(msg_obj, state: FSMContext, uid: int, edit: bool)
         await notify_admin_error(f"Motion Control uid={uid} duration={duration}", e)
         try:
             await wait.edit_text(
-                f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                f"{client_error_text(e)}\n\nКредиты возвращены.",
                 parse_mode="HTML",
                 reply_markup=kb_back()
             )
         except Exception:
             try:
                 await msg_obj.answer(
-                    f"⚠️ {friendly_error(e)}\n\nКредиты возвращены.",
+                    f"{client_error_text(e)}\n\nКредиты возвращены.",
                     parse_mode="HTML",
                     reply_markup=kb_back()
                 )

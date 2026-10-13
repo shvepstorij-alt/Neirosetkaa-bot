@@ -1110,7 +1110,7 @@ async def adm_gpt_del_confirm(cb: CallbackQuery):
             return
         await conn.execute("DELETE FROM gpt_codes WHERE id=$1", code_id)
     await cb.answer(f"✅ Код {row['code']} удалён", show_alert=True)
-    cb.data = f"adm_gpt_free:{plan}"
+    cb = cb.model_copy(update={"data": f"adm_gpt_free:{plan}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await adm_gpt_free_codes(cb)
 
 
@@ -1257,7 +1257,7 @@ async def adm_gpt_release_confirm(cb: CallbackQuery):
             "DELETE FROM gpt_pending_activations WHERE code=$1", row["code"]
         )
     await cb.answer(f"✅ Код {row['code']} возвращён в пул", show_alert=True)
-    cb.data = f"adm_gpt_pending:{plan}"
+    cb = cb.model_copy(update={"data": f"adm_gpt_pending:{plan}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await adm_gpt_pending_codes(cb)
 
 
@@ -1316,7 +1316,7 @@ async def adm_gpt_del_pending_confirm(cb: CallbackQuery):
         await conn.execute("DELETE FROM gpt_pending_activations WHERE code=$1", row["code"])
         await conn.execute("DELETE FROM gpt_codes WHERE id=$1", code_id)
     await cb.answer(f"✅ Код {row['code']} удалён", show_alert=True)
-    cb.data = f"adm_gpt_pending:{plan}"
+    cb = cb.model_copy(update={"data": f"adm_gpt_pending:{plan}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await adm_gpt_pending_codes(cb)
 
 

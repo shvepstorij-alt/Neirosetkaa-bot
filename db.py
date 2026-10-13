@@ -22,6 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ANIM_MODELS, CREDIT_PACKS, CUSTOM_EMOJI_IDS, DATABASE_URL, DISABLED_MODELS, EDIT_MODELS,
+    RETIRED_MODELS, set_model_credits,
     FREE_CREDITS, IMAGE_MODELS, REF_BONUS, REF_WELCOME_CREDITS, SHOP_CATALOG, VIDEO_MODELS, _pool,
     GPT_CODE_ROUTES,
 )
@@ -1674,14 +1675,9 @@ async def load_prices_from_db():
                 if not enabled:
                     DISABLED_MODELS.add(key)
                     continue
-                if key in IMAGE_MODELS:
-                    IMAGE_MODELS[key]["credits"] = credits
-                elif key in VIDEO_MODELS:
-                    VIDEO_MODELS[key]["credits"] = credits
-                elif key in ANIM_MODELS:
-                    ANIM_MODELS[key]["credits"] = credits
-                elif key in EDIT_MODELS:
-                    EDIT_MODELS[key]["credits"] = credits
+                set_model_credits(key, credits)
+            # Отключённые провайдером модели не включаются из БД ни при каких условиях
+            DISABLED_MODELS.update(RETIRED_MODELS)
         else:
             # Записываем дефолтные
             all_models = list(IMAGE_MODELS.items()) + list(VIDEO_MODELS.items()) + list(ANIM_MODELS.items()) + list(EDIT_MODELS.items())

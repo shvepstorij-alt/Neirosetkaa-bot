@@ -437,7 +437,7 @@ async def adm_perplexity_del_confirm(cb: CallbackQuery):
             return
         await conn.execute("DELETE FROM perplexity_codes WHERE id=$1", code_id)
     await cb.answer(f"✅ Код {row['code']} удалён", show_alert=True)
-    cb.data = f"adm_perplexity_free:{plan}"
+    cb = cb.model_copy(update={"data": f"adm_perplexity_free:{plan}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await adm_perplexity_free_codes(cb)
 
 

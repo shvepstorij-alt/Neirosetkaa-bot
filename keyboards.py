@@ -30,6 +30,10 @@ def kb_error_with_alt(menu: str, model_key: str):
     """Клавиатура для сообщения об ошибке с альтернативой и кнопкой Назад."""
     rows = []
     alt_data = ALTERNATIVE_MODELS.get(menu, {}).get(model_key)
+    # Отключённую альтернативу не предлагаем: раньше кнопка вела на модель,
+    # которую сам же бот отвечал «сейчас недоступна».
+    if alt_data and alt_data[1] in DISABLED_MODELS:
+        alt_data = None
     if alt_data:
         alt_menu, alt_key, _alt_desc = alt_data
         # Получаем имя альтернативной модели
@@ -86,7 +90,6 @@ def kb_image_brands():
     """Верхний уровень: выбор бренда моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [_eib("GPT Image",    "iband:gptimg",   "iband_gptimg")],
-        [_eib("Imagen",       "iband:imagen",   "iband_imagen")],
         [_eib("Nano Banana",  "iband:nano",     "iband_nano")],
         [_eib("Flux",         "iband:flux",     "iband_flux")],
         [_eib("Ideogram",     "iband:ideogram", "iband_ideogram")],
@@ -106,7 +109,7 @@ def kb_image_models_for_brand(brand: str):
     for key in keys:
         if key in IMAGE_MODELS and key not in DISABLED_MODELS:
             m = IMAGE_MODELS[key]
-            clean_name = _re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            clean_name = m['name'].strip()  # версию НЕ режем: «Nano Banana 2.1» ≠ «Nano Banana»
             if brand_eid:
                 # есть кастомная иконка → убираем старое эмодзи из названия (без дублей)
                 clean_name = _re.sub(r'^[^\w\s]+\s*', '', clean_name).strip()
@@ -127,7 +130,7 @@ def kb_image_models():
 def kb_video_brands():
     """Верхний уровень: выбор бренда видео-моделей."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_eib("Veo",         "vband:veo",      "vband_veo")],
+        [_eib("Gemini Omni", "vband:veo",      "vband_veo")],
         [_eib("Kling",       "vband:kling",    "vband_kling")],
         [_eib("Seedance",    "vband:seedance", "vband_seedance")],
         [_eib("Wan",         "vband:wan",      "vband_wan")],
@@ -146,7 +149,7 @@ def kb_video_models_for_brand(brand: str):
     for key in keys:
         if key in VIDEO_MODELS and key not in DISABLED_MODELS:
             m = VIDEO_MODELS[key]
-            clean_name = _re.sub(r'\s*\d+(\.\d+)*\s*', ' ', m['name']).strip()
+            clean_name = m['name'].strip()  # версию НЕ режем: «Nano Banana 2.1» ≠ «Nano Banana»
             if brand_eid:
                 # есть кастомная иконка → убираем старое эмодзи из названия (без дублей)
                 clean_name = _re.sub(r'^[^\w\s]+\s*', '', clean_name).strip()
@@ -314,12 +317,17 @@ def kb_aspect_image(model_key: str):
 
 
 def kb_aspect_video(model_key: str):
-    """Выбор формата для видео."""
-    ratios = [
+    """Выбор формата для видео (только те, что модель реально умеет).
+
+    Gemini Omni/Veo делают только 16:9 и 9:16 — раньше кнопка 1:1 была у всех,
+    и такой заказ либо падал с ошибкой, либо молча превращался в 16:9.
+    """
+    _allowed = (VIDEO_MODELS.get(model_key) or {}).get("aspects") or ["16:9", "9:16", "1:1"]
+    ratios = [r for r in (
         ("16:9 Горизонталь", "16:9"),
         ("9:16 Вертикаль",   "9:16"),
         ("1:1 Квадрат",      "1:1"),
-    ]
+    ) if r[1] in _allowed]
     rows = [[InlineKeyboardButton(text=label, callback_data=f"vaspect:{model_key}:{ratio}") for label, ratio in ratios]]
     rows.append([_eib("Главное меню", "back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

@@ -495,8 +495,8 @@ async def on_new_member(event: ChatMemberUpdated):
             chat_id=user.id,
             text=f"👋 Привет! Рад приветствовать тебя в канале!\n\n"
                  f"Я - AI-ассистент Александра. Помогу:\n"
-                 f"🎨 Создать изображение (Imagen 4)\n"
-                 f"🎥 Создать видео (Veo 3.1)\n"
+                 f"🎨 Создать изображение (Nano Banana, GPT Image, Flux)\n"
+                 f"🎥 Создать видео (Gemini Omni, Kling, Seedance)\n"
                  f"💬 Разобраться в нейросетях\n"
                  f"💳 Оформить подписку - оплата в рублях\n\n"
                  f"Жми /start — баланс и все разделы внутри 👇",
@@ -534,8 +534,7 @@ async def reply_create_photo(message: Message, state: FSMContext):
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
         f'{tg_emoji_ui("iband_gptimg", "🤖")} <b>GPT Image</b> - OpenAI, #1 в Image Arena\n'
-        f'{tg_emoji_ui("iband_imagen", "🌟")} <b>Imagen 4</b> - флагман Google, от 7 кр\n'
-        f'{tg_emoji_ui("iband_nano", "🍌")} <b>Nano Banana</b> - Gemini, 4K, от 10 кр\n'
+        f'{tg_emoji_ui("iband_nano", "🍌")} <b>Nano Banana</b> - Google Gemini, от 13 кр\n'
         f'{tg_emoji_ui("iband_flux", "🎭")} <b>Flux</b> - фотореализм, от 12 кр\n'
         f'{tg_emoji_ui("iband_ideogram", "✒️")} <b>Ideogram</b> - идеальный текст, от 14 кр\n'
         f'{tg_emoji_ui("iband_grok", "⚡")} <b>Grok Imagine</b> - xAI, высокий реализм',
@@ -551,7 +550,7 @@ async def reply_create_video(message: Message, state: FSMContext):
         f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Veo</b> - до 4K + аудио, от 239 кр\n'
+        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Gemini Omni</b> - Google, до 4K + аудио, от 239 кр\n'
         f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от 109 кр\n'
         f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от 99 кр\n'
         f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от 80 кр\n'
@@ -609,7 +608,7 @@ async def fav_save(cb: CallbackQuery):
     model_match = None
     if caption:
         import re
-        model_match = re.search(r'(GPT Image|Imagen|Nano Banana|Flux|Ideogram|Grok|Veo|Kling|Seedance|Wan)', caption)
+        model_match = re.search(r'(GPT Image|Imagen|Nano Banana|Flux|Ideogram|Grok|Gemini Omni|Veo|Kling|Seedance|Wan)', caption)
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -871,7 +870,7 @@ async def cmd_publicoffer(message: Message):
         "Используя бот и совершая оплату, вы соглашаетесь с условиями настоящей оферты. "
         "Акцептом считается первая успешная оплата.\n\n"
         "<b>1. Предмет договора</b>\n"
-        "Исполнитель предоставляет доступ к сервису генерации изображений и видео с помощью AI-моделей (Imagen, Veo, Grok, GPT Image, Seedance, Kling, Wan и других). "
+        "Исполнитель предоставляет доступ к сервису генерации изображений и видео с помощью AI-моделей (Nano Banana, Gemini Omni, Grok, GPT Image, Flux, Seedance, Kling, Wan и других). "
         "Заказчик обязуется принять и оплатить услуги.\n\n"
         "<b>2. Права и обязанности</b>\n"
         "Заказчик обязуется:\n"

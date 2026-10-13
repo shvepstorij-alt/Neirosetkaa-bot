@@ -180,7 +180,7 @@ async def chat_preset_handler(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "help_choose")
 async def help_choose(cb: CallbackQuery, state: FSMContext):
     """Устаревший хэндлер - редиректит на пресет 'choose'."""
-    cb.data = "chat_preset:choose"
+    cb = cb.model_copy(update={"data": "chat_preset:choose"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await chat_preset_handler(cb, state)
 
 

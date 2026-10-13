@@ -859,36 +859,50 @@ _admin_err_at: dict = {}
 
 async def notify_admin_error(context: str, e: Exception, prompt: str = ""):
     """Отправляет реальную ошибку админу с деталями + трекинг для алертов.
-    Safety-блокировки - отдельный тип алерта (🟡 вместо 🔴), не считаются как инфра-ошибки.
-    prompt — проблемный промт клиента (добавляется в алерт вместе с ником)."""
-    err_msg = str(e)
+
+    Часть 35. Для ошибок генерации (gen_errors.GenError) Александр видит:
+    что именно случилось, модель и провайдера, категорию отказа, метки
+    модерации, слова промта, которые его вызвали, совет «как исправить» и
+    сырой ответ провайдера. Раньше был один шаблон «Клиент попробовал нарушить
+    safety» — даже когда виноваты были наши параметры или перегрузка.
+
+    Тексты экранируются: раньше сырое тело ошибки вставлялось в <code> как есть,
+    и один символ «<» в ответе провайдера (HTML-страница 502, теги в тексте
+    ошибки) ломал разметку — алерт молча не доходил.
+    """
+    import html as _h_ae
+    from gen_errors import GenError as _GE, admin_lines as _admin_lines
+    _is_gen = isinstance(e, _GE)
+    err_msg = (e.raw or e.client) if _is_gen else str(e)
     low = err_msg.lower()
 
-    # Сначала проверяем точные не-safety проблемы (инфра, downstream)
-    is_infra_problem = (
-        "нестабил" in low or "downstream" in low or
-        "openai gpt image" in low or "недоступ" in low or
-        "api ключ" in low or "rate limit" in low or
-        "сейчас нестабил" in low or "временно недоступна" in low
-    )
-
-    # Safety - только явные индикаторы контент-фильтра
-    is_safety = (
-        not is_infra_problem and (
-            "🛡" in err_msg or
-            "nsfw" in low or "насили" in low or "знаменит" in low or
-            "violat" in low or "moderat" in low or "inappropriate" in low or
-            "контент-полит" in low or "content policy" in low or
-            "content_policy_violation" in low or
-            "flagged by a content checker" in low or
-            ("фильтр" in low and "безопасн" in low)
+    if _is_gen:
+        is_safety = e.kind == "safety"
+    else:
+        # Сначала проверяем точные не-safety проблемы (инфра, downstream)
+        is_infra_problem = (
+            "нестабил" in low or "downstream" in low or
+            "openai gpt image" in low or "недоступ" in low or
+            "api ключ" in low or "rate limit" in low or
+            "сейчас нестабил" in low or "временно недоступна" in low
         )
-    )
+        is_safety = (
+            not is_infra_problem and (
+                "🛡" in err_msg or
+                "nsfw" in low or "насили" in low or "знаменит" in low or
+                "violat" in low or "moderat" in low or "inappropriate" in low or
+                "контент-полит" in low or "content policy" in low or
+                "content_policy_violation" in low or
+                "flagged by a content checker" in low or
+                ("фильтр" in low and "безопасн" in low)
+            )
+        )
 
     # Логируем в БД
     try:
         event_kind = "content_blocked" if is_safety else "error"
-        await log_event(None, event_kind, f"{context} | {err_msg[:500]}")
+        _kind_tag = f"[{e.kind}/{e.category or '-'}] " if _is_gen else ""
+        await log_event(None, event_kind, f"{context} | {_kind_tag}{err_msg[:500]}")
     except Exception:
         pass
 
@@ -902,9 +916,8 @@ async def notify_admin_error(context: str, e: Exception, prompt: str = ""):
         return
     _admin_err_at[context] = _now_ae
 
-    # Ник клиента по uid из контекста + проблемный промт
     def _esc_ae(_s):
-        return str(_s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return _h_ae.escape(str(_s or ""), quote=False)
     _client_tag = ""
     try:
         import re as _re_ae
@@ -922,16 +935,48 @@ async def notify_admin_error(context: str, e: Exception, prompt: str = ""):
     if _client_tag:
         _extra += f"\n\n👤 <b>Клиент:</b> {_client_tag}"
     if prompt:
-        _extra += f"\n📝 <b>Промт:</b> <code>{_esc_ae(prompt)[:600]}</code>"
+        _extra += f"\n📝 <b>Промт:</b> <code>{_esc_ae(str(prompt)[:600])}</code>"
+    _ctx = _esc_ae(context)
 
-    # Safety - жёлтый алерт, не идёт в счётчик критических ошибок
+    if _is_gen:
+        _head = {
+            "safety": "🟡 <b>Отказ по содержанию</b>",
+            "input": "🟡 <b>Не подошёл файл клиента</b>",
+            "no_output": "🟡 <b>Модель ничего не вернула</b>",
+            "params": "🔴 <b>Ошибка параметров (наша)</b>",
+            "auth": "🔴 <b>Ключ API не принят</b>",
+            "balance": "🔴 <b>Закончился баланс у провайдера</b>",
+        }.get(e.kind, "🔴 <b>Ошибка генерации</b>")
+        _tail = ("\n\n<i>Кредиты клиенту возвращены. Клиент увидел причину и совет.</i>"
+                 if e.kind in ("safety", "input", "no_output") else "")
+        _body = f"{_head} | {_ctx}\n\n{_admin_lines(e)}{_extra}{_tail}"
+        if len(_body) > 4000:
+            # Режем по строкам, а не посреди тега/сущности: битый HTML Telegram не примет
+            _keep = []
+            for _ln in _body.split("\n"):
+                if sum(len(x) + 1 for x in _keep) + len(_ln) > 3900:
+                    break
+                _keep.append(_ln)
+            _body = "\n".join(_keep) + "\n…"
+        try:
+            await bot.send_message(ADMIN_ID, _body, parse_mode="HTML")
+        except Exception as _se:
+            logging.error(f"notify_admin_error send failed: {_se}")
+            try:
+                await bot.send_message(ADMIN_ID, f"{_head} | {_ctx}\n\n{_esc_ae(err_msg[:3000])}{_extra}",
+                                       parse_mode="HTML")
+            except Exception:
+                pass
+        return
+
+    # Safety (старые текстовые ошибки) - жёлтый алерт
     if is_safety:
         try:
             await bot.send_message(
                 ADMIN_ID,
-                f"🟡 <b>Промт заблокирован фильтром</b> | {context}\n\n"
-                f"<i>Клиент попробовал нарушить safety. Кредиты возвращены.</i>\n\n"
-                f"<code>{err_msg[:400]}</code>"
+                f"🟡 <b>Отказ по содержанию</b> | {_ctx}\n\n"
+                f"<i>Кредиты возвращены.</i>\n\n"
+                f"<code>{_esc_ae(err_msg[:400])}</code>"
                 f"{_extra}",
                 parse_mode="HTML"
             )
@@ -939,12 +984,12 @@ async def notify_admin_error(context: str, e: Exception, prompt: str = ""):
             pass
         return
 
-    # Реальная ошибка - красный алерт + счётчик
+    # Реальная ошибка - красный алерт
     try:
         # Telegram лимит 4096 символов; оставляем запас на форматирование
         await bot.send_message(
             ADMIN_ID,
-            f"🔴 <b>Ошибка</b> | {context}\n\n<code>{err_msg[:3000]}</code>{_extra}",
+            f"🔴 <b>Ошибка</b> | {_ctx}\n\n<code>{_esc_ae(err_msg[:3000])}</code>{_extra}",
             parse_mode="HTML"
         )
     except Exception:
@@ -1702,14 +1747,14 @@ async def _show_profile(message: Message, user, edit: bool = False):
         "img_std":   "Imagen 4 Standard",
         "img_ultra": "Imagen 4 Ultra",
         "nb_flash":  "Nano Banana Flash",
-        "nb_2":      "Nano Banana v2",
+        "nb_2":      "Nano Banana 2 / 2.1",
         "nb_pro":    "Nano Banana Pro",
         "flux_pro":  "Flux 2 Pro",
         "ideogram_v3": "Ideogram V3",
         # ключи VIDEO_MODELS
-        "vid_lite":  "Veo 3.1 Lite",
-        "vid_fast":  "Veo 3.1 Fast",
-        "vid_pro":   "Veo 3.1 Pro",
+        "vid_lite":  "Gemini Omni Lite / Veo Lite",
+        "vid_fast":  "Gemini Omni Fast / Veo Fast",
+        "vid_pro":   "Gemini Omni Pro / Veo",
         "kling_turbo": "Kling 2.5 Turbo",
         "kling_pro":   "Kling 3.0 Pro",
         # специальные
@@ -1729,7 +1774,7 @@ async def _show_profile(message: Message, user, edit: bool = False):
             (f'{tg_emoji_ui("iband_imagen", "🌟")} Imagen 4',        ["img_fast", "img_std", "img_ultra"]),
             (f'{tg_emoji_ui("iband_nano",   "🍌")} Nano Banana',      ["nb_flash", "nb_2", "nb_pro"]),
             (f'{tg_emoji_ui("iband_flux",   "🎨")} Flux &amp; Ideogram', ["flux_pro", "ideogram_v3"]),
-            (f'{tg_emoji_ui("vband_veo",    "🎥")} Veo 3.1',          ["vid_lite", "vid_fast", "vid_pro"]),
+            (f'{tg_emoji_ui("vband_veo",    "🎥")} Gemini Omni / Veo', ["vid_lite", "vid_fast", "vid_pro"]),
             (f'{tg_emoji_ui("vband_kling",  "🎞")} Kling',            ["kling_turbo", "kling_pro"]),
             ("✏️ Редактирование",                                      ["gemini-flash-image"]),
             ("🎭 Анимация",                                            ["veo-3.1-animate"]),
@@ -2920,11 +2965,11 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
             _banners = [_b for _b in await _shop_banners() if _b.get("on")]
         except Exception:
             _banners = []
+        from config import DISABLED_MODELS
         try:
             from config import IMAGE_MODELS as _IM
             def _img_group(_k, _v):
                 _a = (_v.get("api") or "")
-                if _k.startswith("img_"): return "Imagen"
                 if _k.startswith("nb_"): return "Nano Banana"
                 if _k.startswith("gptimg"): return "GPT Image"
                 if _k.startswith("flux"): return "Flux"
@@ -2934,13 +2979,13 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
             _imgmodels = [{"key": _k, "name": _v.get("name", _k), "credits": _v.get("credits", 0),
                            "desc": _v.get("desc", ""), "speed": _v.get("speed", ""),
                            "group": _img_group(_k, _v)}
-                          for _k, _v in _IM.items()]
+                          for _k, _v in _IM.items() if _k not in DISABLED_MODELS]
         except Exception:
             _imgmodels = []
         try:
             from config import VIDEO_MODELS as _VM
             def _vid_group(_k):
-                if _k.startswith("vid_"): return "Veo"
+                if _k.startswith("vid_"): return "Gemini Omni"
                 if _k.startswith("kling"): return "Kling"
                 if _k.startswith("seedance"): return "Seedance"
                 if "grok" in _k: return "Grok"
@@ -2948,26 +2993,31 @@ async def _inject_recs(html: str, exclude_key: str) -> str:
                 return "Другое"
             _vidmodels = []
             for _k, _v in _VM.items():
+                if _k in DISABLED_MODELS:
+                    continue  # выключенные модели мини-апп раньше показывал и запускал
                 _du = _v.get("durations")
                 _durs = ([{"d": _d, "credits": _t[0]} for _d, _t in sorted(_du.items())] if _du
-                         else [{"d": 8, "credits": int(_v.get("credits", 0))}])
+                         else [{"d": int(_v.get("duration") or 8), "credits": int(_v.get("credits", 0))}])
                 _vidmodels.append({"key": _k, "name": _v.get("name", _k),
                                    "credits": _v.get("credits", 0), "desc": _v.get("desc", ""),
                                    "res": _v.get("res", ""), "group": _vid_group(_k),
-                                   "durations": _durs})
+                                   "durations": _durs,
+                                   "aspects": _v.get("aspects") or ["16:9", "9:16", "1:1"]})
         except Exception:
             _vidmodels = []
         try:
             from config import EDIT_MODELS as _EM
             _editmodels = [{"key": _k, "name": _v.get("name", _k), "credits": _v.get("credits", 0),
-                            "desc": _v.get("desc", "")} for _k, _v in _EM.items()]
+                            "desc": _v.get("desc", "")} for _k, _v in _EM.items()
+                           if _k not in DISABLED_MODELS]
         except Exception:
             _editmodels = []
         try:
             from config import ANIM_MODELS as _AM
             _animmodels = [{"key": _k, "name": _v.get("name", _k), "credits": _v.get("credits", 0),
-                            "desc": _v.get("desc", ""), "duration": _v.get("duration", 5)}
-                           for _k, _v in _AM.items()]
+                            "desc": _v.get("desc", ""), "duration": _v.get("duration", 5),
+                            "aspects": _v.get("aspects") or ["16:9", "9:16", "1:1"]}
+                           for _k, _v in _AM.items() if _k not in DISABLED_MODELS]
         except Exception:
             _animmodels = []
         try:
@@ -6874,6 +6924,9 @@ async def api_admin_model_toggle_handler(request: web.Request) -> web.Response:
         models = dmap.get(section, {})
         if key not in models:
             return web.json_response({"ok": False})
+        from config import RETIRED_MODELS as _RET
+        if enabled and key in _RET:
+            return web.json_response({"ok": False, "msg": "Модель отключена провайдером навсегда — включить нельзя"})
         if enabled:
             DISABLED_MODELS.discard(key)
         else:
@@ -6926,7 +6979,8 @@ async def api_admin_model_price_handler(request: web.Request) -> web.Response:
                 "ON CONFLICT (model_key) DO UPDATE SET credits=$3, section=$2",
                 key, section, credits)
         # И в память — иначе новая цена заработала бы только после перезапуска.
-        models[key]["credits"] = credits
+        from config import set_model_credits as _smc
+        _smc(key, credits)  # и таблицу длительностей тоже — иначе меню и списание расходятся
         logging.info(f"admin: цена генерации {section}/{key} = {credits} кр.")
         return web.json_response({"ok": True, "key": key, "credits": credits})
     except Exception as _e:
@@ -21251,6 +21305,30 @@ async def genvidf_handler(request: web.Request) -> web.Response:
         return web.Response(status=404, text="not found")
 
 
+async def _webgen_fail(uid, context: str, err: Exception, prompt: str = "") -> str:
+    """Ошибка генерации в мини-аппе: алерт Александру + текст причины клиенту.
+
+    Раньше мини-апп получал только «gen_failed», клиент видел «не получилось»
+    без причины, а Александр не узнавал об ошибке вообще (алерта не было).
+    """
+    try:
+        await notify_admin_error(f"{context} (мини-апп) uid={uid}", err, prompt=prompt)
+    except Exception:
+        pass
+    try:
+        from config import client_error_text as _cet
+        return _cet(err)
+    except Exception:
+        return "⚠️ Не получилось. Попробуй ещё раз или выбери другую модель."
+
+
+def _webgen_reason_short(err: Exception) -> str:
+    """Короткая причина для журнала webgen (без HTML)."""
+    import re as _re_wr
+    _t = getattr(err, "raw", "") or str(err)
+    return _re_wr.sub(r"<[^>]+>", "", _t)[:200]
+
+
 async def api_gen_image_handler(request: web.Request) -> web.Response:
     """Генерация изображения из мини-аппки. Списывает кредиты, при ошибке возвращает."""
     try:
@@ -21262,13 +21340,18 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data(_idata)
         if not uid:
             return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
-        from config import IMAGE_MODELS
+        from config import IMAGE_MODELS, DISABLED_MODELS
         _key = str(body.get("model", "")).strip()
         _prompt = str(body.get("prompt", "")).strip()
         _aspect = str(body.get("aspect", "1:1")).strip() or "1:1"
+        if _aspect not in ("1:1", "16:9", "9:16", "4:3", "3:4"):
+            _aspect = "1:1"
         m = IMAGE_MODELS.get(_key)
-        if not m:
-            return web.json_response({"ok": False, "error": "model"}, status=400)
+        # Выключенную (или отключённую провайдером) модель мини-апп раньше
+        # запускал как обычную: деньги списывались, генерация гарантированно падала.
+        if not m or _key in DISABLED_MODELS:
+            return web.json_response({"ok": False, "error": "model",
+                                      "msg": "Эта модель сейчас недоступна — выбери другую."}, status=400)
         if len(_prompt) < 2:
             return web.json_response({"ok": False, "error": "prompt"}, status=400)
         _cost = int(m.get("credits", 0))
@@ -21294,14 +21377,18 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
                                params=_prompt[:200], worker=_WORKER_ID)
         try:
             from generation_api import api_generate_image as _gen
-            _img = await _gen(_prompt, m["model_id"], _aspect, m.get("api", "imagen"),
-                              quality=m.get("quality", "medium"))
+            import re as _re_wg
+            _img = await _gen(_prompt, m["model_id"], _aspect, m.get("api", "gemini"),
+                              quality=m.get("quality", "medium"),
+                              model_name=_re_wg.sub(r"^[^\w]+\s*", "", m.get("name", "")))
         except Exception as _ge:
             # Закрытие задачи и возврат кредитов — одной транзакцией.
-            await webgen_job_finish_refund(_wjob, str(_ge)[:200], int(uid), _cost)
+            await webgen_job_finish_refund(_wjob, _webgen_reason_short(_ge), int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_image gen: {_ge}")
-            return web.json_response({"ok": False, "error": "gen_failed"})
+            _msg = await _webgen_fail(uid, f"Генерация фото model={_key}", _ge, _prompt)
+            return web.json_response({"ok": False, "error": "gen_failed",
+                                      "msg": _msg + "<br>💳 Кредиты возвращены."})
         await _webgen_done(int(uid), _g_ck)
         if not _img:
             await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
@@ -21347,7 +21434,11 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
             from generation_api import upload_large_file as _upl
         except Exception:
             _upl = None
-        vid = await _gv(prompt, m["model_id"], aspect, m.get("api", "veo"), duration)
+        import re as _re_vj
+        vid = await _gv(prompt, m["model_id"], aspect, m.get("api", "veo"), duration,
+                        resolution=m.get("resolution", ""),
+                        model_name=_re_vj.sub(r"^[^\w]+\s*", "", m.get("name", "")),
+                        fallback_model_id=m.get("fallback_model_id", ""))
         if not vid or len(vid) < 1000:
             raise Exception("empty")
         size_mb = len(vid) / 1024 / 1024
@@ -21392,14 +21483,16 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
         # Закрытие задачи и возврат — одной транзакцией: раньше отметка
         # refunded=1 коммитилась ДО начисления, и сбой между ними прятал
         # задачу от фоновой компенсации навсегда. Аудит 30.09.2026, №11.
-        await webgen_job_finish_refund(job_id, str(_e)[:200], int(uid), cost)
+        await webgen_job_finish_refund(job_id, _webgen_reason_short(_e), int(uid), cost)
         logging.error(f"video job {job_id}: {_e}")
+        _msg = await _webgen_fail(uid, f"Генерация видео model={key}", _e, prompt)
         _cr = 0
         try:
             _cr = await _get_cr(int(uid))
         except Exception:
             pass
-        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "credits": _cr})
+        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "msg": _msg,
+                                     "credits": _cr})
     finally:
         # Снимаем «идёт генерация»: иначе счётчик параллельных генераций
         # оставался занятым до автоочистки через 30 минут и блокировал клиента.
@@ -21420,15 +21513,16 @@ async def api_gen_video_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data(_idata)
         if not uid:
             return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
-        from config import VIDEO_MODELS
+        from config import VIDEO_MODELS, DISABLED_MODELS
         _key = str(body.get("model", "")).strip()
         _prompt = str(body.get("prompt", "")).strip()
         _aspect = str(body.get("aspect", "16:9")).strip() or "16:9"
-        if _aspect not in ("16:9", "9:16", "1:1"):
-            _aspect = "16:9"
         m = VIDEO_MODELS.get(_key)
-        if not m:
-            return web.json_response({"ok": False, "error": "model"}, status=400)
+        if not m or _key in DISABLED_MODELS:
+            return web.json_response({"ok": False, "error": "model",
+                                      "msg": "Эта модель сейчас недоступна — выбери другую."}, status=400)
+        if _aspect not in (m.get("aspects") or ("16:9", "9:16", "1:1")):
+            _aspect = "16:9"
         if len(_prompt) < 2:
             return web.json_response({"ok": False, "error": "prompt"}, status=400)
         _durs = m.get("durations")
@@ -21441,7 +21535,7 @@ async def api_gen_video_handler(request: web.Request) -> web.Response:
                 _dur = sorted(_durs.keys())[0]
             _cost = int(_durs[_dur][0])
         else:
-            _dur = 8
+            _dur = int(m.get("duration") or 8)
             _cost = int(m.get("credits", 0))
         from db import deduct as _deduct, get_credits as _get_cr
         _cr = await _get_cr(int(uid))
@@ -21488,7 +21582,7 @@ async def api_gen_video_status_handler(request: web.Request) -> web.Response:
                                   "token": _it.get("token"), "url": _it.get("url"),
                                   "fid": _it.get("fid"),
                                   "credits": _it.get("credits"), "size": _it.get("size_mb"),
-                                  "err": _it.get("err")})
+                                  "err": _it.get("err"), "msg": _it.get("msg")})
     except Exception as _e:
         logging.error(f"api_gen_video_status: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
@@ -21521,12 +21615,18 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data(_idata)
         if not uid:
             return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
-        from config import EDIT_MODELS
+        from config import EDIT_MODELS, DISABLED_MODELS
         _key = str(body.get("model", "")).strip() or "edit_gemini"
         m = EDIT_MODELS.get(_key)
+        if m and _key in DISABLED_MODELS:
+            return web.json_response({"ok": False, "error": "model",
+                                      "msg": "Эта модель сейчас недоступна — выбери другую."}, status=400)
         if not m:
             _key = "edit_gemini"
             m = EDIT_MODELS.get("edit_gemini") or {"name": "Nano Banana", "credits": 10, "api": "gemini"}
+            if _key in DISABLED_MODELS:
+                return web.json_response({"ok": False, "error": "model",
+                                          "msg": "Эта модель сейчас недоступна — выбери другую."}, status=400)
         _prompt = str(body.get("prompt", "")).strip()
         if len(_prompt) < 2:
             return web.json_response({"ok": False, "error": "prompt"}, status=400)
@@ -21552,18 +21652,16 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         await webgen_job_start(_wjob, int(uid), "edit", _key, _cost,
                                params=_prompt[:200], worker=_WORKER_ID)
         try:
-            if (m.get("api") or "gemini") == "fal" and m.get("model_id"):
-                from generation_api import api_fal_edit_image as _fedit
-                _out = await _fedit(_img_in, _prompt, m["model_id"])
-            else:
-                from generation_api import api_edit_image as _edit
-                _out = await _edit(_img_in, _prompt)
+            from generation_api import api_edit_by_model as _edit_m
+            _out = await _edit_m(m, _img_in, _prompt)
         except Exception as _ge:
             # Закрытие задачи и возврат кредитов — одной транзакцией.
-            await webgen_job_finish_refund(_wjob, str(_ge)[:200], int(uid), _cost)
+            await webgen_job_finish_refund(_wjob, _webgen_reason_short(_ge), int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_edit gen: {_ge}")
-            return web.json_response({"ok": False, "error": "gen_failed"})
+            _msg = await _webgen_fail(uid, f"Редактирование фото model={_key}", _ge, _prompt)
+            return web.json_response({"ok": False, "error": "gen_failed",
+                                      "msg": _msg + "<br>💳 Кредиты возвращены."})
         await _webgen_done(int(uid), _g_ck)
         if not _out:
             await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
@@ -21593,12 +21691,8 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
     """Фоновая анимация фото (Veo или fal image-to-video)."""
     from db import add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
     try:
-        if (m.get("api") or "veo_anim") == "fal" and m.get("model_id"):
-            from generation_api import api_fal_animate_image as _fanim
-            vid = await _fanim(img_bytes, prompt, m["model_id"], int(m.get("duration", 5)), aspect)
-        else:
-            from generation_api import api_animate_image as _anim
-            vid = await _anim(img_bytes, prompt, aspect)
+        from generation_api import api_animate_by_model as _anim_m
+        vid = await _anim_m(m, img_bytes, prompt, aspect)
         if not vid or len(vid) < 1000:
             raise Exception("empty")
         size_mb = len(vid) / 1024 / 1024
@@ -21644,14 +21738,16 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
         # Закрытие задачи и возврат — одной транзакцией: раньше отметка
         # refunded=1 коммитилась ДО начисления, и сбой между ними прятал
         # задачу от фоновой компенсации навсегда. Аудит 30.09.2026, №11.
-        await webgen_job_finish_refund(job_id, str(_e)[:200], int(uid), cost)
+        await webgen_job_finish_refund(job_id, _webgen_reason_short(_e), int(uid), cost)
         logging.error(f"anim job {job_id}: {_e}")
+        _msg = await _webgen_fail(uid, f"Анимация фото model={key}", _e, prompt)
         _cr = 0
         try:
             _cr = await _get_cr(int(uid))
         except Exception:
             pass
-        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "credits": _cr})
+        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "msg": _msg,
+                                     "credits": _cr})
     finally:
         # Снимаем «идёт генерация»: иначе счётчик параллельных генераций
         # оставался занятым до автоочистки через 30 минут и блокировал клиента.
@@ -21672,12 +21768,18 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
         uid = _verify_tg_init_data(_idata)
         if not uid:
             return web.json_response({"ok": False, "error": "auth:" + _initdata_reason(_idata)}, status=403)
-        from config import ANIM_MODELS
+        from config import ANIM_MODELS, DISABLED_MODELS
         _key = str(body.get("model", "")).strip() or "anim_veo"
         m = ANIM_MODELS.get(_key)
+        if m and _key in DISABLED_MODELS:
+            return web.json_response({"ok": False, "error": "model",
+                                      "msg": "Эта модель сейчас недоступна — выбери другую."}, status=400)
         if not m:
             _key = "anim_veo"
             m = ANIM_MODELS.get("anim_veo") or {"credits": 249, "api": "veo_anim"}
+            if _key in DISABLED_MODELS:
+                return web.json_response({"ok": False, "error": "model",
+                                          "msg": "Эта модель сейчас недоступна — выбери другую."}, status=400)
         _prompt = str(body.get("prompt", "")).strip()
         if len(_prompt) < 2:
             return web.json_response({"ok": False, "error": "prompt"}, status=400)
@@ -21685,7 +21787,7 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
         if not _img_in:
             return web.json_response({"ok": False, "error": "image"}, status=400)
         _aspect = str(body.get("aspect", "16:9")).strip() or "16:9"
-        if _aspect not in ("16:9", "9:16", "1:1"):
+        if _aspect not in (m.get("aspects") or ("16:9", "9:16", "1:1")):
             _aspect = "16:9"
         _cost = int(m.get("credits", 249))
         from db import deduct as _deduct, get_credits as _get_cr

@@ -401,11 +401,14 @@ def _record_generation(uid: int, history: dict):
 import time as _time_module
 
 IMAGE_MODELS = {
-    # ── Imagen 4 ──────────────────────────────────────────
+    # ── Imagen 4 — ОТКЛЮЧЁН Google 17.08.2026 ─────────────
+    # Ключи оставлены ради истории генераций и статистики; модели всегда в
+    # RETIRED_MODELS (ниже) — в меню их нет, запустить нельзя.
     "img_fast": {
         "name": "⚡ Imagen 4 Fast",
         "model_id": "imagen-4.0-fast-generate-001",
         "api": "imagen",
+        "retired": True,
         "credits": 7,
         "price": "4₽",
         "speed": "~2 сек",
@@ -415,6 +418,7 @@ IMAGE_MODELS = {
         "name": "🌟 Imagen 4",
         "model_id": "imagen-4.0-generate-001",
         "api": "imagen",
+        "retired": True,
         "credits": 10,
         "price": "6₽",
         "speed": "~5 сек",
@@ -424,6 +428,7 @@ IMAGE_MODELS = {
         "name": "✨ Imagen 4 Ultra",
         "model_id": "imagen-4.0-ultra-generate-001",
         "api": "imagen",
+        "retired": True,
         "credits": 13,
         "price": "8₽",
         "speed": "~8 сек",
@@ -439,23 +444,27 @@ IMAGE_MODELS = {
         "speed": "~3 сек",
         "desc": "Быстрый, диалоговый",
     },
+    # gemini-3.1-flash-image-preview и gemini-3-pro-image-preview Google отключил
+    # 25.06.2026 — с тех пор эти две модели в боте отвечали только ошибкой.
+    # Замены по официальной странице deprecations: Nano Banana 2.1 (GA 06.10.2026)
+    # и Gemini 3 Pro Image (GA). Себестоимость: $0.034 и $0.134 за картинку.
     "nb_2": {
-        "name": "🍌 Nano Banana 2",
-        "model_id": "gemini-3.1-flash-image-preview",
+        "name": "🍌 Nano Banana 2.1",
+        "model_id": "gemini-nano-banana-2.1",
         "api": "gemini",
         "credits": 15,
         "price": "8₽",
-        "speed": "~4 сек",
-        "desc": "Новейший, лучшее качество",
+        "speed": "~5 сек",
+        "desc": "Новейший Gemini, лучшее качество",
     },
     "nb_pro": {
         "name": "🍌 Nano Banana Pro",
-        "model_id": "gemini-3-pro-image-preview",
+        "model_id": "gemini-3-pro-image",
         "api": "gemini",
         "credits": 30,
         "price": "14₽",
-        "speed": "~8 сек",
-        "desc": "4K, точный текст в картинке",
+        "speed": "~10 сек",
+        "desc": "2K, точный текст в картинке",
     },
     # ── Black Forest Labs / Ideogram (через fal.ai) ────────
     "flux_pro": {
@@ -531,14 +540,22 @@ IMAGE_MODELS = {
 
 # ─── Модели видео ─────────────────────────────────────────
 VIDEO_MODELS = {
+    # ── Google: Gemini Omni Flash 1.1 (через fal.ai) ──────
+    # Veo 3.1 (preview) Google отключает 22.10.2026, замена — Gemini Omni.
+    # Ключи vid_* сохранены (история, статистика, цены в БД). Себестоимость
+    # на fal.ai за 8 сек: 720p $0.80, 1080p $1.20, 4K $2.40 (звук включён).
+    # fallback_model_id — Veo, пока он жив: если новый эндпоинт не ответит.
     "vid_lite": {
-        "name": "🎞 Veo 3.1 Lite",
-        "model_id": "veo-3.1-lite-generate-preview",
-        "api": "veo",
+        "name": "🎞 Gemini Omni Lite",
+        "model_id": "google/gemini-omni-flash/v1.1/text-to-video",
+        "api": "fal",
+        "resolution": "720p",
+        "fallback_model_id": "veo-3.1-lite-generate-preview",
+        "aspects": ["16:9", "9:16"],
         "credits": 239,
         "price": "127₽",
-        "res": "720p",
-        "desc": "Бюджет Google, с аудио",
+        "res": "720p + аудио",
+        "desc": "Google, бюджетный, со звуком",
     },
     "wan_22": {
         "name": "🌊 Wan 2.2",
@@ -580,13 +597,16 @@ VIDEO_MODELS = {
         },
     },
     "vid_fast": {
-        "name": "🎥 Veo 3.1 Fast",
-        "model_id": "veo-3.1-fast-generate-preview",
-        "api": "veo",
+        "name": "🎥 Gemini Omni Fast",
+        "model_id": "google/gemini-omni-flash/v1.1/text-to-video",
+        "api": "fal",
+        "resolution": "1080p",
+        "fallback_model_id": "veo-3.1-fast-generate-preview",
+        "aspects": ["16:9", "9:16"],
         "credits": 249,
         "price": "133₽",
-        "res": "1080p",
-        "desc": "Баланс цены и качества",
+        "res": "1080p + аудио",
+        "desc": "Google, баланс цены и качества",
     },
     "kling_pro": {
         "name": "🏆 Kling 3.0 Pro",
@@ -630,9 +650,12 @@ VIDEO_MODELS = {
         },
     },
     "vid_pro": {
-        "name": "💎 Veo 3.1",
-        "model_id": "veo-3.1-generate-preview",
-        "api": "veo",
+        "name": "💎 Gemini Omni Pro",
+        "model_id": "google/gemini-omni-flash/v1.1/text-to-video",
+        "api": "fal",
+        "resolution": "4k",
+        "fallback_model_id": "veo-3.1-generate-preview",
+        "aspects": ["16:9", "9:16"],
         "credits": 640,
         "price": "340₽",
         "res": "4K + аудио",
@@ -838,33 +861,50 @@ pending_fk_payments: dict = {}
 ALTERNATIVE_MODELS = {
     # Для каждого ключа - (тип меню, ключ-альтернатива, причина)
     "img":   {
-        "img_ultra":     ("img", "img_std",   "Imagen 4 (чуть проще, но почти не отличается)"),
-        "img_std":       ("img", "img_fast",  "Imagen 4 Fast (быстрее, та же база)"),
-        "nb_pro":        ("img", "img_ultra", "Imagen 4 Ultra (близкое качество, другой провайдер)"),
-        "nb_2":          ("img", "img_std",   "Imagen 4 (другой провайдер, не зависит от Gemini)"),
-        "nb_flash":      ("img", "img_fast",  "Imagen 4 Fast (другой провайдер)"),
-        "flux_pro":      ("img", "img_ultra", "Imagen 4 Ultra (фотореалистичная альтернатива)"),
-        "ideogram_v3":   ("img", "nb_pro",    "Nano Banana Pro (тоже хорошо рисует текст)"),
+        # Imagen 4 отключён Google — альтернативы ведут на живые модели
+        # другого провайдера (если Google перегружен, Gemini тоже не поможет).
+        "nb_pro":        ("img", "gptimg_std",  "GPT Image 2 (другой провайдер, тоже точный текст)"),
+        "nb_2":          ("img", "flux_pro",    "Flux 2 Pro (другой провайдер)"),
+        "nb_flash":      ("img", "grok_img",    "Grok Imagine (другой провайдер)"),
+        "flux_pro":      ("img", "nb_2",        "Nano Banana 2.1 (фотореалистичная альтернатива)"),
+        "ideogram_v3":   ("img", "nb_pro",      "Nano Banana Pro (тоже хорошо рисует текст)"),
+        "gptimg_pro":    ("img", "nb_pro",      "Nano Banana Pro (другой провайдер)"),
+        "gptimg_std":    ("img", "nb_2",        "Nano Banana 2.1 (другой провайдер)"),
+        "gptimg_fast":   ("img", "nb_flash",    "Nano Banana (другой провайдер)"),
+        "grok_img":      ("img", "flux_pro",    "Flux 2 Pro (другой провайдер)"),
+        "grok_img_pro":  ("img", "flux_pro",    "Flux 2 Pro (другой провайдер)"),
     },
     "vid": {
-        "vid_pro":      ("vid", "vid_fast",     "Veo 3.1 Fast (1080p вместо 4K)"),
-        "vid_fast":     ("vid", "vid_lite",     "Veo 3.1 Lite (быстрее)"),
+        "vid_pro":      ("vid", "vid_fast",     "Gemini Omni Fast (1080p, быстрее и дешевле)"),
+        "vid_fast":     ("vid", "kling_turbo",  "Kling 2.5 Turbo (другой провайдер)"),
+        "vid_lite":     ("vid", "seedance_15",  "Seedance 1.5 Pro (другой провайдер, со звуком)"),
         "kling_pro":    ("vid", "kling_turbo",  "Kling 2.5 Turbo (быстрее, той же серии)"),
         "kling_turbo":  ("vid", "seedance_15",  "Seedance 1.5 Pro (другой провайдер)"),
         "seedance_20":  ("vid", "seedance_15",  "Seedance 1.5 Pro (стабильнее)"),
         "seedance_15":  ("vid", "kling_turbo",  "Kling 2.5 Turbo (другой провайдер)"),
-        "wan_22":       ("vid", "vid_lite",     "Veo 3.1 Lite (другой провайдер)"),
+        "wan_22":       ("vid", "vid_lite",     "Gemini Omni Lite (другой провайдер)"),
+        "grok_vid":     ("vid", "seedance_15",  "Seedance 1.5 Pro (другой провайдер)"),
     },
 }
 
 
 def friendly_error(e: Exception) -> str:
-    """Возвращает понятное сообщение для клиента (максимально короткое, без тех. деталей).
-    Safety-ошибки показываем как есть - клиенту нужно знать что надо переформулировать промт.
-    Все остальные ошибки (API 500/503/timeout/неизвестные) - одно универсальное сообщение."""
-    err = str(e)
+    """Понятное сообщение для клиента (HTML).
+
+    Часть 35: ошибки генерации теперь приходят как gen_errors.GenError — в них
+    уже готовый текст «что не прошло и как исправить», его и показываем.
+    Ниже — разбор старых текстовых исключений (Motion Control, сеть и т.п.).
+    """
+    try:
+        from gen_errors import GenError as _GE, strip_ids as _strip
+    except Exception:  # pragma: no cover
+        _GE, _strip = None, (lambda x: x)
+    if _GE is not None and isinstance(e, _GE):
+        return e.client
+    err = _strip(str(e))
     low = err.lower()
-    # Safety/блокировки контента - показываем как есть (клиент должен понимать что делать)
+    _contact = f"@{PERSONAL_USERNAME}"
+    # Safety/блокировки контента — показываем как есть (клиент должен понимать что делать)
     if ("🛡" in err or "фильтр" in low or "заблокирован" in low
         or "переформулир" in low or "копирайт" in low):
         return err
@@ -882,16 +922,12 @@ def friendly_error(e: Exception) -> str:
             "⚠️ Слишком много запросов сейчас.\n"
             "Подожди минуту и попробуй снова 🙏"
         )
-    # Провайдер прислал ПОЛЕЗНОЕ объяснение (нестабильность модели, список
-    # альтернатив, ошибка параметров) — показываем его как есть. Раньше такие
-    # тексты подменялись общим «небольшая техническая проблемка», и клиент
-    # оставался без подсказки, что делать дальше.
+    # Провайдер прислал ПОЛЕЗНОЕ объяснение — показываем его как есть.
     if ("нестабил" in low or "временно недоступна" in low
             or "попробуй альтернативу" in low or "выбери другую модель" in low
             or "ошибка параметров" in low or "завис в очереди" in low
             or "таймаут генерации" in low):
-        return err
-    # Модель вернула текст вместо картинки (клиент прислал разговорный промт/инструкцию)
+        return err if err.lstrip()[:1] in ("⚠", "⏱", "🛡", "⏳", "🤷") else f"⚠️ {err}"
     if "не смогла создать картинку" in low or "пустой ответ" in low or "попробуй другой промт" in low:
         return (
             "⚠️ <b>Похоже, это текст-инструкция, а не описание картинки.</b>\n\n"
@@ -899,12 +935,24 @@ def friendly_error(e: Exception) -> str:
             "Например: <i>рыжий кот в очках сидит в кафе, тёплый свет, реализм</i>"
         )
     # Все остальные - одно универсальное сообщение
-    return "⚠️ Небольшая техническая проблемка. Попробуй ещё раз или напиши @neirosetkaalex"
+    return f"⚠️ Небольшая техническая проблемка. Попробуй ещё раз или напиши {_contact}"
+
+
+def client_error_text(e: Exception) -> str:
+    """Текст ошибки для клиента с ОДНИМ значком в начале.
+
+    Раньше обработчики писали f"⚠️ {friendly_error(e)}", а friendly_error и
+    сама начинала с «⚠️» — клиент видел «⚠️ ⚠️ …» или «⚠️ 🛡 …».
+    """
+    _t = friendly_error(e) or ""
+    _first = _t.lstrip()[:1]
+    if _first and not (_first.isalnum() or _first in "<«\"'"):
+        return _t
+    return f"⚠️ {_t}"
 
 
 IMAGE_BRAND_MODELS = {
     "gptimg":   ["gptimg_fast", "gptimg_std", "gptimg_pro"],
-    "imagen":   ["img_fast", "img_std", "img_ultra"],
     "nano":     ["nb_flash", "nb_2", "nb_pro"],
     "flux":     ["flux_pro"],
     "ideogram": ["ideogram_v3"],
@@ -913,7 +961,6 @@ IMAGE_BRAND_MODELS = {
 
 IMAGE_BRAND_TITLES = {
     "gptimg":   "GPT Image 2 (OpenAI)",
-    "imagen":   "Imagen 4",
     "nano":     "Nano Banana",
     "flux":     "Flux",
     "ideogram": "Ideogram",
@@ -930,7 +977,7 @@ VIDEO_BRAND_MODELS = {
 }
 
 VIDEO_BRAND_TITLES = {
-    "veo":      "Veo",
+    "veo":      "Gemini Omni (Google)",
     "kling":    "Kling",
     "seedance": "Seedance",
     "wan":      "Wan",
@@ -1625,7 +1672,7 @@ def detect_consultant_intent(user_text: str, reply_text: str) -> tuple[str | Non
         if "4k" in combined or "точный текст" in combined or "максимальное качество" in combined or "nano banana pro" in combined:
             return ("image", "nb_pro")
         if "быстр" in combined or "дёшев" in combined or "дешев" in combined:
-            return ("image", "img_fast")
+            return ("image", "nb_flash")
         return ("image", None)
 
     return (None, None)
@@ -1908,7 +1955,8 @@ EDIT_MODELS = {
     "edit_gpt": {
         "name": "🤖 GPT Image",
         "api": "fal",
-        "model_id": "fal-ai/gpt-image-2/edit",
+        # Официальный id эндпоинта на fal.ai — openai/… (как и у генерации).
+        "model_id": "openai/gpt-image-2/edit",
         "credits": 15,
         "desc": "OpenAI - реализм, сложные правки",
     },
@@ -1924,9 +1972,17 @@ ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 к
 
 # Модели для анимации фото (image-to-video)
 ANIM_MODELS = {
+    # Ключ anim_veo сохранён (история/цены в БД), модель — Gemini Omni Flash
+    # image-to-video на fal.ai (Veo 3.1 Google отключает 22.10.2026). Себестоимость
+    # 8 сек 1080p — $1.20. Пока Veo жив, он — резерв при сбое нового эндпоинта.
     "anim_veo": {
-        "name": "🎥 Veo 3.1",
-        "api": "veo_anim",
+        "name": "🎥 Gemini Omni",
+        "api": "fal",
+        "model_id": "google/gemini-omni-flash/v1.1/image-to-video",
+        "resolution": "1080p",
+        "fallback_model_id": "veo-3.1-fast-generate-preview",
+        "aspects": ["16:9", "9:16"],
+        "two_frames": True,
         "credits": 249,
         "desc": "Google, 8 сек, 1080p + аудио",
         "duration": 8,
@@ -1943,6 +1999,7 @@ ANIM_MODELS = {
         "name": "🎞 Kling 2.5 Turbo",
         "api": "fal",
         "model_id": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+        "two_frames": True,
         "credits": 109,
         "desc": "Плавная физика, 5 сек, 1080p",
         "duration": 5,
@@ -1961,6 +2018,45 @@ UPSCALE_CREDIT_COST = 20  # апскейл 4x - себест ~$0.12/4MP → 20 �
 # Множество отключённых моделей (ключи из IMAGE/VIDEO/EDIT/ANIM_MODELS).
 # Заполняется из bot_gen_prices.enabled=FALSE при старте и обновляется через /admin.
 DISABLED_MODELS: set = set()
+
+# Модели, которые провайдер ОТКЛЮЧИЛ навсегда. Всегда выключены, даже если в
+# bot_gen_prices у них enabled=TRUE: db.load_prices() и переключатель в админке
+# возвращают их в DISABLED_MODELS. Иначе клиент платил и получал гарантированную ошибку.
+RETIRED_MODELS: set = {k for _d in (IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS)
+                       for k, _m in _d.items() if _m.get("retired")}
+DISABLED_MODELS.update(RETIRED_MODELS)
+
+# Таблицы цен по длительности — как в коде. Если Александр меняет базовую цену
+# модели в админке, вся таблица масштабируется пропорционально (db.load_prices).
+VIDEO_DURATIONS_DEFAULT = {k: dict(_m["durations"]) for k, _m in VIDEO_MODELS.items()
+                           if _m.get("durations")}
+
+
+def set_model_credits(key: str, credits: int) -> None:
+    """Новая цена модели — и её таблицы длительностей, если она есть.
+
+    Раньше админка меняла только m["credits"]: меню показывало новую цену, а
+    списание по длительности шло по старой таблице из кода.
+    """
+    for _d in (IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS):
+        if key in _d:
+            _d[key]["credits"] = credits
+    _dflt = VIDEO_DURATIONS_DEFAULT.get(key)
+    if not _dflt or key not in VIDEO_MODELS:
+        return
+    _base = _dflt[min(_dflt)][0]
+    if not _base or not credits or credits == _base:
+        VIDEO_MODELS[key]["durations"] = dict(_dflt)
+        return
+    _k = credits / _base
+    _new = {}
+    for _sec, (_c, _rub) in _dflt.items():
+        try:
+            _nr = f"{int(round(int(str(_rub).rstrip('₽')) * _k))}₽"
+        except Exception:
+            _nr = _rub
+        _new[_sec] = (max(1, int(round(_c * _k))), _nr)
+    VIDEO_MODELS[key]["durations"] = _new
 
 # Стоимость улучшения промта - списывается только когда юзер генерирует
 IMPROVE_CREDIT_COST = 0   # само улучшение бесплатно, платит только за генерацию

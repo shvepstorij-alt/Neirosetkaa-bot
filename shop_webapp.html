@@ -525,7 +525,7 @@ function renderGenPhoto(b){
   if(!M.length){ b.innerHTML='<div class="empty">Модели временно недоступны</div>'; return; }
   if(!window._genModel||!M.filter(function(m){return m.key===window._genModel;}).length) window._genModel=M[0].key;
   if(!window._genAspect) window._genAspect='1:1';
-  var order=['Imagen','Nano Banana','GPT Image','Flux','Ideogram','Grok','Другое'];
+  var order=['Nano Banana','GPT Image','Flux','Ideogram','Grok','Другое'];
   var sel=_mkSelect('gen-sel',M,window._genModel,order,"_saveGenPrompt();window._genModel=this.value;renderGen()");
   var cur=(M.filter(function(m){return m.key===window._genModel})[0])||M[0];
   var aspects=['1:1','3:4','4:3','16:9','9:16'].map(function(a){return '<span class="chip'+(window._genAspect===a?' on':'')+'" onclick="_saveGenPrompt();window._genAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
@@ -548,10 +548,12 @@ function renderGenVideo(b){
   var cur=(M.filter(function(m){return m.key===window._vidModel;})[0])||M[0];
   var durs=cur.durations||[{d:8,credits:cur.credits}];
   if(!durs.filter(function(x){return x.d===window._vidDur;}).length) window._vidDur=durs[0].d;
-  var order=['Veo','Kling','Seedance','Grok','Wan','Другое'];
+  var order=['Gemini Omni','Kling','Seedance','Grok','Wan','Другое'];
   var sel=_mkSelect('vid-sel',M,window._vidModel,order,"_saveVidPrompt();window._vidModel=this.value;renderGen()");
   var durChips=durs.map(function(x){return '<span class="chip'+(window._vidDur===x.d?' on':'')+'" onclick="_saveVidPrompt();window._vidDur='+x.d+';renderGen()">'+x.d+' сек · '+x.credits+' кр</span>';}).join('');
-  var aspects=['16:9','9:16','1:1'].map(function(a){return '<span class="chip'+(window._vidAspect===a?' on':'')+'" onclick="_saveVidPrompt();window._vidAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
+  var _va=(cur.aspects&&cur.aspects.length)?cur.aspects:['16:9','9:16','1:1'];
+  if(_va.indexOf(window._vidAspect)<0) window._vidAspect=_va[0];
+  var aspects=_va.map(function(a){return '<span class="chip'+(window._vidAspect===a?' on':'')+'" onclick="_saveVidPrompt();window._vidAspect=\''+a+'\';renderGen()">'+a+'</span>';}).join('');
   b.innerHTML='<div class="chip" style="display:inline-block;margin-bottom:10px" onclick="window._genMode=null;renderGen()">← Разделы</div>'
     +'<div class="block"><h3>Модель</h3>'+sel
     +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>от '+((cur.durations&&cur.durations[0])?cur.durations[0].credits:cur.credits)+' кр</b>'+(cur.res?(' · '+_h(cur.res)):'')+'</div></div>'
@@ -640,7 +642,7 @@ function _vidPoll(job,tries,kind,restore){
       return;
     }
     // error
-    if(res) res.innerHTML='<div class="pm-err">Не получилось сгенерировать видео. Кредиты возвращены — попробуй ещё раз или другую модель.</div>';
+    if(res) res.innerHTML='<div class="pm-err">'+((d&&d.msg)?(d.msg+'<br>💳 Кредиты возвращены.'):'Не получилось сгенерировать видео. Кредиты возвращены — попробуй ещё раз или другую модель.')+'</div>';
     restore();
   }).catch(function(){ setTimeout(function(){_vidPoll(job,tries+1,kind,restore);},4000); });
 }
@@ -735,7 +737,9 @@ function renderGenAnim(b){
   var selBlock=M.length?('<div class="block"><h3>Модель</h3>'
     +_mkSelect('anim-sel',M,window._animModel,null,_sv+"window._animModel=this.value;renderGen()")
     +'<div class="mdl-desc">'+(cur.desc?_h(cur.desc)+' · ':'')+'<b>'+cur.credits+' кр</b>'+(cur.duration?(' · '+cur.duration+' сек'):'')+'</div></div>'):'';
-  var aspects=['16:9','9:16','1:1'].map(function(a){return '<span class="chip'+(window._animAspect===a?' on':'')+'" onclick="'+_sv+'window._animAspect=\''+a+'\';window._animAspectAuto=false;renderGen()">'+a+'</span>';}).join('');
+  var _aa=(cur.aspects&&cur.aspects.length)?cur.aspects:['16:9','9:16','1:1'];
+  if(_aa.indexOf(window._animAspect)<0){ window._animAspect=_aa[0]; }  // Gemini Omni: только 16:9 и 9:16
+  var aspects=_aa.map(function(a){return '<span class="chip'+(window._animAspect===a?' on':'')+'" onclick="'+_sv+'window._animAspect=\''+a+'\';window._animAspectAuto=false;renderGen()">'+a+'</span>';}).join('');
   var fmtHint=window._animImg
     ? (window._animAspectAuto
         ? '<div class="mdl-desc">✅ Формат <b>'+window._animAspect+'</b> определён по твоему фото. Можно изменить вручную.</div>'

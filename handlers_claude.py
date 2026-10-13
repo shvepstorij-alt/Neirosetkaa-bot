@@ -532,7 +532,7 @@ async def adm_claude_del_confirm(cb: CallbackQuery):
             return
         await conn.execute("DELETE FROM claude_codes WHERE id=$1", code_id)
     await cb.answer(f"✅ Код {row['code']} удалён", show_alert=True)
-    cb.data = f"adm_claude_free:{plan}"
+    cb = cb.model_copy(update={"data": f"adm_claude_free:{plan}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await adm_claude_free_codes(cb)
 
 

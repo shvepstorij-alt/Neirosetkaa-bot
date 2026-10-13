@@ -24,6 +24,10 @@ from config import (
     BOT_TOKEN, EVOLINK_API_KEY, FAL_API_KEY, GEMINI_API_KEY, MOTION_MODEL_ID, _RETRY_STATUSES,
     bot,
 )
+import html as _html
+from gen_errors import (
+    GenError, fal_error, gemini_block_error, google_http_error, safety_error,
+)
 
 # Таймауты для «долгих» сессий (polling генерации, скачивание результата).
 # Раньше эти сессии создавались вообще без таймаута: зависший сокет держал
@@ -34,15 +38,23 @@ _LONG_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=180
 
 
 def _is_retryable_error(exc: Exception) -> bool:
-    """Проверяет, стоит ли повторять запрос при этой ошибке."""
+    """Проверяет, стоит ли повторять запрос при этой ошибке.
+
+    Часть 35: таймаут больше НЕ повод повторять. Синхронный запрос к fal.ai или
+    Google, оборвавшийся по таймауту, мог уже выполниться у провайдера — повтор
+    означал вторую оплату той же генерации за наш счёт. Повторяем только явную
+    перегрузку и лимит запросов: такие запросы провайдер не выполнял и не списывал.
+    """
+    if isinstance(exc, GenError):
+        return exc.kind in ("overload", "rate")
     msg = str(exc).lower()
     # Явные HTTP-статусы в тексте
     for code in _RETRY_STATUSES:
         if f" {code}:" in msg or f" {code} " in msg:
             return True
-    # Ключевые слова временных ошибок
+    # Ключевые слова временных ошибок (без timeout — см. выше)
     triggers = [
-        "rate limit", "timeout", "timed out", "temporarily",
+        "rate limit", "temporarily",
         "unavailable", "try again", "internal error",
         "connection reset", "connection aborted",
     ]
@@ -165,34 +177,382 @@ async def upload_large_file(file_bytes: bytes, filename: str = "video.mp4") -> s
         return None
 
 
-async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
-                                  quality: str = "medium", _retry_count: int = 0) -> bytes:
-    """Генерация изображений через fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2).
-    Использует sync endpoint - результат приходит сразу.
-    
-    quality: для GPT Image 2 - 'low' / 'medium' / 'high'. Для остальных игнорируется.
-    _retry_count: счётчик повторных попыток (внутренний параметр для retry при downstream errors)
+# ══════════════════════════════════════════════════════════
+#  Общие помощники (часть 35)
+# ══════════════════════════════════════════════════════════
+
+# Veo 3.1 (preview) Google отключает 22.10.2026 — после этой даты резерв на Veo
+# не имеет смысла, запрос гарантированно получит 404.
+_VEO_SHUTDOWN = datetime.date(2026, 10, 22)
+
+
+def _veo_alive() -> bool:
+    return datetime.date.today() < _VEO_SHUTDOWN
+
+
+def _model_name(model_id: str, fallback: str = "") -> str:
+    """Человеческое имя модели по model_id (для текста ошибки клиенту)."""
+    if fallback:
+        return re.sub(r"^[^\w]+\s*", "", fallback).strip() or fallback
+    try:
+        from config import IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS
+        for _d in (IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS):
+            for _m in _d.values():
+                if _m.get("model_id") == model_id and _m.get("name"):
+                    return re.sub(r"^[^\w]+\s*", "", _m["name"]).strip()
+    except Exception:
+        pass
+    return "Модель"
+
+
+def _mime_of(data: bytes) -> str:
+    """MIME по сигнатуре файла. Раньше любое фото отправлялось как image/jpeg —
+    PNG/WebP из мини-аппа часть моделей отклоняла как «повреждённый файл»."""
+    _b = bytes(data[:12] or b"")
+    if _b.startswith(b"\x89PNG"):
+        return "image/png"
+    if _b[:4] == b"RIFF" and _b[8:12] == b"WEBP":
+        return "image/webp"
+    if _b[:3] == b"GIF":
+        return "image/gif"
+    return "image/jpeg"
+
+
+def _data_uri(data: bytes) -> str:
+    return f"data:{_mime_of(data)};base64,{base64.b64encode(data).decode('utf-8')}"
+
+
+async def _fal_download(url: str, *, model_name: str, model_id: str, kind: str = "image",
+                        request_id: str = "", min_bytes: int = 1000,
+                        attempts: int = 3, timeout_total: int = 180) -> bytes:
+    """Скачивание готового результата fal.ai с проверкой статуса.
+
+    Раньше ответ скачивался без проверки HTTP-статуса: при 403/404 клиенту
+    уходил «файл» из текста ошибки (несколько сотен байт), Telegram его
+    отклонял, а кредиты при этом считались потраченными.
     """
-    MAX_DOWNSTREAM_RETRIES = 2  # Всего 3 попытки (0, 1, 2) - начальная + 2 retry
+    _last = ""
+    _to = aiohttp.ClientTimeout(total=timeout_total, sock_read=120)
+    for _a in range(1, attempts + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=_to) as _s:
+                async with _s.get(url) as _r:
+                    if _r.status != 200:
+                        _last = f"HTTP {_r.status}"
+                    else:
+                        _b = await _r.read()
+                        if len(_b) >= min_bytes:
+                            return _b
+                        _last = f"слишком маленький файл ({len(_b)} байт)"
+        except asyncio.TimeoutError:
+            _last = "timeout"
+        except Exception as _e:
+            _last = f"{type(_e).__name__}: {str(_e)[:150]}"
+        logging.warning(f"fal download {kind} attempt {_a}/{attempts} failed: {_last} url={url[:120]}")
+        if _a < attempts:
+            await asyncio.sleep(2 * _a)
+    _what = "Видео" if kind == "video" else "Картинка"
+    # "lost": результат уже создан и оплачен — повтор/резерв означали бы вторую оплату.
+    raise GenError(
+        "lost",
+        f"⚠️ {_what} создано, но не скачалось с сервера генерации.\n\n"
+        "💡 Попробуй ещё раз — Александр уже получил отчёт и может восстановить файл.",
+        raw=f"download failed: {_last} | request_id={request_id} | url={url[:300]}",
+        provider="fal.ai", model=model_id,
+        hint=(f"Восстановить: /recover {request_id} <user_id>" if request_id and kind == "video"
+              else ""))
+
+
+def _fal_extract_url(result: dict, kind: str) -> str:
+    if not isinstance(result, dict):
+        return ""
+    if kind == "video":
+        _v = result.get("video")
+        if isinstance(_v, dict) and _v.get("url"):
+            return _v["url"]
+        if isinstance(_v, str) and _v.startswith("http"):
+            return _v
+        if result.get("video_url"):
+            return str(result["video_url"])
+        _o = result.get("output")
+        if isinstance(_o, dict):
+            _ov = _o.get("video")
+            if isinstance(_ov, dict) and _ov.get("url"):
+                return _ov["url"]
+            if _o.get("video_url"):
+                return str(_o["video_url"])
+        return ""
+    _imgs = result.get("images")
+    if isinstance(_imgs, list) and _imgs:
+        _i0 = _imgs[0]
+        if isinstance(_i0, dict) and _i0.get("url"):
+            return _i0["url"]
+        if isinstance(_i0, str):
+            return _i0
+    _im = result.get("image")
+    if isinstance(_im, dict) and _im.get("url"):
+        return _im["url"]
+    return ""
+
+
+def _fal_no_result_error(result, kind: str, model_name: str, model_id: str,
+                         prompt: str, request_id: str = "") -> GenError:
+    """Ответ пришёл без картинки/видео — разбираемся, почему."""
+    _txt = json.dumps(result, ensure_ascii=False)[:1500] if isinstance(result, (dict, list)) else str(result)
+    _low = _txt.lower()
+    if isinstance(result, dict) and (result.get("detail") or "content_policy_violation" in _low
+                                     or "flagged by a content" in _low):
+        return fal_error(0, _txt, model_name, model_id, prompt=prompt, stage="result")
+    # Flux и др.: картинка «зацензурена» чёрным кадром, флаг has_nsfw_concepts
+    _nsfw = result.get("has_nsfw_concepts") if isinstance(result, dict) else None
+    if isinstance(_nsfw, list) and any(_nsfw):
+        return safety_error(model_name, raw=_txt, labels=["has_nsfw_concepts"],
+                            provider="fal.ai", model=model_id, prompt=prompt, category="sexual")
+    _what = "видео" if kind == "video" else "картинку"
+    return GenError("no_output",
+                    f"🤷 <b>{_html.escape(model_name)}</b> не вернула {_what} по этому запросу.\n\n"
+                    "💡 Переформулируй промт — опиши, что должно быть в кадре, — или выбери "
+                    "другую модель.",
+                    raw=f"request_id={request_id} | {_txt}", provider="fal.ai", model=model_id)
+
+
+async def _fal_queue_run(model_id: str, payload: dict, poll_max: int = 90, *,
+                         model_name: str = "", prompt: str = "", interval: float = 5.0,
+                         first_wait: float = 0.0, queue_limit_sec: int = 360,
+                         log_tag: str = "fal") -> dict:
+    """Универсальный запуск fal.ai queue: submit → poll → result (JSON).
+
+    Часть 35. Раньше:
+      • ответ submit не проверялся по статусу — ошибка 422 (модерация или
+        неверный параметр) читалась как «нет request_id»;
+      • когда задача упала у провайдера, fal всё равно отдаёт статус COMPLETED,
+        а причина лежит в ответе result с кодом 4xx/5xx. Этот ответ читался как
+        «результат», и клиент получал «нет изображения: {detail…}» без причины.
+    Теперь любая ошибка разбирается gen_errors.fal_error: клиент видит, что именно
+    не прошло и как исправить, Александр — сырой ответ провайдера.
+    """
+    _name = model_name or _model_name(model_id)
     if not FAL_API_KEY:
-        raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
+        raise GenError("auth", "⚙️ Сервис генерации временно недоступен — уже разбираемся.",
+                       raw="FAL_API_KEY не задан в Railway", provider="fal.ai", model=model_id)
+    headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json",
+               "Accept": "application/json"}
+    poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
+    queue_url = f"https://queue.fal.run/{model_id}"
+    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
+        # 1. Постановка в очередь
+        try:
+            async with s.post(queue_url, headers=headers, json=payload,
+                              timeout=aiohttp.ClientTimeout(total=90)) as r:
+                _body = await r.text()
+                if r.status not in (200, 201, 202):
+                    logging.error(f"{log_tag} submit HTTP {r.status} model={model_id} "
+                                  f"keys={list(payload)} body={_body[:500]}")
+                    raise fal_error(r.status, _body, _name, model_id, prompt=prompt, stage="submit")
+                try:
+                    submit = json.loads(_body)
+                except Exception:
+                    raise GenError("provider", f"⚠️ <b>{_html.escape(_name)}</b> сейчас не отвечает.\n\n"
+                                   "💡 Попробуй ещё раз через минуту или выбери другую модель.",
+                                   raw=f"submit non-JSON HTTP {r.status}: {_body[:400]}",
+                                   provider="fal.ai", model=model_id)
+        except aiohttp.ClientConnectorError as _ne:
+            # Соединение даже не установилось — задача точно не создана, денег не стоила.
+            raise GenError("overload", f"⚠️ <b>{_html.escape(_name)}</b> сейчас недоступна "
+                           "(нет связи с сервером генерации).\n\n💡 Попробуй ещё раз через минуту.",
+                           raw=f"submit network: {type(_ne).__name__}: {_ne}", provider="fal.ai",
+                           model=model_id)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as _ne:
+            # Запрос ушёл, ответа нет: fal МОГ принять задачу. Не повторяем и не
+            # уходим на резерв — иначе возможна двойная оплата у провайдера.
+            raise GenError("lost", f"⚠️ <b>{_html.escape(_name)}</b>: сервер генерации не ответил.\n\n"
+                           "💡 Попробуй ещё раз через пару минут.",
+                           raw=f"submit no response: {type(_ne).__name__}: {_ne}", provider="fal.ai",
+                           model=model_id)
+        request_id = submit.get("request_id") if isinstance(submit, dict) else None
+        if not request_id:
+            raise fal_error(0, json.dumps(submit, ensure_ascii=False)[:1200], _name, model_id,
+                            prompt=prompt, stage="submit")
+        status_url = submit.get("status_url") or f"{queue_url}/requests/{request_id}/status"
+        response_url = submit.get("response_url") or f"{queue_url}/requests/{request_id}"
+        logging.info(f"{log_tag} submitted: {request_id} model={model_id} keys={list(payload)}")
+        cancel_url = submit.get("cancel_url") or f"{queue_url}/requests/{request_id}/cancel"
 
-    # Санитизация промта для GPT Image 2 - OpenAI плохо обрабатывает
-    # некоторые спецсимволы (ёлочки «», длинные тире, множественные переносы)
+        async def _cancel() -> bool:
+            """Отмена задачи в очереди fal (PUT …/cancel). True — fal подтвердил отмену:
+            такую задачу он не выполнит и не спишет."""
+            try:
+                async with s.put(cancel_url, headers=poll_headers,
+                                 timeout=aiohttp.ClientTimeout(total=20)) as cr:
+                    _cb = await cr.text()
+                    logging.info(f"{log_tag} cancel {request_id}: HTTP {cr.status} {_cb[:120]}")
+                    return cr.status in (200, 202) and "already" not in _cb.lower()
+            except Exception as _ce:
+                logging.warning(f"{log_tag} cancel {request_id} failed: {_ce}")
+                return False
+
+        async def _fetch_result():
+            """(status, dict|None, body) — результат или ошибка из response_url."""
+            _urls = [response_url]
+            if "queue.fal.run" in response_url:
+                _urls.append(response_url.replace("queue.fal.run", "fal.run"))
+            _last = (0, None, "")
+            for _u in _urls:
+                for _a in range(5):
+                    try:
+                        async with s.get(_u, headers=poll_headers,
+                                         timeout=aiohttp.ClientTimeout(total=60)) as rr:
+                            _b = await rr.text()
+                            _j = None
+                            try:
+                                _j = json.loads(_b)
+                            except Exception:
+                                pass
+                            if rr.status == 200 and isinstance(_j, dict):
+                                return 200, _j, _b
+                            if rr.status >= 400 and rr.status != 404:
+                                # Задача завершилась ошибкой — это её причина.
+                                return rr.status, _j, _b
+                            _last = (rr.status, _j, _b)
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as _fe:
+                        _last = (0, None, f"{type(_fe).__name__}: {_fe}")
+                    await asyncio.sleep(4)
+            return _last
+
+        # 2. Ожидание
+        if first_wait:
+            await asyncio.sleep(first_wait)
+        _in_queue_since = None
+        _errors = 0
+        _done = False
+        for _i in range(poll_max):
+            await asyncio.sleep(interval)
+            try:
+                async with s.get(status_url, headers=poll_headers,
+                                 timeout=aiohttp.ClientTimeout(total=20)) as sr:
+                    _sb = await sr.text()
+                    if sr.status in (401, 403):
+                        raise fal_error(sr.status, _sb, _name, model_id, prompt=prompt, stage="status")
+                    if sr.status == 405:
+                        logging.warning(f"{log_tag} status 405 → читаю результат напрямую {request_id}")
+                        _st, _j, _b = await _fetch_result()
+                        if _st == 200 and _j is not None:
+                            _j["_request_id"] = request_id
+                            return _j
+                        continue
+                    if sr.status not in (200, 202):
+                        _errors += 1
+                        if _errors >= 12:
+                            raise GenError("lost", f"⚠️ <b>{_html.escape(_name)}</b>: сервер "
+                                           "генерации перестал отвечать.\n\n💡 Попробуй ещё раз позже.",
+                                           raw=f"status HTTP {sr.status} x{_errors}: {_sb[:300]} "
+                                               f"request_id={request_id}",
+                                           provider="fal.ai", model=model_id)
+                        continue
+                    try:
+                        st = json.loads(_sb)
+                    except Exception:
+                        _errors += 1
+                        continue
+            except (aiohttp.ClientError, asyncio.TimeoutError) as _pe:
+                _errors += 1
+                logging.warning(f"{log_tag} poll error {request_id}: {_pe}")
+                if _errors >= 12:
+                    raise GenError("lost", "⚠️ Связь с сервером генерации потеряна.\n\n"
+                                   "💡 Попробуй ещё раз позже — если списались кредиты, они вернутся.",
+                                   raw=f"poll network x{_errors}: {_pe} request_id={request_id}",
+                                   provider="fal.ai", model=model_id)
+                continue
+            _errors = 0
+            _status = str(st.get("status") or "").upper()
+            if _status == "COMPLETED":
+                _done = True
+                break
+            if _status in ("FAILED", "ERROR", "CANCELLED"):
+                # Подробности лежат в response_url — берём их оттуда.
+                _st, _j, _b = await _fetch_result()
+                raise fal_error(_st or 500, _b or json.dumps(st, ensure_ascii=False),
+                                _name, model_id, prompt=prompt, stage="status")
+            if _status == "IN_QUEUE":
+                _in_queue_since = _in_queue_since or time.time()
+                if time.time() - _in_queue_since > queue_limit_sec:
+                    # Задачу снимаем с очереди. Подтвердил fal отмену — она не
+                    # выполнится и не спишется, можно повторить/уйти на резерв
+                    # ("overload"). Не подтвердил — "lost": повторять нельзя.
+                    _cancelled = await _cancel()
+                    raise GenError("overload" if _cancelled else "lost",
+                                   f"⏱ <b>{_html.escape(_name)}</b>: очередь у провайдера не двигается "
+                                   f"{queue_limit_sec // 60}+ мин.\n\n💡 Попробуй ещё раз позже или выбери "
+                                   "другую модель.",
+                                   raw=f"IN_QUEUE > {queue_limit_sec}s request_id={request_id} "
+                                       f"cancelled={_cancelled}",
+                                   provider="fal.ai", model=model_id)
+            else:
+                _in_queue_since = None
+            if (_i + 1) % 12 == 0:
+                logging.info(f"{log_tag} still {_status} {request_id} ({model_id})")
+
+        # 3. Результат (или последняя попытка после истечения ожидания)
+        _st, _j, _b = await _fetch_result()
+        if _st == 200 and isinstance(_j, dict):
+            if not _done:
+                logging.info(f"{log_tag} rescued after poll timeout: {request_id}")
+            if _j.get("detail") and not (_fal_extract_url(_j, "video") or _fal_extract_url(_j, "image")):
+                raise fal_error(0, _b, _name, model_id, prompt=prompt, stage="result")
+            _j["_request_id"] = request_id
+            return _j
+        if not _done:
+            # Ждать дальше нельзя, а задача ещё идёт: fal на её result может
+            # отвечать и 4xx («still in progress») — это НЕ ошибка параметров.
+            # Пытаемся отменить; повтора и резерва нет (kind="timeout").
+            await _cancel()
+            raise GenError("timeout", f"⏱ <b>{_html.escape(_name)}</b> не успела за отведённое "
+                           "время.\n\n💡 Попробуй ещё раз или выбери модель побыстрее.",
+                           raw=f"poll timeout request_id={request_id} last_result={_st} {(_b or '')[:200]}",
+                           provider="fal.ai", model=model_id,
+                           hint=f"Если видео всё же появится: /recover {request_id} <user_id>")
+        if _st and _st >= 400:
+            logging.error(f"{log_tag} result HTTP {_st} {request_id} model={model_id}: {(_b or '')[:600]}")
+            raise fal_error(_st, _b or "", _name, model_id, prompt=prompt, stage="result")
+        raise GenError("lost", f"⚠️ <b>{_html.escape(_name)}</b>: не удалось получить результат.\n\n"
+                       "💡 Попробуй ещё раз.", raw=f"result {_st}: {(_b or '')[:400]} request_id={request_id}",
+                       provider="fal.ai", model=model_id)
+
+
+def _fal_content_blocked(result) -> bool:
+    _rs = str(result).lower()
+    return "content_policy_violation" in _rs or "flagged by a content" in _rs
+
+
+# ══════════════════════════════════════════════════════════
+#  ИЗОБРАЖЕНИЯ — fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2, Grok)
+# ══════════════════════════════════════════════════════════
+
+async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
+                                  quality: str = "medium", _retry_count: int = 0,
+                                  model_name: str = "") -> bytes:
+    """Генерация изображений через fal.ai (sync endpoint — результат приходит сразу).
+
+    quality: для GPT Image 2 — 'low' / 'medium' / 'high'; для Grok — 'quality'.
+    _retry_count: внутренний счётчик повторов при downstream_service_error.
+    """
+    MAX_DOWNSTREAM_RETRIES = 2  # Всего 3 попытки (0, 1, 2)
+    _name = model_name or _model_name(model_id)
+    if not FAL_API_KEY:
+        raise GenError("auth", "⚙️ Сервис генерации временно недоступен — уже разбираемся.",
+                       raw="FAL_API_KEY не задан в Railway", provider="fal.ai", model=model_id)
+
+    _orig_prompt = prompt
+    # Санитизация промта для GPT Image 2 — OpenAI плохо обрабатывает
+    # ёлочки «», фигурные кавычки и множественные переносы.
     if "gpt-image-2" in model_id:
-        import re as _re
-        # Заменяем ёлочки «» на обычные кавычки ""
         prompt = prompt.replace('«', '"').replace('»', '"')
-        # Заменяем фигурные кавычки на обычные
-        prompt = prompt.replace('"', '"').replace('"', '"').replace(''', "'").replace(''', "'")
-        # Множественные переносы → один перенос
-        prompt = _re.sub(r'\n{2,}', '\n', prompt)
-        # Убираем ведущие/trailing пробелы на каждой строке
+        prompt = (prompt.replace('“', '"').replace('”', '"')
+                  .replace('‘', "'").replace('’', "'"))
+        prompt = re.sub(r'\n{2,}', '\n', prompt)
         prompt = '\n'.join(line.strip() for line in prompt.split('\n'))
-        # Убираем пустые строки и лишние пробелы
-        prompt = _re.sub(r' {2,}', ' ', prompt).strip()
+        prompt = re.sub(r' {2,}', ' ', prompt).strip()
 
-    # Маппинг aspect_ratio для разных моделей
     aspect_map_flux = {
         "1:1": "square_hd",
         "16:9": "landscape_16_9",
@@ -202,12 +562,8 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
     }
 
     url = f"https://fal.run/{model_id}"
-    headers = {
-        "Authorization": f"Key {FAL_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json"}
 
-    # Разные payload под разные модели
     if "flux-2" in model_id:
         payload = {
             "prompt": prompt,
@@ -223,708 +579,445 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
             "num_images": 1,
         }
     elif "gpt-image-2" in model_id:
-        # GPT Image 2 через fal.ai - поддерживает все форматы
-        # ВАЖНО: fal.ai принимает image_size как предустановленные значения
-        # (те же что у Flux): square_hd/square/portrait_4_3/portrait_16_9/landscape_4_3/landscape_16_9
-        size_map_gptimg = {
-            "1:1":  "square_hd",         # 1024x1024 квадрат
-            "16:9": "landscape_16_9",    # горизонтальный
-            "9:16": "portrait_16_9",     # вертикальный (сторис/Reels)
-            "4:3":  "landscape_4_3",     # классическое фото
-            "3:4":  "portrait_4_3",      # портрет
-        }
         payload = {
             "prompt": prompt,
-            "image_size": size_map_gptimg.get(aspect_ratio, "square_hd"),
+            "image_size": aspect_map_flux.get(aspect_ratio, "square_hd"),
             "quality": quality if quality in ("low", "medium", "high") else "medium",
             "num_images": 1,
         }
-        logging.info(f"GPT Image 2 payload: model={model_id} quality={quality} aspect={aspect_ratio} size={payload['image_size']}")
+        logging.info(f"GPT Image 2 payload: model={model_id} quality={payload['quality']} "
+                     f"aspect={aspect_ratio} size={payload['image_size']}")
     elif "grok-imagine-image" in model_id:
-        payload = {
-            "prompt": prompt,
-            "aspect_ratio": aspect_ratio,
-            "num_images": 1,
-        }
-        # Grok Imagine Pro использует quality mode
+        payload = {"prompt": prompt, "aspect_ratio": aspect_ratio, "num_images": 1}
         if quality == "quality":
             payload["mode"] = "quality"
     else:
         payload = {"prompt": prompt}
 
-    # GPT Image 2 high quality + thinking mode может занять до 60 сек - увеличим timeout
     timeout_sec = 300 if "gpt-image-2" in model_id and quality == "high" else 180
-    timeout = aiohttp.ClientTimeout(total=timeout_sec)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        async with s.post(url, json=payload, headers=headers) as r:
-            if r.status == 401 or r.status == 403:
-                raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
-            if r.status == 422:
-                err_text = (await r.text())[:500]
-                err_lower = err_text.lower()
-                # 422 может быть: safety, validation error, bad params
-                if ("safety" in err_lower or "moderation" in err_lower or
-                    "policy" in err_lower or "nsfw" in err_lower or "violat" in err_lower or
-                    "inappropriate" in err_lower or "blocked" in err_lower or
-                    "content_policy_violation" in err_lower or "flagged by a content" in err_lower):
-                    logging.warning(f"fal.ai safety block for model={model_id}: {err_text}")
-                    raise Exception(
-                        "🛡 Контент заблокирован моделью.\n\n"
-                        "Модель отклонила запрос по правилам безопасности.\n"
-                        "Попробуй переформулировать - избегай NSFW, насилия или знаменитостей."
-                    )
-                # Иначе - валидационная ошибка: логируем полный текст для админа
-                logging.error(f"fal.ai 422 (validation) model={model_id} payload={payload} response={err_text}")
-                raise Exception(
-                    f"⚠️ Ошибка параметров модели. Попробуй другой формат или напиши @neirosetkaalex."
-                )
-            if r.status != 200:
-                # Детальное логирование любой другой ошибки
-                err_text = (await r.text())[:500]
-                logging.error(f"fal.ai HTTP {r.status} model={model_id} payload={payload} response={err_text} retry={_retry_count}")
-
-                # Особая обработка downstream_service_error
-                # Это сбой на стороне underlying модели (OpenAI для GPT Image 2)
-                err_lower = err_text.lower()
-                is_downstream = ("downstream_service_error" in err_lower or
-                                "downstream service error" in err_lower)
-
-                if is_downstream and "gpt-image-2" in model_id:
-                    # Retry - OpenAI иногда временно глючит, особенно с новой моделью GPT Image 2
-                    if _retry_count < MAX_DOWNSTREAM_RETRIES:
-                        wait_sec = 3 * (_retry_count + 1)  # 3s, 6s
-                        logging.info(f"GPT Image 2 downstream error - retry #{_retry_count + 1} через {wait_sec}с")
-                        await asyncio.sleep(wait_sec)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_sec)) as s:
+            async with s.post(url, json=payload, headers=headers) as r:
+                _body = await r.text()
+                if r.status != 200:
+                    logging.error(f"fal.ai image HTTP {r.status} model={model_id} "
+                                  f"retry={_retry_count} response={_body[:500]}")
+                    _err = fal_error(r.status, _body, _name, model_id, prompt=_orig_prompt,
+                                     stage="image")
+                    # Сбой у самого OpenAI (downstream) — короткий повтор: такие
+                    # запросы провайдер не выполнил, второй оплаты нет.
+                    if (_err.kind == "overload" and "downstream" in _body.lower()
+                            and _retry_count < MAX_DOWNSTREAM_RETRIES):
+                        await asyncio.sleep(3 * (_retry_count + 1))
                         return await api_generate_fal_image(
-                            prompt, model_id, aspect_ratio,
-                            quality=quality,
-                            _retry_count=_retry_count + 1,
-                        )
-                    # Все 3 попытки упали - даём честное объяснение клиенту
-                    raise Exception(
-                        "⚠️ OpenAI GPT Image 2 сейчас нестабилен (модель вышла 21 апреля - возможны сбои).\n\n"
-                        "Попробуй альтернативу:\n"
-                        "• 🍌 <b>Nano Banana Pro</b> (30 кр) - 4K от Google\n"
-                        "• ✒️ <b>Ideogram V3</b> (14 кр) - отличный текст в картинке\n"
-                        "• 🎭 <b>Flux 2 Pro</b> (12 кр) - фотореализм\n\n"
-                        "Или повтори попытку через пару минут 🙏"
-                    )
+                            _orig_prompt, model_id, aspect_ratio, quality=quality,
+                            _retry_count=_retry_count + 1, model_name=model_name)
+                    raise _err
+                try:
+                    data = json.loads(_body)
+                except Exception:
+                    raise GenError("provider", f"⚠️ <b>{_html.escape(_name)}</b> вернула непонятный "
+                                   "ответ.\n\n💡 Попробуй ещё раз или выбери другую модель.",
+                                   raw=f"non-JSON: {_body[:400]}", provider="fal.ai", model=model_id)
+    except asyncio.TimeoutError:
+        raise GenError("timeout", f"⏱ <b>{_html.escape(_name)}</b> не успела за {timeout_sec // 60} мин.\n\n"
+                       "💡 Попробуй ещё раз или выбери модель побыстрее.",
+                       raw=f"sync timeout {timeout_sec}s", provider="fal.ai", model=model_id)
+    except aiohttp.ClientError as _ce:
+        raise GenError("overload", f"⚠️ <b>{_html.escape(_name)}</b> сейчас недоступна "
+                       "(нет связи с сервером генерации).\n\n💡 Попробуй ещё раз через минуту.",
+                       raw=f"{type(_ce).__name__}: {_ce}", provider="fal.ai", model=model_id)
 
-                if is_downstream:
-                    # Для не-GPT моделей - просто сообщаем
-                    raise Exception(
-                        "⚠️ Модель временно недоступна. Попробуй через минуту или выбери другую модель."
-                    )
+    img_url = _fal_extract_url(data, "image")
+    _nsfw = data.get("has_nsfw_concepts") if isinstance(data, dict) else None
+    if not img_url or (isinstance(_nsfw, list) and any(_nsfw)):
+        logging.warning(f"fal.ai no image. model={model_id} response={str(data)[:500]}")
+        raise _fal_no_result_error(data, "image", _name, model_id, _orig_prompt)
+    return await _fal_download(img_url, model_name=_name, model_id=model_id, kind="image",
+                               timeout_total=120)
 
-                raise Exception(f"fal.ai API {r.status}: {err_text[:200]}")
-            if r.status != 200:
-                raise Exception(f"fal.ai API {r.status}: {(await r.text())[:300]}")
-            if r.content_type and "json" in r.content_type:
-                data = await r.json()
-            else:
-                raw = await r.text()
-                raise Exception(f"fal.ai image non-JSON: {raw[:200]}")
 
-            # Ищем URL картинки в ответе
-            images = data.get("images", [])
-            if not images:
-                logging.warning(f"fal.ai no images. model={model_id} response={str(data)[:500]}")
-                raise Exception("Модель не вернула изображение. Попробуй другой промт.")
+# ══════════════════════════════════════════════════════════
+#  ВИДЕО — fal.ai (Kling, Seedance, Wan, Grok, Gemini Omni)
+# ══════════════════════════════════════════════════════════
 
-            img_url = images[0].get("url") if isinstance(images[0], dict) else images[0]
-            if not img_url:
-                raise Exception("Пустой URL изображения от fal.ai")
-
-            # Скачиваем картинку
-            async with s.get(img_url) as img_r:
-                if img_r.status != 200:
-                    raise Exception(f"Не удалось скачать картинку: HTTP {img_r.status}")
-                img_bytes = await img_r.read()
-                if len(img_bytes) < 1000:
-                    raise Exception(f"Картинка слишком маленькая ({len(img_bytes)} bytes)")
-                return img_bytes
+def _fal_video_payload(model_id: str, prompt: str, aspect_ratio: str, duration: int,
+                       resolution: str = "") -> dict:
+    """Payload text-to-video под конкретную модель (по их схемам на fal.ai)."""
+    if "kling" in model_id:
+        if "v3" in model_id:
+            return {"prompt": prompt, "duration": str(duration), "aspect_ratio": aspect_ratio,
+                    "generate_audio": True, "negative_prompt": "blur, distort, and low quality",
+                    "cfg_scale": 0.5}
+        return {"prompt": prompt, "duration": "10" if duration >= 10 else "5",
+                "aspect_ratio": aspect_ratio, "negative_prompt": "blur, distort, and low quality",
+                "cfg_scale": 0.5}
+    if "seedance" in model_id:
+        return {"prompt": prompt, "duration": str(duration), "aspect_ratio": aspect_ratio,
+                "resolution": resolution or "720p"}
+    if "wan" in model_id:
+        # Wan 2.2: num_frames 17–161 при 16 кадрах/с. Раньше уходило duration*16
+        # (80/160) — схема ждёт 4n+1, поэтому 81 и 161.
+        return {"prompt": prompt, "num_frames": 161 if duration >= 10 else 81,
+                "aspect_ratio": aspect_ratio, "resolution": resolution or "720p"}
+    if "grok-imagine-video" in model_id:
+        # duration у Grok — ЧИСЛО (1–15). Раньше уходила строка.
+        return {"prompt": prompt, "duration": int(duration), "aspect_ratio": aspect_ratio,
+                "resolution": resolution or "720p"}
+    if "gemini-omni" in model_id:
+        # Gemini Omni Flash: только 16:9 и 9:16, длительность 3–10 сек.
+        _ar = aspect_ratio if aspect_ratio in ("16:9", "9:16") else "16:9"
+        return {"prompt": prompt, "aspect_ratio": _ar, "resolution": resolution or "720p",
+                "duration": max(3, min(10, int(duration or 8)))}
+    return {"prompt": prompt, "aspect_ratio": aspect_ratio}
 
 
 async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str = "16:9",
-                                  duration: int = 5) -> bytes:
-    """Генерация видео через fal.ai (Kling 2.5 Turbo Pro, Kling 3.0 Pro).
-    Использует queue API с polling - аналогично Veo.
-    duration - длина видео в секундах (5/10 для Turbo, 5/8/10 для Pro)."""
-    if not FAL_API_KEY:
-        raise Exception("FAL_API_KEY не задан. Добавь переменную в Railway.")
+                                  duration: int = 5, resolution: str = "",
+                                  model_name: str = "") -> bytes:
+    """Генерация видео через fal.ai queue API (submit → status → result → скачивание)."""
+    _name = model_name or _model_name(model_id)
+    payload = _fal_video_payload(model_id, prompt, aspect_ratio, duration, resolution)
+    logging.info(f"fal.ai video START: model={model_id} duration={duration}s aspect={aspect_ratio} "
+                 f"res={resolution or '-'} prompt_len={len(prompt)}")
+    # Kling Pro реально долгий — до 25 минут на 10 секунд видео.
+    result = await _fal_queue_run(model_id, payload, poll_max=150, model_name=_name, prompt=prompt,
+                                  interval=10, first_wait=15, queue_limit_sec=360,
+                                  log_tag="fal video")
+    request_id = result.get("_request_id", "")
+    vid_url = _fal_extract_url(result, "video")
+    if not vid_url:
+        logging.error(f"fal.ai no video url. keys={list(result.keys())} full={str(result)[:800]}")
+        raise _fal_no_result_error(result, "video", _name, model_id, prompt, request_id)
+    logging.info(f"fal.ai video URL obtained: {vid_url[:100]} (request_id={request_id})")
+    return await _fal_download(vid_url, model_name=_name, model_id=model_id, kind="video",
+                               request_id=request_id, min_bytes=10000, timeout_total=300)
 
-    logging.info(f"fal.ai START: model={model_id} duration={duration}s aspect={aspect_ratio} prompt_len={len(prompt)}")
 
-    headers = {
-        "Authorization": f"Key {FAL_API_KEY}",
-        "Content-Type": "application/json",
-    }
+# ══════════════════════════════════════════════════════════
+#  ИЗОБРАЖЕНИЯ — Google (Nano Banana / Gemini Image)
+# ══════════════════════════════════════════════════════════
 
-    # Payload под разные модели
-    if "kling" in model_id:
-        if "v3" in model_id:
-            payload = {
-                "prompt": prompt,
-                "duration": str(duration),
-                "aspect_ratio": aspect_ratio,
-                "generate_audio": True,
-                "negative_prompt": "blur, distort, and low quality",
-                "cfg_scale": 0.5,
-            }
-        else:
-            safe_duration = "10" if duration >= 10 else "5"
-            payload = {
-                "prompt": prompt,
-                "duration": safe_duration,
-                "aspect_ratio": aspect_ratio,
-                "negative_prompt": "blur, distort, and low quality",
-                "cfg_scale": 0.5,
-            }
-    elif "seedance" in model_id:
-        payload = {
-            "prompt": prompt,
-            "duration": str(duration),
-            "aspect_ratio": aspect_ratio,
-            "resolution": "720p",
-        }
-    elif "wan" in model_id:
-        safe_duration = min(duration, 10)
-        payload = {
-            "prompt": prompt,
-            "num_frames": safe_duration * 16,
-            "aspect_ratio": aspect_ratio,
-            "resolution": "720p",
-        }
-    elif "grok-imagine-video" in model_id:
-        payload = {
-            "prompt": prompt,
-            "duration": str(duration),
-            "aspect_ratio": aspect_ratio,
-            "resolution": "720p",
-        }
-    else:
-        payload = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+# Сколько «пикселей» просить у Gemini Image. У Nano Banana Pro 1K и 2K стоят
+# одинаково ($0.134), поэтому берём 2K. 4K — $0.24, дороже цены в боте.
+_GEMINI_IMAGE_SIZE = {"gemini-3-pro-image": "2K"}
 
-    queue_url = f"https://queue.fal.run/{model_id}"
 
-    # Kling Pro реально долгий - до 25 минут на 5-10 секунд видео
-    timeout = aiohttp.ClientTimeout(total=1700)  # 28 минут запас на скачивание
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        # 1. Ставим задачу в очередь
-        async with s.post(queue_url, json=payload, headers=headers) as r:
-            if r.status == 401 or r.status == 403:
-                raise Exception("FAL_API_KEY недействителен. Проверь ключ в Railway Variables.")
-            if r.status == 422:
-                # 422 у fal.ai — это и safety, и обычная ошибка параметров
-                # (неподдерживаемая длительность/формат). Раньше клиенту всегда
-                # говорили «промт заблокирован», хотя промт был ни при чём.
-                _e422 = (await r.text())[:500]
-                _l422 = _e422.lower()
-                if ("safety" in _l422 or "moderation" in _l422 or "policy" in _l422
-                        or "nsfw" in _l422 or "violat" in _l422 or "blocked" in _l422
-                        or "flagged by a content" in _l422):
-                    raise Exception(
-                        "Промт заблокирован фильтром безопасности 🛡\n"
-                        "Переформулируй - избегай сцен с насилием, NSFW или знаменитостями."
-                    )
-                logging.error(f"fal.ai video 422 (validation) model={model_id} payload={payload} resp={_e422}")
-                raise Exception(
-                    "⚠️ Ошибка параметров модели (формат или длительность). "
-                    "Попробуй другой формат/длительность или другую модель."
-                )
-            if r.status not in (200, 202):
-                raise Exception(f"fal.ai queue API {r.status}: {(await r.text())[:300]}")
-            submit_data = await r.json()
-            request_id = submit_data.get("request_id")
-            if not request_id:
-                raise Exception(f"fal.ai не вернул request_id: {str(submit_data)[:200]}")
+def _gemini_text_parts(data: dict) -> str:
+    try:
+        _parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", []) or []
+        return " ".join(p.get("text", "") for p in _parts if isinstance(p, dict) and p.get("text")).strip()
+    except Exception:
+        return ""
 
-            # КРИТИЧНО: берём URL-ы напрямую из ответа fal.ai.
-            # Они сами точно знают свой формат, а мы угадывать не будем.
-            # Документация: fal.ai возвращает status_url и response_url в submit-ответе.
-            status_url = submit_data.get("status_url") or f"{queue_url}/requests/{request_id}/status"
-            result_url = submit_data.get("response_url") or f"{queue_url}/requests/{request_id}"
 
-            logging.info(
-                f"fal.ai video submitted: {request_id} ({model_id}) | "
-                f"status_url={status_url[:80]} result_url={result_url[:80]} | "
-                f"payload_keys={list(payload.keys())}"
-            )
+def _gemini_image_or_error(data: dict, model_name: str, model_id: str, prompt: str) -> bytes:
+    """Картинка из ответа generateContent или понятная GenError."""
+    for _c in (data.get("candidates") or [])[:1]:
+        for _p in (_c.get("content", {}) or {}).get("parts", []) or []:
+            if isinstance(_p, dict) and "inlineData" in _p:
+                return base64.b64decode(_p["inlineData"]["data"])
+    _blk = gemini_block_error(data, model_name, model_id, prompt)
+    if _blk:
+        raise _blk
+    _txt = _gemini_text_parts(data)
+    _fin = ""
+    try:
+        _fin = str((data.get("candidates") or [{}])[0].get("finishReason") or "")
+    except Exception:
+        pass
+    if _txt:
+        # Модель ответила текстом вместо картинки — чаще всего промт выглядит
+        # как вопрос/инструкция, а не описание сцены. Показываем её ответ.
+        raise GenError("no_output",
+                       f"🤷 <b>{_html.escape(model_name)}</b> ответила текстом вместо картинки:\n"
+                       f"<i>{_html.escape(_txt[:300])}</i>\n\n"
+                       "💡 <b>Как исправить:</b> опиши, ЧТО должно быть на изображении — объект, "
+                       "стиль, фон, свет. Например: <i>рыжий кот в очках сидит в кафе, тёплый "
+                       "свет, реализм</i>.",
+                       raw=f"finishReason={_fin} text={_txt[:500]}", provider="Google", model=model_id,
+                       hint="Промт похож на вопрос/инструкцию, а не на описание картинки")
+    raise GenError("no_output",
+                   f"🤷 <b>{_html.escape(model_name)}</b> не вернула картинку (причина: "
+                   f"{_html.escape(_fin or 'не указана')}).\n\n💡 Переформулируй промт или выбери "
+                   "другую модель.",
+                   raw=json.dumps(data, ensure_ascii=False)[:1200], provider="Google", model=model_id)
 
-        # 2. Polling через /status - каждые 10 сек, до 25 минут
-        # Content-Type убираем из заголовков т.к. это GET без тела (некоторые сервера
-        # ругаются на Content-Type в GET запросах и возвращают 405).
-        get_headers = {"Authorization": f"Key {FAL_API_KEY}"}
 
-        await asyncio.sleep(20)  # Даём fal время поставить задачу на runner
-        max_iterations = 150  # 150 × 10 сек = 25 мин
-        vid_url = None
-        in_queue_count = 0
-        consecutive_errors = 0
-
-        for i in range(max_iterations):
-            try:
-                async with s.get(status_url, headers=get_headers) as sr:
-                    # Защита от non-JSON ответов
-                    if sr.content_type and "json" not in sr.content_type:
-                        consecutive_errors += 1
-                        if consecutive_errors % 5 == 0:
-                            logging.warning(f"fal.ai status poll non-JSON: {sr.content_type}")
-                        await asyncio.sleep(10)
-                        continue
-
-                    if sr.status == 200:
-                        sd = await sr.json()
-                        status = sd.get("status", "")
-                        consecutive_errors = 0
-
-                        if status == "COMPLETED":
-                            elapsed = 20 + (i + 1) * 10
-                            logging.info(f"fal.ai video completed after ~{elapsed}s ({model_id}) request_id={request_id}")
-                            break
-
-                    elif sr.status == 202:
-                        try:
-                            sd = await sr.json()
-                        except (aiohttp.ContentTypeError, Exception):
-                            consecutive_errors += 1
-                            await asyncio.sleep(10)
-                            continue
-                        status = sd.get("status", "IN_PROGRESS")
-                        consecutive_errors = 0
-
-                        if status in ("FAILED", "ERROR"):
-                            err_msg = sd.get("error", "Unknown error")
-                            raise Exception(f"fal.ai ошибка генерации: {err_msg}")
-
-                        # Защита от зомби в очереди
-                        if status == "IN_QUEUE":
-                            in_queue_count += 1
-                            if in_queue_count >= 30:  # 30 × 10 сек = 5 мин
-                                raise Exception(
-                                    "⏱ Запрос завис в очереди fal.ai (5+ мин). "
-                                    "Попробуй ещё раз через минуту."
-                                )
-                        else:
-                            in_queue_count = 0
-
-                        # Логируем прогресс каждую минуту
-                        if (i + 1) % 6 == 0:
-                            elapsed_min = (20 + (i + 1) * 10) / 60
-                            logging.info(f"fal.ai still generating: {model_id} ({elapsed_min:.1f} min, status={status}, request_id={request_id})")
-
-                    elif sr.status == 405:
-                        # Не должно случаться - fal.ai official API поддерживает GET
-                        # Но если всё же вернули 405, пробуем альтернативу: запросить result_url напрямую
-                        logging.warning(f"fal.ai /status returned 405! Switching to direct result_url polling")
-                        # Переключаемся на опрос result_url - он возвращает данные когда готово
-                        try:
-                            async with s.get(result_url, headers=get_headers) as rr2:
-                                if rr2.status == 200:
-                                    rd2 = await rr2.json() if rr2.content_type and "json" in rr2.content_type else {}
-                                    # Проверяем есть ли уже результат
-                                    v2 = rd2.get("video")
-                                    if isinstance(v2, dict) and v2.get("url"):
-                                        vid_url = v2["url"]
-                                        logging.info(f"fal.ai got result via result_url (405 fallback): {request_id}")
-                                        break
-                                    elif isinstance(v2, str):
-                                        vid_url = v2
-                                        break
-                        except Exception as fallback_err:
-                            logging.warning(f"fal.ai result_url fallback also failed: {fallback_err}")
-
-                    else:
-                        # Другие коды - логируем и продолжаем
-                        consecutive_errors += 1
-                        err_body = (await sr.text())[:200]
-                        logging.warning(f"fal.ai status poll {sr.status}: {err_body}")
-                        if consecutive_errors >= 10:
-                            raise Exception(f"fal.ai status API возвращает ошибки 10 раз подряд: {sr.status}")
-
-            except (aiohttp.ClientError, aiohttp.ContentTypeError) as ce:
-                consecutive_errors += 1
-                logging.warning(f"fal.ai status poll error: {ce}")
-                if consecutive_errors >= 10:
-                    raise Exception(f"fal.ai сеть упала 10 раз подряд: {ce}")
-
-            await asyncio.sleep(10)
-        else:
-            # Исчерпали итерации - rescue попытка
-            logging.warning(f"fal.ai polling exhausted, rescue attempt: {request_id}")
-            try:
-                async with s.get(result_url, headers=get_headers) as last_try:
-                    if last_try.status == 200:
-                        ld = await last_try.json() if last_try.content_type and "json" in last_try.content_type else {}
-                        v = ld.get("video")
-                        if isinstance(v, dict):
-                            vid_url = v.get("url")
-                        elif isinstance(v, str):
-                            vid_url = v
-                        if vid_url:
-                            logging.info(f"fal.ai rescued video via direct fetch: {request_id}")
-            except Exception as rescue_err:
-                logging.warning(f"fal.ai rescue failed: {rescue_err}")
-
-            if not vid_url:
-                raise Exception(
-                    f"⏱ Таймаут генерации (>25 мин). Request ID: {request_id}. "
-                    f"Попробуй ещё раз или выбери более быструю модель."
-                )
-
-        # 3. Получаем результат (если ещё не получили через 405-fallback или rescue)
-        if not vid_url:
-            rd = None
-            for _res_att in range(10):
+async def _gemini_generate(s, model_id: str, parts: list, aspect_ratio: str = "",
+                           model_name: str = "", prompt: str = "") -> bytes:
+    """Один вызов generateContent с картинкой на выходе."""
+    _name = model_name or _model_name(model_id)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+    _img_cfg = {}
+    if aspect_ratio:
+        _img_cfg["aspectRatio"] = aspect_ratio
+    if _GEMINI_IMAGE_SIZE.get(model_id):
+        _img_cfg["imageSize"] = _GEMINI_IMAGE_SIZE[model_id]
+    _gen_cfg = {"responseModalities": ["TEXT", "IMAGE"]}
+    if _img_cfg:
+        _gen_cfg["imageConfig"] = _img_cfg
+    payload = {"contents": [{"parts": parts}], "generationConfig": _gen_cfg}
+    for _try in range(2):
+        async with s.post(url, json=payload, headers=headers) as r:
+            _body = await r.text()
+            if r.status == 200:
                 try:
-                    async with s.get(result_url, headers=get_headers) as rr:
-                        if rr.status != 200:
-                            err_text = (await rr.text())[:500]
-                            logging.error(f"fal.ai result fetch FAILED: status={rr.status} url={result_url} body={err_text}")
-                            raise Exception(f"fal.ai result fetch {rr.status}: {err_text[:200]}")
-                        if rr.content_type and "json" in rr.content_type:
-                            rd = await rr.json()
-                            break
-                        else:
-                            logging.warning(f"fal.ai result non-JSON attempt {_res_att}/10: {rr.content_type}")
-                            await asyncio.sleep(5)
-                except aiohttp.ContentTypeError:
-                    logging.warning(f"fal.ai result ContentTypeError attempt {_res_att}/10")
-                    await asyncio.sleep(5)
-            if not rd:
-                raise Exception(f"fal.ai result: не удалось получить JSON после 10 попыток. Request ID: {request_id}")
-
-            # Парсим URL видео
-            video = rd.get("video")
-            if isinstance(video, dict):
-                vid_url = video.get("url")
-            elif isinstance(video, str):
-                vid_url = video
-            if not vid_url:
-                vid_url = rd.get("video_url")
-            if not vid_url:
-                output = rd.get("output")
-                if isinstance(output, dict):
-                    vid_url = (output.get("video", {}).get("url")
-                               if isinstance(output.get("video"), dict)
-                               else output.get("video_url"))
-
-            if not vid_url:
-                # Проверяем content_policy_violation
-                rd_str = str(rd).lower()
-                if "content_policy_violation" in rd_str or "flagged by a content" in rd_str:
-                    raise Exception(
-                        "🛡 Контент заблокирован моделью.\n\n"
-                        "Попробуй переформулировать - избегай NSFW, насилия или знаменитостей."
-                    )
-                logging.error(f"fal.ai no video url in response. keys={list(rd.keys())} full={str(rd)[:800]}")
-                raise Exception(f"fal.ai не вернул URL видео. Request ID: {request_id}")
-
-        logging.info(f"fal.ai video URL obtained: {vid_url[:100]} (request_id={request_id})")
-
-    # 4. Скачивание видео - ОТДЕЛЬНАЯ сессия с собственным таймаутом (вне сессии polling)
-    # Это критично: polling мог «съесть» время общей сессии, а скачивание mp4 требует свежего окна.
-    # До 3 попыток с экспоненциальным бэкоффом.
-    download_timeout = aiohttp.ClientTimeout(total=300, sock_read=120)  # 5 мин общий, 2 мин на чтение
-    last_download_err = None
-    for attempt in range(1, 4):
-        try:
-            async with aiohttp.ClientSession(timeout=download_timeout) as dl_session:
-                async with dl_session.get(vid_url) as vr:
-                    if vr.status != 200:
-                        last_download_err = f"HTTP {vr.status}"
-                        logging.warning(f"fal.ai download attempt {attempt}/3 failed: {last_download_err}")
-                        await asyncio.sleep(2 * attempt)
-                        continue
-                    vid_bytes = await vr.read()
-                    if len(vid_bytes) < 10000:
-                        last_download_err = f"too small ({len(vid_bytes)} bytes)"
-                        logging.warning(f"fal.ai download attempt {attempt}/3: {last_download_err}")
-                        await asyncio.sleep(2 * attempt)
-                        continue
-                    size_mb = len(vid_bytes) / 1024 / 1024
-                    logging.info(f"fal.ai video DOWNLOADED: {size_mb:.1f} MB on attempt {attempt}/3 (request_id={request_id})")
-                    return vid_bytes
-        except asyncio.TimeoutError:
-            last_download_err = "timeout"
-            logging.warning(f"fal.ai download attempt {attempt}/3 timed out")
-            await asyncio.sleep(2 * attempt)
-        except Exception as dl_err:
-            last_download_err = str(dl_err)[:200]
-            logging.warning(f"fal.ai download attempt {attempt}/3 error: {last_download_err}")
-            await asyncio.sleep(2 * attempt)
-
-    # Все 3 попытки не удались - но видео есть на fal.ai, сообщаем админу request_id для ручного восстановления
-    logging.error(f"fal.ai DOWNLOAD FAILED after 3 attempts. request_id={request_id} url={vid_url[:200]} err={last_download_err}")
-    raise Exception(
-        f"Видео создано, но не удалось его скачать ({last_download_err}). "
-        f"Request ID: {request_id}. Админ восстановит вручную командой /recover."
-    )
+                    data = json.loads(_body)
+                except Exception:
+                    raise GenError("provider", f"⚠️ <b>{_html.escape(_name)}</b> вернула непонятный ответ.",
+                                   raw=_body[:500], provider="Google", model=model_id)
+                return _gemini_image_or_error(data, _name, model_id, prompt)
+            # Модель не знает imageSize — повторяем без него (одна попытка).
+            if (r.status == 400 and _try == 0 and "imageSize" in _img_cfg
+                    and ("image_size" in _body.lower() or "imagesize" in _body.lower())):
+                logging.warning(f"Gemini {model_id}: imageSize не принят, повторяю без него")
+                _img_cfg.pop("imageSize", None)
+                if not _img_cfg:
+                    _gen_cfg.pop("imageConfig", None)
+                continue
+            logging.warning(f"Gemini image HTTP {r.status} model={model_id}: {_body[:400]}")
+            raise google_http_error(r.status, _body, _name, model_id, prompt)
+    raise GenError("params", f"⚠️ <b>{_html.escape(_name)}</b> не приняла параметры запроса.",
+                   raw="imageSize retry exhausted", provider="Google", model=model_id)
 
 
 async def api_generate_image(prompt: str, model_id: str, aspect_ratio: str = "1:1",
-                              api_type: str = "imagen", quality: str = "medium") -> bytes:
-    # Dispatch на fal.ai (Flux 2 Pro, Ideogram V3, GPT Image 2)
+                              api_type: str = "gemini", quality: str = "medium",
+                              model_name: str = "") -> bytes:
     if api_type == "fal":
-        return await api_generate_fal_image(prompt, model_id, aspect_ratio, quality=quality)
-
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-
-        if api_type == "gemini":
-            # ── Nano Banana (generateContent) ─────────────────
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "responseModalities": ["IMAGE", "TEXT"],
-                    "imageConfig": {"aspectRatio": aspect_ratio},
-                }
-            }
-            async with s.post(url, json=payload, headers=headers) as r:
-                if r.status != 200:
-                    raise Exception(f"Nano Banana API {r.status}: {(await r.text())[:300]}")
-                data = await r.json()
-
-                # Ищем inline image в частях ответа
-                candidates = data.get("candidates", [])
-                if candidates:
-                    cand = candidates[0]
-                    for part in cand.get("content", {}).get("parts", []):
-                        if "inlineData" in part:
-                            return base64.b64decode(part["inlineData"]["data"])
-
-                    # Изображения нет - смотрим причину
-                    finish_reason = cand.get("finishReason", "UNKNOWN")
-                    logging.warning(
-                        f"Nano Banana no image. model={model_id} reason={finish_reason} "
-                        f"response={str(data)[:500]}"
-                    )
-
-                    # Понятные ошибки для юзера
-                    if finish_reason in ("SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT"):
-                        raise Exception(
-                            "Промт заблокирован фильтром безопасности 🛡\n"
-                            "Попробуй переформулировать - избегай сцен с насилием, "
-                            "откровенным содержанием или узнаваемыми знаменитостями."
-                        )
-                    if finish_reason == "RECITATION":
-                        raise Exception(
-                            "Запрос слишком похож на защищённый копирайтом контент 📄\n"
-                            "Попробуй описать сцену своими словами."
-                        )
-                    # Модель вернула только текст вместо картинки
-                    text_parts = [
-                        p.get("text", "") for p in cand.get("content", {}).get("parts", [])
-                        if "text" in p
-                    ]
-                    if text_parts:
-                        raise Exception(
-                            f"Модель не смогла создать картинку. Совет: {text_parts[0][:200]}"
-                        )
-                    raise Exception(f"Пустой ответ (причина: {finish_reason}). Попробуй другой промт или модель.")
-
-                # Нет candidates вообще - prompt заблокирован на входе
-                block = data.get("promptFeedback", {}).get("blockReason", "UNKNOWN")
-                logging.warning(f"Nano Banana blocked. model={model_id} block={block}")
-                raise Exception(
-                    "Промт заблокирован фильтром безопасности 🛡\n"
-                    "Попробуй переформулировать запрос."
-                )
-
-        else:
-            # ── Imagen (predict) ──────────────────────────────
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:predict"
-            payload = {
-                "instances": [{"prompt": prompt}],
-                "parameters": {
-                    "sampleCount": 1,
-                    "aspectRatio": aspect_ratio,
-                    "safetyFilterLevel": "block_few",
-                }
-            }
-            async with s.post(url, json=payload, headers=headers) as r:
-                if r.status != 200:
-                    raise Exception(f"Imagen API {r.status}: {(await r.text())[:200]}")
-                data = await r.json()
-                return base64.b64decode(data["predictions"][0]["bytesBase64Encoded"])
+        return await api_generate_fal_image(prompt, model_id, aspect_ratio, quality=quality,
+                                            model_name=model_name)
+    if api_type == "imagen":
+        # Imagen 4 Google отключил 17.08.2026 (страница deprecations Gemini API).
+        # Ключи img_* оставлены только ради истории и статистики и всегда выключены.
+        raise GenError("provider", "⚠️ Эта модель больше не поддерживается Google.\n\n"
+                       "💡 Выбери Nano Banana, GPT Image или Flux.",
+                       raw=f"retired model {model_id} (Imagen shutdown 2026-08-17)",
+                       provider="Google", model=model_id)
+    _name = model_name or _model_name(model_id)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=240, sock_connect=30,
+                                                                       sock_read=200)) as s:
+            return await _gemini_generate(s, model_id, [{"text": prompt}], aspect_ratio,
+                                          model_name=_name, prompt=prompt)
+    except asyncio.TimeoutError:
+        raise GenError("timeout", f"⏱ <b>{_html.escape(_name)}</b> не успела за 4 минуты.\n\n"
+                       "💡 Попробуй ещё раз или выбери другую модель.",
+                       raw="gemini image timeout 240s", provider="Google", model=model_id)
+    except aiohttp.ClientError as _ce:
+        raise GenError("overload", f"⚠️ <b>{_html.escape(_name)}</b> сейчас недоступна.\n\n"
+                       "💡 Попробуй ещё раз через минуту.",
+                       raw=f"{type(_ce).__name__}: {_ce}", provider="Google", model=model_id)
 
 
-async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1") -> bytes:
-    """Редактирование фото по референсу через Gemini. Пробует несколько моделей.
-    
-    Список моделей в порядке приоритета (свежие → старые стабильные):
-    - gemini-3.1-flash-image-preview (Nano Banana 2, февраль 2026) - новая, быстрая
-    - gemini-2.5-flash-image (Nano Banana) - стабильная основная
-    - gemini-3-pro-image-preview (Nano Banana Pro) - премиум-резерв
-    """
-    img_b64 = base64.b64encode(image_bytes).decode()
-    # Список моделей - пробуем по очереди от свежей к стабильным.
-    # ВАЖНО: премиум-резерв (3-pro) дороже клиентской цены редактирования, поэтому
-    # уходить на него имеет смысл только при реальной недоступности предыдущих,
-    # а не при отказе по контенту — иначе один заблокированный промт прогонялся
-    # через все модели и стоил бизнесу больше, чем заплатил клиент.
-    models = [
-        "gemini-2.5-flash-image",              # Стабильная основа (Nano Banana)
-        "gemini-3.1-flash-image-preview",      # Nano Banana 2 (preview)
-        "gemini-3-pro-image-preview",          # Премиум резерв (Nano Banana Pro)
+# Редактирование через Gemini: основная модель и резервы (только при НЕДОСТУПНОСТИ
+# предыдущей — 404/перегрузка; отказ по содержанию резервами не обходим).
+# Preview-модели gemini-3.1-flash-image-preview и gemini-3-pro-image-preview
+# Google отключил 25.06.2026 — раньше они стояли здесь и давали только 404.
+EDIT_GEMINI_MODELS = [
+    "gemini-2.5-flash-image",      # Nano Banana — основная (до 15.03.2027)
+    "gemini-nano-banana-2.1",      # Nano Banana 2.1 — GA с 06.10.2026
+]
+
+
+async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1",
+                         model_name: str = "Nano Banana") -> bytes:
+    """Редактирование фото по референсу через Gemini (Nano Banana)."""
+    parts = [
+        {"inlineData": {"mimeType": _mime_of(image_bytes),
+                        "data": base64.b64encode(image_bytes).decode()}},
+        {"text": prompt},
     ]
-    payload = {
-        "contents": [{
-            "parts": [
-                {"inlineData": {"mimeType": "image/jpeg", "data": img_b64}},
-                {"text": prompt}
-            ]
-        }],
-        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}
-    }
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    last_error = None
-    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-        for model in models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            for attempt in range(3):  # 3 попытки на каждую модель
+    last_err = None
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=240, sock_connect=30,
+                                                                   sock_read=200)) as s:
+        for model in EDIT_GEMINI_MODELS:
+            for attempt in range(2):
                 try:
-                    async with s.post(url, json=payload, headers=headers) as r:
-                        if r.status == 503:
-                            await asyncio.sleep(3 * (attempt + 1))
-                            continue
-                        if r.status == 404:
-                            # Модель не существует или больше не поддерживается - пропускаем сразу
-                            last_error = f"Модель {model} недоступна (404)"
-                            logging.warning(f"Gemini model {model} returned 404 - skipping")
-                            break
-                        if r.status != 200:
-                            last_error = f"API {r.status}: {(await r.text())[:150]}"
-                            break
-                        data = await r.json()
-                        # Блокировка по контенту: дальше перебирать модели
-                        # бессмысленно — все они применят тот же фильтр.
-                        _cands = data.get("candidates") or []
-                        if not _cands:
-                            _block = (data.get("promptFeedback", {}) or {}).get("blockReason", "")
-                            if _block:
-                                raise Exception(
-                                    "Промт заблокирован фильтром безопасности 🛡\n"
-                                    "Попробуй переформулировать — избегай узнаваемых людей, "
-                                    "насилия и откровенного содержания."
-                                )
-                            last_error = "Gemini вернул пустой ответ. Попробуй другой промт."
-                            break
-                        _fin = (_cands[0].get("finishReason") or "").upper()
-                        if _fin in ("SAFETY", "IMAGE_SAFETY", "PROHIBITED_CONTENT", "RECITATION"):
-                            raise Exception(
-                                "Промт или фото заблокированы фильтром безопасности 🛡\n"
-                                "Попробуй другое фото или переформулируй запрос."
-                            )
-                        for part in _cands[0].get("content", {}).get("parts", []):
-                            if "inlineData" in part:
-                                return base64.b64decode(part["inlineData"]["data"])
-                        last_error = "Gemini не вернул изображение. Попробуй другой промт."
-                        break
-                except Exception as e:
-                    # Явную блокировку контента пробрасываем сразу: перебор моделей
-                    # её не обойдёт, а каждая попытка стоит денег и времени клиента.
-                    if "🛡" in str(e):
+                    return await _gemini_generate(s, model, parts, "", model_name=model_name,
+                                                  prompt=prompt)
+                except GenError as ge:
+                    last_err = ge
+                    # Отказ по содержанию / фото / промту — другие модели Google
+                    # применят тот же фильтр, а каждая попытка стоит денег.
+                    if ge.kind in ("safety", "input", "no_output", "params", "auth"):
                         raise
-                    last_error = str(e)
-                    await asyncio.sleep(2)
-    raise Exception(last_error or "Все модели недоступны. Попробуй позже.")
-
-
-async def _fal_queue_run(model_id: str, payload: dict, poll_max: int = 90) -> dict:
-    """Универсальный запуск fal.ai queue: submit → poll → result (JSON)."""
-    if not FAL_API_KEY:
-        raise Exception("FAL_API_KEY не задан.")
-    headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
-    poll_headers = {"Authorization": f"Key {FAL_API_KEY}", "Accept": "application/json"}
-    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-        async with s.post(f"https://queue.fal.run/{model_id}", headers=headers, json=payload,
-                          timeout=aiohttp.ClientTimeout(total=60)) as r:
-            submit = await r.json()
-            request_id = submit.get("request_id")
-            if not request_id:
-                raise Exception(f"fal submit failed: {str(submit)[:200]}")
-        status_url = submit.get("status_url") or f"https://queue.fal.run/{model_id}/requests/{request_id}/status"
-        response_url = submit.get("response_url") or f"https://queue.fal.run/{model_id}/requests/{request_id}"
-        for _ in range(poll_max):
-            await asyncio.sleep(5)
-            try:
-                async with s.get(status_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=15)) as sr:
-                    if not (sr.content_type and "json" in sr.content_type):
+                    if ge.kind in ("overload", "rate") and attempt == 0:
+                        await asyncio.sleep(4)
                         continue
-                    st = await sr.json()
-                    if st.get("status") == "COMPLETED":
-                        break
-                    if st.get("status") == "FAILED":
-                        raise Exception(f"fal failed: {str(st)[:200]}")
-            except aiohttp.ContentTypeError:
-                continue
-        else:
-            raise Exception("fal timeout")
-        result = None
-        urls_to_try = [response_url]
-        if "queue.fal.run" in response_url:
-            urls_to_try.append(response_url.replace("queue.fal.run", "fal.run"))
-        elif "fal.run" in response_url:
-            urls_to_try.append(response_url.replace("fal.run", "queue.fal.run"))
-        for try_url in urls_to_try:
-            for _a in range(5):
-                try:
-                    async with s.get(try_url, headers=poll_headers, timeout=aiohttp.ClientTimeout(total=30)) as rr:
-                        if rr.content_type and "json" in rr.content_type:
-                            result = await rr.json()
-                            break
-                        await asyncio.sleep(5)
-                except aiohttp.ContentTypeError:
-                    await asyncio.sleep(5)
-            if result:
-                break
-        if not result:
-            raise Exception("fal result: не удалось получить JSON")
-        return result
+                    break  # 404/иная ошибка провайдера — следующая модель
+                except (aiohttp.ClientError, asyncio.TimeoutError) as ne:
+                    last_err = GenError("overload", f"⚠️ <b>{_html.escape(model_name)}</b> сейчас "
+                                        "недоступна.\n\n💡 Попробуй ещё раз через минуту.",
+                                        raw=f"{model}: {type(ne).__name__}: {ne}",
+                                        provider="Google", model=model)
+                    break
+    raise last_err or GenError("provider", "⚠️ Редактирование сейчас недоступно. Попробуй позже.",
+                               raw="no edit models", provider="Google", model="gemini")
 
 
-def _fal_content_blocked(result) -> bool:
-    _rs = str(result).lower()
-    return "content_policy_violation" in _rs or "flagged by a content" in _rs
-
-
-async def api_fal_edit_image(image_bytes: bytes, prompt: str, model_id: str) -> bytes:
+async def api_fal_edit_image(image_bytes: bytes, prompt: str, model_id: str,
+                             model_name: str = "") -> bytes:
     """Редактирование фото через fal.ai (Grok / GPT Image / Flux Kontext)."""
-    img_b64 = base64.b64encode(image_bytes).decode("utf-8")
-    data_uri = f"data:image/jpeg;base64,{img_b64}"
+    _name = model_name or _model_name(model_id)
+    data_uri = _data_uri(image_bytes)
     if "gpt-image" in model_id:
-        payload = {"prompt": prompt, "image_urls": [data_uri]}
+        # GPT Image 2 edit: image_urls (массив). Качество по умолчанию у fal —
+        # "high" (самое дорогое, дороже нашей цены) — задаём medium явно.
+        payload = {"prompt": prompt, "image_urls": [data_uri], "quality": "medium"}
     else:
         payload = {"prompt": prompt, "image_url": data_uri}
-    result = await _fal_queue_run(model_id, payload, poll_max=60)
-    out_url = (result.get("images") or [{}])[0].get("url") or (result.get("image") or {}).get("url")
-    if not out_url:
-        if _fal_content_blocked(result):
-            raise Exception("🛡 Контент заблокирован моделью. Попробуй переформулировать.")
-        raise Exception(f"fal edit: нет изображения: {str(result)[:150]}")
-    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-        async with s.get(out_url, timeout=aiohttp.ClientTimeout(total=120)) as dr:
-            return await dr.read()
+    result = await _fal_queue_run(model_id, payload, poll_max=72, model_name=_name,
+                                  prompt=prompt, interval=5, log_tag="fal edit")
+    out_url = _fal_extract_url(result, "image")
+    _nsfw = result.get("has_nsfw_concepts")
+    if not out_url or (isinstance(_nsfw, list) and any(_nsfw)):
+        raise _fal_no_result_error(result, "image", _name, model_id, prompt,
+                                   result.get("_request_id", ""))
+    return await _fal_download(out_url, model_name=_name, model_id=model_id, kind="image",
+                               request_id=result.get("_request_id", ""), timeout_total=120)
+
+
+def _fal_anim_payload(model_id: str, image_uri: str, prompt: str, duration: int,
+                      aspect_ratio: str, last_uri: str = "", resolution: str = "") -> dict:
+    """Payload image-to-video под конкретную модель.
+
+    Раньше всем моделям уходило одно и то же: duration числом. Kling ждёт
+    строку "5"/"10", Wan — num_frames вместо duration, Grok — число.
+    """
+    p = {"image_url": image_uri, "prompt": prompt}
+    if "kling" in model_id:
+        p["duration"] = "10" if int(duration) >= 10 else "5"
+        if last_uri:
+            p["tail_image_url"] = last_uri
+    elif "wan" in model_id:
+        p["num_frames"] = 161 if int(duration) >= 10 else 81
+        p["resolution"] = resolution or "720p"
+    elif "grok-imagine-video" in model_id:
+        p["duration"] = int(duration)
+        p["resolution"] = resolution or "720p"
+    elif "gemini-omni" in model_id:
+        p["duration"] = max(3, min(10, int(duration or 8)))
+        p["resolution"] = resolution or "720p"
+        p["aspect_ratio"] = aspect_ratio if aspect_ratio in ("16:9", "9:16") else "16:9"
+        if last_uri:
+            p["end_image_url"] = last_uri
+    else:
+        p["duration"] = str(duration)
+        p["aspect_ratio"] = aspect_ratio
+    return p
 
 
 async def api_fal_animate_image(image_bytes: bytes, prompt: str, model_id: str,
-                                 duration: int = 5, aspect_ratio: str = "16:9") -> bytes:
-    """Анимация фото через fal.ai image-to-video (Grok / Kling / Wan)."""
-    img_b64 = base64.b64encode(image_bytes).decode("utf-8")
-    data_uri = f"data:image/jpeg;base64,{img_b64}"
-    payload = {"image_url": data_uri, "prompt": prompt,
-               "duration": duration, "aspect_ratio": aspect_ratio}
-    result = await _fal_queue_run(model_id, payload, poll_max=180)
-    video_url = (result.get("video") or {}).get("url")
+                                 duration: int = 5, aspect_ratio: str = "16:9",
+                                 last_bytes: bytes | None = None, resolution: str = "",
+                                 model_name: str = "") -> bytes:
+    """Анимация фото через fal.ai image-to-video (Gemini Omni / Grok / Kling / Wan)."""
+    _name = model_name or _model_name(model_id)
+    payload = _fal_anim_payload(model_id, _data_uri(image_bytes), prompt, duration, aspect_ratio,
+                                _data_uri(last_bytes) if last_bytes else "", resolution)
+    result = await _fal_queue_run(model_id, payload, poll_max=150, model_name=_name, prompt=prompt,
+                                  interval=8, first_wait=10, queue_limit_sec=360,
+                                  log_tag="fal anim")
+    video_url = _fal_extract_url(result, "video")
     if not video_url:
-        if _fal_content_blocked(result):
-            raise Exception("🛡 Контент заблокирован моделью. Попробуй переформулировать.")
-        raise Exception(f"fal anim: нет видео: {str(result)[:150]}")
+        raise _fal_no_result_error(result, "video", _name, model_id, prompt,
+                                   result.get("_request_id", ""))
+    return await _fal_download(video_url, model_name=_name, model_id=model_id, kind="video",
+                               request_id=result.get("_request_id", ""), min_bytes=10000,
+                               timeout_total=300)
+
+
+# ══════════════════════════════════════════════════════════
+#  ВИДЕО — Google Veo 3.1 (РЕЗЕРВ до 22.10.2026)
+# ══════════════════════════════════════════════════════════
+
+def _veo_filtered_error(pd: dict, model_name: str, model_id: str, prompt: str):
+    """Отказ Veo по содержанию: Google кладёт причину в raiMediaFilteredReasons."""
+    _resp = (pd.get("response") or {}) if isinstance(pd, dict) else {}
+    _gvr = _resp.get("generateVideoResponse") or {}
+    _reasons = _gvr.get("raiMediaFilteredReasons") or _resp.get("raiMediaFilteredReasons") or []
+    _cnt = _gvr.get("raiMediaFilteredCount") or _resp.get("raiMediaFilteredCount")
+    if _reasons or _cnt:
+        _txt = " | ".join(str(x) for x in _reasons) if isinstance(_reasons, list) else str(_reasons)
+        return safety_error(model_name, raw=f"raiMediaFilteredReasons: {_txt}", provider="Google",
+                            model=model_id, prompt=prompt)
+    _low = json.dumps(pd, ensure_ascii=False).lower()
+    if "filtered" in _low or "safety" in _low or "blocked" in _low:
+        return safety_error(model_name, raw=json.dumps(pd, ensure_ascii=False)[:800],
+                            provider="Google", model=model_id, prompt=prompt)
+    return None
+
+
+async def _veo_run(instance: dict, model_id: str, aspect_ratio: str, resolution: str,
+                   model_name: str, prompt: str) -> bytes:
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
+    params = {"durationSeconds": 8, "sampleCount": 1,
+              "aspectRatio": aspect_ratio if aspect_ratio in ("16:9", "9:16") else "16:9"}
+    if resolution in ("720p", "1080p"):
+        params["resolution"] = resolution
+    payload = {"instances": [instance], "parameters": params}
     async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-        async with s.get(video_url, timeout=aiohttp.ClientTimeout(total=180)) as dv:
-            return await dv.read()
+        async with s.post(f"{base}/models/{model_id}:predictLongRunning",
+                          json=payload, headers=headers) as r:
+            _body = await r.text()
+            if r.status != 200:
+                logging.warning(f"Veo submit HTTP {r.status} model={model_id}: {_body[:400]}")
+                raise google_http_error(r.status, _body, model_name, model_id, prompt)
+            op_name = json.loads(_body).get("name")
+            if not op_name:
+                raise GenError("provider", f"⚠️ <b>{_html.escape(model_name)}</b> не приняла задачу.",
+                               raw=_body[:500], provider="Google", model=model_id)
+            logging.info(f"Veo operation started: {op_name}")
+        # Ожидание до 10 минут (раньше 6 — 1080p в часы пик не успевал).
+        for _ in range(120):
+            await asyncio.sleep(5)
+            try:
+                async with s.get(f"{base}/{op_name}", headers=headers) as pr:
+                    if pr.status != 200:
+                        continue
+                    pd = await pr.json()
+            except Exception as _pe:
+                logging.warning(f"Veo poll error: {_pe}")
+                continue
+            if not pd.get("done"):
+                continue
+            if "error" in pd:
+                _e = pd.get("error") or {}
+                raise google_http_error(int(_e.get("code") or 500), json.dumps(_e, ensure_ascii=False),
+                                        model_name, model_id, prompt)
+            _resp = pd.get("response", {}) or {}
+            _samples = (_resp.get("generateVideoResponse", {}) or {}).get("generatedSamples") or []
+            _preds = _resp.get("predictions") or []
+            for _v in ([x.get("video", x) for x in _samples] + list(_preds)):
+                if not isinstance(_v, dict):
+                    continue
+                if _v.get("bytesBase64Encoded"):
+                    return base64.b64decode(_v["bytesBase64Encoded"])
+                uri = _v.get("uri") or _v.get("videoUri") or _v.get("gcsUri")
+                if uri:
+                    if uri.startswith("gs://"):
+                        uri = uri.replace("gs://", "https://storage.googleapis.com/")
+                    async with s.get(uri, headers={"x-goog-api-key": GEMINI_API_KEY}) as vr:
+                        _vb = await vr.read()
+                        if vr.status == 200 and len(_vb) > 10000:
+                            return _vb
+                        raise GenError("provider", "⚠️ Видео создано, но не скачалось. Попробуй ещё раз.",
+                                       raw=f"Veo download HTTP {vr.status} {len(_vb)}b",
+                                       provider="Google", model=model_id)
+            _blk = _veo_filtered_error(pd, model_name, model_id, prompt)
+            if _blk:
+                raise _blk
+            raise GenError("no_output", f"🤷 <b>{_html.escape(model_name)}</b> не вернула видео.\n\n"
+                           "💡 Переформулируй промт или выбери другую модель.",
+                           raw=json.dumps(pd, ensure_ascii=False)[:1200], provider="Google",
+                           model=model_id)
+    raise GenError("timeout", f"⏱ <b>{_html.escape(model_name)}</b> не успела за 10 минут.\n\n"
+                   "💡 Попробуй ещё раз или выбери другую модель.",
+                   raw=f"Veo poll timeout {op_name}", provider="Google", model=model_id)
 
 
 async def api_animate_image(
@@ -932,78 +1025,66 @@ async def api_animate_image(
     prompt: str,
     aspect_ratio: str = "16:9",
     last_bytes: bytes | None = None,
+    model_id: str = "veo-3.1-fast-generate-preview",
+    resolution: str = "720p",
+    model_name: str = "Veo 3.1",
 ) -> bytes:
-    """Анимация фото через Veo 3.1 (первый кадр + опционально последний)."""
-    base = "https://generativelanguage.googleapis.com/v1beta"
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-
-    first_b64 = base64.b64encode(first_bytes).decode()
+    """Анимация фото через Veo 3.1 — РЕЗЕРВ на случай сбоя Gemini Omni (до 22.10.2026)."""
     instance = {
         "prompt": prompt,
-        "image": {"bytesBase64Encoded": first_b64, "mimeType": "image/jpeg"},
+        "image": {"bytesBase64Encoded": base64.b64encode(first_bytes).decode(),
+                  "mimeType": _mime_of(first_bytes)},
     }
-    params = {"durationSeconds": 8, "aspectRatio": aspect_ratio, "sampleCount": 1}
     if last_bytes:
-        last_b64 = base64.b64encode(last_bytes).decode()
-        instance["lastFrame"] = {"bytesBase64Encoded": last_b64, "mimeType": "image/jpeg"}
+        instance["lastFrame"] = {"bytesBase64Encoded": base64.b64encode(last_bytes).decode(),
+                                 "mimeType": _mime_of(last_bytes)}
+    return await _veo_run(instance, model_id, aspect_ratio, resolution, model_name, prompt)
 
-    payload = {"instances": [instance], "parameters": params}
 
-    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-        async with s.post(
-            f"{base}/models/veo-3.1-fast-generate-preview:predictLongRunning",
-            json=payload, headers=headers
-        ) as r:
-            if r.status != 200:
-                raise Exception(f"Veo Anim API {r.status}: {(await r.text())[:200]}")
-            op_data = await r.json()
-            op_name = op_data.get("name")
-            if not op_name:
-                raise Exception(f"Veo Anim: нет operation name: {op_data}")
-            logging.info(f"Veo Anim operation: {op_name}")
+def _clean_name(m: dict) -> str:
+    return re.sub(r"^[^\w]+\s*", "", str(m.get("name") or "")).strip() or "Модель"
 
-        for _ in range(72):
-            await asyncio.sleep(5)
-            async with s.get(f"{base}/{op_name}", headers=headers) as pr:
-                if pr.status != 200:
-                    continue
-                try:
-                    pd = await pr.json()
-                except (aiohttp.ContentTypeError, Exception) as je:
-                    logging.warning(f"Veo anim poll json error: {je}")
-                    continue
-                if not pd.get("done"):
-                    continue
-                if "error" in pd:
-                    raise Exception(pd["error"].get("message", "Veo Anim error"))
-                # Парсим ответ
-                gen_resp = pd.get("response", {}).get("generateVideoResponse", {})
-                samples = gen_resp.get("generatedSamples", [])
-                if samples:
-                    video = samples[0].get("video", {})
-                    if video.get("bytesBase64Encoded"):
-                        return base64.b64decode(video["bytesBase64Encoded"])
-                    uri = video.get("uri") or video.get("videoUri")
-                    if uri:
-                        vid_headers = {"x-goog-api-key": GEMINI_API_KEY}
-                        scheme = "https://storage.googleapis.com/" if uri.startswith("gs://") else None
-                        url = uri.replace("gs://", "https://storage.googleapis.com/") if scheme else uri
-                        async with s.get(url, headers=vid_headers) as vr:
-                            data_bytes = await vr.read()
-                            if len(data_bytes) > 1000:
-                                return data_bytes
-                _ra_low = str(pd).lower()
-                if ("raimediafiltered" in _ra_low or "rai_media_filtered" in _ra_low
-                        or "filtered" in _ra_low or "safety" in _ra_low or "blocked" in _ra_low):
-                    logging.warning(f"Veo Anim RAI filter: {str(pd)[:400]}")
-                    raise Exception(
-                        "Фото или промт заблокированы фильтром безопасности 🛡\n"
-                        "Veo не анимирует узнаваемых людей и сцены с насилием. "
-                        "Попробуй другое фото или другую модель анимации."
-                    )
-                logging.error(f"Veo Anim unknown response: {str(pd)[:300]}")
-                raise Exception("Неизвестная структура ответа Veo Anim")
-    raise Exception("Превышено время ожидания анимации (6 мин)")
+
+async def api_animate_by_model(m: dict, first_bytes: bytes, prompt: str,
+                               aspect_ratio: str = "16:9",
+                               last_bytes: bytes | None = None) -> bytes:
+    """Анимация фото по описанию модели из ANIM_MODELS (бот и мини-апп — один путь).
+
+    Для Gemini Omni при сбое НОВОГО эндпоинта (не при отказе по содержанию)
+    уходим на Veo, пока Google его не отключил (22.10.2026).
+    """
+    _name = _clean_name(m)
+    _last = last_bytes if m.get("two_frames") else None
+    if m.get("api") == "veo_anim":
+        return await api_animate_image(first_bytes, prompt, aspect_ratio, _last,
+                                       model_id=m.get("model_id") or "veo-3.1-fast-generate-preview",
+                                       resolution=m.get("resolution") or "720p", model_name=_name)
+    try:
+        return await api_fal_animate_image(first_bytes, prompt, m["model_id"],
+                                           duration=int(m.get("duration", 5) or 5),
+                                           aspect_ratio=aspect_ratio, last_bytes=_last,
+                                           resolution=m.get("resolution", ""), model_name=_name)
+    except GenError as ge:
+        _fb = m.get("fallback_model_id")
+        if _fb and _veo_alive() and ge.kind in ("params", "provider", "auth", "balance", "overload"):
+            logging.warning(f"anim {m.get('model_id')} → резерв Veo {_fb}: {ge.kind} {ge.raw[:200]}")
+            try:
+                from common import notify_admin_error as _nae
+                await _nae(f"Анимация: {m.get('model_id')} не сработала — ушёл на резерв {_fb}", ge)
+            except Exception:
+                pass
+            return await api_animate_image(first_bytes, prompt, aspect_ratio, _last, model_id=_fb,
+                                           resolution="1080p" if m.get("resolution") in ("1080p", "4k") else "720p",
+                                           model_name=_name)
+        raise
+
+
+async def api_edit_by_model(m: dict, image_bytes: bytes, prompt: str) -> bytes:
+    """Редактирование фото по описанию модели из EDIT_MODELS (бот и мини-апп)."""
+    _name = _clean_name(m)
+    if m.get("api") == "gemini":
+        return await api_edit_image(image_bytes, prompt, model_name=_name)
+    return await api_fal_edit_image(image_bytes, prompt, m["model_id"], model_name=_name)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1074,11 +1155,8 @@ async def api_kling_motion_control(
                 low = err_text.lower()
                 # Safety блоки (контент)
                 if r.status == 400 and ("safety" in low or "blocked" in low or "policy" in low):
-                    raise Exception(
-                        "Референсы заблокированы фильтром безопасности 🛡\n"
-                        "Попробуй загрузить другие фото/видео - избегай знаменитостей, "
-                        "откровенного содержания, брендов."
-                    )
+                    raise safety_error("Kling Motion Control", raw=f"HTTP 400 {err_text}",
+                                       provider="EvoLink", model=MOTION_MODEL_ID, prompt=prompt)
                 # Только жёсткий индикатор нехватки баланса: HTTP 402 или явная фраза
                 if r.status == 402:
                     raise Exception(f"EvoLink: баланс исчерпан (HTTP 402). Детали: {err_text[:200]}")
@@ -1191,10 +1269,8 @@ async def api_kling_motion_control(
                 err_msg = err.get("message", "") if isinstance(err, dict) else str(err)
                 low = err_msg.lower()
                 if "safety" in low or "blocked" in low or "policy" in low:
-                    raise Exception(
-                        "Референсы заблокированы фильтром безопасности 🛡\n"
-                        "Попробуй другие фото/видео - избегай знаменитостей и брендов."
-                    )
+                    raise safety_error("Kling Motion Control", raw=err_msg, provider="EvoLink",
+                                       model=MOTION_MODEL_ID, prompt=prompt)
                 raise Exception(f"Kling Motion Control: {err_msg or status or 'неизвестная ошибка'}")
             # pending / queued / generating / processing / running - продолжаем ждать
 
@@ -1207,133 +1283,34 @@ async def api_kling_motion_control(
 
 
 async def api_generate_video(prompt: str, model_id: str, aspect_ratio: str = "16:9",
-                              api_type: str = "veo", duration: int = 8) -> bytes:
-    # Dispatch на fal.ai (Kling 2.5 Turbo Pro, Kling 3.0 Pro)
+                              api_type: str = "veo", duration: int = 8, resolution: str = "",
+                              model_name: str = "", fallback_model_id: str = "") -> bytes:
+    """Генерация видео. api_type="fal" — fal.ai (Gemini Omni, Kling, Seedance, Wan, Grok);
+    "veo" — Google Veo 3.1 напрямую (до 22.10.2026).
+
+    fallback_model_id — Veo-модель, на которую уходим, если НОВЫЙ эндпоинт на
+    fal.ai не ответил как надо (404 / ошибка параметров / недоступность).
+    Отказ по содержанию резервом не обходим: правила у Google одни.
+    """
+    _name = model_name or _model_name(model_id)
     if api_type == "fal":
-        return await api_generate_fal_video(prompt, model_id, aspect_ratio, duration)
-
-    base = "https://generativelanguage.googleapis.com/v1beta"
-    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY}
-    payload = {
-        "instances": [{"prompt": prompt}],
-        "parameters": {"durationSeconds": 8, "aspectRatio": aspect_ratio, "sampleCount": 1}
-    }
-    async with aiohttp.ClientSession(timeout=_LONG_TIMEOUT) as s:
-        async with s.post(f"{base}/models/{model_id}:predictLongRunning",
-                          json=payload, headers=headers) as r:
-            if r.status != 200:
-                raise Exception(f"Veo API {r.status}: {(await r.text())[:200]}")
-            op_data = await r.json()
-            op_name = op_data.get("name")
-            logging.info(f"Veo operation started: {op_name}")
-            if not op_name:
-                raise Exception(f"Veo не вернул operation name: {op_data}")
-
-        # polling до 6 минут
-        for i in range(72):
-            await asyncio.sleep(5)
-            async with s.get(f"{base}/{op_name}", headers=headers) as pr:
-                if pr.status != 200:
-                    logging.warning(f"Poll status {pr.status}")
-                    continue
-                pd = await pr.json()
-                if not pd.get("done"):
-                    continue
-
-                logging.info(f"Veo done response keys: {list(pd.keys())}")
-
-                if "error" in pd:
-                    raise Exception(pd["error"].get("message", "Veo error"))
-
-                # Структура 1: response.predictions[]
-                preds = pd.get("response", {}).get("predictions", [])
-                if preds:
-                    logging.info(f"Veo preds[0] keys: {list(preds[0].keys())}")
-                    p = preds[0]
-                    if p.get("bytesBase64Encoded"):
-                        return base64.b64decode(p["bytesBase64Encoded"])
-                    uri = p.get("videoUri") or p.get("gcsUri") or p.get("uri")
-                    if uri and uri.startswith("https://"):
-                        async with s.get(uri) as vr:
-                            return await vr.read()
-                    if uri:
-                        raise Exception(f"GCS URI требует доп. настройки: {uri[:80]}")
-
-                # Структура 2: response.generateVideoResponse.generatedSamples[]
-                gen_resp = pd.get("response", {}).get("generateVideoResponse", {})
-                samples = gen_resp.get("generatedSamples", [])
-                if samples:
-                    logging.info(f"Veo samples[0] keys: {list(samples[0].keys())}")
-                    sample = samples[0]
-                    # video.uri или video.bytesBase64Encoded
-                    video = sample.get("video", {})
-                    if video.get("bytesBase64Encoded"):
-                        return base64.b64decode(video["bytesBase64Encoded"])
-                    uri = video.get("uri") or video.get("videoUri")
-                    logging.info(f"Veo video uri: {uri[:100] if uri else 'None'}")
-                    if uri and uri.startswith("https://"):
-                        vid_headers = {"x-goog-api-key": GEMINI_API_KEY}
-                        async with s.get(uri, headers=vid_headers) as vr:
-                            data_bytes = await vr.read()
-                            logging.info(f"Veo video downloaded: {len(data_bytes)} bytes, status: {vr.status}")
-                            if len(data_bytes) > 1000:
-                                return data_bytes
-                            raise Exception(f"Видео слишком маленькое ({len(data_bytes)} bytes). Попробуй ещё раз.")
-                    if uri and uri.startswith("gs://"):
-                        # Конвертируем GCS URI в HTTPS
-                        https_uri = uri.replace("gs://", "https://storage.googleapis.com/")
-                        async with s.get(https_uri) as vr:
-                            data_bytes = await vr.read()
-                            logging.info(f"Veo GCS download: {len(data_bytes)} bytes")
-                            if len(data_bytes) > 1000:
-                                return data_bytes
-                    if uri:
-                        raise Exception(f"Не удалось скачать видео: {uri[:80]}")
-                    # Может быть напрямую в sample
-                    if sample.get("bytesBase64Encoded"):
-                        return base64.b64decode(sample["bytesBase64Encoded"])
-                    uri = sample.get("uri") or sample.get("videoUri")
-                    if uri and uri.startswith("https://"):
-                        async with s.get(uri) as vr:
-                            return await vr.read()
-
-                # Структура 3: videos[] напрямую
-                videos = pd.get("response", {}).get("videos", [])
-                if videos:
-                    v = videos[0]
-                    if v.get("bytesBase64Encoded"):
-                        return base64.b64decode(v["bytesBase64Encoded"])
-                    uri = v.get("videoUri") or v.get("uri")
-                    if uri and uri.startswith("https://"):
-                        async with s.get(uri) as vr:
-                            return await vr.read()
-
-                # Структура 4: result.videos[]
-                result_videos = pd.get("result", {}).get("videos", [])
-                if result_videos:
-                    v = result_videos[0]
-                    if v.get("bytesBase64Encoded"):
-                        return base64.b64decode(v["bytesBase64Encoded"])
-
-                # Частый случай: Google отфильтровал результат (RAI) и вернул
-                # ответ вообще без сэмплов. Раньше это выглядело как «неизвестная
-                # структура» и клиент получал общую «техническую проблемку».
-                _resp_low = str(pd.get("response", pd)).lower()
-                if ("raimediafiltered" in _resp_low or "rai_media_filtered" in _resp_low
-                        or "filtered" in _resp_low or "safety" in _resp_low
-                        or "blocked" in _resp_low):
-                    logging.warning(f"Veo RAI filter: {str(pd)[:400]}")
-                    raise Exception(
-                        "Запрос заблокирован фильтром безопасности 🛡\n"
-                        "Veo не создаёт сцены с реальными людьми, насилием и знаменитостями. "
-                        "Попробуй переформулировать или выбери другую модель."
-                    )
-                # Лог полного ответа для отладки
-                resp_str = str(pd.get("response", pd))[:600]
-                logging.error(f"Veo unknown response: {resp_str}")
-                raise Exception(f"Неизвестная структура ответа Veo. Ключи: {list(pd.get('response', pd).keys())}")
-
-    raise Exception("Превышено время ожидания (6 мин)")
+        try:
+            return await api_generate_fal_video(prompt, model_id, aspect_ratio, duration,
+                                                resolution=resolution, model_name=_name)
+        except GenError as ge:
+            if (fallback_model_id and _veo_alive()
+                    and ge.kind in ("params", "provider", "auth", "balance", "overload")):
+                logging.warning(f"video {model_id} → резерв Veo {fallback_model_id}: {ge.kind} {ge.raw[:200]}")
+                try:
+                    from common import notify_admin_error as _nae
+                    await _nae(f"Видео: {model_id} не сработала — ушёл на резерв {fallback_model_id}", ge)
+                except Exception:
+                    pass
+                return await _veo_run({"prompt": prompt}, fallback_model_id, aspect_ratio,
+                                      resolution if resolution in ("720p", "1080p") else "1080p",
+                                      _name, prompt)
+            raise
+    return await _veo_run({"prompt": prompt}, model_id, aspect_ratio, resolution, _name, prompt)
 
 # ══════════════════════════════════════════════════════════
 #  ОБРАБОТЧИКИ - СТАРТ / МЕНЮ

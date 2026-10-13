@@ -628,11 +628,24 @@ async def cmd_recover(message: Message):
     status_msg = await message.answer(f"🔍 Ищу видео <code>{request_id}</code>...", parse_mode="HTML")
 
     # Пробуем найти видео на разных известных endpoint'ах Kling
-    endpoints = [
-        "fal-ai/kling-video/v3/pro/text-to-video",
-        "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
-        "fal-ai/kling-video/v3/standard/text-to-video",
-    ]
+    # Все видео-модели бота на fal.ai (раньше — только три эндпоинта Kling:
+    # видео Seedance, Wan, Grok, Gemini Omni и любой анимации найти было нельзя).
+    from config import VIDEO_MODELS as _VMr, ANIM_MODELS as _AMr
+    endpoints = []
+    for _src in (_VMr, _AMr):
+        for _mm in _src.values():
+            _mid = _mm.get("model_id") or ""
+            if _mm.get("api") == "fal" and _mid and _mid not in endpoints:
+                endpoints.append(_mid)
+    for _old in ("fal-ai/kling-video/v3/standard/text-to-video",):
+        if _old not in endpoints:
+            endpoints.append(_old)
+    # fal хранит результат и по полному пути модели, и по пути приложения
+    # (первые два сегмента: fal-ai/kling-video) — пробуем оба.
+    for _ep in list(endpoints):
+        _base = "/".join(_ep.split("/")[:2])
+        if _base not in endpoints:
+            endpoints.append(_base)
     headers = {"Authorization": f"Key {FAL_API_KEY}"}
     vid_url = None
     found_endpoint = None
@@ -1740,12 +1753,12 @@ async def adm_popular(cb: CallbackQuery):
         await cb.answer("❌", show_alert=True); return
     # Словарь ключ → читаемое название
     MODEL_NAMES = {
-        "img_fast":          "⚡ Imagen 4 Fast",
-        "img_std":           "🌟 Imagen 4",
-        "img_ultra":         "✨ Imagen 4 Ultra",
-        "vid_lite":          "🎞 Veo 3.1 Lite",
-        "vid_fast":          "🎥 Veo 3.1 Fast",
-        "vid_pro":           "💎 Veo 3.1",
+        "img_fast":          "⚡ Imagen 4 Fast (отключён)",
+        "img_std":           "🌟 Imagen 4 (отключён)",
+        "img_ultra":         "✨ Imagen 4 Ultra (отключён)",
+        "vid_lite":          "🎞 Gemini Omni Lite (ранее Veo Lite)",
+        "vid_fast":          "🎥 Gemini Omni Fast (ранее Veo Fast)",
+        "vid_pro":           "💎 Gemini Omni Pro (ранее Veo 3.1)",
         "gemini-flash-image":"✏️ Редактирование фото",
         "edit":              "✏️ Редактирование фото",
     }
@@ -3012,7 +3025,7 @@ async def adm_plan_manual(cb: CallbackQuery, state: FSMContext):
     key, plan_idx = parts[1], int(parts[2])
     cur = (await get_setting(f"manual:{key}:{plan_idx}", "0") or "0") == "1"
     await set_setting(f"manual:{key}:{plan_idx}", "0" if cur else "1")
-    cb.data = f"adm_shop_plan:{key}:{plan_idx}"
+    cb = cb.model_copy(update={"data": f"adm_shop_plan:{key}:{plan_idx}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
     await adm_shop_plan(cb, state)
 
 
@@ -3280,7 +3293,9 @@ async def adm_edit_value(message: Message, state: FSMContext):
         elif field == "gen_credits" and gen_key:
             nc = int(value)
             models = {"image": IMAGE_MODELS, "video": VIDEO_MODELS, "edit": EDIT_MODELS, "anim": ANIM_MODELS}.get(gen_section, {})
-            if gen_key in models: models[gen_key]["credits"] = nc
+            if gen_key in models:
+                from config import set_model_credits as _smc
+                _smc(gen_key, nc)  # вместе с таблицей длительностей
             async with pool.acquire() as conn:
                 await conn.execute("INSERT INTO bot_gen_prices (model_key,section,credits) VALUES ($1,$2,$3) ON CONFLICT (model_key) DO UPDATE SET credits=$3", gen_key, gen_section, nc)
             mn = models.get(gen_key, {}).get("name", gen_key)
@@ -3359,6 +3374,10 @@ async def adm_toggle_model(cb: CallbackQuery):
 
     # Переключаем
     new_enabled = key in DISABLED_MODELS  # если сейчас выключена — включаем
+    from config import RETIRED_MODELS as _RET
+    if new_enabled and key in _RET:
+        await cb.answer("Эту модель провайдер отключил навсегда — включить нельзя.", show_alert=True)
+        return
     if new_enabled:
         DISABLED_MODELS.discard(key)
     else:

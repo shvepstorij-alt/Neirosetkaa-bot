@@ -336,7 +336,7 @@ async def sub_renew(cb: CallbackQuery, state: FSMContext):
     key = parts[1] if len(parts) > 1 else ""
     idx = parts[2] if len(parts) > 2 else "0"
     try:
-        cb.data = f"shop_confirm:{key}:{idx}"
+        cb = cb.model_copy(update={"data": f"shop_confirm:{key}:{idx}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
         await shop_confirm(cb, state)
     except Exception as _e:
         logging.error(f"sub_renew failed key={key!r} idx={idx!r}: {_e}")
@@ -346,7 +346,7 @@ async def sub_renew(cb: CallbackQuery, state: FSMContext):
             pass
         # Фолбэк: открываем витрину сервиса свежим сообщением
         try:
-            cb.data = f"shop_renew:{key}"
+            cb = cb.model_copy(update={"data": f"shop_renew:{key}"})  # CallbackQuery в aiogram 3 заморожен — cb.data = … падало
             await shop_renew(cb)
         except Exception:
             pass
@@ -1611,7 +1611,8 @@ async def menu_ref(cb: CallbackQuery):
 async def menu_balance(cb: CallbackQuery):
     cr = await get_credits(cb.from_user.id)
 
-    img_keys  = ["img_fast", "img_std", "img_ultra"]
+    from config import DISABLED_MODELS
+    gpt_keys  = ["gptimg_fast", "gptimg_std", "gptimg_pro"]
     nano_keys = ["nb_flash", "nb_2", "nb_pro"]
     fal_img_keys = ["flux_pro", "ideogram_v3"]
     vid_keys  = ["vid_lite", "vid_fast", "vid_pro"]
@@ -1622,19 +1623,20 @@ async def menu_balance(cb: CallbackQuery):
         icon = "🔹" if cr >= m['credits'] else "🔸"
         return f"{icon} <b>{m['name']}</b> - <i>{m['credits']} кр</i>"
 
-    img_lines  = [model_line(k, IMAGE_MODELS) for k in img_keys  if k in IMAGE_MODELS]
-    nano_lines = [model_line(k, IMAGE_MODELS) for k in nano_keys if k in IMAGE_MODELS]
-    fal_img_lines = [model_line(k, IMAGE_MODELS) for k in fal_img_keys if k in IMAGE_MODELS]
-    vid_lines  = [model_line(k, VIDEO_MODELS) for k in vid_keys  if k in VIDEO_MODELS]
-    kling_lines = [model_line(k, VIDEO_MODELS) for k in kling_keys if k in VIDEO_MODELS]
+    # Выключенные модели (в т.ч. отключённый Google Imagen 4) не показываем
+    img_lines  = [model_line(k, IMAGE_MODELS) for k in gpt_keys if k in IMAGE_MODELS and k not in DISABLED_MODELS]
+    nano_lines = [model_line(k, IMAGE_MODELS) for k in nano_keys if k in IMAGE_MODELS and k not in DISABLED_MODELS]
+    fal_img_lines = [model_line(k, IMAGE_MODELS) for k in fal_img_keys if k in IMAGE_MODELS and k not in DISABLED_MODELS]
+    vid_lines  = [model_line(k, VIDEO_MODELS) for k in vid_keys  if k in VIDEO_MODELS and k not in DISABLED_MODELS]
+    kling_lines = [model_line(k, VIDEO_MODELS) for k in kling_keys if k in VIDEO_MODELS and k not in DISABLED_MODELS]
 
     text = (
         f"💵 <b>Баланс: {cr} кредитов</b>\n\n"
         f"<b>Доступные модели:</b>\n\n"
-        f"🌟 <b>IMAGEN 4</b>\n" + "\n".join(img_lines) + "\n\n"
+        f"🤖 <b>GPT IMAGE 2</b>\n" + "\n".join(img_lines) + "\n\n"
         f"🍌 <b>NANO BANANA</b>\n" + "\n".join(nano_lines) + "\n\n"
         f"🎨 <b>FLUX &amp; IDEOGRAM</b>\n" + "\n".join(fal_img_lines) + "\n\n"
-        f"🎥 <b>VEO 3.1</b>\n" + "\n".join(vid_lines) + "\n\n"
+        f"🎥 <b>GEMINI OMNI</b>\n" + "\n".join(vid_lines) + "\n\n"
         f"🎞 <b>KLING</b>\n" + "\n".join(kling_lines) + "\n\n"
         f"<i>🔹 доступно · 🔸 нужно пополнить</i>"
     )
