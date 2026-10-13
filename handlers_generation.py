@@ -1168,7 +1168,8 @@ async def go_video(cb: CallbackQuery, state: FSMContext):
         "kling_pro":    600,   # Kling 3.0 Pro ~ 10 мин
         "seedance_15":  180,   # Seedance 1.5 Pro ~ 3 мин
         "seedance_20":  240,   # Seedance 2.0 ~ 4 мин
-        "wan_22":       120,   # Wan 2.2 ~ 2 мин
+        "seedance_25":  300,   # Seedance 2.5 ~ 5 мин
+        "wan_22":       180,   # Wan 3.0 ~ 3 мин
         "grok_vid":     120,   # Grok ~ 2 мин
     }
 

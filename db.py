@@ -1694,6 +1694,27 @@ async def load_prices_from_db():
         except Exception as _e36:
             logging.warning(f"gen_prices_v36 skipped: {_e36}")
 
+        # Часть 37: модели заменены на новые версии (Flux 3, Ideogram 4.5,
+        # GPT Image 2.5, Grok 2.0/1.5, Wan 3.0) — у них другой закуп, поэтому
+        # цены этих ключей один раз переписываются из кода.
+        try:
+            _v37 = await conn.fetchval("SELECT value FROM settings WHERE key='gen_prices_v37'")
+            if _v37 != "1":
+                for _k37 in ("flux_pro", "ideogram_v3", "grok_img", "grok_img_pro", "gptimg_fast",
+                             "gptimg_std", "gptimg_pro", "wan_22", "grok_vid", "edit_grok",
+                             "edit_gpt", "edit_flux", "anim_grok", "anim_wan"):
+                    for _d37 in (IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS):
+                        if _k37 in _d37:
+                            await conn.execute(
+                                "UPDATE bot_gen_prices SET credits=$1 WHERE model_key=$2",
+                                int(_d37[_k37].get("credits", 0)), _k37)
+                await conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('gen_prices_v37','1') "
+                    "ON CONFLICT (key) DO UPDATE SET value='1'")
+                logging.info("gen_prices_v37: цены обновлённых моделей записаны в БД")
+        except Exception as _e37:
+            logging.warning(f"gen_prices_v37 skipped: {_e37}")
+
         # Цены на генерации + список отключённых моделей
         rows_gen = await conn.fetch("SELECT * FROM bot_gen_prices")
         if rows_gen:

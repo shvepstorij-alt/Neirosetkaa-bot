@@ -468,73 +468,90 @@ IMAGE_MODELS = {
     },
     # ── Black Forest Labs / Ideogram (через fal.ai) ────────
     "flux_pro": {
-        "name": "🎭 Flux 2 Pro",
-        "model_id": "fal-ai/flux-2-pro",
+        # Часть 37: Flux 3 (BFL) — $0.048 за 1 Мп; резерв — Flux 2 Pro
+        "name": "🎭 Flux 3",
+        "model_id": "blackforestlabs/flux-3/text-to-image",
+        "fal_fallback_id": "fal-ai/flux-2-pro",
         "api": "fal",
-        "credits": 8,
-        "price": "4₽",
-        "speed": "~8 сек",
-        "desc": "Фотореализм от Black Forest Labs",
+        "credits": 13,
+        "price": "7₽",
+        "speed": "~10 сек",
+        "desc": "Black Forest Labs, новейший — фотореализм",
     },
     "ideogram_v3": {
-        "name": "✒️ Ideogram V3",
-        "model_id": "fal-ai/ideogram/v3",
+        # Часть 37: Ideogram 4.5 (medium $0.06); резерв — Ideogram V3. Ключ прежний.
+        "name": "✒️ Ideogram 4.5",
+        "model_id": "ideogram/v4.5",
+        "fal_fallback_id": "fal-ai/ideogram/v3",
         "api": "fal",
+        "quality": "medium",
         "credits": 16,
         "price": "9₽",
         "speed": "~10 сек",
-        "desc": "Идеальный текст в картинке (для постеров, баннеров WB/Ozon)",
+        "desc": "Идеальный текст в картинке (постеры, баннеры WB/Ozon)",
     },
     # ── xAI Grok Imagine (через fal.ai) ──────────────────────
     "grok_img": {
-        "name": "⚡ Grok Imagine",
-        "model_id": "xai/grok-imagine-image",
+        # Часть 37: Grok Imagine Image 2.0, quality=low ($0.04 за 1K); резерв — v1
+        "name": "⚡ Grok Imagine 2.0",
+        "model_id": "xai/grok-imagine-image/v2.0/text-to-image",
+        "fal_fallback_id": "xai/grok-imagine-image",
         "api": "fal",
-        "credits": 6,
-        "price": "3₽",
+        "quality": "low",
+        "credits": 11,
+        "price": "6₽",
         "speed": "~5 сек",
         "desc": "xAI, фотореализм, точный текст",
     },
     "grok_img_pro": {
-        "name": "🔥 Grok Imagine Pro",
-        "model_id": "xai/grok-imagine-image",
-        "api": "fal",
-        "credits": 14,
-        "price": "7₽",
-        "speed": "~10 сек",
-        "desc": "xAI Pro - чище, резче, лучший текст",
-        "quality": "quality",  # quality mode вместо speed mode
-    },
-    # ── OpenAI GPT Image 2 (через fal.ai, 3 уровня качества) ───
-    "gptimg_fast": {
-        "name": "⚡ GPT Image 2 Fast",
-        "model_id": "openai/gpt-image-2",
-        "api": "fal",
-        "quality": "low",
-        "credits": 3,
-        "price": "2₽",
-        "speed": "~8 сек",
-        "desc": "OpenAI, бюджет - проверить идею",
-    },
-    "gptimg_std": {
-        "name": "🤖 GPT Image 2",
-        "model_id": "openai/gpt-image-2",
+        # quality=medium ($0.06 за 1K). Раньше «Pro» слал mode=quality, которого у
+        # модели нет, — клиент платил больше за ту же картинку.
+        "name": "🔥 Grok Imagine 2.0 Pro",
+        "model_id": "xai/grok-imagine-image/v2.0/text-to-image",
+        "fal_fallback_id": "xai/grok-imagine-image",
         "api": "fal",
         "quality": "medium",
+        "credits": 16,
+        "price": "9₽",
+        "speed": "~10 сек",
+        "desc": "xAI, лучшее качество и текст",
+    },
+    # ── OpenAI GPT Image 2.5 (через fal.ai, 3 уровня качества) ───
+    "gptimg_fast": {
+        # Часть 37: GPT Image 2.5 Flare, medium ($0.013 за 1024²); резерв — GPT Image 2
+        "name": "⚡ GPT Image 2.5 Flare",
+        "model_id": "openai/gpt-image-2.5/flare/text-to-image",
+        "fal_fallback_id": "openai/gpt-image-2",
+        "api": "fal",
+        "quality": "medium",
+        "credits": 4,
+        "price": "2₽",
+        "speed": "~8 сек",
+        "desc": "OpenAI, быстрая — проверить идею",
+    },
+    "gptimg_std": {
+        # GPT Image 2.5 Sunburst, high ($0.053 за 1024²)
+        "name": "🤖 GPT Image 2.5",
+        "model_id": "openai/gpt-image-2.5/sunburst/text-to-image",
+        "fal_fallback_id": "openai/gpt-image-2",
+        "api": "fal",
+        "quality": "high",
         "credits": 14,
         "price": "7₽",
         "speed": "~15 сек",
-        "desc": "#1 в Image Arena, рекомендованное качество",
+        "desc": "OpenAI, новейшая — рекомендованное качество",
     },
     "gptimg_pro": {
-        "name": "💎 GPT Image 2 Pro",
-        "model_id": "openai/gpt-image-2",
+        # GPT Image 2.5 Sunburst, max ($0.21 за 1024²)
+        "name": "💎 GPT Image 2.5 Pro",
+        "model_id": "openai/gpt-image-2.5/sunburst/text-to-image",
+        "fal_fallback_id": "openai/gpt-image-2",
         "api": "fal",
-        "quality": "high",
+        "quality": "max",
         "credits": 59,
         "price": "31₽",
-        "speed": "~25 сек",
-        "desc": "Топ 4K, 99% точность текста, thinking mode",
+        "speed": "~30 сек",
+        "desc": "Максимальное качество и точность текста",
     },
 }
 
@@ -558,16 +575,18 @@ VIDEO_MODELS = {
         "desc": "Google, бюджетный, со звуком",
     },
     "wan_22": {
-        "name": "🌊 Wan 2.2",
-        "model_id": "fal-ai/wan/v2.2-a14b/text-to-video",
+        # Часть 37: Wan 3.0 (Alibaba), 720p + звук, $0.10/с; резерв — Wan 2.2
+        "name": "🌊 Wan 3.0",
+        "model_id": "alibaba/wan-3.0/text-to-video",
+        "fal_fallback_id": "fal-ai/wan/v2.2-a14b/text-to-video",
         "api": "fal",
-        "credits": 109,
-        "price": "58₽",
-        "res": "720p",
-        "desc": "Топ open-source, движения людей",
+        "credits": 139,
+        "price": "74₽",
+        "res": "720p + аудио",
+        "desc": "Alibaba, новейший, со звуком",
         "durations": {
-            5:  (109, "58₽"),
-            10: (219, "117₽"),
+            5:  (139, "74₽"),
+            10: (269, "143₽"),
         },
     },
     "kling_turbo": {
@@ -623,16 +642,19 @@ VIDEO_MODELS = {
         },
     },
     "grok_vid": {
-        "name": "⚡ Grok Imagine",
-        "model_id": "xai/grok-imagine-video/text-to-video",
+        # Часть 37: Grok Imagine Video 1.5 Lite, 720p, $0.03/с (дешевле v1 —
+        # $0.07/с). Полной 1.5 для текста на fal нет. Резерв — Grok v1.
+        "name": "⚡ Grok Imagine 1.5",
+        "model_id": "xai/grok-imagine-video/v1.5/lite/text-to-video",
+        # Резерва нет: Grok v1 стоит $0.07/с — дороже цены 1.5 Lite.
         "api": "fal",
-        "credits": 119,
-        "price": "63₽",
+        "credits": 49,
+        "price": "26₽",
         "res": "720p + аудио",
-        "desc": "xAI, нативное аудио, быстро",
+        "desc": "xAI, нативное аудио, быстро и недорого",
         "durations": {
-            6:  (119, "63₽"),
-            10: (189, "101₽"),
+            6:  (49, "26₽"),
+            10: (79, "42₽"),
         },
     },
     "seedance_20": {
@@ -647,6 +669,22 @@ VIDEO_MODELS = {
             5:  (399, "213₽"),
             10: (799, "426₽"),
             15: (1189, "634₽"),
+        },
+    },
+    "seedance_25": {
+        # Часть 37: Seedance 2.5 (ByteDance), 720p + звук, ≈$0.473/с; резерв — 2.0
+        "name": "💎 Seedance 2.5",
+        "model_id": "bytedance/seedance-2.5/text-to-video",
+        "fal_fallback_id": "bytedance/seedance-2.0/text-to-video",
+        "api": "fal",
+        "credits": 619,
+        "price": "330₽",
+        "res": "720p + аудио",
+        "desc": "ByteDance, новейший — кино-качество со звуком",
+        "durations": {
+            5:  (619, "330₽"),
+            10: (1239, "660₽"),
+            15: (1859, "991₽"),
         },
     },
     "vid_pro": {
@@ -863,16 +901,16 @@ ALTERNATIVE_MODELS = {
     "img":   {
         # Imagen 4 отключён Google — альтернативы ведут на живые модели
         # другого провайдера (если Google перегружен, Gemini тоже не поможет).
-        "nb_pro":        ("img", "gptimg_std",  "GPT Image 2 (другой провайдер, тоже точный текст)"),
-        "nb_2":          ("img", "flux_pro",    "Flux 2 Pro (другой провайдер)"),
+        "nb_pro":        ("img", "gptimg_std",  "GPT Image 2.5 (другой провайдер, тоже точный текст)"),
+        "nb_2":          ("img", "flux_pro",    "Flux 3 (другой провайдер)"),
         "nb_flash":      ("img", "grok_img",    "Grok Imagine (другой провайдер)"),
         "flux_pro":      ("img", "nb_2",        "Nano Banana 2.1 (фотореалистичная альтернатива)"),
         "ideogram_v3":   ("img", "nb_pro",      "Nano Banana Pro (тоже хорошо рисует текст)"),
         "gptimg_pro":    ("img", "nb_pro",      "Nano Banana Pro (другой провайдер)"),
         "gptimg_std":    ("img", "nb_2",        "Nano Banana 2.1 (другой провайдер)"),
         "gptimg_fast":   ("img", "nb_flash",    "Nano Banana (другой провайдер)"),
-        "grok_img":      ("img", "flux_pro",    "Flux 2 Pro (другой провайдер)"),
-        "grok_img_pro":  ("img", "flux_pro",    "Flux 2 Pro (другой провайдер)"),
+        "grok_img":      ("img", "flux_pro",    "Flux 3 (другой провайдер)"),
+        "grok_img_pro":  ("img", "flux_pro",    "Flux 3 (другой провайдер)"),
     },
     "vid": {
         "vid_pro":      ("vid", "vid_fast",     "Gemini Omni Fast (1080p, быстрее и дешевле)"),
@@ -881,6 +919,7 @@ ALTERNATIVE_MODELS = {
         "kling_pro":    ("vid", "kling_turbo",  "Kling 2.5 Turbo (быстрее, той же серии)"),
         "kling_turbo":  ("vid", "seedance_15",  "Seedance 1.5 Pro (другой провайдер)"),
         "seedance_20":  ("vid", "seedance_15",  "Seedance 1.5 Pro (стабильнее)"),
+        "seedance_25":  ("vid", "seedance_20",  "Seedance 2.0 (дешевле, тоже со звуком)"),
         "seedance_15":  ("vid", "kling_turbo",  "Kling 2.5 Turbo (другой провайдер)"),
         "wan_22":       ("vid", "vid_lite",     "Gemini Omni Lite (другой провайдер)"),
         "grok_vid":     ("vid", "seedance_15",  "Seedance 1.5 Pro (другой провайдер)"),
@@ -960,7 +999,7 @@ IMAGE_BRAND_MODELS = {
 }
 
 IMAGE_BRAND_TITLES = {
-    "gptimg":   "GPT Image 2 (OpenAI)",
+    "gptimg":   "GPT Image 2.5 (OpenAI)",
     "nano":     "Nano Banana",
     "flux":     "Flux",
     "ideogram": "Ideogram",
@@ -971,7 +1010,7 @@ IMAGE_BRAND_TITLES = {
 VIDEO_BRAND_MODELS = {
     "veo":      ["vid_lite", "vid_fast", "vid_pro"],
     "kling":    ["kling_turbo", "kling_pro"],
-    "seedance": ["seedance_15", "seedance_20"],
+    "seedance": ["seedance_15", "seedance_20", "seedance_25"],
     "wan":      ["wan_22"],
     "grok":     ["grok_vid"],
 }
@@ -1946,26 +1985,32 @@ EDIT_MODELS = {
         "desc": "Gemini - быстро, диалоговый редактор",
     },
     "edit_grok": {
-        "name": "⚡ Grok Imagine",
+        "name": "⚡ Grok Imagine 2.0",
         "api": "fal",
-        "model_id": "xai/grok-imagine-image/edit",
-        "credits": 8,
-        "desc": "xAI - точное следование инструкциям",
+        "model_id": "xai/grok-imagine-image/v2.0/edit",
+        "fal_fallback_id": "xai/grok-imagine-image/edit",
+        "quality": "medium",
+        "credits": 19,
+        "desc": "xAI — точное следование инструкциям",
     },
     "edit_gpt": {
-        "name": "🤖 GPT Image",
+        "name": "🤖 GPT Image 2.5",
         "api": "fal",
-        # Официальный id эндпоинта на fal.ai — openai/… (как и у генерации).
-        "model_id": "openai/gpt-image-2/edit",
+        # Часть 37: GPT Image 2.5 Sunburst edit, high (≈$0.065 с учётом входного фото)
+        "model_id": "openai/gpt-image-2.5/sunburst/edit",
+        "fal_fallback_id": "openai/gpt-image-2/edit",
+        "quality": "high",
         "credits": 17,
-        "desc": "OpenAI - реализм, сложные правки",
+        "desc": "OpenAI — реализм, сложные правки",
     },
     "edit_flux": {
-        "name": "🎭 Flux Kontext",
+        "name": "🎭 Flux 3",
         "api": "fal",
-        "model_id": "fal-ai/flux-kontext/dev",
-        "credits": 10,
-        "desc": "Black Forest Labs - художественный стиль",
+        # Часть 37: Flux 3 edit ($0.048 за 1 Мп); резерв — Flux Kontext
+        "model_id": "blackforestlabs/flux-3/edit-image",
+        "fal_fallback_id": "fal-ai/flux-kontext/dev",
+        "credits": 13,
+        "desc": "Black Forest Labs — художественный стиль",
     },
 }
 ANIM_CREDIT_COST  = 319  # анимация по умолчанию (Gemini Omni 1080p), часть 36
@@ -1988,10 +2033,10 @@ ANIM_MODELS = {
         "duration": 8,
     },
     "anim_grok": {
-        "name": "⚡ Grok Imagine",
+        "name": "⚡ Grok Imagine 1.5",
         "api": "fal",
-        "model_id": "xai/grok-imagine-video/image-to-video",
-        "credits": 119,
+        "model_id": "xai/grok-imagine-video/v1.5/lite/image-to-video",
+        "credits": 49,
         "desc": "xAI, 6 сек, 720p + аудио",
         "duration": 6,
     },
@@ -2005,11 +2050,13 @@ ANIM_MODELS = {
         "duration": 5,
     },
     "anim_wan": {
-        "name": "🌊 Wan 2.2",
+        "name": "🌊 Wan 3.0",
         "api": "fal",
-        "model_id": "fal-ai/wan/v2.2-a14b/image-to-video",
-        "credits": 109,
-        "desc": "Бюджетный, 5 сек, 720p",
+        "model_id": "alibaba/wan-3.0/image-to-video",
+        "fal_fallback_id": "fal-ai/wan/v2.2-a14b/image-to-video",
+        "two_frames": True,
+        "credits": 139,
+        "desc": "Alibaba, 5 сек, 720p + аудио",
         "duration": 5,
     },
 }

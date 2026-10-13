@@ -1749,8 +1749,8 @@ async def _show_profile(message: Message, user, edit: bool = False):
         "nb_flash":  "Nano Banana Flash",
         "nb_2":      "Nano Banana 2 / 2.1",
         "nb_pro":    "Nano Banana Pro",
-        "flux_pro":  "Flux 2 Pro",
-        "ideogram_v3": "Ideogram V3",
+        "flux_pro":  "Flux 3 / Flux 2 Pro",
+        "ideogram_v3": "Ideogram 4.5 / V3",
         # ключи VIDEO_MODELS
         "vid_lite":  "Gemini Omni Lite / Veo Lite",
         "vid_fast":  "Gemini Omni Fast / Veo Fast",

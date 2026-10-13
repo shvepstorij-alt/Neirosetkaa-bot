@@ -215,6 +215,12 @@ def fal_error(status: int, body: str, model_name: str, model_id: str,
         return GenError("no_output", f"🤷 <b>{_who}</b> ничего не создала по этому запросу.\n\n"
                         "💡 Переформулируй промт — опиши, что должно быть в кадре — или "
                         "выбери другую модель.", raw=_raw, provider="fal.ai", model=model_id)
+    if status == 404:
+        # Эндпоинта нет (новая модель ещё не выкачена / id изменился) — это наша
+        # «ошибка параметров»: задача не выполнялась, можно уйти на прежнюю версию.
+        return GenError("params", f"⚠️ <b>{_who}</b> сейчас недоступна у провайдера.\n\n"
+                        "💡 Выбери другую модель — Александр уже получил отчёт.",
+                        raw=_raw, provider="fal.ai", model=model_id)
     if status in (401, 403):
         return GenError("auth", "⚙️ Сервис генерации временно недоступен — уже разбираемся. "
                         "Попробуй другую модель.", raw=_raw, provider="fal.ai", model=model_id)

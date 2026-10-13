@@ -190,6 +190,48 @@ def _veo_alive() -> bool:
     return datetime.date.today() < _VEO_SHUTDOWN
 
 
+def _fal_fallback_for(model_id: str) -> str:
+    """Предыдущая (проверенная) версия модели на fal для нового эндпоинта.
+
+    Часть 37: Ideogram 4.5, Flux 3, GPT Image 2.5, Grok Image 2.0, Seedance 2.5,
+    Wan 3.0, Grok Video 1.5 Lite на живом ключе ещё не запускались. Если fal
+    ответит «не те параметры» (422) или «нет такого эндпоинта» — задача не
+    выполнена и не оплачена, поэтому бот сразу делает её на прежней версии,
+    а Александру приходит отчёт.
+    """
+    try:
+        from config import IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS
+        for _d in (IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS, ANIM_MODELS):
+            for _m in _d.values():
+                if _m.get("model_id") == model_id and _m.get("fal_fallback_id"):
+                    return _m["fal_fallback_id"]
+    except Exception:
+        pass
+    return ""
+
+
+def _fb_quality(fallback_id: str, quality: str) -> str:
+    """Качество для прежней версии GPT Image 2 (у неё нет xhigh/max).
+    Pro (max/xhigh, 59 кр) → high ($0.21 — укладывается в цену);
+    обычная (high, 14 кр) → medium ($0.053): high у GPT 2 дороже её цены."""
+    if "gpt-image-2/" in fallback_id or fallback_id == "openai/gpt-image-2":
+        if quality in ("xhigh", "max"):
+            return "high"
+        if quality == "high":
+            return "medium"
+        return quality or "medium"
+    return quality
+
+
+async def _note_fallback(model_id: str, fallback_id: str, err) -> None:
+    logging.warning(f"fal {model_id} → прежняя версия {fallback_id}: {getattr(err, 'raw', err)!s:.200}")
+    try:
+        from common import notify_admin_error as _nae
+        await _nae(f"Новая модель {model_id} не приняла запрос — сделал на {fallback_id}", err)
+    except Exception:
+        pass
+
+
 def _model_name(model_id: str, fallback: str = "") -> str:
     """Человеческое имя модели по model_id (для текста ошибки клиенту)."""
     if fallback:
@@ -533,7 +575,7 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
                                   model_name: str = "") -> bytes:
     """Генерация изображений через fal.ai (sync endpoint — результат приходит сразу).
 
-    quality: для GPT Image 2 — 'low' / 'medium' / 'high'; для Grok — 'quality'.
+    quality: GPT Image — low…max; Ideogram 4.5 — low/medium/high; Grok 2.0 — low/medium.
     _retry_count: внутренний счётчик повторов при downstream_service_error.
     """
     MAX_DOWNSTREAM_RETRIES = 2  # Всего 3 попытки (0, 1, 2)
@@ -564,12 +606,29 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
     url = f"https://fal.run/{model_id}"
     headers = {"Authorization": f"Key {FAL_API_KEY}", "Content-Type": "application/json"}
 
-    if "flux-2" in model_id:
+    if "flux-3" in model_id:
+        # Flux 3: aspect_ratio + resolution (1k ≈ 1 Мп, $0.048), а не image_size
+        payload = {
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio if aspect_ratio in ("1:1", "16:9", "9:16", "4:3", "3:4") else "1:1",
+            "resolution": "1k",
+            "safety_tolerance": 2,
+            "output_format": "jpeg",
+        }
+    elif "flux-2" in model_id:
         payload = {
             "prompt": prompt,
             "image_size": aspect_map_flux.get(aspect_ratio, "square_hd"),
             "num_images": 1,
             "enable_safety_checker": True,
+        }
+    elif "ideogram/v4" in model_id:
+        # Ideogram 4.5: image_size + quality (low $0.03 / medium $0.06 / high $0.22)
+        payload = {
+            "prompt": prompt,
+            "image_size": aspect_map_flux.get(aspect_ratio, "square_hd"),
+            "quality": quality if quality in ("low", "medium", "high") else "medium",
+            "num_images": 1,
         }
     elif "ideogram" in model_id:
         payload = {
@@ -579,22 +638,30 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
             "num_images": 1,
         }
     elif "gpt-image-2" in model_id:
+        # GPT Image 2.5 (flare/sunburst) умеет ещё xhigh и max; GPT Image 2 — до high
+        _q_ok = (("low", "medium", "high", "xhigh", "max") if "gpt-image-2.5" in model_id
+                 else ("low", "medium", "high"))
+        _q = quality if quality in _q_ok else ("high" if quality in ("xhigh", "max") else "medium")
         payload = {
             "prompt": prompt,
             "image_size": aspect_map_flux.get(aspect_ratio, "square_hd"),
-            "quality": quality if quality in ("low", "medium", "high") else "medium",
+            "quality": _q,
             "num_images": 1,
         }
         logging.info(f"GPT Image 2 payload: model={model_id} quality={payload['quality']} "
                      f"aspect={aspect_ratio} size={payload['image_size']}")
     elif "grok-imagine-image" in model_id:
-        payload = {"prompt": prompt, "aspect_ratio": aspect_ratio, "num_images": 1}
-        if quality == "quality":
-            payload["mode"] = "quality"
+        # v1: параметра качества нет (раньше слали mode=quality — fal его
+        # игнорировал, и «Grok Imagine Pro» был той же моделью за большие деньги).
+        # v2.0: quality low / medium.
+        payload = {"prompt": prompt, "aspect_ratio": aspect_ratio, "resolution": "1k",
+                   "num_images": 1}
+        if "/v2" in model_id:
+            payload["quality"] = quality if quality in ("low", "medium") else "low"
     else:
         payload = {"prompt": prompt}
 
-    timeout_sec = 300 if "gpt-image-2" in model_id and quality == "high" else 180
+    timeout_sec = 300 if "gpt-image-2" in model_id and quality in ("high", "xhigh", "max") else 180
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_sec)) as s:
             async with s.post(url, json=payload, headers=headers) as r:
@@ -606,6 +673,12 @@ async def api_generate_fal_image(prompt: str, model_id: str, aspect_ratio: str =
                                      stage="image")
                     # Сбой у самого OpenAI (downstream) — короткий повтор: такие
                     # запросы провайдер не выполнил, второй оплаты нет.
+                    _fb = _fal_fallback_for(model_id)
+                    if _fb and _err.kind == "params":
+                        await _note_fallback(model_id, _fb, _err)
+                        return await api_generate_fal_image(
+                            _orig_prompt, _fb, aspect_ratio, quality=_fb_quality(_fb, quality),
+                            model_name=model_name)
                     if (_err.kind == "overload" and "downstream" in _body.lower()
                             and _retry_count < MAX_DOWNSTREAM_RETRIES):
                         await asyncio.sleep(3 * (_retry_count + 1))
@@ -653,8 +726,16 @@ def _fal_video_payload(model_id: str, prompt: str, aspect_ratio: str, duration: 
                 "aspect_ratio": aspect_ratio, "negative_prompt": "blur, distort, and low quality",
                 "cfg_scale": 0.5}
     if "seedance" in model_id:
-        return {"prompt": prompt, "duration": str(duration), "aspect_ratio": aspect_ratio,
-                "resolution": resolution or "720p"}
+        _p = {"prompt": prompt, "duration": str(duration), "aspect_ratio": aspect_ratio,
+              "resolution": resolution or "720p"}
+        if "seedance-2.5" in model_id:
+            _p["generate_audio"] = True
+        return _p
+    if "wan-3" in model_id:
+        # Wan 3.0: duration (сек, число), 720p ($0.10/с; по умолчанию было бы 1080p — $0.20/с)
+        return {"prompt": prompt, "duration": int(duration), "resolution": resolution or "720p",
+                "aspect_ratio": aspect_ratio if aspect_ratio in ("16:9", "9:16", "1:1", "4:3", "3:4") else "16:9",
+                "audio": True}
     if "wan" in model_id:
         # Wan 2.2: num_frames 17–161 при 16 кадрах/с. Раньше уходило duration*16
         # (80/160) — схема ждёт 4n+1, поэтому 81 и 161.
@@ -674,9 +755,20 @@ def _fal_video_payload(model_id: str, prompt: str, aspect_ratio: str, duration: 
 
 async def api_generate_fal_video(prompt: str, model_id: str, aspect_ratio: str = "16:9",
                                   duration: int = 5, resolution: str = "",
-                                  model_name: str = "") -> bytes:
+                                  model_name: str = "", _no_fallback: bool = False) -> bytes:
     """Генерация видео через fal.ai queue API (submit → status → result → скачивание)."""
     _name = model_name or _model_name(model_id)
+    _fb = "" if _no_fallback else _fal_fallback_for(model_id)
+    if _fb:
+        try:
+            return await api_generate_fal_video(prompt, model_id, aspect_ratio, duration, resolution,
+                                                model_name=_name, _no_fallback=True)
+        except GenError as _ge:
+            if _ge.kind != "params":
+                raise
+            await _note_fallback(model_id, _fb, _ge)
+            return await api_generate_fal_video(prompt, _fb, aspect_ratio, duration, resolution,
+                                                model_name=_name, _no_fallback=True)
     payload = _fal_video_payload(model_id, prompt, aspect_ratio, duration, resolution)
     logging.info(f"fal.ai video START: model={model_id} duration={duration}s aspect={aspect_ratio} "
                  f"res={resolution or '-'} prompt_len={len(prompt)}")
@@ -858,17 +950,43 @@ async def api_edit_image(image_bytes: bytes, prompt: str, aspect_ratio: str = "1
                                raw="no edit models", provider="Google", model="gemini")
 
 
-async def api_fal_edit_image(image_bytes: bytes, prompt: str, model_id: str,
-                             model_name: str = "") -> bytes:
-    """Редактирование фото через fal.ai (Grok / GPT Image / Flux Kontext)."""
-    _name = model_name or _model_name(model_id)
-    data_uri = _data_uri(image_bytes)
+def _fal_edit_payload(model_id: str, data_uri: str, prompt: str, quality: str = "") -> dict:
     if "gpt-image" in model_id:
-        # GPT Image 2 edit: image_urls (массив). Качество по умолчанию у fal —
-        # "high" (самое дорогое, дороже нашей цены) — задаём medium явно.
-        payload = {"prompt": prompt, "image_urls": [data_uri], "quality": "medium"}
-    else:
-        payload = {"prompt": prompt, "image_url": data_uri}
+        # GPT Image edit: image_urls (массив). Качество по умолчанию у fal —
+        # самое дорогое, поэтому задаём его явно (из конфига модели).
+        _ok = ("low", "medium", "high", "xhigh", "max") if "gpt-image-2.5" in model_id else ("low", "medium", "high")
+        return {"prompt": prompt, "image_urls": [data_uri],
+                "quality": quality if quality in _ok else "medium"}
+    if "grok-imagine-image" in model_id:
+        # Grok edit (v1 и v2.0) ждёт image_urls — МАССИВ. Раньше уходил
+        # image_url, и fal отвечал «нет обязательного поля».
+        _p = {"prompt": prompt, "image_urls": [data_uri], "resolution": "1k", "num_images": 1}
+        if "/v2" in model_id:
+            _p["quality"] = quality if quality in ("low", "medium") else "medium"
+        return _p
+    if "flux-3" in model_id:
+        return {"prompt": prompt, "image_urls": [data_uri], "resolution": "1k",
+                "output_format": "jpeg", "safety_tolerance": 2}
+    return {"prompt": prompt, "image_url": data_uri}   # Flux Kontext и др.
+
+
+async def api_fal_edit_image(image_bytes: bytes, prompt: str, model_id: str,
+                             model_name: str = "", quality: str = "",
+                             _no_fallback: bool = False) -> bytes:
+    """Редактирование фото через fal.ai (Grok / GPT Image / Flux)."""
+    _name = model_name or _model_name(model_id)
+    _fb = "" if _no_fallback else _fal_fallback_for(model_id)
+    if _fb:
+        try:
+            return await api_fal_edit_image(image_bytes, prompt, model_id, _name, quality, True)
+        except GenError as _ge:
+            if _ge.kind != "params":
+                raise
+            await _note_fallback(model_id, _fb, _ge)
+            return await api_fal_edit_image(image_bytes, prompt, _fb, _name,
+                                            _fb_quality(_fb, quality), True)
+    data_uri = _data_uri(image_bytes)
+    payload = _fal_edit_payload(model_id, data_uri, prompt, quality)
     result = await _fal_queue_run(model_id, payload, poll_max=72, model_name=_name,
                                   prompt=prompt, interval=5, log_tag="fal edit")
     out_url = _fal_extract_url(result, "image")
@@ -888,6 +1006,13 @@ def _fal_anim_payload(model_id: str, image_uri: str, prompt: str, duration: int,
     строку "5"/"10", Wan — num_frames вместо duration, Grok — число.
     """
     p = {"image_url": image_uri, "prompt": prompt}
+    if "wan-3" in model_id:
+        # Wan 3.0: start_image_url (не image_url), длительность числом, 720p, звук
+        p = {"start_image_url": image_uri, "prompt": prompt, "duration": int(duration),
+             "resolution": resolution or "720p", "aspect_ratio": "adaptive", "audio": True}
+        if last_uri:
+            p["end_image_url"] = last_uri
+        return p
     if "kling" in model_id:
         p["duration"] = "10" if int(duration) >= 10 else "5"
         if last_uri:
@@ -913,9 +1038,22 @@ def _fal_anim_payload(model_id: str, image_uri: str, prompt: str, duration: int,
 async def api_fal_animate_image(image_bytes: bytes, prompt: str, model_id: str,
                                  duration: int = 5, aspect_ratio: str = "16:9",
                                  last_bytes: bytes | None = None, resolution: str = "",
-                                 model_name: str = "") -> bytes:
+                                 model_name: str = "", _no_fallback: bool = False) -> bytes:
     """Анимация фото через fal.ai image-to-video (Gemini Omni / Grok / Kling / Wan)."""
     _name = model_name or _model_name(model_id)
+    _fb = "" if _no_fallback else _fal_fallback_for(model_id)
+    if _fb and last_bytes and "wan/v2.2" in _fb:
+        _fb = ""  # Wan 2.2 не умеет конечный кадр — резерв выдал бы не то, за что заплатили
+    if _fb:
+        try:
+            return await api_fal_animate_image(image_bytes, prompt, model_id, duration, aspect_ratio,
+                                               last_bytes, resolution, _name, True)
+        except GenError as _ge:
+            if _ge.kind != "params":
+                raise
+            await _note_fallback(model_id, _fb, _ge)
+            return await api_fal_animate_image(image_bytes, prompt, _fb, duration, aspect_ratio,
+                                               last_bytes, resolution, _name, True)
     payload = _fal_anim_payload(model_id, _data_uri(image_bytes), prompt, duration, aspect_ratio,
                                 _data_uri(last_bytes) if last_bytes else "", resolution)
     result = await _fal_queue_run(model_id, payload, poll_max=150, model_name=_name, prompt=prompt,
@@ -1084,7 +1222,8 @@ async def api_edit_by_model(m: dict, image_bytes: bytes, prompt: str) -> bytes:
     _name = _clean_name(m)
     if m.get("api") == "gemini":
         return await api_edit_image(image_bytes, prompt, model_name=_name)
-    return await api_fal_edit_image(image_bytes, prompt, m["model_id"], model_name=_name)
+    return await api_fal_edit_image(image_bytes, prompt, m["model_id"], model_name=_name,
+                                    quality=m.get("quality", ""))
 
 
 # ══════════════════════════════════════════════════════════
