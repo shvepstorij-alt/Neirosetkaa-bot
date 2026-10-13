@@ -3088,7 +3088,7 @@ function loadPending(svc){
     if(!p.length){el.innerHTML='<div class="note">Нет кодов в ожидании активации.</div>';return;}
     var bys={};p.forEach(function(c){var s=c.provider||'';(bys[s]=bys[s]||[]).push(c);});
     var nw=0;p.forEach(function(c){if(c.warn)nw++;});
-    var h='<div class="sub" style="margin:0 0 10px">Выданы клиенту, но активация не завершена. Верни в пул или удали.</div>';
+    var h='<div class="sub" style="margin:0 0 10px">Выданы клиенту, но активация не записана. Если на сайте подписка выдана — «Записать активацию»; если активации не было — «В пул» или «Удалить».</div>';
     if(nw)h+='<div class="note neg" style="margin:0 0 10px">⚠️ Строк, требующих внимания: '+nw
            +'. Это резервы, у которых код уже не «ждёт»: вернулся в пул, записан или исчез. '
            +'Раньше их тут не было видно вовсе.</div>';
@@ -3103,7 +3103,9 @@ function loadPending(svc){
           +(c.left?' · '+esc(c.left):'')
           +(c.order?'<br>🆔 '+esc(c.order):'')
           +(c.org?'<br>🏢 '+esc(c.org):'')+'</div>'+
-           (c.started?'<div class="note neg" style="margin-top:6px">⚠️ Активация уже уходила поставщику — код мог быть потрачен.</div>':'')+
+           (c.spent?'<div class="note neg" style="margin-top:6px">✅ Сайт: подписка по коду выдана ('+esc(c.spent)+'). Код потрачен — в пул его не возвращай.</div>'
+             :(c.started?'<div class="note neg" style="margin-top:6px">⚠️ Активация уже уходила поставщику — код мог быть потрачен.</div>':''))+
+           (c.canRecord?'<button class="btn" style="margin-top:8px" onclick="gptRecord(\''+esc(c.code)+'\',0)">✅ Записать активацию'+(c.user&&c.user!=='—'?' · '+esc(c.user):'')+'</button>':'')+
            '<div class="btns2" style="margin-top:8px"><button class="btn row2 sec" onclick="claudeCodeAction(\''+esc(c.code)+'\',\'release\',\''+svc+'\','+(c.started?1:0)+')">↩️ В пул</button>'+
            '<button class="btn row2 danger" onclick="claudeCodeAction(\''+esc(c.code)+'\',\'delete\',\''+svc+'\','+(c.started?1:0)+')">🗑 Удалить</button></div></div>';
       });
@@ -3127,11 +3129,36 @@ function claudeCodeAction(code,action,svc,started){
     ok='Да, удалить';
   }
   _gwConfirm2(action==='release'?'Вернуть в пул?':'Удалить код?',t,ok,function(){
-    api('/api/admin/claude-code-action',{code:code,action:action,service:svc}).then(function(d){
-      if(d&&d.ok){toast(action==='release'?'Возвращён в пул':'Удалён');loadPending(svc);}
-      else toast((d&&d.msg)||'Ошибка — ничего не изменено');});
+    _codeActionSend(code,action,svc,false);
   });
 }
+function _codeActionSend(code,action,svc,force){
+  api('/api/admin/claude-code-action',{code:code,action:action,service:svc,force:!!force}).then(function(d){
+    if(d&&d.ok){toast(action==='release'?'Возвращён в пул':'Удалён');loadPending(svc);return;}
+    if(d&&d.needForce){
+      /* Сайт уже выдал подписку по коду — сервер не возвращает такой код в пул
+         по одной кнопке. Второе, отдельное подтверждение. 14.10.2026 */
+      _gwConfirm2('Код потрачен на сайте',(d.msg||'')+'\n\nВернуть в пул всё равно?','Да, вернуть принудительно',function(){
+        _codeActionSend(code,action,svc,true);});
+      return;
+    }
+    toast((d&&d.msg)||'Ошибка — ничего не изменено');});
+}
+/* «Записать активацию» (ChatGPT): сайт спрашивается заново, аккаунт сверяется.
+   Если сверить нечем — второе подтверждение «я проверил сам». 14.10.2026 */
+function gptRecord(code,force){
+  toast('Проверяю на сайте…');
+  api('/api/admin/gpt-record',{code:code,force:!!force}).then(function(d){
+    if(d&&d.ok){toast('Активация записана, клиенту написал');loadPending('chatgpt');return;}
+    if(d&&d.needForce&&!force){
+      _gwConfirm2('Подтверди сам',(d.msg||'')+'\n\nПроверил на сайте, что это аккаунт клиента?','Да, записать',function(){
+        gptRecord(code,1);});
+      return;
+    }
+    _infoBox('Не записал',(d&&d.msg)||'Ошибка');
+  });
+}
+
 function codesPool(svc){
   setTimeout(function(){loadPool(svc)},0);
   return hdr("Коды в пуле",svc)+'<div class="wrap"><button class="btn" onclick="leaf(function(){return addCodes(\''+svc+'\')})">➕ Добавить коды</button><div id="poolbody" style="margin-top:12px"><div class="note">Загружаю…</div></div></div>';

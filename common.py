@@ -8837,7 +8837,9 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                     "       COALESCE(p.created_at, c.reserved_at) AS created_at, "
                     "       (c.code IS NOT NULL) AS in_pool, "
                     "       COALESCE(c.is_used, FALSE) AS is_used, c.used_by, "
-                    "       (p.code IS NOT NULL) AS has_pending "
+                    "       (p.code IS NOT NULL) AS has_pending, "
+                    "       COALESCE(c.check_status,'') AS flag_st, "
+                    "       COALESCE(c.flagged_reason,'') AS flag_why "
                     "FROM gpt_codes c "
                     "FULL OUTER JOIN gpt_pending_activations p ON p.code=c.code "
                     "LEFT JOIN users u ON u.user_id=p.user_id "
@@ -8935,14 +8937,49 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
             _pname = (lambda _p: "Perplexity")
         pend = []
         import time as _t_pend
+        # Пользователи для «ничьих» резервов ChatGPT: строку ожидания уже стёрли,
+        # но клиента и заказ можно восстановить (журнал попыток, слежение).
+        # Раньше такие коды показывались как «— · в резерве, без клиента»
+        # с кнопками «В пул» и «Удалить» — даже когда сайт уже ВЫДАЛ по ним
+        # подписку (fulfilled) и «В пул» отдал бы потраченный код следующему.
+        _owners = {}
+        if svc == "chatgpt":
+            for r in pending:
+                if not r["has_pending"] and not r["used_by"]:
+                    try:
+                        _ow = await _gpt_code_owner(r["code"])
+                    except Exception as _e_ow:
+                        logging.warning(f"miniapp-detail owner {r['code']}: {_e_ow}")
+                        _ow = None
+                    if _ow:
+                        _un = ""
+                        try:
+                            _uu = await get_user(_ow[0])
+                            _un = (_uu or {}).get("username") or ""
+                        except Exception:
+                            pass
+                        _owners[r["code"]] = (_ow[0], _ow[1], _ow[2], _un)
+        def _site_spent(_why: str) -> str:
+            _w = (_why or "").lower()
+            for _s in ("fulfilled", "zoom_token_ready", "выдал подписку"):
+                if _s in _w:
+                    return "fulfilled" if _s == "выдал подписку" else _s
+            return ""
         for r in pending:
             ca = r["created_at"]
+            _ow = _owners.get(r["code"])
+            _spent = _site_spent(r["flag_why"] if "flag_why" in r.keys() else "")
             # Состояние строки — главное, чего раньше не было видно.
             if "checking" in r.keys() and r["checking"]:
                 # Неясный исход: код мог быть активирован, бот остановился и
                 # ждёт решения Александра. Показывать это как обычное «ждёт
                 # активации» значило бы прятать главное. 06.10.2026
                 _state, _warn = "неясный исход — ждёт твоего решения", True
+            elif _spent and r["is_used"] and not r["used_by"]:
+                # Сайт подтвердил, что подписка по коду ВЫДАНА. Это не «отклонил»
+                # и не «без клиента»: код потрачен, активацию надо записать.
+                _state, _warn = (f"на сайте подписка ВЫДАНА ({_spent}) — запиши активацию; "
+                                 f"в пул не возвращай", True)
             elif ("flag_st" in r.keys() and r["flag_st"] in ("used", "invalid")
                   and r["is_used"] and not r["used_by"]):
                 # Сайт отклонил код при активации — сам в пул не вернётся. 08.10.2026
@@ -8956,6 +8993,9 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                 _state, _warn = "активация записана", True
             elif r["has_pending"]:
                 _state, _warn = "ждёт активации", False
+            elif _ow:
+                _state, _warn = ("в резерве: строки ожидания нет — клиент и заказ найдены "
+                                 f"({_ow[2]}). Проверь на сайте, прошла ли активация", True)
             else:
                 _state, _warn = "в резерве, без клиента", True
             _exp = r["expires_at"]
@@ -8967,19 +9007,27 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                              else f"срок вышел {int(-_m)} мин назад")
                 except Exception:
                     _left = ""
+            _uid_p = int(r["user_id"]) if r["user_id"] else (_ow[0] if _ow else 0)
+            _un_p = r["username"] or (_ow[3] if _ow else "")
             pend.append({
                 "code": r["code"], "plan": r["plan"],
                 "provider": r["provider"] or "", "providerName": _pname(r["provider"] or ""),
-                "user": ("@" + r["username"]) if r["username"] else ("id" + str(r["user_id"]) if r["user_id"] else "—"),
-                "uid": int(r["user_id"]) if r["user_id"] else 0,
+                "user": ("@" + _un_p) if _un_p else ("id" + str(_uid_p) if _uid_p else "—"),
+                "uid": _uid_p,
                 "org": (r["org_id"] if svc == "claude" else "") or "",
-                "order": r["order_id"] or "",
+                "order": r["order_id"] or (_ow[1] if _ow else ""),
+                # Можно записать активацию (ChatGPT): код у клиента, а сайт его
+                # уже выдал или строки ожидания нет. Запись — с повторным
+                # вопросом к сайту и сверкой аккаунта (gpt_lost_activation_apply).
+                "canRecord": bool(svc == "chatgpt" and r["is_used"] and not r["used_by"]
+                                  and (_spent or _ow)),
+                "spent": _spent,
                 "planName": r["plan_name"] or "",
                 "state": _state, "warn": bool(_warn), "left": _left,
                 # Активация уже уходила поставщику (есть org_id или номер
                 # заказа сайта): код, вернувшийся в пул, может оказаться
                 # уже потраченным. Это видно в подтверждении «В пул».
-                "started": bool(("checking" in r.keys() and r["checking"])
+                "started": bool(_spent or ("checking" in r.keys() and r["checking"])
                                 or ("flag_st" in r.keys() and r["flag_st"] in ("used", "invalid"))
                                 or r["used_by"]
                                 or (r["org_id"] if "org_id" in r.keys() else "")
@@ -9057,6 +9105,32 @@ async def api_admin_claude_provider_handler(request: web.Request) -> web.Respons
         return web.json_response({"ok": False}, status=500)
 
 
+async def api_admin_gpt_record_handler(request: web.Request) -> web.Response:
+    """«Записать активацию» из «Ждущих кодов» (ChatGPT). Admin-only.
+
+    Тот же путь, что кнопка в чате и /gpt_lost_ok: сайт спрашивается заново,
+    аккаунт сверяется; force=true — Александр проверил сам (разные аккаунты
+    force не переопределяет).
+    """
+    try:
+        try: body = await request.json()
+        except Exception: body = {}
+        if _admin_uid_from_body(body) != ADMIN_ID:
+            return web.json_response({"ok": False}, status=403)
+        code = str(body.get("code", "")).strip()
+        if not code:
+            return web.json_response({"ok": False, "msg": "Нет кода"})
+        _r = await gpt_lost_activation_apply(code, force=bool(body.get("force")))
+        import re as _re_rec
+        _msg = _re_rec.sub(r"<[^>]+>", "", str(_r.get("msg") or ""))
+        _needs = (not _r.get("ok")) and "/gpt_lost_ok" in str(_r.get("msg") or "")
+        return web.json_response({"ok": bool(_r.get("ok")), "msg": _msg, "needForce": _needs,
+                                  "order": _r.get("order_id") or "", "email": _r.get("email") or ""})
+    except Exception as _e:
+        logging.error(f"api_admin_gpt_record: {_e}")
+        return web.json_response({"ok": False, "msg": "Сбой: " + str(_e)[:120]}, status=500)
+
+
 async def api_admin_claude_code_action_handler(request: web.Request) -> web.Response:
     """Действие над «ждущим» кодом: release (вернуть в пул) или delete. Admin-only.
     service: 'claude' (по умолчанию) | 'chatgpt'."""
@@ -9073,6 +9147,18 @@ async def api_admin_claude_code_action_handler(request: web.Request) -> web.Resp
             _codes_tbl, _pend_tbl = "gpt_codes", "gpt_pending_activations"
             _release = ("UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
                         "order_id=NULL, reserved_at=NULL WHERE code=$1")
+            if action == "release" and not body.get("force"):
+                # Сайт уже сказал, что по коду выдана подписка, — в пул такой код
+                # не отдаём по одной кнопке: следующий клиент получил бы пустышку.
+                _pool_g = await get_pool()
+                async with _pool_g.acquire() as _c_g:
+                    _why_g = await _c_g.fetchval(
+                        "SELECT COALESCE(flagged_reason,'') FROM gpt_codes WHERE code=$1", code) or ""
+                if any(_s in _why_g.lower() for _s in ("fulfilled", "zoom_token_ready", "выдал подписку")):
+                    return web.json_response({"ok": False, "needForce": True, "msg": (
+                        "Сайт уже ВЫДАЛ подписку по этому коду (" + _why_g[:80] + "). "
+                        "В пул он вернётся пустым. Нажми «Записать активацию» — или, "
+                        "если уверен, что сайт ошибся, верни принудительно.")})
         elif svc == "perplexity":
             # Раньше Perplexity проваливался в ветку Claude: «В пул» шёл в
             # таблицы Claude, ничего не находил — а панель отвечала «Возвращён
@@ -15189,6 +15275,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/release-codes", api_admin_release_codes_handler)
     app.router.add_post("/api/admin/claude-provider", api_admin_claude_provider_handler)
     app.router.add_post("/api/admin/claude-code-action", api_admin_claude_code_action_handler)
+    app.router.add_post("/api/admin/gpt-record", api_admin_gpt_record_handler)
     app.router.add_post("/api/admin/broadcast", api_admin_broadcast_handler)
     logging.info("Admin Mini App: /webapp/admin + /api/admin/overview")
     app.router.add_get("/webapp/claude", webapp_claude_handler)
@@ -17223,6 +17310,22 @@ async def _gpt_code_owner(code: str):
             if _u and _o:
                 return _u, _o, ("слежение" if _key.startswith("gptdone") else "метка слежения")
     pool = await get_pool()
+    # Журнал попыток активации: gptlog:<заказ> хранит строки «КОД|сайт|итог».
+    # Это самый надёжный след для кода, у которого строку ожидания уже стёрли
+    # (used_by при резерве не пишется — поэтому база кодов тут молчит).
+    try:
+        async with pool.acquire() as conn:
+            _lg = await conn.fetch(
+                "SELECT key, value FROM settings WHERE key LIKE 'gptlog:%' "
+                "  AND value LIKE $1 LIMIT 5", f"%{_C}|%")
+            for _l in _lg:
+                _oid_l = _l["key"].split(":", 1)[1]
+                _u_l = await conn.fetchval(
+                    "SELECT user_id FROM fk_orders WHERE order_id=$1", _oid_l)
+                if _u_l:
+                    return int(_u_l), _oid_l, "журнал попыток заказа"
+    except Exception as _e_lg:
+        logging.warning(f"_gpt_code_owner gptlog {_C}: {_e_lg}")
     async with pool.acquire() as conn:
         _r = await conn.fetchrow(
             "SELECT used_by, COALESCE(used_at, reserved_at, NOW()) AS at "
@@ -18230,6 +18333,13 @@ def pool_audit_report(r: dict) -> str:
         _t += (f"Проверено: <b>{_d.get('checked', 0)}</b> из "
                f"{_d.get('pool', 0)} · ✅ годных: <b>{_d.get('free', 0)}</b>\n")
         _t += _codes(_d.get("spent") or [], "Похоже, потрачены", "⚠️")
+        if _sv == "chatgpt" and any(str(_v).lower() in ("fulfilled", "zoom_token_ready")
+                                    for _c, _v in (_d.get("spent") or [])):
+            # fulfilled = подписка ВЫДАНА. Если код был в резерве у клиента —
+            # это не «мусор в пуле», а незаписанная активация. 14.10.2026
+            _t += ("   <i>fulfilled — подписка по коду выдана. Если код был у "
+                   "клиента: «Ждущие коды» → «✅ Записать активацию» "
+                   "(или <code>/gpt_lost_ok КОД</code>). В пул не возвращай.</i>\n")
         _t += _codes(_d.get("odd") or [], "Непонятный статус", "❔")
         if _d.get("noanswer"):
             _t += (f"🔇 Сайт не ответил по {_d['noanswer']} код(ам) — "
