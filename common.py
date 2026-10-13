@@ -17193,7 +17193,55 @@ async def gpt_lost_activations_scan(hours: int = 48, only_new: bool = True) -> l
     return out
 
 
-async def _gpt_apply_from_pending(code: str, force: bool = False):
+async def _gpt_code_owner(code: str):
+    """(user_id, order_id, откуда) для кода, у которого НЕТ строки ожидания.
+
+    Часть 38. Слежение за «claimed» снимает свою метку, когда код дозрел до
+    fulfilled, и шлёт «активация ЗАВЕРШЕНА» с кнопкой «Записать активацию». Но
+    при нажатии ни строки ожидания, ни метки уже нет, а разбор потерянных
+    активаций смотрит только коды сайта bpa с is_used — и кнопка отвечала
+    «Условия изменились: на сайте сейчас fulfilled», хотя именно fulfilled и
+    нужно было записать. Поймал Александр 13.10.2026 на GPTP-Q6WU-06QE-6MSK.
+
+    Источники по надёжности: запись слежения о завершении (gptdone:) → живая
+    метка слежения (gptclaim:) → кому код выдан в базе (used_by) и его
+    ближайший оплаченный заказ ChatGPT без кода.
+    """
+    _C = code.strip().upper()
+    for _key in (f"gptdone:{_C}", f"gptclaim:{_C}"):
+        try:
+            _v = (await get_setting(_key, "") or "").strip()
+        except Exception:
+            _v = ""
+        if _v:
+            _parts = _v.split("|")
+            try:
+                _u = int(_parts[0]) if _parts and _parts[0].strip() else 0
+            except Exception:
+                _u = 0
+            _o = (_parts[1] if len(_parts) > 1 else "").strip()
+            if _u and _o:
+                return _u, _o, ("слежение" if _key.startswith("gptdone") else "метка слежения")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        _r = await conn.fetchrow(
+            "SELECT used_by, COALESCE(used_at, reserved_at, NOW()) AS at "
+            "FROM gpt_codes WHERE UPPER(code)=$1", _C)
+        if not _r or not _r["used_by"]:
+            return None
+        _uid = int(_r["used_by"])
+        _oid = await conn.fetchval(
+            "SELECT f.order_id FROM fk_orders f "
+            "WHERE f.user_id=$1 AND f.status='paid' AND f.pack LIKE 'shop:chatgpt:%' "
+            "  AND f.paid_at <= $2::timestamptz + INTERVAL '10 minutes' "
+            "  AND NOT EXISTS (SELECT 1 FROM gpt_codes g WHERE g.order_id = f.order_id) "
+            "ORDER BY f.paid_at DESC LIMIT 1", _uid, _r["at"])
+    if not _oid:
+        return None
+    return _uid, _oid, "база кодов"
+
+
+async def _gpt_apply_from_pending(code: str, force: bool = False, _row: dict | None = None):
     """Записывает активацию по ЖИВОЙ строке ожидания — только по команде человека.
 
     Зачем отдельный путь. gpt_lost_activations_scan по построению ищет коды
@@ -17211,10 +17259,13 @@ async def _gpt_apply_from_pending(code: str, force: bool = False):
     from chatgpt_activation import (bpa_query_codes, BPA_DONE_STATUSES,
                                     _same_email, same_org, _org_norm)
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        _p = await conn.fetchrow(
-            "SELECT user_id, order_id, plan_name FROM gpt_pending_activations "
-            "WHERE UPPER(code)=$1", code.strip().upper())
+    if _row is not None:
+        _p = _row
+    else:
+        async with pool.acquire() as conn:
+            _p = await conn.fetchrow(
+                "SELECT user_id, order_id, plan_name FROM gpt_pending_activations "
+                "WHERE UPPER(code)=$1", code.strip().upper())
     if not _p:
         return None
     _q = await bpa_query_codes([code])
@@ -17261,6 +17312,16 @@ async def _gpt_apply_from_pending(code: str, force: bool = False):
                         "Organization ID. Для тарифа Go это обычное дело.\n\n"
                         f"Если проверил сам: <code>/gpt_lost_ok {code}</code>")}
     await mark_gpt_code_used(code, _uid, _oid, _site_mail or _cl_mail)
+    try:  # код с записанной активацией — потрачен, в пул его не выдавать
+        async with pool.acquire() as _c_iu:
+            await _c_iu.execute("UPDATE gpt_codes SET is_used=TRUE WHERE UPPER(code)=$1",
+                                code.strip().upper())
+    except Exception as _e_iu:
+        logging.warning(f"apply_from_pending: is_used {code}: {_e_iu}")
+    try:
+        await set_setting(f"gptdone:{code.strip().upper()}", "")
+    except Exception:
+        pass
     # Именно ЭТОГО заказа: у клиента мог появиться резерв по другой оплате.
     try:
         await delete_pending_activation(_uid, _oid)
@@ -17355,11 +17416,34 @@ async def gpt_lost_activation_apply(code: str, force: bool = False) -> dict:
                                   f"<code>/gpt_why {code}</code>")}
         except Exception as _e_al:
             logging.warning(f"gpt_lost_activation_apply: проверка записи {code}: {_e_al}")
+        # Строки ожидания нет, но известно, ЧЕЙ это код (слежение или база) —
+        # записываем по тем же правилам: сайт спрашивается заново, аккаунт
+        # сверяется по Organization ID/почте, без подтверждения — только /gpt_lost_ok.
+        try:
+            _own = await _gpt_code_owner(code)
+        except Exception as _e_ow:
+            logging.warning(f"gpt_lost_activation_apply: владелец {code}: {_e_ow}")
+            _own = None
+        if _own:
+            _r_own = await _gpt_apply_from_pending(
+                code, force=force,
+                _row={"user_id": _own[0], "order_id": _own[1], "plan_name": ""})
+            if _r_own is not None:
+                if not _r_own.get("ok"):
+                    _r_own["msg"] = (_r_own.get("msg") or "") + (
+                        f"\n\n<i>Клиент и заказ взяты из: {_own[2]}.</i>")
+                return _r_own
         # Мог быть возвращён в пул или сайт передумал.
         _st = await bpa_query_codes([code])
         if not _st:
             return {"ok": False, "msg": "Сайт не ответил — попробуй позже."}
         _v = ((_st.get(code.upper()) or {}).get("status") or "").lower()
+        if _v in BPA_USED_STATUSES:
+            return {"ok": False,
+                    "msg": (f"На сайте «{_v}» — подписка выдана, но я не знаю, ЧЕЙ это "
+                            "код: нет ни строки ожидания, ни записи слежения, ни "
+                            "клиента в базе кодов. Ничего не записал.\n\n"
+                            f"Разбор: <code>/gpt_why {code}</code>")}
         return {"ok": False,
                 "msg": f"Условия изменились: на сайте сейчас «{_v or '?'}». "
                        f"Ничего не записал."}

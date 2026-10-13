@@ -1331,6 +1331,16 @@ async def gpt_claimed_watch_loop():
                                     "FROM gpt_codes WHERE code=$1", _code))
                         except Exception as _e_ok:
                             logging.warning(f"claimed-watch: проверка записи {_code}: {_e_ok}")
+                    if not _done and _uid and _oid:
+                        # Метку слежения сейчас снимем — а кнопке «Записать
+                        # активацию» нужно знать клиента и заказ. Без этой записи
+                        # кнопка отвечала «Условия изменились: fulfilled» (13.10.2026).
+                        try:
+                            await set_setting(f"gptdone:{str(_code).strip().upper()}",
+                                              f"{_uid}|{_oid}|{int(time.time())}")
+                        except Exception as _e_gd:
+                            logging.warning(f"claimed-watch: запись gptdone {_code}: {_e_gd}")
+                            continue      # без записи кнопка не сработает — попробуем через минуту
                     if not await _stop_watch():
                         continue          # метка жива — доложим на следующем проходе
                     # Сначала — переписать живую карточку «идёт» в итог. Это
