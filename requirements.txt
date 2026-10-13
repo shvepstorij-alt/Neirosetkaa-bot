@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 asyncpg
 aiohttp==3.10.0
 playwright
+Pillow==11.3.0

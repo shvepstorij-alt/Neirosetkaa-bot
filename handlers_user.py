@@ -21,6 +21,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import (
+    brand_min_credits,
     ADMIN_ID, ADMIN_USERNAME, CHANNEL_ID, FREE_CREDITS, PERSONAL_USERNAME, REF_BONUS, REF_WELCOME_CREDITS,
     SHOP_CATALOG, WELCOME_BACK, WELCOME_NEW, bot, dp, is_admin,
     strip_surrogates, tg_name,
@@ -534,9 +535,9 @@ async def reply_create_photo(message: Message, state: FSMContext):
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
         f'{tg_emoji_ui("iband_gptimg", "🤖")} <b>GPT Image</b> - OpenAI, #1 в Image Arena\n'
-        f'{tg_emoji_ui("iband_nano", "🍌")} <b>Nano Banana</b> - Google Gemini, от 13 кр\n'
-        f'{tg_emoji_ui("iband_flux", "🎭")} <b>Flux</b> - фотореализм, от 12 кр\n'
-        f'{tg_emoji_ui("iband_ideogram", "✒️")} <b>Ideogram</b> - идеальный текст, от 14 кр\n'
+        f'{tg_emoji_ui("iband_nano", "🍌")} <b>Nano Banana</b> - Google Gemini, от {brand_min_credits("image", "nano")} кр\n'
+        f'{tg_emoji_ui("iband_flux", "🎭")} <b>Flux</b> - фотореализм, от {brand_min_credits("image", "flux")} кр\n'
+        f'{tg_emoji_ui("iband_ideogram", "✒️")} <b>Ideogram</b> - идеальный текст, от {brand_min_credits("image", "ideogram")} кр\n'
         f'{tg_emoji_ui("iband_grok", "⚡")} <b>Grok Imagine</b> - xAI, высокий реализм',
         reply_markup=kb_image_brands(), parse_mode="HTML"
     )
@@ -550,11 +551,11 @@ async def reply_create_video(message: Message, state: FSMContext):
         f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Gemini Omni</b> - Google, до 4K + аудио, от 239 кр\n'
-        f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от 109 кр\n'
-        f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от 99 кр\n'
-        f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от 80 кр\n'
-        f'{tg_emoji_ui("vband_grok", "⚡")} <b>Grok</b> - xAI, нативное аудио, от 99 кр\n\n'
+        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Gemini Omni</b> - Google, до 4K + аудио, от {brand_min_credits("video", "veo")} кр\n'
+        f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от {brand_min_credits("video", "kling")} кр\n'
+        f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от {brand_min_credits("video", "seedance")} кр\n'
+        f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от {brand_min_credits("video", "wan")} кр\n'
+        f'{tg_emoji_ui("vband_grok", "⚡")} <b>Grok</b> - xAI, нативное аудио, от {brand_min_credits("video", "grok")} кр\n\n'
         f"⏱ <i>Время генерации: 1–10 минут</i>",
         reply_markup=kb_video_brands(), parse_mode="HTML"
     )

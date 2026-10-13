@@ -20,6 +20,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import (
+    brand_min_credits,
     ANIM_MODELS, DISABLED_MODELS, EDIT_MODELS, EVOLINK_API_KEY, FAL_API_KEY, IMAGE_BRAND_MODELS,
     IMAGE_BRAND_TITLES, IMAGE_MODELS, MOTION_MODEL_ID, MOTION_PRICES, UI_EMOJI_IDS, UPSCALE_CREDIT_COST,
     VIDEO_BRAND_MODELS, VIDEO_BRAND_TITLES, VIDEO_MODELS, _anim_history, _motion_history, _photo_history,
@@ -773,11 +774,11 @@ async def menu_video(cb: CallbackQuery, state: FSMContext):
         f"🎬 <b>Создать видео</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n\n"
         f"<b>Выбери модель:</b>\n\n"
-        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Gemini Omni</b> - Google, до 4K + аудио, от 239 кр\n'
-        f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от 109 кр\n'
-        f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от 99 кр\n'
-        f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от 80 кр\n'
-        f'{tg_emoji_ui("vband_grok", "⚡")} <b>Grok</b> - xAI, нативное аудио, от 99 кр\n\n'
+        f'{tg_emoji_ui("vband_veo", "🎥")} <b>Gemini Omni</b> - Google, до 4K + аудио, от {brand_min_credits("video", "veo")} кр\n'
+        f'{tg_emoji_ui("vband_kling", "🎞")} <b>Kling</b> - плавная физика + аудио, от {brand_min_credits("video", "kling")} кр\n'
+        f'{tg_emoji_ui("vband_seedance", "🎬")} <b>Seedance</b> - нативное аудио, от {brand_min_credits("video", "seedance")} кр\n'
+        f'{tg_emoji_ui("vband_wan", "🌊")} <b>Wan</b> - топ open-source, от {brand_min_credits("video", "wan")} кр\n'
+        f'{tg_emoji_ui("vband_grok", "⚡")} <b>Grok</b> - xAI, нативное аудио, от {brand_min_credits("video", "grok")} кр\n\n'
         f"⏱ <i>Время генерации: 1–10 минут</i>"
     )
     try:
@@ -1488,6 +1489,32 @@ async def change_vid_prompt(cb: CallbackQuery, state: FSMContext):
 #  КОНСУЛЬТАНТ (оригинальная логика сохранена)
 # ══════════════════════════════════════════════════════════
 
+_UPSCALE_MAX_MP = 4.2
+
+
+def _upscale_plan(img: bytes):
+    """(байты, масштаб) так, чтобы результат апскейла был ≤ ~4.2 Мп."""
+    try:
+        from PIL import Image as _PILImage
+        import io as _io
+        im = _PILImage.open(_io.BytesIO(img))
+        w, h = im.size
+        mp = (w * h) / 1e6
+        if mp * 16 <= _UPSCALE_MAX_MP:
+            return img, 4
+        if mp * 4 <= _UPSCALE_MAX_MP:
+            return img, 2
+        k = (_UPSCALE_MAX_MP / 4 / mp) ** 0.5
+        im = im.convert("RGB").resize((max(1, int(w * k)), max(1, int(h * k))), _PILImage.LANCZOS)
+        buf = _io.BytesIO()
+        im.save(buf, "JPEG", quality=95)
+        return buf.getvalue(), 2
+    except Exception as _pe:
+        # Без Pillow размер не узнать: 2x — меньший риск по деньгам, чем 4x
+        logging.warning(f"upscale plan: {_pe}")
+        return img, 2
+
+
 @dp.callback_query(F.data == "menu_upscale")
 async def menu_upscale(cb: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1507,10 +1534,10 @@ async def menu_upscale(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     text = (
-        f"🔍 <b>Улучшить фото (4x)</b>\n\n"
+        f"🔍 <b>Улучшить фото</b>\n\n"
         f"💵 Баланс: <b>{cr} кр</b>\n"
         f"💵 Стоимость: <b>{UPSCALE_CREDIT_COST} кр</b>\n\n"
-        f"Увеличивает разрешение в 4 раза с сохранением деталей.\n"
+        f"Увеличивает разрешение (до ~4 Мп, в 2–4 раза) и добавляет детали.\n"
         f"Идеально для: фото из бота, аватарок, постеров, принтов.\n\n"
         f"📎 Отправь фото для апскейла:"
     )
@@ -1592,6 +1619,10 @@ async def do_upscale(message: Message, state: FSMContext):
 
         # Конвертируем фото в base64 data URI - fal.ai принимает напрямую
         import base64 as _b64
+        # Clarity берёт $0.03 за мегапиксель. При «4x» обычное фото из Telegram
+        # (~1.2 Мп) давало ~19 Мп ≈ $0.58, а фото файлом 12 Мп — ~$5.8 за 20 кр.
+        # Ограничиваем результат ~4 Мп: закуп ≤ $0.13 при любой картинке.
+        img_bytes, _up_scale = _upscale_plan(img_bytes)
         img_b64 = _b64.b64encode(img_bytes).decode("utf-8")
         _up_mime = "image/png" if img_bytes[:4] == b"\x89PNG" else "image/jpeg"
         image_data_uri = f"data:{_up_mime};base64,{img_b64}"
@@ -1603,7 +1634,7 @@ async def do_upscale(message: Message, state: FSMContext):
         }
         payload = {
             "image_url": image_data_uri,
-            "scale": 4,
+            "scale": _up_scale,
             "creativity": 0.35,
             "resemblance": 0.85,
             "prompt": "masterpiece, best quality, highres, detailed",
@@ -1651,7 +1682,7 @@ async def do_upscale(message: Message, state: FSMContext):
         # и клиент получал «ошибку» и возврат за уже оплаченный нами апскейл.
         await safe_send_media(
             message.answer_document,
-            BufferedInputFile(out_bytes, "upscaled_4x.png"),
+            BufferedInputFile(out_bytes, "upscaled.png"),
             caption=(f"✅ <b>Фото улучшено!</b> 📁 Оригинал без сжатия\n"
                      f"💸 Списано {UPSCALE_CREDIT_COST} кр | Остаток: {new_cr} кр"),
             parse_mode="HTML",
@@ -1665,7 +1696,7 @@ async def do_upscale(message: Message, state: FSMContext):
             pass
         try:
             await message.answer_photo(
-                BufferedInputFile(out_bytes, "upscaled_4x.jpg"),
+                BufferedInputFile(out_bytes, "upscaled.jpg"),
                 caption="👀 Превью",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🔍 Улучшить ещё фото", callback_data="menu_upscale"),

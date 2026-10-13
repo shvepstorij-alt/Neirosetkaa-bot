@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ANIM_MODELS, CREDIT_PACKS, CUSTOM_EMOJI_IDS, DATABASE_URL, DISABLED_MODELS, EDIT_MODELS,
-    RETIRED_MODELS, set_model_credits,
+    RETIRED_MODELS, set_model_credits, PACK_DESC_V36,
     FREE_CREDITS, IMAGE_MODELS, REF_BONUS, REF_WELCOME_CREDITS, SHOP_CATALOG, VIDEO_MODELS, _pool,
     GPT_CODE_ROUTES,
 )
@@ -1663,6 +1663,36 @@ async def load_prices_from_db():
                 _apply_desc_override_to_memory(_o["key"], _o["plan_name"] or "", _o["descr"] or "")
         except Exception as _e:
             logging.error(f"apply shop_desc_overrides: {_e}")
+
+        # Часть 36: разовый перевод цен генераций на «закуп + ~40%». Цены в
+        # bot_gen_prices перекрывают код, поэтому без этой миграции новые цены
+        # из config.py не заработали бы. Выполняется ОДИН раз (флаг в settings),
+        # дальше снова главная — админка.
+        try:
+            _v36 = await conn.fetchval("SELECT value FROM settings WHERE key='gen_prices_v36'")
+            if _v36 != "1":
+                _n36 = 0
+                for _sec36, _d36 in (("image", IMAGE_MODELS), ("video", VIDEO_MODELS),
+                                     ("edit", EDIT_MODELS), ("anim", ANIM_MODELS)):
+                    for _k36, _m36 in _d36.items():
+                        _r36 = await conn.execute(
+                            "UPDATE bot_gen_prices SET credits=$1 WHERE model_key=$2",
+                            int(_m36.get("credits", 0)), _k36)
+                        if _r36.endswith(" 1"):
+                            _n36 += 1
+                for _old36, _new36 in PACK_DESC_V36.items():
+                    await conn.execute(
+                        "UPDATE bot_credit_packs SET description=$1 WHERE description=$2",
+                        _new36, _old36)
+                for _pk36 in CREDIT_PACKS.values():  # пакеты уже прочитаны выше
+                    if _pk36.get("desc") in PACK_DESC_V36:
+                        _pk36["desc"] = PACK_DESC_V36[_pk36["desc"]]
+                await conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('gen_prices_v36','1') "
+                    "ON CONFLICT (key) DO UPDATE SET value='1'")
+                logging.info(f"gen_prices_v36: цены генераций обновлены в БД ({_n36} моделей)")
+        except Exception as _e36:
+            logging.warning(f"gen_prices_v36 skipped: {_e36}")
 
         # Цены на генерации + список отключённых моделей
         rows_gen = await conn.fetch("SELECT * FROM bot_gen_prices")

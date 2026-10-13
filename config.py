@@ -439,8 +439,8 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana",
         "model_id": "gemini-2.5-flash-image",
         "api": "gemini",
-        "credits": 13,
-        "price": "7₽",
+        "credits": 11,
+        "price": "6₽",
         "speed": "~3 сек",
         "desc": "Быстрый, диалоговый",
     },
@@ -452,8 +452,8 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana 2.1",
         "model_id": "gemini-nano-banana-2.1",
         "api": "gemini",
-        "credits": 15,
-        "price": "8₽",
+        "credits": 9,
+        "price": "5₽",
         "speed": "~5 сек",
         "desc": "Новейший Gemini, лучшее качество",
     },
@@ -461,8 +461,8 @@ IMAGE_MODELS = {
         "name": "🍌 Nano Banana Pro",
         "model_id": "gemini-3-pro-image",
         "api": "gemini",
-        "credits": 30,
-        "price": "14₽",
+        "credits": 39,
+        "price": "21₽",
         "speed": "~10 сек",
         "desc": "2K, точный текст в картинке",
     },
@@ -471,8 +471,8 @@ IMAGE_MODELS = {
         "name": "🎭 Flux 2 Pro",
         "model_id": "fal-ai/flux-2-pro",
         "api": "fal",
-        "credits": 12,
-        "price": "6₽",
+        "credits": 8,
+        "price": "4₽",
         "speed": "~8 сек",
         "desc": "Фотореализм от Black Forest Labs",
     },
@@ -480,8 +480,8 @@ IMAGE_MODELS = {
         "name": "✒️ Ideogram V3",
         "model_id": "fal-ai/ideogram/v3",
         "api": "fal",
-        "credits": 14,
-        "price": "7₽",
+        "credits": 16,
+        "price": "9₽",
         "speed": "~10 сек",
         "desc": "Идеальный текст в картинке (для постеров, баннеров WB/Ozon)",
     },
@@ -490,8 +490,8 @@ IMAGE_MODELS = {
         "name": "⚡ Grok Imagine",
         "model_id": "xai/grok-imagine-image",
         "api": "fal",
-        "credits": 10,
-        "price": "5₽",
+        "credits": 6,
+        "price": "3₽",
         "speed": "~5 сек",
         "desc": "xAI, фотореализм, точный текст",
     },
@@ -511,8 +511,8 @@ IMAGE_MODELS = {
         "model_id": "openai/gpt-image-2",
         "api": "fal",
         "quality": "low",
-        "credits": 10,
-        "price": "5₽",
+        "credits": 3,
+        "price": "2₽",
         "speed": "~8 сек",
         "desc": "OpenAI, бюджет - проверить идею",
     },
@@ -521,8 +521,8 @@ IMAGE_MODELS = {
         "model_id": "openai/gpt-image-2",
         "api": "fal",
         "quality": "medium",
-        "credits": 20,
-        "price": "11₽",
+        "credits": 14,
+        "price": "7₽",
         "speed": "~15 сек",
         "desc": "#1 в Image Arena, рекомендованное качество",
     },
@@ -531,8 +531,8 @@ IMAGE_MODELS = {
         "model_id": "openai/gpt-image-2",
         "api": "fal",
         "quality": "high",
-        "credits": 45,
-        "price": "24₽",
+        "credits": 59,
+        "price": "31₽",
         "speed": "~25 сек",
         "desc": "Топ 4K, 99% точность текста, thinking mode",
     },
@@ -552,8 +552,8 @@ VIDEO_MODELS = {
         "resolution": "720p",
         "fallback_model_id": "veo-3.1-lite-generate-preview",
         "aspects": ["16:9", "9:16"],
-        "credits": 239,
-        "price": "127₽",
+        "credits": 209,
+        "price": "111₽",
         "res": "720p + аудио",
         "desc": "Google, бюджетный, со звуком",
     },
@@ -561,39 +561,39 @@ VIDEO_MODELS = {
         "name": "🌊 Wan 2.2",
         "model_id": "fal-ai/wan/v2.2-a14b/text-to-video",
         "api": "fal",
-        "credits": 80,
-        "price": "45₽",
+        "credits": 109,
+        "price": "58₽",
         "res": "720p",
         "desc": "Топ open-source, движения людей",
         "durations": {
-            5:  (80, "45₽"),
-            10: (150, "84₽"),
+            5:  (109, "58₽"),
+            10: (219, "117₽"),
         },
     },
     "kling_turbo": {
         "name": "⚡ Kling 2.5 Turbo",
         "model_id": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
         "api": "fal",
-        "credits": 109,
-        "price": "58₽",
+        "credits": 99,
+        "price": "53₽",
         "res": "1080p",
         "desc": "Плавная физика, быстро",
         "durations": {
-            5:  (109, "58₽"),
-            10: (207, "110₽"),
+            5:  (99, "53₽"),
+            10: (189, "101₽"),
         },
     },
     "seedance_15": {
         "name": "🎬 Seedance 1.5 Pro",
         "model_id": "fal-ai/bytedance/seedance/v1.5/pro/text-to-video",
         "api": "fal",
-        "credits": 99,
-        "price": "55₽",
+        "credits": 69,
+        "price": "37₽",
         "res": "720p + аудио",
         "desc": "ByteDance, нативное аудио",
         "durations": {
-            5:  (99, "55₽"),
-            10: (188, "105₽"),
+            5:  (69, "37₽"),
+            10: (139, "74₽"),
         },
     },
     "vid_fast": {
@@ -603,8 +603,8 @@ VIDEO_MODELS = {
         "resolution": "1080p",
         "fallback_model_id": "veo-3.1-fast-generate-preview",
         "aspects": ["16:9", "9:16"],
-        "credits": 249,
-        "price": "133₽",
+        "credits": 319,
+        "price": "170₽",
         "res": "1080p + аудио",
         "desc": "Google, баланс цены и качества",
     },
@@ -612,41 +612,41 @@ VIDEO_MODELS = {
         "name": "🏆 Kling 3.0 Pro",
         "model_id": "fal-ai/kling-video/v3/pro/text-to-video",
         "api": "fal",
-        "credits": 391,
-        "price": "208₽",
+        "credits": 229,
+        "price": "122₽",
         "res": "1080p + аудио",
         "desc": "Кинематограф + аудио",
         "durations": {
-            5:  (391, "208₽"),
-            8:  (593, "315₽"),
-            10: (741, "393₽"),
+            5:  (229, "122₽"),
+            8:  (359, "191₽"),
+            10: (439, "234₽"),
         },
     },
     "grok_vid": {
         "name": "⚡ Grok Imagine",
         "model_id": "xai/grok-imagine-video/text-to-video",
         "api": "fal",
-        "credits": 99,
-        "price": "55₽",
+        "credits": 119,
+        "price": "63₽",
         "res": "720p + аудио",
         "desc": "xAI, нативное аудио, быстро",
         "durations": {
-            6:  (99,  "55₽"),
-            10: (165, "92₽"),
+            6:  (119, "63₽"),
+            10: (189, "101₽"),
         },
     },
     "seedance_20": {
         "name": "🔥 Seedance 2.0",
         "model_id": "bytedance/seedance-2.0/text-to-video",
         "api": "fal",
-        "credits": 449,
-        "price": "239₽",
+        "credits": 399,
+        "price": "213₽",
         "res": "720p + аудио",
         "desc": "#1 с аудио в Video Arena",
         "durations": {
-            5:  (449, "239₽"),
-            10: (849, "449₽"),
-            15: (1249, "664₽"),
+            5:  (399, "213₽"),
+            10: (799, "426₽"),
+            15: (1189, "634₽"),
         },
     },
     "vid_pro": {
@@ -656,8 +656,8 @@ VIDEO_MODELS = {
         "resolution": "4k",
         "fallback_model_id": "veo-3.1-generate-preview",
         "aspects": ["16:9", "9:16"],
-        "credits": 640,
-        "price": "340₽",
+        "credits": 629,
+        "price": "335₽",
         "res": "4K + аудио",
         "desc": "Кино-качество Google",
     },
@@ -667,32 +667,32 @@ VIDEO_MODELS = {
 CREDIT_PACKS = {
     "p15": {
         "name": "🎯 Пробный", "credits": 150, "price": 99, "stars": 40,
-        "desc": "21 фото / 1 видео Lite",
+        "desc": "13 фото / 1 видео Kling",
         "badge": "Попробовать за 99₽",
     },
     "p25": {
         "name": "🥉 Начальный", "credits": 250, "price": 149, "stars": 60,
-        "desc": "35 фото / 2 видео Lite / 1 видео Fast",
+        "desc": "22 фото / 1 видео Lite",
         "badge": "Минимальный запас",
     },
     "p50": {
         "name": "🥈 Старт", "credits": 500, "price": 279, "stars": 112,
-        "desc": "70 фото / 5 видео Lite / 2 видео Fast",
+        "desc": "45 фото / 2 видео Lite / 1 видео Fast",
         "badge": "Популярный",
     },
     "p150": {
         "name": "🏅 Базовый", "credits": 1500, "price": 799, "stars": 320,
-        "desc": "210 фото / 15 видео Lite / 6 видео Fast / 2 видео Pro",
+        "desc": "136 фото / 7 видео Lite / 4 видео Fast / 2 видео Pro",
         "badge": "Хорошая экономия",
     },
     "p500": {
         "name": "🥇 Про", "credits": 5000, "price": 2490, "stars": 996,
-        "desc": "700 фото / 50 видео Lite / 20 видео Fast / 8 видео Pro",
+        "desc": "454 фото / 23 видео Lite / 15 видео Fast / 7 видео Pro",
         "badge": "Выгоднее на 13%",
     },
     "p1200": {
         "name": "💎 Бизнес", "credits": 12000, "price": 5790, "stars": 2316,
-        "desc": "1700 фото / 120 видео Lite / 48 видео Fast / 20 видео Pro",
+        "desc": "1090 фото / 57 видео Lite / 37 видео Fast / 19 видео Pro",
         "badge": "Максимум",
     },
 }
@@ -1103,7 +1103,7 @@ _SYSTEM_PROMPT_TAIL = """
 
 ПРАВИЛЬНЫЕ ФРАЗЫ:
 "В этом боте можно прямо сейчас - нажми <b>📷 Изображение</b>"
-"Кстати, в боте есть Grok Imagine за 10 кр - попробуй"
+"Кстати, в боте есть Grok Imagine — недорогой и быстрый, попробуй" (цену бери из списка моделей ниже)
 
 ━━━━━━━━━━━━━━━━━━━━━━
 🎯 ПРОМПТИНГ - МАСТЕР-КЛАСС
@@ -1936,20 +1936,20 @@ USERS_PAGE_SIZE = 15
 PAYMENTS_PAGE_SIZE = 15
 
 
-EDIT_CREDIT_COST = 10  # стоимость редактирования = 10 кредитов (дефолт Gemini)
+EDIT_CREDIT_COST = 11  # редактирование по умолчанию (Nano Banana), часть 36
 
 EDIT_MODELS = {
     "edit_gemini": {
         "name": "🍌 Nano Banana",
         "api": "gemini",
-        "credits": 10,
+        "credits": 11,
         "desc": "Gemini - быстро, диалоговый редактор",
     },
     "edit_grok": {
         "name": "⚡ Grok Imagine",
         "api": "fal",
         "model_id": "xai/grok-imagine-image/edit",
-        "credits": 10,
+        "credits": 8,
         "desc": "xAI - точное следование инструкциям",
     },
     "edit_gpt": {
@@ -1957,18 +1957,18 @@ EDIT_MODELS = {
         "api": "fal",
         # Официальный id эндпоинта на fal.ai — openai/… (как и у генерации).
         "model_id": "openai/gpt-image-2/edit",
-        "credits": 15,
+        "credits": 17,
         "desc": "OpenAI - реализм, сложные правки",
     },
     "edit_flux": {
         "name": "🎭 Flux Kontext",
         "api": "fal",
         "model_id": "fal-ai/flux-kontext/dev",
-        "credits": 14,
+        "credits": 10,
         "desc": "Black Forest Labs - художественный стиль",
     },
 }
-ANIM_CREDIT_COST  = 249  # стоимость анимации фото = 249 кредитов (Veo, дефолт)
+ANIM_CREDIT_COST  = 319  # анимация по умолчанию (Gemini Omni 1080p), часть 36
 
 # Модели для анимации фото (image-to-video)
 ANIM_MODELS = {
@@ -1983,7 +1983,7 @@ ANIM_MODELS = {
         "fallback_model_id": "veo-3.1-fast-generate-preview",
         "aspects": ["16:9", "9:16"],
         "two_frames": True,
-        "credits": 249,
+        "credits": 319,
         "desc": "Google, 8 сек, 1080p + аудио",
         "duration": 8,
     },
@@ -1991,7 +1991,7 @@ ANIM_MODELS = {
         "name": "⚡ Grok Imagine",
         "api": "fal",
         "model_id": "xai/grok-imagine-video/image-to-video",
-        "credits": 99,
+        "credits": 119,
         "desc": "xAI, 6 сек, 720p + аудио",
         "duration": 6,
     },
@@ -2000,7 +2000,7 @@ ANIM_MODELS = {
         "api": "fal",
         "model_id": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
         "two_frames": True,
-        "credits": 109,
+        "credits": 99,
         "desc": "Плавная физика, 5 сек, 1080p",
         "duration": 5,
     },
@@ -2008,12 +2008,12 @@ ANIM_MODELS = {
         "name": "🌊 Wan 2.2",
         "api": "fal",
         "model_id": "fal-ai/wan/v2.2-a14b/image-to-video",
-        "credits": 80,
+        "credits": 109,
         "desc": "Бюджетный, 5 сек, 720p",
         "duration": 5,
     },
 }
-UPSCALE_CREDIT_COST = 20  # апскейл 4x - себест ~$0.12/4MP → 20 кр (~10.6₽), маржа ~30%
+UPSCALE_CREDIT_COST = 39  # Clarity $0.03/Мп результата; результат ограничен ~4 Мп → ≤$0.126, наценка ~40% (часть 36)
 
 # Множество отключённых моделей (ключи из IMAGE/VIDEO/EDIT/ANIM_MODELS).
 # Заполняется из bot_gen_prices.enabled=FALSE при старте и обновляется через /admin.
@@ -2030,6 +2030,25 @@ DISABLED_MODELS.update(RETIRED_MODELS)
 # модели в админке, вся таблица масштабируется пропорционально (db.load_prices).
 VIDEO_DURATIONS_DEFAULT = {k: dict(_m["durations"]) for k, _m in VIDEO_MODELS.items()
                            if _m.get("durations")}
+
+
+def brand_min_credits(kind: str, brand: str) -> int:
+    """Минимальная цена бренда в кредитах — для строк «от N кр» в меню.
+    Раньше «от 239 кр», «от 13 кр» были зашиты в тексте и расходились с ценами."""
+    _models = IMAGE_MODELS if kind == "image" else VIDEO_MODELS
+    _brands = IMAGE_BRAND_MODELS if kind == "image" else VIDEO_BRAND_MODELS
+    _vals = []
+    for _k in _brands.get(brand, []):
+        _m = _models.get(_k)
+        if not _m or _k in DISABLED_MODELS:
+            continue
+        _d = _m.get("durations")
+        _vals.append(min(c for c, _ in _d.values()) if _d else int(_m.get("credits", 0)))
+    return min(_vals) if _vals else 0
+
+
+# Пакеты: описания до части 36 → после (для разовой миграции в БД)
+PACK_DESC_V36 = {'21 фото / 1 видео Lite': '13 фото / 1 видео Kling', '35 фото / 2 видео Lite / 1 видео Fast': '22 фото / 1 видео Lite', '70 фото / 5 видео Lite / 2 видео Fast': '45 фото / 2 видео Lite / 1 видео Fast', '210 фото / 15 видео Lite / 6 видео Fast / 2 видео Pro': '136 фото / 7 видео Lite / 4 видео Fast / 2 видео Pro', '700 фото / 50 видео Lite / 20 видео Fast / 8 видео Pro': '454 фото / 23 видео Lite / 15 видео Fast / 7 видео Pro', '1700 фото / 120 видео Lite / 48 видео Fast / 20 видео Pro': '1090 фото / 57 видео Lite / 37 видео Fast / 19 видео Pro'}
 
 
 def set_model_credits(key: str, credits: int) -> None:
@@ -2063,9 +2082,9 @@ IMPROVE_CREDIT_COST = 0   # само улучшение бесплатно, пл
 
 # ─── Kling Motion Control: цены по длительности ────────────
 MOTION_PRICES = {
-    5:  149,   # 5 сек - 149 кр (себест. ~40₽, маржа ~50%)
-    8:  299,   # 8 сек - 299 кр (себест. ~63₽, маржа ~60%)
-    10: 349,   # 10 сек - 349 кр (себест. ~79₽, маржа ~57%)
+    5: 119,   # закуп EvoLink ≈40₽, наценка ~40% (часть 36)
+    8: 189,   # закуп EvoLink ≈63₽, наценка ~40% (часть 36)
+    10: 239,   # закуп EvoLink ≈79₽, наценка ~40% (часть 36)
 }
 MOTION_MODEL_ID = "kling-v3-motion-control"  # EvoLink route name
 
