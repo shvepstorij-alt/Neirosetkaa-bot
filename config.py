@@ -66,6 +66,11 @@ AICHONGZ_READY = bool((os.getenv("AICHONGZ_API_KEY", "") or "").strip()
 AICHONGZ_SITE = "https://" + ((os.getenv("AICHONGZ_BASE", "") or "aichongz.top").strip()
                               .replace("https://", "").replace("http://", "")
                               .split("/")[0] or "aichongz.top")
+# Claude у поставщика может идти через другой магазин той же платформы
+# (14.10.2026: «пока на 9527.mobi»). Пусто — тот же домен, что у ChatGPT.
+_A9_CL_HOST = ((os.getenv("AICHONGZ_CLAUDE_BASE", "") or "").strip()
+               .replace("https://", "").replace("http://", "").split("/")[0])
+AICHONGZ_CLAUDE_SITE = ("https://" + _A9_CL_HOST) if _A9_CL_HOST else AICHONGZ_SITE
 CLAUDE_PROVIDERS = {
     # bypriceactivate.pro — активация через ФОРМУ САЙТА (браузер). Их API строго проверяет
     # пул региона кода и отдаёт «out of stock for claude_pro_australia», хотя та же форма
@@ -97,7 +102,8 @@ CLAUDE_PROVIDERS = {
     # aichongz.top — 9527 Agent API: POST /redemptions с Organization ID. Без
     # Session Key сайт по умолчанию примет только Pro (Max требует sk-ant, бот
     # его не собирает) — Max-коды этого сайта отклонятся ДО списания.
-    "aichongz": {"name": "aichongz.top", "base": AICHONGZ_SITE, "api": "a9527"},
+    "aichongz": {"name": AICHONGZ_CLAUDE_SITE.replace("https://", ""), "base": AICHONGZ_CLAUDE_SITE,
+                 "api": "a9527"},
 }
 # vip666 ПЕРЕД ipiap: у ipiap API сейчас работает нестабильно (по словам админа сайта).
 CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "vip666", "ipiap", "aipro", "ios891", "aichongz"]   # порядок авто-фолбэка
@@ -125,7 +131,7 @@ GPT_PROVIDERS = {
     # aichongz.top — 9527 Agent API (подпись HMAC). Код + Session JSON клиента
     # строкой; итог — только status=success. Свой пул кодов, маршрутов ios/ph
     # у сайта нет. Активация — отдельной задачей _run_a9527_gpt_job.
-    "aichongz": {"name": "aichongz.top", "base": AICHONGZ_SITE, "api": "a9527"},
+    "aichongz": {"name": AICHONGZ_SITE.replace("https://", ""), "base": AICHONGZ_SITE, "api": "a9527"},
 }
 # ── Маршрут активации ChatGPT по префиксу кода ──────────────────────────────
 # iOS-коды кладутся на ЛЮБОЙ аккаунт (и на free, и поверх активной подписки) —

@@ -8931,7 +8931,7 @@ async def api_admin_miniapp_detail_handler(request: web.Request) -> web.Response
                 _n = _pname(p)
                 if (_reg.get(p) or {}).get("api") == "a9527":
                     _n += " · только " + ("Plus" if svc == "chatgpt" else "Pro")
-                    if not _a9pv.ready():
+                    if not _a9pv.ready("claude" if svc == "claude" else "gpt"):
                         _n += " · ⚠️ нет ключа API"
                 return _n
             resp["providers"] = [
@@ -9117,7 +9117,7 @@ async def api_admin_claude_provider_handler(request: web.Request) -> web.Respons
                 return web.json_response({"ok": False, "msg": "Неизвестный сайт"})
             if (_reg.get(prov) or {}).get("api") == "a9527":
                 import agent9527 as _a9ps
-                if not _a9ps.ready():
+                if not _a9ps.ready("claude" if svc == "claude" else "gpt"):
                     return web.json_response({"ok": False, "msg": (
                         "aichongz.top выключен: в Railway не заданы AICHONGZ_API_KEY / "
                         "AICHONGZ_API_SECRET. Активным не сделал.")})
@@ -9232,7 +9232,7 @@ async def api_admin_claude_code_action_handler(request: web.Request) -> web.Resp
                 logging.warning(f"code-action provider {code}: {_e_pa9}")
         if _a9_code and action == "release" and not body.get("force"):
             import agent9527 as _a9ca
-            _q_ca = await _a9ca.card_query(code)
+            _q_ca = await _a9ca.card_query(code, "claude" if svc == "claude" else "gpt")
             _v_ca = (_a9ca.verdict(_q_ca.get("card"), _q_ca.get("order"))
                      if _q_ca.get("ok") else {"state": "", "card_status": "", "order_status": ""})
             if not _a9ca.code_free(_v_ca):
@@ -9636,7 +9636,7 @@ def a9527_add_refusal(service: str, provider_setting: str, provider: str, plan: 
         return ("Сайт aichongz.top выключен — в Railway не заданы AICHONGZ_API_KEY / "
                 "AICHONGZ_API_SECRET. Коды НЕ добавлены.")
     if _is9(provider):
-        if not _a9.ready():
+        if not _a9.ready("claude" if service == "claude" else "gpt"):
             return ("aichongz.top: в Railway не заданы AICHONGZ_API_KEY / AICHONGZ_API_SECRET. "
                     "Коды НЕ добавлены.")
         if not _a9.plan_allowed(service, plan):
@@ -9666,7 +9666,7 @@ async def a9527_release_check(service: str, code: str) -> tuple:
         return True, ""
     if service == "chatgpt" and await _a9_mark_get(code):
         return False, "по коду на aichongz уже была отправка — бот следит за заказом"
-    if await _a9527_code_intact(code):
+    if await _a9527_code_intact(code, "claude" if service == "claude" else "gpt"):
         return True, ""
     _why = "aichongz не подтвердил, что код свободен"
     try:
@@ -9694,7 +9694,8 @@ async def _a9527_split_releasable(table: str, codes: list) -> tuple:
             list(codes))]
     if not _a9c:
         return list(codes), []
-    _res = await _a9.batch_query(_a9c) if _a9.ready() else {}
+    _svq = "claude" if table == "claude_codes" else "gpt"
+    _res = await _a9.batch_query(_a9c, _svq) if _a9.ready(_svq) else {}
     _skip = []
     for _cd in _a9c:
         _it = _res.get(_cd) or {}
@@ -9732,7 +9733,7 @@ async def _a9527_check_new_codes(service: str, codes: list) -> dict:
     for _c in _foreign:
         _spent.append({"code": _c, "status": f"уже в пуле другого сайта ({_own[_c]}) — не тронут",
                        "email": "", "when": ""})
-    _res = await _a9.batch_query(_mine) if _mine else {}
+    _res = await _a9.batch_query(_mine, "claude" if service == "claude" else "gpt") if _mine else {}
     if _mine and not _res:
         return {"checkErr": "aichongz не ответил на проверку — коды добавлены без проверки",
                 "spent": _spent}
@@ -10763,10 +10764,48 @@ _A9_CLIENT_MANUAL = ("Автоматически не получилось. Оп
                      "Александр уже знает и активирует вручную, повторять ничего не нужно.")
 
 
+def _a9_acc_plan(session_raw: str, access_token: str = "") -> str:
+    """План аккаунта ChatGPT: session.account.planType, а если его нет — JWT.
+    Пустая строка — не определён. (На заказе #7164 JWT врал «plus» у free,
+    поэтому session — главный источник.)"""
+    try:
+        _p = str(((json.loads(session_raw or "{}") or {}).get("account") or {})
+                 .get("planType") or "").strip().lower()
+    except Exception:
+        _p = ""
+    if _p:
+        return _p
+    try:
+        from chatgpt_activation import gpt_plan_from_session
+        _tok = access_token or ""
+        if not _tok:
+            try:
+                _tok = (json.loads(session_raw or "{}") or {}).get("accessToken") or ""
+            except Exception:
+                _tok = ""
+        return (gpt_plan_from_session("", _tok)[0] or "").strip().lower()
+    except Exception:
+        return ""
+
+
+async def _gpt_handoff_done(order_id: str) -> bool:
+    """Заказ уже переносили между сайтами — второй раз не переносим."""
+    try:
+        return bool((await get_setting(f"gpt_handoff:{order_id}", "") or "").strip())
+    except Exception:
+        return True
+
+
 async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str,
-                             plan_name: str, session_raw: str, access_token: str = "") -> None:
+                             plan_name: str, session_raw: str, access_token: str = "",
+                             allow_handoff: bool = True):
     """Активация ChatGPT на aichongz.top. Вызывается из _run_activation_job:
-    замок клиента и общий перехват ошибок — там."""
+    замок клиента и общий перехват ошибок — там.
+
+    Возвращает ("handoff", код_bpa), если активацию надо продолжить на
+    bypriceactivate (aichongz отказал, а сайт подтвердил, что заказа по коду
+    НЕТ), иначе None. allow_handoff=False — сюда уже пришли С bypriceactivate,
+    обратно не переносим (без кругов)."""
     import html as _h_j
     import time as _t_j
     import agent9527 as _a9
@@ -10796,6 +10835,68 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
     def _done(**kw):
         _activation_jobs[job_id] = {"status": "done", "success": False, **kw}
 
+    async def _to_bpa(_reason: str, _c: str, _mode: str):
+        """Перенос заказа на bypriceactivate. Только когда заказа на aichongz
+        по коду ТОЧНО нет. _mode:
+          "confirmed" — сайт уже подтвердил «свободен»: код возвращаем в пул;
+          "untouched" — код на сайт не уходил: вернём, если сайт подтвердит,
+                        иначе оставим в резерве (вернёт проверенная чистка);
+          "dead"      — код негоден (помечен): не трогаем.
+        Возвращает код bpa или None (переноса нет — остаётся ручной режим)."""
+        if not allow_handoff or _pk != "plus":
+            return None
+        if "bpa" not in GPT_ENABLED_PROVIDERS or await _gpt_handoff_done(order_id):
+            return None
+        try:
+            if (await get_setting(f"gpt_ios_after_ph:{order_id}", "") or "").strip():
+                return None      # филиппинский по заказу уже отбит — переносить некуда
+        except Exception:
+            return None
+        try:
+            _dis = {x for x in (await get_setting("gpt_disabled", "") or "").split(",") if x}
+        except Exception:
+            _dis = set()
+        if "bpa" in _dis:
+            return None
+        # Правило bypriceactivate: на free-аккаунт — только филиппинский код
+        # (iOS на free не тратим). Нет филиппинских — переноса нет.
+        _nb = await get_next_gpt_code(_pk, "bpa", "ph")
+        if not _nb:
+            return None
+        _fate = ""
+        try:
+            if _mode == "confirmed":
+                await release_gpt_code(_c)
+                await _a9_mark_del(_c)
+                _fate = "вернул в пул (сайт подтвердил: свободен)"
+            elif _mode == "untouched":
+                await _a9_mark_del(_c)
+                if await _a9527_code_intact(_c):
+                    await release_gpt_code(_c)
+                    _fate = "вернул в пул (сайт подтвердил: свободен)"
+                else:
+                    _fate = ("на сайт не уходил; сайт сейчас не ответил — оставил в резерве, "
+                             "вернётся в пул после проверки сайтом")
+            else:
+                _fate = "негоден — помечен, в пул не вернётся"
+        except Exception as _e_tb:
+            logging.error(f"9527→bpa: судьба кода {_c}: {_e_tb}")
+            _fate = "не удалось обработать — проверь в «Ждущих кодах»"
+        await save_pending_activation(user_id, _nb, order_id, _pk, plan_name, "bpa")
+        try:
+            await set_setting(f"gpt_handoff:{order_id}", f"aichongz>bpa|{int(_t_j.time())}")
+            await claim_gpt_activation(user_id, stale_minutes=0)   # освежаем замок клиента
+        except Exception as _e_hm:
+            logging.warning(f"9527→bpa: метка переноса {order_id}: {_e_hm}")
+        await _log(_c, {"error": f"перенос на bypriceactivate: {_reason}"[:140]})
+        await _admin("🔀 <b>ChatGPT — перенос aichongz → bypriceactivate</b>", _c,
+                     f"❗ Причина: {_h_j.escape(_reason)[:300]}\n"
+                     f"🔑 Код aichongz: {_fate}.\n"
+                     f"🔑 Новый код bypriceactivate: <code>{_h_j.escape(_nb)}</code>\n"
+                     f"Заказа на aichongz по коду нет — двух подписок не будет. Итог пришлю.")
+        logging.warning(f"9527→bpa: uid={user_id} {_c} → {_nb}: {_reason}")
+        return _nb
+
     _target = _a9.gpt_target(session_raw)
     if not _target:
         _done(error="Нужен ВЕСЬ текст со страницы chatgpt.com/api/auth/session — он "
@@ -10809,6 +10910,13 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
                      f"Ничего не отправлял, активируй вручную.")
         return
     if not _a9.ready():
+        # Переносим, только если по коду НИЧЕГО не отправляли: при метке заказ
+        # на aichongz может быть жив, а без ключа его не проверить.
+        _mk_nr = await _a9_mark_get(code)
+        _nb = None if _mk_nr else await _to_bpa(
+            "aichongz без ключа API (не заданы AICHONGZ_API_KEY / SECRET)", code, "untouched")
+        if _nb:
+            return ("handoff", _nb)
         _done(manual=True, error=_A9_CLIENT_MANUAL)
         await _admin("🔧 <b>ChatGPT — aichongz без ключа API</b>", code,
                      "В Railway не заданы <code>AICHONGZ_API_KEY</code> / "
@@ -10847,6 +10955,12 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
                 _v = {"state": "not_owned", "card_status": _q.get("code") or _k}
             else:
                 await _log(code, {"error": f"проверка кода: {_why or _k}"})
+                if not _mark:
+                    # Ничего не отправляли — заказа на aichongz нет.
+                    _nb = await _to_bpa(f"aichongz не ответил на проверку кода ({_why or _k})",
+                                        code, "untouched")
+                    if _nb:
+                        return ("handoff", _nb)
                 _done(manual=True, error=_A9_CLIENT_MANUAL)
                 await _admin("⚠️ <b>ChatGPT — aichongz не ответил на проверку кода</b>", code,
                              f"❗ <code>{_h_j.escape(_why or str(_k))}</code>\n"
@@ -10911,6 +11025,9 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
     if _decision in ("", "swap"):
         _decision = "nocodes"
 
+    _nb_nc = None
+    if _decision == "nocodes":
+        _nb_nc = await _to_bpa("у aichongz нет пригодных кодов", code, "dead")
     if _swapped:
         await _admin(("🚨 <b>ChatGPT — у aichongz нет пригодных кодов</b>"
                       if _decision == "nocodes" else
@@ -10919,8 +11036,11 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
                      + "\n".join(f"• <code>{_h_j.escape(c)}</code> — {_h_j.escape(str(w))}"
                                  for c, w in _swapped)
                      + "\nОни помечены и в пул сами не вернутся."
-                     + (" Пополни пул aichongz или активируй вручную." if _decision == "nocodes"
+                     + ((" Заказ перенёс на bypriceactivate." if _nb_nc else
+                         " Пополни пул aichongz или активируй вручную.") if _decision == "nocodes"
                         else " Работаю с кодом выше."))
+    if _nb_nc:
+        return ("handoff", _nb_nc)
     if _decision in ("nocodes", "manual", "final", "busy"):
         _done(manual=True, error=_A9_CLIENT_MANUAL)
         if _decision == "busy":
@@ -10984,6 +11104,9 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
             await _log(code, {"error": f"{_k}: {_why}"})
             if _k == "network":
                 await _a9_mark_del(code)      # до сайта не дошло — заказа нет
+                _nb = await _to_bpa(f"aichongz недоступен: {_why}", code, "untouched")
+                if _nb:
+                    return ("handoff", _nb)
                 _done(manual=True, error=_A9_CLIENT_MANUAL)
                 await _admin("⚠️ <b>ChatGPT — aichongz недоступен</b>", code,
                              f"❗ <code>{_h_j.escape(_why)}</code>\nЗапрос до сайта не дошёл, "
@@ -11010,6 +11133,13 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
                             "скопируй страницу целиком и вставь ещё раз.")
                 return
             _fl = _a9.reject_flavor(_r.get("msg") or "")
+            if _intact:
+                # Отказ ДО создания заказа, сайт подтвердил «код свободен».
+                # «Уже есть подписка» тоже переносим: у bypriceactivate для
+                # таких аккаунтов есть свой путь (iOS поверх подписки).
+                _nb = await _to_bpa(f"aichongz отказал до создания заказа: {_why}", code, "confirmed")
+                if _nb:
+                    return ("handoff", _nb)
             _done(manual=True, error=(
                 "Сайт активации сообщил, что на этом аккаунте уже есть подписка ChatGPT. "
                 "Оплата сохранена, код за тобой — Александр свяжется и всё решит."
@@ -11049,7 +11179,16 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
                 await claim_gpt_activation(user_id, stale_minutes=0)   # освежаем замок
             except Exception:
                 pass
+    if _st == "failed" and _a9.code_free(_v) and int(_mark.get("fails") or 0) == 0:
+        # Заказ провалился, автоповторов нет, сайт САМ освободил код — подписки
+        # по нему нет. Пробуем bypriceactivate вместо «повтори сам».
+        await _log(code, {"error": f"заказ failed: {(_v or {}).get('reason') or '—'}"})
+        _nb = await _to_bpa(f"заказ aichongz {_ono} не прошёл: {(_v or {}).get('reason') or '—'}",
+                            code, "confirmed")
+        if _nb:
+            return ("handoff", _nb)
     await _a9_gpt_settle(code, _mark, _v, job_id=job_id, from_job=True)
+    return None
 
 
 async def _a9_gpt_settle(code: str, mark: dict, v: dict, job_id: str = "",
@@ -11350,10 +11489,17 @@ async def _run_activation_job(
         # aichongz.top (9527 API) — своя задача: ни одна проверка ниже
         # (маршруты, /query bypriceactivate, слежение за claimed) к его кодам
         # не относится. Замок клиента снимет finally этой функции.
+        _from_a9 = False
         if provider == "aichongz":
-            await _run_a9527_gpt_job(job_id, code, user_id, order_id, plan_name,
-                                     session_raw, access_token)
-            return
+            _h9 = await _run_a9527_gpt_job(job_id, code, user_id, order_id, plan_name,
+                                           session_raw, access_token)
+            if not (isinstance(_h9, tuple) and _h9[0] == "handoff" and _h9[1]):
+                return
+            # aichongz отказал, заказа там нет — продолжаем на bypriceactivate
+            # обычным путём (его правила маршрутов, перебор, iOS-спасение).
+            code, provider, _from_a9 = _h9[1], "bpa", True
+            _activation_jobs[job_id] = {"status": "pending", "retrying": True,
+                                        "note": "Переключаю на другой сайт активации…"}
         result = await _do_activate(code)
 
         # ── Сайт на паузе: ждём и пробуем сами, тем же кодом ────────────────
@@ -11412,6 +11558,8 @@ async def _run_activation_job(
                                       show_route=show_route, uid=user_id)
         _gpt_used_codes = []        # все сожжённые использованные коды (для отчёта)
         _tried_sites = [provider]   # сайты, где уже пробовали
+        if _from_a9:
+            _tried_sites.insert(0, "aichongz")   # обратно на aichongz не идём
         # Почему перебор кодов прекратили ДОБРОВОЛЬНО. Пустая строка — не
         # прекращали. 19.09.2026: защита «сначала спроси сайт, потом жги»
         # остановила перебор на первом же коде, но флаг code_already_used в
@@ -11426,6 +11574,10 @@ async def _run_activation_job(
         # Исход последнего возврата — чтобы сообщения не гадали, а писали
         # по факту: вернули / сайт ещё держит / застрял.
         _rel_last = {"state": "", "site": ""}
+        # Коды bypriceactivate этой задачи, которые сайт ещё держит (claimed /
+        # выдан). Пока такой есть, на другой сайт переносить нельзя: заказ по
+        # нему может дозреть — вышли бы две подписки.
+        _held_codes = []
 
         def _rel_phrase(_ok: bool) -> str:
             """Фраза о судьбе кода — по факту возврата, а не по догадке.
@@ -11521,6 +11673,7 @@ async def _run_activation_job(
             _await_free = bool(dead_reason and _v == "claimed")
             _site_spent = bool(dead_reason and _v in _USED_SR and not _await_free)
             _rel_last["state"] = "awaiting" if _await_free else "stuck"
+            _held_codes.append(_c)
             _pool_sr = await get_pool()
             async with _pool_sr.acquire() as _cn_sr:
                 await _cn_sr.execute(
@@ -11990,6 +12143,124 @@ async def _run_activation_job(
 
         # Ошибки КЛИЕНТА — сменой сайта не лечатся (протухшая сессия, «нужна проверка»,
         # подтверждение принудительной активации). Их НЕ фолбэсим по сайтам.
+        async def _bpa_to_a9527() -> bool:
+            """Переносит заказ с bypriceactivate на aichongz. True — перенесли
+            (дальше всё ведёт задача aichongz), False — переноса нет."""
+            import agent9527 as _a9b
+            if _plan_key != "plus" or "aichongz" not in GPT_ENABLED_PROVIDERS or not _a9b.ready():
+                return False
+            if _held_codes or await _gpt_handoff_done(order_id):
+                return False
+            # Ни одного кода этого заказа под слежением «claimed» — иначе заказ
+            # на bypriceactivate может дозреть.
+            try:
+                _pool_hc = await get_pool()
+                async with _pool_hc.acquire() as _c_hc:
+                    if await _c_hc.fetchval(
+                            "SELECT 1 FROM settings WHERE key LIKE 'gptclaim:%' "
+                            "AND split_part(value, '|', 2) = $1 "
+                            "AND COALESCE(split_part(value, '|', 4), '') NOT LIKE '%x%' LIMIT 1",
+                            str(order_id or "")):
+                        return False
+            except Exception:
+                return False
+            try:
+                _dis_b = {x for x in (await get_setting("gpt_disabled", "") or "").split(",") if x}
+            except Exception:
+                _dis_b = set()
+            if "aichongz" in _dis_b or not _a9b.gpt_target(session_raw or ""):
+                return False
+            # Аккаунт с подпиской на aichongz не шлём (как и при обычной выдаче).
+            _pl_b = _a9_acc_plan(session_raw or "", access_token or "")
+            if _pl_b and _pl_b != "free" and os.getenv("AICHONGZ_GPT_ON_PAID", "0") != "1":
+                return False
+            # Код bypriceactivate — только с подтверждением сайта, что он свободен.
+            # Сначала спрашиваем БЕЗ побочных эффектов: _safe_release при отказе
+            # метит код и пишет Александру, а здесь отказ — просто «не переносим».
+            try:
+                from chatgpt_activation import (bpa_query_codes as _bq_b,
+                                                BPA_FREE_STATUSES as _FREE_B,
+                                                BPA_USED_STATUSES as _USED_B)
+                _vb = str(((await _bq_b([code])).get(str(code).strip().upper()) or {})
+                          .get("status") or "").strip().lower()
+            except Exception as _e_vb:
+                logging.warning(f"bpa→9527: /query {code}: {_e_vb}")
+                return False
+            _dead_b = _dead_order_reason(result)
+            if not (_vb in _FREE_B or (_dead_b and _vb not in _USED_B)):
+                logging.info(f"bpa→9527: {code} на сайте «{_vb or 'молчит'}» — не переношу")
+                return False
+            if await gpt_activation_already_done(code, user_id, order_id):
+                return False
+            _ac = await get_next_gpt_code("plus", "aichongz")
+            if not _ac:
+                return False
+            if not await _safe_release(code, _dead_b):
+                await release_gpt_code(_ac)      # aichongz-код никуда не уходил
+                return False
+            _why_b = ("нет стока" if result.get("out_of_stock") else
+                      "оплата сайта не прошла (заказа нет)" if result.get("site_payment_failed") else
+                      "сайт на техработах")
+            _tried_sites.append("aichongz")
+            _fate_b = ("вернул в пул (сайт подтвердил: свободен)" if _vb in _FREE_B else
+                       "вернул в пул (сайт подтвердил: заказ не прошёл, списания нет)")
+            try:
+                await _gpt_log_attempt(order_id, code, provider,
+                                       {"error": f"перенос на aichongz: {_why_b}"})
+            except Exception:
+                pass
+            await save_pending_activation(user_id, _ac, order_id, "plus", plan_name, "aichongz")
+            try:
+                await set_setting(f"gpt_handoff:{order_id}", f"bpa>aichongz|{int(__import__('time').time())}")
+                await claim_gpt_activation(user_id, stale_minutes=0)
+            except Exception as _e_hb:
+                logging.warning(f"bpa→9527: метка переноса {order_id}: {_e_hb}")
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🔀 <b>ChatGPT — перенос bypriceactivate → aichongz</b>\n\n"
+                    f"👤 {_who_u} · {plan_name}\n"
+                    f"❗ Причина: {_why_b}\n"
+                    f"🔑 Код bypriceactivate <code>{code}</code>: {_fate_b}.\n"
+                    f"🔑 Новый код aichongz: <code>{_ac}</code>\n"
+                    f"🆔 <code>{order_id}</code>\n"
+                    f"Заказа на bypriceactivate нет — двух подписок не будет. Итог пришлю.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            logging.warning(f"bpa→9527: uid={user_id} {code} → {_ac}: {_why_b}")
+            _activation_jobs[job_id] = {"status": "pending", "retrying": True,
+                                        "note": "Переключаю на другой сайт активации…"}
+            try:
+                await _run_a9527_gpt_job(job_id, _ac, user_id, order_id, plan_name,
+                                         session_raw, access_token, allow_handoff=False)
+            except Exception as _e_rj:
+                # Ошибка уже на aichongz: говорим про ЕГО код, а не про bpa (тот в пуле).
+                logging.error(f"bpa→9527: задача aichongz {_ac}: {_e_rj}", exc_info=True)
+                _mk_e = {}
+                try:
+                    _mk_e = await _a9_mark_get(_ac)
+                except Exception:
+                    pass
+                _activation_jobs[job_id] = (
+                    {"status": "done", "success": False, "pending": True, "error": _A9_CLIENT_WAIT}
+                    if _mk_e else
+                    {"status": "done", "success": False, "manual": True, "error": _A9_CLIENT_MANUAL})
+                try:
+                    import html as _h_rj
+                    await bot.send_message(
+                        ADMIN_ID,
+                        f"🧨 <b>ChatGPT — ошибка после переноса на aichongz</b>\n"
+                        f"👤 {_who_u} · {plan_name}\n🔑 Код aichongz: <code>{_ac}</code>\n"
+                        f"🆔 <code>{order_id}</code>\n"
+                        f"❗ <code>{_h_rj.escape((type(_e_rj).__name__ + ': ' + str(_e_rj))[:250])}</code>\n"
+                        + ("По коду уже была отправка — слежение досмотрит заказ сам."
+                           if _mk_e else "Отправки не было. Код за клиентом, активируй вручную."),
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+            return True
+
         def _client_stop(_res):
             # site_paused здесь же, хотя к клиенту отношения не имеет: смысл
             # списка — «дальше перебирать сайты бессмысленно». Сайт на
@@ -12360,6 +12631,22 @@ async def _run_activation_job(
             if _rescue == "ok":
                 break
             await _cycle_used_current_site()  # на новом сайте тоже перебираем использованные
+
+        # 2б) bypriceactivate → aichongz (Александр 14.10.2026). Только когда
+        #     bypriceactivate ЯВНО сказал, что заказа нет: нет стока, его оплата
+        #     не прошла (failed_precharge), сайт на техработах — И /query
+        #     подтвердил, что код свободен. Любая неясность (claimed, «долго
+        #     обрабатывал», обрыв) — не переносим: возможна вторая подписка.
+        if (not result.get("success") and provider == "bpa" and not _from_a9
+                and "aichongz" not in _tried_sites
+                and (result.get("out_of_stock") or result.get("site_payment_failed")
+                     or result.get("site_paused"))
+                and not (result.get("code_already_used") or result.get("has_plan")
+                         or result.get("openai_blocked") or result.get("wrong_account")
+                         or result.get("site_claimed") or result.get("needs_check")
+                         or result.get("token_invalid") or result.get("needs_force_confirm"))):
+            if await _bpa_to_a9527():
+                return
 
         # 3) КОДЫ КОНЧИЛИСЬ ВЕЗДЕ: результат — «код использован», а свободных кодов больше
         #    нет ни на одном сайте. Это терминальный случай → ручная активация.
@@ -16525,7 +16812,7 @@ async def _claude_pick_code(plan: str):
     # (и «у aichongz закончились коды» про Max не пишем).
     import agent9527 as _a9pk
     _bad9 = lambda p: (CLAUDE_PROVIDERS.get(p) or {}).get("api") == "a9527" \
-        and (plan != "pro" or not _a9pk.ready())
+        and (plan != "pro" or not _a9pk.ready("claude"))
     _ord0 = await _claude_provider_order()
     order = [p for p in _ord0 if not _bad9(p)]
     if _ord0 and _bad9(_ord0[0]):
@@ -16962,7 +17249,7 @@ async def _claude_agent_query(cfg: dict, idem: str) -> dict:
         return {"status": "pending", "reason": str(_e)}
 
 
-async def _a9527_code_intact(code: str) -> bool:
+async def _a9527_code_intact(code: str, svc: str = "gpt") -> bool:
     """Сайт 9527 подтвердил: код свободен и живого заказа по нему нет.
 
     Только по такому ответу код можно вернуть в пул. Молчание сайта, ошибка
@@ -16970,7 +17257,7 @@ async def _a9527_code_intact(code: str) -> bool:
     """
     try:
         import agent9527 as _a9
-        _q = await _a9.card_query(code)
+        _q = await _a9.card_query(code, svc)
         if not _q.get("ok"):
             return False
         return _a9.code_free(_a9.verdict(_q.get("card"), _q.get("order")))
@@ -16991,7 +17278,7 @@ async def _claude_a9527_redeem(cfg: dict, code: str, org_id: str, order_id: str,
     """
     import agent9527 as _a9
     _pn = cfg.get("name", "aichongz.top")
-    if not _a9.ready():
+    if not _a9.ready("claude"):
         return {"ok": False, "err_kind": "other",
                 "err_msg": f"{_pn}: не заданы AICHONGZ_API_KEY / AICHONGZ_API_SECRET."}
     if not org_id:
@@ -17001,7 +17288,7 @@ async def _claude_a9527_redeem(cfg: dict, code: str, org_id: str, order_id: str,
     # сайте от чужого (старого) по тому же коду.
     _cpref = "cl-" + re.sub(r"[^A-Za-z0-9._:-]", "_", str(order_id))[:100] + "-"
     _cono_new = (_cpref + _idem[-16:])[:160]
-    _q = await _a9.card_query(code)
+    _q = await _a9.card_query(code, "claude")
     if not _q.get("ok"):
         _k = _q.get("kind")
         _m = f"{_q.get('code') or ''} {_q.get('msg') or ''}".strip()
@@ -17035,7 +17322,7 @@ async def _claude_a9527_redeem(cfg: dict, code: str, org_id: str, order_id: str,
         return {"ok": False, "err_kind": "already_claimed",
                 "err_msg": f"{_pn}: по коду уже есть заказ "
                            f"(код: {_v['card_status'] or '—'}, заказ: {_v['order_status'] or '—'})"}
-    _r = await _a9.redeem(code, "organization_id", str(org_id).strip(), _idem, _cono_new)
+    _r = await _a9.redeem(code, "organization_id", str(org_id).strip(), _idem, _cono_new, svc="claude")
     if _r.get("ok"):
         _o = _r.get("order") or {}
         logging.info(f"9527 claude redeem {code}: заказ {_o.get('orderNo')} "
@@ -17054,11 +17341,11 @@ async def _claude_a9527_redeem(cfg: dict, code: str, org_id: str, order_id: str,
     # подтвердит, что он свободен; иначе — неясный исход, решает Александр.
     _fl = _a9.reject_flavor(_r.get("msg") or "")
     if (_k == "bad_target" or _fl == "has_plan" or _blob_has_plan((_r.get("msg") or "").lower())) \
-            and await _a9527_code_intact(code):
+            and await _a9527_code_intact(code, "claude"):
         if _k == "bad_target":
             return {"ok": False, "err_kind": "bad_org", "err_msg": f"{_pn}: {_m}"}
         return {"ok": False, "err_kind": "has_plan", "err_msg": f"{_pn}: {_m}"}
-    if not await _a9527_code_intact(code):
+    if not await _a9527_code_intact(code, "claude"):
         return {"ok": False, "err_kind": "unclear",
                 "err_msg": f"{_pn}: отказ ({_m}), и сайт не подтвердил, что код цел"}
     if _fl == "stock" or _k == "upstream":
@@ -17075,7 +17362,7 @@ async def _claude_a9527_status(code: str, ref: str = "", org: str = "",
         import agent9527 as _a9
         if not code:
             return "unknown"
-        _q = await _a9.card_query(code)
+        _q = await _a9.card_query(code, "claude")
         if not _q.get("ok"):
             return "unknown"
         _v = _a9.verdict(_q.get("card"), _q.get("order"), expect_order_no=str(ref or ""))
@@ -21354,7 +21641,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
                         _prov_0 = await _c_0b.fetchval(
                             "SELECT provider FROM claude_codes WHERE code=$1", _c0) or ""
                     if (CLAUDE_PROVIDERS.get(_prov_0) or {}).get("api") == "a9527" \
-                            and not await _a9527_code_intact(_c0):
+                            and not await _a9527_code_intact(_c0, "claude"):
                         # aichongz: код мог уже уйти на сайт — в пул только с
                         # подтверждением; иначе помечаем, решает Александр.
                         async with _pool_0.acquire() as _c_0c:
@@ -21388,7 +21675,7 @@ async def _run_claude_activation_chain(ref, user_id, order_id, org_id, plan_name
             # aichongz: только с ключом API и только Claude Pro (Max — вручную).
             _a9_off = {p for p, _c9 in CLAUDE_PROVIDERS.items()
                        if _c9.get("api") == "a9527"
-                       and (not _a9_ch.ready() or not _a9_ch.plan_allowed("claude", plan_key))}
+                       and (not _a9_ch.ready("claude") or not _a9_ch.plan_allowed("claude", plan_key))}
         except Exception:
             _a9_off = {p for p, _c9 in CLAUDE_PROVIDERS.items() if _c9.get("api") == "a9527"}
         if _a9_off & {p for p in _counts if _counts.get(p, 0) > 0}:
@@ -21848,7 +22135,7 @@ async def clnc_next_handler(cb: CallbackQuery):
             and _peek.get("code"):
         try:
             import agent9527 as _a9nx
-            _qn = await _a9nx.card_query(_peek["code"])
+            _qn = await _a9nx.card_query(_peek["code"], "claude")
             _vn = (_a9nx.verdict(_qn.get("card"), _qn.get("order"),
                                  expect_order_no=str(_peek.get("site_ref") or ""))
                    if _qn.get("ok") else {"state": "noanswer"})

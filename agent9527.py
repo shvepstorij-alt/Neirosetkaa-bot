@@ -35,8 +35,10 @@ logger = logging.getLogger(__name__)
 PREFIX = "/api/agent/v1"
 
 
-def _env_base() -> str:
-    b = (os.getenv("AICHONGZ_BASE", "") or "https://aichongz.top").strip().rstrip("/")
+def _env_base(var: str = "AICHONGZ_BASE", default: str = "https://aichongz.top") -> str:
+    b = (os.getenv(var, "") or default or "").strip().rstrip("/")
+    if not b:
+        return ""
     if b.endswith(PREFIX):
         b = b[: -len(PREFIX)]
     if b.startswith("http://"):
@@ -48,11 +50,30 @@ def _env_base() -> str:
 BASE = _env_base()
 API_KEY = (os.getenv("AICHONGZ_API_KEY", "") or "").strip()
 API_SECRET = (os.getenv("AICHONGZ_API_SECRET", "") or "").strip()
+# Claude может идти через ДРУГОЙ домен/магазин той же платформы 9527 (поставщик
+# 14.10.2026: «Claude пока на 9527.mobi»). Пустые значения — берутся общие.
+CLAUDE_BASE = _env_base("AICHONGZ_CLAUDE_BASE", "")
+CLAUDE_API_KEY = (os.getenv("AICHONGZ_CLAUDE_API_KEY", "") or "").strip()
+CLAUDE_API_SECRET = (os.getenv("AICHONGZ_CLAUDE_API_SECRET", "") or "").strip()
+
+
+def creds(svc: str = "gpt") -> tuple:
+    """(base, key, secret) для сервиса. svc: 'gpt' | 'chatgpt' | 'claude'."""
+    if svc == "claude":
+        return (CLAUDE_BASE or BASE, CLAUDE_API_KEY or API_KEY,
+                CLAUDE_API_SECRET or (API_SECRET if not CLAUDE_API_KEY else ""))
+    return BASE, API_KEY, API_SECRET
+
+
+def site_host(svc: str = "gpt") -> str:
+    b = creds(svc)[0]
+    return b.replace("https://", "").replace("http://", "").split("/")[0] or "aichongz.top"
 SITE_NAME = "aichongz.top"
 
 
-def ready() -> bool:
-    return bool(API_KEY and API_SECRET and BASE)
+def ready(svc: str = "gpt") -> bool:
+    b, k, sec = creds(svc)
+    return bool(k and sec and b)
 
 
 # ── Состояния (английские коды из документации) ─────────────────────────────
@@ -82,23 +103,25 @@ def idem_key(*parts) -> str:
     return "gpt11-" + hashlib.sha256(raw).hexdigest()[:40]
 
 
-def _headers(path: str, body: bytes, idem: str = "") -> dict:
+def _headers(path: str, body: bytes, idem: str = "", svc: str = "gpt") -> dict:
+    _b, _key, _sec = creds(svc)
     ts = str(int(time.time()))
     nonce = secrets.token_urlsafe(24)
     h = {
         "Content-Type": "application/json",
         "User-Agent": "9527-Agent-API/1.0",
-        "X-Api-Key": API_KEY,
+        "X-Api-Key": _key,
         "X-Timestamp": ts,
         "X-Nonce": nonce,
-        "X-Signature": "v1=" + sign("POST", path, ts, nonce, body, API_SECRET),
+        "X-Signature": "v1=" + sign("POST", path, ts, nonce, body, _sec),
     }
     if idem:
         h["Idempotency-Key"] = idem
     return h
 
 
-async def _post_once(path: str, body: bytes, idem: str = "", timeout: float = 30) -> dict:
+async def _post_once(path: str, body: bytes, idem: str = "", timeout: float = 30,
+                     svc: str = "gpt") -> dict:
     """Один HTTP-запрос. Возвращает разобранный итог, исключений наружу не бросает.
 
     reached: False — соединиться не удалось, запрос до сайта ТОЧНО не дошёл;
@@ -106,13 +129,14 @@ async def _post_once(path: str, body: bytes, idem: str = "", timeout: float = 30
     """
     out = {"http": 0, "ok": False, "data": None, "code": "", "msg": "",
            "reached": False, "retry_after": 0}
-    if not ready():
+    if not ready(svc):
         out.update(code="NOT_CONFIGURED",
                    msg="не заданы AICHONGZ_API_KEY / AICHONGZ_API_SECRET")
         return out
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
-            async with s.post(BASE + path, data=body, headers=_headers(path, body, idem)) as r:
+            async with s.post(creds(svc)[0] + path, data=body,
+                              headers=_headers(path, body, idem, svc)) as r:
                 out["reached"] = True
                 out["http"] = r.status
                 try:
@@ -151,12 +175,12 @@ def _retryable(res: dict) -> bool:
 
 
 async def post(path: str, payload_bytes: bytes, idem: str = "", tries: int = 3,
-               timeout: float = 30) -> dict:
+               timeout: float = 30, svc: str = "gpt") -> dict:
     """Запрос с безопасными повторами: тот же ключ и те же байты, новые nonce/время."""
     res = {}
     reached_any = False
     for i in range(max(1, tries)):
-        res = await _post_once(path, payload_bytes, idem, timeout)
+        res = await _post_once(path, payload_bytes, idem, timeout, svc)
         reached_any = reached_any or res["reached"]
         if not _retryable(res) or i == tries - 1:
             break
@@ -170,11 +194,11 @@ async def post(path: str, payload_bytes: bytes, idem: str = "", tries: int = 3,
 
 # ── Проверка кодов ──────────────────────────────────────────────────────────
 
-async def card_query(code: str) -> dict:
+async def card_query(code: str, svc: str = "gpt") -> dict:
     """{'ok': True, 'card': {...}, 'order': {...}|None} или
     {'ok': False, 'kind': ..., 'code': ..., 'msg': ...}."""
     res = await post(PREFIX + "/cards/query", body_bytes({"cardCode": str(code).strip()}),
-                     tries=3, timeout=20)
+                     tries=3, timeout=20, svc=svc)
     if res["ok"] and res["data"]:
         return {"ok": True, "card": res["data"].get("card") or {},
                 "order": res["data"].get("order")}
@@ -182,7 +206,7 @@ async def card_query(code: str) -> dict:
             "msg": res["msg"], "http": res["http"]}
 
 
-async def batch_query(codes: list) -> dict:
+async def batch_query(codes: list, svc: str = "gpt") -> dict:
     """{КОД_КАК_ПЕРЕДАН: {'ok', 'card', 'order'} | {'ok': False, 'code', 'msg'}}.
 
     Пустой словарь — проверить не удалось (сеть, ключ, лимит). Вызывающий
@@ -193,7 +217,7 @@ async def batch_query(codes: list) -> dict:
     for i in range(0, len(items), 100):
         chunk = items[i:i + 100]
         res = await post(PREFIX + "/cards/batch-query", body_bytes({"cardCodes": chunk}),
-                         tries=3, timeout=30)
+                         tries=3, timeout=30, svc=svc)
         if not (res["ok"] and res["data"]):
             logger.warning(f"9527 batch-query: HTTP {res['http']} {res['code']} {res['msg'][:120]}")
             return {}
@@ -267,7 +291,7 @@ def reject_flavor(msg: str) -> str:
 # ── Активация ───────────────────────────────────────────────────────────────
 
 async def redeem(code: str, target_type: str, target_value: str, idem: str,
-                 client_order_no: str = "") -> dict:
+                 client_order_no: str = "", svc: str = "gpt") -> dict:
     """POST /redemptions. Возвращает:
       {'ok': True, 'order': {...}, 'duplicate': bool}
       {'ok': False, 'kind': ..., 'code': ..., 'msg': ..., 'reached': bool}
@@ -284,7 +308,7 @@ async def redeem(code: str, target_type: str, target_value: str, idem: str,
     unclear_rounds = 0
     net_tries = 0
     for _ in range(8):
-        last = await _post_once(path, raw, idem=idem, timeout=60)
+        last = await _post_once(path, raw, idem=idem, timeout=60, svc=svc)
         reached = reached or last["reached"]
         o = (last["data"] or {}).get("order") or {}
         if o.get("orderNo"):
@@ -315,7 +339,7 @@ async def redeem(code: str, target_type: str, target_value: str, idem: str,
         # Неясно, создан ли заказ. По документации: СНАЧАЛА спросить код, и
         # только потом повторять тем же ключом и теми же байтами.
         unclear_rounds += 1
-        q = await card_query(code)
+        q = await card_query(code, svc)
         if q.get("ok"):
             qo = q.get("order") or {}
             if qo.get("orderNo") and (not client_order_no

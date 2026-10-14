@@ -2227,7 +2227,7 @@ async def adm_clprov_set(cb: CallbackQuery):
         await cb.answer("Неизвестный сайт", show_alert=True); return
     if (CLAUDE_PROVIDERS.get(prov) or {}).get("api") == "a9527":
         import agent9527 as _a9cs
-        if not _a9cs.ready():
+        if not _a9cs.ready("claude"):
             await cb.answer("aichongz.top выключен — в Railway не заданы AICHONGZ_API_KEY / "
                             "AICHONGZ_API_SECRET. Активным не сделал.", show_alert=True); return
     await set_setting("claude_provider", prov)

@@ -918,7 +918,7 @@ async def _a9527_release_expired_claude(conn) -> int:
     """Claude-коды aichongz без живого резерва и без метки неясного исхода —
     в пул только по ответу сайта «свободен»; иначе помечаем и пишем Александру."""
     import agent9527 as _a9
-    if not _a9.ready():
+    if not _a9.ready("claude"):
         return 0
     rows = await conn.fetch(
         """SELECT code FROM claude_codes
@@ -931,7 +931,7 @@ async def _a9527_release_expired_claude(conn) -> int:
     codes = [r["code"] for r in rows]
     if not codes:
         return 0
-    res = await _a9.batch_query(codes)
+    res = await _a9.batch_query(codes, "claude")
     n, flagged = 0, []
     for c in codes:
         it = res.get(c) or {}
