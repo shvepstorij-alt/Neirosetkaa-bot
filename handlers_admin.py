@@ -485,13 +485,20 @@ async def cmd_release_codes(message: Message):
         await message.answer("Сервис: gpt / claude / perplexity")
         return
     _codes = [c.strip() for c in parts[2:] if c.strip()]
+    _n_in = len(_codes)
     try:
+        # aichongz: в пул — только подтверждённые сайтом свободными. 14.10.2026
+        from common import _a9527_split_releasable
+        _codes, _a9_skip = await _a9527_split_releasable(_tbl, _codes)
         pool = await get_pool()
         async with pool.acquire() as conn:
             if _tbl == "gpt_codes":
                 _res = await conn.execute(
                     "UPDATE gpt_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL "
                     "WHERE code = ANY($1::text[])", _codes)
+                await conn.execute(
+                    "DELETE FROM settings WHERE key = ANY($1::text[])",
+                    ["a9527:" + c.strip().upper() for c in _codes])
             elif _tbl == "claude_codes":
                 _res = await conn.execute(
                     "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL "
@@ -501,9 +508,14 @@ async def cmd_release_codes(message: Message):
                     "UPDATE perplexity_codes SET is_used=FALSE, used_by=NULL, used_at=NULL "
                     "WHERE code = ANY($1::text[])", _codes)
         _cnt = _res.split()[-1] if isinstance(_res, str) else "0"
+        import html as _h_rc
         await message.answer(
-            f"✅ Возвращено в пул: <b>{_cnt}</b> из {len(_codes)} код(ов) ({_svc}).\n"
-            f"Теперь они снова свободны для активации.",
+            f"✅ Возвращено в пул: <b>{_cnt}</b> из {_n_in} код(ов) ({_svc}).\n"
+            f"Теперь они снова свободны для активации."
+            + (("\n\n⛔ Не вернул (aichongz не подтвердил «свободен»):\n"
+                + "\n".join(f"• <code>{_h_rc.escape(c)}</code> — {_h_rc.escape(str(w))}"
+                            for c, w in _a9_skip[:20]))
+               if _a9_skip else ""),
             parse_mode="HTML")
     except Exception as _e:
         await message.answer(f"❌ Ошибка: {str(_e)[:200]}")
@@ -2213,6 +2225,11 @@ async def adm_clprov_set(cb: CallbackQuery):
     prov = cb.data.split(":", 1)[1]
     if prov not in CLAUDE_PROVIDERS:
         await cb.answer("Неизвестный сайт", show_alert=True); return
+    if (CLAUDE_PROVIDERS.get(prov) or {}).get("api") == "a9527":
+        import agent9527 as _a9cs
+        if not _a9cs.ready():
+            await cb.answer("aichongz.top выключен — в Railway не заданы AICHONGZ_API_KEY / "
+                            "AICHONGZ_API_SECRET. Активным не сделал.", show_alert=True); return
     await set_setting("claude_provider", prov)
     await cb.answer(f"Активный сайт: {claude_provider_name(prov)}")
     await _render_claude_provider(cb.message)

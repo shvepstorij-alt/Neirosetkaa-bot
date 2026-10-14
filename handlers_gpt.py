@@ -62,10 +62,16 @@ async def admin_add_gpt_codes(message: Message):
     if not codes:
         await message.answer("❌ Нет кодов.\n<code>/add_gpt_codes plus\nCODE1</code>", parse_mode="HTML")
         return
-    prov = gpt_enabled_provider(
-        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
+    _set_prov = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER)
+    prov = gpt_enabled_provider(_set_prov)
     if prov not in GPT_PROVIDERS:
         prov = GPT_DEFAULT_PROVIDER
+    from common import a9527_add_refusal
+    _ref9 = a9527_add_refusal("chatgpt", _set_prov, prov, plan)
+    if _ref9:
+        # aichongz выключен или тариф не Plus — коды не должны уйти в чужой пул.
+        await message.answer("⛔ " + _ref9)
+        return
     pool = await get_pool()
     added = skipped = 0
     async with pool.acquire() as conn:
@@ -87,7 +93,8 @@ async def admin_add_gpt_codes(message: Message):
         for r in _by_route) or "—"
     # Маршрут проставляет триггер в БД по префиксу; сюда попадают только коды
     # с незнакомым префиксом — их автоактивация не возьмёт вообще.
-    _unknown = [c for c in codes if not gpt_route_for_code(c)]
+    # Маршруты iOS/Филиппины есть только у bypriceactivate.
+    _unknown = [c for c in codes if not gpt_route_for_code(c)] if prov == "bpa" else []
     _warn = ""
     if _unknown:
         _warn = (f"\n\n⚠️ <b>Незнакомый префикс</b> у {len(_unknown)} код(ов) — "
@@ -95,8 +102,33 @@ async def admin_add_gpt_codes(message: Message):
                  + "\n".join(f"<code>{c}</code>" for c in _unknown[:10])
                  + "\n\nРазметь вручную: <code>/gpt_code_route КОД ios|ph</code>")
     await message.answer(
-        f"✅ <b>Коды добавлены</b>\n\n📦 {plan}\n➕ {added} добавлено  ⏭ {skipped} дублей\n"
-        f"📊 Свободных: <b>{remaining}</b>\n🧭 {_rt_txt}{_warn}", parse_mode="HTML")
+        f"✅ <b>Коды добавлены</b> → {gpt_provider_name(prov)}\n\n📦 {plan}\n➕ {added} добавлено  ⏭ {skipped} дублей\n"
+        f"📊 Свободных: <b>{remaining}</b>"
+        + (f"\n🧭 {_rt_txt}" if prov == "bpa" else "") + _warn, parse_mode="HTML")
+
+    if added and GPT_PROVIDERS.get(prov, {}).get("api") == "a9527":
+        try:
+            from common import _a9527_check_new_codes
+            _r9 = await _a9527_check_new_codes("chatgpt", codes)
+            _bad9 = _r9.get("spent") or []
+            import html as _h9
+            _pr9 = ", ".join(f"{_h9.escape(str(x['name']))} ×{x['n']}" for x in (_r9.get("projects") or []))
+            await message.answer(
+                (f"🔎 aichongz: {_h9.escape(str(_r9.get('checkErr')))}" if _r9.get("checkErr") else
+                 f"🔎 aichongz: целы {_r9.get('checkedOk', 0)} из {_r9.get('checked', 0)}"
+                 + (f"\n🏷 Товар: {_pr9}" if _pr9 else "")
+                 + (("\n🚨 Не пойдут в выдачу / не тронуты:\n"
+                     + "\n".join(f"• <code>{_h9.escape(str(x['code']))}</code> — {_h9.escape(str(x['status']))}" for x in _bad9[:20]))
+                    if _bad9 else "")),
+                parse_mode="HTML")
+            if _r9.get("warns"):
+                import html as _hw9
+                await message.answer(
+                    "⚠️ <b>Проверь тариф</b> — по названию товара похоже на другой тариф (коды в выдаче):\n"
+                    + "\n".join(f"• <code>{_hw9.escape(str(x['code']))}</code> — {_hw9.escape(str(x['why']))}" for x in _r9['warns'][:20]),
+                    parse_mode="HTML")
+        except Exception as _e_a9:
+            logging.warning(f"add_gpt_codes проверка aichongz: {_e_a9}")
 
     # Сразу спрашиваем сайт, целы ли свежие коды. Смысл — отделить две беды,
     # которые иначе не различить: поставщик отдал уже потраченные коды, или их
@@ -151,9 +183,13 @@ async def admin_gpt_codes_to_bpa(message: Message):
     """
     if not is_admin(message.from_user.id):
         return
-    _target = gpt_enabled_provider(
-        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
-    _off = [p for p in GPT_PROVIDERS if p not in GPT_ENABLED_PROVIDERS]
+    # Только на bypriceactivate: коды старых сайтов (GPTP-/GPTI-, в т.ч. Go)
+    # aichongz не принадлежат и в его пул попадать не должны.
+    _target = "bpa"
+    # aichongz сюда не входит, даже выключенный (нет ключа): его коды на
+    # bypriceactivate не работают.
+    _off = [p for p in GPT_PROVIDERS if p not in GPT_ENABLED_PROVIDERS
+            and (GPT_PROVIDERS.get(p) or {}).get("api") != "a9527"]
     if not _off:
         await message.answer("✅ Отключённых сайтов нет — переносить нечего.")
         return
@@ -802,6 +838,11 @@ async def adm_gptprov_set(cb: CallbackQuery):
     prov = cb.data.split(":", 1)[1]
     if prov not in GPT_PROVIDERS:
         await cb.answer("Неизвестный сайт", show_alert=True); return
+    if prov not in GPT_ENABLED_PROVIDERS:
+        await cb.answer("Сайт выключен"
+                        + (" — в Railway не заданы AICHONGZ_API_KEY / AICHONGZ_API_SECRET"
+                           if prov == "aichongz" else "")
+                        + ". Активным не сделал.", show_alert=True); return
     await set_setting("gpt_provider", prov)
     await cb.answer(f"Активный сайт: {gpt_provider_name(prov)}")
     await _render_gpt_provider(cb.message)
@@ -872,10 +913,17 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
                    InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")]]))
         return
     plan = data.get("gpt_add_plan", "plus")
-    prov = gpt_enabled_provider(
-        await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER))
+    _set_prov2 = await get_setting("gpt_provider", GPT_DEFAULT_PROVIDER)
+    prov = gpt_enabled_provider(_set_prov2)
     if prov not in GPT_PROVIDERS:
         prov = GPT_DEFAULT_PROVIDER
+    from common import a9527_add_refusal
+    _ref9b = a9527_add_refusal("chatgpt", _set_prov2, prov, plan)
+    if _ref9b:
+        await state.clear()
+        await _res("⛔ " + _ref9b,
+                   InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_gpt_webapp")]]))
+        return
     codes = [l.strip() for l in (message.text or "").split("\n") if l.strip()]
     if not codes:
         await _res("❌ Нет кодов. Отправь каждый код с новой строки.",
@@ -906,6 +954,29 @@ async def adm_gpt_codes_input(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="⬅️ Назад к Mini App", callback_data="adm_gpt_webapp")],
         ])
     )
+    if added and GPT_PROVIDERS.get(prov, {}).get("api") == "a9527":
+        try:
+            import html as _h9g
+            from common import _a9527_check_new_codes
+            _r9 = await _a9527_check_new_codes("chatgpt", codes)
+            _bad = _r9.get("spent") or []
+            _pr = ", ".join(f"{_h9g.escape(str(x['name']))} ×{x['n']}" for x in (_r9.get("projects") or []))
+            await message.answer(
+                (f"🔎 aichongz: {_h9g.escape(str(_r9['checkErr']))}" if _r9.get("checkErr") else
+                 f"🔎 aichongz: целы {_r9.get('checkedOk', 0)} из {_r9.get('checked', 0)}"
+                 + (f"\n🏷 Товар: {_pr}" if _pr else "")
+                 + (("\n🚨 Не пойдут в выдачу / не тронуты:\n" + "\n".join(
+                     f"• <code>{_h9g.escape(str(x['code']))}</code> — {_h9g.escape(str(x['status']))}"
+                     for x in _bad[:20])) if _bad else "")),
+                parse_mode="HTML")
+            if _r9.get("warns"):
+                import html as _hw9
+                await message.answer(
+                    "⚠️ <b>Проверь тариф</b> — по названию товара похоже на другой тариф (коды в выдаче):\n"
+                    + "\n".join(f"• <code>{_hw9.escape(str(x['code']))}</code> — {_hw9.escape(str(x['why']))}" for x in _r9['warns'][:20]),
+                    parse_mode="HTML")
+        except Exception as _e9g:
+            logging.warning(f"gpt add codes aichongz check: {_e9g}")
 
 
 @dp.callback_query(F.data.startswith("adm_gpt_history:"))
@@ -1242,12 +1313,19 @@ async def adm_gpt_release_confirm(cb: CallbackQuery):
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT code, used_by FROM gpt_codes WHERE id=$1", code_id)
-        if not row:
-            await cb.answer("Код не найден", show_alert=True)
-            return
-        if row["used_by"] is not None:
-            await cb.answer("❌ Код уже активирован, нельзя вернуть", show_alert=True)
-            return
+    if not row:
+        await cb.answer("Код не найден", show_alert=True)
+        return
+    if row["used_by"] is not None:
+        await cb.answer("❌ Код уже активирован, нельзя вернуть", show_alert=True)
+        return
+    # aichongz: в пул только по подтверждению сайта (вне соединения с базой).
+    from common import a9527_release_check
+    _ok_rel, _why_rel = await a9527_release_check("chatgpt", row["code"])
+    if not _ok_rel:
+        await cb.answer(f"⛔ Не вернул в пул: {_why_rel}.", show_alert=True)
+        return
+    async with pool.acquire() as conn:
         # Возвращаем код в пул
         await conn.execute(
             "UPDATE gpt_codes SET is_used=FALSE, reserved_at=NULL WHERE id=$1", code_id
@@ -1429,7 +1507,20 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
     if pending:
         code = pending["code"]
         plan_name = pending.get("plan_name", "?")
-        await release_gpt_code(code)
+        # aichongz: код в пул — только если сайт подтвердил «свободен» и
+        # отправок по нему не было; иначе он помечается и ждёт решения.
+        from common import a9527_release_check
+        _ok_rel, _why_rel = await a9527_release_check("chatgpt", code)
+        if _ok_rel:
+            await release_gpt_code(code)
+        else:
+            try:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"ℹ️ Клиент {await _who_user(uid)} нажал «Активировали вручную». Код aichongz "
+                    f"<code>{code}</code> в пул НЕ вернул: {_why_rel}.", parse_mode="HTML")
+            except Exception:
+                pass
         await delete_pending_activation(uid)
         await log_event(uid, "manual_activated", f"code={code} plan={plan_name}")
         await cb.message.answer(
@@ -1446,7 +1537,8 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
                 ADMIN_ID,
                 f"✅ <b>Ручная активация подтверждена клиентом</b>\n\n"
                 f"👤 {await _who_user(uid)}\n"
-                f"🔑 Код: <code>{code}</code> — возвращён в пул\n"
+                + f"🔑 Код: <code>{code}</code> — "
+                + ("возвращён в пул" if _ok_rel else f"в пул НЕ возвращён ({_why_rel})") + "\n"
                 f"📦 Тариф: <b>{plan_name}</b>",
                 parse_mode="HTML"
             )

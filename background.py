@@ -842,6 +842,126 @@ async def db_cleanup_loop():
         except Exception as e:
             logging.error(f"DB cleanup error: {e}")
 
+async def a9527_watch_loop():
+    """Слежение за заказами ChatGPT на aichongz.top (9527 API) — раз в 3 минуты.
+
+    Сайт рекомендует опрос 5–10 с, но это для живой задачи; фоновой досмотр
+    неясных и долгих заказов идёт пакетом и реже. Без ключа API — простой.
+    """
+    from common import a9527_gpt_watch
+    await asyncio.sleep(120)
+    while True:
+        try:
+            _r = await a9527_gpt_watch()
+            if _r.get("checked"):
+                logging.info(f"a9527 watch: {_r}")
+        except Exception as e:
+            logging.error(f"a9527_watch_loop: {e}", exc_info=True)
+        await asyncio.sleep(180)
+
+
+async def _a9527_release_expired(conn, hours: int) -> int:
+    """Истёкшие резервы кодов aichongz возвращает в пул ТОЛЬКО по ответу
+    сайта «код свободен». У bypriceactivate это делает аудит пула, у 9527 —
+    пакетная проверка. Код с меткой отправки (a9527:) не трогаем вовсе."""
+    import agent9527 as _a9
+    if not _a9.ready():
+        return 0
+    rows = await conn.fetch(
+        """SELECT code FROM gpt_codes
+           WHERE provider='aichongz' AND is_used=TRUE AND used_by IS NULL
+             AND reserved_at < NOW() - make_interval(hours => $1)
+             AND COALESCE(check_status,'unchecked') NOT IN ('used','error','invalid')
+             AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p WHERE p.code = gpt_codes.code)
+             AND NOT EXISTS (SELECT 1 FROM settings s
+                             WHERE s.key = 'a9527:' || UPPER(TRIM(gpt_codes.code)))
+           LIMIT 300""", hours)
+    codes = [r["code"] for r in rows]
+    if not codes:
+        return 0
+    res = await _a9.batch_query(codes)
+    n = 0
+    flagged = []
+    for c in codes:
+        it = res.get(c) or {}
+        if not it.get("ok"):
+            continue
+        if not _a9.code_free(_a9.verdict(it.get("card"), it.get("order"))):
+            _cst = (it.get("card") or {}).get("status") or "?"
+            await conn.execute(
+                "UPDATE gpt_codes SET check_status='error', last_checked_at=NOW(), "
+                "flagged_reason=$2 WHERE code=$1", c,
+                f"aichongz: при возврате в пул сайт ответил «{_cst}»")
+            flagged.append((c, _cst))
+            continue
+        r = await conn.execute(
+            "UPDATE gpt_codes SET is_used=FALSE, reserved_at=NULL WHERE code=$1 "
+            "AND is_used=TRUE AND used_by IS NULL", c)
+        if str(r).endswith(" 1"):
+            n += 1
+    if n or flagged:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"🔑 <b>Коды aichongz после окна активации</b>\n"
+                + (f"Вернул в пул: <b>{n}</b> — сайт подтвердил, что они свободны.\n" if n else "")
+                + (("Не вернул, пометил (сайт не подтвердил «свободен»):\n"
+                    + "\n".join(f"• <code>{c}</code> — {st}" for c, st in flagged[:20]))
+                   if flagged else ""),
+                parse_mode="HTML")
+        except Exception as _e_rm:
+            logging.warning(f"aichongz cleanup msg: {_e_rm}")
+    return n
+
+
+async def _a9527_release_expired_claude(conn) -> int:
+    """Claude-коды aichongz без живого резерва и без метки неясного исхода —
+    в пул только по ответу сайта «свободен»; иначе помечаем и пишем Александру."""
+    import agent9527 as _a9
+    if not _a9.ready():
+        return 0
+    rows = await conn.fetch(
+        """SELECT code FROM claude_codes
+           WHERE provider='aichongz' AND is_used=TRUE AND used_by IS NULL
+             AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid','error')
+             AND NOT EXISTS (SELECT 1 FROM claude_pending_activations p WHERE p.code = claude_codes.code)
+             AND NOT EXISTS (SELECT 1 FROM settings s
+                             WHERE s.key = 'claudecheck:' || UPPER(TRIM(claude_codes.code)))
+           LIMIT 300""")
+    codes = [r["code"] for r in rows]
+    if not codes:
+        return 0
+    res = await _a9.batch_query(codes)
+    n, flagged = 0, []
+    for c in codes:
+        it = res.get(c) or {}
+        if not it.get("ok"):
+            continue
+        if not _a9.code_free(_a9.verdict(it.get("card"), it.get("order"))):
+            _cst = (it.get("card") or {}).get("status") or "?"
+            await conn.execute(
+                "UPDATE claude_codes SET check_status='error', last_checked_at=NOW(), "
+                "flagged_reason=$2 WHERE code=$1", c,
+                f"aichongz: при возврате в пул сайт ответил «{_cst}»")
+            flagged.append((c, _cst))
+            continue
+        r = await conn.execute(
+            "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, "
+            "org_id=NULL WHERE code=$1 AND is_used=TRUE AND used_by IS NULL", c)
+        if str(r).endswith(" 1"):
+            n += 1
+    if flagged:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                "🔑 <b>Claude-коды aichongz не вернул в пул</b> — сайт не подтвердил «свободен»:\n"
+                + "\n".join(f"• <code>{c}</code> — {st}" for c, st in flagged[:20]),
+                parse_mode="HTML")
+        except Exception as _e_rc:
+            logging.warning(f"aichongz claude cleanup msg: {_e_rc}")
+    return n
+
+
 async def gpt_codes_cleanup_loop():
     """Раз в 30 минут освобождает коды, зарезервированные дольше окна активации.
 
@@ -884,11 +1004,13 @@ async def gpt_codes_cleanup_loop():
             async with pool.acquire() as conn:
                 await conn.execute(
                     "DELETE FROM gpt_pending_activations WHERE expires_at < NOW()")
+                # aichongz — отдельно и только с подтверждением сайта (ниже).
                 released = await conn.execute(
                     """UPDATE gpt_codes
                        SET is_used=FALSE, reserved_at=NULL
                        WHERE is_used=TRUE
                          AND used_by IS NULL
+                         AND provider <> 'aichongz'
                          AND reserved_at < NOW() - make_interval(hours => $1)
                          AND COALESCE(check_status,'unchecked') NOT IN ('used','error','invalid')
                          AND NOT EXISTS (
@@ -897,6 +1019,12 @@ async def gpt_codes_cleanup_loop():
                          )""",
                     _release_after_h
                 )
+                try:
+                    _a9n = await _a9527_release_expired(conn, _release_after_h)
+                    if _a9n:
+                        logging.info(f"🔑 gpt_codes cleanup aichongz: вернул {_a9n} (сайт: свободны)")
+                except Exception as _e_a9c:
+                    logging.warning(f"gpt_codes cleanup aichongz: {_e_a9c}")
                 if released and released != "UPDATE 0":
                     logging.info(f"🔑 gpt_codes cleanup: {released}")
                     try:
@@ -1853,11 +1981,13 @@ async def claude_codes_cleanup_loop():
                 # никогда: бот спросил Александра, активирован ли он, и ответа
                 # ещё нет. Раньше защищала только строка резерва и её org_id —
                 # без них такой код уходил в пул. Ревью 06.10.2026.
+                # aichongz — отдельно, только по ответу сайта «свободен» (ниже).
                 released = await conn.fetch(
                     """UPDATE claude_codes
                        SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
                        WHERE is_used=TRUE
                          AND used_by IS NULL
+                         AND provider <> 'aichongz'
                          AND NOT EXISTS (
                              SELECT 1 FROM claude_pending_activations p
                              WHERE p.code = claude_codes.code
@@ -1875,6 +2005,12 @@ async def claude_codes_cleanup_loop():
                 # Напоминание о каждом таком коде — раз в 12 часов, а не каждые
                 # 30 минут: строка висит, пока Александр не решит, и раньше
                 # одно и то же сообщение приходило 48 раз в сутки. 08.10.2026
+                try:
+                    _a9c = await _a9527_release_expired_claude(conn)
+                    if _a9c:
+                        logging.info(f"claude cleanup aichongz: вернул {_a9c} (сайт: свободны)")
+                except Exception as _e_a9cl:
+                    logging.warning(f"claude cleanup aichongz: {_e_a9cl}")
                 _stuck_new = []
                 for _r in _stuck_cl:
                     try:

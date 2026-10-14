@@ -3061,7 +3061,7 @@ function renderClProv(dd,svc){
   el.innerHTML=h;
 }
 function setClaudeProvider(prov,svc){
-  api('/api/admin/claude-provider',{kind:'set',provider:prov,service:svc}).then(function(d){toast(d.ok?'Активный сайт изменён':(d.msg||'Ошибка'));if(d.ok)loadMiniApp(svc);});
+  api('/api/admin/claude-provider',{kind:'set',provider:prov,service:svc}).then(function(d){if(!d.ok&&d.msg){_infoBox('Сайт не изменён',d.msg);return;}toast(d.ok?'Активный сайт изменён':'Ошибка');if(d.ok)loadMiniApp(svc);});
 }
 function toggleClaudeProvOff(prov,svc,off){
   /* Пауза сайта: выключенный сайт полностью исключается из цепочки активации */
@@ -3255,13 +3255,13 @@ function addCodes(svc){
     }
   }
   var hasProv=!!provSel;
-  return hdr("Добавить коды",svc)+'<div class="wrap">'+provSel+'<label class="fl"'+(hasProv?'':' style="margin-top:0"')+'>Тариф</label><select class="f" id="ac_plan">'+opts+'</select><label class="fl">Коды (по одному в строке)</label><textarea class="f" id="ac_codes" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="doAddCodes(\''+svc+'\')">Добавить</button><button class="btn sec" style="margin-top:10px" onclick="doReleaseCodes(\''+svc+'\')">♻️ Вернуть коды в пул</button><div class="sub" style="margin-top:6px">«Вернуть в пул» — снимает пометку «использован» у вставленных кодов (если бот ошибочно их сжёг).</div>'+(svc==='chatgpt'?'<div class="sub" style="margin-top:10px">🧭 <b>Маршрут определяется сам, по префиксу кода:</b><br>GPTI- и GPTGO- → iOS (ложатся на любой аккаунт)<br>GPTP- → Филиппины (только free plan)<br>Разделять при заливке не нужно — после добавления покажу остатки по маршрутам.</div>':'')+'</div>';
+  return hdr("Добавить коды",svc)+'<div class="wrap">'+provSel+'<label class="fl"'+(hasProv?'':' style="margin-top:0"')+'>Тариф</label><select class="f" id="ac_plan">'+opts+'</select><label class="fl">Коды (по одному в строке)</label><textarea class="f" id="ac_codes" placeholder="CODE-XXXX-XXXX"></textarea><button class="btn" onclick="doAddCodes(\''+svc+'\')">Добавить</button><button class="btn sec" style="margin-top:10px" onclick="doReleaseCodes(\''+svc+'\')">♻️ Вернуть коды в пул</button><div class="sub" style="margin-top:6px">«Вернуть в пул» — снимает пометку «использован» у вставленных кодов (если бот ошибочно их сжёг).</div>'+(svc==='chatgpt'?'<div class="sub" style="margin-top:10px">🧭 <b>Для bypriceactivate маршрут определяется сам, по префиксу кода:</b><br>GPTI- и GPTGO- → iOS (ложатся на любой аккаунт)<br>GPTP- → Филиппины (только free plan)<br>Разделять при заливке не нужно — после добавления покажу остатки по маршрутам.</div>':'')+'</div>';
 }
 function doReleaseCodes(svc){
   var codes=fv('ac_codes');if(!codes){toast('Вставь коды, которые вернуть');return;}
   toast('Возвращаю в пул…');
   api('/api/admin/release-codes',{service:svc,codes:codes}).then(function(d){
-    if(!d.ok){toast(d.msg||'Ошибка');return;}
+    if(!d.ok){if(d.msg&&d.msg.length>40){_infoBox('Не выполнено',d.msg);}else{toast(d.msg||'Ошибка');}return;}
     /* Ответ пришёл, когда ты уже ушёл с экрана: экран не открываем, но итог
        не теряем — показываем окном поверх того, где ты сейчас. */
     if(window._apiStale){_infoBox('Возврат кодов в пул ('+svc+')','Прислано: '+(d.total||0)+'\nВозвращено: '+(d.released||0));return;}
@@ -3270,6 +3270,7 @@ function doReleaseCodes(svc){
       +'<div class="kv"><span class="k">Прислано кодов</span><span>'+(d.total||0)+'</span></div>'
       +'<div class="kv"><span class="k">✅ Возвращено (снята пометка)</span><span class="pos">'+(d.released||0)+'</span></div>'
       +((d.total||0)>(d.released||0)?'<div class="sub" style="margin-top:6px">Часть кодов не найдена в базе или уже была свободна.</div>':'')
+      +(d.skippedA9&&d.skippedA9.length?'<div class="note neg" style="margin-top:6px">⛔ Не вернул — aichongz не подтвердил «свободен»:<br>'+d.skippedA9.map(function(x){return esc(x.code)+' — '+esc(x.why);}).join('<br>')+'</div>':'')
       +'</div><button class="btn sec" onclick="back()">Готово</button></div>';});
   });
 }
@@ -3279,11 +3280,12 @@ function doAddCodes(svc){
   if(svc==='claude'||svc==='chatgpt'){pl.provider=fv('ac_provider');}
   toast('Добавляю…');
   api('/api/admin/add-codes',pl).then(function(d){
-    if(!d.ok){toast(d.msg||'Ошибка');return;}
+    if(!d.ok){if(d.msg&&d.msg.length>40){_infoBox('Не выполнено',d.msg);}else{toast(d.msg||'Ошибка');}return;}
     if(window._apiStale){
       var t='Прислано: '+(d.total||0)+'\nДобавлено новых: '+(d.added||0)
         +(d.dupes?('\nУже были в базе: '+d.dupes):'')+(d.skipped?('\nНе похоже на код: '+d.skipped):'');
       if(d.spent&&d.spent.length){t+='\n\n🚨 Уже потрачены ('+d.spent.length+'):\n'+d.spent.map(function(x){return x.code+' — '+x.status;}).join('\n');}
+      if(d.projects&&d.projects.length){t+='\n\n🏷 Товар (aichongz): '+d.projects.map(function(x){return x.name+' ×'+x.n;}).join(', ');}
       if(d.noRoute&&d.noRoute.length){t+='\n\n⚠️ Незнакомый префикс (автоактивация их не возьмёт):\n'+d.noRoute.join('\n');}
       _infoBox('Коды добавлены'+(d.provider?(' → '+d.provider):''),t);return;
     }
@@ -3299,9 +3301,13 @@ function doAddCodes(svc){
     h+='</div>';
     /* Проверка на сайте активации: пришли ли коды уже потраченными */
     if(d.spent&&d.spent.length){
-      h+='<div class="block"><h4>🚨 Уже потрачены ('+d.spent.length+')</h4>'
-        +'<div class="sub">Сайт говорит, что эти коды использованы ДО загрузки. '
-        +'Они в пуле, но помечены и уйдут последними. Это вопрос к поставщику.</div>';
+      h+=(d.projects||d.checkErr
+        ? '<div class="block"><h4>🚨 Не пойдут в выдачу ('+d.spent.length+')</h4>'
+          +'<div class="sub">Причина по данным aichongz — у каждого кода. Клиентам бот их не выдаст; '
+          +'«уже в пуле другого сайта» — код не тронут.</div>'
+        : '<div class="block"><h4>🚨 Уже потрачены ('+d.spent.length+')</h4>'
+          +'<div class="sub">Сайт говорит, что эти коды использованы ДО загрузки. '
+          +'Они в пуле, но помечены и уйдут последними. Это вопрос к поставщику.</div>');
       for(var si=0;si<d.spent.length;si++){var sp=d.spent[si];
         h+='<div class="kv"><span class="k" style="word-break:break-all">'+esc(sp.code)+'</span>'
           +'<span class="neg">'+esc(sp.status)+'</span></div>'
@@ -3315,6 +3321,18 @@ function doAddCodes(svc){
         +(d.checkRest?('<div class="sub">Ещё '+d.checkRest+' не проверял — за раз сайт '
           +'принимает 300. Досмотреть: /gpt_check_pool</div>'):'')+'</div>';
     }
+    /* aichongz (9527): какие товары сайт видит за кодами — сверка с тарифом */
+    if(d.projects&&d.projects.length){
+      h+='<div class="block"><h4>🏷 Товар по данным aichongz</h4>';
+      for(var pj=0;pj<d.projects.length;pj++){h+='<div class="kv"><span class="k">'+esc(d.projects[pj].name)+'</span><span>'+d.projects[pj].n+'</span></div>';}
+      h+='<div class="sub">Проверь, что товар совпадает с выбранным тарифом.</div></div>';
+    }
+    if(d.warns&&d.warns.length){
+      h+='<div class="block"><h4>⚠️ Проверь тариф ('+d.warns.length+')</h4><div class="sub">По названию товара похоже на другой тариф. Коды в выдаче — если это не тот тариф, удали их из пула.</div>';
+      for(var wi=0;wi<d.warns.length;wi++){h+='<div class="kv"><span class="k" style="word-break:break-all">'+esc(d.warns[wi].code)+'</span><span class="neg">'+esc(d.warns[wi].why)+'</span></div>';}
+      h+='</div>';
+    }
+    if(d.checkErr){h+='<div class="block"><div class="note neg">'+esc(d.checkErr)+'</div></div>';}
     /* Остатки по маршрутам: сразу видно, какого типа кодов не хватает */
     if(d.routes&&d.routes.length){
       h+='<div class="block"><h4>🧭 Свободно по маршрутам</h4>';

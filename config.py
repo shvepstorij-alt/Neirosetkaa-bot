@@ -57,6 +57,15 @@ IPIAP_CLAUDE_API_SECRET = os.getenv("IPIAP_CLAUDE_API_SECRET", "")
 # cards:redeem) и base держим в env; base — реальный домен агент-API (не плейсхолдер).
 VIP666_AGENT_KEY  = os.getenv("VIP666_AGENT_KEY", "")
 VIP666_AGENT_BASE = os.getenv("VIP666_AGENT_BASE", "https://vip666ai.com")
+# aichongz.top — «9527 Agent API v1» (Александр 14.10.2026). Подпись HMAC-SHA256,
+# коды и ChatGPT, и Claude. Ключ и секрет — ТОЛЬКО в переменных окружения Railway:
+# AICHONGZ_API_KEY (ak_…), AICHONGZ_API_SECRET (sk_…), AICHONGZ_BASE (домен).
+# Пока ключа нет — сайт в активации не участвует. Клиент API — agent9527.py.
+AICHONGZ_READY = bool((os.getenv("AICHONGZ_API_KEY", "") or "").strip()
+                      and (os.getenv("AICHONGZ_API_SECRET", "") or "").strip())
+AICHONGZ_SITE = "https://" + ((os.getenv("AICHONGZ_BASE", "") or "aichongz.top").strip()
+                              .replace("https://", "").replace("http://", "")
+                              .split("/")[0] or "aichongz.top")
 CLAUDE_PROVIDERS = {
     # bypriceactivate.pro — активация через ФОРМУ САЙТА (браузер). Их API строго проверяет
     # пул региона кода и отдаёт «out of stock for claude_pro_australia», хотя та же форма
@@ -85,9 +94,13 @@ CLAUDE_PROVIDERS = {
     # используется как запасной внутри активации. API нет — только браузер.
     "ios891": {"name": "ios.891014.best", "base": "https://ios.891014.best",
                "api": "browser", "browser_site": "ios891"},
+    # aichongz.top — 9527 Agent API: POST /redemptions с Organization ID. Без
+    # Session Key сайт по умолчанию примет только Pro (Max требует sk-ant, бот
+    # его не собирает) — Max-коды этого сайта отклонятся ДО списания.
+    "aichongz": {"name": "aichongz.top", "base": AICHONGZ_SITE, "api": "a9527"},
 }
 # vip666 ПЕРЕД ipiap: у ipiap API сейчас работает нестабильно (по словам админа сайта).
-CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "vip666", "ipiap", "aipro", "ios891"]   # порядок авто-фолбэка
+CLAUDE_PROVIDER_ORDER   = ["bpa", "root", "vip666", "ipiap", "aipro", "ios891", "aichongz"]   # порядок авто-фолбэка
 CLAUDE_DEFAULT_PROVIDER = "bpa"
 
 # ─── Провайдеры авто-активации ChatGPT ────────────────────────────
@@ -109,6 +122,10 @@ GPT_PROVIDERS = {
     # redeemgpt.com — CDKEY + Session, шаги: Проверить CDKEY → Отправить пополнение →
     # подтверждение почты → (при активной подписке) галочка force → успех.
     "redeem": {"name": "redeemgpt.com", "base": "https://redeemgpt.com"},
+    # aichongz.top — 9527 Agent API (подпись HMAC). Код + Session JSON клиента
+    # строкой; итог — только status=success. Свой пул кодов, маршрутов ios/ph
+    # у сайта нет. Активация — отдельной задачей _run_a9527_gpt_job.
+    "aichongz": {"name": "aichongz.top", "base": AICHONGZ_SITE, "api": "a9527"},
 }
 # ── Маршрут активации ChatGPT по префиксу кода ──────────────────────────────
 # iOS-коды кладутся на ЛЮБОЙ аккаунт (и на free, и поверх активной подписки) —
@@ -124,7 +141,8 @@ GPT_ROUTE_LABELS = {"ios": "iOS", "ph": "Филиппины"}
 # Сайты, реально участвующие в активации ChatGPT. Старые (999uu, aipro, kkqq,
 # redeem) отключены: bypriceactivate умеет и iOS, и Филиппины, и оба тарифа.
 # Код старых сайтов НЕ удалён — чтобы вернуть, допиши ключ в этот список.
-GPT_ENABLED_PROVIDERS = ("bpa",)
+# aichongz включается сам, когда в Railway заданы ключ и секрет его API.
+GPT_ENABLED_PROVIDERS = ("bpa",) + (("aichongz",) if AICHONGZ_READY else ())
 # Тарифы, которые активируются автоматически. Остальные (Pro 5×, Pro 20×) —
 # сразу в ручной режим, пул кодов не трогаем.
 GPT_AUTO_PLANS = ("plus", "go")
@@ -154,7 +172,7 @@ def gpt_route_for_code(code: str) -> str:
     return ""
 
 
-GPT_PROVIDER_ORDER   = ["bpa", "987ai", "aipro", "kkqq", "redeem"]
+GPT_PROVIDER_ORDER   = ["bpa", "aichongz", "987ai", "aipro", "kkqq", "redeem"]
 GPT_DEFAULT_PROVIDER = "bpa"
 
 def gpt_provider_name(provider: str) -> str:

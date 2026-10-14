@@ -610,9 +610,17 @@ async def adm_claude_release_orphan(cb: CallbackQuery):
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT code FROM claude_codes WHERE id=$1", code_id)
-        if not row:
-            await cb.answer("Код не найден", show_alert=True)
-            return
+    if not row:
+        await cb.answer("Код не найден", show_alert=True)
+        return
+    # aichongz: в пул только по подтверждению сайта. Проверка — вне соединения
+    # с базой: запрос к сайту может идти секунды.
+    from common import a9527_release_check
+    _ok_rel, _why_rel = await a9527_release_check("claude", row["code"])
+    if not _ok_rel:
+        await cb.answer(f"⛔ Не вернул в пул: {_why_rel}.", show_alert=True)
+        return
+    async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE claude_codes SET is_used=FALSE, used_by=NULL, used_at=NULL, "
             "order_id=NULL, org_id=NULL WHERE id=$1", code_id)
@@ -700,6 +708,14 @@ async def adm_claude_receive_codes(message: Message, state: FSMContext):
     prov = await get_setting("claude_provider", CLAUDE_DEFAULT_PROVIDER) or CLAUDE_DEFAULT_PROVIDER
     if prov not in CLAUDE_PROVIDERS:
         prov = CLAUDE_DEFAULT_PROVIDER
+    from common import a9527_add_refusal
+    _ref9 = a9527_add_refusal("claude", prov, prov, plan)
+    if _ref9:
+        # aichongz: только Claude Pro и только с ключом API.
+        await state.clear()
+        await _res("⛔ " + _ref9,
+                   InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]]))
+        return
     codes = [l.strip() for l in (message.text or "").splitlines() if l.strip()]
     added = 0
     pool = await get_pool()
@@ -722,6 +738,29 @@ async def adm_claude_receive_codes(message: Message, state: FSMContext):
         InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="adm_claude_webapp")]])
     )
     await log_event(message.from_user.id, "claude_codes_added", f"plan={plan} n={added} prov={prov}")
+    if added and (CLAUDE_PROVIDERS.get(prov) or {}).get("api") == "a9527":
+        try:
+            import html as _h9c
+            from common import _a9527_check_new_codes
+            _r9 = await _a9527_check_new_codes("claude", codes)
+            _bad = _r9.get("spent") or []
+            _pr = ", ".join(f"{_h9c.escape(str(x['name']))} ×{x['n']}" for x in (_r9.get("projects") or []))
+            await message.answer(
+                (f"🔎 aichongz: {_h9c.escape(str(_r9['checkErr']))}" if _r9.get("checkErr") else
+                 f"🔎 aichongz: целы {_r9.get('checkedOk', 0)} из {_r9.get('checked', 0)}"
+                 + (f"\n🏷 Товар: {_pr}" if _pr else "")
+                 + (("\n🚨 Не пойдут в выдачу / не тронуты:\n" + "\n".join(
+                     f"• <code>{_h9c.escape(str(x['code']))}</code> — {_h9c.escape(str(x['status']))}"
+                     for x in _bad[:20])) if _bad else "")),
+                parse_mode="HTML")
+            if _r9.get("warns"):
+                import html as _hw9
+                await message.answer(
+                    "⚠️ <b>Проверь тариф</b> — по названию товара похоже на другой тариф (коды в выдаче):\n"
+                    + "\n".join(f"• <code>{_hw9.escape(str(x['code']))}</code> — {_hw9.escape(str(x['why']))}" for x in _r9['warns'][:20]),
+                    parse_mode="HTML")
+        except Exception as _e9c:
+            logging.warning(f"claude add codes aichongz check: {_e9c}")
 
 
 @dp.callback_query(F.data == "adm_claude_send")

@@ -802,11 +802,21 @@ async def init_db():
             pass
         # Фикс: речекер (987ai) ошибочно метил invalid коды ДРУГИХ сайтов.
         # Возвращаем такие свободные коды в строй (снимаем ложный статус).
+        # ОДИН раз: раньше это шло при КАЖДОМ запуске и снимало и честные
+        # пометки — «пришёл уже потраченным», «код не нашего агента aichongz».
+        # После деплоя такие коды снова шли в выдачу первыми. 14.10.2026
         try:
-            await conn.execute(
-                "UPDATE gpt_codes SET check_status='unchecked', flagged_reason=NULL "
-                "WHERE provider <> '987ai' AND is_used=FALSE "
-                "AND COALESCE(check_status,'unchecked') IN ('invalid','error')")
+            _done_987 = await conn.fetchval(
+                "SELECT value FROM settings WHERE key='mig_unflag_987ai_v1'")
+            if not _done_987:
+                await conn.execute(
+                    "UPDATE gpt_codes SET check_status='unchecked', flagged_reason=NULL "
+                    "WHERE provider NOT IN ('987ai','aichongz') AND is_used=FALSE "
+                    "AND COALESCE(check_status,'unchecked') IN ('invalid','error') "
+                    "AND COALESCE(flagged_reason,'') = ''")
+                await conn.execute(
+                    "INSERT INTO settings(key, value) VALUES ('mig_unflag_987ai_v1','1') "
+                    "ON CONFLICT (key) DO NOTHING")
         except Exception:
             pass
 
@@ -1179,7 +1189,7 @@ async def count_gpt_free_by_route() -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT COALESCE(route,'') AS route, plan, COUNT(*) AS free "
-            "FROM gpt_codes WHERE is_used=FALSE "
+            "FROM gpt_codes WHERE is_used=FALSE AND provider='bpa' "
             "AND COALESCE(check_status,'unchecked') NOT IN ('used','invalid') "
             "GROUP BY COALESCE(route,''), plan ORDER BY route, plan")
     return [dict(r) for r in rows]

@@ -40,7 +40,7 @@ from common import (
 )
 from background import (
     _activation_jobs_cleanup_loop, _claude_job_results_cleanup_loop, _memory_cleanup_loop, auto_recover_lost_videos_loop, claude_codes_cleanup_loop, claude_watch_loop, cleanup_stale_generations_loop,
-    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, nsgifts_stuck_orders_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, gpt_claimed_watch_loop, gpt_dead_order_release_loop, gpt_orphans_loop, gpt_pool_audit_loop, models_desc_refresh_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
+    credit_batches_loop, coins_refund_loop, db_cleanup_loop, fk_auto_check_loop, nsgifts_stuck_orders_loop, gpt_code_rechecker_loop, gpt_codes_cleanup_loop, gpt_claimed_watch_loop, gpt_dead_order_release_loop, a9527_watch_loop, gpt_orphans_loop, gpt_pool_audit_loop, models_desc_refresh_loop, nsgifts_balance_alert_loop, perplexity_codes_cleanup_loop,
     reminders_loop, subscription_reminder_loop, webgen_lost_jobs_loop,
 )
 from _registration_order import ORIG_ORDER as _ORIG_ORDER
@@ -397,6 +397,8 @@ async def main():
     # «claimed» — активация идёт, а не прошла. Следим раз в минуту и
     # сообщаем, чем кончилось. Александр 01.10.2026.
     _spawn_bg(gpt_claimed_watch_loop, "gpt_claimed_watch_loop")
+    # aichongz.top (9527 API): неясные и долгие заказы ChatGPT. 14.10.2026
+    _spawn_bg(a9527_watch_loop, "a9527_watch_loop")
     _spawn_bg(_activation_jobs_cleanup_loop, "_activation_jobs_cleanup_loop")
     _spawn_bg(claude_codes_cleanup_loop, "claude_codes_cleanup_loop")
     _spawn_bg(claude_watch_loop, "claude_watch_loop")
