@@ -642,7 +642,7 @@ function _vidPoll(job,tries,kind,restore){
       return;
     }
     // error
-    if(res) res.innerHTML='<div class="pm-err">'+((d&&d.msg)?(d.msg+'<br>💳 Кредиты возвращены.'):'Не получилось сгенерировать видео. Кредиты возвращены — попробуй ещё раз или другую модель.')+'</div>';
+    if(res) res.innerHTML='<div class="pm-err">'+((d&&d.msg)?d.msg:'Не получилось сгенерировать видео. Проверь баланс или напиши в поддержку.')+'</div>';
     restore();
   }).catch(function(){ setTimeout(function(){_vidPoll(job,tries+1,kind,restore);},4000); });
 }

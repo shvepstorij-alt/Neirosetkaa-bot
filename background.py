@@ -36,6 +36,7 @@ from common import (
     gpt_pool_audit, gpt_reconcile_orphans, pool_audit, pool_audit_report, tg_chunks,
     _who_user, nsgifts_recover_stuck, _WORKER_ID,
     gpt_watch_card, gpt_watch_msg_remember, gpt_watch_msg_resolve,
+    gpt_failure_keyboard,
     claude_watch_tick, _adm_claude_ctx,
 )
 
@@ -57,6 +58,8 @@ async def webgen_lost_jobs_loop():
 
     • фото и редактирование чужого процесса — старше 6 минут;
     • видео и анимация чужого процесса — старше 45 минут (выше потолка);
+    • фото из Telegram — старше 90 минут: внешние и внутренние повторы
+      поставщика плюс доставка могут занять намного больше 6 минут;
     • свои собственные — старше 90 минут: это уже не «идёт», а зависло.
     Захват задачи и возврат кредитов идут одной транзакцией на задачу.
     """
@@ -65,10 +68,11 @@ async def webgen_lost_jobs_loop():
     # которая как раз доделывается.
     await asyncio.sleep(90)
     _KIND_RU = {"photo": "фото", "video": "видео", "anim": "анимации",
-                "edit": "редактирования"}
+                "edit": "редактирования", "tg_photo": "фото"}
     _PASSES = (
         (6,  ("photo", "edit"), True),
         (45, ("video", "anim"), True),
+        (90, ("tg_photo",),     True),
         (90, (),                False),
     )
     while True:
@@ -1540,7 +1544,8 @@ async def gpt_claimed_watch_loop():
                                      "НЕ выдана. Нужна <b>повторная активация ЭТИМ ЖЕ "
                                      "кодом</b>.\n\nСам ничего не делаю: ни активации, "
                                      "ни возврата в пул. Код закреплён за клиентом и "
-                                     "помечен, чужому не уйдёт."))
+                                      "помечен, чужому не уйдёт."),
+                            reply_markup=gpt_failure_keyboard(_code, _oid))
                     except Exception as _e_rs2:
                         logging.warning(f"claimed-watch: правка карточки {_code}: {_e_rs2}")
                     # Новое сообщение шлём ТОЛЬКО если живой карточки не было
@@ -1558,8 +1563,8 @@ async def gpt_claimed_watch_loop():
                                          "нему НЕ выдана. Нужна <b>повторная активация "
                                          "ЭТИМ ЖЕ кодом</b>.\n\nСам ничего не делаю: ни "
                                          "активации, ни возврата в пул. Код закреплён за "
-                                         "клиентом и помечен, чужому не уйдёт."),
-                                parse_mode="HTML")
+                                          "клиентом и помечен, чужому не уйдёт."),
+                                parse_mode="HTML", reply_markup=gpt_failure_keyboard(_code, _oid))
                         except Exception as _e_m2:
                             logging.error(f"claimed-watch: сообщение {_code}: {_e_m2}")
                     # И КЛИЕНТУ. Он мог остаться на экране «бот следит и

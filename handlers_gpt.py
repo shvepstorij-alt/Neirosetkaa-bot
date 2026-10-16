@@ -1559,6 +1559,137 @@ async def cb_gpt_manual_activated(cb: CallbackQuery):
 
 
 
+async def _gpt_retry_card_update(message, result: str, reply_markup):
+    """Меняет исходную карточку (или подпись фото), не создавая сообщений."""
+    import html
+    _caption = bool(getattr(message, "photo", None))
+    _base = (message.html_caption if _caption else message.html_text) or ""
+    _marker = "\n\n🔁 <b>Повторная выдача</b>\n"
+    _base = _base.split(_marker, 1)[0]
+    # Ответ помощника содержит HTML; результат показываем безопасным текстом.
+    _plain = html.unescape(re.sub(r"<[^>]+>", "", str(result)))
+    _text = _base + _marker + html.escape(_plain)
+    _limit = 1024 if _caption else 4096
+    try:
+        if len(_text) > _limit:
+            # Не обрезаем HTML/данные заказа ради статуса. Меняется клавиатура,
+            # полный исход сохраняется в журнале; новое сообщение не отправляем.
+            await message.edit_reply_markup(reply_markup=reply_markup)
+            return False  # подробности показываем всплывающим ответом на кнопку
+        elif _caption:
+            await message.edit_caption(caption=_text, parse_mode="HTML", reply_markup=reply_markup)
+        else:
+            await message.edit_text(_text, parse_mode="HTML", reply_markup=reply_markup)
+        return True
+    except Exception as e:
+        if "not modified" in str(e).lower():
+            return True
+        logging.warning(f"gpt retry card edit: {e}")
+        try:
+            await message.edit_reply_markup(reply_markup=reply_markup)
+        except Exception:
+            return False
+        return False
+
+
+@dp.callback_query(F.data.startswith("adm_gpt_retry:"))
+async def cb_gpt_retry_from_card(cb: CallbackQuery):
+    """Выдаёт клиенту кнопку заново, результат пишет в ту же админ-карточку."""
+    if not is_admin(cb.from_user.id):
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
+    if not cb.message:
+        await cb.answer("Открой исходную карточку заказа", show_alert=True)
+        return
+    from db import claim_activation, release_activation
+    from common import gpt_resend_activation, gpt_failure_keyboard
+    _oid = cb.data.split(":", 1)[1]
+    _lock = f"gptretrycard:{_oid}"
+    _sent_key = f"gptretrymsg:{_oid}:{cb.message.message_id}"
+    _code = ""
+    for row in getattr(cb.message.reply_markup, "inline_keyboard", []) or []:
+        for button in row:
+            _data = button.callback_data or ""
+            if _data.startswith("gptrc:"):
+                _code = _data.split(":", 1)[1]
+    _claimed = False
+    _ok = False
+    try:
+        await cb.answer("Готовлю повторную выдачу…")
+        _claimed = await claim_activation(_lock, stale_minutes=5)
+        if not _claimed:
+            return  # другой тап уже обрабатывает и обновит эту карточку
+        _sent = await get_setting(_sent_key, "")
+        if _sent:
+            _ok, _msg = True, _sent
+        else:
+            _pool = await get_pool()
+            async with _pool.acquire() as conn:
+                _order = await conn.fetchrow(
+                    "SELECT user_id, pack, status FROM fk_orders WHERE order_id=$1", _oid)
+                _done = bool(_order) and bool(await conn.fetchval(
+                    "SELECT 1 FROM gpt_codes WHERE order_id=$1 AND used_by=$2 LIMIT 1",
+                    _oid, _order["user_id"]))
+            if not _order or not str(_order["pack"] or "").startswith("shop:chatgpt:"):
+                _msg = "Заказ ChatGPT не найден."
+            elif _order["status"] != "paid":
+                _msg = "Заказ не оплачен, отменён или возвращён. Повторная выдача недоступна."
+            elif _done or (await get_setting(f"order_done:{_oid}", "0")) == "1":
+                _msg = "Подписка по заказу уже выдана. Повторная активация не нужна."
+            elif _code and (await get_setting(f"gptclaim:{_code.strip().upper()}", "")):
+                _msg = "Сайт ещё обрабатывает активацию. Нажми «Проверить сейчас» и дождись результата."
+            else:
+                _pend = await get_pending_activation(_order["user_id"])
+                if _pend and str(_pend.get("order_id") or "") != _oid:
+                    _msg = "У клиента уже есть активация другого заказа. Её резерв не меняю."
+                else:
+                    _ok, _msg = await gpt_resend_activation(_oid)
+            if _ok:
+                # Повтор доставки callback после успешной отправки не шлёт
+                # клиенту ещё одно сообщение, даже если правка карточки упала.
+                try:
+                    await set_setting(_sent_key, _msg)
+                except Exception as e:
+                    logging.error(f"gpt retry receipt {_oid}: {e}")
+        if _ok:
+            try:
+                # Сверка затем сможет переписать ЭТУ карточку в окончательный успех.
+                if not getattr(cb.message, "photo", None):
+                    await set_setting(f"gpt_confirm_msg:{_oid}", str(cb.message.message_id))
+                _current_code = await _gpt_retry_current_code(_oid)
+                if _current_code:
+                    _code = _current_code
+            except Exception as e:
+                logging.warning(f"gpt retry card tracking {_oid}: {e}")
+    except Exception as e:
+        logging.exception(f"gpt retry {_oid}: {e}")
+        _msg = "Не удалось проверить или выдать активацию. Проверь заказ перед повтором."
+    finally:
+        if _claimed:
+            try:
+                await release_activation(_lock)
+            except Exception as e:
+                logging.warning(f"gpt retry unlock {_oid}: {e}")
+    logging.info(f"gpt retry card order={_oid} ok={_ok}")
+    _updated = await _gpt_retry_card_update(
+        cb.message, ("✅ " if _ok else "⚠️ ") + _msg,
+        gpt_failure_keyboard(_code, _oid, issued=_ok))
+    if not _updated:
+        try:
+            import html
+            _popup = html.unescape(re.sub(r"<[^>]+>", "", str(_msg)))
+            await cb.answer(_popup[:190], show_alert=True)
+        except Exception:
+            pass
+
+
+async def _gpt_retry_current_code(order_id: str) -> str:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return (await conn.fetchval(
+            "SELECT code FROM gpt_pending_activations WHERE order_id=$1 LIMIT 1", order_id)) or ""
+
+
 # ─── Проверить активацию прямо сейчас ────────────────────────────────────────
 # Сверка ходит раз в пять минут. Но когда сообщение о неудаче уже пришло, а на
 # сайте видно, что активация прошла, ждать эти минуты незачем.

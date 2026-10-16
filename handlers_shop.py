@@ -1227,70 +1227,17 @@ async def shop_coins_sbp(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("shop_pay_stars:"))
 async def shop_pay_stars(cb: CallbackQuery):
-    """Оплата Telegram Stars."""
-    parts = cb.data.split(":")
-    key = parts[1]
-    plan_idx = int(parts[2])
-    s = SHOP_CATALOG.get(key)
-    if not s:
-        await cb.answer("Ошибка", show_alert=True)
-        return
-    p = s["plans"][plan_idx]
-    uid = cb.from_user.id
-    # Цена ДЛЯ ЭТОГО клиента: у клиента партнёра — с наценкой.
-    # Копируем тариф, чтобы не портить общий каталог в памяти.
-    p = dict(p); p["price"] = await shop_price_for(uid, key, p.get("price", 0))
-    username = cb.from_user.username or cb.from_user.full_name
-
-    # Отправляем invoice Telegram Stars
-    try:
-        await bot.send_invoice(
-            chat_id=uid,
-            title=f"{s['name']} {p['name']}",
-            description=p["desc"],
-            # Отпечаток НАЗВАНИЯ тарифа: по нему оплата найдёт именно то,
-            # что купили, даже если каталог с тех пор переставили.
-            payload=f"shop:{key}:{plan_idx}:{_plan_hash(p.get('name',''))}",
-            currency="XTR",
-            prices=[LabeledPrice(label=f"{s['name']} {p['name']} - 1 мес", amount=p["stars"])],
-        )
-        try:
-            await cb.message.edit_text(
-                f"⭐ <b>Оплата Telegram Stars</b>\n\n"
-                f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b>\n"
-                f"⭐ Сумма: <b>{p.get('stars', round(p['price']/2.5))} Stars</b>\n\n"
-                f"Счёт отправлен выше 👆\n"
-                f"После оплаты отправьте скриншот Александру - он активирует подписку.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"shop_confirm:{key}:{plan_idx}")],
-                ]),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-    except Exception as e:
-        await cb.answer(f"Ошибка: {e}", show_alert=True)
-        return
-
-    # Уведомить Александра
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"🛍 <b>Заказ из магазина (Stars)</b>\n\n"
-            f"👤 {await _who_user(uid)}\n"
-            f"📦 {tg_emoji(s)} {s['name']} {p['name']}\n"
-            f"⭐ {p['stars']} Stars",
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-    await cb.answer()
+    """Старые кнопки Stars больше не выставляют счета."""
+    await cb.answer("Оплата звёздами отключена. Открой магазин и выбери другой способ оплаты.",
+                    show_alert=True)
 
 
 @dp.pre_checkout_query()
 async def on_pre_checkout(pre_checkout: PreCheckoutQuery):
-    """Единый обработчик - подтверждаем оплату Stars для любого payload."""
-    await pre_checkout.answer(ok=True)
+    """Не разрешаем новые списания по ранее отправленным Stars-счетам."""
+    await pre_checkout.answer(
+        ok=False,
+        error_message="Оплата звёздами отключена. Открой магазин и выбери другой способ оплаты.")
 
 
 @dp.message(F.successful_payment)
@@ -2265,15 +2212,8 @@ async def report_pay_handler(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("paystars:"))
 async def pay_stars(cb: CallbackQuery):
-    key = cb.data.split(":")[1]
-    p = CREDIT_PACKS[key]
-    await cb.message.answer_invoice(
-        title=f"{p['name']} - {p['credits']} кредитов",
-        description=f"Пополнение баланса AI-бота: {p['credits']} кредитов",
-        payload=f"stars:{key}:{cb.from_user.id}",
-        currency="XTR",
-        prices=[LabeledPrice(label=p['name'], amount=p['stars'])],
-    )
-    await cb.answer()
+    """Старые кнопки Stars больше не выставляют счета."""
+    await cb.answer("Оплата звёздами отключена. Открой магазин и выбери другой способ оплаты.",
+                    show_alert=True)
 
 

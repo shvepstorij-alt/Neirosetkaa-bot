@@ -289,6 +289,13 @@ def _new_webgen_id() -> str:
     return _sec_wg.token_urlsafe(10)
 
 
+def generation_refund_text(refunded: bool) -> str:
+    """Не обещаем выполненный возврат, если БД его не подтвердила."""
+    if refunded:
+        return "💳 Кредиты возвращены."
+    return "💳 Возврат пока не подтверждён. Бот повторит его автоматически после восстановления связи."
+
+
 def _webgen_err_resp(err: str):
     """Один текст отказа на все четыре эндпоинта генерации."""
     _msgs = {
@@ -13366,9 +13373,7 @@ async def _run_activation_job(
                     txt += "🔒 Код закреплён за клиентом — активируй вручную ИМ ЖЕ."
                 # Кнопка проверки: сверка сама зайдёт сюда в течение 5 минут, но
                 # ждать не обязательно — по нажатию проверяем этот код сразу.
-                _kb_rc = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="🔄 Проверить сейчас",
-                                         callback_data=f"gptrc:{code}")]])
+                _kb_rc = gpt_failure_keyboard(code, order_id)
                 if screenshot and len(txt) > 1000:
                     # Подпись к фото — максимум 1024 символа, а с контекстом
                     # заказа карточка бывает длиннее: шлём текстом, фото — следом.
@@ -15215,7 +15220,20 @@ async def gpt_watch_msg_remember(code: str, message_id) -> None:
         logging.warning(f"gptwatchmsg {code}: {_e_wm}")
 
 
-async def gpt_watch_msg_resolve(code: str, text: str) -> bool:
+def gpt_failure_keyboard(code: str, order_id: str = "", *, issued: bool = False):
+    """Действия под сообщениями о неудаче; повтор привязан к заказу."""
+    rows = ([[InlineKeyboardButton(text="🔄 Проверить сейчас",
+                                   callback_data=f"gptrc:{code}")]] if code else [])
+    if issued:
+        rows.append([InlineKeyboardButton(text="✅ Кнопка активации отправлена клиенту",
+                                          callback_data="noop")])
+    elif order_id:
+        rows.append([InlineKeyboardButton(text="📨 Выдать повторную активацию",
+                                          callback_data=f"adm_gpt_retry:{order_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def gpt_watch_msg_resolve(code: str, text: str, reply_markup=None) -> bool:
     """Переписывает живую карточку в итоговую. True — получилось.
 
     Зачем: сообщение «активация идёт» висело в чате навсегда. Когда код
@@ -15237,7 +15255,8 @@ async def gpt_watch_msg_resolve(code: str, text: str) -> bool:
         return False
     try:
         await bot.edit_message_text(text, chat_id=ADMIN_ID,
-                                    message_id=int(_mid), parse_mode="HTML")
+                                    message_id=int(_mid), parse_mode="HTML",
+                                    reply_markup=reply_markup)
         _ok = True
     except Exception as _e_ed:
         # «message is not modified» — текст совпал, и это успех, а не сбой.
@@ -23261,26 +23280,23 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
         if len(_prompt) < 2:
             return web.json_response({"ok": False, "error": "prompt"}, status=400)
         _cost = int(m.get("credits", 0))
-        from db import deduct as _deduct, add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
+        from db import get_credits as _get_cr, log_gen as _log_gen
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "photo")
         if not _g_ok:
             return _webgen_err_resp(_g_err)
+        _wjob = _new_webgen_id()
         try:
-            if not await _deduct(int(uid), _cost):
+            if not await webgen_job_start(
+                    _wjob, int(uid), "photo", _key, _cost,
+                    params=_prompt[:200], worker=_WORKER_ID):
                 await _webgen_done(int(uid), _g_ck)
                 return web.json_response({"ok": False, "error": "credits", "have": _cr})
         except Exception:
             await _webgen_done(int(uid), _g_ck)
             raise
-        # Оплаченная генерация попадает в долговечный журнал ДО обращения к
-        # поставщику: если процесс остановят прямо сейчас, кредиты вернёт
-        # разбор потерянных задач, а не «никто». Аудит 29.09.2026, №11.
-        _wjob = _new_webgen_id()
-        await webgen_job_start(_wjob, int(uid), "photo", _key, _cost,
-                               params=_prompt[:200], worker=_WORKER_ID)
         try:
             from generation_api import api_generate_image as _gen
             import re as _re_wg
@@ -23289,17 +23305,19 @@ async def api_gen_image_handler(request: web.Request) -> web.Response:
                               model_name=_re_wg.sub(r"^[^\w]+\s*", "", m.get("name", "")))
         except Exception as _ge:
             # Закрытие задачи и возврат кредитов — одной транзакцией.
-            await webgen_job_finish_refund(_wjob, _webgen_reason_short(_ge), int(uid), _cost)
+            _refunded = await webgen_job_finish_refund(_wjob, _webgen_reason_short(_ge), int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_image gen: {_ge}")
             _msg = await _webgen_fail(uid, f"Генерация фото model={_key}", _ge, _prompt)
             return web.json_response({"ok": False, "error": "gen_failed",
-                                      "msg": _msg + "<br>💳 Кредиты возвращены."})
+                                      "msg": _msg + "<br>" + generation_refund_text(_refunded)})
         await _webgen_done(int(uid), _g_ck)
         if not _img:
-            await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
+            _refunded = await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
                                            int(uid), _cost)
-            return web.json_response({"ok": False, "error": "empty"})
+            return web.json_response({"ok": False, "error": "empty",
+                                      "msg": "Поставщик не вернул изображение.<br>"
+                                             + generation_refund_text(_refunded)})
         await webgen_job_finish(_wjob, "done")
         try:
             await _log_gen(int(uid), "image", _key, _cost)
@@ -23389,7 +23407,7 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
         # Закрытие задачи и возврат — одной транзакцией: раньше отметка
         # refunded=1 коммитилась ДО начисления, и сбой между ними прятал
         # задачу от фоновой компенсации навсегда. Аудит 30.09.2026, №11.
-        await webgen_job_finish_refund(job_id, _webgen_reason_short(_e), int(uid), cost)
+        _refunded = await webgen_job_finish_refund(job_id, _webgen_reason_short(_e), int(uid), cost)
         logging.error(f"video job {job_id}: {_e}")
         _msg = await _webgen_fail(uid, f"Генерация видео model={key}", _e, prompt)
         _cr = 0
@@ -23397,7 +23415,7 @@ async def _run_video_job(job_id, uid, key, m, prompt, aspect, duration, cost):
             _cr = await _get_cr(int(uid))
         except Exception:
             pass
-        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "msg": _msg,
+        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "msg": _msg + "<br>" + generation_refund_text(_refunded),
                                      "credits": _cr})
     finally:
         # Снимаем «идёт генерация»: иначе счётчик параллельных генераций
@@ -23443,27 +23461,26 @@ async def api_gen_video_handler(request: web.Request) -> web.Response:
         else:
             _dur = int(m.get("duration") or 8)
             _cost = int(m.get("credits", 0))
-        from db import deduct as _deduct, get_credits as _get_cr
+        from db import get_credits as _get_cr
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "video")
         if not _g_ok:
             return _webgen_err_resp(_g_err)
+        _job = _new_webgen_id()
         try:
-            if not await _deduct(int(uid), _cost):
+            if not await webgen_job_start(
+                    _job, int(uid), "video", _key, _cost,
+                    params=f"{_prompt[:160]} | {_aspect} | {_dur}с", worker=_WORKER_ID):
                 await _webgen_done(int(uid), _g_ck)
                 return web.json_response({"ok": False, "error": "credits", "have": _cr})
         except Exception:
             await _webgen_done(int(uid), _g_ck)
             raise
-        import time as _t, secrets as _sec
-        _job = _sec.token_urlsafe(10)
+        import time as _t
         _genvid_gc()
         _GENVID_JOBS[_job] = {"status": "pending", "ts": _t.time()}
-        await webgen_job_start(_job, int(uid), "video", _key, _cost,
-                               params=f"{_prompt[:160]} | {_aspect} | {_dur}с",
-                               worker=_WORKER_ID)
         asyncio.create_task(_run_video_job(_job, int(uid), _key, m, _prompt, _aspect, _dur, _cost))
         return web.json_response({"ok": True, "job": _job, "cost": _cost, "credits": await _get_cr(int(uid))})
     except Exception as _e:
@@ -23540,39 +23557,41 @@ async def api_gen_edit_handler(request: web.Request) -> web.Response:
         if not _img_in:
             return web.json_response({"ok": False, "error": "image"}, status=400)
         _cost = int(m.get("credits", 10))
-        from db import deduct as _deduct, add_credits as _add_cr, get_credits as _get_cr, log_gen as _log_gen
+        from db import get_credits as _get_cr, log_gen as _log_gen
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "photo")
         if not _g_ok:
             return _webgen_err_resp(_g_err)
+        _wjob = _new_webgen_id()
         try:
-            if not await _deduct(int(uid), _cost):
+            if not await webgen_job_start(
+                    _wjob, int(uid), "edit", _key, _cost,
+                    params=_prompt[:200], worker=_WORKER_ID):
                 await _webgen_done(int(uid), _g_ck)
                 return web.json_response({"ok": False, "error": "credits", "have": _cr})
         except Exception:
             await _webgen_done(int(uid), _g_ck)
             raise
-        _wjob = _new_webgen_id()
-        await webgen_job_start(_wjob, int(uid), "edit", _key, _cost,
-                               params=_prompt[:200], worker=_WORKER_ID)
         try:
             from generation_api import api_edit_by_model as _edit_m
             _out = await _edit_m(m, _img_in, _prompt)
         except Exception as _ge:
             # Закрытие задачи и возврат кредитов — одной транзакцией.
-            await webgen_job_finish_refund(_wjob, _webgen_reason_short(_ge), int(uid), _cost)
+            _refunded = await webgen_job_finish_refund(_wjob, _webgen_reason_short(_ge), int(uid), _cost)
             await _webgen_done(int(uid), _g_ck)
             logging.error(f"api_gen_edit gen: {_ge}")
             _msg = await _webgen_fail(uid, f"Редактирование фото model={_key}", _ge, _prompt)
             return web.json_response({"ok": False, "error": "gen_failed",
-                                      "msg": _msg + "<br>💳 Кредиты возвращены."})
+                                      "msg": _msg + "<br>" + generation_refund_text(_refunded)})
         await _webgen_done(int(uid), _g_ck)
         if not _out:
-            await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
+            _refunded = await webgen_job_finish_refund(_wjob, "пустой ответ поставщика",
                                            int(uid), _cost)
-            return web.json_response({"ok": False, "error": "empty"})
+            return web.json_response({"ok": False, "error": "empty",
+                                      "msg": "Поставщик не вернул изображение.<br>"
+                                             + generation_refund_text(_refunded)})
         await webgen_job_finish(_wjob, "done")
         try:
             await _log_gen(int(uid), "edit", _key, _cost)
@@ -23644,7 +23663,7 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
         # Закрытие задачи и возврат — одной транзакцией: раньше отметка
         # refunded=1 коммитилась ДО начисления, и сбой между ними прятал
         # задачу от фоновой компенсации навсегда. Аудит 30.09.2026, №11.
-        await webgen_job_finish_refund(job_id, _webgen_reason_short(_e), int(uid), cost)
+        _refunded = await webgen_job_finish_refund(job_id, _webgen_reason_short(_e), int(uid), cost)
         logging.error(f"anim job {job_id}: {_e}")
         _msg = await _webgen_fail(uid, f"Анимация фото model={key}", _e, prompt)
         _cr = 0
@@ -23652,7 +23671,7 @@ async def _run_anim_job(job_id, uid, key, m, prompt, img_bytes, aspect, cost):
             _cr = await _get_cr(int(uid))
         except Exception:
             pass
-        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "msg": _msg,
+        _GENVID_JOBS[job_id].update({"status": "error", "err": "gen_failed", "msg": _msg + "<br>" + generation_refund_text(_refunded),
                                      "credits": _cr})
     finally:
         # Снимаем «идёт генерация»: иначе счётчик параллельных генераций
@@ -23696,26 +23715,26 @@ async def api_gen_anim_handler(request: web.Request) -> web.Response:
         if _aspect not in (m.get("aspects") or ("16:9", "9:16", "1:1")):
             _aspect = "16:9"
         _cost = int(m.get("credits", 249))
-        from db import deduct as _deduct, get_credits as _get_cr
+        from db import get_credits as _get_cr
         _cr = await _get_cr(int(uid))
         if _cr < _cost:
             return web.json_response({"ok": False, "error": "credits", "need": _cost, "have": _cr})
         _g_ok, _g_err, _g_ck = await _webgen_guard(int(uid), "anim")
         if not _g_ok:
             return _webgen_err_resp(_g_err)
+        _job = _new_webgen_id()
         try:
-            if not await _deduct(int(uid), _cost):
+            if not await webgen_job_start(
+                    _job, int(uid), "anim", _key, _cost,
+                    params=f"{_prompt[:160]} | {_aspect}", worker=_WORKER_ID):
                 await _webgen_done(int(uid), _g_ck)
                 return web.json_response({"ok": False, "error": "credits", "have": _cr})
         except Exception:
             await _webgen_done(int(uid), _g_ck)
             raise
-        import time as _t, secrets as _sec
-        _job = _sec.token_urlsafe(10)
+        import time as _t
         _genvid_gc()
         _GENVID_JOBS[_job] = {"status": "pending", "ts": _t.time()}
-        await webgen_job_start(_job, int(uid), "anim", _key, _cost,
-                               params=f"{_prompt[:160]} | {_aspect}", worker=_WORKER_ID)
         asyncio.create_task(_run_anim_job(_job, int(uid), _key, m, _prompt, _img_in, _aspect, _cost))
         return web.json_response({"ok": True, "job": _job, "cost": _cost, "credits": await _get_cr(int(uid))})
     except Exception as _e:

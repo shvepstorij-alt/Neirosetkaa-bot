@@ -2335,81 +2335,79 @@ async def log_payment(user_id: int, credits: int, amount_rub: int, method: str):
         )
     await log_event(user_id, "payment", f"method={method} credits={credits} amount={amount_rub}")
 
-async def deduct(user_id: int, amount: int) -> bool:
-    """Списывает кредиты с баланса юзера по FIFO из партий (самые старые первыми).
-    Атомарная операция: либо списали всю сумму, либо ничего (если не хватает).
-    Возвращает True если успешно."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # 1) Проверяем общий баланс с блокировкой
-            row = await conn.fetchrow(
-                "SELECT credits FROM users WHERE user_id=$1 FOR UPDATE", user_id
-            )
-            if not row or row["credits"] < amount:
-                return False
+async def deduct(user_id: int, amount: int, conn=None) -> bool:
+    """Списывает кредиты и партии атомарно; conn — транзакция вызывающего."""
+    if conn is None:
+        pool = await get_pool()
+        async with pool.acquire() as own_conn:
+            async with own_conn.transaction():
+                return await deduct(user_id, amount, conn=own_conn)
+    row = await conn.fetchrow(
+        "SELECT credits FROM users WHERE user_id=$1 FOR UPDATE", user_id
+    )
+    if not row or row["credits"] < amount:
+        return False
 
-            # 2) Списываем из партий по FIFO - только из активных (не истёкших).
-            # Берём активные партии с кредитами, сортируем по expires_at ASC (сперва скоро истекающие),
-            # чтобы не терять кредиты. Партии без expires_at (NULL) идут в конец.
-            batches = await conn.fetch(
-                """SELECT id, credits_left FROM credit_batches
-                   WHERE user_id = $1 AND credits_left > 0
-                     AND (expires_at IS NULL OR expires_at > NOW())
-                   ORDER BY expires_at ASC NULLS LAST, id ASC
-                   FOR UPDATE""",
-                user_id
-            )
+    # 2) Списываем из партий по FIFO - только из активных (не истёкших).
+    # Берём активные партии с кредитами, сортируем по expires_at ASC (сперва скоро истекающие),
+    # чтобы не терять кредиты. Партии без expires_at (NULL) идут в конец.
+    batches = await conn.fetch(
+        """SELECT id, credits_left FROM credit_batches
+           WHERE user_id = $1 AND credits_left > 0
+             AND (expires_at IS NULL OR expires_at > NOW())
+           ORDER BY expires_at ASC NULLS LAST, id ASC
+           FOR UPDATE""",
+        user_id
+    )
 
-            remaining = amount
-            for b in batches:
-                if remaining <= 0:
-                    break
-                take = min(remaining, b["credits_left"])
-                await conn.execute(
-                    "UPDATE credit_batches SET credits_left = credits_left - $1 WHERE id = $2",
-                    take, b["id"]
-                )
-                remaining -= take
+    remaining = amount
+    for b in batches:
+        if remaining <= 0:
+            break
+        take = min(remaining, b["credits_left"])
+        await conn.execute(
+            "UPDATE credit_batches SET credits_left = credits_left - $1 WHERE id = $2",
+            take, b["id"]
+        )
+        remaining -= take
 
-            # 3) Обновляем общий баланс в users (для обратной совместимости)
-            await conn.execute(
-                "UPDATE users SET credits = credits - $1 WHERE user_id = $2",
-                amount, user_id
-            )
+    # 3) Обновляем общий баланс в users (для обратной совместимости)
+    await conn.execute(
+        "UPDATE users SET credits = credits - $1 WHERE user_id = $2",
+        amount, user_id
+    )
 
-            # Если не хватило партий (что странно - значит где-то рассинхрон),
-            # логируем для диагностики, но не откатываем - общий баланс уже проверен
-            if remaining > 0:
-                logging.warning(
-                    f"deduct partial batch mismatch uid={user_id} amount={amount} "
-                    f"unallocated={remaining} - баланс списан, но партии не покрывают сумму"
-                )
-
-    await log_event(user_id, "deduct", f"amount={amount}")
+    # Если не хватило партий (что странно - значит где-то рассинхрон),
+    # логируем для диагностики, но не откатываем - общий баланс уже проверен
+    if remaining > 0:
+        logging.warning(
+            f"deduct partial batch mismatch uid={user_id} amount={amount} "
+            f"unallocated={remaining} - баланс списан, но партии не покрывают сумму"
+        )
+    await log_event(user_id, "deduct", f"amount={amount}", conn=conn)
     return True
 
 async def webgen_job_start(job_id: str, user_id: int, kind: str, model_key: str,
-                           cost: int, params: str = "", worker: str = "") -> None:
-    """Записывает ОПЛАЧЕННУЮ генерацию в долговечный журнал.
+                           cost: int, params: str = "", worker: str = "") -> bool:
+    """Списывает кредиты и сохраняет задачу одной транзакцией.
 
-    Кредиты списываются до запуска, а сама задача жила только в памяти
-    процесса: перезапуск Railway посреди генерации — и клиент остаётся без
-    результата и без кредитов, а связать оплату с запросом у поставщика не по
-    чему (в active_generations только user_id, вид и время).
-    Внешний аудит 29.09.2026, пункт №11.
+    False — недостаточно кредитов. Ошибка записи/commit пробрасывается:
+    поставщика можно вызывать только после True. Повтор job_id вызывает
+    ошибку уникальности и откатывает повторное списание.
     """
-    try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
+    cost = int(cost)
+    if cost < 0:
+        raise ValueError("Стоимость генерации не может быть отрицательной")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if not await deduct(int(user_id), cost, conn=conn):
+                return False
             await conn.execute(
                 "INSERT INTO webgen_jobs (job_id, user_id, kind, model_key, cost, "
-                "status, worker, params) VALUES ($1,$2,$3,$4,$5,'running',$6,$7) "
-                "ON CONFLICT (job_id) DO NOTHING",
-                job_id, int(user_id), kind, model_key, int(cost), worker, (params or "")[:500])
-    except Exception as e:
-        # Журнал — страховка, а не условие работы: падать из-за него нельзя.
-        logging.error(f"webgen_job_start {job_id}: {e}")
+                "status, worker, params) VALUES ($1,$2,$3,$4,$5,'running',$6,$7)",
+                job_id, int(user_id), kind, model_key, cost, worker, (params or "")[:500])
+    return True
 
 
 async def webgen_job_finish(job_id: str, status: str, err: str = "",
@@ -2438,7 +2436,8 @@ async def webgen_job_finish(job_id: str, status: str, err: str = "",
 async def webgen_job_finish_refund(job_id: str, err: str, user_id: int, cost: int,
                                    status: str = "error") -> bool:
     """Закрывает задачу генерации И возвращает за неё кредиты — в ОДНОЙ
-    транзакции. True — возврат сделали мы, False — задачу уже закрыл кто-то.
+    транзакции. True — возврат подтверждён (включая ранее выполненный).
+    False — возврат не подтверждён; при сбое running подберёт фоновая задача.
 
     Раньше на обычной ошибке генерации это были два отдельных действия:
     сначала webgen_job_finish ставил refunded=1, и только потом начислялись
@@ -2457,7 +2456,8 @@ async def webgen_job_finish_refund(job_id: str, err: str, user_id: int, cost: in
                     "finished_at=NOW() WHERE job_id=$3 AND status='running'",
                     status, (err or "")[:500], job_id)
                 if str(_r).split()[-1] == "0":
-                    return False
+                    return bool(await conn.fetchval(
+                        "SELECT refunded FROM webgen_jobs WHERE job_id=$1", job_id))
                 if _cost > 0:
                     # Возврат не сгорает: это деньги клиента.
                     await add_credits_batch(int(user_id), _cost, source="refund",

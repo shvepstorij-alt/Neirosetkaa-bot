@@ -33,6 +33,7 @@ from states import (
 )
 from db import (
     add_credits, deduct, get_credits, log_event, log_gen,
+    webgen_job_start, webgen_job_finish, webgen_job_finish_refund,
 )
 from keyboards import (
     _eib, kb_after, kb_aspect_image, kb_aspect_video, kb_back, kb_cancel,
@@ -47,6 +48,7 @@ from generation_api import (
 from common import (
     _check_can_generate, check_expiring_credits, mark_generation_active, notify_admin_error, safe_send_media, unmark_generation_active,
     try_acquire_click, release_click, tg_file_proxy_url,
+    _new_webgen_id, _WORKER_ID, generation_refund_text,
 )
 
 import html as _html_mod
@@ -418,77 +420,33 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         await cb.answer("⏳ Уже запускаю…", show_alert=False)
         return
 
-    # Rate limit
-    if not await _check_can_generate(cb, uid, kind="photo"):
-        release_click(_click_key)
-        return
-
-    ok = await deduct(uid, _img_cost)
-    if not ok:
-        release_click(_click_key)
-        await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
-        return
-
-    # Лимит одновременных генераций проверяется атомарно ИМЕННО здесь: между
-    # _check_can_generate и этой вставкой есть await, и два быстрых клика раньше
-    # проскакивали оба. Если лимит исчерпан — возвращаем кредиты.
-    if not await mark_generation_active(uid, "photo"):
+    _job_id = _new_webgen_id()
+    _charged = False
+    _active = False
+    _img_delivered = False
+    try:
+        if not await _check_can_generate(cb, uid, kind="photo"):
+            return
+        if not await mark_generation_active(uid, "photo"):
+            await cb.answer("⏳ Дождись завершения текущих генераций.", show_alert=True)
+            return
+        _active = True
+        if not await webgen_job_start(_job_id, uid, "tg_photo", key, _img_cost,
+                                      params=prompt[:200], worker=_WORKER_ID):
+            await cb.answer("💸 Недостаточно кредитов!", show_alert=True)
+            return
+        _charged = True
+        await state.clear()
         try:
-            await add_credits(uid, _img_cost)
+            await state.update_data(aspect_ratio=data.get("aspect_ratio", "1:1"))
         except Exception:
             pass
-        release_click(_click_key)
-        await cb.answer("⏳ Дождись завершения текущих генераций.", show_alert=True)
-        return
-    await state.clear()
-    # Запоминаем формат уже после очистки: кнопка «Ещё раз» под результатом
-    # должна повторить ИМЕННО тот формат, который выбрал клиент.
-    try:
-        await state.update_data(aspect_ratio=data.get("aspect_ratio", "1:1"))
-    except Exception:
-        pass
-
-    # Флаг чтобы избежать двойного возврата кредитов.
-    # ВАЖНО: объявляем ДО отправки «Генерирую…» — этот вызов Telegram тоже может
-    # упасть (flood-control 429, сообщение удалено), и раньше исключение уходило
-    # наверх уже ПОСЛЕ списания: кредиты пропадали без возврата и без ответа.
-    img_refunded = False
-    # Оригинал уже у клиента? Объявляем ЗДЕСЬ, до try: иначе при обычном
-    # провале генерации (а это и есть частый случай) except читал бы
-    # необъявленную переменную и падал САМ, вместо того чтобы вернуть
-    # кредиты. Поймано самопроверкой 02.10.2026.
-    _img_delivered = False
-
-    async def img_refund_once(reason: str = ""):
-        nonlocal img_refunded
-        if img_refunded:
-            logging.warning(f"img_refund_once SKIPPED uid={uid} reason={reason}")
-            return
-        img_refunded = True
-        await add_credits(uid, _img_cost)
-        logging.info(f"img_refund_once EXECUTED uid={uid} credits={_img_cost} reason={reason}")
-
-    _wait_text = f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{_esc(prompt[:80])}</i>"
-    try:
-        wait = await cb.message.edit_text(_wait_text, parse_mode="HTML")
-    except Exception:
+        _wait_text = f"⚙️ Генерирую...\n\n{model_title_n(m['name'])}\n<i>{_esc(prompt[:80])}</i>"
         try:
+            wait = await cb.message.edit_text(_wait_text, parse_mode="HTML")
+        except Exception:
             wait = await cb.message.answer(_wait_text, parse_mode="HTML")
-        except Exception as _w_err:
-            logging.error(f"go_image: не удалось отправить статус-сообщение uid={uid}: {_w_err}")
-            await img_refund_once(f"wait_msg_failed:{type(_w_err).__name__}")
-            release_click(_click_key)
-            await unmark_generation_active(uid)
-            try:
-                await cb.answer("⚠️ Не удалось начать генерацию. Кредиты возвращены.", show_alert=True)
-            except Exception:
-                pass
-            return
-
-    try:
         aspect = data.get("aspect_ratio", "1:1")
-
-        # Callback для уведомления юзера между попытками retry (особенно важно при 503)
         async def notify_retry(attempt, delay, err):
             err_low = str(err).lower()
             is_overload = (getattr(err, "kind", "") == "overload" or "503" in str(err)
@@ -515,6 +473,8 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
             max_attempts=3, op_name=f"Image {key}",
             on_retry=notify_retry
         )
+        if not img_bytes:
+            raise RuntimeError("Поставщик не вернул изображение")
         await log_gen(uid, "image", key, _img_cost)
         _record_generation(uid, _photo_history)
         await check_expiring_credits(uid)
@@ -535,6 +495,7 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
         # Так же сделано в видео и анимации (флаг video_sent).
         # Широкий разбор 02.10.2026.
         _img_delivered = True
+        await webgen_job_finish(_job_id, "done")
         # Затем превью с кнопками - с retry
         await safe_send_media(
             cb.message.answer_photo,
@@ -548,39 +509,42 @@ async def go_image(cb: CallbackQuery, state: FSMContext):
             await wait.delete()
         except Exception:
             pass
+
     except Exception as e:
         if _img_delivered:
-            # Оригинал клиент получил — это и есть товар. Возврата нет.
-            logging.error(f"go_image: превью не ушло, но оригинал доставлен "
-                          f"uid={cb.from_user.id} model={key}: {e}")
+            # Ошибка превью после доставки оригинала не является поводом для возврата.
             try:
                 await cb.message.answer(
                     "✅ Готово! Оригинал выше — он без сжатия, в полном качестве.\n"
-                    "<i>Превью показать не вышло, но файл у тебя.</i>",
-                    parse_mode="HTML")
+                    "<i>Превью показать не вышло, но файл у тебя.</i>", parse_mode="HTML")
             except Exception:
                 pass
             await notify_admin_error(
-                f"Превью фото не ушло (оригинал ДОСТАВЛЕН, возврата нет) "
-                f"uid={cb.from_user.id} model={key}", e, prompt=prompt)
+                f"Превью фото не ушло (оригинал ДОСТАВЛЕН, возврата нет) uid={uid} model={key}",
+                e, prompt=prompt)
             return
-        await img_refund_once(f"exception:{type(e).__name__}")
-        await notify_admin_error(f"Генерация фото uid={cb.from_user.id} model={key}", e, prompt=prompt)
+        if _charged:
+            _refunded = await webgen_job_finish_refund(
+                _job_id, f"exception:{type(e).__name__}", uid, _img_cost)
+            _refund_note = "\n\n" + generation_refund_text(_refunded)
+        else:
+            _refund_note = ""
+        await notify_admin_error(f"Генерация фото uid={uid} model={key}", e, prompt=prompt)
         try:
             await cb.message.edit_text(
-                f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
-                reply_markup=kb_error_with_alt("img", key),
-                parse_mode="HTML"
-            )
+                f"{client_error_text(e)}{_refund_note}",
+                reply_markup=kb_error_with_alt("img", key), parse_mode="HTML")
         except Exception:
             await cb.message.answer(
-                f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
-                reply_markup=kb_error_with_alt("img", key),
-                parse_mode="HTML"
-            )
+                f"{client_error_text(e)}{_refund_note}",
+                reply_markup=kb_error_with_alt("img", key), parse_mode="HTML")
     finally:
         release_click(_click_key)
-        await unmark_generation_active(uid)
+        if _active:
+            try:
+                await unmark_generation_active(uid)
+            except Exception as _e_um:
+                logging.warning(f"unmark after image uid={uid}: {_e_um}")
     await _cb_ack(cb)
 
 
