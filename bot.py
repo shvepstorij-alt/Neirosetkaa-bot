@@ -44,6 +44,8 @@ from background import (
     reminders_loop, subscription_reminder_loop, webgen_lost_jobs_loop,
 )
 from _registration_order import ORIG_ORDER as _ORIG_ORDER
+from admin_reports import admin_reports_loop
+from gpt_order_card import loop as gpt_order_cards_loop, initialize as initialize_gpt_cards
 
 # -- import handler modules (registers their @dp handlers) --
 import handlers_user
@@ -347,6 +349,7 @@ def _spawn_bg(coro_factory, name: str):
 async def main():
     await _ensure_playwright_browser()
     await init_db()
+    await initialize_gpt_cards()
     await load_prices_from_db()
     await load_miniapp_toggles()
     # HTTP-сервер (вебхуки оплаты + все мини-аппы) поднимаем СИНХРОННО и до
@@ -407,6 +410,8 @@ async def main():
     _spawn_bg(models_desc_refresh_loop, "models_desc_refresh_loop")
     _spawn_bg(_claude_job_results_cleanup_loop, "_claude_job_results_cleanup_loop")
     _spawn_bg(webgen_lost_jobs_loop, "webgen_lost_jobs_loop")
+    _spawn_bg(admin_reports_loop, "admin_reports_loop")
+    _spawn_bg(gpt_order_cards_loop, "gpt_order_cards_loop")
     # NS Gifts: инициализируем клиент и фоновые задачи
 
     if NSGIFTS_USER_ID and NSGIFTS_LOGIN and NSGIFTS_API_SECRET:

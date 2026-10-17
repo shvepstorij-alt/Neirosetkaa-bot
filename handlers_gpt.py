@@ -1592,6 +1592,16 @@ async def _gpt_retry_card_update(message, result: str, reply_markup):
         return False
 
 
+@dp.callback_query(F.data.startswith("gcard:"))
+async def cb_gpt_order_card(cb: CallbackQuery):
+    from gpt_order_card import handle
+    try:
+        await handle(cb)
+    except Exception:
+        logging.exception('GPT order card action failed')
+        await cb.answer('Не удалось завершить действие. Обнови карточку перед повтором.', show_alert=True)
+
+
 @dp.callback_query(F.data.startswith("adm_gpt_retry:"))
 async def cb_gpt_retry_from_card(cb: CallbackQuery):
     """Выдаёт клиенту кнопку заново, результат пишет в ту же админ-карточку."""

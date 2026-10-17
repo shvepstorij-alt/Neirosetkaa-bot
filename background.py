@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Auto-split module "background" — part of Neirosetkaa-bot (refactored from bot.py).
+from gpt_order_card import send as gpt_card_send, edit as gpt_card_edit, photo as gpt_card_photo
 import asyncio, logging, os, re, uuid, base64, hashlib, hmac, json, time
 import datetime
 import datetime as _dt_tz
@@ -1509,7 +1510,7 @@ async def gpt_claimed_watch_loop():
                             InlineKeyboardButton(text="✅ Записать активацию",
                                                  callback_data=f"gptlost:{_code}")]])
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(locals().get('_oid', ''), 
                             ADMIN_ID,
                             f"✅ <b>ChatGPT — активация ЗАВЕРШЕНА</b>\n\n"
                             f"👤 {_who}\n"
@@ -1554,7 +1555,7 @@ async def gpt_claimed_watch_loop():
                     if not _resolved_u:
                         _who = await _who_user(_uid) if _uid else "—"
                         try:
-                            await bot.send_message(
+                            await gpt_card_send(locals().get('_oid', ''), 
                                 ADMIN_ID,
                                 await gpt_watch_card(
                                     _code, _uid, _oid, "unused", stage="failed",
@@ -1607,7 +1608,7 @@ async def gpt_claimed_watch_loop():
                         logging.warning(f"claimed-watch: правка карточки {_code}: {_e_rs3}")
                     if not _resolved_o:
                         try:
-                            await bot.send_message(
+                            await gpt_card_send(locals().get('_oid', ''), 
                                 ADMIN_ID,
                                 await gpt_watch_card(
                                     _code, _uid, _oid, _v, stage="odd",
@@ -1659,7 +1660,7 @@ async def gpt_claimed_watch_loop():
                         logging.warning(f"claimed-watch: правка карточки {_code}: {_e_rs4}")
                     if not _resolved_g:
                         try:
-                            await bot.send_message(
+                            await gpt_card_send(locals().get('_oid', ''), 
                                 ADMIN_ID,
                                 await gpt_watch_card(
                                     _code, _uid, _oid, _v, stage="gaveup",
@@ -1704,7 +1705,7 @@ async def gpt_claimed_watch_loop():
                                  "Ничего не записываю и резерв не трогаю.\n"
                                  "Проверяю каждую минуту — это сообщение само "
                                  "станет итоговым, когда активация завершится.")
-                        _m_live = await bot.send_message(ADMIN_ID, _txt_live,
+                        _m_live = await gpt_card_send(locals().get('_oid', ''), ADMIN_ID, _txt_live,
                                                          parse_mode="HTML")
                         await gpt_watch_msg_remember(_code, _m_live.message_id)
                     except _SkipLiveCard:
@@ -1715,7 +1716,7 @@ async def gpt_claimed_watch_loop():
                     _new_flags += "w"
                     _who = await _who_user(_uid) if _uid else "—"
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(locals().get('_oid', ''), 
                             ADMIN_ID,
                             f"⚠️ <b>ChatGPT — активация затянулась</b>\n\n"
                             f"👤 {_who}\n"

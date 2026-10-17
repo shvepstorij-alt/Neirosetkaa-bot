@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Auto-split module "common" — part of Neirosetkaa-bot (refactored from bot.py).
+from gpt_order_card import send as gpt_card_send, edit as gpt_card_edit, photo as gpt_card_photo, client_success as gpt_card_client_success
 import asyncio, logging, os, re, uuid, base64, hashlib, hmac, json, time
 import datetime
 import datetime as _dt_tz
@@ -10200,11 +10201,11 @@ async def _admin_fail_shot(text, screenshot=None, order_id=None):
     """
     _mid = None
     try:
-        _m = await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        _m = await gpt_card_send(order_id, ADMIN_ID, text, parse_mode="HTML")
         _mid = getattr(_m, "message_id", None)
     except Exception:
         try:
-            _m = await bot.send_message(ADMIN_ID, text)
+            _m = await gpt_card_send(order_id, ADMIN_ID, text)
             _mid = getattr(_m, "message_id", None)
         except Exception:
             pass
@@ -10220,7 +10221,7 @@ async def _admin_fail_shot(text, screenshot=None, order_id=None):
     if screenshot:
         try:
             from aiogram.types import BufferedInputFile
-            await bot.send_photo(
+            await gpt_card_photo(order_id, 
                 ADMIN_ID,
                 BufferedInputFile(screenshot, filename="activation.png"),
                 caption="📸 Экран сайта активации")
@@ -10444,6 +10445,9 @@ async def _gpt_admin_token_msg(user_id, code, order_id, plan_name, session_raw="
     import uuid as _u_tk
     _tok = str(session_raw or access_token or "").strip()
     if not _tok:
+        return
+    from gpt_order_card import capture as _card_capture
+    if await _card_capture(order_id, _tok):
         return
     try:
         if await activation_cooldown(f"gpttok:{order_id or user_id}:{code or '-'}", seconds=1800):
@@ -10728,7 +10732,7 @@ async def _a9_gpt_success(user_id: int, order_id: str, code: str, plan_name: str
         _num = _o.get("num")
         _ordline = (f"🧾 Заказ {'#' + str(_num) if _num else order_id}"
                     + (f" · FreeKassa {_o.get('fk_intid')}" if _o.get("fk_intid") else ""))
-        await client_success_deliver(
+        await gpt_card_client_success(order_id, 
             user_id,
             client_success_text("chatgpt", plan_name, account=email or "",
                                 end=client_end_date(plan_name), order_line=_ordline),
@@ -10751,13 +10755,13 @@ async def _a9_gpt_success(user_id: int, order_id: str, code: str, plan_name: str
         _amid = (await fk_get_order(order_id) or {}).get("admin_msg_id")
         if _amid:
             try:
-                await bot.edit_message_text(_cap, chat_id=ADMIN_ID, message_id=_amid,
+                await gpt_card_edit(order_id, _cap, chat_id=ADMIN_ID, message_id=_amid,
                                             parse_mode="HTML")
                 _edited = True
             except Exception as _e_ed:
                 _edited = "not modified" in str(_e_ed).lower()
         if not _edited:
-            await bot.send_message(ADMIN_ID, _cap, parse_mode="HTML")
+            await gpt_card_send(order_id, ADMIN_ID, _cap, parse_mode="HTML")
     except Exception as _e_ad:
         logging.error(f"9527 gpt success: админу: {_e_ad}")
     return True
@@ -10831,7 +10835,7 @@ async def _run_a9527_gpt_job(job_id: str, code: str, user_id: int, order_id: str
 
     async def _admin(_head, _c, _body):
         try:
-            await bot.send_message(
+            await gpt_card_send(order_id, 
                 ADMIN_ID,
                 f"{_head}\n\n👤 {_who} · {_h_j.escape(str(plan_name))}\n"
                 f"🔑 <code>{_h_j.escape(str(_c))}</code>\n{await _ctx(_c)}\n{_body}",
@@ -11212,7 +11216,7 @@ async def _a9_gpt_settle(code: str, mark: dict, v: dict, job_id: str = "",
 
     async def _admin(_head, _body):
         try:
-            await bot.send_message(
+            await gpt_card_send(oid, 
                 ADMIN_ID,
                 f"{_head}\n\n👤 {_who} · {_h_t.escape(plan_name)}\n"
                 f"🔑 <code>{_h_t.escape(code)}</code> · заказ сайта <code>{_h_t.escape(_ono or '—')}</code>\n"
@@ -11344,7 +11348,7 @@ async def a9527_gpt_watch() -> dict:
                 _m["final"] = "failed"
                 await _a9_mark_set(_kc, _m)
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(_m.get('oid', ''), 
                         ADMIN_ID,
                         f"⏰ <b>ChatGPT — aichongz: клиент не повторил активацию</b>\n"
                         f"🔑 <code>{_kc}</code> · 👤 {await _who_user(_m.get('uid'))} · "
@@ -11391,7 +11395,7 @@ async def a9527_gpt_watch() -> dict:
                 await _gpt_log_attempt(_m.get("oid"), _code, "aichongz",
                                        {"error": "отправка не дошла: сайт подтвердил, что код свободен"})
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(_m.get('oid', ''), 
                         ADMIN_ID,
                         f"ℹ️ <b>ChatGPT — aichongz: неясная отправка не дошла</b>\n"
                         f"🔑 <code>{_code}</code> · 👤 {await _who_user(_m.get('uid'))}\n"
@@ -11407,7 +11411,7 @@ async def a9527_gpt_watch() -> dict:
                 if _t_w.time() - float(_m.get("ts") or 0) > 6 * 3600 and \
                         not await activation_cooldown(f"a9w:{_code.upper()}", seconds=86400):
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(_m.get('oid', ''), 
                             ADMIN_ID,
                             f"⏳ <b>ChatGPT — aichongz: отправка без ответа 6+ часов</b>\n"
                             f"🔑 <code>{_code}</code> · 👤 {await _who_user(_m.get('uid'))}\n"
@@ -11427,7 +11431,7 @@ async def a9527_gpt_watch() -> dict:
         if _s == "wait" and _t_w.time() - float(_m.get("ts") or 0) > 6 * 3600:
             if not await activation_cooldown(f"a9w:{_code.upper()}", seconds=86400):
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(_m.get('oid', ''), 
                         ADMIN_ID,
                         f"⏳ <b>ChatGPT — aichongz: заказ без итога 6+ часов</b>\n"
                         f"🔑 <code>{_code}</code> · заказ <code>{_m.get('ono') or '—'}</code>\n"
@@ -11483,7 +11487,7 @@ async def _run_activation_job(
             await delete_pending_activation(user_id, order_id)
             _activation_jobs[job_id] = {"status": "done", "success": True}
             try:
-                await bot.send_message(
+                await gpt_card_send(order_id, 
                     ADMIN_ID,
                     f"🧪 <b>Тест активации завершён</b>\n"
                     f"👤 {await _who_user(user_id)} — тестовый код, нигде не записан.",
@@ -11742,7 +11746,7 @@ async def _run_activation_job(
                 return False
             _SAFE_REL_ALERT_AT = _t_sr.time()
             try:
-                await bot.send_message(
+                await gpt_card_send(order_id, 
                     ADMIN_ID,
                     (f"⏳ <b>Код вернётся в пул сам</b>\n"
                      f"🔑 <code>{_c}</code> · сайт держит: <b>{_v}</b>\n"
@@ -11891,7 +11895,7 @@ async def _run_activation_job(
                     logging.error(f"GPT bpa rescue: {_e_b}", exc_info=True)
             _err_safe = _err.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             try:
-                await bot.send_message(
+                await gpt_card_send(order_id, 
                     ADMIN_ID,
                     ("✅ <b>ChatGPT — выручил bypriceactivate</b>\n\n"
                      if _ok else
@@ -12042,7 +12046,7 @@ async def _run_activation_job(
                         f"GPT: НЕ жгу код {code} — {_why}. uid={user_id} "
                         f"order={order_id} ответ сайта={str(result.get('error'))[:200]!r}")
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"🛑 <b>Не стал сжигать код</b>\n"
                             f"🔑 <code>{code}</code>\n"
@@ -12066,7 +12070,7 @@ async def _run_activation_job(
                 # админу надо об этом знать, это не рядовая «занятость».
                 if result.get("wrong_account"):
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"⚠️ <b>В пуле оказался УЖЕ ПОТРАЧЕННЫЙ код</b>\n"
                             f"🔑 <code>{code}</code> — сжёг, беру следующий\n"
@@ -12096,7 +12100,7 @@ async def _run_activation_job(
                         f"GPT: второй iOS-код на аккаунт uid={user_id} НЕ выдаю "
                         f"(сайт не подтвердил чужой аккаунт) — ручной режим")
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"🛑 <b>Не стал выдавать второй iOS-код</b>\n"
                             f"👤 {_who_u} · {plan_name}\n{await _actx()}"
@@ -12131,7 +12135,7 @@ async def _run_activation_job(
                     and result.get("code_already_used")):
                 # Дальше не жжём. Код оставляем закреплённым за клиентом.
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"🛑 <b>Стоп: подряд {_GPT_MAX_BURN} кодов «уже использованы»</b>\n"
                         f"👤 {_who_u} · {plan_name}\n{await _actx()}"
@@ -12223,7 +12227,7 @@ async def _run_activation_job(
             except Exception as _e_hb:
                 logging.warning(f"bpa→9527: метка переноса {order_id}: {_e_hb}")
             try:
-                await bot.send_message(
+                await gpt_card_send(order_id, 
                     ADMIN_ID,
                     f"🔀 <b>ChatGPT — перенос bypriceactivate → aichongz</b>\n\n"
                     f"👤 {_who_u} · {plan_name}\n"
@@ -12255,7 +12259,7 @@ async def _run_activation_job(
                     {"status": "done", "success": False, "manual": True, "error": _A9_CLIENT_MANUAL})
                 try:
                     import html as _h_rj
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"🧨 <b>ChatGPT — ошибка после переноса на aichongz</b>\n"
                         f"👤 {_who_u} · {plan_name}\n🔑 Код aichongz: <code>{_ac}</code>\n"
@@ -12472,7 +12476,7 @@ async def _run_activation_job(
                     logging.warning(f"ios rescue: {_old_code} закрыт сверкой — "
                                     f"iOS-код {_new} не потрачен.")
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"✅ <b>ChatGPT — закрыто сверкой, iOS-код сэкономлен</b>\n\n"
                             f"👤 {_who_u} · {plan_name}\n{await _actx(_old_code)}"
@@ -12511,7 +12515,7 @@ async def _run_activation_job(
             _rel_line2 = _rel_phrase(_rel_ok2)
             _mid_ios = None
             try:
-                _m_ios = await bot.send_message(
+                _m_ios = await gpt_card_send(order_id, 
                     ADMIN_ID,
                     ("✅ <b>ChatGPT — выручил iOS-маршрут</b>\n\n" if _ok_ios else
                      "✅ <b>ChatGPT — iOS-маршрут выручил, подтвердилось "
@@ -12624,7 +12628,7 @@ async def _run_activation_job(
                 f"Прежний сайт не сработал: {_fail_reason}\n"
                 f"Ушли на <b>{gpt_provider_name(provider)}</b>.")
             try:
-                _sw_msg = await bot.send_message(ADMIN_ID, _switch_text, parse_mode="HTML")
+                _sw_msg = await gpt_card_send(order_id, ADMIN_ID, _switch_text, parse_mode="HTML")
                 _switch_msg_id = _sw_msg.message_id
             except Exception:
                 _switch_msg_id = None
@@ -12758,7 +12762,7 @@ async def _run_activation_job(
             # уходит НОВОЕ сообщение: раньше при неудачной правке клиент не
             # получал подтверждения вовсе. 06.10.2026
             _mid = _gpt_act_msg.pop(user_id, None)
-            await client_success_deliver(
+            await gpt_card_client_success(order_id, 
                 user_id,
                 client_success_text("chatgpt", plan_name, account=_email or "",
                                     end=client_end_date(plan_name), order_line=_ordline_ok),
@@ -12848,7 +12852,7 @@ async def _run_activation_job(
                             + await _fk_num_line(order_id)
                             + f"⏱ {_used_at}")
                         try:
-                            await bot.edit_message_text(
+                            await gpt_card_edit(order_id, 
                                 _gf_txt, chat_id=ADMIN_ID,
                                 message_id=int(_gf_mid2), parse_mode="HTML")
                         except Exception as _e_ge:
@@ -12858,7 +12862,7 @@ async def _run_activation_job(
                     logging.warning(f"gpt confirm msg close: {_e_gf2}")
                 try:
                     if locals().get("_switch_msg_id"):
-                        await bot.edit_message_text(
+                        await gpt_card_edit(order_id, 
                             _switch_text
                             + "\n\n✅ <b>Активация успешна</b>\n"
                               f"👤 Клиент: <b>{_tg_name}</b> (<code>{user_id}</code>)\n"
@@ -12886,14 +12890,14 @@ async def _run_activation_job(
                     _amid_ok = None
                 if _amid_ok:
                     try:
-                        await bot.edit_message_text(_caption, chat_id=ADMIN_ID,
+                        await gpt_card_edit(order_id, _caption, chat_id=ADMIN_ID,
                                                     message_id=_amid_ok, parse_mode="HTML")
                         _edited = True
                     except Exception as _e_ed:
                         if "not modified" in str(_e_ed).lower():
                             _edited = True
                 if not _edited:
-                    await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+                    await gpt_card_send(order_id, ADMIN_ID, _caption, parse_mode="HTML")
             except Exception:
                 pass
             _fail_clear("gpt", user_id)
@@ -12952,7 +12956,7 @@ async def _run_activation_job(
                         f"активация уже записана (сверка обогнала задачу).")
                     _activation_jobs[job_id] = {"status": "done", "success": True}
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"ℹ️ <b>Активация закрыта раньше</b>\n"
                             f"🔑 <code>{code}</code> · {_who_u}\n\n"
@@ -13137,7 +13141,7 @@ async def _run_activation_job(
                     pass
                 if _fail_should_alert("gpt", user_id):
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"⏸ <b>ChatGPT · сайт на техобслуживании</b>\n\n"
                             f"👤 <b>Клиент:</b> {_who_u}\n"
@@ -13175,7 +13179,7 @@ async def _run_activation_job(
                     pass
                 if _fail_should_alert("gpt", user_id):
                     try:
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"🚨 <b>ChatGPT · на сайте нет мест</b>\n\n"
                             f"👤 <b>Клиент:</b> {_who_u}\n"
@@ -13377,19 +13381,19 @@ async def _run_activation_job(
                 if screenshot and len(txt) > 1000:
                     # Подпись к фото — максимум 1024 символа, а с контекстом
                     # заказа карточка бывает длиннее: шлём текстом, фото — следом.
-                    _m_fin = await bot.send_message(ADMIN_ID, txt, parse_mode="HTML",
+                    _m_fin = await gpt_card_send(order_id, ADMIN_ID, txt, parse_mode="HTML",
                                                     reply_markup=_kb_rc)
                     try:
-                        await bot.send_photo(ADMIN_ID, BufferedInputFile(screenshot, "err.png"))
+                        await gpt_card_photo(order_id, ADMIN_ID, BufferedInputFile(screenshot, "err.png"))
                     except Exception as _e_ph:
                         logging.warning(f"gpt fail photo: {_e_ph}")
                     screenshot = None   # ниже: id текста можно запомнить для правки
                 elif screenshot:
-                    _m_fin = await bot.send_photo(
+                    _m_fin = await gpt_card_photo(order_id, 
                         ADMIN_ID, BufferedInputFile(screenshot, "err.png"),
                         caption=txt, parse_mode="HTML", reply_markup=_kb_rc)
                 else:
-                    _m_fin = await bot.send_message(ADMIN_ID, txt, parse_mode="HTML",
+                    _m_fin = await gpt_card_send(order_id, ADMIN_ID, txt, parse_mode="HTML",
                                                     reply_markup=_kb_rc)
                 # Это сообщение Александр видит чаще всех. Если сверка потом
                 # закроет заказ, оно перепишется в «активация прошла».
@@ -13427,7 +13431,7 @@ async def _run_activation_job(
         }
         # Раньше об этом знал только лог — клиент ждал, а ты не знал, что ждать.
         try:
-            await bot.send_message(
+            await gpt_card_send(order_id, 
                 ADMIN_ID,
                 f"🧨 <b>ChatGPT — внутренняя ошибка активации</b>\n"
                 f"👤 {await _who_user(user_id)} · {plan_name}\n"
@@ -13904,7 +13908,7 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
         _att_ex = await gpt_attempts_block(_order_id)
         logging.info(f"GPT pending истёк uid={user_id} order={_order_id} — жду ручной выдачи")
         try:
-            await bot.send_message(
+            await gpt_card_send(_order_id, 
                 ADMIN_ID,
                 f"⏰ <b>Истекло окно активации ChatGPT</b>\n\n"
                 f"👤 Клиент: <b>{_nick}</b>  (<code>{user_id}</code>)\n"
@@ -13977,7 +13981,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     _den, _den_msg = await _web_access_denied(user_id, check_maintenance=False)
     if _den:
         try:
-            await bot.send_message(
+            await gpt_card_send(locals().get('order_id', ''), 
                 ADMIN_ID,
                 f"\U0001f6ab <b>Заблокированный клиент пытался активировать ChatGPT</b>\n"
                 f"\U0001f464 {await _who_user(user_id)}",
@@ -14100,7 +14104,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             except Exception as _e_tb:
                 logging.warning(f"GPT: снятие надгробия {_code_pend}: {_e_tb}")
             try:
-                await bot.send_message(
+                await gpt_card_send(locals().get('order_id', ''), 
                     ADMIN_ID,
                     f"\u2139\ufe0f <b>ChatGPT — активация после брошенного слежения</b>\n\n"
                     f"\U0001f464 {await _who_user(user_id)}\n"
@@ -14176,7 +14180,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                     _prev_ts = 0.0
                 if _t_dup.time() - _prev_ts > 21600:          # 6 часов
                     await set_setting(_k_dup, str(int(_t_dup.time())))
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         f"\u26d4 <b>ChatGPT — остановил вторую активацию</b>\n\n"
                         f"\U0001f464 {await _who_user(user_id)}\n"
@@ -14227,7 +14231,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                           f"в резерве {_code_pend} — вторую активацию НЕ запускаю")
             if not await activation_cooldown(f"a9dup:{_oid_pend}", seconds=21600):
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         f"\u26d4 <b>ChatGPT — остановил вторую активацию (aichongz)</b>\n\n"
                         f"\U0001f464 {await _who_user(user_id)}\n"
@@ -14290,6 +14294,8 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
     # URL-код от клиента игнорируем — pending является авторитетным источником
     code = pending["code"]
     order_id  = pending["order_id"]
+    from gpt_order_card import capture as _capture_gpt_card_token
+    await _capture_gpt_card_token(order_id, session_raw or access_token)
     plan_name = pending["plan_name"]
     provider  = pending.get("provider", "987ai")
 
@@ -14344,7 +14350,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             await save_pending_activation(user_id, code, order_id, _pk_rp, plan_name, provider)
             logging.info(f"GPT repick off paused site: user={user_id} → {provider} code={code}")
             try:
-                await bot.send_message(
+                await gpt_card_send(locals().get('order_id', ''), 
                     ADMIN_ID,
                     f"🔀 <b>ChatGPT — сайт на паузе, перевыбор</b>\n"
                     f"👤 {await _who_user(user_id)}\n"
@@ -14469,7 +14475,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 logging.info(f"GPT aichongz→bpa: uid={user_id} план {_acc_pl}: "
                              f"{code} → {_ios_new}")
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         f"🔀 <b>ChatGPT — аккаунт уже с подпиской ({_acc_pl})</b>\n"
                         f"Код aichongz <code>{code}</code> не отправлял ("
@@ -14486,7 +14492,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
             else:
                 await _drop_lock()
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         f"✋ <b>ChatGPT — aichongz-код на аккаунт с подпиской не шлю</b>\n"
                         f"👤 {await _who_user(user_id)} · {plan_name} · план аккаунта: "
@@ -14629,7 +14635,7 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 except Exception as _e_st:
                     logging.warning(f"GPT route stock: {_e_st}")
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         f"🚨 <b>ChatGPT — нет кодов нужного маршрута</b>\n\n"
                         f"👤 <b>Клиент:</b> {await _who_user(user_id)}\n"
@@ -15244,6 +15250,9 @@ async def gpt_watch_msg_resolve(code: str, text: str, reply_markup=None) -> bool
     False — карточки нет или Telegram не дал её править (старше 48 часов):
     тогда вызывающий шлёт обычное новое сообщение, и ничего не теряется.
     """
+    from gpt_order_card import update_code as _update_order_card
+    if await _update_order_card(code, text, reply_markup):
+        return True
     _code = str(code or "").strip().upper()
     _key = f"gptwatchmsg:{_code}"
     try:
@@ -15652,7 +15661,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             if _recv and _exp and _recv < _exp - 1.0:
                 logging.error(f"FK AMOUNT MISMATCH ({source}) order={order_id} exp={_exp} recv={_recv}")
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"\U0001f6a8 <b>Несовпадение суммы ({source})</b>\n"
                         f"Заказ <code>{order_id}</code>\n"
@@ -15688,7 +15697,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         logging.error(f"FK: оплата+начисление откатились order={order_id}: {_grant_err}",
                       exc_info=True)
         try:
-            await bot.send_message(
+            await gpt_card_send(order_id, 
                 ADMIN_ID,
                 f"\U0001f6a8 <b>Сбой зачисления — заказ НЕ помечен оплаченным</b>\n\n"
                 f"\U0001f464 {await _who_user(user_id)}\n"
@@ -15714,7 +15723,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         if _st_now in ("cancelled", "refunded"):
             logging.error(f"FK: оплата по заказу в статусе {_st_now}: {order_id}")
             try:
-                await bot.send_message(
+                await gpt_card_send(order_id, 
                     ADMIN_ID,
                     f"\U0001f6a8 <b>Оплата по закрытому заказу</b>\n\n"
                     f"\U0001f194 <code>{order_id}</code>\n"
@@ -15870,7 +15879,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 # Тариф из заказа исчез из каталога. Ничего не подбираем —
                 # зовём Александра с именем того, что реально купили.
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"⚠️ <b>Тариф из заказа исчез из каталога</b>\n\n"
                         f"👤 {await _who_user(user_id)}\n"
@@ -15904,7 +15913,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                                 url=f"https://t.me/{PERSONAL_USERNAME}")],
                         ])
                     )
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"🛍 <b>Заказ ChatGPT (ручная активация)</b>\n"
                         f"👤 {await _who_user(user_id)}  📦 {service_name}\n"
@@ -15926,7 +15935,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"{_oref_pay}\n"
                         f"⚠️ Коды временно закончились. Александр активирует вручную в течение часа 🙌"
                         f"{delayed_note}", parse_mode="HTML")
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"🚨 <b>КОДЫ ChatGPT ЗАКОНЧИЛИСЬ НА ВСЕХ САЙТАХ!</b>\n"
                         f"Заказ <code>{order_id}</code> — активируй вручную!\n"
@@ -16015,7 +16024,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             )],
                         ])
                     )
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"🛍 <b>Claude (ручная активация)</b>\n"
                         f"👤 {await _who_user(user_id)}  📦 {service_name}\n"
@@ -16035,7 +16044,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             f"{delayed_note}",
                             parse_mode="HTML"
                         )
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"🚨 <b>КОДЫ Claude {_plan_name_cl} ЗАКОНЧИЛИСЬ НА ВСЕХ САЙТАХ!</b>\n"
                             f"Заказ <code>{order_id}</code> user=<code>{user_id}</code>\n"
@@ -16073,7 +16082,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                             )],
                         ])
                     )
-                    await bot.send_message(
+                    await gpt_card_send(order_id, 
                         ADMIN_ID,
                         f"🛍 <b>Perplexity (ручная активация)</b>\n"
                         f"👤 {await _who_user(user_id)}  📦 {service_name}\n"
@@ -16096,7 +16105,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                                 [InlineKeyboardButton(text="❓ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
                             ])
                         )
-                        await bot.send_message(
+                        await gpt_card_send(order_id, 
                             ADMIN_ID,
                             f"🚨 <b>КОДЫ Perplexity {_plan_name_cl} ЗАКОНЧИЛИСЬ!</b>\n"
                             f"Заказ <code>{order_id}</code> user=<code>{user_id}</code>\n"
@@ -16128,7 +16137,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                                     [InlineKeyboardButton(text="❓ Написать Александру", url=f"https://t.me/{PERSONAL_USERNAME}")],
                                 ])
                             )
-                            await bot.send_message(
+                            await gpt_card_send(order_id, 
                                 ADMIN_ID,
                                 f"🚨 <b>Perplexity: не удалось отправить кнопку активации</b>\n"
                                 f"👤 {await _who_user(user_id)}  🆔 <code>{order_id}</code>\n"
@@ -16304,15 +16313,15 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         if admin_msg_id:
             # Редактируем существующее сообщение
             try:
-                await bot.edit_message_text(
+                await gpt_card_edit(order_id, 
                     admin_msg, chat_id=ADMIN_ID,
                     message_id=admin_msg_id, parse_mode="HTML",
                     reply_markup=_lp_admin_kb,
                 )
             except Exception:
-                await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=_lp_admin_kb)
+                await gpt_card_send(order_id, ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=_lp_admin_kb)
         else:
-            await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=_lp_admin_kb)
+            await gpt_card_send(order_id, ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=_lp_admin_kb)
     except Exception as e:
         logging.error(f"FK admin notify error: {e}")
 
@@ -17971,7 +17980,7 @@ async def gpt_reconcile_orphans(only_code: str = "") -> dict:
                         note=("Сообщение о неудаче было преждевременным: сайт "
                               "дозавершил заказ, сверка это подтвердила. "
                               "Делать ничего не нужно."))
-                    await bot.edit_message_text(
+                    await gpt_card_edit(r['order_id'], 
                         _txt_rc, chat_id=ADMIN_ID, message_id=int(_cm_mid),
                         parse_mode="HTML")
                     await set_setting(_cm_key, "")
@@ -18685,7 +18694,7 @@ async def gpt_order_mark_activated(order_id: str, user_id: int, code: str,
             + (f"\n{_att_om}\n" if _att_om else "")
             + (f"\n<i>{note}</i>" if note else ""))
     try:
-        await bot.edit_message_text(_txt, chat_id=ADMIN_ID, message_id=_amid,
+        await gpt_card_edit(order_id, _txt, chat_id=ADMIN_ID, message_id=_amid,
                                     parse_mode="HTML")
         return True
     except Exception as _e2:
