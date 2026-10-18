@@ -35,6 +35,18 @@ def plain(text):
     return html.unescape(re.sub(r'<[^>]*>', '', str(text or '')))
 
 
+def chatgpt_emoji():
+    from config import SHOP_CATALOG
+    from keyboards import tg_emoji
+    return tg_emoji(SHOP_CATALOG['chatgpt'])
+
+
+def branded_event(text):
+    # Stored events are not trusted HTML. Restore only our own product emoji.
+    safe = html.escape(plain(text))
+    return re.sub(r'(?:✨\s*)?ChatGPT', lambda _: chatgpt_emoji() + ' ChatGPT', safe)
+
+
 def phase(order, pending, completed, watched, job_running, now):
     """Positive completion evidence wins over any late error or old worker."""
     if completed:
@@ -92,11 +104,14 @@ async def snapshot(conn, oid):
     if state in ('waiting', 'attention', 'expired') and await setting(conn, 'manual:chatgpt:' + plan_index) == '1':
         state, title = 'attention', '🟠 Нужна ручная активация'
     from common import _fin_db_offset, _fin_from_db
-    paid_label = ''
-    if order.get('paid_at'):
-        paid_label = _fin_from_db(order['paid_at'], await _fin_db_offset(conn)).strftime('%d.%m.%Y %H:%M')
+    dates = {}
+    offset = await _fin_db_offset(conn)
+    for key in ('created_at', 'paid_at', 'fulfilled_at'):
+        if order.get(key):
+            dates[key] = _fin_from_db(order[key], offset).strftime('%d.%m.%Y %H:%M:%S')
+    paid_label = dates.get('paid_at', '')
     return dict(order=dict(order), pending=dict(pending) if pending else None, paid_label=paid_label,
-                code=code, done_code=done_code, state=state, title=title,
+                code=code, done_code=done_code, codes=[dict(c) for c in codes], dates=dates, state=state, title=title,
                 journal=await setting(conn, 'gptlog:' + oid),
                 card=json.loads(exists or '{}'))
 
@@ -111,16 +126,22 @@ def render(data, card):
     plan = _plan_by_order('chatgpt', index, _pack_plan_name(o['pack']))[1].get('name') or _pack_plan_name(o['pack'])
     who = '@' + o['username'] if o.get('username') else o.get('full_name') or 'Клиент'
     e = html.escape
-    lines = [f"<b>ChatGPT {e(str(plan))} · заказ #{o.get('num') or '—'}</b>",
+    status = {'paid':'оплачен', 'pending':'ожидает оплаты', 'cancelled':'отменён', 'refunded':'возвращён'}.get(o['status'], o['status'])
+    lines = [f"{chatgpt_emoji()} <b>ChatGPT {e(str(plan))} · заказ #{o.get('num') or '—'}</b>",
              f"<b>{data['title']}</b>", '',
              f"👤 {e(who)} · <code>{o['user_id']}</code>",
-             f"💳 Сумма заказа: {o.get('amount_rub') or 0} ₽ · статус: {e(o['status'])}",
+             f"💳 Сумма заказа: {o.get('amount_rub') or 0} ₽ · статус: {e(status)}",
              f"🧾 FreeKassa: <code>{e(str(o.get('fk_intid') or '—'))}</code>",
              f"🆔 <code>{e(oid)}</code>"]
     if data.get('paid_label'):
         lines.append('Оплачено: ' + e(data['paid_label']))
     if o.get('coins_spent'):
         lines.append(f"Монетками: {o['coins_spent']}")
+    if o.get('payment_method'):
+        method = {'sbp':'СБП', 'card':'карта'}.get(o['payment_method'], o['payment_method'])
+        lines.append('Способ оплаты: ' + e(str(method)))
+    if o.get('promo_code'):
+        lines.append('🎟 Промокод: <code>' + e(str(o['promo_code'])) + '</code>')
     if code:
         lines.append(f"🔑 {'Итоговый' if data['state']=='done' else 'Закреплённый'} код: <code>{e(code)}</code>")
         provider = (data['done_code'] or p).get('provider') or ''
@@ -143,11 +164,76 @@ def render(data, card):
     if card.get('event') and data['state'] not in ('done', 'closed'):
         # This is an event, not the source of the current status.
         lines += ['', 'Последнее уведомление (' + e(card.get('event_at', '')) + '):',
-                  e(plain(card['event'])[:1000])]
+                  branded_event(plain(card['event'])[:1000])]
     if data['state'] == 'done':
         lines += ['', 'Подтверждённый успех. Повторная выдача закрыта.']
     lines += ['', 'История попыток и данные клиента — по кнопкам ниже.']
     return '\n'.join(lines)
+
+
+def history_report(data):
+    from config import _BOT_TZ
+    from common import gpt_provider_name
+    e = html.escape
+    o, p, card = data['order'], data['pending'] or {}, data['card']
+    text = render(data, card).replace('История попыток и данные клиента — по кнопкам ниже.', '')
+    lines = [text, '', '<b>Дополнительные данные заказа</b>',
+             'Имя клиента: ' + e(str(o.get('full_name') or 'не сохранено'))]
+    for field, label in (('created_at','Заказ создан'),('fulfilled_at','Первичная выдача')):
+        lines.append(label + ': ' + e(data.get('dates', {}).get(field) or 'не отмечено'))
+    for field, label in (('expires_at','Срок окна активации'),('activating_at','Начало активации')):
+        value = p.get(field)
+        label_value = value.astimezone(_BOT_TZ).strftime('%d.%m.%Y %H:%M:%S') if value else 'не отмечено'
+        lines.append(label + ': ' + e(label_value))
+    lines.append('Часовой пояс дат: Кызылорда (UTC+5)')
+    lines += ['', '<b>Коды, связанные с заказом</b>']
+    codes = list(data.get('codes') or [])
+    if p.get('code') and not any(c['code'] == p['code'] for c in codes):
+        codes.insert(0, dict(p, used_by=None, used_at=None))
+    for c in codes:
+        code = str(c['code'])
+        label = 'активация записана' if c.get('used_by') == o['user_id'] and c.get('used_at') else (
+            'текущий резерв' if code == p.get('code') else 'связан с заказом, успех не подтверждён')
+        lines.append('• <code>' + e(code) + '</code> — ' + label)
+        if c.get('provider'):
+            lines.append('  Сайт: ' + e(gpt_provider_name(c['provider'])))
+        if c.get('check_status'):
+            lines.append('  Последний статус проверки кода: ' + e(str(c['check_status'])))
+        if c.get('used_at'):
+            lines.append('  Запись использования: ' + e(c['used_at'].astimezone(_BOT_TZ).strftime('%d.%m.%Y %H:%M:%S')))
+    if not codes:
+        lines.append('В базе нет связанных кодов.')
+    lines += ['', '<b>Журнал попыток</b>',
+              'Итоги отдельных попыток не заменяют текущий статус заказа.']
+    if data.get('journal'):
+        for index, row in enumerate(data['journal'].splitlines(), 1):
+            fields = row.split('|')
+            if len(fields) >= 3:
+                lines.append(e(f'{index}. Код: {fields[0]} · сайт: {gpt_provider_name(fields[1])} · результат: {fields[2]}'
+                               + (f' · повторов: {fields[3]}' if len(fields)>3 else '')))
+            else:
+                lines.append(e(row))
+    else:
+        lines.append('Попытки активации ещё не записаны.')
+    lines += ['', 'Полный журнал уведомлений приложен файлом. Полная сессия клиента доступна отдельно по кнопке токена.']
+    return '\n'.join(lines)
+
+
+def message_parts(text, limit=3500):
+    """Split on complete HTML lines; unusually long lines become escaped plain text."""
+    part = ''
+    for line in text.splitlines():
+        rows = [line]
+        if len(line.encode('utf-16-le')) // 2 > limit:
+            raw = plain(line)
+            rows = [html.escape(raw[i:i+400]) for i in range(0, len(raw), 400)]
+        for row in rows:
+            if part and len((part + '\n' + row).encode('utf-16-le')) // 2 > limit:
+                yield part
+                part = ''
+            part += ('\n' if part else '') + row
+    if part:
+        yield part
 
 
 def keyboard(data, card):
@@ -384,7 +470,7 @@ async def handle(cb):
         from common import gpt_recheck_report
         if data['code']:
             result = await gpt_recheck_report(data['code'])
-            await update(oid, text=result or '')
+            await update(oid, text=(chatgpt_emoji() + ' ChatGPT · проверка у поставщика\n' + result) if result else '')
         else:
             await cb.answer('Нет закреплённого кода для проверки', show_alert=True)
         return
@@ -400,10 +486,17 @@ async def handle(cb):
                 filename='chatgpt_session_' + number + '.txt'), caption='Полная сессия · заказ #' + number)
         elif action == 'history':
             history = await setting(conn, 'gptcard_history:' + oid)
-            text = ('Заказ ' + oid + '\n\nЖурнал попыток (результат каждой попытки, не текущий статус):\n'
-                    + data['journal'] + '\n\nУведомления:\n' + history)
+            report = history_report(data)
+            for part in message_parts(report):
+                await bot.send_message(ADMIN_ID, part, parse_mode='HTML')
+            text = plain(report) + '\n\nПолный журнал уведомлений:\n' + history
+            who = '@' + data['order']['username'] if data['order'].get('username') else str(data['order']['user_id'])
             await bot.send_document(ADMIN_ID, BufferedInputFile(text.encode('utf-8'),
-                filename='chatgpt_order_' + number + '.txt'), caption='История заказа #' + number)
+                filename='chatgpt_order_' + number + '.txt'),
+                caption=chatgpt_emoji() + ' <b>ChatGPT · история заказа #' + number + '</b>\n'
+                    + html.escape(who) + ' · ID <code>' + str(data['order']['user_id']) + '</code>\n'
+                    + 'Код: <code>' + html.escape(data['code'] or 'не закреплён') + '</code>\n'
+                    + 'Полные данные заказа — в сообщении выше и в файле.', parse_mode='HTML')
 
 
 async def loop():
