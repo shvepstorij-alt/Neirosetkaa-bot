@@ -219,21 +219,22 @@ def history_report(data):
     return '\n'.join(lines)
 
 
-def message_parts(text, limit=3500):
-    """Split on complete HTML lines; unusually long lines become escaped plain text."""
-    part = ''
+def history_caption(data):
+    """One document caption, within Telegram's 1024-character caption limit.
+
+    Keep complete HTML lines; the attached document retains every detail.
+    Event history is excluded from the caption to prioritize order identity.
+    """
+    card = dict(data['card'])
+    card.pop('event', None)
+    text = render(data, card).replace('История попыток и данные клиента — по кнопкам ниже.', '')
+    footer = '📄 Полные данные и история попыток — в этом файле.'
+    lines = []
     for line in text.splitlines():
-        rows = [line]
-        if len(line.encode('utf-16-le')) // 2 > limit:
-            raw = plain(line)
-            rows = [html.escape(raw[i:i+400]) for i in range(0, len(raw), 400)]
-        for row in rows:
-            if part and len((part + '\n' + row).encode('utf-16-le')) // 2 > limit:
-                yield part
-                part = ''
-            part += ('\n' if part else '') + row
-    if part:
-        yield part
+        candidate = '\n'.join(lines + [line, '', footer])
+        if len(plain(candidate).encode('utf-16-le')) // 2 <= 1024:
+            lines.append(line)
+    return '\n'.join(lines).rstrip() + '\n\n' + footer
 
 
 def keyboard(data, card):
@@ -487,16 +488,10 @@ async def handle(cb):
         elif action == 'history':
             history = await setting(conn, 'gptcard_history:' + oid)
             report = history_report(data)
-            for part in message_parts(report):
-                await bot.send_message(ADMIN_ID, part, parse_mode='HTML')
             text = plain(report) + '\n\nПолный журнал уведомлений:\n' + history
-            who = '@' + data['order']['username'] if data['order'].get('username') else str(data['order']['user_id'])
             await bot.send_document(ADMIN_ID, BufferedInputFile(text.encode('utf-8'),
                 filename='chatgpt_order_' + number + '.txt'),
-                caption=chatgpt_emoji() + ' <b>ChatGPT · история заказа #' + number + '</b>\n'
-                    + html.escape(who) + ' · ID <code>' + str(data['order']['user_id']) + '</code>\n'
-                    + 'Код: <code>' + html.escape(data['code'] or 'не закреплён') + '</code>\n'
-                    + 'Полные данные заказа — в сообщении выше и в файле.', parse_mode='HTML')
+                caption=history_caption(data), parse_mode='HTML')
 
 
 async def loop():
