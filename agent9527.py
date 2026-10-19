@@ -186,7 +186,7 @@ async def post(path: str, payload_bytes: bytes, idem: str = "", tries: int = 3,
             break
         wait = 2 + 2 * i
         if res["http"] == 429 or res["code"] == "RATE_LIMITED":
-            wait = min(max(res.get("retry_after") or 5, 1), 30)
+            wait = max(res.get("retry_after") or 5, 1)
         await asyncio.sleep(wait)
     res["reached_any"] = reached_any
     return res
@@ -318,7 +318,7 @@ async def redeem(code: str, target_type: str, target_value: str, idem: str,
             continue                        # отклонён до обработки — новый nonce
         if last["http"] == 429 or last["code"] == "RATE_LIMITED":
             # Отказ по лимиту квоту не тратит и до обработки не доходит.
-            await asyncio.sleep(min(max(last.get("retry_after") or 5, 1), 30))
+            await asyncio.sleep(max(last.get("retry_after") or 5, 1))
             continue
         kind = error_kind(last)
         if kind == "network" and not reached:
