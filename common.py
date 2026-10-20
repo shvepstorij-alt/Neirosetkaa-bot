@@ -13077,7 +13077,7 @@ async def _run_activation_job(
                 try:
                     await bot.send_message(
                         user_id, _GPT_PROCESSING_TEXT,
-                        parse_mode="HTML", reply_markup=_gpt_support_kb())
+                        parse_mode="HTML", reply_markup=_gpt_support_kb(help_url=webapp_url('/webapp/chatgpt', code=code, plan=plan_name)))
                 except Exception:
                     pass
                 await _admin_fail_shot(
@@ -13213,7 +13213,7 @@ async def _run_activation_job(
                     logging.warning(f"GPT: слежение за {code}: {_e_cp}")
                 try:
                     await bot.send_message(user_id, _GPT_PROCESSING_TEXT, parse_mode="HTML",
-                                           reply_markup=_gpt_support_kb())
+                                           reply_markup=_gpt_support_kb(help_url=webapp_url('/webapp/chatgpt', code=code, plan=plan_name)))
                 except Exception:
                     pass
             else:
@@ -13332,6 +13332,7 @@ async def _run_activation_job(
                     _activation_jobs[job_id] = {
                         "status": "done", "success": False,
                         # без «Попробовать снова», если повтор не поможет
+                        "kind": "token" if _token_invalid else _fail_kind,
                         "manual": not _GPT_FAIL_HINTS.get(
                             _fail_kind, _GPT_FAIL_HINTS["unknown"])[2],
                         "error": (_GPT_TOKEN_FAIL_WEB if _token_invalid
@@ -13594,16 +13595,16 @@ _GPT_FAIL_HINTS = {
               f"<b>chatgpt.com/api/auth/session</b>, скопируй ВЕСЬ текст заново и "
               f"нажми «Повторить».", True),
     "network": ("сайт активации не ответил",
-                "С твоей стороны всё в порядке. Подожди 1–2 минуты, нажми «Повторить» "
-                "и вставь тот же текст со страницы <b>chatgpt.com/api/auth/session</b>.", True),
+                "Результат пока неизвестен. Подожди до 30 минут с начала активации "
+                "и проверь статус в мини-приложении. Повторять запуск не нужно.", False),
     "rate": ("сайт активации сейчас перегружен запросами",
-             "С твоей стороны всё в порядке. Подожди 2–3 минуты и нажми «Повторить».", True),
+             "Повторять запуск не нужно. Проверь статус заказа в мини-приложении.", False),
     "site_payment": ("у сайта активации не прошёл платёж с его стороны",
-                     "С твоей стороны всё в порядке, код цел. Подожди 2–3 минуты и нажми "
-                     "«Повторить».", True),
+                     "Оплачивать заново и менять данные аккаунта не нужно. "
+                     "Проверь статус заказа в мини-приложении.", False),
     "openai_blocked": ("OpenAI временно отклонил активацию на этот аккаунт",
-                       "Подожди 10–15 минут и нажми «Повторить». Если снова не выйдет — "
-                       "нажми «Поддержка», активируем вручную.", True),
+                       "Повторять активацию не нужно. Открой помощь в мини-приложении "
+                       "и передай заказ на проверку.", False),
     "has_plan": ("на аккаунте уже есть платная подписка ChatGPT",
                  "Войди в другой аккаунт ChatGPT — без подписки — и нажми «Повторить», "
                  "или нажми «Поддержка», подскажу, как лучше.", True),
@@ -13611,9 +13612,8 @@ _GPT_FAIL_HINTS = {
              "Тебе ничего менять не нужно — Александр уже получил уведомление и "
              "активирует вручную. Сообщение придёт сюда.", False),
     "unknown": ("сайт активации вернул ошибку",
-                f"Подожди минуту и нажми «Повторить». Если снова не выйдет — открой "
-                f"<b>chatgpt.com/api/auth/session</b> в другом браузере — {_GPT_BROWSERS}, "
-                f"скопируй ВЕСЬ текст заново и вставь.", True),
+                "Результат нужно проверить. Не меняй данные аккаунта и не повторяй "
+                "активацию. Открой помощь в мини-приложении.", False),
 }
 
 
@@ -13682,23 +13682,28 @@ def _gpt_wait_web(why: str, note: str = "", keep_code: bool = True) -> str:
 
 
 _GPT_PROCESSING_TEXT = (
-    "⏳ <b>Активация обрабатывается — сайт принял запрос.</b>\n\n"
-    f"{_GPT_PAID_LINE}\n"
-    "👉 Ничего повторять не нужно: повтор может списать второй код. Подписка обычно "
-    "появляется в течение 10–15 минут — потом обнови chatgpt.com или перезайди в аккаунт. "
-    "Не появилась через 15 минут — нажми «Поддержка».")
+    "⏳ <b>Подтверждение активации ещё не получено.</b>\n\n"
+    "💳 Оплата сохранена.\n"
+    "Подожди до 30 минут с начала активации: подписка может появиться автоматически. "
+    "Повторять активацию и оплачивать заново не нужно. Результат придёт в чат бота. "
+    "Статус и подсказки доступны в мини-приложении активации.")
 _GPT_PROCESSING_WEB = (
-    "Сайт принял запрос. Подписка обычно появляется в течение 10–15 минут — потом обнови "
-    "chatgpt.com или перезайди в аккаунт. Повторять ничего не нужно, результат придёт в чат бота.")
+    "Подтверждение ещё не получено. Подожди до 30 минут с начала активации: подписка "
+    "может появиться автоматически. Повторять ничего не нужно. Результат придёт в чат бота.")
 
 
-def _gpt_support_kb(retry_url: str = "") -> InlineKeyboardMarkup:
+def _gpt_support_kb(retry_url: str = "", help_url: str = "") -> InlineKeyboardMarkup:
     """[🔄 Повторить] [💬 Поддержка] — «Повторить», только если есть куда."""
     from aiogram.types import WebAppInfo as _WAI_sk
     _row = []
     if retry_url:
         _row.append(InlineKeyboardButton(text="🔄 Повторить", web_app=_WAI_sk(url=retry_url)))
-    _row.append(InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{PERSONAL_USERNAME}"))
+    _help_url = help_url or retry_url
+    if _help_url:
+        _help_url += ('&' if '?' in _help_url else '?') + 'help=1'
+        _row.append(InlineKeyboardButton(text="💬 Помощь с активацией", web_app=_WAI_sk(url=_help_url)))
+    else:
+        _row.append(InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{PERSONAL_USERNAME}"))
     return InlineKeyboardMarkup(inline_keyboard=[_row])
 
 def _activation_timer_line(deadline) -> str:
@@ -13818,7 +13823,7 @@ def _status_probe_fail(ip: str):
         logging.warning(f"🚫 Похоже на перебор id активации с IP {ip} - блокирую на 10 мин")
 
 
-async def _notify_gpt_pending_expired(user_id: int) -> None:
+async def _notify_gpt_pending_expired(user_id: int) -> bool:
     """Окно активации ChatGPT истекло — СООБЩАЕМ админу, код НЕ выдаём.
 
     Раньше бот сам брал новый код из пула и продлевал активацию. Повторную
@@ -13826,7 +13831,7 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
     кнопку активации ещё раз»), поэтому здесь мы лишь находим оплаченный заказ
     и присылаем по нему сводку.
 
-    Ничего не возвращает: pending не создаётся, пул не трогается.
+    True только при подтверждённой отправке уведомления; пул не трогаем.
     """
     try:
         pool = await get_pool()
@@ -13859,7 +13864,7 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
                 _order_id, _pack, _skey = _o["order_id"], _pk, _sk
                 break
             if not _order_id:
-                return None
+                return False
             _idx = int(_pack.split(":")[2]) if _pack.count(":") >= 2 and _pack.split(":")[2].isdigit() else 0
             # Было _plan_by_order(_svc, …) — переменной _svc в этой функции НЕТ.
             # Функция падала с NameError на КАЖДОМ нажатии клиента, ошибка
@@ -13876,7 +13881,7 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
         # Клиент может жать кнопку много раз — шлём не чаще раза в 30 минут.
         try:
             if await activation_cooldown(f"gptexpired:{user_id}", seconds=1800):
-                return None
+                return bool(await get_setting('gptexpired_sent:' + _order_id, ''))
         except Exception as _e_cd2:
             logging.warning(f"cooldown gptexpired uid={user_id}: {_e_cd2}")
 
@@ -13908,7 +13913,7 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
         _att_ex = await gpt_attempts_block(_order_id)
         logging.info(f"GPT pending истёк uid={user_id} order={_order_id} — жду ручной выдачи")
         try:
-            await gpt_card_send(_order_id, 
+            _receipt = await gpt_card_send(_order_id, 
                 ADMIN_ID,
                 f"⏰ <b>Истекло окно активации ChatGPT</b>\n\n"
                 f"👤 Клиент: <b>{_nick}</b>  (<code>{user_id}</code>)\n"
@@ -13927,14 +13932,17 @@ async def _notify_gpt_pending_expired(user_id: int) -> None:
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="📨 Отправить повторно",
                                          callback_data=f"adm_resend:{_order_id}")]]))
+            if _receipt:
+                await set_setting('gptexpired_sent:' + _order_id, str(_receipt.message_id))
+                return True
         except Exception as _e_send:
             # Раньше здесь был молчаливый pass — именно так эта функция и
             # «не работала» незаметно. Обязательное сообщение: отказ в лог.
             logging.error(f"истёкшее окно: не отправил сообщение {_order_id}: {_e_send}")
-        return None
+        return False
     except Exception as _e_r:
         logging.error(f"_notify_gpt_pending_expired uid={user_id}: {_e_r}")
-        return None
+        return False
 
 
 async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
@@ -14001,10 +14009,11 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
         # Окно активации истекло. Новый код автоматически НЕ выдаём — повторную
         # выдачу делает только Александр из админ-панели. Здесь лишь уведомляем
         # его, что клиент упёрся в истёкшее окно.
-        await _notify_gpt_pending_expired(user_id)
-        return _resp({"success": False,
-                      "error": f"Время активации истекло. Напиши @{PERSONAL_USERNAME} — "
-                               f"он выдаст новую активацию."})
+        _sent = await _notify_gpt_pending_expired(user_id)
+        return _resp({"success": False, "manual": True,
+                      "error": ("Срок действия кнопки закончился. Оплата сохранена. "
+                                "Запрос передан Александру — новая кнопка придёт в чат бота. Писать отдельно не нужно."
+                                if _sent else "Не удалось открыть активацию по этой кнопке. Проверь статус заказа или открой помощь в мини-приложении. Оплачивать повторно не нужно.")})
 
     # Предупреждения о ПОВТОРНОЙ активации ChatGPT здесь больше нет.
     #
@@ -14672,10 +14681,18 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                                                      keep_code=False)})
 
     job_id = str(uuid.uuid4())[:12]
+    import activation_help as _help
+    try:
+        await _help.track('chatgpt', user_id, order_id, code, job_id, str(body.get('code') or ''))
+    except Exception:
+        logging.exception('GPT: could not save activation help state')
+        await _drop_lock()
+        return _resp({'success': False, 'error': 'Не удалось сохранить операцию. Активация не запущена.'}, 503)
     _activation_jobs[job_id] = {"status": "pending"}
     _gpt_job_active[user_id] = job_id
     asyncio.create_task(
-        _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name, provider, session_raw, _force)
+        _help.run('chatgpt', order_id, job_id,
+            _run_activation_job(job_id, code, access_token, user_id, order_id, plan_name, provider, session_raw, _force))
     )
     logging.info(f"ChatGPT activation started: job={job_id} user={user_id} code={code} site={provider} force={_force}")
     return _resp({"job_id": job_id, "status": "started"})
@@ -15307,13 +15324,13 @@ async def _order_ref_line(order_id: str) -> str:
 # сервис → (как назвать, куда открыть, первый шаг «что дальше»)
 _CLIENT_SVC_INFO = {
     "chatgpt": ("ChatGPT", "https://chatgpt.com",
-                "Обнови <b>chatgpt.com</b> или перезайди в приложение — {plan} "
-                "обычно появляется сразу, но иногда с задержкой до 10–15 минут. "
-                "Это нормально, повторять активацию не нужно."),
+                "Обнови <b>chatgpt.com</b> и проверь нужный аккаунт. Если {plan} "
+                "не отображается, открой «Подписка не появилась» в мини-приложении. "
+                "Повторять активацию не нужно."),
     "claude": ("Claude", "https://claude.ai",
-               "Обнови <b>claude.ai</b> или перезайди в приложение — {plan} обычно "
-               "появляется сразу, но иногда с задержкой до 10–15 минут. Это нормально, "
-               "повторять активацию не нужно."),
+               "Обнови <b>claude.ai</b> и проверь нужный аккаунт. Если {plan} "
+               "не отображается, открой «Подписка не появилась» в мини-приложении. "
+               "Повторять активацию не нужно."),
     "perplexity": ("Perplexity", "https://www.perplexity.ai",
                    "Открой Perplexity и перезайди в аккаунт или нажми "
                    "«Restore Purchases» в приложении — {plan} подтянется."),
@@ -15962,14 +15979,14 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         [InlineKeyboardButton(text="✨ Активировать подписку", style="success",
                                               web_app=WebAppInfo(url=_webapp_url))],
                         [InlineKeyboardButton(text="❓ Нужна помощь", style="primary",
-                                              callback_data="gpt_need_help")],
+                                              web_app=WebAppInfo(url=_webapp_url + ('&' if '?' in _webapp_url else '?') + 'help=1'))],
                     ])
                     # После окна кнопка активации ОСТАЁТСЯ — код живёт до 12 ч
                     _kb_gpt_expired = InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="✨ Активировать подписку", style="success",
                                               web_app=WebAppInfo(url=_webapp_url))],
                         [InlineKeyboardButton(text="❓ Нужна помощь", style="primary",
-                                              callback_data="gpt_need_help")],
+                                              web_app=WebAppInfo(url=_webapp_url + ('&' if '?' in _webapp_url else '?') + 'help=1'))],
                     ])
                     _dl_gpt = _dt_gpt.datetime.now(_BOT_TZ) + _dt_gpt.timedelta(minutes=ACTIVATION_WINDOW_MIN)
                     _exp_gpt = (
@@ -15977,7 +15994,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"{_ordline_g}\n"
                         f"Если ещё не активировал — можно сделать это <b>сейчас</b>: нажми кнопку ниже.\n"
                         f"🎟 Код: <code>{_code}</code>\n\n"
-                        f"Не получается — напиши Александру, активирует вручную 🙌"
+                        "Не получается — нажми «Нужна помощь»: бот покажет подсказки и статус заказа."
                     )
                     # СНАЧАЛА инструкция…
                     try:
@@ -16711,6 +16728,8 @@ async def setup_webhook_server():
     logging.info("Perplexity Mini App: /webapp/perplexity + /api/activate-perplexity + status")
 
     app.router.add_post("/api/activate-chatgpt", api_activate_chatgpt_handler)
+    from activation_help import install as _install_activation_help
+    _install_activation_help(app)
     app.router.add_get("/api/activate-status/{job_id}", api_activation_status_handler)
     logging.info("Mini App: /webapp/chatgpt + /api/activate-chatgpt + /api/activate-status")
     try:
@@ -20117,12 +20136,12 @@ async def _send_claude_webapp_to_user(
         )
         _kb_cl_active = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡ Активировать Claude", style="success", web_app=_WAI(url=webapp_url))],
-            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="claude_need_help")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", web_app=_WAI(url=webapp_url + ('&' if '?' in webapp_url else '?') + 'help=1'))],
         ])
         # После окна кнопка активации ОСТАЁТСЯ — код живёт до 12 ч, клиент может активировать сам
         _kb_cl_expired = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚡ Активировать Claude", style="success", web_app=_WAI(url=webapp_url))],
-            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", callback_data="claude_need_help")],
+            [InlineKeyboardButton(text="❓ Нужна помощь", style="primary", web_app=_WAI(url=webapp_url + ('&' if '?' in webapp_url else '?') + 'help=1'))],
         ])
         _dl_cl = _dt_cl.datetime.now(_BOT_TZ) + _dt_cl.timedelta(minutes=ACTIVATION_WINDOW_MIN)
         _exp_cl = (
@@ -20131,7 +20150,7 @@ async def _send_claude_webapp_to_user(
             f"Если ещё не активировал — можно сделать это <b>сейчас</b>: нажми кнопку ниже, "
             f"введи Organization ID.\n"
             f"🎟 Код: <code>{code}</code>\n\n"
-            f"Не получается — напиши Александру, активирует вручную 🙌"
+            "Не получается — нажми «Нужна помощь»: бот покажет подсказки и статус заказа."
         )
         # СНАЧАЛА инструкция…
         try:
@@ -21208,12 +21227,12 @@ _CLAUDE_FAIL_HINTS = {
                 "скопируй <b>Organization ID</b> — строку вида xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx "
                 "(не User ID и не почту) — и нажми «Повторить».", True),
     "has_plan": ("на этом аккаунте Claude уже есть платная подписка",
-                 "Отмени её на <b>claude.ai/settings/billing</b> и подожди, пока план "
-                 "станет Free (обычно пара минут), затем нажми «Повторить». Или укажи "
-                 "Organization ID другого аккаунта — на Free-плане.", True),
+                 "Отмена автопродления не переводит аккаунт на Free сразу. "
+                 "Укажи Organization ID другого аккаунта на Free-плане или "
+                 "открой помощь в мини-приложении для проверки возможности продления.", True),
     "stock": ("на сайтах активации временно закончились места",
-              "Пополнение обычно занимает 15–30 минут. Нажми «Повторить» чуть позже — "
-              "код остаётся действительным.", True),
+              "Точный срок пополнения пока неизвестен. Менять данные аккаунта "
+              "или повторять активацию не нужно. Проверь статус заказа в мини-приложении.", False),
     "sites": ("автоматически активировать не получилось",
               "Ничего делать не нужно — Александр уже получил уведомление и "
               "активирует вручную. Сообщение придёт сюда.", False),
@@ -21228,13 +21247,12 @@ _CLAUDE_FAIL_HINTS = {
 _CLAUDE_PROCESSING_TEXT = (
     "⏳ <b>Активация обрабатывается — подтверждение ещё не пришло.</b>\n\n"
     "💳 Оплата сохранена.\n"
-    "👉 Ничего повторять не нужно: повтор может списать второй код. Александр "
-    "проверяет активацию на сайте — результат придёт сюда (обычно в течение "
-    "15–30 минут). Если подписка появится раньше — просто обнови claude.ai.")
+    "Подожди до 30 минут с начала активации: подписка может появиться автоматически. "
+    "Повторять активацию и оплачивать заново не нужно. Бот проверяет результат "
+    "и сообщит о нём здесь. Статус и подсказки доступны в мини-приложении.")
 _CLAUDE_PROCESSING_WEB = (
-    "Подтверждение активации ещё не пришло. Ничего повторять не нужно — "
-    "Александр проверяет активацию, результат придёт в чат бота (обычно в течение "
-    "15–30 минут).")
+    "Подтверждение ещё не получено. Подожди до 30 минут с начала активации: подписка "
+    "может появиться автоматически. Ничего повторять не нужно. Результат придёт в чат бота.")
 
 
 def _claude_fail_text(kind: str) -> str:
@@ -21268,13 +21286,12 @@ async def _claude_tell_client(user_id, kind: str) -> None:
             _txt = _claude_fail_text(kind)
             _retry = (_CLAUDE_FAIL_HINTS.get(kind) or _CLAUDE_FAIL_HINTS["sites"])[2]
         _url = ""
-        if _retry:
-            _p = await get_claude_pending_activation(int(user_id))
-            if _p and _p.get("code"):
-                _url = webapp_url("/webapp/claude", plan=_p.get("plan_name") or "",
-                                  code=_p["code"])
+        _p = await get_claude_pending_activation(int(user_id))
+        if _p and _p.get("code"):
+            _url = webapp_url("/webapp/claude", plan=_p.get("plan_name") or "",
+                              code=_p["code"])
         await bot.send_message(int(user_id), _txt, parse_mode="HTML",
-                               reply_markup=_gpt_support_kb(_url))
+                               reply_markup=_gpt_support_kb(_url if _retry else '', help_url=_url))
     except Exception as _e_tc:
         logging.error(f"claude client msg {kind} uid={user_id}: {_e_tc}")
 
@@ -21471,12 +21488,21 @@ async def _claude_set_unclear(ref, user_id, order_id, code, org_id, plan_name, p
         logging.warning(f"claude unclear check {code}: {_e_su}")
     await _claude_check_mark(code, user_id, order_id, site, prov, site_ref, org_id,
                              plan_name, plan_key)
+    _client_kind = 'processing'
+    try:
+        from claude_api import read as _read_claude_operation
+        _operation = await _read_claude_operation(prov, code)
+        if _operation and _operation.get('state') == 'rejected_stock':
+            _client_kind = 'stock'
+    except Exception:
+        logging.warning('Claude: could not read stock guidance state')
     if ref:
-        _claude_job_results[ref] = {"status": "done", "success": False, "pending": True,
-                                    "kind": "processing", "error": _CLAUDE_PROCESSING_WEB}
+        _claude_job_results[ref] = {"status": "done", "success": False,
+                                    "pending": _client_kind == 'processing', "manual": _client_kind == 'stock',
+                                    "kind": _client_kind, "error": _CLAUDE_PROCESSING_WEB if _client_kind == 'processing' else _claude_fail_web('stock')}
     await _claude_ask_admin_check(ref, user_id, order_id, code, org_id, plan_name, plan_key,
                                   prov, site, why, shot=shot, site_ref=site_ref, head=head)
-    await _claude_tell_client(user_id, "processing")
+    await _claude_tell_client(user_id, _client_kind)
 
 
 async def _claude_admin_finish(order_id, user_id, plan_name, code, org_id, site,
@@ -22686,17 +22712,17 @@ async def _claude_open_order(user_id: int):
 async def _notify_claude_pending_expired(user_id: int) -> bool:
     """Окно активации Claude истекло, клиент нажал «Активировать» — сообщаем
     Александру с кнопкой «Отправить повторно». Код сами НЕ выдаём.
-    True — по клиенту есть оплаченный неактивированный заказ Claude."""
+    True — уведомление по оплаченному заказу доставлено администратору."""
     try:
         _o = await _claude_open_order(user_id)
         if not _o:
             return False
         if await activation_cooldown(f"clexpired:{user_id}", seconds=1800):
-            return True
+            return bool(await get_setting('clexpired_sent:' + _o['order_id'], ''))
         _att = await claude_attempts_block(_o["order_id"])
         _unc = await _claude_order_unclear(_o["order_id"])
         _said = (await get_setting(f"claude_client_said_done:{_o['order_id']}", "") or "").strip()
-        await _claude_admin_send(
+        _sent_mid = await _claude_admin_send(
             ("⏰ <b>Claude — клиент снял резерв кнопкой «уже активировал»</b>\n\n" if _said
              else "⏰ <b>Истекло окно активации Claude</b>\n\n")
             + await _adm_claude_ctx(_o["order_id"], "", "", "", _o["plan_name"], uid=user_id)
@@ -22711,7 +22737,10 @@ async def _notify_claude_pending_expired(user_id: int) -> bool:
                 InlineKeyboardButton(text="📨 Отправить повторно",
                                      callback_data=f"adm_resend:{_o['order_id']}")]]),
             order_id=_o["order_id"])
-        return True
+        if _sent_mid:
+            await set_setting('clexpired_sent:' + _o['order_id'], str(_sent_mid))
+            return True
+        return False
     except Exception as _e_ne:
         logging.error(f"_notify_claude_pending_expired uid={user_id}: {_e_ne}")
         return False
@@ -23081,12 +23110,14 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     _force_cl = bool(body.get("force"))   # клиент подтвердил пополнение поверх прежней активации
     try:
         await set_setting("claudejob:" + _ref, _j.dumps({"order_id": order_id, "user_id": user_id}))
+        import activation_help as _help
+        await _help.track('claude', user_id, order_id, code, _ref, str(body.get('code') or ''))
     except Exception:
         _claude_chain_active.pop(user_id, None)
         _claude_job_results.pop(_ref, None)
         return _resp({"error": "Не удалось сохранить операцию. Активация не запущена."}, 503)
-    asyncio.create_task(_run_claude_activation_chain(
-        _ref, user_id, order_id, org_id, plan_name, plan_key, force=_force_cl))
+    asyncio.create_task(_help.run('claude', order_id, _ref, _run_claude_activation_chain(
+        _ref, user_id, order_id, org_id, plan_name, plan_key, force=_force_cl)))
     logging.info(f"Claude activation chain started: ref={_ref} user={user_id} plan={plan_key} force={_force_cl}")
     return _resp({"order_id": _ref, "status": "queued"})
 

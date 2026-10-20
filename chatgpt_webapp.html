@@ -864,7 +864,7 @@
     <div class="success-title">Готово!</div>
     <div class="success-sub-title" id="success-plan">ChatGPT Plus активирован</div>
     <div class="success-sub">
-      Подписка подключена к твоему аккаунту. Обычно тариф появляется сразу, но иногда — с задержкой до 10–15 минут: обнови chatgpt.com или перезайди в аккаунт. Повторять активацию не нужно — я всегда на связи!
+      Активация подтверждена. Обнови chatgpt.com и проверь, что открыт нужный аккаунт. Если тариф ещё не отображается — нажми «Подписка не появилась». Повторять активацию не нужно.
     </div>
 
     <!-- Live-лента рекомендаций (наполняется из renderRecs) -->
@@ -897,7 +897,7 @@
     <div class="error-emoji">😔</div>
     <div class="error-title">Не получилось</div>
     <div class="error-sub" id="err-detail">
-      Возможно, текст со страницы сессии устарел или скопирован не целиком. Оплата сохранена, код за тобой — попробуй ещё раз или напиши Александру.
+      Проверь подсказку для этого заказа. При неизвестном результате активацию повторять не нужно.
     </div>
 
     <div class="btn-wrap-inline">
@@ -1471,7 +1471,7 @@ function showError(msg) {
   var again = document.querySelector('#s5 .btn-green');
   if (again) { again.style.display = ''; again.textContent = 'Попробовать снова'; again.onclick = function(){ showScreen('s2'); }; }
   var el = document.getElementById('err-detail');
-  if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
+  if (el) el.textContent = msg || 'Не удалось получить результат. Открой помощь или проверь статус заказа; повторять активацию не нужно.';
   showScreen('s5');
 }
 
@@ -1505,7 +1505,7 @@ function showProcessing(msg) {
   var tt = document.querySelector('#s5 .error-title');
   if (tt) { tt.textContent = 'Активация обрабатывается'; tt.style.color = 'var(--text)'; }
   var el = document.getElementById('err-detail');
-  if (el) el.textContent = msg || 'Сайт принял запрос — подписка обычно появляется в течение 10–15 минут. Повторять ничего не нужно, результат придёт в чат бота.';
+  if (el) el.textContent = msg || 'Подтверждение ещё не получено. Подожди до 30 минут с начала активации: подписка может появиться автоматически. Повторять ничего не нужно, результат придёт в чат бота.';
   var again = document.querySelector('#s5 .btn-green');
   if (again) again.style.display = 'none';   // без «Попробовать снова» — чтобы не активировать дважды
   showScreen('s5');
@@ -1519,7 +1519,7 @@ function showManual(msg) {
   var em = document.querySelector('#s5 .error-emoji');
   if (em) em.textContent = '🛠';
   var tt = document.querySelector('#s5 .error-title');
-  if (tt) { tt.textContent = 'Активацию завершит Александр'; tt.style.color = 'var(--text)'; }
+  if (tt) { tt.textContent = 'Заказ требует проверки'; tt.style.color = 'var(--text)'; }
   var el = document.getElementById('err-detail');
   if (el) el.textContent = msg || 'Оплата сохранена, код за тобой. Александр активирует вручную — сообщение придёт в чат бота.';
   var again = document.querySelector('#s5 .btn-green');
@@ -1545,8 +1545,7 @@ async function pollResult(jobId) {
       // Задача исчезла из памяти (был деплой) — крутить 6 минут впустую
       // незачем, да и каждый 404 расходует лимит запросов.
       if (data.status === 'not_found') {
-        showProcessing('Активация продолжается на стороне сайта. Результат придёт '
-                     + 'в чат бота — повторять ничего не нужно.');
+        showProcessing('Пока не удалось получить результат. Подожди до 30 минут с начала активации и проверь статус заказа. Повторять активацию не нужно.');
         return;
       }
       if (data.status === 'done') {
@@ -1560,7 +1559,7 @@ async function pollResult(jobId) {
         } else if (data.manual) {
           showManual(data.error);
         } else {
-          showError(data.error);
+          showError(data.error, data.kind);
         }
         return;
       }
@@ -1569,8 +1568,7 @@ async function pollResult(jobId) {
   // Опрос кончился, а ответа нет. Это НЕ ошибка: активация у сайта могла
   // ещё идти. Красный экран тут пугал зря — клиент думал, что подписки нет,
   // и шёл активировать повторно (риск двойной). Александр 02.10.2026.
-  showProcessing('Активация ещё идёт на стороне сайта. Бот следит за ней и '
-               + 'напишет, когда закончится — повторять ничего не нужно.');
+  showProcessing('Подтверждение пока не получено. Подожди до 30 минут с начала активации. Бот проверяет результат; повторять активацию не нужно.');
 }
 
 // ─── Запуск активации ────────────────────────────────────────────
@@ -1606,7 +1604,7 @@ async function startActivation() {
   } catch (_e_sub) {}
 
   try {
-    var resp = await _fetchR('/api/activate-chatgpt', {
+    var resp = await fetch('/api/activate-chatgpt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1616,12 +1614,13 @@ async function startActivation() {
         init_data: tg ? tg.initData : '',
         force:     _forceOnce ? 1 : 0
       })
-    }, 4);
+    });
 
     if (!resp.ok) {
       var errMsg = 'Ошибка сервера. Попробуй снова.';
       try { var d = await resp.json(); errMsg = d.error || errMsg; } catch(_) {}
-      showError(errMsg);
+      if (resp.status >= 500) showProcessing('Не удалось получить результат от сервера. Запрос мог поступить в обработку. Подожди до 30 минут с начала активации и проверь статус заказа; повторять запуск не нужно.');
+      else showError(errMsg, resp.status === 403 ? 'auth' : '');
       return;
     }
 
@@ -1633,9 +1632,10 @@ async function startActivation() {
       if (res.manual) { showManual(res.error); return; }
       showError(res.error || 'Не удалось запустить активацию.'); return;
     }
+    if (window.activationHelp) window.activationHelp.setRef(res.job_id);
     await pollResult(res.job_id);
   } catch(e) {
-    showError('⏳ Сервер сейчас обновляется. Подожди минуту и нажми «Попробовать снова» — код действителен, ничего не потеряется.');
+    showProcessing('Связь прервалась. Запрос мог уже поступить в обработку. Подожди до 30 минут с начала активации и проверь статус заказа. Повторять активацию не нужно.');
   }
 }
 
@@ -2036,5 +2036,6 @@ if (document.readyState === 'loading') {
 })();
 
 </script>
+<script src="/webapp/activation-help.js?v=20261019-1"></script>
 </body>
 </html>

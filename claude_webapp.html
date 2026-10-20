@@ -487,7 +487,7 @@
 
     <div class="warn-box">
       ⚠️ <b>Важно:</b> Твой аккаунт Claude должен быть на <b>Free-плане</b>.<br>
-      Если уже есть платная подписка — сначала отмени её на <b>claude.ai/settings/billing</b>, потом возвращайся сюда.
+      Если уже есть платная подписка — проверь возможность продления через помощь. Отмена автопродления не переводит аккаунт на Free сразу.
     </div>
   </div>
 
@@ -629,7 +629,7 @@
     <div class="success-title">Готово!</div>
     <div class="success-sub-title" id="success-plan">Claude Pro активирован</div>
     <div class="success-sub">
-      Подписка привязана к твоему аккаунту. Обычно появляется сразу, но иногда с задержкой до 10–15 минут — это нормально, повторять активацию не нужно. Обнови claude.ai или перезайди в приложение.
+      Активация подтверждена. Обнови claude.ai и проверь нужный аккаунт. Если тариф ещё не отображается — нажми «Подписка не появилась». Повторять активацию не нужно.
     </div>
 
     <!-- Live-лента рекомендаций -->
@@ -662,7 +662,7 @@
     <div class="error-emoji">😔</div>
     <div class="error-title">Не получилось</div>
     <div class="error-sub" id="err-detail">
-      Что-то пошло не так. Напиши Александру — помогу в течение 15 минут!
+      Проверь подсказку для этого заказа. При неизвестном результате повторять активацию не нужно.
     </div>
 
     <div class="btn-wrap-inline">
@@ -685,7 +685,7 @@
     <div class="error-emoji" id="proc-emoji" style="filter:none;">⏳</div>
     <div class="success-title" id="proc-title" style="color:var(--txt);">Активация обрабатывается</div>
     <div class="success-sub" id="proc-detail">
-      Активация обрабатывается. Подписка появится в течение 5–10 минут. Загляни в Claude чуть позже.
+      Подтверждение ещё не получено. Подожди до 30 минут с начала активации: подписка может появиться автоматически. Повторять активацию не нужно.
     </div>
     <div class="btn-wrap-inline">
       <a href="https://claude.ai" target="_blank" style="text-decoration:none;display:block;">
@@ -1188,7 +1188,7 @@ function showError(msg) {
   if (btn) { btn.style.display = ''; btn.textContent = 'Попробовать снова';
              btn.onclick = function(){ retryActivation(); return false; }; }
   var el = document.getElementById('err-detail');
-  if (el) el.textContent = msg || 'Ошибка активации. Напиши Александру!';
+  if (el) el.textContent = msg || 'Не удалось получить результат. Открой помощь или проверь статус заказа; повторять активацию не нужно.';
   showScreen('s5');
 }
 
@@ -1205,7 +1205,7 @@ function showProcessing(msg) {
 function showManual(msg) {
   if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('warning'); } catch(e) {}
   var em = document.getElementById('proc-emoji'); if (em) em.textContent = '🙌';
-  var tt = document.getElementById('proc-title'); if (tt) tt.textContent = 'Активируем вручную';
+  var tt = document.getElementById('proc-title'); if (tt) tt.textContent = 'Заказ требует проверки';
   var el = document.getElementById('proc-detail');
   if (el) el.textContent = msg || 'Оплата сохранена. Александр уже получил уведомление и активирует вручную — сообщение придёт в чат бота.';
   showScreen('s6');
@@ -1267,7 +1267,7 @@ async function pollStatus(orderId) {
           if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('success'); } catch(e) {}
           showScreen('s4');
         } else {
-          showError(data.error || 'Ошибка активации');
+          showError(data.error || 'Ошибка активации', data.kind);
         }
         return;
       }
@@ -1294,7 +1294,7 @@ async function startActivation() {
   showScreen('s3');
 
   try {
-    var resp = await _fetchR('/api/activate-claude', {
+    var resp = await fetch('/api/activate-claude', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1303,20 +1303,22 @@ async function startActivation() {
         init_data: tg ? tg.initData : '',
         force:     forceMode ? 1 : 0
       })
-    }, 4);
+    });
 
     if (!resp.ok) {
       var errMsg = 'Ошибка сервера. Попробуй снова.';
       try { var d = await resp.json(); errMsg = d.error || errMsg; } catch(_) {}
-      showError(errMsg);
+      if (resp.status >= 500) showProcessing('Не удалось получить результат от сервера. Запрос мог поступить в обработку. Подожди до 30 минут с начала активации и проверь статус заказа; повторять запуск не нужно.');
+      else showError(errMsg, resp.status === 403 ? 'auth' : '');
       return;
     }
 
     var body = await resp.json();
     if (!body.order_id) { showError(body.error || 'Не удалось запустить активацию.'); return; }
+    if (window.activationHelp) window.activationHelp.setRef(body.order_id);
     await pollStatus(body.order_id);
   } catch(e) {
-    showError('⏳ Сервер сейчас обновляется. Подожди минуту и нажми «Попробовать снова» — код действителен, ничего не потеряется.');
+    showProcessing('Связь прервалась. Запрос мог уже поступить в обработку. Подожди до 30 минут с начала активации и проверь статус заказа. Повторять активацию не нужно.');
   }
 }
 
@@ -1635,5 +1637,6 @@ document.addEventListener('DOMContentLoaded', function () {
 })();
 
 </script>
+<script src="/webapp/activation-help.js?v=20261019-1"></script>
 </body>
 </html>
