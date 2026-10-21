@@ -607,7 +607,6 @@ async def improve_prompt_inline(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Генерировать", callback_data=f"go:{prefix}:{key}")],
-                [InlineKeyboardButton(text="✍️ Изменить ещё", callback_data=f"improve_prompt:{prefix}:{key}")],
                 [InlineKeyboardButton(text="🔙 Оригинальный промт", callback_data=f"chprompt:{prefix}:{key}")],
                 [_eib("Главное меню", "back_main")],
             ])
@@ -1740,7 +1739,6 @@ async def edit_confirm_text(message: Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
-            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_edit:{model_key}")],
             [_eib("Главное меню", "back_main")],
         ])
     )
@@ -1766,7 +1764,6 @@ async def anim_confirm_text(message: Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
-            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_anim:{model_key}")],
             [_eib("Главное меню", "back_main")],
         ])
     )
@@ -1858,7 +1855,6 @@ async def do_improve_prompt(message: Message, state: FSMContext):
                   for _ik, _ie in (("gptimg_fast", "iband_gptimg"), ("nb_flash", "iband_nano"),
                                    ("nb_2", "iband_nano"), ("flux_pro", "iband_flux"))
                   if _ik in IMAGE_MODELS and _ik not in DISABLED_MODELS],
-                [InlineKeyboardButton(text="✏️ Изменить промт",      callback_data="menu_improve")],
                 [_eib("Главное меню", "back_main")],
             ])
         )
@@ -1965,8 +1961,7 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
             ),
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✨ Улучшить другой промт", callback_data="menu_improve"),
-                 _eib("Главное меню", "back_main")],
+                [_eib("Главное меню", "back_main")],
                 [InlineKeyboardButton(text="❤️ В избранное", callback_data="fav_save"),
                  _eib("Купить кредиты", "menu_buy")],
             ])
@@ -2000,7 +1995,6 @@ async def improve_gen(cb: CallbackQuery, state: FSMContext):
             f"{client_error_text(e)}\n\n💳 Кредиты возвращены.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✨ Попробовать снова", callback_data="menu_improve")],
                 [_eib("Главное меню", "back_main")],
             ])
         )
@@ -2165,7 +2159,6 @@ async def edit_get_prompt(message: Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
-            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_edit:{model_key}")],
             [InlineKeyboardButton(text="✍️ Изменить промт", callback_data=f"edit_model:{model_key}")],
             [_eib("Главное меню", "back_main")],
         ])
@@ -2208,7 +2201,6 @@ async def improve_edit_prompt(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Редактировать", callback_data=f"go_edit:{model_key}")],
-                [InlineKeyboardButton(text="✨ Улучшить ещё", callback_data=f"improve_edit:{model_key}")],
                 [_eib("Главное меню", "back_main")],
             ])
         )
@@ -2644,7 +2636,6 @@ async def anim_prompt(message: Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
-            [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_anim:{model_key}")],
             [_eib("Главное меню", "back_main")],
         ])
     )
@@ -2686,7 +2677,6 @@ async def improve_anim_prompt(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Анимировать", callback_data=f"go_anim:{model_key}")],
-                [InlineKeyboardButton(text="✨ Улучшить ещё", callback_data=f"improve_anim:{model_key}")],
                 [_eib("Главное меню", "back_main")],
             ])
         )

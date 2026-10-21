@@ -2501,6 +2501,15 @@ async def _do_broadcast(src_chat: int, src_msg: int, reply_markup, notify: Messa
         return await _do_broadcast_inner(src_chat, src_msg, reply_markup,
                                          notify, btn_spec, bc_id,
                                          audience, partner_id, partner_tag)
+    except Exception:
+        logging.exception("broadcast: отправка приостановлена")
+        try:
+            await notify.answer(
+                "⚠️ Рассылка приостановлена из-за ошибки. Сохранённые отметки "
+                "не удалены. Не запускай новую рассылку с тем же текстом: "
+                "нужно проверить журнал и продолжить существующую.")
+        except Exception:
+            logging.exception("broadcast: не удалось сообщить об остановке")
     finally:
         broadcast_release()
 
@@ -2531,7 +2540,7 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
     секунд, а состояние лежит в настройках — после рестарта бот сам предложит
     дослать оставшимся.
     """
-    from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
+    from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
     import json as _json_bc, time as _t_bc, uuid as _uuid_bc
 
     bc_id = bc_id or _uuid_bc.uuid4().hex[:12]
@@ -2557,10 +2566,19 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
         # продолжение после обрыва никого не задевает по второму разу.
         done = set()
         try:
-            done = {r["user_id"] for r in await conn.fetch(
-                "SELECT user_id FROM broadcast_sent WHERE bc_id=$1 AND ok=TRUE", bc_id)}
+            receipts = await conn.fetch(
+                "SELECT user_id,ok,reason FROM broadcast_sent WHERE bc_id=$1", bc_id)
+            uncertain = [r["user_id"] for r in receipts
+                         if not r["ok"] and r["reason"] == "delivery_uncertain"]
+            if uncertain:
+                await notify.answer(
+                    "⛔ Досылка остановлена: результат предыдущей отправки неизвестен "
+                    "для получателя " + str(uncertain[0]) +
+                    ". Нужна проверка доставки перед повтором; возможен дубль.")
+                return
+            done = {r["user_id"] for r in receipts if r["ok"]}
         except Exception as _e_d:
-            logging.warning(f"broadcast: не прочитал отметки: {_e_d}")
+            raise RuntimeError("Не удалось прочитать доставки; отправка отменена во избежание дублей") from _e_d
 
     total = len(users)
     todo = [u for u in users if u not in done]
@@ -2578,6 +2596,7 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
         "aud": _aud, "pid": int(partner_id or 0), "ptag": partner_tag or "",
     }))
 
+    await set_setting(f"bcnotified:{bc_id}", "")
     _aud_name = bc_audience_name(_aud, partner_id, partner_tag)
     _head = (f"📢 Рассылка {_aud_name}" if not done
              else f"📢 Продолжаю рассылку {_aud_name} (уже получили {len(done)})")
@@ -2623,12 +2642,17 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
             async with pool.acquire() as _c:
                 await _c.execute(
                     "INSERT INTO broadcast_sent(bc_id,user_id,ok,reason) "
-                    "VALUES($1,$2,$3,$4) ON CONFLICT (bc_id,user_id) DO NOTHING",
+                    "VALUES($1,$2,$3,$4) ON CONFLICT (bc_id,user_id) DO UPDATE SET "
+                    "ok=broadcast_sent.ok OR EXCLUDED.ok, "
+                    "reason=CASE WHEN broadcast_sent.ok OR EXCLUDED.ok THEN '' ELSE EXCLUDED.reason END",
                     bc_id, uid, ok, reason)
         except Exception as _e_w:
-            logging.warning(f"broadcast: отметка {uid} не записалась: {_e_w}")
+            # Never continue sending when successful deliveries cannot be recorded.
+            raise RuntimeError(f"Не сохранена отметка получателя {uid}; нужна проверка перед досылкой") from _e_w
 
     for i, uid in enumerate(todo):
+        # Persist intent before Telegram: a crash/timeout must not silently resend.
+        await _mark(uid, False, "delivery_uncertain")
         _ok, _reason = False, ""
         for _try in (1, 2):
             try:
@@ -2639,7 +2663,8 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
             except TelegramRetryAfter as _e_fl:
                 # Telegram просит подождать. Раньше такой человек уходил в
                 # «не доставлено» — хотя ему просто не дали отправить.
-                _wait = min(int(getattr(_e_fl, "retry_after", 5)) + 1, 60)
+                _wait = max(1, int(getattr(_e_fl, "retry_after", 5)) + 1)
+                _reason = "лимит Telegram"
                 logging.warning(f"broadcast: флуд-лимит, жду {_wait} с")
                 await _status(f"⏳ Telegram просит паузу {_wait} с… {sent}/{total}")
                 await asyncio.sleep(_wait)
@@ -2648,9 +2673,16 @@ async def _do_broadcast_inner(src_chat: int, src_msg: int, reply_markup, notify:
                 # Человек заблокировал бота или удалил аккаунт. Это не сбой.
                 _reason = "заблокировал бота"
                 break
-            except Exception as _e_s:
+            except TelegramBadRequest as _e_s:
                 _reason = str(_e_s)[:120]
                 break
+            except Exception as _e_s:
+                # Delivery may have succeeded even though its response was lost.
+                await notify.answer(
+                    "⚠️ Рассылка приостановлена: Telegram не подтвердил результат "
+                    f"для получателя {uid}. Автоматический повтор заблокирован, "
+                    "чтобы не отправить дубль. Нужна проверка доставки.")
+                raise RuntimeError(f"Неизвестный результат доставки {uid}") from _e_s
         if _ok:
             sent += 1
         elif _reason == "заблокировал бота":
@@ -5285,6 +5317,9 @@ async def broadcast_resume_notice():
 
 async def _broadcast_resume_once(_json_br):
     """Одна проверка: есть ли незакрытая рассылка, о которой ещё не сказали."""
+    from common import _BC_LOCK
+    if _BC_LOCK["busy"]:
+        return
     try:
         _raw = await get_setting(_BC_STATE, "")
         if not _raw:
@@ -5305,17 +5340,24 @@ async def _broadcast_resume_once(_json_br):
             _got = await conn.fetchval(
                 "SELECT COUNT(*) FROM broadcast_sent WHERE bc_id=$1 AND ok=TRUE", _bc) or 0
     except Exception:
-        _got = 0
+        logging.exception("broadcast resume: не удалось проверить доставки")
+        return
     _total = int(_st.get("total") or 0)
+    # State may have changed during the database reads above.
+    if _BC_LOCK["busy"] or await get_setting(_BC_STATE, "") != _raw:
+        return
+    if _BC_LOCK["busy"]:
+        return
     try:
         await bot.send_message(
             ADMIN_ID,
-            f"⚠️ <b>Рассылка оборвалась</b>\n\n"
-            f"Бот перезапустился, пока она шла.\n"
+            f"⚠️ <b>Рассылка не завершена</b>\n\n"
+            f"Сохранено незавершённое состояние; отправка сейчас не выполняется.\n"
             f"✅ Успели получить: <b>{_got}</b> из {_total}\n"
             f"🕐 Осталось: <b>{max(0, _total - _got)}</b>\n\n"
-            f"Отметки сохранены — дошлю ТОЛЬКО тем, кто не получил. "
-            f"Повторно никому не придёт.",
+            f"При досылке пропущу получателей с подтверждённой доставкой. "
+            f"Если отправка остановилась из-за ошибки записи доставки, "
+            f"сначала нужно проверить журнал.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="▶️ Дослать оставшимся",
@@ -5353,28 +5395,45 @@ async def adm_broadcast_resume(cb: CallbackQuery):
     if _st.get("bc_id") != _bc:
         await cb.answer("Эта рассылка уже неактуальна", show_alert=True)
         return
-    await cb.answer("Продолжаю…")
+    from common import broadcast_claim, broadcast_release
+    why = broadcast_claim("")
+    if why:
+        await cb.answer("Рассылка уже выполняется. Повторная отправка не запущена.", show_alert=True)
+        return
+    handed_over = False
     try:
-        await cb.message.edit_text("▶️ Досылаю оставшимся…")
-    except Exception:
-        pass
-    # fingerprint="" — досылка остатка это законный повтор того же сообщения,
-    # от дублей её бережёт номер рассылки и отметки по каждому клиенту.
-    # Аудиторию восстанавливаем из состояния: без неё досылка остатка
-    # рассылки «клиентам партнёра» ушла бы ВСЕМ пользователям бота.
-    await _do_broadcast(int(_st["chat"]), int(_st["msg"]),
-                        _bc_markup_from_spec(_st.get("btn") or {}),
-                        cb.message, btn_spec=_st.get("btn") or {}, bc_id=_bc,
-                        fingerprint="",
-                        audience=_st.get("aud") or "all",
-                        partner_id=int(_st.get("pid") or 0),
-                        partner_tag=_st.get("ptag") or "")
+        await cb.answer("Продолжаю…")
+        try:
+            await cb.message.edit_text("▶️ Досылаю оставшимся…")
+        except Exception:
+            pass
+        markup = _bc_markup_from_spec(_st.get("btn") or {})
+        chat, msg = int(_st["chat"]), int(_st["msg"])
+        pid = int(_st.get("pid") or 0)
+        handed_over = True
+        await _do_broadcast(chat, msg, markup, cb.message,
+                            btn_spec=_st.get("btn") or {}, bc_id=_bc,
+                            fingerprint="", claimed=True,
+                            audience=_st.get("aud") or "all", partner_id=pid,
+                            partner_tag=_st.get("ptag") or "")
+    finally:
+        if not handed_over:
+            broadcast_release()
+
 
 
 @dp.callback_query(F.data.startswith("bcdrop:"))
 async def adm_broadcast_drop(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
+    from common import _BC_LOCK
+    if _BC_LOCK["busy"]:
+        await cb.answer("Рассылка ещё выполняется. Удалять её состояние нельзя.", show_alert=True)
+        return
+    current = json.loads(await get_setting(_BC_STATE, "") or "{}")
+    if current.get("bc_id") != cb.data.split(":", 1)[1] or _BC_LOCK["busy"]:
+        await cb.answer("Эта кнопка уже неактуальна", show_alert=True)
+        return
     await set_setting(_BC_STATE, "")
     await cb.answer("Забыл")
     try:

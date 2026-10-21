@@ -10052,10 +10052,7 @@ def broadcast_claim(fingerprint: str = "") -> str:
     """
     import time as _t_bl
     _now = _t_bl.time()
-    # Зависший захват (процесс упал, finally не отработал) отпускаем сами.
-    if _BC_LOCK["busy"] and _now - _BC_LOCK["started"] > 7200:
-        logging.warning("broadcast: снимаю зависший замок (больше 2 часов)")
-        _BC_LOCK["busy"] = False
+    # A live worker owns the lock until its finally block releases it.
     if _BC_LOCK["busy"]:
         return "рассылка уже идёт"
     if fingerprint and fingerprint == _BC_LOCK["fp"] and _now - _BC_LOCK["fp_at"] < 900:

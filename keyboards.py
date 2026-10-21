@@ -187,7 +187,6 @@ def kb_confirm(prefix: str, key: str):
             InlineKeyboardButton(text="🚀 Генерировать", callback_data=f"go:{prefix}:{key}"),
             InlineKeyboardButton(text="✍️ Изменить промт", callback_data=f"chprompt:{prefix}:{key}"),
         ],
-        [InlineKeyboardButton(text="✨ Улучшить промт с AI", callback_data=f"improve_prompt:{prefix}:{key}")],
         [_eib("Главное меню", "back_main")],
     ])
 
