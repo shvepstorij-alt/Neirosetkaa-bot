@@ -35,6 +35,18 @@ def plain(text):
     return html.unescape(re.sub(r'<[^>]*>', '', str(text or '')))
 
 
+def attention_text(text):
+    """Keep the event, including supplier errors at its end, within Telegram limits."""
+    value = str(text or '')
+    raw = value.encode('utf-16-le')
+    if len(raw) <= 7000:
+        return value
+    # Long attempt histories must not push the final reason out of the alert.
+    head = raw[:2400].decode('utf-16-le', errors='ignore')
+    tail = raw[-4400:].decode('utf-16-le', errors='ignore')
+    return head + '\n… Полная история — в карточке заказа …\n' + tail
+
+
 def chatgpt_emoji():
     from config import SHOP_CATALOG
     from keyboards import tg_emoji
@@ -282,7 +294,7 @@ async def update(oid, text='', reply_markup=None, token=None, delivery=None):
                         ('ошиб', 'неуда', 'не прош', 'вручн', 'истек', 'нет мест', 'неяс', 'не удалось', 'проверь у продавца')):
                     digest = hashlib.sha256(text.encode()).hexdigest()
                     if card.get('alert') != digest:
-                        card['pending_alert'] = {'digest': digest, 'text': plain(text)[:250]}
+                        card['pending_alert'] = {'digest': digest, 'text': attention_text(plain(text))}
             if data['state'] in ('done', 'closed'):
                 card.pop('pending_alert', None)
             if changed_event:
@@ -345,9 +357,11 @@ async def update(oid, text='', reply_markup=None, token=None, delivery=None):
                 digest = alert['digest']
                 if (oid, digest) not in _alert_sent:
                     await bot.send_message(ADMIN_ID,
-                        f"⚠️ Заказ #{data['order'].get('num')}: требуется внимание.\n" + html.escape(alert['text']),
-                        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                            InlineKeyboardButton(text='Открыть карточку', callback_data='gcard:open:' + str(data['order']['num']))]]))
+                        f"⚠️ Заказ #{data['order'].get('num')}: требуется внимание.\n" + html.escape(attention_text(alert['text']))
+                        + '\n\n↗️ Нажми на цитату сверху, чтобы перейти к карточке заказа.',
+                        parse_mode='HTML', reply_to_message_id=mid,
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text='Обновить карточку', callback_data='gcard:refresh:' + str(data['order']['num']))]]))
                     _alert_sent.add((oid, digest))
                 card['alert'] = digest
                 card.pop('pending_alert', None)
@@ -433,14 +447,15 @@ async def handle(cb):
     if not data:
         await cb.answer('Карточка заказа не найдена', show_alert=True)
         return
+    if action == 'open':
+        # Historical alerts cannot acquire a reply target by editing them.
+        await update(oid)
+        await cb.answer('Карточка обновлена. Найди её в чате по номеру заказа #' + number,
+                        show_alert=True)
+        return
     await cb.answer('Обрабатываю…')
-    if action in ('refresh', 'open'):
-        result = await update(oid)
-        if action == 'open' and result:
-            # Private bot chats have no reliable message permalink. Telegram's
-            # copy opens the existing card as a reply via a short anchor message.
-            await bot.send_message(ADMIN_ID, '↑ Карточка заказа #' + number,
-                                   reply_to_message_id=result.message_id)
+    if action == 'refresh':
+        await update(oid)
         return
     if action == 'retry':
         lock = 'gptretrycard:' + oid
