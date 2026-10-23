@@ -1,3 +1,5 @@
+from gpt_order_card import send as service_card_send
+from payment_receipt import safe_send as send_payment_receipt
 # -*- coding: utf-8 -*-
 # Auto-split module "handlers_shop" — part of Neirosetkaa-bot (refactored from bot.py).
 import asyncio, logging, os, re, uuid, base64, hashlib, hmac, json, time
@@ -914,6 +916,7 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
     rest = max(0, _price - coins_used)
 
     if rest == 0:
+        _order_coins = f"cr_{uid}_{uuid.uuid4().hex}"
         # Списание и начисление — одной транзакцией, плюс ЗДЕСЬ ЖЕ фиксируем
         # применение промокода. Раньше полная оплата монетками применяла
         # скидку, но не записывала promo_uses: одноразовый код можно было
@@ -926,6 +929,13 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
                         raise _NoCoins()
                     await add_credits_batch(uid, p["credits"], source="purchase",
                                             days_valid=0, conn=_c_cs)
+                    # The receipt needs a real order. Commit it with both balances,
+                    # so a failed insert rolls back the debit and the credit grant.
+                    await _c_cs.execute(
+                        "INSERT INTO fk_orders (order_id,user_id,credits,amount_rub,pack,coins_spent,promo_code,status,paid_at,fulfilled_at) "
+                        "VALUES ($1,$2,$3,0,$4,$5,$6,'paid',NOW(),NOW())",
+                        _order_coins, uid, p['credits'], key, coins_used,
+                        _promo_code.strip().upper() if _promo_code else None)
                     if _promo_code:
                         _ins_cs = await _c_cs.execute(
                             "INSERT INTO promo_uses (code, user_id) VALUES ($1, $2) "
@@ -942,6 +952,7 @@ async def pay_coins_credits(cb: CallbackQuery, state: FSMContext):
             await cb.answer("Не получилось провести оплату. Попробуй ещё раз.",
                             show_alert=True)
             return
+        await send_payment_receipt(_order_coins)
         new_cr = await get_credits(uid)
         new_coins = await get_coins(uid)
         await cb.message.edit_text(
@@ -1092,6 +1103,7 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
     if not _paid_ok:
         return
 
+    await send_payment_receipt(order_id)
     new_coins = await get_coins(uid)
     username = cb.from_user.username or cb.from_user.full_name
     await cb.message.edit_text(
@@ -1108,7 +1120,7 @@ async def shop_full_coins(cb: CallbackQuery, state: FSMContext):
         ])
     )
     try:
-        await bot.send_message(
+        await service_card_send(order_id, 
             ADMIN_ID,
             f"\U0001fa99 <b>Заказ оплачен монетками (магазин)</b>\n\n"
             f"\U0001f464 {await _who_user(uid)}\n"
@@ -1318,6 +1330,8 @@ async def on_successful_payment(message: Message):
                         "ON CONFLICT (order_id) DO NOTHING",
                         _order_st, uid, int(p.get("price") or 0),
                         _pack_shop(key, plan_idx, p.get("name", "")))
+                    from gpt_order_card import save as _save_receipt_setting
+                    await _save_receipt_setting(_c_st, 'receipt_stars:' + _order_st, str(_stars_amt))
         except Exception as _e_st:
             logging.error(f"stars shop: заказ не записан {_order_st}: {_e_st}", exc_info=True)
             try:
@@ -1333,6 +1347,7 @@ async def on_successful_payment(message: Message):
                 pass
             return
 
+        await send_payment_receipt(_order_st)
         await message.answer(
             f"✅ <b>Оплата прошла успешно!</b>\n\n"
             f"{tg_emoji(s)} <b>{s['name']} {p['name']}</b> - {p['stars']} ⭐\n\n"
@@ -1390,6 +1405,7 @@ async def on_successful_payment(message: Message):
                     # Отметка выдачи — В ЭТОЙ ЖЕ транзакции: для пакета
                     # кредитов начисление и есть выдача. Аудит 30.09.2026, №14.
                     await mark_stars_delivered(_charge, conn=_c_pk)
+
         except Exception as _e_pk:
             logging.error(f"stars pack: начисление не прошло uid={uid}: {_e_pk}", exc_info=True)
             try:
@@ -1404,6 +1420,8 @@ async def on_successful_payment(message: Message):
             except Exception:
                 pass
             return
+        from payment_receipt import safe_stars_receipt
+        await safe_stars_receipt(_charge, p["credits"], p["name"])
         await log_payment(uid, p["credits"], p["stars"], "stars")
         await process_referral_bonus(uid)
         cr = await get_credits(uid)

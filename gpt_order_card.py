@@ -377,6 +377,9 @@ async def send(oid, chat_id, text, **kwargs):
     from config import bot, ADMIN_ID
     if chat_id == ADMIN_ID:
         result = await update(oid, text, kwargs.get('reply_markup'))
+        if result is None:
+            from service_order_card import update as service_update
+            result = await service_update(oid, text, kwargs.get('reply_markup'))
         if result:
             return result
     return await bot.send_message(chat_id, text, **kwargs)
@@ -386,6 +389,9 @@ async def edit(oid, text, **kwargs):
     from config import bot, ADMIN_ID
     if kwargs.get('chat_id') == ADMIN_ID:
         result = await update(oid, text, kwargs.get('reply_markup'))
+        if result is None:
+            from service_order_card import update as service_update
+            result = await service_update(oid, text, kwargs.get('reply_markup'))
         if result:
             return result
     return await bot.edit_message_text(text, **kwargs)
@@ -395,6 +401,9 @@ async def photo(oid, chat_id, photo, **kwargs):
     from config import bot, ADMIN_ID
     if chat_id == ADMIN_ID:
         result = await update(oid, kwargs.get('caption', ''), kwargs.get('reply_markup'))
+        if result is None:
+            from service_order_card import update as service_update
+            result = await service_update(oid, kwargs.get('caption', ''), kwargs.get('reply_markup'))
         if result:
             await bot.send_photo(chat_id, photo, caption='📸 Скриншот активации · заказ ' + oid)
             return result

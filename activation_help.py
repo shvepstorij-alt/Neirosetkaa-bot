@@ -137,8 +137,8 @@ async def notify(conn, k, r, reason, tell_client=False):
             from gpt_order_card import send
             receipt = await send(r['oid'], ADMIN_ID, text, parse_mode='HTML')
         else:
-            # Keep supplier/retry buttons on the existing Claude card intact.
-            receipt = await bot.send_message(ADMIN_ID, text, parse_mode='HTML')
+            from service_order_card import update
+            receipt = await update(r['oid'], text, force_attention=True)
         r['admin_sent'] = int(receipt.message_id)
         await write(conn, k, r)
     if tell_client and not r.get('client_sent'):

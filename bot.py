@@ -350,6 +350,10 @@ async def main():
     await _ensure_playwright_browser()
     await init_db()
     await initialize_gpt_cards()
+    from service_order_card import initialize as initialize_service_cards
+    from payment_receipt import initialize as initialize_receipts
+    await initialize_service_cards()
+    await initialize_receipts()
     await load_prices_from_db()
     await load_miniapp_toggles()
     # HTTP-сервер (вебхуки оплаты + все мини-аппы) поднимаем СИНХРОННО и до
@@ -412,6 +416,10 @@ async def main():
     _spawn_bg(webgen_lost_jobs_loop, "webgen_lost_jobs_loop")
     _spawn_bg(admin_reports_loop, "admin_reports_loop")
     _spawn_bg(gpt_order_cards_loop, "gpt_order_cards_loop")
+    from service_order_card import loop as service_cards_loop
+    from payment_receipt import loop as receipts_loop
+    _spawn_bg(service_cards_loop, "service_order_cards")
+    _spawn_bg(receipts_loop, "payment_receipts")
     # NS Gifts: инициализируем клиент и фоновые задачи
 
     if NSGIFTS_USER_ID and NSGIFTS_LOGIN and NSGIFTS_API_SECRET:

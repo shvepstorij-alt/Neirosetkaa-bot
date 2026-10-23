@@ -1,3 +1,4 @@
+from gpt_order_card import send as service_card_send
 # -*- coding: utf-8 -*-
 # Auto-split module "handlers_claude" — part of Neirosetkaa-bot (refactored from bot.py).
 import asyncio, logging, os, re, uuid, base64, hashlib, hmac, json, time
@@ -92,7 +93,7 @@ async def cb_claude_need_help(cb: CallbackQuery):
             _ctx_h = (f"\U0001f464 Клиент: {await _wu_h(uid)}\n"
                       "Активного резерва нет (окно активации истекло или заказ закрыт).")
             _chk_h = ""
-        await bot.send_message(
+        await service_card_send((pending or {}).get('order_id', ''), 
             ADMIN_ID,
             "❓ <b>Клиент нажал «Нужна помощь» — Claude</b>\n\n"
             f"{_ctx_h}{_chk_h}\n\n"
@@ -195,7 +196,7 @@ async def cb_claude_manual_activated(cb: CallbackQuery):
                          "не записан — код мог уйти на сайт. Проверь его и реши в «Ждущих кодах».")
             else:
                 _fate = "Код в пул НЕ возвращён: его держит резерв другого клиента."
-            await bot.send_message(
+            await service_card_send((pending or {}).get('order_id', ''), 
                 ADMIN_ID,
                 "\u2705 <b>Клиент нажал «Александр уже активировал» — Claude</b>\n\n"
                 f"{_ctx_m}\n\n{_fate}\n"

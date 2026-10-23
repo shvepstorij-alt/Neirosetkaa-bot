@@ -1,3 +1,5 @@
+from service_order_card import edit_message as service_card_edit
+from payment_receipt import safe_send as send_payment_receipt
 # -*- coding: utf-8 -*-
 # Auto-split module "common" — part of Neirosetkaa-bot (refactored from bot.py).
 from gpt_order_card import send as gpt_card_send, edit as gpt_card_edit, photo as gpt_card_photo, client_success as gpt_card_client_success
@@ -6598,6 +6600,7 @@ async def api_shop_pay_handler(request: web.Request) -> web.Response:
         # Полная оплата монетками — пишем клиенту в чат бота, иначе он видит
         # подтверждение только внутри мини-аппа и не понимает, что дальше.
         if _coins_used > 0 and _rest == 0:
+            await send_payment_receipt(order_id)
             try:
                 await bot.send_message(
                     int(uid),
@@ -15753,6 +15756,8 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             logging.info(f"FK order {order_id} already paid (source={source})")
         return False
 
+    await send_payment_receipt(order_id)
+
     # Гасим кнопки оплаты в сообщении у клиента (первое подтверждение оплаты)
     await _disable_client_pay_msg(order_id)
 
@@ -20372,11 +20377,11 @@ async def _claude_activation_polling_job(
                         _amid_ok = None
                     if _amid_ok:
                         try:
-                            await bot.edit_message_text(_caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+                            await gpt_card_edit(order_id, _caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
                         except Exception:
-                            await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+                            await gpt_card_send(order_id, ADMIN_ID, _caption_ok, parse_mode="HTML")
                     else:
-                        await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+                        await gpt_card_send(order_id, ADMIN_ID, _caption_ok, parse_mode="HTML")
                 except Exception:
                     pass
                 _fail_clear("claude", user_id)
@@ -20427,7 +20432,7 @@ async def _claude_activation_polling_job(
                                     "UPDATE claude_pending_activations SET code=$1, provider=$2, bpa_order_id=NULL WHERE user_id=$3",
                                     _nc, _np, user_id)
                         try:
-                            await bot.send_message(
+                            await gpt_card_send(order_id, 
                                 ADMIN_ID,
                                 f"🔀 <b>Claude — авто-переключение сайта после неудачи</b>\n"
                                 f"👤 {await _who_user(user_id)} ({plan_name})\n"
@@ -20465,13 +20470,13 @@ async def _claude_activation_polling_job(
                         )
                         _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id, provider)
                         if _ss_fail:
-                            await bot.send_photo(
+                            await gpt_card_photo(order_id, 
                                 ADMIN_ID,
                                 BufferedInputFile(_ss_fail, "claude_fail.png"),
                                 caption=_caption_fail, parse_mode="HTML"
                             )
                         else:
-                            await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
+                            await gpt_card_send(order_id, ADMIN_ID, _caption_fail, parse_mode="HTML")
                     except Exception:
                         pass
 
@@ -20568,7 +20573,7 @@ async def _claude_activation_polling_job(
     except Exception:
         pass
     try:
-        await bot.send_message(
+        await gpt_card_send(order_id, 
             ADMIN_ID,
             f"⏰ <b>Claude TIMEOUT</b>\n"
             f"👤 {await _who_user(user_id)}  🔢 BPA: <code>{bpa_order_id}</code>\n"
@@ -20689,11 +20694,11 @@ async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_nam
                     _amid = None
                 if _amid:
                     try:
-                        await bot.edit_message_text(_caption, chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
+                        await gpt_card_edit(order_id, _caption, chat_id=ADMIN_ID, message_id=_amid, parse_mode="HTML")
                     except Exception:
-                        await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+                        await gpt_card_send(order_id, ADMIN_ID, _caption, parse_mode="HTML")
                 else:
-                    await bot.send_message(ADMIN_ID, _caption, parse_mode="HTML")
+                    await gpt_card_send(order_id, ADMIN_ID, _caption, parse_mode="HTML")
             except Exception:
                 pass
             _fail_clear("claude", user_id)
@@ -20704,7 +20709,7 @@ async def _run_claude_browser_job(ref, code, org_id, user_id, order_id, plan_nam
         _err = result.get("error") or "Не удалось активировать."
         _claude_job_results[ref] = {"status": "done", "success": False, "error": _err}
         try:
-            await bot.send_message(
+            await gpt_card_send(order_id, 
                 ADMIN_ID,
                 f"❌ <b>Claude (6661231.xyz) — активация не прошла</b>\n"
                 f"👤 {await _who_user(user_id)} · {plan_name}\n"
@@ -21146,32 +21151,14 @@ async def _claude_admin_send(text: str, kb=None, shot=None, order_id: str = ""):
     текста и запоминает его по заказу. Отказ отправки — в лог, не молча."""
     _mid = None
     if order_id:
-        _order_card = await fk_get_order(order_id)
-        _existing_mid = (_order_card or {}).get("admin_msg_id")
-        if _existing_mid:
-            try:
-                await bot.edit_message_text(text[:4096], chat_id=ADMIN_ID,
-                    message_id=int(_existing_mid), parse_mode="HTML", reply_markup=kb,
-                    disable_web_page_preview=True)
-                _mid = int(_existing_mid)
-            except Exception as exc:
-                if "not modified" in str(exc).lower():
-                    _mid = int(_existing_mid)
-                elif "message to edit not found" not in str(exc).lower():
-                    raise
-    for _pm in (() if _mid else ("HTML", None)):
-        try:
-            _t = text if _pm else re.sub(r"<[^>]+>", "", text)
-            _m = await bot.send_message(ADMIN_ID, _t[:4096], parse_mode=_pm, reply_markup=kb,
-                                        disable_web_page_preview=True)
-            _mid = getattr(_m, "message_id", None)
-            break
-        except Exception as _e_as:
-            logging.error(f"claude admin send ({_pm}): {_e_as}")
-    if _mid and order_id:
-        _card_pool = await get_pool()
-        async with _card_pool.acquire() as _card_conn:
-            await _card_conn.execute("UPDATE fk_orders SET admin_msg_id=$2 WHERE order_id=$1", order_id, _mid)
+        from service_order_card import update as update_service_card
+        _receipt = await update_service_card(order_id, text, kb)
+        if _receipt:
+            _mid = _receipt.message_id
+    if not _mid:
+        _m = await bot.send_message(ADMIN_ID, text, parse_mode="HTML", reply_markup=kb,
+                                    disable_web_page_preview=True)
+        _mid = _m.message_id
     if shot:
         try:
             from aiogram.types import BufferedInputFile as _BIF_as
@@ -21197,7 +21184,10 @@ async def _claude_admin_msgs_close(order_id: str, text: str) -> int:
         except Exception as _e_mc:
             logging.warning(f"claude admin msgs read {_k}: {_e_mc}")
     _n = 0
+    _current = ((await fk_get_order(order_id)) or {}).get("admin_msg_id")
     for _mid in _ids:
+        if _current and int(_mid) == int(_current):
+            continue
         try:
             await bot.edit_message_text(text, chat_id=ADMIN_ID, message_id=int(_mid),
                                         parse_mode="HTML", disable_web_page_preview=True)
@@ -21523,22 +21513,7 @@ async def _claude_admin_finish(order_id, user_id, plan_name, code, org_id, site,
              + (f"\n\n{_att}" if _att else "")
              + (f"\n\n♻️ <b>Сайт отклонил коды</b> ({len(flagged)}):\n{_fl_txt}" if flagged else "")
              + f"\n\n⏱ {_ts}")
-    _done = False
-    try:
-        _amid = ((await fk_get_order(order_id)) or {}).get("admin_msg_id") if order_id else None
-    except Exception:
-        _amid = None
-    if _amid:
-        try:
-            await bot.edit_message_text(_card[:4096], chat_id=ADMIN_ID, message_id=int(_amid),
-                                        parse_mode="HTML", disable_web_page_preview=True)
-            _done = True
-        except Exception as _e_cd:
-            _done = "not modified" in str(_e_cd).lower()
-            if not _done:
-                logging.info(f"claude order card {order_id}: {_e_cd}")
-    if not _done:
-        await _claude_admin_send(_card)
+    await _claude_admin_send(_card, order_id=order_id)
     _close = ("✅ <b>Claude — активация прошла</b> · это сообщение закрыто\n"
               + await _adm_claude_ctx(order_id, code, site, org_id, plan_name, uid=user_id)
               + f"\n⏱ {_ts}")
@@ -22130,7 +22105,7 @@ async def clnc_ok_handler(cb: CallbackQuery):
         logging.error(f"clnc_ok: {_e}", exc_info=True)
         await cb.answer("Ошибка при подтверждении, см. лог.", show_alert=True); return
     try:
-        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        await service_card_edit(cb.message, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Подтверждено — активирована", callback_data="noop")]]))
     except Exception:
         pass
@@ -22220,7 +22195,7 @@ async def clnc_next_handler(cb: CallbackQuery):
         _new_ref, _ctx["user_id"], _ctx["order_id"], _ctx["org_id"],
         _ctx["plan_name"], _ctx["plan_key"], skip_providers={_ctx.get("provider") or ""}))
     try:
-        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        await service_card_edit(cb.message, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text=(f"🔄 Перенесено с {_ctx.get('site','')} на другой сайт · код "
                       + ("помечен потраченным" if _burn else "в пуле")),
@@ -22249,7 +22224,7 @@ async def clapi_retry_handler(cb: CallbackQuery):
         import html as retry_html
         base = await _adm_claude_ctx(ctx["order_id"], ctx["code"], ctx.get("site") or "",
                                      ctx["org_id"], ctx["plan_name"], uid=ctx["user_id"])
-        await cb.message.edit_text("🔁 <b>Claude — повтор исходного заказа</b>\n\n" + base
+        await service_card_edit(cb.message, "🔁 <b>Claude — повтор исходного заказа</b>\n\n" + base
             + "\n\n" + retry_html.escape(detail), parse_mode="HTML", reply_markup=cb.message.reply_markup)
     finally:
         await release_activation(key)
@@ -22305,7 +22280,7 @@ async def clrc_handler(cb: CallbackQuery):
         _detail = (_txt + "\n\nПричина поставщика: " + str(_op.get("reason") or "не сообщена"))
         _base = await _adm_claude_ctx(_ctx.get("order_id") or "", _ctx.get("code") or "",
             _ctx.get("site") or "", _ctx.get("org_id") or "", _ctx.get("plan_name") or "", uid=_ctx.get("user_id"))
-        await cb.message.edit_text("🔎 <b>Claude — проверка операции</b>\n\n" + _base
+        await service_card_edit(cb.message, "🔎 <b>Claude — проверка операции</b>\n\n" + _base
             + "\n\n" + _status_html.escape(_detail)[:1800], parse_mode="HTML", reply_markup=cb.message.reply_markup)
     await cb.answer(_txt[:190], show_alert=True)
 
@@ -22342,7 +22317,7 @@ async def clfail_retry_handler(cb: CallbackQuery):
         _new_ref, _ctx["user_id"], _ctx["order_id"], _ctx["org_id"],
         _ctx["plan_name"], _ctx["plan_key"]))
     try:
-        await cb.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        await service_card_edit(cb.message, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Запущена повторная активация", callback_data="noop")]]))
     except Exception:
         pass
@@ -22855,7 +22830,7 @@ async def _notify_perplexity_pending_expired(user_id: int) -> bool:
             "<b>не выдан</b>. Можно выдать повторно прямо отсюда 👇",
             InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="📨 Отправить повторно",
-                                     callback_data=f"adm_resend:{_o['order_id']}")]]))
+                                     callback_data=f"adm_resend:{_o['order_id']}")]]), order_id=_o["order_id"])
         return True
     except Exception as _e_pe:
         logging.error(f"_notify_perplexity_pending_expired uid={user_id}: {_e_pe}")
@@ -22882,12 +22857,14 @@ async def perplexity_resend_activation(order_id: str) -> tuple:
         return False, "Это не заказ Perplexity"
     if _rec:
         return False, f"Заказ уже активирован (код {_rec}) — повторно не выдаю."
-    if str(_o["status"] or "") in ("cancelled", "refunded", "lost"):
+    if _o["status"] != "paid" or await get_setting(f"order_done:{_oid}", "") == "1":
         return False, f"Заказ в статусе «{_o['status']}» — повторно не выдаю."
     _idx = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
     _pn = (_plan_by_order("perplexity", _idx, _pack_plan_name(_pk))[1].get("name")
            or _pack_plan_name(_pk) or "Pro")
     _pend = await get_perplexity_pending_activation(_uid)
+    if _pend and (_pend.get("org_id") or _pend.get("bpa_order_id")):
+        return False, "Активация уже отправлялась поставщику. Сначала проверь результат — повтор заблокирован."
     if _pend and _pend.get("code") and str(_pend.get("order_id") or "") == _oid:
         _code, _reused = _pend["code"], True
     else:
@@ -22946,7 +22923,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             user_id = _fb.get("user_id")
     if not user_id:
         try:
-            await bot.send_message(
+            await gpt_card_send(locals().get('order_id', ''), 
                 ADMIN_ID,
                 f"⚠️ <b>Mini-app: не прошла авторизация</b>\n"
                 f"initData len=<b>{len(init_data)}</b> · "
@@ -22962,7 +22939,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     _den, _den_msg = await _web_access_denied(user_id, check_maintenance=False)
     if _den:
         try:
-            await bot.send_message(
+            await gpt_card_send(locals().get('order_id', ''), 
                 ADMIN_ID,
                 f"\U0001f6ab <b>Заблокированный клиент пытался активировать Claude</b>\n"
                 f"\U0001f464 {await _who_user(user_id)}",
@@ -23040,7 +23017,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 await _dbl_warned_set("claude", user_id, _claude_double_warned)
                 logging.warning(f'Claude repeat activation: warned user={user_id} code={_recent["code"]}')
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         "⚠️ <b>Повторная активация Claude</b> (клиент предупреждён)\n\n"
                         f"👤 {_uname} ({await _who_user(user_id)})\n"
@@ -23083,7 +23060,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 await _dbl_warned_clear("claude", user_id, _claude_double_warned)
                 logging.info(f"Claude forced re-activation user={user_id}")
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         "✅ <b>Повторная активация Claude — подтверждена</b>\n\n"
                         f"👤 {_uname} ({await _who_user(user_id)}) активирует ещё раз (другой аккаунт).",
@@ -24835,6 +24812,7 @@ async def nsgifts_fulfill_after_payment(fk_order_id: str, user_id: int):
     3. Оплачиваем → получаем пин-коды
     4. Отправляем пользователю
     """
+    await send_payment_receipt(fk_order_id)
     if not rt.nsgifts_client:
         logging.error("NSGifts: client not initialized, cannot fulfill")
         await bot.send_message(
@@ -25231,11 +25209,11 @@ async def _perplexity_activation_polling_job(
                         _amid_ok = None
                     if _amid_ok:
                         try:
-                            await bot.edit_message_text(_caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+                            await gpt_card_edit(order_id, _caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
                         except Exception:
-                            await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+                            await gpt_card_send(order_id, ADMIN_ID, _caption_ok, parse_mode="HTML")
                     else:
-                        await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+                        await gpt_card_send(order_id, ADMIN_ID, _caption_ok, parse_mode="HTML")
                 except Exception:
                     pass
                 _fail_clear("perplexity", user_id)
@@ -25279,13 +25257,13 @@ async def _perplexity_activation_polling_job(
                         )
                         _ss_fail = await _take_claude_bpa_screenshot(bpa_order_id)
                         if _ss_fail:
-                            await bot.send_photo(
+                            await gpt_card_photo(order_id, 
                                 ADMIN_ID,
                                 BufferedInputFile(_ss_fail, "perplexity_fail.png"),
                                 caption=_caption_fail, parse_mode="HTML"
                             )
                         else:
-                            await bot.send_message(ADMIN_ID, _caption_fail, parse_mode="HTML")
+                            await gpt_card_send(order_id, ADMIN_ID, _caption_fail, parse_mode="HTML")
                     except Exception:
                         pass
 
@@ -25382,7 +25360,7 @@ async def _perplexity_activation_polling_job(
     except Exception:
         pass
     try:
-        await bot.send_message(
+        await gpt_card_send(order_id, 
             ADMIN_ID,
             f"⏰ <b>Perplexity TIMEOUT</b>\n"
             f"👤 {await _who_user(user_id)}  🔢 BPA: <code>{bpa_order_id}</code>\n"
@@ -25449,11 +25427,11 @@ async def _perplexity_notify_success(code, user_id, order_id, plan_name, org_id)
             _amid_ok = None
         if _amid_ok:
             try:
-                await bot.edit_message_text(_caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
+                await gpt_card_edit(order_id, _caption_ok, chat_id=ADMIN_ID, message_id=_amid_ok, parse_mode="HTML")
             except Exception:
-                await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+                await gpt_card_send(order_id, ADMIN_ID, _caption_ok, parse_mode="HTML")
         else:
-            await bot.send_message(ADMIN_ID, _caption_ok, parse_mode="HTML")
+            await gpt_card_send(order_id, ADMIN_ID, _caption_ok, parse_mode="HTML")
     except Exception:
         pass
 
@@ -25476,7 +25454,7 @@ async def _px_ask_admin_unclear(user_id: int, code: str, order_id: str,
     except Exception as _e_pc:
         logging.warning(f"pxunclear cooldown {user_id}: {_e_pc}")
     try:
-        await bot.send_message(
+        await gpt_card_send(order_id, 
             ADMIN_ID,
             f"⚠️ <b>Perplexity — исход активации неясен</b>\n\n"
             f"👤 Клиент: {await _who_user(user_id)}\n"
@@ -25580,7 +25558,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
             user_id = _fb.get("user_id")
     if not user_id:
         try:
-            await bot.send_message(
+            await gpt_card_send(locals().get('order_id', ''), 
                 ADMIN_ID,
                 f"⚠️ <b>Mini-app: не прошла авторизация</b>\n"
                 f"initData len=<b>{len(init_data)}</b> · "
@@ -25596,7 +25574,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     _den, _den_msg = await _web_access_denied(user_id, check_maintenance=False)
     if _den:
         try:
-            await bot.send_message(
+            await gpt_card_send(locals().get('order_id', ''), 
                 ADMIN_ID,
                 f"\U0001f6ab <b>Заблокированный клиент пытался активировать Perplexity</b>\n"
                 f"\U0001f464 {await _who_user(user_id)}",
@@ -25671,7 +25649,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                 _perplexity_double_warned.add(user_id)
                 logging.warning(f'Perplexity repeat activation: warned user={user_id} code={_recent["code"]}')
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         "⚠️ <b>Повторная активация Perplexity</b> (клиент предупреждён)\n\n"
                         f"👤 {_uname} ({await _who_user(user_id)})\n"
@@ -25693,7 +25671,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                 _perplexity_double_warned.discard(user_id)
                 logging.info(f"Perplexity forced re-activation user={user_id}")
                 try:
-                    await bot.send_message(
+                    await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         "✅ <b>Повторная активация Perplexity — подтверждена</b>\n\n"
                         f"👤 {_uname} ({await _who_user(user_id)}) активирует ещё раз (другой аккаунт).",
@@ -25775,7 +25753,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     if not _px_marked:
         # Код НЕ отправляем: непотраченный код дороже одной неудачной попытки.
         try:
-            await bot.send_message(
+            await gpt_card_send(locals().get('order_id', ''), 
                 ADMIN_ID,
                 f"🚨 <b>Perplexity: активация остановлена ДО отправки кода</b>\n\n"
                 f"👤 {await _who_user(user_id)}\n"
@@ -25826,7 +25804,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                         await delete_perplexity_pending_activation(user_id, order_id)
                     else:
                         try:
-                            await bot.send_message(
+                            await gpt_card_send(locals().get('order_id', ''), 
                                 ADMIN_ID,
                                 f"🚨 <b>Perplexity: подписка выдана, но код не "
                                 f"отмечен</b>\n\n"
@@ -25863,7 +25841,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
                     if ("стоке" in _detail or "out of stock" in _detail or "нет свободных" in _detail
                             or "receipt" in _detail or "no stock" in _detail):
                         try:
-                            await bot.send_message(
+                            await gpt_card_send(locals().get('order_id', ''), 
                                 ADMIN_ID,
                                 f"🚨 <b>Perplexity — нет стока!</b>\n"
                                 f"👤 {await _who_user(user_id)} ({plan_name})\n"
@@ -25917,7 +25895,7 @@ async def api_activate_perplexity_handler(request: web.Request) -> web.Response:
     except Exception as _e:
         logging.error(f"Perplexity activate error: {_e}", exc_info=True)
         try:
-            await bot.send_message(
+            await gpt_card_send(locals().get('order_id', ''), 
                 ADMIN_ID,
                 f"⚠️ <b>Perplexity activate exception</b>\n"
                 f"user=<code>{user_id}</code> code=<code>{code}</code>\n"

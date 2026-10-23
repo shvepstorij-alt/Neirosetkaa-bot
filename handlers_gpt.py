@@ -1747,3 +1747,13 @@ async def admin_gpt_check(message: Message):
         return
     for _chunk in tg_chunks(_t):
         await message.answer(_chunk, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("scard:"))
+async def cb_service_order_card(cb: CallbackQuery):
+    from service_order_card import handle
+    try:
+        await handle(cb)
+    except Exception:
+        logging.exception('Service order card action failed')
+        await cb.answer('Не удалось завершить действие. Обнови карточку перед повтором.', show_alert=True)
