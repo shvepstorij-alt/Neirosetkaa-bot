@@ -2,6 +2,7 @@
 import asyncio
 import datetime as dt
 import json
+import html
 import logging
 import os
 import time
@@ -23,8 +24,11 @@ class Service:
         self.bot_id=None
         self.daily_cleanup=0
 
-    async def owner_message(self,text,reply_markup=None):
-        data={'chat_id':self.owner,'text':text[:3900]}
+    async def owner_message(self,text,reply_markup=None,parse_mode=None):
+        # HTML is bounded before escaping in show_draft; never cut inside a tag/entity.
+        data={'chat_id':self.owner,'text':text if parse_mode else text[:3900]}
+        if parse_mode:
+            data['parse_mode']=parse_mode
         if reply_markup:
             data['reply_markup']=reply_markup
         return await self.tg.call('sendMessage',**data)
@@ -109,8 +113,12 @@ class Service:
             media={'kind':'sensitive'}
         # Never persist supplied credentials, or forward raw content to the admin bot.
         text='[Сообщение скрыто: возможны данные доступа; нужна ручная проверка]' if secret else scrub(raw)
-        self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
-                          edited='edited_business_message' in update)
+        cid=self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
+                              edited='edited_business_message' in update)
+        if role=='client':
+            person=m.get('from',{})
+            name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
+            self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
 
     async def command(self,text):
         parts=text.strip().split()
@@ -171,10 +179,26 @@ class Service:
         rows=[[('Отвечаю сам',f'chat:off:{c["id"]}'),('Готовить ответы',f'chat:draft:{c["id"]}')]]
         if d['state']=='ready':
             rows.insert(0,[('Одобрить и отправить',f'send:{did}')])
-        text=(f'Черновик №{did} · чат №{c["id"]} · клиент ID {c["uid"]}\n'
-              f'Состояние: {d["state"]}\nНужен оператор: {"да" if d["handoff"] else "нет"}\n\n'
-              f'Разбор (проверьте):\n{d["summary"]}\n\nПредложенный ответ:\n{d["text"]}')
-        sent=await self.owner_message(text,buttons(rows))
+        profile=self.store.profile(c['id'])
+        label=('@'+profile['username']) if profile and profile['username'] else (
+            profile['name'] if profile and profile['name'] else 'Клиент')
+        client=f'<a href="tg://user?id={int(c["uid"])}">{html.escape(label)}</a>'
+        states={'ready':'Готов к проверке','sent':'Отправлен','stale':'Отменён — данные изменились',
+                'sending':'Отправляется','uncertain':'Результат отправки неизвестен'}
+        state=states.get(d['state'],'Требует проверки')
+        note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
+              if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
+              if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
+        text=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
+              f'👤 <b>Клиент:</b> {client}\n'
+              f'<b>Telegram ID:</b> <code>{c["uid"]}</code> · <b>Чат:</b> №{c["id"]}\n\n'
+              f'<b>Статус:</b> {state}\n'
+              f'<b>Участие Александра:</b> {"нужно" if d["handoff"] else "не требуется по оценке модели"}\n\n'
+              f'🔎 <b>Разбор обращения</b>\n<i>Вывод модели — проверьте перед отправкой.</i>\n'
+              f'{html.escape(d["summary"][:700])}\n\n'
+              f'💬 <b>Ответ клиенту</b>\n{html.escape(d["text"][:1800])}\n\n'
+              f'<i>{note}</i>')
+        sent=await self.owner_message(text,buttons(rows),parse_mode='HTML')
         self.store.db.execute('UPDATE drafts SET admin_mid=? WHERE id=?',(sent['message_id'],did))
 
     async def approve(self,did):

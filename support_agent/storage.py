@@ -28,6 +28,8 @@ class Store:
             created REAL, state TEXT DEFAULT 'ready', admin_mid INTEGER,
             telegram_mid INTEGER);
           CREATE TABLE IF NOT EXISTS quota(day TEXT PRIMARY KEY,calls INTEGER DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS chat_profiles(
+            chat INTEGER PRIMARY KEY, username TEXT, name TEXT);
         ''')
 
     @contextmanager
@@ -48,6 +50,13 @@ class Store:
 
     def chat(self, cid):
         return self.db.execute('SELECT * FROM chats WHERE id=?', (cid,)).fetchone()
+
+    def save_profile(self, cid, username, name):
+        self.db.execute('INSERT OR REPLACE INTO chat_profiles VALUES (?,?,?)',
+                        (cid,username,name))
+
+    def profile(self, cid):
+        return self.db.execute('SELECT * FROM chat_profiles WHERE chat=?',(cid,)).fetchone()
 
     def switch(self, mode, cid=None):
         if mode not in ('off', 'draft'):
