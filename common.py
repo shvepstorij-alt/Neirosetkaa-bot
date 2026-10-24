@@ -15640,6 +15640,14 @@ async def _mark_order_fulfilled(order_id: str) -> None:
         logging.warning(f"fulfilled_at {order_id}: {_e_mf}")
 
 
+def _code_activation_service(shop_key):
+    """Only subscription services with dedicated code pools use self-activation.
+    Product display names are editable and must never select a code pool.
+    """
+    return {"chatgpt": "chatgpt", "gpt": "chatgpt", "claude": "claude",
+            "perplexity": "perplexity"}.get(str(shop_key or "").strip().lower())
+
+
 async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webhook") -> bool:
     """Зачисляет кредиты по оплаченному заказу.
 
@@ -15882,16 +15890,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
             except Exception as sub_err:
                 logging.error(f"Ошибка создания подписки: {sub_err}")
 
-            _sk_low = (shop_key or "").lower()
-            _sn_low = (s.get("name", "").lower() if isinstance(s, dict) else "")
-            if ("chatgpt" in _sk_low) or ("chatgpt" in _sn_low) or _sk_low == "gpt":
-                _svc_kind = "chatgpt"
-            elif ("claude" in _sk_low) or ("claude" in _sn_low):
-                _svc_kind = "claude"
-            elif ("perplex" in _sk_low) or ("perplex" in _sn_low):
-                _svc_kind = "perplexity"
-            else:
-                _svc_kind = None
+            _svc_kind = _code_activation_service(shop_key)
             logging.info(f"[shop-pay] order={order_id} shop_key={shop_key!r} name={s.get('name','') if isinstance(s,dict) else ''!r} -> kind={_svc_kind}")
 
             if not p:
@@ -16187,7 +16186,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                     f"{_oref_pay}\n"
                     f"🆔 Заказ: <code>{order_id}</code>\n"
                     + await _fk_num_line(order_id) + "\n"
-                    + f"Александр свяжется с тобой и активирует подписку в течение часа 🙌\n"
+                    + f"Александр свяжется с тобой и выполнит заказ в течение часа 🙌\n"
                     f"{delayed_note}\n\n"
                     f"<i>Пока ждёшь - попробуй генерацию фото и видео прямо в боте! 🎨</i>",
                     parse_mode="HTML",
@@ -17639,6 +17638,8 @@ async def gpt_resend_activation(order_id: str) -> tuple:
     _plan_name = (_plan_by_order(_svc, _idx, _pack_plan_name(pack))[1].get("name")
                   or _pack_plan_name(pack) or "Plus")
     _plan_key = plan_name_to_key(_plan_name)
+    if _plan_key not in GPT_AUTO_PLANS:
+        return False, "Для этого товара самостоятельная активация не предусмотрена — заказ выполняется вручную."
 
     # Код, уже закреплённый за заказом, переиспользуем: иначе на один заказ
     # уйдёт второй код. Новый берём, только если прежнего не осталось.
@@ -20041,6 +20042,9 @@ async def _gpt_pick_code(plan: str):
     тарифом: Go активируется всегда через iOS. Для Plus маршрут уточняется
     позже, в момент активации, когда придёт session (см. подмену маршрута).
     """
+    # Unknown/custom plans must never touch subscription pools or emit stock alerts.
+    if plan not in GPT_AUTO_PLANS:
+        return None, None
     # aichongz — только ChatGPT Plus: для других тарифов его в порядке нет.
     _bad9g = lambda p: (GPT_PROVIDERS.get(p) or {}).get("api") == "a9527" and plan != "plus"
     _ord0 = await _gpt_provider_order()
@@ -26164,7 +26168,7 @@ async def _is_manual_plan(shop_key, plan_idx, plan: dict = None) -> bool:
     #     здесь, а не только переключателем в админке, чтобы забытый тумблер не
     #     привёл к резерву кода под тариф, который бот всё равно не активирует.
     try:
-        if shop_key == "chatgpt":
+        if _code_activation_service(shop_key) == "chatgpt":
             if plan_name_to_key(_p.get("name", "")) not in GPT_AUTO_PLANS:
                 return True
     except Exception as _e_ap:
