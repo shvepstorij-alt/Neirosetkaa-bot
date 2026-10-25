@@ -196,9 +196,11 @@ class Service:
                 'sending':'Отправляется','uncertain':'Результат отправки неизвестен'}
         state=states.get(d['state'],'Требует проверки')
         evidence=self.store.evidence(did)
-        if evidence['status']=='checked':
+        if evidence['status'] in ('checked','insufficient'):
             checked=dt.datetime.fromtimestamp(evidence['checked_at'],dt.timezone(dt.timedelta(hours=5)))
-            research_note=f'🌐 <b>Источники проверены:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
+            label=('Источники проверены' if evidence['status']=='checked'
+                   else 'Поиск выполнен, сведений недостаточно для ответа')
+            research_note=f'🌐 <b>{label}:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
             for source in evidence['sources']:
                 research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
             research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'

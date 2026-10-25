@@ -215,8 +215,10 @@ topic=models/features/plans/comparison; products=chatgpt/claude/perplexity/gemin
 источников из public_research, подтверждающих факты ответа; поставь [ID] рядом
 с соответствующими утверждениями. Один [ID] можно повторять в тексте, но в
 source_ids указывай его один раз. Не вставляй URL самостоятельно.
-Если данных недостаточно/они устарели/противоречат друг другу, handoff=true и
-запроси исследование снова; сервер передаст вопрос владельцу, а не будет угадывать.
+После получения public_research этап поиска завершён: research всегда
+{topic:none,products:[]}. Если данных недостаточно/они устарели/противоречат
+друг другу, handoff=true, source_ids=[], а в summary укажи конкретно, чего
+не хватает. Не выдавай неподтверждённый ответ и не запрашивай поиск снова.
 Без исследования source_ids=[]. Время проверки не является датой обновления статьи.
 Не добавляй представление помощником без повода. Если клиент спрашивает, кто
 отвечает, честно объясни, что ты ИИ-помощник Александра. Не выдавай себя за него.
@@ -224,13 +226,23 @@ source_ids указывай его один раз. Не вставляй URL с
         content=[{'type':'input_text','text':json.dumps({'server_facts':facts,'untrusted_history':history},ensure_ascii=False,default=str)}]
         if image:
             content.append({'type':'input_image','image_url':'data:image/jpeg;base64,'+base64.b64encode(image).decode(),'detail':'auto'})
+        researched=bool(facts.get('public_research'))
+        no_research={'type':'object','properties':{
+            'topic':{'type':'string','enum':['none']},
+            'products':{'type':'array','items':{'type':'string'},'maxItems':0}},
+            'required':['topic','products'],'additionalProperties':False}
+        search_plan={'type':'object','properties':{
+            'topic':{'type':'string','enum':list(TOPICS)},
+            'products':{'type':'array','items':{'type':'string','enum':[*PRODUCTS,'other']},
+                        'minItems':1,'maxItems':4}},
+            'required':['topic','products'],'additionalProperties':False}
+        known_ids=[s['id'] for s in facts.get('public_research',{}).get('sources',[])]
         schema={'type':'object','properties':{
-            'reply':{'type':'string'},'summary':{'type':'string'},'handoff':{'type':'boolean'},
-            'research':{'type':'object','properties':{
-                'topic':{'type':'string','enum':['none',*TOPICS]},
-                'products':{'type':'array','items':{'type':'string','enum':[*PRODUCTS,'other']}}},
-                'required':['topic','products'],'additionalProperties':False},
-            'source_ids':{'type':'array','items':{'type':'integer'}}},
+            'reply':{'type':'string','minLength':1,'maxLength':1800},
+            'summary':{'type':'string','minLength':1,'maxLength':700},'handoff':{'type':'boolean'},
+            'research':no_research if researched else {'anyOf':[no_research,search_plan]},
+            'source_ids':{'type':'array','maxItems':3 if known_ids else 0,
+                          'items':{'type':'integer',**({'enum':known_ids} if known_ids else {})}}},
             'required':['reply','summary','handoff','research','source_ids'],'additionalProperties':False}
         result=await self.request('responses',json={
             'model':self.model,'store':False,'instructions':instructions,
@@ -247,11 +259,21 @@ source_ids указывай его один раз. Не вставляй URL с
             validation='draft_schema'
             if set(value)!= {'reply','summary','handoff','research','source_ids'} or type(value['handoff']) is not bool:
                 raise ValueError()
-            if not valid_plan(value['research']) or not isinstance(value['source_ids'],list):
+            validation='draft_plan'
+            plan=value['research']
+            # Duplicate product names do not change the requested public search.
+            if isinstance(plan,dict) and isinstance(plan.get('products'),list) and all(isinstance(p,str) for p in plan['products']):
+                plan['products']=list(dict.fromkeys(plan['products']))
+            if not valid_plan(plan) or (researched and plan['topic']!='none'):
+                raise ValueError()
+            validation='draft_source_ids'
+            if not isinstance(value['source_ids'],list):
                 raise ValueError()
             if len(value['source_ids'])>3 or any(type(x) is not int for x in value['source_ids']):
                 raise ValueError()
             if not facts.get('public_research') and value['source_ids']:
+                raise ValueError()
+            if researched and any(i not in known_ids for i in value['source_ids']):
                 raise ValueError()
             for key,limit in (('reply',1800),('summary',700)):
                 validation='draft_length'

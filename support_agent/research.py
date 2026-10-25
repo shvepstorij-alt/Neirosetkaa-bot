@@ -123,6 +123,8 @@ def failure_details(exc,stage):
         'draft_incomplete':'модель не завершила ответ',
         'draft_json':'ответ модели не удалось прочитать как JSON',
         'draft_schema':'модель нарушила структуру ответа',
+        'draft_plan':'модель нарушила формат плана исследования (topic/products)',
+        'draft_source_ids':'модель вернула недопустимый список ID источников',
         'draft_length':'ответ модели пустой или превышает ограничение длины',
         'draft_privacy_filter':'ответ отклонён фильтром ссылок или чувствительных данных',
         'remote_error':'ошибка API без уточнённого кода',
@@ -172,6 +174,13 @@ def attach_evidence(answer,evidence):
     if answer.get('research',{}).get('topic')!='none':
         raise ValueError('Research still required')
     ids=answer.get('source_ids',[])
+    if ids==[] and answer.get('handoff') is True:
+        # Insufficient evidence is a normal outcome, not a broken JSON response.
+        # Keep the model's owner summary, but never send its unsupported prose.
+        answer['reply']='Проверю актуальные условия и вернусь к вам с уточнением.'
+        answer['evidence']={'status':'insufficient','checked_at':evidence['checked_at'],
+                            'sources':evidence['sources'][:3]}
+        return answer
     available={s['id']:s for s in evidence['sources']}
     if not ids or len(ids)>3 or any(type(i) is not int or i not in available for i in ids):
         raise ValueError('Answer lacks valid citations')
@@ -180,11 +189,13 @@ def attach_evidence(answer,evidence):
     selected=[available[i] for i in ids]
     if any(f'[{i}]' not in answer['reply'] for i in ids):
         raise ValueError('Missing visible inline citation')
+    if any(int(i) not in ids for i in re.findall(r'\[(\d+)\]',answer['reply'])):
+        raise ValueError('Answer lacks valid citations')
     answer['source_ids']=ids
     answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected}
     return answer
 
 
 def outgoing_text(text,evidence):
-    urls=[f'[{s["id"]}] {s["url"]}' for s in evidence.get('sources',[])]
+    urls=[f'[{s["id"]}] {s["url"]}' for s in evidence.get('sources',[])] if evidence.get('status')=='checked' else []
     return text+('\n\nОфициальные источники:\n'+'\n'.join(urls) if urls else '')
