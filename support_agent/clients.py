@@ -211,10 +211,18 @@ topic=models/features/plans/comparison; products=chatgpt/claude/perplexity/gemin
 Не повторяй первоначальный запрос исследования автоматически: сначала оцени
 уже полученные сведения применительно к вопросу клиента. Не требуй данных
 каталога магазина для ответа об официальных возможностях сервиса.
-Для готового ответа research={topic:none,products:[]}, source_ids — 1–3 уникальных ID
+Для готового ответа research={topic:none,products:[]}, source_ids — 1–6 уникальных ID
 источников из public_research, подтверждающих факты ответа; поставь [ID] рядом
 с соответствующими утверждениями. Один [ID] можно повторять в тексте, но в
 source_ids указывай его один раз. Не вставляй URL самостоятельно.
+Для КАЖДОГО сервиса в вопросе включи подтверждающий источник именно его
+производителя. Источники OpenAI не подтверждают сведения о Claude и наоборот.
+Не путай существование модели, API-доступ, закрытые программы и доступность
+в обычной подписке клиента. Назвать модель доступной в подписке можно только
+при подтверждении именно такого доступа. Анонс не доказывает актуальные условия.
+Отвечай на текущий вопрос прямо. Если спросили модели — перечисли подтверждённые
+модели и ограничения; не заменяй ответ предложением когда-нибудь сделать таблицу.
+Ссылки и маркеры нужны только владельцу, клиенту код отправит чистый текст.
 После получения public_research этап поиска завершён: research всегда
 {topic:none,products:[]}. Если данных недостаточно/они устарели/противоречат
 друг другу, handoff=true, source_ids=[], а в summary укажи конкретно, чего
@@ -241,7 +249,7 @@ source_ids указывай его один раз. Не вставляй URL с
             'reply':{'type':'string','minLength':1,'maxLength':1800},
             'summary':{'type':'string','minLength':1,'maxLength':700},'handoff':{'type':'boolean'},
             'research':no_research if researched else {'anyOf':[no_research,search_plan]},
-            'source_ids':{'type':'array','maxItems':3 if known_ids else 0,
+            'source_ids':{'type':'array','maxItems':6 if known_ids else 0,
                           'items':{'type':'integer',**({'enum':known_ids} if known_ids else {})}}},
             'required':['reply','summary','handoff','research','source_ids'],'additionalProperties':False}
         result=await self.request('responses',json={
@@ -269,7 +277,7 @@ source_ids указывай его один раз. Не вставляй URL с
             validation='draft_source_ids'
             if not isinstance(value['source_ids'],list):
                 raise ValueError()
-            if len(value['source_ids'])>3 or any(type(x) is not int for x in value['source_ids']):
+            if len(value['source_ids'])>6 or any(type(x) is not int for x in value['source_ids']):
                 raise ValueError()
             if not facts.get('public_research') and value['source_ids']:
                 raise ValueError()
