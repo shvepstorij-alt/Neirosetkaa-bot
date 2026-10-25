@@ -13,7 +13,7 @@ from .clients import OpenAI, ShopReader, Telegram
 from .privacy import scrub, sensitive
 from .storage import Store
 from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details
-from .response_policy import continuing_reply, missing_shop_reply
+from .response_policy import continuing_reply, missing_shop_reply, consultation_plan
 
 
 def buttons(rows):
@@ -531,7 +531,7 @@ class Service:
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
             return None
-        plan=answer.get('research',{'topic':'none','products':[]})
+        plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}))
         if plan['topic']=='none':
             return answer
         stage='search'

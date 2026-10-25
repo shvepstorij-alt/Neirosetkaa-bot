@@ -181,7 +181,7 @@ def attach_evidence(answer,evidence):
     if ids==[] and answer.get('handoff') is True:
         # Insufficient evidence is a normal outcome, not a broken JSON response.
         # Keep the model's owner summary, but never send its unsupported prose.
-        answer['reply']='Проверю актуальные условия и вернусь к вам с уточнением.'
+        answer['reply']='Пока не удалось подтвердить актуальные условия. Не хочу дать вам неверную информацию.'
         answer['evidence']={'status':'insufficient','checked_at':evidence['checked_at'],
                             'sources':evidence['sources'][:3]}
         return answer
