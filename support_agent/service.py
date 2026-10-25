@@ -5,6 +5,7 @@ import json
 import html
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -24,19 +25,48 @@ class Service:
         self.owner,self.allowed,self.daily_limit=owner,set(allowed),daily_limit
         self.bot_id=None
         self.daily_cleanup=0
+        self.active_chats=set()
+        self.approval_tasks={}
+        self.owner_delivery_lock=asyncio.Lock()
+        self.owner_interval=0
+        self.owner_last_send=0
 
     def chat_controls(self,c):
         return [('Возобновить помощника',f'chat:draft:{c["id"]}')] if c['mode']=='off' else [
             ('Отвечаю сам',f'chat:off:{c["id"]}')]
 
     async def owner_message(self,text,reply_markup=None,parse_mode=None):
-        # HTML is bounded before escaping in show_draft; never cut inside a tag/entity.
-        data={'chat_id':self.owner,'text':text if parse_mode else text[:3900]}
+        # Cards have complete HTML tags within paragraphs. Split only between
+        # paragraphs; never truncate an answer the owner is being asked to approve.
+        parts=[];current=''
+        def size(value):
+            visible=html.unescape(re.sub(r'<[^>]*>','',value)) if parse_mode=='HTML' else value
+            return len(visible.encode('utf-16-le'))//2
+        for paragraph in text.split('\n\n'):
+            candidate=current+'\n\n'+paragraph if current else paragraph
+            if current and size(candidate)>3900:
+                parts.append(current);current=paragraph
+            else:
+                current=candidate
+        if current:
+            parts.append(current)
+        if any(size(part)>4096 for part in parts):
+            raise ValueError('Owner message paragraph exceeds Telegram limit')
+        data={'chat_id':self.owner}
         if parse_mode:
             data['parse_mode']=parse_mode
-        if reply_markup:
-            data['reply_markup']=reply_markup
-        return await self.tg.call('sendMessage',**data)
+        result=None
+        async with self.owner_delivery_lock:
+            for index,part in enumerate(parts):
+                delay=self.owner_interval-(time.monotonic()-self.owner_last_send)
+                if delay>0:
+                    await asyncio.sleep(delay)
+                payload=dict(data,text=part)
+                if reply_markup and index==len(parts)-1:
+                    payload['reply_markup']=reply_markup
+                self.owner_last_send=time.monotonic()
+                result=await self.tg.call('sendMessage',**payload)
+        return result
 
     async def load_connection(self,ident):
         value=await self.tg.call('getBusinessConnection',business_connection_id=ident)
@@ -56,7 +86,7 @@ class Service:
             q=update['callback_query']
             if q.get('from',{}).get('id')==self.owner and q.get('message',{}).get('chat',{}).get('id')==self.owner:
                 try:
-                    await self.command(q.get('data',''))
+                    await self.command(q.get('data',''),admin_mid=q.get('message',{}).get('message_id'))
                 except (ValueError,IndexError):
                     await self.owner_message('Некорректная команда. Используйте /status.')
             # Expired callback acknowledgement must not block the update queue
@@ -125,7 +155,99 @@ class Service:
             name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
             self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
 
-    async def command(self,text):
+    async def admin_panel(self,text,rows,admin_mid=None):
+        """Bounded owner-only pages; callback navigation edits the existing panel."""
+        markup=buttons(rows)
+        if admin_mid is None:
+            return await self.owner_message(text,markup)
+        try:
+            return await self.tg.call('editMessageText',chat_id=self.owner,
+                message_id=admin_mid,text=text,reply_markup=markup)
+        except Exception:
+            # A deleted panel or an unchanged-page error must not replay actions.
+            logging.warning('Admin panel update unavailable')
+            return None
+
+    def chat_label(self,cid,uid):
+        profile=self.store.profile(cid)
+        label=('@'+profile['username']) if profile and profile['username'] else (
+            profile['name'] if profile and profile['name'] else str(uid))
+        return ' '.join(label.split())[:60]
+
+    async def list_chats(self,page=0,admin_mid=None):
+        count=self.store.db.execute('SELECT count(*) FROM chats').fetchone()[0]
+        pages=max(1,(count+7)//8);page=min(max(0,page),pages-1)
+        chats=self.store.db.execute('SELECT * FROM chats ORDER BY inbound DESC,id DESC LIMIT 8 OFFSET ?',
+                                   (page*8,)).fetchall()
+        lines=[f'💬 Чаты · {count} · страница {page+1}/{pages}',
+               'Глобальный режим: '+self.store.get('mode'),'']
+        rows=[]
+        for c in chats:
+            pending=self.store.db.execute("SELECT count(*) FROM drafts WHERE chat=? AND state='ready'",(c['id'],)).fetchone()[0]
+            queued=self.store.db.execute("SELECT count(*) FROM messages WHERE chat=? AND state IN ('queued','working')",(c['id'],)).fetchone()[0]
+            label=self.chat_label(c['id'],c['uid'])
+            mode='подготовка' if c['mode']=='draft' else 'пауза'
+            if c['uid'] not in self.allowed:
+                mode='не разрешён настройками'
+            lines.append(f'№{c["id"]} · {label} · {mode}\nЧерновиков: {pending} · в обработке/очереди: {queued}')
+            rows.append([(f'№{c["id"]} · {label}',f'view:{c["id"]}')])
+        if not chats:
+            lines.append('Пока нет сообщений из разрешённых чатов.')
+        nav=[]
+        if page:nav.append(('← Назад',f'chats:{page-1}'))
+        if page+1<pages:nav.append(('Далее →',f'chats:{page+1}'))
+        if nav:rows.append(nav)
+        rows.append([('Обновить',f'chats:{page}'),('Ожидают проверки','pending:0')])
+        await self.admin_panel('\n\n'.join(lines),rows,admin_mid)
+
+    async def list_pending(self,page=0,admin_mid=None):
+        count=self.store.db.execute("SELECT count(*) FROM drafts WHERE state IN ('ready','uncertain')").fetchone()[0]
+        pages=max(1,(count+7)//8);page=min(max(0,page),pages-1)
+        drafts=self.store.db.execute("""SELECT d.id,d.chat,d.state,d.created,c.uid FROM drafts d JOIN chats c ON c.id=d.chat
+            WHERE d.state IN ('ready','uncertain') ORDER BY d.id DESC LIMIT 8 OFFSET ?""",(page*8,)).fetchall()
+        lines=[f'📝 Ожидают проверки · {count} · страница {page+1}/{pages}'];rows=[]
+        for d in drafts:
+            label=self.chat_label(d['chat'],d['uid'])
+            state=('исход отправки неизвестен — проверить личку' if d['state']=='uncertain' else
+                   'истёк срок отправки — нужна новая подготовка' if time.time()-d['created']>=900 else
+                   'готов к проверке')
+            lines.append(f'Черновик №{d["id"]} · чат №{d["chat"]} · {label}\n{state}')
+            rows.append([(f'№{d["id"]} · {label}',f'draft:{d["id"]}')])
+        if not drafts:lines.append('Ожидающих черновиков нет.')
+        nav=[]
+        if page:nav.append(('← Назад',f'pending:{page-1}'))
+        if page+1<pages:nav.append(('Далее →',f'pending:{page+1}'))
+        if nav:rows.append(nav)
+        rows.append([('Обновить',f'pending:{page}'),('Все чаты','chats:0')])
+        await self.admin_panel('\n\n'.join(lines),rows,admin_mid)
+
+    async def show_chat(self,cid,admin_mid=None):
+        c=self.store.chat(cid)
+        if not c:
+            await self.admin_panel('Чат не найден.',[[('Все чаты','chats:0')]],admin_mid)
+            return
+        label=self.chat_label(cid,c['uid'])
+        connection=self.store.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
+        access=bool(connection and connection['enabled'] and connection['can_reply'])
+        queued=self.store.db.execute("SELECT state FROM messages WHERE chat=? AND mid=?",(cid,c['latest'])).fetchone()
+        status={'queued':'ожидает обработки','working':'готовится ответ','done':'обработано',
+                'failed':'ошибка обработки','stale':'отменено/устарело','stored':'сохранено, не в очереди'}
+        text=(f'👤 {label}\nЧат №{cid} · Telegram ID {c["uid"]}\n\n'
+              f'Чат: {"подготовка ответов" if c["mode"]=="draft" else "пауза"}\n'
+              f'Глобальный режим: {self.store.get("mode")}\n'
+              f'Разрешён настройками: {"да" if c["uid"] in self.allowed else "нет"}\n'
+              f'Подключение и право ответа: {"есть" if access else "нет"}\n'
+              f'Последнее обращение: {status.get(queued[0],queued[0]) if queued else "нет сохранённого сообщения"}\n\n'
+              'Отправка только после вашего одобрения. Перед повтором проверьте, не ответили ли уже клиенту.')
+        rows=[self.chat_controls(c)]
+        if c['uid'] in self.allowed:
+            rows.append([('Повторить подготовку',f'retry:{cid}')])
+        last=self.store.db.execute('SELECT id FROM drafts WHERE chat=? ORDER BY id DESC LIMIT 1',(cid,)).fetchone()
+        if last:rows.append([('Последний черновик',f'draft:{last[0]}')])
+        rows.append([('Все чаты','chats:0'),('Ожидают проверки','pending:0')])
+        await self.admin_panel(text,rows,admin_mid)
+
+    async def command(self,text,admin_mid=None):
         parts=text.strip().split()
         if not parts:
             return
@@ -144,13 +266,18 @@ class Service:
                 '/stop — остановить всем\n/draft — включить подготовку\n'
                 'AUTO в этой сборке отсутствует. Вложения тестовых чатов передаются OpenAI для анализа.',
                 buttons([[('Остановить всем','global:off'),('Только черновики','global:draft')]]))
-        elif cmd=='/chats':
-            rows=self.store.db.execute('SELECT * FROM chats ORDER BY inbound DESC LIMIT 20').fetchall()
-            if not rows:
-                await self.owner_message('Пока нет сообщений из разрешённых тестовых чатов.')
-            for c in rows:
-                await self.owner_message(f'Чат №{c["id"]} · Telegram ID {c["uid"]}\nРежим: {c["mode"]}',
-                    buttons([self.chat_controls(c)]))
+        elif cmd=='/chats' or cmd.startswith('chats:'):
+            await self.list_chats(int(cmd.split(':')[1]) if ':' in cmd else 0,admin_mid)
+        elif cmd.startswith('view:'):
+            await self.show_chat(int(cmd.split(':')[1]),admin_mid)
+        elif cmd.startswith('draft:'):
+            did=int(cmd.split(':')[1])
+            if self.store.db.execute('SELECT 1 FROM drafts WHERE id=?',(did,)).fetchone():
+                await self.show_draft(did)
+            else:
+                await self.owner_message('Черновик не найден или удалён по сроку хранения. Используйте /pending.')
+        elif cmd.startswith('retry:'):
+            await self.command('/retry '+str(int(cmd.split(':')[1])))
         elif cmd.startswith('chat:'):
             _,mode,raw=cmd.split(':')
             cid=int(raw)
@@ -162,20 +289,30 @@ class Service:
                 'подготовка ответов включена для новых сообщений.' if mode=='draft' else
                 'помощник на паузе. Ожидающие черновики отменены.'),
                 buttons([self.chat_controls(self.store.chat(cid))]))
-        elif cmd=='/pending':
-            rows=self.store.db.execute("SELECT id FROM drafts WHERE state IN ('ready','uncertain') ORDER BY id DESC LIMIT 15").fetchall()
-            for d in rows:
-                await self.show_draft(d['id'])
-            if not rows:
-                await self.owner_message('Ожидающих черновиков нет.')
+        elif cmd=='/pending' or cmd.startswith('pending:'):
+            await self.list_pending(int(cmd.split(':')[1]) if ':' in cmd else 0,admin_mid)
         elif cmd.startswith('send:'):
-            await self.approve(int(cmd.split(':')[1]))
+            if not self.schedule_approval(int(cmd.split(':')[1])):
+                await self.owner_message('Уже отправляются четыре ответа. Этот черновик сохранён; повторите нажатие после завершения отправки.')
+        elif cmd.startswith('sendpause:'):
+            if not self.schedule_approval(int(cmd.split(':')[1]),pause_after=True):
+                await self.owner_message('Уже отправляются четыре ответа. Этот черновик сохранён; повторите нажатие после завершения отправки.')
         elif cmd=='/retry' and len(parts)==2 and parts[1].isdigit():
             cid=int(parts[1]);c=self.store.chat(cid)
             if not c or c['mode']!='draft' or self.store.get('mode')!='draft':
                 await self.owner_message('Сначала включите черновики для этого чата и глобально.')
                 return
             m=self.store.db.execute("SELECT * FROM messages WHERE chat=? AND mid=? AND role='client'",(cid,c['latest'])).fetchone()
+            if not m:
+                await self.owner_message('Последнее сообщение уже недоступно. Нужно новое сообщение клиента.')
+                return
+            if m['state'] in ('queued','working') or cid in self.active_chats:
+                await self.owner_message('Ответ уже в очереди или готовится. Повторный запрос не запущен.')
+                return
+            previous=self.store.db.execute("SELECT state FROM drafts WHERE chat=? AND mid=? AND state IN ('sent','sending','uncertain') LIMIT 1",(cid,c['latest'])).fetchone()
+            if previous:
+                await self.owner_message('На это сообщение уже отправлялся ответ либо исход отправки неизвестен. Проверьте личку; повтор автоматически не создаю. Для продолжения нужно новое сообщение клиента.')
+                return
             if m:
                 self.store.ingest(c['connection'],c['uid'],m['mid'],'client',m['text'],json.loads(m['media']),m['at'],edited=True)
                 await self.owner_message('Подготовка поставлена в очередь заново. Это может расходовать API-баланс.')
@@ -186,8 +323,12 @@ class Service:
             return
         c=self.store.chat(d['chat'])
         rows=[self.chat_controls(c)]
-        if d['state']=='ready':
-            rows.insert(0,[('Одобрить и отправить',f'send:{did}')])
+        expired=d['state']=='ready' and time.time()-d['created']>=900
+        if d['state']=='ready' and not expired:
+            rows.insert(0,[('Отправить и продолжить',f'send:{did}')])
+            rows.insert(1,[('Отправить и взять чат себе',f'sendpause:{did}')])
+        elif expired:
+            rows.insert(0,[('Подготовить свежий ответ',f'retry:{c["id"]}')])
         profile=self.store.profile(c['id'])
         label=('@'+profile['username']) if profile and profile['username'] else (
             profile['name'] if profile and profile['name'] else 'Клиент')
@@ -195,6 +336,8 @@ class Service:
         states={'ready':'Готов к проверке','sent':'Отправлен','stale':'Отменён — данные изменились',
                 'sending':'Отправляется','uncertain':'Результат отправки неизвестен'}
         state=states.get(d['state'],'Требует проверки')
+        if expired:
+            state='Истёк срок проверки (15 минут) — подготовьте свежий ответ'
         evidence=self.store.evidence(did)
         if evidence['status'] in ('checked','insufficient'):
             checked=dt.datetime.fromtimestamp(evidence['checked_at'],dt.timezone(dt.timedelta(hours=5)))
@@ -228,7 +371,22 @@ class Service:
         sent=await self.owner_message(text,buttons(rows),parse_mode='HTML')
         self.store.db.execute('UPDATE drafts SET admin_mid=? WHERE id=?',(sent['message_id'],did))
 
-    async def approve(self,did):
+    def schedule_approval(self,did,pause_after=False):
+        if did in self.approval_tasks:
+            return True
+        if len(self.approval_tasks)>=4:
+            return False  # Draft remains ready; the owner can retry later.
+        async def run():
+            try:
+                await self.approve(did,pause_after=pause_after)
+            except Exception:
+                logging.warning('Approval task failed; inspect pending drafts')
+            finally:
+                self.approval_tasks.pop(did,None)
+        self.approval_tasks[did]=asyncio.create_task(run())
+        return True
+
+    async def approve(self,did,pause_after=False):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
         if not d:
             return
@@ -241,20 +399,28 @@ class Service:
         if not reserved:
             await self.owner_message('Ответ отменён/устарел, чат остановлен или нет права отправки. Повторно не отправляю.')
             return
+        if pause_after:
+            # Pause before yielding to the network so a new incoming message cannot
+            # be queued and then silently discarded after this send completes.
+            self.store.switch('off',c['id'])
         try:
             text=outgoing_text(reserved['text'],self.store.evidence(did))
             sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],text=text)
         except Exception:
             self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
-            await self.owner_message(f'Неизвестен результат отправки черновика №{did}. Проверьте личку. Автоматического повтора не будет.')
+            self.store.switch('off',c['id'])
+            await self.owner_message(f'Неизвестен результат отправки черновика №{did}. Чат поставлен на паузу. Проверьте личку перед возобновлением. Автоматического повтора не будет.',
+                                     buttons([self.chat_controls(self.store.chat(c['id']))]))
             return
         with self.store.transaction():
             self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
             self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
-                (c['id'],sent['message_id'],'assistant',reserved['text'],'{}',time.time(),'done'))
-        if reserved['handoff']:
-            self.store.switch('off',c['id'])
-        await self.owner_message(f'Черновик №{did} отправлен.'+(' Чат передан вам, помощник в нём остановлен.' if reserved['handoff'] else ''))
+                (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
+        current=self.store.chat(c['id'])
+        await self.owner_message(f'Черновик №{did} отправлен. '+(
+            'Чат на паузе; отвечаете вы.' if current['mode']=='off' else
+            'Помощник продолжит готовить черновики следующих сообщений.'),
+            buttons([self.chat_controls(current)]))
 
     def charge_call(self):
         day=dt.datetime.now(dt.timezone.utc).date().isoformat()
@@ -263,6 +429,20 @@ class Service:
 
     async def generate(self,job):
         media=json.loads(job['media']);kind=media.get('kind')
+        earlier=self.store.db.execute('''SELECT media FROM messages WHERE chat=? AND role='client'
+            AND COALESCE(json_extract(media,'$.kind'),'none')!='none'
+            AND mid<? AND mid>COALESCE((SELECT MAX(mid) FROM messages WHERE chat=?
+            AND role IN ('owner','assistant') AND mid<?),0) ORDER BY mid DESC LIMIT 2''',
+            (job['chat'],job['mid'],job['chat'],job['mid'])).fetchall()
+        attachments=[json.loads(row['media']) for row in earlier]
+        attachments=[m for m in attachments if m.get('kind') not in (None,'none')]
+        if attachments:
+            if len(attachments)==1 and attachments[0].get('kind')=='photo' and kind in (None,'none'):
+                media=attachments[0];kind='photo'
+            else:
+                return {'reply':'Уточню детали вашего обращения и вернусь с ответом.',
+                        'summary':'В серии сообщений несколько вложений или предыдущее голосовое. Все вложения автоматически не разобраны: посмотрите их в личке перед ответом.',
+                        'handoff':True}
         if kind in ('sensitive','unsupported'):
             return {'reply':'Для этого вопроса нужна ручная проверка Александра. Пароли и коды входа мне отправлять не нужно.',
                     'summary':'Сообщение содержит возможные данные доступа или неподдерживаемое вложение. Посмотрите оригинал в личке. Секреты не использованы.', 'handoff':True}
@@ -286,6 +466,7 @@ class Service:
         if not self.store.still_current(job):
             return None
         facts=await self.shop.facts(job['uid'])
+        facts=dict(facts,context_scope='История содержит только последние 60 сообщений в пределах 24000 символов; более ранние договорённости могут отсутствовать. Не придумывай их.')
         if not self.store.still_current(job):
             return None
         self.charge_call()
@@ -315,11 +496,13 @@ class Service:
             return unavailable(diagnostic)
 
     async def work_once(self):
-        job=self.store.claim(time.time())
+        job=self.store.claim(time.time(),self.active_chats)
         if not job:
             return False
+        self.active_chats.add(job['chat'])
         if job['uid'] not in self.allowed or time.time()-job['at']>=86340:
             self.store.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND mid=?",(job['chat'],job['mid']))
+            self.active_chats.discard(job['chat'])
             return True
         try:
             answer=await self.generate(job)
@@ -332,6 +515,8 @@ class Service:
             diagnostic=failure_details(exc,'draft')
             logging.warning('Draft processing failed: %s',diagnostic)
             await self.owner_message(f'Не удалось подготовить ответ для чата №{job["chat"]}. Клиенту ничего не отправлено. Проверьте /pending или возьмите диалог вручную. {diagnostic}')
+        finally:
+            self.active_chats.discard(job['chat'])
         return True
 
     async def worker(self):
@@ -416,11 +601,16 @@ async def main():
             ai=OpenAI(session,os.environ['OPENAI_API_KEY'],os.environ['SUPPORT_MODEL'],
                       os.environ['SUPPORT_AUDIO_MODEL'],os.getenv('SUPPORT_SEARCH_MODEL'))
             service=Service(store,tg,ai,shop,owner,allowed,limit);service.bot_id=me['id']
+            service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. Автоответов нет.')
             try:
-                await asyncio.gather(service.poll(),service.worker())
+                await asyncio.gather(service.poll(),service.worker(),service.worker(),service.worker())
             finally:
+                tasks=list(service.approval_tasks.values())
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks,return_exceptions=True)
                 if shop.pool:
                     await shop.pool.close()
     finally:

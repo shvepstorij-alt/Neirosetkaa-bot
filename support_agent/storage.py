@@ -4,6 +4,10 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
+HISTORY_MESSAGES = 60
+HISTORY_CHARACTERS = 24000
+HISTORY_TRUNCATED = '[Начало сообщения не включено в контекст]\n'
+
 
 class Store:
     def __init__(self, path):
@@ -32,6 +36,9 @@ class Store:
             chat INTEGER PRIMARY KEY, username TEXT, name TEXT);
           CREATE TABLE IF NOT EXISTS draft_evidence(
             draft INTEGER PRIMARY KEY, data TEXT);
+          CREATE INDEX IF NOT EXISTS messages_queue ON messages(state,at,chat);
+          CREATE INDEX IF NOT EXISTS drafts_state ON drafts(state,id);
+          CREATE INDEX IF NOT EXISTS chats_inbound ON chats(inbound DESC,id);
         ''')
 
     @contextmanager
@@ -65,7 +72,11 @@ class Store:
             raise ValueError('Automatic sending is not enabled in the pilot')
         with self.transaction():
             # Stale resume buttons must not invalidate an already active draft.
-            if cid is not None and mode=='draft' and self.chat(cid)['mode']=='draft':
+            chat=self.chat(cid) if cid is not None else None
+            if cid is not None and chat is None:
+                raise ValueError('Unknown chat')
+            current=chat['mode'] if chat is not None else self.get('mode')
+            if mode=='draft' and current=='draft':
                 return False
             if cid is None:
                 self.put('mode', mode)
@@ -85,6 +96,8 @@ class Store:
                             (ident, int(enabled), int(can_reply)))
             if previous and (previous['enabled'] != int(enabled) or previous['can_reply'] != int(can_reply)):
                 self.db.execute('UPDATE chats SET revision=revision+1 WHERE connection=?', (ident,))
+                self.db.execute("UPDATE messages SET state='stale' WHERE chat IN (SELECT id FROM chats WHERE connection=?) AND state IN ('queued','working')",(ident,))
+                self.db.execute("UPDATE drafts SET state='stale' WHERE chat IN (SELECT id FROM chats WHERE connection=?) AND state='ready'",(ident,))
 
     def ingest(self, connection, uid, mid, role, text, media, at, edited=False):
         with self.transaction():
@@ -119,28 +132,38 @@ class Store:
             self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')",(cid,))
             self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'",(cid,))
 
-    def claim(self, now):
+    def claim(self, now, excluded_chats=()):
         if self.get('mode') != 'draft':
             return None
         with self.transaction():
+            excluded=tuple(set(excluded_chats))
+            exclusion=(' AND c.id NOT IN ('+','.join('?' for _ in excluded)+')') if excluded else ''
             row=self.db.execute('''SELECT m.*,c.uid,c.connection,c.revision FROM messages m
                 JOIN chats c ON c.id=m.chat JOIN connections b ON b.id=c.connection
-                WHERE m.state='queued' AND c.mode='draft' AND b.enabled=1
-                AND m.mid=c.latest AND m.at<=? ORDER BY m.at LIMIT 1''',(now-3,)).fetchone()
+                WHERE m.state='queued' AND c.mode='draft' AND b.enabled=1 AND b.can_reply=1
+                AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.chat=c.id AND d.state='sending')
+                AND m.mid=c.latest AND m.at<=?'''+exclusion+' ORDER BY m.at,m.chat LIMIT 1',
+                (now-3,*excluded)).fetchone()
             if row:
                 self.db.execute("UPDATE messages SET state='working' WHERE chat=? AND mid=?",(row['chat'],row['mid']))
                 return dict(row, global_revision=int(self.get('revision')))
 
     def still_current(self, job):
         c=self.chat(job['chat'])
+        if not c:
+            return False
         b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
-        return (self.get('mode')=='draft' and c['mode']=='draft' and b and b['enabled']
+        return (self.get('mode')=='draft' and c['mode']=='draft' and b and b['enabled'] and b['can_reply']
                 and c['revision']==job['revision'] and c['latest']==job['mid']
                 and int(self.get('revision'))==job['global_revision'])
 
     def finish(self, job, reply, summary, handoff, evidence=None):
         with self.transaction():
             if not self.still_current(job):
+                return None
+            pending=self.db.execute('SELECT state FROM messages WHERE chat=? AND mid=?',
+                                    (job['chat'],job['mid'])).fetchone()
+            if not pending or pending['state']!='working':
                 return None
             cur=self.db.execute('''INSERT INTO drafts(chat,mid,revision,global_revision,text,summary,handoff,created)
                 VALUES (?,?,?,?,?,?,?,?)''',(job['chat'],job['mid'],job['revision'],job['global_revision'],reply,summary,int(handoff),time.time()))
@@ -167,6 +190,8 @@ class Store:
             d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
             if not d or d['state']!='ready' or not self.still_current(d):
                 return None
+            if self.db.execute("SELECT 1 FROM drafts WHERE chat=? AND state='sending' LIMIT 1",(d['chat'],)).fetchone():
+                return None
             c=self.chat(d['chat'])
             b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
             if not b['can_reply'] or not 0<=now-c['inbound']<86340 or not 0<=now-d['created']<900:
@@ -178,10 +203,27 @@ class Store:
         # A process crash during a paid request or send is NOT safe to replay.
         self.db.execute("UPDATE messages SET state='failed' WHERE state='working'")
         self.db.execute("UPDATE drafts SET state='uncertain' WHERE state='sending'")
+        for row in self.db.execute("SELECT DISTINCT chat FROM drafts WHERE state='uncertain'").fetchall():
+            self.switch('off',row['chat'])
 
     def history(self, cid):
-        rows=self.db.execute('SELECT role,text FROM messages WHERE chat=? ORDER BY mid DESC LIMIT 16',(cid,)).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        # Recent context is bounded in both turns and characters, per chat.
+        # Preserve newest messages first; never silently splice unrelated chats.
+        rows=self.db.execute('SELECT role,text FROM messages WHERE chat=? ORDER BY mid DESC LIMIT ?',
+                             (cid,HISTORY_MESSAGES)).fetchall()
+        chosen=[];remaining=HISTORY_CHARACTERS
+        for row in rows:
+            text=row['text'] or ''
+            if len(text)>remaining:
+                if not chosen:
+                    text=HISTORY_TRUNCATED+text[-(remaining-len(HISTORY_TRUNCATED)):]
+                    chosen.append({'role':row['role'],'text':text})
+                break
+            chosen.append({'role':row['role'],'text':text})
+            remaining-=len(text)
+            if remaining<=0:
+                break
+        return list(reversed(chosen))
 
     def cleanup(self, before):
         with self.transaction():
