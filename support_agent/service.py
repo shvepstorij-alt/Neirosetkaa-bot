@@ -584,8 +584,10 @@ class Service:
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)
             result=unavailable(diagnostic)
-            if str(exc)=='Service identity unconfirmed':
+            if getattr(exc,'discovery_reason',None)=='uncertain':
                 result['reply']='Не удалось однозначно определить официальный сайт сервиса. Уточните, пожалуйста, его полное название и для чего вы хотите его использовать?'
+            elif str(exc)=='Service identity unconfirmed':
+                result['reply']='Сейчас не получилось проверить актуальные условия сервиса. Не хочу назвать вам неверные тарифы или ограничения.'
             return result
 
     async def work_once(self):

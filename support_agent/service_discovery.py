@@ -2,9 +2,26 @@
 import ipaddress
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qsl, urlencode
 
 from .privacy import scrub, sensitive
+
+
+class DiscoveryError(ValueError):
+    def __init__(self,name,reason):
+        super().__init__('Service identity unconfirmed')
+        self.discovery_product=name
+        self.discovery_reason=reason
+
+
+def evidence_url(url):
+    """Ignore only tracking and fragments, never meaningful path/query values."""
+    host=public_host(url)
+    if not host:return None
+    parts=urlsplit(url)
+    query=urlencode(sorted((k,v) for k,v in parse_qsl(parts.query,keep_blank_values=True)
+                           if not k.lower().startswith('utm_')))
+    return (host.removeprefix('www.'),parts.path or '/',query)
 
 
 def public_name(name):
@@ -54,7 +71,7 @@ async def discover(ai,name):
             'as the official domain. No customer data, prices or subscription advice at this stage.'),
         'input':json.dumps({'software_brand':name})})
     if result.get('status')!='completed' or not any(x.get('type')=='web_search_call' and x.get('status')=='completed' for x in result.get('output',[])):
-        raise ValueError('Service identity unconfirmed')
+        raise DiscoveryError(name,'incomplete')
     texts=[];cited=set()
     for item in result.get('output',[]):
         if item.get('type')!='message':continue
@@ -67,17 +84,24 @@ async def discover(ai,name):
         # Accept fences and trailing citations, but no arbitrary JSON substring.
         if text.startswith('```'):text=re.sub(r'^```(?:json)?\s*','',text)
         data,_=json.JSONDecoder().raw_decode(text)
-        if set(data)!= {'status','domain','official_url','corroboration_url'} or data['status']!='verified':
+        if not isinstance(data,dict) or set(data)!= {'status','domain','official_url','corroboration_url'}:
             raise ValueError()
+        if data['status']!='verified':raise DiscoveryError(name,'uncertain')
         domain=data['domain'];official=data['official_url'];other=data['corroboration_url']
         host=public_host(official);independent=public_host(other)
         if (not isinstance(domain,str) or not host or not independent
                 or domain!=host.removeprefix('www.') or '.' not in domain
                 or independent==domain or independent.endswith('.'+domain)
-                or domain.endswith('.'+independent) or official not in cited or other not in cited
+                or domain.endswith('.'+independent)
                 or any(domain==d or domain.endswith('.'+d) for d in
                        ('github.io','github.com','notion.site','wordpress.com','blogspot.com','t.me','youtube.com','facebook.com','wikipedia.org'))):
-            raise ValueError()
+            raise DiscoveryError(name,'domain_mismatch')
+        references={evidence_url(url) for url in cited}
+        references.discard(None)
+        if evidence_url(official) not in references or evidence_url(other) not in references:
+            raise DiscoveryError(name,'uncited_urls')
+    except DiscoveryError:
+        raise
     except (ValueError,TypeError,KeyError):
-        raise ValueError('Service identity unconfirmed') from None
+        raise DiscoveryError(name,'invalid_format') from None
     return {'name':name,'domains':[domain],'official_url':official,'corroboration_url':other}

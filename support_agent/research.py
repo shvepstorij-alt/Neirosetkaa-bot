@@ -10,6 +10,9 @@ from .service_discovery import public_name, discover
 DEFAULT_SEARCH_MODEL = 'gpt-5.4-mini'
 
 PRODUCTS = {
+    # Official sites checked 2026-10-26. This is a fast path, not a closed list.
+    'zoom': ('Zoom Workplace video meetings subscription', ('zoom.com','zoom.us')),
+    'krea': ('Krea AI creative tools subscription', ('krea.ai',)),
     'chatgpt': ('ChatGPT consumer subscription', ('openai.com',)),
     'claude': ('Claude consumer subscription', ('anthropic.com', 'claude.com', 'claude.ai')),
     'perplexity': ('Perplexity consumer subscription', ('perplexity.ai',)),
@@ -186,6 +189,17 @@ def failure_details(exc,stage):
         'unknown_ids':'модель выбрала неизвестные или недопустимые ID источников',
         'unlisted_inline_ids':'ID в тексте ответа отсутствует в списке выбранных источников',
     }.get(getattr(exc,'citation_reason',None),reason)
+    discovery_reason=getattr(exc,'discovery_reason',None)
+    if discovery_reason:
+        reason={
+            'incomplete':'поиск сайта не завершился',
+            'uncertain':'поиск не подтвердил принадлежность сайта сервису',
+            'domain_mismatch':'найденные домены не прошли проверку принадлежности',
+            'uncited_urls':'ссылки определения сайта не совпали с подтверждёнными цитатами поиска',
+            'invalid_format':'ответ определения сайта не соответствует ожидаемому формату',
+        }.get(discovery_reason,'не удалось проверить сайт сервиса')
+        product=getattr(exc,'discovery_product','')
+        if public_name(product):reason+='; сервис: '+product
     details=f'Этап: {stages.get(stage,"обработка")}. Причина: {reason}.'
     status=getattr(exc,'status',None)
     if type(status) is int and 100<=status<=599:

@@ -13,7 +13,8 @@ def consultation_plan(latest, plan):
         return {'topic':'none','products':[]}
     names={'chatgpt':r'chat\s*gpt|чат\s*гпт',
            'claude':r'claude|клод', 'perplexity':r'perplexity|перплексити',
-           'gemini':r'gemini|джемини'}
+           'gemini':r'gemini|джемини', 'zoom':r'\bzoom\b|\bзум\b',
+           'krea':r'\bkrea\b|\bкреа\b'}
     products=[key for key,pattern in names.items() if re.search(pattern,text)]
     public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
     if not products or not public:
