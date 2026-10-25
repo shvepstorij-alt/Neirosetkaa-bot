@@ -221,7 +221,15 @@ topic=none, products=[]. Не ищи в интернете приватные д
 функциях, лимитах или ОФИЦИАЛЬНЫХ тарифах
 всегда запроси исследование, даже если считаешь, что знаешь ответ:
 topic=models/features/plans/comparison; products=chatgpt/claude/perplexity/gemini.
-Для другого сервиса products=[other]. Выбирай сервисы только по теме клиента;
+Для другого публичного программного сервиса products содержит его краткое
+каноническое название латиницей в нижнем регистре: например zoom или higgsfield.
+Не используй other для известного названия. Допустимы буквы, цифры, пробел и дефис,
+до 48 символов и 5 слов. Только название бренда: никаких запросов, ссылок,
+имён клиентов, ID, кодов, паролей, поставщиков или фрагментов переписки.
+Не выбирай посторонние темы/людей/взрослые сервисы как продукты. Если название
+неоднозначно или неизвестно, уточни у клиента, не выдумывай бренд.
+Система отдельно проверит официальный сайт нового сервиса перед исследованием.
+Выбирай сервисы только по теме клиента;
 при неясной задаче сначала уточни, не угадывай сервис. Не перечисляй старые модели
 по памяти и не принимай клиентские сведения или старую историю за свежий источник.
 Без public_research первичный reply для исследования не является готовым ответом.
@@ -275,7 +283,8 @@ server_facts.conversation.continuing=true означает продолжени�
             'required':['topic','products'],'additionalProperties':False}
         search_plan={'type':'object','properties':{
             'topic':{'type':'string','enum':list(TOPICS)},
-            'products':{'type':'array','items':{'type':'string','enum':[*PRODUCTS,'other']},
+            'products':{'type':'array','items':{'type':'string','minLength':2,'maxLength':48,
+                        'pattern':'^[a-z][a-z0-9]*(?:[ -][a-z0-9]+){0,4}$'},
                         'minItems':1,'maxItems':4}},
             'required':['topic','products'],'additionalProperties':False}
         known_ids=[s['id'] for s in facts.get('public_research',{}).get('sources',[])]

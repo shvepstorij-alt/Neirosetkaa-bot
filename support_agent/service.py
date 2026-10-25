@@ -401,8 +401,10 @@ class Service:
             label=('Источники проверены' if evidence['status']=='checked'
                    else 'Поиск выполнен, сведений недостаточно для ответа')
             research_note=f'🌐 <b>{label}:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
-            for source in evidence['sources']:
+            for source in evidence['sources'][:8]:
                 research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
+            for name,identity in evidence.get('discoveries',{}).items():
+                research_note+=f'Сайт {html.escape(name)} найден поиском: <a href="{html.escape(identity["corroboration_url"],quote=True)}">проверка принадлежности</a>\n'
             research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
             if evidence.get('citation_mode')=='bibliography':
                 research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
@@ -537,7 +539,11 @@ class Service:
         stage='search'
         try:
             self.charge_call()
-            evidence=await lookup(self.ai,plan)
+            def charge_search():
+                if not self.store.still_current(job):
+                    raise ValueError('Stale research job')
+                self.charge_call()
+            evidence=await lookup(self.ai,plan,charge_extra=charge_search)
             if not self.store.still_current(job):
                 return None
             stage='final_draft'
@@ -546,11 +552,34 @@ class Service:
             if not self.store.still_current(job):
                 return None
             stage='citations'
-            return attach_evidence(final,evidence)
+            checked=attach_evidence(final,evidence)
+            missing=checked.get('evidence',{}).get('missing_products',[])
+            if missing:
+                # One bounded correction, using the SAME evidence. Never invent
+                # or silently add a citation to unsupported model prose.
+                from .research import evidence_domains, safe_url
+                covered=all(any(safe_url(s['url'],evidence_domains(evidence,p))
+                            for s in evidence['sources']) for p in missing)
+                if covered and self.store.still_current(job):
+                    self.charge_call()
+                    stage='final_draft'
+                    corrected=await self.ai.draft(history,dict(facts,public_research=evidence,
+                        research_correction={'missing_products':missing,
+                            'instruction':'Перепиши ответ по имеющимся источникам. Для каждого сервиса выбери подтверждающие его утверждения ID. Если сведений недостаточно, не выдумывай.'}),image)
+                    if not self.store.still_current(job):
+                        return None
+                    stage='citations'
+                    return attach_evidence(corrected,evidence)
+            return checked
         except Exception as exc:
+            if not self.store.still_current(job):
+                return None
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)
-            return unavailable(diagnostic)
+            result=unavailable(diagnostic)
+            if str(exc)=='Service identity unconfirmed':
+                result['reply']='Не удалось однозначно определить официальный сайт сервиса. Уточните, пожалуйста, его полное название и для чего вы хотите его использовать?'
+            return result
 
     async def work_once(self):
         job=self.store.claim(time.time(),self.active_chats)

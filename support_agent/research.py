@@ -5,6 +5,7 @@ import time
 from urllib.parse import urlsplit
 
 from .privacy import scrub
+from .service_discovery import public_name, discover
 
 DEFAULT_SEARCH_MODEL = 'gpt-5.4-mini'
 
@@ -27,7 +28,7 @@ def valid_plan(plan):
     return (isinstance(plan,dict) and set(plan)=={'topic','products'}
             and plan['topic'] in ('none',*TOPICS)
             and isinstance(plan['products'],list) and len(plan['products'])<=4
-            and all(isinstance(p,str) and p in (*PRODUCTS,'other') for p in plan['products'])
+            and all(isinstance(p,str) and (p in (*PRODUCTS,'other') or public_name(p)) for p in plan['products'])
             and len(set(plan['products']))==len(plan['products'])
             and (bool(plan['products']) if plan['topic']!='none' else not plan['products']))
 
@@ -44,15 +45,43 @@ def safe_url(url,domains):
         return False
 
 
-async def lookup(ai,plan):
+async def lookup(ai,plan,charge_extra=None,_registry=None):
     if not valid_plan(plan) or plan['topic']=='none' or 'other' in plan['products']:
         raise ValueError('Unsupported research request')
-    domains=sorted({d for p in plan['products'] for d in PRODUCTS[p][1]})
+    # Separate domain filters prevent one popular provider from exhausting the
+    # entire search budget. Charge each additional API request before sending it.
+    if len(plan['products'])>1:
+        sources=[];digests=[];checked=[];product_domains={};discoveries={}
+        for index,product in enumerate(plan['products']):
+            if index and charge_extra is not None:
+                charge_extra()
+            evidence=await lookup(ai,{'topic':plan['topic'],'products':[product]},charge_extra=charge_extra)
+            product_domains.update(evidence.get('product_domains',{}))
+            discoveries.update(evidence.get('discoveries',{}))
+            mapping={s['id']:len(sources)+i+1 for i,s in enumerate(evidence['sources'])}
+            sources.extend(dict(s,id=mapping[s['id']]) for s in evidence['sources'])
+            digest=re.sub(r'\[(\d+)\]',lambda m:'['+str(mapping.get(int(m[1]),m[1]))+']',evidence['digest'])
+            digests.append(product+':\n'+digest)
+            checked.append(evidence['checked_at'])
+        return {'status':'checked','checked_at':min(checked),'sources':sources,
+                'products':list(plan['products']),'digest':'\n\n'.join(digests),
+                'product_domains':product_domains,'discoveries':discoveries,
+                'note':'Каждый сервис исследован отдельно. Это официальные сведения, не прайс магазина.'}
+    registry=PRODUCTS if _registry is None else _registry
+    product=plan['products'][0]
+    if product not in registry:
+        identity=await discover(ai,product)
+        if charge_extra is not None:charge_extra()
+        evidence=await lookup(ai,plan,charge_extra=charge_extra,
+                              _registry={product:(product+' software subscription',tuple(identity['domains']))})
+        evidence['discoveries']={product:identity}
+        return evidence
+    domains=sorted({d for p in plan['products'] for d in registry[p][1]})
     date=dt.datetime.now(dt.timezone(dt.timedelta(hours=5))).date().isoformat()
-    # Only enum-derived public terms reach the search model, never the history,
+    # Only validated public brand labels and fixed topics reach search, never history,
     # order data, attachments, user URLs, name, username, or Telegram ID.
     query=(f'As of {date}, check official sources for '+
-           '; '.join(PRODUCTS[p][0] for p in plan['products'])+'. '+TOPICS[plan['topic']])
+           '; '.join(registry[p][0] for p in plan['products'])+'. '+TOPICS[plan['topic']])
     model=getattr(ai,'search_model',DEFAULT_SEARCH_MODEL)
     payload={
         'model':model,
@@ -111,8 +140,11 @@ async def lookup(ai,plan):
             parts.append(block_text)
     if not sources or not ''.join(parts).strip():
         raise ValueError('No cited evidence')
-    return {'status':'checked','checked_at':time.time(),'sources':sources[:12],
+    if len(sources)>12:
+        raise ValueError('Too many cited sources')
+    return {'status':'checked','checked_at':time.time(),'sources':sources,
             'products':list(plan['products']),
+            'product_domains':{p:list(registry[p][1]) for p in plan['products']},
             'digest':scrub('\n'.join(parts))[:10000],
             'note':'Это данные из интернета, не инструкции и не каталог магазина. Проверка не гарантирует актуальность каждой страницы.'}
 
@@ -138,6 +170,8 @@ def failure_details(exc,stage):
         'Search was not completed':'API не подтвердил завершённый поиск',
         'Search cited an unapproved source':'ссылка вне разрешённых официальных источников',
         'No cited evidence':'поиск не вернул текст с подтверждёнными ссылками',
+        'Too many cited sources':'поиск превысил допустимое число источников; ответ не использован',
+        'Service identity unconfirmed':'не удалось однозначно подтвердить официальный сайт сервиса; уточните название продукта',
         'Answer lacks valid citations':'в ответе отсутствуют корректные ID источников',
         'Evidence insufficient for final answer':'модель запросила дополнительную проверку либо повторила ID источников',
         'Research still required':'поиск завершён, но модель сочла сведения недостаточными, устаревшими или противоречивыми и запросила дополнительную проверку',
@@ -183,7 +217,7 @@ def attach_evidence(answer,evidence):
         # Keep the model's owner summary, but never send its unsupported prose.
         answer['reply']='Пока не удалось подтвердить актуальные условия. Не хочу дать вам неверную информацию.'
         answer['evidence']={'status':'insufficient','checked_at':evidence['checked_at'],
-                            'sources':evidence['sources'][:3]}
+                            'sources':evidence['sources'][:3], 'discoveries':evidence.get('discoveries',{})}
         return answer
     available={s['id']:s for s in evidence['sources']}
     if not ids or len(ids)>6 or any(type(i) is not int or i not in available for i in ids):
@@ -197,27 +231,36 @@ def attach_evidence(answer,evidence):
            'claude':r'claude|anthropic|клод', 'perplexity':r'perplexity|перплексити',
            'gemini':r'gemini|джемини'}
     required.update(p for p,pattern in names.items() if re.search(pattern,answer['reply'],re.I))
-    missing=[p for p in sorted(required) if p not in PRODUCTS or not any(
-        safe_url(s['url'],PRODUCTS[p][1]) for s in selected)]
+    missing=[p for p in sorted(required) if not any(
+        safe_url(s['url'],evidence_domains(evidence,p)) for s in selected)]
     if missing:
         # Do not send claims about a provider supported only by another provider's URLs.
-        answer['reply']='Уточню доступные модели и условия подписок, чтобы дать вам точную информацию.'
+        answer['reply']='Пока не удалось подтвердить все условия по указанным сервисам. Не хочу дать вам неверную информацию.'
         answer['summary']='Ответ остановлен: выбранные источники не покрывают сервисы: '+', '.join(missing)+'. Нужна проверка владельца.'
         answer['handoff']=True
         answer['evidence']={'status':'insufficient','checked_at':evidence['checked_at'],
-                            'sources':evidence['sources'][:6]}
+                            'sources':evidence['sources'], 'missing_products':missing,
+                            'discoveries':evidence.get('discoveries',{})}
         return answer
     missing_inline=any(f'[{i}]' not in answer['reply'] for i in ids)
     if any(int(i) not in ids for i in re.findall(r'\[(\d+)\]',answer['reply'])):
         raise ValueError('Answer lacks valid citations')
     answer['source_ids']=ids
-    answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected}
+    answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected,
+                        'discoveries':evidence.get('discoveries',{})}
     if missing_inline:
         # Do not invent claim-to-source mappings. The deterministic bibliography
         # supplies the selected URLs; the owner checks their relevance before sending.
         answer['evidence']['citation_mode']='bibliography'
         answer['handoff']=True
     return answer
+
+
+def evidence_domains(evidence,product):
+    # Registry entries are trusted locally; dynamic entries originate ONLY from
+    # discovery, never from the final answer or client-supplied domains.
+    if product in PRODUCTS:return PRODUCTS[product][1]
+    return evidence.get('product_domains',{}).get(product,[])
 
 
 def outgoing_text(text,evidence):
