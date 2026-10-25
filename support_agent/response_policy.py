@@ -25,7 +25,8 @@ def missing_shop_reply(latest, facts, has_images=False):
         return {'reply':' '.join(parts)+' По подпискам и возможностям сервисов подскажу)',
                 'summary':'Последний запрос затрагивает закрытые закупочные сведения или контент 18+. Дан краткий отказ без возврата к прежним темам.',
                 'handoff':False}
-    if has_images or facts.get('source')!='unavailable':
+    catalog_missing=facts.get('source')=='unavailable' or facts.get('catalog_status') in ('read_error','not_connected')
+    if has_images or not catalog_missing:
         return None
     retail=bool(re.search(r'у\s+вас|через\s+вас|у\s+тебя|через\s+тебя|ваш\w*\s+(?:магазин|тариф|цен)',text))
     purchase=bool(re.search(r'цен|стоим|тариф|оформ|купить|покуп|подписк',text))

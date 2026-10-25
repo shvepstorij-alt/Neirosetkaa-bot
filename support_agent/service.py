@@ -297,9 +297,18 @@ class Service:
             await self.owner_message(
                 f'Помощник: {self.store.get("mode")}\nТестовых клиентов: {len(self.allowed)}\nЧерновиков: {n}\n'
                 '/chats — чаты и управление\n/pending — черновики\n/retry НОМЕР_ЧАТА — повторить подготовку\n'
-                '/stop — остановить всем\n/draft — включить подготовку\n'
+                '/stop — остановить всем\n/draft — включить подготовку\n/shop_status — проверить подключение магазина\n'
                 'AUTO в этой сборке отсутствует. Вложения тестовых чатов передаются OpenAI для анализа.',
                 buttons([[('Остановить всем','global:off'),('Только черновики','global:draft')]]))
+        elif cmd=='/shop_status':
+            facts=await self.shop.facts(self.owner)
+            labels={'available':'доступны','truncated':'доступны первые 150 записей',
+                    'read_error':'ошибка чтения / прав доступа','not_connected':'не подключены'}
+            await self.owner_message('Магазин · проверка доступа только на чтение\n\n'
+                +'Каталог: '+labels.get(facts.get('catalog_status'),'статус неизвестен')
+                +'\nТарифов с подтверждённой базовой ценой: '+str(len(facts.get('catalog',[])))
+                +'\nЗаказы: '+labels.get(facts.get('orders_status'),'статус неизвестен')
+                +'\n\nЭто не весь ассортимент: динамические товары, описания, остатки и способ активации ещё не подтверждаются. Проверка не вызывает модель.')
         elif cmd=='/chats' or cmd.startswith('chats:'):
             await self.list_chats(int(cmd.split(':')[1]) if ':' in cmd else 0,admin_mid)
         elif cmd.startswith('view:'):

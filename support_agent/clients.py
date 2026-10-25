@@ -192,7 +192,9 @@ summary — кратко: запрос, проверенные факты, чт�
 Скриншот оплаты не доказывает получение платежа; проверяй server_facts.
 Не воспроизводи пароли, токены, коды входа и банковские данные из вложений.
 Факты доступны только из блока server_facts; отсутствие данных не означает отказ.
-Каталог может быть неполным. Не используй цены, характеристики, ссылки и сроки
+Каталог может быть неполным. base_price_rub с price_scope=base_not_customer_quote
+не является ценой для клиента: не цитируй её клиенту, handoff=true при запросе цены.
+Не используй цены, характеристики, ссылки и сроки
 из памяти модели. Нельзя считать оплату активацией. Не добавляй произвольные ссылки.
 Обычно ответ — один короткий абзац, до двух вопросов. Не пиши «сейчас я онлайн».
 Нет каталога — сообщи об этом только в summary. Не проси клиента дать список
@@ -342,17 +344,36 @@ class ShopReader:
             raise ValueError('SHOP_READONLY_DATABASE_URL must use a separate read-only role')
 
     async def facts(self,uid):
-        if not self.pool:
-            return {'source':'unavailable','orders':[],'catalog':[],'note':'Магазин не подключён. Статусы и цены неизвестны.'}
+        result={'source':'unavailable','orders':[],'catalog':[],
+                'orders_status':'not_connected','catalog_status':'not_connected',
+                'catalog_complete':False,
+                'note':'Цены и заказы неизвестны. Динамические товары, скидки, описания и остатки не проверены.'}
+        if not self.pool:return result
+        # Independent transactions: an order permission error must not hide prices.
         try:
             async with self.pool.acquire() as c, c.transaction(readonly=True):
-                orders=await c.fetch('''SELECT num, fk_intid, status, amount_rub, coins_spent, paid_at,
-                    last_checked_at FROM fk_orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5''',uid)
-                catalog=await c.fetch('''SELECT service_name,plan_name,price FROM bot_shop_items
-                    WHERE enabled=TRUE AND plan_idx>=0 ORDER BY key,sort_order,plan_idx LIMIT 150''')
-            return {'source':'shop_database','observed_at_unix':time.time(),
-                'orders':[dict(r,activation_status='not_checked') for r in orders],
-                'catalog':[{'service':scrub(r['service_name']),'plan':scrub(r['plan_name']),'price_rub':r['price']} for r in catalog],
-                'note':'Последние 5 заказов клиента; каталог может быть неполным. Активация не проверена. Время чтения БД не равно проверке поставщика.'}
+                rows=await c.fetch('''SELECT key,plan_idx,service_name,plan_name,price FROM support_catalog_readonly
+                    ORDER BY key,sort_order,plan_idx LIMIT 151''')
+            catalog=[]
+            for row in rows[:150]:
+                price=row['price']
+                if type(price) is not int or price<=0:continue
+                catalog.append({'service_key':row['key'],'plan_index':row['plan_idx'],
+                    'service':scrub(row['service_name']),'plan':scrub(row['plan_name']),
+                    'base_price_rub':price,'price_scope':'base_not_customer_quote','fulfillment':'not_verified','stock':'not_checked'})
+            result.update(catalog=catalog,catalog_status='truncated' if len(rows)>150 else 'available',
+                          catalog_observed_at_unix=time.time())
         except Exception:
-            return {'source':'unavailable','orders':[],'catalog':[],'note':'Ошибка чтения. Не подтверждай цену, оплату или активацию.'}
+            result['catalog_status']='read_error'
+        try:
+            async with self.pool.acquire() as c, c.transaction(readonly=True):
+                rows=await c.fetch('''SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at
+                    FROM fk_orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5''',uid)
+            result.update(orders=[dict(r,activation_status='not_checked') for r in rows],
+                          orders_status='available',orders_observed_at_unix=time.time())
+        except Exception:
+            result['orders_status']='read_error'
+        if result['catalog_status'] in ('available','truncated') or result['orders_status']=='available':
+            result['source']='shop_database'
+        result['note']="Базовые цены только для проверки владельцем. Не называй их клиенту итоговой ценой: персональные партнёрские наценки, акции и скидки не вычислены; нужна проверка цены оформления. Каталог неполный: динамические товары и описания из кода не подключены. Отсутствие позиции не доказывает отсутствие товара. Порядок выдачи и наличие кодов неизвестны. Заказы — последние 5 этого клиента, оплата не подтверждает активацию. При ошибке раздела не подтверждай его сведения. Время чтения БД не равно проверке поставщика. Не обещай самостоятельную активацию любого товара."
+        return result

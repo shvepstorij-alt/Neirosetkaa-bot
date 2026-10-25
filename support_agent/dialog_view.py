@@ -49,8 +49,8 @@ def _media_label(raw):
         kind=value.get('kind') if isinstance(value,dict) else None
     except (TypeError,ValueError):
         kind=None
-    return {'photo':'📷 Фото — отправляется отдельным вложением при открытии страницы',
-            'voice':'🎤 Голосовое — отправляется отдельным вложением при открытии страницы',
+    return {'photo':'📷 Фото — оригинал в личке',
+            'voice':'🎤 Голосовое — оригинал в личке',
             'unsupported':'📎 Вложение — оригинал в личке',
             'sensitive':'🔒 Сообщение скрыто: возможны данные доступа'}.get(kind,'')
 
@@ -110,5 +110,3 @@ async def show_dialog(service,cid,page=None,expanded_mid=None,part=0,admin_mid=N
     buttons.append([_button('К последним',cid,pages-1),_button('Обновить',cid,page)])
     buttons.append([('Карточка чата',f'view:{cid}'),('Все чаты','chats:0')])
     await service.admin_panel('\n\n'.join(blocks),buttons,admin_mid,parse_mode='HTML')
-    from .dialog_media import send_page_media
-    await send_page_media(service,cid,page_mids[page])
