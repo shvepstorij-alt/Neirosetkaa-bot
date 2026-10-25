@@ -6,6 +6,8 @@ from urllib.parse import urlsplit
 
 from .privacy import scrub
 
+DEFAULT_SEARCH_MODEL = 'gpt-5.4-mini'
+
 PRODUCTS = {
     'chatgpt': ('ChatGPT consumer subscription', ('openai.com',)),
     'claude': ('Claude consumer subscription', ('anthropic.com', 'claude.com', 'claude.ai')),
@@ -52,7 +54,9 @@ async def lookup(ai,plan):
     query=(f'As of {date}, check official sources for '+
            '; '.join(PRODUCTS[p][0] for p in plan['products'])+'. '+TOPICS[plan['topic']])
     result=await ai.request('responses',json={
-        'model':ai.model,'store':False,'max_output_tokens':2200,'max_tool_calls':2,
+        'model':getattr(ai,'search_model',DEFAULT_SEARCH_MODEL),
+        'store':False,'max_output_tokens':5000,'max_tool_calls':2,
+        'reasoning':{'effort':'low'},
         'tools':[{'type':'web_search','filters':{'allowed_domains':domains},
                   'external_web_access':True,'search_context_size':'medium'}],
         'tool_choice':'required','include':['web_search_call.action.sources'],

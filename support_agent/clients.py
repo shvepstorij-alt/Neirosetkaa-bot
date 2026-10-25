@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .privacy import scrub
-from .research import PRODUCTS, TOPICS, valid_plan
+from .research import PRODUCTS, TOPICS, valid_plan, DEFAULT_SEARCH_MODEL
 
 
 class RemoteError(Exception):
@@ -25,7 +25,8 @@ API_CODES={'invalid_api_key','invalid_request_error','unsupported_parameter','un
 API_PARAMS={'model','tools','tools[0]','tools[0].type','tools[0].filters',
             'tools[0].filters.allowed_domains','tools[0].external_web_access',
             'tools[0].search_context_size','tool_choice','include','include[0]',
-            'max_tool_calls','max_output_tokens','text.format','text.format.schema','input'}
+            'max_tool_calls','max_output_tokens','text.format','text.format.schema','input',
+            'reasoning','reasoning.effort'}
 
 
 def api_error(status,payload):
@@ -95,10 +96,11 @@ def normalize_image(data):
 
 
 class OpenAI:
-    def __init__(self,session,key,model,audio_model):
+    def __init__(self,session,key,model,audio_model,search_model=None):
         self.session=session
         self.headers={'Authorization':'Bearer '+key}
         self.model=model
+        self.search_model=(search_model or '').strip() or DEFAULT_SEARCH_MODEL
         self.audio_model=audio_model
         root=Path(__file__).parent
         self.rules='\n\n'.join((root/f).read_text(encoding='utf-8') for f in ('SERVICE_RULES.md','STYLE.md'))

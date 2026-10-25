@@ -409,7 +409,8 @@ async def main():
                 raise ValueError('This bot already has a webhook; do not start polling over an existing service')
             shop=ShopReader(os.environ.get('SHOP_READONLY_DATABASE_URL',''))
             await shop.start()
-            ai=OpenAI(session,os.environ['OPENAI_API_KEY'],os.environ['SUPPORT_MODEL'],os.environ['SUPPORT_AUDIO_MODEL'])
+            ai=OpenAI(session,os.environ['OPENAI_API_KEY'],os.environ['SUPPORT_MODEL'],
+                      os.environ['SUPPORT_AUDIO_MODEL'],os.getenv('SUPPORT_SEARCH_MODEL'))
             service=Service(store,tg,ai,shop,owner,allowed,limit);service.bot_id=me['id']
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. Автоответов нет.')
