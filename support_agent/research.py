@@ -134,6 +134,7 @@ def failure_details(exc,stage):
         'No cited evidence':'поиск не вернул текст с подтверждёнными ссылками',
         'Answer lacks valid citations':'в ответе отсутствуют корректные ID источников',
         'Evidence insufficient for final answer':'модель запросила дополнительную проверку либо повторила ID источников',
+        'Research still required':'поиск завершён, но модель сочла сведения недостаточными, устаревшими или противоречивыми и запросила дополнительную проверку',
         'Missing visible inline citation':'модель не расставила ссылки [ID] в тексте ответа',
         'Daily API request limit reached':'достигнут суточный лимит запросов помощника',
     }
@@ -168,15 +169,18 @@ def unavailable(diagnostic=None):
 
 
 def attach_evidence(answer,evidence):
+    if answer.get('research',{}).get('topic')!='none':
+        raise ValueError('Research still required')
     ids=answer.get('source_ids',[])
     available={s['id']:s for s in evidence['sources']}
     if not ids or len(ids)>3 or any(type(i) is not int or i not in available for i in ids):
         raise ValueError('Answer lacks valid citations')
-    if len(set(ids))!=len(ids) or answer.get('research',{}).get('topic')!='none':
-        raise ValueError('Evidence insufficient for final answer')
+    # Reusing a source for several claims is valid; list its URL only once.
+    ids=list(dict.fromkeys(ids))
     selected=[available[i] for i in ids]
     if any(f'[{i}]' not in answer['reply'] for i in ids):
         raise ValueError('Missing visible inline citation')
+    answer['source_ids']=ids
     answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected}
     return answer
 
