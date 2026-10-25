@@ -11,6 +11,7 @@ from pathlib import Path
 from .clients import OpenAI, ShopReader, Telegram, normalize_image
 from .privacy import scrub, sensitive
 from .storage import Store
+from .research import lookup, attach_evidence, outgoing_text, unavailable
 
 
 def buttons(rows):
@@ -23,6 +24,10 @@ class Service:
         self.owner,self.allowed,self.daily_limit=owner,set(allowed),daily_limit
         self.bot_id=None
         self.daily_cleanup=0
+
+    def chat_controls(self,c):
+        return [('Возобновить помощника',f'chat:draft:{c["id"]}')] if c['mode']=='off' else [
+            ('Отвечаю сам',f'chat:off:{c["id"]}')]
 
     async def owner_message(self,text,reply_markup=None,parse_mode=None):
         # HTML is bounded before escaping in show_draft; never cut inside a tag/entity.
@@ -145,14 +150,18 @@ class Service:
                 await self.owner_message('Пока нет сообщений из разрешённых тестовых чатов.')
             for c in rows:
                 await self.owner_message(f'Чат №{c["id"]} · Telegram ID {c["uid"]}\nРежим: {c["mode"]}',
-                    buttons([[('Отвечаю сам',f'chat:off:{c["id"]}'),('Готовить ответы',f'chat:draft:{c["id"]}')]]))
+                    buttons([self.chat_controls(c)]))
         elif cmd.startswith('chat:'):
             _,mode,raw=cmd.split(':')
             cid=int(raw)
             if not self.store.chat(cid):
                 return
-            self.store.switch(mode,cid)
-            await self.owner_message(f'Чат №{cid}: {mode}. Старые ответы отменены.')
+            changed=self.store.switch(mode,cid)
+            await self.owner_message(f'Чат №{cid}: '+(
+                'помощник уже включён. Готовые черновики сохранены.' if not changed else
+                'подготовка ответов включена для новых сообщений.' if mode=='draft' else
+                'помощник на паузе. Ожидающие черновики отменены.'),
+                buttons([self.chat_controls(self.store.chat(cid))]))
         elif cmd=='/pending':
             rows=self.store.db.execute("SELECT id FROM drafts WHERE state IN ('ready','uncertain') ORDER BY id DESC LIMIT 15").fetchall()
             for d in rows:
@@ -176,7 +185,7 @@ class Service:
         if not d:
             return
         c=self.store.chat(d['chat'])
-        rows=[[('Отвечаю сам',f'chat:off:{c["id"]}'),('Готовить ответы',f'chat:draft:{c["id"]}')]]
+        rows=[self.chat_controls(c)]
         if d['state']=='ready':
             rows.insert(0,[('Одобрить и отправить',f'send:{did}')])
         profile=self.store.profile(c['id'])
@@ -186,6 +195,17 @@ class Service:
         states={'ready':'Готов к проверке','sent':'Отправлен','stale':'Отменён — данные изменились',
                 'sending':'Отправляется','uncertain':'Результат отправки неизвестен'}
         state=states.get(d['state'],'Требует проверки')
+        evidence=self.store.evidence(did)
+        if evidence['status']=='checked':
+            checked=dt.datetime.fromtimestamp(evidence['checked_at'],dt.timezone(dt.timedelta(hours=5)))
+            research_note=f'🌐 <b>Источники проверены:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
+            for source in evidence['sources']:
+                research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
+            research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
+        else:
+            research_note={'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
+                           'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
+                               evidence['status'],'')
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
               if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
@@ -197,6 +217,7 @@ class Service:
               f'🔎 <b>Разбор обращения</b>\n<i>Вывод модели — проверьте перед отправкой.</i>\n'
               f'{html.escape(d["summary"][:700])}\n\n'
               f'💬 <b>Ответ клиенту</b>\n{html.escape(d["text"][:1800])}\n\n'
+              f'{research_note}'
               f'<i>{note}</i>')
         sent=await self.owner_message(text,buttons(rows),parse_mode='HTML')
         self.store.db.execute('UPDATE drafts SET admin_mid=? WHERE id=?',(sent['message_id'],did))
@@ -215,7 +236,8 @@ class Service:
             await self.owner_message('Ответ отменён/устарел, чат остановлен или нет права отправки. Повторно не отправляю.')
             return
         try:
-            sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],text=reserved['text'])
+            text=outgoing_text(reserved['text'],self.store.evidence(did))
+            sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],text=text)
         except Exception:
             self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
             await self.owner_message(f'Неизвестен результат отправки черновика №{did}. Проверьте личку. Автоматического повтора не будет.')
@@ -261,7 +283,26 @@ class Service:
         if not self.store.still_current(job):
             return None
         self.charge_call()
-        return await self.ai.draft(self.store.history(job['chat']),facts,image)
+        history=self.store.history(job['chat'])
+        answer=await self.ai.draft(history,facts,image)
+        if not self.store.still_current(job):
+            return None
+        plan=answer.get('research',{'topic':'none','products':[]})
+        if plan['topic']=='none':
+            return answer
+        try:
+            self.charge_call()
+            evidence=await lookup(self.ai,plan)
+            if not self.store.still_current(job):
+                return None
+            self.charge_call()
+            final=await self.ai.draft(history,dict(facts,public_research=evidence),image)
+            if not self.store.still_current(job):
+                return None
+            return attach_evidence(final,evidence)
+        except Exception as exc:
+            logging.warning('Public research unavailable: %s',type(exc).__name__)
+            return unavailable()
 
     async def work_once(self):
         job=self.store.claim(time.time())
@@ -273,7 +314,7 @@ class Service:
         try:
             answer=await self.generate(job)
             if answer:
-                did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'])
+                did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
                 if did:
                     await self.show_draft(did)
         except Exception as exc:

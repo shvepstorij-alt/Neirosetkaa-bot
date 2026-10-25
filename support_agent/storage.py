@@ -30,6 +30,8 @@ class Store:
           CREATE TABLE IF NOT EXISTS quota(day TEXT PRIMARY KEY,calls INTEGER DEFAULT 0);
           CREATE TABLE IF NOT EXISTS chat_profiles(
             chat INTEGER PRIMARY KEY, username TEXT, name TEXT);
+          CREATE TABLE IF NOT EXISTS draft_evidence(
+            draft INTEGER PRIMARY KEY, data TEXT);
         ''')
 
     @contextmanager
@@ -62,6 +64,9 @@ class Store:
         if mode not in ('off', 'draft'):
             raise ValueError('Automatic sending is not enabled in the pilot')
         with self.transaction():
+            # Stale resume buttons must not invalidate an already active draft.
+            if cid is not None and mode=='draft' and self.chat(cid)['mode']=='draft':
+                return False
             if cid is None:
                 self.put('mode', mode)
                 self.put('revision', int(self.get('revision')) + 1)
@@ -71,6 +76,7 @@ class Store:
                 self.db.execute('UPDATE chats SET mode=?,revision=revision+1 WHERE id=?', (mode,cid))
                 self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')", (cid,))
                 self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'", (cid,))
+        return True
 
     def connection(self, ident, enabled, can_reply):
         with self.transaction():
@@ -132,14 +138,20 @@ class Store:
                 and c['revision']==job['revision'] and c['latest']==job['mid']
                 and int(self.get('revision'))==job['global_revision'])
 
-    def finish(self, job, reply, summary, handoff):
+    def finish(self, job, reply, summary, handoff, evidence=None):
         with self.transaction():
             if not self.still_current(job):
                 return None
             cur=self.db.execute('''INSERT INTO drafts(chat,mid,revision,global_revision,text,summary,handoff,created)
                 VALUES (?,?,?,?,?,?,?,?)''',(job['chat'],job['mid'],job['revision'],job['global_revision'],reply,summary,int(handoff),time.time()))
             self.db.execute("UPDATE messages SET state='done' WHERE chat=? AND mid=?",(job['chat'],job['mid']))
+            self.db.execute('INSERT INTO draft_evidence VALUES (?,?)',
+                            (cur.lastrowid,json.dumps(evidence or {'status':'not_requested','sources':[]})))
             return cur.lastrowid
+
+    def evidence(self,did):
+        row=self.db.execute('SELECT data FROM draft_evidence WHERE draft=?',(did,)).fetchone()
+        return json.loads(row[0]) if row else {'status':'not_recorded','sources':[]}
 
     def reserve_call(self, day, limit):
         with self.transaction():
@@ -175,3 +187,4 @@ class Store:
         with self.transaction():
             self.db.execute('DELETE FROM messages WHERE at<?',(before,))
             self.db.execute('DELETE FROM drafts WHERE created<?',(before,))
+            self.db.execute('DELETE FROM draft_evidence WHERE draft NOT IN (SELECT id FROM drafts)')
