@@ -13,10 +13,17 @@ from .clients import OpenAI, ShopReader, Telegram, normalize_image
 from .privacy import scrub, sensitive
 from .storage import Store
 from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details
+from .response_policy import continuing_reply, missing_shop_reply
 
 
 def buttons(rows):
-    return {'inline_keyboard':[[{'text':label,'callback_data':data} for label,data in row] for row in rows]}
+    def item(value):
+        if isinstance(value,dict):
+            return dict(value)
+        label,data=value
+        return dict(text=label,callback_data=data,
+                    **({'style':'success'} if data.startswith('dialog:') else {}))
+    return {'inline_keyboard':[[item(value) for value in row] for row in rows]}
 
 
 class Service:
@@ -34,6 +41,17 @@ class Service:
     def chat_controls(self,c):
         return [('Возобновить помощника',f'chat:draft:{c["id"]}')] if c['mode']=='off' else [
             ('Отвечаю сам',f'chat:off:{c["id"]}')]
+
+    def chat_identity(self,cid):
+        """Plain-text context for every per-client owner confirmation."""
+        c=self.store.chat(cid)
+        if not c:
+            return f'Чат №{cid} · клиент не найден'
+        profile=self.store.profile(cid)
+        username=''.join(str(profile['username'] or '').split())[:64] if profile else ''
+        name=' '.join(str(profile['name'] or '').split())[:100] if profile else ''
+        label='@'+username.lstrip('@') if username else name or 'Клиент без ника'
+        return f'Чат №{cid} · {label} · ID {c["uid"]}'
 
     async def owner_message(self,text,reply_markup=None,parse_mode=None):
         # Cards have complete HTML tags within paragraphs. Split only between
@@ -155,14 +173,15 @@ class Service:
             name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
             self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
 
-    async def admin_panel(self,text,rows,admin_mid=None):
+    async def admin_panel(self,text,rows,admin_mid=None,parse_mode=None):
         """Bounded owner-only pages; callback navigation edits the existing panel."""
         markup=buttons(rows)
         if admin_mid is None:
-            return await self.owner_message(text,markup)
+            return await self.owner_message(text,markup,parse_mode=parse_mode)
         try:
             return await self.tg.call('editMessageText',chat_id=self.owner,
-                message_id=admin_mid,text=text,reply_markup=markup)
+                message_id=admin_mid,text=text,reply_markup=markup,
+                **({'parse_mode':parse_mode} if parse_mode else {}))
         except Exception:
             # A deleted panel or an unchanged-page error must not replay actions.
             logging.warning('Admin panel update unavailable')
@@ -211,7 +230,7 @@ class Service:
             state=('исход отправки неизвестен — проверить личку' if d['state']=='uncertain' else
                    'истёк срок отправки — нужна новая подготовка' if time.time()-d['created']>=900 else
                    'готов к проверке')
-            lines.append(f'Черновик №{d["id"]} · чат №{d["chat"]} · {label}\n{state}')
+            lines.append(f'Черновик №{d["id"]} · чат №{d["chat"]} · {label} · ID {d["uid"]}\n{state}')
             rows.append([(f'№{d["id"]} · {label}',f'draft:{d["id"]}')])
         if not drafts:lines.append('Ожидающих черновиков нет.')
         nav=[]
@@ -242,6 +261,7 @@ class Service:
         rows=[self.chat_controls(c)]
         if c['uid'] in self.allowed:
             rows.append([('Повторить подготовку',f'retry:{cid}')])
+        rows.append([('Весь диалог',f'dialog:{cid}')])
         last=self.store.db.execute('SELECT id FROM drafts WHERE chat=? ORDER BY id DESC LIMIT 1',(cid,)).fetchone()
         if last:rows.append([('Последний черновик',f'draft:{last[0]}')])
         rows.append([('Все чаты','chats:0'),('Ожидают проверки','pending:0')])
@@ -278,13 +298,20 @@ class Service:
                 await self.owner_message('Черновик не найден или удалён по сроку хранения. Используйте /pending.')
         elif cmd.startswith('retry:'):
             await self.command('/retry '+str(int(cmd.split(':')[1])))
+        elif cmd.startswith('dialog:'):
+            from .dialog_view import show_dialog
+            await show_dialog(self,int(cmd.split(':')[1]))
+        elif cmd.startswith('dlg:'):
+            from .dialog_view import show_dialog
+            _,cid,page,mid,part=cmd.split(':')
+            await show_dialog(self,int(cid),int(page),int(mid) or None,int(part),admin_mid)
         elif cmd.startswith('chat:'):
             _,mode,raw=cmd.split(':')
             cid=int(raw)
             if not self.store.chat(cid):
                 return
             changed=self.store.switch(mode,cid)
-            await self.owner_message(f'Чат №{cid}: '+(
+            await self.owner_message(self.chat_identity(cid)+'\n'+(
                 'помощник уже включён. Готовые черновики сохранены.' if not changed else
                 'подготовка ответов включена для новых сообщений.' if mode=='draft' else
                 'помощник на паузе. Ожидающие черновики отменены.'),
@@ -300,22 +327,22 @@ class Service:
         elif cmd=='/retry' and len(parts)==2 and parts[1].isdigit():
             cid=int(parts[1]);c=self.store.chat(cid)
             if not c or c['mode']!='draft' or self.store.get('mode')!='draft':
-                await self.owner_message('Сначала включите черновики для этого чата и глобально.')
+                await self.owner_message(self.chat_identity(cid)+'\nСначала включите черновики для этого чата и глобально.')
                 return
             m=self.store.db.execute("SELECT * FROM messages WHERE chat=? AND mid=? AND role='client'",(cid,c['latest'])).fetchone()
             if not m:
-                await self.owner_message('Последнее сообщение уже недоступно. Нужно новое сообщение клиента.')
+                await self.owner_message(self.chat_identity(cid)+'\nПоследнее сообщение уже недоступно. Нужно новое сообщение клиента.')
                 return
             if m['state'] in ('queued','working') or cid in self.active_chats:
-                await self.owner_message('Ответ уже в очереди или готовится. Повторный запрос не запущен.')
+                await self.owner_message(self.chat_identity(cid)+'\nОтвет уже в очереди или готовится. Повторный запрос не запущен.')
                 return
             previous=self.store.db.execute("SELECT state FROM drafts WHERE chat=? AND mid=? AND state IN ('sent','sending','uncertain') LIMIT 1",(cid,c['latest'])).fetchone()
             if previous:
-                await self.owner_message('На это сообщение уже отправлялся ответ либо исход отправки неизвестен. Проверьте личку; повтор автоматически не создаю. Для продолжения нужно новое сообщение клиента.')
+                await self.owner_message(self.chat_identity(cid)+'\nНа это сообщение уже отправлялся ответ либо исход отправки неизвестен. Проверьте личку; повтор автоматически не создаю. Для продолжения нужно новое сообщение клиента.')
                 return
             if m:
                 self.store.ingest(c['connection'],c['uid'],m['mid'],'client',m['text'],json.loads(m['media']),m['at'],edited=True)
-                await self.owner_message('Подготовка поставлена в очередь заново. Это может расходовать API-баланс.')
+                await self.owner_message(self.chat_identity(cid)+'\nПодготовка поставлена в очередь заново. Это может расходовать API-баланс.')
 
     async def show_draft(self,did):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
@@ -323,6 +350,7 @@ class Service:
             return
         c=self.store.chat(d['chat'])
         rows=[self.chat_controls(c)]
+        rows.append([('Весь диалог',f'dialog:{c["id"]}')])
         expired=d['state']=='ready' and time.time()-d['created']>=900
         if d['state']=='ready' and not expired:
             rows.insert(0,[('Отправить и продолжить',f'send:{did}')])
@@ -397,7 +425,7 @@ class Service:
         await self.load_connection(c['connection'])
         reserved=self.store.reserve_send(did,time.time())
         if not reserved:
-            await self.owner_message('Ответ отменён/устарел, чат остановлен или нет права отправки. Повторно не отправляю.')
+            await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: ответ отменён/устарел, чат остановлен или нет права отправки. Повторно не отправляю.')
             return
         if pause_after:
             # Pause before yielding to the network so a new incoming message cannot
@@ -409,7 +437,7 @@ class Service:
         except Exception:
             self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
             self.store.switch('off',c['id'])
-            await self.owner_message(f'Неизвестен результат отправки черновика №{did}. Чат поставлен на паузу. Проверьте личку перед возобновлением. Автоматического повтора не будет.',
+            await self.owner_message(self.chat_identity(c['id'])+f'\nНеизвестен результат отправки черновика №{did}. Чат поставлен на паузу. Проверьте личку перед возобновлением. Автоматического повтора не будет.',
                                      buttons([self.chat_controls(self.store.chat(c['id']))]))
             return
         with self.store.transaction():
@@ -417,7 +445,7 @@ class Service:
             self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
                 (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
         current=self.store.chat(c['id'])
-        await self.owner_message(f'Черновик №{did} отправлен. '+(
+        await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did} отправлен. '+(
             'Чат на паузе; отвечаете вы.' if current['mode']=='off' else
             'Помощник продолжит готовить черновики следующих сообщений.'),
             buttons([self.chat_controls(current)]))
@@ -469,8 +497,15 @@ class Service:
         facts=dict(facts,context_scope='История содержит только последние 60 сообщений в пределах 24000 символов; более ранние договорённости могут отсутствовать. Не придумывай их.')
         if not self.store.still_current(job):
             return None
-        self.charge_call()
         history=self.store.history(job['chat'])
+        latest=next((m['text'] for m in reversed(history) if m['role']=='client'),'')
+        shortcut=missing_shop_reply(latest,facts)
+        if shortcut:
+            return shortcut
+        replied=bool(self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone())
+        facts=dict(facts,conversation={'continuing':replied,
+                                      'latest_client_message':latest})
+        self.charge_call()
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
             return None
@@ -507,6 +542,8 @@ class Service:
         try:
             answer=await self.generate(job)
             if answer:
+                replied=self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone()
+                answer['reply']=continuing_reply(answer['reply'],[{'role':'assistant'}] if replied else [])
                 did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
                 if did:
                     await self.show_draft(did)
@@ -514,7 +551,7 @@ class Service:
             self.store.db.execute("UPDATE messages SET state='failed' WHERE chat=? AND mid=? AND state='working'",(job['chat'],job['mid']))
             diagnostic=failure_details(exc,'draft')
             logging.warning('Draft processing failed: %s',diagnostic)
-            await self.owner_message(f'Не удалось подготовить ответ для чата №{job["chat"]}. Клиенту ничего не отправлено. Проверьте /pending или возьмите диалог вручную. {diagnostic}')
+            await self.owner_message(self.chat_identity(job['chat'])+f'\nНе удалось подготовить ответ. Клиенту ничего не отправлено. Проверьте /pending или возьмите диалог вручную. {diagnostic}')
         finally:
             self.active_chats.discard(job['chat'])
         return True
