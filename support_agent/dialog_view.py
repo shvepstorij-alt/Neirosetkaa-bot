@@ -5,7 +5,7 @@ import json
 
 
 PAGE_SIZE=5
-PREVIEW_UNITS=150
+PAGE_BODY_UNITS=3000
 PART_UNITS=1500
 LOCAL_TZ=dt.timezone(dt.timedelta(hours=5))
 
@@ -33,7 +33,7 @@ def _number(value,default=0):
 
 
 def _button(text,cid,page,mid=0,part=0):
-    return {'text':text,'callback_data':f'dlg:{cid}:{page}:{mid}:{part}','style':'success'}
+    return {'text':text,'callback_data':f'dlg:{cid}:{page}:{mid}:{part}'}
 
 
 def _time(value):
@@ -49,13 +49,14 @@ def _media_label(raw):
         kind=value.get('kind') if isinstance(value,dict) else None
     except (TypeError,ValueError):
         kind=None
-    return {'photo':'📷 Фото — оригинал в личке',
-            'voice':'🎤 Голосовое — оригинал в личке',
+    return {'photo':'📷 Фото — отправляется отдельным вложением при открытии страницы',
+            'voice':'🎤 Голосовое — отправляется отдельным вложением при открытии страницы',
             'unsupported':'📎 Вложение — оригинал в личке',
             'sensitive':'🔒 Сообщение скрыто: возможны данные доступа'}.get(kind,'')
 
 
-async def show_dialog(service,cid,page=0,expanded_mid=None,part=0,admin_mid=None):
+async def show_dialog(service,cid,page=None,expanded_mid=None,part=0,admin_mid=None):
+    open_latest=page is None
     cid=_number(cid);page=_number(page);part=_number(part)
     expanded_mid=_number(expanded_mid)
     chat=service.store.chat(cid)
@@ -64,22 +65,33 @@ async def show_dialog(service,cid,page=0,expanded_mid=None,part=0,admin_mid=None
                                   parse_mode='HTML')
         return
     db=service.store.db
-    count=db.execute('SELECT count(*) FROM messages WHERE chat=?',(cid,)).fetchone()[0]
-    pages=max(1,(count+PAGE_SIZE-1)//PAGE_SIZE)
-    page=min(page,pages-1)
-    missing=False
-    if expanded_mid:
-        target=db.execute('SELECT mid FROM messages WHERE chat=? AND mid=?',(cid,expanded_mid)).fetchone()
-        if target:
-            # Stable message identity: an old button still opens its own message
-            # even after retention cleanup moved the page boundary.
-            before=db.execute('SELECT count(*) FROM messages WHERE chat=? AND mid<?',
-                              (cid,expanded_mid)).fetchone()[0]
-            page=before//PAGE_SIZE
-        else:
-            missing=True;expanded_mid=0;part=0
-    rows=db.execute('SELECT mid,role,text,media,at FROM messages WHERE chat=? ORDER BY mid LIMIT ? OFFSET ?',
-                    (cid,PAGE_SIZE,page*PAGE_SIZE)).fetchall()
+    # Paginate complete quoted text, including text hidden by Telegram's native
+    # expand arrow. Hidden text still counts towards the message length limit.
+    rows=db.execute('SELECT mid,role,text,media,at FROM messages WHERE chat=? ORDER BY mid',
+                    (cid,)).fetchall()
+    count=len(rows)
+    roles={'client':'Клиент','owner':'Александр · вручную','assistant':'Помощник · одобрено владельцем'}
+    packed=[[]];page_mids=[[]];used=0;target_page=None
+    for row in rows:
+        chunks=text_parts(row['text'] or '[Текст отсутствует]')
+        for index,body in enumerate(chunks):
+            head=f'<b>{roles.get(row["role"],"Сообщение")}</b> · {_time(row["at"])} · №{row["mid"]}'
+            if len(chunks)>1:
+                head+=f'\n<i>Часть {index+1}/{len(chunks)} полного сообщения</i>'
+            media=_media_label(row['media'])
+            block=head+'\n<blockquote expandable>'+html.escape(body)+'</blockquote>'
+            if media:block+='\n<i>'+media+'</i>'
+            visible=head.replace('<b>','').replace('</b>','').replace('<i>','').replace('</i>','')+'\n'+body+'\n'+media
+            units=len(visible.encode('utf-16-le'))//2+2
+            if packed[-1] and (used+units>PAGE_BODY_UNITS or len(packed[-1])>=PAGE_SIZE):
+                packed.append([]);page_mids.append([]);used=0
+            packed[-1].append(block);page_mids[-1].append(row["mid"]);used+=units
+            # Accept old per-message callbacks without restoring their keyboard.
+            if row['mid']==expanded_mid and index==min(part,len(chunks)-1):
+                target_page=len(packed)-1
+    pages=len(packed)
+    missing=bool(expanded_mid and target_page is None)
+    page=target_page if target_page is not None else pages-1 if open_latest else min(page,pages-1)
     label=html.escape(service.chat_label(cid,chat['uid']))
     blocks=[f'💬 <b>Сохранённый диалог · чат №{cid}</b>\n{label} · ID {chat["uid"]}',
             f'<i>Сообщений: {count} · страница {page+1}/{pages} · время UTC+5</i>',
@@ -88,37 +100,15 @@ async def show_dialog(service,cid,page=0,expanded_mid=None,part=0,admin_mid=None
     if missing:
         blocks.append('<i>Выбранное сообщение уже удалено или недоступно в этом чате.</i>')
     buttons=[]
-    roles={'client':'Клиент','owner':'Александр · вручную','assistant':'Помощник · одобрено владельцем'}
-    for row in rows:
-        raw=row['text'] or ''
-        role=roles.get(row['role'],'Сообщение')
-        mid=row['mid']
-        head=f'<b>{role}</b> · {_time(row["at"])} · №{mid}'
-        media=_media_label(row['media'])
-        expanded=mid==expanded_mid
-        if expanded:
-            chunks=text_parts(raw);current=min(part,len(chunks)-1)
-            body=chunks[current] or '[Текст отсутствует]'
-            if len(chunks)>1:
-                head+=f'\n<i>Часть {current+1}/{len(chunks)} полного сообщения</i>'
-            nav=[]
-            if current:nav.append(_button('← Предыдущая часть',cid,page,mid,current-1))
-            if current+1<len(chunks):nav.append(_button('Следующая часть →',cid,page,mid,current+1))
-            buttons.append([_button(f'Свернуть №{mid}',cid,page)])
-            if nav:buttons.append(nav)
-        else:
-            chunks=text_parts(raw,PREVIEW_UNITS)
-            body=(chunks[0]+'…' if len(chunks)>1 else chunks[0]) or '[Текст отсутствует]'
-            buttons.append([_button(f'Развернуть №{mid}',cid,page,mid)])
-        block=head+'\n<blockquote>'+html.escape(body)+'</blockquote>'
-        if media:block+='\n<i>'+media+'</i>'
-        blocks.append(block)
+    blocks.extend(packed[page])
     if not rows:
         blocks.append('Сохранённых сообщений пока нет.')
     nav=[]
     if page:nav.append(_button('← Раньше',cid,page-1))
     if page+1<pages:nav.append(_button('Позже →',cid,page+1))
     if nav:buttons.append(nav)
-    buttons.append([_button('К последним',cid,pages-1),_button('Обновить',cid,page,expanded_mid,part)])
+    buttons.append([_button('К последним',cid,pages-1),_button('Обновить',cid,page)])
     buttons.append([('Карточка чата',f'view:{cid}'),('Все чаты','chats:0')])
     await service.admin_panel('\n\n'.join(blocks),buttons,admin_mid,parse_mode='HTML')
+    from .dialog_media import send_page_media
+    await send_page_media(service,cid,page_mids[page])

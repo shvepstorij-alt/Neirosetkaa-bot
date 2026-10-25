@@ -160,6 +160,7 @@ class Service:
         elif m.get('document') and m['document'].get('mime_type') in ('image/jpeg','image/png','image/webp'):
             media={k:v for k,v in m['document'].items() if k in ('file_id','file_size')}
             media['kind']='photo'
+            media['delivery_kind']='document'
         elif any(m.get(key) for key in ('document','video','animation','audio','video_note','sticker','contact','location','venue','poll')) or not raw:
             media={'kind':'unsupported'}
         if secret:
@@ -511,7 +512,7 @@ class Service:
             if message['role']=='client':
                 current_turn.append(message['text'])
         latest='\n'.join(reversed(current_turn))
-        shortcut=missing_shop_reply(latest,facts)
+        shortcut=missing_shop_reply(latest,facts,has_images=bool(image))
         if shortcut:
             return shortcut
         replied=bool(self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone())

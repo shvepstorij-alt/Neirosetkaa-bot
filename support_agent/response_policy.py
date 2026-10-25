@@ -11,7 +11,7 @@ def continuing_reply(reply, history):
     return cleaned.strip() or 'Чем могу помочь?'
 
 
-def missing_shop_reply(latest, facts):
+def missing_shop_reply(latest, facts, has_images=False):
     """Public subscription prices must not substitute for an unavailable shop catalog."""
     text=latest.lower()
     procurement=bool(re.search(r'закуп|поставщик|себестоим',text))
@@ -25,7 +25,7 @@ def missing_shop_reply(latest, facts):
         return {'reply':' '.join(parts)+' По подпискам и возможностям сервисов подскажу)',
                 'summary':'Последний запрос затрагивает закрытые закупочные сведения или контент 18+. Дан краткий отказ без возврата к прежним темам.',
                 'handoff':False}
-    if facts.get('source')!='unavailable':
+    if has_images or facts.get('source')!='unavailable':
         return None
     retail=bool(re.search(r'у\s+вас|через\s+вас|у\s+тебя|через\s+тебя|ваш\w*\s+(?:магазин|тариф|цен)',text))
     purchase=bool(re.search(r'цен|стоим|тариф|оформ|купить|покуп|подписк',text))
