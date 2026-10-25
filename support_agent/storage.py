@@ -10,7 +10,8 @@ HISTORY_TRUNCATED = '[Начало сообщения не включено в �
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, batch_seconds=300):
+        self.batch_seconds=batch_seconds
         self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript('''
@@ -40,6 +41,16 @@ class Store:
           CREATE INDEX IF NOT EXISTS drafts_state ON drafts(state,id);
           CREATE INDEX IF NOT EXISTS chats_inbound ON chats(inbound DESC,id);
         ''')
+
+        columns={row['name'] for row in self.db.execute('PRAGMA table_info(chats)')}
+        for name,kind in (('batch_due','REAL'),('batch_start','REAL'),('batch_first','INTEGER')):
+            if name not in columns:
+                self.db.execute(f'ALTER TABLE chats ADD COLUMN {name} {kind} NOT NULL DEFAULT 0')
+        # Existing queued work receives a persistent collection window on upgrade.
+        self.db.execute("""UPDATE chats SET batch_start=?,batch_due=?,batch_first=latest
+            WHERE batch_due=0 AND EXISTS (SELECT 1 FROM messages m
+            WHERE m.chat=chats.id AND m.mid=chats.latest AND m.state='queued')""",
+            (time.time(),time.time()+self.batch_seconds))
 
     @contextmanager
     def transaction(self):
@@ -107,6 +118,9 @@ class Store:
             existing = self.db.execute('SELECT 1 FROM messages WHERE chat=? AND mid=?', (cid,mid)).fetchone()
             if existing and not edited:
                 return cid
+            pending=self.db.execute("SELECT state FROM messages WHERE chat=? AND mid=?",
+                                    (cid,chat['latest'])).fetchone()
+            collecting=bool(pending and pending['state']=='queued' and chat['batch_due']>0)
             # Any manual owner message or edit invalidates pending suggestions.
             if role == 'owner':
                 self.db.execute("UPDATE chats SET mode='off',revision=revision+1 WHERE id=?", (cid,))
@@ -116,8 +130,19 @@ class Store:
             self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'", (cid,))
             chat = self.chat(cid)
             queued = role == 'client' and mid == chat['latest'] and chat['mode']=='draft' and self.get('mode')=='draft'
+            if queued and not collecting:
+                start=time.time() if edited else min(float(at),time.time())
+                self.db.execute('UPDATE chats SET batch_start=?,batch_due=?,batch_first=? WHERE id=?',
+                                (start,start+self.batch_seconds,mid,cid))
             self.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)',
                             (cid,mid,role,text,json.dumps(media),at,'queued' if queued else 'stored'))
+            if role=='client' and mid!=chat['latest'] and pending and pending['state'] in ('queued','working') and chat['mode']=='draft' and self.get('mode')=='draft':
+                # Editing an earlier fragment must not strand the last fragment.
+                self.db.execute("UPDATE messages SET state='queued' WHERE chat=? AND mid=? AND role='client'",
+                                (cid,chat['latest']))
+                if not collecting:
+                    self.db.execute('UPDATE chats SET batch_start=?,batch_due=? WHERE id=?',
+                                    (time.time(),time.time()+self.batch_seconds,cid))
             return cid
 
     def delete_messages(self, connection, uid, mids):
@@ -126,11 +151,24 @@ class Store:
             if not row:
                 return
             cid=row[0]
+            c=self.chat(cid)
+            pending=self.db.execute('SELECT state FROM messages WHERE chat=? AND mid=?',
+                                    (cid,c['latest'])).fetchone()
             for mid in mids:
                 self.db.execute('DELETE FROM messages WHERE chat=? AND mid=?',(cid,mid))
             self.db.execute('UPDATE chats SET revision=revision+1 WHERE id=?',(cid,))
             self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')",(cid,))
             self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'",(cid,))
+
+            if pending and pending['state'] in ('queued','working') and c['mode']=='draft' and self.get('mode')=='draft':
+                latest=self.db.execute("SELECT mid FROM messages WHERE chat=? AND role='client' AND mid>=? ORDER BY mid DESC LIMIT 1",
+                                       (cid,c['batch_first'])).fetchone()
+                if latest:
+                    self.db.execute('UPDATE chats SET latest=? WHERE id=?',(latest[0],cid))
+                    self.db.execute("UPDATE messages SET state='queued' WHERE chat=? AND mid=?",(cid,latest[0]))
+                    if pending['state']=='working':
+                        self.db.execute('UPDATE chats SET batch_start=?,batch_due=? WHERE id=?',
+                                        (time.time(),time.time()+self.batch_seconds,cid))
 
     def claim(self, now, excluded_chats=()):
         if self.get('mode') != 'draft':
@@ -142,11 +180,24 @@ class Store:
                 JOIN chats c ON c.id=m.chat JOIN connections b ON b.id=c.connection
                 WHERE m.state='queued' AND c.mode='draft' AND b.enabled=1 AND b.can_reply=1
                 AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.chat=c.id AND d.state='sending')
-                AND m.mid=c.latest AND m.at<=?'''+exclusion+' ORDER BY m.at,m.chat LIMIT 1',
-                (now-3,*excluded)).fetchone()
+                AND m.mid=c.latest AND c.batch_due<=?'''+exclusion+' ORDER BY m.at,m.chat LIMIT 1',
+                (now,*excluded)).fetchone()
             if row:
                 self.db.execute("UPDATE messages SET state='working' WHERE chat=? AND mid=?",(row['chat'],row['mid']))
                 return dict(row, global_revision=int(self.get('revision')))
+
+    def prepare_now(self,cid,now):
+        """Expedite only an existing queued batch; never revive completed work."""
+        with self.transaction():
+            c=self.chat(cid)
+            if not c or c['mode']!='draft' or self.get('mode')!='draft':return False
+            b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
+            if not b or not b['enabled'] or not b['can_reply']:return False
+            pending=self.db.execute("SELECT 1 FROM messages WHERE chat=? AND mid=? AND state='queued'",
+                                    (cid,c['latest'])).fetchone()
+            if not pending:return False
+            self.db.execute('UPDATE chats SET batch_due=MIN(batch_due,?) WHERE id=?',(now,cid))
+            return True
 
     def still_current(self, job):
         c=self.chat(job['chat'])

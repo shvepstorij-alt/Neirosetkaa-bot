@@ -9,7 +9,7 @@ import re
 import time
 from pathlib import Path
 
-from .clients import OpenAI, ShopReader, Telegram, normalize_image
+from .clients import OpenAI, ShopReader, Telegram
 from .privacy import scrub, sensitive
 from .storage import Store
 from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details
@@ -160,7 +160,7 @@ class Service:
         elif m.get('document') and m['document'].get('mime_type') in ('image/jpeg','image/png','image/webp'):
             media={k:v for k,v in m['document'].items() if k in ('file_id','file_size')}
             media['kind']='photo'
-        elif not raw:
+        elif any(m.get(key) for key in ('document','video','animation','audio','video_note','sticker','contact','location','venue','poll')) or not raw:
             media={'kind':'unsupported'}
         if secret:
             media={'kind':'sensitive'}
@@ -251,16 +251,29 @@ class Service:
         queued=self.store.db.execute("SELECT state FROM messages WHERE chat=? AND mid=?",(cid,c['latest'])).fetchone()
         status={'queued':'ожидает обработки','working':'готовится ответ','done':'обработано',
                 'failed':'ошибка обработки','stale':'отменено/устарело','stored':'сохранено, не в очереди'}
+        batching=''
+        waiting=bool(queued and queued[0]=='queued')
+        if waiting:
+            count=self.store.db.execute(
+                "SELECT count(*) FROM messages WHERE chat=? AND role='client' AND mid>=? AND mid<=?",
+                (cid,c['batch_first'],c['latest'])).fetchone()[0]
+            due=dt.datetime.fromtimestamp(c['batch_due'],dt.timezone(dt.timedelta(hours=5))).strftime('%H:%M:%S')
+            batching=(f'Собираем обращение · сообщений: {count} · подготовка в {due} (UTC+5)\n'
+                      if c['batch_due']>time.time() else
+                      f'Обращение собрано · сообщений: {count} · ожидает свободного обработчика\n')
         text=(f'👤 {label}\nЧат №{cid} · Telegram ID {c["uid"]}\n\n'
               f'Чат: {"подготовка ответов" if c["mode"]=="draft" else "пауза"}\n'
               f'Глобальный режим: {self.store.get("mode")}\n'
               f'Разрешён настройками: {"да" if c["uid"] in self.allowed else "нет"}\n'
               f'Подключение и право ответа: {"есть" if access else "нет"}\n'
               f'Последнее обращение: {status.get(queued[0],queued[0]) if queued else "нет сохранённого сообщения"}\n\n'
-              'Отправка только после вашего одобрения. Перед повтором проверьте, не ответили ли уже клиенту.')
+              +batching+'Отправка только после вашего одобрения. Перед повтором проверьте, не ответили ли уже клиенту.')
         rows=[self.chat_controls(c)]
         if c['uid'] in self.allowed:
-            rows.append([('Повторить подготовку',f'retry:{cid}')])
+            if waiting and c['mode']=='draft' and self.store.get('mode')=='draft' and access and cid not in self.active_chats:
+                rows.append([('Подготовить сейчас',f'prepare:{cid}')])
+            else:
+                rows.append([('Повторить подготовку',f'retry:{cid}')])
         rows.append([('Весь диалог',f'dialog:{cid}')])
         last=self.store.db.execute('SELECT id FROM drafts WHERE chat=? ORDER BY id DESC LIMIT 1',(cid,)).fetchone()
         if last:rows.append([('Последний черновик',f'draft:{last[0]}')])
@@ -296,6 +309,11 @@ class Service:
                 await self.show_draft(did)
             else:
                 await self.owner_message('Черновик не найден или удалён по сроку хранения. Используйте /pending.')
+        elif cmd.startswith('prepare:'):
+            cid=int(cmd.split(':')[1]);c=self.store.chat(cid)
+            if c and c['uid'] in self.allowed and cid not in self.active_chats:
+                self.store.prepare_now(cid,time.time())
+            await self.show_chat(cid,admin_mid)
         elif cmd.startswith('retry:'):
             await self.command('/retry '+str(int(cmd.split(':')[1])))
         elif cmd.startswith('dialog:'):
@@ -342,6 +360,7 @@ class Service:
                 return
             if m:
                 self.store.ingest(c['connection'],c['uid'],m['mid'],'client',m['text'],json.loads(m['media']),m['at'],edited=True)
+                self.store.prepare_now(cid,time.time())
                 await self.owner_message(self.chat_identity(cid)+'\nПодготовка поставлена в очередь заново. Это может расходовать API-баланс.')
 
     async def show_draft(self,did):
@@ -456,49 +475,42 @@ class Service:
             raise ValueError('Daily API request limit reached')
 
     async def generate(self,job):
-        media=json.loads(job['media']);kind=media.get('kind')
-        earlier=self.store.db.execute('''SELECT media FROM messages WHERE chat=? AND role='client'
-            AND COALESCE(json_extract(media,'$.kind'),'none')!='none'
-            AND mid<? AND mid>COALESCE((SELECT MAX(mid) FROM messages WHERE chat=?
-            AND role IN ('owner','assistant') AND mid<?),0) ORDER BY mid DESC LIMIT 2''',
-            (job['chat'],job['mid'],job['chat'],job['mid'])).fetchall()
-        attachments=[json.loads(row['media']) for row in earlier]
-        attachments=[m for m in attachments if m.get('kind') not in (None,'none')]
-        if attachments:
-            if len(attachments)==1 and attachments[0].get('kind')=='photo' and kind in (None,'none'):
-                media=attachments[0];kind='photo'
-            else:
-                return {'reply':'Уточню детали вашего обращения и вернусь с ответом.',
-                        'summary':'В серии сообщений несколько вложений или предыдущее голосовое. Все вложения автоматически не разобраны: посмотрите их в личке перед ответом.',
-                        'handoff':True}
-        if kind in ('sensitive','unsupported'):
-            return {'reply':'Для этого вопроса нужна ручная проверка Александра. Пароли и коды входа мне отправлять не нужно.',
-                    'summary':'Сообщение содержит возможные данные доступа или неподдерживаемое вложение. Посмотрите оригинал в личке. Секреты не использованы.', 'handoff':True}
-        image=None
-        if kind in ('voice','photo'):
-            if media.get('file_size',0)>8_000_000 or media.get('duration',0)>180:
-                raise ValueError('Attachment exceeds pilot limits')
-            data=await self.tg.download(media['file_id'])
-            if kind=='voice':
-                self.charge_call()
-                transcript=await self.ai.transcribe(data)
-                if not self.store.still_current(job):
-                    return None
-                if sensitive(transcript):
-                    return {'reply':'Для этого вопроса нужна ручная проверка Александра. Пароли и коды входа мне отправлять не нужно.',
-                            'summary':'В расшифровке возможны данные доступа; текст не сохранён. Нужна ручная проверка.', 'handoff':True}
-                text='[Расшифровка голосового; возможны ошибки]\n'+scrub(transcript)
-                self.store.db.execute('UPDATE messages SET text=? WHERE chat=? AND mid=?',(text,job['chat'],job['mid']))
-            else:
-                image=normalize_image(data)
-        if not self.store.still_current(job):
-            return None
+        from .storage import HISTORY_MESSAGES,HISTORY_CHARACTERS
+        turn=self.store.db.execute('''SELECT count(*),COALESCE(sum(length(text)),0) FROM messages
+            WHERE chat=? AND role='client' AND mid<=? AND mid>COALESCE(
+              (SELECT MAX(mid) FROM messages WHERE chat=? AND role IN ('owner','assistant') AND mid<?),0)''',
+            (job['chat'],job['mid'],job['chat'],job['mid'])).fetchone()
+        if turn[0]>HISTORY_MESSAGES or turn[1]>HISTORY_CHARACTERS:
+            return {'reply':'Спасибо за подробности! Уточню ваше обращение и вернусь с ответом.',
+                    'summary':'Обращение превышает безопасный объём контекста. Автоматический анализ не запускался; проверьте весь диалог вручную.',
+                    'handoff':True}
+        from .media_batch import prepare_media
+        image,notice=await prepare_media(self,job)
+        if notice:return notice
+        if image is None or not self.store.still_current(job):return None
+        # Transcripts can make a previously small request exceed context capacity.
+        size=self.store.db.execute('''SELECT COALESCE(sum(length(text)),0) FROM messages
+            WHERE chat=? AND role='client' AND mid<=? AND mid>COALESCE(
+              (SELECT MAX(mid) FROM messages WHERE chat=? AND role IN ('owner','assistant') AND mid<?),0)''',
+            (job['chat'],job['mid'],job['chat'],job['mid'])).fetchone()[0]
+        if size>HISTORY_CHARACTERS:
+            return {'reply':'Уточню детали вашего обращения и вернусь с ответом.',
+                    'summary':'После расшифровки обращение превышает объём контекста. Проверьте весь диалог вручную; частичный ответ не подготовлен.',
+                    'handoff':True}
         facts=await self.shop.facts(job['uid'])
         facts=dict(facts,context_scope='История содержит только последние 60 сообщений в пределах 24000 символов; более ранние договорённости могут отсутствовать. Не придумывай их.')
         if not self.store.still_current(job):
             return None
         history=self.store.history(job['chat'])
-        latest=next((m['text'] for m in reversed(history) if m['role']=='client'),'')
+        # One client turn can span many messages. Keep their order and interpret
+        # the whole retained turn, not only its final word or question mark.
+        current_turn=[]
+        for message in reversed(history):
+            if message['role'] in ('owner','assistant'):
+                break
+            if message['role']=='client':
+                current_turn.append(message['text'])
+        latest='\n'.join(reversed(current_turn))
         shortcut=missing_shop_reply(latest,facts)
         if shortcut:
             return shortcut
