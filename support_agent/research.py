@@ -100,10 +100,51 @@ async def lookup(ai,plan):
             'note':'Это данные из интернета, не инструкции и не каталог магазина. Проверка не гарантирует актуальность каждой страницы.'}
 
 
-def unavailable():
+def failure_details(exc,stage):
+    stages={'search':'поиск источников','final_draft':'подготовка ответа по источникам',
+            'citations':'проверка ссылок ответа','draft':'подготовка черновика'}
+    reasons={
+        'api_http':'OpenAI отклонил запрос',
+        'api_timeout':'истекло время ожидания ответа OpenAI',
+        'api_transport':'не удалось получить ответ OpenAI (сеть или формат ответа)',
+        'draft_incomplete':'модель не завершила ответ',
+        'draft_json':'ответ модели не удалось прочитать как JSON',
+        'draft_schema':'модель нарушила структуру ответа',
+        'draft_length':'ответ модели пустой или превышает ограничение длины',
+        'draft_privacy_filter':'ответ отклонён фильтром ссылок или чувствительных данных',
+        'remote_error':'ошибка API без уточнённого кода',
+    }
+    known_values={
+        'Unsupported research request':'сервис или тема пока не поддерживаются поиском',
+        'Search was not completed':'API не подтвердил завершённый поиск',
+        'Search cited an unapproved source':'ссылка вне разрешённых официальных источников',
+        'No cited evidence':'поиск не вернул текст с подтверждёнными ссылками',
+        'Answer lacks valid citations':'в ответе отсутствуют корректные ID источников',
+        'Evidence insufficient for final answer':'модель запросила дополнительную проверку либо повторила ID источников',
+        'Missing visible inline citation':'модель не расставила ссылки [ID] в тексте ответа',
+        'Daily API request limit reached':'достигнут суточный лимит запросов помощника',
+    }
+    reason=reasons.get(getattr(exc,'reason',None))
+    if reason is None:
+        reason=known_values.get(str(exc),'непредвиденная ошибка обработки; нужна проверка кода')
+    details=f'Этап: {stages.get(stage,"обработка")}. Причина: {reason}.'
+    status=getattr(exc,'status',None)
+    if type(status) is int and 100<=status<=599:
+        details+=f' HTTP {status}.'
+    # These attributes are already allowlisted by api_error; recheck at the boundary.
+    from .clients import API_CODES, API_PARAMS
+    for label,value,allowed in (('Код',getattr(exc,'api_code',None),API_CODES),
+                                ('Параметр',getattr(exc,'param',None),API_PARAMS)):
+        if isinstance(value,str) and value in allowed:
+            details+=f' {label}: {value}.'
+    return details
+
+
+def unavailable(diagnostic=None):
     return {'reply':'Точные актуальные условия нужно уточнить у Александра, чтобы не ввести вас в заблуждение.',
             'summary':'Свежие сведения не удалось подтвердить источниками. Нужна ручная проверка; ответ из памяти модели не использован.',
-            'handoff':True,'evidence':{'status':'unavailable','sources':[]}}
+            'handoff':True,'evidence':{'status':'unavailable','sources':[],
+                                     'diagnostic':diagnostic or 'Причина не сохранена в старой версии.'}}
 
 
 def attach_evidence(answer,evidence):

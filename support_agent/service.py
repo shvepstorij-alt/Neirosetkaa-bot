@@ -11,7 +11,7 @@ from pathlib import Path
 from .clients import OpenAI, ShopReader, Telegram, normalize_image
 from .privacy import scrub, sensitive
 from .storage import Store
-from .research import lookup, attach_evidence, outgoing_text, unavailable
+from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details
 
 
 def buttons(rows):
@@ -206,6 +206,8 @@ class Service:
             research_note={'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
                            'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
                                evidence['status'],'')
+            if evidence['status']=='unavailable' and evidence.get('diagnostic'):
+                research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:600])}\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
               if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
@@ -290,19 +292,23 @@ class Service:
         plan=answer.get('research',{'topic':'none','products':[]})
         if plan['topic']=='none':
             return answer
+        stage='search'
         try:
             self.charge_call()
             evidence=await lookup(self.ai,plan)
             if not self.store.still_current(job):
                 return None
+            stage='final_draft'
             self.charge_call()
             final=await self.ai.draft(history,dict(facts,public_research=evidence),image)
             if not self.store.still_current(job):
                 return None
+            stage='citations'
             return attach_evidence(final,evidence)
         except Exception as exc:
-            logging.warning('Public research unavailable: %s',type(exc).__name__)
-            return unavailable()
+            diagnostic=failure_details(exc,stage)
+            logging.warning('Public research unavailable: %s',diagnostic)
+            return unavailable(diagnostic)
 
     async def work_once(self):
         job=self.store.claim(time.time())
@@ -319,8 +325,9 @@ class Service:
                     await self.show_draft(did)
         except Exception as exc:
             self.store.db.execute("UPDATE messages SET state='failed' WHERE chat=? AND mid=? AND state='working'",(job['chat'],job['mid']))
-            logging.warning('Draft processing failed: %s',type(exc).__name__)
-            await self.owner_message(f'Не удалось подготовить ответ для чата №{job["chat"]}. Клиенту ничего не отправлено. Проверьте /pending или возьмите диалог вручную. Ошибка: {type(exc).__name__}.')
+            diagnostic=failure_details(exc,'draft')
+            logging.warning('Draft processing failed: %s',diagnostic)
+            await self.owner_message(f'Не удалось подготовить ответ для чата №{job["chat"]}. Клиенту ничего не отправлено. Проверьте /pending или возьмите диалог вручную. {diagnostic}')
         return True
 
     async def worker(self):

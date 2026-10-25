@@ -1,5 +1,6 @@
 """Fixed-endpoint API clients; research.py enables isolated public web search only."""
 import base64
+import asyncio
 import io
 import json
 import re
@@ -12,6 +13,31 @@ from .research import PRODUCTS, TOPICS, valid_plan
 
 class RemoteError(Exception):
     """Never include a URL, credentials, request body or provider body in logs."""
+    def __init__(self,message,*,reason='remote_error',status=None,api_code=None,param=None):
+        super().__init__(message)
+        self.reason,self.status,self.api_code,self.param=reason,status,api_code,param
+
+
+API_CODES={'invalid_api_key','invalid_request_error','unsupported_parameter','unsupported_value',
+           'model_not_found','permission_denied','insufficient_quota','rate_limit_exceeded',
+           'credit_balance_exhausted','organization_spend_limit_exceeded','project_spend_limit_exceeded',
+           'organization_usage_limit_exceeded','slow_down','server_is_overloaded','server_error'}
+API_PARAMS={'model','tools','tools[0]','tools[0].type','tools[0].filters',
+            'tools[0].filters.allowed_domains','tools[0].external_web_access',
+            'tools[0].search_context_size','tool_choice','include','include[0]',
+            'max_tool_calls','max_output_tokens','text.format','text.format.schema','input'}
+
+
+def api_error(status,payload):
+    # Never expose error.message: it can echo the API key or client input.
+    err=payload.get('error',{}) if isinstance(payload,dict) else {}
+    err=err if isinstance(err,dict) else {}
+    code=next((v for v in (err.get('code'),err.get('type'))
+               if isinstance(v,str) and v in API_CODES),None)
+    param=err.get('param')
+    param=param if isinstance(param,str) and param in API_PARAMS else None
+    return RemoteError('OpenAI HTTP request rejected',reason='api_http',status=status,
+                       api_code=code,param=param)
 
 
 class Telegram:
@@ -81,12 +107,18 @@ class OpenAI:
         try:
             async with self.session.post('https://api.openai.com/v1/'+path,headers=self.headers,**kwargs) as r:
                 if r.status!=200:
-                    raise RemoteError('OpenAI request rejected; check account/model/budget')
+                    try:
+                        payload=await r.json()
+                    except Exception:
+                        payload={}
+                    raise api_error(r.status,payload)
                 return await r.json()
         except RemoteError:
             raise
+        except asyncio.TimeoutError:
+            raise RemoteError('OpenAI timeout; not retried',reason='api_timeout') from None
         except Exception:
-            raise RemoteError('OpenAI transport failed; not retried') from None
+            raise RemoteError('OpenAI transport failed; not retried',reason='api_transport') from None
 
     async def transcribe(self,data):
         import aiohttp
@@ -156,11 +188,13 @@ topic=models/features/plans/comparison; products=chatgpt/claude/perplexity/gemin
             'text':{'format':{'type':'json_schema','name':'support_draft','strict':True,'schema':schema}},
         })
         if result.get('status')!='completed':
-            raise RemoteError('Model did not complete draft')
+            raise RemoteError('Model did not complete draft',reason='draft_incomplete')
         chunks=[c['text'] for item in result.get('output',[]) if item.get('type')=='message'
                 for c in item.get('content',[]) if c.get('type')=='output_text']
+        validation='draft_json'
         try:
             value=json.loads(''.join(chunks))
+            validation='draft_schema'
             if set(value)!= {'reply','summary','handoff','research','source_ids'} or type(value['handoff']) is not bool:
                 raise ValueError()
             if not valid_plan(value['research']) or not isinstance(value['source_ids'],list):
@@ -170,12 +204,14 @@ topic=models/features/plans/comparison; products=chatgpt/claude/perplexity/gemin
             if not facts.get('public_research') and value['source_ids']:
                 raise ValueError()
             for key,limit in (('reply',1800),('summary',700)):
+                validation='draft_length'
                 if not isinstance(value[key],str) or not 0<len(value[key])<=limit:
                     raise ValueError()
+                validation='draft_privacy_filter'
                 if scrub(value[key])!=value[key]:
                     raise ValueError()
         except (ValueError,TypeError):
-            raise RemoteError('Draft validation failed; manual review required') from None
+            raise RemoteError('Draft validation failed; manual review required',reason=validation) from None
         return value
 
 
