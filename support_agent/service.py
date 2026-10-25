@@ -204,6 +204,8 @@ class Service:
             for source in evidence['sources']:
                 research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
             research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
+            if evidence.get('citation_mode')=='bibliography':
+                research_note+='<i>Модель не привязала все источники к фразам. Бот добавит ссылки списком; перед отправкой проверьте, подтверждают ли они ответ.</i>\n\n'
         else:
             research_note={'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
                            'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(

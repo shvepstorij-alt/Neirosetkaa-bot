@@ -187,12 +187,16 @@ def attach_evidence(answer,evidence):
     # Reusing a source for several claims is valid; list its URL only once.
     ids=list(dict.fromkeys(ids))
     selected=[available[i] for i in ids]
-    if any(f'[{i}]' not in answer['reply'] for i in ids):
-        raise ValueError('Missing visible inline citation')
+    missing_inline=any(f'[{i}]' not in answer['reply'] for i in ids)
     if any(int(i) not in ids for i in re.findall(r'\[(\d+)\]',answer['reply'])):
         raise ValueError('Answer lacks valid citations')
     answer['source_ids']=ids
     answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected}
+    if missing_inline:
+        # Do not invent claim-to-source mappings. The deterministic bibliography
+        # supplies the selected URLs; the owner checks their relevance before sending.
+        answer['evidence']['citation_mode']='bibliography'
+        answer['handoff']=True
     return answer
 
 
