@@ -53,8 +53,9 @@ async def lookup(ai,plan):
     # order data, attachments, user URLs, name, username, or Telegram ID.
     query=(f'As of {date}, check official sources for '+
            '; '.join(PRODUCTS[p][0] for p in plan['products'])+'. '+TOPICS[plan['topic']])
-    result=await ai.request('responses',json={
-        'model':getattr(ai,'search_model',DEFAULT_SEARCH_MODEL),
+    model=getattr(ai,'search_model',DEFAULT_SEARCH_MODEL)
+    payload={
+        'model':model,
         'store':False,'max_output_tokens':5000,'max_tool_calls':2,
         'reasoning':{'effort':'low'},
         'tools':[{'type':'web_search','filters':{'allowed_domains':domains},
@@ -67,7 +68,15 @@ async def lookup(ai,plan):
             'No private store information, reseller prices, suppliers, or purchasing actions. '
             'Do not claim freshness just because a page was retrieved today.'),
         'input':query,
-    })
+    }
+    try:
+        result=await ai.request('responses',json=payload)
+    except Exception as exc:
+        from .clients import RemoteError
+        if isinstance(exc,RemoteError):
+            exc.search_model=model if model in ('gpt-5.4-mini','gpt-4.1-mini') else 'other'
+            exc.search_revision='ws2'
+        raise
     if result.get('status')!='completed' or not any(
             x.get('type')=='web_search_call' and x.get('status')=='completed'
             for x in result.get('output',[])):
@@ -136,11 +145,18 @@ def failure_details(exc,stage):
     if type(status) is int and 100<=status<=599:
         details+=f' HTTP {status}.'
     # These attributes are already allowlisted by api_error; recheck at the boundary.
-    from .clients import API_CODES, API_PARAMS
+    from .clients import API_CODES, API_PARAMS, safe_api_hint
     for label,value,allowed in (('Код',getattr(exc,'api_code',None),API_CODES),
                                 ('Параметр',getattr(exc,'param',None),API_PARAMS)):
         if isinstance(value,str) and value in allowed:
             details+=f' {label}: {value}.'
+    if getattr(exc,'search_revision',None)=='ws2':
+        model=getattr(exc,'search_model',None)
+        if model in ('gpt-5.4-mini','gpt-4.1-mini','other'):
+            details+=f' Поиск ws2; модель: {model}.'
+    hint=safe_api_hint(getattr(exc,'api_hint',None))
+    if hint:
+        details+=f' Пояснение API (фильтр): {hint}'
     return details
 
 

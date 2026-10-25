@@ -13,9 +13,10 @@ from .research import PRODUCTS, TOPICS, valid_plan, DEFAULT_SEARCH_MODEL
 
 class RemoteError(Exception):
     """Never include a URL, credentials, request body or provider body in logs."""
-    def __init__(self,message,*,reason='remote_error',status=None,api_code=None,param=None):
+    def __init__(self,message,*,reason='remote_error',status=None,api_code=None,param=None,api_hint=None):
         super().__init__(message)
         self.reason,self.status,self.api_code,self.param=reason,status,api_code,param
+        self.api_hint=api_hint
 
 
 API_CODES={'invalid_api_key','invalid_request_error','unsupported_parameter','unsupported_value',
@@ -29,6 +30,48 @@ API_PARAMS={'model','tools','tools[0]','tools[0].type','tools[0].filters',
             'reasoning','reasoning.effort'}
 
 
+# Only public technical words may survive an error message. Never output arbitrary
+# provider text, identifiers, URLs, emails, numbers, or credentials.
+ERROR_WORDS=set('''a an the this that these those is are was be been being not no only
+    and or for to of in on at with without by from as it you your we our please
+    tool tools web search web_search web_search_preview web_search_2025_08_26
+    model models gpt-4.1-mini gpt-5.4-mini supported support supports unsupported
+    available unavailable allowed allow enabled enable disabled access accessible
+    denied permission permissions organization organisation project account verified
+    verify verification must required requires require need needs tier usage country
+    countries region regions location restricted restriction restrictions policy
+    request invalid parameter parameters unknown unrecognized value values type
+    field fields provided specified expected use using currently does do cannot can
+    does not yet implemented incompatible combination compatible reasoning effort
+    low medium high minimal none filters allowed_domains external_web_access
+    search_context_size tool_choice include max_tool_calls max_output_tokens
+    true false responses api endpoint version legacy preview billing payment paid
+    free balance quota limit exceeded insufficient credit credits enabled rejected
+    parallel_tool_calls tool_choice required auto structured output json format
+    response_format text.format text.format.schema reasoning.effort error because
+    when while multiple one more than each all some cannot organization_verification
+    configured configuration supported_models feature features beta deprecated
+    not_allowed not_supported missing disabled_for_project contact administrator
+    service services data retention zero z dr zdr compliance privacy store
+    '''.split())
+
+
+def safe_api_hint(message):
+    """Lossy technical excerpt, NOT the verbatim provider message."""
+    if not isinstance(message,str):
+        return None
+    words=[]
+    # Keep credential/email/URL-shaped strings whole so their pieces cannot leak.
+    for token in re.findall(r'[A-Za-z0-9_@:/+.\-]+|…',message[:4000]):
+        word=token.lower().strip('.')
+        value=word if word in ERROR_WORDS else '…'
+        if value!='…' or not words or words[-1]!='…':
+            words.append(value)
+    if not any(w!='…' for w in words):
+        return None
+    return ' '.join(words)[:260]
+
+
 def api_error(status,payload):
     # Never expose error.message: it can echo the API key or client input.
     err=payload.get('error',{}) if isinstance(payload,dict) else {}
@@ -38,7 +81,7 @@ def api_error(status,payload):
     param=err.get('param')
     param=param if isinstance(param,str) and param in API_PARAMS else None
     return RemoteError('OpenAI HTTP request rejected',reason='api_http',status=status,
-                       api_code=code,param=param)
+                       api_code=code,param=param,api_hint=safe_api_hint(err.get('message')))
 
 
 class Telegram:
