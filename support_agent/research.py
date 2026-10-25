@@ -181,6 +181,11 @@ def failure_details(exc,stage):
     reason=reasons.get(getattr(exc,'reason',None))
     if reason is None:
         reason=known_values.get(str(exc),'непредвиденная ошибка обработки; нужна проверка кода')
+    reason={
+        'empty_ids':'модель не выбрала ID источников для ответа',
+        'unknown_ids':'модель выбрала неизвестные или недопустимые ID источников',
+        'unlisted_inline_ids':'ID в тексте ответа отсутствует в списке выбранных источников',
+    }.get(getattr(exc,'citation_reason',None),reason)
     details=f'Этап: {stages.get(stage,"обработка")}. Причина: {reason}.'
     status=getattr(exc,'status',None)
     if type(status) is int and 100<=status<=599:
@@ -208,6 +213,12 @@ def unavailable(diagnostic=None):
                                      'diagnostic':diagnostic or 'Причина не сохранена в старой версии.'}}
 
 
+class CitationError(ValueError):
+    def __init__(self,reason):
+        super().__init__('Answer lacks valid citations')
+        self.citation_reason=reason
+
+
 def attach_evidence(answer,evidence):
     if answer.get('research',{}).get('topic')!='none':
         raise ValueError('Research still required')
@@ -220,8 +231,10 @@ def attach_evidence(answer,evidence):
                             'sources':evidence['sources'][:3], 'discoveries':evidence.get('discoveries',{})}
         return answer
     available={s['id']:s for s in evidence['sources']}
-    if not ids or len(ids)>6 or any(type(i) is not int or i not in available for i in ids):
-        raise ValueError('Answer lacks valid citations')
+    if not ids:
+        raise CitationError('empty_ids')
+    if len(ids)>6 or any(type(i) is not int or i not in available for i in ids):
+        raise CitationError('unknown_ids')
     # Reusing a source for several claims is valid; list its URL only once.
     ids=list(dict.fromkeys(ids))
     selected=[available[i] for i in ids]
@@ -244,7 +257,7 @@ def attach_evidence(answer,evidence):
         return answer
     missing_inline=any(f'[{i}]' not in answer['reply'] for i in ids)
     if any(int(i) not in ids for i in re.findall(r'\[(\d+)\]',answer['reply'])):
-        raise ValueError('Answer lacks valid citations')
+        raise CitationError('unlisted_inline_ids')
     answer['source_ids']=ids
     answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected,
                         'discoveries':evidence.get('discoveries',{})}

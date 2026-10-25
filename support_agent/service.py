@@ -546,31 +546,38 @@ class Service:
             evidence=await lookup(self.ai,plan,charge_extra=charge_search)
             if not self.store.still_current(job):
                 return None
-            stage='final_draft'
-            self.charge_call()
-            final=await self.ai.draft(history,dict(facts,public_research=evidence),image)
-            if not self.store.still_current(job):
-                return None
-            stage='citations'
-            checked=attach_evidence(final,evidence)
-            missing=checked.get('evidence',{}).get('missing_products',[])
-            if missing:
-                # One bounded correction, using the SAME evidence. Never invent
-                # or silently add a citation to unsupported model prose.
-                from .research import evidence_domains, safe_url
-                covered=all(any(safe_url(s['url'],evidence_domains(evidence,p))
-                            for s in evidence['sources']) for p in missing)
-                if covered and self.store.still_current(job):
-                    self.charge_call()
-                    stage='final_draft'
-                    corrected=await self.ai.draft(history,dict(facts,public_research=evidence,
-                        research_correction={'missing_products':missing,
-                            'instruction':'Перепиши ответ по имеющимся источникам. Для каждого сервиса выбери подтверждающие его утверждения ID. Если сведений недостаточно, не выдумывай.'}),image)
+            from .research import CitationError, evidence_domains, safe_url
+            correction=None
+            for attempt in range(2):
+                if not self.store.still_current(job):
+                    return None
+                stage='final_draft'
+                self.charge_call()
+                final_facts=dict(facts,public_research=evidence)
+                if correction:final_facts['research_correction']=correction
+                try:
+                    final=await self.ai.draft(history,final_facts,image)
                     if not self.store.still_current(job):
                         return None
                     stage='citations'
-                    return attach_evidence(corrected,evidence)
-            return checked
+                    checked=attach_evidence(final,evidence)
+                    missing=checked.get('evidence',{}).get('missing_products',[])
+                    covered=all(any(safe_url(s['url'],evidence_domains(evidence,p))
+                                for s in evidence['sources']) for p in missing)
+                    if not missing or not covered or attempt:
+                        return checked
+                    issue='missing_products'
+                except Exception as exc:
+                    # Retry citation formatting only, not transport, privacy,
+                    # unsupported facts, or arbitrary model failures.
+                    if attempt or not (isinstance(exc,CitationError) or
+                                       getattr(exc,'reason',None)=='draft_source_ids'):
+                        raise
+                    issue=getattr(exc,'citation_reason','unknown_ids')
+                    missing=[]
+                correction={'missing_products':missing,'issue':issue,
+                    'allowed_source_ids':[s['id'] for s in evidence['sources']],
+                    'instruction':'Перепиши ответ только по имеющимся источникам. source_ids должен перечислять ID подтверждающих источников, а каждый [ID] в тексте должен входить в source_ids. Для каждого сервиса используй его источники. Не придумывай ссылки или факты. Если сведений недостаточно, handoff=true и source_ids=[].'}
         except Exception as exc:
             if not self.store.still_current(job):
                 return None
