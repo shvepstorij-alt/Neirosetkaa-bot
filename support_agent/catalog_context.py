@@ -91,3 +91,68 @@ def false_absence(reply, facts):
         if annotate({'catalog':facts.get('requested_catalog',[])},clause)['requested_catalog']:
             return True
     return False
+
+
+def verified_catalog_reply(facts, reason):
+    """Owner-review fallback built from fields, never from a rejected model reply."""
+    from .privacy import scrub
+    rows=facts.get('requested_catalog',[])
+    groups={}
+    for row in rows:
+        if not isinstance(row,dict):continue
+        if 'appstore' in (_families(_words(row.get('service_key')))|_families(_words(row.get('service')))):
+            continue  # A denomination without a region is not a usable quote.
+        price=row.get('customer_price_rub',row.get('catalog_price_rub'))
+        if type(price) is not int or price<=0:continue
+        name=scrub(str(row.get('service','')))[:100]
+        plan=scrub(str(row.get('plan','')))[:100]
+        if not name or not plan:continue
+        groups.setdefault((name,plan),set()).add(price)
+    lines=[f'{name} · {plan} — {next(iter(prices))} ₽' for (name,plan),prices in groups.items() if len(prices)==1]
+    lines=lines[:8]
+    parts=[]
+    if lines:
+        parts.append('Тарифы магазина:\n'+'\n'.join(lines)+'\nЦены до применения промокода и списания монет.')
+    if 'appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):
+        parts.append('Для подбора пополнения App Store подскажите регион Apple ID, стоимость нужной покупки в валюте аккаунта и текущий баланс.')
+    if not parts:parts=['Уточню условия по вашему вопросу.']
+    reply='\n\n'.join(parts)
+    if len(reply)>1800:reply='\n\n'.join(parts[-1:])
+    return {'reply':reply,'summary':'Свободный ответ не прошёл проверку. Сохранена только подтверждённая часть каталога и уточняющие вопросы. Остальные части обращения требуют проверки владельца.',
+            'handoff':True,'source_ids':[],'research':{'topic':'none','products':[]},
+            'evidence':{'status':'catalog_review','sources':[],
+                        'diagnostic':scrub(str(reason))[:500]}}
+
+
+def direct_catalog_reply(facts, latest):
+    """Narrow price-only route; unknown words/tasks go to normal consultation.
+
+    No feature claims, numeric calculations, existing orders or guessed brands.
+    """
+    words=_words(latest)
+    if not set(words)&{'тарифы','цены','цену','стоят','стоит','стоимость','сколько'}:return None
+    rows=facts.get('requested_catalog',[])
+    regular=[r for r in rows if 'appstore' not in (_families(_words(r.get('service_key')))|_families(_words(r.get('service'))))]
+    if not regular or len(regular)>8:return None
+    quotes={}
+    for row in regular:
+        price=row.get('customer_price_rub',row.get('catalog_price_rub'))
+        if type(price) is not int or price<=0 or not row.get('service') or not row.get('plan'):return None
+        key=(row['service'],row['plan'])
+        if key in quotes and quotes[key]!=price:return None
+        quotes[key]=price
+    allowed=set('привет здравствуйте добрый день вечер какие тарифы тариф тарифов цены цену стоит стоят стоимость сколько можно оформить купить заказать через вас у вас есть и еще ещё также хочу пополнить пополнение баланс баланса что нужно уточнить подскажите пожалуйста мне для спасибо а по на подписку подписки подписок это'.split())
+    for row in rows:
+        allowed.update(_words(row.get('service_key')));allowed.update(_words(row.get('service')))
+        families=_families(_words(row.get('service_key')))|_families(_words(row.get('service')))
+        for family in families:
+            for alias in ALIASES[family]:allowed.update(_words(alias))
+    # App Store is an independent dynamic section, not necessarily a regular row.
+    if facts.get('appstore',{}).get('status')=='available':
+        for alias in ALIASES['appstore']:allowed.update(_words(alias))
+    if any(word not in allowed for word in words):return None
+    result=verified_catalog_reply(facts,'')
+    if not result['reply'].startswith('Тарифы магазина:'):return None
+    result.update(summary='Ответ составлен из прочитанных цен магазина. Возможности тарифов и условия, не указанные в данных, не добавлялись.',handoff=False)
+    result['evidence']={'status':'catalog_direct','sources':[]}
+    return result

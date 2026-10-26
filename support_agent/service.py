@@ -440,10 +440,12 @@ class Service:
             if evidence.get('citation_mode')=='bibliography':
                 research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
         else:
-            research_note={'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
+            research_note={'catalog_direct':'📋 <b>Цены:</b> ответ собран из каталога без генерации моделью.\n\n',
+                           'catalog_review':'📋 <b>Каталог:</b> показана только подтверждённая часть; свободный ответ отклонён проверкой.\n\n',
+                           'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
                            'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
                                evidence['status'],'')
-            if evidence['status']=='unavailable' and evidence.get('diagnostic'):
+            if evidence['status'] in ('unavailable','catalog_review') and evidence.get('diagnostic'):
                 research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:600])}\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
@@ -555,6 +557,9 @@ class Service:
         shortcut=missing_shop_reply(latest,facts,has_images=bool(image))
         if shortcut:
             return shortcut
+        from .catalog_context import direct_catalog_reply
+        direct=direct_catalog_reply(facts,latest) if not image else None
+        if direct:return direct
         replied=bool(self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone())
         facts=dict(facts,conversation={'continuing':replied,
                                       'latest_client_message':latest,
@@ -582,7 +587,8 @@ class Service:
                     review=await self.ai.check_answer(answer,corrected)
                     if not self.store.still_current(job):return None
                     if not review['supported']:
-                        return unavailable('Проверка содержания: ответ не согласуется с подтверждёнными данными магазина.')
+                        from .catalog_context import verified_catalog_reply
+                        return verified_catalog_reply(facts,review['reason'])
             return answer
         stage='search'
         try:
@@ -647,6 +653,9 @@ class Service:
         except Exception as exc:
             if not self.store.still_current(job):
                 return None
+            if str(exc)=='Answer content unsupported' and facts.get('requested_catalog'):
+                from .catalog_context import verified_catalog_reply
+                return verified_catalog_reply(facts,review['reason'])
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)
             result=unavailable(diagnostic)
