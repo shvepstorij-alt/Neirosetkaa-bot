@@ -54,11 +54,18 @@ async def lookup(ai,plan,charge_extra=None,_registry=None):
     # Separate domain filters prevent one popular provider from exhausting the
     # entire search budget. Charge each additional API request before sending it.
     if len(plan['products'])>1:
-        sources=[];digests=[];checked=[];product_domains={};discoveries={}
+        sources=[];digests=[];checked=[];product_domains={};discoveries={};failures={};successful=[]
         for index,product in enumerate(plan['products']):
             if index and charge_extra is not None:
                 charge_extra()
-            evidence=await lookup(ai,{'topic':plan['topic'],'products':[product]},charge_extra=charge_extra)
+            try:
+                evidence=await lookup(ai,{'topic':plan['topic'],'products':[product]},charge_extra=charge_extra)
+            except Exception as exc:
+                if str(exc) in ('Stale research job','Daily API request limit reached'):
+                    raise
+                failures[product]=failure_details(exc,'search')
+                continue
+            successful.append(product)
             product_domains.update(evidence.get('product_domains',{}))
             discoveries.update(evidence.get('discoveries',{}))
             mapping={s['id']:len(sources)+i+1 for i,s in enumerate(evidence['sources'])}
@@ -66,14 +73,15 @@ async def lookup(ai,plan,charge_extra=None,_registry=None):
             digest=re.sub(r'\[(\d+)\]',lambda m:'['+str(mapping.get(int(m[1]),m[1]))+']',evidence['digest'])
             digests.append(product+':\n'+digest)
             checked.append(evidence['checked_at'])
-        return {'status':'checked','checked_at':min(checked),'sources':sources,
-                'products':list(plan['products']),'digest':'\n\n'.join(digests),
+        return {'status':'partial' if failures else 'checked','checked_at':min(checked) if checked else time.time(),'sources':sources,
+                'products':successful,'requested_products':list(plan['products']),
+                'failures':failures,'digest':'\n\n'.join(digests),
                 'product_domains':product_domains,'discoveries':discoveries,
                 'note':'Каждый сервис исследован отдельно. Это официальные сведения, не прайс магазина.'}
     registry=PRODUCTS if _registry is None else _registry
     product=plan['products'][0]
     if product not in registry:
-        identity=await discover(ai,product)
+        identity=await discover(ai,product,charge_extra=charge_extra)
         if charge_extra is not None:charge_extra()
         evidence=await lookup(ai,plan,charge_extra=charge_extra,
                               _registry={product:(product+' software subscription',tuple(identity['domains']))})
@@ -154,7 +162,8 @@ async def lookup(ai,plan,charge_extra=None,_registry=None):
 
 def failure_details(exc,stage):
     stages={'search':'поиск источников','final_draft':'подготовка ответа по источникам',
-            'citations':'проверка ссылок ответа','draft':'подготовка черновика'}
+            'citations':'проверка ссылок ответа','draft':'подготовка черновика',
+            'answer_check':'проверка фактов и цен ответа'}
     reasons={
         'api_http':'OpenAI отклонил запрос',
         'api_timeout':'истекло время ожидания ответа OpenAI',
@@ -173,6 +182,8 @@ def failure_details(exc,stage):
         'Search was not completed':'API не подтвердил завершённый поиск',
         'Search cited an unapproved source':'ссылка вне разрешённых официальных источников',
         'No cited evidence':'поиск не вернул текст с подтверждёнными ссылками',
+        'Answer content unsupported':'отдельная проверка не подтвердила факты или цены в ответе',
+        'Answer review unavailable':'не удалось выполнить отдельную проверку содержания ответа',
         'Too many cited sources':'поиск превысил допустимое число источников; ответ не использован',
         'Service identity unconfirmed':'не удалось однозначно подтвердить официальный сайт сервиса; уточните название продукта',
         'Answer lacks valid citations':'в ответе отсутствуют корректные ID источников',
@@ -197,6 +208,10 @@ def failure_details(exc,stage):
             'domain_mismatch':'найденные домены не прошли проверку принадлежности',
             'uncited_urls':'ссылки определения сайта не совпали с подтверждёнными цитатами поиска',
             'invalid_format':'ответ определения сайта не соответствует ожидаемому формату',
+            'no_cited_identity':'поиск не дал двух источников для проверки сайта',
+            'too_many_sources':'слишком много источников определения сайта',
+            'extraction_incomplete':'проверка принадлежности сайта не завершена',
+            'invalid_source_ids':'неверный выбор источников при проверке сайта',
         }.get(discovery_reason,'не удалось проверить сайт сервиса')
         product=getattr(exc,'discovery_product','')
         if public_name(product):reason+='; сервис: '+product
@@ -233,16 +248,18 @@ class CitationError(ValueError):
         self.citation_reason=reason
 
 
-def attach_evidence(answer,evidence):
+def attach_evidence(answer,evidence,allow_catalog_only=False):
     if answer.get('research',{}).get('topic')!='none':
         raise ValueError('Research still required')
     ids=answer.get('source_ids',[])
     if ids==[] and answer.get('handoff') is True:
         # Insufficient evidence is a normal outcome, not a broken JSON response.
         # Keep the model's owner summary, but never send its unsupported prose.
-        answer['reply']='Пока не удалось подтвердить актуальные условия. Не хочу дать вам неверную информацию.'
+        if not allow_catalog_only:
+            answer['reply']='Пока не удалось подтвердить актуальные условия. Не хочу дать вам неверную информацию.'
         answer['evidence']={'status':'insufficient','checked_at':evidence['checked_at'],
-                            'sources':evidence['sources'][:3], 'discoveries':evidence.get('discoveries',{})}
+                            'sources':evidence['sources'][:3], 'discoveries':evidence.get('discoveries',{}),
+                            'failures':evidence.get('failures',{})}
         return answer
     available={s['id']:s for s in evidence['sources']}
     if not ids:
@@ -257,7 +274,10 @@ def attach_evidence(answer,evidence):
     names={'chatgpt':r'chatgpt|openai|чат\s*гпт',
            'claude':r'claude|anthropic|клод', 'perplexity':r'perplexity|перплексити',
            'gemini':r'gemini|джемини'}
-    required.update(p for p,pattern in names.items() if re.search(pattern,answer['reply'],re.I))
+    # A failed product can be named in an honest disclaimer. The semantic
+    # answer check rejects factual claims about it without evidence.
+    required.update(p for p,pattern in names.items() if re.search(pattern,answer['reply'],re.I)
+                    and p not in evidence.get('failures',{}))
     missing=[p for p in sorted(required) if not any(
         safe_url(s['url'],evidence_domains(evidence,p)) for s in selected)]
     if missing:
@@ -274,7 +294,10 @@ def attach_evidence(answer,evidence):
         raise CitationError('unlisted_inline_ids')
     answer['source_ids']=ids
     answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected,
-                        'discoveries':evidence.get('discoveries',{})}
+                        'discoveries':evidence.get('discoveries',{}),'failures':evidence.get('failures',{})}
+    if evidence.get('failures'):
+        answer['handoff']=True
+        answer['evidence']['status']='insufficient'
     if missing_inline:
         # Do not invent claim-to-source mappings. The deterministic bibliography
         # supplies the selected URLs; the owner checks their relevance before sending.

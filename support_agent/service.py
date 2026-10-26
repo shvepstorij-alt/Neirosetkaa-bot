@@ -298,8 +298,17 @@ class Service:
                 f'Помощник: {self.store.get("mode")}\nТестовых клиентов: {len(self.allowed)}\nЧерновиков: {n}\n'
                 '/chats — чаты и управление\n/pending — черновики\n/retry НОМЕР_ЧАТА — повторить подготовку\n'
                 '/stop — остановить всем\n/draft — включить подготовку\n/shop_status — проверить подключение магазина\n'
+                '/research_test — тест поиска без отправки клиентам (расходует API)\n'
                 'AUTO в этой сборке отсутствует. Вложения тестовых чатов передаются OpenAI для анализа.',
                 buttons([[('Остановить всем','global:off'),('Только черновики','global:draft')]]))
+        elif cmd=='/research_test':
+            running=getattr(self,'research_probe_task',None)
+            if running and not running.done():
+                await self.owner_message('Проверка интернета уже выполняется.')
+                return
+            from .research_probe import run_probe
+            await self.owner_message('Проверяю Zoom, Krea и Lovable через API. Это платные запросы в пределах дневного лимита. Клиентам ничего не отправляется. /stop остановит дальнейшие этапы.')
+            self.research_probe_task=asyncio.create_task(run_probe(self))
         elif cmd=='/shop_status':
             facts=await self.shop.facts(self.owner)
             labels={'available':'доступны','truncated':'доступны первые 150 записей',
@@ -308,6 +317,7 @@ class Service:
                 +'Каталог: '+labels.get(facts.get('catalog_status'),'статус неизвестен')
                 +'\nТарифов с подтверждённой базовой ценой: '+str(len(facts.get('catalog',[])))
                 +'\nЗаказы: '+labels.get(facts.get('orders_status'),'статус неизвестен')
+                +'\nПерсональные цены: '+('расчёт доступен' if facts.get('customer_prices_status')=='available' else 'не подключены; доступен обычный прайс')
                 +'\n\nЭто не весь ассортимент: динамические товары, описания, остатки и способ активации ещё не подтверждаются. Проверка не вызывает модель.')
         elif cmd=='/chats' or cmd.startswith('chats:'):
             await self.list_chats(int(cmd.split(':')[1]) if ':' in cmd else 0,admin_mid)
@@ -405,6 +415,8 @@ class Service:
                 research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
             for name,identity in evidence.get('discoveries',{}).items():
                 research_note+=f'Сайт {html.escape(name)} найден поиском: <a href="{html.escape(identity["corroboration_url"],quote=True)}">проверка принадлежности</a>\n'
+            for name,reason in evidence.get('failures',{}).items():
+                research_note+=f'Не проверено: <b>{html.escape(name)}</b> — {html.escape(str(reason)[:180])}\n'
             research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
             if evidence.get('citation_mode')=='bibliography':
                 research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
@@ -528,13 +540,20 @@ class Service:
             return shortcut
         replied=bool(self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone())
         facts=dict(facts,conversation={'continuing':replied,
-                                      'latest_client_message':latest})
+                                      'latest_client_message':latest,
+                                      'latest_message':current_turn[0] if current_turn else ''})
         self.charge_call()
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
             return None
         plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}))
         if plan['topic']=='none':
+            if facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I):
+                self.charge_call()
+                review=await self.ai.check_answer(answer,facts)
+                if not self.store.still_current(job):return None
+                if not review['supported']:
+                    return unavailable('Проверка содержания: ответ не согласуется с подтверждёнными данными магазина.')
             return answer
         stage='search'
         try:
@@ -543,7 +562,15 @@ class Service:
                 if not self.store.still_current(job):
                     raise ValueError('Stale research job')
                 self.charge_call()
-            evidence=await lookup(self.ai,plan,charge_extra=charge_search)
+            try:
+                evidence=await lookup(self.ai,plan,charge_extra=charge_search)
+            except Exception as exc:
+                if str(exc) in ('Stale research job','Daily API request limit reached'):
+                    raise
+                # Retain usable shop facts even when the public lookup fails.
+                evidence={'status':'partial','checked_at':time.time(),'sources':[],
+                    'products':[],'requested_products':plan['products'],'digest':'',
+                    'failures':{p:failure_details(exc,'search') for p in plan['products']}}
             if not self.store.still_current(job):
                 return None
             from .research import CitationError, evidence_domains, safe_url
@@ -560,10 +587,17 @@ class Service:
                     if not self.store.still_current(job):
                         return None
                     stage='citations'
-                    checked=attach_evidence(final,evidence)
+                    checked=attach_evidence(dict(final),evidence,allow_catalog_only=bool(facts.get('catalog') or evidence.get('failures')))
                     missing=checked.get('evidence',{}).get('missing_products',[])
                     covered=all(any(safe_url(s['url'],evidence_domains(evidence,p))
                                 for s in evidence['sources']) for p in missing)
+                    if not missing:
+                        stage='answer_check'
+                        self.charge_call()
+                        review=await self.ai.check_answer(final,final_facts)
+                        if not self.store.still_current(job):return None
+                        if not review['supported']:
+                            raise ValueError('Answer content unsupported')
                     if not missing or not covered or attempt:
                         return checked
                     issue='missing_products'
@@ -571,11 +605,14 @@ class Service:
                     # Retry citation formatting only, not transport, privacy,
                     # unsupported facts, or arbitrary model failures.
                     if attempt or not (isinstance(exc,CitationError) or
-                                       getattr(exc,'reason',None)=='draft_source_ids'):
+                                       getattr(exc,'reason',None)=='draft_source_ids' or
+                                       str(exc)=='Answer content unsupported'):
                         raise
-                    issue=getattr(exc,'citation_reason','unknown_ids')
+                    issue=('unsupported_content' if str(exc)=='Answer content unsupported'
+                           else getattr(exc,'citation_reason','unknown_ids'))
                     missing=[]
                 correction={'missing_products':missing,'issue':issue,
+                    'content_review':review['reason'] if issue=='unsupported_content' else '',
                     'allowed_source_ids':[s['id'] for s in evidence['sources']],
                     'instruction':'Перепиши ответ только по имеющимся источникам. source_ids должен перечислять ID подтверждающих источников, а каждый [ID] в тексте должен входить в source_ids. Для каждого сервиса используй его источники. Не придумывай ссылки или факты. Если сведений недостаточно, handoff=true и source_ids=[].'}
         except Exception as exc:
@@ -705,6 +742,8 @@ async def main():
                 await asyncio.gather(service.poll(),service.worker(),service.worker(),service.worker())
             finally:
                 tasks=list(service.approval_tasks.values())
+                probe=getattr(service,'research_probe_task',None)
+                if probe and not probe.done():tasks.append(probe)
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks,return_exceptions=True)

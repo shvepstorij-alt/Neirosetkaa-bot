@@ -11,6 +11,10 @@ def consultation_plan(latest, plan):
     text=latest.lower()
     if re.search(r'закуп|поставщик|себестоим|18\s*\+|порно|эротическ', text):
         return {'topic':'none','products':[]}
+    # Explicit replacement is different from a multi-message continuation.
+    replacements=list(re.finditer(r'теперь\s+только|вместо\s+этого|предыдущий\s+вопрос\s+отменяю',text))
+    if replacements:
+        text=text[replacements[-1].start():]
     names={'chatgpt':r'chat\s*gpt|чат\s*гпт',
            'claude':r'claude|клод', 'perplexity':r'perplexity|перплексити',
            'gemini':r'gemini|джемини', 'zoom':r'\bzoom\b|\bзум\b',
@@ -19,7 +23,7 @@ def consultation_plan(latest, plan):
     public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
     if not products or not public:
         return plan
-    requested=list(dict.fromkeys(list(plan.get('products',[]))+products))
+    requested=list(dict.fromkeys(list(plan.get('products',[]))+products))[:4]
     topic=plan.get('topic','none')
     if topic=='none':
         topic='plans' if re.search(r'тариф|подписк|входит',text) else 'features'
