@@ -192,6 +192,21 @@ summary — кратко: запрос, проверенные факты, чт�
 Скриншот оплаты не доказывает получение платежа; проверяй server_facts.
 Не воспроизводи пароли, токены, коды входа и банковские данные из вложений.
 Факты доступны только из блока server_facts; отсутствие данных не означает отказ.
+requested_catalog — специально найденные предложения НАШЕГО магазина по текущему
+вопросу. Если там есть Krea или другой сервис, запрещено говорить «нет в каталоге»,
+«нет прямого предложения» и заменять его цену долларами. Перечисли названия тарифов
+и customer_price_rub, иначе catalog_price_rub, в рублях. Функции сверяй с официальными
+источниками, не меняя цену магазина. Официальная цена нужна для услуги без найденного
+предложения или явного вопроса о цене производителя. Нет совпадения — НЕ значит нет услуги.
+appstore — отдельный ассортимент пополнений, его отсутствие в обычном catalog
+не означает отсутствие пополнений. Используй appstore.instructions для консультации.
+Уточни регион Apple ID, валюту и стоимость покупки и имеющийся баланс, чтобы
+подобрать номинал. Не предполагай регион по языку/местоположению. Не требуй пароль.
+При status=available используй регионы/номиналы/рублёвые цены из appstore.regions;
+при stale/read_error/unavailable не обещай наличие или точную стоимость, но помоги
+определить нужный регион и сумму. Не советуй «обратиться в магазин»: клиент уже здесь.
+Не говори «наш способ не подтверждён»: задай конкретный недостающий вопрос.
+Не гарантируй оплату любой сторонней подписки балансом Apple без проверки её условий.
 Каталог может быть неполным. catalog_price_rub — подтверждённая обычная розничная
 цена магазина. Её можно назвать: «По обычному прайсу — … ₽»; персональные условия
 и промокоды учитываются при оформлении. Не называть её итоговой суммой для клиента.
@@ -371,9 +386,10 @@ latest_message — последнее отдельное сообщение. Е�
 
 class ShopReader:
     """Optional SELECT-only connection. No import of production config/common."""
-    def __init__(self,dsn=''):
+    def __init__(self,dsn='',export_url='',export_token=''):
         self.dsn=dsn
         self.pool=None
+        self.export_url,self.export_token=export_url,export_token
 
     async def start(self):
         if not self.dsn:
@@ -397,6 +413,17 @@ class ShopReader:
             raise ValueError('SHOP_READONLY_DATABASE_URL must use a separate read-only role')
 
     async def facts(self,uid):
+        result=await self._database_facts(uid)
+        from .shop_export_client import fetch_export
+        live=await fetch_export(self.export_url,self.export_token,uid)
+        result.update(live)
+        if live.get('catalog_status') in ('available','truncated'):
+            result['source']='live_shop'
+        if live.get('live_shop_status')=='available':
+            result['note']='Цены магазина приведены до промокода при оформлении и списания монет. customer_price_rub при наличии имеет приоритет над catalog_price_rub. appstore содержит отдельный динамический ассортимент. Описания магазина не заменяют официальную проверку функций сервисов. Оплата не доказывает активацию.'
+        return result
+
+    async def _database_facts(self,uid):
         result={'source':'unavailable','orders':[],'catalog':[],
                 'orders_status':'not_connected','catalog_status':'not_connected',
                 'catalog_complete':False,

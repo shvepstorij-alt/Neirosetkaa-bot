@@ -318,7 +318,25 @@ class Service:
                 +'\nТарифов с подтверждённой базовой ценой: '+str(len(facts.get('catalog',[])))
                 +'\nЗаказы: '+labels.get(facts.get('orders_status'),'статус неизвестен')
                 +'\nПерсональные цены: '+('расчёт доступен' if facts.get('customer_prices_status')=='available' else 'не подключены; доступен обычный прайс')
-                +'\n\nЭто не весь ассортимент: динамические товары, описания, остатки и способ активации ещё не подтверждаются. Проверка не вызывает модель.')
+                +'\nЖивой каталог магазина: '+str(facts.get('live_shop_status','not_connected'))
+                +'\nApp Store: '+str(facts.get('appstore',{}).get('status','not_connected'))
+                +'\nРегионов App Store: '+str(len(facts.get('appstore',{}).get('regions',[])))
+                +'\n\nПроверка не вызывает модель. Статусы оплаты и активации различаются.')
+        elif cmd=='/catalog_test':
+            from .catalog_context import annotate
+            name=' '.join(parts[1:])[:120] or 'Krea App Store'
+            facts=annotate(await self.shop.facts(self.owner),name)
+            rows=facts['requested_catalog']
+            lines=['Проверка каталога · '+name,'Источник: '+str(facts.get('source')),
+                   'Живой экспорт: '+str(facts.get('live_shop_status','not_connected'))]
+            for row in rows[:30]:
+                lines.append(str(row['service'])+' · '+str(row['plan'])+' — '+str(row.get('customer_price_rub',row.get('catalog_price_rub')))+' ₽')
+            if not rows:lines.append('Совпадений в прочитанных данных нет. Это не доказательство отсутствия товара.')
+            apple=facts.get('appstore',{})
+            lines.append('App Store: '+str(apple.get('status','not_connected')))
+            lines.extend(str(r['name'])+' · номиналов: '+str(len(r['denoms'])) for r in apple.get('regions',[])[:50])
+            lines.append('Цены показаны для владельца до промокода/монет. Модель не вызывается.')
+            await self.owner_message('\n\n'.join(lines))
         elif cmd=='/chats' or cmd.startswith('chats:'):
             await self.list_chats(int(cmd.split(':')[1]) if ':' in cmd else 0,admin_mid)
         elif cmd.startswith('view:'):
@@ -532,6 +550,8 @@ class Service:
             WHERE chat=? AND role='client' AND mid>=? AND mid<=? ORDER BY mid''',
             (job['chat'],batch_first,job['mid'])).fetchall()
         latest=current_request(batch,batch_first,job['mid'])
+        from .catalog_context import annotate
+        facts=annotate(facts,latest)
         shortcut=missing_shop_reply(latest,facts,has_images=bool(image))
         if shortcut:
             return shortcut
@@ -544,13 +564,25 @@ class Service:
         if not self.store.still_current(job):
             return None
         plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}))
+        facts=annotate(facts,latest,plan['products'])
         if plan['topic']=='none':
-            if facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I):
+            if facts.get('requested_catalog') or facts.get('appstore') or (facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I)):
                 self.charge_call()
                 review=await self.ai.check_answer(answer,facts)
                 if not self.store.still_current(job):return None
                 if not review['supported']:
-                    return unavailable('Проверка содержания: ответ не согласуется с подтверждёнными данными магазина.')
+                    self.charge_call()
+                    corrected=dict(facts,research_correction={'issue':'catalog_conflict',
+                        'content_review':review['reason'],'instruction':'Исправь ответ по requested_catalog и appstore. Не отрицай имеющийся товар и не подменяй рублёвую цену официальной. Если новых фактов нет, не придумывай их.'})
+                    answer=await self.ai.draft(history,corrected,image)
+                    if not self.store.still_current(job):return None
+                    if answer.get('research',{}).get('topic','none')!='none':
+                        return unavailable('После исправления ответа требуется отдельная проверка публичных сведений.')
+                    self.charge_call()
+                    review=await self.ai.check_answer(answer,corrected)
+                    if not self.store.still_current(job):return None
+                    if not review['supported']:
+                        return unavailable('Проверка содержания: ответ не согласуется с подтверждёнными данными магазина.')
             return answer
         stage='search'
         try:
@@ -727,7 +759,8 @@ async def main():
             webhook=await tg.call('getWebhookInfo')
             if webhook.get('url'):
                 raise ValueError('This bot already has a webhook; do not start polling over an existing service')
-            shop=ShopReader(os.environ.get('SHOP_READONLY_DATABASE_URL',''))
+            shop=ShopReader(os.environ.get('SHOP_READONLY_DATABASE_URL',''),
+                            os.environ.get('SUPPORT_SHOP_URL',''),os.environ.get('SUPPORT_SHOP_READ_TOKEN',''))
             await shop.start()
             ai=OpenAI(session,os.environ['OPENAI_API_KEY'],os.environ['SUPPORT_MODEL'],
                       os.environ['SUPPORT_AUDIO_MODEL'],os.getenv('SUPPORT_SEARCH_MODEL'))

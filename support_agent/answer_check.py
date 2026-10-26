@@ -41,7 +41,7 @@ def review_input(answer,facts):
     if set(ids)-{source['id'] for source in sources}:
         raise ValueError('Answer review input invalid')
     catalogue=[]
-    for row in facts.get('catalog',[])[:150]:
+    for row in facts.get('catalog',[])[:500]:
         if isinstance(row,dict):
             catalogue.append({key:_scalar(row[key]) for key in CATALOG_FIELDS if key in row})
     domains={}
@@ -68,7 +68,11 @@ def review_input(answer,facts):
     return {'reply':scrub(reply),'source_ids':ids,
             'public_evidence':{'digest':digest,'sources':sources,
                                'product_domains':domains,'failures':failures},
-            'catalog':catalogue,'catalog_status':_scalar(facts.get('catalog_status')),
+            'catalog':catalogue,
+            'requested_catalog':[{key:_scalar(row[key]) for key in CATALOG_FIELDS if key in row}
+                                 for row in facts.get('requested_catalog',[])[:100]],
+            'appstore':facts.get('appstore',{}),
+            'catalog_status':_scalar(facts.get('catalog_status')),
             'catalog_complete':facts.get('catalog_complete') is True}
 
 
@@ -78,6 +82,9 @@ async def check_answer(ai,answer,facts):
     Caller owns request budgeting and stale-job cancellation. No tools, retries,
     history, personal orders, images, or customer identifiers are passed here.
     """
+    from .catalog_context import false_absence
+    if false_absence(answer.get('reply',''),facts):
+        return {'supported':False,'reason':'Ответ отрицает предложение сервиса, найденного в requested_catalog. Используй тарифы и рублёвые цены магазина.'}
     data=review_input(answer,facts)
     schema={'type':'object','properties':{
         'supported':{'type':'boolean'},
@@ -100,6 +107,14 @@ async def check_answer(ai,answer,facts):
                 'versus API-only models/previews; plan benefits, limits, country, currency, monthly '
                 'versus annual billing and per-user/per-account prices. A provider list price is NOT '
                 'the store price. Store prices must match catalogue fields and their explicit scope: '
+                'requested_catalog lists matching store offers. Reject claims that these services '
+                'are absent, and reject substituting official USD prices for known RUB store prices '
+                'unless the customer specifically asked about official prices. '
+                'Use customer_price_rub preferentially when supplied. '
+                'App Store is a separate dynamic section: check its instructions, regions and '
+                'denominations, do not infer absence from regular catalogue. Region, existing '
+                'balance and intended purchase can be clarified without referral to the owner. '
+                'Never guarantee all subscriptions can be paid via Apple balance. '
                 'base_not_customer_quote must not become a final personal price; a disclosed catalogue '
                 'price may be quoted as catalogue price, but no unsupported discount or guaranteed '
                 'checkout total. Only explicitly confirmed customer price can be personal/final. '
