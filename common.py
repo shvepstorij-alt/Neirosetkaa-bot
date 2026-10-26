@@ -16649,6 +16649,29 @@ async def setup_webhook_server():
     app.router.add_post("/api/shop/pay", api_shop_pay_handler)
     app.router.add_post("/api/shop/promo", api_shop_promo_handler)
     app.router.add_post("/api/shop/prices", api_shop_prices_handler)
+    from support_shop_export import make_support_catalog_handler
+    import ns_gifts as _support_nsg
+    async def _support_hidden():
+        value=json.loads(await get_setting('shop_hidden','') or '[]')
+        if not isinstance(value,list) or not all(isinstance(k,str) for k in value):
+            raise ValueError('Invalid catalogue visibility')
+        return set(value)
+    async def _support_prepare_stock():
+        overrides={}
+        for key,kind in (('hidden',list),('featured',list),('markup_map',dict),('rename_map',dict),('merge_map',dict)):
+            value=json.loads(await get_setting('nsg_'+key,'') or ('[]' if kind is list else '{}'))
+            if not isinstance(value,kind):raise ValueError('Invalid dynamic catalogue settings')
+            overrides[key.removesuffix('_map')]=value
+        _support_nsg.set_overrides(overrides)
+    async def _support_stock():
+        return await _support_nsg.get_stock_cached(rt.nsgifts_client) if rt.nsgifts_client else {}
+    app.router.add_post('/api/support/catalog',make_support_catalog_handler(
+        catalog=lambda:SHOP_CATALOG,hidden=_support_hidden,price_for=shop_price_for,
+        prepare_stock=_support_prepare_stock,stock=_support_stock,
+        apple_categories=_support_nsg.get_apple_categories,stock_age=_support_nsg.stock_age,
+        folder_for_category=_support_nsg.get_folder_by_category,
+        markup_for_category=_appstore_markup_web,usd_rate=_nsg_usd_rate,
+        calc_price=_support_nsg.calc_price_rub))
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)
