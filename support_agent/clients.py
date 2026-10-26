@@ -180,6 +180,8 @@ class OpenAI:
         return text
 
     async def draft(self,history,facts,image=None):
+        from .catalog_context import customer_facts
+        facts=customer_facts(facts)
         instructions=self.rules+'''
 Ты готовишь ЧЕРНОВИК для Александра. Ответ клиенту пока не отправляется.
 Верни JSON: reply (до 1800 символов), summary (до 700), handoff (bool), research, source_ids.

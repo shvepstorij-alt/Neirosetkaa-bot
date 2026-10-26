@@ -446,7 +446,7 @@ class Service:
                            'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
                                evidence['status'],'')
             if evidence['status'] in ('unavailable','catalog_review') and evidence.get('diagnostic'):
-                research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:600])}\n\n'
+                research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:1500])}\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
               if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
@@ -552,6 +552,12 @@ class Service:
             WHERE chat=? AND role='client' AND mid>=? AND mid<=? ORDER BY mid''',
             (job['chat'],batch_first,job['mid'])).fetchall()
         latest=current_request(batch,batch_first,job['mid'])
+        from .request_context import resolve_request
+        latest=resolve_request(self.store.db,job['chat'],batch_first,job['mid'],latest)
+        if not latest:
+            return {'reply':'Напомните, пожалуйста, ваш вопрос — не хочу ответить про другой сервис.',
+                    'summary':'Клиент ждёт ответ, но исходный вопрос отсутствует в сохранённом контексте.',
+                    'handoff':True}
         from .catalog_context import annotate
         facts=annotate(facts,latest)
         shortcut=missing_shop_reply(latest,facts,has_images=bool(image))

@@ -93,6 +93,22 @@ def false_absence(reply, facts):
     return False
 
 
+def customer_facts(facts):
+    """Expose one applicable retail price, keeping original audit facts untouched."""
+    result=dict(facts)
+    for field in ('catalog','requested_catalog'):
+        if field not in facts:continue
+        result[field]=[]
+        for original in facts[field]:
+            row=dict(original)
+            price=row.get('customer_price_rub')
+            if type(price) is int and price>0:
+                for key in ('base_price_rub','catalog_price_rub','price_rub'):
+                    row.pop(key,None)
+            result[field].append(row)
+    return result
+
+
 def verified_catalog_reply(facts, reason):
     """Owner-review fallback built from fields, never from a rejected model reply."""
     from .privacy import scrub
@@ -109,19 +125,25 @@ def verified_catalog_reply(facts, reason):
         if not name or not plan:continue
         groups.setdefault((name,plan),set()).add(price)
     lines=[f'{name} · {plan} — {next(iter(prices))} ₽' for (name,plan),prices in groups.items() if len(prices)==1]
-    lines=lines[:8]
+    all_lines=lines
+    lines=[]
+    used=0
+    for line in all_lines:
+        if len(lines)>=8 or used+len(line)+1>1350:break
+        lines.append(line);used+=len(line)+1
     parts=[]
     if lines:
         parts.append('Тарифы магазина:\n'+'\n'.join(lines)+'\nЦены до применения промокода и списания монет.')
+        if len(lines)<len(all_lines):
+            parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
     if 'appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):
         parts.append('Для подбора пополнения App Store подскажите регион Apple ID, стоимость нужной покупки в валюте аккаунта и текущий баланс.')
-    if not parts:parts=['Уточню условия по вашему вопросу.']
+    if not parts:parts=['Не удалось подготовить проверенный ответ по вашему обращению. Нужна ручная проверка условий; подтверждённых цен для ответа сейчас нет.']
     reply='\n\n'.join(parts)
-    if len(reply)>1800:reply='\n\n'.join(parts[-1:])
     return {'reply':reply,'summary':'Свободный ответ не прошёл проверку. Сохранена только подтверждённая часть каталога и уточняющие вопросы. Остальные части обращения требуют проверки владельца.',
             'handoff':True,'source_ids':[],'research':{'topic':'none','products':[]},
             'evidence':{'status':'catalog_review','sources':[],
-                        'diagnostic':scrub(str(reason))[:500]}}
+                        'diagnostic':scrub(str(reason))[:1500]}}
 
 
 def direct_catalog_reply(facts, latest):
