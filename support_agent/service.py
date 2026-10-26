@@ -13,7 +13,7 @@ from .clients import OpenAI, ShopReader, Telegram
 from .privacy import scrub, sensitive
 from .storage import Store
 from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details
-from .response_policy import continuing_reply, missing_shop_reply, consultation_plan
+from .response_policy import continuing_reply, missing_shop_reply, consultation_plan, current_request
 
 
 def buttons(rows):
@@ -411,8 +411,9 @@ class Service:
             label=('Источники проверены' if evidence['status']=='checked'
                    else 'Поиск выполнен, сведений недостаточно для ответа')
             research_note=f'🌐 <b>{label}:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
-            for source in evidence['sources'][:8]:
+            for index,source in enumerate(evidence['sources']):
                 research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
+                if (index+1)%8==0:research_note+='\n'
             for name,identity in evidence.get('discoveries',{}).items():
                 research_note+=f'Сайт {html.escape(name)} найден поиском: <a href="{html.escape(identity["corroboration_url"],quote=True)}">проверка принадлежности</a>\n'
             for name,reason in evidence.get('failures',{}).items():
@@ -500,10 +501,10 @@ class Service:
 
     async def generate(self,job):
         from .storage import HISTORY_MESSAGES,HISTORY_CHARACTERS
+        batch_first=self.store.chat(job['chat'])['batch_first']
         turn=self.store.db.execute('''SELECT count(*),COALESCE(sum(length(text)),0) FROM messages
-            WHERE chat=? AND role='client' AND mid<=? AND mid>COALESCE(
-              (SELECT MAX(mid) FROM messages WHERE chat=? AND role IN ('owner','assistant') AND mid<?),0)''',
-            (job['chat'],job['mid'],job['chat'],job['mid'])).fetchone()
+            WHERE chat=? AND role='client' AND mid>=? AND mid<=?''',
+            (job['chat'],batch_first,job['mid'])).fetchone()
         if turn[0]>HISTORY_MESSAGES or turn[1]>HISTORY_CHARACTERS:
             return {'reply':'Спасибо за подробности! Уточню ваше обращение и вернусь с ответом.',
                     'summary':'Обращение превышает безопасный объём контекста. Автоматический анализ не запускался; проверьте весь диалог вручную.',
@@ -514,9 +515,8 @@ class Service:
         if image is None or not self.store.still_current(job):return None
         # Transcripts can make a previously small request exceed context capacity.
         size=self.store.db.execute('''SELECT COALESCE(sum(length(text)),0) FROM messages
-            WHERE chat=? AND role='client' AND mid<=? AND mid>COALESCE(
-              (SELECT MAX(mid) FROM messages WHERE chat=? AND role IN ('owner','assistant') AND mid<?),0)''',
-            (job['chat'],job['mid'],job['chat'],job['mid'])).fetchone()[0]
+            WHERE chat=? AND role='client' AND mid>=? AND mid<=?''',
+            (job['chat'],batch_first,job['mid'])).fetchone()[0]
         if size>HISTORY_CHARACTERS:
             return {'reply':'Уточню детали вашего обращения и вернусь с ответом.',
                     'summary':'После расшифровки обращение превышает объём контекста. Проверьте весь диалог вручную; частичный ответ не подготовлен.',
@@ -526,22 +526,19 @@ class Service:
         if not self.store.still_current(job):
             return None
         history=self.store.history(job['chat'])
-        # One client turn can span many messages. Keep their order and interpret
-        # the whole retained turn, not only its final word or question mark.
-        current_turn=[]
-        for message in reversed(history):
-            if message['role'] in ('owner','assistant'):
-                break
-            if message['role']=='client':
-                current_turn.append(message['text'])
-        latest='\n'.join(reversed(current_turn))
+        # Full history remains context for references; only the fixed collection
+        # batch is a new request. An unapproved old draft must not revive its topic.
+        batch=self.store.db.execute('''SELECT mid,role,text FROM messages
+            WHERE chat=? AND role='client' AND mid>=? AND mid<=? ORDER BY mid''',
+            (job['chat'],batch_first,job['mid'])).fetchall()
+        latest=current_request(batch,batch_first,job['mid'])
         shortcut=missing_shop_reply(latest,facts,has_images=bool(image))
         if shortcut:
             return shortcut
         replied=bool(self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone())
         facts=dict(facts,conversation={'continuing':replied,
                                       'latest_client_message':latest,
-                                      'latest_message':current_turn[0] if current_turn else ''})
+                                      'latest_message':batch[-1]['text'] if batch else ''})
         self.charge_call()
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
@@ -587,7 +584,7 @@ class Service:
                     if not self.store.still_current(job):
                         return None
                     stage='citations'
-                    checked=attach_evidence(dict(final),evidence,allow_catalog_only=bool(facts.get('catalog') or evidence.get('failures')))
+                    checked=attach_evidence(dict(final),evidence,allow_catalog_only=bool(facts.get('catalog') or evidence.get('failures')),semantic_review=True)
                     missing=checked.get('evidence',{}).get('missing_products',[])
                     covered=all(any(safe_url(s['url'],evidence_domains(evidence,p))
                                 for s in evidence['sources']) for p in missing)
@@ -614,7 +611,7 @@ class Service:
                 correction={'missing_products':missing,'issue':issue,
                     'content_review':review['reason'] if issue=='unsupported_content' else '',
                     'allowed_source_ids':[s['id'] for s in evidence['sources']],
-                    'instruction':'Перепиши ответ только по имеющимся источникам. source_ids должен перечислять ID подтверждающих источников, а каждый [ID] в тексте должен входить в source_ids. Для каждого сервиса используй его источники. Не придумывай ссылки или факты. Если сведений недостаточно, handoff=true и source_ids=[].'}
+                    'instruction':'Перепиши ответ только по имеющимся источникам. source_ids должен перечислять ID подтверждающих источников, а каждый [ID] в тексте должен входить в source_ids. Для каждого сервиса используй его источники. Не придумывай ссылки или факты. Если часть сведений отсутствует, сохрани подтверждённые сведения и их source_ids, handoff=true. Пустой source_ids допустим только без публичных фактических утверждений.'}
         except Exception as exc:
             if not self.store.still_current(job):
                 return None

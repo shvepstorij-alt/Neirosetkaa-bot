@@ -248,17 +248,24 @@ class CitationError(ValueError):
         self.citation_reason=reason
 
 
-def attach_evidence(answer,evidence,allow_catalog_only=False):
+def attach_evidence(answer,evidence,allow_catalog_only=False,semantic_review=False):
+    """Attach source metadata; semantic_review requires a subsequent factual check.
+
+    Selected citation IDs are formatting metadata, not proof that every researched
+    service must be discussed. A caller enabling semantic_review MUST verify the
+    entire proposed answer against the complete evidence before saving/sending it.
+    """
     if answer.get('research',{}).get('topic')!='none':
         raise ValueError('Research still required')
     ids=answer.get('source_ids',[])
     if ids==[] and answer.get('handoff') is True:
         # Insufficient evidence is a normal outcome, not a broken JSON response.
         # Keep the model's owner summary, but never send its unsupported prose.
-        if not allow_catalog_only:
+        if not allow_catalog_only and not semantic_review:
             answer['reply']='Пока не удалось подтвердить актуальные условия. Не хочу дать вам неверную информацию.'
         answer['evidence']={'status':'insufficient','checked_at':evidence['checked_at'],
-                            'sources':evidence['sources'][:3], 'discoveries':evidence.get('discoveries',{}),
+                            'sources':evidence['sources'] if semantic_review else evidence['sources'][:3],
+                            'discoveries':evidence.get('discoveries',{}),
                             'failures':evidence.get('failures',{})}
         return answer
     available={s['id']:s for s in evidence['sources']}
@@ -280,7 +287,7 @@ def attach_evidence(answer,evidence,allow_catalog_only=False):
                     and p not in evidence.get('failures',{}))
     missing=[p for p in sorted(required) if not any(
         safe_url(s['url'],evidence_domains(evidence,p)) for s in selected)]
-    if missing:
+    if missing and not semantic_review:
         # Do not send claims about a provider supported only by another provider's URLs.
         answer['reply']='Пока не удалось подтвердить все условия по указанным сервисам. Не хочу дать вам неверную информацию.'
         answer['summary']='Ответ остановлен: выбранные источники не покрывают сервисы: '+', '.join(missing)+'. Нужна проверка владельца.'
@@ -293,8 +300,18 @@ def attach_evidence(answer,evidence,allow_catalog_only=False):
     if any(int(i) not in ids for i in re.findall(r'\[(\d+)\]',answer['reply'])):
         raise CitationError('unlisted_inline_ids')
     answer['source_ids']=ids
-    answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],'sources':selected,
+    answer['evidence']={'status':'checked','checked_at':evidence['checked_at'],
+                        'sources':list(evidence['sources']) if semantic_review else selected,
                         'discoveries':evidence.get('discoveries',{}),'failures':evidence.get('failures',{})}
+    if semantic_review:
+        answer['evidence']['selected_source_ids']=ids
+        # No invented source-to-claim mapping: semantic verification receives all
+        # actual material, including sources the drafting model omitted from IDs.
+        # This also permits a supported partial reply with explicit uncertainty.
+        if missing:
+            answer['evidence']['coverage_review']=missing
+            answer['evidence']['citation_mode']='bibliography'
+            answer['handoff']=True
     if evidence.get('failures'):
         answer['handoff']=True
         answer['evidence']['status']='insufficient'

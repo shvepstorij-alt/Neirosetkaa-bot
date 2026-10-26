@@ -23,7 +23,7 @@ async def run_probe(service):
         charge();stage='final_draft'
         answer=await service.ai.draft([{'role':'client','text':'Какие официальные тарифы и основные ограничения у Zoom, Krea и Lovable?'}],facts)
         stage='citations'
-        checked=attach_evidence(dict(answer),evidence,allow_catalog_only=bool(evidence.get('failures')))
+        checked=attach_evidence(dict(answer),evidence,allow_catalog_only=bool(evidence.get('failures')),semantic_review=True)
         charge();stage='answer_check'
         review=await service.ai.check_answer(answer,facts)
         if service.store.get('revision')!=revision:return

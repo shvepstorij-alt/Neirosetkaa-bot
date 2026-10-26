@@ -2,10 +2,24 @@
 import re
 
 
+def current_request(messages, batch_first, latest_mid):
+    """Text of the current collected batch, not every unanswered past question.
+
+    `messages` contains mid/role/text rows in arbitrary order. Full history stays
+    available separately to the model for references such as «а у второго?».
+    A missing legacy batch boundary falls back to the newest message rather than
+    silently reviving every earlier topic. Deleted fragments are simply absent.
+    """
+    first=batch_first if isinstance(batch_first,int) and 0<batch_first<=latest_mid else latest_mid
+    rows=sorted((m for m in messages if m['role']=='client'
+                 and first<=m['mid']<=latest_mid),key=lambda m:m['mid'])
+    return '\n'.join(m['text'] or '' for m in rows)
+
+
 def consultation_plan(latest, plan):
     """Require public evidence for explicit plan/features questions, not private prices.
 
-    Only the unanswered client turn is inspected. Never send its text to search.
+    Only the current collected client batch is inspected. Never send its text to search.
     The model still resolves references and images; this is a conservative floor.
     """
     text=latest.lower()
