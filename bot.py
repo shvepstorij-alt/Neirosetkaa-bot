@@ -349,6 +349,7 @@ def _spawn_bg(coro_factory, name: str):
 async def main():
     await _ensure_playwright_browser()
     await init_db()
+    await handlers_user.register_info_command()
     await initialize_gpt_cards()
     from service_order_card import initialize as initialize_service_cards
     from payment_receipt import initialize as initialize_receipts

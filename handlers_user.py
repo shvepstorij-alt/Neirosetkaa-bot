@@ -15,7 +15,7 @@ from aiogram.types import (
     LabeledPrice, PreCheckoutQuery, BufferedInputFile,
     ReplyKeyboardMarkup, KeyboardButton
 )
-from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, StateFilter
+from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, StateFilter, Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -815,6 +815,49 @@ async def fav_more(cb: CallbackQuery):
     await _send_favorites_page(cb.message, cb.from_user.id, offset)
 
 
+@dp.message(Command("info"), StateFilter("*"))
+async def cmd_info(message: Message):
+    await message.answer(
+        "ℹ️ <b>Информация и поддержка</b>\n\n"
+        "Документы сервиса, связь с поддержкой и актуальные товары и цены — по кнопкам ниже.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔒 Политика конфиденциальности", callback_data="info_privacy")],
+            [InlineKeyboardButton(text="📋 Пользовательское соглашение / оферта", callback_data="info_offer")],
+            [InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{PERSONAL_USERNAME}")],
+            [InlineKeyboardButton(text="🛍 Товары и цены", callback_data="menu_shop")],
+        ]))
+
+
+@dp.callback_query(F.data.in_({"info_privacy", "info_offer"}), StateFilter("*"))
+async def info_document(cb: CallbackQuery):
+    await cb.answer()
+    if not isinstance(cb.message, Message):
+        return
+    if cb.data == "info_privacy":
+        await cmd_privacy(cb.message)
+    else:
+        await cmd_publicoffer(cb.message)
+
+
+async def register_info_command():
+    """Preserve existing BotFather commands when adding the information entry."""
+    from aiogram.types import BotCommand
+    for language in ("", "ru"):
+        try:
+            commands = await bot.get_my_commands(language_code=language)
+            if not commands and language:
+                commands = await bot.get_my_commands()
+            commands = [command for command in commands if command.command != "info"]
+            if len(commands) >= 100:
+                logging.warning("Cannot add /info: Telegram command list is full")
+                continue
+            commands.append(BotCommand(command="info", description="Информация и поддержка"))
+            await bot.set_my_commands(commands, language_code=language)
+        except Exception:
+            logging.warning("Could not register /info in Telegram command menu", exc_info=True)
+
+
 @dp.message(F.text == "/help", StateFilter("*"))
 async def cmd_help(message: Message):
     await message.answer(
@@ -833,74 +876,14 @@ async def cmd_help(message: Message):
 
 @dp.message(F.text == "/privacy", StateFilter("*"))
 async def cmd_privacy(message: Message):
-    await message.answer(
-        "\U0001f512 <b>Политика конфиденциальности @Neirosetkaa_bot</b>\n\n"
-        "<b>1. Общие положения</b>\n"
-        "Использование бота означает согласие с данной Политикой и условиями обработки персональных данных.\n\n"
-        "<b>2. Какие данные собираем</b>\n"
-        "• Имя пользователя в Telegram\n"
-        "• Username в Telegram\n"
-        "• Telegram ID (user_id)\n\n"
-        "Данные используются исключительно для:\n"
-        "- обработки платежей и начисления кредитов\n"
-        "- технической поддержки\n"
-        "- уведомлений о работе сервиса\n\n"
-        "<b>3. Хранение и защита</b>\n"
-        "Данные хранятся на защищённых серверах. Доступ - только у администрации бота. "
-        "Передача третьим лицам без согласия пользователя не осуществляется, "
-        "за исключением случаев, предусмотренных законодательством.\n\n"
-        "<b>4. Права пользователя</b>\n"
-        "Вы вправе в любой момент:\n"
-        "• запросить доступ к своим данным\n"
-        "• потребовать исправления или удаления данных\n"
-        "• отозвать согласие на обработку\n\n"
-        "Для этого напишите: @{}\n\n"
-        "<b>5. Изменения</b>\n"
-        "Политика может обновляться. Актуальная версия всегда доступна по команде /privacy.".format(
-            PERSONAL_USERNAME
-        ),
-        parse_mode="HTML"
-    )
+    from legal_texts import privacy_text
+    await message.answer(privacy_text(PERSONAL_USERNAME), parse_mode="HTML")
 
 
 @dp.message(F.text == "/publicoffer", StateFilter("*"))
 async def cmd_publicoffer(message: Message):
-    await message.answer(
-        "\U0001f4cb <b>Публичная оферта @Neirosetkaa_bot</b>\n"
-        "<i>Дата публикации: 13.04.2026</i>\n\n"
-        "Используя бот и совершая оплату, вы соглашаетесь с условиями настоящей оферты. "
-        "Акцептом считается первая успешная оплата.\n\n"
-        "<b>1. Предмет договора</b>\n"
-        "Исполнитель предоставляет доступ к сервису генерации изображений и видео с помощью AI-моделей (Nano Banana, Gemini Omni, Grok, GPT Image, Flux, Seedance, Kling, Wan и других). "
-        "Заказчик обязуется принять и оплатить услуги.\n\n"
-        "<b>2. Права и обязанности</b>\n"
-        "Заказчик обязуется:\n"
-        "• предоставлять достоверные данные\n"
-        "• своевременно оплачивать услуги\n"
-        "• не использовать сервис для незаконных целей\n\n"
-        "Исполнитель обязуется:\n"
-        "• обеспечивать работу сервиса\n"
-        "• информировать о сбоях и изменениях\n"
-        "• рассматривать претензии в течение 3 рабочих дней\n\n"
-        "<b>3. Порядок оказания услуг</b>\n"
-        "• Услуга считается оказанной в момент успешной генерации контента\n"
-        "• Кредиты списываются автоматически при генерации\n"
-        "• Претензии принимаются в течение 3 дней после оплаты\n"
-        "• Исполнитель не несёт ответственности за сбои в работе API Google\n\n"
-        "<b>4. Стоимость и оплата</b>\n"
-        "• Стоимость кредитов указана в боте перед оплатой\n"
-        "• Оплата через СБП, карту РФ или Telegram Stars\n"
-        "• Обязательства считаются исполненными при поступлении средств\n\n"
-        "<b>5. Ответственность</b>\n"
-        "Исполнитель не отвечает за форс-мажор: сбои связи, действия третьих лиц, изменения в API провайдеров.\n\n"
-        "<b>6. Контакты</b>\n"
-        "\U0001f4ac Поддержка: @{}\n"
-        "\U0001f4e7 По вопросам оферты: @{}\n\n"
-        "<i>Совершая оплату, вы подтверждаете согласие с данной офертой.</i>".format(
-            PERSONAL_USERNAME, PERSONAL_USERNAME
-        ),
-        parse_mode="HTML"
-    )
+    from legal_texts import agreement_text
+    await message.answer(agreement_text(PERSONAL_USERNAME), parse_mode="HTML")
 
 
 
