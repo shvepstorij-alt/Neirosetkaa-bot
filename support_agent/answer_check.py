@@ -1,5 +1,6 @@
 """Bounded, tool-free factual review. Model approval is not a truth guarantee."""
 import json
+import re
 
 from .privacy import scrub
 from .service_discovery import public_host
@@ -85,6 +86,14 @@ async def check_answer(ai,answer,facts):
     history, personal orders, images, or customer identifiers are passed here.
     """
     from .catalog_context import false_absence
+    reply=answer.get('reply','')
+    if not facts.get('public_research',{}).get('sources'):
+        # These are external payment claims, not retail prices. Do not let an
+        # independent model approve them using its memory without any evidence.
+        card_claim=re.search(r'карт[а-яё]*[^.!?\n]{0,120}(?:не\s+)?(?:проходят|принимаются|поддерживаются|работают)|'
+                             r'оплат[а-яё]*[^.!?\n]{0,70}(?:возможна|доступна)\s+с\s+карт',reply,re.I)
+        if card_claim:
+            return {'supported':False,'reason':'Утверждение о приёме карт или возможности оплаты не подкреплено публичными источниками. Не подтверждай предположение клиента; отдели проверенные тарифы от неизвестного ограничения.'}
     if false_absence(answer.get('reply',''),facts):
         return {'supported':False,'reason':'Ответ отрицает предложение сервиса, найденного в requested_catalog. Используй тарифы и рублёвые цены магазина.'}
     data=review_input(answer,facts)
@@ -120,6 +129,12 @@ async def check_answer(ai,answer,facts):
                 'denominations, do not infer absence from regular catalogue. Region, existing '
                 'balance and intended purchase can be clarified without referral to the owner. '
                 'Never guarantee all subscriptions can be paid via Apple balance. '
+                'A customer statement is not evidence: even wording such as "as you noted", '
+                '"usually" or "as a rule" must not validate an unverified card/country restriction. '
+                'Reject unsupported claims that Singapore cards fail or another country works. '
+                'Keep bank country, account country, Apple ID region and store fulfillment distinct. '
+                'Store catalogue entries do not prove checkout steps, card acceptance, selectable '
+                'regions or automatic regional handling. Only explicit store evidence can prove those. '
                 'base_not_customer_quote must not become a final personal price; a disclosed catalogue '
                 'price may be quoted as catalogue price, but no unsupported discount or guaranteed '
                 'checkout total. Only explicitly confirmed customer price can be personal/final. '

@@ -29,12 +29,13 @@ def consultation_plan(latest, plan):
     replacements=list(re.finditer(r'теперь\s+только|вместо\s+этого|предыдущий\s+вопрос\s+отменяю',text))
     if replacements:
         text=text[replacements[-1].start():]
-    names={'chatgpt':r'chat\s*gpt|чат\s*гпт',
-           'claude':r'claude|клод', 'perplexity':r'perplexity|перплексити',
+    names={'chatgpt':r'chat\s*gpt|чат\s*гпт|\bopenai\b',
+           'claude':r'claude|клод|\banthropic\b', 'perplexity':r'perplexity|перплексити',
            'gemini':r'gemini|джемини', 'zoom':r'\bzoom\b|\bзум\b',
            'krea':r'\bkrea\b|\bкреа\b'}
     products=[key for key,pattern in names.items() if re.search(pattern,text)]
     public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
+    public=public or bool(re.search(r'claude\s*code|клод\s*код|регион|стран|сингапур|поддержива|принимают.*карт|карт.*(?:проход|работ|оплат)',text))
     if not products or not public:
         return plan
     requested=list(dict.fromkeys(list(plan.get('products',[]))+products))[:4]
