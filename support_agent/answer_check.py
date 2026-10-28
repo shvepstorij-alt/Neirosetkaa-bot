@@ -106,6 +106,13 @@ async def check_answer(ai,answer,facts):
     # approve approximately. Check before spending another model request.
     from .catalog_context import customer_facts
     retail=customer_facts(facts).get('requested_catalog', [])
+    activation_claim=re.search(
+        r'активац[а-яё]*[^.!?\n]{0,70}автомат|автомат[а-яё]*[^.!?\n]{0,70}актив|'
+        r'без\s+(?:необходимости\s+)?входа|в\s+аккаунт\s+не\s+входим|'
+        r'(?:никаких\s+)?данных\s+для\s+входа[^.!?\n]{0,40}не\s+запрашиваем|'
+        r'потребуется\s+только[^.!?\n]{0,60}оплат',reply,re.I)
+    if activation_claim and (not retail or any(row.get('fulfillment') in (None,'','not_verified') for row in retail)):
+        return {'supported':False,'reason':'Этап: проверка способа оформления. Ответ обещает автоматическую активацию, отсутствие входа или что достаточно только оплаты. Способ оформления выбранного товара не подтверждён: fulfillment=not_verified. Наличие тарифа и запрет помощнику входить в аккаунты не подтверждают оформление без входа. Не обещай эти условия; передай уточнение владельцу.'}
     prices=set()
     for row in retail:
         for key in ('customer_price_rub','catalog_price_rub','price_rub','base_price_rub'):
