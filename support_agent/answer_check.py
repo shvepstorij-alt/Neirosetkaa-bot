@@ -75,7 +75,14 @@ def review_input(answer,facts):
     # digests while applying the same filter's per-string 16K bound.
     digest=str(evidence.get('digest',''))[:40000]
     digest=''.join(scrub(digest[i:i+12000]) for i in range(0,len(digest),12000))
-    return {'reply':scrub(reply),'source_ids':ids,
+    # Summary may contain private order/customer details. Project only this
+    # bounded claim instead of forwarding the owner's entire analysis.
+    summary=str(answer.get('summary',''))
+    owner_claims=[]
+    if re.search(r'оформлен[а-яё]*[^.!?\n]{0,80}(?:не\s*доступ|невозмож)|'
+                 r'(?:не\s*доступ|невозмож)[^.!?\n]{0,80}оформлен',summary,re.I):
+        owner_claims.append('Owner analysis claims purchases through the store are unavailable.')
+    return {'reply':scrub(reply),'owner_public_claims':owner_claims,'source_ids':ids,
             'public_evidence':{'digest':digest,'sources':sources,
                                'product_domains':domains,'failures':failures},
             'catalog':catalogue,
@@ -143,6 +150,9 @@ async def check_answer(ai,answer,facts):
                 'concrete claim is supported by the supplied evidence and attached to the correct '
                 'service and plan. Otherwise supported=false with a concise Russian explanation. '
                 'Do not generate an alternative answer. Check model availability in consumer plans '
+                'Also check owner_public_claims projected from owner analysis: they must agree with reply '
+                'and supplied facts. Lack of an order-creation tool does not prove purchases through '
+                'the store are unavailable. Reject that unsupported inference. '
                 'versus API-only models/previews; plan benefits, limits, country, currency, monthly '
                 'versus annual billing and per-user/per-account prices. A provider list price is NOT '
                 'the store price. Store prices must match catalogue fields and their explicit scope: '
