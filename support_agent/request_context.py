@@ -15,6 +15,9 @@ def is_reminder(text):
 
 
 def is_acknowledgement(text):
+    lines=[line.strip() for line in str(text).splitlines() if line.strip()]
+    if len(lines)>1:
+        return all(is_acknowledgement(line) for line in lines)
     text=re.sub(r'[\s!?.…,]+',' ',str(text).casefold()).strip()
     return text in ('спасибо','хорошо','понял','поняла','ок','окей','да','ладно')
 
@@ -39,7 +42,8 @@ def resolve_request(db, chat, first, last, text):
         bounds=(drafts[1]['mid']+1 if len(drafts)>1 else drafts[0]['mid'],drafts[0]['mid'])
     rows=db.execute("SELECT text FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
     if len(rows)>60:return ''
-    parts=[r['text'] for r in rows if r['text'] and not is_reminder(r['text'])]
+    parts=[r['text'] for r in rows if r['text'] and not is_reminder(r['text'])
+           and not is_acknowledgement(r['text'])]
     previous='\n'.join(parts)
     if not previous or len(previous)>24000:return ''
     db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,*bounds))
