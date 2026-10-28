@@ -13,7 +13,9 @@ def current_request(messages, batch_first, latest_mid):
     first=batch_first if isinstance(batch_first,int) and 0<batch_first<=latest_mid else latest_mid
     rows=sorted((m for m in messages if m['role']=='client'
                  and first<=m['mid']<=latest_mid),key=lambda m:m['mid'])
-    return '\n'.join(m['text'] or '' for m in rows)
+    text='\n'.join(m['text'] or '' for m in rows)
+    replacements=list(re.finditer(r'теперь\s+только|вместо\s+этого|предыдущий\s+вопрос\s+отменяю',text,re.I))
+    return text[replacements[-1].start():] if replacements else text
 
 
 def consultation_plan(latest, plan):
@@ -34,6 +36,11 @@ def consultation_plan(latest, plan):
            'gemini':r'gemini|джемини', 'zoom':r'\bzoom\b|\bзум\b',
            'krea':r'\bkrea\b|\bкреа\b'}
     products=[key for key,pattern in names.items() if re.search(pattern,text)]
+    if products:
+        # A newly named service must not inherit known brands from old turns.
+        # Keep dynamically discovered names: their aliases are not in this map.
+        plan=dict(plan,products=[p for p in plan.get('products',[])
+                                if p not in names or p in products])
     public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
     public=public or bool(re.search(r'claude\s*code|клод\s*код|регион|стран|сингапур|поддержива|принимают.*карт|карт.*(?:проход|работ|оплат)',text))
     if not products or not public:

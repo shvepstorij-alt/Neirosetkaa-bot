@@ -46,10 +46,13 @@ async def prepare_media(service,job):
     transcription attempts never automatically consume the budget again.
     """
     if not service.store.still_current(job):return None,None
+    first=service.store.chat(job['chat'])['batch_first']
+    if not isinstance(first,int) or not 0<first<=job['mid']:
+        first=job['mid']
     rows=service.store.db.execute('''SELECT mid,text,media FROM messages
-        WHERE chat=? AND role='client' AND mid<=? AND mid>COALESCE(
+        WHERE chat=? AND role='client' AND mid>=? AND mid<=? AND mid>COALESCE(
           (SELECT MAX(mid) FROM messages WHERE chat=? AND role IN ('owner','assistant') AND mid<?),0)
-        ORDER BY mid''',(job['chat'],job['mid'],job['chat'],job['mid'])).fetchall()
+        ORDER BY mid''',(job['chat'],first,job['mid'],job['chat'],job['mid'])).fetchall()
     files=[];photos=voices=0;duration=declared=0
     # Preflight the entire turn, including unsupported media among valid files.
     for row in rows:
