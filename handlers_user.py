@@ -876,14 +876,16 @@ async def cmd_help(message: Message):
 
 @dp.message(F.text == "/privacy", StateFilter("*"))
 async def cmd_privacy(message: Message):
-    from legal_texts import privacy_text
-    await message.answer(privacy_text(PERSONAL_USERNAME), parse_mode="HTML")
+    from legal_texts import privacy_text, document_pages
+    for page in document_pages(privacy_text(PERSONAL_USERNAME)):
+        await message.answer(page, parse_mode="HTML")
 
 
 @dp.message(F.text == "/publicoffer", StateFilter("*"))
 async def cmd_publicoffer(message: Message):
-    from legal_texts import agreement_text
-    await message.answer(agreement_text(PERSONAL_USERNAME), parse_mode="HTML")
+    from legal_texts import agreement_text, document_pages
+    for page in document_pages(agreement_text(PERSONAL_USERNAME)):
+        await message.answer(page, parse_mode="HTML")
 
 
 
