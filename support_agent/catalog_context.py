@@ -168,7 +168,10 @@ def verified_catalog_reply(facts, reason):
     all_lines=lines
     lines=[]
     used=0
-    apple_requested='appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[])
+    apple_requested=('appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[])
+                     or bool(facts.get('appstore_selection'))
+                     or any('appstore' in (_families(_words(row.get('service_key')))|_families(_words(row.get('service'))))
+                            for row in rows if isinstance(row,dict)))
     # Reserve space for the independently priced regional stock and questions.
     line_budget=800 if apple_requested else 1350
     for line in all_lines:
@@ -206,7 +209,11 @@ def verified_catalog_reply(facts, reason):
     return {'reply':reply,'summary':'Свободный ответ не прошёл проверку. Сохранена только подтверждённая часть каталога и уточняющие вопросы. Остальные части обращения требуют проверки владельца.',
             'handoff':True,'source_ids':[],'research':{'topic':'none','products':[]},
             'evidence':{'status':'catalog_review','sources':[],
-                        'diagnostic':scrub(str(reason))[:1500]}}
+                        'diagnostic':scrub(str(reason))[:1100]
+                        +'\nДанные: обычных тарифов='+str(len(rows))
+                        +'; Apple status='+str(facts.get('appstore',{}).get('status','not_connected'))
+                        +'; регионов='+str(len(facts.get('appstore',{}).get('regions',[])))
+                        +'; выбранные регионы='+','.join(facts.get('appstore_selection',{}).get('requested_codes',[]))}}
 
 
 def direct_catalog_reply(facts, latest):

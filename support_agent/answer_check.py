@@ -130,7 +130,14 @@ async def check_answer(ai,answer,facts):
         if card_claim:
             return {'supported':False,'reason':'Утверждение о приёме карт или возможности оплаты не подкреплено публичными источниками. Не подтверждай предположение клиента; отдели проверенные тарифы от неизвестного ограничения.'}
     if false_absence(answer.get('reply',''),facts):
-        return {'supported':False,'reason':'Ответ отрицает предложение сервиса, найденного в requested_catalog. Используй тарифы и рублёвые цены магазина.'}
+        selection=facts.get('appstore_selection',{})
+        apple=facts.get('appstore',{})
+        detail=(' Региональные данные App Store: статус='+str(apple.get('status','not_connected'))
+                +'; запрошено='+','.join(selection.get('requested_codes',[]))
+                +'; получено регионов='+str(len(apple.get('regions',[])))
+                +'; совпало='+str(len(selection.get('matched_regions',[])))+'.') if selection else ''
+        return {'supported':False,'reason':'Этап: проверка отсутствия предложения. Ответ утверждает отсутствие товара, региона или номинала без достаточного подтверждения.'
+                +' Совпавших обычных тарифов='+str(len(facts.get('requested_catalog',[])))+'.'+detail}
     data=review_input(answer,facts)
     schema={'type':'object','properties':{
         'supported':{'type':'boolean'},
