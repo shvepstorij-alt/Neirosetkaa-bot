@@ -8,7 +8,7 @@ import logging
 import re
 from types import SimpleNamespace
 
-from gpt_order_card import setting, save, attention_text, phase
+from gpt_order_card import setting, save, attention_text, phase, unique_button_rows
 
 PREFIX = 'servicecard:'
 SERVICES = ('claude', 'perplexity')
@@ -136,7 +136,10 @@ def keyboard(data, card):
         rows.append([B(text='📨 Отправить активацию повторно', callback_data='scard:retry:' + number)])
         # Preserve supplier-specific decisions, including their existing safety checks.
         for row in card.get('actions', []):
-            buttons = [B(**b) for b in row if b.get('callback_data') != 'noop' and not b.get('callback_data', '').startswith(('scard:', 'adm_resend:'))]
+            buttons = [B(**b) for b in row if b.get('callback_data') != 'noop' and not b.get('callback_data', '').startswith(('scard:', 'adm_resend:', 'adm_resend2:'))]
+            for button in buttons:
+                if (getattr(button, 'callback_data', None) or '').startswith('clrc:'):
+                    button.text = '🔎 Проверить у поставщика'
             if buttons:
                 rows.append(buttons)
         if data['code']:
@@ -145,7 +148,7 @@ def keyboard(data, card):
             if provider in sites:
                 rows.append([B(text='🌐 Открыть сайт поставщика', url=sites[provider])])
     rows.append([B(text='📜 История и данные', callback_data='scard:history:' + number)])
-    return K(inline_keyboard=rows)
+    return K(inline_keyboard=unique_button_rows(rows))
 
 
 async def edit_message(message, text='', **kwargs):
@@ -188,7 +191,7 @@ async def handle(cb):
                 data = await snapshot(conn, oid)
             if data['state'] in ('done','closed','unknown','running'):
                 return await cb.answer('Повтор недоступен: заказ завершён либо результат активации ещё проверяется.', show_alert=True)
-            if await activation_cooldown(lock, seconds=60):
+            if await activation_cooldown('servicecard_retry_cooldown:' + oid, seconds=60):
                 return await cb.answer('Кнопка недавно отправлялась. Подожди минуту.', show_alert=True)
             from common import claude_resend_activation, perplexity_resend_activation
             fn = claude_resend_activation if data['service'] == 'claude' else perplexity_resend_activation

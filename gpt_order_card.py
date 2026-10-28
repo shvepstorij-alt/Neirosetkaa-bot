@@ -249,6 +249,23 @@ def history_caption(data):
     return '\n'.join(lines).rstrip() + '\n\n' + footer
 
 
+def unique_button_rows(rows):
+    """Deduplicate actions when a rendered keyboard is saved again."""
+    seen, result = set(), []
+    for row in rows:
+        kept = []
+        for button in row:
+            payload = button.model_dump(exclude_none=True)
+            identity = json.dumps({k: v for k, v in payload.items()
+                                   if k not in ('text', 'style', 'icon_custom_emoji_id')}, sort_keys=True)
+            if identity not in seen:
+                seen.add(identity)
+                kept.append(button)
+        if kept:
+            result.append(kept)
+    return result
+
+
 def keyboard(data, card):
     from aiogram.types import InlineKeyboardButton as B, InlineKeyboardMarkup as K, WebAppInfo
     from config import webapp_url
@@ -261,7 +278,7 @@ def keyboard(data, card):
         # Preserve provider-specific actions, e.g. confirming a route or manual work.
         for row in card.get('actions', []):
             buttons = [B(**b) for b in row if (b.get('callback_data') or b.get('url') or b.get('web_app')) and not
-                       b.get('callback_data', '').startswith(('gptrc:', 'adm_gpt_retry:', 'gcard:'))
+                       b.get('callback_data', '').startswith(('gptrc:', 'adm_gpt_retry:', 'gcard:', 'adm_resend:', 'adm_resend2:'))
                        and b.get('callback_data') != 'noop']
             if buttons:
                 rows.append(buttons)
@@ -269,7 +286,7 @@ def keyboard(data, card):
         rows.append([B(text='📋 Токен целиком', web_app=WebAppInfo(url=webapp_url('/webapp/token', k=card['token_key'])))])
         rows.append([B(text='📄 Токен файлом', callback_data='gcard:token:' + str(data['order']['num']))])
     rows.append([B(text='📜 История и данные', callback_data='gcard:history:' + str(data['order']['num']))])
-    return K(inline_keyboard=rows)
+    return K(inline_keyboard=unique_button_rows(rows))
 
 
 async def update(oid, text='', reply_markup=None, token=None, delivery=None):
