@@ -4,6 +4,7 @@ import time
 from urllib.parse import urlsplit
 import aiohttp
 from .privacy import scrub
+from .catalog_context import apple_region_codes
 
 
 def clean_export(data):
@@ -55,7 +56,8 @@ def clean_apple(apple):
                 if type(price) is not int or price<=0:raise ValueError('Invalid denomination')
                 denoms.append({'nominal':scrub(str(entry.get('nominal','')))[:160],'price_rub':price});count+=1
             if count>500:raise ValueError('Too many denominations')
-            info['regions'].append({'name':scrub(str(region.get('name','')))[:160],'denoms':denoms})
+            name=scrub(str(region.get('name','')))[:160]
+            info['regions'].append({'name':name,'region_codes':sorted(apple_region_codes(name)),'denoms':denoms})
     return info
 
 

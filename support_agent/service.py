@@ -330,7 +330,7 @@ class Service:
             lines=['Проверка каталога · '+name,'Источник: '+str(facts.get('source')),
                    'Живой экспорт: '+str(facts.get('live_shop_status','not_connected'))]
             for row in rows[:30]:
-                lines.append(str(row['service'])+' · '+str(row['plan'])+' — '+str(row.get('customer_price_rub',row.get('catalog_price_rub')))+' ₽')
+                lines.append(str(row['service'])+' · '+str(row['plan'])+' — '+str(row.get('catalog_price_rub'))+' ₽')
             if not rows:lines.append('Совпадений в прочитанных данных нет. Это не доказательство отсутствия товара.')
             apple=facts.get('appstore',{})
             lines.append('App Store: '+str(apple.get('status','not_connected')))
@@ -344,7 +344,7 @@ class Service:
         elif cmd.startswith('draft:'):
             did=int(cmd.split(':')[1])
             if self.store.db.execute('SELECT 1 FROM drafts WHERE id=?',(did,)).fetchone():
-                await self.show_draft(did)
+                await self.show_draft(did,admin_mid)
             else:
                 await self.owner_message('Черновик не найден или удалён по сроку хранения. Используйте /pending.')
         elif cmd.startswith('prepare:'):
@@ -367,6 +367,14 @@ class Service:
             if not self.store.chat(cid):
                 return
             changed=self.store.switch(mode,cid)
+            draft=self.store.db.execute('SELECT id FROM drafts WHERE chat=? AND admin_mid=? ORDER BY id DESC LIMIT 1',
+                                        (cid,admin_mid)).fetchone() if admin_mid is not None else None
+            if draft:
+                await self.show_draft(draft['id'],admin_mid)
+                return
+            if admin_mid is not None:
+                await self.show_chat(cid,admin_mid)
+                return
             await self.owner_message(self.chat_identity(cid)+'\n'+(
                 'помощник уже включён. Готовые черновики сохранены.' if not changed else
                 'подготовка ответов включена для новых сообщений.' if mode=='draft' else
@@ -401,13 +409,14 @@ class Service:
                 self.store.prepare_now(cid,time.time())
                 await self.owner_message(self.chat_identity(cid)+'\nПодготовка поставлена в очередь заново. Это может расходовать API-баланс.')
 
-    async def show_draft(self,did):
+    async def show_draft(self,did,admin_mid=None):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
         if not d:
             return
         c=self.store.chat(d['chat'])
         rows=[self.chat_controls(c)]
         rows.append([('Весь диалог',f'dialog:{c["id"]}')])
+        rows.append([('Все чаты','chats:0'),('Обновить',f'draft:{did}')])
         expired=d['state']=='ready' and time.time()-d['created']>=900
         if d['state']=='ready' and not expired:
             rows.insert(0,[('Отправить и продолжить',f'send:{did}')])
@@ -454,14 +463,29 @@ class Service:
               f'👤 <b>Клиент:</b> {client}\n'
               f'<b>Telegram ID:</b> <code>{c["uid"]}</code> · <b>Чат:</b> №{c["id"]}\n\n'
               f'<b>Статус:</b> {state}\n'
+              f'<b>Помощник в чате:</b> {"пауза" if c["mode"]=="off" else "подготовка ответов"}\n'
               f'<b>Участие Александра:</b> {"нужно" if d["handoff"] else "не требуется по оценке модели"}\n\n'
               f'🔎 <b>Разбор обращения</b>\n<i>Вывод модели — проверьте перед отправкой.</i>\n'
               f'{html.escape(d["summary"][:700])}\n\n'
               f'💬 <b>Ответ клиенту</b>\n{html.escape(d["text"][:1800])}\n\n'
               f'{research_note}'
               f'<i>{note}</i>')
-        sent=await self.owner_message(text,buttons(rows),parse_mode='HTML')
-        self.store.db.execute('UPDATE drafts SET admin_mid=? WHERE id=?',(sent['message_id'],did))
+        if admin_mid is not None:
+            if len(html.unescape(re.sub(r'<[^>]*>','',text)).encode('utf-16-le'))//2>3900:
+                # A long draft was initially sent in several parts. Its final
+                # action panel is updated without duplicating those parts.
+                text=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
+                      f'👤 {client} · <code>{c["uid"]}</code> · Чат №{c["id"]}\n\n'
+                      f'<b>Статус:</b> {state}\n'
+                      f'<b>Помощник в чате:</b> {"пауза" if c["mode"]=="off" else "подготовка ответов"}\n\n'
+                      f'💬 <b>Ответ клиенту</b>\n{html.escape(d["text"][:1800])}\n\n'
+                      f'<i>Разбор и источники сохранены в предыдущих частях карточки. {note}</i>')
+            updated=await self.admin_panel(text,rows,admin_mid,parse_mode='HTML')
+            if updated is not None:
+                self.store.db.execute('UPDATE drafts SET admin_mid=? WHERE id=?',(admin_mid,did))
+        else:
+            sent=await self.owner_message(text,buttons(rows),parse_mode='HTML')
+            self.store.db.execute('UPDATE drafts SET admin_mid=? WHERE id=?',(sent['message_id'],did))
 
     def schedule_approval(self,did,pause_after=False):
         if did in self.approval_tasks:
@@ -489,6 +513,8 @@ class Service:
         await self.load_connection(c['connection'])
         reserved=self.store.reserve_send(did,time.time())
         if not reserved:
+            if d['admin_mid']:
+                await self.show_draft(did,d['admin_mid'])
             await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: ответ отменён/устарел, чат остановлен или нет права отправки. Повторно не отправляю.')
             return
         if pause_after:
@@ -501,6 +527,8 @@ class Service:
         except Exception:
             self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
             self.store.switch('off',c['id'])
+            if d['admin_mid']:
+                await self.show_draft(did,d['admin_mid'])
             await self.owner_message(self.chat_identity(c['id'])+f'\nНеизвестен результат отправки черновика №{did}. Чат поставлен на паузу. Проверьте личку перед возобновлением. Автоматического повтора не будет.',
                                      buttons([self.chat_controls(self.store.chat(c['id']))]))
             return
@@ -509,10 +537,12 @@ class Service:
             self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
                 (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
         current=self.store.chat(c['id'])
+        if d['admin_mid']:
+            await self.show_draft(did,d['admin_mid'])
         await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did} отправлен. '+(
             'Чат на паузе; отвечаете вы.' if current['mode']=='off' else
             'Помощник продолжит готовить черновики следующих сообщений.'),
-            buttons([self.chat_controls(current)]))
+            buttons([self.chat_controls(current),[('Все чаты','chats:0'),('Обновить',f'draft:{did}')]]))
 
     def charge_call(self):
         day=dt.datetime.now(dt.timezone.utc).date().isoformat()
