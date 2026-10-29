@@ -12,6 +12,7 @@ def policies_for(facts):
     return [{'service':'krea','source':'owner_confirmed','confirmed_on':'2026-10-29',
              'required_fields':['account_email','account_password'],
              'delivery_channel':'personally_to_alexander_telegram',
+             'customer_instruction':'После оплаты пришлите необходимые данные сюда, в эту переписку. Не направлять клиента в другой чат. Дальше требуется ручное оформление владельцем.',
              'agent_can_login':False,'agent_can_pay':False,
              'agent_collects_credentials':False,
              'duration':'not_confirmed','success_criterion':'not_confirmed'}]

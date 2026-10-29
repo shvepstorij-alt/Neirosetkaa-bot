@@ -21,28 +21,15 @@ ALIASES = {
 }
 
 
-APPLE_REGION_ALIASES = {
-    'US': ('us', 'usa', 'сша', 'американский', 'американского', 'американским', 'американском', 'америка', 'united states'),
-    'TR': ('tr', 'турция', 'турции', 'турцию', 'турецкий', 'турецкого', 'турецким', 'турецком', 'turkey', 'türkiye'),
-    'RU': ('ru', 'россия', 'россии', 'российский', 'russia'),
-    'GB': ('uk', 'gb', 'великобритания', 'великобритании', 'united kingdom'),
-}
+from .apple_matching import ALIASES as APPLE_REGION_ALIASES, region_codes, exact_quote
 
 
 def apple_region_codes(text):
-    """Canonical codes from explicit names, never from denomination currency."""
-    words=_words(text)
-    result={code for code,aliases in APPLE_REGION_ALIASES.items()
-            if any(_contains(words,_words(alias)) for alias in aliases)}
-    # Stock names use a separate final segment, e.g. Apple Gift Card | AE.
-    tail=str(text or '').split('|')[-1].strip().upper()
-    if re.fullmatch(r'[A-Z]{2}',tail):
-        result.add({'UK':'GB'}.get(tail,tail))
-    return result
+    return region_codes(text,stock=True)
 
 
 def apple_selection(apple, text):
-    requested=apple_region_codes(text)
+    requested=region_codes(text)
     regions=apple.get('regions',[]) if isinstance(apple,dict) else []
     matched=[r for r in regions if isinstance(r,dict) and requested & apple_region_codes(r.get('name',''))]
     return {'requested_codes':sorted(requested),'matched_regions':matched,
@@ -186,7 +173,7 @@ def verified_catalog_reply(facts, reason):
         if len(lines)<len(all_lines):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
     if policies:
-        parts.append('Для оформления Krea нужны почта и пароль от вашего аккаунта. Передайте их лично Александру в Telegram — оформлением займётся он. Сначала выберите нужный тариф в магазине и оплатите заказ.')
+        parts.append('Для оформления Krea нужны почта и пароль от вашего аккаунта. После выбора тарифа и оплаты пришлите их сюда, в эту переписку. Дальше потребуется ручное оформление.')
     if apple_requested:
         selection=facts.get('appstore_selection',{})
         known=selection.get('requested_codes',[])
@@ -228,7 +215,14 @@ def direct_apple_reply(facts, latest):
     allowed=set('а как мне хочу пополнить пополнение баланс баланса appstore app store apple id icloud '
                 'эп стора эпл апп стор аппстор айклауд у меня регион сша usa us американский '
                 'турция турции tr турецкий на долларов доллары доллар usd try лир лиры '
-                'сколько стоит какие варианты цены есть нужно пожалуйста подскажите'.split())
+                'сколько стоит какие варианты цены есть нужно пожалуйста подскажите будет стоить '
+                'евро eur германия германии немецкий немецкого немецком регионе de germany в '
+                'пополнения балансе эп сторе'.split())
+    from .apple_matching import CURRENCIES, ALIASES
+    allowed.update(c.lower() for c in CURRENCIES)
+    allowed.update(code.lower() for code in ALIASES)
+    allowed.update(w for names in ALIASES.values() for name in names for w in _words(name))
+    allowed.update(('тенге','йен','иен','рублей','пополнить','хотел','бы','хотела','цену','для'))
     if any(w not in allowed and not w.isdigit() for w in words):return None
     if 'appstore' not in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):return None
     selection=facts.get('appstore_selection',{})
@@ -236,32 +230,17 @@ def direct_apple_reply(facts, latest):
     if len(known)>1:return None
     answer=verified_catalog_reply(facts,'')
     answer['evidence']={'status':'catalog_direct','sources':[]}
-    if known==['US']:
-        amounts=re.findall(r'(\d+(?:[.,]\d+)?)\s*(?:\$|USD|доллар[а-яё]*)|\$\s*(\d+(?:[.,]\d+)?)',latest,re.I)
-        from decimal import Decimal
-        amounts={Decimal((a or b).replace(',','.')) for a,b in amounts}
-        if len(amounts)==1:
-            amount=next(iter(amounts));quotes=set();matched=0
-            status=facts.get('appstore',{}).get('status','not_connected')
-            for region in selection.get('matched_regions',[]):
-                for row in region.get('denoms',[]):
-                    match=re.fullmatch(r'\s*(?:(\d+(?:[.,]\d+)?)\s*(?:USD|\$)|(?:USD|\$)\s*(\d+(?:[.,]\d+)?))\s*',str(row.get('nominal','')),re.I)
-                    if match and Decimal((match[1] or match[2]).replace(',','.'))==amount:
-                        matched+=1
-                    else:continue
-                    if type(row.get('price_rub')) is int and row['price_rub']>0:
-                        quotes.add(row['price_rub'])
-            if len(quotes)==1 and status in ('available','truncated'):
-                answer['reply']=f'Для Apple ID США есть пополнение на {amount:g} USD — {quotes.pop()} ₽. Регион подарочного кода должен совпадать с регионом Apple ID. После получения код нужно погасить в App Store через профиль → «Погасить подарочную карту или код». Цена до промокода и списания монет.'
-                answer['handoff']=False
-            else:
-                answer['reply']=f'Вы хотите пополнить Apple ID США на {amount:g} USD. Точную стоимость этого номинала сейчас подтвердить не получилось; потребуется проверка перед оформлением.'
-                reason=('источник недоступен' if status not in ('available','truncated') else
-                        'получены разные цены одного номинала' if len(quotes)>1 else
-                        'у совпавшего номинала нет корректной цены' if matched else
-                        'в полученной выборке нет точного совпадения номинала; отсутствие товара не подтверждено')
-                answer['evidence']={'status':'catalog_review','sources':[], 'diagnostic':
-                    f'Этап: подбор точного номинала App Store. Причина: {reason}. Регион=US; сумма={amount:g} USD; статус источника={status}; совпадений={matched}; разных корректных цен={len(quotes)}.'}
+    quote=exact_quote(facts,latest)
+    if quote:
+        amount=quote['amount'];unit=quote['currency'];code=quote['region']
+        label={'US':'США','DE':'Германии','TR':'Турции','GB':'Великобритании','RU':'России'}.get(code,code)
+        if quote['price'] is not None:
+            answer['reply']=f"Для Apple ID {label} есть пополнение на {amount:g} {unit} — {quote['price']} ₽. После оплаты код нужно погасить в App Store через профиль, пункт «Погасить подарочную карту или код»."
+            answer['handoff']=False
+        else:
+            answer['reply']=f'Вы хотите пополнить Apple ID {label} на {amount:g} {unit}. Точную стоимость этого номинала сейчас подтвердить не получилось; потребуется проверка перед оформлением.'
+            answer['evidence']={'status':'catalog_review','sources':[], 'diagnostic':
+                f"Этап: подбор точного номинала App Store. Причина: {quote['reason']}. Регион={code}; сумма={amount:g} {unit}; статус источника={quote['status']}; совпадений={quote['matched']}; разных корректных цен={quote['price_count']}."}
     answer['summary']='Ответ по текущим региональным данным App Store. Регион не выбирался по истории модели.'
     return answer
 

@@ -36,12 +36,13 @@ def _dependent_followup(text):
 def _apple_detail_kind(text):
     line=re.sub(r'\s+',' ',str(text).casefold()).strip(' !?.,…')
     line=re.sub(r'^(?:нет[, ]+|лучше |тогда |точнее |передумал[, ]+|передумала[, ]+)','',line)
-    region=r'(?:у меня )?(?:регион(?: apple id)? )?(?:сша|usa|us|турция|турецкий|tr|россия|ru|uk|gb)'
-    amount=(r'(?:(?:пополнить(?: баланс)?(?: хочу)?|хочу пополнить(?: баланс)?|сумма)\s+)?'
-            r'(?:на\s+)?(?:\d+(?:[.,]\d{1,2})?\s*(?:\$|usd|доллар(?:ов|а)?|try|лир(?:ы)?|₺|€|eur)'
-            r'|(?:\$|₺|€)\s*\d+(?:[.,]\d{1,2})?)')
-    if re.fullmatch(region,line):return 'region',line
-    if re.fullmatch(amount,line):return 'amount',line
+    from .apple_matching import ALIASES, PAIR
+    region=re.sub(r'^(?:у меня )?(?:регион(?: apple id)? )?','',line)
+    aliases={alias.casefold() for names in ALIASES.values() for alias in names}
+    aliases.update(code.lower() for code in ALIASES)
+    if region in aliases:return 'region',line
+    amount=re.sub(r'^(?:(?:пополнить(?: баланс)?(?: хочу)?|хочу пополнить(?: баланс)?|сумма)\s+)?(?:на\s+)?','',line)
+    if PAIR.fullmatch(amount):return 'amount',line
     return None,line
 
 

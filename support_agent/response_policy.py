@@ -52,7 +52,16 @@ def consultation_plan(latest, plan):
     return {'topic':topic,'products':requested}
 
 
+def natural_reply(reply):
+    """Plain customer punctuation; retain identifiers, prices and line breaks."""
+    reply=re.sub(r'^Тарифы магазина:\s*\n','',reply)
+    reply=re.sub(r'^([^\n·]+) · ([^\n]+?) — (\d[^\n]*₽)\s*$',r'\1 \2: \3',reply,flags=re.M)
+    reply=re.sub(r'(?<=\S)[ \t]+·[ \t]+(?=\S)',' ',reply)
+    return reply.replace('—','-').replace('–','-')
+
+
 def continuing_reply(reply, history):
+    reply=natural_reply(reply)
     if not any(m.get('role') in ('assistant','owner') for m in history):
         return reply
     # Only remove an opening salutation, never quoted or embedded client text.

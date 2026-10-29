@@ -331,6 +331,8 @@ def evidence_domains(evidence,product):
 
 
 def outgoing_text(text,evidence):
+    from .response_policy import natural_reply
+    text=natural_reply(text)
     # Sources stay in the owner's card, including for drafts created before this update.
     ids={str(s['id']) for s in evidence.get('sources',[])}
     text=re.sub(r'\[(\d+)\]',lambda m:'' if m.group(1) in ids else m.group(0),text)

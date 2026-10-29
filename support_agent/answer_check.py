@@ -104,6 +104,14 @@ async def check_answer(ai,answer,facts):
     """
     from .catalog_context import false_absence
     reply=answer.get('reply','')
+    from .apple_matching import exact_quote
+    current=facts.get('conversation',{}).get('latest_client_message','')
+    quote=exact_quote(facts,current)
+    if quote:
+        for m in re.finditer(r'(?<![\w.,])(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',reply,re.I):
+            price=float(re.sub(r'[ \u00a0\u202f]','',m[1]).replace(',','.'))
+            if quote['price'] is None or price!=quote['price']:
+                return {'supported':False,'reason':f"Этап: проверка точной цены App Store. Регион={quote['region']}; номинал={quote['amount']} {quote['currency']}; ожидаемая цена={quote['price'] if quote['price'] is not None else 'не подтверждена'}; цена в ответе={price:g}. Причина: {quote['reason'] or 'цена не соответствует выбранному региону, валюте и номиналу'}."}
     # Retail amounts are structured facts, not something a second model may
     # approve approximately. Check before spending another model request.
     from .catalog_context import customer_facts
@@ -123,7 +131,11 @@ async def check_answer(ai,answer,facts):
             value=row.get(key)
             if type(value) in (int,float) and value>0:
                 prices.add(float(value))
-    for region in facts.get('appstore',{}).get('regions',[]):
+    apple_regions=facts.get('appstore',{}).get('regions',[])
+    selection=facts.get('appstore_selection',{})
+    if selection.get('requested_codes'):
+        apple_regions=selection.get('matched_regions',[])
+    for region in apple_regions:
         for row in region.get('denoms',[]):
             value=row.get('price_rub')
             if type(value) in (int,float) and value>0:
