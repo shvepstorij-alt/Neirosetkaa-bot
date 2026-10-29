@@ -16668,10 +16668,11 @@ async def setup_webhook_server():
     async def _support_workflows(catalog):
         from support_fulfillment import project_details
         async with (await get_pool()).acquire() as conn:
-            rows=await conn.fetch("SELECT key,value FROM settings WHERE key LIKE 'manual:%' OR key LIKE 'linkpay:enabled:%' OR key LIKE 'creds:enabled:%' OR key LIKE 'creds:instructions:%'")
+            rows=await conn.fetch("SELECT key,value FROM settings WHERE key LIKE 'manual:%' OR key LIKE 'linkpay:enabled:%' OR key LIKE 'creds:enabled:%' OR key LIKE 'creds:instructions:%' OR key LIKE 'linkpay:instructions:%'")
         # Project allowlisted field identities locally; raw instructions never leave the shop.
         return project_details(catalog,{r['key']:r['value'] for r in rows},plan_name_to_key,GPT_AUTO_PLANS,
-                               default_creds_instruction=_CREDS_DEFAULT_INSTR)
+                               default_creds_instruction=_CREDS_DEFAULT_INSTR,
+                               default_linkpay_instruction=_LINKPAY_DEFAULT_INSTR)
     async def _support_bot_identity():
         me=await bot.get_me()
         return {'username':me.username,'catalog_webapp':bool(WEBAPP_BASE_URL)}
