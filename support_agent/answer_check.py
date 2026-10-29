@@ -33,6 +33,7 @@ def review_input(answer,facts):
     """Copy only the answer and public evidence; exclude order/identity data."""
     from .catalog_context import customer_facts
     facts=customer_facts(facts)
+    from .workflow_policy import policies_for
     reply=answer.get('reply')
     ids=answer.get('source_ids',[])
     if (not isinstance(reply,str) or not reply.strip() or len(reply)>1800
@@ -83,6 +84,7 @@ def review_input(answer,facts):
                  r'(?:не\s*доступ|невозмож)[^.!?\n]{0,80}оформлен',summary,re.I):
         owner_claims.append('Owner analysis claims purchases through the store are unavailable.')
     return {'reply':scrub(reply),'owner_public_claims':owner_claims,'source_ids':ids,
+            'owner_workflow_policies':policies_for(facts),
             'public_evidence':{'digest':digest,'sources':sources,
                                'product_domains':domains,'failures':failures},
             'catalog':catalogue,

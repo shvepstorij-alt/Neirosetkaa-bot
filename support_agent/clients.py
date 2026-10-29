@@ -146,7 +146,7 @@ class OpenAI:
         self.search_model=(search_model or '').strip() or DEFAULT_SEARCH_MODEL
         self.audio_model=audio_model
         root=Path(__file__).parent
-        self.rules='\n\n'.join((root/f).read_text(encoding='utf-8') for f in ('SERVICE_RULES.md','STYLE.md'))
+        self.rules='\n\n'.join((root/f).read_text(encoding='utf-8') for f in ('SERVICE_RULES.md','STYLE.md','WORKFLOW_RULES.md'))
 
     async def request(self,path,**kwargs):
         try:
@@ -182,6 +182,8 @@ class OpenAI:
     async def draft(self,history,facts,image=None):
         from .catalog_context import customer_facts
         facts=customer_facts(facts)
+        from .workflow_policy import enrich
+        facts=enrich(facts)
         instructions=self.rules+'''
 Ты готовишь ЧЕРНОВИК для Александра. Ответ клиенту пока не отправляется.
 Верни JSON: reply (до 1800 символов), summary (до 700), handoff (bool), research, source_ids.
