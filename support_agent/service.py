@@ -331,16 +331,37 @@ class Service:
             facts=await self.shop.facts(self.owner)
             rows=annotate(facts,query)['requested_catalog'] if query else facts.get('catalog',[])
             lines=['Проверка инструкций оформления','Живой источник: '+str(facts.get('live_shop_status','not_connected'))]
-            seen=set()
+            groups={}
+            reasons={
+                'manual_not_projected':'ручная ветка: точные поля и шаги отдельно не описаны в экспорте',
+                'code_steps_not_projected':'кодовая ветка: инструкции активации в эту проекцию ещё не включены',
+                'invalid_instruction_type':'в настройках инструкции получен неподдерживаемый тип значения',
+                'default_fields_changed':'стандарт полей магазина изменился; прежняя схема не применена',
+                'custom_fields_not_projected':'нестандартная инструкция не распознана как однозначный список полей',
+                'fields_confirmed':'поля подтверждены действующей инструкцией',
+                'default_steps_unavailable':'стандартная инструкция по ссылке не передана в проекцию',
+                'default_steps_changed':'стандарт шагов магазина отличается от поддерживаемого',
+                'custom_steps_not_projected':'у товара нестандартная инструкция по ссылке; её шаги не подтверждены',
+                'steps_confirmed':'шаги подтверждены действующей инструкцией'}
             for row in rows:
                 item=(str(row.get('service','')),str(row.get('fulfillment','not_verified')),
-                      str(row.get('required_fields_status','not_verified')),str(row.get('workflow_steps_status','not_verified')))
-                if item in seen:continue
-                seen.add(item)
-                if len(seen)>40:
+                      str(row.get('required_fields_status','not_verified')),str(row.get('workflow_steps_status','not_verified')),
+                      row.get('workflow_reason',''))
+                groups.setdefault(item,[]).append(str(row.get('plan','')))
+            for index,(item,plans) in enumerate(groups.items()):
+                if index>=40:
                     lines.append('Показаны первые 40 вариантов. Укажите сервис после команды.');break
-                name,method,fields,steps=item
-                lines.append(f'{name}: способ={method}; поля={fields}; пошаговая инструкция={steps}')
+                name,method,fields,steps,reason=item
+                coverage=(f'поля={fields}' if method=='account_details' else
+                          f'пошаговая инструкция={steps}' if method=='checkout_link' else
+                          'поля и шаги не проверяются этой проекцией')
+                lines.append(f'{name}: тарифы '+', '.join(dict.fromkeys(plans))+
+                             f'\nСпособ={method}; {coverage}.'+
+                             '\nПричина: '+reasons.get(reason,'точная причина не получена из экспорта; нужна проверка текущей версии магазина'))
+                from .workflow_policy import policies_for
+                policy=policies_for({'requested_catalog':[{'service':name}]})
+                if any(p['service']=='suno' for p in policy) and method!='account_details':
+                    lines.append('Конфликт Suno: владелец подтвердил почту и пароль, настройка магазина передаёт '+method+'. Изменение настройки требует отдельного согласования.')
             if not rows:lines.append('В прочитанной выборке сервис не сопоставлен; это не подтверждает отсутствие товара.')
             lines.append('not_verified означает, что конкретные поля/шаги ещё не подтверждены, а не что оформить нельзя. Модель не вызывается.')
             await self.owner_message('\n\n'.join(lines))

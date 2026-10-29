@@ -43,6 +43,10 @@ def clean_export(data):
             if (method in ('manual','checkout_link','account_details','code_activation_conditional')
                     and row.get('fulfillment_source')=='live_shop_settings_and_code'):
                 item.update(fulfillment=method,fulfillment_source='live_shop_settings_and_code')
+                reasons={'manual_not_projected','code_steps_not_projected','invalid_instruction_type',
+                         'default_fields_changed','custom_fields_not_projected','fields_confirmed',
+                         'default_steps_unavailable','default_steps_changed','custom_steps_not_projected','steps_confirmed'}
+                if row.get('workflow_reason') in reasons:item['workflow_reason']=row['workflow_reason']
                 if method=='checkout_link':
                     allowed_steps=['open_service','login_own_account','open_plans','select_plan',
                                    'open_checkout','copy_checkout_url','send_checkout_url']

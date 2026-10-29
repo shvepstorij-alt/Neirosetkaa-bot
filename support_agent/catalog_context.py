@@ -172,8 +172,12 @@ def verified_catalog_reply(facts, reason):
         parts.append('Тарифы магазина:\n'+'\n'.join(lines)+'\nЦены до применения промокода и списания монет.')
         if len(lines)<len(all_lines):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
-    if policies:
-        parts.append('Для оформления Krea нужны почта и пароль от вашего аккаунта. После выбора тарифа и оплаты пришлите их сюда, в эту переписку. Дальше потребуется ручное оформление.')
+    for policy in policies:
+        name={'krea':'Krea','suno':'Suno'}[policy['service']]
+        if policy['service']=='suno' and any(r.get('fulfillment')!='account_details' for r in rows if 'suno' in str(r.get('service','')).casefold()):
+            parts.append('Для оформления Suno нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления заказа.')
+        else:
+            parts.append(f'Для оформления {name} нужны почта и пароль от вашего аккаунта. После выбора тарифа и оплаты пришлите их сюда, в эту переписку. Дальше потребуется ручное оформление.')
     if apple_requested:
         selection=facts.get('appstore_selection',{})
         known=selection.get('requested_codes',[])

@@ -26,7 +26,7 @@ def workflow_reply(facts,latest):
         if 'appstore' not in (_families(_words(row.get('service','')))|_families(_words(row.get('service_key','')))):
             groups.setdefault(row.get('service',''),[]).append(row)
     if not all(groups):return None
-    krea=bool(policies_for(facts));parts=[];diagnostics=[];handoff=False
+    parts=[];diagnostics=[];handoff=False
     from .bot_guide import purchase_navigation
     navigation=purchase_navigation(facts,apple=apple_requested and not groups)
     if navigation:parts.append(navigation)
@@ -37,11 +37,17 @@ def workflow_reply(facts,latest):
                 price=item.get('catalog_price_rub')
                 if type(price) is int and price>0:prices.append(f"{item.get('plan','')}: {price} ₽")
             if prices:parts.append(f'Для {name} есть такие тарифы:\n'+'\n'.join(dict.fromkeys(prices)))
-        if krea and 'krea' in _families(_words(name)):
+        owner_policies=policies_for({'requested_catalog':items})
+        methods={item.get('fulfillment','not_verified') for item in items}
+        if any(p['service']=='suno' for p in owner_policies) and methods!={'account_details'}:
+            parts.append(name+': для оформления нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления; платёжную ссылку от сервиса для этого способа присылать не нужно.')
+            diagnostics.append(name+': конфликт способов оформления. Владелец подтвердил account_details (почта и пароль), живой каталог передаёт '+','.join(sorted(methods))+'. Нужно согласовать настройку товара; метод в магазине не изменён автоматически.')
+            handoff=True
+            continue
+        if owner_policies:
             parts.append(name+': выберите тариф и оплатите заказ. После оплаты пришлите сюда, в эту переписку, почту и пароль от аккаунта.')
             handoff=True
             continue
-        methods={item.get('fulfillment','not_verified') for item in items}
         if methods=={'account_details'}:
             fields={tuple(item.get('required_fields',[])) for item in items if item.get('required_fields_status')=='available'}
             complete=all(item.get('required_fields_status')=='available' for item in items)
