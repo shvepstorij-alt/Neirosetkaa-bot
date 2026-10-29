@@ -319,6 +319,7 @@ class Service:
                 +'\nЗаказы: '+labels.get(facts.get('orders_status'),'статус неизвестен')
                 +'\nПерсональные цены: '+('расчёт доступен' if facts.get('customer_prices_status')=='available' else 'не подключены; доступен обычный прайс')
                 +'\nЖивой каталог магазина: '+str(facts.get('live_shop_status','not_connected'))
+                +'\nСпособы оформления: '+str(facts.get('workflow_status','not_connected'))
                 +'\nApp Store: '+str(facts.get('appstore',{}).get('status','not_connected'))
                 +'\nРегионов App Store: '+str(len(facts.get('appstore',{}).get('regions',[])))
                 +'\n\nПроверка не вызывает модель. Статусы оплаты и активации различаются.')

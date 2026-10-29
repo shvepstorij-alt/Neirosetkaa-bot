@@ -26,11 +26,18 @@ def clean_export(data):
                   (('service_key',100),('service',160),('plan',160),('description',1500),('service_description',1500))}
             item.update(plan_index=row.get('plan_index'),catalog_price_rub=price,
                         price_scope='public_catalog_before_personal_adjustments',stock='not_checked',fulfillment='not_verified')
+            method=row.get('fulfillment')
+            if (method in ('manual','checkout_link','account_details','code_activation_conditional')
+                    and row.get('fulfillment_source')=='live_shop_settings_and_code'):
+                item.update(fulfillment=method,fulfillment_source='live_shop_settings_and_code')
             quote=row.get('customer_price_rub')
             if type(quote) is int and quote>0:
                 item.update(customer_price_rub=quote,price_scope='customer_catalog_before_checkout_coupon_and_coins')
             cleaned.append(item)
-        result.update(catalog=cleaned,catalog_status=status,catalog_complete=False,
+        workflow_status=data.get('workflow_status','not_connected')
+        if workflow_status not in ('available','partial','not_connected','invalid_response','timeout','read_error'):
+            workflow_status='invalid_response'
+        result.update(catalog=cleaned,catalog_status=status,catalog_complete=False,workflow_status=workflow_status,
                       customer_prices_status='available' if cleaned and all('customer_price_rub' in r for r in cleaned) else 'partial')
     try:result['appstore']=clean_apple(data.get('appstore',{}))
     except (ValueError,TypeError,KeyError,AttributeError):result['appstore']={'status':'read_error','regions':[]}

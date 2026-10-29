@@ -10,7 +10,7 @@ CATALOG_FIELDS = (
     'service', 'plan', 'base_price_rub', 'catalog_price_rub',
     'customer_price_rub', 'price_rub', 'price_scope', 'price_status',
     'currency', 'billing_period', 'duration', 'fulfillment', 'stock',
-    'customer_price_confirmed',
+    'customer_price_confirmed', 'fulfillment_source',
     'description', 'service_description',
 )
 
@@ -113,8 +113,10 @@ async def check_answer(ai,answer,facts):
         r'без\s+(?:необходимости\s+)?входа|в\s+аккаунт\s+не\s+входим|'
         r'(?:никаких\s+)?данных\s+для\s+входа[^.!?\n]{0,40}не\s+запрашиваем|'
         r'потребуется\s+только[^.!?\n]{0,60}оплат',reply,re.I)
-    if activation_claim and (not retail or any(row.get('fulfillment') in (None,'','not_verified') for row in retail)):
-        return {'supported':False,'reason':'Этап: проверка способа оформления. Ответ обещает автоматическую активацию, отсутствие входа или что достаточно только оплаты. Способ оформления выбранного товара не подтверждён: fulfillment=not_verified. Наличие тарифа и запрет помощнику входить в аккаунты не подтверждают оформление без входа. Не обещай эти условия; передай уточнение владельцу.'}
+    if activation_claim:
+        allowed={'manual','checkout_link','account_details','code_activation_conditional'}
+        methods=sorted({r.get('fulfillment') if r.get('fulfillment') in allowed else 'not_verified' for r in retail})
+        return {'supported':False,'reason':'Этап: проверка способа оформления. Ответ обещает автоматическую активацию, отсутствие входа или что достаточно только оплаты. Получены ветки: fulfillment='+','.join(methods or ['not_verified'])+'. Ветка оформления не подтверждает успех, отсутствие входа или достаточность оплаты. Не обещай эти условия; уточни неподтверждённый этап.'}
     prices=set()
     for row in retail:
         for key in ('customer_price_rub','catalog_price_rub','price_rub','base_price_rub'):
