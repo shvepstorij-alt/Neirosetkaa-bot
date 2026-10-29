@@ -31,7 +31,7 @@ def _positive(value):
 def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
                                  stock, apple_categories, stock_age,
                                  folder_for_category, markup_for_category,
-                                 usd_rate, calc_price, workflow_snapshot=None):
+                                 usd_rate, calc_price, workflow_snapshot=None, bot_identity=None):
     """All network/DB dependencies are read-only functions already used by the shop.
 
     catalog() is sync; hidden/price_for/prepare_stock/stock/markup_for_category/
@@ -40,6 +40,26 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
     """
     gate=asyncio.Semaphore(2)
     pricing_gate=asyncio.Semaphore(8)
+    identity_gate=asyncio.Lock()
+    identity_cache={'until':0,'value':None}
+
+    async def navigation():
+        if bot_identity is None:return {'status':'not_connected'}
+        async with identity_gate:
+            if identity_cache['until']>time.monotonic():
+                return dict(identity_cache['value'])
+            try:
+                value=await asyncio.wait_for(bot_identity(),timeout=3)
+                if (not isinstance(value,dict) or not isinstance(value.get('username'),str)
+                        or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}',value['username'])
+                        or type(value.get('catalog_webapp')) is not bool):
+                    return {'status':'invalid_response'}
+                result={'status':'available','username':value['username'],
+                        'catalog_webapp':value['catalog_webapp']}
+                identity_cache.update(until=time.monotonic()+300,value=result)
+                return dict(result)
+            except asyncio.TimeoutError:return {'status':'timeout'}
+            except Exception:return {'status':'read_error'}
 
     async def regular(uid, hidden_keys):
         rows=[];truncated=False
@@ -187,9 +207,11 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
             except Exception:return web.json_response(result)
             values=await asyncio.gather(
                 asyncio.wait_for(regular(uid,set(hidden_keys)),timeout=15),
-                asyncio.wait_for(apple(set(hidden_keys)),timeout=15),return_exceptions=True)
+                asyncio.wait_for(apple(set(hidden_keys)),timeout=15),
+                navigation(),return_exceptions=True)
             if isinstance(values[0],dict):result.update(values[0])
             if isinstance(values[1],dict):result['appstore']=values[1]
+            result['bot_navigation']=values[2] if isinstance(values[2],dict) else {'status':'read_error'}
             encoded=json.dumps(result,ensure_ascii=False,allow_nan=False)
             if len(encoded.encode())>1_500_000:
                 return web.json_response({'ok':False,'error':'response_size'},status=503)
