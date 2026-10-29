@@ -12,6 +12,7 @@ CATALOG_FIELDS = (
     'currency', 'billing_period', 'duration', 'fulfillment', 'stock',
     'customer_price_confirmed', 'fulfillment_source',
     'description', 'service_description',
+    'required_fields', 'required_fields_status', 'required_fields_source',
 )
 
 
@@ -24,6 +25,8 @@ def _scalar(value):
 
 
 def _catalog_value(key, value):
+    if key=='required_fields':
+        return [v for v in value if v in ('account_email','account_password')] if isinstance(value,list) else []
     if key in ('description', 'service_description') and isinstance(value, str):
         return scrub(value)[:1500]
     return _scalar(value)
@@ -119,6 +122,7 @@ async def check_answer(ai,answer,facts):
     activation_claim=re.search(
         r'активац[а-яё]*[^.!?\n]{0,70}автомат|автомат[а-яё]*[^.!?\n]{0,70}актив|'
         r'без\s+(?:необходимости\s+)?входа|в\s+аккаунт\s+не\s+входим|'
+        r'не\s+входим\s+в\s+(?:ваш\s+)?аккаунт|вход[а-яё]*[^.!?\n]{0,70}не\s+(?:происходит|выполняется)|'
         r'(?:никаких\s+)?данных\s+для\s+входа[^.!?\n]{0,40}не\s+запрашиваем|'
         r'потребуется\s+только[^.!?\n]{0,60}оплат',reply,re.I)
     if activation_claim:

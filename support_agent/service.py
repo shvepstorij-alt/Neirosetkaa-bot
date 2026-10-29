@@ -595,6 +595,9 @@ class Service:
         from .catalog_context import direct_workflow_reply,direct_apple_reply
         apple=direct_apple_reply(facts,latest) if not image else None
         if apple:return apple
+        from .fulfillment_reply import workflow_reply
+        fulfillment=workflow_reply(facts,latest) if not image else None
+        if fulfillment:return fulfillment
         workflow=direct_workflow_reply(facts,latest) if not image else None
         if workflow:return workflow
         shortcut=missing_shop_reply(latest,facts,has_images=bool(image))

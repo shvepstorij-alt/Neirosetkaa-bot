@@ -308,3 +308,5 @@ class Store:
             self.db.execute('DELETE FROM messages WHERE at<?',(before,))
             self.db.execute('DELETE FROM drafts WHERE created<?',(before,))
             self.db.execute('DELETE FROM draft_evidence WHERE draft NOT IN (SELECT id FROM drafts)')
+            if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='plural_context_refs'").fetchone():
+                self.db.execute("DELETE FROM plural_context_refs WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.chat=plural_context_refs.chat AND messages.mid=plural_context_refs.mid AND role='client')")

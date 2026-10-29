@@ -1,5 +1,7 @@
 """Keep reminder messages attached to the last client question, never a model answer."""
 import re
+import time
+import json
 
 
 def is_reminder(text):
@@ -124,18 +126,70 @@ def _service_names(catalog):
     return names
 
 
+def _only_service_names(text,catalog):
+    from .catalog_context import _words
+    tokens=list(_words(text));matched=False
+    for name in sorted(_service_names(catalog),key=len,reverse=True):
+        i=0
+        while i<=len(tokens)-len(name):
+            if tuple(tokens[i:i+len(name)])==name:
+                del tokens[i:i+len(name)];matched=True
+            else:i+=1
+    return matched and all(t in ('сервис','сервисы','сервиса','это','и','именно','про','подписка') for t in tokens)
+
+
 def _contextual_followup(text,catalog):
     """Short workflow/plan references may inherit client context, never account state."""
     from .catalog_context import _words,_contains
     tokens=_words(text)
     if not tokens or len(tokens)>24:return False
     if any(_contains(tokens,name) for name in _service_names(catalog)):return False
-    allowed=set('а и это этот эта его ее её мне от меня вам вас у нужно нужны нужен потребуется требуется какие данные что как куда когда сколько времени ждать долго занимает оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено после передать прислать отправить почта почту пароль аккаунт аккаунта вход активация активации активировать подписка подписку подписки тариф тарифа тарифы выбрать выбирать месяц месяца месяцев год года годовой месячный можно ли будет для на по с со без уже не прошло работает спасибо пожалуйста подскажите тогда хочу да нет'.split())
+    allowed=set('а и это этот эта его ее её мне от меня вам вас у нужно нужны нужен потребуется требуется какие данные что как куда когда сколько времени ждать долго занимает оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено после передать прислать отправить почта почту пароль аккаунт аккаунта вход активация активации активировать подписка подписку подписки тариф тарифа тарифы выбрать выбирать месяц месяца месяцев год года годовой месячный можно ли будет для на по с со без уже не прошло работает спасибо пожалуйста подскажите тогда хочу да нет двух этих сервисов обоих обоим них них'.split())
     for row in catalog:
         allowed.update(_words(row.get('plan','')))
     intent=set('нужно нужны нужен потребуется требуется данные оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено активация активации активировать ждать долго месяц год годовой месячный пароль почту аккаунт тариф тарифа'.split())
     plans={word for row in catalog for word in _words(row.get('plan',''))}
     return bool(set(tokens)&(intent|plans)) and all(t in allowed or t.isdigit() for t in tokens)
+
+
+def _recent_service_labels(db,chat,first,catalog,source_mids=None):
+    """Only explicit client mentions, bounded by time and size; never model answers."""
+    from .catalog_context import ALIASES,_words,_contains,_families
+    rows=db.execute("SELECT mid,text FROM messages WHERE chat=? AND role='client' AND mid<? AND (at IS NULL OR at>=?) ORDER BY mid DESC LIMIT 60",(chat,first,time.time()-86400)).fetchall()
+    if source_mids is not None:
+        rows=[row for row in rows if row['mid'] in source_mids]
+        if {row['mid'] for row in rows}!=set(source_mids):return []
+    labels=[];used=0
+    for row in rows:
+        text=row['text'] or '';used+=len(text)
+        if used>24000:break
+        if re.search(r'предыдущий вопрос отменяю|забудь|не обсуждаем|\bне\s+\w+\s*,?\s*а\s+',text,re.I):break
+        tokens=_words(text)
+        found=[]
+        for family,aliases in ALIASES.items():
+            if any(_contains(tokens,_words(a)) for a in aliases):found.append((family,aliases[0]))
+        for item in catalog:
+            name=item.get('service','');key=item.get('service_key','')
+            if name and any(_contains(tokens,_words(v)) for v in (name,key) if v):
+                families=_families(_words(name))|_families(_words(key))
+                if not families:found.append((name.casefold(),name))
+        if len({identity for identity,_ in found})>2:return []
+        for identity,label in found:
+            if identity not in {i for i,_,_ in labels}:labels.append((identity,label,row['mid']))
+        if len(labels)>=2:return [(label,mid) for _,label,mid in reversed(labels[:2])]
+    return []
+
+
+def _resolve_plural_reference(db,chat,mid,text,catalog):
+    if re.search(r'\b(?:двух\s+этих|этих\s+двух|обоих|обоим)\b',text,re.I):
+        db.execute('CREATE TABLE IF NOT EXISTS plural_context_refs (chat INTEGER, mid INTEGER, refs TEXT, PRIMARY KEY(chat,mid))')
+        saved=db.execute('SELECT refs FROM plural_context_refs WHERE chat=? AND mid=?',(chat,mid)).fetchone()
+        sources=json.loads(saved['refs']) if saved else None
+        names=_recent_service_labels(db,chat,mid,catalog,sources)
+        if saved is None:
+            db.execute('INSERT INTO plural_context_refs VALUES (?,?,?)',(chat,mid,json.dumps(sorted({ref for _,ref in names}))))
+        if len(names)==2:return 'Сервисы: '+', '.join(label for label,_ in names)+'\n'+text
+    return text
 
 
 def resolve_request(db, chat, first, last, text, catalog=()):
@@ -145,13 +199,14 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     bounded by the preceding draft. Never use generated draft text as evidence.
     """
     db.execute('CREATE TABLE IF NOT EXISTS request_context (chat INTEGER PRIMARY KEY, first_mid INTEGER, last_mid INTEGER)')
+    text=_resolve_plural_reference(db,chat,first,text,catalog)
     if _has_apple_topic(text):
         text=_current_apple_details(text)
     if is_acknowledgement(text):return text
     reminder=is_reminder(text)
     followup=_dependent_followup(text) or _contextual_followup(text,catalog)
     from .catalog_context import _words,_contains
-    service_only=_words(text) in _service_names(catalog)
+    service_only=_only_service_names(text,catalog)
     # Region-only replies are considered below only after examining prior client
     # content. A standalone region must never revive an unrelated service.
     region_candidate=_apple_details_candidate(text)
@@ -169,9 +224,9 @@ def resolve_request(db, chat, first, last, text, catalog=()):
                 return text
             return ''
         bounds=(drafts[1]['mid']+1 if len(drafts)>1 else drafts[0]['mid'],drafts[0]['mid'])
-    rows=db.execute("SELECT text FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
+    rows=db.execute("SELECT mid,text FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
     if len(rows)>60:return '' if reminder else text
-    parts=[r['text'] for r in rows if r['text'] and not is_reminder(r['text'])
+    parts=[_resolve_plural_reference(db,chat,r['mid'],r['text'],catalog) for r in rows if r['text'] and not is_reminder(r['text'])
            and not is_acknowledgement(r['text'])]
     previous=''
     for part in parts:
@@ -186,6 +241,12 @@ def resolve_request(db, chat, first, last, text, catalog=()):
             previous_has_service=any(_contains(_words(previous),name) for name in _service_names(catalog))
             if not previous_has_service and (_dependent_followup(previous) or _contextual_followup(previous,catalog)):
                 linked=previous+'\n'+text
+            elif previous_has_service:
+                current_names={name for name in _service_names(catalog) if _contains(_words(text),name)}
+                previous_names={name for name in _service_names(catalog) if _contains(_words(previous),name)}
+                from .catalog_context import _families
+                same_families=_families(_words(text)) and _families(_words(text))<=_families(_words(previous))
+                if current_names<=previous_names or same_families:linked=previous+'\n'+text
         if followup or linked is not None:
             combined=linked if linked is not None else previous+'\n'+text
             if len(combined)>24000:return text

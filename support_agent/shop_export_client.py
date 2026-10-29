@@ -30,6 +30,16 @@ def clean_export(data):
             if (method in ('manual','checkout_link','account_details','code_activation_conditional')
                     and row.get('fulfillment_source')=='live_shop_settings_and_code'):
                 item.update(fulfillment=method,fulfillment_source='live_shop_settings_and_code')
+                if method=='account_details':
+                    item.update(required_fields_status='not_verified',required_fields=[])
+                    fields=row.get('required_fields')
+                    if (row.get('required_fields_status')=='available'
+                            and row.get('required_fields_source')=='live_shop_creds_instructions'
+                            and isinstance(fields,list) and fields
+                            and all(isinstance(f,str) and f in ('account_email','account_password') for f in fields)
+                            and len(fields)==len(set(fields))):
+                        item.update(required_fields_status='available',required_fields=list(fields),
+                                    required_fields_source='live_shop_creds_instructions')
             quote=row.get('customer_price_rub')
             if type(quote) is int and quote>0:
                 item.update(customer_price_rub=quote,price_scope='customer_catalog_before_checkout_coupon_and_coins')
