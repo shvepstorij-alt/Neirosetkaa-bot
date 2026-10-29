@@ -88,12 +88,14 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
                  'catalog_price_rub':base,
                  'price_scope':'public_catalog_before_personal_adjustments',
                  'stock':'not_checked','fulfillment':'not_verified'}
-            from support_fulfillment import METHODS, REQUIRED_FIELDS, LINKPAY_STEPS
+            from support_fulfillment import METHODS, REQUIRED_FIELDS, LINKPAY_STEPS, WORKFLOW_REASONS
             detail=workflows.get((key,index))
             method=detail.get('method') if isinstance(detail,dict) else detail
             if method in METHODS:
                 row['fulfillment']=method
                 row['fulfillment_source']='live_shop_settings_and_code'
+                if isinstance(detail,dict) and detail.get('workflow_reason') in WORKFLOW_REASONS:
+                    row['workflow_reason']=detail['workflow_reason']
             if method=='checkout_link':
                 row.update(workflow_steps_status='not_verified',workflow_steps=[])
                 if (isinstance(detail,dict) and detail.get('workflow_steps_status')=='available'

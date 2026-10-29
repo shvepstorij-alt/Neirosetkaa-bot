@@ -3,6 +3,9 @@ import html
 import re
 METHODS=frozenset({'manual','checkout_link','account_details','code_activation_conditional'})
 REQUIRED_FIELDS=frozenset({'account_email','account_password'})
+WORKFLOW_REASONS=frozenset({'manual_not_projected','code_steps_not_projected','invalid_instruction_type',
+                          'default_fields_changed','custom_fields_not_projected','fields_confirmed',
+                          'default_steps_unavailable','default_steps_changed','custom_steps_not_projected','steps_confirmed'})
 LINKPAY_STEPS=('open_service','login_own_account','open_plans','select_plan',
                'open_checkout','copy_checkout_url','send_checkout_url')
 
@@ -75,19 +78,27 @@ def project_details(catalog, flags, plan_key, auto_plans=('plus','go'), *, defau
     result={}
     for (key,index),method in routes.items():
         value={'method':method,'required_fields_status':'not_verified','required_fields':[],
-               'workflow_steps_status':'not_verified','workflow_steps':[]}
+               'workflow_steps_status':'not_verified','workflow_steps':[],
+               'workflow_reason':'manual_not_projected' if method=='manual' else 'code_steps_not_projected'}
         if method=='account_details':
             custom=flags.get('creds:instructions:'+key,'')
             default_applies=isinstance(custom,str) and (not custom or _instruction_identity(custom)==default)
+            value['workflow_reason']=('invalid_instruction_type' if not isinstance(custom,str) else
+                                      'default_fields_changed' if default_applies and default!=standard else
+                                      'custom_fields_not_projected')
             if ((default_applies and default==standard)
                     or (isinstance(custom,str) and custom and not default_applies and _custom_creds_fields(custom))):
                 value.update(required_fields_status='available',
                              required_fields=['account_email','account_password'],
-                             required_fields_source='live_shop_creds_instructions')
+                             required_fields_source='live_shop_creds_instructions',workflow_reason='fields_confirmed')
         if method=='checkout_link':
             custom=flags.get('linkpay:instructions:'+key,'')
+            value['workflow_reason']=('invalid_instruction_type' if not isinstance(custom,str) else
+                                      'default_steps_unavailable' if default_linkpay_instruction is None else
+                                      'default_steps_changed' if link_default!=link_standard else
+                                      'custom_steps_not_projected')
             if isinstance(custom,str) and link_default==link_standard and (not custom or _instruction_identity(custom)==link_default):
                 value.update(workflow_steps_status='available',workflow_steps=list(LINKPAY_STEPS),
-                             workflow_steps_source='live_shop_linkpay_instructions')
+                             workflow_steps_source='live_shop_linkpay_instructions',workflow_reason='steps_confirmed')
         result[(key,index)]=value
     return result
