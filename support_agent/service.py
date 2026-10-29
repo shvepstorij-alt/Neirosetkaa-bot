@@ -325,6 +325,25 @@ class Service:
                 +'\nApp Store: '+str(facts.get('appstore',{}).get('status','not_connected'))
                 +'\nРегионов App Store: '+str(len(facts.get('appstore',{}).get('regions',[])))
                 +'\n\nПроверка не вызывает модель. Статусы оплаты и активации различаются.')
+        elif cmd=='/workflow_test':
+            from .catalog_context import annotate
+            query=' '.join(parts[1:])[:120]
+            facts=await self.shop.facts(self.owner)
+            rows=annotate(facts,query)['requested_catalog'] if query else facts.get('catalog',[])
+            lines=['Проверка инструкций оформления','Живой источник: '+str(facts.get('live_shop_status','not_connected'))]
+            seen=set()
+            for row in rows:
+                item=(str(row.get('service','')),str(row.get('fulfillment','not_verified')),
+                      str(row.get('required_fields_status','not_verified')),str(row.get('workflow_steps_status','not_verified')))
+                if item in seen:continue
+                seen.add(item)
+                if len(seen)>40:
+                    lines.append('Показаны первые 40 вариантов. Укажите сервис после команды.');break
+                name,method,fields,steps=item
+                lines.append(f'{name}: способ={method}; поля={fields}; пошаговая инструкция={steps}')
+            if not rows:lines.append('В прочитанной выборке сервис не сопоставлен; это не подтверждает отсутствие товара.')
+            lines.append('not_verified означает, что конкретные поля/шаги ещё не подтверждены, а не что оформить нельзя. Модель не вызывается.')
+            await self.owner_message('\n\n'.join(lines))
         elif cmd=='/catalog_test':
             from .catalog_context import annotate
             name=' '.join(parts[1:])[:120] or 'Krea App Store'

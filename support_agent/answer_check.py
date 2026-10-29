@@ -13,6 +13,7 @@ CATALOG_FIELDS = (
     'customer_price_confirmed', 'fulfillment_source',
     'description', 'service_description',
     'required_fields', 'required_fields_status', 'required_fields_source',
+    'workflow_steps','workflow_steps_status','workflow_steps_source',
 )
 
 
@@ -25,6 +26,9 @@ def _scalar(value):
 
 
 def _catalog_value(key, value):
+    if key=='workflow_steps':
+        allowed={'open_service','login_own_account','open_plans','select_plan','open_checkout','copy_checkout_url','send_checkout_url'}
+        return [v for v in value if v in allowed] if isinstance(value,list) else []
     if key=='required_fields':
         return [v for v in value if v in ('account_email','account_password')] if isinstance(value,list) else []
     if key in ('description', 'service_description') and isinstance(value, str):

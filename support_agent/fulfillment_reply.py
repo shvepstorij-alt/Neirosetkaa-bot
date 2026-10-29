@@ -4,7 +4,7 @@ import re
 
 def workflow_reply(facts,latest):
     lines=[line.strip() for line in latest.splitlines() if line.strip()]
-    questions=[line for line in lines if re.search(r'оформ|кроме оплаты|что.*прислать|какие.*данные',line,re.I)]
+    questions=[line for line in lines if re.search(r'оформ|кроме оплаты|что.*прислать|какие.*данные|как.*(?:получить|скопировать|найти).*ссылк',line,re.I)]
     if not questions:return None
     if re.search(r'функци|лимит|входит|отлич|возврат|ошиб|не работает|закуп|поставщик|себестоим|18\s*\+|порно|эротическ',latest,re.I):return None
     from .catalog_context import _words,_families
@@ -53,7 +53,18 @@ def workflow_reply(facts,latest):
                 diagnostics.append(name+': ветка account_details подтверждена; точный список полей не подтверждён для всех выбранных тарифов.')
                 handoff=True
         elif methods=={'checkout_link'}:
-            parts.append(name+': оформление по платёжной ссылке сервиса. Выберите тариф в магазине; дальше потребуется ссылка для оплаты.')
+            expected=['open_service','login_own_account','open_plans','select_plan','open_checkout','copy_checkout_url','send_checkout_url']
+            verified=all(item.get('workflow_steps_status')=='available' and item.get('workflow_steps')==expected for item in items)
+            if verified:
+                parts.append(name+': для оформления понадобится ссылка на оплату выбранного тарифа. Получить её можно так:\n'
+                             '1. Откройте сайт сервиса и войдите в свой аккаунт.\n'
+                             '2. Откройте тарифы или подписку и выберите нужный план.\n'
+                             '3. Перейдите на страницу оплаты, но самостоятельно не оплачивайте.\n'
+                             '4. Скопируйте ссылку этой страницы и пришлите сюда, в эту переписку.\n'
+                             'Если на каком-то шаге не получается, пришлите скриншот без платёжных данных, подскажу дальше)')
+            else:
+                parts.append(name+': оформление по платёжной ссылке сервиса. Для подробных шагов нужно проверить действующую инструкцию этого товара.')
+                diagnostics.append(name+': ветка checkout_link подтверждена; пошаговая инструкция не подтверждена для всех выбранных тарифов.')
             handoff=True
         elif methods=={'manual'}:
             parts.append(name+': оформление вручную. Перед оплатой нужно проверить необходимые данные для выбранного тарифа.')

@@ -28,14 +28,14 @@ def _mentions(text,catalog):
     for family,aliases in ALIASES.items():
         if any(_contains(tokens,_words(alias)) for alias in aliases):
             found[family]=aliases[0]
-    for row in catalog:
+    from .catalog_context import annotate
+    for row in annotate({'catalog':catalog},text)['requested_catalog']:
         if not isinstance(row,dict):continue
         name=str(row.get('service',''));key=str(row.get('service_key',''))
         if not name:continue
-        if any(_contains(tokens,_words(v)) for v in (name,key) if v):
-            families=_families(_words(name))|_families(_words(key))
-            identity=next(iter(families)) if len(families)==1 else 'catalog:'+key.casefold()+':'+name.casefold()
-            found[identity]=name
+        families=_families(_words(name))|_families(_words(key))
+        identity=next(iter(families)) if len(families)==1 else 'catalog:'+key.casefold()+':'+name.casefold()
+        found[identity]=name
     return found
 
 
@@ -70,6 +70,10 @@ def _boundary(text):
                           r'отменяю\s+вс[её]|начн[её]м\s+заново|до\s+свидания|до\s+завтра',text,re.I))
 
 
+def _new_inquiry(text):
+    return bool(re.match(r'^\s*(?:привет|приветствую|здравствуйте|добрый\s+(?:день|вечер)|доброе\s+утро)\b',text,re.I))
+
+
 def _session_rows(db,chat,last,now):
     rows=db.execute("SELECT mid,text,at FROM messages WHERE chat=? AND role='client' AND mid<=? ORDER BY mid DESC LIMIT ?",
                     (chat,last,MAX_MESSAGES+1)).fetchall()
@@ -84,6 +88,7 @@ def _session_rows(db,chat,last,now):
         if chars>MAX_CHARACTERS:break
         if _boundary(text):break
         kept.append(dict(row))
+        if _new_inquiry(text):break
     return list(reversed(kept))
 
 
@@ -164,7 +169,7 @@ def enrich_request(db,chat,first,last,text,catalog):
         between=db.execute("SELECT text FROM messages WHERE chat=? AND role='client' AND mid>? AND mid<? ORDER BY mid DESC LIMIT ?",
                            (chat,previous['mid'],first,MAX_MESSAGES)).fetchall()
         gap=bool(old and isinstance(old['at'],(int,float)) and rows and rows[0]['at']-old['at']>SESSION_GAP)
-        if gap or any(_boundary(r['text'] or '') for r in between):prior=None
+        if gap or any(_boundary(r['text'] or '') or _new_inquiry(r['text'] or '') for r in between):prior=None
     if prior and (previous['mid'] not in mids or not _valid(prior,rows,catalog)):
         # Explicit names can repair missing source references. A bare region or
         # another all-intent must not silently substitute a deleted service.

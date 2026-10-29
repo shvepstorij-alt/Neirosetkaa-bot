@@ -3,7 +3,7 @@ import re
 
 from .response_policy import natural_reply
 
-SESSION_GAP_SECONDS=6*60*60
+SESSION_GAP_SECONDS=30*60
 _GREETING=re.compile(
     r'^\s*(?:здравствуйте|здравствуй|приветствую|привет|добрый\s+(?:день|вечер)|доброе\s+утро)\b',
     re.I)
@@ -15,7 +15,7 @@ _OPENING=re.compile(
 def session_info(db,chat,first,last):
     """Only delivered replies and the current raw client batch define greeting state.
 
-    A six-hour gap starts a fresh greeting exchange only when the current client
+    A half-hour gap starts a fresh greeting exchange only when the current client
     actually greets. It does not reset product, order, or account context.
     """
     rows=db.execute("""SELECT mid,text,at FROM messages

@@ -43,6 +43,15 @@ def clean_export(data):
             if (method in ('manual','checkout_link','account_details','code_activation_conditional')
                     and row.get('fulfillment_source')=='live_shop_settings_and_code'):
                 item.update(fulfillment=method,fulfillment_source='live_shop_settings_and_code')
+                if method=='checkout_link':
+                    allowed_steps=['open_service','login_own_account','open_plans','select_plan',
+                                   'open_checkout','copy_checkout_url','send_checkout_url']
+                    item.update(workflow_steps_status='not_verified',workflow_steps=[])
+                    if (row.get('workflow_steps_status')=='available'
+                            and row.get('workflow_steps_source')=='live_shop_linkpay_instructions'
+                            and row.get('workflow_steps')==allowed_steps):
+                        item.update(workflow_steps_status='available',workflow_steps=allowed_steps,
+                                    workflow_steps_source='live_shop_linkpay_instructions')
                 if method=='account_details':
                     item.update(required_fields_status='not_verified',required_fields=[])
                     fields=row.get('required_fields')
