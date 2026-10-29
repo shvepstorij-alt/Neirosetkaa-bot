@@ -1,5 +1,6 @@
 """Read only the owner's authenticated shop export; never accept client URLs."""
 import json
+import re
 import time
 from urllib.parse import urlsplit
 import aiohttp
@@ -13,6 +14,18 @@ def clean_export(data):
     if type(observed) not in (float,int) or not -5<=time.time()-observed<=60:
         raise ValueError('Expired export')
     result={'live_shop_status':'available','live_shop_observed_at':observed}
+    nav=data.get('bot_navigation',{})
+    nav_status=nav.get('status','not_connected') if isinstance(nav,dict) else 'invalid_response'
+    if nav_status not in ('available','not_connected','timeout','read_error','invalid_response'):
+        nav_status='invalid_response'
+    result['bot_navigation']={'status':nav_status}
+    if nav_status=='available':
+        if (not isinstance(nav.get('username'),str)
+                or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}',nav['username'])
+                or type(nav.get('catalog_webapp')) is not bool):
+            result['bot_navigation']={'status':'invalid_response'}
+        else:
+            result['bot_navigation'].update(username=nav['username'],catalog_webapp=nav['catalog_webapp'])
     status=data.get('catalog_status')
     if status in ('available','truncated'):
         rows=data.get('catalog')

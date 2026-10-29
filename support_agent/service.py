@@ -320,6 +320,8 @@ class Service:
                 +'\nПерсональные цены: '+('расчёт доступен' if facts.get('customer_prices_status')=='available' else 'не подключены; доступен обычный прайс')
                 +'\nЖивой каталог магазина: '+str(facts.get('live_shop_status','not_connected'))
                 +'\nСпособы оформления: '+str(facts.get('workflow_status','not_connected'))
+                +'\nНавигация по боту: '+str(facts.get('bot_navigation',{}).get('status','not_connected'))
+                +'\nБот магазина: '+('@'+facts['bot_navigation']['username'] if facts.get('bot_navigation',{}).get('status')=='available' else 'ник не подтверждён')
                 +'\nApp Store: '+str(facts.get('appstore',{}).get('status','not_connected'))
                 +'\nРегионов App Store: '+str(len(facts.get('appstore',{}).get('regions',[])))
                 +'\n\nПроверка не вызывает модель. Статусы оплаты и активации различаются.')
@@ -574,6 +576,7 @@ class Service:
                     'summary':'После расшифровки обращение превышает объём контекста. Проверьте весь диалог вручную; частичный ответ не подготовлен.',
                     'handoff':True}
         facts=await self.shop.facts(job['uid'])
+        if not self.store.still_current(job):return None
         facts=dict(facts,context_scope='История содержит только последние 60 сообщений в пределах 24000 символов; более ранние договорённости могут отсутствовать. Не придумывай их.')
         if not self.store.still_current(job):
             return None
@@ -586,12 +589,19 @@ class Service:
         latest=current_request(batch,batch_first,job['mid'])
         from .request_context import resolve_request
         latest=resolve_request(self.store.db,job['chat'],batch_first,job['mid'],latest,facts.get('catalog',[]))
+        from .session_context import enrich_request
+        latest=enrich_request(self.store.db,job['chat'],batch_first,job['mid'],latest,facts.get('catalog',[]))
         if not latest:
             return {'reply':'Напомните, пожалуйста, ваш вопрос — не хочу ответить про другой сервис.',
                     'summary':'Клиент ждёт ответ, но исходный вопрос отсутствует в сохранённом контексте.',
                     'handoff':True}
         from .catalog_context import annotate
         facts=annotate(facts,latest)
+        from .bot_guide import navigation_facts,navigation_reply
+        facts=dict(facts,shop_navigation=navigation_facts(facts))
+        raw_batch='\n'.join(row['text'] or '' for row in batch)
+        navigation=navigation_reply(facts,raw_batch or latest) if not image else None
+        if navigation:return navigation
         from .catalog_context import direct_workflow_reply,direct_apple_reply
         apple=direct_apple_reply(facts,latest) if not image else None
         if apple:return apple
@@ -606,7 +616,8 @@ class Service:
         from .catalog_context import direct_catalog_reply
         direct=direct_catalog_reply(facts,latest) if not image else None
         if direct:return direct
-        replied=bool(self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone())
+        from .conversation_style import session_info
+        replied=session_info(self.store.db,job['chat'],batch_first,job['mid'])['continuing']
         facts=dict(facts,conversation={'continuing':replied,
                                       'latest_client_message':latest,
                                       'latest_message':batch[-1]['text'] if batch else ''})
@@ -723,8 +734,9 @@ class Service:
         try:
             answer=await self.generate(job)
             if answer:
-                replied=self.store.db.execute("SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') LIMIT 1",(job['chat'],)).fetchone()
-                answer['reply']=continuing_reply(answer['reply'],[{'role':'assistant'}] if replied else [])
+                from .conversation_style import session_info,decorate_reply
+                first=self.store.chat(job['chat'])['batch_first']
+                answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']))
                 did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
                 if did:
                     await self.show_draft(did)

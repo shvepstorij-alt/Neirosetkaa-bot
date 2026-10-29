@@ -305,6 +305,10 @@ def direct_catalog_reply(facts, latest):
     if any(word not in allowed for word in words):return None
     result=verified_catalog_reply(facts,'')
     if not result['reply'].startswith('Тарифы магазина:'):return None
+    services={name for name,_ in quotes}
+    if len(services)==1 and 'appstore' not in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):
+        name=next(iter(services))
+        result['reply']=f'Для {name} есть такие тарифы:\n'+'\n'.join(f'{plan}: {price} ₽' for (_,plan),price in quotes.items())
     result.update(summary='Ответ составлен из прочитанных цен магазина. Возможности тарифов и условия, не указанные в данных, не добавлялись.',handoff=False)
     result['evidence']={'status':'catalog_direct','sources':[]}
     return result
