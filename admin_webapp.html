@@ -456,6 +456,15 @@ function unboundScreen(per,off,date){
   },0);
   return hdr('Заказы без записанного кода','ChatGPT')+'<div class="wrap"><div id="ubbody"><div class="note">Загружаю…</div></div></div>';
 }
+/* Sort presentation only. Runtime plan indexes must remain unchanged. */
+function plansByPrice(plans){
+  return (plans||[]).map(function(plan,position){return {plan:plan,position:position};}).sort(function(a,b){
+    var ap=Number(a.plan.price),bp=Number(b.plan.price);
+    if(a.plan.price===''||a.plan.price===null||a.plan.price===undefined||!isFinite(ap))ap=Infinity;
+    if(b.plan.price===''||b.plan.price===null||b.plan.price===undefined||!isFinite(bp))bp=Infinity;
+    return ap<bp?-1:(ap>bp?1:a.position-b.position);
+  }).map(function(item){return item.plan;});
+}
 function profitCosts(){
   setTimeout(loadPrices,0);
   return hdr("Себестоимость и цены","Все сервисы и тарифы")+'<div class="wrap"><div id="cbody"><div class="note">Загружаю…</div></div></div>';
@@ -467,7 +476,7 @@ function loadPrices(){
     var h='<div class="block"><label class="fl" style="margin-top:0">Курс закупа доллара (₽)</label><input class="f" id="costrate" value="'+d.rate+'" inputmode="numeric"/></div>';
     d.services.forEach(function(s){
       h+='<div class="block"><h4>'+(s.emoji?s.emoji+' ':'')+s.name+'</h4>';
-      s.plans.forEach(function(pp){
+      plansByPrice(s.plans).forEach(function(pp){
         /* У ChatGPT закуп бывает разный: филиппинский код и iOS стоят не
            одинаково. Раньше значение было одно на тариф, и разницу в марже
            между маршрутами увидеть было нельзя. Пусто = считать по общему. */
@@ -1522,7 +1531,7 @@ function planEdit(key){
   window._peKey=key; if(window._niceMode===undefined)window._niceMode='round';
   h+='<div class="block"><div class="mlab">🧮 Онлайн-калькулятор цен</div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Курс ₽/$</div><input class="f" id="pe_rate_'+key+'" inputmode="decimal" value="'+(d.rate||'')+'" oninput="mkPreview(\''+key+'\')"/></div><div style="flex:1"><div class="mlab">Наценка %</div><input class="f" id="pe_mk_'+key+'" inputmode="numeric" placeholder="30" oninput="mkPreview(\''+key+'\')"/></div></div><div class="mlab" style="margin-top:8px">Округление</div><div class="seg" id="pe_round_'+key+'">'+roundSegInner(window._niceMode,'peRound')+'</div><div id="pe_prev_'+key+'" style="margin-top:10px"></div><button class="btn sec" style="margin-top:10px" onclick="applyMarkup(\''+key+'\')">↻ Применить к тарифам</button><div class="note">Считает вживую. «Применить» подставит цены в поля — потом «💾 Сохранить».</div></div>';
   setTimeout(function(){mkPreview(key)},0);
-  s.plans.forEach(function(p){
+  plansByPrice(s.plans).forEach(function(p){
     h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-name="'+(p.name||'').replace(/"/g,'&quot;')+'"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></span><button class="btn row2 danger" style="width:auto;margin:0;padding:5px 10px;font-size:11px" onclick="delPlan(\''+key+'\',\''+(p.name||'').replace(/\x27/g,'')+'\')">Удалить</button></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" style="min-height:70px">'+(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
   });
   return h+'<button class="btn sec" onclick="leaf(function(){return planAdd(\''+key+'\')})">➕ Добавить тариф</button><button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
@@ -1548,7 +1557,7 @@ function mkPreview(key){
   var mk=parseFloat(((document.getElementById('pe_mk_'+key)||{}).value||'').replace(',','.'));
   if(isNaN(mk)||!(rate>0)){el.innerHTML='<div class="note">Впиши курс и наценку — покажу будущие цены вживую.</div>';return;}
   var h='';
-  s.plans.forEach(function(p){
+  plansByPrice(s.plans).forEach(function(p){
     var cost=p.costUsd||0;
     if(!(cost>0)){h+='<div class="kv"><span class="k">'+p.name+'</span><span class="muted" style="font-size:11px">нет закупа $</span></div>';return;}
     var np=nicePrice(cost,rate,mk,window._niceMode||'round'),cur=p.price||0;
@@ -1571,17 +1580,47 @@ function applyMarkup(key){
   api('/api/admin/prices-save',{rate:rate,items:[]});
   toast(n?('Пересчитано: '+n+(miss?(' · без закупа: '+miss):'')+' — проверь и «Сохрани»'):'Заполни «Закуп $» у тарифов');
 }
-function savePlanEdit(key){
+function planEditSnapshot(key){
   var items=[];
   document.querySelectorAll('#app [data-key="'+key+'"]').forEach(function(b){
     items.push({key:key,idx:+b.getAttribute('data-idx'),name:b.getAttribute('data-name'),price:b.querySelector('.pe-price').value,costUsd:b.querySelector('.pe-cost').value,desc:b.querySelector('.pe-desc').value,manual:b.querySelector('.pe-man').classList.contains('on')});
   });
-  var sd=(document.getElementById('pe_svcdesc')||{}).value;
-  toast('Сохраняю…');
-  api('/api/admin/prices-save',{items:items,svcKey:key,svcDesc:sd}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});
+  return {items:items,svcKey:key,svcDesc:(document.getElementById('pe_svcdesc')||{}).value};
 }
-function planAdd(key){return hdr("Новый тариф")+'<div class="wrap"><label class="fl">Название тарифа</label><input class="f" id="pa_name" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="pa_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doPlanAdd(\''+key+'\')">Создать</button></div>';}
-function doPlanAdd(key){var name=fv('pa_name'),price=fv('pa_price');if(!name||!price){toast('Название и цена');return;}toast('Создаю…');api('/api/admin/plan-add',{key:key,name:name,price:price}).then(function(d){toast(d.ok?'Тариф добавлен ✓':(d.msg||'Ошибка'));if(d.ok){var _st=window._apiStale;api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;if(!_st)back();});}});}
+function cachePlanEditSnapshot(key,snapshot){
+  var d=window._pricesData||{services:[]};
+  var service=(d.services||[]).filter(function(s){return s.key===key;})[0];if(!service)return;
+  service.desc=snapshot.svcDesc;
+  snapshot.items.forEach(function(item){
+    var plan=(service.plans||[]).filter(function(p){return p.idx===item.idx&&p.name===item.name;})[0];if(!plan)return;
+    var price=Number(String(item.price).replace(',','.')),cost=Number(String(item.costUsd).replace(',','.'));
+    if(isFinite(price))plan.price=price;if(isFinite(cost))plan.costUsd=cost;
+    plan.desc=item.desc;plan.manual=item.manual;
+  });
+}
+function savePlanEdit(key){
+  window._peSaving=window._peSaving||{};
+  if(window._peSaving[key]){toast('Сохранение уже идёт, дождись результата');return;}
+  var snapshot=planEditSnapshot(key),signature=JSON.stringify(snapshot);
+  var editor=document.getElementById('pe_svcdesc');
+  window._peSaving[key]=true;toast('Сохраняю…');
+  return api('/api/admin/prices-save',snapshot).then(function(d){
+    if(!d||!d.ok){toast((d&&d.msg)||'Ошибка сохранения');return;}
+    cachePlanEditSnapshot(key,snapshot);
+    return api('/api/admin/prices',{}).then(function(pd){
+      if(pd&&pd.ok)window._pricesData=pd;
+      var sameScreen=editor&&document.getElementById('pe_svcdesc')===editor&&window._peKey===key;
+      if(pd&&pd.ok&&sameScreen&&JSON.stringify(planEditSnapshot(key))===signature){
+        app.innerHTML=planEdit(key);toast('Сохранено ✓');
+      }else if(sameScreen){
+        toast('Сохранено ✓ Новые правки оставлены. Порядок обновится при открытии');
+      }else{toast('Сохранено ✓');}
+    });
+  }).catch(function(){toast('Не удалось обновить результат. Проверь сохранение при открытии раздела');})
+    .then(function(){delete window._peSaving[key];});
+}
+function planAdd(key){return hdr("Новый тариф")+'<div class="wrap"><label class="fl">Название тарифа</label><input class="f" id="pa_name" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="pa_price" inputmode="numeric" placeholder="1990"/><label class="fl">Закуп $ (себестоимость)</label><input class="f" id="pa_cost" inputmode="decimal" placeholder="0"/><div class="note">Можно оставить пустым и заполнить позже. Используется для расчёта себестоимости и маржи.</div><button class="btn" onclick="doPlanAdd(\''+key+'\')">Создать</button></div>';}
+function doPlanAdd(key){var name=fv('pa_name').trim(),price=fv('pa_price'),rawCost=fv('pa_cost').trim().replace(',','.'),cost=rawCost===''?0:Number(rawCost);if(!name||!price){toast('Название и цена');return;}if(!isFinite(cost)||cost<0){toast('Закуп должен быть числом не меньше нуля');return;}toast('Создаю…');api('/api/admin/plan-add',{key:key,name:name,price:price,costUsd:cost}).then(function(d){toast(d.ok?'Тариф добавлен ✓':(d.msg||'Ошибка'));if(d.ok){var _st=window._apiStale;api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;if(!_st)back();});}});}
 function delPlan(key,name){_gwConfirm2('Подтверди действие','Удалить тариф '+name+'?','Да, удалить',function(){api('/api/admin/plan-delete',{key:key,name:name}).then(function(d){if(d.ok){api('/api/admin/prices',{}).then(function(pd){if(pd.ok)window._pricesData=pd;app.innerHTML=planEdit(key);});}else toast('Ошибка');});});}
 function serviceAdd(){return hdr("Новый сервис")+'<div class="wrap"><label class="fl">Название</label><input class="f" id="sv_name" placeholder="Например: Notion"/><label class="fl">Эмодзи (необязательно)</label><input class="f" id="sv_em" placeholder="📝"/><label class="fl">Первый тариф — название</label><input class="f" id="sv_plan" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="sv_price" inputmode="numeric" placeholder="1990"/><button class="btn" onclick="doServiceAdd()">Создать</button><div class="note">Тарифы и закуп можно изменить после создания.</div></div>';}
 function doServiceAdd(){var name=fv('sv_name'),price=fv('sv_price');if(!name||!price){toast('Название и цена обязательны');return;}toast('Создаю…');api('/api/admin/service-add',{name:name,emoji:fv('sv_em'),planName:fv('sv_plan'),price:price}).then(function(d){toast(d.ok?'Сервис добавлен ✓':(d.msg||'Ошибка'));if(d.ok)back();});}

@@ -79,9 +79,14 @@
   }
   var originalError = window.showError, originalProcessing = window.showProcessing;
   window.showError = function (msg, kind) {
+    var retryBlocked = ['network', 'rate', 'site_payment', 'openai_blocked', 'code', 'unknown', 'needs_check', 'pending', 'manual', 'review'].indexOf(kind) >= 0;
+    var sessionInvalid = !claude && !retryBlocked && (kind === 'token' || /сесси[а-яё]*[^.!?\n]{0,55}(?:недействительн|ист[её]к|просроч)|session (?:has |is )?(?:invalid|expired)|не принял токен/i.test(msg || ''));
+    if (sessionInvalid && !/другом браузере/i.test(msg || '')) {
+      msg = (msg || 'Сессия ChatGPT недействительна или истекла.') + '\n\nОткрой другой браузер и заново войди в нужный аккаунт ChatGPT. В этом же браузере открой chatgpt.com/api/auth/session и скопируй весь свежий текст сессии. Вернись сюда, нажми «Попробовать снова» и вставь новый текст вместо старого.';
+    }
     originalError(msg);
     // Retry only for a definite input/authorization issue, never an arbitrary failure.
-    var retry = ['token', 'bad_org', 'has_plan', 'input', 'auth'].indexOf(kind) >= 0 || /токен не найден|скопирован не (?:полностью|целиком)|неверный формат.*Organization|не тот текст|не принял токен|ошибка авторизации|не принял Organization/i.test(msg || '');
+    var retry = !retryBlocked && (sessionInvalid || ['token', 'bad_org', 'has_plan', 'input', 'auth'].indexOf(kind) >= 0 || /токен не найден|скопирован не (?:полностью|целиком)|неверный формат.*Organization|не тот текст|не принял токен|ошибка авторизации|не принял Organization/i.test(msg || ''));
     var b = document.querySelector('#s5 .btn-' + accent);
     if (b) b.style.display = retry ? '' : 'none';
     var title = document.querySelector('#s5 .error-title');

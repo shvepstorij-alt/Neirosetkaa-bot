@@ -6740,8 +6740,12 @@ async def api_admin_sales_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+_admin_plan_add_lock = asyncio.Lock()
+
+
 async def api_admin_plan_add_handler(request: web.Request) -> web.Response:
     """Добавить тариф в сервис. Admin-only."""
+    stage = 'проверка данных нового тарифа'
     try:
         try: body = await request.json()
         except Exception: body = {}
@@ -6753,19 +6757,43 @@ async def api_admin_plan_add_handler(request: web.Request) -> web.Response:
         scat = SHOP_CATALOG.get(k)
         if not k or not scat or not name or price <= 0:
             return web.json_response({"ok": False, "msg": "Нужно название и цена"})
+        from decimal import Decimal, InvalidOperation
+        cost_raw = body.get('costUsd')
+        cost = None
+        if cost_raw is not None and str(cost_raw).strip():
+            try:
+                if isinstance(cost_raw, bool):raise ValueError('Invalid cost')
+                cost = Decimal(str(cost_raw).strip().replace(',', '.'))
+                if not cost.is_finite() or not 0 <= cost <= 100_000_000:
+                    raise ValueError('Invalid cost')
+            except (InvalidOperation, ValueError):
+                return web.json_response({'ok': False, 'msg': 'Себестоимость должна быть числом от 0 до 100000000 $'}, status=400)
+        stage = 'подключение к базе для создания тарифа'
         pool = await get_pool()
-        async with pool.acquire() as conn:
-            mx = await conn.fetchval("SELECT COALESCE(MAX(plan_idx),-1) FROM bot_shop_items WHERE key=$1", k)
-            new_idx = int(mx) + 1
-            await conn.execute(
-                "INSERT INTO bot_shop_items (key, plan_idx, service_name, emoji, service_desc, plan_name, price, stars, plan_desc, sort_order) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (key, plan_idx) DO NOTHING",
-                k, new_idx, scat.get("name", k), scat.get("emoji", ""), scat.get("desc", ""), name, price, 0, "", new_idx)
-        scat.setdefault("plans", []).append({"name": name, "price": price, "stars": 0, "desc": ""})
+        async with _admin_plan_add_lock:
+            runtime_idx = len(scat.get('plans', []))
+            async with pool.acquire() as conn, conn.transaction():
+                mx = await conn.fetchval("SELECT COALESCE(MAX(plan_idx),-1) FROM bot_shop_items WHERE key=$1", k)
+                new_idx = int(mx) + 1
+                last_sort = await conn.fetchval("SELECT COALESCE(MAX(sort_order),-1) FROM bot_shop_items WHERE key=$1", k)
+                new_sort = int(last_sort) + 1
+                stage = 'запись нового тарифа'
+                await conn.execute(
+                    "INSERT INTO bot_shop_items (key, plan_idx, service_name, emoji, service_desc, plan_name, price, stars, plan_desc, sort_order) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                    k, new_idx, scat.get("name", k), scat.get("emoji", ""), scat.get("desc", ""), name, price, 0, "", new_sort)
+                if cost is not None:
+                    stage = 'сохранение себестоимости нового тарифа'
+                    await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',
+                                       f'cost_usd:{k}:{runtime_idx}', format(cost, 'f'))
+            stage = 'обновление каталога после сохранения тарифа'
+            scat.setdefault("plans", []).append({"name": name, "price": price, "stars": 0, "desc": ""})
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_plan_add: {_e}")
-        return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
+        sqlstate = str(getattr(_e, 'sqlstate', '') or '')
+        reason = type(_e).__name__ + (f' (SQLSTATE {sqlstate})' if re.fullmatch(r'[0-9A-Z]{5}', sqlstate) else '')
+        return web.json_response({"ok": False, "msg": f'Этап: {stage}. Причина: {reason}. Точная первопричина требует проверки журнала.'}, status=500)
 
 
 async def api_admin_plan_delete_handler(request: web.Request) -> web.Response:
@@ -15196,7 +15224,15 @@ async def _gpt_log_attempt(order_id: str, code: str, provider: str,
         else:
             _out = ""
             if isinstance(result, dict):
-                _out = str(result.get("error") or "").strip()
+                from chatgpt_activation import gpt_provider_error_text, gpt_session_rejected
+                _reported = gpt_provider_error_text(result)
+                if gpt_session_rejected(_reported):
+                    _out = 'Данные сессии недействительны или истекли; требуется новый токен после повторного входа'
+                elif _reported and not _reported.lstrip().startswith(('{', '[')):
+                    # Never copy an unprocessed payload/session into the admin history.
+                    _out = re.sub(r'(?i)\bBearer\s+[^\s,;]+', '[токен скрыт]', _reported)
+                    _out = re.sub(r'\beyJ[A-Za-z0-9_.-]{20,}', '[токен скрыт]', _out)
+                    _out = re.sub(r'(?i)(access[_ -]?token|session[_ -]?token|password|authorization)\s*[=:]\s*[^\s,;]+', r'\1=[скрыто]', _out)
                 if not _out:
                     for _f, _t in (("code_already_used", "код уже использован"),
                                    ("wrong_account", "чужой аккаунт"),
@@ -15216,7 +15252,9 @@ async def _gpt_log_attempt(order_id: str, code: str, provider: str,
                 _sst = str(result.get("site_status") or "").strip()
                 if _sst and _sst not in _out:
                     _out = (_out + f" (сайт: {_sst})") if _out else f"сайт: {_sst}"
-            _out = (_out or "сайт не назвал причину").replace("|", "/").replace("\n", " ")[:140]
+                if not _out and type(result.get('http')) is int:
+                    _out = 'HTTP '+str(result['http'])+'; текст причины отсутствует в результате активации'
+            _out = (_out or "в результате активации отсутствуют причина и диагностические признаки; первопричина не установлена").replace("|", "/").replace("\n", " ")[:140]
         _base = f"{str(code or '').strip().upper()}|{str(provider or '').strip()}|{_out}"
         _key = f"gptlog:{_oid}"
         _prev = (await get_setting(_key, "") or "").strip()

@@ -2799,6 +2799,51 @@ async def activate_claude_ios891(cdk_code: str, org_id: str, plan: str = "pro") 
                 pass
 
 
+def gpt_session_rejected(message) -> bool:
+    """Match a rejection, never a mere session page URL or static input label."""
+    import re
+    if not isinstance(message,str):return False
+    text=message.casefold().replace('ё','е')
+    return bool(re.search(
+        r'(?:данные\s+)?сесси[а-я]*[^.!?\n]{0,55}(?:недействительн|истек|просроч|невалид)|'
+        r'(?:недействительн|истек|просроч)[^.!?\n]{0,45}сесси[а-я]*|'
+        r'\b(?:session|token)\s+(?:(?:has|is)\s+)?(?:expired|invalid)\b',text))
+
+
+def gpt_provider_error_text(payload) -> str:
+    """Extract only designated textual error fields; never stringify JSON objects.
+
+    This text is untrusted input for classification, not a safe diagnostic body.
+    Session rejections are replaced with a fixed message before returning.
+    """
+    if not isinstance(payload,dict):return ''
+    candidates=[]
+    for name in ('message','detail','error','site_message','provider_message'):
+        value=payload.get(name)
+        if isinstance(value,str) and value.strip():candidates.append(value.strip()[:2000])
+        if isinstance(value,dict):
+            for field in ('message','detail','error'):
+                text=value.get(field)
+                if isinstance(text,str) and text.strip():candidates.append(text.strip()[:2000])
+    return next((text for text in candidates if gpt_session_rejected(text)),candidates[0] if candidates else '')
+
+
+def _gpt_bpa_session_failure(http_status, error_code='', **meta):
+    """Safe public message and allowlisted machine evidence, no raw sessions."""
+    safe='Данные сессии ChatGPT недействительны или истекли. Войди заново и скопируй свежий текст со страницы сессии.'
+    result={'success':False,'token_invalid':True,'error':safe,'site_message':safe,
+            'http':http_status,'provider_error_kind':'session_invalid'}
+    if error_code in ('SESSION_INVALID','SESSION_EXPIRED','TOKEN_INVALID','TOKEN_EXPIRED'):
+        result['error_code']=error_code
+    for key in ('order_id','order_status'):
+        value=meta.get(key)
+        if isinstance(value,str) and 0<len(value)<=100:result[key]=value
+    provider_status=meta.get('provider_status')
+    if provider_status in ('session_invalid','session_expired','token_invalid','token_expired','failed'):
+        result['provider_status']=provider_status
+    return result
+
+
 async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False) -> dict:
     """bypriceactivate.pro — ChatGPT Plus Direct (АСИНХРОННЫЙ API, без браузера).
 
@@ -2858,7 +2903,11 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     pass  # приняли, ниже опрашиваем
                 else:
                     ec = (d.get("error_code") or "").upper()
-                    det = d.get("detail") or d.get("error") or f"HTTP {st}"
+                    det = gpt_provider_error_text(d) or f"HTTP {st}"
+                    if (ec in ('SESSION_INVALID','SESSION_EXPIRED','TOKEN_INVALID','TOKEN_EXPIRED')
+                            or st in (400,401,403,409,422) and ec not in ('CODE_ALREADY_USED','CODE_NOT_FOUND')
+                            and gpt_session_rejected(det)):
+                        return _gpt_bpa_session_failure(st,ec)
                     # 409 у этого сайта значит НЕ ТОЛЬКО «код уже использован».
                     # Тем же кодом он отвечает «нет свободных мест / нет
                     # receipt'ов» — это видно по его же эндпоинту Perplexity,
@@ -2932,8 +2981,7 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                     if st == 404 or ec == "CODE_NOT_FOUND":
                         return {"success": False, "error": "Код не найден на сайте: " + str(det)}
                     if st == 400 or ec == "SESSION_INVALID":
-                        return {"success": False, "token_invalid": True,
-                                "error": "Сессия не принята (просрочена/битая). Скопируй заново со страницы session."}
+                        return _gpt_bpa_session_failure(st,ec)
                     if st == 503 or ec == "SERVICE_NOT_READY":
                         # 18.09.2026: сайт ответил «Service temporarily paused
                         # for maintenance. Codes stay valid; retry later», а бот
@@ -3045,7 +3093,7 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                                 "other_email": _acc, "client_email": _client_email}
                     return {"success": True, "email": _acc or _client_email}
                 if status == "failed":
-                    msg = pd.get("message") or pd.get("error") or "Активация не удалась."
+                    msg = gpt_provider_error_text(pd) or "Активация не удалась."
                     # ТЕХНИЧЕСКАЯ причина. `message` — текст для человека
                     # («Покупку завершить не удалось»), а что именно сломалось,
                     # знает provider_status: его отдаёт GET /api/gpt/orders/{id}
@@ -3072,8 +3120,10 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
                                 "error": "У сайта не прошёл платёж по его карте — "
                                          "код цел. " + str(msg)}
                     # 1) битая/просроченная сессия — стоп, клиент обновляет токен
-                    if "session" in _ml or "token" in _ml or "expired" in _ml or "истёк" in _ml:
-                        return {"success": False, "token_invalid": True, "error": str(msg), **_dg}
+                    _ec = str(pd.get('error_code') or '').upper()
+                    if (gpt_session_rejected(msg) or _ec in ('SESSION_INVALID','SESSION_EXPIRED','TOKEN_INVALID','TOKEN_EXPIRED')
+                            or "session" in _ml or "token" in _ml or "expired" in _ml or "истёк" in _ml):
+                        return _gpt_bpa_session_failure(pr.status,_ec,**_dg)
                     # 2) на АККАУНТЕ уже есть подписка → нужна принудительная активация.
                     #    bypriceactivate.pro форс не умеет → НЕ останавливаемся и НЕ жжём код:
                     #    отдаём обычный сбой, чтобы диспетчер увёл активацию на другой сайт
@@ -3180,7 +3230,8 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
     except _aiohttp.ClientError as e:
         return {"success": False, "error": "Сеть/сайт недоступен: " + str(e)[:120]}
     except Exception as e:
-        return {"success": False, "error": str(e)[:200]}
+        return {"success": False, "error": str(e)[:200] or 'Ошибка обработки ответа поставщика: '+type(e).__name__,
+                'provider_error_stage':'request_or_poll','provider_exception':type(e).__name__}
 
 
 if __name__ == "__main__":
