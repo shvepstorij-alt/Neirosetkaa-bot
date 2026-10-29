@@ -514,9 +514,10 @@ class Service:
         await self.load_connection(c['connection'])
         reserved=self.store.reserve_send(did,time.time())
         if not reserved:
+            reason=self.store.send_block_reason(did,time.time())
             if d['admin_mid']:
                 await self.show_draft(did,d['admin_mid'])
-            await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: ответ отменён/устарел, чат остановлен или нет права отправки. Повторно не отправляю.')
+            await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: отправка заблокирована. Этап: проверка перед отправкой. Причина: {reason}. Клиенту ничего не отправлено этим нажатием.')
             return
         if pause_after:
             # Pause before yielding to the network so a new incoming message cannot
@@ -591,6 +592,11 @@ class Service:
                     'handoff':True}
         from .catalog_context import annotate
         facts=annotate(facts,latest)
+        from .catalog_context import direct_workflow_reply,direct_apple_reply
+        apple=direct_apple_reply(facts,latest) if not image else None
+        if apple:return apple
+        workflow=direct_workflow_reply(facts,latest) if not image else None
+        if workflow:return workflow
         shortcut=missing_shop_reply(latest,facts,has_images=bool(image))
         if shortcut:
             return shortcut

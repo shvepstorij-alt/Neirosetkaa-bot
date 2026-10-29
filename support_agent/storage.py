@@ -236,6 +236,33 @@ class Store:
             self.db.execute('UPDATE quota SET calls=calls+1 WHERE day=?',(day,))
             return True
 
+    def send_block_reason(self, did, now):
+        """Explain current send guards without exposing customer content or secrets."""
+        d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+        if not d:return 'черновик не найден или удалён по сроку хранения'
+        c=self.chat(d['chat'])
+        if not c:return 'чат не найден'
+        if c['latest']!=d['mid']:return 'поступило новое или изменённое сообщение клиента; этот черновик относится к предыдущему обращению'
+        if d['state'] not in ('ready','stale'):
+            states={'sent':'черновик уже отправлен; повторная отправка заблокирована',
+                    'sending':'отправка этого черновика уже выполняется',
+                    'uncertain':'результат прошлой отправки неизвестен; сначала проверьте личку',
+                    'stale':'черновик отменён после изменения сообщений или режима работы'}
+            return states.get(d['state'],'черновик не находится в состоянии готовности к отправке')
+        if self.get('mode')!='draft':return 'помощник остановлен глобально'
+        if c['mode']!='draft':return 'помощник в этом чате на паузе'
+        b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
+        if not b or not b['enabled']:return 'подключение Telegram Business отсутствует или отключено'
+        if not b['can_reply']:return 'Telegram Business не предоставляет право ответа в этом чате'
+        if d['state']=='stale':return 'черновик отменён после изменения сообщений или режима работы'
+        if c['revision']!=d['revision'] or int(self.get('revision'))!=d['global_revision']:
+            return 'после подготовки черновика изменился режим работы; подготовьте новый ответ'
+        if self.db.execute("SELECT 1 FROM drafts WHERE chat=? AND state='sending' LIMIT 1",(d['chat'],)).fetchone():
+            return 'в этом чате уже отправляется другой ответ'
+        if not 0<=now-c['inbound']<86340:return 'истекло допустимое окно ответа Telegram либо время последнего обращения некорректно'
+        if not 0<=now-d['created']<900:return 'истёк срок проверки черновика (15 минут) либо время его создания некорректно'
+        return 'первопричина отказа не установлена; требуется проверка состояния отправки'
+
     def reserve_send(self, did, now):
         with self.transaction():
             d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()

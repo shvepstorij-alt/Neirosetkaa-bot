@@ -28,13 +28,54 @@ def _dependent_followup(text):
     return bool(re.fullmatch(
         r'(?:а |и )?(?:сколько (?:это |он |она )?стоит|какая цена|какие лимиты|'
         r'что входит|как (?:его |её |это )?оформить|как оплатить|какой (?:из них )?лучше|'
+        r'что (?:нужно(?: будет)?|потребуется|нужно будет предоставить) для оформления|'
+        r'какие данные (?:нужны|потребуются)(?: для оформления)?|'
         r'а у (?:первого|второго|третьего)|у (?:первого|второго|третьего))',clean))
 
 
+def _apple_detail_kind(text):
+    line=re.sub(r'\s+',' ',str(text).casefold()).strip(' !?.,…')
+    line=re.sub(r'^(?:нет[, ]+|лучше |тогда |точнее |передумал[, ]+|передумала[, ]+)','',line)
+    region=r'(?:у меня )?(?:регион(?: apple id)? )?(?:сша|usa|us|турция|турецкий|tr|россия|ru|uk|gb)'
+    amount=(r'(?:(?:пополнить(?: баланс)?(?: хочу)?|хочу пополнить(?: баланс)?|сумма)\s+)?'
+            r'(?:на\s+)?(?:\d+(?:[.,]\d{1,2})?\s*(?:\$|usd|доллар(?:ов|а)?|try|лир(?:ы)?|₺|€|eur)'
+            r'|(?:\$|₺|€)\s*\d+(?:[.,]\d{1,2})?)')
+    if re.fullmatch(region,line):return 'region',line
+    if re.fullmatch(amount,line):return 'amount',line
+    return None,line
+
+
+def _current_apple_details(text):
+    """Only standalone slot replies supersede older slot replies; never rewrite prose."""
+    if re.search(r'\b(?:сравни[а-яё]*|сравнение|оба|обоих|варианты|или)\b',str(text),re.I):
+        return text
+    lines=str(text).splitlines()
+    kinds=[_apple_detail_kind(line) for line in lines]
+    last={kind:i for i,(kind,_) in enumerate(kinds) if kind}
+    kept=[]
+    for i,(line,(kind,_)) in enumerate(zip(lines,kinds)):
+        if kind and last[kind]!=i:continue
+        if kind:
+            line=re.sub(r'^(?:нет[, ]+|лучше |тогда |точнее |передумал[, ]+|передумала[, ]+)','',line.strip(),flags=re.I)
+        kept.append(line)
+    return '\n'.join(kept)
+
+
+def _apple_details_candidate(text):
+    """Recognize complete short region/amount replies, not arbitrary new topics."""
+    lines=[re.sub(r'\s+',' ',line.casefold()).strip(' !?.,…')
+           for line in str(text).splitlines() if line.strip()]
+    if not lines:return False
+    return all(is_acknowledgement(line) or _apple_detail_kind(line)[0] for line in lines)
+
+
+def _has_apple_topic(text):
+    from .catalog_context import ALIASES, _contains, _words
+    return any(_contains(_words(text),_words(alias)) for alias in ALIASES['appstore'])
+
+
 def _apple_region_followup(text, previous):
-    clean=re.sub(r'[\s!?.…,]+',' ',str(text).casefold()).strip()
-    region=bool(re.fullmatch(r'(?:регион )?(?:сша|usa|us|турция|турецкий|tr|россия|ru|uk|gb)',clean))
-    return region and bool(re.search(r'app\s*store|icloud|apple\s*id|апп?\s*стор|эп(?:п?л)?\s*стор|айтюнс',previous,re.I))
+    return _apple_details_candidate(text) and _has_apple_topic(previous)
 
 
 def resolve_request(db, chat, first, last, text):
@@ -44,12 +85,14 @@ def resolve_request(db, chat, first, last, text):
     bounded by the preceding draft. Never use generated draft text as evidence.
     """
     db.execute('CREATE TABLE IF NOT EXISTS request_context (chat INTEGER PRIMARY KEY, first_mid INTEGER, last_mid INTEGER)')
+    if _has_apple_topic(text):
+        text=_current_apple_details(text)
     if is_acknowledgement(text):return text
     reminder=is_reminder(text)
     followup=_dependent_followup(text)
     # Region-only replies are considered below only after examining prior client
     # content. A standalone region must never revive an unrelated service.
-    region_candidate=bool(re.fullmatch(r'(?:регион\s+)?(?:сша|usa|us|турция|турецкий|tr|россия|ru|uk|gb)[.!?\s]*',str(text),re.I))
+    region_candidate=_apple_details_candidate(text)
     if not reminder and not followup and not region_candidate:
         db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
         return text
@@ -69,10 +112,14 @@ def resolve_request(db, chat, first, last, text):
     parts=[r['text'] for r in rows if r['text'] and not is_reminder(r['text'])
            and not is_acknowledgement(r['text'])]
     previous='\n'.join(parts)
+    if _has_apple_topic(previous):
+        previous=_current_apple_details(previous)
     if not previous or len(previous)>24000:return '' if reminder else text
     if not reminder:
         if followup or _apple_region_followup(text,previous):
             combined=previous+'\n'+text
+            if _apple_region_followup(text,previous):
+                combined=_current_apple_details(combined)
             if len(combined)>24000:return text
             db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,bounds[0],last))
             return combined

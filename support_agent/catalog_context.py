@@ -9,7 +9,8 @@ import re
 ALIASES = {
     'krea': ('krea', 'креа'),
     'appstore': ('appstore', 'app store', 'icloud', 'айклауд', 'apple id', 'эпл айди', 'эппл айди',
-                 'аппстор', 'апп стор', 'эпл стор', 'эппл стор', 'айтюнс', 'itunes'),
+                 'аппстор', 'апп стор', 'эпл стор', 'эппл стор', 'эп стор', 'эп стора',
+                 'апп стора', 'эпл стора', 'эппл стора', 'апстор', 'апстора', 'айтюнс', 'itunes'),
     'chatgpt': ('chatgpt', 'chat gpt', 'чат гпт', 'чатгпт'),
     'claude': ('claude', 'клод', 'клода'),
     'perplexity': ('perplexity', 'перплексити'),
@@ -178,10 +179,14 @@ def verified_catalog_reply(facts, reason):
         if len(lines)>=8 or used+len(line)+1>line_budget:break
         lines.append(line);used+=len(line)+1
     parts=[]
+    from .workflow_policy import policies_for
+    policies=policies_for(facts)
     if lines:
         parts.append('Тарифы магазина:\n'+'\n'.join(lines)+'\nЦены до применения промокода и списания монет.')
         if len(lines)<len(all_lines):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
+    if policies:
+        parts.append('Для оформления Krea нужны почта и пароль от вашего аккаунта. Передайте их лично Александру в Telegram — оформлением займётся он. Сначала выберите нужный тариф в магазине и оплатите заказ.')
     if apple_requested:
         selection=facts.get('appstore_selection',{})
         known=selection.get('requested_codes',[])
@@ -204,7 +209,7 @@ def verified_catalog_reply(facts, reason):
         question=('Подскажите стоимость нужной покупки в валюте аккаунта и текущий баланс Apple ID.' if known else
                   'Для подбора пополнения App Store подскажите регион Apple ID, стоимость нужной покупки в валюте аккаунта и текущий баланс.')
         parts.append(question)
-    if not parts:parts=['Не удалось подготовить проверенный ответ по вашему обращению. Нужна ручная проверка условий; подтверждённых цен для ответа сейчас нет.']
+    if not parts:parts=['Уточните, пожалуйста, о каком сервисе или заказе идёт речь — хочу проверить именно ваш вопрос.']
     reply='\n\n'.join(parts)
     return {'reply':reply,'summary':'Свободный ответ не прошёл проверку. Сохранена только подтверждённая часть каталога и уточняющие вопросы. Остальные части обращения требуют проверки владельца.',
             'handoff':True,'source_ids':[],'research':{'topic':'none','products':[]},
@@ -214,6 +219,68 @@ def verified_catalog_reply(facts, reason):
                         +'; Apple status='+str(facts.get('appstore',{}).get('status','not_connected'))
                         +'; регионов='+str(len(facts.get('appstore',{}).get('regions',[])))
                         +'; выбранные регионы='+','.join(facts.get('appstore_selection',{}).get('requested_codes',[]))}}
+
+
+def direct_apple_reply(facts, latest):
+    """Plain top-up questions use stock facts, not historical region guesses."""
+    words=set(_words(latest))
+    if _families(_words(latest))-{'appstore'}:return None
+    allowed=set('а как мне хочу пополнить пополнение баланс баланса appstore app store apple id icloud '
+                'эп стора эпл апп стор аппстор айклауд у меня регион сша usa us американский '
+                'турция турции tr турецкий на долларов доллары доллар usd try лир лиры '
+                'сколько стоит какие варианты цены есть нужно пожалуйста подскажите'.split())
+    if any(w not in allowed and not w.isdigit() for w in words):return None
+    if 'appstore' not in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):return None
+    selection=facts.get('appstore_selection',{})
+    known=selection.get('requested_codes',[])
+    if len(known)>1:return None
+    answer=verified_catalog_reply(facts,'')
+    answer['evidence']={'status':'catalog_direct','sources':[]}
+    if known==['US']:
+        amounts=re.findall(r'(\d+(?:[.,]\d+)?)\s*(?:\$|USD|доллар[а-яё]*)|\$\s*(\d+(?:[.,]\d+)?)',latest,re.I)
+        from decimal import Decimal
+        amounts={Decimal((a or b).replace(',','.')) for a,b in amounts}
+        if len(amounts)==1:
+            amount=next(iter(amounts));quotes=set();matched=0
+            status=facts.get('appstore',{}).get('status','not_connected')
+            for region in selection.get('matched_regions',[]):
+                for row in region.get('denoms',[]):
+                    match=re.fullmatch(r'\s*(?:(\d+(?:[.,]\d+)?)\s*(?:USD|\$)|(?:USD|\$)\s*(\d+(?:[.,]\d+)?))\s*',str(row.get('nominal','')),re.I)
+                    if match and Decimal((match[1] or match[2]).replace(',','.'))==amount:
+                        matched+=1
+                    else:continue
+                    if type(row.get('price_rub')) is int and row['price_rub']>0:
+                        quotes.add(row['price_rub'])
+            if len(quotes)==1 and status in ('available','truncated'):
+                answer['reply']=f'Для Apple ID США есть пополнение на {amount:g} USD — {quotes.pop()} ₽. Регион подарочного кода должен совпадать с регионом Apple ID. После получения код нужно погасить в App Store через профиль → «Погасить подарочную карту или код». Цена до промокода и списания монет.'
+                answer['handoff']=False
+            else:
+                answer['reply']=f'Вы хотите пополнить Apple ID США на {amount:g} USD. Точную стоимость этого номинала сейчас подтвердить не получилось; потребуется проверка перед оформлением.'
+                reason=('источник недоступен' if status not in ('available','truncated') else
+                        'получены разные цены одного номинала' if len(quotes)>1 else
+                        'у совпавшего номинала нет корректной цены' if matched else
+                        'в полученной выборке нет точного совпадения номинала; отсутствие товара не подтверждено')
+                answer['evidence']={'status':'catalog_review','sources':[], 'diagnostic':
+                    f'Этап: подбор точного номинала App Store. Причина: {reason}. Регион=US; сумма={amount:g} USD; статус источника={status}; совпадений={matched}; разных корректных цен={len(quotes)}.'}
+    answer['summary']='Ответ по текущим региональным данным App Store. Регион не выбирался по истории модели.'
+    return answer
+
+
+def direct_workflow_reply(facts, latest):
+    """Owner-approved transactional Krea FAQ; no manufacturer features or model."""
+    from .workflow_policy import policies_for
+    if not policies_for(facts):return None
+    words=set(_words(latest))
+    allowed=set('привет здравствуйте добрый день вечер как оформить оформления оформить подписку подписки подписка '
+                'на креа krea какие тарифы тариф есть что нужно будет для от меня потребуется требуется '
+                'какие данные нужны нужны ли почта пароль и сколько стоит стоят цены цена стоимость '
+                'купить хочу мне у вас через магазин пожалуйста подскажите'.split())
+    if words-allowed or not words&{'оформить','оформления','нужно','потребуется','данные','купить'}:
+        return None
+    answer=verified_catalog_reply(facts,'')
+    answer.update(summary='Цены из магазина и условия Krea, прямо подтверждённые владельцем. Нужное ручное оформление выполняет Александр.',handoff=True)
+    answer['evidence']={'status':'catalog_direct','sources':[]}
+    return answer
 
 
 def direct_catalog_reply(facts, latest):
