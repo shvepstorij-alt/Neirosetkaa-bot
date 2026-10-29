@@ -16665,13 +16665,19 @@ async def setup_webhook_server():
         _support_nsg.set_overrides(overrides)
     async def _support_stock():
         return await _support_nsg.get_stock_cached(rt.nsgifts_client) if rt.nsgifts_client else {}
+    async def _support_workflows(catalog):
+        from support_fulfillment import project
+        async with (await get_pool()).acquire() as conn:
+            rows=await conn.fetch("SELECT key,value FROM settings WHERE key LIKE 'manual:%' OR key LIKE 'linkpay:enabled:%' OR key LIKE 'creds:enabled:%'")
+        # Return only allowlisted route names; never export instructions/credentials.
+        return project(catalog,{r['key']:r['value'] for r in rows},plan_name_to_key,GPT_AUTO_PLANS)
     app.router.add_post('/api/support/catalog',make_support_catalog_handler(
         catalog=lambda:SHOP_CATALOG,hidden=_support_hidden,price_for=shop_price_for,
         prepare_stock=_support_prepare_stock,stock=_support_stock,
         apple_categories=_support_nsg.get_apple_categories,stock_age=_support_nsg.stock_age,
         folder_for_category=_support_nsg.get_folder_by_category,
         markup_for_category=_appstore_markup_web,usd_rate=_nsg_usd_rate,
-        calc_price=_support_nsg.calc_price_rub))
+        calc_price=_support_nsg.calc_price_rub,workflow_snapshot=_support_workflows))
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)

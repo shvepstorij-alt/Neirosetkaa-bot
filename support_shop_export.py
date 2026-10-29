@@ -4,6 +4,7 @@ Dependencies are injected by the shop; this module never imports common/runtime,
 opens orders, buys codes, returns procurement fields, or handles customer passwords.
 """
 import asyncio
+import copy
 import hmac
 import html
 import json
@@ -30,7 +31,7 @@ def _positive(value):
 def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
                                  stock, apple_categories, stock_age,
                                  folder_for_category, markup_for_category,
-                                 usd_rate, calc_price):
+                                 usd_rate, calc_price, workflow_snapshot=None):
     """All network/DB dependencies are read-only functions already used by the shop.
 
     catalog() is sync; hidden/price_for/prepare_stock/stock/markup_for_category/
@@ -44,6 +45,19 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
         rows=[];truncated=False
         source=catalog()
         if not isinstance(source,dict):raise ValueError('Invalid catalogue')
+        source=copy.deepcopy(source)
+        workflows={}
+        workflow_status='not_connected'
+        if workflow_snapshot is not None:
+            try:
+                workflows=await asyncio.wait_for(workflow_snapshot(source),timeout=5)
+                workflow_status='available'
+                if not isinstance(workflows,dict):
+                    workflows={};workflow_status='invalid_response'
+            except asyncio.TimeoutError:
+                workflow_status='timeout'
+            except Exception:
+                workflows={};workflow_status='read_error'
         async def priced(key,index,service,plan):
             base=_positive(plan.get('price'))
             row={'service_key':_text(key,100),'plan_index':index,
@@ -54,6 +68,11 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
                  'catalog_price_rub':base,
                  'price_scope':'public_catalog_before_personal_adjustments',
                  'stock':'not_checked','fulfillment':'not_verified'}
+            from support_fulfillment import METHODS
+            method=workflows.get((key,index))
+            if method in METHODS:
+                row['fulfillment']=method
+                row['fulfillment_source']='live_shop_settings_and_code'
             try:
                 async with pricing_gate:
                     quote=await price_for(uid,key,base)
@@ -74,7 +93,10 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
                 rows.append((key,index,service,dict(plan)))
             if truncated:break
         result=await asyncio.gather(*(priced(*row) for row in rows))
+        if workflow_status=='available' and any(r['fulfillment']=='not_verified' for r in result):
+            workflow_status='partial'
         return {'catalog_status':'truncated' if truncated else 'available',
+                'workflow_status':workflow_status,
                 'catalog_complete':not truncated,'catalog':result}
 
     async def apple(hidden_keys):
@@ -103,8 +125,9 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
         count=0;truncated=False
         for category in apple_categories(data):
             cat_id=category['category_id']
-            folder=folder_for_category(data,cat_id)
-            if not folder or folder.get('hidden'):continue
+            # Match api_appstore_regions_handler: the dedicated Apple section
+            # does not depend on generic gift-card folder membership/visibility.
+            # Its own shop_hidden['appstore'] gate above remains authoritative.
             if len(result['regions'])>=50:
                 truncated=True;break
             markup=await markup_for_category(data,cat_id,category)
