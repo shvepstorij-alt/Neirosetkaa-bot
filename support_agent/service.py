@@ -360,8 +360,10 @@ class Service:
                              '\nПричина: '+reasons.get(reason,'точная причина не получена из экспорта; нужна проверка текущей версии магазина'))
                 from .workflow_policy import policies_for
                 policy=policies_for({'requested_catalog':[{'service':name}]})
-                if any(p['service']=='suno' for p in policy) and method!='account_details':
-                    lines.append('Конфликт Suno: владелец подтвердил почту и пароль, настройка магазина передаёт '+method+'. Изменение настройки требует отдельного согласования.')
+                if policy:
+                    lines.append(name+': владелец подтвердил почту и пароль; это отдельный источник подтверждения, даже если экспорт полей остаётся not_verified.')
+                    if method!='account_details' and any(p['service']!='krea' for p in policy):
+                        lines.append('Конфликт '+name+': владелец подтвердил account_details, настройка магазина передаёт '+method+'. Изменение настройки требует отдельного согласования.')
             if not rows:lines.append('В прочитанной выборке сервис не сопоставлен; это не подтверждает отсутствие товара.')
             lines.append('not_verified означает, что конкретные поля/шаги ещё не подтверждены, а не что оформить нельзя. Модель не вызывается.')
             await self.owner_message('\n\n'.join(lines))

@@ -39,13 +39,15 @@ def workflow_reply(facts,latest):
             if prices:parts.append(f'Для {name} есть такие тарифы:\n'+'\n'.join(dict.fromkeys(prices)))
         owner_policies=policies_for({'requested_catalog':items})
         methods={item.get('fulfillment','not_verified') for item in items}
-        if any(p['service']=='suno' for p in owner_policies) and methods!={'account_details'}:
+        if any(p['service'] in ('suno','zoom','openrouter','spotify','youtube') for p in owner_policies) and methods!={'account_details'}:
             parts.append(name+': для оформления нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления; платёжную ссылку от сервиса для этого способа присылать не нужно.')
             diagnostics.append(name+': конфликт способов оформления. Владелец подтвердил account_details (почта и пароль), живой каталог передаёт '+','.join(sorted(methods))+'. Нужно согласовать настройку товара; метод в магазине не изменён автоматически.')
             handoff=True
             continue
         if owner_policies:
             parts.append(name+': выберите тариф и оплатите заказ. После оплаты пришлите сюда, в эту переписку, почту и пароль от аккаунта.')
+            if re.search(r'google|гугл',latest,re.I) and any(p.get('google_sign_in') for p in owner_policies):
+                parts.append('Если в этот сервис вы входите через Google, для оформления нужны почта и пароль от соответствующего Google-аккаунта. Одноразовые и резервные коды присылать не нужно.')
             handoff=True
             continue
         if methods=={'account_details'}:

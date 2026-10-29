@@ -173,7 +173,7 @@ def verified_catalog_reply(facts, reason):
         if len(lines)<len(all_lines):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
     for policy in policies:
-        name={'krea':'Krea','suno':'Suno'}[policy['service']]
+        name={'krea':'Krea','suno':'Suno','zoom':'Zoom','openrouter':'Openrouter','spotify':'Spotify','youtube':'YouTube'}[policy['service']]
         if policy['service']=='suno' and any(r.get('fulfillment')!='account_details' for r in rows if 'suno' in str(r.get('service','')).casefold()):
             parts.append('Для оформления Suno нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления заказа.')
         else:
