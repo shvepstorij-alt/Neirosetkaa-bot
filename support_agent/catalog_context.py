@@ -217,7 +217,7 @@ def direct_apple_reply(facts, latest):
                 'турция турции tr турецкий на долларов доллары доллар usd try лир лиры '
                 'сколько стоит какие варианты цены есть нужно пожалуйста подскажите будет стоить '
                 'евро eur германия германии немецкий немецкого немецком регионе de germany в '
-                'пополнения балансе эп сторе'.split())
+                'пополнения балансе эп сторе и или россии германии франции привет здравствуйте добрый день'.split())
     from .apple_matching import CURRENCIES, ALIASES
     allowed.update(c.lower() for c in CURRENCIES)
     allowed.update(code.lower() for code in ALIASES)
@@ -227,7 +227,21 @@ def direct_apple_reply(facts, latest):
     if 'appstore' not in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):return None
     selection=facts.get('appstore_selection',{})
     known=selection.get('requested_codes',[])
-    if len(known)>1:return None
+    if len(known)>1:
+        from .apple_matching import regional_quotes
+        quotes=regional_quotes(facts,latest)
+        parts=[];diagnostics=[]
+        for q in quotes:
+            label={'DE':'Германия','RU':'Россия','FR':'Франция'}.get(q['region'],q['region'])
+            if q.get('price') is not None:
+                parts.append(f"{label}, {q['amount']:g} {q['currency']}: {q['price']} ₽")
+            else:
+                parts.append(f'{label}: нужно уточнить номинал или проверить его стоимость.')
+                diagnostics.append(f"Регион={q['region']}; причина={q['reason']}")
+        return {'reply':'\n'.join(parts),'summary':'Несколько регионов App Store; суммы сопоставлены по валютам номиналов, без пересчёта.',
+                'handoff':bool(diagnostics),'source_ids':[],
+                'evidence':{'status':'catalog_review' if diagnostics else 'catalog_direct','sources':[],
+                            'diagnostic':'Этап: сопоставление нескольких регионов App Store. '+ '; '.join(diagnostics) if diagnostics else ''}}
     answer=verified_catalog_reply(facts,'')
     answer['evidence']={'status':'catalog_direct','sources':[]}
     quote=exact_quote(facts,latest)

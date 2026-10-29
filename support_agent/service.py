@@ -585,7 +585,7 @@ class Service:
             (job['chat'],batch_first,job['mid'])).fetchall()
         latest=current_request(batch,batch_first,job['mid'])
         from .request_context import resolve_request
-        latest=resolve_request(self.store.db,job['chat'],batch_first,job['mid'],latest)
+        latest=resolve_request(self.store.db,job['chat'],batch_first,job['mid'],latest,facts.get('catalog',[]))
         if not latest:
             return {'reply':'Напомните, пожалуйста, ваш вопрос — не хочу ответить про другой сервис.',
                     'summary':'Клиент ждёт ответ, но исходный вопрос отсутствует в сохранённом контексте.',

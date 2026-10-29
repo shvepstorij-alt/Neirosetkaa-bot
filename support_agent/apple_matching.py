@@ -39,7 +39,7 @@ REGIONS = {
 ALIASES={code:tuple(names.split('|')) for code,names in REGIONS.items()}
 CURRENCIES=('USD','EUR','TRY','GBP','AED','AUD','BRL','CAD','INR','JPY','KZT','PLN',
             'SAR','RUB','CHF','SGD','HKD','NZD','MXN','KRW','SEK','NOK','DKK','ZAR')
-TOKEN=r'(?:'+ '|'.join(CURRENCIES)+r'|\$|€|₺|£|евро|доллар(?:ов|а|ы)?|лир(?:ы)?|тенге|иен(?:ы)?|йен(?:ы)?)'
+TOKEN=r'(?:'+ '|'.join(CURRENCIES)+r'|\$|€|₺|£|₽|руб(?:лей|ля|ль)|евро|доллар(?:ов|а|ы)?|лир(?:ы)?|тенге|иен(?:ы)?|йен(?:ы)?)'
 NUMBER=r'\d+(?:[.,]\d{1,2})?'
 PAIR=re.compile(r'(?<![\w.,])('+NUMBER+r')\s*('+TOKEN+r')(?!\w)|(?<!\w)('+TOKEN+r')\s*('+NUMBER+r')(?![\d.,])',re.I)
 
@@ -70,6 +70,7 @@ def canonical_currency(token):
     if t=='евро' or t=='€':return 'EUR'
     if t=='₺' or t.startswith('лир'):return 'TRY'
     if t=='£':return 'GBP'
+    if t=='₽' or t.startswith('руб'):return 'RUB'
     if t.startswith('доллар') or t=='$':return '$'
     if t=='тенге':return 'KZT'
     if t.startswith(('иен','йен')):return 'JPY'
@@ -111,3 +112,22 @@ def exact_quote(facts,text):
             'в полученной выборке нет точного совпадения номинала; отсутствие товара не подтверждено' if not matched else '')
     return {'region':codes[0],'amount':amount,'currency':unit,'price':next(iter(prices)) if not reason else None,
             'reason':reason,'status':status,'matched':len(matched),'price_count':len(prices)}
+
+
+def regional_quotes(facts,text):
+    """Assign amounts by explicit currency, never by order or country exchange rate."""
+    selection=facts.get('appstore_selection',{});requested=amounts(text)
+    results=[]
+    for code in selection.get('requested_codes',[]):
+        rows=[r for r in selection.get('matched_regions',[]) if code in region_codes(r.get('name',''),stock=True)]
+        units={identity[1] for r in rows for entry in r.get('denoms',[])
+               if (identity:=nominal(entry.get('nominal','')))}
+        candidates={(a,u) for a,u in requested if u in units or u=='$' and units & {'USD','CAD','AUD','NZD','SGD','HKD','MXN'}}
+        if len(candidates)!=1:
+            results.append({'region':code,'price':None,'reason':'не удалось однозначно связать сумму и валюту с регионом'})
+            continue
+        amount,unit=next(iter(candidates))
+        local=dict(facts,appstore_selection=dict(selection,requested_codes=[code],matched_regions=rows))
+        quote=exact_quote(local,f'{amount} {unit}')
+        results.append(quote)
+    return results

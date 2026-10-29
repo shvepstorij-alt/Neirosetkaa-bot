@@ -67,7 +67,42 @@ def _apple_details_candidate(text):
     lines=[re.sub(r'\s+',' ',line.casefold()).strip(' !?.,…')
            for line in str(text).splitlines() if line.strip()]
     if not lines:return False
-    return all(is_acknowledgement(line) or _apple_detail_kind(line)[0] for line in lines)
+    if all(is_acknowledgement(line) or _apple_detail_kind(line)[0] for line in lines):return True
+    return _regional_question(text)
+
+
+def _regional_question(text):
+    """Recognize a regional price question as a whole, not a particular phrase."""
+    from .apple_matching import ALIASES,PAIR,region_codes,words
+    if not region_codes(text):return False
+    remainder=PAIR.sub(' ',str(text))
+    tokens=set(words(remainder))
+    allowed=set('а и или для в во на у меня регион региона регионе сколько стоит будет стоить пополнение пополнить баланс баланса цена цены хочу нужно пожалуйста подскажите'.split())
+    allowed.update(w for code,names in ALIASES.items() for alias in (code,*names) for w in words(alias))
+    return not tokens-allowed
+
+
+def _apple_topic_only(text):
+    from .catalog_context import ALIASES,_words
+    return _words(text) in {_words(alias) for alias in ALIASES['appstore']}
+
+
+def _link_apple_turn(previous,text):
+    """Carry service identity, but not an earlier country's amount, into a new regional question."""
+    from .apple_matching import region_codes
+    if _apple_topic_only(text):
+        if _has_apple_topic(previous):return previous
+        if _apple_details_candidate(previous):return text+'\n'+previous
+    if _apple_region_followup(text,previous):
+        if re.search(r'\b(?:сравни[а-яё]*|сравнение|оба|обоих|варианты|или)\b',previous,re.I):
+            return previous+'\n'+text
+        if _regional_question(text) and region_codes(text):
+            from .apple_matching import amounts
+            anchors=[line for line in previous.splitlines() if _has_apple_topic(line)
+                     and not region_codes(line) and not amounts(line)]
+            return (anchors[0] if anchors else 'App Store')+'\n'+_current_apple_details(text)
+        return _current_apple_details(previous+'\n'+text)
+    return None
 
 
 def _has_apple_topic(text):
@@ -79,7 +114,31 @@ def _apple_region_followup(text, previous):
     return _apple_details_candidate(text) and _has_apple_topic(previous)
 
 
-def resolve_request(db, chat, first, last, text):
+def _service_names(catalog):
+    from .catalog_context import ALIASES,_words
+    names={_words(alias) for aliases in ALIASES.values() for alias in aliases}
+    for row in catalog:
+        for key in ('service','service_key'):
+            value=_words(row.get(key,''))
+            if value:names.add(value)
+    return names
+
+
+def _contextual_followup(text,catalog):
+    """Short workflow/plan references may inherit client context, never account state."""
+    from .catalog_context import _words,_contains
+    tokens=_words(text)
+    if not tokens or len(tokens)>24:return False
+    if any(_contains(tokens,name) for name in _service_names(catalog)):return False
+    allowed=set('а и это этот эта его ее её мне от меня вам вас у нужно нужны нужен потребуется требуется какие данные что как куда когда сколько времени ждать долго занимает оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено после передать прислать отправить почта почту пароль аккаунт аккаунта вход активация активации активировать подписка подписку подписки тариф тарифа тарифы выбрать выбирать месяц месяца месяцев год года годовой месячный можно ли будет для на по с со без уже не прошло работает спасибо пожалуйста подскажите тогда хочу да нет'.split())
+    for row in catalog:
+        allowed.update(_words(row.get('plan','')))
+    intent=set('нужно нужны нужен потребуется требуется данные оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено активация активации активировать ждать долго месяц год годовой месячный пароль почту аккаунт тариф тарифа'.split())
+    plans={word for row in catalog for word in _words(row.get('plan',''))}
+    return bool(set(tokens)&(intent|plans)) and all(t in allowed or t.isdigit() for t in tokens)
+
+
+def resolve_request(db, chat, first, last, text, catalog=()):
     """Persist only message references. Deleted/expired content is not resurrected.
 
     Older deployments have no pointer: use the most recent draft's client batch,
@@ -90,11 +149,13 @@ def resolve_request(db, chat, first, last, text):
         text=_current_apple_details(text)
     if is_acknowledgement(text):return text
     reminder=is_reminder(text)
-    followup=_dependent_followup(text)
+    followup=_dependent_followup(text) or _contextual_followup(text,catalog)
+    from .catalog_context import _words,_contains
+    service_only=_words(text) in _service_names(catalog)
     # Region-only replies are considered below only after examining prior client
     # content. A standalone region must never revive an unrelated service.
     region_candidate=_apple_details_candidate(text)
-    if not reminder and not followup and not region_candidate:
+    if not reminder and not followup and not region_candidate and not service_only:
         db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
         return text
     pointer=db.execute('SELECT first_mid,last_mid FROM request_context WHERE chat=?',(chat,)).fetchone()
@@ -112,15 +173,21 @@ def resolve_request(db, chat, first, last, text):
     if len(rows)>60:return '' if reminder else text
     parts=[r['text'] for r in rows if r['text'] and not is_reminder(r['text'])
            and not is_acknowledgement(r['text'])]
-    previous='\n'.join(parts)
+    previous=''
+    for part in parts:
+        linked=_link_apple_turn(previous,part) if previous else None
+        previous=linked if linked is not None else (previous+'\n'+part if previous else part)
     if _has_apple_topic(previous):
         previous=_current_apple_details(previous)
     if not previous or len(previous)>24000:return '' if reminder else text
     if not reminder:
-        if followup or _apple_region_followup(text,previous):
-            combined=previous+'\n'+text
-            if _apple_region_followup(text,previous):
-                combined=_current_apple_details(combined)
+        linked=_link_apple_turn(previous,text)
+        if linked is None and service_only:
+            previous_has_service=any(_contains(_words(previous),name) for name in _service_names(catalog))
+            if not previous_has_service and (_dependent_followup(previous) or _contextual_followup(previous,catalog)):
+                linked=previous+'\n'+text
+        if followup or linked is not None:
+            combined=linked if linked is not None else previous+'\n'+text
             if len(combined)>24000:return text
             db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,bounds[0],last))
             return combined
