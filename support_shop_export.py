@@ -68,11 +68,23 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
                  'catalog_price_rub':base,
                  'price_scope':'public_catalog_before_personal_adjustments',
                  'stock':'not_checked','fulfillment':'not_verified'}
-            from support_fulfillment import METHODS
-            method=workflows.get((key,index))
+            from support_fulfillment import METHODS, REQUIRED_FIELDS
+            detail=workflows.get((key,index))
+            method=detail.get('method') if isinstance(detail,dict) else detail
             if method in METHODS:
                 row['fulfillment']=method
                 row['fulfillment_source']='live_shop_settings_and_code'
+            if method=='account_details':
+                row.update(required_fields_status='not_verified',required_fields=[])
+                if isinstance(detail,dict):
+                    fields=detail.get('required_fields')
+                    if (detail.get('required_fields_status')=='available'
+                            and detail.get('required_fields_source')=='live_shop_creds_instructions'
+                            and isinstance(fields,list) and fields
+                            and all(isinstance(f,str) and f in REQUIRED_FIELDS for f in fields)
+                            and len(fields)==len(set(fields))):
+                        row.update(required_fields_status='available',required_fields=list(fields),
+                                   required_fields_source='live_shop_creds_instructions')
             try:
                 async with pricing_gate:
                     quote=await price_for(uid,key,base)

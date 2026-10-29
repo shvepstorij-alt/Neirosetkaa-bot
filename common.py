@@ -16666,11 +16666,12 @@ async def setup_webhook_server():
     async def _support_stock():
         return await _support_nsg.get_stock_cached(rt.nsgifts_client) if rt.nsgifts_client else {}
     async def _support_workflows(catalog):
-        from support_fulfillment import project
+        from support_fulfillment import project_details
         async with (await get_pool()).acquire() as conn:
-            rows=await conn.fetch("SELECT key,value FROM settings WHERE key LIKE 'manual:%' OR key LIKE 'linkpay:enabled:%' OR key LIKE 'creds:enabled:%'")
-        # Return only allowlisted route names; never export instructions/credentials.
-        return project(catalog,{r['key']:r['value'] for r in rows},plan_name_to_key,GPT_AUTO_PLANS)
+            rows=await conn.fetch("SELECT key,value FROM settings WHERE key LIKE 'manual:%' OR key LIKE 'linkpay:enabled:%' OR key LIKE 'creds:enabled:%' OR key LIKE 'creds:instructions:%'")
+        # Project allowlisted field identities locally; raw instructions never leave the shop.
+        return project_details(catalog,{r['key']:r['value'] for r in rows},plan_name_to_key,GPT_AUTO_PLANS,
+                               default_creds_instruction=_CREDS_DEFAULT_INSTR)
     app.router.add_post('/api/support/catalog',make_support_catalog_handler(
         catalog=lambda:SHOP_CATALOG,hidden=_support_hidden,price_for=shop_price_for,
         prepare_stock=_support_prepare_stock,stock=_support_stock,
