@@ -7,6 +7,13 @@ def workflow_reply(facts,latest):
     questions=[line for line in lines if re.search(r'оформ|кроме оплаты|что.*прислать|какие.*данные|как.*(?:получить|скопировать|найти).*ссылк',line,re.I)]
     if not questions:return None
     if re.search(r'функци|лимит|входит|отлич|возврат|ошиб|не работает|закуп|поставщик|себестоим|18\s*\+|порно|эротическ',latest,re.I):return None
+    ambiguities=facts.get('catalog_selection',{}).get('variant_ambiguities',[])
+    if ambiguities:
+        labels=list(dict.fromkeys(name for group in ambiguities for name in group['services']))
+        return {'reply':'Что именно нужно оформить: '+' или '.join(labels)+'?',
+                'summary':'У бренда найдены разные типы товаров; клиенту задан один вопрос для выбора конкретного товара.',
+                'handoff':False,'source_ids':[],'evidence':{'status':'catalog_direct','sources':[],
+                    'diagnostic':'Этап: выбор товара. Неоднозначны отдельные продукты одного бренда: '+', '.join(labels)}}
     from .catalog_context import _words,_families
     from .request_context import _service_names
     known_words={word for name in _service_names(facts.get('catalog',[])) for word in name}

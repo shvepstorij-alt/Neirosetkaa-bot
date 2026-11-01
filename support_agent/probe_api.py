@@ -11,10 +11,12 @@ from pathlib import Path
 
 
 def code_fingerprint():
-    files=('clients.py','service.py','research.py','feature_reply.py','reply_audit.py',
-           'answer_check.py','dialog_probe.py','probe_api.py')
     root=Path(__file__).resolve().parent
-    return {name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}
+    files=sorted(p.name for p in root.glob('*.py') if p.name!='probe_client.py')
+    files+=['STYLE.md','SERVICE_RULES.md','WORKFLOW_RULES.md','requirements.txt']
+    # Compare code/rules, not Windows vs Linux line-ending conventions.
+    return {name:hashlib.sha256((root/name).read_text(encoding='utf-8').replace('\r\n','\n').encode('utf-8')).hexdigest()
+            for name in files}
 
 
 class ProbeConfigurationError(ValueError):

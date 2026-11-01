@@ -24,19 +24,8 @@ def _all_intent(text):
 
 
 def _mentions(text,catalog):
-    tokens=_words(text);found={}
-    for family,aliases in ALIASES.items():
-        if any(_contains(tokens,_words(alias)) for alias in aliases):
-            found[family]=aliases[0]
-    from .catalog_context import annotate
-    for row in annotate({'catalog':catalog},text)['requested_catalog']:
-        if not isinstance(row,dict):continue
-        name=str(row.get('service',''));key=str(row.get('service_key',''))
-        if not name:continue
-        families=_families(_words(name))|_families(_words(key))
-        identity=next(iter(families)) if len(families)==1 else 'catalog:'+key.casefold()+':'+name.casefold()
-        found[identity]=name
-    return found
+    from .catalog_context import service_mentions
+    return service_mentions(text,catalog)
 
 
 def _only_names(text,catalog):

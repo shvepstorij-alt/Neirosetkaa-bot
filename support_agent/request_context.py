@@ -155,7 +155,7 @@ def _contextual_followup(text,catalog):
 
 def _recent_service_labels(db,chat,first,catalog,source_mids=None):
     """Only explicit client mentions, bounded by time and size; never model answers."""
-    from .catalog_context import ALIASES,_words,_contains,_families
+    from .catalog_context import service_mentions
     rows=db.execute("SELECT mid,text FROM messages WHERE chat=? AND role='client' AND mid<? AND (at IS NULL OR at>=?) ORDER BY mid DESC LIMIT 60",(chat,first,time.time()-86400)).fetchall()
     if source_mids is not None:
         rows=[row for row in rows if row['mid'] in source_mids]
@@ -165,15 +165,7 @@ def _recent_service_labels(db,chat,first,catalog,source_mids=None):
         text=row['text'] or '';used+=len(text)
         if used>24000:break
         if re.search(r'предыдущий вопрос отменяю|забудь|не обсуждаем|\bне\s+\w+\s*,?\s*а\s+',text,re.I):break
-        tokens=_words(text)
-        found=[]
-        for family,aliases in ALIASES.items():
-            if any(_contains(tokens,_words(a)) for a in aliases):found.append((family,aliases[0]))
-        for item in catalog:
-            name=item.get('service','');key=item.get('service_key','')
-            if name and any(_contains(tokens,_words(v)) for v in (name,key) if v):
-                families=_families(_words(name))|_families(_words(key))
-                if not families:found.append((name.casefold(),name))
+        found=list(service_mentions(text,catalog).items())
         if len({identity for identity,_ in found})>2:return []
         for identity,label in found:
             if identity not in {i for i,_,_ in labels}:labels.append((identity,label,row['mid']))

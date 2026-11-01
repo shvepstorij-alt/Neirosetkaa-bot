@@ -51,6 +51,98 @@ def _families(words):
             if any(_contains(words,_words(alias)) for alias in aliases)}
 
 
+def _credit_product(row):
+    # Product title/key, NOT plan limits: Krea plans can contain credits without
+    # being a separately sold top-up. Fulfillment is not a product classifier.
+    return bool(re.search(r'кредит|(?<![a-z])credits?(?![a-z])',
+                          str(row.get('service',''))+' '+str(row.get('service_key','')),re.I))
+
+
+def _product_aliases(catalog):
+    aliases=dict(ALIASES)
+    extras=[r for r in catalog if isinstance(r,dict) and _credit_product(r)]
+    for row in catalog:
+        if not isinstance(row,dict) or _credit_product(row):continue
+        names=[str(row.get(k,'')) for k in ('service','service_key') if row.get(k)]
+        if any(_families(_words(name)) for name in names):continue
+        if names and any(any(_contains(_words(str(extra.get('service',''))+' '+str(extra.get('service_key',''))),_words(name))
+                                for name in names) for extra in extras):
+            aliases['catalog_brand:'+str(row.get('service_key') or row.get('service')).casefold()]=tuple(names)
+    return aliases
+
+
+def _product_families(text,aliases):
+    return {family for family,names in aliases.items() if any(_contains(_words(text),_words(name)) for name in names)}
+
+
+def variant_families(catalog):
+    aliases=_product_aliases(catalog)
+    groups={}
+    for row in catalog:
+        if not isinstance(row,dict):continue
+        for family in _product_families(str(row.get('service',''))+' '+str(row.get('service_key','')),aliases):
+            groups.setdefault(family,set()).add(_credit_product(row))
+    return {family for family,kinds in groups.items() if len(kinds)>1}
+
+
+def _select_variants(rows,latest):
+    selected=list(rows);ambiguous=[]
+    aliases=_product_aliases(rows)
+    parts=re.split(r'[,;.!?\n]|\bи\b',latest,flags=re.I)
+    scopes={};previous=None
+    all_families=_product_families(latest,aliases)
+    for part in parts:
+        families=_product_families(part,aliases)
+        targets=families or ({previous} if previous else all_families if len(all_families)==1 else set())
+        for family in targets:scopes.setdefault(family,[]).append(part)
+        if families:previous=next(iter(families)) if len(families)==1 else None
+    for family in variant_families(rows):
+        related=[r for r in rows if family in _product_families(str(r.get('service',''))+' '+str(r.get('service_key','')),aliases)]
+        extra=[r for r in related if _credit_product(r)];regular=[r for r in related if not _credit_product(r)]
+        local='\n'.join(scopes.get(family,[]))
+        rest=local
+        explicit_extra=False
+        for row in extra:
+            name=str(row.get('service',''))
+            if name and _contains(_words(local),_words(name)):
+                explicit_extra=True
+                rest=re.sub(re.escape(name),' ',rest,flags=re.I)
+        plan=any(_contains(_words(rest),_words(r.get('plan'))) for r in regular if r.get('plan'))
+        credit_word=bool(re.search(r'кредит|\bcredits?\b',local,re.I))
+        purchase=bool(re.search(r'пополн|купить|докуп|пакет|приобр|оформ',local,re.I))
+        want_extra=explicit_extra or credit_word and (purchase or not plan)
+        want_regular=plan or bool(re.search(r'подписк',rest,re.I))
+        coordinated=bool(re.search(r'[,;]|\b(?:и|оба|обе|также|ещ[её])\b',latest,re.I))
+        if explicit_extra and coordinated and any(_contains(_words(rest),_words(r.get('service'))) for r in regular):
+            want_regular=True
+        both=want_extra and want_regular and coordinated
+        if want_extra and not want_regular:
+            selected=[r for r in selected if r not in regular]
+        elif want_regular and not want_extra:
+            selected=[r for r in selected if r not in extra]
+        elif not both:
+            ambiguous.append({'family':family,'services':list(dict.fromkeys(str(r.get('service','')) for r in related))})
+    return selected,ambiguous
+
+
+def service_mentions(text,catalog):
+    """Use the same product identity for catalogue and conversational references."""
+    found={family:aliases[0] for family,aliases in ALIASES.items()
+           if any(_contains(_words(text),_words(alias)) for alias in aliases)}
+    split=variant_families(catalog)
+    aliases=_product_aliases(catalog)
+    for row in annotate({'catalog':catalog},text)['requested_catalog']:
+        name=str(row.get('service',''));key=str(row.get('service_key',''))
+        if not name:continue
+        families=_product_families(name+' '+key,aliases)
+        if len(families)==1 and not families&split:identity=next(iter(families))
+        else:
+            for family in families&split:found.pop(family,None)
+            identity='catalog:'+key.casefold()+':'+name.casefold()
+        found[identity]=name
+    return found
+
+
 def annotate(facts, latest, products=()):
     """Copy facts, adding request-relevant rows; never mark an item unavailable.
 
@@ -87,12 +179,16 @@ def annotate(facts, latest, products=()):
             seen.add(identity)
             services.append({'service_key':identity[0],'service':identity[1],
                              'match_basis':'name_or_key' if direct else 'explicit_alias'})
+    matched,ambiguities=_select_variants(matched,str(latest))
+    selected_services={(str(r.get('service_key','')),str(r.get('service',''))) for r in matched}
+    services=[s for s in services if (s['service_key'],s['service']) in selected_services]
     result['requested_catalog']=matched
     if 'appstore' in wanted:
         result['appstore_selection']=apple_selection(facts.get('appstore',{}),latest)
     result['catalog_selection']={
         'status':'matched' if matched else 'no_explicit_match',
         'matched_services':services,
+        'variant_ambiguities':ambiguities,
         'mentioned_known_services':sorted(wanted),
         'absence_confirmed':False,
         'note':('Совпавшие строки — предложения магазина; используй их рублёвые цены '
