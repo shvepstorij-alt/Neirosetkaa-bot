@@ -12,7 +12,7 @@ from pathlib import Path
 from .clients import OpenAI, ShopReader, Telegram
 from .privacy import scrub, sensitive
 from .storage import Store
-from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details
+from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details, with_public_trace
 from .response_policy import continuing_reply, missing_shop_reply, consultation_plan, current_request
 
 
@@ -705,6 +705,7 @@ class Service:
                 answer.setdefault('evidence',{'status':'catalog_checked','sources':[]})['content_review']=review
             return answer
         stage='search'
+        evidence={}
         try:
             self.charge_call()
             def charge_search():
@@ -725,9 +726,14 @@ class Service:
             from .research import CitationError, evidence_domains, safe_url
             correction=None
             from .feature_reply import price_block,compose
-            # Partial search has a separate path that must retain the verified
-            # portion and explicitly describe unavailable services.
-            retail_block=price_block(facts,latest) if not evidence.get('failures') else ''
+            # Partial evidence still uses deterministic prices when at least
+            # one product has sources; unknown products get explicit blocks.
+            retail_block=price_block(facts,latest,topic=plan['topic']) if evidence.get('sources') else ''
+            if retail_block:
+                # Unknown services may need official prices; do not suppress
+                # that part of a mixed question with the store-price-only mode.
+                if any(not annotate({'catalog':facts.get('requested_catalog',[])},p)['requested_catalog'] for p in plan['products']):
+                    retail_block=''
             for attempt in range(2):
                 if not self.store.still_current(job):
                     return None
@@ -760,17 +766,17 @@ class Service:
                             raise ValueError('Answer content unsupported')
                         checked.setdefault('evidence',{})['content_review']=review
                     if not missing or not covered or attempt:
-                        return checked
+                        return with_public_trace(checked,evidence)
                     issue='missing_products'
                 except Exception as exc:
                     # Retry citation formatting only, not transport, privacy,
                     # unsupported facts, or arbitrary model failures.
                     if attempt or not (isinstance(exc,CitationError) or
-                                       getattr(exc,'reason',None)=='feature_length' or
+                                       getattr(exc,'reason',None) in ('feature_length','feature_incomplete') or
                                        getattr(exc,'reason',None)=='draft_source_ids' or
                                        str(exc)=='Answer content unsupported'):
                         raise
-                    issue=('feature_length' if getattr(exc,'reason',None)=='feature_length' else
+                    issue=(getattr(exc,'reason') if getattr(exc,'reason',None) in ('feature_length','feature_incomplete') else
                            'unsupported_content' if str(exc)=='Answer content unsupported'
                            else getattr(exc,'citation_reason','unknown_ids'))
                     missing=[]
@@ -789,12 +795,12 @@ class Service:
                 # Store only a scrubbed candidate, never raw model payload/history.
                 if getattr(self,'_probe_capture',False):
                     fallback['evidence']['rejected_reply']=scrub(final.get('reply',''))[:2500]
-                return fallback
+                return with_public_trace(fallback,evidence)
             if str(getattr(exc,'reason','')).startswith('feature_') and facts.get('requested_catalog'):
                 from .catalog_context import verified_catalog_reply
                 fallback=verified_catalog_reply(facts,failure_details(exc,stage))
                 fallback['evidence'].update(sources=evidence.get('sources',[]),checked_at=evidence.get('checked_at'))
-                return fallback
+                return with_public_trace(fallback,evidence)
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)
             result=unavailable(diagnostic)
@@ -802,7 +808,7 @@ class Service:
                 result['reply']='Не удалось однозначно определить официальный сайт сервиса. Уточните, пожалуйста, его полное название и для чего вы хотите его использовать?'
             elif str(exc)=='Service identity unconfirmed':
                 result['reply']='Сейчас не получилось проверить актуальные условия сервиса. Не хочу назвать вам неверные тарифы или ограничения.'
-            return result
+            return with_public_trace(result,evidence)
 
     async def work_once(self):
         job=self.store.claim(time.time(),self.active_chats)

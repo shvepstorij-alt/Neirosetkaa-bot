@@ -180,6 +180,7 @@ def failure_details(exc,stage):
         'feature_source_domain':'блок функций сослался на источник другого сервиса или неподтверждённого домена',
         'feature_source_count':'выделенный ответ превысил общий лимит 12 источников',
         'feature_length':'выделенное описание функций превысило лимит 1100 символов',
+        'feature_incomplete':'блок функций заканчивается незавершённой связкой или вводной фразой; нужна короткая законченная формулировка',
         'draft_plan':'модель нарушила формат плана исследования (topic/products)',
         'draft_source_ids':'модель вернула недопустимый список ID источников',
         'draft_length':'ответ модели пустой или превышает ограничение длины',
@@ -207,6 +208,7 @@ def failure_details(exc,stage):
     reason={
         'empty_ids':'модель не выбрала ID источников для ответа',
         'unknown_ids':'модель выбрала неизвестные или недопустимые ID источников',
+        'too_many_ids':'ответ превысил общий лимит 12 ID источников',
         'unlisted_inline_ids':'ID в тексте ответа отсутствует в списке выбранных источников',
     }.get(getattr(exc,'citation_reason',None),reason)
     discovery_reason=getattr(exc,'discovery_reason',None)
@@ -257,6 +259,16 @@ class CitationError(ValueError):
         self.citation_reason=reason
 
 
+def with_public_trace(answer,evidence):
+    """Owner-only public search digest, not a claim that page text was captured."""
+    meta=answer.setdefault('evidence',{})
+    digest=str(evidence.get('digest',''))
+    meta['public_digest']=scrub(digest[:6000])
+    meta['public_digest_truncated']=len(digest)>6000
+    if not meta.get('sources'):meta['sources']=list(evidence.get('sources',[]))
+    return answer
+
+
 def attach_evidence(answer,evidence,allow_catalog_only=False,semantic_review=False):
     """Attach source metadata; semantic_review requires a subsequent factual check.
 
@@ -267,6 +279,8 @@ def attach_evidence(answer,evidence,allow_catalog_only=False,semantic_review=Fal
     if answer.get('research',{}).get('topic')!='none':
         raise ValueError('Research still required')
     ids=answer.get('source_ids',[])
+    if ids==[] and re.search(r'\[\d+\]',answer.get('reply','')):
+        raise CitationError('unlisted_inline_ids')
     if ids==[] and answer.get('handoff') is True:
         # Insufficient evidence is a normal outcome, not a broken JSON response.
         # Keep the model's owner summary, but never send its unsupported prose.
@@ -280,7 +294,8 @@ def attach_evidence(answer,evidence,allow_catalog_only=False,semantic_review=Fal
     available={s['id']:s for s in evidence['sources']}
     if not ids:
         raise CitationError('empty_ids')
-    if len(ids)>6 or any(type(i) is not int or i not in available for i in ids):
+    if len(ids)>12:raise CitationError('too_many_ids')
+    if any(type(i) is not int or i not in available for i in ids):
         raise CitationError('unknown_ids')
     # Reusing a source for several claims is valid; list its URL only once.
     ids=list(dict.fromkeys(ids))

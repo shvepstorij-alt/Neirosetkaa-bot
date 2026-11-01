@@ -91,7 +91,9 @@ def review_input(answer,facts):
     if re.search(r'оформлен[а-яё]*[^.!?\n]{0,80}(?:не\s*доступ|невозмож)|'
                  r'(?:не\s*доступ|невозмож)[^.!?\n]{0,80}оформлен',summary,re.I):
         owner_claims.append('Owner analysis claims purchases through the store are unavailable.')
+    from .feature_reply import public_question
     return {'reply':scrub(reply),'owner_public_claims':owner_claims,'source_ids':ids,
+            'public_question':public_question(facts),
             'shop_navigation':navigation_facts(facts),
             'owner_workflow_policies':policies_for(facts),
             'public_evidence':{'digest':digest,'sources':sources,
@@ -117,14 +119,10 @@ async def check_answer(ai,answer,facts):
     audit=catalogue_audit(reply,facts)
     if audit['issues']:
         return {'supported':False,'reason':'\n'.join(audit['issues'])}
-    from .apple_matching import exact_quote
     current=facts.get('conversation',{}).get('latest_client_message','')
-    quote=exact_quote(facts,current)
-    if quote:
-        for m in re.finditer(r'(?<![\w.,])(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',reply,re.I):
-            price=float(re.sub(r'[ \u00a0\u202f]','',m[1]).replace(',','.'))
-            if quote['price'] is None or price!=quote['price']:
-                return {'supported':False,'reason':f"Этап: проверка точной цены App Store. Регион={quote['region']}; номинал={quote['amount']} {quote['currency']}; ожидаемая цена={quote['price'] if quote['price'] is not None else 'не подтверждена'}; цена в ответе={price:g}. Причина: {quote['reason'] or 'цена не соответствует выбранному региону, валюте и номиналу'}."}
+    from .reply_audit import apple_audit
+    apple=apple_audit(reply,facts,current)
+    if apple['issues']:return {'supported':False,'reason':'\n'.join(apple['issues'])}
     # Retail amounts are structured facts, not something a second model may
     # approve approximately. Check before spending another model request.
     from .catalog_context import customer_facts
@@ -185,6 +183,9 @@ async def check_answer(ai,answer,facts):
             'model':ai.model,'store':False,'max_output_tokens':1400,
             'instructions':(
                 'You independently check a Russian customer support answer against supplied evidence. '
+                'Also check relevance and completeness against public_question: a true generic overview '
+                'does not answer a specific request for API, SSO or another feature. Reject omissions '
+                'unless the answer explicitly identifies what is unconfirmed. '
                 'Verify EACH numerical feature limit against the SAME named plan, not another plan or Free. '
                 'A flattened pricing table or a list of feature labels does not establish which features are enabled. '
                 'If the evidence does not unambiguously bind a feature to a plan, reject that claim and identify it. '

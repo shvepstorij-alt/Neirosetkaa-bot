@@ -6,6 +6,15 @@ import json
 import os
 import re
 import time
+import hashlib
+from pathlib import Path
+
+
+def code_fingerprint():
+    files=('clients.py','service.py','research.py','feature_reply.py','reply_audit.py',
+           'answer_check.py','dialog_probe.py','probe_api.py')
+    root=Path(__file__).resolve().parent
+    return {name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in files}
 
 
 class ProbeConfigurationError(ValueError):
@@ -32,6 +41,7 @@ class ProbeManager:
         self.service=service
         self.db=service.store.db
         self.daily_runs=daily_runs
+        self.build=code_fingerprint()
         self.db.execute('''CREATE TABLE IF NOT EXISTS remote_probe_runs(
             id TEXT PRIMARY KEY,created REAL,status TEXT,data TEXT)''')
         self.db.execute("UPDATE remote_probe_runs SET status='interrupted' WHERE status IN ('queued','running')")
@@ -51,7 +61,7 @@ class ProbeManager:
         used=self.db.execute('SELECT count(*) FROM remote_probe_runs WHERE created>=?',(day,)).fetchone()[0]
         if used>=self.daily_runs:return {'error':'daily_test_limit','limit':self.daily_runs},429
         self.db.execute('INSERT INTO remote_probe_runs VALUES (?,?,?,?)',
-                        (ident,time.time(),'queued',json.dumps({'reports':[],'calls':0})))
+                        (ident,time.time(),'queued',json.dumps({'reports':[],'calls':0,'build':self.build})))
         self.service.research_probe_task=asyncio.create_task(self._run(ident,self.service.store.get('revision')))
         return self.read(ident),202
 
@@ -60,7 +70,7 @@ class ProbeManager:
         reports=[]
         def save(status,**extra):
             self.db.execute('UPDATE remote_probe_runs SET status=?,data=? WHERE id=?',
-                (status,json.dumps(dict(reports=reports,**extra),ensure_ascii=False),ident))
+                (status,json.dumps(dict(reports=reports,build=self.build,**extra),ensure_ascii=False),ident))
         async def emit(text):
             if len(reports)>=10 or len(text)>24000:raise ValueError('Test report capacity exceeded')
             reports.append(text)
@@ -116,8 +126,14 @@ def create_app(service,token,daily_runs=3):
         result=manager.read(ident)
         return web.json_response(result if result else {'error':'not_found'},status=200 if result else 404)
 
+    async def info(request):
+        task=getattr(service,'research_probe_task',None)
+        return web.json_response({'build':manager.build,'daily_run_limit':manager.daily_runs,
+                                  'test_running':bool(task and not task.done())})
+
     app=web.Application(middlewares=[authorize],client_max_size=512)
     app.router.add_post('/v1/tests',start)
+    app.router.add_get('/v1/tests',info)
     app.router.add_get('/v1/tests/{ident}',read)
     return app
 

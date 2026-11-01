@@ -5,6 +5,35 @@ from decimal import Decimal
 MONEY = re.compile(r'(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:лей|ля|ль)?\b)', re.I)
 
 
+def apple_audit(reply,facts,question):
+    from .apple_matching import exact_quote
+    from .catalog_context import ALIASES,_families,_words
+    quote=exact_quote(facts,question)
+    result={'quote':quote,'prices':[],'issues':[]}
+    if not quote:return result
+    names=set()
+    for row in facts.get('requested_catalog',[]):
+        families=_families(_words(str(row.get('service',''))+' '+str(row.get('service_key',''))))
+        if 'appstore' in families:continue
+        names.update(str(row.get(k,'')) for k in ('service','service_key') if row.get(k))
+        for family in families:names.update(ALIASES.get(family,()))
+    anchors=[(re.compile(r'(?<!\w)'+re.escape(name)+r'(?!\w)',re.I),'regular') for name in names]
+    anchors.append((re.compile(r'app\s*store|apple(?:\s*id)?|icloud|эп\s*стор|апп\s*стор|айклауд',re.I),'apple'))
+    scope=None if names else 'apple'
+    for segment in re.split(r'[\n;]',reply):
+        matches=sorted((m.start(),m.end(),kind) for pattern,kind in anchors for m in pattern.finditer(segment))
+        for money in MONEY.finditer(segment):
+            preceding=[m for m in matches if m[1]<=money.start()]
+            local=preceding[-1][2] if preceding else scope
+            if local!='apple':continue
+            amount=Decimal(re.sub(r'[ \u00a0\u202f]','',money[1]).replace(',','.'))
+            result['prices'].append(amount)
+            if quote['price'] is None or amount!=Decimal(str(quote['price'])):
+                result['issues'].append(f"Этап: проверка точной цены App Store. Регион={quote['region']}; номинал={quote['amount']} {quote['currency']}; ожидаемая цена={quote['price'] if quote['price'] is not None else 'не подтверждена'}; цена в ответе={amount}. Причина: {quote['reason'] or 'цена не соответствует выбранному региону, валюте и номиналу'}.")
+        if matches:scope=matches[-1][2]
+    return result
+
+
 def catalogue_audit(reply, facts):
     from .catalog_context import customer_facts
     rows = customer_facts(facts).get('requested_catalog', [])

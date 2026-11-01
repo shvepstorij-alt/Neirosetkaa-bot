@@ -74,23 +74,30 @@ def report_details(answer, facts, question):
                      'Цены обычных тарифов этим правилом не проверены; региональный номинал App Store проверяется отдельно ниже, если определён.')
     elif not audit['issues']:
         lines.append('Расхождений в проверенных ценах/сроках не обнаружено; непроверенные фразы этим не подтверждаются.')
-    from .apple_matching import exact_quote
-    quote=exact_quote(selected,question)
+    from .reply_audit import apple_audit
+    apple=apple_audit(answer.get('reply',''),selected,question)
+    quote=apple['quote']
     if quote:
-        from .reply_audit import MONEY
-        from decimal import Decimal
-        import re
-        amounts=[Decimal(re.sub(r'[ \u00a0\u202f]','',m[1]).replace(',','.')) for m in MONEY.finditer(answer.get('reply',''))]
+        amounts=apple['prices']
         expected=quote.get('price')
         lines.append(f"App Store: регион={quote['region']}; номинал={quote['amount']} {quote['currency']}; подтверждённая цена={expected}; суммы ответа={amounts}; "
-                     +('совпадение' if expected is not None and amounts and all(v==Decimal(str(expected)) for v in amounts) else 'требуется проверка; совпадение не установлено'))
-    for source in evidence.get('sources',[]):
+                     +('совпадение' if expected is not None and amounts and not apple['issues'] else 'требуется проверка; совпадение не установлено'))
+    sources=evidence.get('sources',[])
+    selected_ids=set(evidence.get('selected_source_ids',answer.get('source_ids',[])))
+    ordered=sorted(sources,key=lambda s:s.get('id') not in selected_ids) if all(isinstance(s,dict) for s in sources) else sources
+    for source in ordered[:12]:
         url=source.get('url','') if isinstance(source,dict) else ''
         host=public_host(url)
         if host and safe_url(url,(host,)):
             lines.append('Источник ['+str(source.get('id','?'))+']: '+url)
     if evidence.get('sources'):
         lines.append('URL позволяют перепроверить страницы сейчас. Полные тексты страниц на момент поиска в этом отчёте не сохранены.')
+    if len(sources)>12:lines.append('Показаны первые 12 источников (сначала использованные в ответе) из '+str(len(sources))+'.')
+    if evidence.get('public_digest'):
+        lines.append('Сводка публичного поиска — данные модели поиска, а не сохранённые тексты страниц и не гарантия точности:')
+        digest=evidence['public_digest']
+        lines.extend(digest[i:i+1000] for i in range(0,len(digest),1000))
+        if evidence.get('public_digest_truncated'):lines.append('Сводка сокращена до 6000 символов.')
     return '\n\n'.join(lines)
 
 
