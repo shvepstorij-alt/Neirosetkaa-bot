@@ -107,6 +107,10 @@ async def lookup(ai,plan,charge_extra=None,_registry=None):
             'Cover EACH requested product with its own official sources. Distinguish models available '
             'in consumer subscription apps from API-only models, previews and restricted access programs. '
             'Verify current plan availability, not merely that a model exists. '
+            'For pricing tables, bind every feature and numerical limit explicitly to its exact plan. '
+            'Do not transfer Free limits to Basic or assume Pro has larger training limits. '
+            'If HTML extraction loses table checkmarks or column alignment, mark those claims unknown. '
+            'For each numerical feature retain a short supporting quote with its plan label and citation. '
             'for every claim, dates when available, and explicit unknowns/conflicts. '
             'No private store information, reseller prices, suppliers, or purchasing actions. '
             'Do not claim freshness just because a page was retrieved today.'),

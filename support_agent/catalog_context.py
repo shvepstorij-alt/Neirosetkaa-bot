@@ -249,6 +249,19 @@ def direct_apple_reply(facts, latest):
     answer=verified_catalog_reply(facts,'')
     answer['evidence']={'status':'catalog_direct','sources':[]}
     quote=exact_quote(facts,latest)
+    if (not quote and facts.get('appstore',{}).get('status') in ('available','truncated')
+            and re.search(r'как\s+(?:мне\s+)?пополнить|как\s+пополнение',latest,re.I)):
+        from .bot_guide import purchase_navigation
+        navigation=purchase_navigation(facts,apple=True)
+        answer['reply']=((navigation+'\n\n') if navigation else '')+(
+            'Для пополнения нужен подарочный код того же региона, что и ваш Apple ID. '
+            'Выберите регион и номинал, оплатите заказ, затем погасите полученный код '
+            'в App Store: профиль → «Погасить подарочную карту или код».\n\n'
+            +('Регион уже указан. На какую сумму хотите пополнить баланс?' if len(known)==1 else
+              'Подскажите регион Apple ID и сумму пополнения.'))
+        answer['handoff']=False
+        answer['summary']='Инструкция покупки подарочного кода; точная цена не запрошена и не обещана.'
+        return answer
     if quote:
         amount=quote['amount'];unit=quote['currency'];code=quote['region']
         label={'US':'США','DE':'Германии','TR':'Турции','GB':'Великобритании','RU':'России'}.get(code,code)

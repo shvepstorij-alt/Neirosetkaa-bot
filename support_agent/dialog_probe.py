@@ -14,13 +14,75 @@ class NoTelegram:
 class CatalogOnly:
     def __init__(self, shop, owner):
         self.shop, self.owner = shop, owner
+        self.last_facts = {}
 
     async def facts(self, uid):
         # No client ID is queried. Do not put owner order history into the model.
         facts = await self.shop.facts(self.owner)
         allowed = ('catalog', 'catalog_status', 'catalog_complete', 'appstore', 'bot_navigation',
                    'live_shop_status', 'workflow_status', 'catalog_observed_at_unix', 'note', 'source')
-        return {k: v for k, v in facts.items() if k in allowed}
+        self.last_facts = {k: v for k, v in facts.items() if k in allowed}
+        return self.last_facts
+
+
+def report_details(answer, facts, question):
+    from .catalog_context import annotate
+    from .reply_audit import catalogue_audit
+    from .privacy import scrub
+    from .research import safe_url
+    from .service_discovery import public_host
+    evidence = answer.get('evidence', {})
+    status = evidence.get('status', 'not_recorded')
+    lines = ['Диагностика владельцу:', 'Статус доказательств: '+str(status)]
+    checked_at=evidence.get('checked_at')
+    if type(checked_at) in (int,float) and 0<checked_at<4102444800:
+        import datetime as dt
+        lines.append('Время поиска UTC: '+dt.datetime.fromtimestamp(checked_at,dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
+    if evidence.get('diagnostic'):
+        lines.append('Причина: '+scrub(str(evidence['diagnostic'])))
+    if evidence.get('missing_products'):
+        lines.append('Не покрыты сервисы: '+', '.join(map(str,evidence['missing_products'])))
+    if evidence.get('failures'):
+        lines.append('Ошибки источников: '+scrub(str(evidence['failures'])))
+    if evidence.get('citation_mode')=='bibliography':
+        lines.append('Ссылки перечислены списком; привязка ко всем фразам не подтверждена.')
+    review=evidence.get('content_review')
+    if isinstance(review,dict):
+        lines.append('Проверка содержания: '+('пройдена моделью (не гарантия)' if review.get('supported') else 'отклонена'))
+        lines.append(scrub(str(review.get('reason','Причина отсутствует'))))
+    else:
+        lines.append('Результат проверки содержания моделью не сохранён или модельная проверка не выполнялась.')
+    if evidence.get('handoff_reason'):
+        lines.append('Участие владельца: '+scrub(str(evidence['handoff_reason'])))
+    if answer.get('handoff') and not any(evidence.get(k) for k in ('diagnostic','missing_products','failures','citation_mode','handoff_reason')):
+        lines.append('Флаг участия владельца установлен; конкретная причина отдельно не записана. '
+                     'Это не доказательство ошибки: ручное оформление также может требовать владельца.')
+    selected=facts if 'requested_catalog' in facts else annotate(facts,question)
+    audit=catalogue_audit(answer.get('reply',''),selected)
+    lines.append(f"Сопоставлено рублёвых цен с именованными тарифами: {audit['checked_prices']}.")
+    lines.extend(audit['issues'])
+    if not audit['checked_prices']:
+        lines.append('Цены именованных тарифов этим правилом НЕ ПРОВЕРЕНЫ. Apple, неоднозначные строки и ответы без цен требуют отдельной проверки.')
+    elif not audit['issues']:
+        lines.append('Расхождений в проверенных ценах/сроках не обнаружено; непроверенные фразы этим не подтверждаются.')
+    from .apple_matching import exact_quote
+    quote=exact_quote(selected,question)
+    if quote:
+        from .reply_audit import MONEY
+        from decimal import Decimal
+        import re
+        amounts=[Decimal(re.sub(r'[ \u00a0\u202f]','',m[1]).replace(',','.')) for m in MONEY.finditer(answer.get('reply',''))]
+        expected=quote.get('price')
+        lines.append(f"App Store: регион={quote['region']}; номинал={quote['amount']} {quote['currency']}; подтверждённая цена={expected}; суммы ответа={amounts}; "
+                     +('совпадение' if expected is not None and amounts and all(v==Decimal(str(expected)) for v in amounts) else 'требуется проверка; совпадение не установлено'))
+    for source in evidence.get('sources',[]):
+        url=source.get('url','') if isinstance(source,dict) else ''
+        host=public_host(url)
+        if host and safe_url(url,(host,)):
+            lines.append('Источник ['+str(source.get('id','?'))+']: '+url)
+    if evidence.get('sources'):
+        lines.append('URL позволяют перепроверить страницы сейчас. Полные тексты страниц на момент поиска в этом отчёте не сохранены.')
+    return '\n\n'.join(lines)
 
 
 SCENARIOS = (
@@ -50,8 +112,9 @@ async def run_probe(service, max_calls=20):
         calls += 1
 
     store = Store(':memory:', batch_seconds=300)
-    isolated = Service(store, NoTelegram(), service.ai,
-                       CatalogOnly(service.shop, service.owner), 0, {-1})
+    shop=CatalogOnly(service.shop, service.owner)
+    isolated = Service(store, NoTelegram(), service.ai, shop, 0, {-1})
+    isolated._probe_capture=True
     isolated.charge_call = charge
     store.switch('draft')
     store.connection('test-only', True, True)
@@ -61,6 +124,8 @@ async def run_probe(service, max_calls=20):
             cid = None
             mid = 0
             for turn, fragments in enumerate(turns, 1):
+                isolated._probe_facts={}
+                isolated._probe_question=''
                 stage = f'сценарий {index+1}, шаг {turn}, подготовка ответа'
                 if service.store.get('revision') != revision:
                     raise RuntimeError('Test stopped: owner changed mode')
@@ -85,6 +150,9 @@ async def run_probe(service, max_calls=20):
                 report = (f'Тест {index+1}, шаг {turn}: {name}\n{label}\n\n'
                           +'Вопрос:\n'+'\n'.join(fragments)+'\n\nОтвет:\n'+reply
                           +'\n\nРазбор:\n'+str(answer.get('summary', '')))
+                selected=isolated._probe_facts or shop.last_facts
+                question=isolated._probe_question or '\n'.join(fragments)
+                report+='\n\n'+report_details(answer,selected,question)
                 await service.owner_message(html.escape(report), parse_mode='HTML')
         await service.owner_message(f'Прогон завершён. Учтённых этапов API: {calls}/{max_calls}. '
                                     'Часть ответов могла быть подготовлена без модели. '

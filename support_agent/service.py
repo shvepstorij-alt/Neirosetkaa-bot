@@ -648,6 +648,9 @@ class Service:
                     'handoff':True}
         from .catalog_context import annotate
         facts=annotate(facts,latest)
+        if getattr(self,'_probe_capture',False):
+            self._probe_facts=facts
+            self._probe_question=latest
         from .bot_guide import navigation_facts,navigation_reply
         facts=dict(facts,shop_navigation=navigation_facts(facts))
         raw_batch='\n'.join(row['text'] or '' for row in batch)
@@ -678,6 +681,8 @@ class Service:
             return None
         plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}))
         facts=annotate(facts,latest,plan['products'])
+        if getattr(self,'_probe_capture',False):
+            self._probe_facts=facts
         if plan['topic']=='none':
             if facts.get('requested_catalog') or facts.get('appstore') or (facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I)):
                 self.charge_call()
@@ -697,6 +702,7 @@ class Service:
                     if not review['supported']:
                         from .catalog_context import verified_catalog_reply
                         return verified_catalog_reply(facts,review['reason'])
+                answer.setdefault('evidence',{'status':'catalog_checked','sources':[]})['content_review']=review
             return answer
         stage='search'
         try:
@@ -741,6 +747,7 @@ class Service:
                         if not self.store.still_current(job):return None
                         if not review['supported']:
                             raise ValueError('Answer content unsupported')
+                        checked.setdefault('evidence',{})['content_review']=review
                     if not missing or not covered or attempt:
                         return checked
                     issue='missing_products'
@@ -763,7 +770,10 @@ class Service:
                 return None
             if str(exc)=='Answer content unsupported' and facts.get('requested_catalog'):
                 from .catalog_context import verified_catalog_reply
-                return verified_catalog_reply(facts,review['reason'])
+                fallback=verified_catalog_reply(facts,review['reason'])
+                fallback['evidence'].update(sources=evidence.get('sources',[]),content_review=review,
+                                            checked_at=evidence.get('checked_at'))
+                return fallback
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)
             result=unavailable(diagnostic)

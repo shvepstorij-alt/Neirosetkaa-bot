@@ -106,4 +106,6 @@ def workflow_reply(facts,latest):
     return {'reply':'\n\n'.join(parts),'summary':'Объяснение оформления по данным магазина; сроки, отсутствие входа и успех не обещаны.',
             'handoff':handoff,'source_ids':[],
             'evidence':{'status':'catalog_review' if diagnostics else 'catalog_direct','sources':[],
+                        'handoff_reason':('Нужна проверка неподтверждённых условий оформления.' if diagnostics else
+                                          'Требуется действие владельца при оформлении; отказ проверки ответа не установлен.') if handoff else '',
                         'diagnostic':'Этап: проверка инструкции оформления. '+'; '.join(diagnostics) if diagnostics else ''}}
