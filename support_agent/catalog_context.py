@@ -249,8 +249,7 @@ def direct_apple_reply(facts, latest):
     answer=verified_catalog_reply(facts,'')
     answer['evidence']={'status':'catalog_direct','sources':[]}
     quote=exact_quote(facts,latest)
-    if (not quote and facts.get('appstore',{}).get('status') in ('available','truncated')
-            and re.search(r'как\s+(?:мне\s+)?пополнить|как\s+пополнение',latest,re.I)):
+    if (not quote and re.search(r'как\s+(?:мне\s+)?пополнить|как\s+пополнение',latest,re.I)):
         from .bot_guide import purchase_navigation
         navigation=purchase_navigation(facts,apple=True)
         answer['reply']=((navigation+'\n\n') if navigation else '')+(
@@ -261,6 +260,13 @@ def direct_apple_reply(facts, latest):
               'Подскажите регион Apple ID и сумму пополнения.'))
         answer['handoff']=False
         answer['summary']='Инструкция покупки подарочного кода; точная цена не запрошена и не обещана.'
+        source_status=facts.get('appstore',{}).get('status','not_connected')
+        if source_status not in ('available','truncated'):
+            answer['handoff']=True
+            answer['evidence']={'status':'catalog_review','sources':[],'diagnostic':
+                'Этап: чтение региональных номиналов App Store. Статус='+str(source_status)
+                +'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))
+                +'. Показана общая инструкция; доступность и цены номиналов не подтверждены.'}
         return answer
     if quote:
         amount=quote['amount'];unit=quote['currency'];code=quote['region']

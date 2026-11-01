@@ -724,17 +724,26 @@ class Service:
                 return None
             from .research import CitationError, evidence_domains, safe_url
             correction=None
+            from .feature_reply import price_block,compose
+            retail_block=price_block(facts,latest)
             for attempt in range(2):
                 if not self.store.still_current(job):
                     return None
                 stage='final_draft'
                 self.charge_call()
                 final_facts=dict(facts,public_research=evidence)
+                if retail_block:final_facts['feature_only']=True
                 if correction:final_facts['research_correction']=correction
                 try:
                     final=await self.ai.draft(history,final_facts,image)
                     if not self.store.still_current(job):
                         return None
+                    if retail_block:
+                        composed,reason=compose(final,retail_block)
+                        if reason:
+                            review={'supported':False,'reason':reason}
+                            raise ValueError('Answer content unsupported')
+                        final=composed
                     stage='citations'
                     checked=attach_evidence(dict(final),evidence,allow_catalog_only=bool(facts.get('catalog') or evidence.get('failures')),semantic_review=True)
                     missing=checked.get('evidence',{}).get('missing_products',[])

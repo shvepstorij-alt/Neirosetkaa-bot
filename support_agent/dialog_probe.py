@@ -33,7 +33,11 @@ def report_details(answer, facts, question):
     from .service_discovery import public_host
     evidence = answer.get('evidence', {})
     status = evidence.get('status', 'not_recorded')
-    lines = ['Диагностика владельцу:', 'Статус доказательств: '+str(status)]
+    lines = ['Диагностика владельцу:', 'Статус доказательств: '+str(status),
+             'Источники этого шага: каталог='+str(facts.get('source','unknown'))
+             +'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))
+             +'; App Store='+str(facts.get('appstore',{}).get('status','not_connected'))
+             +'; навигация='+str(facts.get('bot_navigation',{}).get('status','not_connected'))]
     checked_at=evidence.get('checked_at')
     if type(checked_at) in (int,float) and 0<checked_at<4102444800:
         import datetime as dt
