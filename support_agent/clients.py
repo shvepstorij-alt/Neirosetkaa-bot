@@ -460,17 +460,22 @@ latest_message — последнее отдельное сообщение. Е�
         ids=[s['id'] for s in sources if isinstance(s,dict) and type(s.get('id')) is int]
         if not products or len(products)>4 or not ids:
             raise RemoteError('Feature evidence unavailable',reason='draft_source_ids')
+        # Reserve headings, separators and up to three citation markers per
+        # service BEFORE allocating block length; schema-valid blocks must fit.
+        ref_budget=sum(len(str(i))+2 for i in sorted(set(ids),key=lambda i:len(str(i)),reverse=True)[:3])+1
+        overhead=sum(len(p)+2+ref_budget for p in products)+2*(len(products)-1)
+        block_limit=min(700,max(1,(1100-overhead)//len(products)))
         schema={'type':'object','properties':{
             'features':{'type':'array','minItems':len(products),'maxItems':len(products),
                 'items':{'type':'object','properties':{
                     'service':{'type':'string','enum':products},
-                    'text':{'type':'string','minLength':1,'maxLength':700},
-                    'source_ids':{'type':'array','minItems':0,'maxItems':6,
+                    'text':{'type':'string','minLength':1,'maxLength':block_limit},
+                    'source_ids':{'type':'array','minItems':0,'maxItems':3,
                                   'items':{'type':'integer','enum':ids}}},
                     'required':['service','text','source_ids'],'additionalProperties':False}},
             'handoff':{'type':'boolean'},'summary':{'type':'string','minLength':1,'maxLength':700}},
             'required':['features','handoff','summary'],'additionalProperties':False}
-        public={'products':products,'plans':[{'service':r.get('service'),'plan':r.get('plan')}
+        public={'products':products,'max_characters_per_service':block_limit,'plans':[{'service':r.get('service'),'plan':r.get('plan')}
                     for r in facts.get('requested_catalog',[])],
                 'digest':evidence.get('digest',''),
                 'sources':[{'id':s['id'],'url':s.get('url',''),'title':s.get('title','')} for s in sources],
@@ -511,8 +516,11 @@ latest_message — последнее отдельное сообщение. Е�
                 validation='feature_schema'
                 if set(block)!={'service','text','source_ids'}:raise ValueError()
                 text=block['text'];refs=block['source_ids']
-                if not isinstance(text,str) or not 0<len(text)<=700 or scrub(text)!=text:raise ValueError()
-                if not isinstance(refs,list) or len(refs)>6 or len(set(refs))!=len(refs):raise ValueError()
+                validation='feature_length'
+                if not isinstance(text,str) or not 0<len(text)<=block_limit:raise ValueError()
+                validation='feature_schema'
+                if scrub(text)!=text:raise ValueError()
+                if not isinstance(refs,list) or len(refs)>3 or len(set(refs))!=len(refs):raise ValueError()
                 if any(type(i) is not int or i not in ids for i in refs):raise ValueError()
                 from .research import evidence_domains,safe_url
                 domains=evidence_domains(evidence,block['service'])

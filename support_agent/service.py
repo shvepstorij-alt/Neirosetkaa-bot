@@ -766,10 +766,12 @@ class Service:
                     # Retry citation formatting only, not transport, privacy,
                     # unsupported facts, or arbitrary model failures.
                     if attempt or not (isinstance(exc,CitationError) or
+                                       getattr(exc,'reason',None)=='feature_length' or
                                        getattr(exc,'reason',None)=='draft_source_ids' or
                                        str(exc)=='Answer content unsupported'):
                         raise
-                    issue=('unsupported_content' if str(exc)=='Answer content unsupported'
+                    issue=('feature_length' if getattr(exc,'reason',None)=='feature_length' else
+                           'unsupported_content' if str(exc)=='Answer content unsupported'
                            else getattr(exc,'citation_reason','unknown_ids'))
                     missing=[]
                 correction={'missing_products':missing,'issue':issue,
@@ -787,6 +789,11 @@ class Service:
                 # Store only a scrubbed candidate, never raw model payload/history.
                 if getattr(self,'_probe_capture',False):
                     fallback['evidence']['rejected_reply']=scrub(final.get('reply',''))[:2500]
+                return fallback
+            if str(getattr(exc,'reason','')).startswith('feature_') and facts.get('requested_catalog'):
+                from .catalog_context import verified_catalog_reply
+                fallback=verified_catalog_reply(facts,failure_details(exc,stage))
+                fallback['evidence'].update(sources=evidence.get('sources',[]),checked_at=evidence.get('checked_at'))
                 return fallback
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)
