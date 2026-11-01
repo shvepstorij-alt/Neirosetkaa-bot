@@ -8,6 +8,25 @@ import re
 import time
 
 
+class ProbeConfigurationError(ValueError):
+    """Controlled diagnostics only; never includes variable contents."""
+
+
+def number_setting(name,default,minimum,maximum):
+    raw=os.getenv(name,str(default)).strip()
+    if not re.fullmatch(r'[0-9]{1,6}',raw):
+        raise ProbeConfigurationError(name+': требуется целое число; значение скрыто.')
+    value=int(raw)
+    if not minimum<=value<=maximum:
+        raise ProbeConfigurationError(name+f': допустимый диапазон {minimum}–{maximum}; значение скрыто.')
+    return value
+
+
+def startup_diagnostic(exc):
+    if isinstance(exc,ProbeConfigurationError):return str(exc)
+    return 'Первопричина не установлена. Тип='+type(exc).__name__+'; проверьте подключение HTTP-порта и состояние хранилища.'
+
+
 class ProbeManager:
     def __init__(self,service,daily_runs=3):
         self.service=service
@@ -63,9 +82,14 @@ class ProbeManager:
 
 def create_app(service,token,daily_runs=3):
     from aiohttp import web
+    token=token.strip()
+    if not token:
+        raise ProbeConfigurationError('SUPPORT_PROBE_TOKEN: переменная отсутствует или пуста. Нужен отдельный тестовый ключ.')
     if not re.fullmatch(r'[A-Za-z0-9_-]{43,128}',token):
-        raise ValueError('SUPPORT_PROBE_TOKEN must be a separate random token of 43-128 URL-safe characters')
-    if not 1<=daily_runs<=10:raise ValueError('SUPPORT_PROBE_DAILY_RUNS must be 1-10')
+        raise ProbeConfigurationError('SUPPORT_PROBE_TOKEN: неверный формат. Длина='+str(len(token))
+            +'; нужно 43–128 символов A–Z, a–z, 0–9, _ или -. Ключ скрыт.')
+    if type(daily_runs) is not int or not 1<=daily_runs<=10:
+        raise ProbeConfigurationError('SUPPORT_PROBE_DAILY_RUNS: требуется целое число от 1 до 10; значение скрыто.')
     manager=ProbeManager(service,daily_runs)
 
     @web.middleware
@@ -101,11 +125,13 @@ def create_app(service,token,daily_runs=3):
 async def start_server(service):
     if os.getenv('SUPPORT_PROBE_ENABLED')!='yes':return None
     from aiohttp import web
-    app=create_app(service,os.getenv('SUPPORT_PROBE_TOKEN',''),int(os.getenv('SUPPORT_PROBE_DAILY_RUNS','3')))
+    daily=number_setting('SUPPORT_PROBE_DAILY_RUNS',3,1,10)
+    port=number_setting('PORT',8080,1,65535)
+    app=create_app(service,os.getenv('SUPPORT_PROBE_TOKEN',''),daily)
     runner=web.AppRunner(app,access_log=None)
     await runner.setup()
     try:
-        await web.TCPSite(runner,'0.0.0.0',int(os.getenv('PORT','8080'))).start()
+        await web.TCPSite(runner,'0.0.0.0',port).start()
     except BaseException:
         await runner.cleanup()
         raise

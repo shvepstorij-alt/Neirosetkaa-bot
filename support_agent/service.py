@@ -910,15 +910,15 @@ async def main():
             service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. Автоответов нет.')
-            from .probe_api import start_server
+            from .probe_api import start_server,startup_diagnostic
             probe_server=None
             try:
                 probe_server=await start_server(service)
             except Exception as exc:
-                logging.warning('Remote test API unavailable: %s',type(exc).__name__)
+                diagnostic=startup_diagnostic(exc)
+                logging.warning('Remote test API unavailable: %s',diagnostic)
                 await service.owner_message('Удалённый тестовый интерфейс не запущен. Этап: настройка HTTP-сервера; '
-                    +'тип ошибки: '+type(exc).__name__+'. Проверьте SUPPORT_PROBE_TOKEN, SUPPORT_PROBE_DAILY_RUNS и PORT. '
-                    +'Секреты скрыты. Основной помощник продолжает работу; точная первопричина пока не установлена.')
+                    +diagnostic+' Основной помощник продолжает работу.')
             try:
                 await asyncio.gather(service.poll(),service.worker(),service.worker(),service.worker())
             finally:
