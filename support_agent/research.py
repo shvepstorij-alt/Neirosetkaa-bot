@@ -227,6 +227,14 @@ def failure_details(exc,stage):
         product=getattr(exc,'discovery_product','')
         if public_name(product):reason+='; сервис: '+product
     details=f'Этап: {stages.get(stage,"обработка")}. Причина: {reason}.'
+    feature_detail=getattr(exc,'feature_detail',None)
+    if isinstance(feature_detail,dict):
+        expected=[p for p in feature_detail.get('expected',[]) if isinstance(p,str) and public_name(p)]
+        present=[p for p in feature_detail.get('present',[]) if p in expected]
+        kind=feature_detail.get('received_type')
+        if kind in ('dict','list','str','int','float','bool','NoneType'):
+            details+=' Формат='+kind+'.'
+        details+=' Ожидались сервисы='+','.join(expected)+'; получены='+','.join(present)+'; отсутствуют='+','.join(p for p in expected if p not in present)+'.'
     status=getattr(exc,'status',None)
     if type(status) is int and 100<=status<=599:
         details+=f' HTTP {status}.'
