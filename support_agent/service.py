@@ -725,7 +725,9 @@ class Service:
             from .research import CitationError, evidence_domains, safe_url
             correction=None
             from .feature_reply import price_block,compose
-            retail_block=price_block(facts,latest)
+            # Partial search has a separate path that must retain the verified
+            # portion and explicitly describe unavailable services.
+            retail_block=price_block(facts,latest) if not evidence.get('failures') else ''
             for attempt in range(2):
                 if not self.store.still_current(job):
                     return None
@@ -908,9 +910,19 @@ async def main():
             service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. Автоответов нет.')
+            from .probe_api import start_server
+            probe_server=None
+            try:
+                probe_server=await start_server(service)
+            except Exception as exc:
+                logging.warning('Remote test API unavailable: %s',type(exc).__name__)
+                await service.owner_message('Удалённый тестовый интерфейс не запущен. Этап: настройка HTTP-сервера; '
+                    +'тип ошибки: '+type(exc).__name__+'. Проверьте SUPPORT_PROBE_TOKEN, SUPPORT_PROBE_DAILY_RUNS и PORT. '
+                    +'Секреты скрыты. Основной помощник продолжает работу; точная первопричина пока не установлена.')
             try:
                 await asyncio.gather(service.poll(),service.worker(),service.worker(),service.worker())
             finally:
+                if probe_server:await probe_server.cleanup()
                 tasks=list(service.approval_tasks.values())
                 probe=getattr(service,'research_probe_task',None)
                 if probe and not probe.done():tasks.append(probe)

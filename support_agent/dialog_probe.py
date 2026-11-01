@@ -107,10 +107,15 @@ SCENARIOS = (
 )
 
 
-async def run_probe(service, max_calls=20):
+async def run_probe(service, max_calls=20, emit=None, expected_revision=None):
     from .service import Service
-    revision = service.store.get('revision')
+    revision = service.store.get('revision') if expected_revision is None else expected_revision
     calls = 0
+    async def send(text,parse_mode=None):
+        if emit is not None:
+            await emit(html.unescape(text) if parse_mode=='HTML' else text)
+        else:
+            await service.owner_message(text,parse_mode=parse_mode)
     def charge():
         nonlocal calls
         if service.store.get('revision') != revision:
@@ -162,10 +167,11 @@ async def run_probe(service, max_calls=20):
                 selected=isolated._probe_facts or shop.last_facts
                 question=isolated._probe_question or '\n'.join(fragments)
                 report+='\n\n'+report_details(answer,selected,question)
-                await service.owner_message(html.escape(report), parse_mode='HTML')
-        await service.owner_message(f'Прогон завершён. Учтённых этапов API: {calls}/{max_calls}. '
+                await send(html.escape(report), parse_mode='HTML')
+        await send(f'Прогон завершён. Учтённых этапов API: {calls}/{max_calls}. '
                                     'Часть ответов могла быть подготовлена без модели. '
                                     'Клиентам ничего не отправлено. Семантическую точность нужно оценить по отчёту.')
+        return {'status':'completed','calls':calls}
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -175,8 +181,9 @@ async def run_probe(service, max_calls=20):
                  'Daily API request limit reached')
         reason = str(exc) if str(exc) in known else ('превышено время этапа 180 секунд' if isinstance(exc, TimeoutError)
                  else 'первопричина не установлена; произвольный текст исключения скрыт')
-        await service.owner_message(f'Прогон остановлен. Этап: {stage}; причина: {reason}; '
+        await send(f'Прогон остановлен. Этап: {stage}; причина: {reason}; '
                                     f'тип: {type(exc).__name__}; учтённых этапов API: {calls}/{max_calls}. '
                                     'Полный прогон не завершён. Первопричину смотрите в диагностике приложения.')
+        return {'status':'failed','calls':calls,'stage':stage,'reason':reason}
     finally:
         store.db.close()
