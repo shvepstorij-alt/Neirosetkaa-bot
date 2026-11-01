@@ -58,11 +58,16 @@ def report_details(answer, facts, question):
         lines.append('Флаг участия владельца установлен; конкретная причина отдельно не записана. '
                      'Это не доказательство ошибки: ручное оформление также может требовать владельца.')
     selected=facts if 'requested_catalog' in facts else annotate(facts,question)
+    if evidence.get('rejected_reply'):
+        lines.append('Отклонённый вариант (клиенту не отправлялся):\n'+scrub(evidence['rejected_reply']))
+        lines.append('Далее проверяется сохранённый безопасный ответ, а не отклонённый вариант.')
     audit=catalogue_audit(answer.get('reply',''),selected)
     lines.append(f"Сопоставлено рублёвых цен с именованными тарифами: {audit['checked_prices']}.")
     lines.extend(audit['issues'])
     if not audit['checked_prices']:
-        lines.append('Цены именованных тарифов этим правилом НЕ ПРОВЕРЕНЫ. Apple, неоднозначные строки и ответы без цен требуют отдельной проверки.')
+        from .reply_audit import MONEY
+        lines.append('Обычных рублёвых цен для сопоставления нет.' if not MONEY.search(answer.get('reply','')) else
+                     'Цены обычных тарифов этим правилом не проверены; региональный номинал App Store проверяется отдельно ниже, если определён.')
     elif not audit['issues']:
         lines.append('Расхождений в проверенных ценах/сроках не обнаружено; непроверенные фразы этим не подтверждаются.')
     from .apple_matching import exact_quote

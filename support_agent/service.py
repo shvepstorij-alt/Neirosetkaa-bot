@@ -773,6 +773,9 @@ class Service:
                 fallback=verified_catalog_reply(facts,review['reason'])
                 fallback['evidence'].update(sources=evidence.get('sources',[]),content_review=review,
                                             checked_at=evidence.get('checked_at'))
+                # Store only a scrubbed candidate, never raw model payload/history.
+                if getattr(self,'_probe_capture',False):
+                    fallback['evidence']['rejected_reply']=scrub(final.get('reply',''))[:2500]
                 return fallback
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)

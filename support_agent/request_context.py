@@ -43,7 +43,8 @@ def _apple_detail_kind(text):
     aliases={alias.casefold() for names in ALIASES.values() for alias in names}
     aliases.update(code.lower() for code in ALIASES)
     if region in aliases:return 'region',line
-    amount=re.sub(r'^(?:(?:пополнить(?: баланс)?(?: хочу)?|хочу пополнить(?: баланс)?|сумма)\s+)?(?:на\s+)?','',line)
+    amount=re.sub(r'^(?:а\s+)?(?:сколько\s+(?:будет\s+)?стоить|сколько\s+стоит|какая\s+цена(?:\s+на)?)\s+','',line)
+    amount=re.sub(r'^(?:(?:пополнить(?: баланс)?(?: хочу)?|хочу пополнить(?: баланс)?|сумма)\s+)?(?:на\s+)?','',amount)
     if PAIR.fullmatch(amount):return 'amount',line
     return None,line
 
