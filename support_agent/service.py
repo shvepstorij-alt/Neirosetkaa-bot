@@ -299,8 +299,17 @@ class Service:
                 '/chats — чаты и управление\n/pending — черновики\n/retry НОМЕР_ЧАТА — повторить подготовку\n'
                 '/stop — остановить всем\n/draft — включить подготовку\n/shop_status — проверить подключение магазина\n'
                 '/research_test — тест поиска без отправки клиентам (расходует API)\n'
+                '/dialog_test — тестовые диалоги через рабочую логику (расходует API)\n'
                 'AUTO в этой сборке отсутствует. Вложения тестовых чатов передаются OpenAI для анализа.',
                 buttons([[('Остановить всем','global:off'),('Только черновики','global:draft')]]))
+        elif cmd=='/dialog_test':
+            running=getattr(self,'research_probe_task',None)
+            if running and not running.done():
+                await self.owner_message('Другой тест уже выполняется. Дождитесь окончания или используйте /stop.')
+                return
+            from .dialog_probe import run_probe
+            await self.owner_message('Запускаю 3 тестовых диалога, 6 ответов. До 20 учтённых этапов API в пределах дневного лимита; это не денежный лимит. История изолирована, отправки клиентам запрещены. /stop остановит следующие этапы; начатый запрос может списать средства.')
+            self.research_probe_task=asyncio.create_task(run_probe(self))
         elif cmd=='/research_test':
             running=getattr(self,'research_probe_task',None)
             if running and not running.done():
