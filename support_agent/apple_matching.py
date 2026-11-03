@@ -92,9 +92,10 @@ def exact_quote(facts,text):
     selection=facts.get('appstore_selection',{})
     codes=selection.get('requested_codes',[]);wanted=amounts(text)
     if len(codes)!=1 or len(wanted)!=1:return None
-    amount,unit=next(iter(wanted));entries=[]
+    amount,unit=next(iter(wanted));entries=[];denom_count=0
     for region in selection.get('matched_regions',[]):
         for row in region.get('denoms',[]):
+            denom_count+=1
             identity=nominal(row.get('nominal',''))
             if identity:entries.append((identity,row.get('price_rub')))
     # A bare dollar symbol is ambiguous across dollar currencies. Resolve only
@@ -111,7 +112,20 @@ def exact_quote(facts,text):
             'у совпавшего номинала нет корректной цены' if matched and not prices else
             'в полученной выборке нет точного совпадения номинала; отсутствие товара не подтверждено' if not matched else '')
     return {'region':codes[0],'amount':amount,'currency':unit,'price':next(iter(prices)) if not reason else None,
-            'reason':reason,'status':status,'matched':len(matched),'price_count':len(prices)}
+            'reason':reason,'status':status,'matched':len(matched),'price_count':len(prices),
+            'selected_region_count':len(selection.get('matched_regions',[])),
+            'denomination_count':denom_count,'parsed_count':len(entries),
+            'parsed_identities':[f'{a:g} {u}' for a,u in sorted({identity for identity,_ in entries})[:12]],
+            'stock_age_seconds':facts.get('appstore',{}).get('stock_age_seconds')}
+
+
+def quote_diagnostic(quote):
+    """Counts and parsed public identities only; no raw supplier rows."""
+    age=quote.get('stock_age_seconds')
+    age=age if type(age) is int and 0<=age<1800 else 'неизвестен'
+    return (f"Выбрано регионов={quote['selected_region_count']}; номиналов={quote['denomination_count']}; "
+            f"распознано={quote['parsed_count']}; возраст остатков, сек={age}; "
+            'распознанные номиналы (не более 12)='+', '.join(quote['parsed_identities'])+'.')
 
 
 def regional_quotes(facts,text):

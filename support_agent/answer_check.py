@@ -92,7 +92,7 @@ def review_input(answer,facts):
                  r'(?:не\s*доступ|невозмож)[^.!?\n]{0,80}оформлен',summary,re.I):
         owner_claims.append('Owner analysis claims purchases through the store are unavailable.')
     from .feature_reply import public_question
-    return {'reply':scrub(reply),'owner_public_claims':owner_claims,'source_ids':ids,
+    result={'reply':scrub(reply),'owner_public_claims':owner_claims,'source_ids':ids,
             'public_question':public_question(facts),
             'shop_navigation':navigation_facts(facts),
             'owner_workflow_policies':policies_for(facts),
@@ -105,6 +105,31 @@ def review_input(answer,facts):
             'appstore_selection':facts.get('appstore_selection',{}),
             'catalog_status':_scalar(facts.get('catalog_status')),
             'catalog_complete':facts.get('catalog_complete') is True}
+    if facts.get('feature_only') is True:
+        # The code audits the COMPLETE reply before reaching review_input.
+        # Only an exact code-rendered price prefix may be excluded from the
+        # model's public-feature review. Never let a model validate store prices
+        # against manufacturer USD pricing, or hide arbitrary answer text.
+        from .feature_reply import price_block, compose
+        block=price_block(facts,'',topic='features')
+        prefix=block+'\n\n'
+        if not block or not reply.startswith(prefix):
+            raise ValueError('Feature review requires exact catalogue price prefix')
+        feature_text=reply[len(prefix):]
+        composed,reason=compose(dict(answer,reply=feature_text),block)
+        if reason or composed['reply']!=reply:
+            raise ValueError('Feature review contains non-feature claims')
+        result['reply']=scrub(feature_text)
+        result['review_scope']='public_features_only; exact store price prefix checked by code'
+        result['catalog']=[]
+        result['requested_catalog']=[{k:v for k,v in row.items() if k in ('service','plan','duration','billing_period')}
+                                     for row in result['requested_catalog']]
+        result['owner_public_claims']=[]
+        result['owner_workflow_policies']=[]
+        result['shop_navigation']={}
+        result['appstore']={}
+        result['appstore_selection']={}
+    return result
 
 
 async def check_answer(ai,answer,facts):

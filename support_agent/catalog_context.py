@@ -372,8 +372,9 @@ def direct_apple_reply(facts, latest):
             answer['handoff']=False
         else:
             answer['reply']=f'Вы хотите пополнить Apple ID {label} на {amount:g} {unit}. Точную стоимость этого номинала сейчас подтвердить не получилось; потребуется проверка перед оформлением.'
+            from .apple_matching import quote_diagnostic
             answer['evidence']={'status':'catalog_review','sources':[], 'diagnostic':
-                f"Этап: подбор точного номинала App Store. Причина: {quote['reason']}. Регион={code}; сумма={amount:g} {unit}; статус источника={quote['status']}; совпадений={quote['matched']}; разных корректных цен={quote['price_count']}."}
+                f"Этап: подбор точного номинала App Store. Причина: {quote['reason']}. Регион={code}; сумма={amount:g} {unit}; статус источника={quote['status']}; совпадений={quote['matched']}; разных корректных цен={quote['price_count']}. "+quote_diagnostic(quote)}
     answer['summary']='Ответ по текущим региональным данным App Store. Регион не выбирался по истории модели.'
     return answer
 
