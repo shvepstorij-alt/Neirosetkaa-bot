@@ -55,7 +55,13 @@ def compose(answer, block):
     text=answer.get('reply','')
     if re.search(r'[$€₽]|\b(?:руб(?:лей|ля|ль)?|RUB|USD|EUR|TRY|GBP)\b|скидк|сниженн[а-яё]*\s+ставк|discount',text,re.I):
         return None,'Этап: разделение функций и цены. Модель добавила денежные сведения в блок функций; цены вставляет код из catalog_price_rub.'
-    if re.search(r'@|https?://|/start|owner_confirmed|парол|пришл|опла[тч]|(?:откройте|перейдите|выберите)[^.!?\n]{0,50}(?:каталог|магазин)',text,re.I):
+    # Billing cadence is a public plan property, not a customer instruction.
+    # Leave its truth/plan binding to the content audit; keep transactions out.
+    if re.search(r'@|https?://|/start|owner_confirmed|парол|пришл|'
+                 r'оплатите|оплачивайте|(?:после|до|для)\s+оплат|'
+                 r'\b(?:API|доступ|использование)\b[^.!?\n]{0,35}опла[тч]|'
+                 r'опла[тч][^.!?\n]{0,35}(?:отдельно|заказ|карт[а-яё]*)|'
+                 r'(?:откройте|перейдите|выберите)[^.!?\n]{0,50}(?:каталог|магазин)',text,re.I):
         return None,'Этап: разделение функций и оформления. В блоке функций появились ник, ссылка или инструкция оформления; эти сведения нельзя генерировать в этом режиме.'
     reply=block+'\n\n'+text
     if len(reply)>1800:
