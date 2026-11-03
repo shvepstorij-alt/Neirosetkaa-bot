@@ -262,7 +262,7 @@ def verified_catalog_reply(facts, reason):
         if len(lines)>=8 or used+len(line)+1>line_budget:break
         lines.append(line);used+=len(line)+1
     parts=[];workflow_conflicts=[]
-    from .workflow_policy import policies_for
+    from .workflow_policy import policies_for,route_evidence
     policies=policies_for(facts)
     if lines:
         parts.append('Тарифы магазина:\n'+'\n'.join(lines)+'\nЦены до применения промокода и списания монет.')
@@ -270,13 +270,14 @@ def verified_catalog_reply(facts, reason):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
     for policy in policies:
         name={'krea':'Krea','suno':'Suno','zoom':'Zoom','openrouter':'Openrouter','spotify':'Spotify','youtube':'YouTube'}[policy['service']]
-        policy_rows=[r for r in rows if policy['service'] in {
-            p['service'] for p in policies_for({'requested_catalog':[r]})}]
-        methods={r.get('fulfillment','not_verified') for r in policy_rows}
-        if policy['service'] in ('suno','zoom','openrouter','spotify','youtube') and methods!={'account_details'}:
+        state,methods=route_evidence(policy['service'],rows)
+        if state=='conflict':
             parts.append(f'Для оформления {name} нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления заказа.')
             workflow_conflicts.append(name+': конфликт способов оформления; владелец подтвердил account_details, '
                 'полученные ветки='+(','.join(sorted(str(method) for method in methods)) if methods else 'строки выбранного товара не получены')+'.')
+        elif state=='unavailable':
+            parts.append(f'Для оформления {name} нужны почта и пароль от аккаунта. Их нужно будет прислать сюда, в эту переписку. Порядок оформления проверю перед оплатой.')
+            workflow_conflicts.append(name+': поля подтверждены владельцем; действующая инструкция магазина не получена. Живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; полученные ветки='+(','.join(sorted(methods)) if methods else 'строки выбранного товара не получены')+'. Конфликт способа оформления не установлен.')
         else:
             parts.append(f'Для оформления {name} нужны почта и пароль от вашего аккаунта. После выбора тарифа и оплаты пришлите их сюда, в эту переписку. Дальше потребуется ручное оформление.')
     if apple_requested:
@@ -301,9 +302,14 @@ def verified_catalog_reply(facts, reason):
         question=('Подскажите стоимость нужной покупки в валюте аккаунта и текущий баланс Apple ID.' if known else
                   'Для подбора пополнения App Store подскажите регион Apple ID, стоимость нужной покупки в валюте аккаунта и текущий баланс.')
         parts.append(question)
-    if not parts:parts=['Уточните, пожалуйста, о каком сервисе или заказе идёт речь — хочу проверить именно ваш вопрос.']
+    availability_review=(not rows and not apple_requested and
+                         'этап: подтверждение оформления вне каталога.' in str(reason).casefold())
+    if not parts:
+        parts=(['Возможность и способ оформления этого сервиса нужно проверить до оплаты. Проверю условия, чтобы не обещать неподтверждённый вариант оформления.']
+               if availability_review else
+               ['Уточните, пожалуйста, о каком сервисе или заказе идёт речь — хочу проверить именно ваш вопрос.'])
     reply='\n\n'.join(parts)
-    return {'reply':reply,'summary':'Свободный ответ не прошёл проверку. Сохранена только подтверждённая часть каталога и уточняющие вопросы. Остальные части обращения требуют проверки владельца.',
+    return {'reply':reply,'summary':('Ответ обещал неподтверждённую возможность оформления сервиса. Возможность и порядок нужно проверить владельцу до оплаты; предложение и цена не подтверждены.' if availability_review else 'Свободный ответ не прошёл проверку. Сохранена только подтверждённая часть каталога и уточняющие вопросы. Остальные части обращения требуют проверки владельца.'),
             'handoff':True,'source_ids':[],'research':{'topic':'none','products':[]},
             'evidence':{'status':'catalog_review','sources':[],
                         'diagnostic':scrub(str(reason))[:1100]

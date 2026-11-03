@@ -36,6 +36,159 @@ def _catalog_value(key, value):
     return _scalar(value)
 
 
+def _code_credential_issue(text, facts):
+    """Bind account-credential requirements to their own fulfillment branch."""
+    from .catalog_context import _families, _words, _contains
+    from .workflow_policy import policies_for
+    rows = [r for r in facts.get('requested_catalog', []) if isinstance(r, dict)]
+    code_rows = [r for r in rows if r.get('fulfillment') == 'code_activation_conditional']
+    if not code_rows:return ''
+    policies = policies_for(facts)
+    active = rows
+    requirements = re.compile(
+        r'(?<!\w)(?:нуж(?:ен|на|ны|но)|потребует[а-яё]*|потребуются|понадоб[а-яё]*|требует[а-яё]*|'
+        r'требуются|необходимо|пришлите|присылайте|отправьте|отправить|отправляйте|'
+        r'передайте|передать|передавайте|сообщите|предоставьте|введите|запрашива[а-яё]*)(?!\w)', re.I)
+    for clause in re.split(r'(?<=[.!?])\s+|[\n;,]|\s+а\s+', text):
+        families = _families(_words(clause))
+        matched = [r for r in rows if
+                   families & _families(_words(str(r.get('service', ''))+' '+str(r.get('service_key', ''))))
+                   or any(_contains(_words(clause), _words(r.get(k, ''))) for k in ('service', 'service_key') if r.get(k))]
+        if matched:active = matched
+        targets = [r for r in active if r.get('fulfillment') == 'code_activation_conditional']
+        if not targets or clause.rstrip().endswith('?'):continue
+        if re.search(r'не\s+(?:могу|можем)\s+(?:подтвердить|уточнить)|нужно\s+проверить[^.!?]{0,35}(?:данные|поля)', clause, re.I):
+            continue
+        # Signing in to one's own service is different from sending account
+        # credentials to the shop. Do not ban ordinary self-login explanations.
+        transfer = bool(re.search(r'пришл|присыла|отправ|переда|сообщ|предостав', clause, re.I))
+        if not transfer and re.search(r'для\s+входа|войдите|авторизуйтесь', clause, re.I):continue
+        terms = list(re.finditer(r'(?<!\w)(?:парол[а-яё]*|почт[а-яё]*|email|e-mail|логин[а-яё]*)(?!\w)', clause, re.I))
+        verbs = list(requirements.finditer(clause))
+        if not terms or not verbs:continue
+        requested_fields = set()
+        for term in terms:
+            nearest = min(verbs, key=lambda v:min(abs(v.end()-term.start()), abs(v.start()-term.end())))
+            if re.search(r'не\s*$', clause[max(0, nearest.start()-8):nearest.start()], re.I):continue
+            field = 'account_password' if term[0].lower().startswith('парол') else 'account_email'
+            if (field == 'account_email' and facts.get('course_bonus')
+                    and re.search(r'курс|обучени|регистрац', clause, re.I)):
+                continue
+            requested_fields.add(field)
+        for row in targets:
+            permitted = set(row.get('required_fields', [])) if row.get('required_fields_status') == 'available' else set()
+            family = _families(_words(str(row.get('service', ''))+' '+str(row.get('service_key', ''))))
+            for policy in policies:
+                if (policy.get('source') == 'owner_confirmed'
+                        and family & _families(_words(policy.get('service', '')))):
+                    permitted.update(policy.get('required_fields', []))
+            missing = requested_fields - permitted
+            if missing:
+                labels = ','.join(sorted(missing))
+                return ('Этап: подтверждение полей кодовой активации. Причина: ответ требует данные аккаунта, '
+                        'не подтверждённые для выбранной кодовой ветки. fulfillment=code_activation_conditional; '
+                        'неподтверждённые поля='+labels+'. Наличие платного тарифа не подтверждает требование почты или пароля.')
+    return ''
+
+
+def evidence_scope_issue(answer, facts):
+    """Reject store-specific claims whose source is missing, before model review.
+
+    Legacy unregionalized Apple rows are NOT current regional stock evidence.
+    General gift-code explanations and explicit uncertainty remain allowed.
+    The helper is also usable by callers that skip the optional model review.
+    """
+    from .catalog_context import _families, _words, apple_region_codes
+    from .apple_matching import REGIONS, nominal, amounts
+    text = str(answer.get('reply', ''))
+    credential_issue = _code_credential_issue(text, facts)
+    if credential_issue:return credential_issue
+    current = str(facts.get('conversation', {}).get('latest_client_message', ''))
+    families = _families(_words(current))
+    apple_context = 'appstore' in families or 'appstore' in _families(_words(text))
+    apple_context = apple_context or 'appstore' in facts.get('catalog_selection', {}).get('mentioned_known_services', [])
+    if apple_context:
+        apple = facts.get('appstore', {})
+        status = apple.get('status', 'not_connected')
+        status = status if status in ('available', 'truncated', 'not_connected', 'read_error', 'timeout', 'stale', 'unavailable') else 'unknown'
+        regions = apple.get('regions', [])
+        regions = regions if isinstance(regions, list) else []
+        requested = set(facts.get('appstore_selection', {}).get('requested_codes', [])) & set(REGIONS)
+        if not requested:
+            requested = apple_region_codes(current)
+        active = 'appstore' in families and not families - {'appstore'}
+        nav_available = facts.get('bot_navigation', {}).get('status') == 'available'
+        for sentence in re.split(r'(?<=[.!?])\s+|\n+', text):
+            mentioned = _families(_words(sentence))
+            if mentioned:
+                active = 'appstore' in mentioned
+            if not active or not sentence.strip() or sentence.rstrip().endswith('?'):
+                continue
+            uncertain = bool(re.search(r'не\s+(?:могу|удалось|получилось)\s+подтвердить|не\s+подтвержден|'
+                                       r'подтвердить[^.!?\n]{0,50}не\s+(?:удалось|получилось)|'
+                                       r'неизвестно|уточню|нужно\s+(?:проверить|уточнить)', sentence, re.I))
+            # Do not mistake a customer's desired amount or a hypothetical
+            # calculation for an available denomination in this store.
+            hypothetical = bool(re.search(r'если|например,?\s+если|вы\s+хотите|вам\s+нужно|предположим', sentence, re.I))
+            inventory = bool(re.search(r'(?<!\w)(?:есть|имеются|доступен|доступна|доступны|представлены|прода[её]м|предлагаем)(?!\w)|в\s+наличии', sentence, re.I))
+            inventory = inventory or bool(re.search(r'номинал[а-яё]*\s+(?:от|на\s+выбор|следующ)', sentence, re.I))
+            price = bool(re.search(r'\d[\d\s.,]*\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?!\w)', sentence, re.I)
+                         or amounts(sentence) and re.search(r'стоит|стоимость|цен[аы]|за\s+\d', sentence, re.I))
+            regional_step = bool(re.search(r'выб(?:ерите|рать)[^.!?\n]{0,40}регион', sentence, re.I)
+                                 and apple_region_codes(sentence))
+            if (not nav_available and not uncertain and re.search(
+                    r'(?:откройте|открыть|перейдите|перейти|нажмите|нажать|выберите|выбрать)[^.!?\n]{0,80}'
+                    r'(?:@[A-Za-z][A-Za-z0-9_]+|/start|(?:раздел|категори[юя])\s*[«"\x27]?(?:магазин|каталог|icloud))', sentence, re.I)):
+                return ('Этап: подтверждение навигации App Store. Причина: инструкция называет конкретные кнопки или бота, '
+                        'но текущая навигация магазина не подтверждена. Не подставляй путь из памяти.')
+            if not (inventory or price or regional_step) or uncertain or hypothetical:
+                continue
+            codes = apple_region_codes(sentence) or requested
+            matched = [r for r in regions if isinstance(r, dict)
+                       and (not codes or codes & apple_region_codes(r.get('name', '')))]
+            found = set().union(*(apple_region_codes(r.get('name', '')) for r in matched)) if matched else set()
+            denoms = [d for r in matched for d in r.get('denoms', []) if isinstance(d, dict)]
+            if status not in ('available', 'truncated') or not matched or codes - found or not denoms:
+                return ('Этап: подтверждение регионального предложения App Store. Причина: нет текущих доказательств '
+                        'заявленного наличия, номиналов, цены или выбора региона. Статус источника='+status
+                        +'; запрошено='+','.join(sorted(codes))+'; регионов='+str(len(regions))
+                        +'; совпало регионов='+str(len(matched))+'; номиналов='+str(len(denoms))
+                        +'. Обычные строки iCloud/AppStore без региона не подтверждают региональное предложение.')
+            # A range/list must belong to the selected region(s), rather than
+            # being copied from an unrelated legacy or neighbouring catalogue.
+            wanted = amounts(sentence)
+            if wanted:
+                for code in codes:
+                    identities = {identity for r in matched if code in apple_region_codes(r.get('name', ''))
+                                  for d in r.get('denoms', []) if (identity := nominal(d.get('nominal', '')))}
+                    for value, currency in wanted:
+                        # A RUB retail price is not a foreign face value. For
+                        # Russian face/retail RUB ambiguity, exact price binding
+                        # is handled by apple_audit, not an order-based guess.
+                        if currency == 'RUB' and (code != 'RU' or price):
+                            continue
+                        canonical = 'USD' if currency == '$' and code == 'US' else currency
+                        if (value, canonical) not in identities:
+                            return ('Этап: привязка номинала App Store к региону. Причина: заявленный номинал не найден '
+                                    'в текущей региональной выборке; отсутствие товара не установлено. Регион='+code
+                                    +'; распознанных номиналов='+str(len(identities))+'.')
+    # An absent catalogue match is neither proof of absence nor permission to
+    # guarantee a custom purchase. A check/negotiation can be offered instead.
+    if not facts.get('requested_catalog') and re.search(
+            r'нет[^.!?\n]{0,45}(?:каталог|магазин)|вне\s+каталога|не\s+представлен[^.!?\n]{0,30}каталог', current, re.I):
+        for sentence in re.split(r'(?<=[.!?])\s+|\n+', text):
+            promise = re.search(r'оформлени[ея][^.!?\n]{0,25}(?:возможно|доступно)|'
+                r'(?<!не\s)(?:можем|можно)\s+(?:(?:вам|это|его|её|ее|подписку|также|тоже|у\s+нас|через\s+нас)\s+){0,3}(?:оформить|оплатить)|'
+                r'(?<!не\s)(?:оформим|оплатим)', sentence, re.I)
+            uncertain = re.search(r'нельзя\s+(?:пока\s+)?(?:подтвердить|обещать|утверждать|гарантировать)|'
+                r'не\s+(?:могу|можем)\s+(?:пока\s+)?(?:подтвердить|обещать|утверждать|гарантировать)|'
+                r'если[^.!?\n]{0,60}(?:согласуем|подтвердим|подтвердится)', sentence, re.I)
+            if promise and not uncertain and not sentence.rstrip().endswith('?'):
+                return ('Этап: подтверждение оформления вне каталога. Причина: нет подтверждённого предложения или '
+                        'согласованного способа оформления. Разрешено предложить ручную проверку, но не утверждать, что оформление возможно.')
+    return ''
+
+
 def review_input(answer,facts):
     """Copy only the answer and public evidence; exclude order/identity data."""
     from .catalog_context import customer_facts
@@ -150,6 +303,11 @@ async def check_answer(ai,answer,facts,images=None):
     """
     from .catalog_context import false_absence
     reply=answer.get('reply','')
+    scope_issue=evidence_scope_issue(answer,facts)
+    if scope_issue:return {'supported':False,'reason':scope_issue}
+    from .literal_evidence import unsupported_model_version
+    version_issue=unsupported_model_version(answer,facts)
+    if version_issue:return {'supported':False,'reason':version_issue}
     from .reply_audit import catalogue_audit
     audit=catalogue_audit(reply,facts)
     if audit['issues']:
@@ -211,7 +369,11 @@ async def check_answer(ai,answer,facts,images=None):
     data=review_input(answer,facts)
     feature_units={}
     if facts.get('feature_only') is True:
-        feature_units={str(i+1):text for i,text in enumerate(data['reply'].split('\n\n')) if text.strip()}
+        # A paragraph may contain several unrelated claims. Require findings
+        # for every sentence/line, without splitting decimal model versions.
+        content=re.sub(r'\[\d{1,3}\]','',data['reply'])
+        units=[text.strip() for text in re.split(r'\n+|(?<=[.!?;])\s+',content) if text.strip()]
+        feature_units={str(i+1):text for i,text in enumerate(units)}
         if not feature_units or len(feature_units)>30:raise ValueError('Feature review units invalid')
         data['review_units']=feature_units
     request_input=json.dumps(data,ensure_ascii=False,allow_nan=False)
@@ -247,7 +409,7 @@ async def check_answer(ai,answer,facts,images=None):
             'required':['claims','missing_requested_facets'],'additionalProperties':False}
     try:
         result=await ai.request('responses',json={
-            'model':ai.model,'store':False,'max_output_tokens':1400,
+            'model':ai.model,'store':False,'max_output_tokens':3200 if feature_review else 1400,
             'instructions':(
                 'Review ONLY the included public feature assertions in the Russian reply. '
                 'This is a narrow feature review: retail prices were checked by code and are not '
@@ -266,7 +428,14 @@ async def check_answer(ai,answer,facts,images=None):
                 'another answer. Return exactly one claims finding for EACH code-assigned review_units '
                 'unit_id; no omissions or duplicates. Judge ALL assertions in that entire unit, '
                 'preserving each service and plan. For each, set status supported, unsupported or uncertain '
-                'and give concise Russian evidence: the matching supplied fact or the exact '
+                'and give evidence: for supported, copy ONE exact continuous supporting excerpt '
+                'from public_evidence.digest (whitespace differences allowed), including necessary '
+                'plan/platform and billing qualifiers. The excerpt must support ALL assertions '
+                'in the unit, not just one convenient fragment. If no such excerpt exists, use '
+                'uncertain or unsupported with a concise Russian explanation. Preserve distinctions '
+                'between web-only and mobile features, included credits and separately billed '
+                'features, and the actual plan. Never turn optional paid add-ons into included '
+                'features. For a failure identify the exact '
                 'contradiction/missing evidence. Do not put affirmative verification in an '
                 'unsupported finding. List only actually unanswered explicit facets in '
                 'missing_requested_facets; otherwise return an empty array. Do not flag a '
@@ -378,6 +547,7 @@ async def check_answer(ai,answer,facts,images=None):
                     or len(value['missing_requested_facets'])>10):
                 raise FeatureReviewError('Этап: проверка блоков функций. Причина: модель вернула неверную структуру списка проверок.')
             failures=[];seen=set()
+            normalized_digest=re.sub(r'\s+',' ',data['public_evidence']['digest']).strip()
             for claim in value['claims']:
                 if (not isinstance(claim,dict) or set(claim)!={'unit_id','status','evidence'}
                         or not isinstance(claim['unit_id'],str) or claim['unit_id'] not in feature_units
@@ -390,6 +560,8 @@ async def check_answer(ai,answer,facts,images=None):
                         raise FeatureReviewError('Этап: проверка блоков функций. Причина: объяснение отсутствует, превышает лимит или содержит скрываемые данные.')
                 if claim['status']!='supported':
                     failures.append('Блок '+claim['unit_id']+': '+claim['evidence'])
+                elif re.sub(r'\s+',' ',claim['evidence']).strip() not in normalized_digest:
+                    failures.append('Блок '+claim['unit_id']+': подтверждающий фрагмент не найден в полученной сводке источников; положительная оценка без такого фрагмента не принята.')
             if seen!=set(feature_units):
                 raise FeatureReviewError('Этап: проверка блоков функций. Причина: проверены не все блоки; ожидалось='+str(len(feature_units))+'; получено='+str(len(seen))+'.')
             for facet in value['missing_requested_facets']:
@@ -397,7 +569,7 @@ async def check_answer(ai,answer,facts,images=None):
                     raise FeatureReviewError('Этап: проверка блоков функций. Причина: неверный список нераскрытых пунктов запроса.')
                 failures.append('Не раскрыт запрошенный пункт: '+facet)
             return {'supported':not failures,'reason':'\n'.join(failures)[:1500] if failures else
-                    'Все '+str(len(value['claims']))+' проверенных утверждений подтверждены предоставленными данными; незакрытых запрошенных пунктов не отмечено.'}
+                    'Для всех '+str(len(value['claims']))+' блоков модель указала фрагменты полученной сводки; незакрытых запрошенных пунктов не отмечено. Это модельная проверка смысла, а не гарантия точности источника.'}
         if (not isinstance(value,dict) or set(value)!= {'supported','reason'}
                 or type(value['supported']) is not bool or not isinstance(value['reason'],str)
                 or not 0<len(value['reason'].strip())<=1500 or scrub(value['reason'])!=value['reason']):

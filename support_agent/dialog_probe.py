@@ -126,18 +126,23 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None, su
     from .service import Service
     revision = service.store.get('revision') if expected_revision is None else expected_revision
     calls = 0
+    quota_exhausted = False
     async def send(text,parse_mode=None):
         if emit is not None:
             await emit(html.unescape(text) if parse_mode=='HTML' else text)
         else:
             await service.owner_message(text,parse_mode=parse_mode)
     def charge():
-        nonlocal calls
+        nonlocal calls,quota_exhausted
         if service.store.get('revision') != revision:
             raise RuntimeError('Test stopped: owner changed mode')
         if calls >= max_calls:
             raise RuntimeError('Test API call limit reached')
-        service.charge_call()
+        try:
+            service.charge_call()
+        except ValueError as exc:
+            if str(exc)=='Daily API request limit reached':quota_exhausted=True
+            raise
         calls += 1
 
     from .coverage_cases import SUITES, EXPECTATION
@@ -181,6 +186,9 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None, su
                 if not job:
                     raise RuntimeError('Test queue: synthetic batch not claimed')
                 answer = await asyncio.wait_for(isolated.generate(job), timeout=180)
+                # generate() may turn a resource failure into a safe client
+                # fallback. That is not a completed semantic test of this turn.
+                if quota_exhausted:raise RuntimeError('Daily API request limit reached')
                 if not answer:
                     raise RuntimeError('Test generation: no current answer returned')
                 first = store.chat(cid)['batch_first']

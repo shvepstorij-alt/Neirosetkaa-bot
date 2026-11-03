@@ -27,3 +27,14 @@ def policies_for(facts):
 
 def enrich(facts):
     return dict(facts,owner_workflow_policies=policies_for(facts))
+
+
+def route_evidence(service,rows):
+    """Distinguish a missing projection from an explicitly different route."""
+    selected=[row for row in rows if service in {
+        policy['service'] for policy in policies_for({'requested_catalog':[row]})}]
+    methods={str(row.get('fulfillment','not_verified')) for row in selected}
+    explicit=methods & {'manual','checkout_link','account_details','code_activation_conditional'}
+    if explicit-{'account_details'}:return 'conflict',methods
+    if not selected or methods!={'account_details'}:return 'unavailable',methods
+    return 'matched',methods

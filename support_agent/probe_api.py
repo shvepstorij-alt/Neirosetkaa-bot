@@ -128,8 +128,16 @@ def create_app(service,token):
         return web.json_response(result if result else {'error':'not_found'},status=200 if result else 404)
 
     async def info(request):
+        import datetime as dt
+        now=dt.datetime.now(dt.timezone.utc)
+        row=service.store.db.execute('SELECT calls FROM quota WHERE day=?',(now.date().isoformat(),)).fetchone()
+        used=int(row[0]) if row else 0
+        limit=service.daily_limit
+        quota={'limit':limit,'used':used,'remaining':max(0,limit-used),
+               'resets_at_utc':dt.datetime.combine(now.date()+dt.timedelta(days=1),dt.time(),dt.timezone.utc).isoformat()}
         task=getattr(service,'research_probe_task',None)
         return web.json_response({'build':manager.build,'daily_run_limit':None,'daily_run_limit_enabled':False,
+                                  'daily_api_quota':quota,
                                   'test_running':bool(task and not task.done())})
 
     app=web.Application(middlewares=[authorize],client_max_size=512)

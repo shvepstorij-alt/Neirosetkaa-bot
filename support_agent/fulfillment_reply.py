@@ -2,9 +2,57 @@
 import re
 
 
+def _code_help(name):
+    """Steps verified in our three activation mini-apps, not inferred from a plan.
+
+    Only called for the confirmed conditional code route. Never collect session
+    data in this chat or imply that payment has already issued a usable code.
+    """
+    from .catalog_context import _families,_words
+    families=_families(_words(name))
+    if 'chatgpt' in families:
+        return ('Если в вашем оплаченном заказе доступна кнопка активации, откройте её. '
+                'Войдите в нужный аккаунт на chatgpt.com. В том же браузере откройте '
+                'https://chatgpt.com/api/auth/session и скопируйте весь текст JSON. '
+                'Вставьте его только в поле мини-приложения активации и нажмите активацию. '
+                'Пароль и данные сессии сюда в переписку присылать не нужно.')
+    if 'claude' in families:
+        return ('Если в вашем оплаченном заказе доступна кнопка «Активировать Claude», откройте её. '
+                'Войдите в нужный аккаунт на claude.ai, откройте https://claude.ai/settings/account '
+                'и скопируйте Organization ID. Вставьте его в поле мини-приложения активации '
+                'и нажмите активацию. Пароль от аккаунта для этой кодовой процедуры не нужен.')
+    if 'perplexity' in families:
+        return ('Если в вашем оплаченном заказе доступна кнопка «Активировать Perplexity», откройте её. '
+                'Войдите в нужный аккаунт Perplexity и откройте в том же браузере '
+                'https://www.perplexity.ai/api/auth/session. Скопируйте значение поля id '
+                'и вставьте в поле мини-приложения активации, затем нажмите активацию. '
+                'Пароль и данные сессии сюда в переписку присылать не нужно.')
+    return ''
+
+
+def _selected_plan_rows(items,latest):
+    """Prefer explicitly named complete plan labels, not unrelated variants."""
+    from .catalog_context import _words
+    words=_words(latest)
+    hits=[]
+    for index,item in enumerate(items):
+        plan=_words(item.get('plan',''))
+        if not plan:continue
+        for start in range(len(words)-len(plan)+1):
+            if words[start:start+len(plan)]==plan:hits.append((start,start+len(plan),index))
+    # Pro inside the same occurrence of "Pro на год" is not a separate request.
+    selected={index for start,end,index in hits if not any(
+        other_start<=start and end<=other_end and other_end-other_start>end-start
+        for other_start,other_end,_ in hits)}
+    return [item for index,item in enumerate(items) if index in selected] if selected else items
+
+
 def workflow_reply(facts,latest):
     lines=[line.strip() for line in latest.splitlines() if line.strip()]
-    questions=[line for line in lines if re.search(r'оформ|кроме оплаты|что.*прислать|какие.*данные|как.*(?:получить|скопировать|найти).*ссылк',line,re.I)]
+    questions=[line for line in lines if re.search(
+        r'оформ|кроме оплаты|(?:что|какие).*(?:нужн|потреб|треб|данн|присл)|'
+        r'как.*(?:получить|скопировать|найти).*ссылк|как.*(?:пополн|активир)|парол.*(?:нуж|треб)|'
+        r'если.*вход.*(?:google|гугл)',line,re.I)]
     if not questions:return None
     if re.search(r'функци|лимит|входит|отлич|возврат|ошиб|не работает|закуп|поставщик|себестоим|18\s*\+|порно|эротическ',latest,re.I):return None
     ambiguities=facts.get('catalog_selection',{}).get('variant_ambiguities',[])
@@ -42,7 +90,7 @@ def workflow_reply(facts,latest):
         # names must reach consultation/discovery instead of being omitted.
         for token in re.findall(r'(?<!\w)[A-Za-z][A-Za-z0-9_-]*(?!\w)',line):
             if set(_words(token))-(known_words|ordinary):return None
-    from .workflow_policy import policies_for
+    from .workflow_policy import policies_for,route_evidence
     rows=facts.get('requested_catalog',[])
     apple_requested='appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[])
     if not rows and not apple_requested:return None
@@ -54,8 +102,12 @@ def workflow_reply(facts,latest):
     parts=[];diagnostics=[];handoff=False
     from .bot_guide import purchase_navigation
     navigation=purchase_navigation(facts,apple=apple_requested and not groups)
-    if navigation:parts.append(navigation)
+    # Append navigation only if the whole answer has no unresolved procedure.
+    # A valid catalogue button is not a reason to solicit payment first.
     for name,items in groups.items():
+        # Shared names such as Pro in a multi-brand question cannot be bound
+        # to a brand by a token match alone. Keep those variants unresolved.
+        if len(groups)==1:items=_selected_plan_rows(items,latest)
         if re.search(r'тариф|цен|стоим',latest,re.I):
             prices=[]
             for item in items:
@@ -64,13 +116,16 @@ def workflow_reply(facts,latest):
             if prices:parts.append(f'Для {name} есть такие тарифы:\n'+'\n'.join(dict.fromkeys(prices)))
         owner_policies=policies_for({'requested_catalog':items})
         methods={item.get('fulfillment','not_verified') for item in items}
-        if any(p['service'] in ('suno','zoom','openrouter','spotify','youtube') for p in owner_policies) and methods!={'account_details'}:
-            parts.append(name+': для оформления нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления; платёжную ссылку от сервиса для этого способа присылать не нужно.')
-            diagnostics.append(name+': конфликт способов оформления. Владелец подтвердил account_details (почта и пароль), живой каталог передаёт '+','.join(sorted(methods))+'. Нужно согласовать настройку товара; метод в магазине не изменён автоматически.')
-            handoff=True
-            continue
         if owner_policies:
-            parts.append(name+': выберите тариф и оплатите заказ. После оплаты пришлите сюда, в эту переписку, почту и пароль от аккаунта.')
+            state,projected=route_evidence(owner_policies[0]['service'],items)
+            if state=='conflict':
+                parts.append(name+': для оформления нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления; платёжную ссылку от сервиса для этого способа присылать не нужно.')
+                diagnostics.append(name+': конфликт способов оформления. Владелец подтвердил account_details; получены подтверждённые ветки '+','.join(sorted(projected))+'. Метод в магазине не изменён автоматически.')
+            elif state=='unavailable':
+                parts.append(name+': для оформления нужно будет прислать сюда, в эту переписку, почту и пароль от аккаунта. Порядок оформления проверю перед оплатой.')
+                diagnostics.append(name+': поля подтверждены владельцем; действующая инструкция магазина не получена. Живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; источник каталога='+str(facts.get('source','not_recorded'))+'; полученные ветки='+','.join(sorted(projected))+'. Конфликт способа оформления не установлен.')
+            else:
+                parts.append(name+': выберите тариф и оплатите заказ. После оплаты пришлите сюда, в эту переписку, почту и пароль от аккаунта.')
             if re.search(r'google|гугл',latest,re.I) and any(p.get('google_sign_in') for p in owner_policies):
                 parts.append('Если в этот сервис вы входите через Google, для оформления нужны почта и пароль от соответствующего Google-аккаунта. Одноразовые и резервные коды присылать не нужно.')
             handoff=True
@@ -105,11 +160,17 @@ def workflow_reply(facts,latest):
             handoff=True
         elif methods=={'code_activation_conditional'}:
             parts.append(name+': предусмотрено оформление по коду активации. Выдачу кода нужно проверить по заказу.')
+            instructions=_code_help(name)
+            if instructions:parts.append(instructions)
             diagnostics.append(name+': кодовая ветка подтверждена; наличие и выдача кода этим источником не подтверждаются.')
             handoff=True
         else:
-            parts.append(name+': способ оформления зависит от выбранного тарифа. Какой тариф вы хотите оформить?')
-            diagnostics.append(name+': полученные ветки оформления='+','.join(sorted(methods)))
+            if not (methods & {'manual','checkout_link','account_details','code_activation_conditional'}):
+                parts.append(name+': действующую инструкцию оформления сейчас подтвердить не получилось. Проверю необходимые шаги и данные до оплаты.')
+                diagnostics.append(name+': инструкция оформления не получена; живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; полученные ветки='+','.join(sorted(str(method) for method in methods))+'. Неизвестный способ не означает зависимость от тарифа; повторный выбор не запрошен.')
+            else:
+                parts.append(name+': есть разные способы оформления. Уточню, какой предусмотрен для выбранного тарифа, до оплаты.')
+                diagnostics.append(name+': несколько веток оформления='+','.join(sorted(str(method) for method in methods))+'. Соответствие выбранному тарифу требует проверки.')
             handoff=True
     if apple_requested:
         from .apple_matching import ALIASES
@@ -127,7 +188,13 @@ def workflow_reply(facts,latest):
         elif not codes:
             parts.append('Для App Store нужны регион вашего Apple ID и сумма пополнения. Пароль от Apple ID для покупки подарочного кода не нужен.')
         else:
-            parts.append('Для App Store указано несколько регионов. Подскажите, какую сумму хотите пополнить для каждого аккаунта.')
+            parts.append('Для App Store указано несколько регионов. Подскажите, какую сумму хотите пополнить для каждого аккаунта. Пароль от Apple ID для покупки подарочного кода не нужен.')
+        source=facts.get('appstore',{}).get('status','not_connected')
+        if source not in ('available','truncated'):
+            parts.append('Текущие региональные номиналы сейчас не удалось проверить. Доступность и цену нужно подтвердить до оплаты.')
+            diagnostics.append('App Store: региональный источник='+str(source)+'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; выбранные регионы='+','.join(codes)+'. Номиналы из обычного каталога не подтверждают региональное наличие.')
+            handoff=True
+    if navigation and not diagnostics:parts.insert(0,navigation)
     return {'reply':'\n\n'.join(parts),'summary':'Объяснение оформления по данным магазина; сроки, отсутствие входа и успех не обещаны.',
             'handoff':handoff,'source_ids':[],
             'evidence':{'status':'catalog_review' if diagnostics else 'catalog_direct','sources':[],

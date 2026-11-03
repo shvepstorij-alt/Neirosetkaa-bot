@@ -43,6 +43,10 @@ def consultation_plan(latest, plan):
                                 if p not in names or p in products])
     public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
     public=public or bool(re.search(r'claude\s*code|клод\s*код|регион|стран|сингапур|поддержива|принимают.*карт|карт.*(?:проход|работ|оплат)',text))
+    # The model router must not turn a SaaS plan question into a model-release
+    # search simply because the requested product also offers AI features.
+    if public and plan.get('topic')=='models' and not re.search(r'модел|\bmodels?\b|claude\s*code|клод\s*код',text):
+        plan=dict(plan,topic='plans' if re.search(r'тариф|план|подписк',text) else 'features')
     if not products or not public:
         return plan
     requested=list(dict.fromkeys(list(plan.get('products',[]))+products))[:4]

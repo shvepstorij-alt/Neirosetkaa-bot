@@ -712,7 +712,11 @@ class Service:
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
         if plan['topic']=='none':
-            if image or facts.get('requested_catalog') or facts.get('appstore') or (facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I)):
+            # An unknown product has no selected rows. That must not exempt a
+            # free-form promise about our ability to fulfil/pay from review.
+            store_consultation=bool(re.search(r'оформ|актив|подписк|тариф|оплат|каталог|магазин|пополн',
+                                             latest+' '+answer['reply'],re.I))
+            if image or store_consultation or facts.get('requested_catalog') or facts.get('appstore') or (facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I)):
                 self.charge_call()
                 review=await self.ai.check_answer(answer,facts,**({'images':image} if image else {}))
                 if not self.store.still_current(job):return None
@@ -747,7 +751,8 @@ class Service:
                     raise ValueError('Stale research job')
                 self.charge_call()
             try:
-                evidence=await lookup(self.ai,plan,charge_extra=charge_search)
+                from .research import public_facets
+                evidence=await lookup(self.ai,plan,charge_extra=charge_search,question_facets=public_facets(latest))
             except Exception as exc:
                 if str(exc) in ('Stale research job','Daily API request limit reached'):
                     raise
