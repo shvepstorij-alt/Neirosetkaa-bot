@@ -730,7 +730,7 @@ class Service:
                     if not review['supported']:
                         if image:
                             from .troubleshooting import visual_failure
-                            result=visual_failure(review['reason'])
+                            result=visual_failure(review['reason'],latest)
                             result['evidence']['content_review']=review
                             if getattr(self,'_probe_capture',False):result['evidence']['rejected_reply']=scrub(answer.get('reply',''))[:1800]
                             return result
@@ -827,7 +827,7 @@ class Service:
             if image:
                 from .troubleshooting import visual_failure
                 diagnostic=review['reason'] if str(exc)=='Answer content unsupported' else failure_details(exc,stage)
-                result=visual_failure(diagnostic)
+                result=visual_failure(diagnostic,latest)
                 if str(exc)=='Answer content unsupported':result['evidence']['content_review']=review
                 if getattr(self,'_probe_capture',False):result['evidence']['rejected_reply']=scrub((locals().get('final') or {}).get('reply',''))[:1800]
                 return with_public_trace(result,evidence)
