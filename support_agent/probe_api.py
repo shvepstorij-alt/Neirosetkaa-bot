@@ -53,7 +53,8 @@ class ProbeManager:
         return dict(id=row['id'],created=row['created'],status=row['status'],**json.loads(row['data']))
 
     def start(self,ident,suite='baseline'):
-        if suite not in ('baseline','acceptance'):return {'error':'unknown_test_suite'},400
+        from .coverage_cases import SUITES
+        if suite not in ('baseline','acceptance',*SUITES):return {'error':'unknown_test_suite'},400
         existing=self.read(ident)
         if existing:
             if existing.get('suite','baseline')!=suite:return {'error':'test_suite_conflict'},409
@@ -116,7 +117,8 @@ def create_app(service,token):
         if (not isinstance(data,dict) or set(data)!={'request_id'}
                 or not isinstance(data['request_id'],str) or not re.fullmatch(r'[a-f0-9]{32}',data['request_id'])):
             return web.json_response({'error':'expected_request_id_only'},status=400)
-        result,status=manager.start(data['request_id'],suite='acceptance' if request.path.endswith('/acceptance') else 'baseline')
+        suite=request.path.rsplit('/',1)[-1]
+        result,status=manager.start(data['request_id'],suite='baseline' if suite=='tests' else suite)
         return web.json_response(result,status=status)
 
     async def read(request):
@@ -133,6 +135,9 @@ def create_app(service,token):
     app=web.Application(middlewares=[authorize],client_max_size=512)
     app.router.add_post('/v1/tests',start)
     app.router.add_post('/v1/tests/acceptance',start)
+    from .coverage_cases import SUITES
+    for suite in SUITES:
+        app.router.add_post('/v1/tests/'+suite,start)
     app.router.add_get('/v1/tests',info)
     app.router.add_get('/v1/tests/{ident}',read)
     return app

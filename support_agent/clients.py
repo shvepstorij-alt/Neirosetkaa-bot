@@ -412,7 +412,7 @@ latest_message — последнее отдельное сообщение. Е�
             'reply':{'type':'string','minLength':1,'maxLength':1800},
             'summary':{'type':'string','minLength':1,'maxLength':700},'handoff':{'type':'boolean'},
             'research':no_research if researched else {'anyOf':[no_research,search_plan]},
-            'source_ids':{'type':'array','maxItems':6 if known_ids else 0,
+            'source_ids':{'type':'array','maxItems':12 if known_ids else 0,
                           'items':{'type':'integer',**({'enum':known_ids} if known_ids else {})}}},
             'required':['reply','summary','handoff','research','source_ids'],'additionalProperties':False}
         result=await self.request('responses',json={
@@ -440,7 +440,7 @@ latest_message — последнее отдельное сообщение. Е�
             validation='draft_source_ids'
             if not isinstance(value['source_ids'],list):
                 raise ValueError()
-            if len(value['source_ids'])>6 or any(type(x) is not int for x in value['source_ids']):
+            if len(value['source_ids'])>12 or any(type(x) is not int for x in value['source_ids']):
                 raise ValueError()
             if not facts.get('public_research') and value['source_ids']:
                 raise ValueError()

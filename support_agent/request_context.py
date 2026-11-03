@@ -156,21 +156,26 @@ def _contextual_followup(text,catalog):
 def _recent_service_labels(db,chat,first,catalog,source_mids=None):
     """Only explicit client mentions, bounded by time and size; never model answers."""
     from .catalog_context import service_mentions
-    rows=db.execute("SELECT mid,text FROM messages WHERE chat=? AND role='client' AND mid<? AND (at IS NULL OR at>=?) ORDER BY mid DESC LIMIT 60",(chat,first,time.time()-86400)).fetchall()
-    if source_mids is not None:
-        rows=[row for row in rows if row['mid'] in source_mids]
-        if {row['mid'] for row in rows}!=set(source_mids):return []
-    labels=[];used=0
+    from .session_context import _active,_boundary,_new_inquiry,SESSION_GAP
+    now=time.time()
+    rows=db.execute("SELECT mid,text,at FROM messages WHERE chat=? AND role='client' AND mid<? AND (at IS NULL OR at>=?) ORDER BY mid DESC LIMIT 60",(chat,first,now-86400)).fetchall()
+    kept=[];used=0;later=now
     for row in rows:
         text=row['text'] or '';used+=len(text)
         if used>24000:break
-        if re.search(r'предыдущий вопрос отменяю|забудь|не обсуждаем|\bне\s+\w+\s*,?\s*а\s+',text,re.I):break
+        at=row['at']
+        if isinstance(at,(int,float)):
+            if not 0<=later-at<=SESSION_GAP:break
+            later=at
+        if _boundary(text):break
         found=list(service_mentions(text,catalog).items())
         if len({identity for identity,_ in found})>2:return []
-        for identity,label in found:
-            if identity not in {i for i,_,_ in labels}:labels.append((identity,label,row['mid']))
-        if len(labels)>=2:return [(label,mid) for _,label,mid in reversed(labels[:2])]
-    return []
+        kept.append(dict(row))
+        if _new_inquiry(text):break
+    services,_=_active(list(reversed(kept)),catalog)
+    selected=sorted(services,key=lambda service:service['mid'])[-2:]
+    if source_mids is not None and {service['mid'] for service in selected}!=set(source_mids):return []
+    return [(service['label'],service['mid']) for service in selected] if len(selected)==2 else []
 
 
 def _resolve_plural_reference(db,chat,mid,text,catalog):
@@ -217,7 +222,18 @@ def resolve_request(db, chat, first, last, text, catalog=()):
                 return text
             return ''
         bounds=(drafts[1]['mid']+1 if len(drafts)>1 else drafts[0]['mid'],drafts[0]['mid'])
-    rows=db.execute("SELECT mid,text FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
+    rows=db.execute("SELECT mid,text,at FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
+    # The pointer is not proof that an old inquiry is still active. Apply the
+    # same maximum age/session gap as the multi-service context, before any
+    # dependent question can inherit a service, region or denomination.
+    from .session_context import MAX_AGE,SESSION_GAP
+    now=time.time()
+    timestamps=[r['at'] for r in rows if isinstance(r['at'],(int,float))]
+    stale=(any(not 0<=now-at<=MAX_AGE for at in timestamps)
+           or bool(timestamps and now-max(timestamps)>SESSION_GAP))
+    if stale:
+        db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
+        return '' if reminder else text
     if len(rows)>60:return '' if reminder else text
     parts=[_resolve_plural_reference(db,chat,r['mid'],r['text'],catalog) for r in rows if r['text'] and not is_reminder(r['text'])
            and not is_acknowledgement(r['text'])]

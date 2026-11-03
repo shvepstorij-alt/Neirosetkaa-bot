@@ -86,10 +86,23 @@ def _active(rows,catalog):
     for row in rows:
         text=row['text'] or '';mentions=_mentions(text,catalog)
         if re.search(r'теперь\s+только|пока\s+только|вместо\s+этого',text,re.I):services={};region=None
-        cancelled=bool(re.search(r'\bне\s+нуж[а-яё]*|\bне\s+оформля[а-яё]*|\bне\s+обсуждаем',text,re.I))
-        for identity,label in mentions.items():
-            if cancelled:services.pop(identity,None)
-            else:services[identity]={'identity':identity,'label':label,'mid':row['mid']}
+        # Negation belongs to its clause, not every service in the message.
+        # Keep coordinated groups together ("Krea и Zoom не нужны"), but split
+        # contrasting/predicate-bearing clauses ("Krea не нужна, нужен Suno").
+        clauses=re.split(r'[,;.!?\n]|\b(?:а|но|зато)\b',text,flags=re.I)
+        scoped=[]
+        for clause in clauses:
+            conjunctions=re.split(r'\s+и\s+',clause,flags=re.I)
+            if (len(conjunctions)>1 and all(_mentions(part,catalog) and re.search(
+                    r'\b(?:нуж[а-яё]*|остав[а-яё]*|оформля[а-яё]*)\b',part,re.I)
+                    for part in conjunctions)):
+                scoped.extend(conjunctions)
+            else:scoped.append(clause)
+        for clause in scoped:
+            cancelled=bool(re.search(r'\bне\s+нуж[а-яё]*|\bне\s+оформля[а-яё]*|\bне\s+обсуждаем|^\s*не\s+',clause,re.I))
+            for identity,label in _mentions(clause,catalog).items():
+                if cancelled:services.pop(identity,None)
+                else:services[identity]={'identity':identity,'label':label,'mid':row['mid']}
         codes=region_codes(text)
         if len(codes)==1 and ('appstore' in mentions or ('appstore' in services and _region_only(text))):
             region={'code':next(iter(codes)),'mid':row['mid']}

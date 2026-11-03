@@ -140,11 +140,15 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None, su
         service.charge_call()
         calls += 1
 
-    if suite not in ('baseline','acceptance'):raise ValueError('Unknown fixed test suite')
+    from .coverage_cases import SUITES, EXPECTATION
+    if suite not in ('baseline','acceptance',*SUITES):raise ValueError('Unknown fixed test suite')
     scenarios=SCENARIOS;files={};expectations={}
     if suite=='acceptance':
         from .acceptance_cases import cases,fixtures,EXPECTATIONS
         scenarios=cases();files=fixtures();expectations=EXPECTATIONS
+    elif suite in SUITES:
+        scenarios=SUITES[suite]
+        expectations={name:EXPECTATION for name,_ in scenarios}
     store = Store(':memory:', batch_seconds=300)
     shop=CatalogOnly(service.shop, service.owner)
     isolated = Service(store, NoTelegram(files), service.ai, shop, 0, {-1})

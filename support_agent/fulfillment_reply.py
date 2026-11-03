@@ -18,12 +18,30 @@ def workflow_reply(facts,latest):
     from .request_context import _service_names
     known_words={word for name in _service_names(facts.get('catalog',[])) for word in name}
     ordinary=set('что нужно потребуется данные почта пароль оплата оплаты оформить оформление оформления выбрать тариф тарифы регион сумма пополнение баланс после для и или как куда спасибо пожалуйста сервис сервисы apple id store app почту аккаунт аккаунта'.split())
+    ordinary.update(('google','email','e','mail','password','если','вход'))
+    if 'appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):
+        from .apple_matching import ALIASES as region_aliases
+        ordinary.update(('usd','eur','try','rub','gbp','cad','aud','inr','jpy','kzt','sar','brl','pln'))
+        for code in facts.get('appstore_selection',{}).get('requested_codes',[]):
+            ordinary.update(_words(code))
+            for alias in region_aliases.get(code,()):ordinary.update(_words(alias))
     for row in facts.get('requested_catalog',[]):
         known_words.update(_words(row.get('service','')));known_words.update(_words(row.get('plan','')))
+    selected_families=set()
+    for row in facts.get('requested_catalog',[]):
+        selected_families.update(_families(_words(row.get('service',''))))
+        selected_families.update(_families(_words(row.get('service_key',''))))
+    # A known alias missing from the selected catalogue is not an instruction
+    # to silently explain only the other products in the same question.
+    if _families(_words(latest))-selected_families-{'appstore'}:return None
     for line in lines:
         if line.startswith(('Сервисы текущего обращения:','Сервисы:','Регион Apple ID:')):continue
-        for tail in re.findall(r'\bи\s+([A-Za-zА-Яа-яЁё][\w-]*)',line,re.I):
+        for tail in re.findall(r'(?:\bи\b|\bили\b|[,;+])\s*([A-Za-zА-Яа-яЁё][\w-]*)',line,re.I):
             if tail.casefold() not in known_words|ordinary:return None
+        # Latin product names can also precede a comma/conjunction. Unknown
+        # names must reach consultation/discovery instead of being omitted.
+        for token in re.findall(r'(?<!\w)[A-Za-z][A-Za-z0-9_-]*(?!\w)',line):
+            if set(_words(token))-(known_words|ordinary):return None
     from .workflow_policy import policies_for
     rows=facts.get('requested_catalog',[])
     apple_requested='appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[])

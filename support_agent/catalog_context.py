@@ -261,7 +261,7 @@ def verified_catalog_reply(facts, reason):
     for line in all_lines:
         if len(lines)>=8 or used+len(line)+1>line_budget:break
         lines.append(line);used+=len(line)+1
-    parts=[]
+    parts=[];workflow_conflicts=[]
     from .workflow_policy import policies_for
     policies=policies_for(facts)
     if lines:
@@ -270,8 +270,13 @@ def verified_catalog_reply(facts, reason):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
     for policy in policies:
         name={'krea':'Krea','suno':'Suno','zoom':'Zoom','openrouter':'Openrouter','spotify':'Spotify','youtube':'YouTube'}[policy['service']]
-        if policy['service']=='suno' and any(r.get('fulfillment')!='account_details' for r in rows if 'suno' in str(r.get('service','')).casefold()):
-            parts.append('Для оформления Suno нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления заказа.')
+        policy_rows=[r for r in rows if policy['service'] in {
+            p['service'] for p in policies_for({'requested_catalog':[r]})}]
+        methods={r.get('fulfillment','not_verified') for r in policy_rows}
+        if policy['service'] in ('suno','zoom','openrouter','spotify','youtube') and methods!={'account_details'}:
+            parts.append(f'Для оформления {name} нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления заказа.')
+            workflow_conflicts.append(name+': конфликт способов оформления; владелец подтвердил account_details, '
+                'полученные ветки='+(','.join(sorted(str(method) for method in methods)) if methods else 'строки выбранного товара не получены')+'.')
         else:
             parts.append(f'Для оформления {name} нужны почта и пароль от вашего аккаунта. После выбора тарифа и оплаты пришлите их сюда, в эту переписку. Дальше потребуется ручное оформление.')
     if apple_requested:
@@ -302,6 +307,7 @@ def verified_catalog_reply(facts, reason):
             'handoff':True,'source_ids':[],'research':{'topic':'none','products':[]},
             'evidence':{'status':'catalog_review','sources':[],
                         'diagnostic':scrub(str(reason))[:1100]
+                        +('\nЭтап: проверка инструкции оформления. '+'; '.join(workflow_conflicts) if workflow_conflicts else '')
                         +'\nДанные: обычных тарифов='+str(len(rows))
                         +'; Apple status='+str(facts.get('appstore',{}).get('status','not_connected'))
                         +'; регионов='+str(len(facts.get('appstore',{}).get('regions',[])))
