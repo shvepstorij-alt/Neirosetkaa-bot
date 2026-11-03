@@ -54,32 +54,36 @@ class ProbeManager:
         if not row:return None
         return dict(id=row['id'],created=row['created'],status=row['status'],**json.loads(row['data']))
 
-    def start(self,ident):
+    def start(self,ident,suite='baseline'):
+        if suite not in ('baseline','acceptance'):return {'error':'unknown_test_suite'},400
         existing=self.read(ident)
-        if existing:return existing,200
+        if existing:
+            if existing.get('suite','baseline')!=suite:return {'error':'test_suite_conflict'},409
+            return existing,200
         running=getattr(self.service,'research_probe_task',None)
         if running and not running.done():return {'error':'test_already_running'},409
         day=dt.datetime.now(dt.timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
         used=self.db.execute('SELECT count(*) FROM remote_probe_runs WHERE created>=?',(day,)).fetchone()[0]
         if used>=self.daily_runs:return {'error':'daily_test_limit','limit':self.daily_runs},429
         self.db.execute('INSERT INTO remote_probe_runs VALUES (?,?,?,?)',
-                        (ident,time.time(),'queued',json.dumps({'reports':[],'calls':0,'build':self.build})))
-        self.service.research_probe_task=asyncio.create_task(self._run(ident,self.service.store.get('revision')))
+                        (ident,time.time(),'queued',json.dumps({'reports':[],'calls':0,'build':self.build,'suite':suite})))
+        self.service.research_probe_task=asyncio.create_task(self._run(ident,self.service.store.get('revision'),suite))
         return self.read(ident),202
 
-    async def _run(self,ident,revision):
+    async def _run(self,ident,revision,suite='baseline'):
         from .dialog_probe import run_probe
         reports=[]
         def save(status,**extra):
             self.db.execute('UPDATE remote_probe_runs SET status=?,data=? WHERE id=?',
-                (status,json.dumps(dict(reports=reports,build=self.build,**extra),ensure_ascii=False),ident))
+                (status,json.dumps(dict(reports=reports,build=self.build,suite=suite,**extra),ensure_ascii=False),ident))
         async def emit(text):
             if len(reports)>=10 or len(text)>24000:raise ValueError('Test report capacity exceeded')
             reports.append(text)
             save('running')
         save('running')
         try:
-            result=await asyncio.wait_for(run_probe(self.service,max_calls=20,emit=emit,expected_revision=revision),timeout=1200)
+            options={'suite':suite} if suite!='baseline' else {}
+            result=await asyncio.wait_for(run_probe(self.service,max_calls=20,emit=emit,expected_revision=revision,**options),timeout=1200)
             result=dict(result or {'status':'failed','reason':'runner_returned_no_result'})
             status=result.pop('status','failed')
             save(status,**result)
@@ -119,7 +123,7 @@ def create_app(service,token,daily_runs=3):
         if (not isinstance(data,dict) or set(data)!={'request_id'}
                 or not isinstance(data['request_id'],str) or not re.fullmatch(r'[a-f0-9]{32}',data['request_id'])):
             return web.json_response({'error':'expected_request_id_only'},status=400)
-        result,status=manager.start(data['request_id'])
+        result,status=manager.start(data['request_id'],suite='acceptance' if request.path.endswith('/acceptance') else 'baseline')
         return web.json_response(result,status=status)
 
     async def read(request):
@@ -135,6 +139,7 @@ def create_app(service,token,daily_runs=3):
 
     app=web.Application(middlewares=[authorize],client_max_size=512)
     app.router.add_post('/v1/tests',start)
+    app.router.add_post('/v1/tests/acceptance',start)
     app.router.add_get('/v1/tests',info)
     app.router.add_get('/v1/tests/{ident}',read)
     return app

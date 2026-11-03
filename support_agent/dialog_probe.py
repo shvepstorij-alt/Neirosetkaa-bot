@@ -7,6 +7,14 @@ from .conversation_style import decorate_reply, session_info
 
 
 class NoTelegram:
+    def __init__(self,fixtures=None):
+        self.fixtures=fixtures or {}
+
+    async def download(self,file_id):
+        if file_id not in self.fixtures:
+            raise RuntimeError('Test isolation: non-fixture download forbidden')
+        return self.fixtures[file_id]
+
     async def call(self, *args, **kwargs):
         raise RuntimeError('Test isolation: Telegram client operation forbidden')
 
@@ -114,7 +122,7 @@ SCENARIOS = (
 )
 
 
-async def run_probe(service, max_calls=20, emit=None, expected_revision=None):
+async def run_probe(service, max_calls=20, emit=None, expected_revision=None, suite='baseline'):
     from .service import Service
     revision = service.store.get('revision') if expected_revision is None else expected_revision
     calls = 0
@@ -132,16 +140,21 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None):
         service.charge_call()
         calls += 1
 
+    if suite not in ('baseline','acceptance'):raise ValueError('Unknown fixed test suite')
+    scenarios=SCENARIOS;files={};expectations={}
+    if suite=='acceptance':
+        from .acceptance_cases import cases,fixtures,EXPECTATIONS
+        scenarios=cases();files=fixtures();expectations=EXPECTATIONS
     store = Store(':memory:', batch_seconds=300)
     shop=CatalogOnly(service.shop, service.owner)
-    isolated = Service(store, NoTelegram(), service.ai, shop, 0, {-1})
+    isolated = Service(store, NoTelegram(files), service.ai, shop, 0, {-1})
     isolated._probe_capture=True
     isolated.charge_call = charge
     store.switch('draft')
     store.connection('test-only', True, True)
     stage = 'инициализация'
     try:
-        for index, (name, turns) in enumerate(SCENARIOS):
+        for index, (name, turns) in enumerate(scenarios):
             cid = None
             mid = 0
             for turn, fragments in enumerate(turns, 1):
@@ -150,9 +163,15 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None):
                 stage = f'сценарий {index+1}, шаг {turn}, подготовка ответа'
                 if service.store.get('revision') != revision:
                     raise RuntimeError('Test stopped: owner changed mode')
+                fragment_texts=[]
                 for fragment in fragments:
                     mid += 1
-                    cid = store.ingest('test-only', -index-1, mid, 'client', fragment, {}, time.time())
+                    media={};text=fragment
+                    if isinstance(fragment,dict):
+                        key=fragment['photo'];text=fragment['text']
+                        media={'kind':'photo','file_id':key,'file_size':len(files[key])}
+                    fragment_texts.append(text)
+                    cid = store.ingest('test-only', -index-1, mid, 'client', text, media, time.time())
                 store.prepare_now(cid, time.time())
                 job = store.claim(time.time())
                 if not job:
@@ -169,10 +188,12 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None):
                                  (cid, mid, 'assistant', reply, '{}', time.time(), 'stored'))
                 label = 'НУЖНА ПРОВЕРКА' if answer.get('handoff') else 'ПОДГОТОВЛЕН (не гарантия точности)'
                 report = (f'Тест {index+1}, шаг {turn}: {name}\n{label}\n\n'
-                          +'Вопрос:\n'+'\n'.join(fragments)+'\n\nОтвет:\n'+reply
+                          +'Вопрос:\n'+'\n'.join(fragment_texts)+'\n\nОтвет:\n'+reply
                           +'\n\nРазбор:\n'+str(answer.get('summary', '')))
+                if name in expectations:
+                    report+='\n\nКритерий ручной оценки (не автоматическое заключение):\n'+expectations[name]
                 selected=isolated._probe_facts or shop.last_facts
-                question=isolated._probe_question or '\n'.join(fragments)
+                question=isolated._probe_question or '\n'.join(fragment_texts)
                 report+='\n\n'+report_details(answer,selected,question)
                 await send(html.escape(report), parse_mode='HTML')
         await send(f'Прогон завершён. Учтённых этапов API: {calls}/{max_calls}. '
