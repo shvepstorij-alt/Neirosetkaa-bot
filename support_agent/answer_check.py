@@ -109,6 +109,7 @@ def review_input(answer,facts):
         from .course_bonus import POLICY
         result['owner_course_bonus_policy']=dict(POLICY)
         result['owner_course_bonus_policy']['email_already_provided']=facts['course_bonus'].get('email_already_provided') is True
+    result['owner_refund_policy']={'decision_by':'owner','automatic_refund':False,'screenshot_is_not_approval':True}
     if facts.get('feature_only') is True:
         # The code audits the COMPLETE reply before reaching review_input.
         # Only an exact code-rendered price prefix may be excluded from the
@@ -232,6 +233,10 @@ async def check_answer(ai,answer,facts,images=None):
                 'causes, illegible error codes or a false claim that an unrelated image shows an error. '
                 'A screenshot does not establish why an account was suspended or whether a refund '
                 'is due. Private credentials visible in it must not be repeated or sent to search. '
+                'owner_refund_policy is an owner-approved workflow rule, not a manufacturer claim. '
+                'The statement that a screenshot cannot approve a refund and the owner must decide '
+                'is supported by that policy; it does not need a public URL. Do not confuse a '
+                'refusal to confirm approval with actually approving or denying the refund. '
                 'Do not reject an accurate visible observation solely because it has no public URL. '
                 'Manufacturer troubleshooting steps still require supplied approved instructions '
                 'or public evidence; an image does not prove a proposed repair will work. '

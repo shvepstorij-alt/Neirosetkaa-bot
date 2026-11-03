@@ -504,11 +504,15 @@ class Service:
                 research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
         else:
             research_note={'catalog_direct':'📋 <b>Цены:</b> ответ собран из каталога без генерации моделью.\n\n',
+                           'owner_policy':'📋 <b>Условия:</b> ответ по правилам владельца; право клиента ещё не подтверждено.\n\n',
+                           'clarification':'💬 <b>Уточнение:</b> запрошены сведения для разбора; причина проблемы не установлена.\n\n',
+                           'visual_clarification':'📷 <b>Фото:</b> нужна более чёткая деталь; распознавание не запускалось.\n\n',
+                           'visual_review':'📷 <b>Фото:</b> ответ не прошёл проверку; нужен ручной разбор.\n\n',
                            'catalog_review':'📋 <b>Каталог:</b> показана только подтверждённая часть; свободный ответ отклонён проверкой.\n\n',
                            'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
                            'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
                                evidence['status'],'')
-            if evidence['status'] in ('unavailable','catalog_review') and evidence.get('diagnostic'):
+            if evidence['status'] in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
                 research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:1500])}\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
@@ -653,6 +657,16 @@ class Service:
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
             self._probe_question=latest
+        if image:
+            boundary=missing_shop_reply(latest,facts,has_images=True)
+            if boundary:return boundary
+            from .visual_quality import assess_images,VisualQualityError
+            from .troubleshooting import low_detail_reply,visual_failure
+            try:
+                clarification=low_detail_reply(assess_images(image),latest)
+            except VisualQualityError as exc:
+                return visual_failure(str(exc))
+            if clarification:return clarification
         from .bot_guide import navigation_facts,navigation_reply
         facts=dict(facts,shop_navigation=navigation_facts(facts))
         raw_batch='\n'.join(row['text'] or '' for row in batch)
@@ -716,7 +730,10 @@ class Service:
                     if not review['supported']:
                         if image:
                             from .troubleshooting import visual_failure
-                            return visual_failure(review['reason'])
+                            result=visual_failure(review['reason'])
+                            result['evidence']['content_review']=review
+                            if getattr(self,'_probe_capture',False):result['evidence']['rejected_reply']=scrub(answer.get('reply',''))[:1800]
+                            return result
                         from .catalog_context import verified_catalog_reply
                         return verified_catalog_reply(facts,review['reason'])
                 answer.setdefault('evidence',{'status':'catalog_checked','sources':[]})['content_review']=review
@@ -810,7 +827,10 @@ class Service:
             if image:
                 from .troubleshooting import visual_failure
                 diagnostic=review['reason'] if str(exc)=='Answer content unsupported' else failure_details(exc,stage)
-                return with_public_trace(visual_failure(diagnostic),evidence)
+                result=visual_failure(diagnostic)
+                if str(exc)=='Answer content unsupported':result['evidence']['content_review']=review
+                if getattr(self,'_probe_capture',False):result['evidence']['rejected_reply']=scrub((locals().get('final') or {}).get('reply',''))[:1800]
+                return with_public_trace(result,evidence)
             if course:
                 # A failed public comparison must never become a paid order
                 # recommendation just because ordinary catalogue rows exist.

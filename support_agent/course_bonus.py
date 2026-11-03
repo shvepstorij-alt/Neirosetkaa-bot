@@ -33,6 +33,21 @@ def exited(text):
                 and not re.search(r'бонус|курс|обучени|куратор',text,re.I))
 
 
+def explicit_choice(text):
+    from .catalog_context import _families,_words
+    text=str(text)
+    choices=list(re.finditer(r'выбираю|выбрал[аи]?|хочу\s+в\s+подарок|пусть\s+будет|остановлюсь\s+на|передумал[аи]?[, ]*',text,re.I))
+    if choices:
+        part=text[choices[-1].end():]
+        if re.search(r'\bне\s*$',text[:choices[-1].start()],re.I) or re.match(r'\s*не\b',part,re.I):
+            return True,None
+    elif re.fullmatch(r'\s*(?:Claude|Клод|Chat\s*GPT|чат\s*гпт)[.!?\s]*',text,re.I):
+        part=text
+    else:return False,None
+    families=_families(_words(part)) & {'chatgpt','claude'}
+    return True,({'chatgpt':'ChatGPT','claude':'Claude'}[next(iter(families))] if len(families)==1 else None)
+
+
 def introduction(text):
     text=str(text).casefold().replace('ё','е')
     if re.search(r'не\s+(?:с|из)\s+(?:курса|обучения)',text):return False
@@ -69,8 +84,14 @@ def context(current,history):
     email_before=any(m.get('role')=='client' and registration_email_message(m.get('text',''))
                      for m in recent[anchors[-1]:]) if prior else False
     identified=named_course(text) or (prior and any(named_course(m.get('text','')) for m in recent[anchors[-1]:]))
+    chosen,selected=explicit_choice(text)
+    if not chosen and prior:
+        for message in reversed(recent[anchors[-1]:]):
+            if message.get('role')!='client':continue
+            chosen,selected=explicit_choice(message.get('text',''))
+            if chosen:break
     return dict(POLICY,comparison_requested=compare,email_already_provided=email or email_before,
-                course_identity='named_program' if identified else 'unconfirmed')
+                course_identity='named_program' if identified else 'unconfirmed',selected_service=selected)
 
 
 def reply(policy):
@@ -80,14 +101,19 @@ def reply(policy):
                 'Пришлите также почту регистрации на курсе, без пароля.'))
     elif policy['comparison_requested']:return None
     elif policy['email_already_provided']:
-        text=('Спасибо! Доступность бонусной подписки нужно проверить вручную по почте регистрации на курсе. '
-              'После проверки согласуем оформление ChatGPT или Claude на месяц. Повторно отправлять почту не нужно.')
+        choice=policy.get('selected_service')
+        text=((f'Понял, вы выбрали {choice}. ' if choice else 'Спасибо! ')
+              +'Доступность бонусной подписки проверю вручную по почте регистрации на курсе. '
+              +('После проверки согласуем оформление на месяц. ' if choice else
+                'После проверки согласуем оформление ChatGPT или Claude на месяц. ')
+              +'Повторно отправлять почту не нужно.')
     else:
-        text=('По условиям курса предусмотрена бонусная подписка на месяц: ChatGPT или Claude на выбор. '
+        text=((f"Понял, вы выбрали {policy['selected_service']}. " if policy.get('selected_service') else '')
+              +'По условиям курса предусмотрена бонусная подписка на месяц: ChatGPT или Claude на выбор. '
               'Пришлите сюда почту, на которую регистрировались на курсе, я проверю, доступен ли вам бонус. '
               'Пароль от почты не нужен. Если ещё не определились с сервисом, помогу сравнить их под ваши задачи)')
     return {'reply':text,'summary':'Обращение по бонусу курса. Право на бонус не подтверждено; нужна ручная проверка владельца по почте регистрации. Тариф, выдача и активация не обещаны.',
             'handoff':True,'source_ids':[],
-            'evidence':{'status':'catalog_direct','sources':[],
+            'evidence':{'status':'owner_policy','sources':[],
                 'handoff_reason':'Бонус курса: доступность проверяет владелец вручную. '+
                     ('В сообщениях есть почта; значение не включено в диагностику.' if policy['email_already_provided'] else 'Нужна почта регистрации на курсе.')}}

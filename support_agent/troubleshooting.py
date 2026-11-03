@@ -2,6 +2,10 @@
 import re
 
 
+def requires_owner(text):
+    return bool(re.search(r'возврат|верн(?:ите|уть)\s+деньги|(?:позови|позовите|свяжи|свяжите|поговорить\s+с)[^.!?\n]{0,30}(?:Александр|оператор|человек)',str(text),re.I))
+
+
 def screenshot_request(text,has_images=False):
     if has_images:return None
     text=str(text or '')
@@ -22,10 +26,27 @@ def screenshot_request(text,has_images=False):
              'Так будет понятнее, на каком этапе возникла проблема. '
              'Перед отправкой скройте пароли, коды входа и платёжные данные. '
              'Если скриншот сделать не получается, скопируйте текст ошибки.')
-    handoff=bool(re.search(r'возврат|верн(?:ите|уть)\s+деньги|(?:позови|позовите|свяжи|свяжите|поговорить\s+с)[^.!?\n]{0,30}(?:Александр|оператор|человек)',text,re.I))
+    handoff=requires_owner(text)
     return {'reply':message,'summary':'Сообщение о конкретной проблеме без изображения. Запрошен скриншот либо точный текст; причина, блокировка и состояние оплаты не установлены.',
             'handoff':handoff,'source_ids':[],
-            'evidence':{'status':'catalog_direct','sources':[]}}
+            'evidence':{'status':'clarification','sources':[]}}
+
+
+def low_detail_reply(records,request=''):
+    flagged=[r for r in records if r['severely_low_detail']]
+    if not flagged:return None
+    indices=', '.join(str(r['index']) for r in flagged)
+    target='На этом фото' if len(records)==1 else 'На фото №'+indices
+    return {'reply':target+' не хватает различимых деталей, чтобы надёжно прочитать текст. '
+                'Пришлите, пожалуйста, более чёткий снимок или увеличенный фрагмент с ошибкой. '
+                'Можно также скопировать её текст сюда. По этому изображению я не буду угадывать сообщение.',
+            'summary':'Локально обнаружена крайне низкая детализация фото. Распознавание моделью не запускалось; текст и причина ошибки не установлены.',
+            'handoff':requires_owner(request),'source_ids':[],
+            'evidence':{'status':'visual_clarification','sources':[],
+                'handoff_reason':'В сообщении есть запрос человека или решения по возврату.' if requires_owner(request) else '',
+                'diagnostic':'Этап: локальная проверка детализации изображения. '+
+                    '; '.join(f"фото={r['index']}, highpass={r['mean_highpass']}, доля границ={r['strong_edge_fraction']}" for r in flagged)
+                    +'. Порог: highpass<0.02 и доля границ<0.0001. Это не универсальная проверка читаемости; нужен чёткий фрагмент.'}}
 
 
 def visual_failure(reason):
@@ -33,5 +54,5 @@ def visual_failure(reason):
     return {'reply':'Пока не получилось подготовить проверенный разбор по вашему фото. Чтобы не подсказать неверное действие, этот случай нужно проверить вручную. Повторно отправлять то же фото не нужно.',
             'summary':'Визуальный ответ не подтверждён; требуется ручная проверка изображения и ситуации.',
             'handoff':True,'source_ids':[],
-            'evidence':{'status':'unavailable','sources':[],
+            'evidence':{'status':'visual_review','sources':[],
                 'diagnostic':'Этап: проверка ответа по изображению. '+scrub(reason)[:1500]}}
