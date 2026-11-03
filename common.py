@@ -23028,7 +23028,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
     if not _re.match(
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', org_id
     ):
-        return _resp({"error": "Неверный формат Organization ID. Должен быть UUID."})
+        return _resp({"error": "Неверный формат Organization ID. Должен быть UUID.", "kind": "bad_org"})
 
     pending = await get_claude_pending_activation(user_id)
     if not pending:
@@ -23070,8 +23070,8 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
             return _resp({"order_id": str(existing_bpa), "status": "queued"})
         logging.info(f"Claude prev bpa={existing_bpa} failed — делаем новый POST")
 
-    # Guard: повторная активация Claude за 29 дней — предупреждаем, повторное
-    # нажатие «Попробовать снова» активирует принудительно (на другой аккаунт).
+    # Guard: recent activation requires explicit confirmation of this request.
+    # This is not supplier force mode and never proves a currently active plan.
     try:
         _pool_dbl = await get_pool()
         async with _pool_dbl.acquire() as _c_dbl:
@@ -23090,7 +23090,9 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 _uname = _u["full_name"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             else:
                 _uname = "без ника"
-            if not await _dbl_warned_is("claude", user_id, _claude_double_warned):
+            # Consent belongs to this submitted code/Organization ID, never a
+            # remembered per-user warning. A page refresh must not accept it.
+            if body.get("confirm_repeat") is not True:
                 await _dbl_warned_set("claude", user_id, _claude_double_warned)
                 logging.warning(f'Claude repeat activation: warned user={user_id} code={_recent["code"]}')
                 try:
@@ -23103,7 +23105,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                         f"⏱ Дата: <b>{_us}</b>\n"
                         f"🧩 Прошлый Org: <code>{_recent.get('org_id') or '—'}</code>\n"
                         f"🧩 Сейчас Org: <code>{org_id or '—'}</code>\n\n"
-                        "Если клиент нажмёт «Попробовать снова» — активирует на другой аккаунт.",
+                        "Клиент должен проверить Organization ID и явно подтвердить продолжение. Активация ещё не запущена.",
                         parse_mode="HTML"
                     )
                 except Exception:
@@ -23113,7 +23115,7 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                 _prev_org = (_recent.get("org_id") or "").strip()
                 _same_org = bool(_prev_org and org_id and
                                  _prev_org.lower() == (org_id or "").lower())
-                _l_cl = ["⚠️ На этот аккаунт уже активировали подписку Claude.\n"]
+                _l_cl = ["⚠️ У вас была активация Claude за последние 29 дней.\n"]
                 if _prev_org:
                     _l_cl.append(f"🧩 Прошлая активация: {_prev_org} ({_us})")
                 else:
@@ -23122,17 +23124,19 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                     _l_cl.append(f"🧩 Сейчас активируешь: {org_id}")
                 if _same_org:
                     _l_cl.append(
-                        "\nНа этот аккаунт была оформлена подписка менее месяца назад "
-                        "и она ещё активна. Можете продлить подписку начиная с сегодняшнего дня "
-                        "по кнопке «Попробовать снова».")
+                        "\nOrganization ID совпадает с прошлой активацией. "
+                        "Текущее состояние подписки по этой записи не проверено. "
+                        "Если хотите продолжить новый оплаченный заказ на этом аккаунте, подтвердите ниже.")
                 elif org_id:
                     _l_cl.append(
-                        "\nЭто ДРУГОЙ аккаунт — всё в порядке. Нажми «Попробовать снова», и активация пройдёт.")
+                        "\nЭто другой Organization ID. Проверьте, что он принадлежит нужному аккаунту. "
+                        "Если всё верно, подтвердите продолжение ниже. Результат будет проверен после запуска.")
                 else:
                     _l_cl.append(
-                        "\nЕсли оформляешь на ДРУГОЙ аккаунт (например, для друга) — нажми «Попробовать снова».")
+                        "\nПроверьте нужный аккаунт и подтвердите продолжение ниже.")
                 _l_cl.append("\nЕсли это случайно — напиши Александру.")
-                return _resp({"error": "\n".join(_l_cl)})
+                return _resp({"error": "\n".join(_l_cl), "kind": "repeat_confirmation",
+                              "need_confirm_repeat": True})
             else:
                 await _dbl_warned_clear("claude", user_id, _claude_double_warned)
                 logging.info(f"Claude forced re-activation user={user_id}")
@@ -23140,13 +23144,24 @@ async def api_activate_claude_handler(request: web.Request) -> web.Response:
                     await gpt_card_send(locals().get('order_id', ''), 
                         ADMIN_ID,
                         "✅ <b>Повторная активация Claude — подтверждена</b>\n\n"
-                        f"👤 {_uname} ({await _who_user(user_id)}) активирует ещё раз (другой аккаунт).",
+                        f"👤 {_uname} ({await _who_user(user_id)}) явно подтвердил продолжение текущего заказа. "
+                        "Это ещё не подтверждение успешной активации.",
                         parse_mode="HTML"
                     )
                 except Exception:
                     pass
     except Exception as _dbl_e:
-        logging.error(f"claude double-activation check: {_dbl_e}")
+        logging.error("Claude repeat guard unavailable: %s", type(_dbl_e).__name__)
+        try:
+            await gpt_card_send(order_id, ADMIN_ID,
+                "⚠️ <b>Claude: запуск остановлен до отправки поставщику</b>\n"
+                "Этап: проверка предыдущей активации. Первопричина не установлена. "
+                "Тип ошибки: <code>" + type(_dbl_e).__name__ + "</code>. "
+                "Проверь подключение к базе и обнови карточку заказа.", parse_mode="HTML")
+        except Exception:
+            pass
+        return _resp({"error": "Не удалось проверить предыдущую активацию. Новая активация не запущена. "
+                      "Оплата сохранена, заказ нужно проверить.", "kind": "needs_check"}, 409)
 
     # ── Единая цепочка активации: непрерывная загрузка у клиента, а авто-фолбэк
     #    по всем сайтам (по числу свободных кодов тарифа) — под капотом. ──

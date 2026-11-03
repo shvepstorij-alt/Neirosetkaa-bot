@@ -719,6 +719,13 @@ var codeInput = null;
 var s1Btn     = null;
 var UUID_RE   = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var forceMode = false;   // ?force=1 — клиент подтвердил пополнение поверх прежней активации
+var repeatConfirmSignature = ''; // одноразовое согласие только на текущие code + Org ID
+var activationRequestInFlight = false;
+
+function activationSignature() {
+  var org = document.getElementById('org-input');
+  return JSON.stringify([codeInput ? codeInput.value.trim() : '', org ? org.value.trim().toLowerCase() : '']);
+}
 
 // ─── Навигация ───────────────────────────────────────────────────
 function showScreen(id) {
@@ -1211,18 +1218,46 @@ function showManual(msg) {
   showScreen('s6');
 }
 
+/* Это наше предупреждение о недавнем заказе, НЕ разрешение force поставщику. */
+function showRepeatConfirm(msg) {
+  repeatConfirmSignature = '';
+  var signature = activationSignature();
+  var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '⚠️';
+  var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'Подтвердите продолжение'; tt.style.color = ''; }
+  var detail = document.getElementById('err-detail');
+  if (detail) { detail.textContent = msg || 'Проверьте аккаунт перед продолжением.'; detail.style.whiteSpace = 'pre-line'; }
+  var btn = document.querySelector('#s5 .btn-orange');
+  if (btn) {
+    btn.style.display = '';
+    btn.textContent = 'Подтвердить и продолжить';
+    btn.onclick = function() {
+      if (activationSignature() !== signature) {
+        repeatConfirmSignature = '';
+        showError('Данные аккаунта или код изменились. Проверьте их и запустите активацию снова.', 'input');
+        return false;
+      }
+      repeatConfirmSignature = signature;
+      startActivation();
+      return false;
+    };
+  }
+  showScreen('s5');
+}
+
 /* Сайт просит подтвердить пополнение: на этот Org ID уже была активация.
    Показываем предупреждение и кнопку — по ней активация продолжается с force=1. */
 function showForceConfirm(org, prev) {
+  var signature = activationSignature();
   if (tg && tg.HapticFeedback) try { tg.HapticFeedback.notificationOccurred('warning'); } catch(e) {}
   var em = document.querySelector('#s5 .error-emoji'); if (em) em.textContent = '⚠️';
   var tt = document.querySelector('#s5 .error-title'); if (tt) { tt.textContent = 'Подтвердите активацию'; tt.style.color = ''; }
   var el = document.getElementById('err-detail');
-  if (el) el.innerHTML = 'На этот аккаунт'
-    + (org ? ' (<code>' + org + '</code>)' : '')
-    + ' уже была активация' + (prev ? ' — <b>' + prev + '</b>' : '') + '.<br><br>'
-    + 'Если это <b>твой</b> аккаунт — подтверди, подписка пополнится.<br>'
-    + 'Если Organization ID указан по ошибке — <b>не подтверждай</b>: подписка уйдёт чужому аккаунту, вернуть её будет нельзя.';
+  if (el) { el.textContent = 'На этот аккаунт'
+    + (org ? ' (' + org + ')' : '')
+    + ' уже была активация' + (prev ? ' — ' + prev : '') + '.\n\n'
+    + 'Если это твой аккаунт — подтверди отправку запроса на пополнение.\n'
+    + 'Если Organization ID указан по ошибке — не подтверждай: запрос уйдёт на другой аккаунт.';
+    el.style.whiteSpace = 'pre-line'; }
   /* ВАЖНО: в этом вебаппе кнопка имеет класс btn-orange (не btn-green, как в GPT).
      Ищем максимально терпимо — первую кнопку экрана s5, какой бы класс ни был. */
   var btn = document.querySelector('#s5 .btn-orange')
@@ -1232,7 +1267,17 @@ function showForceConfirm(org, prev) {
   if (btn) {
     btn.style.display = '';
     btn.textContent = '✅ Это мой аккаунт — активировать';
-    btn.onclick = function(){ forceMode = true; startActivation(); return false; };
+    btn.onclick = function(){
+      if (activationSignature() !== signature) {
+        forceMode = false;
+        showError('Данные аккаунта или код изменились. Проверьте их и запустите активацию снова.', 'input');
+        return false;
+      }
+      // Явное подтверждение поставщику относится к тому же code + Org ID и
+      // одновременно подтверждает локальное предупреждение о прошлом заказе.
+      repeatConfirmSignature = signature;
+      forceMode = true; startActivation(); return false;
+    };
   }
   showScreen('s5');
 }
@@ -1271,7 +1316,7 @@ async function pollStatus(orderId) {
         }
         return;
       }
-      if (st === 'failed') { showError(data.error || 'Активация не удалась'); return; }
+      if (st === 'failed') { showError(data.error || 'Активация не удалась', data.kind); return; }
     } catch(e) {}
   }
   showProcessing('Активация идёт дольше обычного. Ничего повторять не нужно — результат придёт в чат бота.');
@@ -1279,6 +1324,7 @@ async function pollStatus(orderId) {
 
 // ─── Запуск активации ────────────────────────────────────────────
 async function startActivation() {
+  if (activationRequestInFlight) return;
   var el     = document.getElementById('org-input');
   var orgId  = (el ? el.value.trim() : '').toLowerCase();
   var errBox = document.getElementById('err-box');
@@ -1292,6 +1338,12 @@ async function startActivation() {
   }
 
   showScreen('s3');
+  activationRequestInFlight = true;
+
+  var confirmRepeat = repeatConfirmSignature !== '' && repeatConfirmSignature === activationSignature();
+  repeatConfirmSignature = ''; // согласие не переживает неизвестный исход POST
+  var forceForRequest = forceMode;
+  forceMode = false;
 
   try {
     var resp = await fetch('/api/activate-claude', {
@@ -1301,7 +1353,8 @@ async function startActivation() {
         org_id:    orgId,
         code:      codeInput ? codeInput.value.trim() : '',
         init_data: tg ? tg.initData : '',
-        force:     forceMode ? 1 : 0
+        force:     forceForRequest ? 1 : 0,
+        confirm_repeat: confirmRepeat
       })
     });
 
@@ -1309,16 +1362,20 @@ async function startActivation() {
       var errMsg = 'Ошибка сервера. Попробуй снова.';
       try { var d = await resp.json(); errMsg = d.error || errMsg; } catch(_) {}
       if (resp.status >= 500) showProcessing('Не удалось получить результат от сервера. Запрос мог поступить в обработку. Подожди до 30 минут с начала активации и проверь статус заказа; повторять запуск не нужно.');
-      else showError(errMsg, resp.status === 403 ? 'auth' : '');
+      else showError(errMsg, d && d.kind ? d.kind : (resp.status === 403 ? 'auth' : ''));
       return;
     }
 
     var body = await resp.json();
-    if (!body.order_id) { showError(body.error || 'Не удалось запустить активацию.'); return; }
+    if (body.need_confirm_repeat === true && body.kind === 'repeat_confirmation') { showRepeatConfirm(body.error); return; }
+    if (body.need_force === true) { showForceConfirm(body.org || '', body.prev || ''); return; }
+    if (!body.order_id) { showError(body.error || 'Не удалось запустить активацию.', body.kind); return; }
     if (window.activationHelp) window.activationHelp.setRef(body.order_id);
     await pollStatus(body.order_id);
   } catch(e) {
     showProcessing('Связь прервалась. Запрос мог уже поступить в обработку. Подожди до 30 минут с начала активации и проверь статус заказа. Повторять активацию не нужно.');
+  } finally {
+    activationRequestInFlight = false;
   }
 }
 

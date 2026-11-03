@@ -21,6 +21,15 @@ def plain(text):
     return html.unescape(re.sub(r'</?(?:b|i|u|s|a|code|pre|strong|em|blockquote|tg-emoji|span)(?:\s[^>]*)?>', '', str(text or '')))
 
 
+def safe_supplier_reason(value):
+    text = plain(value)
+    if (text.lstrip().startswith(('{', '[')) or re.search(
+            r'(?:password|secret|token|authorization|cookie|session|api[_ -]?key|пароль|токен|body)\s*[:=]|'
+            r'https?://[^\s/]+:[^\s/]+@', text, re.I)):
+        return 'Текст причины скрыт: содержит структурированные или чувствительные данные.'
+    return re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[email скрыт]', text)[:500]
+
+
 async def initialize():
     from db import get_pool
     async with (await get_pool()).acquire() as conn:
@@ -60,8 +69,9 @@ async def snapshot(conn, oid):
             state, title = 'running', '⏳ Активация выполняется'
     elif service == 'perplexity' and not completed and o['status'] == 'paid' and o['user_id'] in c._px_inflight:
         state, title = 'running', '⏳ Активация выполняется'
-    code = (done or p or {}).get('code', '') or card.get('last_code', '')
-    provider = (done or p or {}).get('provider') or card.get('last_provider', 'bpa')
+    code = (done or p or {}).get('code', '') or card.get('last_code', '') or (codes[0].get('code', '') if codes else '')
+    code_row = next((c for c in codes if c.get('code') == code), {})
+    provider = (done or p or code_row).get('provider') or card.get('last_provider', '')
     operation = {}
     if service == 'claude' and code:
         key = 'claudeop:' + hashlib.sha256((provider + ':' + code.strip().upper()).encode()).hexdigest()
@@ -70,7 +80,7 @@ async def snapshot(conn, oid):
             operation = candidate
     return dict(order=dict(o), service=service, pending=dict(p or {}), codes=codes,
                 code=code, done_code=done, state=state,
-                title=title, dates=dates, card=card, operation=operation)
+                title=title, dates=dates, card=card, operation=operation, provider=provider)
 
 
 def render(data, card, *, event=True):
@@ -107,7 +117,7 @@ def render(data, card, *, event=True):
     account = (data.get('done_code') or p).get('org_id') or card.get('last_account')
     if account:
         lines.append(('🏢 Organization ID: ' if service == 'claude' else '🆔 Аккаунт: ') + '<code>' + e(account) + '</code>')
-    provider = (data.get('done_code') or p).get('provider') or card.get('last_provider', 'bpa')
+    provider = data.get('provider') or (data.get('done_code') or p).get('provider') or card.get('last_provider', '')
     if data['code']:
         lines.append('🌐 Поставщик: ' + e({'bpa':'bypriceactivate.pro','aichongz':'9527.mobi','root':'rootchatgptplus.com'}.get(provider, provider)))
     if p.get('bpa_order_id'):
@@ -118,7 +128,7 @@ def render(data, card, *, event=True):
         if operation.get('ref'):
             lines.append('Номер у поставщика: <code>' + e(operation['ref']) + '</code>')
         if data['state'] not in ('done', 'closed') and operation.get('reason'):
-            lines.append('Причина / ответ сайта: ' + e(str(operation['reason'])[:500]))
+            lines.append('Причина / ответ сайта: ' + e(safe_supplier_reason(operation['reason'])))
     if card.get('delivery'):
         lines.append('📨 ' + e(card['delivery']))
     if event and card.get('event') and (data['state'] not in ('done', 'closed') or card.get('support')):
@@ -132,18 +142,21 @@ def keyboard(data, card):
     from aiogram.types import InlineKeyboardButton as B, InlineKeyboardMarkup as K
     number = str(data['order']['num'])
     rows = [[B(text='🔄 Обновить карточку', callback_data='scard:refresh:' + number)]]
+    if data['service'] == 'claude':
+        rows.append([B(text='🔎 Проверить у поставщика', callback_data='scard:check:' + number)])
     if data['state'] not in ('done', 'closed'):
         rows.append([B(text='📨 Отправить активацию повторно', callback_data='scard:retry:' + number)])
         # Preserve supplier-specific decisions, including their existing safety checks.
         for row in card.get('actions', []):
-            buttons = [B(**b) for b in row if b.get('callback_data') != 'noop' and not b.get('callback_data', '').startswith(('scard:', 'adm_resend:', 'adm_resend2:'))]
+            buttons = [B(**b) for b in row if b.get('callback_data') != 'noop' and not b.get('callback_data', '').startswith(('scard:', 'adm_resend:', 'adm_resend2:'))
+                       and not (data['service'] == 'claude' and b.get('callback_data', '').startswith('clrc:'))]
             for button in buttons:
                 if (getattr(button, 'callback_data', None) or '').startswith('clrc:'):
                     button.text = '🔎 Проверить у поставщика'
             if buttons:
                 rows.append(buttons)
         if data['code']:
-            provider = (data.get('done_code') or data['pending']).get('provider') or card.get('last_provider', 'bpa')
+            provider = data.get('provider') or (data.get('done_code') or data['pending']).get('provider') or card.get('last_provider', '')
             sites = {'bpa':'https://bypriceactivate.pro', 'aichongz':'https://9527.mobi', 'root':'https://rootchatgptplus.com', 'vip666':'https://vip666ai.com', 'ipiap':'https://ipiap.com'}
             if provider in sites:
                 rows.append([B(text='🌐 Открыть сайт поставщика', url=sites[provider])])
@@ -182,6 +195,56 @@ async def handle(cb):
     await cb.answer('Обрабатываю…')
     if action == 'refresh':
         await update(oid)
+    elif action == 'check':
+        # A stable order-number action must survive missing/expired legacy
+        # clrc tokens. It reads status only; never redeems, retries or finalizes.
+        if data['service'] != 'claude':
+            return await cb.answer('Проверка этого поставщика здесь не поддерживается.', show_alert=True)
+        lock = 'servicecard_check:' + oid
+        if not await claim_activation(lock, stale_minutes=2):
+            return await cb.answer('Проверка этого заказа уже выполняется.', show_alert=True)
+        try:
+            async with (await get_pool()).acquire() as conn:
+                data = await snapshot(conn, oid)
+            if not data:
+                return await cb.answer('Заказ не найден при повторном чтении; статус поставщика не запрашивался.', show_alert=True)
+            if await activation_cooldown('servicecard_check_cooldown:' + oid, seconds=20):
+                return await cb.answer('Проверка недавно выполнялась. Подожди 20 секунд.', show_alert=True)
+            p, card, op = data['pending'], data['card'], data.get('operation') or {}
+            code = data.get('code') or ''
+            row = next((c for c in data.get('codes', []) if c.get('code') == code), {})
+            provider = data.get('provider') or p.get('provider') or row.get('provider') or card.get('last_provider') or ''
+            org = p.get('org_id') or op.get('org') or row.get('org_id') or card.get('last_account') or ''
+            ref = op.get('ref') or p.get('bpa_order_id') or ''
+            missing = [name for name, value in (('код', code), ('поставщик', provider), ('Organization ID', org)) if not value]
+            from common import _claude_can_recheck, _claude_query_once
+            if missing:
+                detail = 'Этап: подготовка проверки Claude. Не хватает данных: ' + ', '.join(missing) + '. Запрос поставщику не выполнялся.'
+            elif not _claude_can_recheck(provider, str(ref)):
+                detail = 'Этап: подготовка проверки Claude. У сохранённого поставщика нет доступного API статуса либо отсутствует номер операции. Запрос не выполнялся.'
+            elif op.get('org') and str(op['org']).lower() != str(org).lower():
+                detail = 'Этап: подготовка проверки Claude. Organization ID резерва не совпадает с сохранённой операцией. Запрос не выполнялся.'
+            else:
+                try:
+                    state = await _claude_query_once(provider, ref, code=code, org=org, since_ts=op.get('started_at') or 0)
+                    labels = {'success':'Поставщик подтвердил успех. Эта кнопка не закрывала заказ и не отправляла клиенту подтверждение; локальное завершение нужно проверить отдельно.',
+                              'failed':'Поставщик сообщил об отказе. Это не доказывает, что код свободен; повторная активация не запускалась.',
+                              'review':'Поставщик сообщил о ручной проверке. Повторная активация не запускалась.',
+                              'pending':'Поставщик ещё обрабатывает заказ. Повторная активация не запускалась.',
+                              'mismatch':'Данные аккаунта или операции поставщика не совпадают с заказом. Заказ не закрывался.',
+                              'noorg':'Поставщик не подтвердил Organization ID клиента. Заказ не закрывался.',
+                              'free':'Поставщик сообщил, что код свободен. Код не освобождался, повторная активация не запускалась.',
+                              'unknown':'Статус поставщика не подтверждён. Первопричина пока не установлена; код не освобождался.'}
+                    detail = 'Этап: чтение статуса Claude. ' + labels.get(state, labels['unknown'])
+                    from claude_api import read as read_operation
+                    latest = await read_operation(provider, code)
+                    if latest and latest.get('order_id') == oid and latest.get('reason'):
+                        detail += '\nПричина поставщика: ' + safe_supplier_reason(latest['reason'])
+                except Exception as exc:
+                    detail = 'Этап: чтение статуса Claude. Проверка не завершена; тип сбоя=' + type(exc).__name__ + '. Первопричина не установлена. Повторная активация не запускалась.'
+            await update(oid, '🔎 Проверка у поставщика\n\n' + detail, force_attention=True, notify_attention=False)
+        finally:
+            await release_activation(lock)
     elif action == 'retry':
         lock = 'servicecard_retry:' + oid
         if not await claim_activation(lock, stale_minutes=5):
@@ -210,7 +273,7 @@ async def handle(cb):
         if data.get('operation'):
             # Operation bodies/credentials are intentionally excluded from exports.
             op = data['operation']
-            report += '\n\nОперация поставщика:\n' + '\n'.join(k + ': ' + str(op.get(k) or '') for k in ('provider','code','org','ref','state','reason'))
+            report += '\n\nОперация поставщика:\n' + '\n'.join(k + ': ' + (safe_supplier_reason(op[k]) if k == 'reason' and op.get(k) else str(op.get(k) or '')) for k in ('provider','code','org','ref','state','reason'))
         footer = '\n\n📄 Полные данные заказа и история — в этом файле.'
         lines = []
         for line in render(data, data['card'], event=False).splitlines():
@@ -236,7 +299,7 @@ async def loop():
         await asyncio.sleep(30)
 
 
-async def update(oid, text='', reply_markup=None, delivery=None, force_attention=False):
+async def update(oid, text='', reply_markup=None, delivery=None, force_attention=False, notify_attention=True):
     """Serialized read/merge/render; only a proven missing message is recreated."""
     from db import get_pool
     from config import bot, ADMIN_ID, _BOT_TZ
@@ -261,8 +324,8 @@ async def update(oid, text='', reply_markup=None, delivery=None, force_attention
             if changed_event:
                 card['event'], card['event_at'] = text, stamp
                 card['support'] = force_attention
-                if force_attention or (data['state'] not in ('done', 'closed') and any(word in plain(text).lower() for word in
-                        ('ошиб', 'неуда', 'не прош', 'вручн', 'истек', 'нет мест', 'неяс', 'не удалось', 'проверь у продавца', 'проверка', 'неясен', 'failed', 'timeout'))):
+                if notify_attention and (force_attention or (data['state'] not in ('done', 'closed') and any(word in plain(text).lower() for word in
+                        ('ошиб', 'неуда', 'не прош', 'вручн', 'истек', 'нет мест', 'неяс', 'не удалось', 'проверь у продавца', 'проверка', 'неясен', 'failed', 'timeout')))):
                     digest = hashlib.sha256(text.encode()).hexdigest()
                     if card.get('alert') != digest:
                         card['pending_alert'] = {'digest': digest, 'text': attention_text(plain(text))}
