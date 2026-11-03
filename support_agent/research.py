@@ -24,6 +24,10 @@ TOPICS = {
     'features': 'current capabilities limitations file uploads document analysis supported formats',
     'plans': 'current official subscription plans features limits prices currencies regions; distinguish API pricing',
     'comparison': 'current models subscription features document analysis and limitations',
+    'troubleshooting': 'current official help for account suspension, sign-in and session errors, '
+                       'regional availability, payment errors and subscription activation delays; '
+                       'distinguish visible symptoms from proven causes; include official safe steps '
+                       'and when account owner must contact official support; never guarantee recovery',
 }
 
 

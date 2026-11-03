@@ -20,6 +20,7 @@ def public_question(facts):
         ('Мобильное приложение',r'мобил|android|ios|iphone'),('Браузер',r'браузер|browser'),
         ('Экспорт',r'экспорт|export'),('Совместная работа',r'команд|совместн|team'),
         ('Сравнение тарифов',r'сравни|отличи|разниц'),('Состав тарифа',r'возможност|функци|что\s+входит'))
+    facets+= (('Доступность по странам и региональные ограничения',r'регион|стран|\bрф\b|росси'),)
     labels=[label for label,pattern in facets if re.search(pattern,text,re.I)]
     specifics=('SVG','PDF','DOCX','XLSX','CSV','PNG','JPG','JPEG','WEBP','GIF','MP4','MOV','AVI','MP3','WAV','OGG',
         'JSON','XML','HTML','PPTX','TXT','PSD','HEIC','STL','GLB','FBX','Windows','macOS','Linux','Android','iOS',

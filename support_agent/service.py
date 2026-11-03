@@ -642,6 +642,8 @@ class Service:
         latest=resolve_request(self.store.db,job['chat'],batch_first,job['mid'],latest,facts.get('catalog',[]))
         from .session_context import enrich_request
         latest=enrich_request(self.store.db,job['chat'],batch_first,job['mid'],latest,facts.get('catalog',[]))
+        if not latest and image:
+            latest='Клиент прислал изображение без подписи. Разбери, что на нём видно; если цель обращения неясна, уточни её. Не придумывай ошибку или намерение клиента.'
         if not latest:
             return {'reply':'Напомните, пожалуйста, ваш вопрос — не хочу ответить про другой сервис.',
                     'summary':'Клиент ждёт ответ, но исходный вопрос отсутствует в сохранённом контексте.',
@@ -654,21 +656,32 @@ class Service:
         from .bot_guide import navigation_facts,navigation_reply
         facts=dict(facts,shop_navigation=navigation_facts(facts))
         raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .troubleshooting import screenshot_request
+        problem=screenshot_request(raw_batch or latest,has_images=bool(image))
+        if problem:return problem
+        from .course_bonus import context as course_context, reply as course_reply
+        course=course_context(raw_batch or latest,history)
+        if course:
+            intake=course_reply(course)
+            if intake and not image:return intake
+            facts=dict(facts,course_bonus=course)
+            if course['comparison_requested']:
+                latest+='\nСравни ChatGPT и Claude для выбора бонусной подписки курса; учти актуальные региональные ограничения и условия доступа в России. Не подтверждай право на бонус.'
         navigation=navigation_reply(facts,raw_batch or latest) if not image else None
-        if navigation:return navigation
+        if navigation and not course:return navigation
         from .catalog_context import direct_workflow_reply,direct_apple_reply
-        apple=direct_apple_reply(facts,latest) if not image else None
+        apple=direct_apple_reply(facts,latest) if not image and not course else None
         if apple:return apple
         from .fulfillment_reply import workflow_reply
-        fulfillment=workflow_reply(facts,latest) if not image else None
+        fulfillment=workflow_reply(facts,latest) if not image and not course else None
         if fulfillment:return fulfillment
-        workflow=direct_workflow_reply(facts,latest) if not image else None
+        workflow=direct_workflow_reply(facts,latest) if not image and not course else None
         if workflow:return workflow
-        shortcut=missing_shop_reply(latest,facts,has_images=bool(image))
+        shortcut=missing_shop_reply(latest,facts,has_images=bool(image)) if not course else None
         if shortcut:
             return shortcut
         from .catalog_context import direct_catalog_reply
-        direct=direct_catalog_reply(facts,latest) if not image else None
+        direct=direct_catalog_reply(facts,latest) if not image and not course else None
         if direct:return direct
         from .conversation_style import session_info
         replied=session_info(self.store.db,job['chat'],batch_first,job['mid'])['continuing']
@@ -680,13 +693,14 @@ class Service:
         if not self.store.still_current(job):
             return None
         plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}))
+        if course and course['comparison_requested']:plan={'topic':'comparison','products':['chatgpt','claude']}
         facts=annotate(facts,latest,plan['products'])
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
         if plan['topic']=='none':
-            if facts.get('requested_catalog') or facts.get('appstore') or (facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I)):
+            if image or facts.get('requested_catalog') or facts.get('appstore') or (facts.get('catalog') and re.search(r'₽|руб|\bRUB\b',answer['reply'],re.I)):
                 self.charge_call()
-                review=await self.ai.check_answer(answer,facts)
+                review=await self.ai.check_answer(answer,facts,**({'images':image} if image else {}))
                 if not self.store.still_current(job):return None
                 if not review['supported']:
                     self.charge_call()
@@ -697,9 +711,12 @@ class Service:
                     if answer.get('research',{}).get('topic','none')!='none':
                         return unavailable('После исправления ответа требуется отдельная проверка публичных сведений.')
                     self.charge_call()
-                    review=await self.ai.check_answer(answer,corrected)
+                    review=await self.ai.check_answer(answer,corrected,**({'images':image} if image else {}))
                     if not self.store.still_current(job):return None
                     if not review['supported']:
+                        if image:
+                            from .troubleshooting import visual_failure
+                            return visual_failure(review['reason'])
                         from .catalog_context import verified_catalog_reply
                         return verified_catalog_reply(facts,review['reason'])
                 answer.setdefault('evidence',{'status':'catalog_checked','sources':[]})['content_review']=review
@@ -728,7 +745,7 @@ class Service:
             from .feature_reply import price_block,compose
             # Partial evidence still uses deterministic prices when at least
             # one product has sources; unknown products get explicit blocks.
-            retail_block=price_block(facts,latest,topic=plan['topic']) if evidence.get('sources') else ''
+            retail_block=price_block(facts,latest,topic=plan['topic']) if evidence.get('sources') and not course and not image else ''
             if retail_block:
                 # Unknown services may need official prices; do not suppress
                 # that part of a mixed question with the store-price-only mode.
@@ -760,12 +777,15 @@ class Service:
                     if not missing:
                         stage='answer_check'
                         self.charge_call()
-                        review=await self.ai.check_answer(final,final_facts)
+                        review=await self.ai.check_answer(final,final_facts,**({'images':image} if image else {}))
                         if not self.store.still_current(job):return None
                         if not review['supported']:
                             raise ValueError('Answer content unsupported')
                         checked.setdefault('evidence',{})['content_review']=review
                     if not missing or not covered or attempt:
+                        if course:
+                            checked['handoff']=True
+                            checked.setdefault('evidence',{})['handoff_reason']='Доступность бонуса проверяет владелец вручную по почте регистрации на курсе.'
                         return with_public_trace(checked,evidence)
                     issue='missing_products'
                 except Exception as exc:
@@ -787,6 +807,20 @@ class Service:
         except Exception as exc:
             if not self.store.still_current(job):
                 return None
+            if image:
+                from .troubleshooting import visual_failure
+                diagnostic=review['reason'] if str(exc)=='Answer content unsupported' else failure_details(exc,stage)
+                return with_public_trace(visual_failure(diagnostic),evidence)
+            if course:
+                # A failed public comparison must never become a paid order
+                # recommendation just because ordinary catalogue rows exist.
+                result=course_reply(dict(course,comparison_requested=False))
+                result['reply']='Актуальные условия для полного сравнения сейчас подтвердить не получилось. '+result['reply']
+                diagnostic=review['reason'] if str(exc)=='Answer content unsupported' else failure_details(exc,stage)
+                result['evidence']={'status':'unavailable','sources':evidence.get('sources',[]),
+                    'diagnostic':'Этап: сравнение бонусных подписок курса. '+diagnostic,
+                    'handoff_reason':'Нужна ручная проверка бонуса и неподтверждённых условий сравнения.'}
+                return with_public_trace(result,evidence)
             if str(exc)=='Answer content unsupported' and facts.get('requested_catalog'):
                 from .catalog_context import verified_catalog_reply
                 fallback=verified_catalog_reply(facts,review['reason'])
