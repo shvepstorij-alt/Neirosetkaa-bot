@@ -1,6 +1,5 @@
 """Opt-in authenticated API for fixed synthetic tests only, no customer operations."""
 import asyncio
-import datetime as dt
 import hmac
 import json
 import os
@@ -39,10 +38,9 @@ def startup_diagnostic(exc):
 
 
 class ProbeManager:
-    def __init__(self,service,daily_runs=3):
+    def __init__(self,service):
         self.service=service
         self.db=service.store.db
-        self.daily_runs=daily_runs
         self.build=code_fingerprint()
         self.db.execute('''CREATE TABLE IF NOT EXISTS remote_probe_runs(
             id TEXT PRIMARY KEY,created REAL,status TEXT,data TEXT)''')
@@ -62,9 +60,6 @@ class ProbeManager:
             return existing,200
         running=getattr(self.service,'research_probe_task',None)
         if running and not running.done():return {'error':'test_already_running'},409
-        day=dt.datetime.now(dt.timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
-        used=self.db.execute('SELECT count(*) FROM remote_probe_runs WHERE created>=?',(day,)).fetchone()[0]
-        if used>=self.daily_runs:return {'error':'daily_test_limit','limit':self.daily_runs},429
         self.db.execute('INSERT INTO remote_probe_runs VALUES (?,?,?,?)',
                         (ident,time.time(),'queued',json.dumps({'reports':[],'calls':0,'build':self.build,'suite':suite})))
         self.service.research_probe_task=asyncio.create_task(self._run(ident,self.service.store.get('revision'),suite))
@@ -96,7 +91,7 @@ class ProbeManager:
             save('failed',reason='test_runner_exception',exception_type=type(exc).__name__)
 
 
-def create_app(service,token,daily_runs=3):
+def create_app(service,token):
     from aiohttp import web
     token=token.strip()
     if not token:
@@ -104,9 +99,7 @@ def create_app(service,token,daily_runs=3):
     if not re.fullmatch(r'[A-Za-z0-9_-]{43,128}',token):
         raise ProbeConfigurationError('SUPPORT_PROBE_TOKEN: неверный формат. Длина='+str(len(token))
             +'; нужно 43–128 символов A–Z, a–z, 0–9, _ или -. Ключ скрыт.')
-    if type(daily_runs) is not int or not 1<=daily_runs<=10:
-        raise ProbeConfigurationError('SUPPORT_PROBE_DAILY_RUNS: требуется целое число от 1 до 10; значение скрыто.')
-    manager=ProbeManager(service,daily_runs)
+    manager=ProbeManager(service)
 
     @web.middleware
     async def authorize(request,handler):
@@ -134,7 +127,7 @@ def create_app(service,token,daily_runs=3):
 
     async def info(request):
         task=getattr(service,'research_probe_task',None)
-        return web.json_response({'build':manager.build,'daily_run_limit':manager.daily_runs,
+        return web.json_response({'build':manager.build,'daily_run_limit':None,'daily_run_limit_enabled':False,
                                   'test_running':bool(task and not task.done())})
 
     app=web.Application(middlewares=[authorize],client_max_size=512)
@@ -148,9 +141,8 @@ def create_app(service,token,daily_runs=3):
 async def start_server(service):
     if os.getenv('SUPPORT_PROBE_ENABLED')!='yes':return None
     from aiohttp import web
-    daily=number_setting('SUPPORT_PROBE_DAILY_RUNS',3,1,10)
     port=number_setting('PORT',8080,1,65535)
-    app=create_app(service,os.getenv('SUPPORT_PROBE_TOKEN',''),daily)
+    app=create_app(service,os.getenv('SUPPORT_PROBE_TOKEN',''))
     runner=web.AppRunner(app,access_log=None)
     await runner.setup()
     try:
