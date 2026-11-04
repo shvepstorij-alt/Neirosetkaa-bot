@@ -869,6 +869,10 @@ class Service:
         facts=dict(facts,conversation={'continuing':replied,
                                       'latest_client_message':latest,
                                       'latest_message':batch[-1]['text'] if batch else ''})
+        if selection and not image and not course:
+            from .recommendation_flow import run as recommend_for_task
+            recommendation=await recommend_for_task(self,facts,latest,raw_batch,job)
+            if recommendation is not None:return recommendation
         self.charge_call()
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):

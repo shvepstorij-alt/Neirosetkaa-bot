@@ -27,6 +27,55 @@ def _clean(value,limit):
     return isinstance(value,str) and 0<len(value.strip())<=limit and scrub(value)==value
 
 
+def _kinds(facts):
+    return ['feature','billing','workflow','uncertain']+(['task_fit','limitation'] if facts.get('recommendation_mode') is True else [])
+
+
+def _task_projection(facts):
+    raw=facts.get('recommendation_task',{})
+    if not isinstance(raw,dict):_fail('подготовка задачи рекомендации','ожидался объект безопасных признаков задачи.')
+    result={}
+    for key in ('labels','durations'):
+        values=raw.get(key,[])
+        if not isinstance(values,list) or len(values)>12 or any(not _clean(v,100) for v in values):
+            _fail('подготовка задачи рекомендации','неверный список '+key+'; значения скрыты.')
+        result[key]=values
+    kind=raw.get('kind','')
+    if kind not in ('','creative_generation','visual_understanding','plan_selection'):
+        _fail('подготовка задачи рекомендации','неподтверждённый вид задачи.')
+    result['kind']=kind
+    return result
+
+
+def _retail_duration(rows):
+    """Exact store term only; neither price nor manufacturer billing implies it."""
+    aliases={'month':('month',1),'monthly':('month',1),'месяц':('month',1),
+             'year':('year',1),'annual':('year',1),'annually':('year',1),'год':('year',1)}
+    terms=[]
+    for row in rows:
+        current=[]
+        for key in ('duration','billing_period'):
+            raw=row.get(key)
+            if not isinstance(raw,str) or not raw.strip():continue
+            raw=raw.strip().casefold()
+            value=aliases.get(raw)
+            match=re.fullmatch(r'(\d{1,2})\s*(months?|месяц(?:а|ев)?|years?|год(?:а)?|лет)',raw)
+            if match:
+                n=int(match[1]);unit='month' if re.match(r'month|месяц',match[2]) else 'year'
+                value=(unit,n) if 1<=n<=36 else None
+            if value:current.append(value)
+        if not current or len(set(current))!=1:return ''
+        terms.append(current[0])
+    if not terms or len(set(terms))!=1:return ''
+    unit,n=terms[0]
+    if n==1:return 'за месяц' if unit=='month' else 'за год'
+    singular='месяц' if unit=='month' else 'год'
+    plural='месяца' if unit=='month' else 'года'
+    many='месяцев' if unit=='month' else 'лет'
+    word=singular if n%10==1 and n%100!=11 else plural if 2<=n%10<=4 and n%100 not in (12,13,14) else many
+    return 'за '+str(n)+' '+word
+
+
 def _read(result,stage):
     """Give bounded transport/format reasons without exposing provider bodies."""
     if not isinstance(result,dict):_fail(stage,'ответ API не является объектом.')
@@ -79,8 +128,9 @@ def _contract(facts):
         _fail('подготовка атомарных функций','ожидалось от 1 до 4 безопасных названий сервисов.')
     products=list(dict.fromkeys(products))
     rows=facts.get('requested_catalog',[])
-    block=price_block(facts,'',topic='comparison')
-    if not block:_fail('подготовка атомарных функций','нет однозначного блока рублёвых цен каталога.')
+    recommendation=facts.get('recommendation_mode') is True
+    block='' if recommendation else price_block(facts,'',topic='comparison')
+    if not block and not recommendation:_fail('подготовка атомарных функций','нет однозначного блока рублёвых цен каталога.')
     sources=[]
     for source in evidence.get('sources',[]):
         if (isinstance(source,dict) and type(source.get('id')) is int and source['id']>0
@@ -101,8 +151,11 @@ def _contract(facts):
             identity=(service,plan)
             if identity in seen:continue
             seen.add(identity)
-            targets.append({'target_id':'T'+str(len(targets)+1),'product':product,
-                            'service':service,'plan':plan})
+            target={'target_id':'T'+str(len(targets)+1),'product':product,'service':service,'plan':plan}
+            if recommendation:
+                price=row.get('catalog_price_rub')
+                target['catalog_price_rub']=price if type(price) is int and price>0 else None
+            targets.append(target)
     # The bounded router can research fewer products than the catalogue
     # matches. Never silently omit a matched plan and declare a full answer.
     # Unresearched targets have no eligible sources and can only become gaps.
@@ -113,10 +166,28 @@ def _contract(facts):
             _fail('подготовка атомарных функций','небезопасное или слишком длинное название тарифа.')
         seen.add((service,plan))
         allowed['catalog_unresearched']=[]
-        targets.append({'target_id':'T'+str(len(targets)+1),'product':'catalog_unresearched',
-                        'service':service,'plan':plan})
+        target={'target_id':'T'+str(len(targets)+1),'product':'catalog_unresearched','service':service,'plan':plan}
+        if recommendation:
+            price=row.get('catalog_price_rub')
+            target['catalog_price_rub']=price if type(price) is int and price>0 else None
+        targets.append(target)
     if not 1<=len(targets)<=16:
         _fail('подготовка атомарных функций','число точных целей вне диапазона 1–16.')
+    if recommendation:
+        for target in targets:
+            matches=[r for r in rows if str(r.get('service',''))==target['service'] and str(r.get('plan',''))==target['plan']]
+            prices=[r.get('catalog_price_rub') for r in matches]
+            valid=[p for p in prices if type(p) is int and p>0]
+            target['price_issue']=''
+            target['retail_duration']=_retail_duration(matches)
+            if not matches:
+                target['catalog_price_rub']=None
+            elif len(valid)!=len(prices) or len(set(valid))!=1:
+                target['catalog_price_rub']=None
+                target['price_issue']=('Этап: привязка цены рекомендации. Для одного сервиса и тарифа '
+                    'нет единственной полностью подтверждённой цены; строк='+str(len(matches))
+                    +'; корректных цен='+str(len(valid))+'; разных корректных цен='+str(len(set(valid)))+'.')
+            else:target['catalog_price_rub']=valid[0]
     digest=str(evidence.get('digest',''))[:40000]
     digest=''.join(scrub(digest[i:i+12000]) for i in range(0,len(digest),12000))
     excerpts={}
@@ -126,12 +197,20 @@ def _contract(facts):
         refs=sorted({int(i) for i in re.findall(r'\[(\d{1,6})\]',paragraph)} & valid_ids)
         for offset in range(0,len(paragraph),1200):
             excerpts['E'+str(len(excerpts)+1)]={'text':paragraph[offset:offset+1200],'source_ids':refs}
-    return {'version':2,'targets':targets,'allowed_sources':allowed,'sources':sources,
+    result={'version':2,'targets':targets,'allowed_sources':allowed,'sources':sources,
             'digest':digest,'evidence_excerpts':excerpts,'question':public_question(facts),
             'price_block':block}
+    if recommendation:
+        budget=facts.get('recommendation_budget',1700)
+        if type(budget) is not int or not 800<=budget<=1800:_fail('подготовка рекомендации','лимит ответа должен быть целым числом 800–1800.')
+        result.update(recommendation_mode=True,recommendation_task=_task_projection(facts),recommendation_budget=budget)
+    return result
 
 
 def _atomic_guard(text,facts):
+    from .answer_check import activation_promise_issue
+    activation_issue=activation_promise_issue(text)
+    if activation_issue:return activation_issue
     from .feature_reply import compose
     from .literal_evidence import unsupported_model_version
     # Paid add-on eligibility is a capability qualifier, not a store price.
@@ -168,12 +247,64 @@ def _claim_guard(claim,target,contract,facts):
     allowed=contract['allowed_sources'][target['product']]
     if any(i not in allowed for i in claim['source_ids']):
         return 'ID источника относится к другому сервису; привязка к цели не подтверждена.'
-    if claim['kind']!='feature':return ''
+    if claim['kind'] not in ('feature','task_fit','limitation'):return ''
     if not claim['source_ids']:return 'Нет подтверждающих источников для фактической записи.'
+    if (re.search(r'pro\s*(?:5|20|50)\s*[xх×]?\b',target.get('plan',''),re.I)
+            and re.search(r'соответств|эквивалент|это\s+(?:официальн[а-яё]*\s+)?план|относ[а-яё]*\s+к',claim['text'],re.I)
+            and re.search(r'pro\s*(?:100|200|500)\b|официальн[а-яё]*[^.!?\n]{0,25}\bpro\b',claim['text'],re.I)):
+        return ('Этап: соответствие тарифа магазина официальному плану. Для обозначения Pro 5x/20x/50x '
+                'не подтверждена эквивалентность другому официальному уровню; название и цена не являются доказательством.')
     return _atomic_guard(claim['text'],facts)
 
 
+def _render_recommendation(contract,accepted,missing,diagnostics):
+    """Recommend only independently accepted task-fit claims; no prose rewrite."""
+    products=list(dict.fromkeys(t['product'] for t in contract['targets']))
+    budget=contract.get('recommendation_budget',1700)
+    blocks=[];used=[];gaps=set();chosen=[]
+    for product_index,product in enumerate(products):
+        targets=[t for t in contract['targets'] if t['product']==product]
+        reserve='\n\n'.join(next(t['service'] for t in contract['targets'] if t['product']==p)+': подбор пока не подтверждён.' for p in products[product_index+1:])
+        fitting=[t for t in targets if any(c['kind']=='task_fit' for c in accepted.get(t['target_id'],[]))]
+        fitting.sort(key=lambda t:(t.get('catalog_price_rub') is None,t.get('catalog_price_rub') or 0,t['target_id']))
+        if not fitting:
+            t=targets[0];gaps.add(t['target_id'])
+            blocks.append(t['service']+': подходящий тариф под вашу задачу пока не подтверждён.')
+            continue
+        before=len(blocks)
+        for target in fitting[:2]:
+            tid=target['target_id'];claims=accepted[tid]
+            ordered=sorted(claims,key=lambda c:0 if c['kind']=='task_fit' else 1)
+            heading=_display(target)
+            if target.get('catalog_price_rub') is not None:heading+=': '+str(target['catalog_price_rub'])+' ₽'
+            else:heading+=': цена магазина не подтверждена'
+            if target.get('catalog_price_rub') is not None and target.get('retail_duration'):
+                heading+=' '+target['retail_duration']
+            if target.get('price_issue'):
+                gaps.add(tid);diagnostics.append(tid+': '+target['price_issue'])
+            text=heading+'\n'+'\n'.join(c['text']+' '+''.join('['+str(i)+']' for i in c['source_ids']) for c in ordered)
+            if tid in missing:
+                text+='\nЧасть запрошенных условий пока не подтверждена.';gaps.add(tid)
+            if len('\n\n'.join(blocks+[text,reserve]))>budget-70 or len({i for c in used+ordered for i in c['source_ids']})>12:
+                gaps.add(tid);diagnostics.append(tid+': рекомендация не включена из-за лимита длины или источников.')
+                continue
+            blocks.append(text);used.extend(ordered);chosen.append(tid)
+        if len(blocks)==before:
+            gaps.add(targets[0]['target_id'])
+            blocks.append(targets[0]['service']+': проверенная рекомендация не поместилась; нужна отдельная консультация.')
+    if not blocks:blocks=['Подходящий сервис под вашу задачу пока не удалось подтвердить.']
+    if gaps and chosen:blocks.append('По остальным вариантам нужны дополнительные подтверждения.')
+    reply='\n\n'.join(blocks)
+    if len(reply)>budget:_fail('сборка рекомендации','проверенные блоки превышают выделенный лимит '+str(budget)+' символов; текст не обрезан.')
+    return {'reply':reply,'summary':'Рекомендация собрана кодом только из независимо принятых утверждений о соответствии задаче; цены магазина подставлены отдельно.',
+            'handoff':bool(gaps),'research':{'topic':'none','products':[]},
+            'source_ids':list(dict.fromkeys(i for c in used for i in c['source_ids'])),
+            'feature_projection':{'rendered_claim_ids':[c['claim_id'] for c in used],
+                                  'incomplete_target_ids':sorted(gaps)}}
+
+
 def _render(contract,accepted,missing,diagnostics):
+    if contract.get('recommendation_mode') is True:return _render_recommendation(contract,accepted,missing,diagnostics)
     # Reserve an explicit gap for EVERY exact target before adding any claims.
     lines={t['target_id']:_display(t)+': подробности уточню.' for t in contract['targets']}
     prefix=contract['price_block']
@@ -218,7 +349,7 @@ async def draft_claims(ai,facts):
     """Generate typed candidates; the caller MUST review before sending them."""
     contract=_contract(facts)
     targets={t['target_id']:t for t in contract['targets']}
-    kinds=['feature','billing','workflow','uncertain']
+    kinds=_kinds(facts)
     target_properties={}
     for tid,target in targets.items():
         allowed=contract['allowed_sources'][target['product']]
@@ -232,6 +363,9 @@ async def draft_claims(ai,facts):
     schema={'type':'object','properties':{'claims':{'type':'object','properties':target_properties,
         'required':list(targets),'additionalProperties':False}},'required':['claims'],'additionalProperties':False}
     public={k:contract[k] for k in ('targets','sources','digest','evidence_excerpts','question')}
+    if contract.get('recommendation_mode'):
+        public['recommendation_task']=contract['recommendation_task']
+        public['targets']=[{k:v for k,v in t.items() if k not in ('catalog_price_rub','price_issue','retail_duration')} for t in contract['targets']]
     response=await ai.request('responses',json={'model':ai.model,'store':False,
         'max_output_tokens':min(8000,max(2000,800+len(targets)*450)),
         'instructions':(
@@ -250,7 +384,13 @@ async def draft_claims(ai,facts):
             'Price and workflow records will NOT be rendered; the application supplies store prices. '
             'No usernames, URLs, citations in text, greetings, or promises of future work. '
             'source_ids must be supporting supplied official source IDs for that same service. '
-            'No memory, guesses, unavailable Unlimited assertions, or unrelated Free/API plans.'),
+            'No memory, guesses, unavailable Unlimited assertions, or unrelated Free/API plans.'
+            +(' In recommendation mode prioritize one task_fit statement explaining how THIS exact plan addresses '
+              'the supplied safe task requirements, and optionally one limitation. task_fit must be directly '
+              'entailed by evidence, not a generic endorsement or best/cheapest ranking. A feature alone is not '
+              'proof of fit. For visual_understanding verify interpreting existing images, not generating them. '
+              'For short video distinguish one generation from an edited multi-scene final video. Use uncertain '
+              'when fit cannot be established; never invent a recommendation.' if contract.get('recommendation_mode') else '')),
         'input':json.dumps(public,ensure_ascii=False),'text':{'format':{
             'type':'json_schema','name':'support_feature_claims_v2','strict':True,'schema':schema}}})
     value=_read(response,'подготовка атомарных утверждений')
@@ -290,7 +430,7 @@ async def draft_claims(ai,facts):
     if any(n not in (1,2) for n in counts.values()):
         _fail('подготовка атомарных утверждений','не все цели покрыты ровно одной или двумя записями.')
     contract['claims']=claims
-    candidates={tid:[c for c in claims if c['target_id']==tid and c['kind']=='feature' and not c['code_rejection']] for tid in targets}
+    candidates={tid:[c for c in claims if c['target_id']==tid and c['kind'] in ('feature','task_fit','limitation') and not c['code_rejection']] for tid in targets}
     result=_render(contract,candidates,{},[])
     result['handoff']=True  # Candidate is not approved merely because it parsed.
     result['feature_claims']=contract
@@ -316,7 +456,7 @@ async def review_claims(ai,answer,facts):
     for claim in claims:
         if (not isinstance(claim,dict) or set(claim)!={'claim_id','target_id','kind','text','source_ids','code_rejection'}
                 or not isinstance(claim.get('target_id'),str) or claim['target_id'] not in targets
-                or claim.get('kind') not in ('feature','billing','workflow','uncertain')
+                or claim.get('kind') not in _kinds(facts)
                 or not _clean(claim.get('text'),240) or not isinstance(claim.get('source_ids'),list)
                 or not isinstance(claim.get('code_rejection'),str) or len(claim['code_rejection'])>600
                 or scrub(claim['code_rejection'])!=claim['code_rejection']):
@@ -341,7 +481,7 @@ async def review_claims(ai,answer,facts):
         eligible[claim['claim_id']]=refs
         finding_properties[claim['claim_id']]={'type':'object','properties':{
             'status':{'type':'string','enum':['supported','unsupported','uncertain']},
-            'kind':{'type':'string','enum':['feature','billing','workflow','uncertain']},
+            'kind':{'type':'string','enum':_kinds(facts)},
             'evidence_ids':{'type':'array','minItems':0,'maxItems':min(6,len(refs)),
                             'items':{'type':'string',**({'enum':refs} if refs else {})}},
             'reason':{'type':'string','minLength':1,'maxLength':160}},
@@ -354,6 +494,9 @@ async def review_claims(ai,answer,facts):
             'required':['target_id','reason'],'additionalProperties':False}}},
         'required':['findings','missing_facets'],'additionalProperties':False}
     public={k:fresh[k] for k in ('targets','sources','digest','evidence_excerpts','question')}
+    if fresh.get('recommendation_mode'):
+        public['recommendation_task']=fresh['recommendation_task']
+        public['targets']=[{k:v for k,v in t.items() if k not in ('catalog_price_rub','price_issue','retail_duration')} for t in fresh['targets']]
     public['claims']=[{k:c[k] for k in ('claim_id','target_id','kind','text','source_ids')} for c in claims]
     public['eligible_evidence_ids']=eligible
     response=await ai.request('responses',json={'model':ai.model,'store':False,
@@ -380,7 +523,16 @@ async def review_claims(ai,answer,facts):
             'missing_facets lists only explicitly requested facets that accepted feature claims fail to answer, '
             'with exact target_id. Do not require unrelated Free/API/Enterprise tiers, payment procedures, '
             'renewal details or every optional feature for a general comparison. '
-            'Store prices are rendered independently and are outside your task.'),
+            'Store prices are rendered independently and are outside your task.'
+            +(' Recommendation mode also permits task_fit and limitation. Independently verify task_fit entails '
+              'the specific safe task requirements for the SAME plan, not merely that the service has some '
+              'generative feature. Reject unsupported best/cheapest/general endorsements. For '
+              'visual_understanding verify analysis of existing image contents, not image creation. '
+              'For requested video duration distinguish single-generation limits and an edited final video. '
+              'A limitation must itself be supported evidence, not a guess that a service cannot do something. '
+              'Keep kind task_fit only for a supported practical connection to the task. Never reclassify '
+              'a generic capability as task_fit without that connection. Missing facets describe unverified '
+              'requested constraints, not a demand to recommend every price tier.' if fresh.get('recommendation_mode') else '')),
         'input':json.dumps(public,ensure_ascii=False),'text':{'format':{
             'type':'json_schema','name':'support_feature_claim_review_v2','strict':True,'schema':schema}}})
     value=_read(response,'независимая проверка атомарных утверждений')
@@ -412,7 +564,7 @@ async def review_claims(ai,answer,facts):
         if raw_id not in by_id:_fail(stage,'поле claim_id содержит неизвестный ID; значение скрыто.')
         if raw_id in seen:_fail(stage,raw_id+': ID результата повторён.')
         if finding.get('status') not in ('supported','unsupported','uncertain'):_fail(stage,raw_id+': поле status содержит недопустимое значение.')
-        if finding.get('kind') not in ('feature','billing','workflow','uncertain'):_fail(stage,raw_id+': поле kind содержит недопустимую категорию.')
+        if finding.get('kind') not in _kinds(facts):_fail(stage,raw_id+': поле kind содержит недопустимую категорию.')
         reason_value=finding.get('reason')
         if not isinstance(reason_value,str):_fail(stage,raw_id+': поле reason имеет неверный тип.')
         if not 0<len(reason_value.strip())<=160:_fail(stage,raw_id+': длина reason вне диапазона 1–160; получено='+str(len(reason_value))+'.')
@@ -427,8 +579,11 @@ async def review_claims(ai,answer,facts):
         # Foreign but syntactically valid evidence is a rejected claim, not a
         # reason to discard independently supported claims for other targets.
         rejection=claim.get('code_rejection') or _atomic_guard(claim['text'],facts)
-        if claim['kind']!='feature' or finding['kind']!='feature':
+        allowed_kinds={'feature','task_fit','limitation'} if fresh.get('recommendation_mode') else {'feature'}
+        if claim['kind'] not in allowed_kinds or finding['kind'] not in allowed_kinds:
             rejection=rejection or 'Категория записи не является технической функцией; цена/оформление не включены.'
+        elif claim['kind']!=finding['kind']:
+            rejection=rejection or 'Независимая проверка не подтвердила категорию и соответствие задаче; запись не переименована автоматически.'
         elif finding['status']!='supported':rejection=rejection or finding['reason']
         elif not refs:rejection=rejection or 'Нет подтверждающих фрагментов сводки.'
         else:

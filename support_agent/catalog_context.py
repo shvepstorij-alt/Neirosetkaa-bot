@@ -125,7 +125,11 @@ def _select_variants(rows,latest):
             if name and _contains(_words(local),_words(name)):
                 explicit_extra=True
                 rest=re.sub(re.escape(name),' ',rest,flags=re.I)
-        plan=any(_contains(_words(rest),_words(r.get('plan'))) for r in regular if r.get('plan'))
+        # Share canonical plan selection with the workflow layer (e.g. Plus /
+        # «плюс»). Different matchers let a paid subscription silently retain
+        # separately sold manual credit products on the next short question.
+        from .fulfillment_reply import _selected_plan_rows
+        plan=bool(_selected_plan_rows(regular,rest,require_match=True))
         credit_word=bool(re.search(r'кредит|\bcredits?\b',local,re.I))
         purchase=bool(re.search(r'пополн|купить|докуп|пакет|приобр|оформ',local,re.I))
         want_extra=explicit_extra or credit_word and (purchase or not plan)
