@@ -13,10 +13,28 @@ ALIASES = {
                  'апп стора', 'эпл стора', 'эппл стора', 'апстор', 'апстора', 'айтюнс', 'itunes'),
     'chatgpt': ('chatgpt', 'chat gpt', 'чат гпт', 'чатгпт', 'чате гпт', 'чата гпт'),
     'claude': ('claude', 'клод', 'клода', 'клоде', 'клоду'),
+    'gemini': ('gemini','джемини','гемини'),
     'perplexity': ('perplexity', 'перплексити'),
     'zoom': ('zoom', 'зум', 'зуме', 'зума', 'зуму'),
     'notion': ('notion', 'ноушен', 'ноушн'),
     'motion': ('motion', 'моушен', 'моушн'),
+    'canva': ('canva','канва','канве','канву'),
+    'capcut': ('capcut','cap cut','капкат','капкут','капкате'),
+    'cursor': ('cursor','курсор','курсоре','курсора'),
+    'midjourney': ('midjourney','миджорни','миджерни'),
+    'telegram_premium': ('telegram premium','telegrampremium','телеграм премиум','тг премиум','тгпремиум'),
+    'github': ('github','git hub','гитхаб','гитхабе'),
+    'genspark': ('genspark','дженспарк','генспарк'),
+    'supergrok': ('supergrok','super grok','супергрок','супер грок'),
+    'zai': ('z.ai','zai','зи ай'),
+    'elevenlabs': ('elevenlabs','eleven labs','элевенлабс','илевенлабс'),
+    'heygen': ('heygen','хейген','хейджен'),
+    'kimi': ('kimi','кими'),
+    'kling': ('kling','kling ai','клинг'),
+    'lovable': ('lovable','ловабл','лавабл'),
+    'make': ('make','мейк'),
+    'manus': ('manus','манус'),
+    'runway': ('runway','ранвей','ранвэй'),
     'higgsfield': ('higgsfield', 'higgsfield ai', 'хиггсфилд', 'хиггсфиелд'),
 }
 
@@ -271,25 +289,30 @@ def verified_catalog_reply(facts, reason):
     for line in all_lines:
         if len(lines)>=8 or used+len(line)+1>line_budget:break
         lines.append(line);used+=len(line)+1
-    parts=[];workflow_conflicts=[]
-    from .workflow_policy import policies_for,route_evidence
+    parts=[];workflow_conflicts=[];shared_links=[]
+    from .workflow_policy import policies_for,route_evidence,instruction_for,policy_scope_issue
     policies=policies_for(facts)
     if lines:
         parts.append('Тарифы магазина:\n'+'\n'.join(lines)+'\nЦены до применения промокода и списания монет.')
         if len(lines)<len(all_lines):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
     for policy in policies:
-        name={'krea':'Krea','suno':'Suno','zoom':'Zoom','openrouter':'Openrouter','spotify':'Spotify','youtube':'YouTube'}[policy['service']]
+        name=policy.get('display_name') or {'krea':'Krea','suno':'Suno','zoom':'Zoom','openrouter':'Openrouter','spotify':'Spotify','youtube':'YouTube'}[policy['service']]
         state,methods=route_evidence(policy['service'],rows)
-        if state=='conflict':
-            parts.append(f'Для оформления {name} нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления заказа.')
-            workflow_conflicts.append(name+': конфликт способов оформления; владелец подтвердил account_details, '
-                'полученные ветки='+(','.join(sorted(str(method) for method in methods)) if methods else 'строки выбранного товара не получены')+'.')
-        elif state=='unavailable':
-            parts.append(f'Для оформления {name} нужны почта и пароль от аккаунта. Их нужно будет прислать сюда, в эту переписку. Порядок оформления проверю перед оплатой.')
-            workflow_conflicts.append(name+': поля подтверждены владельцем; действующая инструкция магазина не получена. Живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; полученные ветки='+(','.join(sorted(methods)) if methods else 'строки выбранного товара не получены')+'. Конфликт способа оформления не установлен.')
+        if policy['required_fields']==['checkout_url'] and policy.get('workflow_steps_source')=='owner_confirmed':
+            shared_links.append((name,policy,state))
         else:
-            parts.append(f'Для оформления {name} нужны почта и пароль от вашего аккаунта. После выбора тарифа и оплаты пришлите их сюда, в эту переписку. Дальше потребуется ручное оформление.')
+            parts.append(instruction_for(policy,name,state,style='fallback'))
+        if state=='conflict':
+            workflow_conflicts.append(name+': конфликт способов оформления; правило владельца='+policy['expected_fulfillment']+'; полученные ветки='+','.join(sorted(methods))+'.')
+            scope_issue=policy_scope_issue(policy,[row for row in rows if policy['service'] in {p['service'] for p in policies_for({'requested_catalog':[row]})}])
+            if scope_issue:workflow_conflicts.append(name+': '+scope_issue)
+        elif state=='unavailable':
+            workflow_conflicts.append(name+': данные подтверждены владельцем; действующая инструкция магазина не получена. Живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; полученные ветки='+','.join(sorted(methods))+'. Конфликт способа оформления не установлен.')
+    if shared_links:
+        names=', '.join(item[0] for item in shared_links)
+        state='matched' if all(item[2]=='matched' for item in shared_links) else 'unavailable'
+        parts.append(instruction_for(shared_links[0][1],names,state,style='fallback'))
     if apple_requested:
         selection=facts.get('appstore_selection',{})
         known=selection.get('requested_codes',[])

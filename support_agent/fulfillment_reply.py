@@ -131,6 +131,7 @@ def workflow_reply(facts,latest):
     known_words={word for name in _service_names(facts.get('catalog',[])) for word in name}
     ordinary=set('что нужно потребуется данные почта пароль оплата оплаты оформить оформление оформления выбрать тариф тарифы регион сумма пополнение баланс после для и или как куда спасибо пожалуйста сервис сервисы apple id store app почту аккаунт аккаунта'.split())
     ordinary.update(('google','email','e','mail','password','если','вход'))
+    ordinary.update(('почте','почтой','почты','паролю','паролем','пароля','ссылке','ссылкой','данным','данными'))
     if 'appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):
         from .apple_matching import ALIASES as region_aliases
         ordinary.update(('usd','eur','try','rub','gbp','cad','aud','inr','jpy','kzt','sar','brl','pln'))
@@ -154,7 +155,7 @@ def workflow_reply(facts,latest):
         # names must reach consultation/discovery instead of being omitted.
         for token in re.findall(r'(?<!\w)[A-Za-z][A-Za-z0-9_-]*(?!\w)',line):
             if set(_words(token))-(known_words|ordinary):return None
-    from .workflow_policy import policies_for,route_evidence
+    from .workflow_policy import policies_for,route_evidence,instruction_for,policy_scope_issue,route_choice
     rows=facts.get('requested_catalog',[])
     apple_requested='appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[])
     if not rows and not apple_requested:return None
@@ -163,7 +164,7 @@ def workflow_reply(facts,latest):
         if 'appstore' not in (_families(_words(row.get('service','')))|_families(_words(row.get('service_key','')))):
             groups.setdefault(row.get('service',''),[]).append(row)
     if not all(groups):return None
-    parts=[];diagnostics=[];handoff=False
+    parts=[];diagnostics=[];handoff=False;shared_links=[]
     from .bot_guide import purchase_navigation
     navigation=purchase_navigation(facts,apple=apple_requested and not groups)
     # Append navigation only if the whole answer has no unresolved procedure.
@@ -185,16 +186,23 @@ def workflow_reply(facts,latest):
         methods={item.get('fulfillment','not_verified') for item in items}
         if owner_policies:
             state,projected=route_evidence(owner_policies[0]['service'],items)
-            if state=='conflict':
-                parts.append(name+': для оформления нужны почта и пароль от аккаунта. Перед оплатой нужно согласовать порядок оформления; платёжную ссылку от сервиса для этого способа присылать не нужно.')
-                diagnostics.append(name+': конфликт способов оформления. Владелец подтвердил account_details; получены подтверждённые ветки '+','.join(sorted(projected))+'. Метод в магазине не изменён автоматически.')
-            elif state=='unavailable':
-                parts.append(name+': для оформления нужно будет прислать сюда, в эту переписку, почту и пароль от аккаунта. Порядок оформления проверю перед оплатой.')
-                diagnostics.append(name+': поля подтверждены владельцем; действующая инструкция магазина не получена. Живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; источник каталога='+str(facts.get('source','not_recorded'))+'; полученные ветки='+','.join(sorted(projected))+'. Конфликт способа оформления не установлен.')
+            policy=owner_policies[0]
+            choice=route_choice(latest if len(groups)==1 else _service_plan_scope(name,groups,latest)) if policy.get('field_alternatives') else None
+            if choice and projected & set(policy.get('method_options',[])) and choice not in projected:
+                state='conflict'
+                diagnostics.append(name+': выбранный клиентом способ='+choice+'; текущий способ товара='+','.join(sorted(projected))+'. Владелец подтвердил оба способа, но настройка выбранного товара не изменена автоматически.')
+            if policy['required_fields']==['checkout_url'] and policy.get('workflow_steps_source')=='owner_confirmed':
+                shared_links.append((name,policy,state))
             else:
-                parts.append(name+': выберите тариф и оплатите заказ. После оплаты пришлите сюда, в эту переписку, почту и пароль от аккаунта.')
-            if re.search(r'google|гугл',latest,re.I) and any(p.get('google_sign_in') for p in owner_policies):
-                parts.append('Если в этот сервис вы входите через Google, для оформления нужны почта и пароль от соответствующего Google-аккаунта. Одноразовые и резервные коды присылать не нужно.')
+                parts.append(instruction_for(policy,name,state,google=bool(re.search(r'google|гугл',latest,re.I)),choice=choice))
+            if policy.get('field_alternatives') and not choice:
+                diagnostics.append(name+': доступны подтверждённые альтернативы; клиент ещё не выбрал способ. Оба набора данных не требуются; до выбора не направлять к оплате.')
+            if state=='conflict':
+                diagnostics.append(name+': конфликт способов оформления. Правило владельца='+policy['expected_fulfillment']+'; полученные ветки='+','.join(sorted(projected))+'. Настройка магазина не изменена автоматически.')
+                scope_issue=policy_scope_issue(policy,items)
+                if scope_issue:diagnostics.append(name+': '+scope_issue)
+            elif state=='unavailable':
+                diagnostics.append(name+': необходимые данные подтверждены владельцем; текущая ветка оформления не получена. Живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; полученные ветки='+','.join(sorted(projected))+'. Конфликт не установлен.')
             handoff=True
             continue
         if methods=={'account_details'}:
@@ -239,6 +247,10 @@ def workflow_reply(facts,latest):
                 parts.append(name+': есть разные способы оформления. Уточню, какой предусмотрен для выбранного тарифа, до оплаты.')
                 diagnostics.append(name+': несколько веток оформления='+','.join(sorted(str(method) for method in methods))+'. Соответствие выбранному тарифу требует проверки.')
             handoff=True
+    if shared_links:
+        names=', '.join(item[0] for item in shared_links)
+        state='matched' if all(item[2]=='matched' for item in shared_links) else 'unavailable'
+        parts.append(instruction_for(shared_links[0][1],names,state))
     if apple_requested:
         from .apple_matching import ALIASES
         codes=facts.get('appstore_selection',{}).get('requested_codes',[])

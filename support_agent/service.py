@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import html
 import logging
+from contextvars import ContextVar
 import os
 import re
 import time
@@ -14,6 +15,12 @@ from .privacy import scrub, sensitive
 from .storage import Store
 from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details, with_public_trace
 from .response_policy import continuing_reply, missing_shop_reply, consultation_plan, current_request
+
+
+# Polling must persist local controls before moving to the next update, while
+# owner-only rendering/network work must not hold up reception of /stop.
+_POLL_INGEST=ContextVar('support_poll_ingest',default=False)
+_COMMAND_IO_GATE=ContextVar('support_command_io_gate',default=None)
 
 
 def buttons(rows):
@@ -37,6 +44,84 @@ class Service:
         self.owner_delivery_lock=asyncio.Lock()
         self.owner_interval=0
         self.owner_last_send=0
+        self.admin_tasks={}
+        self.callback_tasks={}
+        self.admin_retiring=set()
+        self.admin_sequence=0
+
+    def release_command_io_gate(self):
+        gate=_COMMAND_IO_GATE.get()
+        if gate is not None:gate.set()
+
+    def schedule_admin_job(self,factory,*,readonly=False):
+        """Bound owner I/O. Mutable command tasks reach their first I/O in order.
+
+        At capacity, another read-only refresh is discarded. A local control
+        may cancel an older presentation task whose local phase has completed;
+        owner UI delivery can be lost, but a stop is never discarded for it.
+        """
+        running=[(key,value) for key,value in self.admin_tasks.items() if not value['task'].done()]
+        if len(running)>=4:
+            if readonly:
+                logging.warning('Owner read-only task not queued: capacity=4; local controls remain available')
+                return None
+            candidates=[(key,value) for key,value in running if value['readonly'] or value['gate'].is_set()]
+            if not candidates:
+                raise RuntimeError('Owner command local phases exhausted capacity')
+            key,value=candidates[0]
+            value['task'].cancel()
+            self.admin_retiring.add(value['task'])
+            value['task'].add_done_callback(self.admin_retiring.discard)
+            self.admin_tasks.pop(key,None)
+        self.admin_sequence+=1
+        ident=self.admin_sequence;gate=asyncio.Event()
+        async def run():
+            token=_COMMAND_IO_GATE.set(gate)
+            try:
+                await factory()
+            except (ValueError,IndexError):
+                try:await self.owner_message('Некорректная команда. Используйте /status.')
+                except Exception:logging.warning('Invalid command notification unavailable')
+            except Exception as exc:
+                logging.warning('Owner task unavailable: %s',type(exc).__name__)
+                try:
+                    await self.owner_message('Этап: обработка команды владельца. Результат панели не получен. '
+                        'Локальные переключения режима могли уже примениться; проверьте /status. '
+                        'Первопричина не установлена; необработанная ошибка скрыта.')
+                except Exception:
+                    logging.warning('Owner task failure notification unavailable')
+            finally:
+                gate.set()
+                _COMMAND_IO_GATE.reset(token)
+                self.admin_tasks.pop(ident,None)
+        task=asyncio.create_task(run())
+        self.admin_tasks[ident]={'task':task,'gate':gate,'readonly':readonly}
+        return gate
+
+    async def dispatch_polled_command(self,text,admin_mid=None):
+        parts=text.strip().split()
+        if not parts:return
+        cmd=parts[0].split('@')[0]
+        readonly=(cmd in ('/start','/status','/shop_status','/workflow_test','/catalog_test','/chats','/pending')
+                  or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:')))
+        gate=self.schedule_admin_job(lambda:self.command(text,admin_mid),readonly=readonly)
+        if gate is not None and not readonly:
+            # Stop/resume/retry/prepare mutate state synchronously before their
+            # first owner I/O. Never let an older resume run after a newer stop.
+            await gate.wait()
+
+    def schedule_callback_ack(self,ident):
+        if len(self.callback_tasks)>=4:
+            logging.warning('Callback acknowledgement not queued: capacity=4')
+            return
+        self.admin_sequence+=1;key=self.admin_sequence
+        async def run():
+            try:
+                await self.tg.call('answerCallbackQuery',callback_query_id=ident)
+            except Exception:
+                logging.warning('Callback acknowledgement unavailable')
+            finally:self.callback_tasks.pop(key,None)
+        self.callback_tasks[key]=asyncio.create_task(run())
 
     def chat_controls(self,c):
         return [('Возобновить помощника',f'chat:draft:{c["id"]}')] if c['mode']=='off' else [
@@ -54,6 +139,7 @@ class Service:
         return f'Чат №{cid} · {label} · ID {c["uid"]}'
 
     async def owner_message(self,text,reply_markup=None,parse_mode=None):
+        self.release_command_io_gate()
         # Cards have complete HTML tags within paragraphs. Split only between
         # paragraphs; never truncate an answer the owner is being asked to approve.
         parts=[];current=''
@@ -104,25 +190,34 @@ class Service:
             q=update['callback_query']
             if q.get('from',{}).get('id')==self.owner and q.get('message',{}).get('chat',{}).get('id')==self.owner:
                 try:
-                    await self.command(q.get('data',''),admin_mid=q.get('message',{}).get('message_id'))
+                    if _POLL_INGEST.get():
+                        await self.dispatch_polled_command(q.get('data',''),q.get('message',{}).get('message_id'))
+                    else:
+                        await self.command(q.get('data',''),admin_mid=q.get('message',{}).get('message_id'))
                 except (ValueError,IndexError):
                     await self.owner_message('Некорректная команда. Используйте /status.')
             # Expired callback acknowledgement must not block the update queue
             # or replay an already handled command after a restart.
-            try:
-                await self.tg.call('answerCallbackQuery',callback_query_id=q['id'])
-            except Exception:
-                logging.warning('Callback acknowledgement unavailable')
+            if _POLL_INGEST.get():self.schedule_callback_ack(q['id'])
+            else:
+                try:
+                    await self.tg.call('answerCallbackQuery',callback_query_id=q['id'])
+                except Exception:
+                    logging.warning('Callback acknowledgement unavailable')
             return
         if 'message' in update:
             m=update['message']
             if (m.get('text','').strip()=='/id' and m.get('chat',{}).get('type')=='private'
                     and m.get('from',{}).get('id')==m.get('chat',{}).get('id')):
-                await self.tg.call('sendMessage',chat_id=m['chat']['id'],text=f'Ваш Telegram ID: {m["chat"]["id"]}')
+                if _POLL_INGEST.get():
+                    self.schedule_admin_job(lambda:self.tg.call('sendMessage',chat_id=m['chat']['id'],text=f'Ваш Telegram ID: {m["chat"]["id"]}'),readonly=True)
+                else:
+                    await self.tg.call('sendMessage',chat_id=m['chat']['id'],text=f'Ваш Telegram ID: {m["chat"]["id"]}')
                 return
             if m.get('from',{}).get('id')==self.owner and m.get('chat',{}).get('id')==self.owner:
                 try:
-                    await self.command(m.get('text',''))
+                    if _POLL_INGEST.get():await self.dispatch_polled_command(m.get('text',''))
+                    else:await self.command(m.get('text',''))
                 except (ValueError,IndexError):
                     await self.owner_message('Некорректная команда. Используйте /status.')
             return
@@ -176,6 +271,7 @@ class Service:
 
     async def admin_panel(self,text,rows,admin_mid=None,parse_mode=None):
         """Bounded owner-only pages; callback navigation edits the existing panel."""
+        self.release_command_io_gate()
         markup=buttons(rows)
         if admin_mid is None:
             return await self.owner_message(text,markup,parse_mode=parse_mode)
@@ -308,16 +404,16 @@ class Service:
                 await self.owner_message('Другой тест уже выполняется. Дождитесь окончания или используйте /stop.')
                 return
             from .dialog_probe import run_probe
-            await self.owner_message('Запускаю 3 тестовых диалога, 6 ответов. До 20 учтённых этапов API в пределах дневного лимита; это не денежный лимит. История изолирована, отправки клиентам запрещены. /stop остановит следующие этапы; начатый запрос может списать средства.')
             self.research_probe_task=asyncio.create_task(run_probe(self))
+            await self.owner_message('Запускаю 3 тестовых диалога, 6 ответов. До 20 учтённых этапов API в пределах дневного лимита; это не денежный лимит. История изолирована, отправки клиентам запрещены. /stop остановит следующие этапы; начатый запрос может списать средства.')
         elif cmd=='/research_test':
             running=getattr(self,'research_probe_task',None)
             if running and not running.done():
                 await self.owner_message('Проверка интернета уже выполняется.')
                 return
             from .research_probe import run_probe
-            await self.owner_message('Проверяю Zoom, Krea и Lovable через API. Это платные запросы в пределах дневного лимита. Клиентам ничего не отправляется. /stop остановит дальнейшие этапы.')
             self.research_probe_task=asyncio.create_task(run_probe(self))
+            await self.owner_message('Проверяю Zoom, Krea и Lovable через API. Это платные запросы в пределах дневного лимита. Клиентам ничего не отправляется. /stop остановит дальнейшие этапы.')
         elif cmd=='/shop_status':
             facts=await self.shop.facts(self.owner)
             labels={'available':'доступны','truncated':'доступны первые 150 записей',
@@ -371,9 +467,20 @@ class Service:
                 from .workflow_policy import policies_for
                 policy=policies_for({'requested_catalog':[{'service':name}]})
                 if policy:
-                    lines.append(name+': владелец подтвердил почту и пароль; это отдельный источник подтверждения, даже если экспорт полей остаётся not_verified.')
-                    if method!='account_details' and any(p['service']!='krea' for p in policy):
-                        lines.append('Конфликт '+name+': владелец подтвердил account_details, настройка магазина передаёт '+method+'. Изменение настройки требует отдельного согласования.')
+                    for confirmed in policy:
+                        fields=','.join(confirmed['required_fields']) or 'данные аккаунта клиента не требуются'
+                        lines.append(name+': подтверждено владельцем '+confirmed['confirmed_on']+'; поля клиента='+fields+'.')
+                        if confirmed.get('field_alternatives'):
+                            lines.append(name+': альтернативные наборы (достаточно одного)='+
+                                ' ИЛИ '.join(','.join(option) for option in confirmed['field_alternatives'])+'.')
+                        if confirmed.get('workflow_steps_status')=='available':
+                            lines.append(name+': пошаговая инструкция подтверждена владельцем '+confirmed['confirmed_on']
+                                         +'; источник='+confirmed.get('workflow_steps_source','owner_confirmed')+'.')
+                        if confirmed.get('provided_fields'):
+                            lines.append(name+': клиенту выдаются '+','.join(confirmed['provided_fields'])+'; тип аккаунта='+confirmed.get('account_ownership','not_confirmed')+'; срок='+confirmed['duration']+'.')
+                        compatible=confirmed.get('compatible_fulfillment',['account_details'])
+                        if method in ('manual','account_details','checkout_link','code_activation_conditional') and method not in compatible:
+                            lines.append('Конфликт '+name+': правило владельца='+confirmed['expected_fulfillment']+'; настройка магазина='+method+'. Метод не изменён автоматически.')
             if not rows:lines.append('В прочитанной выборке сервис не сопоставлен; это не подтверждает отсутствие товара.')
             lines.append('not_verified означает, что конкретные поля/шаги ещё не подтверждены, а не что оформить нельзя. Модель не вызывается.')
             await self.owner_message('\n\n'.join(lines))
@@ -572,7 +679,17 @@ class Service:
         if c['uid'] not in self.allowed:
             return
         # Recheck current Telegram permissions, then atomically consume draft.
-        await self.load_connection(c['connection'])
+        try:
+            await self.load_connection(c['connection'])
+        except Exception as exc:
+            status=getattr(exc,'status',None)
+            detail=(' HTTP='+str(status)+'.') if type(status) is int and 100<=status<=599 else ''
+            cause=('Время ожидания истекло.' if isinstance(exc,asyncio.TimeoutError) else
+                   'Telegram не подтвердил доступность подключения; точная первопричина не получена.')
+            await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}. '
+                'Этап: проверка прав Telegram Business перед отправкой. '+cause+detail+
+                ' Этим нажатием отправка клиенту не начиналась. Состояние черновика можно проверить через /pending.')
+            return
         reserved=self.store.reserve_send(did,time.time())
         if not reserved:
             reason=self.store.send_block_reason(did,time.time())
@@ -813,6 +930,8 @@ class Service:
                         if not self.store.still_current(job):return None
                         if not review.get('supported'):
                             raise ValueError('Answer content unsupported')
+                        target_labels={t['target_id']:t['service']+(' '+t['plan'] if t.get('plan') else '')
+                                       for t in final['feature_claims'].get('targets',[])}
                         final=review.get('revised_answer',final)
                         atomic_diagnostics=final.get('evidence',{}).get('atomic_diagnostics',[])
                         checked=attach_evidence(dict(final),evidence,allow_catalog_only=True,semantic_review=True)
@@ -820,6 +939,9 @@ class Service:
                         checked['evidence']['atomic_diagnostics']=atomic_diagnostics
                         if final.get('handoff'):
                             checked['evidence']['status']='insufficient'
+                            missing=[target_labels[tid] for tid in review.get('missing_targets',[]) if tid in target_labels]
+                            checked['evidence']['handoff_reason']=('Не подтверждены все запрошенные функции: '+', '.join(missing)+'.'
+                                if missing else 'Проверка оставила неполные публичные сведения; конкретные причины указаны в проверке утверждений.')
                         return with_public_trace(checked,evidence)
                     if retail_block:
                         composed,reason=compose(final,retail_block)
@@ -964,7 +1086,9 @@ class Service:
                 for update in updates:
                     # Advance only after local persistence/handling. Message dedup and
                     # send reservation protect against replay after a crash here.
-                    await self.ingest(update)
+                    token=_POLL_INGEST.set(True)
+                    try:await self.ingest(update)
+                    finally:_POLL_INGEST.reset(token)
                     self.store.put('offset',update['update_id']+1)
             except Exception as exc:
                 logging.warning('Polling failed: %s',type(exc).__name__)
@@ -1012,7 +1136,10 @@ async def main():
             raise ValueError('Railway requires a volume; SUPPORT_STATE_PATH must be inside it')
     path.parent.mkdir(parents=True,exist_ok=True)
     lock=process_lock(path)
-    store=Store(str(path));store.recover()
+    store=Store(str(path))
+    interrupted=store.db.execute("SELECT count(*) FROM messages WHERE state='working'").fetchone()[0]
+    interrupted_sends=store.db.execute("SELECT count(*) FROM drafts WHERE state IN ('sending','uncertain')").fetchone()[0]
+    store.recover()
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=75)) as session:
             tg=Telegram(session,os.environ['SUPPORT_BOT_TOKEN'])
@@ -1030,7 +1157,9 @@ async def main():
             service=Service(store,tg,ai,shop,owner,allowed,limit);service.bot_id=me['id']
             service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
-            await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. Автоответов нет.')
+            await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. Автоответов нет.'+
+                ('\nПрерванных подготовок ответа: '+str(interrupted)+'. Автоматически не повторяются; проверьте /chats.' if interrupted else '')+
+                ('\nНеопределённых отправок: '+str(interrupted_sends)+'. Соответствующие чаты на паузе; сначала проверьте личку и /pending.' if interrupted_sends else ''))
             from .probe_api import start_server,startup_diagnostic
             probe_server=None
             try:
@@ -1045,6 +1174,9 @@ async def main():
             finally:
                 if probe_server:await probe_server.cleanup()
                 tasks=list(service.approval_tasks.values())
+                tasks.extend(item['task'] for item in service.admin_tasks.values())
+                tasks.extend(service.callback_tasks.values())
+                tasks.extend(service.admin_retiring)
                 probe=getattr(service,'research_probe_task',None)
                 if probe and not probe.done():tasks.append(probe)
                 for task in tasks:

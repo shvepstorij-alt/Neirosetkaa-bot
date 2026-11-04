@@ -283,6 +283,17 @@ def failure_details(exc,stage):
                    'total_reply_length':'превышена общая длина ответа'}.get(feature_detail.get('condition'))
         if condition:details+=' Нарушенное условие: '+condition+'.'
     status=getattr(exc,'status',None)
+    validation_detail=getattr(exc,'validation_detail',None)
+    if getattr(exc,'reason',None)=='draft_privacy_filter' and isinstance(validation_detail,dict):
+        field=validation_detail.get('field')
+        if field in ('reply','summary'):details+=' Поле='+field+'.'
+        labels={'url':'вставлена ссылка в свободный текст','email':'email',
+                'credential_line':'строка с данными доступа','access_secret':'признак секрета доступа',
+                'payment_number':'длинный числовой идентификатор','voucher_code':'признак кода активации'}
+        found=validation_detail.get('categories',[])
+        if isinstance(found,list):
+            safe=[labels[x] for x in found if isinstance(x,str) and x in labels]
+            if safe:details+=' Условие фильтра: '+', '.join(safe)+'. Значения скрыты.'
     if type(status) is int and 100<=status<=599:
         details+=f' HTTP {status}.'
     # These attributes are already allowlisted by api_error; recheck at the boundary.

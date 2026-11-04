@@ -454,7 +454,11 @@ latest_message — последнее отдельное сообщение. Е�
                 if scrub(value[key])!=value[key]:
                     raise ValueError()
         except (ValueError,TypeError):
-            raise RemoteError('Draft validation failed; manual review required',reason=validation) from None
+            error=RemoteError('Draft validation failed; manual review required',reason=validation)
+            if validation=='draft_privacy_filter':
+                from .privacy import redaction_categories
+                error.validation_detail={'field':key,'categories':redaction_categories(value[key])}
+            raise error from None
         return value
 
     async def feature_draft(self,facts):

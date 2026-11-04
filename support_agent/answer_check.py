@@ -42,7 +42,9 @@ def _code_credential_issue(text, facts):
     from .workflow_policy import policies_for
     rows = [r for r in facts.get('requested_catalog', []) if isinstance(r, dict)]
     code_rows = [r for r in rows if r.get('fulfillment') == 'code_activation_conditional']
-    if not code_rows:return ''
+    owner_fields={id(r):policies_for({'requested_catalog':[r]}) for r in rows}
+    guarded=[r for r in rows if r in code_rows or owner_fields[id(r)]]
+    if not guarded:return ''
     policies = policies_for(facts)
     active = rows
     requirements = re.compile(
@@ -55,7 +57,7 @@ def _code_credential_issue(text, facts):
                    families & _families(_words(str(r.get('service', ''))+' '+str(r.get('service_key', ''))))
                    or any(_contains(_words(clause), _words(r.get(k, ''))) for k in ('service', 'service_key') if r.get(k))]
         if matched:active = matched
-        targets = [r for r in active if r.get('fulfillment') == 'code_activation_conditional']
+        targets = [r for r in active if r in guarded]
         if not targets or clause.rstrip().endswith('?'):continue
         if re.search(r'не\s+(?:могу|можем)\s+(?:подтвердить|уточнить)|нужно\s+проверить[^.!?]{0,35}(?:данные|поля)', clause, re.I):
             continue
@@ -77,6 +79,11 @@ def _code_credential_issue(text, facts):
             requested_fields.add(field)
         for row in targets:
             permitted = set(row.get('required_fields', [])) if row.get('required_fields_status') == 'available' else set()
+            confirmed=owner_fields[id(row)]
+            if confirmed:
+                permitted=set().union(*(set(p['required_fields']) for p in confirmed))
+                for policy in confirmed:
+                    for alternative in policy.get('field_alternatives',[]):permitted.update(alternative)
             family = _families(_words(str(row.get('service', ''))+' '+str(row.get('service_key', ''))))
             for policy in policies:
                 if (policy.get('source') == 'owner_confirmed'
@@ -85,6 +92,11 @@ def _code_credential_issue(text, facts):
             missing = requested_fields - permitted
             if missing:
                 labels = ','.join(sorted(missing))
+                if confirmed:
+                    return ('Этап: подтверждение полей оформления. Причина: ответ требует данные, '
+                            'не предусмотренные подтверждённым правилом владельца. Сервис='+str(row.get('service',''))
+                            +'; неподтверждённые поля='+labels+'; допустимые поля='+','.join(sorted(permitted))
+                            +'; источник=owner_confirmed. Поля другого сервиса не переносятся на этот товар.')
                 return ('Этап: подтверждение полей кодовой активации. Причина: ответ требует данные аккаунта, '
                         'не подтверждённые для выбранной кодовой ветки. fulfillment=code_activation_conditional; '
                         'неподтверждённые поля='+labels+'. Наличие платного тарифа не подтверждает требование почты или пароля.')
