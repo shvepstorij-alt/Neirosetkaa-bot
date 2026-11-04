@@ -149,8 +149,10 @@ def _contextual_followup(text,catalog):
     """Short workflow/plan references may inherit client context, never account state."""
     from .catalog_context import _words,_contains
     tokens=_words(text)
-    if not tokens or len(tokens)>24:return False
+    if not tokens or len(tokens)>60:return False
     if any(_contains(tokens,name) for name in _service_names(catalog)):return False
+    if _workflow_help_followup(text):return True
+    if len(tokens)>24:return False
     allowed=set('а и это этот эта его ее её мне от меня вам вас у нужно нужны нужен потребуется требуется какие данные что как куда когда сколько времени ждать долго занимает оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено после передать прислать отправить почта почту пароль аккаунт аккаунта вход активация активации активировать подписка подписку подписки тариф тарифа тарифы выбрать выбирать месяц месяца месяцев год года годовой месячный можно ли будет для на по с со без уже не прошло работает спасибо пожалуйста подскажите тогда хочу да нет двух этих сервисов обоих обоим них получить скопировать найти ссылка ссылку ссылки платежную платёжную страницу страницы'.split())
     allowed.update('ссылке почте паролю данным давайте давай выбираю выберу вариант способом через удобнее наверное бота бот ботом его него продолжить продолжать расскажите подробнее поподробнее пожалуйста попробовать остановимся остановлюсь плюс plus какой какую какой-то посоветуете порекомендуете подойдет подойдёт лучше выбрать определиться помогите'.split())
     for row in catalog:
@@ -159,6 +161,37 @@ def _contextual_followup(text,catalog):
     intent.update(('ссылке','почте','паролю','данным'))
     plans={word for row in catalog for word in _words(row.get('plan',''))}
     return bool(set(tokens)&(intent|plans)) and all(t in allowed or t.isdigit() for t in tokens)
+
+
+def _workflow_help_followup(text):
+    """Bounded help with the active procedure, not a new product selection.
+
+    It only marks a possible continuation. Existing client evidence and the
+    normal expiry rules still decide whether any service can be inherited.
+    """
+    value=str(text)
+    if re.search(r'\b(?:теперь|кстати|вместо|другой\s+сервис|новый\s+сервис|другая\s+тема|отменяю|забудь)\b',value,re.I):return False
+    if re.search(r'генерир|генерац|создавать|монтаж|снимать\s+видео|делать\s+(?:фото|видео)',value,re.I):return False
+    # A new Cyrillic login target is still a product name, not an implicit UI
+    # continuation ("как войти в Авито"). Ordinary account/browser nouns may
+    # refer to the active procedure; an unrecognized target must stay fresh.
+    target=re.search(r'\bвойти\s+(?:в|на)\s+([а-яёa-z][а-яёa-z0-9_-]*)',value,re.I)
+    generic_targets={'свой','свою','мой','мою','аккаунт','браузер','профиль','систему',
+                     'приложение','личный','кабинет','учетную','учётную','сайт','него','неё','нее'}
+    if target and target[1].casefold() not in generic_targets:return False
+    # Brand-like Latin tokens must not silently rebind an unfamiliar service to
+    # the previous one. Common browser/technical UI words are not new products.
+    technical={'chrome','safari','firefox','edge','google','json','api','auth',
+               'session','login','account','id','organization','org','http','https',
+               'url','email','browser','cookies','cookie','copy','paste'}
+    if any(word.casefold() not in technical for word in re.findall(r'[A-Za-z][A-Za-z0-9_-]*',value)):
+        return False
+    anchor=re.search(r'авториз|авторизац|войти|вход|сесси|токен|'
+                     r'активир|активац|кнопк|браузер|скопир|встав|пункт|шаг|'
+                     r'organization\s+id|\borg\s+id\b',value,re.I)
+    request=re.search(r'\b(?:как|что|где|почему|какой|какая|какие|объясни[а-яё]*|'
+                      r'подскаж[а-яё]*|помог[а-яё]*|не\s+(?:могу|получается|открывается|понимаю|вижу|видно|работает))\b',value,re.I)
+    return bool(anchor and request)
 
 
 def _same_service_reference(text, previous, catalog):

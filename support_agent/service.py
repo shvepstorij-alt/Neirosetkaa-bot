@@ -761,6 +761,8 @@ class Service:
                     'summary':'После расшифровки обращение превышает объём контекста. Проверьте весь диалог вручную; частичный ответ не подготовлен.',
                     'handoff':True}
         facts=await self.shop.facts(job['uid'])
+        from .offer_terms import enrich as confirmed_offer_terms
+        facts=confirmed_offer_terms(facts)
         if not self.store.still_current(job):return None
         facts=dict(facts,context_scope='История содержит только последние 60 сообщений в пределах 24000 символов; более ранние договорённости могут отсутствовать. Не придумывай их.')
         if not self.store.still_current(job):

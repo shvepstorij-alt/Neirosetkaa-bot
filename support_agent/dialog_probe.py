@@ -228,6 +228,10 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None, su
                  'Daily API request limit reached')
         reason = str(exc) if str(exc) in known else ('превышено время этапа 180 секунд' if isinstance(exc, TimeoutError)
                  else 'первопричина не установлена; произвольный текст исключения скрыт')
+        from .clients import RemoteError
+        if isinstance(exc,RemoteError):
+            from .research import failure_details
+            reason=failure_details(exc,'draft')
         await send(f'Прогон остановлен. Этап: {stage}; причина: {reason}; '
                                     f'тип: {type(exc).__name__}; учтённых этапов API: {calls}/{max_calls}. '
                                     'Полный прогон не завершён. Первопричину смотрите в диагностике приложения.')

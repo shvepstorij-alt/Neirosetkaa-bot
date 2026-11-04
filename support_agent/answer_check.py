@@ -9,7 +9,7 @@ from .service_discovery import public_host
 CATALOG_FIELDS = (
     'service', 'plan', 'base_price_rub', 'catalog_price_rub',
     'customer_price_rub', 'price_rub', 'price_scope', 'price_status',
-    'currency', 'billing_period', 'duration', 'fulfillment', 'stock',
+    'currency', 'billing_period', 'duration', 'duration_source', 'fulfillment', 'stock',
     'customer_price_confirmed', 'fulfillment_source',
     'description', 'service_description',
     'required_fields', 'required_fields_status', 'required_fields_source',
