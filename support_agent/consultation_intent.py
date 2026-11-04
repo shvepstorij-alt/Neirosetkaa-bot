@@ -12,7 +12,7 @@ _VISUAL_ANALYSIS = re.compile(
     r'(?:фото|снимок)[^.!?\n]{0,90}(?:приборн|что[^.!?\n]{0,15}горит|распозна|расшифр)|'
     r'(?:приборн[а-яё]*\s+панел|знач[ое]к[^.!?\n]{0,25}горит)', re.I)
 _MEDIA = re.compile(r'фото|изображени|картинк|видео|ролик|анимац', re.I)
-_CREATE = re.compile(r'генерац|генерир|созда[вт]|сделать|делать|ожив|анимир|редакт|монтаж|обработ|хочу|нуж[а-яё]*', re.I)
+_CREATE = re.compile(r'генерац|генерир|созда[вт]|сделать|делать|ожив|анимир|редакт|монтаж|обработ', re.I)
 _DISCOVERY = re.compile(r'сервис|нейросет|инструмент|помог[^.!?\n]{0,30}выбрать|'
                         r'подскаж|посовет|подойд[её]т|порекоменду', re.I)
 
@@ -21,7 +21,10 @@ def context(text, facts=None):
     text = str(text or '')
     if re.search(r'закуп|поставщик|себестоим|18\s*\+|порно|эротическ', text, re.I):
         return {'active': False}
-    if _VISUAL_ANALYSIS.search(text):
+    creative_action=any(_MEDIA.search(clause) and _CREATE.search(clause)
+                        for clause in re.split(r'[.!?;\n]|\s+и\s+',text,flags=re.I))
+    upload_analysis=bool(re.search(r'(?:загру[жз]|прикреп|отправ|показ)[^.!?\n]{0,40}(?:фото|изображени|снимк)',text,re.I))
+    if _VISUAL_ANALYSIS.search(text) or upload_analysis and not creative_action:
         return {
             'active': True, 'kind': 'visual_understanding',
             'task_text': text[-1800:],
@@ -30,7 +33,8 @@ def context(text, facts=None):
                 'Учитывать уже названные задачи и выбранный сервис. Проверить актуальную возможность загрузки и анализа фото и лимиты подходящего тарифа по официальным сведениям; рублёвые цены брать только из магазина.',
                 'По автомобильному индикатору не обещать точную диагностику неисправности или безопасность движения. Можно объяснить символ по фото и рекомендовать свериться с руководством автомобиля; при необходимости уточнить марку/модель.'
             ]}
-    if not (_MEDIA.search(text) and (_CREATE.search(text) or _DISCOVERY.search(text))):
+    production_want=bool(re.search(r'(?:хочу|нуж[а-яё]*)[^.!?\n]{0,45}(?:фото|изображени|видео|ролик|анимац)',text,re.I)) and not upload_analysis
+    if not (_MEDIA.search(text) and (creative_action or _DISCOVERY.search(text) or production_want)):
         return {'active': False}
     # Explicit creative production is meaningful even when no product is named.
     # This includes the continuation "нужно делать короткие 15-30 секундные видео".

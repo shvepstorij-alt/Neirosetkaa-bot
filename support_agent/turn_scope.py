@@ -8,6 +8,15 @@ def scope(facts, resolved, current, discovered=False):
     from .consultation_intent import context
     from .request_context import is_reminder
     rows=facts.get('requested_catalog',[])
+    # Latest explicit exclusions/exclusive selection override earlier clauses
+    # within the same collected batch, across every catalogue brand.
+    if re.search(r'\bне\s+(?:нуж|буду|оформ)|\b(?:пока|хочу|нужен|нужна|нужно|теперь)\s+только',current,re.I):
+        from .session_context import _active
+        active,_=_active([{'mid':1,'text':current}],facts.get('catalog',[]))
+        ids={entry['identity'] for entry in active}
+        if ids:
+            rows=[r for r in rows if set(service_mentions(r.get('service',''),facts.get('catalog',[])))&ids]
+            facts=dict(facts,requested_catalog=rows)
     creative=context(current,facts).get('kind')=='creative_generation'
     explicit=service_mentions(current,facts.get('catalog',[]))
     if creative and not explicit and not discovered:
@@ -35,6 +44,13 @@ def scope(facts, resolved, current, discovered=False):
     apple='appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[])
     if apple or is_reminder(current):return facts,resolved
     query=(', '.join(labels)+'\n' if labels else '')+current
+    from .selection_help import is_selection_request,has_selection_purpose
+    # A short request for another recommendation still refers to the client's
+    # supplied task. Pass only task-bearing client lines, not old prices/actions.
+    if is_selection_request(current,facts) and not has_selection_purpose(current):
+        task_lines=[line for line in resolved.splitlines() if has_selection_purpose(line)
+                    and not re.search(r'как[^.!?\n]{0,30}(?:оплат|оформ)|\b(?:стоимость|цена|тарифы)\b',line,re.I)]
+        if task_lines:query+='\n'+'\n'.join(task_lines[-3:])
     # Selected plan identity lives in structured rows, not an extra invented
     # sentence which a shortcut might mistake for another client question.
     from .workflow_policy import route_choice

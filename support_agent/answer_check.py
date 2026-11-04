@@ -308,6 +308,14 @@ def review_input(answer,facts):
         result['owner_course_bonus_policy']=dict(POLICY)
         result['owner_course_bonus_policy']['email_already_provided']=facts['course_bonus'].get('email_already_provided') is True
     result['owner_refund_policy']={'decision_by':'owner','automatic_refund':False,'screenshot_is_not_approval':True}
+    from .claude_policy import claude_policy_facts
+    from .referral_guide import referral_facts
+    from .external_quote import POLICY
+    result['owner_claude_policy']=claude_policy_facts()
+    result['referral_policy']={k:v for k,v in referral_facts(facts).items() if k!='owner_diagnostic'}
+    result['external_quote_policy']=dict(POLICY)
+    result['case_fields']={k: facts.get('case_fields',{}).get(k) is True
+                           for k in ('payment_reference_supplied','payment_provider_supplied')}
     if facts.get('feature_only') is True:
         # The code audits the COMPLETE reply before reaching review_input.
         # Only an exact code-rendered price prefix may be excluded from the
@@ -348,7 +356,16 @@ async def check_answer(ai,answer,facts,images=None):
     """
     # Universal delivery guarantees must be checked before any specialized
     # reviewer can return early (including atomic public-feature review).
-    activation_issue=activation_promise_issue(answer.get('reply',''))
+    text=answer.get('reply','')
+    from .claude_policy import public_region_issue
+    region_issue=public_region_issue(text,facts)
+    if region_issue:return {'supported':False,'reason':region_issue}
+    fields=facts.get('case_fields',{})
+    if fields.get('payment_reference_supplied') and re.search(r'(?:пришлите|укажите|сообщите|отправьте)[^.!?\n]{0,80}номер\s+(?:заказа|платежа)',text,re.I):
+        return {'supported':False,'reason':'Этап: полнота обращения. Номер заказа/платежа уже указан в текущем пакете клиента; повторный запрос отклонён. Наличие номера не подтверждает оплату или возврат.'}
+    if fields.get('payment_provider_supplied') and re.search(r'(?:уточните|сообщите|укажите)[^.!?\n]{0,60}способ\s+оплат',text,re.I):
+        return {'supported':False,'reason':'Этап: полнота обращения. Платёжный сервис уже назван в текущем пакете; повторное уточнение способа оплаты отклонено.'}
+    activation_issue=activation_promise_issue(text)
     if activation_issue:
         methods={r.get('fulfillment') for r in facts.get('requested_catalog',[]) if isinstance(r,dict)}
         allowed={'manual','checkout_link','account_details','code_activation_conditional'}

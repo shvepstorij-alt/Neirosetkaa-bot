@@ -260,6 +260,10 @@ class Service:
             media={'kind':'unsupported'}
         if secret:
             media={'kind':'sensitive'}
+        if not secret:
+            from .external_quote import public_sites
+            sites=public_sites(raw)
+            if sites:media['public_service_sites']=sites
         # Keep only a local message reference, never Telegram's quoted text or
         # credentials. Context resolution validates the same-chat stored row.
         reply_mid=m.get('reply_to_message',{}).get('message_id')
@@ -741,6 +745,13 @@ class Service:
     async def generate(self,job):
         from .storage import HISTORY_MESSAGES,HISTORY_CHARACTERS
         batch_first=self.store.chat(job['chat'])['batch_first']
+        from .topic_boundary import boundary_reply
+        incoming=self.store.db.execute('SELECT text FROM messages WHERE chat=? AND role=\'client\' AND mid>=? AND mid<=? ORDER BY mid',
+                                       (job['chat'],batch_first,job['mid'])).fetchall()
+        previous=self.store.db.execute('SELECT text FROM messages WHERE chat=? AND role=\'client\' AND mid<? ORDER BY mid DESC LIMIT 1',
+                                       (job['chat'],batch_first)).fetchone()
+        blocked=boundary_reply('\n'.join(r['text'] or '' for r in incoming),previous['text'] if previous else '')
+        if blocked:return blocked
         turn=self.store.db.execute('''SELECT count(*),COALESCE(sum(length(text)),0) FROM messages
             WHERE chat=? AND role='client' AND mid>=? AND mid<=?''',
             (job['chat'],batch_first,job['mid'])).fetchone()
@@ -763,6 +774,10 @@ class Service:
         facts=await self.shop.facts(job['uid'])
         from .offer_terms import enrich as confirmed_offer_terms
         facts=confirmed_offer_terms(facts)
+        from .referral_guide import referral_facts
+        from .claude_policy import claude_policy_facts
+        from .external_quote import POLICY
+        facts=dict(facts,referral_policy=referral_facts(facts),owner_claude_policy=claude_policy_facts(),external_quote_policy=POLICY)
         if not self.store.still_current(job):return None
         facts=dict(facts,context_scope='История содержит только последние 60 сообщений в пределах 24000 символов; более ранние договорённости могут отсутствовать. Не придумывай их.')
         if not self.store.still_current(job):
@@ -787,6 +802,33 @@ class Service:
         from .catalog_context import annotate
         facts=annotate(facts,latest)
         raw_batch='\n'.join(row['text'] or '' for row in batch)
+        facts=dict(facts,case_fields={
+            'payment_reference_supplied':bool(re.search(r'(?:номер\s+(?:заказа|платежа)|intid|заказ\s*№)\s*[:#№]?\s*\d{3,12}(?!\d)',raw_batch,re.I)),
+            'payment_provider_supplied':bool(re.search(r'free\s*kassa|фр[ие]кас[с]?а',raw_batch,re.I))})
+        site_rows=self.store.db.execute('SELECT media FROM messages WHERE chat=? AND role=\'client\' AND mid>=? AND mid<=? ORDER BY mid',
+                                        (job['chat'],batch_first,job['mid'])).fetchall()
+        sites=[]
+        for row in site_rows:
+            try:media=json.loads(row['media'] or '{}')
+            except (ValueError,TypeError):continue
+            sites.extend(media.get('public_service_sites',[]))
+        facts=dict(facts,public_service_sites=list(dict.fromkeys(sites))[:2])
+        if len(facts['public_service_sites'])==1 and re.fullmatch(r'\s*\[ссылка скрыта\]\s*',raw_batch):
+            # A homepage sent after our clarification is a new identity hint,
+            # not an instruction to reuse the last unrelated purchased service.
+            from .service_discovery import public_name
+            brand=facts['public_service_sites'][0].split('.')[0].replace('-',' ')
+            if public_name(brand):
+                latest='Как оформить '+brand+'? Какие тарифы и стоимость?'
+                facts=annotate(facts,latest)
+                raw_batch=latest
+        from .referral_guide import referral_reply
+        from .claude_policy import claude_risk_reply
+        known_reply=referral_reply(facts,raw_batch) or claude_risk_reply(facts,raw_batch)
+        if known_reply and not image:return known_reply
+        from .external_quote import intake_reply
+        external_intake=intake_reply(facts,raw_batch)
+        if external_intake and not image:return external_intake
         from .consultation_intent import context as consultation_context
         consultation=consultation_context(latest,facts)
         from .selection_help import is_selection_request,has_selection_purpose
@@ -873,11 +915,28 @@ class Service:
             from .recommendation_flow import run as recommend_for_task
             recommendation=await recommend_for_task(self,facts,latest,raw_batch,job)
             if recommendation is not None:return recommendation
+        if facts.get('public_service_sites') and not image and not course and not facts.get('requested_catalog'):
+            from .external_quote import run as quote_external
+            external=await quote_external(self,facts,latest,{'products':[]},job)
+            if external is not None:return external
         self.charge_call()
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
             return None
         plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}),facts)
+        if not image and not course:
+            from .external_quote import run as quote_external
+            if not facts.get('public_service_sites') and len(plan.get('products',[]))==1:
+                brand=re.sub(r'[^a-z0-9]','',plan['products'][0].casefold())
+                for previous in self.store.db.execute('SELECT media FROM messages WHERE chat=? AND role=\'client\' AND mid<? ORDER BY mid DESC LIMIT 6',
+                                                     (job['chat'],batch_first)).fetchall():
+                    try:oldsites=json.loads(previous['media'] or '{}').get('public_service_sites',[])
+                    except (ValueError,TypeError):continue
+                    matching=[s for s in oldsites if brand and brand in re.sub(r'[^a-z0-9]','',s.split('.')[0])]
+                    if matching:
+                        facts=dict(facts,public_service_sites=matching[:1]);break
+            external=await quote_external(self,facts,latest,plan,job)
+            if external is not None:return external
         if course and course['comparison_requested']:plan={'topic':'comparison','products':['chatgpt','claude']}
         facts=annotate(facts,latest,plan['products'])
         facts,_=scope_turn(facts,resolved_context,raw_batch,discovered=True)
