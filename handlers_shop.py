@@ -71,7 +71,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, CREDIT_PACKS, IMAGE_MODELS, PERSONAL_USERNAME, SHOP_CATALOG, SHOP_CATEGORIES,
-    VIDEO_MODELS, _rand_sfx, _ref_bonus_for_count, bot, dp, fk_pay_url, pending_fk_payments,
+    VIDEO_MODELS, REF_WELCOME_CREDITS, COINS_REF_PERCENT, _rand_sfx, _ref_bonus_for_count, bot, dp, fk_pay_url, pending_fk_payments,
     tg_name,
 )
 from states import (
@@ -1546,9 +1546,10 @@ async def menu_ref(cb: CallbackQuery):
         f"👑 50+ друзей · +350 кр\n\n"
         f"❓ <b>Как работает:</b>\n"
         f"1\u20e3 Поделись своей ссылкой\n"
-        f"2\u20e3 Друг регистрируется и получает +200 кр\n"
+        f"2\u20e3 Друг регистрируется и получает +{REF_WELCOME_CREDITS} кр\n"
         f"3\u20e3 Друг делает первую покупку → тебе кредиты по уровню\n"
-        f"    <b>+ кешбэк 10% монетками</b> 🪙 с его покупки\n"
+        f"    <b>+ кешбэк {COINS_REF_PERCENT * 100:g}% монетками</b> 🪙 с первой покупки\n"
+        f"<i>Бонусные кредиты действуют 30 дней. Начисление за первую покупку разовое.</i>\n"
         f"<i>Монетки можно тратить на любые покупки в боте</i>\n\n"
         f"\U0001f4ca <b>Твоя статистика:</b>\n"
         f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"

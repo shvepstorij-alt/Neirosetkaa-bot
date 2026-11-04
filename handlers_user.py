@@ -24,7 +24,7 @@ from config import (
     brand_min_credits,
     ADMIN_ID, ADMIN_USERNAME, CHANNEL_ID, FREE_CREDITS, PERSONAL_USERNAME, REF_BONUS, REF_WELCOME_CREDITS,
     SHOP_CATALOG, WELCOME_BACK, WELCOME_NEW, bot, dp, is_admin,
-    strip_surrogates, tg_name,
+    strip_surrogates, tg_name, COINS_REF_PERCENT, _ref_bonus_for_count,
 )
 from db import (
     add_credits_batch, ensure_user, fk_get_order, get_coins, get_credits, get_gen_count,
@@ -432,18 +432,21 @@ async def cmd_ref(message: Message):
     me = await bot.get_me()
     ref_link = f"https://t.me/{me.username}?start=ref_{uid}"
     user_coins = await get_coins(uid)
-    earned = paid_refs * REF_BONUS
+    next_bonus = _ref_bonus_for_count(paid_refs)
     await message.answer(
         f"\U0001f91d <b>Пригласить друга</b>\n\n"
-        f"<b>+{REF_BONUS} кредитов тебе за друга и +{REF_WELCOME_CREDITS} — ему сразу!</b>\n\n"
+        f"<b>За следующего оплатившего друга тебе +{next_bonus} кредитов, другу при регистрации +{REF_WELCOME_CREDITS}!</b>\n\n"
         f"❓ <b>Как работает:</b>\n"
         f"1\u20e3 Поделись своей ссылкой\n"
         f"2\u20e3 Друг регистрируется \u2192 он получает <b>+{REF_WELCOME_CREDITS} кредитов</b>\n"
-        f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>+{REF_BONUS} кредитов</b>\n\n"
+        f"3\u20e3 Друг делает первую покупку \u2192 ты получаешь <b>кредиты по уровню</b> и <b>{COINS_REF_PERCENT * 100:g}% монетками</b> с этой покупки\n\n"
+        f"Размер кредитного бонуса растёт с уровнем: от {_ref_bonus_for_count(0)} до {_ref_bonus_for_count(50)} кредитов.\n"
+        f"Бонусные кредиты действуют 30 дней. Монетки можно тратить на покупки в боте.\n"
+        f"Бонус за первую покупку разовый, а не с каждой оплаты друга.\n\n"
         f"\U0001f4ca <b>Статистика:</b>\n"
         f"\U0001f465 Приглашено: <b>{total_refs}</b>\n"
         f"\U0001f4b0 Купили: <b>{paid_refs}</b>\n"
-        f"\U0001f381 Заработано: <b>{earned} кредитов</b>\n\n"
+        f"🪙 Монеток на балансе: <b>{user_coins:.0f}₽</b>\n\n"
         f"\U0001f517 <b>Твоя ссылка:</b>\n"
         f"<code>{ref_link}</code>",
         parse_mode="HTML"
