@@ -376,6 +376,16 @@ async def check_answer(ai,answer,facts,images=None):
         feature_units={str(i+1):text for i,text in enumerate(units)}
         if not feature_units or len(feature_units)>30:raise ValueError('Feature review units invalid')
         data['review_units']=feature_units
+        # Stable references avoid requiring the reviewer to reproduce long
+        # Markdown passages verbatim. The code owns every reference and its
+        # text; selecting one is still only a model judgment of entailment.
+        digest=data['public_evidence']['digest']
+        excerpts=[]
+        for paragraph in re.split(r'\n\s*\n',digest):
+            if not paragraph.strip():continue
+            for offset in range(0,len(paragraph),1200):
+                excerpts.append(paragraph[offset:offset+1200])
+        data['evidence_excerpts']={'E'+str(i+1):text for i,text in enumerate(excerpts)}
     request_input=json.dumps(data,ensure_ascii=False,allow_nan=False)
     if images:
         import base64
@@ -428,10 +438,12 @@ async def check_answer(ai,answer,facts,images=None):
                 'another answer. Return exactly one claims finding for EACH code-assigned review_units '
                 'unit_id; no omissions or duplicates. Judge ALL assertions in that entire unit, '
                 'preserving each service and plan. For each, set status supported, unsupported or uncertain '
-                'and give evidence: for supported, copy ONE exact continuous supporting excerpt '
-                'from public_evidence.digest (whitespace differences allowed), including necessary '
-                'plan/platform and billing qualifiers. The excerpt must support ALL assertions '
-                'in the unit, not just one convenient fragment. If no such excerpt exists, use '
+                'and give evidence: for supported, return ONLY the code-assigned evidence_excerpts '
+                'IDs, such as E3 or E3,E4 (at most eight distinct IDs). Do not copy, translate or '
+                'paraphrase a quotation into this field. Read the referenced text together with '
+                'the full digest, including necessary plan/platform and billing qualifiers. '
+                'The referenced excerpts must jointly support ALL assertions '
+                'in the unit, not just one convenient fragment. If no such evidence exists, use '
                 'uncertain or unsupported with a concise Russian explanation. Preserve distinctions '
                 'between web-only and mobile features, included credits and separately billed '
                 'features, and the actual plan. Never turn optional paid add-ons into included '
@@ -560,8 +572,15 @@ async def check_answer(ai,answer,facts,images=None):
                         raise FeatureReviewError('Этап: проверка блоков функций. Причина: объяснение отсутствует, превышает лимит или содержит скрываемые данные.')
                 if claim['status']!='supported':
                     failures.append('Блок '+claim['unit_id']+': '+claim['evidence'])
-                elif re.sub(r'\s+',' ',claim['evidence']).strip() not in normalized_digest:
-                    failures.append('Блок '+claim['unit_id']+': подтверждающий фрагмент не найден в полученной сводке источников; положительная оценка без такого фрагмента не принята.')
+                else:
+                    evidence=claim['evidence'].strip()
+                    if re.fullmatch(r'E\d+(?:\s*,\s*E\d+)*',evidence):
+                        refs=[s.strip() for s in evidence.split(',')]
+                        if (len(refs)>8 or len(refs)!=len(set(refs))
+                                or any(ref not in data['evidence_excerpts'] for ref in refs)):
+                            failures.append('Блок '+claim['unit_id']+': неизвестный, повторённый или избыточный ID подтверждающего фрагмента; проверка не принята.')
+                    elif re.sub(r'\s+',' ',evidence) not in normalized_digest:
+                        failures.append('Блок '+claim['unit_id']+': подтверждающий фрагмент не найден в полученной сводке источников; положительная оценка без такого фрагмента не принята.')
             if seen!=set(feature_units):
                 raise FeatureReviewError('Этап: проверка блоков функций. Причина: проверены не все блоки; ожидалось='+str(len(feature_units))+'; получено='+str(len(seen))+'.')
             for facet in value['missing_requested_facets']:
@@ -569,7 +588,7 @@ async def check_answer(ai,answer,facts,images=None):
                     raise FeatureReviewError('Этап: проверка блоков функций. Причина: неверный список нераскрытых пунктов запроса.')
                 failures.append('Не раскрыт запрошенный пункт: '+facet)
             return {'supported':not failures,'reason':'\n'.join(failures)[:1500] if failures else
-                    'Для всех '+str(len(value['claims']))+' блоков модель указала фрагменты полученной сводки; незакрытых запрошенных пунктов не отмечено. Это модельная проверка смысла, а не гарантия точности источника.'}
+                    'Для всех '+str(len(value['claims']))+' блоков модель указала существующие фрагменты полученной сводки; незакрытых запрошенных пунктов не отмечено. Это модельная проверка смысла, а не гарантия точности источника.'}
         if (not isinstance(value,dict) or set(value)!= {'supported','reason'}
                 or type(value['supported']) is not bool or not isinstance(value['reason'],str)
                 or not 0<len(value['reason'].strip())<=1500 or scrub(value['reason'])!=value['reason']):
