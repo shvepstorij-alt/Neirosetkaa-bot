@@ -515,6 +515,9 @@ class Service:
                                evidence['status'],'')
             if evidence['status'] in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
                 research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:1500])}\n\n'
+        atomic_diagnostics=evidence.get('atomic_diagnostics',[])
+        if atomic_diagnostics:
+            research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
               if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
@@ -790,12 +793,34 @@ class Service:
                 stage='final_draft'
                 self.charge_call()
                 final_facts=dict(facts,public_research=evidence)
-                if retail_block:final_facts['feature_only']=True
+                if retail_block:
+                    final_facts['feature_only']=True
+                    final_facts['feature_claims_v2']=True
                 if correction:final_facts['research_correction']=correction
+                atomic_reviewed=False
                 try:
                     final=await self.ai.draft(history,final_facts,image)
                     if not self.store.still_current(job):
                         return None
+                    if final_facts.get('feature_claims_v2') and 'feature_claims' in final:
+                        atomic_reviewed=True
+                        # Review atomic records before citation formatting.
+                        # A failed/uncited product must not bypass review, and
+                        # a rejected optional claim must not erase other facts.
+                        stage='answer_check'
+                        self.charge_call()
+                        review=await self.ai.check_answer(final,final_facts)
+                        if not self.store.still_current(job):return None
+                        if not review.get('supported'):
+                            raise ValueError('Answer content unsupported')
+                        final=review.get('revised_answer',final)
+                        atomic_diagnostics=final.get('evidence',{}).get('atomic_diagnostics',[])
+                        checked=attach_evidence(dict(final),evidence,allow_catalog_only=True,semantic_review=True)
+                        checked.setdefault('evidence',{})['content_review']={k:v for k,v in review.items() if k!='revised_answer'}
+                        checked['evidence']['atomic_diagnostics']=atomic_diagnostics
+                        if final.get('handoff'):
+                            checked['evidence']['status']='insufficient'
+                        return with_public_trace(checked,evidence)
                     if retail_block:
                         composed,reason=compose(final,retail_block)
                         if reason:
@@ -824,10 +849,10 @@ class Service:
                 except Exception as exc:
                     # Retry citation formatting only, not transport, privacy,
                     # unsupported facts, or arbitrary model failures.
-                    if attempt or not (isinstance(exc,CitationError) or
+                    if (atomic_reviewed or 'feature_claims' in (locals().get('final') or {}) or attempt or not (isinstance(exc,CitationError) or
                                        getattr(exc,'reason',None) in ('feature_length','feature_incomplete') or
                                        getattr(exc,'reason',None)=='draft_source_ids' or
-                                       str(exc)=='Answer content unsupported'):
+                                       str(exc)=='Answer content unsupported')):
                         raise
                     issue=(getattr(exc,'reason') if getattr(exc,'reason',None) in ('feature_length','feature_incomplete') else
                            'unsupported_content' if str(exc)=='Answer content unsupported'
@@ -840,6 +865,19 @@ class Service:
         except Exception as exc:
             if not self.store.still_current(job):
                 return None
+            if (locals().get('final_facts') or {}).get('feature_claims_v2'):
+                diagnostic=failure_details(exc,stage)
+                # A failed public-feature contract is not a purchase request.
+                # Keep exact retail facts without unrelated password/workflow
+                # fallback text; never release unchecked feature candidates.
+                result={'reply':retail_block+'\n\nПодробности возможностей этих тарифов сейчас подтвердить не получилось. Уточню их перед рекомендацией.',
+                        'summary':'Цены прочитаны из магазина. Проверка описаний возможностей не завершена; неподтверждённые функции не включены.',
+                        'handoff':True,'source_ids':[],
+                        'research':{'topic':'none','products':[]},
+                        'evidence':{'status':'catalog_review','diagnostic':diagnostic,
+                                    'sources':evidence.get('sources',[]),
+                                    'handoff_reason':'Нужна проверка описаний функций; цены не являются подтверждением функций.'}}
+                return with_public_trace(result,evidence)
             if image:
                 from .troubleshooting import visual_failure
                 diagnostic=review['reason'] if str(exc)=='Answer content unsupported' else failure_details(exc,stage)

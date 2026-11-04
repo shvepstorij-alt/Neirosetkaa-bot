@@ -301,6 +301,10 @@ async def check_answer(ai,answer,facts,images=None):
     history, personal orders or customer identifiers are passed here. Optional
     images are the bounded normalized photos already used by the draft model.
     """
+    if facts.get('feature_claims_v2') is True and 'feature_claims' in answer:
+        if images:raise FeatureReviewError('Этап: проверка утверждений. Вложения не поддерживаются в публичном сравнении.')
+        from .feature_claims import review_claims
+        return await review_claims(ai,answer,facts)
     from .catalog_context import false_absence
     reply=answer.get('reply','')
     scope_issue=evidence_scope_issue(answer,facts)

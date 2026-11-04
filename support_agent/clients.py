@@ -459,6 +459,9 @@ latest_message — последнее отдельное сообщение. Е�
 
     async def feature_draft(self,facts):
         """Separate request: no store prices, private workflow, navigation or history."""
+        if facts.get('feature_claims_v2') is True:
+            from .feature_claims import draft_claims
+            return await draft_claims(self,facts)
         evidence=facts.get('public_research',{})
         products=list(dict.fromkeys(evidence.get('requested_products') or evidence.get('products') or []))
         sources=evidence.get('sources',[])

@@ -199,6 +199,9 @@ async def lookup(ai,plan,charge_extra=None,_registry=None,question_facets=()):
 
 
 def failure_details(exc,stage):
+    from .feature_claims import FeatureClaimsError
+    if isinstance(exc,FeatureClaimsError):
+        return scrub(exc.diagnostic)[:1500]
     stages={'search':'поиск источников','final_draft':'подготовка ответа по источникам',
             'citations':'проверка ссылок ответа','draft':'подготовка черновика',
             'answer_check':'проверка фактов и цен ответа'}

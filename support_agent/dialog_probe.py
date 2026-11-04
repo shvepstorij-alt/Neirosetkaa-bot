@@ -63,8 +63,12 @@ def report_details(answer, facts, question):
         lines.append('Ссылки перечислены списком; привязка ко всем фразам не подтверждена.')
     review=evidence.get('content_review')
     if isinstance(review,dict):
-        lines.append('Проверка содержания: '+('пройдена моделью (не гарантия)' if review.get('supported') else 'отклонена'))
+        label=('собран частичный ответ из принятых утверждений; исходный ответ целиком не подтверждён'
+               if review.get('partial') else 'пройдена моделью (не гарантия)' if review.get('supported') else 'отклонена')
+        lines.append('Проверка содержания: '+label)
         lines.append(scrub(str(review.get('reason','Причина отсутствует'))))
+        for diagnostic in evidence.get('atomic_diagnostics',[]):
+            lines.append('Проверка утверждения: '+scrub(str(diagnostic)))
     else:
         lines.append('Результат проверки содержания моделью не сохранён или модельная проверка не выполнялась.')
     if evidence.get('handoff_reason'):

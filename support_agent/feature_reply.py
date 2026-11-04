@@ -95,29 +95,8 @@ def price_block(facts, question, topic=None):
 
 
 def compose(answer, block):
-    """Reject guessed amounts; omit disclosed, unrequested billing-only sentences."""
+    """Legacy block guard. Atomic mode filters whole reviewed records upstream."""
     text=answer.get('reply','')
-    # Qualitative provider savings are outside this feature-only projection.
-    # Remove a whole sentence, never a number/negation within a factual claim.
-    # Numeric prices/discounts, mixed feature claims and payment instructions
-    # still fail closed. Each paragraph must retain its feature assertions.
-    paragraphs=[];omitted=0
-    for paragraph in text.split('\n\n'):
-        kept=[];removed=0
-        for sentence in re.split(r'(?<=[.!?])\s+(?!\[\d)',paragraph):
-            plain=re.sub(r'\[\d{1,3}\]','',sentence).strip()
-            billing_only=bool(re.fullmatch(
-                r'Годов[а-яё]*\s+(?:планы|тарифы|подписки)(?:\s+(?:Pro|Business|Basic|Max|и))*\s+'
-                r'(?:(?:предлагают|дают|обеспечивают)\s+скидк[а-яё]*|'
-                r'снижают\s+(?:месячную\s+)?стоимость|позволяют\s+сэкономить)'
-                r'(?:,\s*функционал\s+аналогичен\s+месячным)?[.!?]',plain,re.I))
-            if billing_only:removed+=1
-            else:kept.append(sentence)
-        remaining=' '.join(kept).strip()
-        if removed and re.search(r'[.!?]',re.sub(r'\[\d{1,3}\]','',remaining)):
-            omitted+=removed;paragraphs.append(remaining)
-        else:paragraphs.append(paragraph)
-    text='\n\n'.join(paragraphs)
     if _has_money(text) or re.search(r'скидк|сниженн[а-яё]*\s+ставк|discount|снижают\s+(?:месячную\s+)?стоимость|позволяют\s+сэкономить',text,re.I):
         return None,'Этап: разделение функций и цены. Модель добавила денежные сведения в блок функций; цены вставляет код из catalog_price_rub.'
     # Billing cadence is a public plan property, not a customer instruction.
@@ -131,7 +110,4 @@ def compose(answer, block):
     reply=block+'\n\n'+text
     if len(reply)>1800:
         return None,'Этап: сборка ответа. Цены и описание превышают лимит 1800 символов; сократи описание функций, не удаляя сервисы.'
-    result=dict(answer,reply=reply)
-    if omitted:
-        result['summary']=str(answer.get('summary',''))+' Отдельные фразы об экономии при годовой оплате поставщика исключены из сравнения функций: '+str(omitted)+'. Рублёвые цены добавлены из каталога; оставшиеся функции требуют проверки.'
-    return result,''
+    return dict(answer,reply=reply),''
