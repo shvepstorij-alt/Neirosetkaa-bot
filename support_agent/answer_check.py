@@ -105,7 +105,7 @@ def _code_credential_issue(text, facts):
 
 def activation_promise_issue(text):
     """Reject promised delivery/time, not an explanation that no guarantee exists."""
-    for clause in re.split(r'(?<=[.!?])\s+|\n+', str(text or '')):
+    for clause in re.split(r'(?<=[.!?;])\s+|\n+|\s+но\s+', str(text or ''),flags=re.I):
         if clause.rstrip().endswith('?'):continue
         if re.search(r'не\s+(?:могу|можем|буду|будем)?\s*(?:гарантир|обеща)|'
                      r'не\s+гарантиру|нельзя\s+(?:гарантировать|обещать)|'
@@ -114,12 +114,17 @@ def activation_promise_issue(text):
             continue
         activation = bool(re.search(r'активир|активац|подписк[^.!?\n]{0,35}(?:появит|подтян|включ|начн[её]т|заработ)', clause, re.I))
         if not activation:continue
-        tentative=bool(re.search(r'может|возможно|иногда|ожидан|провер|не\s+всегда|не\s+обязательно',clause,re.I))
+        tentative=bool(re.search(r'может|возможно|иногда|ожидан|не\s+всегда|не\s+обязательно',clause,re.I))
         timing=bool(re.search(r'(?:через|за|в\s+течение)\s*\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*(?:минут|мин\b|секунд|час)',clause,re.I))
         automatic=bool(re.search(r'автоматическ|сама\b|достаточно\s+(?:только\s+)?оплат|просто\s+(?:дожд|оплат)',clause,re.I))
-        payment=bool(re.search(r'после\s+оплаты|как\s+только\s+оплат|оплат[^.!?\n]{0,25}(?:достаточно|автомат)|'
+        payment=bool(re.search(r'после\s+(?:подтверждения\s+)?оплаты|как\s+только\s+оплат|оплат[^.!?\n]{0,25}(?:достаточно|автомат)|'
                                r'просто\s+дожд[^.!?\n]{0,50}оплат',clause,re.I))
-        if not tentative and (timing or automatic and payment):
+        automatic_activation=bool(re.search(
+            r'активир[а-яё]*[^.!?\n]{0,70}автоматическ|'
+            r'автоматическ[а-яё]*[^.!?\n]{0,70}активир|'
+            r'активац[а-яё]*\s+(?:выполняется|происходит|пройд[её]т)[^.!?\n]{0,40}автомат|'
+            r'активац[а-яё]*\s+(?:будет\s+)?автоматическ(?:ая|ой|ую)\b',clause,re.I))
+        if not tentative and (timing or automatic and payment or automatic_activation):
             return ('Этап: проверка обещания активации. Причина: ответ гарантирует срок или автоматическое '
                     'получение подписки только по оплате. Оплата, кодовая ветка и скриншот не подтверждают '
                     'успех или срок. Действие: объяснить подтверждённые шаги конкретного заказа, без обещания результата.')
@@ -341,6 +346,14 @@ async def check_answer(ai,answer,facts,images=None):
     history, personal orders or customer identifiers are passed here. Optional
     images are the bounded normalized photos already used by the draft model.
     """
+    # Universal delivery guarantees must be checked before any specialized
+    # reviewer can return early (including atomic public-feature review).
+    activation_issue=activation_promise_issue(answer.get('reply',''))
+    if activation_issue:
+        methods={r.get('fulfillment') for r in facts.get('requested_catalog',[]) if isinstance(r,dict)}
+        allowed={'manual','checkout_link','account_details','code_activation_conditional'}
+        methods=sorted({m if m in allowed else 'not_verified' for m in methods})
+        return {'supported':False,'reason':activation_issue+' fulfillment='+','.join(methods or ['not_verified'])+'.'}
     if facts.get('feature_claims_v2') is True and 'feature_claims' in answer:
         if images:raise FeatureReviewError('Этап: проверка утверждений. Вложения не поддерживаются в публичном сравнении.')
         from .feature_claims import review_claims

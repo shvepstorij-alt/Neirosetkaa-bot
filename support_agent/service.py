@@ -795,6 +795,10 @@ class Service:
             consultation={'active':False}
         if consultation.get('active'):
             facts=dict(facts,consultation_intent=consultation)
+        # Old questions provide reference slots, not the newest turn's intent.
+        from .turn_scope import scope as scope_turn,purchase_reply
+        resolved_context=latest
+        facts,latest=scope_turn(facts,resolved_context,raw_batch)
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
             self._probe_question=latest
@@ -816,6 +820,8 @@ class Service:
         from .activation_guidance import reply as activation_help
         activation=activation_help(facts,latest,raw_batch) if not image else None
         if activation:return activation
+        purchase=purchase_reply(facts,raw_batch) if not image else None
+        if purchase:return purchase
         from .troubleshooting import screenshot_request
         problem=screenshot_request(raw_batch or latest,has_images=bool(image))
         if problem:return problem
@@ -838,6 +844,7 @@ class Service:
         if selection:
             clarification=selection_reply(facts,latest)
             if clarification:return clarification
+        facts=dict(facts,task_consultation=bool(selection))
         navigation=navigation_reply(facts,raw_batch or latest) if not image and covers(raw_batch,{'purchase'},facts) else None
         if navigation and not course:return navigation
         from .catalog_context import direct_workflow_reply,direct_apple_reply
@@ -867,6 +874,7 @@ class Service:
         plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}),facts)
         if course and course['comparison_requested']:plan={'topic':'comparison','products':['chatgpt','claude']}
         facts=annotate(facts,latest,plan['products'])
+        facts,_=scope_turn(facts,resolved_context,raw_batch,discovered=True)
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
         if plan['topic']=='none':

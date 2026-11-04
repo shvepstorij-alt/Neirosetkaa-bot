@@ -83,7 +83,11 @@ def catalogue_audit(reply, facts):
                         tail=prefix[match.end():]
                         year=bool(re.search(r'на\s+год|годов|annual|year',tail))
                         if variant!=label and not year:continue
-                        clean=re.sub(r'\b(?:на\s+год|годов[а-яё]*|месячн[а-яё]*|месяц|тариф|план|стоит|цена|за|в|annual|yearly|monthly)\b',' ',tail)
+                        # A pronoun in the same bounded price span can refer
+                        # back to the explicitly named plan. Numeric equality
+                        # is still checked against that exact plan, never the
+                        # general set of prices. Other prose remains ambiguous.
+                        clean=re.sub(r'\b(?:на\s+год|годов[а-яё]*|месячн[а-яё]*|месяц|тариф|план|стоит|цена|за|в|он|она|это|составляет|около|примерно|annual|yearly|monthly)\b',' ',tail)
                         if re.search(r'[\w]',clean):continue
                         if year and variant==label and not label.endswith(' на год'):
                             if any(str(r.get('plan','')).casefold()==label+' на год' and r.get('service')==row.get('service') for r in rows):continue

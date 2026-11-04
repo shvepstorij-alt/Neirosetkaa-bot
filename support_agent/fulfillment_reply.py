@@ -30,7 +30,7 @@ def _code_help(name):
     return ''
 
 
-def _selected_plan_rows(items,latest):
+def _selected_plan_rows(items,latest,require_match=False):
     """Prefer explicitly named complete plan labels, not unrelated variants."""
     from .catalog_context import _words
     # Transliteration of plan labels is shared by every service. Avoid Russian
@@ -49,7 +49,7 @@ def _selected_plan_rows(items,latest):
     selected={index for start,end,index in hits if not any(
         other_start<=start and end<=other_end and other_end-other_start>end-start
         for other_start,other_end,_ in hits)}
-    return [item for index,item in enumerate(items) if index in selected] if selected else items
+    return [item for index,item in enumerate(items) if index in selected] if selected else ([] if require_match else items)
 
 
 def _service_plan_scope(name,groups,latest):

@@ -79,7 +79,8 @@ def consultation_plan(latest, plan, facts=None):
     public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
     public=public or bool(re.search(r'claude\s*code|клод\s*код|регион|стран|сингапур|поддержива|принимают.*карт|карт.*(?:проход|работ|оплат)',text))
     from .selection_help import is_selection_request
-    public=public or is_selection_request(latest,facts)
+    task_consultation=bool((facts or {}).get('task_consultation'))
+    public=public or is_selection_request(latest,facts) or task_consultation
     catalog_brands=_catalog_public_brands(facts) if facts is not None else []
     explicit_features=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|'
                                     r'какие\s+(?:сейчас\s+)?модел|ограничени|'
@@ -88,7 +89,7 @@ def consultation_plan(latest, plan, facts=None):
     checkout_only=bool(re.search(r'как\s+(?:оформить|оплатить|купить|активировать)|'
                                 r'что\s+(?:нужно|потребуется)\s+(?:после|для)|'
                                 r'какие\s+данные|куда\s+(?:прислать|отправить)',text)) and not explicit_features
-    if catalog_brands and (explicit_features or plan_question or is_selection_request(latest,facts)) and not checkout_only:
+    if catalog_brands and (explicit_features or plan_question or is_selection_request(latest,facts) or task_consultation) and not checkout_only:
         products=list(dict.fromkeys(products+catalog_brands))[:4]
         public=True
         # Preserve matching partial model routes, then cover fresh catalogue
