@@ -49,12 +49,45 @@ def low_detail_reply(records,request=''):
                     +'. Порог: highpass<0.02 и доля границ<0.0001. Это не универсальная проверка читаемости; нужен чёткий фрагмент.'}}
 
 
+def _refund_approval_question(question):
+    """Narrow authority question; never swallow mixed technical incidents."""
+    text=str(question or '')
+    return (bool(re.search(r'возврат|\brefund\b|верн(?:ут|ули|уть|[её]те)\s+деньги',text,re.I))
+        and bool(re.search(r'одобрен|одобрил|одобрите|подтвержд[её]н|подтвердил|согласован|approved',text,re.I))
+        and not re.search(r'ошибк|вход|блокиров|заблок|забан|не\s+могу|не\s+получается|'
+                          r'не\s+работ|не\s+актив|не\s+появ|не\s+пришл|'
+                          r'тариф|сравни|возможност|закуп|поставщик|себестоим|18\s*\+|порно|эротическ',text,re.I))
+
+
+def refund_decision_reply(question,facts,has_images=False):
+    """Apply owner policy without reading a picture as proof of refund authority.
+
+    The latest-order list does not identify this refund, so it must not be used
+    to assume a payment method or disclose an unrelated payment identifier.
+    """
+    if not has_images or not _refund_approval_question(question):return None
+    return {'reply':'По одному скриншоту нельзя подтвердить одобрение возврата. '
+                'Решение по возврату принимаю лично после ручной проверки заказа и обстоятельств. '
+                'По фото возврат автоматически не оформляется.\n\n'
+                'Для проверки напишите номер заказа, если ещё не указывали. '
+                'Если оплачивали через FreeKassa, подойдёт номер платежа из квитанции. '
+                'Пароли и данные карты присылать не нужно.',
+            'summary':'Вопрос об одобрении возврата по изображению. Применена политика владельца: '
+                'снимок не подтверждает решение; нужна ручная проверка заказа. '
+                'Само изображение этим ответом не распознавалось. Одобрение или отказ не установлены.',
+            'handoff':True,'source_ids':[],
+            'evidence':{'status':'owner_policy','sources':[],
+                'handoff_reason':'Решение о возврате принимает владелец после ручной проверки заказа.',
+                'diagnostic':'Этап: применение политики решения по возврату. '
+                    'Подтверждение решения по заказу отсутствует; изображение не устанавливает полномочия '
+                    'и не заменяет ручную проверку владельца. Метод оплаты не предполагался. '
+                    'Содержание изображения этим ответом не проверялось.'}}
+
+
 def visual_failure(reason,request=''):
     from .privacy import scrub
-    policy_question=(bool(re.search(r'возврат',request,re.I)) and
-        bool(re.search(r'одобрен|подтвержд[её]н|согласован|approved',request,re.I)) and
-        not re.search(r'ошибк|вход|блокиров|не\s+могу|не\s+получается',request,re.I))
-    text=('По одному скриншоту нельзя подтвердить одобрение возврата. Решение по возврату принимаю после ручной проверки заказа и обстоятельств. По фото возврат автоматически не оформляется.' if policy_question else
+    policy=refund_decision_reply(request,{},has_images=True)
+    text=(policy['reply'] if policy else
           'Пока не получилось подготовить проверенный разбор по вашему фото. Чтобы не подсказать неверное действие, этот случай нужно проверить вручную. Повторно отправлять то же фото не нужно.')
     return {'reply':text,
             'summary':'Визуальный ответ не подтверждён; требуется ручная проверка изображения и ситуации.',

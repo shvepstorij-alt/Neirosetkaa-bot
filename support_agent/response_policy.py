@@ -18,7 +18,42 @@ def current_request(messages, batch_first, latest_mid):
     return text[replacements[-1].start():] if replacements else text
 
 
-def consultation_plan(latest, plan):
+def _catalog_public_brands(facts):
+    """Derive public brands from fresh matches, never the whole catalogue."""
+    from .catalog_context import _families, _words, _contains
+    from .research import PRODUCTS
+    from .service_discovery import public_name
+    brands=[]
+    for row in (facts or {}).get('requested_catalog',[]):
+        if not isinstance(row,dict):continue
+        name=str(row.get('service','')).strip()
+        key=str(row.get('service_key','')).strip().casefold()
+        families=_families(_words(name+' '+key))
+        if 'appstore' in families:continue  # Dynamic gift stock, not an iCloud plan.
+        known=[p for p in PRODUCTS if p in families]
+        if known:
+            brands.extend(known)
+            continue
+        family_brands=[p for p in sorted(families) if public_name(p)]
+        if family_brands:
+            brands.extend(family_brands)
+            continue
+        # A dot may be part of a displayed software brand (not a client URL).
+        # Reject private/link-like labels before normalizing punctuation.
+        from .privacy import scrub,sensitive
+        if scrub(name)!=name or sensitive(name) or re.search(r'@|://|[/\\]',name):continue
+        title=re.sub(r'\s+',' ',name.casefold().replace('.',' ')).strip()
+        # An opaque/internal SKU is not a public software brand. Prefer a key
+        # only if the displayed title actually contains that public label.
+        compact_title=re.sub(r'[^a-z0-9]','',name.casefold())
+        if public_name(key) and (_contains(_words(name),_words(key)) or key==compact_title):
+            brands.append(key)
+        elif public_name(title):
+            brands.append(title)
+    return list(dict.fromkeys(brands))[:4]
+
+
+def consultation_plan(latest, plan, facts=None):
     """Require public evidence for explicit plan/features questions, not private prices.
 
     Only the current collected client batch is inspected. Never send its text to search.
@@ -43,6 +78,32 @@ def consultation_plan(latest, plan):
                                 if p not in names or p in products])
     public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
     public=public or bool(re.search(r'claude\s*code|клод\s*код|регион|стран|сингапур|поддержива|принимают.*карт|карт.*(?:проход|работ|оплат)',text))
+    from .selection_help import is_selection_request
+    public=public or is_selection_request(latest,facts)
+    catalog_brands=_catalog_public_brands(facts) if facts is not None else []
+    explicit_features=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|'
+                                    r'какие\s+(?:сейчас\s+)?модел|ограничени|'
+                                    r'официальн[а-яё]*[^.!?\n]{0,40}(?:сведен|возможност|описан|сайт)',text))
+    plan_question=bool(re.search(r'какие\s+(?:есть\s+)?(?:платные\s+)?тариф|о\s+тариф|по\s+тариф|тарифы',text))
+    checkout_only=bool(re.search(r'как\s+(?:оформить|оплатить|купить|активировать)|'
+                                r'что\s+(?:нужно|потребуется)\s+(?:после|для)|'
+                                r'какие\s+данные|куда\s+(?:прислать|отправить)',text)) and not explicit_features
+    if catalog_brands and (explicit_features or plan_question or is_selection_request(latest,facts)) and not checkout_only:
+        products=list(dict.fromkeys(products+catalog_brands))[:4]
+        public=True
+        # Preserve matching partial model routes, then cover fresh catalogue
+        # brands before optional discoveries outside the catalogue.
+        from .catalog_context import _families,_words,_contains
+        from .research import PRODUCTS
+        aligned=[];outside=[]
+        for p in plan.get('products',[]):
+            family=_families(_words(p))
+            candidates=[brand for brand in products if brand in family or brand==p or _contains(_words(p),_words(brand))]
+            if len(candidates)==1:aligned.append(candidates[0])
+            elif p not in PRODUCTS:outside.append(p)
+        plan=dict(plan,products=list(dict.fromkeys(aligned+products+outside))[:4])
+        if plan.get('topic')=='none' and re.search(r'сравн|отлич|разниц',text):
+            plan=dict(plan,topic='comparison')
     # The model router must not turn a SaaS plan question into a model-release
     # search simply because the requested product also offers AI features.
     if public and plan.get('topic')=='models' and not re.search(r'модел|\bmodels?\b|claude\s*code|клод\s*код',text):
@@ -90,7 +151,7 @@ def missing_shop_reply(latest, facts, has_images=False):
                 'handoff':False}
     # A missing retail catalog must not block an independently verifiable
     # explanation of named services. Private prices remain unconfirmed.
-    if consultation_plan(latest,{'topic':'none','products':[]})['topic']!='none':
+    if consultation_plan(latest,{'topic':'none','products':[]},facts)['topic']!='none':
         return None
     catalog_missing=facts.get('source')=='unavailable' or facts.get('catalog_status') in ('read_error','not_connected')
     if has_images or not catalog_missing:

@@ -47,7 +47,71 @@ def _selected_plan_rows(items,latest):
     return [item for index,item in enumerate(items) if index in selected] if selected else items
 
 
+def _service_plan_scope(name,groups,latest):
+    """Bind an explicitly named plan to its own service, not another brand.
+
+    A bare shared plan label in a multi-service question remains unresolved.
+    Only client text is inspected; no workflow or plan identity is invented.
+    """
+    from .catalog_context import ALIASES,_words,_families
+    anchors=[]
+    for service,items in groups.items():
+        names={_words(service)}
+        families=set()
+        for item in items:
+            for field in ('service','service_key'):
+                words=_words(item.get(field,''))
+                if words:names.add(words)
+                families.update(_families(words))
+        for family in families:
+            names.update(_words(alias) for alias in ALIASES[family])
+        for words in names:
+            if not words:continue
+            pattern=r'(?<!\w)'+r'[\W_]+'.join(re.escape(word) for word in words)+r'(?!\w)'
+            for match in re.finditer(pattern,latest,re.I):
+                anchors.append((match.start(),match.end(),service))
+    # Keep the full name over shorter aliases at the same occurrence.
+    anchors=[anchor for anchor in anchors if not any(
+        other[2]==anchor[2] and other[0]<=anchor[0] and anchor[1]<=other[1]
+        and other[1]-other[0]>anchor[1]-anchor[0] for other in anchors)]
+    anchors=sorted(set(anchors))
+    def preceding_plan(start,service):
+        matches=[]
+        for item in groups[service]:
+            words=_words(item.get('plan',''))
+            if not words:continue
+            pattern=(r'(?<!\w)'+r'[\W_]+'.join(re.escape(word) for word in words)
+                     +r'\s+(?:для|у|на)\s*$')
+            found=re.search(pattern,latest[:start],re.I)
+            if found and not any(a>=found.start() for a,_,_ in anchors if a<start):
+                matches.append(found)
+        return min(matches,key=lambda match:match.start()) if matches else None
+    scopes=[]
+    for start,end,service in anchors:
+        if service!=name:continue
+        if any(other!=service and a<end and start<b for a,b,other in anchors):
+            continue  # An alias matches multiple products: do not guess.
+        following=[anchor for anchor in anchors if anchor[0]>=end]
+        stop=following[0][0] if following else len(latest)
+        if following:
+            next_start,_,next_service=following[0]
+            next_prefix=preceding_plan(next_start,next_service)
+            if next_prefix and next_prefix.start()>=end:stop=next_prefix.start()
+        scoped=latest[start:stop]
+        # A later stand-alone "хочу Pro" after a comma/new line can refer to
+        # the whole service list. Do not attach it to the last brand by order.
+        scoped=re.split(r'[,;\n]|[.!?]\s+',scoped,maxsplit=1)[0]
+        # Also support "Pro для Claude" / "Plus у ChatGPT", without taking
+        # an earlier service's plan from "ChatGPT Plus, Claude Pro".
+        prefix=preceding_plan(start,service)
+        if prefix:scoped=prefix[0]+' '+scoped
+        scopes.append(scoped)
+    return '\n'.join(scopes)
+
+
 def workflow_reply(facts,latest):
+    from .selection_help import is_selection_request
+    if is_selection_request(latest):return None
     lines=[line.strip() for line in latest.splitlines() if line.strip()]
     questions=[line for line in lines if re.search(
         r'оформ|кроме оплаты|(?:что|какие).*(?:нужн|потреб|треб|данн|присл)|'
@@ -108,6 +172,9 @@ def workflow_reply(facts,latest):
         # Shared names such as Pro in a multi-brand question cannot be bound
         # to a brand by a token match alone. Keep those variants unresolved.
         if len(groups)==1:items=_selected_plan_rows(items,latest)
+        else:
+            scope=_service_plan_scope(name,groups,latest)
+            if scope:items=_selected_plan_rows(items,scope)
         if re.search(r'тариф|цен|стоим',latest,re.I):
             prices=[]
             for item in items:

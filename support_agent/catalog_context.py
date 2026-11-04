@@ -111,7 +111,8 @@ def _select_variants(rows,latest):
         credit_word=bool(re.search(r'кредит|\bcredits?\b',local,re.I))
         purchase=bool(re.search(r'пополн|купить|докуп|пакет|приобр|оформ',local,re.I))
         want_extra=explicit_extra or credit_word and (purchase or not plan)
-        want_regular=plan or bool(re.search(r'подписк',rest,re.I))
+        want_regular=(plan or bool(re.search(r'подписк',rest,re.I))
+                      or not want_extra and bool(re.search(r'тариф|(?<!\w)план[а-яё]*(?!\w)',rest,re.I)))
         coordinated=bool(re.search(r'[,;]|\b(?:и|оба|обе|также|ещ[её])\b',latest,re.I))
         if explicit_extra and coordinated and any(_contains(_words(rest),_words(r.get('service'))) for r in regular):
             want_regular=True
@@ -154,6 +155,8 @@ def annotate(facts, latest, products=()):
     product_words=[_words(p) for p in products if isinstance(p,str)]
     requests=[request,*product_words]
     wanted=set().union(*(_families(words) for words in requests))
+    product_aliases=_product_aliases(facts.get('catalog',[]))
+    dynamic_wanted=set().union(*(_product_families(' '.join(words),product_aliases) for words in requests))
     # A unique branded first word handles renamed rows (e.g. «Runway ML»)
     # without maintaining an exhaustive list. Generic/ambiguous prefixes do not.
     prefixes={}
@@ -171,7 +174,8 @@ def annotate(facts, latest, products=()):
         direct=any(_contains(words,key) or _contains(words,name) for words in requests)
         if name and len(prefixes.get(name[0],()))==1:
             direct=direct or any(_contains(words,(name[0],)) for words in requests)
-        alias=bool(family&wanted)
+        alias=bool(family&wanted) or bool(dynamic_wanted & _product_families(
+            str(row.get('service',''))+' '+str(row.get('service_key','')),product_aliases))
         if not (direct or alias):continue
         matched.append(dict(row))
         identity=(str(row.get('service_key','')),str(row.get('service','')))
@@ -219,6 +223,11 @@ def false_absence(reply, facts):
 def customer_facts(facts):
     """Consultations quote the public catalogue; checkout owns personal pricing."""
     result=dict(facts)
+    # Transport diagnostics belong to the owner, never customer prose/model
+    # instructions. Availability status itself remains usable as evidence.
+    for field in ('live_shop_diagnostic','live_shop_attempts','live_shop_reason',
+                  'live_shop_previous_http_status'):
+        result.pop(field,None)
     for field in ('catalog','requested_catalog'):
         if field not in facts:continue
         result[field]=[]
@@ -236,7 +245,8 @@ def customer_facts(facts):
 def verified_catalog_reply(facts, reason):
     """Owner-review fallback built from fields, never from a rejected model reply."""
     from .privacy import scrub
-    rows=facts.get('requested_catalog',[])
+    from .catalog_order import ordered_rows
+    rows=ordered_rows(facts.get('requested_catalog',[]))
     groups={}
     for row in rows:
         if not isinstance(row,dict):continue
@@ -415,7 +425,8 @@ def direct_catalog_reply(facts, latest):
     """
     words=_words(latest)
     if not set(words)&{'тарифы','цены','цену','стоят','стоит','стоимость','сколько'}:return None
-    rows=facts.get('requested_catalog',[])
+    from .catalog_order import ordered_rows
+    rows=ordered_rows(facts.get('requested_catalog',[]))
     regular=[r for r in rows if 'appstore' not in (_families(_words(r.get('service_key')))|_families(_words(r.get('service'))))]
     if not regular or len(regular)>8:return None
     quotes={}

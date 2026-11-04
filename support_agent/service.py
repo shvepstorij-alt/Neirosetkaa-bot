@@ -328,6 +328,7 @@ class Service:
                 +'\nЗаказы: '+labels.get(facts.get('orders_status'),'статус неизвестен')
                 +'\nПерсональные цены: '+('расчёт доступен' if facts.get('customer_prices_status')=='available' else 'не подключены; доступен обычный прайс')
                 +'\nЖивой каталог магазина: '+str(facts.get('live_shop_status','not_connected'))
+                +('\nДиагностика подключения: '+scrub(str(facts['live_shop_diagnostic']))[:700] if facts.get('live_shop_diagnostic') else '')
                 +'\nСпособы оформления: '+str(facts.get('workflow_status','not_connected'))
                 +'\nНавигация по боту: '+str(facts.get('bot_navigation',{}).get('status','not_connected'))
                 +'\nБот магазина: '+('@'+facts['bot_navigation']['username'] if facts.get('bot_navigation',{}).get('status')=='available' else 'ник не подтверждён')
@@ -673,6 +674,9 @@ class Service:
         from .troubleshooting import screenshot_request
         problem=screenshot_request(raw_batch or latest,has_images=bool(image))
         if problem:return problem
+        from .troubleshooting import refund_decision_reply
+        refund_policy=refund_decision_reply(raw_batch or latest,facts,has_images=bool(image))
+        if refund_policy:return refund_policy
         from .course_bonus import context as course_context, reply as course_reply
         course=course_context(raw_batch or latest,history)
         if course:
@@ -681,21 +685,28 @@ class Service:
             facts=dict(facts,course_bonus=course)
             if course['comparison_requested']:
                 latest+='\nСравни ChatGPT и Claude для выбора бонусной подписки курса; учти актуальные региональные ограничения и условия доступа в России. Не подтверждай право на бонус.'
+        from .selection_help import is_selection_request,selection_reply
+        # Intent belongs to this batch; relevant past tasks may enrich the
+        # facts, but an old request to choose must not override "more details".
+        selection=is_selection_request(raw_batch or latest,facts) if not image and not course else False
+        if selection:
+            clarification=selection_reply(facts,latest)
+            if clarification:return clarification
         navigation=navigation_reply(facts,raw_batch or latest) if not image else None
         if navigation and not course:return navigation
         from .catalog_context import direct_workflow_reply,direct_apple_reply
         apple=direct_apple_reply(facts,latest) if not image and not course else None
         if apple:return apple
         from .fulfillment_reply import workflow_reply
-        fulfillment=workflow_reply(facts,latest) if not image and not course else None
+        fulfillment=workflow_reply(facts,latest) if not image and not course and not selection else None
         if fulfillment:return fulfillment
-        workflow=direct_workflow_reply(facts,latest) if not image and not course else None
+        workflow=direct_workflow_reply(facts,latest) if not image and not course and not selection else None
         if workflow:return workflow
         shortcut=missing_shop_reply(latest,facts,has_images=bool(image)) if not course else None
         if shortcut:
             return shortcut
         from .catalog_context import direct_catalog_reply
-        direct=direct_catalog_reply(facts,latest) if not image and not course else None
+        direct=direct_catalog_reply(facts,latest) if not image and not course and not selection else None
         if direct:return direct
         from .conversation_style import session_info
         replied=session_info(self.store.db,job['chat'],batch_first,job['mid'])['continuing']
@@ -706,7 +717,7 @@ class Service:
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
             return None
-        plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}))
+        plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}),facts)
         if course and course['comparison_requested']:plan={'topic':'comparison','products':['chatgpt','claude']}
         facts=annotate(facts,latest,plan['products'])
         if getattr(self,'_probe_capture',False):

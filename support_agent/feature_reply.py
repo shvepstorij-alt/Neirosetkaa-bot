@@ -79,8 +79,9 @@ def public_question(facts):
 def price_block(facts, question, topic=None):
     if topic not in ('features','comparison','plans') and not re.search(r'возможност|сравни|отлич[аи]|разниц|функци',question,re.I):return ''
     if re.search(r'как\s+(?:оформ|оплат)|что\s+(?:нужно|потребуется)|возврат|заказ\s*№',question,re.I):return ''
-    rows=facts.get('requested_catalog',[])
-    if not rows or len(rows)>8:return ''
+    from .catalog_order import ordered_rows
+    rows=ordered_rows(facts.get('requested_catalog',[]))
+    if not rows or len(rows)>16:return ''
     quotes={}
     for row in rows:
         price=row.get('catalog_price_rub')

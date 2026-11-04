@@ -28,7 +28,8 @@ class CatalogOnly:
         # No client ID is queried. Do not put owner order history into the model.
         facts = await self.shop.facts(self.owner)
         allowed = ('catalog', 'catalog_status', 'catalog_complete', 'appstore', 'bot_navigation',
-                   'live_shop_status', 'workflow_status', 'catalog_observed_at_unix', 'note', 'source')
+                   'live_shop_status', 'live_shop_diagnostic','live_shop_attempts','live_shop_reason',
+                   'workflow_status', 'catalog_observed_at_unix', 'note', 'source')
         self.last_facts = {k: v for k, v in facts.items() if k in allowed}
         return self.last_facts
 
@@ -47,6 +48,8 @@ def report_details(answer, facts, question):
              +'; App Store='+str(facts.get('appstore',{}).get('status','not_connected'))
              +'; навигация='+str(facts.get('bot_navigation',{}).get('status','not_connected'))]
     checked_at=evidence.get('checked_at')
+    if facts.get('live_shop_diagnostic'):
+        lines.append('Диагностика подключения магазина: '+scrub(str(facts['live_shop_diagnostic']))[:700])
     if type(checked_at) in (int,float) and 0<checked_at<4102444800:
         import datetime as dt
         lines.append('Время поиска UTC: '+dt.datetime.fromtimestamp(checked_at,dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))

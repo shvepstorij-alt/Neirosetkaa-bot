@@ -105,6 +105,12 @@ def catalogue_audit(reply, facts):
                 last_price_end=money.end()
                 continue
             if matches:
+                # A qualified complete catalogue title owns its nested suffix:
+                # "Новый аккаунт с подпиской Plus" must not become bare Plus
+                # merely because the latter starts closer to the money token.
+                matches=[match for match in matches if not any(
+                    other[0]<=match[0] and match[1]<=other[1]
+                    and other[1]-other[0]>match[1]-match[0] for other in matches)]
                 nearest=max((start,end) for start,end,_,_ in matches)
                 matches=[m for m in matches if m[:2]==nearest]
             candidates=[m[2] for m in matches]

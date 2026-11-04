@@ -213,7 +213,7 @@ def failure_details(exc,stage):
         'feature_coverage':'в выделенном ответе пропущен, повторён или подменён запрошенный сервис',
         'feature_source_domain':'блок функций сослался на источник другого сервиса или неподтверждённого домена',
         'feature_source_count':'выделенный ответ превысил общий лимит 12 источников',
-        'feature_length':'выделенное описание функций превысило лимит 1100 символов',
+        'feature_length':'выделенное описание функций не прошло ограничение длины',
         'feature_incomplete':'блок функций заканчивается незавершённой связкой или вводной фразой; нужна короткая законченная формулировка',
         'draft_plan':'модель нарушила формат плана исследования (topic/products)',
         'draft_source_ids':'модель вернула недопустимый список ID источников',
@@ -268,7 +268,17 @@ def failure_details(exc,stage):
         kind=feature_detail.get('received_type')
         if kind in ('dict','list','str','int','float','bool','NoneType'):
             details+=' Формат='+kind+'.'
-        details+=' Ожидались сервисы='+','.join(expected)+'; получены='+','.join(present)+'; отсутствуют='+','.join(p for p in expected if p not in present)+'.'
+        if 'expected' in feature_detail:
+            details+=' Ожидались сервисы='+','.join(expected)+'; получены='+','.join(present)+'; отсутствуют='+','.join(p for p in expected if p not in present)+'.'
+        product=feature_detail.get('product')
+        if isinstance(product,str) and public_name(product):details+=' Сервис='+product+'.'
+        for key,label in (('characters','Символов'),('limit','Лимит')):
+            value=feature_detail.get(key)
+            if type(value) is int and 0<=value<=100000:details+=' '+label+'='+str(value)+'.'
+        condition={'missing_sentence_end':'нет завершения предложения',
+                   'dangling_connector':'текст заканчивается незавершённой связкой',
+                   'total_reply_length':'превышена общая длина ответа'}.get(feature_detail.get('condition'))
+        if condition:details+=' Нарушенное условие: '+condition+'.'
     status=getattr(exc,'status',None)
     if type(status) is int and 100<=status<=599:
         details+=f' HTTP {status}.'

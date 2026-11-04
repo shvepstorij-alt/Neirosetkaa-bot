@@ -27,6 +27,12 @@ def is_acknowledgement(text):
 def _dependent_followup(text):
     """Only explicit short references; never infer a topic from arbitrary prose."""
     clean=re.sub(r'[\s!?.…,]+',' ',str(text).casefold()).strip()
+    details=re.sub(r'^(?:(?:а|и|можно|расскажите|подскажите|пожалуйста)\s+){0,5}','',clean)
+    if re.fullmatch(r'(?:подробнее|поподробнее|подробней|побольше\s+информации)'
+                    r'(?:\s+(?:про|о|об)\s+(?:эти\s+|этих\s+)?'
+                    r'(?:тариф[а-яё]*|план[а-яё]*|подписк[а-яё]*|возможност[а-яё]*|'
+                    r'функци[а-яё]*|них|это|нём|нем))?',details):
+        return True
     return bool(re.fullmatch(
         r'(?:а |и )?(?:сколько (?:это |он |она )?стоит|какая цена|какие лимиты|'
         r'что входит|как (?:его |её |это )?оформить|как оплатить|какой (?:из них )?лучше|'
@@ -153,6 +159,46 @@ def _contextual_followup(text,catalog):
     return bool(set(tokens)&(intent|plans)) and all(t in allowed or t.isdigit() for t in tokens)
 
 
+def _purpose_answer_candidate(text,catalog):
+    """Concrete task descriptions may answer a pending choice clarification.
+
+    This flag alone never imports history. The prior client selection or a
+    recent sent task question must also be established below.
+    """
+    from .selection_help import has_selection_purpose
+    from .catalog_context import service_mentions
+    if not has_selection_purpose(text) or service_mentions(text,catalog):return False
+    # An explicitly introduced, unfamiliar Latin product must not be rebound to
+    # an older catalogue brand merely because its purpose contains "documents".
+    # Formats/ordinary technical requirements are not service introductions.
+    technical={'pdf','docx','xlsx','csv','txt','api','sso','scim','saml','webhook',
+               'offline','python','javascript','typescript','html','css','sql',
+               'excel','word','google','docs','sheets','drive','powerpoint'}
+    introduced=re.search(r'(?:^|\b(?:сервис[а-яё]*|подписк[а-яё]*|оформить|нужен|нужна|интересует)\s+)'
+                         r'([A-Za-z][A-Za-z0-9_-]{2,})(?!\w)',str(text).strip(),re.I)
+    if introduced and introduced[1].casefold() not in technical:return False
+    if re.search(r'\b(?:теперь|кстати|вместо|другой\s+сервис|другая\s+тема|отменяю|забудь)\b',text,re.I):return False
+    # A new how-to, troubleshooting or purchase question is not an answer
+    # describing what the customer intends to do with the earlier service.
+    if re.match(r'^\s*(?:а\s+)?(?:как|почему|где|когда|сколько|можно\s+ли|не\s+работает|ошибка)\b',text,re.I):return False
+    return True
+
+
+def _purpose_answers_previous(db,chat,first,bounds,previous,catalog):
+    from .catalog_context import service_mentions,annotate
+    from .selection_help import is_selection_request
+    if not service_mentions(previous,catalog):return False
+    if is_selection_request(previous,annotate({'catalog':catalog},previous)):
+        return True
+    asked=db.execute("SELECT text,at FROM messages WHERE chat=? AND role IN ('assistant','owner') AND mid>? AND mid<? ORDER BY mid DESC LIMIT 1",
+                     (chat,bounds[1],first)).fetchone()
+    if not asked:return False
+    from .session_context import SESSION_GAP
+    if isinstance(asked['at'],(int,float)) and not 0<=time.time()-asked['at']<=SESSION_GAP:return False
+    return bool(re.search(r'для\s+каких\s+задач|что\s+(?:именно\s+)?(?:вы\s+)?хотите\s+делать|'
+                          r'какие\s+задачи\s+(?:планируете|хотите)|под\s+какие\s+задачи',asked['text'] or '',re.I))
+
+
 def _recent_service_labels(db,chat,first,catalog,source_mids=None):
     """Only explicit client mentions, bounded by time and size; never model answers."""
     from .catalog_context import service_mentions
@@ -205,10 +251,11 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     followup=_dependent_followup(text) or _contextual_followup(text,catalog)
     from .catalog_context import _words,_contains
     service_only=_only_service_names(text,catalog)
+    purpose_candidate=_purpose_answer_candidate(text,catalog)
     # Region-only replies are considered below only after examining prior client
     # content. A standalone region must never revive an unrelated service.
     region_candidate=_apple_details_candidate(text)
-    if not reminder and not followup and not region_candidate and not service_only:
+    if not reminder and not followup and not region_candidate and not service_only and not purpose_candidate:
         db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
         return text
     pointer=db.execute('SELECT first_mid,last_mid FROM request_context WHERE chat=?',(chat,)).fetchone()
@@ -244,6 +291,8 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     if _has_apple_topic(previous):
         previous=_current_apple_details(previous)
     if not previous or len(previous)>24000:return '' if reminder else text
+    if purpose_candidate and _purpose_answers_previous(db,chat,first,bounds,previous,catalog):
+        followup=True
     if not reminder:
         linked=_link_apple_turn(previous,text)
         if linked is None and service_only:
