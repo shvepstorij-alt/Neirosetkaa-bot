@@ -260,6 +260,11 @@ class Service:
             media={'kind':'unsupported'}
         if secret:
             media={'kind':'sensitive'}
+        # Keep only a local message reference, never Telegram's quoted text or
+        # credentials. Context resolution validates the same-chat stored row.
+        reply_mid=m.get('reply_to_message',{}).get('message_id')
+        if role=='client' and type(reply_mid) is int and 0<reply_mid<m['message_id']:
+            media['reply_mid']=reply_mid
         # Never persist supplied credentials, or forward raw content to the admin bot.
         text='[Сообщение скрыто: возможны данные доступа; нужна ручная проверка]' if secret else scrub(raw)
         cid=self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
@@ -628,6 +633,8 @@ class Service:
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
               if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
+        from .customer_format import format_customer
+        _,customer_preview=format_customer(d['text'][:1800])
         text=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
               f'👤 <b>Клиент:</b> {client}\n'
               f'<b>Telegram ID:</b> <code>{c["uid"]}</code> · <b>Чат:</b> №{c["id"]}\n\n'
@@ -636,7 +643,7 @@ class Service:
               f'<b>Участие Александра:</b> {"нужно" if d["handoff"] else "не требуется по оценке модели"}\n\n'
               f'🔎 <b>Разбор обращения</b>\n<i>Вывод модели — проверьте перед отправкой.</i>\n'
               f'{html.escape(d["summary"][:700])}\n\n'
-              f'💬 <b>Ответ клиенту</b>\n{html.escape(d["text"][:1800])}\n\n'
+              f'💬 <b>Ответ клиенту</b>\n{customer_preview}\n\n'
               f'{research_note}'
               f'<i>{note}</i>')
         if admin_mid is not None:
@@ -647,7 +654,7 @@ class Service:
                       f'👤 {client} · <code>{c["uid"]}</code> · Чат №{c["id"]}\n\n'
                       f'<b>Статус:</b> {state}\n'
                       f'<b>Помощник в чате:</b> {"пауза" if c["mode"]=="off" else "подготовка ответов"}\n\n'
-                      f'💬 <b>Ответ клиенту</b>\n{html.escape(d["text"][:1800])}\n\n'
+                      f'💬 <b>Ответ клиенту</b>\n{customer_preview}\n\n'
                       f'<i>Разбор и источники сохранены в предыдущих частях карточки. {note}</i>')
             updated=await self.admin_panel(text,rows,admin_mid,parse_mode='HTML')
             if updated is not None:
@@ -703,7 +710,9 @@ class Service:
             self.store.switch('off',c['id'])
         try:
             text=outgoing_text(reserved['text'],self.store.evidence(did))
-            sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],text=text)
+            from .customer_format import customer_payload
+            text,payload=customer_payload(text)
+            sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],**payload)
         except Exception:
             self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
             self.store.switch('off',c['id'])
@@ -775,6 +784,17 @@ class Service:
                     'handoff':True}
         from .catalog_context import annotate
         facts=annotate(facts,latest)
+        raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .consultation_intent import context as consultation_context
+        consultation=consultation_context(latest,facts)
+        from .selection_help import is_selection_request,has_selection_purpose
+        transactional=bool(re.search(r'как[^.!?\n]{0,30}(?:оплат|активир|оформ)|я\s+оплат|уже\s+оплат|что[^.!?\n]{0,30}(?:нужно|потребуется)',raw_batch,re.I))
+        current_consultation=consultation_context(raw_batch,facts)
+        task_followup=has_selection_purpose(raw_batch) and not transactional
+        if not (current_consultation.get('active') or is_selection_request(raw_batch,facts) or task_followup):
+            consultation={'active':False}
+        if consultation.get('active'):
+            facts=dict(facts,consultation_intent=consultation)
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
             self._probe_question=latest
@@ -790,7 +810,12 @@ class Service:
             if clarification:return clarification
         from .bot_guide import navigation_facts,navigation_reply
         facts=dict(facts,shop_navigation=navigation_facts(facts))
+        from .request_goals import covers,goals
+        facts=dict(facts,request_goals=sorted(goals(raw_batch or latest,facts)))
         raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .activation_guidance import reply as activation_help
+        activation=activation_help(facts,latest,raw_batch) if not image else None
+        if activation:return activation
         from .troubleshooting import screenshot_request
         problem=screenshot_request(raw_batch or latest,has_images=bool(image))
         if problem:return problem
@@ -808,25 +833,27 @@ class Service:
         from .selection_help import is_selection_request,selection_reply
         # Intent belongs to this batch; relevant past tasks may enrich the
         # facts, but an old request to choose must not override "more details".
-        selection=is_selection_request(raw_batch or latest,facts) if not image and not course else False
+        selection=(is_selection_request(raw_batch or latest,facts) or consultation.get('active',False)
+                   or task_followup and bool(facts.get('requested_catalog'))) if not image and not course else False
         if selection:
             clarification=selection_reply(facts,latest)
             if clarification:return clarification
-        navigation=navigation_reply(facts,raw_batch or latest) if not image else None
+        navigation=navigation_reply(facts,raw_batch or latest) if not image and covers(raw_batch,{'purchase'},facts) else None
         if navigation and not course:return navigation
         from .catalog_context import direct_workflow_reply,direct_apple_reply
-        apple=direct_apple_reply(facts,latest) if not image and not course else None
+        apple=direct_apple_reply(facts,latest) if not image and not course and covers(raw_batch,{'purchase','price','activation'},facts) else None
         if apple:return apple
         from .fulfillment_reply import workflow_reply
-        fulfillment=workflow_reply(facts,latest) if not image and not course and not selection else None
+        fulfillment=workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price'},facts) else None
         if fulfillment:return fulfillment
-        workflow=direct_workflow_reply(facts,latest) if not image and not course and not selection else None
+        workflow=direct_workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price'},facts) else None
         if workflow:return workflow
-        shortcut=missing_shop_reply(latest,facts,has_images=bool(image)) if not course else None
+        shortcut=missing_shop_reply(latest,facts,has_images=bool(image)) if not course and not selection else None
         if shortcut:
             return shortcut
         from .catalog_context import direct_catalog_reply
-        direct=direct_catalog_reply(facts,latest) if not image and not course and not selection else None
+        catalog_goals={'price','purchase'} if 'appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[]) else {'price'}
+        direct=direct_catalog_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,catalog_goals,facts) else None
         if direct:return direct
         from .conversation_style import session_info
         replied=session_info(self.store.db,job['chat'],batch_first,job['mid'])['continuing']
@@ -869,6 +896,9 @@ class Service:
                             result['evidence']['content_review']=review
                             if getattr(self,'_probe_capture',False):result['evidence']['rejected_reply']=scrub(answer.get('reply',''))[:1800]
                             return result
+                        from .consultation_intent import fallback as consultation_fallback
+                        useful=consultation_fallback(facts,review['reason'])
+                        if useful:return useful
                         from .catalog_context import verified_catalog_reply
                         return verified_catalog_reply(facts,review['reason'])
                 answer.setdefault('evidence',{'status':'catalog_checked','sources':[]})['content_review']=review
@@ -898,7 +928,9 @@ class Service:
             from .feature_reply import price_block,compose
             # Partial evidence still uses deterministic prices when at least
             # one product has sources; unknown products get explicit blocks.
-            retail_block=price_block(facts,latest,topic=plan['topic']) if evidence.get('sources') and not course and not image else ''
+            # A feature table cannot represent a recommendation or a mixed
+            # request with purchase steps. Keep these in full reviewed prose.
+            retail_block=price_block(facts,latest,topic=plan['topic']) if evidence.get('sources') and not course and not image and not selection else ''
             if retail_block:
                 # Unknown services may need official prices; do not suppress
                 # that part of a mixed question with the store-price-only mode.
@@ -987,6 +1019,9 @@ class Service:
         except Exception as exc:
             if not self.store.still_current(job):
                 return None
+            from .consultation_intent import fallback as consultation_fallback
+            useful=consultation_fallback(facts,review['reason'] if str(exc)=='Answer content unsupported' else failure_details(exc,stage))
+            if useful:return with_public_trace(useful,evidence)
             if (locals().get('final_facts') or {}).get('feature_claims_v2'):
                 diagnostic=failure_details(exc,stage)
                 # A failed public-feature contract is not a purchase request.

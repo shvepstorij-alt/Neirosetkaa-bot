@@ -103,6 +103,29 @@ def _code_credential_issue(text, facts):
     return ''
 
 
+def activation_promise_issue(text):
+    """Reject promised delivery/time, not an explanation that no guarantee exists."""
+    for clause in re.split(r'(?<=[.!?])\s+|\n+', str(text or '')):
+        if clause.rstrip().endswith('?'):continue
+        if re.search(r'не\s+(?:могу|можем|буду|будем)?\s*(?:гарантир|обеща)|'
+                     r'не\s+гарантиру|нельзя\s+(?:гарантировать|обещать)|'
+                     r'срок[^.!?\n]{0,30}(?:не\s+подтвержд|неизвест)|'
+                     r'не\s+(?:означает|подтверждает|гарантирует)[^.!?\n]{0,45}активац', clause, re.I):
+            continue
+        activation = bool(re.search(r'активир|активац|подписк[^.!?\n]{0,35}(?:появит|подтян|включ|начн[её]т|заработ)', clause, re.I))
+        if not activation:continue
+        tentative=bool(re.search(r'может|возможно|иногда|ожидан|провер|не\s+всегда|не\s+обязательно',clause,re.I))
+        timing=bool(re.search(r'(?:через|за|в\s+течение)\s*\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*(?:минут|мин\b|секунд|час)',clause,re.I))
+        automatic=bool(re.search(r'автоматическ|сама\b|достаточно\s+(?:только\s+)?оплат|просто\s+(?:дожд|оплат)',clause,re.I))
+        payment=bool(re.search(r'после\s+оплаты|как\s+только\s+оплат|оплат[^.!?\n]{0,25}(?:достаточно|автомат)|'
+                               r'просто\s+дожд[^.!?\n]{0,50}оплат',clause,re.I))
+        if not tentative and (timing or automatic and payment):
+            return ('Этап: проверка обещания активации. Причина: ответ гарантирует срок или автоматическое '
+                    'получение подписки только по оплате. Оплата, кодовая ветка и скриншот не подтверждают '
+                    'успех или срок. Действие: объяснить подтверждённые шаги конкретного заказа, без обещания результата.')
+    return ''
+
+
 def evidence_scope_issue(answer, facts):
     """Reject store-specific claims whose source is missing, before model review.
 
@@ -113,6 +136,8 @@ def evidence_scope_issue(answer, facts):
     from .catalog_context import _families, _words, apple_region_codes
     from .apple_matching import REGIONS, nominal, amounts
     text = str(answer.get('reply', ''))
+    activation_issue=activation_promise_issue(text)
+    if activation_issue:return activation_issue
     credential_issue = _code_credential_issue(text, facts)
     if credential_issue:return credential_issue
     current = str(facts.get('conversation', {}).get('latest_client_message', ''))
@@ -270,6 +295,9 @@ def review_input(answer,facts):
             'appstore_selection':facts.get('appstore_selection',{}),
             'catalog_status':_scalar(facts.get('catalog_status')),
             'catalog_complete':facts.get('catalog_complete') is True}
+    intent=facts.get('consultation_intent',{})
+    if isinstance(intent,dict) and intent.get('active') is True:
+        result['consultation_intent']={key:intent[key] for key in ('kind','instructions','durations_requested') if key in intent}
     if facts.get('course_bonus'):
         from .course_bonus import POLICY
         result['owner_course_bonus_policy']=dict(POLICY)
@@ -337,11 +365,18 @@ async def check_answer(ai,answer,facts,images=None):
     from .catalog_context import customer_facts
     retail=customer_facts(facts).get('requested_catalog', [])
     activation_claim=re.search(
-        r'активац[а-яё]*[^.!?\n]{0,70}автомат|автомат[а-яё]*[^.!?\n]{0,70}актив|'
         r'без\s+(?:необходимости\s+)?входа|в\s+аккаунт\s+не\s+входим|'
         r'не\s+входим\s+в\s+(?:ваш\s+)?аккаунт|вход[а-яё]*[^.!?\n]{0,70}не\s+(?:происходит|выполняется)|'
         r'(?:никаких\s+)?данных\s+для\s+входа[^.!?\n]{0,40}не\s+запрашиваем|'
         r'потребуется\s+только[^.!?\n]{0,60}оплат',reply,re.I)
+    automatic_claim=any(
+        re.search(r'активац[а-яё]*[^.!?\n]{0,70}автомат|автомат[а-яё]*[^.!?\n]{0,70}актив',clause,re.I)
+        and not re.search(r'не\s+(?:могу|можем)?\s*(?:обеща|гарантир|подтверд)|'
+                          r'не\s+(?:означает|подтверждает|гарантирует)|'
+                          r'не\s+(?:всегда|обязательно)|может|возможно|неизвест|проверить|уточнить',clause,re.I)
+        and not clause.rstrip().endswith('?')
+        for clause in re.split(r'(?<=[.!?])\s+|\n+',reply))
+    activation_claim=activation_claim or automatic_claim
     if activation_claim:
         allowed={'manual','checkout_link','account_details','code_activation_conditional'}
         methods=sorted({r.get('fulfillment') if r.get('fulfillment') in allowed else 'not_verified' for r in retail})
@@ -487,6 +522,15 @@ async def check_answer(ai,answer,facts,images=None):
                 'Also check relevance and completeness against public_question: a true generic overview '
                 'does not answer a specific request for API, SSO or another feature. Reject omissions '
                 'of explicitly requested facets unless the answer identifies what is unconfirmed. '
+                'consultation_intent identifies the task: creative_generation is image/video creation; '
+                'visual_understanding means interpreting existing image contents. A generator or '
+                'presentation product is not evidence of dashboard-photo interpretation. Do not '
+                'approve an unsupported categorical claim that no available service can do the task. '
+                'Check all mixed asks, including service selection and purchase steps, not merely '
+                'the last named service. A request to recommend services must not be answered solely '
+                'with prices of an unrelated prior service or another request to name the service. '
+                'A desired 15-30 second finished video does not establish a model single-generation '
+                'length. Screen text does not authorize promised activation time or success. '
                 'In public_features_only review_scope, requested_catalog defines the store plan '
                 'identities being compared. Do not demand unrelated Free, Max, Enterprise or API '
                 'plans merely because they occur in the evidence; require them only if explicitly '
@@ -516,6 +560,8 @@ async def check_answer(ai,answer,facts,images=None):
                 'delivery to Alexander. Do not require a public website to confirm private '
                 'store procedures, or invent a manufacturer security policy to override them. '
                 'agent_can_login=false restricts the AI, not the human store operator. '
+                'provided_fields are supplied BY the store, not requested FROM the customer. '
+                'CapCut new_provided_account therefore must not require existing-account credentials. '
                 'owner_course_bonus_policy, when present, is an owner-approved course program: '
                 'one month of ChatGPT OR Claude, subject to manual eligibility verification by '
                 'course registration email. Never demand a manufacturer source for this private '

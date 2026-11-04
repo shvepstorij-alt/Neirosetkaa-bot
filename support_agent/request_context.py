@@ -152,13 +152,25 @@ def _contextual_followup(text,catalog):
     if not tokens or len(tokens)>24:return False
     if any(_contains(tokens,name) for name in _service_names(catalog)):return False
     allowed=set('а и это этот эта его ее её мне от меня вам вас у нужно нужны нужен потребуется требуется какие данные что как куда когда сколько времени ждать долго занимает оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено после передать прислать отправить почта почту пароль аккаунт аккаунта вход активация активации активировать подписка подписку подписки тариф тарифа тарифы выбрать выбирать месяц месяца месяцев год года годовой месячный можно ли будет для на по с со без уже не прошло работает спасибо пожалуйста подскажите тогда хочу да нет двух этих сервисов обоих обоим них получить скопировать найти ссылка ссылку ссылки платежную платёжную страницу страницы'.split())
-    allowed.update('ссылке почте паролю данным давайте давай выбираю выберу вариант способом через удобнее'.split())
+    allowed.update('ссылке почте паролю данным давайте давай выбираю выберу вариант способом через удобнее наверное бота бот ботом его него продолжить продолжать расскажите подробнее поподробнее пожалуйста попробовать остановимся остановлюсь плюс plus какой какую какой-то посоветуете порекомендуете подойдет подойдёт лучше выбрать определиться помогите'.split())
     for row in catalog:
         allowed.update(_words(row.get('plan','')))
     intent=set('нужно нужны нужен потребуется требуется данные оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено активация активации активировать ждать долго месяц год годовой месячный пароль почту аккаунт тариф тарифа ссылку ссылка ссылки'.split())
     intent.update(('ссылке','почте','паролю','данным'))
     plans={word for row in catalog for word in _words(row.get('plan',''))}
     return bool(set(tokens)&(intent|plans)) and all(t in allowed or t.isdigit() for t in tokens)
+
+
+def _same_service_reference(text, previous, catalog):
+    """An explicit same-brand 'can it do this?' retains the client's task.
+
+    A named different service always starts its own request. This is based on
+    actual client messages only, never on a generated capability claim.
+    """
+    from .catalog_context import service_mentions
+    current=set(service_mentions(text,catalog));prior=set(service_mentions(previous,catalog))
+    return bool(current and current<=prior and re.search(
+        r'\b(?:это|такое|эти\s+задачи|этой\s+задач[а-яё]*|для\s+этого|с\s+этим)\b',text,re.I))
 
 
 def _purpose_answer_candidate(text,catalog):
@@ -238,6 +250,42 @@ def _resolve_plural_reference(db,chat,mid,text,catalog):
     return text
 
 
+def _reply_client_context(db,chat,first,last,text,catalog):
+    """Resolve a reply ID to original client evidence, never the quoted answer.
+
+    Only same-chat existing bounded source messages are usable. Telegram reply
+    text itself is not evidence and is neither stored nor reconstructed here.
+    """
+    from .catalog_context import service_mentions
+    from .session_context import MAX_AGE,SESSION_GAP
+    rows=db.execute('SELECT media FROM messages WHERE chat=? AND role=\'client\' AND mid BETWEEN ? AND ? ORDER BY mid',(chat,first,last)).fetchall()
+    targets=[]
+    for row in rows:
+        try:media=json.loads(row['media'] or '{}')
+        except (ValueError,TypeError):continue
+        target=media.get('reply_mid') if isinstance(media,dict) else None
+        if isinstance(target,int) and not isinstance(target,bool) and 0<target<first:targets.append(target)
+    if len(set(targets))!=1:return None
+    target=db.execute('SELECT mid,role,text,at FROM messages WHERE chat=? AND mid=?',(chat,targets[0])).fetchone()
+    if not target:return None
+    if target['role']=='client':bounds=(target['mid'],target['mid'])
+    elif target['role'] in ('assistant','owner'):
+        draft=db.execute('SELECT mid FROM drafts WHERE chat=? AND telegram_mid=? ORDER BY id DESC LIMIT 1',(chat,target['mid'])).fetchone()
+        end=draft['mid'] if draft else target['mid']-1
+        boundary=db.execute("SELECT MAX(mid) AS mid FROM messages WHERE chat=? AND role IN ('assistant','owner') AND mid<?",(chat,end+1)).fetchone()['mid']
+        bounds=((boundary+1) if boundary is not None else 0,end)
+    else:return None
+    sources=db.execute("SELECT text,at FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
+    now=time.time()
+    if not sources or len(sources)>60:return None
+    if any(not isinstance(r['at'],(int,float)) or not 0<=now-r['at']<=min(MAX_AGE,SESSION_GAP) for r in sources):return None
+    previous='\n'.join(r['text'] for r in sources if r['text'] and not is_acknowledgement(r['text']))
+    if not previous or len(previous)+len(text)>24000:return None
+    current=set(service_mentions(text,catalog));prior=set(service_mentions(previous,catalog))
+    if current and not current<=prior:return None
+    return previous+'\n'+text
+
+
 def resolve_request(db, chat, first, last, text, catalog=()):
     """Persist only message references. Deleted/expired content is not resurrected.
 
@@ -245,6 +293,10 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     bounded by the preceding draft. Never use generated draft text as evidence.
     """
     db.execute('CREATE TABLE IF NOT EXISTS request_context (chat INTEGER PRIMARY KEY, first_mid INTEGER, last_mid INTEGER)')
+    replied=_reply_client_context(db,chat,first,last,text,catalog)
+    if replied is not None:
+        db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
+        return replied
     text=_resolve_plural_reference(db,chat,first,text,catalog)
     if _has_apple_topic(text):
         text=_current_apple_details(text)
@@ -254,10 +306,11 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     from .catalog_context import _words,_contains
     service_only=_only_service_names(text,catalog)
     purpose_candidate=_purpose_answer_candidate(text,catalog)
+    reference_candidate=bool(re.search(r'\b(?:это|такое|эти\s+задачи|этой\s+задач[а-яё]*|для\s+этого|с\s+этим)\b',text,re.I))
     # Region-only replies are considered below only after examining prior client
     # content. A standalone region must never revive an unrelated service.
     region_candidate=_apple_details_candidate(text)
-    if not reminder and not followup and not region_candidate and not service_only and not purpose_candidate:
+    if not reminder and not followup and not region_candidate and not service_only and not purpose_candidate and not reference_candidate:
         db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
         return text
     pointer=db.execute('SELECT first_mid,last_mid FROM request_context WHERE chat=?',(chat,)).fetchone()
@@ -284,7 +337,7 @@ def resolve_request(db, chat, first, last, text, catalog=()):
         db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
         return '' if reminder else text
     if len(rows)>60:return '' if reminder else text
-    parts=[_resolve_plural_reference(db,chat,r['mid'],r['text'],catalog) for r in rows if r['text'] and not is_reminder(r['text'])
+    parts=[_resolve_plural_reference(db,chat,r['mid'],_reply_client_context(db,chat,r['mid'],r['mid'],r['text'],catalog) or r['text'],catalog) for r in rows if r['text'] and not is_reminder(r['text'])
            and not is_acknowledgement(r['text'])]
     previous=''
     for part in parts:
@@ -297,6 +350,8 @@ def resolve_request(db, chat, first, last, text, catalog=()):
         followup=True
     if not reminder:
         linked=_link_apple_turn(previous,text)
+        if linked is None and reference_candidate and _same_service_reference(text,previous,catalog):
+            linked=previous+'\n'+text
         if linked is None and service_only:
             previous_has_service=any(_contains(_words(previous),name) for name in _service_names(catalog))
             if not previous_has_service and (_dependent_followup(previous) or _contextual_followup(previous,catalog)):

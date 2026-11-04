@@ -33,10 +33,15 @@ def _code_help(name):
 def _selected_plan_rows(items,latest):
     """Prefer explicitly named complete plan labels, not unrelated variants."""
     from .catalog_context import _words
-    words=_words(latest)
+    # Transliteration of plan labels is shared by every service. Avoid Russian
+    # «про»: it is also a preposition, not evidence of choosing a Pro plan.
+    aliases={'плюс':'plus','макс':'max','го':'go','бизнес':'business',
+             'бейсик':'basic','бэйсик':'basic','премиум':'premium'}
+    canonical=lambda value:tuple(aliases.get(w,w) for w in _words(value))
+    words=canonical(latest)
     hits=[]
     for index,item in enumerate(items):
-        plan=_words(item.get('plan',''))
+        plan=canonical(item.get('plan',''))
         if not plan:continue
         for start in range(len(words)-len(plan)+1):
             if words[start:start+len(plan)]==plan:hits.append((start,start+len(plan),index))

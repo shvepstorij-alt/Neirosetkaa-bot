@@ -19,7 +19,7 @@ _TASKS = re.compile(
     r'видео[а-яё]*|изображени[а-яё]*|картин[а-яё]*|фото[а-яё]*|дизайн[а-яё]*|'
     r'анимац[а-яё]*|монтаж[а-яё]*|музык[а-яё]*|пес(?:ни|ен|ню)|озвуч[а-яё]*|голос[а-яё]*|'
     r'встреч[а-яё]*|созвон[а-яё]*|конференц[а-яё]*|вебинар[а-яё]*|звонк[а-яё]*|'
-    r'проект[а-яё]*|управлени[а-яё]*|планировани[а-яё]*|автоматизац[а-яё]*|интеграц[а-яё]*|'
+    r'консультант[а-яё]*|консультир[а-яё]*|проект[а-яё]*|управлени[а-яё]*|планировани[а-яё]*|автоматизац[а-яё]*|интеграц[а-яё]*|'
     r'api|sso|scim|saml|webhook|экспорт[а-яё]*|офлайн[а-яё]*|offline|'
     r'хранилищ[а-яё]*|запис[ьи][а-яё]*|субтитр[а-яё]*|презентац[а-яё]*)(?!\w)', re.I)
 
@@ -30,6 +30,8 @@ def is_selection_request(text, facts=None):
     if re.search(r'закуп|поставщик|себестоим|18\s*\+|порно|эротическ', text, re.I):
         return False
     if _UI_PROBLEM.search(text):return False
+    from .consultation_intent import context
+    if context(text, facts).get('active'):return True
     # Selecting an entry in the UI is not asking which plan fits one's tasks.
     navigation = re.search(r'(?:где|как)[^.!?\n]{0,45}выбрать[^.!?\n]{0,45}(?:в\s+боте|в\s+каталоге|кнопк)', text, re.I)
     advice = re.search(r'посовет|порекоменду|подойд[её]т|лучше|определиться|подобрать', text, re.I)
@@ -57,6 +59,8 @@ def has_selection_purpose(text):
     text = re.sub(r'(?:для\s+каких|какие|под\s+какие)\s+задач[а-яё]*', '', text, flags=re.I)
     text = re.sub(r'не\s+знаю[^.!?\n]{0,25}задач[а-яё]*', '', text, flags=re.I)
     if _TASKS.search(text):return True
+    if re.search(r'отвечать\s+(?:на\s+вопросы\s+)?клиент[а-яё]*|'
+                 r'(?:повседневн[а-яё]*|рабоч[а-яё]*)[^.!?\n]{0,25}вопрос[а-яё]*', text, re.I):return True
     if re.search(r'\d{1,5}\s*(?:участник[а-яё]*|сотрудник[а-яё]*|пользовател[а-яё]*|человек|мест|seat[s]?)', text, re.I):
         return True
     # An explicit intended action can be meaningful even for a service whose
@@ -68,6 +72,8 @@ def has_selection_purpose(text):
 
 def selection_reply(facts, text):
     """Return one friendly question only while the purpose is still missing."""
+    from .consultation_intent import context
+    if context(text, facts).get('active'):return None
     if not is_selection_request(text, facts) or has_selection_purpose(text):return None
     rows = facts.get('requested_catalog', [])
     count = len({str(row.get('service_key') or row.get('service')) for row in rows if isinstance(row, dict)})

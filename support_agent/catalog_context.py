@@ -11,7 +11,7 @@ ALIASES = {
     'appstore': ('appstore', 'app store', 'icloud', 'айклауд', 'apple id', 'эпл айди', 'эппл айди',
                  'аппстор', 'апп стор', 'эпл стор', 'эппл стор', 'эп стор', 'эп стора',
                  'апп стора', 'эпл стора', 'эппл стора', 'апстор', 'апстора', 'айтюнс', 'itunes'),
-    'chatgpt': ('chatgpt', 'chat gpt', 'чат гпт', 'чатгпт', 'чате гпт', 'чата гпт'),
+    'chatgpt': ('chatgpt', 'chat gpt', 'чат гпт', 'чатгпт', 'чате гпт', 'чата гпт', 'gpt', 'гпт'),
     'claude': ('claude', 'клод', 'клода', 'клоде', 'клоду'),
     'gemini': ('gemini','джемини','гемини'),
     'perplexity': ('perplexity', 'перплексити'),
@@ -131,6 +131,10 @@ def _select_variants(rows,latest):
         want_extra=explicit_extra or credit_word and (purchase or not plan)
         want_regular=(plan or bool(re.search(r'подписк',rest,re.I))
                       or not want_extra and bool(re.search(r'тариф|(?<!\w)план[а-яё]*(?!\w)',rest,re.I)))
+        # Task-oriented consultation concerns the service subscription, not a
+        # separately sold credit top-up that merely shares its brand name.
+        if not credit_word and re.search(r'подробн|подойд|посовет|рекоменд|консульт|работ|фото|видео|выбор|выбрать',rest,re.I):
+            want_regular=True
         coordinated=bool(re.search(r'[,;]|\b(?:и|оба|обе|также|ещ[её])\b',latest,re.I))
         if explicit_extra and coordinated and any(_contains(_words(rest),_words(r.get('service'))) for r in regular):
             want_regular=True
@@ -293,7 +297,7 @@ def verified_catalog_reply(facts, reason):
     from .workflow_policy import policies_for,route_evidence,instruction_for,policy_scope_issue
     policies=policies_for(facts)
     if lines:
-        parts.append('Тарифы магазина:\n'+'\n'.join(lines)+'\nЦены до применения промокода и списания монет.')
+        parts.append('Тарифы магазина:\n'+'\n'.join(lines))
         if len(lines)<len(all_lines):
             parts.append('Есть и другие тарифы. Подскажите, какой сервис и план разобрать подробнее?')
     for policy in policies:
@@ -329,7 +333,7 @@ def verified_catalog_reply(facts, reason):
                     if len(quotes)>=4 or quote_size+len(line)>350:break
                     quotes.append(line);quote_size+=len(line)+1
         if quotes:
-            parts.append('Пополнение App Store:\n'+'\n'.join(quotes)+'\nЭто часть доступных номиналов. Цены до промокода и списания монет.')
+            parts.append('Пополнение App Store:\n'+'\n'.join(quotes)+'\nЭто часть доступных номиналов.')
         elif known:
             parts.append('Регион Apple ID: '+', '.join(known)+'. Актуальную цену конкретного номинала пока не удалось подтвердить.')
         question=('Подскажите стоимость нужной покупки в валюте аккаунта и текущий баланс Apple ID.' if known else

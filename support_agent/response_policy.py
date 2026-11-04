@@ -120,6 +120,7 @@ def consultation_plan(latest, plan, facts=None):
 def natural_reply(reply):
     """Plain customer punctuation; retain identifiers, prices and line breaks."""
     reply=re.sub(r'^Тарифы магазина:\s*\n','',reply)
+    reply=re.sub(r'(?im)^\s*Цены до (?:применения промокода и списания монет|промокода и списания монет)\.?\s*$', '',reply)
     reply=re.sub(r'^([^\n·]+) · ([^\n]+?) — (\d[^\n]*₽)\s*$',r'\1 \2: \3',reply,flags=re.M)
     reply=re.sub(r'(?<=\S)[ \t]+·[ \t]+(?=\S)',' ',reply)
     return reply.replace('—','-').replace('–','-')
