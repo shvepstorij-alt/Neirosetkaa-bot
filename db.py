@@ -254,6 +254,17 @@ async def init_db():
         """)
         # Лог премиум-реферальных начислений (для месячного лимита и аудита)
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS admin_coin_grants (
+                request_id TEXT PRIMARY KEY,
+                admin_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                amount INTEGER NOT NULL CHECK (amount > 0),
+                reason TEXT NOT NULL,
+                balance_after NUMERIC(12,2),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS ref_premium_log (
                 id          SERIAL PRIMARY KEY,
                 referrer_id BIGINT NOT NULL,
@@ -1594,10 +1605,10 @@ async def load_prices_from_db():
                 if k not in SHOP_CATALOG:
                     SHOP_CATALOG[k] = {
                         "_key":  k,
-                        "name":  code_svc.get("name",  r["service_name"]),
-                        "emoji": code_svc.get("emoji", r["emoji"]),
+                        "name":  r["service_name"] or code_svc.get("name", k),
+                        "emoji": r["emoji"] if r["emoji"] is not None else code_svc.get("emoji", ""),
                         "emoji_id": code_svc.get("emoji_id", "") or CUSTOM_EMOJI_IDS.get(k, ""),
-                        "desc":  code_svc.get("desc",  r["service_desc"]),
+                        "desc":  r["service_desc"] if r["service_desc"] is not None else code_svc.get("desc", ""),
                         "plans": []
                     }
                 plan_idx = r["plan_idx"]
@@ -1613,10 +1624,11 @@ async def load_prices_from_db():
                     {}
                 )
                 SHOP_CATALOG[k]["plans"].append({
-                    "name":  code_plan.get("name",  r["plan_name"]),
+                    "name":  r["plan_name"],
+                    "_db_plan_idx": plan_idx,
                     "price": r["price"],   # цена — из БД (сохраняет правки через /admin)
                     "stars": r["stars"],
-                    "desc":  code_plan.get("desc",  r["plan_desc"]),
+                    "desc":  r["plan_desc"] if r["plan_desc"] is not None else code_plan.get("desc", ""),
                 })
 
             # _nsgifts-сервисы (App Store / NS Gifts) живут только в коде (без тарифов в БД),
@@ -1632,7 +1644,7 @@ async def load_prices_from_db():
             # Синхронизируем описания из кода обратно в БД (чтобы не устаревали)
             for key, svc in _code_catalog.items():
                 await conn.execute(
-                    "UPDATE bot_shop_items SET service_name=$1, emoji=$2, "
+                    "UPDATE bot_shop_items SET service_name=COALESCE(NULLIF(service_name,''),$1), emoji=COALESCE(emoji,$2), "
                     "service_desc=CASE WHEN service_desc IS NULL OR service_desc='' THEN $3 ELSE service_desc END "
                     "WHERE key=$4",
                     svc["name"], svc.get("emoji", ""), svc.get("desc", ""), key
@@ -1673,6 +1685,15 @@ async def load_prices_from_db():
                 _apply_desc_override_to_memory(_o["key"], _o["plan_name"] or "", _o["descr"] or "")
         except Exception as _e:
             logging.error(f"apply shop_desc_overrides: {_e}")
+
+        # Explicit admin edits belong to a stable DB plan ID, not a shared
+        # display name; preserve empty texts and duplicate-name variants.
+        _admin_desc = {r['key']:r['value'] for r in await conn.fetch(
+            "SELECT key,value FROM settings WHERE key LIKE 'admin_plan_desc:%'")}
+        for _k,_svc in SHOP_CATALOG.items():
+            for _p in _svc.get('plans',[]):
+                _setting = f'admin_plan_desc:{_k}:{_p.get("_db_plan_idx")}'
+                if _setting in _admin_desc:_p['desc'] = _admin_desc[_setting]
 
         # Часть 36: разовый перевод цен генераций на «закуп + ~40%». Цены в
         # bot_gen_prices перекрывают код, поэтому без этой миграции новые цены

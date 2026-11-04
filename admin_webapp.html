@@ -387,7 +387,7 @@ window._navN=0;window._apiStale=false;
    выплату» дважды — две выплаты. Теперь такой же запрос, пока первый не
    вернулся, не отправляется. Чтения (загрузка экранов) не трогаем.
    Ревью 06.10.2026. */
-var _MUT_RE=/\/api\/admin\/(promo-create|promo-deactivate|plan-add|plan-delete|service-add|service-delete|balance|block|referral-set|feed-order-action|order-action|order-delete|shop-order-action|add-codes|release-codes|code-delete|claude-code-action|broadcast|prices-save|recs-save|shopcats-save|shopdisplay-save|catsmeta-save|logo-save|logo-del|banners-save|banner-media|packs-save|model-price|setting-save|svc-save|claude-provider|nsg-product|nsg-bulk|giveaway-action|fin-settings)$/;
+var _MUT_RE=/\/api\/admin\/(promo-create|promo-deactivate|plan-add|plan-delete|service-add|service-delete|balance|coins-grant|catalog\/edit|block|referral-set|feed-order-action|order-action|order-delete|shop-order-action|add-codes|release-codes|code-delete|claude-code-action|broadcast|prices-save|recs-save|shopcats-save|shopdisplay-save|catsmeta-save|logo-save|logo-del|banners-save|banner-media|packs-save|model-price|setting-save|svc-save|claude-provider|nsg-product|nsg-bulk|giveaway-action|fin-settings)$/;
 var _MUT_PARTNER=['add','remove','payout','promo_set','fee_set','rate_set','bcstart'];
 var _inflight={};
 function _isMut(path,body){
@@ -410,8 +410,14 @@ function api(path,body){var tg=window.Telegram&&window.Telegram.WebApp;body=body
   }
   body.initData=tg?tg.initData:"";
   var n0=window._navN;
-  var P=fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}})
-    .then(function(d){if(mkey)delete _inflight[mkey];return d;});
+  var options={method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},timer=null;
+  /* A timed-out coin grant is uncertain, not failed: retry uses the SAME UUID.
+     Abort also releases the ordinary in-flight lock so recovery is possible. */
+  if(path==='/api/admin/coins-grant'&&typeof AbortController!=='undefined'){
+    var ctl=new AbortController();options.signal=ctl.signal;timer=setTimeout(function(){ctl.abort();},30000);
+  }
+  var P=fetch(path,options).then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}})
+    .then(function(d){if(timer)clearTimeout(timer);if(mkey)delete _inflight[mkey];return d;});
   return {then:function(f,g){return P.then(function(d){
     var prev=window._apiStale;window._apiStale=(window._navN!==n0);
     try{return f?f(d):d;}finally{window._apiStale=prev;}
@@ -539,7 +545,8 @@ function userCardHtml(u){
      Внешний аудит 29.09.2026, повторная проверка. */
   var name=u.username?('@'+esc(u.username)):(u.name?esc(u.name):('ID '+esc(u.id)));
   return '<div class="block" style="margin-top:14px"><div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><div class="ic" style="width:44px;height:44px;font-size:20px"><i class="ti ti-user"></i></div><div><div style="font-size:15px;font-weight:600">'+name+'</div><div class="sub">ID '+u.id+(u.created?' · с '+u.created:'')+'</div></div></div>'+
-    '<div class="kv"><span class="k">Баланс</span><span>'+nf(u.credits)+' кр</span></div>'+
+    '<div class="kv"><span class="k">Кредиты генераций</span><span>'+nf(u.credits)+' кр</span></div>'+
+    '<div class="kv"><span class="k">Монетки магазина</span><span>'+(u.coins==null?'не загружены':nf(u.coins)+' 🪙')+'</span></div>'+
     '<div class="kv"><span class="k">Покупок</span><span>'+u.purchases+' на '+nf(u.spent)+' ₽</span></div>'+
     '<div class="kv"><span class="k">Статус</span><span class="tag '+(u.blocked?'r':'g')+'">'+(u.blocked?'заблокирован':'активен')+'</span></div>'+
     (u.refPremium?'<div class="kv"><span class="k">Премиум-реферал</span><span>'+(u.refPct!=null?u.refPct+'%':'да')+'</span></div>':'')+
@@ -551,7 +558,8 @@ function userCardHtml(u){
     '<div class="kv"><span class="k">Пришёл по ссылке</span><span>'
       +(u.invitedBy?esc(u.invitedBy.user):'сам')+'</span></div>'+'</div>'+
     (u.refsCount?'<button class="btn sec" onclick="_refKids('+u.id+')">👥 Показать приглашённых ('+u.refsCount+')</button>':'')+
-    '<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return balForm(\'add\',\''+u.id+'\')})">Начислить</button><button class="btn row2 danger" onclick="toggleBlock('+u.id+','+(u.blocked?'false':'true')+')">'+(u.blocked?'Разблокировать':'Заблокировать')+'</button></div>';
+    '<button class="btn sec" onclick="coinGrantOpen(\''+u.id+'\')">🪙 Начислить монетки</button>'+
+    '<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return balForm(\'add\',\''+u.id+'\')})">Начислить кредиты</button><button class="btn row2 danger" onclick="toggleBlock('+u.id+','+(u.blocked?'false':'true')+')">'+(u.blocked?'Разблокировать':'Заблокировать')+'</button></div>';
 }
 function toggleBlock(id,block){toast('…');api('/api/admin/block',{id:id,block:block}).then(function(d){toast(d.ok?(block?'Заблокирован':'Разблокирован'):'Ошибка');if(d.ok&&window._curUser){window._curUser.blocked=block;var el=document.getElementById('findres');if(el)el.innerHTML=userCardHtml(window._curUser);}});}
 
@@ -667,8 +675,115 @@ SCREENS["Балансы"]=function(){
   var ops=[["💰","Начислить кредиты","add"],["➖","Снять кредиты","deduct"],["✏️","Установить баланс","set"]];
   var h=hdr("Балансы")+'<div class="wrap">';
   ops.forEach(function(o){h+='<div class="row" onclick="leaf(function(){return balForm(\''+o[2]+'\',\'\')})"><span class="ic">'+o[0]+'</span><div><div class="lbl2">'+o[1]+'</div></div><span class="chev">›</span></div>'});
-  return h+'<div class="note">Введи ID пользователя и сумму — операция применяется сразу.</div></div>';
+  return h+'<div class="row" onclick="coinGrantOpen(\'\')"><span class="ic">🪙</span><div><div class="lbl2">Начислить монетки магазина</div><div class="sub">Отдельно от кредитов генераций</div></div><span class="chev">›</span></div><div class="note">Монетки используются при покупке товаров. Кредиты — для генераций в боте.</div></div>';
 };
+/* One unresolved grant survives navigation/reload. No auth data is persisted. */
+var _COIN_GRANT_KEY='adminCoinGrantPending_v1';
+function coinGrantBalance(value){return typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=99999999.99;}
+function coinGrantStored(){
+  try{
+    var p=JSON.parse(sessionStorage.getItem(_COIN_GRANT_KEY)||'null');
+    if(p&&/^\d{1,16}$/.test(String(p.id))&&Number.isSafeInteger(p.amount)&&p.amount>0&&p.amount<=1000000
+      &&typeof p.reason==='string'&&p.reason.length>0&&p.reason.length<=240
+      &&/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(p.request_id))return p;
+  }catch(e){}
+  return null;
+}
+function coinGrantUUID(){
+  if(!window.crypto||!window.crypto.getRandomValues)return null;
+  var a=new Uint8Array(16);window.crypto.getRandomValues(a);a[6]=(a[6]&15)|64;a[8]=(a[8]&63)|128;
+  var h=Array.from(a,function(n){return n.toString(16).padStart(2,'0')}).join('');
+  return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
+}
+function coinGrantOpen(uid){leaf(function(){return coinGrantForm(uid)});}
+function coinGrantForm(uid){
+  var pending=coinGrantStored();
+  window._coinGrant=pending?{payload:pending,uncertain:true,busy:false}:{user:null,busy:false};
+  setTimeout(function(){if(pending)coinGrantRender();else if(uid)coinGrantFind(String(uid));},0);
+  return hdr('Начислить монетки','монетки магазина, не кредиты генераций')
+    +'<div class="wrap" id="coin_grant_body"><label class="fl">Telegram ID или @ник клиента</label>'
+    +'<input class="f" id="coin_grant_q" placeholder="431818619 или @nick"/>'
+    +'<button class="btn sec" onclick="coinGrantFind()">Найти клиента</button><div id="coin_grant_status"></div></div>';
+}
+function coinGrantFind(query){
+  var state=window._coinGrant;
+  if(!state||state.busy||state.payload)return;
+  query=(query||fv('coin_grant_q')).trim();
+  if(!query){toast('Введите ID или @ник клиента');return;}
+  var status=document.getElementById('coin_grant_status');if(status)status.textContent='Проверяю клиента…';
+  state.busy=true;
+  api('/api/admin/user-find',{q:query}).then(function(d){
+    state.busy=false;
+    if(window._coinGrant!==state||window._apiStale)return;
+    if(!d||!d.ok||!d.user){if(status)status.textContent=(d&&d.msg)||'Этап: поиск клиента. Ответ сервера не получен; получатель не подтверждён.';return;}
+    var u=d.user;
+    if(!/^\d{1,16}$/.test(String(u.id))||!coinGrantBalance(u.coins)){
+      if(status)status.textContent='Этап: проверка получателя. ID или баланс монет не подтверждён; начисление недоступно.';return;
+    }
+    state.user={id:String(u.id),label:u.username?'@'+u.username:(u.name||'Клиент'),coins:u.coins};
+    coinGrantRender();
+  });
+}
+function coinGrantRender(){
+  var s=window._coinGrant,el=document.getElementById('coin_grant_body');if(!s||!el)return;
+  var p=s.payload,u=s.user||{},h='';
+  if(s.done){
+    h='<div class="block"><h4>Монетки начислены</h4><div class="kv"><span>Получатель</span><b>ID '+esc(s.done.id)+'</b></div>'
+      +'<div class="kv"><span>Начислено этой операцией</span><b>'+nf(s.done.amount)+' 🪙</b></div>'
+      +'<div class="kv"><span>Подтверждённый баланс</span><b>'+nf(s.done.balance)+' 🪙</b></div>'
+      +(s.done.replayed?'<div class="note">Подтверждён результат ранее отправленной операции. Повторного начисления нет.</div>':'')+'</div>'
+      +'<button class="btn sec" onclick="coinGrantOpen(\''+s.done.id+'\')">Новое начисление</button>'
+      +'<button class="btn sec" onclick="userOpen(\''+s.done.id+'\')">Карточка клиента</button>';
+  }else if(p){
+    h='<div class="block"><h4>'+(s.uncertain?'Проверить незавершённое начисление':'Проверьте начисление')+'</h4>'
+      +'<div class="kv"><span>Получатель</span><b>'+esc(u.label||'Клиент')+' · ID '+esc(p.id)+'</b></div>'
+      +'<div class="kv"><span>Добавить монеток</span><b>'+nf(p.amount)+' 🪙</b></div>'
+      +(coinGrantBalance(u.coins)?'<div class="kv"><span>Баланс при проверке</span><span>'+nf(u.coins)+' 🪙</span></div>':'')
+      +'<div class="note">Причина: '+esc(p.reason)+'</div>'
+      +'<div class="note">'+(s.uncertain?'Ответ не подтверждён. Повторяем только эту же операцию с тем же номером, чтобы не начислить дважды.':'Получатель и сумма проверены. Кредиты генераций не изменятся.')+'</div></div>'
+      +(s.error?'<div class="note neg">'+esc(s.error)+'</div>':'')
+      +'<button class="btn" id="coin_grant_send" '+(s.busy?'disabled':'')+' onclick="coinGrantSend()">'
+      +(s.busy?'Проверяю…':s.uncertain?'Проверить результат без повторного начисления':'Начислить '+nf(p.amount)+' монеток')+'</button>';
+    if(!s.uncertain&&!s.busy)h+='<button class="btn sec" onclick="coinGrantEdit()">Изменить сумму или причину</button>';
+  }else if(u.id){
+    h='<div class="block"><b>'+esc(u.label)+'</b><div class="sub">ID '+esc(u.id)+'</div>'
+      +'<div class="kv"><span>Монетки магазина</span><b>'+nf(u.coins)+' 🪙</b></div></div>'
+      +'<label class="fl">Начислить монеток</label><input class="f" id="coin_grant_amount" inputmode="numeric" placeholder="100" maxlength="7"/>'
+      +'<label class="fl">Причина начисления</label><textarea class="f" id="coin_grant_reason" maxlength="240" placeholder="Например, компенсация по заказу"></textarea>'
+      +'<button class="btn" onclick="coinGrantReview()">Проверить получателя и сумму</button>'
+      +'<div class="note">От 1 до 1 000 000 монеток. Это монетки магазина, а не кредиты для генераций. Сообщение клиенту автоматически не отправляется.</div>';
+  }
+  el.innerHTML=h;
+}
+function coinGrantReview(){
+  var s=window._coinGrant;if(!s||s.busy||s.payload||!s.user)return;
+  var amount=fv('coin_grant_amount'),reason=fv('coin_grant_reason').trim();
+  if(!/^[1-9]\d{0,6}$/.test(amount)||Number(amount)>1000000){toast('Укажите целое число от 1 до 1 000 000');return;}
+  if(!reason||reason.length>240){toast('Укажите причину: от 1 до 240 символов');return;}
+  var id=coinGrantUUID();if(!id){toast('Этап: подготовка операции. Браузер не поддерживает безопасный уникальный номер.');return;}
+  s.payload={id:s.user.id,amount:Number(amount),reason:reason,request_id:id};s.uncertain=false;coinGrantRender();
+}
+function coinGrantEdit(){var s=window._coinGrant;if(!s||s.busy||s.uncertain)return;s.payload=null;coinGrantRender();}
+function coinGrantSend(){
+  var s=window._coinGrant;if(!s||s.busy||!s.payload||s.done)return;
+  var p=s.payload;
+  try{sessionStorage.setItem(_COIN_GRANT_KEY,JSON.stringify(p));}
+  catch(e){s.error='Этап: сохранение номера операции. Браузер запретил временное хранилище; запрос не отправлен.';coinGrantRender();return;}
+  s.busy=true;s.uncertain=true;s.error='';coinGrantRender();
+  api('/api/admin/coins-grant',Object.assign({},p)).then(function(d){
+    s.busy=false;
+    if(d&&d.ok&&d.request_id===p.request_id&&coinGrantBalance(d.balance)){
+      try{sessionStorage.removeItem(_COIN_GRANT_KEY);}catch(e){}
+      s.done={id:p.id,amount:p.amount,balance:d.balance,replayed:!!d.replayed};
+      if(window._curUser&&String(window._curUser.id)===p.id)window._curUser.coins=d.balance;
+      if(window._uc&&window._uc.user&&String(window._uc.user.id)===p.id)window._uc.user.coins=d.balance;
+    }else{
+      if(d&&d.applied===false){s.uncertain=false;try{sessionStorage.removeItem(_COIN_GRANT_KEY);}catch(e){}}
+      s.error=(d&&d.msg)||'Этап: подтверждение начисления. Ответ не получен или не содержит подтверждённого результата; первопричина не установлена. Используйте проверку этой же операции.';
+    }
+    if(window._coinGrant===s&&!window._apiStale)coinGrantRender();
+  });
+}
 function balForm(op,preid){
   var titles={add:"Начислить кредиты",deduct:"Снять кредиты",set:"Установить баланс"};
   return hdr(titles[op]||"Баланс")+'<div class="wrap"><label class="fl">Telegram ID</label><input class="f" id="bal_id" inputmode="numeric" value="'+(preid||'')+'" placeholder="431818619"/><label class="fl">Кредиты</label><input class="f" id="bal_amt" inputmode="numeric" placeholder="100"/><button class="btn" onclick="doBalance(\''+op+'\')">Применить</button><div id="balres"></div></div>';
@@ -1477,7 +1592,7 @@ function loadPriceShop(){
     window._pricesData=d;
     var h='<div class="glabel">🛒 Сервисы ('+d.services.length+')</div>';
     d.services.forEach(function(s){
-      h+='<div class="row" onclick="leaf(function(){return planEdit(\''+s.key+'\')})"><span class="ic">'+(s.emoji||'🏷️')+'</span><div><div class="lbl2">'+s.name+'</div><div class="sub">'+s.plans.length+' тариф(ов)</div></div><span class="chev">›</span></div>';
+      h+='<div class="row" onclick="leaf(function(){return planEdit(\''+s.key+'\')})"><span class="ic">'+esc(s.emoji||'🏷️')+'</span><div><div class="lbl2">'+esc(s.name)+'</div><div class="sub">'+s.plans.length+' тариф(ов)</div></div><span class="chev">›</span></div>';
     });
     el.innerHTML=h;
   });
@@ -1526,13 +1641,23 @@ function planEdit(key){
   var d=window._pricesData||{services:[]};
   var s=d.services.filter(function(x){return x.key===key})[0];
   if(!s)return hdr("Тариф")+'<div class="wrap"><div class="note">Открой раздел заново.</div></div>';
-  var h=hdr(s.name,"цены и описания")+'<div class="wrap">';
-  h+='<label class="fl" style="margin-top:0">Описание сервиса</label><textarea class="f" id="pe_svcdesc" style="min-height:80px">'+(s.desc||'')+'</textarea>';
+  var safe=function(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');};
+  var canRename=typeof s.revision==='string'&&s.revision.length>0&&(s.plans||[]).every(function(p){return Number.isInteger(p.planId);});
+  var h=hdr(s.name,"сервис и тарифы")+'<div class="wrap">';
+  if(canRename){h+='<label class="fl" style="margin-top:0">Название сервиса</label><input class="f" id="pe_svcname" maxlength="120" value="'+safe(s.name)+'"/><label class="fl">Эмодзи</label><input class="f" id="pe_svcemoji" maxlength="32" value="'+safe(s.emoji||'')+'"/>';}
+  else{h+='<div class="note">Цены и описания можно изменить здесь. Для переименования нужна актуальная версия сервера с идентификаторами тарифов.</div>';}
+  h+='<label class="fl">Описание сервиса</label><textarea class="f" id="pe_svcdesc" maxlength="12000" style="min-height:80px">'+safe(s.desc||'')+'</textarea>';
   window._peKey=key; if(window._niceMode===undefined)window._niceMode='round';
   h+='<div class="block"><div class="mlab">🧮 Онлайн-калькулятор цен</div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Курс ₽/$</div><input class="f" id="pe_rate_'+key+'" inputmode="decimal" value="'+(d.rate||'')+'" oninput="mkPreview(\''+key+'\')"/></div><div style="flex:1"><div class="mlab">Наценка %</div><input class="f" id="pe_mk_'+key+'" inputmode="numeric" placeholder="30" oninput="mkPreview(\''+key+'\')"/></div></div><div class="mlab" style="margin-top:8px">Округление</div><div class="seg" id="pe_round_'+key+'">'+roundSegInner(window._niceMode,'peRound')+'</div><div id="pe_prev_'+key+'" style="margin-top:10px"></div><button class="btn sec" style="margin-top:10px" onclick="applyMarkup(\''+key+'\')">↻ Применить к тарифам</button><div class="note">Считает вживую. «Применить» подставит цены в поля — потом «💾 Сохранить».</div></div>';
   setTimeout(function(){mkPreview(key)},0);
   plansByPrice(s.plans).forEach(function(p){
-    h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-name="'+(p.name||'').replace(/"/g,'&quot;')+'"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600">'+p.name+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></span><button class="btn row2 danger" style="width:auto;margin:0;padding:5px 10px;font-size:11px" onclick="delPlan(\''+key+'\',\''+(p.name||'').replace(/\x27/g,'')+'\')">Удалить</button></div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div><div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" style="min-height:70px">'+(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
+    var deleteName=encodeURIComponent(String(p.name||'')).replace(/'/g,'%27');
+    var nameEditable=canRename&&p.renameEditable!==false;
+    h+='<div class="block" data-key="'+key+'" data-idx="'+p.idx+'" data-plan-id="'+(canRename?p.planId:'')+'" data-name="'+safe(p.name)+'"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600">'+safe(p.name)+' <span class="'+(p.margin>=20?'pos':'neg')+'" style="font-size:11px;font-weight:400">маржа '+p.margin+'%</span></span><button class="btn row2 danger" style="width:auto;margin:0;padding:5px 10px;font-size:11px" onclick="delPlan(\''+key+'\',decodeURIComponent(\''+deleteName+'\'))">Удалить</button></div>'
+      +(canRename?'<div class="mlab">Название тарифа</div><input class="f pe-name" maxlength="120" value="'+safe(p.name)+'"'+(nameEditable?'':' disabled')+'/>'+(nameEditable?'':'<div class="note">'+safe(p.renameReason||'Переименование этого тарифа недоступно: название связано с оформлением заказа. Цена, закуп, описание и ручная выдача редактируются ниже.')+'</div>'):'')
+      +'<div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Цена ₽</div><input class="f pe-price" value="'+p.price+'" inputmode="numeric"/></div><div style="flex:1"><div class="mlab">Закуп $</div><input class="f pe-cost" value="'+p.costUsd+'" inputmode="decimal"/></div></div>'
+      +(key==='chatgpt'?'<div style="display:flex;gap:8px;margin-top:8px"><div style="flex:1"><div class="mlab">Закуп Филиппины $</div><input class="f pe-cost-ph" placeholder="как общий" value="'+safe(p.costPh||'')+'" inputmode="decimal"/></div><div style="flex:1"><div class="mlab">Закуп iOS $</div><input class="f pe-cost-ios" placeholder="как общий" value="'+safe(p.costIos||'')+'" inputmode="decimal"/></div></div><div class="note">Пусто или 0: использовать общий закуп тарифа.</div>':'')
+      +'<div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" maxlength="12000" style="min-height:70px">'+safe(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
   });
   return h+'<button class="btn sec" onclick="leaf(function(){return planAdd(\''+key+'\')})">➕ Добавить тариф</button><button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
 }
@@ -1581,42 +1706,67 @@ function applyMarkup(key){
   toast(n?('Пересчитано: '+n+(miss?(' · без закупа: '+miss):'')+' — проверь и «Сохрани»'):'Заполни «Закуп $» у тарифов');
 }
 function planEditSnapshot(key){
-  var items=[];
+  var items=[],service=((window._pricesData||{}).services||[]).filter(function(s){return s.key===key;})[0];
+  var stable=service&&typeof service.revision==='string'&&service.revision.length>0&&(service.plans||[]).every(function(p){return Number.isInteger(p.planId);});
   document.querySelectorAll('#app [data-key="'+key+'"]').forEach(function(b){
-    items.push({key:key,idx:+b.getAttribute('data-idx'),name:b.getAttribute('data-name'),price:b.querySelector('.pe-price').value,costUsd:b.querySelector('.pe-cost').value,desc:b.querySelector('.pe-desc').value,manual:b.querySelector('.pe-man').classList.contains('on')});
+    var item={key:key,idx:+b.getAttribute('data-idx'),name:b.getAttribute('data-name'),price:b.querySelector('.pe-price').value,costUsd:b.querySelector('.pe-cost').value,desc:b.querySelector('.pe-desc').value,manual:b.querySelector('.pe-man').classList.contains('on')};
+    if(key==='chatgpt'){var ph=b.querySelector('.pe-cost-ph'),ios=b.querySelector('.pe-cost-ios');if(ph)item.costPh=ph.value;if(ios)item.costIos=ios.value;}
+    if(stable){var rawId=b.getAttribute('data-plan-id');item.planId=/^\d+$/.test(rawId||'')?Number(rawId):NaN;item.newName=(b.querySelector('.pe-name')||{}).value;}
+    items.push(item);
   });
-  return {items:items,svcKey:key,svcDesc:(document.getElementById('pe_svcdesc')||{}).value};
+  var snapshot={items:items,svcKey:key,svcDesc:(document.getElementById('pe_svcdesc')||{}).value};
+  if(stable){snapshot.revision=service.revision;snapshot.svcName=(document.getElementById('pe_svcname')||{}).value;snapshot.svcEmoji=(document.getElementById('pe_svcemoji')||{}).value;}
+  return snapshot;
 }
 function cachePlanEditSnapshot(key,snapshot){
   var d=window._pricesData||{services:[]};
   var service=(d.services||[]).filter(function(s){return s.key===key;})[0];if(!service)return;
   service.desc=snapshot.svcDesc;
+  if(snapshot.revision){service.name=snapshot.svcName;service.emoji=snapshot.svcEmoji;}
   snapshot.items.forEach(function(item){
     var plan=(service.plans||[]).filter(function(p){return p.idx===item.idx&&p.name===item.name;})[0];if(!plan)return;
     var price=Number(String(item.price).replace(',','.')),cost=Number(String(item.costUsd).replace(',','.'));
     if(isFinite(price))plan.price=price;if(isFinite(cost))plan.costUsd=cost;
+    ['costPh','costIos'].forEach(function(field){if(item[field]!==undefined){var value=Number(String(item[field]||'0').replace(',','.'));if(isFinite(value))plan[field]=value;}});
     plan.desc=item.desc;plan.manual=item.manual;
+    if(item.newName!==undefined)plan.name=item.newName;
   });
 }
 function savePlanEdit(key){
   window._peSaving=window._peSaving||{};
   if(window._peSaving[key]){toast('Сохранение уже идёт, дождись результата');return;}
   var snapshot=planEditSnapshot(key),signature=JSON.stringify(snapshot);
+  var validation='';
+  if(snapshot.revision&&(!String(snapshot.svcName||'').trim()||String(snapshot.svcName).trim().length>120)){validation='Название сервиса: от 1 до 120 символов';}
+  snapshot.items.forEach(function(item){
+    var price=Number(String(item.price||'').replace(',','.')),cost=Number(String(item.costUsd||'0').replace(',','.'));
+    if(!String(item.price||'').trim()||!Number.isInteger(price)||price<=0)validation='Цена тарифа должна быть целым числом больше нуля';
+    if(!isFinite(cost)||cost<0)validation='Закуп должен быть числом не меньше нуля';
+    ['costPh','costIos'].forEach(function(field){if(item[field]!==undefined){var value=Number(String(item[field]||'0').replace(',','.'));if(!isFinite(value)||value<0)validation='Закуп по маршруту должен быть числом не меньше нуля';}});
+    if(snapshot.revision&&(!String(item.newName||'').trim()||String(item.newName).trim().length>120))validation='Название тарифа: от 1 до 120 символов';
+    if(snapshot.revision&&!Number.isInteger(item.planId))validation='Не получен идентификатор тарифа. Открой раздел заново';
+  });
+  if(validation){toast(validation);return;}
+  var path='/api/admin/prices-save',payload=snapshot;
+  if(snapshot.revision){
+    path='/api/admin/catalog/edit';payload={key:key,revision:snapshot.revision,serviceName:String(snapshot.svcName).trim(),emoji:String(snapshot.svcEmoji||'').trim(),serviceDesc:snapshot.svcDesc||'',plans:snapshot.items.map(function(item){var plan={planId:item.planId,name:String(item.newName).trim(),price:Number(String(item.price).replace(',','.')),costUsd:Number(String(item.costUsd||'0').replace(',','.')),desc:item.desc,manual:item.manual};if(key==='chatgpt')['costPh','costIos'].forEach(function(field){if(item[field]!==undefined)plan[field]=Number(String(item[field]||'0').replace(',','.'));});return plan;})};
+  }
   var editor=document.getElementById('pe_svcdesc');
   window._peSaving[key]=true;toast('Сохраняю…');
-  return api('/api/admin/prices-save',snapshot).then(function(d){
-    if(!d||!d.ok){toast((d&&d.msg)||'Ошибка сохранения');return;}
+  return api(path,payload).then(function(d){
+    if(!d||!d.ok){toast((d&&(d.msg||d.error))||'Этап сохранения: сервер не подтвердил изменения');return;}
     cachePlanEditSnapshot(key,snapshot);
     return api('/api/admin/prices',{}).then(function(pd){
-      if(pd&&pd.ok)window._pricesData=pd;
       var sameScreen=editor&&document.getElementById('pe_svcdesc')===editor&&window._peKey===key;
-      if(pd&&pd.ok&&sameScreen&&JSON.stringify(planEditSnapshot(key))===signature){
+      var unchanged=sameScreen&&JSON.stringify(planEditSnapshot(key))===signature;
+      if(pd&&pd.ok)window._pricesData=pd;
+      if(pd&&pd.ok&&unchanged){
         app.innerHTML=planEdit(key);toast('Сохранено ✓');
       }else if(sameScreen){
         toast('Сохранено ✓ Новые правки оставлены. Порядок обновится при открытии');
       }else{toast('Сохранено ✓');}
     });
-  }).catch(function(){toast('Не удалось обновить результат. Проверь сохранение при открытии раздела');})
+  }).catch(function(){toast('Этап сохранения или обновления: соединение прервано, результат неизвестен. Открой раздел заново перед повтором');})
     .then(function(){delete window._peSaving[key];});
 }
 function planAdd(key){return hdr("Новый тариф")+'<div class="wrap"><label class="fl">Название тарифа</label><input class="f" id="pa_name" placeholder="Pro"/><label class="fl">Цена ₽</label><input class="f" id="pa_price" inputmode="numeric" placeholder="1990"/><label class="fl">Закуп $ (себестоимость)</label><input class="f" id="pa_cost" inputmode="decimal" placeholder="0"/><div class="note">Можно оставить пустым и заполнить позже. Используется для расчёта себестоимости и маржи.</div><button class="btn" onclick="doPlanAdd(\''+key+'\')">Создать</button></div>';}
@@ -4109,7 +4259,8 @@ function _ucLoad(uid,nav){
     if((d.warnings||[]).length)h+='<div class="note neg">⚠️ '+d.warnings.map(esc).join('<br>')+'</div>';
     /* Действия */
     h+='<button class="btn" onclick="'+(u.username?('tgLink(\''+String(u.username).replace(/[^A-Za-z0-9_]/g,'')+'\')'):('tgLinkId(\''+u.id+'\')'))+'">✍️ Написать</button>'
-      +'<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return balForm(\'add\',\''+u.id+'\')})">💰 Начислить</button>'
+      +'<button class="btn sec" onclick="coinGrantOpen(\''+u.id+'\')">🪙 Начислить монетки магазина</button>'
+      +'<div class="btns2"><button class="btn row2 sec" onclick="leaf(function(){return balForm(\'add\',\''+u.id+'\')})">💰 Начислить кредиты</button>'
       +'<button class="btn row2 '+(u.blocked?'sec':'danger')+'" onclick="_ucBlock('+u.id+','+(u.blocked?'false':'true')+')">'+(u.blocked?'Разблокировать':'Заблокировать')+'</button></div>';
     el.innerHTML=h;fxRun(el);
   });

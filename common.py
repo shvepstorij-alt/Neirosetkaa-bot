@@ -5751,6 +5751,51 @@ async def api_admin_attention_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False}, status=500)
 
 
+def _serialized_admin_catalog(handler):
+    """All legacy catalogue mutations use the same lock as stable-ID edits."""
+    async def wrapped(request):
+        try:body=await request.json()
+        except Exception:body={}
+        if not isinstance(body,dict) or _admin_uid_from_body(body)!=ADMIN_ID:
+            return web.json_response({'ok':False,'msg':'Нет доступа администратора'},status=403)
+        async with _admin_plan_add_lock:
+            return await handler(request)
+    return wrapped
+
+
+async def _admin_service_edit_snapshot(conn, key, rate):
+    """Stable DB identities plus the existing runtime settings indexes."""
+    from admin_operations import revision
+    scat = SHOP_CATALOG.get(key)
+    if not scat:return None
+    rows = await conn.fetch('SELECT * FROM bot_shop_items WHERE key=$1 AND enabled=TRUE AND plan_idx>=0 ORDER BY sort_order,plan_idx', key)
+    runtime = scat.get('plans', [])
+    if len(rows) != len(runtime):return None
+    plans = []; used_runtime_indexes = set()
+    settings = {r['key']: r['value'] for r in await conn.fetch(
+        'SELECT key,value FROM settings WHERE key LIKE $1 OR key LIKE $2', 'cost_usd:'+key+':%', 'manual:'+key+':%')}
+    for idx,row in enumerate(rows):
+        pid = int(row['plan_idx'])
+        ri = next((i for i,p in enumerate(runtime) if p.get('_db_plan_idx') == pid), idx)
+        if ri in used_runtime_indexes or not 0<=ri<len(runtime):return None
+        used_runtime_indexes.add(ri)
+        usd = float(settings.get(f'cost_usd:{key}:{ri}') or 0)
+        price = int(row['price'] or 0)
+        p = {'idx':ri,'planId':pid,'name':row['plan_name'],'price':price,
+             'costUsd':usd,'margin':round((price-usd*rate)/price*100) if price>0 else 0,
+             'manual':settings.get(f'manual:{key}:{ri}')=='1','desc':row['plan_desc'] or ''}
+        p['renameEditable'] = key not in ('chatgpt','claude','perplexity')
+        p['renameReason'] = '' if p['renameEditable'] else 'Название используется для выбора кода активации; можно менять цену, закуп, описание и ручную выдачу'
+        if key=='chatgpt':
+            for route in ('ph','ios'):p['cost'+route.capitalize()]=float(settings.get(f'cost_usd:{key}:{ri}:{route}') or 0)
+        plans.append(p)
+    service = {'key':key,'name':rows[0]['service_name'] if rows else scat.get('name',key),
+               'emoji':rows[0]['emoji'] if rows else scat.get('emoji',''),
+               'desc':rows[0]['service_desc'] if rows else scat.get('desc',''),'plans':plans}
+    service['revision'] = revision(service)
+    return service
+
+
 async def api_admin_prices_handler(request: web.Request) -> web.Response:
     """Текущие цены ₽ и закуп $ по всем сервисам/тарифам. Admin-only."""
     try:
@@ -5786,12 +5831,18 @@ async def api_admin_prices_handler(request: web.Request) -> web.Response:
                             _row["cost" + _rt.capitalize()] = 0.0
                 pl.append(_row)
             services.append({"key": k, "name": scat.get("name", k), "emoji": scat.get("emoji", ""), "desc": scat.get("desc", ""), "plans": pl})
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            for index,service in enumerate(services):
+                stable = await _admin_service_edit_snapshot(conn,service['key'],rate)
+                if stable:services[index] = stable
         return web.json_response({"ok": True, "rate": rate, "services": services})
     except Exception as _e:
         logging.error(f"api_admin_prices: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
 
 
+@_serialized_admin_catalog
 async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
     """Сохранение цен ₽, закупа $ и курса. Admin-only."""
     try:
@@ -5853,6 +5904,7 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
                         _pd = str(it["desc"])
                         if _pidx is not None:
                             await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_idx=$3", _pd, k, _pidx)
+                            await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value', f'admin_plan_desc:{k}:{_pidx}', _pd)
                         elif pname:
                             await conn.execute("UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3", _pd, k, pname)
                         if scat and 0 <= idx < len(scat.get("plans", [])):
@@ -5872,6 +5924,96 @@ async def api_admin_prices_save_handler(request: web.Request) -> web.Response:
     except Exception as _e:
         logging.error(f"api_admin_prices_save: {_e}")
         return web.json_response({"ok": False, "error": "server"}, status=500)
+
+
+async def api_admin_catalog_edit_handler(request: web.Request) -> web.Response:
+    """One validated transaction; keys/plan IDs and historical orders stay intact."""
+    from admin_operations import validate_catalog_edit, validate_renamed_labels, AdminInputError, AdminConflict
+    stage = 'проверка формы редактирования каталога'
+    committed = False
+    try:
+        try:body = await request.json()
+        except Exception:body = {}
+        if not isinstance(body,dict) or _admin_uid_from_body(body)!=ADMIN_ID:
+            return web.json_response({'ok':False,'msg':'Нет доступа администратора'},status=403)
+        data = validate_catalog_edit(body)
+        key = data['key']
+        if key not in SHOP_CATALOG:
+            return web.json_response({'ok':False,'msg':'Сервис не найден; обновите каталог'},status=404)
+        pool = await get_pool()
+        async with _admin_plan_add_lock:
+            async with pool.acquire() as conn, conn.transaction():
+                stage = 'проверка версии каталога перед сохранением'
+                locked = await conn.fetch('SELECT plan_idx FROM bot_shop_items WHERE key=$1 FOR UPDATE',key)
+                if not locked:raise AdminConflict('Сервис удалён или не сохранён в базе; обновите каталог')
+                rate = float(await conn.fetchval("SELECT value FROM settings WHERE key='cost_usd_rate'") or 90)
+                current = await _admin_service_edit_snapshot(conn,key,rate)
+                if not current or current['revision']!=data['revision']:
+                    raise AdminConflict('Каталог изменился после открытия формы. Обновите данные и повторите правку; ничего не сохранено')
+                by_id = {p['planId']:p for p in current['plans']}
+                if set(by_id)!={p['planId'] for p in data['plans']}:
+                    raise AdminConflict('Набор тарифов изменился; обновите форму. Тарифы не добавлены и не удалены')
+                validate_renamed_labels(current['plans'],data['plans'])
+                stage = 'сохранение сервиса и тарифов'
+                await conn.execute('UPDATE bot_shop_items SET service_name=$1,emoji=$2,service_desc=$3 WHERE key=$4',data['name'],data['emoji'],data['desc'],key)
+                # Persistent description overrides must follow rename, including
+                # an intentionally empty description. No old order is rewritten.
+                await conn.execute("INSERT INTO shop_desc_overrides (key,plan_name,descr) VALUES ($1,'',$2) ON CONFLICT (key,plan_name) DO UPDATE SET descr=EXCLUDED.descr,updated_at=NOW()",key,data['desc'])
+                for plan in data['plans']:
+                    old = by_id[plan['planId']]
+                    if not old.get('renameEditable',True) and old['name']!=plan['name']:
+                        raise AdminConflict('Тариф '+old['name']+': название используется маршрутом активации. Переименование не выполнено; остальные изменения также не сохранены')
+                    await conn.execute('UPDATE bot_shop_items SET plan_name=$1,price=$2,plan_desc=$3 WHERE key=$4 AND plan_idx=$5',plan['name'],plan['price'],plan['desc'],key,plan['planId'])
+                    await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',f'admin_plan_desc:{key}:{plan["planId"]}',plan['desc'])
+                    for setting,value in ((f'cost_usd:{key}:{old["idx"]}',str(plan['costUsd'])),(f'manual:{key}:{old["idx"]}','1' if plan['manual'] else '0')):
+                        await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',setting,value)
+                    for route in ('ph','ios'):
+                        field='cost'+route.capitalize()
+                        if field in plan:
+                            await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',
+                                               f'cost_usd:{key}:{old["idx"]}:{route}',str(plan[field]) if plan[field]>0 else '')
+                await conn.execute('INSERT INTO events (user_id,kind,data) VALUES ($1,$2,$3)',ADMIN_ID,'admin_catalog_edit','key='+key+'; plans='+str(len(data['plans']))+'; stable IDs retained')
+            committed = True
+            stage = 'обновление рабочего каталога'
+            scat = SHOP_CATALOG[key]
+            scat.update(name=data['name'],emoji=data['emoji'],desc=data['desc'])
+            for plan in data['plans']:
+                ri = by_id[plan['planId']]['idx']
+                scat['plans'][ri].update(name=plan['name'],price=plan['price'],desc=plan['desc'],_db_plan_idx=plan['planId'])
+        return web.json_response({'ok':True})
+    except AdminInputError as exc:
+        return web.json_response({'ok':False,'msg':'Этап: проверка формы. '+str(exc)},status=400)
+    except AdminConflict as exc:
+        return web.json_response({'ok':False,'msg':'Этап: проверка версии. '+str(exc)},status=409)
+    except Exception as exc:
+        logging.error('admin catalogue edit failed at %s: %s',stage,type(exc).__name__)
+        state = ' Изменения уже записаны в базу; обновление рабочего каталога не завершено. Перезапустите сервис и проверьте данные, не повторяйте правку вслепую.' if committed else ' Транзакция не подтверждена; обновите данные перед повтором.'
+        return web.json_response({'ok':False,'saved':committed,'msg':'Этап: '+stage+'. Причина: '+type(exc).__name__+'. Первопричина не установлена.'+state},status=500)
+
+
+async def api_admin_coins_grant_handler(request: web.Request) -> web.Response:
+    from admin_operations import validate_grant, grant_coins, AdminInputError, AdminConflict
+    stage = 'проверка начисления монет'
+    try:
+        try:body=await request.json()
+        except Exception:body={}
+        if not isinstance(body,dict) or _admin_uid_from_body(body)!=ADMIN_ID:
+            return web.json_response({'ok':False,'msg':'Нет доступа администратора'},status=403)
+        uid,amount,reason,request_id=validate_grant(body)
+        stage='атомарное начисление монет и запись журнала'
+        pool=await get_pool()
+        async with pool.acquire() as conn, conn.transaction():
+            result=await grant_coins(conn,ADMIN_ID,uid,amount,reason,request_id)
+        return web.json_response(dict(ok=True,**result))
+    except AdminInputError as exc:
+        return web.json_response({'ok':False,'applied':False,'msg':'Этап: проверка начисления. '+str(exc)},status=400)
+    except AdminConflict as exc:
+        return web.json_response({'ok':False,'msg':'Этап: проверка повтора. '+str(exc)},status=409)
+    except LookupError:
+        return web.json_response({'ok':False,'applied':False,'msg':'Этап: поиск клиента. Клиент не найден; монеты не начислены'},status=404)
+    except Exception as exc:
+        logging.error('admin coin grant failed at %s: %s',stage,type(exc).__name__)
+        return web.json_response({'ok':False,'msg':'Этап: '+stage+'. Причина: '+type(exc).__name__+'. Результат не подтверждён. Повторяйте только с прежним идентификатором операции.'},status=500)
 
 
 async def api_admin_recs_handler(request: web.Request) -> web.Response:
@@ -6787,7 +6929,7 @@ async def api_admin_plan_add_handler(request: web.Request) -> web.Response:
                     await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',
                                        f'cost_usd:{k}:{runtime_idx}', format(cost, 'f'))
             stage = 'обновление каталога после сохранения тарифа'
-            scat.setdefault("plans", []).append({"name": name, "price": price, "stars": 0, "desc": ""})
+            scat.setdefault("plans", []).append({"name": name, "price": price, "stars": 0, "desc": "", "_db_plan_idx": new_idx})
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_plan_add: {_e}")
@@ -6796,6 +6938,7 @@ async def api_admin_plan_add_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "msg": f'Этап: {stage}. Причина: {reason}. Точная первопричина требует проверки журнала.'}, status=500)
 
 
+@_serialized_admin_catalog
 async def api_admin_plan_delete_handler(request: web.Request) -> web.Response:
     """Удалить тариф из сервиса. Admin-only."""
     try:
@@ -8144,7 +8287,7 @@ async def api_admin_user_find_handler(request: web.Request) -> web.Response:
         cr = u.get("created_at")
         return web.json_response({"ok": True, "user": {
             "id": uid, "username": u.get("username") or "", "name": u.get("full_name") or "",
-            "credits": int(u.get("credits") or 0), "blocked": bool(u.get("is_blocked")),
+            "credits": int(u.get("credits") or 0), "coins": round(float(u.get("coins") or 0),2), "blocked": bool(u.get("is_blocked")),
             "created": cr.strftime("%d.%m.%Y") if cr else "",
             "purchases": int(pur["c"] or 0), "spent": int(pur["s"] or 0),
             "refPremium": bool(rp and rp.get("ref_premium")),
@@ -9324,6 +9467,7 @@ async def api_admin_claude_code_action_handler(request: web.Request) -> web.Resp
         return web.json_response({"ok": False}, status=500)
 
 
+@_serialized_admin_catalog
 async def api_admin_service_add_handler(request: web.Request) -> web.Response:
     """Добавить новый сервис в магазин (с первым тарифом). Admin-only."""
     try:
@@ -9350,13 +9494,14 @@ async def api_admin_service_add_handler(request: web.Request) -> web.Response:
                 "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (key, plan_idx) DO NOTHING",
                 key, 0, name, emoji, "", plan_name, price, 0, "", 999)
         SHOP_CATALOG[key] = {"_key": key, "name": name, "emoji": emoji, "desc": "",
-                             "plans": [{"name": plan_name, "price": price, "stars": 0, "desc": ""}]}
+                             "plans": [{"name": plan_name, "price": price, "stars": 0, "desc": "", "_db_plan_idx": 0}]}
         return web.json_response({"ok": True, "key": key})
     except Exception as _e:
         logging.error(f"api_admin_service_add: {_e}")
         return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
 
 
+@_serialized_admin_catalog
 async def api_admin_service_delete_handler(request: web.Request) -> web.Response:
     """Удалить сервис из магазина. Admin-only. Базовые сервисы защищены."""
     try:
@@ -16670,6 +16815,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/actwindow", api_admin_actwindow_handler)
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
+    app.router.add_post("/api/admin/catalog/edit", api_admin_catalog_edit_handler)
+    app.router.add_post("/api/admin/coins-grant", api_admin_coins_grant_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
     app.router.add_post("/api/admin/recs-save", api_admin_recs_save_handler)
     app.router.add_post("/api/admin/shopcats", api_admin_shopcats_handler)
