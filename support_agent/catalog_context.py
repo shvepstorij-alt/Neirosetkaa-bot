@@ -451,8 +451,9 @@ def direct_workflow_reply(facts, latest):
     if words-allowed or not words&{'оформить','оформления','нужно','потребуется','данные','купить'}:
         return None
     answer=verified_catalog_reply(facts,'')
-    answer.update(summary='Цены из магазина и условия Krea, прямо подтверждённые владельцем. Нужное ручное оформление выполняет Александр.',handoff=True)
-    answer['evidence']={'status':'catalog_direct','sources':[]}
+    answer.update(summary='Цены из магазина и условия Krea, прямо подтверждённые владельцем. Нужное ручное оформление выполняет Александр.',handoff=False)
+    answer['evidence']={'status':'catalog_direct','sources':[],
+                        'owner_action_required':True,'review_required':False}
     return answer
 
 

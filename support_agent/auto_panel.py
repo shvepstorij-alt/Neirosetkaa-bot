@@ -147,7 +147,9 @@ def chat_details(service,c):
         text+='\n'+('Текущий ответ' if current else 'Предыдущий ответ')+': №'+str(d['id'])+' · '+d['state']
         if current:
             if d['summary']:text+='\nКраткий разбор (проверьте): '+scrub(d['summary'])[:240]
-            text+='\nУчастие владельца: '+('нужно' if d['handoff'] else 'не запрошено; отправка всё равно проверяется отдельно')
+            text+='\nПроверка ответа владельцем: '+('нужна' if d['handoff'] else 'не запрошена; допуск AUTO проверяется отдельно')
+            if store.evidence(d['id']).get('owner_action_required'):
+                text+='\nОформление выполняет Александр; подтверждённую инструкцию можно отправить автоматически.'
         elif d['state']=='stale':text+='\nЭтот ответ отменён и не является решением по новому обращению.'
     notice=store.db.execute('SELECT original FROM auto_notices WHERE draft=?',(d['id'],)).fetchone() if d else None
     if notice:

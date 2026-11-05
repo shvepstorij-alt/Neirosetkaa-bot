@@ -42,6 +42,8 @@ def block_reason(answer,evidence=None,current_text=''):
     if len(text)>1800:return _reason('текст превышает проверенный лимит 1800 символов.')
     if evidence is None:evidence=answer.get('evidence')
     if not isinstance(evidence,dict):return _reason('сохранённые подтверждения ответа отсутствуют.')
+    if evidence.get('review_required') is True:
+        return _reason('сохранено явное требование проверки содержания; действие по оформлению и проверка текста различаются.')
     if evidence.get('manual_secret_intake'):
         return _reason('предусмотрена ручная обработка данных доступа; требуется владелец.')
     if evidence.get('handoff_reason'):
@@ -57,13 +59,17 @@ def block_reason(answer,evidence=None,current_text=''):
         return _reason('в обращении сохранён признак скрытых данных доступа; нужен ручной разбор.')
     from .privacy import sensitive
     if sensitive(current):return _reason('обращение может содержать данные доступа; нужен ручной разбор.')
-    if sensitive(text):return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
     # A short follow-up such as "да" may not repeat the financial/account
     # subject. Do not let a falsely optimistic review approve action claims or
     # collection of secrets merely because the current fragment looks benign.
     if re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
                  r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код\s+входа)',text,re.I):
         return _reason('ответ запрашивает данные доступа; сбор этих данных оставлен владельцу.')
+    # Mentioning that no password is needed is not providing its value. Strip
+    # only this exact code-owned public sentence from the detection copy;
+    # secrets anywhere else, including the next sentence, remain detectable.
+    detection=re.sub(r'(?<!\w)Пароль от аккаунта для этого способа не нужен\.(?=\s|$)','',text)
+    if sensitive(detection):return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
     if re.search(r'(?:возврат[^.!?\n]{0,40}(?:одобрен|оформлен|подтвержд[её]н)|'
                  r'(?:одобрил|оформил|выполнил)[а-яё]*[^.!?\n]{0,25}возврат|'
                  r'подписк[а-яё]*\s+(?:уже\s+)?активирован[а-яё]*|'

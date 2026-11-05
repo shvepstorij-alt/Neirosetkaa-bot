@@ -280,8 +280,12 @@ def workflow_reply(facts,latest):
             handoff=True
     if navigation and not diagnostics:parts.insert(0,navigation)
     return {'reply':'\n\n'.join(parts),'summary':'Объяснение оформления по данным магазина; сроки, отсутствие входа и успех не обещаны.',
-            'handoff':handoff,'source_ids':[],
+            # Performing fulfilment is a separate responsibility from reviewing
+            # the consultation. A verified instruction does not itself execute
+            # a payment, log into an account or promise activation.
+            'handoff':bool(diagnostics),'source_ids':[],
             'evidence':{'status':'catalog_review' if diagnostics else 'catalog_direct','sources':[],
-                        'handoff_reason':('Нужна проверка неподтверждённых условий оформления.' if diagnostics else
-                                          'Требуется действие владельца при оформлении; отказ проверки ответа не установлен.') if handoff else '',
+                        'owner_action_required':handoff,
+                        'review_required':bool(diagnostics),
+                        'handoff_reason':'Нужна проверка неподтверждённых условий оформления.' if diagnostics else '',
                         'diagnostic':'Этап: проверка инструкции оформления. '+'; '.join(diagnostics) if diagnostics else ''}}
