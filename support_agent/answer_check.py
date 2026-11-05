@@ -341,6 +341,8 @@ def review_input(answer,facts):
         result['owner_course_bonus_policy']=dict(POLICY)
         result['owner_course_bonus_policy']['email_already_provided']=facts['course_bonus'].get('email_already_provided') is True
     result['owner_refund_policy']={'decision_by':'owner','automatic_refund':False,'screenshot_is_not_approval':True}
+    from .email_registration import POLICY as email_policy
+    result['owner_registration_email_policy']=dict(email_policy)
     from .claude_policy import claude_policy_facts
     from .referral_guide import referral_facts
     from .external_quote import POLICY
@@ -465,7 +467,11 @@ async def check_answer(ai,answer,facts,images=None):
             value=row.get(key)
             if type(value) in (int,float) and value>0:
                 prices.add(float(value))
-    apple_regions=facts.get('appstore',{}).get('regions',[])
+    # Apple stock is attached to every shop snapshot. Its prices are not a
+    # universal whitelist for unrelated services, generation or external quotes.
+    apple_requested=('appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[])
+                     or bool(facts.get('appstore_selection')))
+    apple_regions=facts.get('appstore',{}).get('regions',[]) if apple_requested else []
     selection=facts.get('appstore_selection',{})
     if selection.get('requested_codes'):
         apple_regions=selection.get('matched_regions',[])
@@ -491,6 +497,8 @@ async def check_answer(ai,answer,facts,images=None):
                 continue
             if amount not in prices:
                 return {'supported':False,'reason':f'Этап: проверка рублёвой цены. Сумма ответа={amount:g}; обычных тарифов={len(retail)}; регионов в проверке={len(apple_regions)}; выбранные коды='+','.join(selection.get('requested_codes',[]))+'. Сумма не совпала с подтверждёнными розничными ценами; номинал карты и цена покупки проверяются раздельно.'}
+    elif 'requested_catalog' in facts and re.search(r'(?<!\w)\d+(?:[.,]\d+)?\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',reply,re.I):
+        return {'supported':False,'reason':'Этап: подтверждение рублёвой цены. Для текущего запроса нет подтверждённых розничных цен; обычных тарифов='+str(len(retail))+'; релевантных регионов Apple='+str(len(apple_regions))+'. Несвязанный ассортимент не использовался для проверки суммы.'}
     if not facts.get('public_research',{}).get('sources'):
         # These are external payment claims, not retail prices. Do not let an
         # independent model approve them using its memory without any evidence.

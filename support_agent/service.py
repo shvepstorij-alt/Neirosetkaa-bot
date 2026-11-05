@@ -992,6 +992,9 @@ class Service:
             if has_photo:
                 order['reply']='Магазин пока ожидает подтверждение оплаты. Изображение уже приложено; нужна ручная сверка, является ли оно чеком и что произошло с платежом. Сам снимок не подтверждает зачисление. Повторно оплачивать сейчас не нужно.'
                 order['evidence']['diagnostic']+=' Изображение в текущем обращении уже есть; содержимое не распознавалось, повторный запрос того же вложения не сделан.'
+                from .auto_policy import consultation_evidence
+                order['evidence']=consultation_evidence(order['reply'],'order',owner_action_required=True,
+                    diagnostic=order['evidence']['diagnostic'])
         from .request_goals import goals
         other=goals(current)-{'problem'}
         # A bank receipt is not proof of settlement and need not be downloaded
@@ -1000,6 +1003,10 @@ class Service:
         new_account=bool(re.search(r'нов[а-яё]*\s+аккаунт|new\s+account',current,re.I))
         if not other and not new_account:return order
         status=order.get('order_context',{}).get('status')
+        if status is None:
+            # A missing reference or failed owned lookup is not authority to
+            # compose catalogue prices/activation claims for an unknown order.
+            return order
         if status in ('pending','failed','cancelled','canceled','expired'):return order
         inner=await self._generate_body(dict(job,_order_context=order.get('order_context',{})))
         if inner is None:return None
@@ -1048,7 +1055,9 @@ class Service:
         from .offer_terms import enrich as confirmed_offer_terms
         facts=confirmed_offer_terms(facts)
         from .app_installation import policy_facts as installation_policy
-        facts=dict(facts,installation_policy=installation_policy(),verified_order_context=job.get('_order_context',{}))
+        from .email_registration import POLICY as email_policy
+        facts=dict(facts,installation_policy=installation_policy(),verified_order_context=job.get('_order_context',{}),
+                   owner_registration_email_policy=dict(email_policy))
         from .referral_guide import referral_facts
         from .claude_policy import claude_policy_facts
         from .external_quote import POLICY
@@ -1138,9 +1147,18 @@ class Service:
             if clarification:return clarification
         from .bot_guide import navigation_facts,navigation_reply
         facts=dict(facts,shop_navigation=navigation_facts(facts))
+        from .consultation_intent import intro_reply as creative_intro
+        creative=creative_intro(facts,raw_batch)
+        if creative and not image:return creative
         from .request_goals import covers,goals
         facts=dict(facts,request_goals=sorted(goals(raw_batch or latest,facts)))
         raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .fulfillment_reply import transaction_ack
+        acknowledgement=transaction_ack(raw_batch)
+        if acknowledgement and not image:return acknowledgement
+        from .email_registration import reply as email_reply
+        email_guide=email_reply(facts,raw_batch,guide_history)
+        if email_guide and not image:return email_guide
         from .new_account_guide import reply as new_account_reply
         account_guide=new_account_reply(facts,raw_batch,guide_history)
         if account_guide and not image:return account_guide

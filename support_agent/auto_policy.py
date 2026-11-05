@@ -8,6 +8,65 @@ No network, customer text in diagnostics, financial or account actions here.
 import math
 import time
 import re
+import hashlib
+import hmac
+import secrets
+
+
+# These proofs are produced only by deterministic local renderers. They are
+# not an LLM field or confidence score. An old process's ready answers are not
+# auto-replayed after restart; its proofs deliberately cannot authorize a new
+# process. Nothing here is an external credential or configuration variable.
+_CONSULTATION_KEY=secrets.token_bytes(32)
+_CONSULTATION_KINDS={'order','course','workflow','activation','external','creative'}
+_PUBLIC_SESSION_URLS={
+    'https://chatgpt.com/api/auth/session',
+    'https://www.perplexity.ai/api/auth/session',
+}
+
+
+def _consultation_text(text):
+    from .response_policy import natural_reply
+    text=natural_reply(str(text or '')).replace('\r\n','\n').strip()
+    return re.sub(r'^\s*(?:Здравствуйте|Приветствую|Добрый день|Добрый вечер|Доброе утро|Привет)[!.,:)\s]*',
+                  '',text,count=1,flags=re.I).strip()
+
+
+def consultation_evidence(text,kind,**metadata):
+    """Seal an immutable consultation, never a performed action or model prose."""
+    if kind not in _CONSULTATION_KINDS:raise ValueError('Unknown local consultation renderer')
+    payload=(kind+'\n'+_consultation_text(text)).encode('utf-8')
+    signature=hmac.new(_CONSULTATION_KEY,payload,hashlib.sha256).hexdigest()
+    return {**metadata,'status':kind+'_consultation','sources':[],
+            'review_required':False,'consultation_contract':{'kind':kind,'proof':signature}}
+
+
+def _local_consultation(text,evidence):
+    contract=evidence.get('consultation_contract')
+    if not isinstance(contract,dict) or set(contract)!={'kind','proof'}:return False
+    kind=contract.get('kind');proof=contract.get('proof')
+    if kind not in _CONSULTATION_KINDS or evidence.get('status')!=kind+'_consultation':return False
+    if not isinstance(proof,str) or not re.fullmatch(r'[0-9a-f]{64}',proof):return False
+    expected=consultation_evidence(text,kind)['consultation_contract']['proof']
+    return hmac.compare_digest(proof,expected)
+
+
+def _consultation_detection_copy(text):
+    # Only these complete public URLs are instructional, never a private
+    # session value. A query, fragment, credentials or a suffix is NOT removed.
+    # The sealed renderer can explain field names and instruct where to put
+    # them. Strip only bare field words in this detection copy. Credential
+    # assignments/JWTs/API keys are rejected before this function is called;
+    # unlabelled mixed values and unknown session URLs remain detectable.
+    pieces=[]
+    for part in re.split(r'(https?://[^\s<>]+)',str(text)):
+        if part.startswith(('https://','http://')):
+            url=part.rstrip('.,;)')
+            pieces.append(part[len(url):] if url in _PUBLIC_SESSION_URLS else part)
+        else:
+            pieces.append(re.sub(r'(?<!\w)(?:парол[ьяеию]?|пароли|password|токен[а-яё]*|token|'
+                          r'сесси[яиюей]+|session|cookie|cvv|код\s+входа)(?!\w)','[поле]',part,flags=re.I))
+    return ''.join(pieces)
 
 
 def _reason(condition):
@@ -34,7 +93,24 @@ def block_reason(answer,evidence=None,current_text=''):
         if not isinstance(detail,str):detail=''
         if detail:
             from .privacy import sensitive,scrub
-            detail=('[детали скрыты: возможны данные доступа]' if sensitive(detail) else scrub(detail))[:1000]
+            safe=scrub(detail)
+            detection=re.sub(r'(?<!\w)(?:account_email|account_password|checkout_url|course_registration_email|'
+                             r'required_fields|workflow_steps|provided_fields|account_ownership)(?!\w)',
+                             '[имя поля]',safe,flags=re.I)
+            # An explicitly named schema field is not its value. Only the
+            # detection copy changes; actual assignments/JWTs stay redacted.
+            detection=re.sub(r'(?i)(?:поле|поля|полей)\s+(?:пароля|токена|сессии)(?=[\s.,;:]|$)',
+                             '[имя поля]',detection)
+            detection=re.sub(r'(?i)(\[имя поля\]\s*[/,]\s*)(?:пароля|токена|сессии)'
+                             r'(?=$|[.,;!?]|\s+(?:не|подтвержден|проверен|отсутств|нуж|треб))',
+                             r'\1[имя поля]',detection)
+            if sensitive(detection):
+                stage=re.match(r'^Этап:\s*([А-Яа-яЁё ]{3,90})\.',safe)
+                fields=sorted(set(re.findall(r'(?<!\w)(?:account_email|account_password|checkout_url|course_registration_email)(?!\w)',safe)))
+                detail=(('Этап: '+stage[1]+'. ' if stage else '')
+                        +('В диагностике указаны поля: '+', '.join(fields)+'. ' if fields else '')
+                        +'Остальные детали скрыты: возможны данные доступа.')
+            else:detail=safe[:1000]
         return _reason('ответ требует участия владельца; автоматическая отправка не разрешена.'
                        +(' Основание: '+detail if detail else ' Конкретная причина в сохранённых подтверждениях отсутствует.'))
     text=answer.get('reply')
@@ -42,6 +118,10 @@ def block_reason(answer,evidence=None,current_text=''):
     if len(text)>1800:return _reason('текст превышает проверенный лимит 1800 символов.')
     if evidence is None:evidence=answer.get('evidence')
     if not isinstance(evidence,dict):return _reason('сохранённые подтверждения ответа отсутствуют.')
+    status=evidence.get('status')
+    consultation=_local_consultation(text,evidence)
+    if status in {kind+'_consultation' for kind in _CONSULTATION_KINDS} and not consultation:
+        return _reason('кодовая консультация не имеет действующего подтверждения неизменённого текста; нужна новая подготовка.')
     if evidence.get('review_required') is True:
         return _reason('сохранено явное требование проверки содержания; действие по оформлению и проверка текста различаются.')
     if evidence.get('manual_secret_intake'):
@@ -59,17 +139,32 @@ def block_reason(answer,evidence=None,current_text=''):
         return _reason('в обращении сохранён признак скрытых данных доступа; нужен ручной разбор.')
     from .privacy import sensitive
     if sensitive(current):return _reason('обращение может содержать данные доступа; нужен ручной разбор.')
+    if consultation and evidence['consultation_contract']['kind']=='workflow' and re.search(r'\[email скрыт\]|\[ссылка скрыта\]',current,re.I):
+        return _reason('получены данные или ссылка для оформления; их обработку выполняет владелец.')
     # A short follow-up such as "да" may not repeat the financial/account
     # subject. Do not let a falsely optimistic review approve action claims or
     # collection of secrets merely because the current fragment looks benign.
-    if re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
+    if not consultation and re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
                  r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код\s+входа)',text,re.I):
         return _reason('ответ запрашивает данные доступа; сбор этих данных оставлен владельцу.')
     # Mentioning that no password is needed is not providing its value. Strip
     # only this exact code-owned public sentence from the detection copy;
     # secrets anywhere else, including the next sentence, remain detectable.
-    detection=re.sub(r'(?<!\w)Пароль от аккаунта для этого способа не нужен\.(?=\s|$)','',text)
+    from .privacy import redaction_categories
+    if consultation and ({'access_secret','credential_line'} & set(redaction_categories(text))
+            or re.search(r'(?i)(?:парол[ья]?|password|токен|token|session|cookie|cvv)\s*[:=]\s*\S',text)):
+        return _reason('кодовая консультация содержит значение доступа или присваивание; автоматическая отправка запрещена.')
+    detection=(_consultation_detection_copy(text) if consultation else
+               re.sub(r'(?<!\w)Пароль от аккаунта для этого способа не нужен\.(?=\s|$)','',text))
     if sensitive(detection):return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
+    if consultation:
+        # Local renderers describe checked observations or the next question;
+        # this does not execute payment/refund/activation or grant eligibility.
+        if re.search(r'возврат[^.!?\n]{0,40}(?:одобрен|оформлен)|'
+                     r'подписк[а-яё]*\s+(?:уже\s+)?активирован[а-яё]*|'
+                     r'аккаунт\s+(?:уже\s+)?создан',text,re.I):
+            return _reason('даже кодовая консультация не может утверждать выполнение возврата или оформления.')
+        return None
     if re.search(r'(?:возврат[^.!?\n]{0,40}(?:одобрен|оформлен|подтвержд[её]н)|'
                  r'(?:одобрил|оформил|выполнил)[а-яё]*[^.!?\n]{0,25}возврат|'
                  r'подписк[а-яё]*\s+(?:уже\s+)?активирован[а-яё]*|'
@@ -86,7 +181,6 @@ def block_reason(answer,evidence=None,current_text=''):
     if evidence.get('new_account_stage') in ('owner_registration','owner_session_intake','owner_details_received'):
         return _reason('текущий этап нового аккаунта требует ручного оформления владельцем.')
 
-    status=evidence.get('status')
     if not isinstance(status,str):return _reason('статус подтверждений отсутствует или имеет неверный тип.')
     if 'content_review' in evidence and not isinstance(evidence['content_review'],dict):
         return _reason('сохранённый результат проверки содержания имеет неверный тип.')
@@ -134,5 +228,6 @@ def status_safe(value):
     """Fixed vocabulary only; no arbitrary provider value in diagnostics."""
     known={'unavailable','insufficient','partial','catalog_review','order_status','owner_policy',
            'visual_review','visual_clarification','not_requested','clarification','catalog_direct',
-           'checked','catalog_checked','topic_boundary'}
+           'checked','catalog_checked','topic_boundary',
+           'order_consultation','course_consultation','workflow_consultation','activation_consultation','external_consultation','creative_consultation'}
     return value if value in known else 'unknown'

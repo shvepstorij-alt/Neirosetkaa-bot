@@ -2,6 +2,16 @@
 import re
 
 
+def transaction_ack(current):
+    """A future payment statement is neither a paid order nor a new question."""
+    value=re.sub(r'[\s!?.…,]+',' ',str(current).casefold()).strip()
+    if not re.fullmatch(r'(?:(?:хорошо|спасибо|понял|поняла|ок|окей)\s+)?(?:сейчас\s+)?(?:я\s+)?(?:оплачу|оплатим|оплату)',value):return None
+    text='Хорошо) После оплаты следуйте инструкции в сообщении заказа. Если появится вопрос на каком-то шаге, напишите сюда, помогу разобраться.'
+    from .auto_policy import consultation_evidence
+    return {'reply':text,'summary':'Клиент планирует оплатить; факт оплаты и активации не подтверждался.',
+            'handoff':False,'source_ids':[],'evidence':consultation_evidence(text,'workflow')}
+
+
 def _code_help(name):
     """Steps verified in our three activation mini-apps, not inferred from a plan.
 
@@ -119,11 +129,13 @@ def workflow_reply(facts,latest):
     if is_selection_request(latest):return None
     lines=[line.strip() for line in latest.splitlines() if line.strip()]
     questions=[line for line in lines if re.search(
-        r'оформ|кроме оплаты|(?:что|какие).*(?:нужн|потреб|треб|данн|присл)|'
+        r'оформ|(?:можно|могу)[^.!?\n]{0,35}(?:оплат|купить)|кроме оплаты|(?:что|какие).*(?:нужн|потреб|треб|данн|присл)|'
         r'как.*(?:получить|скопировать|найти).*ссылк|как.*(?:пополн|активир)|парол.*(?:нуж|треб)|'
+        r'ссылк[а-яё]*[^.!?\n]{0,45}(?:кид|скин|скид|присл|отправ|переда)|'
+        r'(?:куда|вам|сюда)[^.!?\n]{0,35}(?:кид|скин|присл|отправ)[^.!?\n]{0,25}ссылк|'
         r'если.*вход.*(?:google|гугл)',line,re.I)]
     if not questions:return None
-    if re.search(r'функци|лимит|входит|отлич|возврат|ошиб|не работает|закуп|поставщик|себестоим|18\s*\+|порно|эротическ',latest,re.I):return None
+    if re.search(r'функци|лимит|входит|отлич|модел|сравн|подробнее|возврат|ошиб|не работает|закуп|поставщик|себестоим|18\s*\+|порно|эротическ',latest,re.I):return None
     ambiguities=facts.get('catalog_selection',{}).get('variant_ambiguities',[])
     if ambiguities:
         labels=list(dict.fromkeys(name for group in ambiguities for name in group['services']))
@@ -136,6 +148,8 @@ def workflow_reply(facts,latest):
     known_words={word for name in _service_names(facts.get('catalog',[])) for word in name}
     ordinary=set('что нужно потребуется данные почта пароль оплата оплаты оформить оформление оформления выбрать тариф тарифы регион сумма пополнение баланс после для и или как куда спасибо пожалуйста сервис сервисы apple id store app почту аккаунт аккаунта'.split())
     ordinary.update(('google','email','e','mail','password','если','вход'))
+    ordinary.update(('хорошо','сейчас','оплачу','оплачивать','вам','сюда','ссылку','ссылки','кидать','скинуть','отправить','прислать'))
+    ordinary.update(('у','вас','можно','могу','еще','ещё','оплатить','купить','подписку','подписки'))
     ordinary.update(('почте','почтой','почты','паролю','паролем','пароля','ссылке','ссылкой','данным','данными'))
     if 'appstore' in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):
         from .apple_matching import ALIASES as region_aliases
@@ -169,7 +183,7 @@ def workflow_reply(facts,latest):
         if 'appstore' not in (_families(_words(row.get('service','')))|_families(_words(row.get('service_key','')))):
             groups.setdefault(row.get('service',''),[]).append(row)
     if not all(groups):return None
-    parts=[];diagnostics=[];handoff=False;shared_links=[]
+    parts=[];diagnostics=[];handoff=False;shared_links=[];needs_choice=False
     from .bot_guide import purchase_navigation
     navigation=purchase_navigation(facts,apple=apple_requested and not groups)
     # Append navigation only if the whole answer has no unresolved procedure.
@@ -181,7 +195,8 @@ def workflow_reply(facts,latest):
         else:
             scope=_service_plan_scope(name,groups,latest)
             if scope:items=_selected_plan_rows(items,scope)
-        if re.search(r'тариф|цен|стоим',latest,re.I):
+        from .request_goals import goals
+        if 'price' in goals(latest,facts):
             prices=[]
             for item in items:
                 price=item.get('catalog_price_rub')
@@ -201,7 +216,7 @@ def workflow_reply(facts,latest):
             else:
                 parts.append(instruction_for(policy,name,state,google=bool(re.search(r'google|гугл',latest,re.I)),choice=choice))
             if policy.get('field_alternatives') and not choice:
-                diagnostics.append(name+': доступны подтверждённые альтернативы; клиент ещё не выбрал способ. Оба набора данных не требуются; до выбора не направлять к оплате.')
+                needs_choice=True
             if state=='conflict':
                 diagnostics.append(name+': конфликт способов оформления. Правило владельца='+policy['expected_fulfillment']+'; полученные ветки='+','.join(sorted(projected))+'. Настройка магазина не изменена автоматически.')
                 scope_issue=policy_scope_issue(policy,items)
@@ -278,8 +293,8 @@ def workflow_reply(facts,latest):
             parts.append('Текущие региональные номиналы сейчас не удалось проверить. Доступность и цену нужно подтвердить до оплаты.')
             diagnostics.append('App Store: региональный источник='+str(source)+'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; выбранные регионы='+','.join(codes)+'. Номиналы из обычного каталога не подтверждают региональное наличие.')
             handoff=True
-    if navigation and not diagnostics:parts.insert(0,navigation)
-    return {'reply':'\n\n'.join(parts),'summary':'Объяснение оформления по данным магазина; сроки, отсутствие входа и успех не обещаны.',
+    if navigation and not diagnostics and not needs_choice:parts.insert(0,navigation)
+    result={'reply':'\n\n'.join(parts),'summary':'Объяснение оформления по данным магазина; сроки, отсутствие входа и успех не обещаны.',
             # Performing fulfilment is a separate responsibility from reviewing
             # the consultation. A verified instruction does not itself execute
             # a payment, log into an account or promise activation.
@@ -289,3 +304,8 @@ def workflow_reply(facts,latest):
                         'review_required':bool(diagnostics),
                         'handoff_reason':'Нужна проверка неподтверждённых условий оформления.' if diagnostics else '',
                         'diagnostic':'Этап: проверка инструкции оформления. '+'; '.join(diagnostics) if diagnostics else ''}}
+    if not diagnostics:
+        from .auto_policy import consultation_evidence
+        result['evidence']=consultation_evidence(result['reply'],'workflow',owner_action_required=handoff,
+            diagnostic='Этап: консультация об оформлении. Поля и шаги получены из подтверждённой инструкции; ручное выполнение заказа этим ответом не подтверждается.')
+    return result

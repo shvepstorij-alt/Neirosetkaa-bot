@@ -15,6 +15,9 @@ def _plan_text(value):
     value=unicodedata.normalize('NFKC',str(value)).casefold()
     value=re.sub(r'(?<=\d)\s*[xх×](?!\w)',' x',value)
     value=re.sub(r'(?<=[a-zа-яё])(?=\d)|(?<=\d)(?=[a-zа-яё])',' ',value)
+    aliases={'плюс':'plus','бейсик':'basic','бэйсик':'basic','бизнес':'business',
+             'стандарт':'standard','премиум':'premium','премьер':'premier','макс':'max'}
+    value=re.sub(r'\b(?:'+ '|'.join(aliases)+r')\b',lambda m:aliases[m[0]],value)
     return re.sub(r'\s+',' ',value).strip()
 
 
@@ -100,7 +103,7 @@ def catalogue_audit(reply, facts):
                         # back to the explicitly named plan. Numeric equality
                         # is still checked against that exact plan, never the
                         # general set of prices. Other prose remains ambiguous.
-                        clean=re.sub(r'\b(?:на\s+год|годов[а-яё]*|месячн[а-яё]*|месяц|тариф|план|стоит|цена|за|в|он|она|это|составляет|около|примерно|annual|yearly|monthly)\b',' ',tail)
+                        clean=re.sub(r'\b(?:на\s+год|годов[а-яё]*|месячн[а-яё]*|месяц|тариф|план|стоит|стоимость|цена|цене|по|обойд[её]тся|за|в|на|он|она|это|составляет|около|примерно|annual|yearly|monthly)\b',' ',tail)
                         if re.search(r'[\w]',clean):continue
                         if year and variant==label and not label.endswith(' на год'):
                             if any(_plan_text(r.get('plan',''))==label+' на год' and r.get('service')==row.get('service') for r in rows):continue
@@ -149,7 +152,7 @@ def catalogue_audit(reply, facts):
                 issues.append(f'Этап: привязка цены к тарифу. Цена ответа={amount}; не удалось однозначно сопоставить предшествующий ярлык подтверждённому тарифу. Сервис={service or "не определён"}. Укажи сервис и тариф перед каждой рублёвой ценой; совпадение суммы с общим набором цен недостаточно.')
             suffix=re.match(r'[\s*_()/-]*(?:в\s+месяц|/\s*мес|ежемесяч\w*|месячн\w*|на\s+год|в\s+год|/\s*год|годов\w*)',lower[money.end():])
             scope=(matches[0][3] if matches else '')+' '+(suffix[0] if suffix else '')
-            period = 'month' if re.search(r'в\s+месяц|/\s*мес|ежемесяч|месячн', scope) else (
+            period = 'month' if re.search(r'(?:в|на)\s+месяц|/\s*мес|ежемесяч|месячн', scope) else (
                 'year' if re.search(r'на\s+год|в\s+год|/\s*год|годов', scope) else '')
             if period and candidates:
                 values = ' '.join(str(r.get(k, '')) for r in candidates for k in ('plan', 'billing_period', 'duration')).casefold()

@@ -92,7 +92,7 @@ def selection_diagnostic(facts,current):
 
 def _gmail_answer(text,question_before=False):
     value=re.sub(r'\s+',' ',str(text).casefold()).strip(' !?.,)')
-    gmail=bool(re.search(r'gmail|джимейл|гмейл|почт[а-яё]*\s+гугл',value,re.I))
+    gmail=bool(re.search(r'g\s*mail|джимейл|гмейл|гмайл|гмаил|почт[а-яё]*\s+гугл',value,re.I))
     if gmail:
         if re.search(r'нет|не\s+(?:имею|заводил|создавал)|без\s+gmail',value,re.I):return False
         if re.search(r'есть|имею|использую|у\s+меня|уже\s+(?:создал|завёл|завел)',value,re.I):return True
@@ -158,10 +158,12 @@ def enrich_facts(facts,current,history=()):
     index=next((i for i in range(len(rows)-1,-1,-1) if rows[i].get('role') in ('assistant','owner')),None)
     if index is None:return facts
     prompt=rows[index]['text']
-    asked=next((p for p in (GMAIL_QUESTION,REGISTRATION_PROMPT,OWNER_FIELDS_PROMPT,OWNER_DETAILS_ACK,OWNER_SESSION_PROMPT) if p in prompt),None)
+    from .email_registration import GMAIL_PROMPT,OUTLOOK_PROMPT
+    asked=next((p for p in (GMAIL_QUESTION,REGISTRATION_PROMPT,OWNER_FIELDS_PROMPT,OWNER_DETAILS_ACK,OWNER_SESSION_PROMPT,GMAIL_PROMPT,OUTLOOK_PROMPT) if p in prompt),None)
     if asked is None:return facts
     plain=re.sub(r'[\s!?.…,]+',' ',value.casefold()).strip()
-    candidate=(_gmail_answer(value,asked==GMAIL_QUESTION) is not None
+    candidate=(_gmail_answer(value,asked in (GMAIL_QUESTION,GMAIL_PROMPT)) is not None
+               or bool(re.search(r'почт|g\s*mail|гмаил|гмайл|outlook|аутлук',value,re.I))
                or asked==REGISTRATION_PROMPT and (plain in ('готово','сделал','сделала','зарегистрировался','зарегистрировалась') or _registration_claim(value) is not None)
                or asked==OWNER_FIELDS_PROMPT and '[email скрыт]' in value
                or asked==OWNER_SESSION_PROMPT and bool(re.search(r'токен|сесси|как\s+(?:получить|найти|скопировать)',value,re.I))

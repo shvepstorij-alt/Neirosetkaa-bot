@@ -11,7 +11,7 @@ _VISUAL_ANALYSIS = re.compile(
     r'(?:знач[ое]к|значки|панел|прибор|что[^.!?\n]{0,20}(?:фото|изображени))|'
     r'(?:фото|снимок)[^.!?\n]{0,90}(?:приборн|что[^.!?\n]{0,15}горит|распозна|расшифр)|'
     r'(?:приборн[а-яё]*\s+панел|знач[ое]к[^.!?\n]{0,25}горит)', re.I)
-_MEDIA = re.compile(r'фото|изображени|картинк|видео|ролик|анимац', re.I)
+_MEDIA = re.compile(r'фото|изображени|картинк|видео|ролик|анимац|рилс|reels', re.I)
 _CREATE = re.compile(r'генерац|генерир|созда[вт]|сделать|делать|ожив|анимир|редакт|монтаж|обработ', re.I)
 _DISCOVERY = re.compile(r'сервис|нейросет|инструмент|помог[^.!?\n]{0,30}выбрать|'
                         r'подскаж|посовет|подойд[её]т|порекоменду', re.I)
@@ -76,7 +76,27 @@ def fallback(facts, reason):
         body+='Для ролика на '+', '.join(durations)+' проверьте длительность одного клипа в настройках выбранной модели: итоговый ролик может потребовать нескольких сцен и монтажа.\n\n'
     body+='Сравнение отдельных подписок и остальные условия вашего вопроса пока не удалось проверить. Не буду советовать тариф без подтверждённых возможностей.'
     from .privacy import scrub
-    return {'reply':body,'summary':'Сохранена полезная подтверждённая навигация генераций. Сравнение внешних подписок и остальные пункты не подтверждены; нужна проверка владельца.',
-            'handoff':True,'source_ids':[],'evidence':{'status':'catalog_review','sources':[],
-            'diagnostic':'Этап: подбор сервиса по задаче. '+scrub(str(reason))[:1200],
-            'handoff_reason':'Публичные возможности для рекомендации и остальные пункты запроса не проверены.'}}
+    from .auto_policy import consultation_evidence
+    return {'reply':body,'summary':'Сохранена полезная подтверждённая навигация генераций. Сравнение внешних подписок и остальные пункты не подтверждены.',
+            'handoff':False,'source_ids':[],'evidence':consultation_evidence(body,'creative',
+            owner_action_required=True,diagnostic='Этап: подбор сервиса по задаче. '+scrub(str(reason))[:1200])}
+
+
+def intro_reply(facts,text):
+    """A useful first step for generic creative tasks, without invented prices."""
+    intent=context(text,facts)
+    if intent.get('kind')!='creative_generation':return None
+    from .catalog_context import service_mentions
+    if service_mentions(text,facts.get('catalog',[])):return None
+    if re.search(r'сравн|тариф|сколько|стоим|цен[аыу]|лимит|не\s+подход|отдельн[а-яё]*\s+(?:сервис|подписк)',text,re.I):return None
+    nav=intent.get('shop_generation_navigation',{})
+    if nav.get('identity_status')!='available' or not nav.get('username'):return None
+    body=('Да, помогу подобрать) Начать можно прямо в @'+nav['username']+'.\n\n'
+          'В главном меню есть «Изображение», «Видео», «Редактировать...» и «Анимировать...». '
+          'Модели, параметры и стоимость в кредитах будут показаны перед запуском.\n\n')
+    if intent.get('durations_requested'):
+        body+='Для итогового ролика указанной длительности может понадобиться несколько сцен и монтаж: длительность одного клипа зависит от выбранной модели.\n\n'
+    body+='Хотите создавать материал с нуля по описанию или оживлять готовые фото? Если возможностей бота будет мало, подберём отдельный сервис с подпиской под задачу.'
+    from .auto_policy import consultation_evidence
+    return {'reply':body,'summary':'Начальная консультация по генерациям в боте, без сторонних лимитов, моделей и цен.',
+            'handoff':False,'source_ids':[],'evidence':consultation_evidence(body,'creative')}

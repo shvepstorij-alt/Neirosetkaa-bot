@@ -30,7 +30,7 @@ def redaction_categories(text):
 
 def sensitive(text):
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
-    text=re.sub(r'(?i)\b(?:gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|pro|turbo|preview))?|claude-(?:sonnet|opus|haiku)-\d+(?:[-.]\d+)?|gemini-\d+(?:\.\d+)?-(?:pro|flash))(?![\w-])',
+    text=re.sub(r'(?i)\b(?:gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|pro|turbo|preview))?|claude-(?:sonnet|opus|haiku)-\d+(?:[-.]\d+)?|gemini-\d+(?:\.\d+)?-(?:pro|flash)|glm-\d+(?:\.\d+)?(?:-(?:turbo|air|flash|vision))?)(?![\w-]|\.(?=\S))',
                 '[название модели]',text or '')
     # An explicitly labelled public order reference is not an OTP merely
     # because the number happens to contain 4–8 digits on the following line.
@@ -50,7 +50,7 @@ def sensitive(text):
     # at explicit question/exclamation boundaries (not dots in URLs/emails).
     # Keep every unrecognised fragment for the sensitive-value checks below.
     lines=re.split(r'(?<=[?!])\s*|\n',text)
-    field_questions=[_credential_field_question(line) for line in lines]
+    field_questions=[_credential_field_question(line) or _credential_help_question(line) for line in lines]
     remaining=[line for line,is_question in zip(lines,field_questions) if not is_question]
     if len(remaining)!=len(lines):
         # A password question followed by a bare Latin string can be the
@@ -72,6 +72,23 @@ def sensitive(text):
 _PUBLIC_FIELD_WORDS={'apple','id','google','krea','zoom','canva','cursor','github','suno',
                      'midjourney','spotify','youtube','openrouter','gemini','grok','chatgpt',
                      'claude','password','token','session','cookie','cvv','email','login'}
+
+
+def _credential_help_question(text):
+    """A request for instructions is not a supplied credential value.
+
+    Narrow syntax only; assignment, numbers, payloads and unknown Latin values
+    stay manual. A separate secret line is still inspected by sensitive().
+    """
+    text=str(text or '').strip()
+    if not text or len(text)>500:return False
+    lower=text.casefold().replace('ё','е')
+    if re.search(r'[:={}\[\]"\'`@\d]|sk-|eyj|bearer|access.?token|refresh.?token|session.?key',lower):return False
+    if not re.search(r'токен|пароль|сесси[яию]',lower):return False
+    if any(w not in _PUBLIC_FIELD_WORDS for w in re.findall(r'[a-z]+',lower)):return False
+    if not re.search(r'(?:где|откуда|как)[^.!?]{0,70}(?:получить|взять|найти|открыть|скопировать)|не\s+(?:могу|получается|удается)[^.!?]{0,50}(?:получить|взять|найти|открыть|скопировать)',lower):return False
+    if re.search(r'(?:токен|пароль|сесси[яию])\s+(?!для\b|на\b|в\b|от\b|не\b|нуж\w*\b|получ\w*\b|взять\b|найти\b|скопировать\b|открыть\b)\w+',lower):return False
+    return True
 
 
 def _credential_field_question(text):

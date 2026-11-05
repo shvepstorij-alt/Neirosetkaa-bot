@@ -112,8 +112,14 @@ def reply(policy):
               +'По условиям курса предусмотрена бонусная подписка на месяц: ChatGPT или Claude на выбор. '
               'Пришлите сюда почту, на которую регистрировались на курсе, я проверю, доступен ли вам бонус. '
               'Пароль от почты не нужен. Если ещё не определились с сервисом, помогу сравнить их под ваши задачи)')
-    return {'reply':text,'summary':'Обращение по бонусу курса. Право на бонус не подтверждено; нужна ручная проверка владельца по почте регистрации. Тариф, выдача и активация не обещаны.',
-            'handoff':True,'source_ids':[],
+    needs_owner=bool(policy.get('course_identity')!='unconfirmed' and policy['email_already_provided'])
+    result={'reply':text,'summary':'Обращение по бонусу курса. Право на бонус не подтверждено; нужна ручная проверка владельца по почте регистрации. Тариф, выдача и активация не обещаны.',
+            'handoff':needs_owner,'source_ids':[],
             'evidence':{'status':'owner_policy','sources':[],
                 'handoff_reason':'Бонус курса: доступность проверяет владелец вручную. '+
                     ('В сообщениях есть почта; значение не включено в диагностику.' if policy['email_already_provided'] else 'Нужна почта регистрации на курсе.')}}
+    if not needs_owner:
+        from .auto_policy import consultation_evidence
+        result['evidence']=consultation_evidence(text,'course',owner_action_required=False,
+            diagnostic='Этап: сбор сведений по бонусу курса. Задан вопрос о программе или почте регистрации; право на бонус не подтверждено, проверку выполнит владелец после получения данных.')
+    return result

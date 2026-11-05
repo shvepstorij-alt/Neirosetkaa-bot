@@ -17,6 +17,10 @@ ALIASES = {
     'gemini': ('gemini','джемини','гемини'),
     'perplexity': ('perplexity', 'перплексити'),
     'zoom': ('zoom', 'зум', 'зуме', 'зума', 'зуму'),
+    'suno': ('suno','суно'),
+    'spotify': ('spotify','спотифай','спотифая','спотифаю'),
+    'youtube': ('youtube','you tube','ютуб','ютубе','ютуба'),
+    'openrouter': ('openrouter','open router','опенроутер','опенроутере'),
     'notion': ('notion', 'ноушен', 'ноушн'),
     'motion': ('motion', 'моушен', 'моушн'),
     'canva': ('canva','канва','канве','канву'),
@@ -135,6 +139,7 @@ def _select_variants(rows,latest):
         purchase=bool(re.search(r'пополн|купить|докуп|пакет|приобр|оформ',local,re.I))
         want_extra=explicit_extra or credit_word and (purchase or not plan)
         want_regular=(plan or bool(re.search(r'подписк',rest,re.I))
+                      or not want_extra and bool(re.search(r'активир|активац|оплатил|оплатила|оплачено',rest,re.I))
                       or not want_extra and bool(re.search(r'тариф|(?<!\w)план[а-яё]*(?!\w)',rest,re.I)))
         # Task-oriented consultation concerns the service subscription, not a
         # separately sold credit top-up that merely shares its brand name.
@@ -193,10 +198,16 @@ def annotate(facts, latest, products=()):
         if name and len(name[0])>=4 and name[0] not in ('premium','подписка','пополнение','доступ','account','credits'):
             prefixes.setdefault(name[0],set()).add(str(row.get('service_key') or row.get('service')))
     matched=[];services=[];seen=set()
+    individual_request=bool(re.search(r'(?:другой|другого|неизвестный|неизвестного)\s+сервис|сервис[^.!?\n]{0,40}(?:нет|не\s+наш[её]л)[^.!?\n]{0,20}каталог',str(latest),re.I))
     for row in facts.get('catalog',[]):
         if not isinstance(row,dict):continue
         key=_words(row.get('service_key'))
         name=_words(row.get('service'))
+        # "Другой сервис" is an operator's generic pricing tool, not the
+        # unknown product whose official site the customer has yet to supply.
+        # Its arbitrary denominations must not replace individual intake.
+        if individual_request and name==('другой','сервис'):
+            continue
         family=_families(key)|_families(name)
         direct=any(_contains(words,key) or _contains(words,name) for words in requests)
         if name and len(prefixes.get(name[0],()))==1:

@@ -34,7 +34,7 @@ def _dependent_followup(text):
                     r'функци[а-яё]*|них|это|нём|нем))?',details):
         return True
     return bool(re.fullmatch(
-        r'(?:а |и )?(?:сколько (?:это |он |она )?стоит|какая цена|какие лимиты|'
+        r'(?:а |и )?(?:сколько (?:это |он |она )?стоит|какая цена|какие (?:есть )?тарифы(?: есть)?|какие лимиты|'
         r'что входит|как (?:его |её |это )?оформить|как оплатить|какой (?:из них )?лучше|'
         r'что (?:нужно(?: будет)?|потребуется|нужно будет предоставить) для оформления|'
         r'какие данные (?:нужны|потребуются)(?: для оформления)?|'
@@ -156,10 +156,12 @@ def _contextual_followup(text,catalog):
     if len(tokens)>24:return False
     allowed=set('а и это этот эта его ее её мне от меня вам вас у нужно нужны нужен потребуется требуется какие данные что как куда когда сколько времени ждать долго занимает оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено после передать прислать отправить почта почту пароль аккаунт аккаунта вход активация активации активировать подписка подписку подписки тариф тарифа тарифы выбрать выбирать месяц месяца месяцев год года годовой месячный можно ли будет для на по с со без уже не прошло работает спасибо пожалуйста подскажите тогда хочу да нет двух этих сервисов обоих обоим них получить скопировать найти ссылка ссылку ссылки платежную платёжную страницу страницы'.split())
     allowed.update('существующий существующем существующего текущий текущем текущего старый старом старого собственный своем своём ссылке ссылки почте паролю данным давайте давай выбираю выберу вариант способом через удобнее наверное бота бот ботом его него продолжить продолжать расскажите подробнее поподробнее пожалуйста попробовать остановимся остановлюсь плюс plus какой какую какой-то посоветуете порекомендуете подойдет подойдёт лучше выбрать определиться помогите'.split())
+    allowed.update('скинуть скидывать кидать выслать присылать пришлю отправлю оплачу оплатим оплату сейчас хорошо'.split())
     for row in catalog:
         allowed.update(_words(row.get('plan','')))
     intent=set('нужно нужны нужен потребуется требуется данные оформить оформление оформления оплатить оплата оплаты оплатил оплатила оплачено активация активации активировать ждать долго месяц год годовой месячный пароль почту аккаунт тариф тарифа ссылку ссылка ссылки'.split())
     intent.update(('ссылке','почте','паролю','данным'))
+    intent.update(('оплачу','оплатим','оплату'))
     plans={word for row in catalog for word in _words(row.get('plan',''))}
     return bool(set(tokens)&(intent|plans)) and all(t in allowed or t.isdigit() for t in tokens)
 
@@ -208,7 +210,7 @@ def _workflow_help_followup(text):
     anchor=re.search(r'авториз|авторизац|войти|вход|сесси|токен|'
                      r'активир|активац|кнопк|браузер|скопир|встав|пункт|шаг|'
                      r'organization\s+id|\borg\s+id\b',value,re.I)
-    request=re.search(r'\b(?:как|что|где|почему|какой|какая|какие|объясни[а-яё]*|'
+    request=re.search(r'\b(?:как|что|где|откуда|почему|какой|какая|какие|объясни[а-яё]*|'
                       r'подскаж[а-яё]*|помог[а-яё]*|не\s+(?:могу|получается|открывается|понимаю|вижу|видно|работает))\b',value,re.I)
     return bool(anchor and request)
 
@@ -355,6 +357,11 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     if is_acknowledgement(text):return text
     reminder=is_reminder(text)
     followup=_dependent_followup(text) or _contextual_followup(text,catalog)
+    lines=[line.strip() for line in text.splitlines() if line.strip() and not is_acknowledgement(line)]
+    # A collected batch can ask about the previous service and introduce a
+    # second service on its next line. Keep the first explicit continuation;
+    # do not reduce the entire batch to only the last named product.
+    leading_followup=(len(lines)>1 and _dependent_followup(lines[0]))
     from .catalog_context import _words,_contains
     service_only=_only_service_names(text,catalog)
     purpose_candidate=_purpose_answer_candidate(text,catalog)
@@ -362,7 +369,7 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     # Region-only replies are considered below only after examining prior client
     # content. A standalone region must never revive an unrelated service.
     region_candidate=_apple_details_candidate(text)
-    if not reminder and not followup and not region_candidate and not service_only and not purpose_candidate and not reference_candidate:
+    if not reminder and not followup and not leading_followup and not region_candidate and not service_only and not purpose_candidate and not reference_candidate:
         db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
         return text
     pointer=db.execute('SELECT first_mid,last_mid FROM request_context WHERE chat=?',(chat,)).fetchone()
@@ -398,6 +405,9 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     if _has_apple_topic(previous):
         previous=_current_apple_details(previous)
     if not previous or len(previous)>24000:return '' if reminder else text
+    if leading_followup:
+        from .catalog_context import service_mentions
+        followup=bool(service_mentions(previous,catalog))
     if purpose_candidate and _purpose_answers_previous(db,chat,first,bounds,previous,catalog):
         followup=True
     if not reminder:

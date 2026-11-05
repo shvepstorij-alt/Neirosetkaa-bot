@@ -49,10 +49,10 @@ def requested_reference(question, context=''):
 
 
 def _answer(reply,reason,handoff=False):
+    from .auto_policy import consultation_evidence
     return {'reply':reply,'summary':'Статус оплаты проверяется отдельно от активации; чек не подтверждает зачисление автоматически.',
-            'handoff':handoff,'research':{'topic':'none','products':[]},'source_ids':[],
-            'evidence':{'status':'order_status','diagnostic':reason,
-                        'handoff_reason':reason if handoff else ''}}
+            'handoff':False,'research':{'topic':'none','products':[]},'source_ids':[],
+            'evidence':consultation_evidence(reply,'order',diagnostic=reason,owner_action_required=handoff)}
 
 
 def _amount(value):
@@ -142,8 +142,10 @@ async def order_reply(shop,uid,current,*,facts=None,context=''):
     module never requests unscoped existence, contact email or account data.
     `order_context` is a minimal trusted signal for root's mixed-goal composer.
     """
+    if re.search(r'возврат|верните\s+деньги|вернуть\s+деньги',current,re.I) and not is_status_request(current):return None
     reference=requested_reference(current,context)
-    if not is_status_request(current) and not (reference and is_status_request(context)):
+    if not is_status_request(current) and not (reference and (
+            reference.get('kind') in ('fk_intid','shop_num','pair') or is_status_request(context))):
         return None
     if not reference or reference.get('kind')=='multiple':
         return status_reply({},current,reference)
