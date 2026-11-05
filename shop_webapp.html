@@ -86,6 +86,9 @@
   .card-ic img.pnglogo{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
   .card-ic .mono{font:800 36px/1 -apple-system,sans-serif;color:#fff}
   .card-name{font-size:22px;font-weight:800;text-align:center}
+  .claude-notice{text-align:center;margin:4px 0 18px;padding:0 6px}
+  .claude-notice-title{color:#f59e0b;font-size:17px;font-weight:800;margin-bottom:8px}
+  .claude-notice-text{color:var(--text2);font-size:12px;line-height:1.65;overflow-wrap:anywhere}
   .card-desc{font-size:13px;color:var(--text2);line-height:1.6;text-align:center;margin:8px 0 16px}
   .card-plans-h{font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 8px}
   .plan{background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:13px 14px;margin-bottom:10px}
@@ -930,6 +933,13 @@ function openCard(key, _silent){
   if(window._coins===undefined){ _loadCoins(function(){ openCard(key,true); }); }
   body.innerHTML='<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(key,c.logo)+'">'+_iconHtml(c.logo,c.name)+'</div>'
     +'<div class="card-name">'+c.name+'</div></div>'
+    +((String(key).toLowerCase()==='claude'||/^claude(?:\s|$)/i.test(String(c.name||'')))
+      ?'<div class="claude-notice" role="note"><div class="claude-notice-title">Без гарантии</div>'
+       +'<div class="claude-notice-text">При оформлении или использовании Claude может потребоваться верификация личности. '
+       +'Можно попробовать пройти её по действующему загранпаспорту, водительскому удостоверению или другому государственному документу, '
+       +'который принимает Claude. Принятие документа и успешное прохождение проверки не гарантируются.<br><br>'
+       +'К сожалению, из-за политики Claude мы не можем гарантировать, что аккаунт не потребует верификации личности и не будет заблокирован. '
+       +'Проверка возможна и без активной подписки. С её прохождением мы помочь не можем.</div></div>':'' )
     +(c.desc?('<div class="card-desc">'+c.desc+'</div>'):'')
     +partnerPromo
     +'<div class="card-plans-h">🎟 Промокод</div>'+promoBlock
