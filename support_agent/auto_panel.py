@@ -64,7 +64,7 @@ def overview(service):
           +f'\n\nАвтоответы: {counts["auto"]} чат(ов)\nТолько черновики: {counts["draft"]}\nНа паузе: {counts["off"]}'
           +f'\nТребуют внимания: {len(attention_chats(service))}\nГотовых черновиков: {ready}'
           +f'\n\nСобирается обращений: {queued}\nГотовится ответов: {working}'
-          +f'\nОкно сбора сообщений: {store.batch_seconds} сек. от первого сообщения обращения.'
+          +f'\nСбор сообщений: {delay_label(store.batch_seconds)}.'
           +f'\nAPI сегодня (UTC): {used}/{service.daily_limit} этапов. Это не денежный лимит.'
           +'\n\nДоступ Telegram проверяется отдельно перед отправкой. Состояние магазина: /shop_status.'
           +'\nНовые чаты автоматически не получают разрешение AUTO.\n/chats — все чаты · /pending — черновики · /stop — остановить всем'
@@ -74,7 +74,33 @@ def overview(service):
     rows=[[('Остановить всем','global:off')],
           [('Все чаты','chats:0'),('Требуют внимания','attention:0')],
           [('Настройки автоответов','auto:settings'),('Только черновики','global:draft')],
+          [('Таймер сбора сообщений','delay:view')],
           [('Обновить','control:refresh')]]
+    return text,rows
+
+
+def delay_label(seconds):
+    if seconds==0:return 'без ожидания'
+    if seconds%60==0:return str(seconds//60)+' мин. от первого сообщения'
+    return str(seconds)+' сек. от первого сообщения'
+
+
+def delay_settings(service):
+    store=service.store;rev=store.get('batch_delay_revision')
+    text=('⏱ Таймер сбора сообщений\n\nСейчас: '+delay_label(store.batch_seconds)
+          +'\n\nНастройка общая для черновиков и AUTO. Несколько сообщений внутри окна объединяются в одно обращение. '
+          'Новое сообщение внутри окна не отсчитывает таймер заново.'
+          '\n\nБез ожидания: подготовка начинается при первой возможности. Это не гарантирует мгновенную отправку: '
+          'ещё нужны обработка, проверка и доступ Telegram. Ответы могут стать чаще, расходы API — выше.'
+          '\n\nИзменение применяется и к ожидающим обращениям. Уже готовящийся ответ не отменяется; '
+          'завершённые и отменённые обращения повторно не запускаются.'
+          '\n\nСвоё время: /delay 2 — две минуты; /delay 0 — без ожидания. Диапазон: 0–60 минут.')
+    rows=[[('Без ожидания'+(' ✓' if store.batch_seconds==0 else ''),f'delay:set:0:{rev}')],
+          [(str(minutes)+' мин.'+(' ✓' if store.batch_seconds==minutes*60 else ''),f'delay:set:{minutes*60}:{rev}') for minutes in (1,3,5)],
+          [('Своё время','delay:custom')]]
+    if store.batch_seconds==0:
+        rows.append([('Вернуть ожидание ('+delay_label(int(store.get('batch_saved_seconds')))+')',f'delay:restore:{rev}')])
+    rows.append([('Обновить','delay:view'),('Управление','control:refresh')])
     return text,rows
 
 
@@ -109,10 +135,18 @@ def chat_details(service,c):
         states={'auto_sent':'автоответ отправлен','auto_blocked':'автоответ передан на проверку',
                 'send_uncertain':'результат отправки неизвестен','manual':'вы ответили вручную','owner_sent':'ответ отправлен после вашего одобрения','auto_enabled':'автоответы включены для новых обращений'}
         text+='\nПоследнее действие: '+states.get(event['state'],event['state'])+' · '+clock(event['at'])
-        if event['reason']:text+='\nПричина: '+event['reason']
+        if event['reason']:text+='\nПричина последнего действия: '+event['reason']
     d=store.db.execute('SELECT * FROM drafts WHERE chat=? ORDER BY id DESC LIMIT 1',(c['id'],)).fetchone()
+    pending=store.db.execute('SELECT state FROM messages WHERE chat=? AND mid=?',(c['id'],c['latest'])).fetchone()
+    current=bool(d and d['mid']==c['latest'] and d['revision']==c['revision']
+                 and d['global_revision']==int(store.get('revision')) and d['state']!='stale')
+    if pending and pending['state'] in ('queued','working') and not current:
+        text+='\nТекущее обращение: '+('идёт сбор сообщений' if pending['state']=='queued' else 'ответ готовится')
+        text+='\nРешение об отправке AUTO по нему ещё не принято.'
     if d:
-        text+='\nПоследний ответ: №'+str(d['id'])+' · '+d['state']
-        if d['summary']:text+='\nКраткий разбор (проверьте): '+scrub(d['summary'])[:240]
-        text+='\nУчастие владельца: '+('нужно' if d['handoff'] else 'не запрошено; отправка всё равно проверяется отдельно')
+        text+='\n'+('Текущий ответ' if current else 'Предыдущий ответ')+': №'+str(d['id'])+' · '+d['state']
+        if current:
+            if d['summary']:text+='\nКраткий разбор (проверьте): '+scrub(d['summary'])[:240]
+            text+='\nУчастие владельца: '+('нужно' if d['handoff'] else 'не запрошено; отправка всё равно проверяется отдельно')
+        elif d['state']=='stale':text+='\nЭтот ответ отменён и не является решением по новому обращению.'
     return text

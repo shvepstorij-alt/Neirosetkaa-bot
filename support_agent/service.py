@@ -106,6 +106,7 @@ class Service:
         if not parts:return
         cmd=parts[0].split('@')[0]
         readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','control:refresh','auto:settings')
+                  or cmd in ('delay:view','delay:custom') or cmd=='/delay' and len(parts)==1
                   or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:')))
         gate=self.schedule_admin_job(lambda:self.command(text,admin_mid),readonly=readonly)
         if gate is not None and not readonly:
@@ -412,7 +413,8 @@ class Service:
                       if c['batch_due']>time.time() else
                       f'Обращение собрано · сообщений: {count} · ожидает свободного обработчика\n')
         from .auto_panel import MODES,chat_details
-        text=(f'👤 {label}\nЧат №{cid} · Telegram ID {c["uid"]}\n\n'
+        from .auto_panel import clock
+        text=(f'👤 {label}\nЧат №{cid} · Telegram ID {c["uid"]}\nСостояние на {clock(time.time())} (UTC+5)\n\n'
               f'Чат: {MODES.get(c["mode"],"неизвестно")}\n'
               f'Глобальный режим: {self.store.get("mode")}\n'
               f'Разрешён настройками: {"да" if c["uid"] in self.allowed else "нет"}\n'
@@ -432,7 +434,7 @@ class Service:
         last=self.store.db.execute('SELECT id FROM drafts WHERE chat=? ORDER BY id DESC LIMIT 1',(cid,)).fetchone()
         if last:rows.append([('Последний черновик',f'draft:{last[0]}')])
         rows.append([('Все чаты','chats:0'),('Ожидают проверки','pending:0')])
-        rows.append([('Управление','control:refresh')])
+        rows.append([('Обновить',f'view:{cid}'),('Управление','control:refresh')])
         await self.admin_panel(text,rows,admin_mid)
 
     async def command(self,text,admin_mid=None):
@@ -440,7 +442,33 @@ class Service:
         if not parts:
             return
         cmd=parts[0].split('@')[0]
-        if cmd in ('/auto','auto:settings'):
+        if cmd in ('delay:view','/delay') and len(parts)==1:
+            from .auto_panel import delay_settings
+            text,rows=delay_settings(self)
+            await self.admin_panel(text,rows,admin_mid)
+        elif cmd=='delay:custom':
+            await self.admin_panel('Напишите /delay и количество минут от 0 до 60.\nНапример: /delay 3\n/delay 0 — без ожидания.',
+                                   [[('Назад','delay:view')]],admin_mid)
+        elif cmd.startswith(('delay:set:','delay:restore:')):
+            fields=cmd.split(':')
+            expected=int(fields[-1])
+            if expected!=int(self.store.get('batch_delay_revision')):
+                await self.owner_message('Настройка таймера уже изменилась. Обновите меню таймера; старая кнопка не применена.')
+                return
+            if fields[1]=='restore':self.store.restore_batch_seconds(expected_revision=expected)
+            else:self.store.set_batch_seconds(int(fields[2]),expected_revision=expected)
+            from .auto_panel import delay_settings
+            text,rows=delay_settings(self)
+            await self.admin_panel(text,rows,admin_mid)
+        elif cmd=='/delay':
+            if len(parts)!=2 or not parts[1].isascii() or not parts[1].isdigit() or len(parts[1])>2 or not 0<=int(parts[1])<=60:
+                await self.owner_message('Таймер не изменён. Используйте /delay 3 — минуты от 0 до 60; 0 отключает ожидание.')
+                return
+            self.store.set_batch_seconds(int(parts[1])*60)
+            from .auto_panel import delay_settings
+            text,rows=delay_settings(self)
+            await self.admin_panel(text,rows,admin_mid)
+        elif cmd in ('/auto','auto:settings'):
             await self.show_control(admin_mid,settings=True)
         elif cmd.startswith('attention:'):
             await self.show_attention(int(cmd.split(':')[1]),admin_mid)

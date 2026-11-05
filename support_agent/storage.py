@@ -10,7 +10,9 @@ HISTORY_TRUNCATED = '[Начало сообщения не включено в �
 
 
 class Store:
-    def __init__(self, path, batch_seconds=300):
+    def __init__(self, path, batch_seconds=180):
+        if type(batch_seconds) is not int or not 0<=batch_seconds<=3600:
+            raise ValueError('Batch delay must be an integer from 0 to 3600 seconds')
         self.batch_seconds=batch_seconds
         self.db = sqlite3.connect(path, timeout=10, isolation_level=None)
         self.db.row_factory = sqlite3.Row
@@ -46,11 +48,26 @@ class Store:
         for name,kind in (('batch_due','REAL'),('batch_start','REAL'),('batch_first','INTEGER')):
             if name not in columns:
                 self.db.execute(f'ALTER TABLE chats ADD COLUMN {name} {kind} NOT NULL DEFAULT 0')
-        # Existing queued work receives a persistent collection window on upgrade.
-        self.db.execute("""UPDATE chats SET batch_start=?,batch_due=?,batch_first=latest
-            WHERE batch_due=0 AND EXISTS (SELECT 1 FROM messages m
-            WHERE m.chat=chats.id AND m.mid=chats.latest AND m.state='queued')""",
-            (time.time(),time.time()+self.batch_seconds))
+        with self.transaction():
+            persisted=self.db.execute("SELECT value FROM settings WHERE key='batch_seconds'").fetchone()
+            first_setting=persisted is None
+            if first_setting:self.put('batch_seconds',batch_seconds)
+            else:
+                try:self.batch_seconds=int(persisted[0])
+                except (TypeError,ValueError):raise ValueError('Persisted batch delay is invalid') from None
+                if not 0<=self.batch_seconds<=3600:
+                    raise ValueError('Persisted batch delay is invalid')
+            self.db.execute("INSERT OR IGNORE INTO settings VALUES ('batch_delay_revision','0')")
+            self.db.execute("INSERT OR IGNORE INTO settings VALUES ('batch_saved_seconds',?)",
+                            (str(self.batch_seconds or 180),))
+            now=time.time()
+            # Legacy queued batches without collection fields receive an origin
+            # once. A settings change never changes their first message/start.
+            self.db.execute("""UPDATE chats SET batch_start=?,batch_due=?,batch_first=latest
+                WHERE batch_due=0 AND EXISTS (SELECT 1 FROM messages m
+                WHERE m.chat=chats.id AND m.mid=chats.latest AND m.state='queued')""",
+                (now,now+self.batch_seconds))
+            if first_setting:self._recalculate_batch_deadlines(now,self.batch_seconds)
 
     @contextmanager
     def transaction(self):
@@ -67,6 +84,60 @@ class Store:
 
     def put(self, key, value):
         self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, str(value)))
+
+    @property
+    def batch_delay_revision(self):
+        return int(self.get('batch_delay_revision'))
+
+    def _recalculate_batch_deadlines(self,now,seconds):
+        """Adjust only current queued, enabled batches; caller owns transaction.
+
+        Increasing delay also applies to a queued 'prepare now' batch: the
+        explicit global setting defines its new deadline. Work already claimed
+        by a worker is never cancelled or queued again here.
+        """
+        if self.get('mode') not in ('draft','auto'):return
+        self.db.execute("""UPDATE chats SET batch_due=CASE WHEN ?=0 THEN ? ELSE MAX(?,batch_start+?) END
+            WHERE mode IN ('draft','auto') AND EXISTS (
+                SELECT 1 FROM messages m WHERE m.chat=chats.id AND m.mid=chats.latest
+                AND m.role='client' AND m.state='queued')""",(seconds,now,now,seconds))
+
+    def set_batch_seconds(self,seconds,expected_revision=None):
+        if type(seconds) is not int or not 0<=seconds<=3600:
+            raise ValueError('Batch delay must be an integer from 0 to 3600 seconds')
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision<0):
+            raise ValueError('Batch delay revision must be a nonnegative integer')
+        with self.transaction():
+            revision=self.batch_delay_revision
+            if expected_revision is not None and revision!=expected_revision:return False
+            current=int(self.get('batch_seconds'))
+            if current==seconds:
+                self.batch_seconds=current
+                return False
+            self.put('batch_seconds',seconds)
+            if seconds:self.put('batch_saved_seconds',seconds)
+            self.put('batch_delay_revision',revision+1)
+            self._recalculate_batch_deadlines(time.time(),seconds)
+        self.batch_seconds=seconds
+        return True
+
+    def restore_batch_seconds(self,expected_revision=None):
+        # Restoration and expected-revision comparison share one transaction;
+        # another owner action cannot turn an old restore button into an edit.
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision<0):
+            raise ValueError('Batch delay revision must be a nonnegative integer')
+        with self.transaction():
+            revision=self.batch_delay_revision
+            if expected_revision is not None and revision!=expected_revision:return False
+            try:seconds=int(self.get('batch_saved_seconds'))
+            except (TypeError,ValueError):raise ValueError('Saved batch delay is invalid') from None
+            if not 1<=seconds<=3600:raise ValueError('Saved batch delay is invalid')
+            if int(self.get('batch_seconds'))==seconds:return False
+            self.put('batch_seconds',seconds)
+            self.put('batch_delay_revision',revision+1)
+            self._recalculate_batch_deadlines(time.time(),seconds)
+        self.batch_seconds=seconds
+        return True
 
     def chat(self, cid):
         return self.db.execute('SELECT * FROM chats WHERE id=?', (cid,)).fetchone()
