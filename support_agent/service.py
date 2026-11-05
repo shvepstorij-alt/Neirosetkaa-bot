@@ -256,9 +256,14 @@ class Service:
             media={k:v for k,v in m['document'].items() if k in ('file_id','file_size')}
             media['kind']='photo'
             media['delivery_kind']='document'
+        elif m.get('document') and (m['document'].get('mime_type') in ('text/plain','application/json')
+                or str(m['document'].get('file_name','')).casefold().endswith(('.txt','.json'))):
+            # These files can contain the entire session. Do not download them
+            # or store even their supplied name: owner opens the original chat.
+            media={'kind':'manual_text_file'}
         elif any(m.get(key) for key in ('document','video','animation','audio','video_note','sticker','contact','location','venue','poll')) or not raw:
             media={'kind':'unsupported'}
-        if secret:
+        if secret and media.get('kind')!='manual_text_file':
             media={'kind':'sensitive'}
         if not secret:
             from .external_quote import public_sites
@@ -743,6 +748,51 @@ class Service:
             raise ValueError('Daily API request limit reached')
 
     async def generate(self,job):
+        """Owned payment evidence composes with, never replaces, another goal."""
+        from .order_status import order_reply,is_status_request
+        first=self.store.chat(job['chat'])['batch_first']
+        rows=self.store.db.execute("SELECT text,media FROM messages WHERE chat=? AND role='client' AND mid>=? AND mid<=? ORDER BY mid",
+                                   (job['chat'],first,job['mid'])).fetchall()
+        current='\n'.join(r['text'] or '' for r in rows)
+        from .topic_boundary import boundary_reply
+        if boundary_reply(current):return await self._generate_body(job)
+        previous=self.store.db.execute("SELECT text FROM messages WHERE chat=? AND role='client' AND mid<? ORDER BY mid DESC LIMIT 1",
+                                       (job['chat'],first)).fetchone()
+        order=await order_reply(self.shop,job['uid'],current,context=previous['text'] if previous else '')
+        if not self.store.still_current(job):return None
+        if order is None:return await self._generate_body(job)
+        if order.get('order_context',{}).get('status')=='pending':
+            has_photo=False
+            for row in rows:
+                try:has_photo=has_photo or json.loads(row['media'] or '{}').get('kind')=='photo'
+                except (ValueError,TypeError):pass
+            if has_photo:
+                order['reply']='Магазин пока ожидает подтверждение оплаты. Изображение уже приложено; нужна ручная сверка, является ли оно чеком и что произошло с платежом. Сам снимок не подтверждает зачисление. Повторно оплачивать сейчас не нужно.'
+                order['evidence']['diagnostic']+=' Изображение в текущем обращении уже есть; содержимое не распознавалось, повторный запрос того же вложения не сделан.'
+        from .request_goals import goals
+        other=goals(current)-{'problem'}
+        # A bank receipt is not proof of settlement and need not be downloaded
+        # to read an already-owned shop status. New account/activation guidance
+        # is still preserved when explicitly requested in the same message.
+        new_account=bool(re.search(r'нов[а-яё]*\s+аккаунт|new\s+account',current,re.I))
+        if not other and not new_account:return order
+        status=order.get('order_context',{}).get('status')
+        if status in ('pending','failed','cancelled','canceled','expired'):return order
+        inner=await self._generate_body(dict(job,_order_context=order.get('order_context',{})))
+        if inner is None:return None
+        if inner.get('evidence',{}).get('manual_secret_intake') and status!='paid':return order
+        body=order['reply']+'\n\n'+inner['reply']
+        if len(body)>1800:
+            order['reply']+='\n\nВопрос по оформлению тоже требует ответа; разберём его отдельно после проверки оплаты.'
+            order['handoff']=True
+            order['evidence']['diagnostic']+=' Этап: сборка нескольких целей. Длина='+str(len(body))+'; лимит=1800. Инструкция не обрезалась.'
+            return order
+        inner=dict(inner,reply=body,handoff=bool(order.get('handoff') or inner.get('handoff')))
+        inner.setdefault('evidence',{})['order_status_diagnostic']=order.get('evidence',{}).get('diagnostic','')
+        inner['evidence'].setdefault('atomic_diagnostics',[]).append(order.get('evidence',{}).get('diagnostic',''))
+        return inner
+
+    async def _generate_body(self,job):
         from .storage import HISTORY_MESSAGES,HISTORY_CHARACTERS
         batch_first=self.store.chat(job['chat'])['batch_first']
         from .topic_boundary import boundary_reply
@@ -774,6 +824,8 @@ class Service:
         facts=await self.shop.facts(job['uid'])
         from .offer_terms import enrich as confirmed_offer_terms
         facts=confirmed_offer_terms(facts)
+        from .app_installation import policy_facts as installation_policy
+        facts=dict(facts,installation_policy=installation_policy(),verified_order_context=job.get('_order_context',{}))
         from .referral_guide import referral_facts
         from .claude_policy import claude_policy_facts
         from .external_quote import POLICY
@@ -783,6 +835,9 @@ class Service:
         if not self.store.still_current(job):
             return None
         history=self.store.history(job['chat'])
+        recent=self.store.db.execute('SELECT role,text FROM messages WHERE chat=? AND at>=? AND mid<=? ORDER BY mid DESC LIMIT 40',
+                                     (job['chat'],time.time()-86400,job['mid'])).fetchall()
+        guide_history=[dict(r) for r in reversed(recent)]
         # Full history remains context for references; only the fixed collection
         # batch is a new request. An unapproved old draft must not revive its topic.
         batch=self.store.db.execute('''SELECT mid,role,text FROM messages
@@ -813,6 +868,8 @@ class Service:
             except (ValueError,TypeError):continue
             sites.extend(media.get('public_service_sites',[]))
         facts=dict(facts,public_service_sites=list(dict.fromkeys(sites))[:2])
+        from .new_account_guide import enrich_facts as new_account_context
+        facts=new_account_context(facts,raw_batch,guide_history)
         if len(facts['public_service_sites'])==1 and re.fullmatch(r'\s*\[ссылка скрыта\]\s*',raw_batch):
             # A homepage sent after our clarification is a new identity hint,
             # not an instruction to reuse the last unrelated purchased service.
@@ -861,6 +918,12 @@ class Service:
         from .request_goals import covers,goals
         facts=dict(facts,request_goals=sorted(goals(raw_batch or latest,facts)))
         raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .new_account_guide import reply as new_account_reply
+        account_guide=new_account_reply(facts,raw_batch,guide_history)
+        if account_guide and not image:return account_guide
+        from .app_installation import reply as installation_reply
+        installation=installation_reply(facts,raw_batch)
+        if installation and not image:return installation
         from .activation_guidance import reply as activation_help
         activation=activation_help(facts,latest,raw_batch) if not image else None
         if activation:return activation
@@ -895,7 +958,7 @@ class Service:
         apple=direct_apple_reply(facts,latest) if not image and not course and covers(raw_batch,{'purchase','price','activation'},facts) else None
         if apple:return apple
         from .fulfillment_reply import workflow_reply
-        fulfillment=workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price'},facts) else None
+        fulfillment=workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price','activation'},facts) else None
         if fulfillment:return fulfillment
         workflow=direct_workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price'},facts) else None
         if workflow:return workflow

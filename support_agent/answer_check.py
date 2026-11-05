@@ -314,6 +314,8 @@ def review_input(answer,facts):
     result['owner_claude_policy']=claude_policy_facts()
     result['referral_policy']={k:v for k,v in referral_facts(facts).items() if k!='owner_diagnostic'}
     result['external_quote_policy']=dict(POLICY)
+    from .app_installation import policy_facts
+    result['installation_policy']=policy_facts()
     result['case_fields']={k: facts.get('case_fields',{}).get(k) is True
                            for k in ('payment_reference_supplied','payment_provider_supplied')}
     if facts.get('feature_only') is True:

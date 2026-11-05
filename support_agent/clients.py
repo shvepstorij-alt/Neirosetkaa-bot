@@ -681,6 +681,43 @@ class ShopReader:
             result['note']='Для консультации используй обычные цены catalog_price_rub. Персональные расчёты, промокоды и монеты относятся к оформлению заказа. appstore содержит отдельный динамический ассортимент. Описания магазина не заменяют официальную проверку функций сервисов. Оплата не доказывает активацию.'
         return result
 
+    async def order_facts(self,uid,reference):
+        """Fresh, owned exact lookup; never trusts an email or client-supplied UID."""
+        result={'orders':[],'orders_status':'not_connected','ownership_scope':'authenticated_user',
+                'orders_observed_at_unix':time.time(),'payment_source':'shop_database'}
+        if type(uid) is not int or not 0<uid<2**63:
+            return dict(result,orders_status='invalid_identity')
+        if not isinstance(reference,dict) or set(reference)-{'num','fk_intid','untyped'}:
+            return dict(result,orders_status='invalid_reference')
+        if not reference or ('untyped' in reference and set(reference) not in ({'untyped'},{'num','untyped'})):
+            return dict(result,orders_status='invalid_reference')
+        values=[uid];clauses=['user_id=$1']
+        for key,value in reference.items():
+            if key=='num':
+                if type(value) is not int or not 0<value<2**63:return dict(result,orders_status='invalid_reference')
+                values.append(value);clauses.append('num=$'+str(len(values)))
+            else:
+                if not isinstance(value,str) or not re.fullmatch(r'\d{1,20}',value):return dict(result,orders_status='invalid_reference')
+                values.append(value);param='$'+str(len(values))
+                clauses.append('fk_intid='+param if key=='fk_intid' else '(num::text='+param+' OR fk_intid='+param+')')
+        if not self.pool:return result
+        try:
+            async with self.pool.acquire() as c,c.transaction(readonly=True):
+                rows=await c.fetch('SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at FROM fk_orders WHERE '
+                                   +' AND '.join(clauses)+' LIMIT 2',*values)
+            return dict(result,orders=[dict(r,activation_status='not_checked') for r in rows],
+                        orders_status='available' if len(rows)==1 else 'not_found' if not rows else 'ambiguous',
+                        orders_observed_at_unix=time.time())
+        except Exception as exc:
+            # Safe type/stage only, never SQL values or connection details.
+            label=type(exc).__name__
+            known={'InsufficientPrivilegeError','UndefinedColumnError','UndefinedTableError','QueryCanceledError','TimeoutError','ConnectionDoesNotExistError','ConnectionFailureError','CannotConnectNowError'}
+            return dict(result,orders_status='read_error',orders_diagnostic='Этап: чтение собственного заказа. '+
+                        ('Недостаточно прав SELECT.' if label=='InsufficientPrivilegeError' else
+                         'Схема таблицы не соответствует запросу.' if label in ('UndefinedColumnError','UndefinedTableError') else
+                         'Запрос к базе не завершился вовремя.' if label in ('TimeoutError','QueryCanceledError') else
+                         'Соединение с базой недоступно.' if label in known else 'Первопричина не установлена; тип='+label[:60]+'.'))
+
     async def _database_facts(self,uid):
         result={'source':'unavailable','orders':[],'catalog':[],
                 'orders_status':'not_connected','catalog_status':'not_connected',

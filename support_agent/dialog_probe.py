@@ -187,6 +187,17 @@ async def run_probe(service, max_calls=20, emit=None, expected_revision=None, su
                         key=fragment['photo'];text=fragment['text']
                         media={'kind':'photo','file_id':key,'file_size':len(files[key])}
                     fragment_texts.append(text)
+                    # Mirror production intake for fixed public-site fixtures.
+                    # No arbitrary remote prompts, URL fetch or customer files.
+                    from .external_quote import public_sites
+                    from .privacy import sensitive,scrub
+                    if sensitive(text):
+                        text='[Сообщение скрыто: возможны данные доступа; нужна ручная проверка]'
+                        media={'kind':'sensitive'}
+                    else:
+                        sites=public_sites(text)
+                        if sites:media['public_service_sites']=sites
+                        text=scrub(text)
                     cid = store.ingest('test-only', -index-1, mid, 'client', text, media, time.time())
                 store.prepare_now(cid, time.time())
                 job = store.claim(time.time())

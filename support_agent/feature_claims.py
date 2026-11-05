@@ -246,12 +246,66 @@ def _display(target):
     return target['service']+(' '+target['plan'] if target['plan'] else '')
 
 
+# Decisive operation checks are a conservative floor, not a semantic proof.
+# Source eligibility and independent evidence review are still required.
+_OPERATION_SPECS={
+    'image understanding':(
+        r'фото|изображени|картин|снимк|скрин|images?|photos?|pictures?|screenshots?|visual',
+        r'анализ[а-яё]*|распозна[а-яё]*|интерпрет[а-яё]*|понима[а-яё]*|'
+        r'объясн[а-яё]*|отвеча[а-яё]*|understand[a-z]*|interpret[a-z]*|'
+        r'analy[sz][a-z]*|recogni[sz][a-z]*|answer[a-z]*|describ[a-z]*'),
+    'photo generation':(
+        r'фото|изображени|картин|снимк|images?|photos?|pictures?',
+        r'генер[а-яё]*|генерац[а-яё]*|созда[а-яё]*|generat[a-z]*|creat[a-z]*|produc[a-z]*'),
+    'image editing':(
+        r'фото|изображени|картин|снимк|фон|images?|photos?|pictures?|background',
+        r'редакт[а-яё]*|ретуш[а-яё]*|замен[а-яё]*|edit[a-z]*|retouch[a-z]*|replac[a-z]*'),
+    'video generation':(
+        r'видео|ролик|videos?|clips?',
+        r'генер[а-яё]*|генерац[а-яё]*|созда[а-яё]*|generat[a-z]*|creat[a-z]*|produc[a-z]*'),
+    'video editing':(
+        r'видео|ролик|сцен|videos?|clips?|scenes?',
+        r'редакт[а-яё]*|монтаж[а-яё]*|монтир[а-яё]*|обрез[а-яё]*|edit[a-z]*|trim[a-z]*|cut[a-z]*'),
+    'photo animation':(
+        r'фото|изображени|картин|снимк|images?|photos?|pictures?',
+        r'анимир[а-яё]*|анимац[а-яё]*|ожив[а-яё]*|animat[a-z]*|image[- ]to[- ]video')}
+
+
+def _operation_present(text,family):
+    media,operation=_OPERATION_SPECS[family]
+    for clause in re.split(r'[,;.!?\n]|\s+(?:но|but|и|and)\s+',str(text),flags=re.I):
+        if not re.search(media,clause,re.I):continue
+        for match in re.finditer(r'(?<!\w)(?:'+operation+r')(?!\w)',clause,re.I):
+            prefix=clause[max(0,match.start()-40):match.start()]
+            prefix=re.sub(r'не\s+только|not\s+only','',prefix,flags=re.I)
+            if re.search(r'(?<!\w)(?:не|нет|без|вместо|not|no|cannot|without|instead)(?!\w)',prefix,re.I):continue
+            return True
+    return False
+
+
+def _operation_fit_issue(text,facts):
+    if facts.get('recommendation_mode') is not True:return ''
+    task=_task_projection(facts)
+    # Understanding existing images is decisive even if a partial vocabulary
+    # projection omitted its label. Upload/storage/generation do not imply it.
+    families=(['image understanding'] if task['kind']=='visual_understanding' else
+              [label for label in task['labels'] if label in _OPERATION_SPECS])
+    if not families:return ''
+    if any(_operation_present(text,family) for family in families):return ''
+    return ('Этап: соответствие операции задаче. В task_fit нет явно подтверждаемой положительной '
+            'операции из требуемых семейств: '+', '.join(families)+'. Загрузка файлов, хранение и '
+            'другая операция сами по себе не подтверждают выполнение задачи; утверждение исключено.')
+
+
 def _claim_guard(claim,target,contract,facts):
     allowed=contract['allowed_sources'][target['product']]
     if any(i not in allowed for i in claim['source_ids']):
         return 'ID источника относится к другому сервису; привязка к цели не подтверждена.'
     if claim['kind'] not in ('feature','task_fit','limitation'):return ''
     if not claim['source_ids']:return 'Нет подтверждающих источников для фактической записи.'
+    if claim['kind']=='task_fit':
+        operation_issue=_operation_fit_issue(claim['text'],facts)
+        if operation_issue:return operation_issue
     if (re.search(r'pro\s*(?:5|20|50)\s*[xх×]?\b',target.get('plan',''),re.I)
             and re.search(r'соответств|эквивалент|это\s+(?:официальн[а-яё]*\s+)?план|относ[а-яё]*\s+к',claim['text'],re.I)
             and re.search(r'pro\s*(?:100|200|500)\b|официальн[а-яё]*[^.!?\n]{0,25}\bpro\b',claim['text'],re.I)):
@@ -400,7 +454,7 @@ async def draft_claims(ai,facts):
             +(' In recommendation mode EVERY target object MUST contain task_fit (one task_fit or uncertain record) and details (zero or one feature/limitation/uncertain record). Never omit the task_fit decision or replace it with only generic features. The task_fit record explains how THIS exact plan addresses '
               'the supplied safe task requirements, and optionally one limitation. task_fit must be directly '
               'entailed by evidence, not a generic endorsement or best/cheapest ranking. A feature alone is not '
-              'proof of fit. For visual_understanding verify interpreting existing images, not generating them. '
+              'proof of fit. State the decisive operation explicitly, not a generic list of tools: image understanding means analyzing/interpreting existing image contents, not upload/storage/image generation; image editing means changing an existing image, not merely creating one; photo animation means animating an existing image; video generation means creating video, not viewing/analyzing recordings; video editing means montage/trimming/changing existing video. Only claim the task facets actually supported by evidence. For visual_understanding verify interpreting existing images, not generating them. '
               'For short video distinguish one generation from an edited multi-scene final video. Use uncertain '
               'when fit cannot be established; never invent a recommendation.' if contract.get('recommendation_mode') else '')),
         'input':json.dumps(public,ensure_ascii=False),'text':{'format':{
@@ -548,7 +602,7 @@ async def review_claims(ai,answer,facts):
               'visual_understanding verify analysis of existing image contents, not image creation. '
               'For requested video duration distinguish single-generation limits and an edited final video. '
               'A limitation must itself be supported evidence, not a guess that a service cannot do something. '
-              'Keep kind task_fit only for a supported practical connection to the task. Never reclassify '
+              'Keep kind task_fit only for a supported practical connection to the task. Verify the decisive operation, not keyword overlap: uploading files or generating images does not prove understanding image contents; image generation does not prove editing; image editing does not prove animation; analyzing a video does not prove creating video. Require the stated positive operation in the same exact plan evidence and retain limitations. Never reclassify '
               'a generic capability as task_fit without that connection. Missing facets describe unverified '
               'requested constraints, not a demand to recommend every price tier.' if fresh.get('recommendation_mode') else '')),
         'input':json.dumps(public,ensure_ascii=False),'text':{'format':{

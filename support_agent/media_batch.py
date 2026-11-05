@@ -61,6 +61,11 @@ async def prepare_media(service,job):
             if not isinstance(media,dict):raise ValueError()
             kind=media.get('kind','none')
             if kind=='none':continue
+            if kind=='manual_text_file':
+                return [], {'reply':'Файл получен. Для него нужна моя ручная проверка в этой переписке. Повторно отправлять его содержимое текстом не нужно.',
+                    'summary':'Текстовый/JSON-файл оставлен для ручной обработки владельцем; файл не скачивался, содержимое и имя не передавались модели.',
+                    'handoff':True,'evidence':{'status':'owner_policy','manual_secret_intake':True,
+                        'diagnostic':'Этап: приём файла для ручной обработки. Тип=text/json; загрузка=не выполнялась; модель=не вызывалась. Содержимое и наличие токена не устанавливались.'}}
             if kind=='sensitive' or media.get('blocked_transcript'):
                 return _manual('В обращении возможны данные доступа. Они не переданы в подготовку ответа.')
             if kind not in ('photo','voice'):

@@ -128,6 +128,23 @@ def quote_diagnostic(quote):
             'распознанные номиналы (не более 12)='+', '.join(quote['parsed_identities'])+'.')
 
 
+def alternatives(facts,quote,limit=3):
+    """Same-region/currency exact stock rows, never a substitute quote or bundle."""
+    if quote.get('status') not in ('available','truncated') or quote.get('matched')!=0:return []
+    rows={}
+    for region in facts.get('appstore_selection',{}).get('matched_regions',[]):
+        if quote['region'] not in region_codes(region.get('name',''),stock=True):continue
+        for row in region.get('denoms',[]):
+            identity=nominal(row.get('nominal',''))
+            if not identity or identity[1]!=quote['currency'] or identity[0]<=0:continue
+            price=row.get('price_rub')
+            rows.setdefault(identity,set()).add(price if type(price) is int else None)
+    verified=[{'amount':a,'currency':u,'price':next(iter(prices))} for (a,u),prices in rows.items()
+              if len(prices)==1 and all(type(p) is int and p>0 for p in prices)]
+    verified.sort(key=lambda r:(abs(r['amount']-quote['amount']),r['amount']))
+    return verified[:limit]
+
+
 def regional_quotes(facts,text):
     """Assign amounts by explicit currency, never by order or country exchange rate."""
     selection=facts.get('appstore_selection',{});requested=amounts(text)

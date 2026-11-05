@@ -32,6 +32,11 @@ def sensitive(text):
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
     text=re.sub(r'(?i)\b(?:gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|pro|turbo|preview))?|claude-(?:sonnet|opus|haiku)-\d+(?:[-.]\d+)?|gemini-\d+(?:\.\d+)?-(?:pro|flash))(?![\w-])',
                 '[название модели]',text or '')
+    # An explicitly labelled public order reference is not an OTP merely
+    # because the number happens to contain 4–8 digits on the following line.
+    # Only the detection copy changes; output scrub still masks card-sized IDs.
+    text=re.sub(r'(?i)((?:номер\s+(?:заказа|платежа)|заказ\w*\s*[#№]|free\s*kassa|фри\s*касс\w*|\bintid\b)\s*[:#№]?\s*)\d{1,18}\b',
+                r'\1[номер заказа]',text)
     # Discussing a required field is not supplying its value. Keep that intent
     # so support can answer e.g. whether Apple ID credentials are required.
     # This affects intake only; output scrub/redaction stays unchanged.

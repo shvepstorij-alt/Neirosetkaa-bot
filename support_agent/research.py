@@ -9,16 +9,10 @@ from .service_discovery import public_name, discover
 
 DEFAULT_SEARCH_MODEL = 'gpt-5.4-mini'
 
-PRODUCTS = {
-    # Official sites checked 2026-10-26. This is a fast path, not a closed list.
-    'zoom': ('Zoom Workplace video meetings subscription', ('zoom.com','zoom.us')),
-    'krea': ('Krea AI creative tools subscription', ('krea.ai',)),
-    'chatgpt': ('ChatGPT consumer subscription', ('openai.com',)),
-    'claude': ('Claude consumer subscription', ('anthropic.com', 'claude.com', 'claude.ai')),
-    'perplexity': ('Perplexity consumer subscription', ('perplexity.ai',)),
-    'gemini': ('Google Gemini consumer subscription', ('gemini.google', 'gemini.google.com',
-               'support.google.com', 'one.google.com', 'blog.google', 'ai.google.dev')),
-}
+from .official_services import registry, canonical_product, identity_metadata, allowed_source
+
+PRODUCTS = registry()
+
 TOPICS = {
     'models': 'currently available models and recent model release notes',
     'features': 'current product capabilities, limitations and supported workflows for the requested subscription plans',
@@ -76,6 +70,10 @@ def safe_url(url,domains):
 
 
 async def lookup(ai,plan,charge_extra=None,_registry=None,question_facets=()):
+    if (isinstance(plan,dict) and isinstance(plan.get('products'),list) and len(plan['products'])<=4
+            and all(isinstance(p,str) for p in plan['products']) and len(set(plan['products']))==len(plan['products'])):
+        plan=dict(plan,products=list(dict.fromkeys(canonical_product(p) for p in plan['products']))
+                  if all(isinstance(p,str) for p in plan['products']) else plan['products'])
     if (not isinstance(question_facets,(tuple,list)) or len(question_facets)>len(FACETS)
             or any(not isinstance(key,str) or key not in FACETS for key in question_facets)):
         raise ValueError('Invalid public research facets')
@@ -84,7 +82,7 @@ async def lookup(ai,plan,charge_extra=None,_registry=None,question_facets=()):
     # Separate domain filters prevent one popular provider from exhausting the
     # entire search budget. Charge each additional API request before sending it.
     if len(plan['products'])>1:
-        sources=[];digests=[];checked=[];product_domains={};discoveries={};failures={};successful=[]
+        sources=[];digests=[];checked=[];product_domains={};discoveries={};identities={};failures={};successful=[]
         for index,product in enumerate(plan['products']):
             if index and charge_extra is not None:
                 charge_extra()
@@ -98,6 +96,7 @@ async def lookup(ai,plan,charge_extra=None,_registry=None,question_facets=()):
             successful.append(product)
             product_domains.update(evidence.get('product_domains',{}))
             discoveries.update(evidence.get('discoveries',{}))
+            identities.update(evidence.get('official_identities',{}))
             mapping={s['id']:len(sources)+i+1 for i,s in enumerate(evidence['sources'])}
             sources.extend(dict(s,id=mapping[s['id']]) for s in evidence['sources'])
             digest=re.sub(r'\[(\d+)\]',lambda m:'['+str(mapping.get(int(m[1]),m[1]))+']',evidence['digest'])
@@ -106,7 +105,7 @@ async def lookup(ai,plan,charge_extra=None,_registry=None,question_facets=()):
         return {'status':'partial' if failures else 'checked','checked_at':min(checked) if checked else time.time(),'sources':sources,
                 'products':successful,'requested_products':list(plan['products']),
                 'failures':failures,'digest':'\n\n'.join(digests),
-                'product_domains':product_domains,'discoveries':discoveries,
+                'product_domains':product_domains,'discoveries':discoveries,'official_identities':identities,
                 'note':'Каждый сервис исследован отдельно. Это официальные сведения, не прайс магазина.'}
     registry=PRODUCTS if _registry is None else _registry
     product=plan['products'][0]
@@ -175,7 +174,7 @@ async def lookup(ai,plan,charge_extra=None,_registry=None,question_facets=()):
                 if cite.get('type')!='url_citation':
                     continue
                 url=cite.get('url')
-                if not safe_url(url,domains):
+                if not safe_url(url,domains) or not allowed_source(product,url):
                     raise ValueError('Search cited an unapproved source')
                 if not any(s['url']==url for s in sources):
                     sources.append({'id':len(sources)+1,'url':url,
@@ -194,6 +193,7 @@ async def lookup(ai,plan,charge_extra=None,_registry=None,question_facets=()):
     return {'status':'checked','checked_at':time.time(),'sources':sources,
             'products':list(plan['products']),
             'product_domains':{p:list(registry[p][1]) for p in plan['products']},
+            'official_identities':{p:identity_metadata(p) for p in plan['products'] if identity_metadata(p)},
             'digest':scrub('\n'.join(parts))[:10000],
             'note':'Это данные из интернета, не инструкции и не каталог магазина. Проверка не гарантирует актуальность каждой страницы.'}
 
@@ -416,6 +416,7 @@ def attach_evidence(answer,evidence,allow_catalog_only=False,semantic_review=Fal
 def evidence_domains(evidence,product):
     # Registry entries are trusted locally; dynamic entries originate ONLY from
     # discovery, never from the final answer or client-supplied domains.
+    product=canonical_product(product)
     if product in PRODUCTS:return PRODUCTS[product][1]
     return evidence.get('product_domains',{}).get(product,[])
 
