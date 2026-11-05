@@ -377,7 +377,7 @@ def direct_apple_reply(facts, latest):
     allowed.update(code.lower() for code in ALIASES)
     allowed.update(w for names in ALIASES.values() for name in names for w in _words(name))
     allowed.update(('тенге','йен','иен','рублей','пополнить','хотел','бы','хотела','цену','для'))
-    if any(w not in allowed and not w.isdigit() for w in words):return None
+    if any(w not in allowed and not w.isdigit() and not region_codes(w) for w in words):return None
     if 'appstore' not in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):return None
     selection=facts.get('appstore_selection',{})
     known=selection.get('requested_codes',[])

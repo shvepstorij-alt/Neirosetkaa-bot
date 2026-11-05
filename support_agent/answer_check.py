@@ -477,8 +477,20 @@ async def check_answer(ai,answer,facts,images=None):
     if prices:
         for match in re.finditer(r'(?<![\w.,])([0-9]+(?:[ \u00a0\u202f][0-9]{3})*(?:[.,][0-9]{1,2})?)\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',reply,re.I):
             amount=float(re.sub(r'[ \u00a0\u202f]','',match[1]).replace(',','.'))
+            # A Russian Apple gift card has two different RUB amounts: its
+            # face value and the retail price. Explicit face-value wording
+            # must not be rejected as an incorrect retail price.
+            prefix=reply[max(0,match.start()-80):match.start()]
+            from .apple_matching import nominal
+            face_value=re.search(r'(?:номинал(?:ом|а)?|пополнени[ея]\s+(?:баланса\s+)?на)\s*$',prefix,re.I)
+            if face_value and any(
+                identity and identity[1]=='RUB' and float(identity[0])==amount
+                for region in apple_regions for row in region.get('denoms',[])
+                for identity in [nominal(row.get('nominal',''))]
+            ):
+                continue
             if amount not in prices:
-                return {'supported':False,'reason':'Рублёвая сумма в ответе не совпадает с подтверждёнными ценами выбранных тарифов магазина. Исправь сумму по requested_catalog; не пересчитывай её из официальной цены.'}
+                return {'supported':False,'reason':f'Этап: проверка рублёвой цены. Сумма ответа={amount:g}; обычных тарифов={len(retail)}; регионов в проверке={len(apple_regions)}; выбранные коды='+','.join(selection.get('requested_codes',[]))+'. Сумма не совпала с подтверждёнными розничными ценами; номинал карты и цена покупки проверяются раздельно.'}
     if not facts.get('public_research',{}).get('sources'):
         # These are external payment claims, not retail prices. Do not let an
         # independent model approve them using its memory without any evidence.

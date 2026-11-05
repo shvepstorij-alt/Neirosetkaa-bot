@@ -31,11 +31,11 @@ def attention_chats(service):
     result=[]
     for c in service.store.db.execute('SELECT * FROM chats ORDER BY inbound DESC,id DESC').fetchall():
         if c['uid'] not in service.allowed:continue
-        d=service.store.db.execute('SELECT * FROM drafts WHERE chat=? ORDER BY id DESC LIMIT 1',(c['id'],)).fetchone()
+        d=service.store.db.execute("SELECT * FROM drafts WHERE chat=? AND (state='uncertain' OR state='ready' AND handoff=1) ORDER BY id DESC LIMIT 1",(c['id'],)).fetchone()
         m=service.store.db.execute('SELECT state FROM messages WHERE chat=? AND mid=?',(c['id'],c['latest'])).fetchone()
         event=latest(service.store,c['id'])
         if (d and (d['state']=='uncertain' or d['state']=='ready' and d['handoff'])
-                or event and event['state'] in ('auto_blocked','send_uncertain') and c['mode']=='off'
+                or event and event['state'] in ('auto_blocked','send_uncertain')
                 or m and m['state']=='failed' and not (event and event['state']=='manual')):
             result.append(c)
     return result
@@ -108,8 +108,8 @@ def settings(service):
     store=service.store
     text=('⚙️ Автоответы · тестовый запуск\n\n'
           'Автоматическая отправка доступна только одному явно настроенному тестовому Telegram ID и только после включения в карточке чата.'
-          '\n\nВозвраты, секретные данные, ручные действия и неподтверждённые ответы автоматически не отправляются: чат переходит в черновики с причиной для вас.'
-          '\nРучное сообщение с вашей стороны ставит этот чат на паузу.'
+          '\n\nНеподтверждённый ответ остаётся вам для проверки. Клиент получает короткое уведомление, если Telegram разрешает отправку. Режим не меняется из-за ошибок.'
+          '\nРучное сообщение отменяет устаревшую подготовку, но не меняет режим. Остановить помощника можно в меню чата или командой /stop.'
           '\nПереключения не отправляют старые ответы. /stop не отзывает запрос, уже переданный Telegram.'
           '\n\nПолучатель: '+(str(service.auto_test_id) if service.auto_test_id else 'не настроен')
           +'\nТекущий общий режим: '+MODES.get(store.get('mode'),'неизвестен'))
@@ -132,7 +132,7 @@ def chat_details(service,c):
     if c['mode']=='auto' and service.auto_suspended:text+='\nAUTO заблокирован: ошибка сохранения отправки; нужна проверка хранилища и лички.'
     elif c['mode']=='auto' and not service.auto_permitted(c):text+='\nAUTO заблокирован: этот ID не является настроенным тестовым получателем.'
     if event:
-        states={'auto_sent':'автоответ отправлен','auto_blocked':'автоответ передан на проверку',
+        states={'auto_sent':'автоответ отправлен','notice_sent':'клиенту отправлено служебное уведомление; исходный ответ требует проверки','auto_blocked':'автоответ передан на проверку',
                 'send_uncertain':'результат отправки неизвестен','manual':'вы ответили вручную','owner_sent':'ответ отправлен после вашего одобрения','auto_enabled':'автоответы включены для новых обращений'}
         text+='\nПоследнее действие: '+states.get(event['state'],event['state'])+' · '+clock(event['at'])
         if event['reason']:text+='\nПричина последнего действия: '+event['reason']
@@ -149,4 +149,9 @@ def chat_details(service,c):
             if d['summary']:text+='\nКраткий разбор (проверьте): '+scrub(d['summary'])[:240]
             text+='\nУчастие владельца: '+('нужно' if d['handoff'] else 'не запрошено; отправка всё равно проверяется отдельно')
         elif d['state']=='stale':text+='\nЭтот ответ отменён и не является решением по новому обращению.'
+    notice=store.db.execute('SELECT original FROM auto_notices WHERE draft=?',(d['id'],)).fetchone() if d else None
+    if notice:
+        text+='\nИсходный черновик для проверки: №'+str(notice['original'])
+        reason=store.evidence(notice['original']).get('auto_block_reason','')
+        if reason:text+='\nПричина ручной проверки: '+scrub(reason)[:700]
     return text

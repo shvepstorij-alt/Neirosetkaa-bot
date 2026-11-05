@@ -39,6 +39,8 @@ class Store:
             chat INTEGER PRIMARY KEY, username TEXT, name TEXT);
           CREATE TABLE IF NOT EXISTS draft_evidence(
             draft INTEGER PRIMARY KEY, data TEXT);
+          CREATE TABLE IF NOT EXISTS auto_notices(
+            original INTEGER PRIMARY KEY, draft INTEGER UNIQUE, kind TEXT);
           CREATE INDEX IF NOT EXISTS messages_queue ON messages(state,at,chat);
           CREATE INDEX IF NOT EXISTS drafts_state ON drafts(state,id);
           CREATE INDEX IF NOT EXISTS chats_inbound ON chats(inbound DESC,id);
@@ -202,7 +204,7 @@ class Store:
             collecting=bool(pending and pending['state']=='queued' and chat['batch_due']>0)
             # Any manual owner message or edit invalidates pending suggestions.
             if role == 'owner':
-                self.db.execute("UPDATE chats SET mode='off',revision=revision+1 WHERE id=?", (cid,))
+                self.db.execute("UPDATE chats SET revision=revision+1 WHERE id=?", (cid,))
             else:
                 self.db.execute('UPDATE chats SET latest=MAX(latest,?),inbound=MAX(inbound,?),revision=revision+1 WHERE id=?', (mid,at,cid))
             self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')", (cid,))
@@ -397,29 +399,39 @@ class Store:
             return dict(d,connection=c['connection'],uid=c['uid'])
 
     def pause_auto_for_review(self,did,now):
-        """Move only a current AUTO answer to manual draft review atomically.
+        """Check that an answer can be flagged for review without changing modes.
 
-        No stale answer is revived. The retained answer receives the new chat
-        revision so the owner may explicitly approve it in global AUTO mode.
-        Subsequent client messages are prepared as drafts until re-enabled.
+        Legacy method name retained for callers. No stale work is revived.
         """
         with self.transaction():
             d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
             if not d or d['state']!='ready' or not self.still_current(d):return False
             c=self.chat(d['chat'])
             if self.get('mode')!='auto' or c['mode']!='auto':return False
-            self.db.execute("UPDATE chats SET mode='draft',revision=revision+1 WHERE id=?",(c['id'],))
-            self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')",(c['id'],))
-            self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND id<>? AND state='ready'",(c['id'],did))
-            self.db.execute('UPDATE drafts SET revision=? WHERE id=?',(c['revision']+1,did))
             return True
+
+    def auto_notice(self,did,kind):
+        """Create one deterministic notice per rejected answer, without changing modes."""
+        from .auto_notice import TEXTS
+        text=TEXTS[kind]
+        with self.transaction():
+            if self.db.execute('SELECT 1 FROM auto_notices WHERE original=? OR draft=?',(did,did)).fetchone():return None
+            d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+            if not d or d['state']!='ready' or not self.still_current(d):return None
+            if self.effective_mode(d['chat'])!='auto':return None
+            cur=self.db.execute('''INSERT INTO drafts(chat,mid,revision,global_revision,text,summary,handoff,created)
+                VALUES (?,?,?,?,?,?,0,?)''',(d['chat'],d['mid'],d['revision'],d['global_revision'],text,
+                'Служебный ответ клиенту; исходный черновик и причина сохранены владельцу.',time.time()))
+            nid=cur.lastrowid
+            self.db.execute('INSERT INTO draft_evidence VALUES (?,?)',(nid,json.dumps({'status':'clarification','sources':[]})))
+            self.db.execute('INSERT INTO auto_notices VALUES (?,?,?)',(did,nid,kind))
+            return nid
 
     def recover(self):
         # A process crash during a paid request or send is NOT safe to replay.
         self.db.execute("UPDATE messages SET state='failed' WHERE state='working'")
         self.db.execute("UPDATE drafts SET state='uncertain' WHERE state='sending'")
-        for row in self.db.execute("SELECT DISTINCT chat FROM drafts WHERE state='uncertain'").fetchall():
-            self.switch('off',row['chat'])
+        # Unknown sends are never replayed; the owner's selected mode persists.
 
     def history(self, cid):
         # Recent context is bounded in both turns and characters, per chat.
@@ -445,6 +457,7 @@ class Store:
             self.db.execute('DELETE FROM messages WHERE at<?',(before,))
             self.db.execute('DELETE FROM drafts WHERE created<?',(before,))
             self.db.execute('DELETE FROM draft_evidence WHERE draft NOT IN (SELECT id FROM drafts)')
+            self.db.execute('DELETE FROM auto_notices WHERE original NOT IN (SELECT id FROM drafts) OR draft NOT IN (SELECT id FROM drafts)')
             if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='plural_context_refs'").fetchone():
                 self.db.execute("DELETE FROM plural_context_refs WHERE NOT EXISTS (SELECT 1 FROM messages WHERE messages.chat=plural_context_refs.chat AND messages.mid=plural_context_refs.mid AND role='client')")
             if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_context_refs'").fetchone():

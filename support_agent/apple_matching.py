@@ -7,7 +7,7 @@ REGIONS = {
  'US':'сша|америка|американский|американского|американском|usa|united states',
  'GB':'великобритания|великобритании|британия|британский|британского|uk|united kingdom',
  'TR':'турция|турции|турцию|турецкий|турецкого|турецком|turkey|türkiye',
- 'RU':'россия|россии|российский|российского|russia',
+ 'RU':'россия|россии|российский|российского|russia|рф|российская федерация',
  'DE':'германия|германии|германию|немецкий|немецкого|немецком|germany',
  'AE':'оаэ|эмираты|эмиратах|эмиратов|united arab emirates|uae',
  'AT':'австрия|австрии|австрийский|австрийского|austria',
@@ -52,6 +52,13 @@ def region_codes(text, stock=False):
             p=words(name)
             if any(w[i:i+len(p)]==p for i in range(len(w)-len(p)+1)):
                 found.add(code)
+            # Russian country adjectives inflect in natural customer requests:
+            # «в российском», «российскую», «немецкому» etc. Only known
+            # dictionary stems qualify; no inference from arbitrary words.
+            if len(p)==1 and re.fullmatch(r'[а-яё]+(?:ский|цкий)',p[0]):
+                stem=p[0][:-2]
+                if any(re.fullmatch(re.escape(stem)+r'(?:ий|ого|ому|им|ом|ая|ой|ую|ое|ие|их|ими)',token) for token in w):
+                    found.add(code)
     # Uppercase explicit codes are supported without interpreting ordinary
     # English words "in", "at", "be", "it" as country requests.
     for token in re.findall(r'\b[A-Z]{2,3}\b',str(text)):
