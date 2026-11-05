@@ -6,7 +6,11 @@ SOURCE='https://support.claude.com/en/articles/8461763-where-can-i-access-claude
 
 def claude_policy_facts():
     return {
-        'source':'owner_confirmed_2026_11_04',
+        'source':'owner_confirmed_2026_11_05',
+        'identity_source':'https://support.claude.com/en/articles/14328960-identity-verification-on-claude',
+        'identity_check_mandatory_for_every_purchase':False,
+        'identity_documents_options':['valid_government_passport','physical_drivers_license','other_accepted_government_photo_id'],
+        'document_acceptance_or_verification_success_guaranteed':False,
         'region_source':SOURCE,
         'russia_officially_supported':False,
         'vpn_owner_recommendation':'При работе из РФ использовать VPN, по возможности один сервис VPN и одну локацию; это практический совет владельца, не доказанный способ снизить риск и не гарантия доступа.',
@@ -44,6 +48,8 @@ def claude_risk_reply(facts,current):
           'При работе из РФ используйте VPN. По возможности придерживайтесь одного VPN и одной локации. '
           'Это практическая рекомендация, но она не гарантирует доступ и отсутствие блокировок.\n\n'
           'Claude может запросить проверку личности даже без активной подписки. '
+          'Если проверка появилась, можно попробовать действующий загранпаспорт, водительское удостоверение '
+          'или другой государственный документ из списка на экране Claude. Принятие документа и успешное прохождение не гарантируются. '
           'С её прохождением я помочь не могу; документы для проверки сюда присылать не нужно.\n\n'
           'Я не могу гарантировать, что аккаунт не заблокируют или не попросят верификацию: '
           'эти проверки контролирует сам Claude. Причину конкретной блокировки нужно разбирать отдельно, '
@@ -51,7 +57,7 @@ def claude_risk_reply(facts,current):
     return {'reply':body,'summary':'Сообщены ограничения и отсутствие гарантий по согласованной политике. VPN не представлен доказанным снижением риска; причина конкретной блокировки не устанавливалась.',
             'handoff':False,'source_ids':[],
             'evidence':{'status':'catalog_direct','sources':[],
-                        'diagnostic':'Этап: раскрытие рисков Claude. Условия владельца от 04.11.2026; Россия отсутствует в официальном перечне доступа. Источник региона: '+SOURCE+'. Гарантия доступности, частота блокировок и доказанное снижение риска VPN не установлены.'}}
+                        'diagnostic':'Этап: раскрытие рисков Claude. Условия владельца обновлены 05.11.2026; Россия отсутствует в официальном перечне доступа. Источник региона: '+SOURCE+'. Принятие документов, успешная верификация, гарантия доступности и доказанное снижение риска VPN не установлены.'}}
 
 def public_region_issue(answer,facts=None):
     """Reject unsupported Claude availability/immunity claims before delivery.
@@ -72,6 +78,11 @@ def public_region_issue(answer,facts=None):
             other_names += [str(r.get('service','')).casefold() for r in rows
                             if str(r.get('service_key','')).casefold()!='claude' and r.get('service')]
             if any(re.search(r'(?<![a-zа-я])'+re.escape(n)+r'(?![a-zа-я])',low) for n in other_names):continue
+        universal_check=bool(re.search(r'(?:всегда|обязательно|у\s+каждого|для\s+всех)[^.!?\n]{0,65}верификац|'
+                                       r'верификац[^.!?\n]{0,40}(?:обязательна|для\s+всех)|'
+                                       r'при\s+оформлении[^.!?\n]{0,65}(?:затребует|потребует)[^.!?\n]{0,25}верификац',low))
+        if universal_check and not re.search(r'не\s+обязатель|не\s+всегда|может\s+(?:потребова|запроси)|нельзя\s+утверждать',low):
+            return 'Этап: проверка условий верификации Claude. Не подтверждено, что каждый покупатель обязательно проходит проверку личности. Наличие запроса в конкретном аккаунте и универсальная обязательность — разные факты.'
         # Separate warning that an outcome cannot be guaranteed is permitted.
         disclaimer=bool(re.search(r'(?:не\s+(?:могу|можем|да[её]м)|нельзя|невозможно)\s+гарантир|'
                                   r'без\s+гаранти|не\s+гарантиру|гаранти[а-я]*\s+нет',low))
