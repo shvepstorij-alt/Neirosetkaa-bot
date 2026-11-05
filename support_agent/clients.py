@@ -95,12 +95,17 @@ class Telegram:
             async with self.session.post(self.base+method,json=data) as r:
                 result=await r.json()
                 if r.status!=200 or not result.get('ok'):
-                    raise RemoteError('Telegram request rejected')
+                    error=RemoteError('Telegram request rejected',reason='telegram_rejected',status=r.status)
+                    code=result.get('error_code')
+                    if type(code) is int and 100<=code<=599:error.telegram_code=code
+                    raise error
                 return result['result']
         except RemoteError:
             raise
+        except asyncio.TimeoutError:
+            raise RemoteError('Telegram transport uncertain',reason='telegram_timeout') from None
         except Exception:
-            raise RemoteError('Telegram transport uncertain') from None
+            raise RemoteError('Telegram transport uncertain',reason='telegram_transport_uncertain') from None
 
     async def download(self, file_id, maximum=8_000_000):
         meta=await self.call('getFile',file_id=file_id)

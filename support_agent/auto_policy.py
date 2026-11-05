@@ -25,7 +25,18 @@ def block_reason(answer,evidence=None,current_text=''):
     if type(answer.get('handoff')) is not bool:
         return _reason('флаг участия владельца отсутствует или имеет неверный тип.')
     if answer['handoff']:
-        return _reason('ответ требует участия владельца; автоматическая отправка не разрешена.')
+        meta=evidence if isinstance(evidence,dict) else answer.get('evidence',{})
+        detail=''
+        if isinstance(meta,dict):
+            detail=meta.get('diagnostic') or meta.get('handoff_reason') or ''
+            if not detail and isinstance(meta.get('content_review'),dict) and meta['content_review'].get('supported') is False:
+                detail=meta['content_review'].get('reason','')
+        if not isinstance(detail,str):detail=''
+        if detail:
+            from .privacy import sensitive,scrub
+            detail=('[детали скрыты: возможны данные доступа]' if sensitive(detail) else scrub(detail))[:1000]
+        return _reason('ответ требует участия владельца; автоматическая отправка не разрешена.'
+                       +(' Основание: '+detail if detail else ' Конкретная причина в сохранённых подтверждениях отсутствует.'))
     text=answer.get('reply')
     if not isinstance(text,str) or not text.strip():return _reason('текст ответа пуст или имеет неверный тип.')
     if len(text)>1800:return _reason('текст превышает проверенный лимит 1800 символов.')

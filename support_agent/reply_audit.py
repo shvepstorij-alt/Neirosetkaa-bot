@@ -1,8 +1,21 @@
 """Deterministic catalogue checks; never use manufacturer terms to infer shop duration."""
 import re
+import unicodedata
 from decimal import Decimal
 
 MONEY = re.compile(r'(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)\s*(?:₽|руб(?:лей|ля|ль)?\b)', re.I)
+
+
+def _plan_text(value):
+    """Normalize typography, never numbers, qualifiers or missing multipliers.
+
+    A 20x/20х/20× display is one spelling; 5x and 20x remain different.
+    Colliding catalogue labels still go through the conflicting-price check.
+    """
+    value=unicodedata.normalize('NFKC',str(value)).casefold()
+    value=re.sub(r'(?<=\d)\s*[xх×](?!\w)',' x',value)
+    value=re.sub(r'(?<=[a-zа-яё])(?=\d)|(?<=\d)(?=[a-zа-яё])',' ',value)
+    return re.sub(r'\s+',' ',value).strip()
 
 
 def apple_audit(reply,facts,question):
@@ -69,11 +82,11 @@ def catalogue_audit(reply, facts):
             # mentioned later in a feature description ("unlike Basic...").
             # A previous monetary quote is a hard boundary: its plan must not
             # accidentally own the next amount in the same sentence or list.
-            prefix=lower[last_price_end:money.start()].replace('**','').replace('__','')
+            prefix=_plan_text(lower[last_price_end:money.start()].replace('**','').replace('__',''))
             matches=[];labels=[]
             for row in rows:
                 if service and str(row.get('service','')).casefold()!=service:continue
-                label=str(row.get('plan','')).strip().casefold()
+                label=_plan_text(row.get('plan',''))
                 if not label:continue
                 variants=[label]
                 if label.endswith(' на год'):variants.append(label[:-7])
@@ -90,7 +103,7 @@ def catalogue_audit(reply, facts):
                         clean=re.sub(r'\b(?:на\s+год|годов[а-яё]*|месячн[а-яё]*|месяц|тариф|план|стоит|цена|за|в|он|она|это|составляет|около|примерно|annual|yearly|monthly)\b',' ',tail)
                         if re.search(r'[\w]',clean):continue
                         if year and variant==label and not label.endswith(' на год'):
-                            if any(str(r.get('plan','')).casefold()==label+' на год' and r.get('service')==row.get('service') for r in rows):continue
+                            if any(_plan_text(r.get('plan',''))==label+' на год' and r.get('service')==row.get('service') for r in rows):continue
                         matches.append((match.start(),match.end(),row,tail))
             visible_labels=[label for label in set(labels) if not any(
                 other[0]<=label[0] and label[1]<=other[1] and other[1]-other[0]>label[1]-label[0]

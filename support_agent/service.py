@@ -737,7 +737,7 @@ class Service:
                 research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:1500])}\n\n'
         atomic_diagnostics=evidence.get('atomic_diagnostics',[])
         if evidence.get('auto_block_reason'):
-            research_note+='🛑 <b>Почему AUTO остановлен</b>\n'+html.escape(evidence['auto_block_reason'][:1400])+'\n\n'
+            research_note+='🛑 <b>Почему AUTO остановлен</b>\n'+html.escape(evidence['auto_block_reason'][:1400])+'\nЧат переведён в черновики. Возобновить AUTO можно отдельно в карточке чата.\n\n'
         if atomic_diagnostics:
             research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
@@ -858,6 +858,9 @@ class Service:
                 reason=('Ответ Telegram не подтвердил принадлежность подключения владельцу или его ID.'
                         if isinstance(exc,ValueError) and str(exc)=='AUTO connection identity mismatch'
                         else 'Свежие права Telegram не получены; точная первопричина недоступна; тип='+type(exc).__name__+'.')
+                for label,value in (('HTTP',getattr(exc,'status',None)),('Код Telegram',getattr(exc,'telegram_code',None))):
+                    if type(value) is int and 100<=value<=599:reason+=' '+label+'='+str(value)+'.'
+                if getattr(exc,'reason',None)=='telegram_timeout':reason+=' Превышено время ожидания Telegram.'
                 await self.auto_review(did,'Этап: проверка Telegram перед AUTO. '+reason)
                 return
             status=getattr(exc,'status',None)
@@ -876,7 +879,14 @@ class Service:
                 await self.auto_review(did,reason);return
         reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_send(did,time.time()))
         if not reserved:
-            if automatic:return
+            if automatic:
+                current=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+                now=time.time()
+                if current and current['state']=='ready' and self.store.still_current(current):
+                    chat=self.store.chat(current['chat'])
+                    if not 0<=now-current['created']<=120 or not 0<=now-chat['inbound']<86340:
+                        await self.auto_review(did,'Этап: актуальность перед AUTO-отправкой. '+str(self.store.auto_send_block_reason(did,now)))
+                return
             reason=self.store.send_block_reason(did,time.time())
             if d['admin_mid']:
                 await self.show_draft(did,d['admin_mid'])
