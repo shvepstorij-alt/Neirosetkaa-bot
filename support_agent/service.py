@@ -987,7 +987,10 @@ class Service:
         if not self.store.still_current(job):
             return None
         plan=consultation_plan(latest,answer.get('research',{'topic':'none','products':[]}),facts)
-        if not image and not course:
+        from .response_policy import public_question
+        if public_question(latest):
+            facts=dict(facts,public_research_required=True,public_question_products=list(plan.get('products',[])))
+        if not image and not course and (not public_question(latest) or facts.get('public_service_sites')):
             from .external_quote import run as quote_external
             if not facts.get('public_service_sites') and len(plan.get('products',[]))==1:
                 brand=re.sub(r'[^a-z0-9]','',plan['products'][0].casefold())
@@ -1006,6 +1009,13 @@ class Service:
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
         if plan['topic']=='none':
+            if facts.get('public_research_required'):
+                # A router returning none is not evidence. Never let a second
+                # model approve public plans/features using its own memory.
+                return {'reply':'Пришлите, пожалуйста, ссылку на официальный сайт сервиса, чтобы я проверил нужные тарифы и условия.',
+                        'summary':'Для публичного вопроса не определён проверяемый сервис; ответ из памяти модели не использован.',
+                        'handoff':True,'source_ids':[],'evidence':{'status':'unavailable','sources':[],
+                        'diagnostic':'Этап: маршрутизация публичного вопроса. Запрос требует официальных сведений; тема поиска=none; подтверждённых названий сервисов=0; источников=0. Запрошена публичная ссылка вместо утверждений из памяти.'}}
             # An unknown product has no selected rows. That must not exempt a
             # free-form promise about our ability to fulfil/pay from review.
             store_consultation=bool(re.search(r'оформ|актив|подписк|тариф|оплат|каталог|магазин|пополн',

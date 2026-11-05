@@ -12,6 +12,47 @@ OWNER_DETAILS_ACK='Данные для согласования указаны �
 OWNER_SESSION_PROMPT='Если новый аккаунт ChatGPT уже зарегистрирован, дальнейшее оформление согласуем здесь вручную.'
 
 
+def _new_plus_plan(value):
+    # Labels may use parentheses, a dash, or put the account qualifier last.
+    # These are spelling/layout variants of an existing catalogue SKU, not a
+    # licence to turn ordinary Plus into a new-account purchase.
+    from .catalog_context import _words
+    words=_words(value)
+    return (bool(re.search(r'нов[а-яё]*\W+аккаунт|аккаунт\W+нов[а-яё]*|new\W+account|account\W+new',str(value),re.I))
+            and any(w in ('plus','плюс') for w in words)
+            and not any(w in ('pro','go','го','max','макс') for w in words))
+
+
+def _only_chatgpt_mentions(mentioned):
+    # service_mentions returns product-scoped IDs when a brand also sells
+    # credits: catalog:chatgpt:chatgpt is not the bare family ID "chatgpt".
+    # Compare the canonical public identities, not the implementation keys.
+    from .catalog_context import _families,_words
+    return bool(mentioned) and all(_families(_words(name))=={'chatgpt'}
+                                 and not re.search(r'кредит|\bcredits?\b',name,re.I)
+                                 for name in mentioned.values())
+
+
+def _current_sku(facts,current):
+    """Recover an explicitly requested SKU from fresh catalogue rows.
+
+    Generic upstream plan grouping is not proof of a different selection. An
+    explicit current new-account request can be resolved independently, while
+    a bare yes/no must still have our own prompt and a client-owned SKU source.
+    """
+    from .catalog_context import _families,_words,_credit_product
+    if _families(_words(current))!={'chatgpt'} or not _new_plus_plan(current):return facts
+    if re.search(r'кредит|\bcredits?\b',str(current),re.I):return facts
+    catalog=facts.get('catalog',[])
+    candidates=[r for r in catalog if isinstance(r,dict)
+                and _families(_words(str(r.get('service',''))+' '+str(r.get('service_key',''))))=={'chatgpt'}
+                and not _credit_product(r) and _new_plus_plan(r.get('plan',''))]
+    # Distinct product keys/plans are not silently merged, even at equal prices.
+    identities={(str(r.get('service_key','')),str(r.get('service','')),str(r.get('plan',''))) for r in candidates}
+    if len(identities)!=1:return facts
+    return dict(facts,requested_catalog=candidates)
+
+
 def selected_new_account(facts):
     from .catalog_context import _families,_words,_credit_product
     rows=facts.get('requested_catalog',[])
@@ -20,12 +61,33 @@ def selected_new_account(facts):
         identity=' '.join(str(row.get(k,'')) for k in ('service','service_key'))
         plan=str(row.get('plan',''))
         if _families(_words(identity))!={'chatgpt'} or _credit_product(row):return None
-        if not re.search(r'нов[а-яё]*\s+аккаунт|new\s+account',plan,re.I):return None
-        if not re.search(r'(?<!\w)(?:plus|плюс)(?!\w)',plan,re.I):return None
+        if not _new_plus_plan(plan):return None
     if len({(r.get('service'),r.get('plan')) for r in rows})!=1:return None
     prices={r.get('catalog_price_rub') for r in rows}
     price=next(iter(prices)) if len(prices)==1 else None
     return dict(rows[0],catalog_price_rub=price if type(price) is int and price>0 else None)
+
+
+def selection_diagnostic(facts,current):
+    """Bounded public SKU/route trace; no client text, identifiers or secrets."""
+    from .privacy import scrub,sensitive
+    relevant=bool(_new_plus_plan(current))
+    recovered=_current_sku(facts,current)
+    rows=facts.get('requested_catalog',[])
+    if not relevant:return ''
+    def label(row):
+        values=[]
+        for key in ('service','plan','fulfillment'):
+            value=str(row.get(key,''))
+            values.append(key+'='+('[скрыто]' if sensitive(value) else scrub(value)[:90]))
+        return '; '.join(values)
+    safe_rows=[label(r) for r in rows[:3] if isinstance(r,dict)]
+    selected=selected_new_account(recovered)
+    return ('Этап: выбор товара нового аккаунта. Исходных выбранных строк='+str(len(rows))
+            +'; точный SKU после явного выбора='+('да' if selected else 'нет')
+            +'; каталог='+str(facts.get('catalog_status','unknown'))
+            +'; строки (не более 3): '+' | '.join(safe_rows)
+            +'. Это трассировка выбора, а не установленная первопричина предыдущего отказа.')
 
 
 def _gmail_answer(text,question_before=False):
@@ -75,7 +137,7 @@ def _reported_registration(history,facts):
         text=row.get('text','')
         from .catalog_context import service_mentions
         mentioned=service_mentions(text,facts.get('catalog',[]))
-        if mentioned and set(mentioned)!={'chatgpt'}:return False
+        if mentioned and not _only_chatgpt_mentions(mentioned):return False
         claim=_registration_claim(text)
         if claim is not None:return claim
         if re.search(r'нов[а-яё]*\s+аккаунт|new\s+account',str(text),re.I):break
@@ -112,8 +174,8 @@ def enrich_facts(facts,current,history=()):
         if row.get('role')!='client':continue
         source=row['text'];mentions=service_mentions(source,catalog)
         if not mentions:continue
-        if set(mentions)!={'chatgpt'} or not re.search(r'нов[а-яё]*\s+аккаунт|new\s+account',source,re.I):return facts
-        scoped=annotate(facts,source)
+        if not _only_chatgpt_mentions(mentions) or not _new_plus_plan(source):return facts
+        scoped=_current_sku(annotate(facts,source),source)
         new_rows=[r for r in scoped.get('requested_catalog',[]) if selected_new_account({'requested_catalog':[r]})]
         scoped=dict(scoped,requested_catalog=new_rows)
         if selected_new_account(scoped) is None:return facts
@@ -121,12 +183,13 @@ def enrich_facts(facts,current,history=()):
     return facts
 
 def reply(facts,current,history=()):
+    facts=_current_sku(facts,current)
     row=selected_new_account(facts)
     if row is None:return None
     value=str(current or '')
     from .catalog_context import service_mentions
     mentioned=service_mentions(value,facts.get('catalog',[]))
-    if mentioned and set(mentioned)!={'chatgpt'}:return None
+    if mentioned and not _only_chatgpt_mentions(mentioned):return None
     # This guide must never swallow a comparison, technical error or unrelated
     # task merely because the account SKU is still selected in context.
     from .request_goals import goals

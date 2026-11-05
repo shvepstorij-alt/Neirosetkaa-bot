@@ -273,13 +273,36 @@ _OPERATION_SPECS={
 
 def _operation_present(text,family):
     media,operation=_OPERATION_SPECS[family]
-    for clause in re.split(r'[,;.!?\n]|\s+(?:но|but|и|and)\s+',str(text),flags=re.I):
-        if not re.search(media,clause,re.I):continue
+    # A conjunction may coordinate objects of one verb ("анализирует
+    # документы и изображения") or separate operations. Carry a positive
+    # predicate only into a bare object fragment, never across a new verb.
+    predicates='|'.join(spec[1] for spec in _OPERATION_SPECS.values())
+    other_predicates=(r'загру[а-яё]*|хран[а-яё]*|скач[а-яё]*|просматрив[а-яё]*|'
+        r'показыва[а-яё]*|сохраня[а-яё]*|уме[а-яё]*|мож[а-яё]*|поддержива[а-яё]*|'
+        r'[а-яё]{2,}(?:ет|ют|ит|ят|ешь|ете|ем|ут)|'
+        r'upload[a-z]*|stor(?:e|es|ing)|download[a-z]*|view[a-z]*|display[a-z]*|'
+        r'sav(?:e|es|ing)|support[a-z]*|export[a-z]*|render[a-z]*|convert[a-z]*|can|cannot')
+    carry=''
+    for piece in re.split(r'([,;.!?\n]|\s+(?:но|but|а|и|and)\s+)',str(text),flags=re.I):
+        if not piece.strip():continue
+        if re.fullmatch(r'[,;.!?\n]|\s+(?:но|but|а)\s+',piece,re.I):carry='';continue
+        if re.fullmatch(r'\s+(?:и|and)\s+',piece,re.I):continue
+        clause=piece
+        has_predicate=bool(re.search(r'(?<!\w)(?:'+predicates+'|'+other_predicates+r')(?!\w)',clause,re.I))
+        if carry and not has_predicate and re.search(media,clause,re.I):
+            clause=carry+' '+clause
+        positive=[]
         for match in re.finditer(r'(?<!\w)(?:'+operation+r')(?!\w)',clause,re.I):
             prefix=clause[max(0,match.start()-40):match.start()]
             prefix=re.sub(r'не\s+только|not\s+only','',prefix,flags=re.I)
             if re.search(r'(?<!\w)(?:не|нет|без|вместо|not|no|cannot|without|instead)(?!\w)',prefix,re.I):continue
-            return True
+            positive.append(match[0])
+        if positive and re.search(media,clause,re.I):
+            # A negated object is not an operation target even when the
+            # shared predicate itself is positive.
+            object_text=re.sub(r'не\s+только|not\s+only','',piece,flags=re.I)
+            if not re.search(r'(?<!\w)(?:не|нет|без|not|no|without)(?!\w)',object_text,re.I):return True
+        carry=positive[-1] if positive else ''
     return False
 
 
@@ -306,12 +329,106 @@ def _claim_guard(claim,target,contract,facts):
     if claim['kind']=='task_fit':
         operation_issue=_operation_fit_issue(claim['text'],facts)
         if operation_issue:return operation_issue
+    metric_issue=_plan_metric_issue(claim['text'],target,contract)
+    if metric_issue:return metric_issue
     if (re.search(r'pro\s*(?:5|20|50)\s*[xх×]?\b',target.get('plan',''),re.I)
             and re.search(r'соответств|эквивалент|это\s+(?:официальн[а-яё]*\s+)?план|относ[а-яё]*\s+к',claim['text'],re.I)
             and re.search(r'pro\s*(?:100|200|500)\b|официальн[а-яё]*[^.!?\n]{0,25}\bpro\b',claim['text'],re.I)):
         return ('Этап: соответствие тарифа магазина официальному плану. Для обозначения Pro 5x/20x/50x '
                 'не подтверждена эквивалентность другому официальному уровню; название и цена не являются доказательством.')
     return _atomic_guard(claim['text'],facts)
+
+
+def _numeric_metrics(text):
+    """Only explicit count/unit pairs; not ordinals, rankings or video quotas.
+
+    This is a contradiction floor for a search digest, not factual proof of
+    its contents. Duration, credits and parallel video counts deliberately
+    remain with semantic review: a monthly quota is not a single clip limit.
+    """
+    text=str(text).casefold().replace('**','')
+    result={}
+    specs={
+        'projects':r'(?<![\w.,])([0-9]{1,7})\s*(?:projects?|проект(?:а|ов)?)(?!\w)',
+        'participants':r'(?<![\w.,])([0-9]{1,7})\s*(?:participants?|участник(?:а|ов)?)(?!\w)',
+    }
+    for metric,pattern in specs.items():
+        for match in re.finditer(pattern,text):
+            result.setdefault(metric,set()).add(int(match[1]))
+    for clause in re.split(r'[;\n]',text):
+        if not re.search(r'storage|хранил|облачн',clause):continue
+        for match in re.finditer(r'(?<![\w.,])([0-9]{1,7})\s*(gb|tb|гб|тб)(?!\w)',clause):
+            unit={'гб':'gb','тб':'tb'}.get(match[2],match[2])
+            result.setdefault('storage_'+unit,set()).add(int(match[1]))
+    return result
+
+
+def _plan_metric_issue(text,target,contract):
+    """Reject a direct numeric contradiction in an explicitly named plan block.
+
+    Ambiguous tables, combined plan headings and contradictory digest values
+    do not establish a unique bound and are left to independent review.
+    """
+    plan=str(target.get('plan','')).strip()
+    if not plan or not _numeric_metrics(text):return ''
+    targets=contract.get('targets',[])
+    products={str(t.get('product','')) for t in targets if t.get('product')}
+    product=str(target.get('product',''))
+    aliases={}
+    for item in targets:
+        for name in (item.get('product',''),item.get('service','')):
+            if name:aliases.setdefault(str(name).casefold(),set()).add(str(item.get('product','')))
+    aliases.setdefault(product.casefold(),set()).add(product)
+    active_product=product if len(products)<=1 else None
+    active_plan=None;found={}
+    plan_names={str(t.get('plan','')).strip().casefold() for t in targets if t.get('plan')}
+    plan_names.add(plan.casefold())
+    boundary_plans=plan_names|{'free','basic','standard','pro','max','unlimited','business',
+        'enterprise','creator','team','mega','starter','plus','go'}
+    allowed=set(contract.get('allowed_sources',{}).get(product,[]))
+    for raw in re.split(r'\n|;\s*(?=[A-Za-zА-Яа-я])',str(contract.get('digest',''))):
+        line=raw.strip().replace('**','')
+        line=re.sub(r'^#{1,6}\s*','',line)
+        line=re.sub(r'^[-*]\s+','',line)
+        # Product-only headings are the boundary between independent brands.
+        heading=line.rstrip(':').strip().casefold()
+        if heading in aliases:
+            owners=aliases[heading]
+            active_product=next(iter(owners)) if len(owners)==1 else None
+            active_plan=None
+            continue
+        if line.endswith(':') and heading not in boundary_plans:
+            # An unrecognised brand/section heading cannot inherit the last
+            # recognised product and plan merely because it shares a limit.
+            active_product=None;active_plan=None
+            continue
+        candidate=re.match(r'^(?:(?:план|plan)\s+)?([A-Za-zА-Яа-я][\w .×-]{0,65}?)(?:\s*[:—–]|\s+-\s+|$)',line,re.I)
+        if candidate:
+            label=candidate[1].strip()
+            # Inline "Zoom Pro: ..." establishes both boundaries explicitly.
+            named_product=False
+            for alias in sorted(aliases,key=len,reverse=True):
+                if label.casefold().startswith(alias+' '):
+                    owners=aliases[alias]
+                    active_product=next(iter(owners)) if len(owners)==1 else None
+                    label=label[len(alias):].strip();named_product=True;break
+            if (label.casefold() in boundary_plans or named_product or raw.lstrip().startswith('#')
+                    or re.match(r'^\s*\*\*[^*]+\*\*',raw)):
+                active_plan=label.casefold()
+        elif raw.lstrip().startswith('#'):
+            active_plan=None
+        if active_product!=product or active_plan!=plan.casefold():continue
+        refs={int(i) for i in re.findall(r'\[(\d{1,6})\]',line)}
+        if not refs & allowed:continue
+        for metric,values in _numeric_metrics(line).items():found.setdefault(metric,set()).update(values)
+    for metric,values in _numeric_metrics(text).items():
+        expected=found.get(metric,set())
+        if len(values)==1 and len(expected)==1 and values!=expected:
+            return ('Этап: привязка числового лимита к тарифу. Тариф='+plan+
+                    '; метрика='+metric+'; число ответа='+str(next(iter(values)))+
+                    '; число в именованной секции сводки='+str(next(iter(expected)))+
+                    '. Сводка поиска не является гарантией факта; противоречащее ей утверждение исключено.')
+    return ''
 
 
 def _render_recommendation(contract,accepted,missing,diagnostics):

@@ -46,6 +46,19 @@ async def run(service, facts, question, current, job):
     from .response_policy import _catalog_public_brands
     creative=task['kind']=='creative_generation'
     products=_catalog_public_brands(facts)
+    # A named public tool is still part of a comparison even if it has no
+    # separate shop SKU (e.g. Codex vs Kimi). Never fabricate its retail price.
+    from .official_services import registry
+    from .catalog_context import ALIASES
+    official=registry()
+    for product in official:
+        aliases=ALIASES.get(product,(product,))
+        if any(re.search(r'(?<!\w)'+re.escape(alias)+r'(?!\w)',current,re.I) for alias in aliases) and product not in products:
+            products.append(product)
+    from .response_policy import explicit_public_products
+    explicit_products=explicit_public_products(current)
+    products=list(dict.fromkeys(products+explicit_products))
+    products=products[:4]
     discovery=creative and (not products or bool(re.search(
         r'(?:выбрать|подобрать|подскаж|посовет|порекоменд|нужен|нужна|нужны|какой|какие|другие)'
         r'[^.!?\n]{0,45}(?:сервис|нейросет|инструмент|генератор|редактор)|'
@@ -92,6 +105,7 @@ async def run(service, facts, question, current, job):
             from .request_goals import goals
             for clause in re.split(r'[?!;\n]',current):
                 if 'purchase' in goals(clause,facts):continue
+                mandatory.extend(explicit_public_products(clause))
                 selected=annotate(facts,clause)
                 mandatory.extend(_catalog_public_brands(selected))
             charge()

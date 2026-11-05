@@ -12,6 +12,7 @@ _SERVICES={
  'zoom':('Zoom Workplace video meetings subscription',('zoom.com','zoom.us'),('https://www.zoom.com/en/products/collaboration-tools/',)),
  'krea':('Krea AI creative tools subscription',('krea.ai',),('https://www.krea.ai/pricing',)),
  'chatgpt':('ChatGPT consumer subscription',('openai.com','chatgpt.com'),('https://openai.com/chatgpt/pricing/','https://chatgpt.com/pricing/')),
+ 'codex':('OpenAI Codex coding agent capabilities and ChatGPT plan access not API billing',('developers.openai.com','learn.chatgpt.com','openai.com','chatgpt.com'),('https://developers.openai.com/api/docs/guides/code-generation',)),
  'claude':('Claude consumer subscription',('anthropic.com','claude.com','claude.ai'),('https://claude.com/pricing',)),
  'perplexity':('Perplexity consumer subscription',('perplexity.ai',),('https://www.perplexity.ai/help-center/en/articles/11187416-which-perplexity-subscription-plan-is-right-for-you',)),
  'gemini':('Google Gemini consumer subscription',('gemini.google','gemini.google.com','support.google.com','one.google.com','blog.google','ai.google.dev'),('https://gemini.google/subscriptions/',)),

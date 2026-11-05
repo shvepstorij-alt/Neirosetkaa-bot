@@ -47,6 +47,18 @@ def task_projection(facts,question):
     # This bounded text is used locally only. It is not included in the request.
     raw=str(question or '')+'\n'+str(consultation.get('task_text',''))
     labels=[name for name,pattern in _LABELS if re.search(pattern,raw,re.I)]
+    from .selection_help import development_purpose
+    if development_purpose(raw):
+        if 'coding' not in labels:labels.append('coding')
+        # Finite task facets retain the purpose without sending arbitrary
+        # customer text, code, account information or client projects to search.
+        for name,pattern in (
+            ('website development',r'сайт|лендинг|frontend|фронтенд|backend|бэкенд'),
+            ('application development',r'приложени'),
+            ('bot development',r'бот'),
+            ('debugging and testing',r'баг|ошиб|отлад|тест|debug|testing'),
+        ):
+            if re.search(pattern,raw,re.I) and name not in labels:labels.append(name)
     durations=[]
     for match in re.finditer(r'(?<!\w)(\d{1,3})(?:\s*[-–—]\s*(\d{1,3}))?\s*(секунд[а-яё]*|сек\.?|минут[а-яё]*)(?!\w)',raw,re.I):
         low=int(match[1]);high=int(match[2]) if match[2] else low

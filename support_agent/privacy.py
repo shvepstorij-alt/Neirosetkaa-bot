@@ -44,13 +44,27 @@ def sensitive(text):
     # other messages. Remove only independently recognised question lines from
     # the detection copy, never from stored text. A secret on another line is
     # still detected normally (including an unlabelled password/code).
-    lines=text.splitlines()
-    remaining=[line for line in lines if not _credential_field_question(line)]
+    # A message may contain several independent questions on one line. A
+    # purchase question can mention an unfamiliar brand/amount; neither is a
+    # credential value belonging to the following field question. Split only
+    # at explicit question/exclamation boundaries (not dots in URLs/emails).
+    # Keep every unrecognised fragment for the sensitive-value checks below.
+    lines=re.split(r'(?<=[?!])\s*|\n',text)
+    field_questions=[_credential_field_question(line) for line in lines]
+    remaining=[line for line,is_question in zip(lines,field_questions) if not is_question]
     if len(remaining)!=len(lines):
         # A password question followed by a bare Latin string can be the
         # supplied password on the next line. Do not erase that association.
-        if any(re.fullmatch(r'[a-zA-Z0-9!@$%^&*_.+\-]{5,}',line.strip())
-               and line.strip().casefold() not in _PUBLIC_FIELD_WORDS for line in remaining):return True
+        if any(re.fullmatch(r'[a-zA-Z0-9!@$%^&*_.+\-]{5,}',line.strip().rstrip('?!'))
+               and line.strip().rstrip('?!').casefold() not in _PUBLIC_FIELD_WORDS for line in remaining):return True
+        first_question=field_questions.index(True)
+        # An unknown Latin string following the field question may be its
+        # value even when introduced with prose ("Вот qwerty"). Earlier,
+        # independent product questions do not have that association.
+        if any(word.casefold() not in _PUBLIC_FIELD_WORDS
+               for line,is_question in zip(lines[first_question+1:],field_questions[first_question+1:])
+               if not is_question for word in re.findall(r'[a-zA-Z]+',line)):
+            return True
     text='\n'.join(remaining)
     return bool(re.search(r'(?im)парол|password|\bpass\b|токен|token|session|cookie|cvv|код.{0,15}(?:почт|вход|подтверж)|^\s*\d{4,8}\s*$|(?=\S{8,})(?=\S*[a-zA-Z])(?=\S*\d)\S{8,}',text or ''))
 
@@ -70,11 +84,16 @@ def _credential_field_question(text):
     if re.search(r'[:={}\[\]"\'`]|@|\d|sk-|eyj|bearer|access.?token|refresh.?token|session.?key',lower):return False
     if not re.search(r'парол|password|токен|token|session|cookie|cvv|код\s+(?:входа|подтверждения)',lower):return False
     if not re.search(r'\?$|^(?:как|где|почему|что\s+значит)\b',lower):return False
-    if not re.search(r'нуж(?:ен|на|но|ны)|требу\w*|зачем|как|где|почему|что\s+значит|надо\s+(?:ли\s+)?(?:прислать|отправить)|можно\s+ли',lower):return False
+    if not re.search(r'нуж(?:ен|на|но|ны)|требу\w*|зачем|как|где|почему|что\s+значит|надо\s+(?:ли\s+)?(?:прислать|отправить)|можно\s+ли',lower):
+        if not re.fullmatch(r'(?:а\s+)?(?:пароль|токен|код\s+входа)\s+тоже\?',lower):return False
     # Unrecognised Latin text may be an unlabelled password. Public field and
     # common brand words are harmless; new names can still be handled manually.
     if any(word not in _PUBLIC_FIELD_WORDS for word in re.findall(r'[a-z]+',lower)):return False
     # "пароль qwerty нужен?" is not an approved field-name pattern even if
     # somebody deliberately uses a harmless brand as a purported secret.
-    if re.search(r'(?:пароль|password|токен|token)\s+(?!от\b|для\b|вам\b|мне\b|нуж\w*\b|надо\b|треб\w*\b|присыл\w*\b|отправ\w*\b|перед\w*\b|в\b|это\b|тоже\b|можно\b|обязател\w*\b)[a-zа-я]+',lower):return False
+    # Apple ID is the public name of the account field, not a supplied value.
+    # Do not generalise this to arbitrary words after "пароль": those can be
+    # actual passwords (including names of other products).
+    field_syntax=re.sub(r'\b(пароль|password)\s+(apple\s+id)\b',r'\1 от \2',lower)
+    if re.search(r'(?:пароль|password|токен|token)\s+(?!от\b|для\b|вам\b|мне\b|нуж\w*\b|надо\b|треб\w*\b|присыл\w*\b|отправ\w*\b|перед\w*\b|в\b|это\b|тоже\b|можно\b|обязател\w*\b)[a-zа-я]+',field_syntax):return False
     return True

@@ -131,6 +131,37 @@ def activation_promise_issue(text):
     return ''
 
 
+def free_offer_issue(text,facts):
+    """A title containing 'free' is not proof of a free shop trial."""
+    from .catalog_context import _families,_words,_contains
+    rows=[r for r in facts.get('requested_catalog',[]) if isinstance(r,dict)]
+    active=rows
+    for clause in re.split(r'(?<=[.!?])\s+|\n+',str(text or '')):
+        families=_families(_words(clause))
+        matched=[r for r in rows if families & _families(_words(str(r.get('service',''))+' '+str(r.get('service_key',''))))
+                 or any(_contains(_words(clause),_words(r.get(k,''))) for k in ('service','service_key') if r.get(k))]
+        if matched:active=matched
+        if clause.rstrip().endswith('?') or not re.search(r'бесплатн|\bfree\b',clause,re.I):continue
+        if re.search(r'не\s+(?:могу|можем)?\s*(?:предлага|подтверж|обеща)|не\s+доступ|не\s+предусмотр|'
+                     r'не\s+(?:является|означает)[^.!?]{0,25}бесплатн',clause,re.I):continue
+        trial=bool(re.search(r'пробн|trial',clause,re.I))
+        shop_offer=bool(re.search(r'у\s+нас|через\s+нас|наш[а-яё]*\s+(?:бот|магазин)|активаци[а-яё]*\s+по\s+почт',clause,re.I))
+        if not trial and not shop_offer:continue
+        # A sourced explanation of the provider's own Free plan is separate
+        # from an offer made by this store.
+        if (not shop_offer and facts.get('public_research',{}).get('sources')
+                and re.search(r'официальн[а-яё]*\s+(?:сайт|сервис)|на\s+сайте\s+сервиса',clause,re.I)):
+            continue
+        if not active:continue
+        if any(type(r.get('catalog_price_rub')) in (int,float) and r['catalog_price_rub']==0
+               or r.get('trial_status')=='available' and r.get('free_trial_confirmed') is True for r in active):
+            continue
+        return ('Этап: подтверждение бесплатного предложения. Ответ предлагает бесплатный пробный доступ или оформление через магазин, '
+                'но нулевая цена и подтверждённые условия бесплатной выдачи отсутствуют. Тарифов='+str(len(active))+
+                '; подтверждённых нулевых цен=0. Слова free/пробный в названии товара не подтверждают бесплатность.')
+    return ''
+
+
 def evidence_scope_issue(answer, facts):
     """Reject store-specific claims whose source is missing, before model review.
 
@@ -141,6 +172,8 @@ def evidence_scope_issue(answer, facts):
     from .catalog_context import _families, _words, apple_region_codes
     from .apple_matching import REGIONS, nominal, amounts
     text = str(answer.get('reply', ''))
+    free_issue=free_offer_issue(text,facts)
+    if free_issue:return free_issue
     activation_issue=activation_promise_issue(text)
     if activation_issue:return activation_issue
     credential_issue = _code_credential_issue(text, facts)
@@ -359,6 +392,19 @@ async def check_answer(ai,answer,facts,images=None):
     # Universal delivery guarantees must be checked before any specialized
     # reviewer can return early (including atomic public-feature review).
     text=answer.get('reply','')
+    from .response_policy import public_question
+    current=facts.get('conversation',{}).get('latest_client_message','')
+    if (facts.get('public_research_required') or public_question(current)) and not facts.get('public_research',{}).get('sources'):
+        return {'supported':False,'reason':'Этап: доказательства публичного ответа. Запрошены официальные тарифы, функции или ограничения; источников=0. Каталог магазина подтверждает цены и собственные инструкции, но не публичные возможности стороннего сервиса. Модельная проверка без источников не может разрешить такой ответ.'}
+    required=facts.get('public_question_products',[])
+    if required:
+        from .research import evidence_domains,safe_url
+        evidence=facts.get('public_research',{})
+        sources=evidence.get('sources',[])
+        missing=[p for p in required if not any(isinstance(s,dict) and safe_url(s.get('url'),evidence_domains(evidence,p)) for s in sources)]
+        if missing:
+            return {'supported':False,'reason':'Этап: покрытие публичного вопроса источниками. Не подтверждены сервисы: '+','.join(missing)+
+                    '; запрошено сервисов='+str(len(required))+'; источников='+str(len(sources))+'. Источники другого сервиса не подтверждают его тарифы или возможности.'}
     from .claude_policy import public_region_issue
     region_issue=public_region_issue(text,facts)
     if region_issue:return {'supported':False,'reason':region_issue}

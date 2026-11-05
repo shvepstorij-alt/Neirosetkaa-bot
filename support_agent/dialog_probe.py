@@ -77,6 +77,9 @@ def report_details(answer, facts, question):
         lines.append('Флаг участия владельца установлен; конкретная причина отдельно не записана. '
                      'Это не доказательство ошибки: ручное оформление также может требовать владельца.')
     selected=facts if 'requested_catalog' in facts else annotate(facts,question)
+    from .new_account_guide import selection_diagnostic
+    sku_trace=selection_diagnostic(selected,question)
+    if sku_trace:lines.append(sku_trace)
     if evidence.get('rejected_reply'):
         lines.append('Отклонённый вариант (клиенту не отправлялся):\n'+scrub(evidence['rejected_reply']))
         lines.append('Далее проверяется сохранённый безопасный ответ, а не отклонённый вариант.')

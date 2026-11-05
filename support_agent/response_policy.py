@@ -2,6 +2,56 @@
 import re
 
 
+def public_question(text):
+    """Public product facts need research even when no retail SKU matched."""
+    text=str(text or '')
+    if re.search(r'закуп|поставщик|себестоим|18\s*\+|порно|эротическ',text,re.I):return False
+    return bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|ограничени|отлич|сравн|'
+                          r'какие\s+(?:есть\s+|сейчас\s+|платные\s+)*(?:модел|тариф)|'
+                          r'официальн[а-яё]*[^.!?\n]{0,50}(?:цен|валют|услов|сведен|описан|сайт)',text,re.I))
+
+
+def explicit_public_products(text):
+    """Only current public labels, never customer URLs, identity or history.
+
+    Known aliases are deterministic. Unknown Latin labels are accepted only in
+    an explicit software-plan question and still require official discovery.
+    Generic billing words and tier names are not software identities.
+    """
+    from .catalog_context import ALIASES,_words,_contains
+    from .official_services import canonical_product,registry
+    from .service_discovery import public_name
+    from .privacy import scrub,sensitive
+    value=str(text or '')
+    words=_words(value)
+    known=[]
+    for key,aliases in ALIASES.items():
+        if any(_contains(words,_words(alias)) for alias in aliases):known.append(canonical_product(key))
+    for key in registry():
+        if _contains(words,_words(key.replace('_',' '))):known.append(key)
+    if not (public_question(value) or re.search(r'лучше|выбрать|сравн|отлич',value,re.I)):
+        return list(dict.fromkeys(known))[:4]
+    # Never mine labels from links, email, handles, passwords or private values.
+    clean=re.sub(r'https?://\S+|\b\S+@\S+|@[A-Za-z0-9_]+',' ',scrub(value))
+    blocked={'usd','eur','rub','api','ai','saas','free','basic','pro','plus','max','ultra',
+             'business','enterprise','monthly','annual','google','account','id','ssо','sso'}
+    labels=[]
+    for match in re.finditer(r'(?<![\w./@-])([A-Z][A-Za-z][A-Za-z0-9-]{0,35})(?![\w./@-])',clean):
+        label=match[1].casefold()
+        if label not in blocked and not re.search(r'\d',label) and public_name(label) and not sensitive(label):labels.append(canonical_product(label))
+    # Lowercase unknown brands also occur as explicit peers ("krea и foobar").
+    # Extract only the joined labels, not arbitrary English words in a task.
+    if public_question(value) or re.search(r'лучше|выбрать|сравн|отлич',value,re.I):
+        pair=r'(?<![\w./@-])([A-Za-z][A-Za-z0-9-]{1,35})\s+(?:и|или|vs\.?|versus)\s+([A-Za-z][A-Za-z0-9-]{1,35})(?![\w./@-])'
+        for match in re.finditer(pair,clean,re.I):
+            for raw in match.groups():
+                label=raw.casefold()
+                if label not in blocked and not re.search(r'\d',label) and public_name(label) and not sensitive(label):labels.append(canonical_product(label))
+    # Known multi-word aliases own their component words (e.g. Telegram Premium).
+    components={w for p in known for w in _words(p.replace('_',' '))}
+    return list(dict.fromkeys(known+[p for p in labels if p not in components]))[:4]
+
+
 def current_request(messages, batch_first, latest_mid):
     """Text of the current collected batch, not every unanswered past question.
 
@@ -89,6 +139,10 @@ def consultation_plan(latest, plan, facts=None):
     checkout_only=bool(re.search(r'как\s+(?:оформить|оплатить|купить|активировать)|'
                                 r'что\s+(?:нужно|потребуется)\s+(?:после|для)|'
                                 r'какие\s+данные|куда\s+(?:прислать|отправить)',text)) and not explicit_features
+    if public_question(latest) and not checkout_only:
+        explicit=explicit_public_products(latest)
+        products=list(dict.fromkeys(products+catalog_brands+explicit))[:4]
+        public=True
     if catalog_brands and (explicit_features or plan_question or is_selection_request(latest,facts) or task_consultation) and not checkout_only:
         products=list(dict.fromkeys(products+catalog_brands))[:4]
         public=True
