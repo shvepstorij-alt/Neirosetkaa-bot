@@ -1,4 +1,4 @@
-"""Pilot: draft review + explicit owner-approved sends. NO automatic client sends."""
+"""Draft review and explicitly enabled, single-test-recipient automatic replies."""
 import asyncio
 import datetime as dt
 import json
@@ -34,9 +34,12 @@ def buttons(rows):
 
 
 class Service:
-    def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100):
+    def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None):
         self.store,self.tg,self.ai,self.shop=store,tg,ai,shop
         self.owner,self.allowed,self.daily_limit=owner,set(allowed),daily_limit
+        self.auto_test_id=(auto_test_id if type(auto_test_id) is int and auto_test_id>0
+                           and auto_test_id in self.allowed and auto_test_id!=owner else None)
+        self.auto_suspended=False
         self.bot_id=None
         self.daily_cleanup=0
         self.active_chats=set()
@@ -102,8 +105,8 @@ class Service:
         parts=text.strip().split()
         if not parts:return
         cmd=parts[0].split('@')[0]
-        readonly=(cmd in ('/start','/status','/shop_status','/workflow_test','/catalog_test','/chats','/pending')
-                  or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:')))
+        readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','control:refresh','auto:settings')
+                  or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:')))
         gate=self.schedule_admin_job(lambda:self.command(text,admin_mid),readonly=readonly)
         if gate is not None and not readonly:
             # Stop/resume/retry/prepare mutate state synchronously before their
@@ -124,8 +127,35 @@ class Service:
         self.callback_tasks[key]=asyncio.create_task(run())
 
     def chat_controls(self,c):
-        return [('Возобновить помощника',f'chat:draft:{c["id"]}')] if c['mode']=='off' else [
-            ('Отвечаю сам',f'chat:off:{c["id"]}')]
+        controls=([('Возобновить помощника',f'chat:draft:{c["id"]}')] if c['mode']=='off' else
+                  [('Отвечаю сам',f'chat:off:{c["id"]}')])
+        if c['mode']=='auto':controls.append(('Только черновики',f'chat:draft:{c["id"]}'))
+        elif self.auto_permitted(c):controls.append(('Включить автоответы',f'auto:confirm:{c["id"]}'))
+        return controls
+
+    def auto_permitted(self,c):
+        return bool(not self.auto_suspended and c and self.auto_test_id is not None and c['uid']==self.auto_test_id and c['uid'] in self.allowed)
+
+    async def show_control(self,admin_mid=None,settings=False):
+        from .auto_panel import overview,settings as settings_view
+        text,rows=settings_view(self) if settings else overview(self)
+        await self.admin_panel(text,rows,admin_mid)
+
+    async def show_attention(self,page=0,admin_mid=None):
+        from .auto_panel import attention_chats,chat_details
+        chats=attention_chats(self);page=max(0,min(page,max(0,(len(chats)-1)//8)))
+        lines=['⚠️ Требуют внимания'];rows=[]
+        for c in chats[page*8:page*8+8]:
+            from .auto_panel import latest
+            event=latest(self.store,c['id'])
+            lines.append(self.chat_identity(c['id'])+'\n'+(event['reason'][:200] if event and event['reason'] else 'Откройте карточку: требуется проверка ответа или ошибки обработки.'))
+            rows.append([(self.chat_label(c['id'],c['uid']),f'view:{c["id"]}')])
+        if not chats:lines.append('Необработанных обращений с отмеченной необходимостью проверки нет.')
+        if page:rows.append([('← Раньше',f'attention:{page-1}')])
+        if (page+1)*8<len(chats):rows.append([('Позже →',f'attention:{page+1}')])
+        rows.append([('Обновить',f'attention:{page}'),('Все чаты','chats:0')])
+        rows.append([('Управление','control:refresh')])
+        await self.admin_panel('\n\n'.join(lines),rows,admin_mid)
 
     def chat_identity(self,cid):
         """Plain-text context for every per-client owner confirmation."""
@@ -181,6 +211,11 @@ class Service:
             return
         self.store.connection(value['id'],bool(value.get('is_enabled')),
                               bool(value.get('rights',{}).get('can_reply',value.get('can_reply',False))))
+        if not value.get('is_enabled') or not value.get('rights',{}).get('can_reply',value.get('can_reply',False)):
+            from .auto_panel import record
+            for c in self.store.db.execute("SELECT id FROM chats WHERE connection=? AND mode='auto'",(value['id'],)).fetchall():
+                self.store.switch('off',c['id'])
+                record(self.store,c['id'],None,'auto_blocked','Этап: обновление подключения Telegram. Подключение отключено либо право ответа отозвано. Для AUTO потребуется ручное включение после восстановления прав.')
 
     async def ingest(self,update):
         if 'business_connection' in update:
@@ -282,6 +317,9 @@ class Service:
             person=m.get('from',{})
             name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
             self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
+        else:
+            from .auto_panel import record
+            record(self.store,cid,None,'manual')
 
     async def admin_panel(self,text,rows,admin_mid=None,parse_mode=None):
         """Bounded owner-only pages; callback navigation edits the existing panel."""
@@ -316,7 +354,8 @@ class Service:
             pending=self.store.db.execute("SELECT count(*) FROM drafts WHERE chat=? AND state='ready'",(c['id'],)).fetchone()[0]
             queued=self.store.db.execute("SELECT count(*) FROM messages WHERE chat=? AND state IN ('queued','working')",(c['id'],)).fetchone()[0]
             label=self.chat_label(c['id'],c['uid'])
-            mode='подготовка' if c['mode']=='draft' else 'пауза'
+            from .auto_panel import MODES
+            mode=MODES.get(self.store.effective_mode(c['id']),'неизвестно')
             if c['uid'] not in self.allowed:
                 mode='не разрешён настройками'
             lines.append(f'№{c["id"]} · {label} · {mode}\nЧерновиков: {pending} · в обработке/очереди: {queued}')
@@ -372,16 +411,20 @@ class Service:
             batching=(f'Собираем обращение · сообщений: {count} · подготовка в {due} (UTC+5)\n'
                       if c['batch_due']>time.time() else
                       f'Обращение собрано · сообщений: {count} · ожидает свободного обработчика\n')
+        from .auto_panel import MODES,chat_details
         text=(f'👤 {label}\nЧат №{cid} · Telegram ID {c["uid"]}\n\n'
-              f'Чат: {"подготовка ответов" if c["mode"]=="draft" else "пауза"}\n'
+              f'Чат: {MODES.get(c["mode"],"неизвестно")}\n'
               f'Глобальный режим: {self.store.get("mode")}\n'
               f'Разрешён настройками: {"да" if c["uid"] in self.allowed else "нет"}\n'
               f'Подключение и право ответа: {"есть" if access else "нет"}\n'
               f'Последнее обращение: {status.get(queued[0],queued[0]) if queued else "нет сохранённого сообщения"}\n\n'
-              +batching+'Отправка только после вашего одобрения. Перед повтором проверьте, не ответили ли уже клиенту.')
+              +batching+chat_details(self,c)+'\n\n'
+              +('AUTO разрешён только настроенному тестовому получателю. Каждый ответ проверяется перед отправкой.'
+                if self.store.effective_mode(cid)=='auto' and self.auto_permitted(c)
+                else 'Отправка только после вашего одобрения. Перед повтором проверьте, не ответили ли уже клиенту.'))
         rows=[self.chat_controls(c)]
         if c['uid'] in self.allowed:
-            if waiting and c['mode']=='draft' and self.store.get('mode')=='draft' and access and cid not in self.active_chats:
+            if waiting and self.store.effective_mode(cid)!='off' and access and cid not in self.active_chats:
                 rows.append([('Подготовить сейчас',f'prepare:{cid}')])
             else:
                 rows.append([('Повторить подготовку',f'retry:{cid}')])
@@ -389,6 +432,7 @@ class Service:
         last=self.store.db.execute('SELECT id FROM drafts WHERE chat=? ORDER BY id DESC LIMIT 1',(cid,)).fetchone()
         if last:rows.append([('Последний черновик',f'draft:{last[0]}')])
         rows.append([('Все чаты','chats:0'),('Ожидают проверки','pending:0')])
+        rows.append([('Управление','control:refresh')])
         await self.admin_panel(text,rows,admin_mid)
 
     async def command(self,text,admin_mid=None):
@@ -396,22 +440,46 @@ class Service:
         if not parts:
             return
         cmd=parts[0].split('@')[0]
-        if cmd in ('/stop','global:off'):
+        if cmd in ('/auto','auto:settings'):
+            await self.show_control(admin_mid,settings=True)
+        elif cmd.startswith('attention:'):
+            await self.show_attention(int(cmd.split(':')[1]),admin_mid)
+        elif cmd.startswith('auto:arm:'):
+            expected=int(cmd.split(':')[2])
+            if not self.auto_test_id or expected!=int(self.store.get('revision')):
+                await self.owner_message('AUTO не включён: тестовый ID не настроен или кнопка устарела. Откройте /status.')
+                return
+            self.store.switch('auto')
+            await self.show_control(admin_mid,settings=True)
+        elif cmd.startswith('auto:confirm:'):
+            cid=int(cmd.split(':')[2]);c=self.store.chat(cid)
+            if not self.auto_permitted(c) or self.store.get('mode')!='auto':
+                await self.show_control(admin_mid,settings=True);return
+            text=(self.chat_identity(cid)+'\n\nВключить автоматические ответы только для этого тестового чата?'
+                  '\nСтарые ответы не отправятся. Новые сообщения будут собираться в одно обращение. '
+                  'Ручные случаи перейдут в черновики. «Отвечаю сам» или /stop остановят следующие отправки.')
+            await self.admin_panel(text,[[('Включить для новых сообщений',f'auto:on:{cid}:{self.store.get("revision")}:{c["revision"]}')],
+                                         [('Назад',f'view:{cid}')]],admin_mid)
+        elif cmd.startswith('auto:on:'):
+            _,_,raw,global_rev,chat_rev=cmd.split(':');cid=int(raw);c=self.store.chat(cid)
+            if (not self.auto_permitted(c) or self.store.get('mode')!='auto'
+                    or int(global_rev)!=int(self.store.get('revision')) or int(chat_rev)!=c['revision']):
+                await self.owner_message('AUTO не включён: разрешение отсутствует либо режим/сообщения изменились после подтверждения. Обновите карточку.')
+                return
+            self.store.switch('auto',cid)
+            from .auto_panel import record
+            record(self.store,cid,None,'auto_enabled')
+            await self.show_chat(cid,admin_mid)
+        elif cmd in ('/stop','global:off'):
             self.store.switch('off')
-            await self.owner_message('Помощник остановлен. Черновики отменены. Уже отправленный Telegram запрос остановка не отзывает.')
+            if admin_mid is not None:await self.show_control(admin_mid)
+            else:await self.owner_message('Помощник остановлен. Черновики отменены. Уже отправленный Telegram запрос остановка не отзывает.')
         elif cmd in ('/draft','global:draft'):
             self.store.switch('draft')
-            await self.owner_message('Режим черновиков включён для новых сообщений в разрешённых чатах. Клиентам автоматически ничего не отправляется.')
-        elif cmd in ('/start','/status'):
-            n=self.store.db.execute("SELECT count(*) FROM drafts WHERE state='ready'").fetchone()[0]
-            await self.owner_message(
-                f'Помощник: {self.store.get("mode")}\nТестовых клиентов: {len(self.allowed)}\nЧерновиков: {n}\n'
-                '/chats — чаты и управление\n/pending — черновики\n/retry НОМЕР_ЧАТА — повторить подготовку\n'
-                '/stop — остановить всем\n/draft — включить подготовку\n/shop_status — проверить подключение магазина\n'
-                '/research_test — тест поиска без отправки клиентам (расходует API)\n'
-                '/dialog_test — тестовые диалоги через рабочую логику (расходует API)\n'
-                'AUTO в этой сборке отсутствует. Вложения тестовых чатов передаются OpenAI для анализа.',
-                buttons([[('Остановить всем','global:off'),('Только черновики','global:draft')]]))
+            if admin_mid is not None:await self.show_control(admin_mid)
+            else:await self.owner_message('Режим черновиков включён для новых сообщений в разрешённых чатах. Клиентам автоматически ничего не отправляется.')
+        elif cmd in ('/start','/status','control:refresh'):
+            await self.show_control(admin_mid)
         elif cmd=='/dialog_test':
             running=getattr(self,'research_probe_task',None)
             if running and not running.done():
@@ -540,6 +608,9 @@ class Service:
         elif cmd.startswith('chat:'):
             _,mode,raw=cmd.split(':')
             cid=int(raw)
+            if mode not in ('off','draft'):
+                await self.owner_message('Для AUTO используйте отдельную кнопку подтверждения в карточке тестового чата.')
+                return
             if not self.store.chat(cid):
                 return
             changed=self.store.switch(mode,cid)
@@ -566,7 +637,7 @@ class Service:
                 await self.owner_message('Уже отправляются четыре ответа. Этот черновик сохранён; повторите нажатие после завершения отправки.')
         elif cmd=='/retry' and len(parts)==2 and parts[1].isdigit():
             cid=int(parts[1]);c=self.store.chat(cid)
-            if not c or c['mode']!='draft' or self.store.get('mode')!='draft':
+            if not c or self.store.effective_mode(cid)=='off':
                 await self.owner_message(self.chat_identity(cid)+'\nСначала включите черновики для этого чата и глобально.')
                 return
             m=self.store.db.execute("SELECT * FROM messages WHERE chat=? AND mid=? AND role='client'",(cid,c['latest'])).fetchone()
@@ -637,6 +708,8 @@ class Service:
             if evidence['status'] in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
                 research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:1500])}\n\n'
         atomic_diagnostics=evidence.get('atomic_diagnostics',[])
+        if evidence.get('auto_block_reason'):
+            research_note+='🛑 <b>Почему AUTO остановлен</b>\n'+html.escape(evidence['auto_block_reason'][:1400])+'\n\n'
         if atomic_diagnostics:
             research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
@@ -644,11 +717,13 @@ class Service:
               if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
         from .customer_format import format_customer
         _,customer_preview=format_customer(d['text'][:1800])
+        from .auto_panel import MODES
+        mode_label=MODES.get(self.store.effective_mode(c['id']),'неизвестно')
         text=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
               f'👤 <b>Клиент:</b> {client}\n'
               f'<b>Telegram ID:</b> <code>{c["uid"]}</code> · <b>Чат:</b> №{c["id"]}\n\n'
               f'<b>Статус:</b> {state}\n'
-              f'<b>Помощник в чате:</b> {"пауза" if c["mode"]=="off" else "подготовка ответов"}\n'
+              f'<b>Помощник в чате:</b> {mode_label}\n'
               f'<b>Участие Александра:</b> {"нужно" if d["handoff"] else "не требуется по оценке модели"}\n\n'
               f'🔎 <b>Разбор обращения</b>\n<i>Вывод модели — проверьте перед отправкой.</i>\n'
               f'{html.escape(d["summary"][:700])}\n\n'
@@ -662,7 +737,7 @@ class Service:
                 text=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
                       f'👤 {client} · <code>{c["uid"]}</code> · Чат №{c["id"]}\n\n'
                       f'<b>Статус:</b> {state}\n'
-                      f'<b>Помощник в чате:</b> {"пауза" if c["mode"]=="off" else "подготовка ответов"}\n\n'
+                      f'<b>Помощник в чате:</b> {mode_label}\n\n'
                       f'💬 <b>Ответ клиенту</b>\n{customer_preview}\n\n'
                       f'<i>Разбор и источники сохранены в предыдущих частях карточки. {note}</i>')
             updated=await self.admin_panel(text,rows,admin_mid,parse_mode='HTML')
@@ -687,17 +762,76 @@ class Service:
         self.approval_tasks[did]=asyncio.create_task(run())
         return True
 
-    async def approve(self,did,pause_after=False):
+    async def auto_review(self,did,reason):
+        """Keep a current answer for owner approval; never revive stale work."""
+        d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+        if not d or not self.store.pause_auto_for_review(did,time.time()):return
+        from .auto_panel import record
+        record(self.store,d['chat'],did,'auto_blocked',reason)
+        evidence=self.store.evidence(did)
+        evidence['auto_block_reason']=reason
+        self.store.db.execute('UPDATE draft_evidence SET data=? WHERE draft=?',(json.dumps(evidence),did))
+        self.store.db.execute('UPDATE drafts SET handoff=1 WHERE id=?',(did,))
+        try:await self.show_draft(did,d['admin_mid'])
+        except Exception:logging.warning('AUTO review card unavailable; saved for /pending')
+
+    async def auto_send(self,did):
+        await self.approve(did,automatic=True)
+
+    def auto_content_reason(self,d):
+        from .auto_policy import block_reason
+        c=self.store.chat(d['chat'])
+        first=c['batch_first'] or d['mid']
+        rows=self.store.db.execute("SELECT text,media FROM messages WHERE chat=? AND role='client' AND mid>=? AND mid<=? ORDER BY mid",
+                                   (d['chat'],first,d['mid'])).fetchall()
+        current='\n'.join(row['text'] or '' for row in rows)
+        for row in rows:
+            try:kind=json.loads(row['media'] or '{}').get('kind')
+            except (ValueError,TypeError):kind='unsupported'
+            if kind in ('sensitive','manual_text_file','unsupported'):
+                return 'Этап: допуск AUTO. Во входящем обращении есть вложение или данные для ручного разбора; автоматическая отправка запрещена.'
+        return block_reason({'reply':d['text'],'summary':d['summary'],'handoff':bool(d['handoff'])},
+                            self.store.evidence(d['id']),current)
+
+    async def approve(self,did,pause_after=False,automatic=False):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
         if not d:
             return
         c=self.store.chat(d['chat'])
         if c['uid'] not in self.allowed:
             return
+        if automatic:
+            if not self.auto_permitted(c) or self.store.effective_mode(c['id'])!='auto':return
+            if d['state']!='ready' or not self.store.still_current(d):return
+            reason=self.auto_content_reason(d)
+            if reason:
+                await self.auto_review(did,reason);return
         # Recheck current Telegram permissions, then atomically consume draft.
         try:
-            await self.load_connection(c['connection'])
+            if automatic:
+                value=await self.tg.call('getBusinessConnection',business_connection_id=c['connection'])
+                if (not isinstance(value,dict) or value.get('id')!=c['connection']
+                        or not isinstance(value.get('user'),dict) or value['user'].get('id')!=self.owner
+                        or type(value.get('is_enabled')) is not bool
+                        or not isinstance(value.get('rights',{}),dict)
+                        or type(value.get('rights',{}).get('can_reply',value.get('can_reply'))) is not bool):
+                    raise ValueError('AUTO connection identity mismatch')
+                self.record_connection(value)
+                if not value['is_enabled'] or not value.get('rights',{}).get('can_reply',value.get('can_reply')):
+                    self.store.switch('off',c['id'])
+                    from .auto_panel import record
+                    record(self.store,c['id'],did,'auto_blocked','Этап: свежие права Telegram. Подключение отключено либо право ответа отсутствует; отправка не начиналась.')
+                    try:await self.show_chat(c['id'])
+                    except Exception:logging.warning('AUTO permission failure panel unavailable; pause saved')
+                    return
+            else:await self.load_connection(c['connection'])
         except Exception as exc:
+            if automatic:
+                reason=('Ответ Telegram не подтвердил принадлежность подключения владельцу или его ID.'
+                        if isinstance(exc,ValueError) and str(exc)=='AUTO connection identity mismatch'
+                        else 'Свежие права Telegram не получены; точная первопричина недоступна; тип='+type(exc).__name__+'.')
+                await self.auto_review(did,'Этап: проверка Telegram перед AUTO. '+reason)
+                return
             status=getattr(exc,'status',None)
             detail=(' HTTP='+str(status)+'.') if type(status) is int and 100<=status<=599 else ''
             cause=('Время ожидания истекло.' if isinstance(exc,asyncio.TimeoutError) else
@@ -706,8 +840,15 @@ class Service:
                 'Этап: проверка прав Telegram Business перед отправкой. '+cause+detail+
                 ' Этим нажатием отправка клиенту не начиналась. Состояние черновика можно проверить через /pending.')
             return
-        reserved=self.store.reserve_send(did,time.time())
+        if automatic:
+            fresh=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+            if not self.auto_permitted(self.store.chat(d['chat'])):return
+            reason=self.auto_content_reason(fresh)
+            if reason:
+                await self.auto_review(did,reason);return
+        reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_send(did,time.time()))
         if not reserved:
+            if automatic:return
             reason=self.store.send_block_reason(did,time.time())
             if d['admin_mid']:
                 await self.show_draft(did,d['admin_mid'])
@@ -725,16 +866,51 @@ class Service:
         except Exception:
             self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
             self.store.switch('off',c['id'])
+            if automatic:
+                from .auto_panel import record
+                record(self.store,c['id'],did,'send_uncertain','Этап: отправка AUTO. Telegram не подтвердил результат. Повтор запрещён; проверьте личку.')
+                try:
+                    await self.owner_message(self.chat_identity(c['id'])+'\nНеизвестен результат AUTO-отправки. Чат на паузе; проверьте личку. Повтора не будет.',
+                                             buttons([[('Карточка чата',f'view:{c["id"]}')]]))
+                except Exception:logging.warning('AUTO uncertain notification unavailable; persistent pause saved')
+                return
             if d['admin_mid']:
                 await self.show_draft(did,d['admin_mid'])
             await self.owner_message(self.chat_identity(c['id'])+f'\nНеизвестен результат отправки черновика №{did}. Чат поставлен на паузу. Проверьте личку перед возобновлением. Автоматического повтора не будет.',
                                      buttons([self.chat_controls(self.store.chat(c['id']))]))
             return
-        with self.store.transaction():
-            self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
-            self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
-                (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
+        try:
+            if not isinstance(sent,dict) or type(sent.get('message_id')) is not int:
+                raise ValueError('Telegram message confirmation missing')
+            with self.store.transaction():
+                self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
+                self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
+                    (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
+        except Exception:
+            self.auto_suspended=True
+            try:
+                self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
+                self.store.switch('off',c['id'])
+            except Exception:logging.warning('Send result persistence unavailable; AUTO suspended in memory')
+            try:
+                await self.owner_message(f'Чат №{c["id"]} · ID {c["uid"]}\nЭтап: сохранение результата отправки. '
+                    'Запрос уже передан Telegram, но подтверждённый результат не удалось сохранить или проверить. '
+                    'AUTO остановлен в этом процессе; повтор запрещён. Проверьте личку перед продолжением.')
+            except Exception:logging.warning('Send persistence failure notification unavailable')
+            return
         current=self.store.chat(c['id'])
+        if automatic:
+            from .auto_panel import record
+            try:record(self.store,c['id'],did,'auto_sent')
+            except Exception:logging.warning('AUTO action log unavailable; confirmed send is persisted')
+            # The confirmed customer result is persisted before optional UI I/O.
+            if d['admin_mid']:
+                try:await self.show_draft(did,d['admin_mid'])
+                except Exception:logging.warning('AUTO sent card refresh unavailable; send remains confirmed')
+            return
+        from .auto_panel import record
+        try:record(self.store,c['id'],did,'owner_sent')
+        except Exception:logging.warning('Manual send action log unavailable; confirmed send is persisted')
         if d['admin_mid']:
             await self.show_draft(did,d['admin_mid'])
         await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did} отправлен. '+(
@@ -1236,12 +1412,20 @@ class Service:
                 from .conversation_style import session_info,decorate_reply
                 first=self.store.chat(job['chat'])['batch_first']
                 answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']))
+                if isinstance(answer.get('feature_projection'),dict):
+                    answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
                 did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
                 if did:
-                    await self.show_draft(did)
+                    if self.store.effective_mode(job['chat'])=='auto' and self.auto_permitted(self.store.chat(job['chat'])):
+                        await self.auto_send(did)
+                    else:await self.show_draft(did)
         except Exception as exc:
             self.store.db.execute("UPDATE messages SET state='failed' WHERE chat=? AND mid=? AND state='working'",(job['chat'],job['mid']))
             diagnostic=failure_details(exc,'draft')
+            if self.store.still_current(job) and self.store.effective_mode(job['chat'])=='auto':
+                self.store.switch('draft',job['chat'])
+                from .auto_panel import record
+                record(self.store,job['chat'],None,'auto_blocked',diagnostic)
             logging.warning('Draft processing failed: %s',diagnostic)
             await self.owner_message(self.chat_identity(job['chat'])+f'\nНе удалось подготовить ответ. Клиенту ничего не отправлено. Проверьте /pending или возьмите диалог вручную. {diagnostic}')
         finally:
@@ -1305,6 +1489,11 @@ async def main():
     allowed={int(x.strip()) for x in os.environ.get('SUPPORT_TEST_CHAT_IDS','').split(',') if x.strip()}
     if owner<=0 or any(x<=0 or x==owner for x in allowed):
         raise ValueError('Positive, separate test client IDs are required')
+    raw_auto=os.environ.get('SUPPORT_AUTO_TEST_CHAT_ID','').strip()
+    if raw_auto and not raw_auto.isdecimal():raise ValueError('SUPPORT_AUTO_TEST_CHAT_ID must be one numeric test ID')
+    auto_id=int(raw_auto) if raw_auto else None
+    if auto_id is not None and (auto_id<=0 or auto_id==owner or auto_id not in allowed):
+        raise ValueError('SUPPORT_AUTO_TEST_CHAT_ID must be one separate allowed test client')
     limit=int(os.environ.get('SUPPORT_DAILY_CALL_LIMIT','100'))
     if not 1<=limit<=2000:
         raise ValueError('Invalid daily request limit')
@@ -1321,6 +1510,9 @@ async def main():
     interrupted=store.db.execute("SELECT count(*) FROM messages WHERE state='working'").fetchone()[0]
     interrupted_sends=store.db.execute("SELECT count(*) FROM drafts WHERE state IN ('sending','uncertain')").fetchone()[0]
     store.recover()
+    if auto_id is None and store.get('mode')=='auto':store.switch('draft')
+    for c in store.db.execute("SELECT id,uid FROM chats WHERE mode='auto'").fetchall():
+        if c['uid']!=auto_id:store.switch('draft',c['id'])
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=75)) as session:
             tg=Telegram(session,os.environ['SUPPORT_BOT_TOKEN'])
@@ -1335,10 +1527,11 @@ async def main():
             await shop.start()
             ai=OpenAI(session,os.environ['OPENAI_API_KEY'],os.environ['SUPPORT_MODEL'],
                       os.environ['SUPPORT_AUDIO_MODEL'],os.getenv('SUPPORT_SEARCH_MODEL'))
-            service=Service(store,tg,ai,shop,owner,allowed,limit);service.bot_id=me['id']
+            service=Service(store,tg,ai,shop,owner,allowed,limit,auto_test_id=auto_id);service.bot_id=me['id']
             service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
-            await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. Автоответов нет.'+
+            await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. '+
+                ('AUTO доступен только явно настроенному тестовому ID после включения в карточке.' if auto_id else 'AUTO не настроен; автоматических отправок нет.')+
                 ('\nПрерванных подготовок ответа: '+str(interrupted)+'. Автоматически не повторяются; проверьте /chats.' if interrupted else '')+
                 ('\nНеопределённых отправок: '+str(interrupted_sends)+'. Соответствующие чаты на паузе; сначала проверьте личку и /pending.' if interrupted_sends else ''))
             from .probe_api import start_server,startup_diagnostic

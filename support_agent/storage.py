@@ -79,15 +79,15 @@ class Store:
         return self.db.execute('SELECT * FROM chat_profiles WHERE chat=?',(cid,)).fetchone()
 
     def switch(self, mode, cid=None):
-        if mode not in ('off', 'draft'):
-            raise ValueError('Automatic sending is not enabled in the pilot')
+        if mode not in ('off', 'draft', 'auto'):
+            raise ValueError('Unknown support mode')
         with self.transaction():
             # Stale resume buttons must not invalidate an already active draft.
             chat=self.chat(cid) if cid is not None else None
             if cid is not None and chat is None:
                 raise ValueError('Unknown chat')
             current=chat['mode'] if chat is not None else self.get('mode')
-            if mode=='draft' and current=='draft':
+            if mode in ('draft','auto') and current==mode:
                 return False
             if cid is None:
                 self.put('mode', mode)
@@ -99,6 +99,14 @@ class Store:
                 self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')", (cid,))
                 self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'", (cid,))
         return True
+
+    def effective_mode(self,cid):
+        """AUTO requires two independent persisted opt-ins; no cached mode."""
+        c=self.chat(cid)
+        global_mode=self.get('mode')
+        if not c or global_mode not in ('draft','auto') or c['mode'] not in ('draft','auto'):
+            return 'off'
+        return 'auto' if global_mode=='auto' and c['mode']=='auto' else 'draft'
 
     def connection(self, ident, enabled, can_reply):
         with self.transaction():
@@ -129,14 +137,14 @@ class Store:
             self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')", (cid,))
             self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'", (cid,))
             chat = self.chat(cid)
-            queued = role == 'client' and mid == chat['latest'] and chat['mode']=='draft' and self.get('mode')=='draft'
+            queued = role == 'client' and mid == chat['latest'] and self.effective_mode(cid)!='off'
             if queued and not collecting:
                 start=time.time() if edited else min(float(at),time.time())
                 self.db.execute('UPDATE chats SET batch_start=?,batch_due=?,batch_first=? WHERE id=?',
                                 (start,start+self.batch_seconds,mid,cid))
             self.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)',
                             (cid,mid,role,text,json.dumps(media),at,'queued' if queued else 'stored'))
-            if role=='client' and mid!=chat['latest'] and pending and pending['state'] in ('queued','working') and chat['mode']=='draft' and self.get('mode')=='draft':
+            if role=='client' and mid!=chat['latest'] and pending and pending['state'] in ('queued','working') and self.effective_mode(cid)!='off':
                 # Editing an earlier fragment must not strand the last fragment.
                 self.db.execute("UPDATE messages SET state='queued' WHERE chat=? AND mid=? AND role='client'",
                                 (cid,chat['latest']))
@@ -160,7 +168,7 @@ class Store:
             self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')",(cid,))
             self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'",(cid,))
 
-            if pending and pending['state'] in ('queued','working') and c['mode']=='draft' and self.get('mode')=='draft':
+            if pending and pending['state'] in ('queued','working') and self.effective_mode(cid)!='off':
                 latest=self.db.execute("SELECT mid FROM messages WHERE chat=? AND role='client' AND mid>=? ORDER BY mid DESC LIMIT 1",
                                        (cid,c['batch_first'])).fetchone()
                 if latest:
@@ -171,14 +179,14 @@ class Store:
                                         (time.time(),time.time()+self.batch_seconds,cid))
 
     def claim(self, now, excluded_chats=()):
-        if self.get('mode') != 'draft':
+        if self.get('mode') not in ('draft','auto'):
             return None
         with self.transaction():
             excluded=tuple(set(excluded_chats))
             exclusion=(' AND c.id NOT IN ('+','.join('?' for _ in excluded)+')') if excluded else ''
             row=self.db.execute('''SELECT m.*,c.uid,c.connection,c.revision FROM messages m
                 JOIN chats c ON c.id=m.chat JOIN connections b ON b.id=c.connection
-                WHERE m.state='queued' AND c.mode='draft' AND b.enabled=1 AND b.can_reply=1
+                WHERE m.state='queued' AND c.mode IN ('draft','auto') AND b.enabled=1 AND b.can_reply=1
                 AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.chat=c.id AND d.state='sending')
                 AND m.mid=c.latest AND c.batch_due<=?'''+exclusion+' ORDER BY m.at,m.chat LIMIT 1',
                 (now,*excluded)).fetchone()
@@ -190,7 +198,7 @@ class Store:
         """Expedite only an existing queued batch; never revive completed work."""
         with self.transaction():
             c=self.chat(cid)
-            if not c or c['mode']!='draft' or self.get('mode')!='draft':return False
+            if not c or self.effective_mode(cid)=='off':return False
             b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
             if not b or not b['enabled'] or not b['can_reply']:return False
             pending=self.db.execute("SELECT 1 FROM messages WHERE chat=? AND mid=? AND state='queued'",
@@ -204,7 +212,7 @@ class Store:
         if not c:
             return False
         b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
-        return (self.get('mode')=='draft' and c['mode']=='draft' and b and b['enabled'] and b['can_reply']
+        return (self.effective_mode(job['chat'])!='off' and b and b['enabled'] and b['can_reply']
                 and c['revision']==job['revision'] and c['latest']==job['mid']
                 and int(self.get('revision'))==job['global_revision'])
 
@@ -249,8 +257,8 @@ class Store:
                     'uncertain':'результат прошлой отправки неизвестен; сначала проверьте личку',
                     'stale':'черновик отменён после изменения сообщений или режима работы'}
             return states.get(d['state'],'черновик не находится в состоянии готовности к отправке')
-        if self.get('mode')!='draft':return 'помощник остановлен глобально'
-        if c['mode']!='draft':return 'помощник в этом чате на паузе'
+        if self.get('mode') not in ('draft','auto'):return 'помощник остановлен глобально'
+        if c['mode'] not in ('draft','auto'):return 'помощник в этом чате на паузе'
         b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
         if not b or not b['enabled']:return 'подключение Telegram Business отсутствует или отключено'
         if not b['can_reply']:return 'Telegram Business не предоставляет право ответа в этом чате'
@@ -276,6 +284,64 @@ class Store:
                 return None
             self.db.execute("UPDATE drafts SET state='sending' WHERE id=?",(did,))
             return dict(d, connection=c['connection'], uid=c['uid'])
+
+    def auto_send_block_reason(self,did,now):
+        """Return a safe exact reason, or None if AUTO dispatch may be reserved.
+
+        This is scheduling/state validation only. The service must independently
+        authorize the test recipient and content immediately before reservation.
+        """
+        d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+        if not d:return 'черновик не найден или удалён по сроку хранения'
+        c=self.chat(d['chat'])
+        if not c:return 'чат не найден'
+        if self.get('mode')!='auto':return 'автоответы не разрешены глобальным режимом'
+        if c['mode']!='auto':return 'автоответы не разрешены в этом чате'
+        if d['state']!='ready':
+            states={'sent':'ответ уже отправлен; автоматический повтор запрещён',
+                    'sending':'отправка ответа уже выполняется',
+                    'uncertain':'результат прошлой отправки неизвестен; автоматический повтор запрещён',
+                    'stale':'ответ отменён после изменения обращения или режима'}
+            return states.get(d['state'],'ответ не находится в состоянии готовности')
+        if c['latest']!=d['mid']:return 'получено более новое сообщение клиента'
+        if c['revision']!=d['revision'] or int(self.get('revision'))!=d['global_revision']:
+            return 'после подготовки ответа изменилось обращение или режим работы'
+        b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
+        if not b or not b['enabled']:return 'подключение Telegram Business отсутствует или отключено'
+        if not b['can_reply']:return 'Telegram Business не предоставляет право ответа'
+        if d['handoff']:return 'ответ требует проверки или действия владельца'
+        if self.db.execute("SELECT 1 FROM drafts WHERE chat=? AND state='sending' LIMIT 1",(d['chat'],)).fetchone():
+            return 'в этом чате уже отправляется другой ответ'
+        if not 0<=now-c['inbound']<86340:return 'истекло окно ответа Telegram либо время обращения некорректно'
+        if not 0<=now-d['created']<=120:return 'ответ старше 120 секунд либо время создания некорректно'
+        return None
+
+    def reserve_auto_send(self,did,now):
+        """Atomically consume a ready answer once; never recover it for replay."""
+        with self.transaction():
+            if self.auto_send_block_reason(did,now) is not None:return None
+            d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+            c=self.chat(d['chat'])
+            self.db.execute("UPDATE drafts SET state='sending' WHERE id=?",(did,))
+            return dict(d,connection=c['connection'],uid=c['uid'])
+
+    def pause_auto_for_review(self,did,now):
+        """Move only a current AUTO answer to manual draft review atomically.
+
+        No stale answer is revived. The retained answer receives the new chat
+        revision so the owner may explicitly approve it in global AUTO mode.
+        Subsequent client messages are prepared as drafts until re-enabled.
+        """
+        with self.transaction():
+            d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+            if not d or d['state']!='ready' or not self.still_current(d):return False
+            c=self.chat(d['chat'])
+            if self.get('mode')!='auto' or c['mode']!='auto':return False
+            self.db.execute("UPDATE chats SET mode='draft',revision=revision+1 WHERE id=?",(c['id'],))
+            self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')",(c['id'],))
+            self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND id<>? AND state='ready'",(c['id'],did))
+            self.db.execute('UPDATE drafts SET revision=? WHERE id=?',(c['revision']+1,did))
+            return True
 
     def recover(self):
         # A process crash during a paid request or send is NOT safe to replay.
