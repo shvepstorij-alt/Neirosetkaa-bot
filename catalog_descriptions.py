@@ -29,7 +29,7 @@ def describe(service_key, service_name, plan_name=None):
     matches=[(key,row) for key,row in _DATA['services'].items()
              if identities & {_identity(v) for v in [key,*row.get('aliases',[])]}]
     if len(matches)!=1:
-        return {'text':'Условия этого предложения, состав услуги и порядок оформления уточняются до оплаты.',
+        return {'text':'Помощь с оформлением подписки на выбранный сервис. Для индивидуального заказа нужны официальный сайт, название плана и срок подписки.',
                 'source_urls':[],'status':'needs_confirmation','checked_date':CHECKED_DATE,
                 'service_id':None,'limitation':'Сервис не сопоставлен однозначно с проверенным справочником.'}
     key,row=matches[0]
@@ -45,21 +45,13 @@ def describe(service_key, service_name, plan_name=None):
             base=next((value for label,value in row.get('plans',{}).items()
                        if _identity(label)==_identity(annual[1])),None)
             if base:
-                entry=dict(base,text=base['text']+' Годовой вариант предложения магазина; период указан в названии товара.')
-        if entry is None and key=='openrouter':
-            entry={'text':'Пополнение баланса OpenRouter для оплаты использования моделей. Объём доступной работы зависит от выбранной модели, тарификации и фактического расхода; это не безлимитная подписка.',
-                   'status':'shop_scope_only'}
-        if entry is None and key=='appstore':
-            entry={'text':'Номинал регионального предложения Apple. Выбирайте только для соответствующего региона Apple ID; цену и доступность нужно проверить в текущем региональном каталоге.',
-                   'status':'shop_scope_only'}
-        if entry is None and key=='telegram' and re.fullmatch(r'(?:3|6|12)\s+месяц(?:а|ев)',str(plan_name).strip(),re.I):
-            entry={'text':'Telegram Premium на срок, указанный в названии предложения. Дополнительные функции включают расширенные лимиты, расшифровку голосовых, перевод и премиальное оформление; нужна поддерживаемая версия приложения.',
-                   'status':'shop_scope_only'}
-        if entry is None and key in ('other_service','heygen','make') and re.fullmatch(r'\d+(?:[.,]\d+)?\s*[$€]?',str(plan_name).strip()):
-            entry={'text':'Индивидуальный вариант оплаты выбранного сервиса. Название с суммой не подтверждает отдельный публичный тариф или набор функций; состав услуги согласовывается перед оплатой.',
-                   'status':'shop_scope_only'}
+                entry=dict(base,text=base['text']+' Годовая подписка на 12 месяцев.')
+        if entry is None and key in ('heygen','make','other_service','openrouter') and re.fullmatch(r'\d+(?:[.,]\d+)?\s*[$€]?',str(plan_name).strip()):
+            entry=dict(row.get('default_plan',row['service']),status='shop_scope_only')
+        if entry is None and isinstance(row.get('default_plan'),dict):
+            entry=row['default_plan']
         if entry is None:
-            entry={'text':'Состав этого варианта и доступные функции необходимо уточнить перед оплатой. Название товара магазина не подтверждает соответствие отдельному публичному тарифу сервиса.',
+            entry={'text':row['service']['text'],
                    'status':'needs_confirmation'}
     return {'text':entry['text'],'source_urls':list(entry.get('source_urls',row.get('source_urls',[]))),
             'status':entry.get('status','needs_confirmation'),'checked_date':CHECKED_DATE,
