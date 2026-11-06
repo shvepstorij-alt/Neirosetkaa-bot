@@ -1406,14 +1406,14 @@ async def cmd_refresh_desc(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer(
-        "♻️ Запускаю обновление описаний тарифов (веб-поиск актуальных моделей).\n"
-        "Займёт ~1–2 минуты, пришлю сводку…")
+        "♻️ Готовлю описания из проверенного снимка официальных источников.\n"
+        "Дата проверки и неподтверждённые соответствия будут указаны в сводке. Это не новый веб-поиск.")
     try:
         from models_refresh import refresh_all_descriptions
         summary = await refresh_all_descriptions(notify=False)
         await message.answer(summary, parse_mode="HTML")
     except Exception as e:
-        await message.answer(f"❌ Ошибка обновления описаний: {str(e)[:300]}")
+        await message.answer(f"❌ Этап: подготовка описаний. Тип ошибки: {type(e).__name__}. Описания не опубликованы; проверьте журнал сервиса.")
 
 
 @dp.message(F.text.startswith("/apply_desc"), StateFilter("*"))
@@ -1424,50 +1424,21 @@ async def cmd_apply_desc(message: Message, state: FSMContext):
         return
     await message.answer("📝 Применяю подготовленные описания (без обращения к API)…")
     try:
-        from desc_data import DESCRIPTIONS
+        from catalog_maintenance import apply_reviewed_catalog
+        from catalog_descriptions import CHECKED_DATE, describe
         from config import SHOP_CATALOG
         from db import get_pool
-        _svc_n = 0
-        _plan_n = 0
-        _skipped = []
         pool = await get_pool()
         async with pool.acquire() as conn:
-            for _key, _d in DESCRIPTIONS.items():
-                _scat = SHOP_CATALOG.get(_key)
-                if not _scat:
-                    continue
-                _sd = (_d.get("service") or "").strip()
-                if _sd:
-                    await conn.execute(
-                        "UPDATE bot_shop_items SET service_desc=$1 WHERE key=$2", _sd, _key)
-                    _scat["desc"] = _sd
-                    _svc_n += 1
-                _plans = _d.get("plans") or {}
-                for _i, _p in enumerate(_scat.get("plans", [])):
-                    _pn = _p.get("name", "")
-                    _nd = _plans.get(_pn)
-                    if _nd:
-                        await conn.execute(
-                            "UPDATE bot_shop_items SET plan_desc=$1 WHERE key=$2 AND plan_name=$3",
-                            _nd, _key, _pn)
-                        _scat["plans"][_i]["desc"] = _nd
-                        _plan_n += 1
-                    else:
-                        if _pn:
-                            _skipped.append(f"{_key}:{_pn}")
-        _tail = ""
-        if _skipped:
-            _tail = ("\n\n<i>Тарифы без совпадения по имени (описание не менял, поправь вручную "
-                     "в админке): " + ", ".join(_skipped[:20]) + ("…" if len(_skipped) > 20 else "") + "</i>")
+            await apply_reviewed_catalog(conn, SHOP_CATALOG, force=True)
+        pending = sum(describe(k,svc.get("name",""),p.get("name",""))["status"] == "needs_confirmation"
+                      for k,svc in SHOP_CATALOG.items() for p in svc.get("plans",[]))
         await message.answer(
-            f"✅ <b>Описания применены</b>\n\n"
-            f"Сервисов обновлено: <b>{_svc_n}</b>\n"
-            f"Тарифов обновлено: <b>{_plan_n}</b>\n"
-            f"Тексты уже в боте и в карточках мини-аппки (доллары там дополнительно вычищаются)."
-            + _tail,
-            parse_mode="HTML")
+            f"✅ Описания из снимка {CHECKED_DATE} применены.\n"
+            f"Сервисов: {len(SHOP_CATALOG)}. Тарифов с неподтверждённым соответствием: {pending}.\n"
+            "Цены, названия и идентификаторы товаров не изменены. Это не новая интернет-проверка.")
     except Exception as e:
-        await message.answer(f"❌ Ошибка применения описаний: {str(e)[:300]}")
+        await message.answer(f"❌ Этап: применение описаний. Запись не завершена; тип ошибки: {type(e).__name__}. Подробности в журнале сервиса.")
 
 
 # ─── Антиспам: результат ввода редактирует сообщение-подсказку ──

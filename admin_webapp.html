@@ -1647,6 +1647,8 @@ function planEdit(key){
   if(canRename){h+='<label class="fl" style="margin-top:0">Название сервиса</label><input class="f" id="pe_svcname" maxlength="120" value="'+safe(s.name)+'"/><label class="fl">Эмодзи</label><input class="f" id="pe_svcemoji" maxlength="32" value="'+safe(s.emoji||'')+'"/>';}
   else{h+='<div class="note">Цены и описания можно изменить здесь. Для переименования нужна актуальная версия сервера с идентификаторами тарифов.</div>';}
   h+='<label class="fl">Описание сервиса</label><textarea class="f" id="pe_svcdesc" maxlength="12000" style="min-height:80px">'+safe(s.desc||'')+'</textarea>';
+  var suggestionKey=encodeURIComponent(String(key)).replace(/'/g,'%27');
+  h+='<button class="btn sec" id="pe_suggest_btn" onclick="loadCatalogSuggestions(decodeURIComponent(\''+suggestionKey+'\'))">✨ Подобрать названия и описания</button><div class="note">Сначала покажу предложения и источники. Ничего не сохраняется автоматически; после подстановки проверьте поля и нажмите «Сохранить».</div><div id="pe_suggestions"></div>';
   window._peKey=key; if(window._niceMode===undefined)window._niceMode='round';
   h+='<div class="block"><div class="mlab">🧮 Онлайн-калькулятор цен</div><div style="display:flex;gap:8px"><div style="flex:1"><div class="mlab">Курс ₽/$</div><input class="f" id="pe_rate_'+key+'" inputmode="decimal" value="'+(d.rate||'')+'" oninput="mkPreview(\''+key+'\')"/></div><div style="flex:1"><div class="mlab">Наценка %</div><input class="f" id="pe_mk_'+key+'" inputmode="numeric" placeholder="30" oninput="mkPreview(\''+key+'\')"/></div></div><div class="mlab" style="margin-top:8px">Округление</div><div class="seg" id="pe_round_'+key+'">'+roundSegInner(window._niceMode,'peRound')+'</div><div id="pe_prev_'+key+'" style="margin-top:10px"></div><button class="btn sec" style="margin-top:10px" onclick="applyMarkup(\''+key+'\')">↻ Применить к тарифам</button><div class="note">Считает вживую. «Применить» подставит цены в поля — потом «💾 Сохранить».</div></div>';
   setTimeout(function(){mkPreview(key)},0);
@@ -1660,6 +1662,67 @@ function planEdit(key){
       +'<div class="mlab" style="margin-top:8px">Описание тарифа</div><textarea class="f pe-desc" maxlength="12000" style="min-height:70px">'+safe(p.desc||'')+'</textarea><div class="row" style="cursor:default;margin-top:10px;margin-bottom:0"><div><div class="lbl2">Ручная выдача</div><div class="sub">заказ приходит тебе</div></div><span class="sw'+(p.manual?' on':'')+' pe-man" onclick="this.classList.toggle(\'on\')"><b></b></span></div></div>';
   });
   return h+'<button class="btn sec" onclick="leaf(function(){return planAdd(\''+key+'\')})">➕ Добавить тариф</button><button class="btn" onclick="savePlanEdit(\''+key+'\')">💾 Сохранить</button><button class="btn danger" onclick="delService(\''+key+'\')">🗑 Удалить сервис</button></div>';
+}
+function catalogSuggestionVerified(item){return !!(item&&['verified_general','verified_plan','shop_scope_only'].indexOf(item.status)>=0&&catalogSuggestionSources(item.sources));}
+function catalogSuggestionSources(sources){
+  return (Array.isArray(sources)?sources:[]).slice(0,8).map(function(source){
+    var raw=typeof source==='string'?source:(source&&source.url),url;
+    try{url=new URL(raw);if(url.protocol!=='https:'||url.username||url.password)return '';}catch(e){return '';}
+    return '<a href="'+esc(url.href)+'" target="_blank" rel="noopener noreferrer">'+esc(url.hostname)+'</a>';
+  }).filter(Boolean).join(' · ');
+}
+function renderCatalogSuggestions(key,data){
+  var encoded=encodeURIComponent(key).replace(/'/g,'%27'),h='<div class="block" style="margin-top:12px"><b>Предварительный просмотр</b><div class="note">Проверено: '+esc(data.checkedAt||'время не указано')+'</div>';
+  var service=data.service||{},items=[service].concat(Array.isArray(data.plans)?data.plans:[]);
+  items.forEach(function(item,index){
+    var label=index===0?'Сервис':('Тариф: '+String(item.currentName||'название не получено'));
+    var verified=catalogSuggestionVerified(item),name=index===0?item.name:item.suggestedName;
+    h+='<div style="margin-top:12px"><b>'+esc(label)+'</b>'+(name?'<div>'+esc(name)+'</div>':'')
+      +'<div class="note" style="white-space:pre-wrap">'+esc(item.description||'Описание не подтверждено')+'</div>';
+    if(!verified)h+='<div class="neg">Соответствие не подтверждено — автоматическая подстановка недоступна.</div>';
+    if(Array.isArray(item.officialPlanNames)&&item.officialPlanNames.length)h+='<div class="note">Планы на официальном сайте: '+item.officialPlanNames.map(function(n){return esc(n);}).join(', ')+'</div>';
+    h+='<div class="note">'+catalogSuggestionSources(item.sources)+'</div>';
+    if(verified)h+='<button class="btn sec" onclick="applyCatalogSuggestion(decodeURIComponent(\''+encoded+'\'),'+index+')">'+(item.status==='verified_plan'&&item.suggestedName?'Подставить название и описание':'Подставить описание')+'</button>';
+    h+='</div>';
+  });
+  return h+'</div>';
+}
+function loadCatalogSuggestions(key){
+  var editor=document.getElementById('pe_svcdesc'),panel=document.getElementById('pe_suggestions'),button=document.getElementById('pe_suggest_btn');
+  if(!editor||!panel||window._peKey!==key){toast('Откройте редактор сервиса заново');return;}
+  window._catalogSuggestionLoading=window._catalogSuggestionLoading||{};
+  if(window._catalogSuggestionLoading[key]){toast('Подбор уже идёт');return;}
+  window._catalogSuggestionLoading[key]=true;if(button)button.disabled=true;
+  panel.innerHTML='<div class="note">Проверяю сведения. Поля редактора пока не меняются…</div>';
+  return api('/api/admin/catalog/suggestions',{key:key}).then(function(d){
+    if(window._peKey!==key||document.getElementById('pe_svcdesc')!==editor)return;
+    if(!d||!d.ok||!d.suggestions){panel.innerHTML='<div class="note neg">'+esc((d&&(d.msg||d.error))||'Этап: подбор описаний. Сервер не подтвердил результат; причина не получена.')+'</div>';return;}
+    window._catalogSuggestions=window._catalogSuggestions||{};
+    window._catalogSuggestions[key]={editor:editor,data:d.suggestions};
+    panel.innerHTML=renderCatalogSuggestions(key,d.suggestions);
+  }).catch(function(){
+    if(document.getElementById('pe_svcdesc')===editor)panel.innerHTML='<div class="note neg">Этап: получение предложений. Соединение прервано; результат не получен. Поля не изменены.</div>';
+  }).then(function(){delete window._catalogSuggestionLoading[key];if(document.getElementById('pe_suggest_btn')===button&&button)button.disabled=false;});
+}
+function applyCatalogSuggestion(key,index){
+  var stored=(window._catalogSuggestions||{})[key];
+  if(!stored||window._peKey!==key||document.getElementById('pe_svcdesc')!==stored.editor){toast('Предложения устарели. Выполните подбор заново');return;}
+  var data=stored.data,item=index===0?data.service:(data.plans||[])[index-1];
+  if(!catalogSuggestionVerified(item)){toast('Соответствие не подтверждено');return;}
+  if(typeof item.description!=='string'||item.description.length>12000){toast('Описание отсутствует или превышает лимит');return;}
+  if(index===0){
+    var serviceName=document.getElementById('pe_svcname');
+    if(serviceName&&item.status==='verified_plan'&&typeof item.suggestedName==='string'&&item.suggestedName.trim()&&item.suggestedName.length<=120)serviceName.value=item.suggestedName.trim();
+    stored.editor.value=item.description;
+  }else{
+    var rows=Array.from(document.querySelectorAll('#app [data-key][data-idx]')).filter(function(b){return b.getAttribute('data-key')===key&&Number(b.getAttribute('data-idx'))===item.planIdx&&b.getAttribute('data-name')===item.currentName;});
+    if(rows.length!==1){toast('Тариф изменился или не найден. Обновите каталог и выполните подбор заново');return;}
+    var description=rows[0].querySelector('.pe-desc'),name=rows[0].querySelector('.pe-name');
+    if(!description){toast('Поле описания тарифа не найдено');return;}
+    description.value=item.description;
+    if(name&&!name.disabled&&item.status==='verified_plan'&&typeof item.suggestedName==='string'&&item.suggestedName.trim()&&item.suggestedName.length<=120)name.value=item.suggestedName.trim();
+  }
+  toast('Подставлено только в поля. Проверьте и нажмите «Сохранить»');
 }
 function nicePrice(usd,rate,mk,mode){
   var rub=usd*rate*(1+mk/100);
@@ -2557,21 +2620,45 @@ function planLabel(svc,plan){var m={chatgpt:{plus:'Plus',pro_5x:'Pro 5×',go:'Go
 SCREENS["Приветствие"]=function(){
   setTimeout(loadSettings,0);
   return hdr("Приветствие")+'<div class="wrap"><label class="fl">Доп. текст приветствия (HTML)</label><textarea class="f" id="wel_txt" placeholder="Загружаю…"></textarea><button class="btn" onclick="saveWelcome()">Сохранить</button><div class="note">Добавляется к приветствию при /start.</div></div>'
-    +'<div class="wrap" style="margin-top:14px"><label class="fl">📲 Текст «Установить приложение» ChatGPT (HTML)</label><textarea class="f" id="inst_txt" placeholder="Загружаю…" style="min-height:180px"></textarea><button class="btn" onclick="saveInstall()">Сохранить</button><div class="note">Показывается клиенту по кнопке «Установить Приложение» в меню ChatGPT. Можно HTML: &lt;b&gt;, &lt;a href&gt;, эмодзи.</div></div>';
+    +installGuideEditor('android','🤖 Android')+installGuideEditor('iphone','🍎 iPhone');
 };
+function installGuideEditor(platform,title){
+  return '<div class="wrap" style="margin-top:14px"><label class="fl">'+title+' · установка ChatGPT (HTML)</label><textarea class="f" id="inst_'+platform+'" placeholder="Загружаю…" style="min-height:180px" disabled></textarea><button class="btn" id="inst_save_'+platform+'" onclick="saveInstall(\''+platform+'\')" disabled>Сохранить '+title+'</button><div class="note">Отдельная инструкция после выбора устройства. Старый текст сохранён в разделе iPhone. До 3500 символов; можно &lt;b&gt;, &lt;i&gt;, &lt;a href&gt;. Пустой текст возвращает стандартную инструкцию.</div></div>';
+}
 /* При сбое настройки не подставляем ПУСТУЮ строку: сохранить такое поверх
    настоящего текста — значит стереть приветствие. Показываем ошибку прямо
    в поле, раньше там навсегда оставалось «Загружаю…». */
-function loadSettings(cb){api('/api/admin/settings',{}).then(function(d){
+function loadSettings(cb){
+  var installTargets={};['android','iphone'].forEach(function(p){installTargets[p]=document.getElementById('inst_'+p);});
+  api('/api/admin/settings',{}).then(function(d){
   window._settings=d;
-  var w=document.getElementById('wel_txt'), iw=document.getElementById('inst_txt');
-  if(d&&d.ok){ if(w)w.value=d.welcome||''; if(iw)iw.value=d.gptInstall||''; }
+  var w=document.getElementById('wel_txt');
+  if(d&&d.ok){ if(w)w.value=d.welcome||''; }
   else { if(w)w.placeholder='⚠️ Не загрузилось — не сохраняй, сначала открой заново';
-         if(iw)iw.placeholder='⚠️ Не загрузилось — не сохраняй, сначала открой заново';
          toast('Настройки не загрузились'); }
+  ['android','iphone'].forEach(function(platform){
+    var field=document.getElementById('inst_'+platform),button=document.getElementById('inst_save_'+platform);
+    if(!field||field!==installTargets[platform]||!field.disabled)return;
+    if(d&&d.ok){
+      var value=platform==='android'?d.gptInstallAndroid:(d.gptInstallIphone!=null?d.gptInstallIphone:d.gptInstall);
+      if(typeof value==='string'){field.value=value;field.disabled=false;if(button)button.disabled=false;return;}
+    }
+    field.placeholder='⚠️ Инструкция не загрузилась — обновите страницу';field.disabled=true;if(button)button.disabled=true;
+  });
   if(cb)cb(d);});}
 function saveWelcome(){var t=fv('wel_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'welcome',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
-function saveInstall(){var t=fv('inst_txt');toast('Сохраняю…');api('/api/admin/setting-save',{kind:'gpt_install',text:t}).then(function(d){toast(d.ok?'Сохранено ✓':'Ошибка');});}
+function saveInstall(platform){
+  if(platform!=='android'&&platform!=='iphone'){toast('Выберите устройство');return;}
+  var field=document.getElementById('inst_'+platform),button=document.getElementById('inst_save_'+platform);
+  if(!field||field.disabled||!button||button.disabled){toast('Сначала загрузите инструкцию');return;}
+  var t=field.value;
+  if(t.length>3500){toast('Сократите инструкцию до 3500 символов');return;}
+  button.disabled=true;toast('Сохраняю…');
+  return api('/api/admin/setting-save',{kind:'gpt_install_'+platform,text:t}).then(function(d){
+    toast(d&&d.ok?'Сохранено ✓':((d&&d.msg)||'Не удалось сохранить инструкцию'));
+  }).catch(function(){toast('Сеть недоступна. Изменения не подтверждены; текст сохранён в поле.');})
+    .finally(function(){if(document.getElementById('inst_save_'+platform)===button)button.disabled=false;});
+}
 
 var _bcAud='all', _bcPid=0, _bcPtag='';
 var _BC_AUD_NAMES={all:'всем пользователям',partners:'партнёрам',all_partner_clients:'всем клиентам от партнёров',partner_clients:'клиентам партнёра'};

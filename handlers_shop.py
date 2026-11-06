@@ -443,28 +443,51 @@ async def shop_service(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "gpt_install_app")
 async def gpt_install_app(cb: CallbackQuery):
-    """Кнопка «Установить Приложение» в меню ChatGPT — показывает инструкцию,
-    заданную админом в панели (setting gpt_install_text)."""
-    txt = (await get_setting("gpt_install_text", "") or "").strip()
-    if not txt:
-        txt = (
-            "📲 <b>Установка приложения ChatGPT</b>\n\n"
-            "Инструкция скоро появится. "
-            f"Если нужна помощь с установкой — напиши @{PERSONAL_USERNAME}."
-        )
+    """Device selection; the old callback remains valid on existing messages."""
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤖 Android", callback_data="gpt_install_app:android"),
+         InlineKeyboardButton(text="🍎 iPhone", callback_data="gpt_install_app:iphone")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="shop_svc:chatgpt")]
     ])
+    await _show_gpt_install_screen(cb,"📲 <b>Установить приложение ChatGPT</b>\n\nВыберите ваше устройство:",kb)
+
+
+async def _show_gpt_install_screen(cb,txt,kb):
+    try:await cb.answer()
+    except Exception:logging.warning('Install guide callback acknowledgement unavailable')
     try:
         await cb.message.edit_text(txt, reply_markup=kb, parse_mode="HTML",
                                    disable_web_page_preview=True)
-    except Exception:
+    except Exception as exc:
+        if 'message is not modified' in str(exc).casefold():return
         try:
             await cb.message.answer(txt, reply_markup=kb, parse_mode="HTML",
                                     disable_web_page_preview=True)
         except Exception:
-            await cb.message.answer(txt, reply_markup=kb)
-    await cb.answer()
+            # Malformed admin HTML must not make installation help unusable.
+            import html as _html
+            plain=_html.unescape(re.sub(r'<[^>]*>','',txt))
+            await cb.message.answer(plain, reply_markup=kb, parse_mode=None,
+                                    disable_web_page_preview=True)
+
+
+@dp.callback_query(F.data.startswith("gpt_install_app:"))
+async def gpt_install_platform(cb: CallbackQuery):
+    platform=str(cb.data).split(':',1)[-1]
+    if platform not in ('android','iphone'):
+        await cb.answer('Устройство не найдено. Откройте выбор устройства заново.',show_alert=True)
+        return
+    from install_guides import load_guides
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к устройствам", callback_data="gpt_install_app")]
+    ])
+    try:
+        guides=await load_guides(get_setting)
+        txt=guides[platform]
+    except Exception as exc:
+        logging.warning('Install guide unavailable: stage=settings_read; platform=%s; type=%s',platform,type(exc).__name__)
+        txt='Инструкция сейчас не загрузилась из-за технической ошибки. Вернитесь к выбору устройства и попробуйте ещё раз или напишите в поддержку.'
+    await _show_gpt_install_screen(cb,txt,kb)
 
 
 @dp.callback_query(F.data.startswith("shop_confirm:"))

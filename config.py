@@ -2355,3 +2355,7 @@ def model_title_n(name: str) -> str:
                       or 0x2190 <= ord(fb[0]) <= 0x21FF or ord(fb[0]) in (0x2B50, 0x2B55, 0x2705, 0x274C, 0x2764)):
         return name
     return f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji> {clean}' if clean else f'<tg-emoji emoji-id="{eid}">{fb}</tg-emoji>'
+
+# Reviewed defaults; DB migration preserves later owner edits. Prices and names stay intact.
+from catalog_descriptions import apply_catalog as _apply_reviewed_defaults
+_apply_reviewed_defaults(SHOP_CATALOG)

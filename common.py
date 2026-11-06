@@ -9524,6 +9524,24 @@ async def api_admin_service_delete_handler(request: web.Request) -> web.Response
         return web.json_response({"ok": False, "msg": "Ошибка"}, status=500)
 
 
+async def api_admin_catalog_suggestions_handler(request: web.Request) -> web.Response:
+    """Source-labelled preview only. Applying/saving uses the existing editor."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "msg": "Некорректный запрос"}, status=400)
+    if _admin_uid_from_body(body) != ADMIN_ID:
+        return web.json_response({"ok": False}, status=403)
+    key = str(body.get("key", ""))
+    service = SHOP_CATALOG.get(key)
+    if not service:
+        return web.json_response({"ok": False, "msg": "Сервис не найден в текущем каталоге"}, status=404)
+    from catalog_descriptions import CHECKED_DATE
+    from catalog_suggestions import suggestions
+    return web.json_response({"ok": True, "checkedAt": CHECKED_DATE,
+        "suggestions": suggestions(key, service)})
+
+
 async def api_admin_settings_handler(request: web.Request) -> web.Response:
     try:
         try: body = await request.json()
@@ -9531,7 +9549,8 @@ async def api_admin_settings_handler(request: web.Request) -> web.Response:
         if _admin_uid_from_body(body) != ADMIN_ID:
             return web.json_response({"ok": False}, status=403)
         welcome = await get_setting("welcome_extra", "")
-        gpt_install = await get_setting("gpt_install_text", "")
+        from install_guides import settings_payload
+        install_payload = await settings_payload(get_setting)
         maint = (await get_setting("maintenance", "0")) == "1"
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -9546,7 +9565,7 @@ async def api_admin_settings_handler(request: web.Request) -> web.Response:
             {"key": "claude", "name": "Claude", "enabled": bool(rt.claude_webapp_enabled), "codes": int(cl)},
             {"key": "perplexity", "name": "Perplexity", "enabled": bool(rt.perplexity_webapp_enabled), "codes": int(px)},
         ]
-        return web.json_response({"ok": True, "welcome": welcome, "gptInstall": gpt_install,
+        return web.json_response({"ok": True, "welcome": welcome, **install_payload,
                                   "maintenance": maint,
                                   "miniapps": miniapps,
                                   "appstore": {"rate": rate, "markup": markup, "threshold": thr}})
@@ -9564,8 +9583,13 @@ async def api_admin_setting_save_handler(request: web.Request) -> web.Response:
         kind = str(body.get("kind", ""))
         if kind == "welcome":
             await set_setting("welcome_extra", str(body.get("text", "")))
-        elif kind == "gpt_install":
-            await set_setting("gpt_install_text", str(body.get("text", "")))
+        elif kind in {"gpt_install", "gpt_install_android", "gpt_install_iphone"}:
+            from install_guides import setting_key, validate_guide
+            try:
+                guide = validate_guide(body.get("text", ""))
+            except ValueError as error:
+                return web.json_response({"ok": False, "msg": str(error)}, status=400)
+            await set_setting(setting_key(kind), guide)
         elif kind == "maintenance":
             await set_setting("maintenance", "1" if body.get("on") else "0")
             maintenance_cache_reset()   # чтобы режим включился сразу, а не через 10 с
@@ -16816,6 +16840,7 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/prices", api_admin_prices_handler)
     app.router.add_post("/api/admin/prices-save", api_admin_prices_save_handler)
     app.router.add_post("/api/admin/catalog/edit", api_admin_catalog_edit_handler)
+    app.router.add_post("/api/admin/catalog/suggestions", api_admin_catalog_suggestions_handler)
     app.router.add_post("/api/admin/coins-grant", api_admin_coins_grant_handler)
     app.router.add_post("/api/admin/recs", api_admin_recs_handler)
     app.router.add_post("/api/admin/recs-save", api_admin_recs_save_handler)

@@ -1695,6 +1695,10 @@ async def load_prices_from_db():
                 _setting = f'admin_plan_desc:{_k}:{_p.get("_db_plan_idx")}'
                 if _setting in _admin_desc:_p['desc'] = _admin_desc[_setting]
 
+        from catalog_maintenance import apply_reviewed_catalog, align_suno_method
+        await apply_reviewed_catalog(conn, SHOP_CATALOG)
+        await align_suno_method(conn, SHOP_CATALOG)
+
         # Часть 36: разовый перевод цен генераций на «закуп + ~40%». Цены в
         # bot_gen_prices перекрывают код, поэтому без этой миграции новые цены
         # из config.py не заработали бы. Выполняется ОДИН раз (флаг в settings),
