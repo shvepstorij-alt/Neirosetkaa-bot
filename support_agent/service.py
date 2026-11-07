@@ -1011,7 +1011,16 @@ class Service:
             'Помощник продолжит готовить черновики следующих сообщений.'),
             buttons([self.chat_controls(current),[('Все чаты','chats:0'),('Обновить',f'draft:{did}')]]))
 
-    def charge_call(self):
+    def _mark_stage(self,job,name):
+        job.setdefault('_stages',[]).append((str(name)[:40],time.time()))
+
+    def charge_call(self, reason='model'):
+        """Reserve intent for the next real API request. The quota moves in request()."""
+        from .usage import current_meter
+        meter=current_meter()
+        if meter is not None:
+            meter.arm(reason)
+            return
         day=dt.datetime.now(dt.timezone.utc).date().isoformat()
         if not self.store.reserve_call(day,self.daily_limit):
             raise ValueError('Daily API request limit reached')
@@ -1069,6 +1078,8 @@ class Service:
         return inner
 
     async def _generate_body(self,job):
+        """Classify the turn and gather facts. Model work continues in _draft_checked."""
+        self._mark_stage(job,'classify')
         from .storage import HISTORY_MESSAGES,HISTORY_CHARACTERS
         batch_first=self.store.chat(job['chat'])['batch_first']
         from .topic_boundary import boundary_reply
@@ -1239,7 +1250,6 @@ class Service:
         # and deterministic renderers instead of abandoning the conversation.
         job['_consultation_facts']=facts
         job['_consultation_question']=latest
-        raw_batch='\n'.join(row['text'] or '' for row in batch)
         from .fulfillment_reply import transaction_ack
         acknowledgement=transaction_ack(raw_batch)
         if acknowledgement and not image:return acknowledgement
@@ -1312,7 +1322,16 @@ class Service:
             from .external_quote import run as quote_external
             external=await quote_external(self,facts,latest,{'products':[]},job)
             if external is not None:return external
-        self.charge_call()
+        self._mark_stage(job,'draft')
+        return await self._draft_checked(job,facts,history,image,latest,course,selection,raw_batch,resolved_context)
+
+    async def _draft_checked(self,job,facts,history,image,latest,course,selection,raw_batch,resolved_context):
+        """Draft, check, and look up official pages when the route still needs them."""
+        from .catalog_context import annotate
+        from .turn_scope import scope as scope_turn
+        from .request_goals import covers
+        batch_first=self.store.chat(job['chat'])['batch_first']
+        self.charge_call('draft')
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
             return None
@@ -1624,19 +1643,37 @@ class Service:
             self.active_chats.discard(job['chat'])
             return True
         try:
-            answer=await self.generate(job)
-            if answer:
-                from .conversation_style import session_info,decorate_reply
-                first=self.store.chat(job['chat'])['batch_first']
-                answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']),
-                                               introduced=self.store.introduced(job['chat']))
-                if isinstance(answer.get('feature_projection'),dict):
-                    answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
-                did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
-                if did:
-                    if self.store.effective_mode(job['chat'])=='auto' and self.auto_permitted(self.store.chat(job['chat'])):
-                        await self.auto_send(did)
-                    else:await self.show_draft(did)
+            from .usage import CallMeter, reset_meter, use_meter
+            started=time.time()
+            meter=CallMeter(self.store,self.daily_limit,job['chat'])
+            token=use_meter(meter)
+            try:
+                answer=await self.generate(job)
+                if answer:
+                    chat=self.store.chat(job['chat'])
+                    waited=max(0.0,started-float(chat['batch_start'] or started)) if chat else 0.0
+                    generated=time.time()-started
+                    reasons=[event['reason'] for event in meter.events]
+                    answer.setdefault('evidence',{})['timing']={
+                        'batch_wait_seconds':round(waited,1),
+                        'generate_seconds':round(generated,1),
+                        'api_calls':len(meter.events),
+                        'api_reasons':reasons}
+                    logging.info('support_turn chat=%s calls=%s reasons=%s batch_wait=%.1f generate=%.1f',
+                                 job['chat'],len(meter.events),','.join(reasons),waited,generated)
+                    from .conversation_style import session_info,decorate_reply
+                    first=self.store.chat(job['chat'])['batch_first']
+                    answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']),
+                                                   introduced=self.store.introduced(job['chat']))
+                    if isinstance(answer.get('feature_projection'),dict):
+                        answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
+                    did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
+                    if did:
+                        if self.store.effective_mode(job['chat'])=='auto' and self.auto_permitted(self.store.chat(job['chat'])):
+                            await self.auto_send(did)
+                        else:await self.show_draft(did)
+            finally:
+                reset_meter(token)
         except Exception as exc:
             self.store.db.execute("UPDATE messages SET state='failed' WHERE chat=? AND mid=? AND state='working'",(job['chat'],job['mid']))
             diagnostic=failure_details(exc,'draft')

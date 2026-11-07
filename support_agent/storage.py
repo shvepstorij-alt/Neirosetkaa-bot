@@ -221,8 +221,15 @@ class Store:
             queued = role == 'client' and mid == chat['latest'] and self.effective_mode(cid)!='off'
             if queued and not collecting:
                 start=time.time() if edited else min(float(at),time.time())
+                from .turn_stages import next_batch_due
+                due=next_batch_due(start,time.time(),self.batch_seconds,0,False)
                 self.db.execute('UPDATE chats SET batch_start=?,batch_due=?,batch_first=? WHERE id=?',
-                                (start,start+self.batch_seconds,mid,cid))
+                                (start,due,mid,cid))
+            elif queued and collecting:
+                # A later fragment joins the open batch. It must not push the deadline out.
+                from .turn_stages import next_batch_due
+                due=next_batch_due(chat['batch_start'],time.time(),self.batch_seconds,chat['batch_due'],True)
+                self.db.execute('UPDATE chats SET batch_due=? WHERE id=? AND batch_due>?',(due,cid,due))
             self.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)',
                             (cid,mid,role,text,json.dumps(media),at,'queued' if queued else 'stored'))
             if role=='client' and mid!=chat['latest'] and pending and pending['state'] in ('queued','working') and self.effective_mode(cid)!='off':
@@ -382,6 +389,12 @@ class Store:
     def evidence(self,did):
         row=self.db.execute('SELECT data FROM draft_evidence WHERE draft=?',(did,)).fetchone()
         return json.loads(row[0]) if row else {'status':'not_recorded','sources':[]}
+
+    def calls_today(self, day=None):
+        import datetime as dt
+        day = day or dt.datetime.now(dt.timezone.utc).date().isoformat()
+        row = self.db.execute('SELECT calls FROM quota WHERE day=?', (day,)).fetchone()
+        return int(row[0]) if row else 0
 
     def reserve_call(self, day, limit):
         with self.transaction():
