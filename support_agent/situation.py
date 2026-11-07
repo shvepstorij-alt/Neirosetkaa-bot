@@ -87,6 +87,60 @@ def _client_amount(text):
     return '', ''
 
 
+_LIST = re.compile(
+    r'(?:все|каких|какие|список|перечень|назови(?:те)?|покажи(?:те)?|перечисли(?:те)?)'
+    r'.{0,40}(?:номинал|тариф|вариант|цен)', re.I)
+_HOWTO = re.compile(r'как\s+(?:мне\s+|нам\s+)?(?:оформить|купить|оплатить|пополнить|подключить|заказать)', re.I)
+_CAPABILITIES = re.compile(
+    r'что\s+(?:ты|вы)\s+мож(?:ешь|ете)|чем\s+(?:ты|вы)\s+мож(?:ешь|ете)|кто\s+(?:ты|вы)\b|что\s+умеешь', re.I)
+_PRICE = re.compile(r'сколько|стоит|стоим|цен[аыуе]', re.I)
+
+
+def format_offer(service, plan):
+    """Show the tariff once when its name already ends with that plan."""
+    service = str(service or '').strip()
+    plan = str(plan or '').strip()
+    if not service:
+        return plan
+    folded_service = _normalize(service).split()
+    folded_plan = _normalize(plan).split()
+    visible = plan.split()
+    if not plan or _normalize(service).endswith(_normalize(plan)):
+        return service
+    while folded_service and folded_plan and visible and folded_service[-1] == folded_plan[0]:
+        folded_service.pop()
+        folded_plan.pop(0)
+        visible.pop(0)
+    if not visible:
+        return service
+    return f'{service} {" ".join(visible)}'
+
+
+def classify_intent(text):
+    """Question type of the current burst. Product names are not the classifier."""
+    if _CAPABILITIES.search(text or ''):
+        return 'capabilities'
+    if _LIST.search(text or ''):
+        return 'list_nominals'
+    if _HOWTO.search(text or ''):
+        return 'how_to'
+    if _PRICE.search(text or ''):
+        return 'price'
+    return 'continuation'
+
+
+def _burst_text(messages):
+    burst = []
+    for message in reversed(messages):
+        role = message.get('role')
+        if role in ('assistant', 'owner') and burst:
+            break
+        if role == 'client':
+            burst.append(message.get('text') or '')
+    burst.reverse()
+    return '\n'.join(part for part in burst if part).strip()
+
+
 def _offers_in(text, service_label):
     rows = []
     for label, price in re.findall(r'([^\n:]{2,80}?):\s*(\d+)\s*₽', str(text or '')):
@@ -216,6 +270,43 @@ def analyze(messages, state=None, catalog=()):
         missing.append('service')
     elif situation['want'] == 'tariff' and 'option' in situation['asked_slots'] and 'option' not in known:
         missing.append('option')
+    situation['burst'] = _burst_text(messages)
+    situation['intent'] = classify_intent(situation['burst'] or situation.get('latest_intent') or '')
+    # A new question does not inherit an amount or tariff the client is not asking about.
+    if situation['intent'] in ('list_nominals', 'capabilities'):
+        situation['amount'] = ''
+        situation['currency'] = ''
+        situation['option_label'] = ''
+        situation['matched_offers'] = []
+    elif situation['intent'] == 'how_to':
+        situation['option_label'] = ''
+        situation['matched_offers'] = []
+        if situation['want'] != 'appstore_topup':
+            situation['amount'] = ''
+            situation['currency'] = ''
+            situation['region'] = ''
+    known = [slot for slot in known if {
+        'service': situation['service_key'], 'region': situation['region'], 'amount': situation['amount'],
+        'currency': situation['currency'], 'option': situation['option_label'],
+    }.get(slot)]
+    missing = []
+    if situation['intent'] == 'list_nominals' and situation['want'] == 'appstore_topup':
+        if 'region' not in known:
+            missing.append('region')
+    elif situation['intent'] in ('capabilities', 'how_to') and situation['want'] != 'appstore_topup':
+        missing = []
+    elif situation['intent'] == 'how_to' and situation['want'] == 'appstore_topup':
+        for slot in ('region', 'amount', 'currency'):
+            if slot not in known:
+                missing.append(slot)
+    elif situation['want'] == 'appstore_topup' and situation['intent'] in ('price', 'continuation'):
+        for slot in ('region', 'amount', 'currency'):
+            if slot not in known:
+                missing.append(slot)
+    elif situation['want'] == 'unknown' and situation['intent'] == 'continuation':
+        missing.append('service')
+    elif situation['want'] == 'tariff' and situation['intent'] in ('price', 'continuation') and 'option' in situation['asked_slots'] and 'option' not in known:
+        missing.append('option')
     situation['known'] = known
     situation['missing'] = missing
     return situation
@@ -287,7 +378,7 @@ def _tariff_fact(facts, situation):
                 break
     if type(price) is not int:
         return None
-    return {'reply': (f'{service} {label}: {price} ₽\n\n'
+    return {'reply': (f'{format_offer(service, label)}: {price} ₽\n\n'
                       'Это цена из каталога. Оформить можно в боте: выберите этот сервис, тариф и способ оплаты. '
                       'Оплата сама по себе не активирует подписку.'),
             'summary': 'Тариф выбран по открытому диалогу, цена взята из каталога.',
@@ -299,7 +390,7 @@ def _tariff_fact(facts, situation):
 def _missing_sentence(situation, options=()):
     missing = list(situation.get('missing') or [])
     if options and 'option' in missing:
-        lines = [f"{row['service']} {row['plan']}: {row['price']} ₽" for row in options]
+        lines = [f"{format_offer(row['service'], row['plan'])}: {row['price']} ₽" for row in options]
         return 'Подходят несколько тарифов:\n' + '\n'.join(lines) + '\n\nКакой из этих тарифов выбрать?'
     if situation.get('want') == 'appstore_topup':
         if missing == ['region', 'amount', 'currency'] or set(missing) >= {'region', 'amount'}:
@@ -315,7 +406,7 @@ def _missing_sentence(situation, options=()):
     if missing == ['option']:
         offered = situation.get('offered') or []
         if offered:
-            lines = [f"{row['service']} {row['plan']}: {row['price']} ₽" for row in offered]
+            lines = [f"{format_offer(row['service'], row['plan'])}: {row['price']} ₽" for row in offered]
             return 'Цены из каталога:\n' + '\n'.join(lines) + '\n\nКакой тариф выбрать?'
         return 'Какой тариф вас интересует?'
     names = {'region': 'регион', 'amount': 'сумму', 'currency': 'валюту', 'service': 'сервис', 'option': 'тариф'}
@@ -345,17 +436,72 @@ def _one_question(situation, options=(), facts=None):
                          'diagnostic': 'Этап: разбор диалога. Не хватает: ' + ', '.join(situation.get('missing') or []) + '.'}}
 
 
+def _all_denoms(facts, code):
+    from .apple_matching import nominal, region_codes
+    found = {}
+    for region in (facts or {}).get('appstore', {}).get('regions', []) or []:
+        if code not in region_codes(region.get('name', ''), stock=True):
+            continue
+        for row in region.get('denoms', []) or []:
+            identity = nominal(row.get('nominal', ''))
+            price = row.get('price_rub')
+            if not identity or type(price) is not int or price <= 0:
+                continue
+            found[identity] = price
+    rows = [{'amount': amount, 'currency': unit, 'price': price} for (amount, unit), price in found.items()]
+    rows.sort(key=lambda row: (row['currency'], -row['amount']))
+    return rows
+
+
+def _list_reply(facts, situation):
+    if situation.get('service_key') == 'appstore':
+        if not situation.get('region'):
+            return _one_question(dict(situation, missing=['region']), facts=facts)
+        rows = _all_denoms(facts, situation['region'])
+        label = {'US': 'США', 'DE': 'Германии', 'TR': 'Турции', 'GB': 'Великобритании', 'RU': 'России'}.get(
+            situation['region'], situation['region'])
+        if not rows:
+            text = f'Актуальные номиналы для Apple ID {label} сейчас не удалось загрузить.'
+        else:
+            text = f"Номиналы для Apple ID {label}:\n" + '\n'.join(
+                f"{row['amount']:g} {row['currency']}: {row['price']} ₽" for row in rows)
+        return {'reply': text, 'summary': 'Список номиналов выбранного региона. Сумма, которую клиент не называл в этом вопросе, не подставлена.',
+                'handoff': False, 'source_ids': [],
+                'evidence': {'status': 'catalog_direct', 'sources': [],
+                             'diagnostic': 'Этап: разбор текущего вопроса. Запрошен список номиналов, а не цена старой суммы.'}}
+    offered = situation.get('offered') or []
+    if not offered:
+        return None
+    text = 'Тарифы из каталога:\n' + '\n'.join(
+        f"{format_offer(row['service'], row['plan'])}: {row['price']} ₽" for row in offered)
+    return {'reply': text, 'summary': 'Список тарифов по текущему вопросу.',
+            'handoff': False, 'source_ids': [],
+            'evidence': {'status': 'catalog_direct', 'sources': [],
+                         'diagnostic': 'Этап: разбор текущего вопроса. Запрошен список тарифов.'}}
+
+
 def respond(situation, facts):
-    """Quote a verified price, or ask once for everything that is still missing."""
+    """Answer the current question. Background facts do not replace it."""
     if not situation:
         return None
-    if situation.get('want') == 'appstore_topup' and not situation.get('missing'):
+    intent = situation.get('intent')
+    if intent == 'capabilities':
+        return None
+    if intent == 'list_nominals':
+        listed = _list_reply(facts, situation)
+        if listed:
+            return listed
+    if intent == 'how_to':
+        if situation.get('want') == 'appstore_topup' and situation.get('missing'):
+            return _one_question(situation, facts=facts)
+        return None
+    if situation.get('want') == 'appstore_topup' and not situation.get('missing') and intent in ('price', 'continuation'):
         quoted = _apple_fact(facts, situation)
         if quoted:
             return quoted
     if situation.get('want') == 'tariff' and situation.get('offered') and not situation.get('option_label') and not situation.get('matched_offers'):
         if re.search(r'сколько|стоим|цен|тариф', situation.get('latest_intent') or '', re.I):
-            lines = [f"{row['service']} {row['plan']}: {row['price']} ₽" for row in situation['offered']]
+            lines = [f"{format_offer(row['service'], row['plan'])}: {row['price']} ₽" for row in situation['offered']]
             text = 'Цены из каталога:\n' + '\n'.join(lines)
             if not _same_question(text, situation.get('previous_question')):
                 return {'reply': text, 'summary': 'Цены сервиса из каталога по уже известной теме.',
@@ -404,6 +550,9 @@ def _known_statement(situation):
 def guard_reply(answer, situation, facts=None):
     """Drop a question whose answer is already known, and do not repeat the previous one."""
     if not isinstance(answer, dict) or not situation:
+        return answer
+    # A how-to or a capabilities question is not replaced by the previous price card.
+    if situation.get('intent') in ('capabilities', 'how_to'):
         return answer
     text = str(answer.get('reply') or '')
     asked = question_targets(text)
