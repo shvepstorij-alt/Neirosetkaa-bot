@@ -1084,6 +1084,25 @@ class Service:
         return inner
 
     async def _generate_body(self,job):
+        """Classify, then keep the reply consistent with the last 10 messages."""
+        self._situation=None
+        answer=await self._generate_body_inner(job)
+        return self._guard_situation(job,answer)
+
+    def _guard_situation(self,job,answer):
+        situation=getattr(self,'_situation',None)
+        if not situation:
+            return answer
+        from .situation import guard_reply, remember
+        facts=getattr(self,'_last_dialog_facts',None) or {}
+        guarded=guard_reply(answer,situation,facts) if isinstance(answer,dict) else answer
+        try:
+            remember(self.store.db,job['chat'],situation)
+        except Exception:
+            logging.warning('Situation was not saved')
+        return guarded
+
+    async def _generate_body_inner(self,job):
         """Classify the turn and gather facts. Model work continues in _draft_checked."""
         self._mark_stage(job,'classify')
         from .storage import HISTORY_MESSAGES,HISTORY_CHARACTERS
@@ -1152,6 +1171,16 @@ class Service:
         from .catalog_context import annotate
         facts=annotate(facts,latest)
         raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .situation import prepare as prepare_situation
+        prepared=prepare_situation(self.store.db,job['chat'],facts)
+        self._situation=prepared['situation']
+        facts=dict(facts,situation=prepared['situation'])
+        self._last_dialog_facts=facts
+        # Quotes and slot questions for a topic the dialog already identified.
+        # Unknown-service and safety turns stay on their own paths.
+        if (prepared.get('reply') and not image and prepared['situation'].get('want') in ('appstore_topup','tariff')
+                and not re.search(r'возврат|верн\w*\s+деньг|парол|токен|сесси', raw_batch, re.I)):
+            return prepared['reply']
         from .workflow_policy import ambiguity_reply
         if not image:
             unclear=ambiguity_reply(raw_batch)
@@ -1198,7 +1227,6 @@ class Service:
             consultation={'active':False}
         if consultation.get('active'):
             facts=dict(facts,consultation_intent=consultation)
-        # Old questions provide reference slots, not the newest turn's intent.
         from .dialog_state import bind_turn
         binding=bind_turn(self.store.db,job['chat'],raw_batch,facts)
         facts=binding['facts']
@@ -1224,7 +1252,7 @@ class Service:
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
             self._probe_question=latest
-        if turn['clarification_required'] and not image:
+        if turn['clarification_required'] and not image and not (facts.get('situation') or {}).get('service_key'):
             labels=', '.join(turn['reference_labels'])
             reply=(f'Что хотите узнать о {labels}: стоимость, порядок оформления или возможности?' if labels else
                    'О каком сервисе хотите узнать? Уточните, пожалуйста, название.')
