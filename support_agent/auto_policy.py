@@ -136,7 +136,9 @@ def block_reason(answer,evidence=None,current_text=''):
     from .response_decision import verified_atomic_decision
     decision=verified_atomic_decision(answer,meta)
     atomic_partial=bool(decision and decision['coverage_complete'] is False)
-    if answer['handoff'] and not atomic_partial:
+    from .dialog_state import client_collection
+    collecting=client_collection(answer.get('reply'))
+    if answer['handoff'] and not atomic_partial and not collecting:
         meta=evidence if isinstance(evidence,dict) else answer.get('evidence',{})
         detail=''
         if isinstance(meta,dict):
@@ -144,10 +146,13 @@ def block_reason(answer,evidence=None,current_text=''):
             if not detail and isinstance(meta.get('content_review'),dict) and meta['content_review'].get('supported') is False:
                 detail=meta['content_review'].get('reason','')
         if not isinstance(detail,str):detail=''
+        if not detail:
+            detail=str(answer.get('summary') or '').strip()
         if detail:
             detail=owner_reason(detail)
         return _reason('ответ требует участия владельца; автоматическая отправка не разрешена.'
-                       +(' Основание: '+detail if detail else ' Конкретная причина в сохранённых подтверждениях отсутствует.'))
+                       +(' Основание: '+detail if detail else
+                         ' Основание: модель запросила владельца, отдельная диагностика не сохранена.'))
     text=answer.get('reply')
     if not isinstance(text,str) or not text.strip():return _reason('текст ответа пуст или имеет неверный тип.')
     if len(text)>1800:return _reason('текст превышает проверенный лимит 1800 символов.')
@@ -165,7 +170,7 @@ def block_reason(answer,evidence=None,current_text=''):
         return _reason('сохранено явное требование проверки содержания; действие по оформлению и проверка текста различаются.')
     if evidence.get('manual_secret_intake'):
         return _reason('предусмотрена ручная обработка данных доступа; требуется владелец.')
-    if evidence.get('handoff_reason'):
+    if evidence.get('handoff_reason') and not collecting:
         return _reason('сохранена причина ручного разбора; автоматический допуск не подтверждён.')
 
     current=str(current_text or '')
@@ -188,6 +193,17 @@ def block_reason(answer,evidence=None,current_text=''):
     if not consultation and reviewed_detection is None and re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
                  r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код(?:ы)?\s+(?:входа|подтверждения)|(?:одноразов|резервн)[а-яё]*\s+код)',text,re.I):
         return _reason('ответ запрашивает данные доступа; сбор этих данных оставлен владельцу.')
+    from .order_status import is_status_request
+    if is_status_request(current):
+        return _reason('обращение касается проверки оплаты или заказа; в пилоте требуется ручная проверка.')
+    if re.search(r'возврат|верн[а-яё]*\s+деньг|чарджб[еэ]к|chargeback|'
+                 r'чек\b|квитанци|резервн[а-яё]*\s+код|одноразов[а-яё]*\s+код',current,re.I):
+        return _reason('обращение касается возврата, платёжного подтверждения или кодов доступа; нужен владелец.')
+    from .completion_claims import has_completion_claim
+    if collecting and has_completion_claim(text):
+        return _reason('ответ одновременно запрашивает данные и утверждает, что оформление уже выполнено.')
+    if collecting:
+        return None
     # Mentioning that no password is needed is not providing its value. Strip
     # only this exact code-owned public sentence from the detection copy;
     # secrets anywhere else, including the next sentence, remain detectable.
@@ -224,8 +240,9 @@ def block_reason(answer,evidence=None,current_text=''):
     if re.search(r'возврат|верн[а-яё]*\s+деньг|чарджб[еэ]к|chargeback|'
                  r'чек\b|квитанци|резервн[а-яё]*\s+код|одноразов[а-яё]*\s+код',current,re.I):
         return _reason('обращение касается возврата, платёжного подтверждения или кодов доступа; нужен владелец.')
-    if re.search(r'бонусн[а-яё]*\s+подписк|куратор|из\s+(?:обучения|курса)|завод[а-яё]*\s+нейроагент',current,re.I):
-        return _reason('доступность бонуса курса подтверждает владелец; автоматический ответ не разрешён.')
+    from .dialog_state import grants_unverified_benefit
+    if grants_unverified_benefit(text):
+        return _reason('ответ подтверждает выдачу бонуса или льготы; это решает владелец.')
     if evidence.get('new_account_stage') in ('owner_registration','owner_session_intake','owner_details_received'):
         return _reason('текущий этап нового аккаунта требует ручного оформления владельцем.')
 

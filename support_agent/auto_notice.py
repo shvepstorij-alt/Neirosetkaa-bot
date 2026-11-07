@@ -23,7 +23,7 @@ def matches_template(kind, text, now=None):
     return text==text_for(kind, now)
 
 
-def kind_for(evidence, reason, current_text=''):
+def kind_for(evidence, reason, current_text='', usable_reply=False):
     # Exact diagnostics stay owner-only. This classification makes no promises
     # about fulfilment, delivery times, refunds or the outcome of a payment.
     evidence = evidence if isinstance(evidence, dict) else {}
@@ -52,11 +52,12 @@ def kind_for(evidence, reason, current_text=''):
         return 'technical'
     # Missing sources/coverage is informational even if an old route stored
     # handoff_reason. That field alone is not evidence of an account action.
+    # A held draft is a real answer. The canned gap text is only for when there is nothing to show.
     if re.search(r'источник|неполнот|не\s+подтвержд|не\s+удалось\s+(?:получить|подтвердить)|coverage|source', diagnostic, re.I):
-        return 'information'
+        return 'human' if usable_reply else 'information'
     if evidence.get('status') in ('unavailable', 'not_recorded'):
         return 'technical'
-    return 'information'
+    return 'human' if usable_reply else 'information'
 
 
 def helpful_reply(facts, evidence, reason, question=''):

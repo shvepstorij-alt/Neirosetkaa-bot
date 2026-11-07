@@ -285,6 +285,8 @@ def project_turn(facts, resolved, current, reference=None):
     # Only the reference resolver may supply this field, before model drafting.
     effective=own or inherited
     requests=clause_requests(resolved,current,facts.get('catalog',[]))
+    # A short reply to a question this chat already asked is not a new unnamed topic.
+    bound=bool((facts.get('dialog_state') or {}).get('bound')) if isinstance(facts,dict) else False
     return {'version':1,'current_text':current,'context_text':resolved,
             'current_goals':sorted(own),'goals':sorted(effective),
             'inherited_goals':sorted(inherited) if not own else [],
@@ -295,7 +297,7 @@ def project_turn(facts, resolved, current, reference=None):
             'entities':list(entities),
             'source_mid':reference.get('source_mid') if reference else None,
             'requests':requests,
-            'clarification_required':bool(reference and (not effective or reference.get('reason')=='unavailable_client_context')),
+            'clarification_required':bool(not bound and reference and (not effective or reference.get('reason')=='unavailable_client_context')),
             'reference_reason':reference.get('reason') if reference else '',
             'context_condition':reference.get('context_condition','') if reference else '',
             'checked_sources':reference.get('checked_sources',0) if reference else 0,
