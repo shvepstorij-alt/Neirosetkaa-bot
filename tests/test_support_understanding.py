@@ -54,7 +54,7 @@ class ScriptedModel:
     def __init__(self):
         self.payloads = []
 
-    async def understand_turn(self, context):
+    async def understand_turn(self, context, images=None):
         self.payloads.append(context)
         burst = context.get('burst') or ''
         low = burst.casefold().replace('ё', 'е')

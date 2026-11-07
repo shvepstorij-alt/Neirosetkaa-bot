@@ -1074,11 +1074,20 @@ class Service:
 
     async def _understood_reply(self,job):
         from .turn_understanding import build_context, package
+        from .media_batch import prepare_media
         if not self.store.still_current(job):
             return None
+        images,notice=await prepare_media(self,job)
+        if images is None and notice is None:
+            return None
+        if notice:
+            notice.setdefault('evidence',{'status':'owner_policy','sources':[],'reply_class':'unverified',
+                                          'diagnostic':notice.get('summary') or 'Вложение не передано в разбор.'})
+            return notice
         facts=await self.shop.facts(job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
-        understanding=await self.ai.understand_turn(context)
+        self.charge_call('understand_image' if images else 'understand')
+        understanding=await self.ai.understand_turn(context, images=images or None)
         if not self.store.still_current(job):
             return None
         self._last_turn_context=context

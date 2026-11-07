@@ -1,0 +1,131 @@
+# Разговорные названия для модели.
+# Это словарь, а не маршрутизатор: код не выбирает сервис по совпадению слова.
+# Как править: у нужного сервиса допишите строку в aliases. id должен совпадать
+# с ключом товара в каталоге магазина. После правки нужен новый выкат помощника.
+# Одинаковое слово нельзя вешать на два сервиса.
+
+services:
+  - id: chatgpt
+    name: ChatGPT
+    aliases: [chatgpt, chat gpt, gpt, чат гпт, чатгпт, чатжпт, гпт, жпт, чате гпт, чата гпт]
+  - id: claude
+    name: Claude
+    aliases: [claude, клод, клода, клоде, клоду]
+  - id: grok
+    name: SuperGrok
+    aliases: [grok, грок, супергрок, super grok, supergrok]
+  - id: perplexity
+    name: Perplexity
+    aliases: [perplexity, перплексити, перплекс]
+  - id: cursor
+    name: Cursor
+    aliases: [cursor, курсор, курсора, курсоре]
+  - id: lovable
+    name: Lovable
+    aliases: [lovable, ловабл, лавабл]
+  - id: midjourney
+    name: Midjourney
+    aliases: [midjourney, миджорни, миджерни, миджа, мидж]
+  - id: canva
+    name: Canva
+    aliases: [canva, канва, канве, канву]
+  - id: kling
+    name: Kling
+    aliases: [kling, kling ai, клинг]
+  - id: runway
+    name: Runway
+    aliases: [runway, ранвей, ранвэй]
+  - id: heygen
+    name: HeyGen
+    aliases: [heygen, хейген, хейджен]
+  - id: elevenlabs
+    name: ElevenLabs
+    aliases: [elevenlabs, eleven labs, элевенлабс, илевенлабс, элевен]
+  - id: suno
+    name: Suno
+    aliases: [suno, суно]
+  - id: gamma
+    name: Gamma
+    aliases: [gamma, гамма]
+  - id: appstore
+    name: App Store
+    aliases: [app store, appstore, апп стор, аппстор, эпл стор, эппл стор, эп стор, icloud, айклауд]
+  - id: zoom
+    name: Zoom
+    aliases: [zoom, зум, зума, зуме, зуму]
+  - id: spotify
+    name: Spotify
+    aliases: [spotify, спотифай, спотик]
+  - id: capcut
+    name: CapCut
+    aliases: [capcut, cap cut, капкат, капкут]
+  - id: freepik
+    name: Freepik
+    aliases: [freepik, фрипик]
+  - id: genspark
+    name: Genspark
+    aliases: [genspark, генспарк, дженспарк]
+  - id: github
+    name: GitHub
+    aliases: [github, git hub, гитхаб, гитхабе]
+  - id: higgsfield
+    name: Higgsfield
+    aliases: [higgsfield, higgsfield ai, хиггсфилд, хигсфилд]
+  - id: kimi
+    name: Kimi
+    aliases: [kimi, кими]
+  - id: krea
+    name: Krea
+    aliases: [krea, креа, крее]
+  - id: make
+    name: Make
+    aliases: [make, мейк]
+  - id: manus
+    name: Manus
+    aliases: [manus, манус]
+  - id: openrouter
+    name: OpenRouter
+    aliases: [openrouter, open router, опенроутер, опен роутер]
+  - id: telegram
+    name: Telegram
+    aliases: [telegram, телеграм, телега]
+  - id: telegram_premium
+    name: Telegram Premium
+    aliases: [telegram premium, тг прем, тг премиум, телеграм премиум]
+  - id: youtube
+    name: YouTube
+    aliases: [youtube, you tube, ютуб, ютуба, ютубе]
+  - id: zai
+    name: Z.ai
+    aliases: [z.ai, zai, зи ай]
+  - id: codex
+    name: Codex
+    aliases: [codex, кодекс]
+  - id: gemini
+    name: Gemini
+    aliases: [gemini, гемини, джемини]
+  - id: notion
+    name: Notion
+    aliases: [notion, ноушен, ноушн]
+  - id: motion
+    name: Motion
+    aliases: [motion, моушен, моушн]
+
+phrases:
+  - phrase: чат гпт плюс
+    service: chatgpt
+    tariff: Plus
+
+tariff_words:
+  - words: [годовая, годовой, годовое, на год]
+    meaning: годовой тариф, если у сервиса есть и месяц, и год
+  - words: [месячная, месячный, месячное, на месяц]
+    meaning: месячный тариф; тариф «на год» по этим словам не выбирать
+  - words: [про, pro]
+    meaning: тариф Pro; без слова про год это месяц, если есть и месяц, и год
+  - words: [плюс, plus]
+    meaning: тариф Plus, если он есть у этого сервиса
+  - words: [бизнес, business]
+    meaning: тариф Business
+  - words: [прем, премиум, premium]
+    meaning: тариф Premium

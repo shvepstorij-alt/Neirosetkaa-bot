@@ -68,6 +68,9 @@ async def prepare_media(service,job):
                         'diagnostic':'Этап: приём файла для ручной обработки. Тип=text/json; загрузка=не выполнялась; модель=не вызывалась. Содержимое и наличие токена не устанавливались.'}}
             if kind=='sensitive' or media.get('blocked_transcript'):
                 return _manual('В обращении возможны данные доступа. Они не переданы в подготовку ответа.')
+            if kind=='document':
+                # A PDF receipt stays with the owner. It is not sent to the model.
+                continue
             if kind not in ('photo','voice'):
                 return _manual('В обращении есть неподдерживаемое вложение.')
             if not isinstance(media.get('file_id'),str) or not media['file_id']:

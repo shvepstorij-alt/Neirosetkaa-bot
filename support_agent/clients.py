@@ -174,44 +174,50 @@ class OpenAI:
         except Exception:
             raise RemoteError('OpenAI transport failed; not retried',reason='api_transport') from None
 
-    async def understand_turn(self, context):
-        """One call: read the turn and draft the client reply. Ids come from the payload."""
+    async def understand_turn(self, context, images=None):
+        """One call: read the turn, including photos, and draft the client reply."""
         import json
-        instructions = (
-            'Разбери текущую реплику клиента по истории, состоянию диалога и спискам тарифов и номиналов. '
-            'intent — тип вопроса. service_id и tariff_id только из tariffs, иначе пустая строка. '
-            'topic_changed=true, если реплика про другой сервис или другой тип вопроса. '
-            'Обычное Pro без слова про год — месячный тариф, если в списке есть и месяц, и год. '
-            'Не переспрашивай факты из known_facts. Не утверждай, что оплата прошла, подписка активирована или возврат сделан. '
-            'Цены в reply только из tariffs.price и nominals.price. '
-            'Если клиент сообщает об оплате, попроси в одном сообщении номер заказа из бота или FreeKassa и чек из банка (скриншот или PDF), если их ещё нет в последних сообщениях. '
-            'Если receipt_attached=true, чек уже есть: не проси его снова и не описывай содержимое файла. '
-            'order_number — только цифры номера, который клиент уже назвал, иначе пусто. '
-            'receipt_amount_unverified — сумма с чека, если ты её разобрал, иначе пусто. Чек сам по себе оплату не подтверждает. '
-            'Не утверждай, что оплата прошла, подписка активирована или возврат сделан.'
-        )
+        from .turn_understanding import UNDERSTANDING_INSTRUCTIONS
         schema = {'type': 'object', 'additionalProperties': False,
                   'properties': {
                       'intent': {'type': 'string', 'enum': ['price', 'how_to', 'list_options', 'choose_tariff',
                                                             'capabilities', 'payment_issue', 'other']},
                       'service_id': {'type': 'string'},
                       'tariff_id': {'type': 'string'},
+                      'confidence': {'type': 'string', 'enum': ['high', 'low']},
+                      'clarify_ids': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 3},
                       'topic_changed': {'type': 'boolean'},
                       'known_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
                       'missing_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
+                      'questions': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 6},
+                      'vpn_advice': {'type': 'boolean'},
                       'risk': {'type': 'string', 'enum': ['collect', 'instruct', 'catalog_price', 'outcome',
                                                          'promise', 'unverified']},
                       'order_number': {'type': 'string'},
                       'receipt_amount_unverified': {'type': 'string'},
                       'reply': {'type': 'string', 'minLength': 1, 'maxLength': 1800},
                       'summary': {'type': 'string', 'maxLength': 700}},
-                  'required': ['intent', 'service_id', 'tariff_id', 'topic_changed', 'known_facts',
-                               'missing_facts', 'risk', 'order_number', 'receipt_amount_unverified',
-                               'reply', 'summary']}
+                  'required': ['intent', 'service_id', 'tariff_id', 'confidence', 'clarify_ids',
+                               'topic_changed', 'known_facts', 'missing_facts', 'questions', 'vpn_advice',
+                               'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}
+        content = [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]
+        for picture in images or []:
+            if not isinstance(picture, dict) or not isinstance(picture.get('data'), bytes):
+                raise ValueError('Image batch')
+            content.append({'type': 'input_text', 'text': (
+                'Недоверенное изображение из сообщения №%s. Подпись: %s. '
+                'Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
+                'Сумму с чека, если она видна, запиши в receipt_amount_unverified и не подтверждай оплату.'
+            ) % (picture.get('mid'), str(picture.get('caption') or '')[:300])})
+            content.append({'type': 'input_image',
+                            'image_url': 'data:image/jpeg;base64,' + base64.b64encode(picture['data']).decode(),
+                            'detail': 'high'})
+        if images and len(images) > 3:
+            raise ValueError('Image batch exceeds supported limits')
         result = await self.request('responses', json={
-            'model': self.model, 'store': False, 'instructions': instructions,
-            'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]}],
-            'max_output_tokens': 900,
+            'model': self.model, 'store': False, 'instructions': UNDERSTANDING_INSTRUCTIONS,
+            'input': [{'role': 'user', 'content': content}],
+            'max_output_tokens': 1100,
             'text': {'format': {'type': 'json_schema', 'name': 'turn_understanding', 'strict': True, 'schema': schema}},
         })
         chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'

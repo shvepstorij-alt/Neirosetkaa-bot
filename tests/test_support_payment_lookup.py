@@ -1,9 +1,12 @@
 """Paid claims: ask for the number and the receipt, then read only this user's order."""
 import asyncio
+import io
 import re
 import tempfile
 import time
 import unittest
+
+from PIL import Image
 
 from support_agent.auto_notice import text_for
 from support_agent.auto_policy import block_reason
@@ -13,6 +16,15 @@ from support_agent.service import Service
 from support_agent.storage import Store
 
 OTHER_USER_AMOUNT = 777777
+
+
+def _jpeg():
+    buffer = io.BytesIO()
+    Image.new('RGB', (16, 16), (240, 240, 240)).save(buffer, 'JPEG')
+    return buffer.getvalue()
+
+
+JPEG = _jpeg()
 
 
 class RecordingTelegram(NoTelegram):
@@ -55,7 +67,7 @@ class PayModel:
     def __init__(self):
         self.drafts = []
 
-    async def understand_turn(self, context):
+    async def understand_turn(self, context, images=None):
         burst = (context.get('burst') or '').strip()
         numbers = re.findall(r'(?<!\d)(\d{3,18})(?!\d)', burst)
         if numbers:
@@ -90,6 +102,7 @@ class PaymentLookupTests(unittest.TestCase):
         self.store.connection('biz', True, True)
         self.shop = Shop()
         self.tg = RecordingTelegram()
+        self.tg.fixtures['receipt-photo-1'] = JPEG
         self.model = PayModel()
         self.service = Service(self.store, self.tg, self.model, self.shop, owner=1, allowed={1, 50}, daily_limit=100)
         self.mid = 0

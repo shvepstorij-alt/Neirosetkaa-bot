@@ -13,6 +13,32 @@ from .reply_assertion import asserts_outcome, collects_case_data
 INTENTS = ('price', 'how_to', 'list_options', 'choose_tariff', 'capabilities',
            'payment_issue', 'other')
 CLASSES = ('collect', 'instruct', 'catalog_price', 'outcome', 'promise', 'unverified')
+VPN_SENTENCE = ('Для доступа к сервисам лучше включить VPN и по возможности всегда '
+                'использовать одну и ту же локацию.')
+UNDERSTANDING_INSTRUCTIONS = (
+    'Разбери текущую реплику клиента по истории, состоянию диалога, глоссарию и спискам тарифов и номиналов. '
+    'glossary — разговорные названия и слова тарифов. Это подсказка смысла. '
+    'intent — тип вопроса. service_id и tariff_id только из tariffs, иначе пустая строка. '
+    'confidence=high, только когда сервис или тариф понятен. '
+    'confidence=low, если есть сомнение: service_id и tariff_id оставь пустыми, '
+    'clarify_ids — два или три id из tariffs (id или service_id), '
+    'reply — короткий вопрос ровно с этими вариантами, без выбора одного из них. '
+    'topic_changed=true, если реплика про другой сервис или другой тип вопроса. '
+    'Обычное Pro без слова про год — месячный тариф, если в списке есть и месяц, и год. '
+    'questions — все отдельные вопросы этого обращения, коротко и с названием из каталога, если оно известно. '
+    'reply отвечает на каждый вопрос отдельным коротким пунктом: 1. 2. 3. '
+    'Не переспрашивай факты из known_facts. Не утверждай, что оплата прошла, подписка активирована или возврат сделан. '
+    'Цены в reply только из tariffs.price и nominals.price. '
+    'Если клиент сообщает об оплате, попроси в одном сообщении номер заказа из бота или FreeKassa и чек из банка (скриншот или PDF), если их ещё нет в последних сообщениях. '
+    'Если receipt_attached=true, чек уже есть: не проси его снова и не описывай содержимое файла. '
+    'order_number — только цифры номера, который клиент уже назвал, иначе пусто. '
+    'receipt_amount_unverified — сумма с чека, если ты её разобрал, иначе пусто. Чек сам по себе оплату не подтверждает. '
+    'Если вопрос про работу сервиса в стране клиента, доступ, соединение или обычное использование сервисов, '
+    'поставь vpn_advice=true и напиши, что нужен VPN и лучше всегда одна и та же локация. '
+    'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
+    'Голос уже расшифрован в тексте сообщения. '
+    'Не утверждай, что оплата прошла, подписка активирована или возврат сделан.'
+)
 _RUBLE = re.compile(r'(\d{2,7})\s*(?:₽|руб(?:лей|ля|ль)?)', re.I)
 _PROMISE = re.compile(r'(?i)обещаю|гарантирую|точно\s+активир|возврат\s+одобрен|уже\s+оформил')
 _INTERNAL = re.compile(
@@ -84,8 +110,14 @@ def build_context(db, chat, facts):
     catalog = (facts or {}).get('catalog') or []
     tariffs = catalog_index(facts)
     from .payment_case import receipt_files
+    from .glossary import for_context
+    try:
+        glossary = for_context(facts)
+    except Exception:
+        glossary = {'services': [], 'phrases': [], 'tariff_words': [], 'load_error': True}
     return {'burst': burst,
             'receipt_attached': bool(receipt_files(db, chat)),
+            'glossary': glossary,
             'history': window,
             'dialog_state': {'service_id': state.get('service_key') or '',
                              'service': state.get('service_label') or '',
@@ -124,14 +156,107 @@ def validate(understanding, context):
         chosen = None
     elif not service_id and chosen:
         service_id = chosen['service_id']
+    confidence = str((understanding or {}).get('confidence') or 'high')
+    if confidence not in ('high', 'low'):
+        confidence = 'high'
     return {'intent': understanding.get('intent') if understanding.get('intent') in INTENTS else 'other',
             'service_id': service_id,
             'tariff_id': tariff_id,
             'tariff': chosen,
+            'confidence': confidence,
             'topic_changed': bool(understanding.get('topic_changed')),
             'known_facts': [str(item) for item in understanding.get('known_facts') or [] if isinstance(item, str)][:12],
             'missing_facts': [str(item) for item in understanding.get('missing_facts') or [] if isinstance(item, str)][:12],
+            'questions': _texts(understanding.get('questions'), 6),
+            'vpn_advice': bool((understanding or {}).get('vpn_advice')),
             'allowed_prices': _allowed_prices(tariffs, context.get('nominals') or [], service_id, tariff_id)}
+
+
+def _texts(values, limit):
+    return [str(item).strip() for item in values or [] if isinstance(item, str) and str(item).strip()][:limit]
+
+
+def clarify_options(understanding, context):
+    """Keep only catalogue ids the model offered. Do not invent a third choice."""
+    tariffs = context.get('tariffs') or []
+    by_id = {row['id']: row for row in tariffs}
+    by_service = {}
+    for row in tariffs:
+        by_service.setdefault(row['service_id'], row)
+    found = []
+    seen = set()
+    for raw in (understanding or {}).get('clarify_ids') or []:
+        item = str(raw or '')
+        if item in by_id:
+            row = by_id[item]
+            label = (row['service'] + ' ' + row['plan']).strip()
+            key = row['id']
+        elif item in by_service:
+            row = by_service[item]
+            label = row['service']
+            key = row['service_id']
+        else:
+            continue
+        if key in seen or not label:
+            continue
+        seen.add(key)
+        found.append({'id': key, 'label': label})
+        if len(found) == 3:
+            break
+    return found
+
+
+def _clarify_reply(reply, options):
+    labels = [item['label'] for item in options]
+    folded = str(reply or '').casefold()
+    if '?' in str(reply or '') and all(label.casefold() in folded for label in labels):
+        return str(reply).strip()
+    if len(labels) == 2:
+        body = labels[0] + ' или ' + labels[1]
+    else:
+        body = ', '.join(labels[:-1]) + ' или ' + labels[-1]
+    return 'Уточните, пожалуйста: ' + body + '?'
+
+
+def _answer_blocks(reply):
+    parts = re.split(r'(?m)^\s*\d+[.)]\s+', str(reply or ''))
+    return [part.strip() for part in parts[1:] if part.strip()]
+
+
+def _catalog_tokens(context):
+    tokens = set()
+    for row in context.get('tariffs') or []:
+        for part in (row.get('service'), row.get('plan'), row.get('service_id')):
+            for word in re.findall(r'[A-Za-zА-Яа-яЁё0-9]{3,}', str(part or '')):
+                tokens.add(word.casefold().replace('ё', 'е'))
+    return tokens
+
+
+def questions_addressed(reply, questions, context):
+    """A multi-question turn needs one numbered point per question the model listed."""
+    items = [item for item in questions or [] if item]
+    if len(items) < 2:
+        return True
+    blocks = _answer_blocks(reply)
+    if len(blocks) < len(items):
+        return False
+    known = _catalog_tokens(context)
+    folded = str(reply or '').casefold().replace('ё', 'е')
+    for question in items:
+        words = re.findall(r'[A-Za-zА-Яа-яЁё0-9]{3,}', question)
+        needed = [word.casefold().replace('ё', 'е') for word in words if word.casefold().replace('ё', 'е') in known]
+        if any(word not in folded for word in needed):
+            return False
+    return True
+
+
+def _with_vpn(reply, needed):
+    if not needed:
+        return reply
+    folded = reply.casefold()
+    if ('vpn' in folded or 'впн' in folded) and 'локац' in folded:
+        return reply
+    return (reply.rstrip() + '\n\n' + VPN_SENTENCE).strip()
 
 
 def classify_draft(reply, allowed_prices):
@@ -178,16 +303,37 @@ def remember_turn(db, chat, validated, context):
 def package(understanding, context, db=None, chat=None):
     validated = validate(understanding or {}, context)
     reply = str((understanding or {}).get('reply') or '').strip()
-    if not reply:
-        from .handoff import handoff_text
+    from .handoff import handoff_text
+    if validated['confidence'] == 'low':
+        options = clarify_options(understanding, context)
+        validated['service_id'] = ''
+        validated['tariff_id'] = ''
+        validated['tariff'] = None
+        validated['allowed_prices'] = _allowed_prices(
+            context.get('tariffs') or [], context.get('nominals') or [], '', '')
+        if len(options) < 2:
+            reply = handoff_text()
+            verdict = {'send': False, 'class': 'unverified',
+                       'reason': 'Уверенность низкая, а двух вариантов из каталога модель не назвала.'}
+        else:
+            reply = _clarify_reply(reply, options)
+            verdict = classify_draft(reply, validated['allowed_prices'])
+    elif not reply:
         reply = handoff_text()
         verdict = {'send': False, 'class': 'unverified', 'reason': 'Модель не дала текст ответа.'}
     else:
         verdict = classify_draft(reply, validated['allowed_prices'])
+    if verdict['send']:
+        reply = _with_vpn(reply, validated['vpn_advice'])
+        if len(reply) > 1800:
+            verdict = {'send': False, 'class': 'unverified', 'reason': 'Ответ с правилом VPN длиннее 1800 символов.'}
+    if verdict['send'] and not questions_addressed(reply, validated['questions'], context):
+        verdict = {'send': False, 'class': 'unverified',
+                   'reason': 'В ответе нет отдельного пункта на каждый вопрос из разбора.'}
     if db is not None and chat is not None:
         remember_turn(db, chat, validated, context)
     summary = str((understanding or {}).get('summary') or verdict['reason'])[:700]
-    return {'reply': reply or 'Александр будет на связи в течение получаса-часа. Пока могу помочь с другими вопросами)',
+    return {'reply': reply or handoff_text(),
             'summary': summary,
             'handoff': not verdict['send'],
             'source_ids': [],
@@ -197,8 +343,11 @@ def package(understanding, context, db=None, chat=None):
                          'turn_understanding': {'intent': validated['intent'],
                                                 'service_id': validated['service_id'],
                                                 'tariff_id': validated['tariff_id'],
+                                                'confidence': validated['confidence'],
                                                 'topic_changed': validated['topic_changed'],
                                                 'known_facts': validated['known_facts'],
-                                                'missing_facts': validated['missing_facts']},
+                                                'missing_facts': validated['missing_facts'],
+                                                'questions': validated['questions'],
+                                                'vpn_advice': validated['vpn_advice']},
                          'diagnostic': verdict['reason'],
                          'handoff_reason': '' if verdict['send'] else verdict['reason']}}
