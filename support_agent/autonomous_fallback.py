@@ -127,6 +127,8 @@ def _apple(facts, text, reason):
         bare = re.search(r'(?<!\w)\d+(?:[.,]\d+)?(?:\s*(?:тысяч[аиу]?|тыс\.?)(?!\w))?', normalized, re.I)
         if bare:
             prefix += ': сумма ' + bare[0]
+    if facts.get('situation') and (not codes or not wanted or len(codes) != 1 or len(wanted) != 1):
+        return None
     if not codes:
         prompt = 'Какой регион у вашего Apple ID?' if wanted else 'Подскажите регион Apple ID и валюту указанной суммы.' if re.search(r'\d', normalized) else 'Какой регион Apple ID и на какую сумму хотите пополнить баланс?'
         return _finish(prefix + '. ' + prompt, reason, diagnostic='Регион не подтверждён; сумму клиента не проверяли как цену магазина.')
@@ -201,10 +203,14 @@ def reply(facts, reason, question=''):
     labels = _labels(names, mentions, scope, catalog)
     if not labels:
         dialog = facts.get('dialog_state') or {}
-        if dialog.get('bound') and dialog.get('service_label'):
-            labels = [_safe_label(dialog.get('service_label'))]
+        situation = facts.get('situation') or {}
+        label = situation.get('service_label') or (dialog.get('service_label') if dialog.get('bound') else '')
+        if label:
+            labels = [_safe_label(label)]
             labels = [label for label in labels if label]
         if not labels:
+            if situation:
+                return None
             return _finish('Какой сервис вас интересует?', reason, diagnostic='Идентичность сервиса не определена; несвязанный ассортимент не использован.')
     prices = {}
     methods = {}

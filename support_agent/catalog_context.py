@@ -423,43 +423,10 @@ def direct_apple_reply(facts, latest, current=None):
     answer=verified_catalog_reply(facts,'')
     answer['evidence']={'status':'catalog_direct','sources':[]}
     quote=exact_quote(facts,latest)
-    if (not quote and re.search(r'как\s+(?:мне\s+)?пополнить|как\s+пополнение',current,re.I)):
-        from .bot_guide import purchase_navigation
-        from .apple_matching import amounts
-        navigation=purchase_navigation(facts,apple=True)
-        answer['reply']=((navigation+'\n\n') if navigation else '')+(
-            'Нужен подарочный код того же региона, что и ваш Apple ID. После оплаты погасите код '
-            'в App Store: профиль → «Погасить подарочную карту или код».\n\n'
-            +('Регион уже указан. На какую сумму хотите пополнить баланс?' if len(known)==1 else
-              'Какой регион у вашего Apple ID?' if amounts(latest) else
-              'Подскажите регион Apple ID и сумму пополнения.'))
-        answer['handoff']=False
-        answer['summary']='Инструкция покупки подарочного кода; точная цена не запрошена и не обещана.'
-        source_status=facts.get('appstore',{}).get('status','not_connected')
-        if source_status not in ('available','truncated'):
-            answer['reply']=('Пополнение Apple ID делается подарочным кодом того же региона, что и аккаунт. '
-                             'Актуальные номиналы и цены сейчас не удалось загрузить.\n\n'
-                             +('На какую сумму хотите пополнить баланс?' if len(known)==1 else
-                               'Подскажите регион Apple ID и сумму пополнения.'))
-            answer['evidence']={'status':'clarification','sources':[],'diagnostic':
-                'Этап: чтение региональных номиналов App Store. Статус='+str(source_status)
-                +'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))
-                +'. Доступность и цены номиналов не подтверждены; показано только объяснение способа и уточнение параметров.'}
-        return answer
-    if not quote and len(known)<=1 and not re.search(r'цен|стоим|вариант|номинал',current,re.I):
-        if re.search(r'\d+\s*(?:тысячи?|тысяч|тыс)(?!\w)',current,re.I):
-            answer['reply']=('Это сумма на баланс Apple ID или бюджет покупки кода? Уточните, пожалуйста, валюту.'
-                             if known else 'Уточните, пожалуйста, регион Apple ID и валюту суммы пополнения.')
-            answer['handoff']=False
-            answer['summary']='Сумма названа без валюты; уточняется её назначение, цена и наличие не обещаны.'
-            return answer
-        from .apple_matching import amounts
-        answer['reply']=('На какую сумму хотите пополнить баланс Apple ID?' if known else
-                         'Какой регион у вашего Apple ID?' if amounts(latest) else
-                         'Какой регион у вашего Apple ID и на какую сумму хотите пополнить баланс?')
-        answer['handoff']=False
-        answer['summary']='Уточнение недостающих параметров пополнения; инструкция из истории не повторялась, цена и доступность не обещаны.'
-        return answer
+    # Missing region or amount is decided from the whole dialog, not from this
+    # message alone. Asking here used to forget the other slot on the next turn.
+    if not quote:
+        return None
     if quote:
         amount=quote['amount'];unit=quote['currency'];code=quote['region']
         label={'US':'США','DE':'Германии','TR':'Турции','GB':'Великобритании','RU':'России'}.get(code,code)
