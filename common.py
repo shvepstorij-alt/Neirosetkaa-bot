@@ -9583,7 +9583,7 @@ async def api_admin_setting_save_handler(request: web.Request) -> web.Response:
         kind = str(body.get("kind", ""))
         if kind == "welcome":
             await set_setting("welcome_extra", str(body.get("text", "")))
-        elif kind in {"gpt_install", "gpt_install_android", "gpt_install_iphone"}:
+        elif kind in {"gpt_install", "gpt_install_android", "gpt_install_iphone", "gpt_install_desktop"}:
             from install_guides import setting_key, validate_guide
             try:
                 guide = validate_guide(body.get("text", ""))

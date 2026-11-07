@@ -114,9 +114,8 @@ def reply(facts,current,history=()):
     if identity!='chatgpt' and not prior and not apple_region:
         body='Какое приложение хотите установить?'
     elif desktop:
-        body=('Для компьютера откройте официальную страницу загрузки ChatGPT:\n'+DESKTOP+'\n\n'
-              'Выберите доступный вариант для своей системы и следуйте шагам на странице. '
-              'После установки войдите в тот же аккаунт ChatGPT. Установка приложения сама по себе не подключает подписку.')
+        from install_guides import DESKTOP_PLAIN
+        body=DESKTOP_PLAIN
     elif android:
         body=('Для Android можно скачать приложение здесь:\n'+ANDROID+'\n\n'
               'Это сторонний каталог APK, не сайт OpenAI. Проверку конкретного файла я не выполнял, поэтому гарантировать его безопасность не могу. '

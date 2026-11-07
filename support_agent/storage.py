@@ -49,7 +49,8 @@ class Store:
 
         columns={row['name'] for row in self.db.execute('PRAGMA table_info(chats)')}
         for name,kind in (('batch_due','REAL'),('batch_start','REAL'),('batch_first','INTEGER'),
-                          ('manual_pause_until','REAL'),('owner_answered_mid','INTEGER')):
+                          ('manual_pause_until','REAL'),('owner_answered_mid','INTEGER'),
+                          ('introduced','INTEGER')):
             if name not in columns:
                 self.db.execute(f'ALTER TABLE chats ADD COLUMN {name} {kind} NOT NULL DEFAULT 0')
         with self.transaction():
@@ -265,6 +266,18 @@ class Store:
                 AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.chat=? AND d.mid=messages.mid
                                  AND d.state IN ('sent','sending'))""",
                 (cid, int(latest), cid))
+
+    def introduced(self, cid):
+        c=self.chat(cid)
+        if c and int(c['introduced'] or 0):
+            return True
+        row=self.db.execute(
+            "SELECT 1 FROM messages WHERE chat=? AND role='assistant' AND text LIKE ? LIMIT 1",
+            (cid, 'Здравствуйте! Я ИИ-помощник Александра%')).fetchone()
+        return bool(row)
+
+    def mark_introduced(self, cid):
+        self.db.execute('UPDATE chats SET introduced=1 WHERE id=?', (cid,))
 
     def manual_pause_blocks(self, cid, now):
         c=self.chat(cid)
@@ -482,8 +495,8 @@ class Store:
 
     def auto_notice(self,did,kind):
         """Create one deterministic notice per rejected answer, without changing modes."""
-        from .auto_notice import TEXTS
-        text=TEXTS[kind]
+        from .auto_notice import text_for
+        text=text_for(kind)
         with self.transaction():
             if self.db.execute('SELECT 1 FROM auto_notices WHERE original=? OR draft=?',(did,did)).fetchone():return None
             d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()

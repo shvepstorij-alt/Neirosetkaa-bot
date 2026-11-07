@@ -446,7 +446,8 @@ async def gpt_install_app(cb: CallbackQuery):
     """Device selection; the old callback remains valid on existing messages."""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🤖 Android", callback_data="gpt_install_app:android"),
-         InlineKeyboardButton(text="🍎 iPhone", callback_data="gpt_install_app:iphone")],
+         InlineKeyboardButton(text="🍎 iPhone", callback_data="gpt_install_app:iphone"),
+         InlineKeyboardButton(text="💻 Компьютер", callback_data="gpt_install_app:desktop")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="shop_svc:chatgpt")]
     ])
     await _show_gpt_install_screen(cb,"📲 <b>Установить приложение ChatGPT</b>\n\nВыберите ваше устройство:",kb)
@@ -474,7 +475,7 @@ async def _show_gpt_install_screen(cb,txt,kb):
 @dp.callback_query(F.data.startswith("gpt_install_app:"))
 async def gpt_install_platform(cb: CallbackQuery):
     platform=str(cb.data).split(':',1)[-1]
-    if platform not in ('android','iphone'):
+    if platform not in ('android','iphone','desktop'):
         await cb.answer('Устройство не найдено. Откройте выбор устройства заново.',show_alert=True)
         return
     from install_guides import load_guides
