@@ -63,9 +63,24 @@ def redaction_categories(text):
     return _redact(text)[1]
 
 
+def _embedded_secret(text):
+    """A supplied access value, not a question about one."""
+    value=str(text or '')
+    if re.search(r'(?i)access.?token|refresh.?token|session.?key|\bbearer\b|eyJ[\w-]{20}|sk-[\w-]{16}',value):
+        return True
+    if re.search(r'(?i)(?:парол\w*|password|\bpass\b|токен\w*|token|сесси\w*|session|код|code)\s*[:=]\s*\S{3,}',value):
+        return True
+    if re.search(r'(?i)(?:парол\w*|password|токен\w*|token|код|code)\s+\d{4,8}\b',value):
+        return True
+    if re.search(r'(?i)\b\d{4,8}\b(?:\s+\S+){0,3}\s+(?:парол|код|token|токен)\b',value):
+        return True
+    return False
+
+
 def sensitive(text):
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
     if 'access_secret' in redaction_categories(text):return True
+    if _embedded_secret(text):return True
     # Recognition uses the original model label, before model-name projection.
     original_lines=re.split(r'(?<=[?!])\s*|\n',text or '')
     quantity_questions=[public_token_quantity_question(line) for line in original_lines]
@@ -90,6 +105,7 @@ def sensitive(text):
     # Keep every unrecognised fragment for the sensitive-value checks below.
     lines=re.split(r'(?<=[?!])\s*|\n',text)
     field_questions=[_credential_field_question(line) or _credential_help_question(line)
+                     or _credential_consultation(line)
                      or (i<len(quantity_questions) and quantity_questions[i])
                      for i,line in enumerate(lines)]
     remaining=[line for line,is_question in zip(lines,field_questions) if not is_question]
@@ -116,6 +132,32 @@ def sensitive(text):
 _PUBLIC_FIELD_WORDS={'apple','id','google','krea','zoom','canva','cursor','github','suno',
                      'midjourney','spotify','youtube','openrouter','gemini','grok','chatgpt',
                      'claude','password','token','session','cookie','cvv','email','login'}
+
+
+_CONSULT_PUBLIC_WORDS=_PUBLIC_FIELD_WORDS|{'forgot','expired','expire','code','account','ctrl','plus','pro','help'}
+
+
+def _credential_consultation(text):
+    """A problem question about access, without a supplied secret value.
+
+    «забыл пароль», «истёк токен» and «не приходит код» stay available for a
+    consultation. Assignments, one-time codes and unknown tokens do not.
+    """
+    raw=str(text or '').strip()
+    if not raw or len(raw)>500 or '\n' in raw:return False
+    if _embedded_secret(raw):return False
+    if re.search(r'[={\[\]"\'`]|sk-|eyj|bearer|access.?token|refresh.?token|session.?key',raw,re.I):
+        return False
+    lower=raw.casefold().replace('ё','е')
+    if not re.search(r'парол|password|\bpass\b|токен|token|сесси|session|код',lower):return False
+    if not re.search(r'забыл|не\s+помню|не\s+приходит|не\s+пришел|не\s+вставля|истек|'
+                     r'протух|не\s+действует|что\s+делать|как\s+восстанов|где\s+(?:взять|найти)|'
+                     r'не\s+могу\s+(?:войти|вставить|скопировать)|проверить\s+спам|'
+                     r'запросить\s+(?:код\s+)?повтор|expired|expire|forgot',lower):
+        return False
+    for word in re.findall(r'[a-z][a-z0-9!@$%^&*_.+\-]{3,}',lower):
+        if word not in _CONSULT_PUBLIC_WORDS:return False
+    return True
 
 
 def _credential_help_question(text):

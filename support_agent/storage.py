@@ -7,6 +7,7 @@ from contextlib import contextmanager
 HISTORY_MESSAGES = 60
 HISTORY_CHARACTERS = 24000
 HISTORY_TRUNCATED = '[Начало сообщения не включено в контекст]\n'
+MANUAL_PAUSE_SECONDS = 600
 
 
 class Store:
@@ -47,7 +48,8 @@ class Store:
         ''')
 
         columns={row['name'] for row in self.db.execute('PRAGMA table_info(chats)')}
-        for name,kind in (('batch_due','REAL'),('batch_start','REAL'),('batch_first','INTEGER')):
+        for name,kind in (('batch_due','REAL'),('batch_start','REAL'),('batch_first','INTEGER'),
+                          ('manual_pause_until','REAL'),('owner_answered_mid','INTEGER')):
             if name not in columns:
                 self.db.execute(f'ALTER TABLE chats ADD COLUMN {name} {kind} NOT NULL DEFAULT 0')
         with self.transaction():
@@ -196,17 +198,22 @@ class Store:
             self.db.execute('INSERT OR IGNORE INTO chats(connection,uid) VALUES (?,?)', (connection,uid))
             chat = self.db.execute('SELECT * FROM chats WHERE connection=? AND uid=?', (connection,uid)).fetchone()
             cid = chat['id']
-            existing = self.db.execute('SELECT 1 FROM messages WHERE chat=? AND mid=?', (cid,mid)).fetchone()
+            existing = self.db.execute('SELECT role FROM messages WHERE chat=? AND mid=?', (cid,mid)).fetchone()
+            # The assistant stores its own outgoing row before Telegram echoes it.
+            # That echo must not start a manual pause or cancel the client's turn.
+            if existing and existing['role']=='assistant':
+                return cid
             if existing and not edited:
+                return cid
+            if role=='owner':
+                self._pause_after_manual_reply(cid,mid,time.time())
+                self.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)',
+                                (cid,mid,role,text,json.dumps(media),at,'stored'))
                 return cid
             pending=self.db.execute("SELECT state FROM messages WHERE chat=? AND mid=?",
                                     (cid,chat['latest'])).fetchone()
             collecting=bool(pending and pending['state']=='queued' and chat['batch_due']>0)
-            # Any manual owner message or edit invalidates pending suggestions.
-            if role == 'owner':
-                self.db.execute("UPDATE chats SET revision=revision+1 WHERE id=?", (cid,))
-            else:
-                self.db.execute('UPDATE chats SET latest=MAX(latest,?),inbound=MAX(inbound,?),revision=revision+1 WHERE id=?', (mid,at,cid))
+            self.db.execute('UPDATE chats SET latest=MAX(latest,?),inbound=MAX(inbound,?),revision=revision+1 WHERE id=?', (mid,at,cid))
             self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')", (cid,))
             self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'", (cid,))
             chat = self.chat(cid)
@@ -225,6 +232,57 @@ class Store:
                     self.db.execute('UPDATE chats SET batch_start=?,batch_due=? WHERE id=?',
                                     (time.time(),time.time()+self.batch_seconds,cid))
             return cid
+
+    def _pause_after_manual_reply(self, cid, owner_mid, now):
+        """Pause the chat and remember which client messages the owner covered.
+
+        Caller holds the write transaction. Client messages with a smaller id
+        are treated as answered. Later client messages stay queued for after
+        the pause. Assistant rows are ignored by ingest before this runs.
+        """
+        answered=self.db.execute(
+            "SELECT MAX(mid) FROM messages WHERE chat=? AND role='client' AND mid<?",
+            (cid, owner_mid)).fetchone()[0] or 0
+        until=float(now)+MANUAL_PAUSE_SECONDS
+        self.db.execute('''UPDATE chats SET revision=revision+1,
+            manual_pause_until=max(COALESCE(manual_pause_until,0), ?),
+            owner_answered_mid=max(COALESCE(owner_answered_mid,0), ?)
+            WHERE id=?''', (until, int(answered), cid))
+        self.db.execute("""UPDATE messages SET state='stale'
+            WHERE chat=? AND role='client' AND mid<=? AND state IN ('queued','working')""",
+            (cid, int(answered)))
+        self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'", (cid,))
+        latest=self.db.execute('SELECT latest FROM chats WHERE id=?',(cid,)).fetchone()[0]
+        if latest and int(latest)>int(answered):
+            first=self.db.execute(
+                "SELECT MIN(mid) FROM messages WHERE chat=? AND role='client' AND mid>?",
+                (cid, int(answered))).fetchone()[0] or latest
+            self.db.execute('UPDATE chats SET batch_first=? WHERE id=?',(int(first),cid))
+            # A draft that was not sent is not an answer. Keep the latest
+            # unanswered client message claimable once the pause ends.
+            self.db.execute("""UPDATE messages SET state='queued'
+                WHERE chat=? AND mid=? AND role='client' AND state IN ('working','done','stale')
+                AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.chat=? AND d.mid=messages.mid
+                                 AND d.state IN ('sent','sending'))""",
+                (cid, int(latest), cid))
+
+    def manual_pause_blocks(self, cid, now):
+        c=self.chat(cid)
+        return bool(c and float(c['manual_pause_until'] or 0)>float(now))
+
+    def release_unsent(self, did):
+        """Drop a reserved send that has not been handed to Telegram."""
+        with self.transaction():
+            d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+            if not d or d['state']!='sending':
+                return False
+            c=self.chat(d['chat'])
+            answered=int(c['owner_answered_mid'] or 0) if c else 0
+            self.db.execute("UPDATE drafts SET state='stale' WHERE id=?",(did,))
+            if d['mid']>answered:
+                self.db.execute("""UPDATE messages SET state='queued'
+                    WHERE chat=? AND mid=? AND role='client'""",(d['chat'],d['mid']))
+            return True
 
     def delete_messages(self, connection, uid, mids):
         with self.transaction():
@@ -261,8 +319,10 @@ class Store:
                 JOIN chats c ON c.id=m.chat JOIN connections b ON b.id=c.connection
                 WHERE m.state='queued' AND c.mode IN ('draft','auto') AND b.enabled=1 AND b.can_reply=1
                 AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.chat=c.id AND d.state='sending')
+                AND COALESCE(c.manual_pause_until,0)<=?
+                AND m.mid>COALESCE(c.owner_answered_mid,0)
                 AND m.mid=c.latest AND c.batch_due<=?'''+exclusion+' ORDER BY m.at,m.chat LIMIT 1',
-                (now,*excluded)).fetchone()
+                (now,now,*excluded)).fetchone()
             if row:
                 self.db.execute("UPDATE messages SET state='working' WHERE chat=? AND mid=?",(row['chat'],row['mid']))
                 return dict(row, global_revision=int(self.get('revision')))
@@ -272,6 +332,8 @@ class Store:
         with self.transaction():
             c=self.chat(cid)
             if not c or self.effective_mode(cid)=='off':return False
+            if float(c['manual_pause_until'] or 0)>now:return False
+            if int(c['latest'] or 0)<=int(c['owner_answered_mid'] or 0):return False
             b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
             if not b or not b['enabled'] or not b['can_reply']:return False
             pending=self.db.execute("SELECT 1 FROM messages WHERE chat=? AND mid=? AND state='queued'",
@@ -338,6 +400,8 @@ class Store:
         if d['state']=='stale':return 'черновик отменён после изменения сообщений или режима работы'
         if c['revision']!=d['revision'] or int(self.get('revision'))!=d['global_revision']:
             return 'после подготовки черновика изменился режим работы; подготовьте новый ответ'
+        if float(c['manual_pause_until'] or 0)>now:
+            return 'в чате пауза после ручного ответа владельца'
         if self.db.execute("SELECT 1 FROM drafts WHERE chat=? AND state='sending' LIMIT 1",(d['chat'],)).fetchone():
             return 'в этом чате уже отправляется другой ответ'
         if not 0<=now-c['inbound']<86340:return 'истекло допустимое окно ответа Telegram либо время последнего обращения некорректно'
@@ -354,6 +418,8 @@ class Store:
             c=self.chat(d['chat'])
             b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
             if not b['can_reply'] or not 0<=now-c['inbound']<86340 or not 0<=now-d['created']<900:
+                return None
+            if float(c['manual_pause_until'] or 0)>now:
                 return None
             self.db.execute("UPDATE drafts SET state='sending' WHERE id=?",(did,))
             return dict(d, connection=c['connection'], uid=c['uid'])
@@ -379,6 +445,8 @@ class Store:
         if c['latest']!=d['mid']:return 'получено более новое сообщение клиента'
         if c['revision']!=d['revision'] or int(self.get('revision'))!=d['global_revision']:
             return 'после подготовки ответа изменилось обращение или режим работы'
+        if float(c['manual_pause_until'] or 0)>now:
+            return 'в чате пауза после ручного ответа владельца'
         b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
         if not b or not b['enabled']:return 'подключение Telegram Business отсутствует или отключено'
         if not b['can_reply']:return 'Telegram Business не предоставляет право ответа'
@@ -393,6 +461,8 @@ class Store:
         """Atomically consume a ready answer once; never recover it for replay."""
         with self.transaction():
             if self.auto_send_block_reason(did,now) is not None:return None
+            c=self.chat(self.db.execute('SELECT chat FROM drafts WHERE id=?',(did,)).fetchone()['chat'])
+            if c and float(c['manual_pause_until'] or 0)>now:return None
             d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
             c=self.chat(d['chat'])
             self.db.execute("UPDATE drafts SET state='sending' WHERE id=?",(did,))

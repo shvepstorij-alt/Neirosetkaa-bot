@@ -1,8 +1,9 @@
 """Read-only personalized catalog prices, before checkout coupons/coin spending.
 
 No partner IDs, procurement discounts or margins are passed to the model.
-The SQL helper is installed separately by the database owner. Missing access is
-not proof that a client has no partner: remain without a personalized quote.
+The SQL helper is support_agent/sql/support_readonly.sql, installed by the
+database owner. Missing access is not proof that a client has no partner and
+is not an unpaid order: remain without a personalized quote.
 """
 import datetime as dt
 import math
