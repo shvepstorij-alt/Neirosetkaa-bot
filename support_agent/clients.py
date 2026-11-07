@@ -718,6 +718,82 @@ class ShopReader:
             result['note']='Для консультации используй обычные цены catalog_price_rub. Персональные расчёты, промокоды и монеты относятся к оформлению заказа. appstore содержит отдельный динамический ассортимент. Описания магазина не заменяют официальную проверку функций сервисов. Оплата не доказывает активацию.'
         return result
 
+    async def _read_owned_orders(self, clauses, values, limit, order_by=''):
+        """Owned payment rows plus a secret-free activation diagnostic.
+
+        A missing activation table does not erase the payment result and is
+        never reported as an unpaid order.
+        """
+        where=' AND '.join(clauses)
+        tail=(' ORDER BY '+order_by if order_by else '')+' LIMIT '+str(int(limit))
+        full='''SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at,
+            pack,fulfilled_at,order_id FROM fk_orders WHERE '''+where+tail
+        base='''SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at
+            FROM fk_orders WHERE '''+where+tail
+        try:
+            async with self.pool.acquire() as c, c.transaction(readonly=True):
+                rows=await c.fetch(full,*values)
+                projected=[]
+                from .order_activation import project_order
+                for row in rows:
+                    # A missing activation table must not abort the payment read.
+                    try:
+                        async with c.transaction(readonly=True):
+                            projected.append(await self._project_order(c, values[0], row))
+                    except Exception:
+                        projected.append(project_order(dict(row),{'lookup':'unavailable'}))
+                return projected
+        except Exception as exc:
+            if getattr(exc,'sqlstate',None)!='42703':
+                raise
+        async with self.pool.acquire() as c, c.transaction(readonly=True):
+            rows=await c.fetch(base,*values)
+            from .order_activation import project_order
+            return [project_order(dict(row),{'lookup':'unavailable'}) for row in rows]
+
+    async def _project_order(self, conn, uid, row):
+        from .order_activation import project_order
+        data=dict(row)
+        return project_order(data, await self._activation_signals(conn, uid, data))
+
+    async def _activation_signals(self, conn, uid, data):
+        signals={'lookup':'ok','fulfilled':bool(data.get('fulfilled_at'))}
+        if str(data.get('status') or '').casefold()!='paid':
+            return signals
+        order_id=str(data.get('order_id') or '')
+        if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', order_id):
+            signals['lookup']='unavailable'
+            return signals
+        link=await conn.fetchrow(
+            'SELECT status FROM linkpay_orders WHERE fk_order_id=$1 AND user_id=$2', order_id, uid)
+        if link and link['status'] in ('awaiting_link','awaiting_payment','awaiting_creds','awaiting_setup'):
+            signals['linkpay_status']=str(link['status'])
+        gift=await conn.fetchrow(
+            'SELECT status FROM nsgifts_orders WHERE fk_order_id=$1 AND user_id=$2', order_id, uid)
+        if gift and gift['status'] in ('pending','success','delivered','done'):
+            signals['nsgifts_status']=str(gift['status'])
+        tables={'chatgpt':('gpt_pending_activations','gpt_codes',True),
+                'claude':('claude_pending_activations','claude_codes',False),
+                'perplexity':('perplexity_pending_activations','perplexity_codes',False)}
+        pack=str(data.get('pack') or '')
+        service_key=pack.split(':')[1] if pack.startswith('shop:') and len(pack.split(':'))>1 else ''
+        chosen=tables.get(service_key)
+        if chosen:
+            pending,codes,started=chosen
+            started_sql='(activating_at IS NOT NULL)' if started else 'FALSE'
+            pending_row=await conn.fetchrow(
+                'SELECT (expires_at>NOW()) AS open, '+started_sql+' AS started FROM '+pending+
+                ' WHERE order_id=$1 AND user_id=$2', order_id, uid)
+            if pending_row:
+                signals['pending_open']=bool(pending_row['open'])
+                signals['activation_started']=bool(pending_row['started'])
+            code_row=await conn.fetchrow(
+                'SELECT (used_at IS NOT NULL) AS used FROM '+codes+
+                ' WHERE order_id=$1 AND used_by=$2', order_id, uid)
+            if code_row:
+                signals['code_used']=bool(code_row['used'])
+        return signals
+
     async def order_facts(self,uid,reference):
         """Fresh, owned exact lookup; never trusts an email or client-supplied UID."""
         result={'orders':[],'orders_status':'not_connected','ownership_scope':'authenticated_user',
@@ -739,11 +815,9 @@ class ShopReader:
                 clauses.append('fk_intid='+param if key=='fk_intid' else '(num::text='+param+' OR fk_intid='+param+')')
         if not self.pool:return result
         try:
-            async with self.pool.acquire() as c,c.transaction(readonly=True):
-                rows=await c.fetch('SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at FROM fk_orders WHERE '
-                                   +' AND '.join(clauses)+' LIMIT 2',*values)
-            return dict(result,orders=[dict(r,activation_status='not_checked') for r in rows],
-                        orders_status='available' if len(rows)==1 else 'not_found' if not rows else 'ambiguous',
+            projected=await self._read_owned_orders(clauses, values, limit=2)
+            return dict(result,orders=projected,
+                        orders_status='available' if len(projected)==1 else 'not_found' if not projected else 'ambiguous',
                         orders_observed_at_unix=time.time())
         except Exception as exc:
             # Safe type/stage only, never SQL values or connection details.
@@ -785,14 +859,11 @@ class ShopReader:
         except Exception:
             result['catalog_status']='read_error'
         try:
-            async with self.pool.acquire() as c, c.transaction(readonly=True):
-                rows=await c.fetch('''SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at
-                    FROM fk_orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5''',uid)
-            result.update(orders=[dict(r,activation_status='not_checked') for r in rows],
+            result.update(orders=await self._read_owned_orders(['user_id=$1'],[uid],limit=5,order_by='created_at DESC'),
                           orders_status='available',orders_observed_at_unix=time.time())
         except Exception:
             result['orders_status']='read_error'
         if result['catalog_status'] in ('available','truncated') or result['orders_status']=='available':
             result['source']='shop_database'
-        result['note']="catalog_price_rub — обычный розничный прайс, разрешено сообщать с этим смыслом. Если customer_price_rub есть, это цена каталога для клиента до промокода при оформлении/монет. Иначе индивидуальная цена не вычислена: не обещай итоговую сумму. Каталог неполный: динамические товары и описания из кода не подключены. Отсутствие позиции не доказывает отсутствие товара: можно исследовать официальный сервис и отдельно уточнить оформление через магазин. Порядок выдачи и наличие кодов неизвестны. Заказы — последние 5 этого клиента, оплата не подтверждает активацию. При ошибке раздела не подтверждай его сведения. Время чтения БД не равно проверке поставщика. Не обещай самостоятельную активацию любого товара."
+        result['note']="catalog_price_rub — обычный розничный прайс, разрешено сообщать с этим смыслом. Если customer_price_rub есть, это цена каталога для клиента до промокода при оформлении/монет. Иначе индивидуальная цена не вычислена: не обещай итоговую сумму. Каталог неполный: динамические товары и описания из кода не подключены. Отсутствие позиции не доказывает отсутствие товара: можно исследовать официальный сервис и отдельно уточнить оформление через магазин. Порядок выдачи и наличие кодов неизвестны. Заказы — последние 5 этого клиента, оплата не подтверждает активацию. activation_status unavailable или not_checked не означает, что заказ не оплачен и не означает, что подписка не включена. При ошибке раздела не подтверждай его сведения и не называй заказ неоплаченным. Время чтения БД не равно проверке поставщика. Не обещай самостоятельную активацию любого товара."
         return result

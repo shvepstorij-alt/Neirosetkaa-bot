@@ -51,6 +51,15 @@ class Service:
         self.callback_tasks={}
         self.admin_retiring=set()
         self.admin_sequence=0
+        self._business_locks={}
+
+    def _business_lock(self, ident, uid):
+        key=(str(ident), int(uid))
+        lock=self._business_locks.get(key)
+        if lock is None:
+            lock=asyncio.Lock()
+            self._business_locks[key]=lock
+        return lock
 
     def release_command_io_gate(self):
         gate=_COMMAND_IO_GATE.get()
@@ -311,15 +320,21 @@ class Service:
             media['reply_mid']=reply_mid
         # Never persist supplied credentials, or forward raw content to the admin bot.
         text='[Сообщение скрыто: возможны данные доступа; нужна ручная проверка]' if secret else scrub(raw)
-        cid=self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
-                              edited='edited_business_message' in update)
-        if role=='client':
-            person=m.get('from',{})
-            name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
-            self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
-        else:
-            from .auto_panel import record
-            record(self.store,cid,None,'manual')
+        # Same lock as dispatch, so a stored manual reply cannot race an auto-send
+        # that has not yet been handed to Telegram.
+        async with self._business_lock(ident, uid):
+            cid=self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
+                                  edited='edited_business_message' in update)
+            if role=='client':
+                person=m.get('from',{})
+                name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
+                self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
+            else:
+                stored=self.store.db.execute('SELECT role FROM messages WHERE chat=? AND mid=?',
+                                             (cid,m['message_id'])).fetchone()
+                if stored and stored['role']=='owner':
+                    from .auto_panel import record
+                    record(self.store,cid,None,'manual')
 
     async def admin_panel(self,text,rows,admin_mid=None,parse_mode=None):
         """Bounded owner-only pages; callback navigation edits the existing panel."""
@@ -895,63 +910,73 @@ class Service:
             reason=self.auto_content_reason(fresh)
             if reason:
                 await self.auto_review(did,reason);return
-        reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_send(did,time.time()))
-        if not reserved:
-            if automatic:
-                current=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
-                now=time.time()
-                if current and current['state']=='ready' and self.store.still_current(current):
-                    chat=self.store.chat(current['chat'])
-                    if not 0<=now-current['created']<=120 or not 0<=now-chat['inbound']<86340:
-                        await self.auto_review(did,'Этап: актуальность перед AUTO-отправкой. '+str(self.store.auto_send_block_reason(did,now)))
-                return
-            reason=self.store.send_block_reason(did,time.time())
-            if d['admin_mid']:
-                await self.show_draft(did,d['admin_mid'])
-            await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: отправка заблокирована. Этап: проверка перед отправкой. Причина: {reason}. Клиенту ничего не отправлено этим нажатием.')
-            return
-        if pause_after:
-            # Pause before yielding to the network so a new incoming message cannot
-            # be queued and then silently discarded after this send completes.
-            self.store.switch('off',c['id'])
+        lock=self._business_lock(c['connection'], c['uid'])
+        await lock.acquire()
         try:
-            text=outgoing_text(reserved['text'],self.store.evidence(did))
-            from .customer_format import customer_payload
-            text,payload=customer_payload(text)
-            sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],**payload)
-        except Exception:
-            self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
-            if automatic:
-                from .auto_panel import record
-                record(self.store,c['id'],did,'send_uncertain','Этап: отправка AUTO. Telegram не подтвердил результат. Повтор запрещён; проверьте личку.')
-                try:
-                    await self.owner_message(self.chat_identity(c['id'])+'\nНеизвестен результат AUTO-отправки. Режим сохранён; проверьте личку. Повтора этого ответа не будет.',
-                                             buttons([[('Карточка чата',f'view:{c["id"]}')]]))
-                except Exception:logging.warning('AUTO uncertain notification unavailable; persistent pause saved')
+            if self.store.manual_pause_blocks(c['id'], time.time()):
                 return
-            if d['admin_mid']:
-                await self.show_draft(did,d['admin_mid'])
-            await self.owner_message(self.chat_identity(c['id'])+f'\nНеизвестен результат отправки черновика №{did}. Режим сохранён. Проверьте личку. Автоматического повтора не будет.',
-                                     buttons([self.chat_controls(self.store.chat(c['id']))]))
-            return
-        try:
-            if not isinstance(sent,dict) or type(sent.get('message_id')) is not int:
-                raise ValueError('Telegram message confirmation missing')
-            with self.store.transaction():
-                self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
-                self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
-                    (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
-        except Exception:
-            self.auto_suspended=True
+            reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_send(did,time.time()))
+            if not reserved:
+                if automatic:
+                    current=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+                    now=time.time()
+                    if current and current['state']=='ready' and self.store.still_current(current):
+                        chat=self.store.chat(current['chat'])
+                        if not 0<=now-current['created']<=120 or not 0<=now-chat['inbound']<86340:
+                            await self.auto_review(did,'Этап: актуальность перед AUTO-отправкой. '+str(self.store.auto_send_block_reason(did,now)))
+                    return
+                reason=self.store.send_block_reason(did,time.time())
+                if d['admin_mid']:
+                    await self.show_draft(did,d['admin_mid'])
+                await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: отправка заблокирована. Этап: проверка перед отправкой. Причина: {reason}. Клиенту ничего не отправлено этим нажатием.')
+                return
+            if pause_after:
+                # Pause before yielding to the network so a new incoming message cannot
+                # be queued and then silently discarded after this send completes.
+                self.store.switch('off',c['id'])
+            if self.store.manual_pause_blocks(c['id'], time.time()):
+                self.store.release_unsent(did)
+                return
             try:
+                text=outgoing_text(reserved['text'],self.store.evidence(did))
+                from .customer_format import customer_payload
+                text,payload=customer_payload(text)
+                sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],**payload)
+            except Exception:
                 self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
-            except Exception:logging.warning('Send result persistence unavailable; AUTO suspended in memory')
+                if automatic:
+                    from .auto_panel import record
+                    record(self.store,c['id'],did,'send_uncertain','Этап: отправка AUTO. Telegram не подтвердил результат. Повтор запрещён; проверьте личку.')
+                    try:
+                        await self.owner_message(self.chat_identity(c['id'])+'\nНеизвестен результат AUTO-отправки. Режим сохранён; проверьте личку. Повтора этого ответа не будет.',
+                                                 buttons([[('Карточка чата',f'view:{c["id"]}')]]))
+                    except Exception:logging.warning('AUTO uncertain notification unavailable; persistent pause saved')
+                    return
+                if d['admin_mid']:
+                    await self.show_draft(did,d['admin_mid'])
+                await self.owner_message(self.chat_identity(c['id'])+f'\nНеизвестен результат отправки черновика №{did}. Режим сохранён. Проверьте личку. Автоматического повтора не будет.',
+                                         buttons([self.chat_controls(self.store.chat(c['id']))]))
+                return
             try:
-                await self.owner_message(f'Чат №{c["id"]} · ID {c["uid"]}\nЭтап: сохранение результата отправки. '
-                    'Запрос уже передан Telegram, но подтверждённый результат не удалось сохранить или проверить. '
-                    'AUTO остановлен в этом процессе; повтор запрещён. Проверьте личку перед продолжением.')
-            except Exception:logging.warning('Send persistence failure notification unavailable')
-            return
+                if not isinstance(sent,dict) or type(sent.get('message_id')) is not int:
+                    raise ValueError('Telegram message confirmation missing')
+                with self.store.transaction():
+                    self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
+                    self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
+                        (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
+            except Exception:
+                self.auto_suspended=True
+                try:
+                    self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
+                except Exception:logging.warning('Send result persistence unavailable; AUTO suspended in memory')
+                try:
+                    await self.owner_message(f'Чат №{c["id"]} · ID {c["uid"]}\nЭтап: сохранение результата отправки. '
+                        'Запрос уже передан Telegram, но подтверждённый результат не удалось сохранить или проверить. '
+                        'AUTO остановлен в этом процессе; повтор запрещён. Проверьте личку перед продолжением.')
+                except Exception:logging.warning('Send persistence failure notification unavailable')
+                return
+        finally:
+            lock.release()
         current=self.store.chat(c['id'])
         if automatic:
             from .auto_panel import record
@@ -1098,6 +1123,10 @@ class Service:
         from .catalog_context import annotate
         facts=annotate(facts,latest)
         raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .workflow_policy import ambiguity_reply
+        if not image:
+            unclear=ambiguity_reply(raw_batch)
+            if unclear:return unclear
         facts=dict(facts,case_fields={
             'payment_reference_supplied':bool(re.search(r'(?:номер\s+(?:заказа|платежа)|intid|заказ\s*№)\s*[:#№]?\s*\d{3,12}(?!\d)',raw_batch,re.I)),
             'payment_provider_supplied':bool(re.search(r'free\s*kassa|фр[ие]кас[с]?а',raw_batch,re.I))})

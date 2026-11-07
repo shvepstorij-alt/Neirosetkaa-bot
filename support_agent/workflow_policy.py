@@ -44,15 +44,108 @@ for _id in ('genspark','zai'):
                           workflow_steps_status='available')
 
 
+_EXTRA_TEXT_SERVICES=(
+    ('krea',r'krea|креа'),
+    ('suno',r'suno|суно'),
+    ('zoom',r'zoom|зум|зуме|зума'),
+    ('openrouter',r'openrouter|open router|опенроутер'),
+    ('spotify',r'spotify|спотифай'),
+    ('youtube',r'youtube|you tube|ютуб|ютубе'),
+)
+_PURCHASE_CUE=re.compile(
+    r'подписк|тариф|купить|куплю|купит|оплат|оформ|аккаунт|почт|'
+    r'сколько\s+стоит|стоим|цен[аыуе]|premium|премиум|\bplus\b|\bpro\b|'
+    r'что\s+(?:нужно|потребуется)|какие\s+данные|продл|пополн|заказать|'
+    r'хочу|нужен|нужна|нужно|подключ',re.I)
+_NON_PRODUCT={
+    'cursor':re.compile(r'пропал|исчез|мышь|мышк|указател|мига|не\s+двига|на\s+экране|в\s+тексте|в\s+строке|ввода|выдел',re.I),
+    'youtube':re.compile(r'видео|ролик|залить|выложить|вылож|снять|снят|монтаж|превью|шортс|shorts|контент|клип|для\s+(?:ютуб\w*|youtube)|на\s+(?:ютуб\w*|youtube)',re.I),
+}
+
+
+def _service_patterns():
+    patterns=list(_EXTRA_TEXT_SERVICES)
+    for service,rule in NEW_RULES.items():
+        patterns.append((service,rule['pattern']))
+    return patterns
+
+
+def _sentence_kind(service, sentence):
+    non=_NON_PRODUCT.get(service)
+    if service in _NON_PRODUCT and ((non and non.search(sentence)) or not _PURCHASE_CUE.search(sentence)):
+        return 'ambiguous'
+    return 'mention'
+
+
+def classify_service_mentions(text):
+    """purchase, mention, or ambiguous for each service keyword in the text.
+
+    Cursor and YouTube are ambiguous when the sentence is about a pointer or
+    a video, or when the word appears without a purchase cue. Other services
+    keep a plain mention so an obvious catalogue question still resolves.
+    """
+    found={}
+    sentences=re.split(r'[.!?\n]+',str(text or '')) or ['']
+    for service,pattern in _service_patterns():
+        compiled=re.compile(r'(?<!\w)(?:'+pattern+r')(?!\w)',re.I)
+        kinds=set()
+        for sentence in sentences:
+            if not compiled.search(sentence):continue
+            kind=_sentence_kind(service,sentence)
+            if kind=='mention' and service in _NON_PRODUCT and _PURCHASE_CUE.search(sentence):
+                kind='purchase'
+            kinds.add(kind)
+        if not kinds:continue
+        if 'purchase' in kinds:
+            found[service]='purchase'
+        elif 'ambiguous' in kinds:
+            found[service]='ambiguous'
+        else:
+            found[service]='mention'
+    return found
+
+
+def ambiguous_service_keys(text):
+    return {service for service,kind in classify_service_mentions(text).items() if kind=='ambiguous'}
+
+
+def ambiguity_reply(text):
+    """Ask which service was meant. Never request account data from one word."""
+    mentions=classify_service_mentions(text)
+    ambiguous=sorted(service for service,kind in mentions.items() if kind=='ambiguous')
+    if not ambiguous or any(kind=='purchase' for kind in mentions.values()):
+        return None
+    if ambiguous==['cursor']:
+        question='Уточните, пожалуйста: речь про подписку на редактор Cursor или про указатель на экране?'
+    elif ambiguous==['youtube']:
+        question='Уточните, пожалуйста: вам нужна подписка YouTube или помощь с видео для YouTube?'
+    else:
+        labels=', '.join({'cursor':'Cursor','youtube':'YouTube'}.get(service,service) for service in ambiguous)
+        question='Уточните, пожалуйста, вы про оформление '+labels+' или о чём-то другом? Данные аккаунта пока не нужны.'
+    return {'reply':question,
+            'summary':'Совпадение по слову не принято за покупку. Задан уточняющий вопрос, данные доступа не запрошены.',
+            'handoff':False,'source_ids':[],
+            'evidence':{'status':'clarification','sources':[],
+                        'diagnostic':'Этап: уточнение сервиса. Одно совпавшее слово не запускает запрос почты или пароля.'}}
+
+
 def policies_for(facts):
     rows=facts.get('requested_catalog',[])
     names=' '.join(str(r.get(k,'')) for r in rows if isinstance(r,dict)
                    for k in ('service_key','service'))
     current=str(facts.get('conversation',{}).get('latest_client_message',''))
-    services=[service for service,pattern in (('krea',r'krea|креа'),('suno',r'suno|суно'),
-              ('zoom',r'zoom|зум|зуме|зума'),('openrouter',r'openrouter|open router|опенроутер'),
-              ('spotify',r'spotify|спотифай'),('youtube',r'youtube|you tube|ютуб|ютубе'))
-              if re.search(r'(?<!\w)(?:'+pattern+r')(?!\w)',names+' '+current,re.I)]
+    mentions=classify_service_mentions(current)
+    def _matched(service,pattern):
+        if mentions.get(service)=='ambiguous':return False
+        found=re.search(r'(?<!\w)(?:'+pattern+r')(?!\w)',names+' '+current,re.I)
+        if not found:return False
+        # A free-text hit without a catalogue row still needs a real purchase
+        # cue for the services that are easy to confuse with ordinary words.
+        in_names=bool(re.search(r'(?<!\w)(?:'+pattern+r')(?!\w)',names,re.I))
+        if service in _NON_PRODUCT and not in_names and mentions.get(service)!='purchase':
+            return False
+        return True
+    services=[service for service,pattern in _EXTRA_TEXT_SERVICES if _matched(service,pattern)]
     policies=[{'service':service,'source':'owner_confirmed','confirmed_on':'2026-10-29',
              'expected_fulfillment':'account_details',
              'required_fields':['account_email','account_password'],
@@ -66,7 +159,7 @@ def policies_for(facts):
                                if service in ('suno','zoom','openrouter','spotify','youtube') else None),
              'duration':'not_confirmed','success_criterion':'not_confirmed'} for service in services]
     for service,rule in NEW_RULES.items():
-        if not re.search(r'(?<!\w)(?:'+rule['pattern']+r')(?!\w)',names+' '+current,re.I):continue
+        if not _matched(service,rule['pattern']):continue
         policy={k:v for k,v in rule.items() if k!='pattern'}
         policy.update(service=service,source='owner_confirmed',confirmed_on='2026-11-04',
                       delivery_channel='personally_to_alexander_telegram',

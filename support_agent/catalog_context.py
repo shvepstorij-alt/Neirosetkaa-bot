@@ -187,6 +187,9 @@ def annotate(facts, latest, products=()):
     product_words=[_words(p) for p in products if isinstance(p,str)]
     requests=[request,*product_words]
     wanted=set().union(*(_families(words) for words in requests))
+    from .workflow_policy import ambiguous_service_keys
+    ambiguous=ambiguous_service_keys(latest)
+    wanted-=ambiguous
     product_aliases=_product_aliases(facts.get('catalog',[]))
     dynamic_wanted=set().union(*(_product_families(' '.join(words),product_aliases) for words in requests))
     # A unique branded first word handles renamed rows (e.g. «Runway ML»)
@@ -209,6 +212,8 @@ def annotate(facts, latest, products=()):
         if individual_request and name==('другой','сервис'):
             continue
         family=_families(key)|_families(name)
+        if family & ambiguous:
+            continue
         direct=any(_contains(words,key) or _contains(words,name) for words in requests)
         if name and len(prefixes.get(name[0],()))==1:
             direct=direct or any(_contains(words,(name[0],)) for words in requests)

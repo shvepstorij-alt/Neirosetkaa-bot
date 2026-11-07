@@ -105,8 +105,8 @@ def status_reply(facts, question, reference=None):
         detail=lookup.get('diagnostic','')
         from .privacy import scrub
         detail=scrub(detail)[:500] if isinstance(detail,str) else ''
-        return _answer('Сейчас не получилось надежно проверить оплату заказа. Проверю его вручную; неподтвержденный статус называть не буду.',
-                       'Этап: чтение собственного заказа. Статус источника='+safe+'. Зачисление и активация не подтверждены. '+detail,True)
+        return _answer('Сейчас не получилось надежно проверить оплату заказа. Проверю его вручную; неподтвержденный статус называть не буду. Недоступность проверки не означает, что заказ не оплачен.',
+                       'Этап: чтение собственного заказа. Статус источника='+safe+'. Зачисление и активация не подтверждены. Недоступный источник не считается отсутствием оплаты. '+detail,True)
     rows=lookup.get('orders')
     if not isinstance(rows,list) or len(rows)!=1 or not isinstance(rows[0],dict):
         return _answer('Не получилось однозначно сопоставить номер с заказом. Проверю вручную.',
@@ -123,8 +123,11 @@ def status_reply(facts, question, reference=None):
     amount_text=(' на '+amount+' ₽') if amount is not None else ''
     status=str(row.get('status','')).casefold()
     if status=='paid':
-        return _answer(label+amount_text+': оплата отмечена в магазине как полученная. Это еще не подтверждение активации или выдачи подписки.',
-                       'Этап: чтение статуса собственного заказа. status=paid; источник=авторизованное чтение магазина. Активация, выдача и прямой запрос к платежному провайдеру этим не проверены.')
+        from .order_activation import service_phrase, activation_phrase
+        detail=(service_phrase(row)+activation_phrase(row)).strip()
+        extra=(' '+detail) if detail else ''
+        return _answer(label+amount_text+': оплата отмечена в магазине как полученная.'+extra+' Это еще не подтверждение активации или выдачи подписки.',
+                       'Этап: чтение статуса собственного заказа. status=paid; источник=авторизованное чтение магазина. Активация='+str(row.get('activation_status') or 'not_checked')+'. Прямой запрос к платежному провайдеру этим не проверен.')
     if status=='pending':
         return _answer(label+amount_text+': магазин пока ожидает подтверждение оплаты. Если деньги уже списались, пришлите скриншот банковского чека, скрыв номер карты, счет и другие лишние личные данные. Чек поможет разобраться, но сам по себе не подтверждает зачисление платежа в магазине. Повторно оплачивать сейчас не нужно.',
                        'Этап: чтение статуса собственного заказа. status=pending; источник=авторизованное чтение магазина. Чек не проверяет зачисление и не меняет статус.',True)
@@ -173,6 +176,10 @@ async def order_reply(shop,uid,current,*,facts=None,context=''):
         if own_match:
             state=str(candidate.get('status','')).casefold()
             if state in ('paid','pending','cancelled','canceled','expired','failed'):
+                activation=str(candidate.get('activation_status') or 'not_checked')
+                if activation not in ('not_checked','unavailable','not_applicable','pending_window','in_progress',
+                                      'code_consumed','fulfilled_recorded','manual_pending'):
+                    activation='not_checked'
                 result['order_context']={'status':state,'ownership_scope':'authenticated_user',
-                                         'activation_status':'not_checked','source':'exact_shop_order_lookup'}
+                                         'activation_status':activation,'source':'exact_shop_order_lookup'}
     return result
