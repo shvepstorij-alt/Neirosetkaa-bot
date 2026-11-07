@@ -74,7 +74,19 @@ def _matches_reference(row,reference):
             or kind=='ambiguous' and value in (num,fk))
 
 
-def status_reply(facts, question, reference=None):
+def _intake(question, context=''):
+    """Ask for the missing case facts. Do not state a payment or activation result."""
+    blob = f'{question}\n{context}'
+    parts = ['Пришлите номер заказа из сообщения бота или номер платежа FreeKassa. Проверю оплату именно вашего заказа.']
+    if re.search(r'активир', str(question or ''), re.I):
+        parts.append('Напишите, что именно не получается: текст ошибки или скриншот без паролей, токенов и платёжных данных.')
+    if re.search(r'chatgpt|чат\s*гпт|\bplus\b|плюс', blob, re.I):
+        parts.append('Для обычной подписки ChatGPT токен вставляется в окно активации в боте, не в эту переписку. Сначала сверю заказ.')
+    parts.append('Александр посмотрит заказ и напишет, что делать дальше.')
+    return ' '.join(parts)
+
+
+def status_reply(facts, question, reference=None, context=''):
     """Render only an exact owned lookup. Never search by supplied email/name.
 
     Root plumbing supplies `order_lookup` with ownership_scope set by its own
@@ -84,7 +96,7 @@ def status_reply(facts, question, reference=None):
     if not is_status_request(question) and reference is None:return None
     reference=reference or requested_reference(question)
     if not reference:
-        return _answer('Пришлите номер заказа из сообщения бота или номер платежа FreeKassa. Проверю оплату именно вашего заказа)',
+        return _answer(_intake(question, context),
                        'Этап: выбор заказа для проверки оплаты. Номер заказа или FreeKassa не указан. Последние заказы не выбраны вместо него.')
     if reference.get('kind')=='multiple':
         return _answer('Пришлите, пожалуйста, один номер заказа или платежа FreeKassa, который нужно проверить.',
@@ -151,7 +163,7 @@ async def order_reply(shop,uid,current,*,facts=None,context=''):
             reference.get('kind') in ('fk_intid','shop_num','pair') or is_status_request(context))):
         return None
     if not reference or reference.get('kind')=='multiple':
-        return status_reply({},current,reference)
+        return status_reply({},current,reference,context)
     if reference['kind']=='pair':
         query={k:int(v) if k=='num' else v for k,v in reference.items() if k!='kind'}
     else:

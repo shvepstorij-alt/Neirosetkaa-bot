@@ -1055,6 +1055,33 @@ class Service:
             raise ValueError('Daily API request limit reached')
 
     async def generate(self,job):
+        """One structured reading when the model supports it. Older routers stay for tests."""
+        if hasattr(self.ai,'understand_turn') and not job.get('_legacy'):
+            try:
+                understood=await self._understood_reply(job)
+                if understood is not None:
+                    return understood
+            except Exception as exc:
+                from .handoff import handoff_text
+                return {'reply':handoff_text(),'summary':'Разбор хода не завершился. Клиенту оставлено ожидание владельца.',
+                        'handoff':True,'source_ids':[],
+                        'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',
+                                    'diagnostic':'Этап: разбор хода. Тип='+type(exc).__name__+'. Текст клиента не отправлялся.'}}
+        return await self._generate_legacy(job)
+
+    async def _understood_reply(self,job):
+        from .turn_understanding import build_context, package
+        if not self.store.still_current(job):
+            return None
+        facts=await self.shop.facts(job['uid'])
+        context=build_context(self.store.db, job['chat'], facts)
+        understanding=await self.ai.understand_turn(context)
+        if not self.store.still_current(job):
+            return None
+        self._last_turn_context=context
+        return package(understanding, context, self.store.db, job['chat'])
+
+    async def _generate_legacy(self,job):
         """Owned payment evidence composes with, never replaces, another goal."""
         from .order_status import order_reply,is_status_request
         first=self.store.chat(job['chat'])['batch_first']

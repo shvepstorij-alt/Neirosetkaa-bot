@@ -103,7 +103,7 @@ class ScreenshotTests(unittest.TestCase):
         for nominal in ('1000 RUB', '2000 RUB', '3000 RUB', '4000 RUB', '5000 RUB', '6000 RUB'):
             self.assertIn(nominal, listed)
         howto = self.say('Как оформить подписку на Ловабл')
-        self.assertNotIn(TEXTS['manual'], howto)
+        self.assertNotIn('Результат операции пока не подтверждён', howto)
         self.assertNotIn('Вы хотите пополнить', howto)
         self.assertNotIn('Pro Pro', howto)
         self.assertTrue('Lovable' in howto or 'оформ' in howto.casefold(), howto)
@@ -153,8 +153,8 @@ class SendGateTests(unittest.TestCase):
         evidence = {'status': 'workflow_consultation', 'owner_action_required': True, 'sources': []}
         kind = kind_for(evidence, 'кодовая консультация не имеет действующего подтверждения неизменённого текста',
                         'Как оформить подписку на Ловабл', usable_reply=True)
-        self.assertNotEqual(kind, 'manual')
-        self.assertNotEqual(TEXTS.get(kind), TEXTS['manual'])
+        self.assertEqual(kind, 'human')
+        self.assertNotIn('Результат операции пока не подтверждён', TEXTS.get(kind, ''))
 
 
 if __name__ == '__main__':
