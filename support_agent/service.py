@@ -332,6 +332,9 @@ class Service:
             media={k:v for k,v in m['document'].items() if k in ('file_id','file_size')}
             media['kind']='photo'
             media['delivery_kind']='document'
+        elif m.get('document') and m['document'].get('mime_type')=='application/pdf':
+            # Bank receipt. Keep the file id only; never the name or the bytes.
+            media={'kind':'document','file_id':str(m['document'].get('file_id') or '')[:128]}
         elif m.get('document') and (m['document'].get('mime_type') in ('text/plain','application/json')
                 or str(m['document'].get('file_name','')).casefold().endswith(('.txt','.json'))):
             # These files can contain the entire session. Do not download them
@@ -1079,6 +1082,12 @@ class Service:
         if not self.store.still_current(job):
             return None
         self._last_turn_context=context
+        from .payment_case import resolve_payment
+        payment=await resolve_payment(self, job, understanding, context)
+        if not self.store.still_current(job):
+            return None
+        if payment is not None:
+            return payment
         return package(understanding, context, self.store.db, job['chat'])
 
     async def _generate_legacy(self,job):

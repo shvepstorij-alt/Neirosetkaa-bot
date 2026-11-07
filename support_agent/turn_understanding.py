@@ -83,7 +83,9 @@ def build_context(db, chat, facts):
     state = load(db, chat)
     catalog = (facts or {}).get('catalog') or []
     tariffs = catalog_index(facts)
+    from .payment_case import receipt_files
     return {'burst': burst,
+            'receipt_attached': bool(receipt_files(db, chat)),
             'history': window,
             'dialog_state': {'service_id': state.get('service_key') or '',
                              'service': state.get('service_label') or '',
