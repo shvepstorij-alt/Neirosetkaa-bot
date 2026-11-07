@@ -9,12 +9,56 @@ def public_question(text):
     from .privacy import public_token_quantity_question
     if any(public_token_quantity_question(line) for line in re.split(r'(?<=[?!])\s*|\n',text)):
         return True
-    return bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|ограничени|отлич|сравн|'
+    return bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|ограничени|отлич|сравн|разниц|'
                           r'какие\s+(?:есть\s+|сейчас\s+|платные\s+)*(?:модел|тариф)|'
                           r'официальн[а-яё]*[^.!?\n]{0,50}(?:цен|валют|услов|сведен|описан|сайт)',text,re.I))
 
 
-def explicit_public_products(text):
+def _without_catalogue_plan_labels(text, facts):
+    """Remove exact tiers of currently mentioned services, not global words.
+
+    Plan names are catalogue data, not another brand registry. Match whole
+    labels with their qualifiers and retain unrelated explicitly named tools.
+    The input copy is used only for identity discovery, never as the question.
+    """
+    if not isinstance(facts, dict):return text
+    from .catalog_context import annotate, _words
+    rows=[row for key in ('catalog','requested_catalog') for row in facts.get(key,[])
+          if isinstance(row,dict)]
+    selected=annotate({'catalog':rows},text).get('requested_catalog',[])
+    labels=set()
+    for row in selected:
+        label=str(row.get('plan','')).strip()
+        if not label:continue
+        labels.add(label)
+        # A customer's tier name may omit only a catalogue billing suffix;
+        # never drop arbitrary feature/variant words from the plan identity.
+        base=re.sub(r'\s+(?:на\s+(?:год|месяц)|годовой|месячный|annual|annually|monthly|yearly)\s*$',
+                    '',label,flags=re.I)
+        if base:labels.add(base)
+    # Protect displayed service titles at overlapping occurrences. This also
+    # covers a real catalogue service whose title equals another plan label.
+    protected=[]
+    for row in selected:
+        for key in ('service','service_key'):
+            name=str(row.get(key,'')).strip()
+            if not name:continue
+            pattern=r'(?<!\w)'+re.escape(name)+r'(?!\w)'
+            protected.extend((m.start(),m.end()) for m in re.finditer(pattern,text,re.I))
+    spans=[]
+    for label in sorted(labels,key=len,reverse=True):
+        tokens=_words(label)
+        if not tokens:continue
+        pattern=r'(?<!\w)'+r'[\W_]+'.join(re.escape(token) for token in tokens)+r'(?!\w)'
+        for match in re.finditer(pattern,text,re.I):
+            if any(start<match.end() and match.start()<end for start,end in protected):continue
+            spans.append((match.start(),match.end()))
+    copy=list(text)
+    for start,end in spans:copy[start:end]=' '*(end-start)
+    return ''.join(copy)
+
+
+def explicit_public_products(text, facts=None):
     """Only current public labels, never customer URLs, identity or history.
 
     Known aliases are deterministic. Unknown Latin labels are accepted only in
@@ -36,16 +80,18 @@ def explicit_public_products(text):
         return list(dict.fromkeys(known))[:4]
     # Never mine labels from links, email, handles, passwords or private values.
     clean=re.sub(r'https?://\S+|\b\S+@\S+|@[A-Za-z0-9_]+',' ',scrub(value))
+    clean=_without_catalogue_plan_labels(clean,facts)
     blocked={'usd','eur','rub','api','ai','saas','free','basic','pro','plus','max','ultra',
              'business','enterprise','monthly','annual','google','account','id','ssо','sso'}
     labels=[]
-    for match in re.finditer(r'(?<![\w./@-])([A-Z][A-Za-z][A-Za-z0-9-]{0,35})(?![\w./@-])',clean):
+    end=r'(?![\w/@-]|\.[A-Za-z0-9])'
+    for match in re.finditer(r'(?<![\w./@-])([A-Z][A-Za-z][A-Za-z0-9-]{0,35})'+end,clean):
         label=match[1].casefold()
         if label not in blocked and not re.search(r'\d',label) and public_name(label) and not sensitive(label):labels.append(canonical_product(label))
     # Lowercase unknown brands also occur as explicit peers ("krea и foobar").
     # Extract only the joined labels, not arbitrary English words in a task.
     if public_question(value) or re.search(r'лучше|выбрать|сравн|отлич',value,re.I):
-        pair=r'(?<![\w./@-])([A-Za-z][A-Za-z0-9-]{1,35})\s+(?:и|или|vs\.?|versus)\s+([A-Za-z][A-Za-z0-9-]{1,35})(?![\w./@-])'
+        pair=r'(?<![\w./@-])([A-Za-z][A-Za-z0-9-]{1,35})\s+(?:и|или|vs\.?|versus)\s+([A-Za-z][A-Za-z0-9-]{1,35})'+end
         for match in re.finditer(pair,clean,re.I):
             for raw in match.groups():
                 label=raw.casefold()
@@ -129,7 +175,7 @@ def consultation_plan(latest, plan, facts=None):
         # Keep dynamically discovered names: their aliases are not in this map.
         plan=dict(plan,products=[p for p in plan.get('products',[])
                                 if p not in names or p in products])
-    public=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|какие\s+(?:сейчас\s+)?модел|какие\s+тариф|о\s+тариф|по\s+тариф|тарифы',text))
+    public=public_question(latest) or bool(re.search(r'о\s+тариф|по\s+тариф|тарифы',text))
     public=public or bool(re.search(r'claude\s*code|клод\s*код|регион|стран|сингапур|поддержива|принимают.*карт|карт.*(?:проход|работ|оплат)',text))
     from .selection_help import is_selection_request
     task_consultation=bool((facts or {}).get('task_consultation'))
@@ -138,12 +184,14 @@ def consultation_plan(latest, plan, facts=None):
     explicit_features=bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|отлич|сравн|'
                                     r'какие\s+(?:сейчас\s+)?модел|ограничени|'
                                     r'официальн[а-яё]*[^.!?\n]{0,40}(?:сведен|возможност|описан|сайт)',text))
+    from .request_goals import goals
+    explicit_features=explicit_features or 'features' in goals(latest)
     plan_question=bool(re.search(r'какие\s+(?:есть\s+)?(?:платные\s+)?тариф|о\s+тариф|по\s+тариф|тарифы',text))
     checkout_only=bool(re.search(r'как\s+(?:оформить|оплатить|купить|активировать)|'
                                 r'что\s+(?:нужно|потребуется)\s+(?:после|для)|'
                                 r'какие\s+данные|куда\s+(?:прислать|отправить)',text)) and not explicit_features
     if public_question(latest) and not checkout_only:
-        explicit=explicit_public_products(latest)
+        explicit=explicit_public_products(latest,facts)
         products=list(dict.fromkeys(products+catalog_brands+explicit))[:4]
         public=True
     if catalog_brands and (explicit_features or plan_question or is_selection_request(latest,facts) or task_consultation) and not checkout_only:

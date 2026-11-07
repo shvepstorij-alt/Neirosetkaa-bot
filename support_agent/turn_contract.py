@@ -38,10 +38,81 @@ class IntentReference:
     checked_sources: int = 0
     missing_sources: int = 0
     product_kind: str = ''
+    plan_labels: tuple[str, ...] = ()
 
     @property
     def question(self):
         return ', '.join(self.entities.labels)+'\n'+intent_questions(self.goals,self.product_kind)
+
+
+def canonical_plan_words(value):
+    """Catalogue plan typography: Pro5x, Pro 5× and Pro 5х share a label.
+
+    This normalises a label's spelling, not a model tier or a numeric value.
+    Only a complete catalogue plan match may select a SKU afterwards.
+    """
+    from .catalog_context import _words
+    value=str(value).casefold().replace('×','x')
+    value=re.sub(r'(?<=\d)х(?=\W|$)','x',value)
+    value=re.sub(r'(?<=[a-zа-яё])(?=\d)|(?<=\d)(?=[a-zа-яё])',' ',value)
+    aliases={'плюс':'plus','макс':'max','го':'go','бизнес':'business',
+             'бейсик':'basic','бэйсик':'basic','премиум':'premium'}
+    return tuple(aliases.get(word,word) for word in _words(value))
+
+
+def plan_reference(text,catalog):
+    """A whole catalogue plan-only reply, never an arbitrary new task."""
+    from .fulfillment_reply import _selected_plan_rows
+    from .catalog_context import service_mentions
+    if len(str(text))>350 or service_mentions(text,catalog):return []
+    matched=_selected_plan_rows(catalog,text,require_match=True)
+    if not matched:return []
+    tokens=list(canonical_plan_words(text))
+    for plan in sorted({canonical_plan_words(row.get('plan','')) for row in matched},key=len,reverse=True):
+        if not plan:continue
+        for start in range(len(tokens)-len(plan),-1,-1):
+            if tuple(tokens[start:start+len(plan)])==plan:del tokens[start:start+len(plan)]
+    allowed=set('а и нет лучше тогда тариф тарифа тарифе план плана выбираю беру хочу давайте давай '
+                'мне нужен нужна нужно это именно пожалуйста подписка подписку'.split())
+    return matched if not set(tokens)-allowed else []
+
+
+def contextual_question(text,catalog):
+    """Service-less informational follow-ups retain validated client focus."""
+    from .catalog_context import service_mentions,_words
+    from .request_goals import goals
+    value=str(text)
+    intent=goals(value)
+    if (not intent or intent-set(INFORMATION_GOALS) or len(value)>500
+            or service_mentions(value,catalog)):return False
+    # A newly introduced product must reach discovery, including one not yet
+    # present in the catalogue. Catalogue plan labels remain legitimate slots.
+    public_tokens={word for row in catalog for word in canonical_plan_words(row.get('plan',''))}
+    technical={'android','ios','iphone','apk','app','store','google','chrome','safari','windows','macos'}
+    if any(word.casefold() not in public_tokens|technical
+           for word in re.findall(r'[A-Za-z][A-Za-z0-9_-]*',value)):return False
+    words=_words(value)
+    if len(words)>45:return False
+    ordinary=set('оформления оплаты покупки подписки тарифов тарифами тарифах тариф тарифы плана планов '
+                 'них них же этого этого него нее неё аккаунта аккаунт приложении приложения приложение '
+                 'телефоне телефона андроид айфон входа активации установки'.split())
+    for target in re.findall(r'(?<!\w)(?:на|для|про|об|о|у|сервиса|сервисе)\s+([а-яё][а-яё0-9_-]*)',value,re.I):
+        if target.casefold() not in ordinary and target.casefold() not in public_tokens:
+            return False
+    return True
+
+
+def focused_history(history,catalog):
+    """Keep the latest explicitly named client focus and its parameter turns."""
+    from .catalog_context import service_mentions
+    focus=None;kept=[]
+    for row in reversed(history):
+        named=client_entities(row.get('text',''),catalog)
+        if named:
+            if focus is None:focus=set(named)
+            elif set(named)!=focus:break
+        kept.append(row)
+    return list(reversed(kept)) if focus else list(history)
 
 
 def product_kind(text):
@@ -92,6 +163,28 @@ def entity_reference(text, catalog):
                 else:i+=1
         if not set(tokens)-_REFERENCE_WORDS:
             return EntityReference(tuple(names), tuple(dict.fromkeys(names.values())))
+    if not names:
+        # Emphatic whole labels such as «Курсорррр» are not arbitrary fuzzy
+        # brands. Compress only runs of 3+ letters, considering the single and
+        # double spellings, and accept exactly one known catalogue identity.
+        value=text.casefold()
+        runs=list(re.finditer(r'([^\W\d_])\1{2,}',value))
+        if 0<len(runs)<=4:
+            variants={value}
+            for run in reversed(runs):
+                variants={candidate[:run.start()]+run[1]*count+candidate[run.end():]
+                          for candidate in variants for count in (1,2)}
+            matches={}
+            for variant in variants:
+                known=service_mentions(variant,catalog)
+                if not known:continue
+                remaining=list(_words(variant))
+                for name in sorted(_service_names(catalog),key=len,reverse=True):
+                    for start in range(len(remaining)-len(name),-1,-1):
+                        if tuple(remaining[start:start+len(name)])==name:del remaining[start:start+len(name)]
+                if not set(remaining)-_REFERENCE_WORDS:
+                    matches[tuple(known)]=EntityReference(tuple(known),tuple(dict.fromkeys(known.values())))
+            if len(matches)==1:return next(iter(matches.values()))
     # A new public brand is a client-supplied name, not evidence of a product
     # sold by this shop. It still goes through normal discovery/availability.
     match=re.fullmatch(r'\s*(?:а|и|тогда)\s+(?:(?:на|у|для|про)\s+)?'
@@ -105,15 +198,33 @@ def entity_reference(text, catalog):
     return None
 
 
+def client_entities(text,catalog):
+    from .catalog_context import service_mentions
+    named=service_mentions(text,catalog)
+    if named:return named
+    reference=entity_reference(text,catalog)
+    return dict(zip(reference.identities,reference.labels)) if reference else {}
+
+
 def reference_intent(current, history, catalog):
     """Read actual, already freshness-validated client rows, newest intent wins."""
     from .request_goals import goals
     entities=entity_reference(current,catalog)
+    plans=plan_reference(current,catalog) if not entities else []
+    if plans:
+        from .catalog_context import service_mentions
+        focus={}
+        for row in reversed(history):
+            focus=client_entities(row.get('text',''),catalog)
+            if focus:break
+        applicable=[row for row in plans if set(service_mentions(str(row.get('service','')),catalog)) & set(focus)]
+        if len(focus)==1 and applicable:
+            entities=EntityReference(tuple(focus),tuple(dict.fromkeys(focus.values())))
     if not entities or goals(current):return None
     from .catalog_context import service_mentions
     focus={}
     for row in reversed(history):
-        focus=service_mentions(row.get('text',''),catalog)
+        focus=client_entities(row.get('text',''),catalog)
         if focus:break
     same_entities=set(entities.identities)==set(focus)
     kind=product_kind(current) or _historical_product_kind(history,catalog)
@@ -141,7 +252,7 @@ def reference_intent(current, history, catalog):
             return IntentReference(entities,(),row.get('mid'),'previous_intent_requires_clarification')
         return IntentReference(entities,tuple(g for g in INFORMATION_GOALS if g in intent),
                                row.get('mid'),'same_entity_reference' if same_entities else 'latest_client_question',
-                               product_kind=kind)
+                               product_kind=kind,plan_labels=tuple(dict.fromkeys(str(row.get('plan','')) for row in plans)))
     return IntentReference(entities,(),None,'no_client_question')
 
 
@@ -179,7 +290,7 @@ def project_turn(facts, resolved, current, reference=None):
             'inherited_goals':sorted(inherited) if not own else [],
             'relation':('same_entity_reference' if reference and reference.get('reason')=='same_entity_reference' else
                         'entity_reference' if reference else 'current_request'),
-            'current_act':('question' if own else 'entity_reference' if reference else
+            'current_act':('question' if own else 'plan_reference' if reference and reference.get('plan_labels') else 'entity_reference' if reference else
                            'parameter' if resolved.strip()!=current.strip() else 'unspecified'),
             'entities':list(entities),
             'source_mid':reference.get('source_mid') if reference else None,
@@ -190,7 +301,8 @@ def project_turn(facts, resolved, current, reference=None):
             'checked_sources':reference.get('checked_sources',0) if reference else 0,
             'missing_sources':reference.get('missing_sources',0) if reference else 0,
             'product_kind':product_kind(current) or (reference.get('product_kind','') if reference else ''),
-            'reference_labels':reference.get('entities',{}).get('labels',[]) if reference else []}
+            'reference_labels':reference.get('entities',{}).get('labels',[]) if reference else [],
+            'plan_labels':reference.get('plan_labels',[]) if reference else []}
 
 
 def intent_questions(goals,kind=''):

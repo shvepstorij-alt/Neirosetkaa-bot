@@ -724,6 +724,7 @@ class Service:
                 research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
         else:
             research_note={'catalog_direct':'📋 <b>Цены:</b> ответ собран из каталога без генерации моделью.\n\n',
+                           'installation_consultation':'📲 <b>Установка:</b> инструкция или уточнение собраны по подтверждённым правилам; оформление заказа не выполнялось.\n\n',
                            'owner_policy':'📋 <b>Условия:</b> ответ по правилам владельца; право клиента ещё не подтверждено.\n\n',
                            'clarification':'💬 <b>Уточнение:</b> запрошены сведения для разбора; причина проблемы не установлена.\n\n',
                            'visual_clarification':'📷 <b>Фото:</b> нужна более чёткая деталь; распознавание не запускалось.\n\n',
@@ -805,7 +806,12 @@ class Service:
         self.store.db.execute('UPDATE drafts SET handoff=1 WHERE id=?',(did,))
         if notify_client:
             from .auto_notice import kind_for
-            nid=self.store.auto_notice(did,kind_for(evidence,reason))
+            chat=self.store.chat(d['chat'])
+            first=chat['batch_first'] or d['mid']
+            current='\n'.join(row['text'] or '' for row in self.store.db.execute(
+                "SELECT text FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid",
+                (d['chat'],first,d['mid'])).fetchall())
+            nid=self.store.auto_notice(did,kind_for(evidence,reason,current))
             if nid:
                 await self.auto_send(nid)
         try:await self.show_draft(did,d['admin_mid'])
@@ -1070,7 +1076,7 @@ class Service:
         if not self.store.still_current(job):
             return None
         history=self.store.history(job['chat'])
-        recent=self.store.db.execute('SELECT role,text FROM messages WHERE chat=? AND at>=? AND mid<=? ORDER BY mid DESC LIMIT 40',
+        recent=self.store.db.execute('SELECT mid,at,role,text FROM messages WHERE chat=? AND at>=? AND mid<=? ORDER BY mid DESC LIMIT 40',
                                      (job['chat'],time.time()-86400,job['mid'])).fetchall()
         guide_history=[dict(r) for r in reversed(recent)]
         # Full history remains context for references; only the fixed collection
@@ -1184,6 +1190,11 @@ class Service:
         if creative and not image:return creative
         from .request_goals import covers,goals
         facts=dict(facts,request_goals=sorted(goals(raw_batch or latest,facts)))
+        # Job-local only, never a cross-chat cache or an authority for facts.
+        # A later provider/model exception can still use the verified scope
+        # and deterministic renderers instead of abandoning the conversation.
+        job['_consultation_facts']=facts
+        job['_consultation_question']=latest
         raw_batch='\n'.join(row['text'] or '' for row in batch)
         from .fulfillment_reply import transaction_ack
         acknowledgement=transaction_ack(raw_batch)
@@ -1195,7 +1206,7 @@ class Service:
         account_guide=new_account_reply(facts,raw_batch,guide_history)
         if account_guide and not image:return account_guide
         from .app_installation import reply as installation_reply
-        installation=installation_reply(facts,raw_batch)
+        installation=installation_reply(facts,raw_batch,guide_history)
         if installation and not image:return installation
         from .activation_guidance import reply as activation_help
         activation=activation_help(facts,latest,raw_batch) if not image else None
@@ -1588,9 +1599,19 @@ class Service:
                 # A local deterministic notice needs no model quota. Finish
                 # only the still-current job, then use normal send guards.
                 self.store.db.execute("UPDATE messages SET state='working' WHERE chat=? AND mid=? AND state='failed'",(job['chat'],job['mid']))
-                did=self.store.finish(job,'Требуется ручная проверка обращения.',diagnostic,True,
-                    {'status':'unavailable','sources':[],'diagnostic':diagnostic})
-                if did:await self.auto_review(did,diagnostic)
+                failure_evidence={'status':'unavailable','sources':[],'diagnostic':diagnostic}
+                from .auto_notice import helpful_reply
+                recovered=helpful_reply(job.get('_consultation_facts'),failure_evidence,diagnostic,
+                                        job.get('_consultation_question',''))
+                from .auto_policy import block_reason
+                current=job.get('_consultation_facts',{}).get('conversation_turn',{}).get('current_text','')
+                if recovered and block_reason(recovered,current_text=current) is None:
+                    recovered['evidence']['preparation_failure']=diagnostic
+                    did=self.store.finish(job,recovered['reply'],recovered['summary'],False,recovered['evidence'])
+                    if did:await self.auto_send(did)
+                else:
+                    did=self.store.finish(job,'Требуется ручная проверка обращения.',diagnostic,True,failure_evidence)
+                    if did:await self.auto_review(did,diagnostic)
             logging.warning('Draft processing failed: %s',diagnostic)
             await self.owner_message(self.chat_identity(job['chat'])+f'\nНе удалось подготовить содержательный ответ. Режим сохранён. Проверьте /pending: там виден результат служебного уведомления клиенту, если оно было доступно. {diagnostic}')
         finally:

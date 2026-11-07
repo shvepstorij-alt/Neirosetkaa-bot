@@ -3,17 +3,22 @@
 No guarantees about a third-party binary, fake billing identity or region access.
 """
 import re
+import time
 
 ANDROID='https://chatgpt.ru.uptodown.com/android'
 PLAY='https://play.google.com/store/apps/details?id=com.openai.chatgpt'
 IOS='https://apps.apple.com/us/app/chatgpt/id6448311069'
 APPLE='https://support.apple.com/en-ca/118283'
+DESKTOP='https://chatgpt.com/ru-RU/download/'
+PLATFORM_QUESTION='Подскажу пошагово) У вас Android, iPhone или компьютер?'
+_LEGACY_PLATFORM_QUESTION='Подскажу пошагово) У вас Android или iPhone?'
 
 
 def policy_facts():
     return {'source':'owner_instructions_and_primary_store_pages_2026_11_05',
             'android_alternative':ANDROID,'alternative_is_third_party':True,
             'apk_signature_verified':False,'official_android':PLAY,'official_ios':IOS,
+            'official_desktop':DESKTOP,'desktop_source_checked_on':'2026-11-07',
             'apple_region_source':APPLE,
             'none_payment_option_guaranteed':False,'billing_details_must_be_valid':True,
             'region_change_prerequisites':['spend_remaining_balance','cancel_blocking_subscriptions_and_wait_until_period_end',
@@ -22,26 +27,97 @@ def policy_facts():
             'installation_does_not_confirm_subscription_or_regional_access':True}
 
 
-def reply(facts,current):
-    text=str(current or '')
-    install=bool(re.search(r'(?:скача|установ)[а-яё]*[^.!?\n]{0,50}(?:прилож|chat\s*gpt|чат\s*гпт|апк|apk)|'
+def _install_intent(text):
+    return bool(re.search(r'(?:скача|установ)[а-яё]*[^.!?\n]{0,50}(?:прилож|chat\s*gpt|чат\s*гпт|апк|apk)|'
         r'(?:прилож|chat\s*gpt|чат\s*гпт)[^.!?\n]{0,45}(?:скача|установ)|как[^.!?\n]{0,35}(?:сменить|изменить)[^.!?\n]{0,30}регион',text,re.I))
-    if not install:return None
+
+
+def _platforms(text):
+    found=set()
+    if re.search(r'android|андроид|\bapk\b|апк',text,re.I):found.add('android')
+    if re.search(r'iphone|ipad|\bios\b|айфон|айпад|apple\s*(?:id|аккаунт)|эпл|app\s*store|регион',text,re.I):found.add('ios')
+    if re.search(r'компьютер|ноутбук|виндо[ув]с|винд[аеуы]|\b(?:pc|windows|macos|mac|пк)\b',text,re.I):found.add('desktop')
+    return found
+
+
+def _platform_slot(text):
+    return bool(re.fullmatch(r'\s*(?:(?:у\s+меня|на|это|а)\s+)?(?:android|андроид[а-яё]*|iphone|айфон[а-яё]*|ipad|айпад[а-яё]*|ios|компьютер[а-яё]*|ноутбук[а-яё]*|пк|pc|windows|macos|mac)[.!?\s]*',text,re.I))
+
+
+def _identity(text,catalog):
+    """Only the customer's product words establish the app, never a default."""
+    from .catalog_context import _families,_words,service_mentions
+    families=_families(_words(text))
+    names=service_mentions(text,catalog)
+    if families-{'chatgpt','appstore'}:return 'other'
+    if any(_families(_words(name))-{'chatgpt','appstore'} or not _families(_words(name))
+           for name in names.values()):return 'other'
+    allowed={'chatgpt','chat','gpt','android','apk','iphone','ipad','ios','apple','id','app','store',
+             'windows','pc','mac','macos','openai'}
+    if any(word.casefold() not in allowed for word in re.findall(r'[a-zA-Z][a-zA-Z0-9_-]*',text)):
+        return 'other'
+    target=re.search(r'(?:скачать|установить)\s+(?:приложение\s+)?([а-яёa-z][а-яёa-z0-9_-]*)',text,re.I)
+    if (target and target[1].casefold() not in {'приложение','на','в','его','мне','себе','чат','гпт','chatgpt'}
+            and _families(_words(target[1]))!={'chatgpt'}):
+        return 'other'
+    return 'chatgpt' if 'chatgpt' in families else None
+
+
+def _previous_installation(facts,current,history):
+    """Fresh original client intent, with only our own exact slot prompt usable."""
+    from .context_validity import validate_client_rows
+    from .request_context import is_acknowledgement
+    from .auto_policy import _consultation_text
+    rows=[r for r in list(history)[-40:] if isinstance(r,dict)]
+    clients=[r for r in rows if r.get('role')=='client']
+    context=validate_client_rows(reversed(clients),now=time.time(),max_messages=40)
+    valid={r['mid'] for r in context.rows}
+    last_prompt=next((r for r in reversed(rows) if r.get('role') in ('assistant','owner')),None)
+    prompt=bool(last_prompt and _consultation_text(last_prompt.get('text')) in (PLATFORM_QUESTION,_LEGACY_PLATFORM_QUESTION)
+                and type(last_prompt.get('at')) in (int,float)
+                and 0<=time.time()-last_prompt['at']<=14400)
+    platform_hint=set()
+    for row in reversed(clients):
+        if row.get('mid') not in valid:break
+        text=str(row.get('text',''))
+        if text==current:continue  # Service history includes the current batch.
+        identity=_identity(text,facts.get('catalog',[]))
+        if identity=='other':break
+        if _install_intent(text) and identity=='chatgpt':
+            return text,prompt,platform_hint or _platforms(text)
+        if _platform_slot(text):
+            if not platform_hint:platform_hint=_platforms(text)
+        elif not is_acknowledgement(text):break
+    return '',False,set()
+
+
+def reply(facts,current,history=()):
+    text=str(current or '')
+    from .privacy import sensitive
+    if sensitive(text):return None
+    identity=_identity(text,facts.get('catalog',[]))
+    if identity=='other':return None
+    prior,prompt,prior_platforms=_previous_installation(facts,text,history)
+    slot=_platform_slot(text)
+    short_install=bool(re.fullmatch(r'\s*(?:а\s+)?(?:как|где)\s+(?:его\s+)?(?:скачать|установить)(?:\s+приложение)?[.!?\s]*',text,re.I))
+    install=_install_intent(text) or short_install
+    if not install and not (slot and prompt and prior):return None
     from .request_goals import covers
     if not covers(text,{'installation'},facts):return None
     if re.search(r'сколько|тариф|как[^.!?\n]{0,35}оплат|возврат|верн[а-я]*\s+деньг|что\s+входит',text,re.I):return None
-    from .catalog_context import _families,_words
-    families=_families(_words(text))
-    known=families or set(facts.get('catalog_selection',{}).get('mentioned_known_services',[]))
-    if known-{'chatgpt','appstore'}:return None
-    from .catalog_context import service_mentions
-    named=service_mentions(text,facts.get('catalog',[]))
-    selected=named or service_mentions(' '.join(str(r.get('service','')) for r in facts.get('requested_catalog',[])),facts.get('catalog',[]))
-    if set(selected)-{'chatgpt','appstore'}:return None
-    android=bool(re.search(r'android|андроид|\bapk\b|апк',text,re.I))
-    ios=bool(re.search(r'iphone|ipad|ios|айфон|айпад|apple\s*(?:id|аккаунт)|эпл|app\s*store|регион',text,re.I))
-    if android and ios:return None
-    if android:
+    platforms=_platforms(text)
+    if not platforms and prior:platforms=prior_platforms
+    if len(platforms)>1:return None
+    android='android' in platforms;ios='ios' in platforms;desktop='desktop' in platforms
+    apple_region=bool(re.search(r'как[^.!?\n]{0,35}(?:сменить|изменить)[^.!?\n]{0,30}регион',text,re.I)
+                      and re.search(r'apple\s*(?:id|account|аккаунт)|app\s*store|эпл',text,re.I))
+    if identity!='chatgpt' and not prior and not apple_region:
+        body='Какое приложение хотите установить?'
+    elif desktop:
+        body=('Для компьютера откройте официальную страницу загрузки ChatGPT:\n'+DESKTOP+'\n\n'
+              'Выберите доступный вариант для своей системы и следуйте шагам на странице. '
+              'После установки войдите в тот же аккаунт ChatGPT. Установка приложения сама по себе не подключает подписку.')
+    elif android:
         body=('Для Android можно скачать приложение здесь:\n'+ANDROID+'\n\n'
               'Это сторонний каталог APK, не сайт OpenAI. Проверку конкретного файла я не выполнял, поэтому гарантировать его безопасность не могу. '
               'Если доступен Google Play, предпочтительнее установить приложение OpenAI оттуда:\n'+PLAY+'\n\n'
@@ -50,7 +126,8 @@ def reply(facts,current):
               'Не отключайте защиту устройства. Если появится предупреждение или ошибка, пришлите её скриншот.\n\n'
               'Войдите в тот же аккаунт ChatGPT, на который оформляется подписка. Повторно покупать подписку внутри приложения не нужно.')
     elif ios:
-        body=('На iPhone установите ChatGPT от OpenAI через App Store:\n'+IOS+'\n\n'
+        body=(('Смена региона Apple Account требует проверки действующих условий.\n\n' if apple_region and identity!='chatgpt' and not prior else
+               'На iPhone установите ChatGPT от OpenAI через App Store:\n'+IOS+'\n\n')+
               'Если магазин пишет, что приложение недоступно в вашем регионе, сначала проверьте страну Apple Account. '
               'Смена региона подходит не во всех случаях: нужно потратить остаток баланса, отменить мешающие подписки '
               'и дождаться окончания их периода. Незавершённые покупки, возвраты и семейная группа тоже могут мешать.\n\n'
@@ -60,10 +137,13 @@ def reply(facts,current):
               'Некоторый контент может быть недоступен в новом регионе. После изменения платёжных данных подписки при необходимости '
               'оформляются заново, если доступны в этой стране. Не меняйте регион, пока не проверите важные подписки и iCloud.\n\n'
               'После установки войдите в тот же аккаунт ChatGPT. Повторно покупать подписку в приложении не нужно.')
+        if apple_region and identity!='chatgpt' and not prior:
+            body=body.removesuffix('\n\nПосле установки войдите в тот же аккаунт ChatGPT. Повторно покупать подписку в приложении не нужно.')
     else:
-        body='Подскажу пошагово) У вас Android или iPhone?'
+        body=PLATFORM_QUESTION
+    from .auto_policy import consultation_evidence
     return {'reply':body,'summary':'Инструкция установки без гарантии APK, доступа по региону или обязательного варианта None. Покупка подписки повторно не предлагается.',
             'handoff':False,'source_ids':[],
-            'evidence':{'status':'owner_policy','sources':[],
-                        'diagnostic':'Этап: инструкция установки. Платформа='+('android' if android else 'ios' if ios else 'не указана')+
-                            '; APK третьей стороны не проверялся по подписи; оплата и активация не проверялись. Условия Apple сверены 05.11.2026.'}}
+            'evidence':consultation_evidence(body,'installation',
+                        diagnostic='Этап: инструкция установки. Платформа='+('android' if android else 'ios' if ios else 'desktop' if desktop else 'не указана')+
+                            '; APK третьей стороны не проверялся по подписи; оплата и активация не проверялись. Условия Apple сверены 05.11.2026; официальная страница загрузки для компьютера сверена 07.11.2026.')}

@@ -1,21 +1,72 @@
 """Code-owned customer notices. Never include provider errors or customer secrets."""
+import re
 
 TEXTS = {
-    'technical': 'Сейчас возникла техническая ошибка, и я не смог подготовить проверенный ответ. Александр посмотрит ваше обращение и ответит, когда будет на связи.',
-    'information': 'Пока не получилось надёжно подтвердить условия по вашему вопросу. Не хочу дать вам неверную информацию. Потребуется проверка Александра; он ответит, когда будет на связи.',
-    'manual': 'Этот вопрос требует личной проверки Александра. Он посмотрит ваше обращение и ответит, когда будет на связи.',
+    'technical': 'Сейчас не удалось получить проверенные данные. Помогу разобраться по карточке тарифа или скриншоту ошибки без личных и платёжных данных. Также могу подобрать другой сервис под вашу задачу).',
+    'information': 'Часть условий пока не подтверждена. Помогу разобраться по официальному описанию: пришлите ссылку на нужный пункт или скриншот без личных данных. Если хотите, подберём другой сервис под вашу задачу).',
+    'manual': 'Результат операции пока не подтверждён. Могу объяснить порядок действий по сообщению заказа или тексту ошибки без личных данных; оплату, возврат или активацию без проверки не подтверждаю.',
+    'human': 'Хорошо, запрос на ответ человека сохранён. Если захотите, пока помогу с выбором тарифа или инструкцией по сервису).',
+    'secret': 'Полученные данные доступа повторно присылать не нужно. С общими вопросами по сервису и дальнейшим шагам помогу).',
 }
 
 
-def kind_for(evidence, reason):
+def kind_for(evidence, reason, current_text=''):
     # Exact diagnostics stay owner-only. This classification makes no promises
     # about fulfilment, delivery times, refunds or the outcome of a payment.
-    if evidence.get('manual_secret_intake') or evidence.get('new_account_stage'):
+    evidence = evidence if isinstance(evidence, dict) else {}
+    from .privacy import sensitive
+    current = str(current_text or '')
+    diagnostic = '\n'.join(str(value) for value in (reason, evidence.get('handoff_reason', ''), evidence.get('diagnostic', '')))
+    lower = diagnostic.casefold()
+    if (evidence.get('manual_secret_intake') or sensitive(current)
+            or re.search(r'\[(?:данные доступа|токен|сообщение скрыто)', current, re.I)):
+        return 'secret'
+    if (re.search(r'(?:позовите|позови|соедините|подключите)[^.!?\n]{0,45}(?:человек|оператор|александр)|'
+                 r'(?:хочу|можно)[^.!?\n]{0,25}(?:поговорить|общаться)[^.!?\n]{0,25}(?:с\s+человеком|с\s+александром)|'
+                 r'(?:хочу|нужен|нужна)[^.!?\n]{0,25}(?:оператор|жив[а-яё]*\s+человек)', current, re.I)
+        or 'клиент явно просит человека' in lower or 'human request' in lower):
+        return 'human'
+    if (evidence.get('owner_action_required') is True or evidence.get('review_required') is True
+            or evidence.get('new_account_stage')
+            or evidence.get('status') in ('order_status', 'owner_policy')
+            or re.search(r'конфликт\s+(?:подтвержд[её]нных\s+)?(?:правил|политик|способов\s+оформления)', diagnostic, re.I)):
         return 'manual'
+    from .order_status import is_status_request
+    if (is_status_request(current) or re.search(r'возврат|верн[а-яё]*\s+деньг|я\s+оплатил|уже\s+оплатил|'
+            r'(?<!\w)(?:активируй(?:те)?|оформи(?:те)?|создай(?:те)?)\b', current, re.I)):
+        return 'manual'
+    if any(x in lower for x in ('лимит запросов', 'telegram', '120 секунд', 'ошибка подготовки')):
+        return 'technical'
+    # Missing sources/coverage is informational even if an old route stored
+    # handoff_reason. That field alone is not evidence of an account action.
+    if re.search(r'источник|неполнот|не\s+подтвержд|не\s+удалось\s+(?:получить|подтвердить)|coverage|source', diagnostic, re.I):
+        return 'information'
     if evidence.get('status') in ('unavailable', 'not_recorded'):
         return 'technical'
-    if any(x in reason.casefold() for x in ('лимит запросов', 'telegram', '120 секунд', 'ошибка подготовки')):
-        return 'technical'
-    if evidence.get('status') in ('order_status', 'owner_policy') or evidence.get('handoff_reason'):
-        return 'manual'
     return 'information'
+
+
+def helpful_reply(facts, evidence, reason, question=''):
+    """Trusted scoped repair for informational failures, before notice storage.
+
+    None means retain the real manual path and its static notice. The caller
+    must use normal current-job/send checks for a returned replacement; this
+    function cannot authorize Telegram delivery or change the selected mode.
+    """
+    if not isinstance(facts, dict):
+        return None
+    current = (facts.get('conversation_turn', {}).get('current_text')
+               or facts.get('conversation', {}).get('latest_message') or question
+               or facts.get('conversation', {}).get('latest_client_message', ''))
+    kind = kind_for(evidence, reason, current)
+    if kind in ('manual', 'human', 'secret'):
+        return None
+    evidence = evidence if isinstance(evidence, dict) else {}
+    from .privacy import scrub
+    diagnostic = '\n'.join(scrub(str(value))[:1400] for value in
+                           (reason, evidence.get('handoff_reason', ''), evidence.get('diagnostic', '')) if value)
+    from .autonomous_fallback import reply
+    answer = reply(facts, diagnostic, question)
+    if answer is not None:
+        answer.setdefault('evidence', {})['notice_recovery_kind'] = kind
+    return answer

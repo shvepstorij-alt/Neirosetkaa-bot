@@ -227,7 +227,7 @@ def _workflow_help_followup(text):
     if any(word.casefold() not in technical for word in re.findall(r'[A-Za-z][A-Za-z0-9_-]*',value)):
         return False
     anchor=re.search(r'авториз|авторизац|войти|вход|сесси|токен|'
-                     r'активир|активац|кнопк|браузер|скопир|встав|пункт|шаг|'
+                     r'активир|активац|кнопк|браузер|скопир|встав|пункт|шаг|ссылк|'
                      r'organization\s+id|\borg\s+id\b',value,re.I)
     request=re.search(r'\b(?:как|что|где|откуда|почему|какой|какая|какие|объясни[а-яё]*|'
                       r'подскаж[а-яё]*|помог[а-яё]*|не\s+(?:могу|получается|открывается|понимаю|вижу|видно|работает))\b',value,re.I)
@@ -375,7 +375,7 @@ def resolve_request(db, chat, first, last, text, catalog=()):
         db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,start,end))
         mids=[r['mid'] for r in db.execute("SELECT mid FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid",(chat,start,end))]
         db.execute('INSERT OR REPLACE INTO request_context_sources VALUES (?,?)',(chat,json.dumps(mids)))
-    from .turn_contract import entity_reference, reference_intent, save_reference
+    from .turn_contract import entity_reference, reference_intent, save_reference,plan_reference,contextual_question,focused_history
     save_reference(db,chat,last,None)
     replied=_reply_client_context(db,chat,first,last,text,catalog)
     if replied is not None:
@@ -386,7 +386,9 @@ def resolve_request(db, chat, first, last, text, catalog=()):
         text=_current_apple_details(text)
     if is_acknowledgement(text):return text
     reminder=is_reminder(text)
-    followup=_dependent_followup(text) or _contextual_followup(text,catalog)
+    contextual=contextual_question(text,catalog)
+    plan_only=bool(plan_reference(text,catalog))
+    followup=_dependent_followup(text) or _contextual_followup(text,catalog) or contextual or plan_only
     lines=[line.strip() for line in text.splitlines() if line.strip() and not is_acknowledgement(line)]
     # A collected batch can ask about the previous service and introduce a
     # second service on its next line. Keep the first explicit continuation;
@@ -432,12 +434,24 @@ def resolve_request(db, chat, first, last, text, catalog=()):
                                                     valid.checked_count,valid.missing_source_count))
         return '' if reminder else text
     if len(rows)>60:return '' if reminder else text
+    if contextual or plan_only:
+        rows=focused_history([dict(row) for row in rows],catalog)
     parts=[_resolve_plural_reference(db,chat,r['mid'],_reply_client_context(db,chat,r['mid'],r['mid'],r['text'],catalog) or r['text'],catalog) for r in rows if r['text'] and not is_reminder(r['text'])
            and not is_acknowledgement(r['text'])]
     previous=''
     for part in parts:
         linked=_link_apple_turn(previous,part) if previous else None
         previous=linked if linked is not None else (previous+'\n'+part if previous else part)
+    if contextual or plan_only:
+        from .turn_contract import client_entities
+        from .catalog_context import service_mentions
+        if not service_mentions(previous,catalog):
+            focus={}
+            for row in reversed(rows):
+                focus=client_entities(row['text'],catalog)
+                if focus:break
+            if focus and not any(identity.startswith('unverified:') for identity in focus):
+                previous=', '.join(dict.fromkeys(focus.values()))+'\n'+previous
     if _has_apple_topic(previous):
         previous=_current_apple_details(previous)
     if not previous or len(previous)>24000:return '' if reminder else text

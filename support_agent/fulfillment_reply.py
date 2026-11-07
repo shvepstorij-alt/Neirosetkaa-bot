@@ -45,9 +45,7 @@ def _selected_plan_rows(items,latest,require_match=False):
     from .catalog_context import _words
     # Transliteration of plan labels is shared by every service. Avoid Russian
     # «про»: it is also a preposition, not evidence of choosing a Pro plan.
-    aliases={'плюс':'plus','макс':'max','го':'go','бизнес':'business',
-             'бейсик':'basic','бэйсик':'basic','премиум':'premium'}
-    canonical=lambda value:tuple(aliases.get(w,w) for w in _words(value))
+    from .turn_contract import canonical_plan_words as canonical
     words=canonical(latest)
     hits=[]
     for index,item in enumerate(items):
@@ -343,4 +341,5 @@ def workflow_reply(facts,latest,current=None):
         from .auto_policy import consultation_evidence
         result['evidence']=consultation_evidence(result['reply'],'workflow',owner_action_required=handoff,
             diagnostic='Этап: консультация об оформлении. Поля и шаги получены из подтверждённой инструкции; ручное выполнение заказа этим ответом не подтверждается.')
-    return result
+    from .public_plan_reference import attach
+    return attach(result,facts,current or facts.get('conversation_turn',{}).get('current_text',''))

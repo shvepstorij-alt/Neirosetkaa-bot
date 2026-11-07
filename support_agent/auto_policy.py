@@ -18,7 +18,7 @@ import secrets
 # auto-replayed after restart; its proofs deliberately cannot authorize a new
 # process. Nothing here is an external credential or configuration variable.
 _CONSULTATION_KEY=secrets.token_bytes(32)
-_CONSULTATION_KINDS={'order','course','workflow','activation','external','creative'}
+_CONSULTATION_KINDS={'order','course','workflow','activation','external','creative','installation'}
 _PUBLIC_SESSION_URLS={
     'https://chatgpt.com/api/auth/session',
     'https://www.perplexity.ai/api/auth/session',
@@ -177,7 +177,9 @@ def block_reason(answer,evidence=None,current_text=''):
     if re.search(r'\[\s*Сообщение скрыто|\[данные доступа скрыты\]|\[токен скрыт\]',current,re.I):
         return _reason('в обращении сохранён признак скрытых данных доступа; нужен ручной разбор.')
     from .privacy import sensitive
-    if sensitive(current):return _reason('обращение может содержать данные доступа; нужен ручной разбор.')
+    from .public_plan_reference import valid as public_plan_reference
+    if sensitive(current) and not public_plan_reference(current,evidence):
+        return _reason('обращение может содержать данные доступа; нужен ручной разбор.')
     if (reviewed_detection is not None or consultation and evidence['consultation_contract']['kind']=='workflow') and re.search(r'\[email скрыт\]|\[ссылка скрыта\]',current,re.I):
         return _reason('получены данные или ссылка для оформления; их обработку выполняет владелец.')
     # A short follow-up such as "да" may not repeat the financial/account
@@ -195,6 +197,13 @@ def block_reason(answer,evidence=None,current_text=''):
         return _reason('кодовая консультация содержит значение доступа или присваивание; автоматическая отправка запрещена.')
     detection=(reviewed_detection if reviewed_detection is not None else _consultation_detection_copy(text) if consultation else
                re.sub(r'(?<!\w)Пароль от аккаунта для этого способа не нужен\.(?=\s|$)','',text))
+    if consultation and evidence['consultation_contract']['kind']=='installation':
+        # Only URLs emitted by this sealed renderer; a modified query, suffix
+        # or fragment remains visible to the ordinary sensitive-data checks.
+        from .app_installation import ANDROID,PLAY,IOS,APPLE,DESKTOP
+        installer_urls={ANDROID,PLAY,IOS,APPLE,DESKTOP}
+        detection=re.sub(r'https?://[^\s<>]+',lambda match:
+            '[публичная страница установки]' if match[0] in installer_urls else match[0],detection)
     if decision is not None:
         from .public_metrics import detection_copy as public_metric_detection
         detection=public_metric_detection(detection)
@@ -268,5 +277,5 @@ def status_safe(value):
     known={'unavailable','insufficient','partial','catalog_review','order_status','owner_policy',
            'visual_review','visual_clarification','not_requested','clarification','catalog_direct',
            'checked','catalog_checked','topic_boundary',
-           'order_consultation','course_consultation','workflow_consultation','activation_consultation','external_consultation','creative_consultation'}
+           'order_consultation','course_consultation','workflow_consultation','activation_consultation','external_consultation','creative_consultation','installation_consultation'}
     return value if value in known else 'unknown'
