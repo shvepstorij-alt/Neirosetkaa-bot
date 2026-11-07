@@ -835,7 +835,7 @@ class Service:
             current='\n'.join(row['text'] or '' for row in self.store.db.execute(
                 "SELECT text FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid",
                 (d['chat'],first,d['mid'])).fetchall())
-            nid=self.store.auto_notice(did,kind_for(evidence,reason,current))
+            nid=self.store.auto_notice(did,kind_for(evidence,reason,current,usable_reply=bool(str(d['text'] or '').strip())))
             if nid:
                 await self.auto_send(nid)
         try:await self.show_draft(did,d['admin_mid'])
@@ -996,6 +996,12 @@ class Service:
                 notice=self.store.db.execute('SELECT 1 FROM auto_notices WHERE draft=?',(did,)).fetchone()
                 record(self.store,c['id'],did,'notice_sent' if notice else 'auto_sent')
             except Exception:logging.warning('AUTO action log unavailable; confirmed send is persisted')
+            from .dialog_state import asks_for_check
+            if asks_for_check(text):
+                try:
+                    await self.owner_message(self.chat_identity(c['id'])+'\nКлиенту отправлен вопрос для проверки. '
+                                             'Причина: ответ собирает данные, решение по ним остаётся за вами. Ничего не оформлено.')
+                except Exception:logging.warning('Owner check notice unavailable; client question remains sent')
             # The confirmed customer result is persisted before optional UI I/O.
             if d['admin_mid']:
                 try:await self.show_draft(did,d['admin_mid'])
@@ -1193,6 +1199,16 @@ class Service:
         if consultation.get('active'):
             facts=dict(facts,consultation_intent=consultation)
         # Old questions provide reference slots, not the newest turn's intent.
+        from .dialog_state import bind_turn
+        binding=bind_turn(self.store.db,job['chat'],raw_batch,facts)
+        facts=binding['facts']
+        self._last_dialog_facts=facts
+        if binding.get('grounded') and not image:
+            return binding['grounded']
+        if binding.get('continue_text'):
+            latest=binding['continue_text']
+            facts=annotate(facts,latest)
+            self._last_dialog_facts=facts
         from .turn_scope import scope as scope_turn,purchase_reply
         resolved_context=latest
         facts,latest=scope_turn(facts,resolved_context,raw_batch)
@@ -1662,9 +1678,23 @@ class Service:
                     logging.info('support_turn chat=%s calls=%s reasons=%s batch_wait=%.1f generate=%.1f',
                                  job['chat'],len(meter.events),','.join(reasons),waited,generated)
                     from .conversation_style import session_info,decorate_reply
+                    from .dialog_state import prepare_outgoing, record_outgoing
                     first=self.store.chat(job['chat'])['batch_first']
                     answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']),
                                                    introduced=self.store.introduced(job['chat']))
+                    cleaned,replaced=prepare_outgoing(answer['reply'],getattr(self,'_last_dialog_facts',{}) or {})
+                    answer['reply']=cleaned
+                    if replaced:
+                        answer['handoff']=True
+                        answer['summary']='В черновике остались только неподтверждённые названия моделей. Клиенту оставлено ожидание владельца.'
+                        answer.setdefault('evidence',{})['diagnostic']=(
+                            'Этап: проверка утверждений. Названия моделей не найдены в каталоге и переданных источниках. '
+                            'Клиенту отправлена фраза ожидания.')
+                    if not replaced:
+                        try:
+                            record_outgoing(self.store.db,job['chat'],answer['reply'],getattr(self,'_last_dialog_facts',{}) or {})
+                        except Exception:
+                            logging.warning('Dialog state was not saved')
                     if isinstance(answer.get('feature_projection'),dict):
                         answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
                     did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))

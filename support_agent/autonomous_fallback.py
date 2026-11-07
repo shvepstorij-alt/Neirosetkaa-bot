@@ -24,6 +24,10 @@ def _context(facts, question):
     # A newly named service overrides old scoped rows and old Apple slots.
     explicit = service_mentions(current, catalog)
     contextual = str(question or turn.get('context_text') or conversation.get('latest_client_message') or current)
+    dialog = facts.get('dialog_state') or {}
+    # The open topic wins over an isolated fragment that names no other service.
+    if dialog.get('bound') and dialog.get('service_label') and not explicit:
+        contextual = str(dialog.get('service_label')) + '\n' + contextual
     context_entities = service_mentions(contextual, catalog)
     scope = (contextual if explicit and set(context_entities) <= set(explicit) else current) if explicit else contextual
     if not explicit and _unknown_labels(current, catalog):
@@ -196,7 +200,12 @@ def reply(facts, reason, question=''):
     names = [name for name in names if name]
     labels = _labels(names, mentions, scope, catalog)
     if not labels:
-        return _finish('Какой сервис вас интересует?', reason, diagnostic='Идентичность сервиса не определена; несвязанный ассортимент не использован.')
+        dialog = facts.get('dialog_state') or {}
+        if dialog.get('bound') and dialog.get('service_label'):
+            labels = [_safe_label(dialog.get('service_label'))]
+            labels = [label for label in labels if label]
+        if not labels:
+            return _finish('Какой сервис вас интересует?', reason, diagnostic='Идентичность сервиса не определена; несвязанный ассортимент не использован.')
     prices = {}
     methods = {}
     for row in rows:
