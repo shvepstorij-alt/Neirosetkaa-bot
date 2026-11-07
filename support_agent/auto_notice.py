@@ -9,11 +9,9 @@ TEXTS = {
 
 
 def text_for(kind, now=None):
-    # A held draft is the handoff sentence. The old operation-result template is gone.
-    if kind in ('human', 'manual'):
-        from .handoff import handoff_text
-        return handoff_text(now)
-    return TEXTS[kind]
+    """The only fixed sentence a client can receive instead of a draft."""
+    from .handoff import handoff_text
+    return handoff_text(now)
 
 
 def matches_template(kind, text, now=None):

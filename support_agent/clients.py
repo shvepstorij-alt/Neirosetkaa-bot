@@ -174,6 +174,46 @@ class OpenAI:
         except Exception:
             raise RemoteError('OpenAI transport failed; not retried',reason='api_transport') from None
 
+    async def understand_turn(self, context):
+        """One call: read the turn and draft the client reply. Ids come from the payload."""
+        import json
+        instructions = (
+            'Разбери текущую реплику клиента по истории, состоянию диалога и спискам тарифов и номиналов. '
+            'intent — тип вопроса. service_id и tariff_id только из tariffs, иначе пустая строка. '
+            'topic_changed=true, если реплика про другой сервис или другой тип вопроса. '
+            'Обычное Pro без слова про год — месячный тариф, если в списке есть и месяц, и год. '
+            'Не переспрашивай факты из known_facts. Не утверждай, что оплата прошла, подписка активирована или возврат сделан. '
+            'Цены в reply только из tariffs.price и nominals.price. '
+            'Если нужно проверить оплату или активацию, попроси номер заказа или FreeKassa и текст ошибки или скриншот, без результата операции.'
+        )
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'properties': {
+                      'intent': {'type': 'string', 'enum': ['price', 'how_to', 'list_options', 'choose_tariff',
+                                                            'capabilities', 'payment_issue', 'other']},
+                      'service_id': {'type': 'string'},
+                      'tariff_id': {'type': 'string'},
+                      'topic_changed': {'type': 'boolean'},
+                      'known_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
+                      'missing_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
+                      'risk': {'type': 'string', 'enum': ['collect', 'instruct', 'catalog_price', 'outcome',
+                                                         'promise', 'unverified']},
+                      'reply': {'type': 'string', 'minLength': 1, 'maxLength': 1800},
+                      'summary': {'type': 'string', 'maxLength': 700}},
+                  'required': ['intent', 'service_id', 'tariff_id', 'topic_changed', 'known_facts',
+                               'missing_facts', 'risk', 'reply', 'summary']}
+        result = await self.request('responses', json={
+            'model': self.model, 'store': False, 'instructions': instructions,
+            'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]}],
+            'max_output_tokens': 900,
+            'text': {'format': {'type': 'json_schema', 'name': 'turn_understanding', 'strict': True, 'schema': schema}},
+        })
+        chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
+                  for c in item.get('content', []) if c.get('type') == 'output_text']
+        value = json.loads(''.join(chunks) or '{}')
+        if value.get('intent') not in schema['properties']['intent']['enum']:
+            raise ValueError('turn intent')
+        return value
+
     async def choose_tariff(self, candidates, text):
         """Pick one id from the list just shown, or say the reply is not a choice."""
         import json

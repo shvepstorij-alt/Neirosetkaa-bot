@@ -200,6 +200,12 @@ def block_reason(answer,evidence=None,current_text=''):
                  r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код(?:ы)?\s+(?:входа|подтверждения)|(?:одноразов|резервн)[а-яё]*\s+код)',text,re.I):
         return _reason('ответ запрашивает данные доступа; сбор этих данных оставлен владельцу.')
     from .reply_assertion import collects_case_data, asserts_outcome
+    reply_class=evidence.get('reply_class') if isinstance(evidence,dict) else ''
+    if reply_class in ('collect','instruct','catalog_price') and not asserts_outcome(text):
+        return None
+    if reply_class in ('outcome','promise','unverified'):
+        detail=evidence.get('diagnostic') if isinstance(evidence,dict) else ''
+        return _reason(detail or 'ответ утверждает непроверенный результат.')
     if collects_case_data(text) and not asserts_outcome(text):
         return None
     from .order_status import is_status_request
