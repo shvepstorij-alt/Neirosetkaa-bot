@@ -1202,7 +1202,7 @@ class Service:
         apple=direct_apple_reply(facts,latest,current=raw_batch) if not image and not course and covers(raw_batch,{'purchase','price','activation'},facts) else None
         if apple:return apple
         from .fulfillment_reply import workflow_reply
-        fulfillment=workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price','activation'},facts) else None
+        fulfillment=workflow_reply(facts,latest,current=raw_batch) if not image and not course and not selection and covers(raw_batch,{'purchase','price','activation'},facts) else None
         if fulfillment:return fulfillment
         workflow=direct_workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price'},facts) else None
         if workflow:return workflow

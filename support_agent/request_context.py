@@ -437,11 +437,11 @@ def resolve_request(db, chat, first, last, text, catalog=()):
             # «А на ChatGPT?» transfers the question, not the previous
             # product, tariff or regional slots. Resolve only explicit, short
             # brand-only continuations against a client-authored intent.
-            if re.match(r'^\s*а\s+на\s+',text,re.I):
+            if re.match(r'^\s*а\s+',text,re.I):
                 from .request_goals import goals
                 prior_goals=goals(previous)
                 if 'purchase' in prior_goals or 'price' in prior_goals:
-                    brand=re.sub(r'^\s*а\s+на\s+','',text,flags=re.I).strip(' ?!.')
+                    brand=re.sub(r'^\s*а\s+(?:на\s+)?','',text,flags=re.I).strip(' ?!.')
                     question=('Как оформить ' if 'purchase' in prior_goals else 'Сколько стоит ')+brand+'?'
                     db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,bounds[0],last))
                     return question

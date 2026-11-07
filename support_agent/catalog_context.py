@@ -432,11 +432,14 @@ def direct_apple_reply(facts, latest, current=None):
         answer['summary']='Инструкция покупки подарочного кода; точная цена не запрошена и не обещана.'
         source_status=facts.get('appstore',{}).get('status','not_connected')
         if source_status not in ('available','truncated'):
-            answer['handoff']=True
-            answer['evidence']={'status':'catalog_review','sources':[],'diagnostic':
+            answer['reply']=('Пополнение Apple ID делается подарочным кодом того же региона, что и аккаунт. '
+                             'Актуальные номиналы и цены сейчас не удалось загрузить.\n\n'
+                             +('На какую сумму хотите пополнить баланс?' if len(known)==1 else
+                               'Подскажите регион Apple ID и сумму пополнения.'))
+            answer['evidence']={'status':'clarification','sources':[],'diagnostic':
                 'Этап: чтение региональных номиналов App Store. Статус='+str(source_status)
                 +'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))
-                +'. Показана общая инструкция; доступность и цены номиналов не подтверждены.'}
+                +'. Доступность и цены номиналов не подтверждены; показано только объяснение способа и уточнение параметров.'}
         return answer
     if not quote and len(known)<=1 and not re.search(r'цен|стоим|вариант|номинал',current,re.I):
         if re.search(r'\d+\s*(?:тысячи?|тысяч|тыс)(?!\w)',current,re.I):
@@ -471,6 +474,17 @@ def direct_apple_reply(facts, latest, current=None):
             from .apple_matching import quote_diagnostic
             answer['evidence']={'status':'catalog_review','sources':[], 'diagnostic':
                 f"Этап: подбор точного номинала App Store. Причина: {quote['reason']}. Регион={code}; сумма={amount:g} {unit}; статус источника={quote['status']}; совпадений={quote['matched']}; разных корректных цен={quote['price_count']}. "+quote_diagnostic(quote)}
+            if other and quote['matched']==0 and quote['status'] in ('available','truncated'):
+                # Offering verified alternatives and asking the customer's
+                # choice requires no claim that the requested card is absent.
+                # Do not replace this useful consultation with a handoff notice.
+                answer['reply']=(f'Точную цену пополнения на {amount:g} {unit} для Apple ID {label} '
+                                 'в полученных данных подтвердить не удалось.\n\n'
+                                 'Есть подтверждённые варианты для этого региона:\n'+'\n'.join(
+                                     f"{r['amount']:g} {r['currency']}: {r['price']} ₽" for r in other)
+                                 +'\n\nЭто другие суммы пополнения. Подойдёт один из них или нужен именно указанный номинал?')
+                answer['handoff']=False
+                answer['evidence']['status']='catalog_direct'
     answer['summary']='Ответ по текущим региональным данным App Store. Регион не выбирался по истории модели.'
     return answer
 

@@ -124,7 +124,7 @@ def _service_plan_scope(name,groups,latest):
     return '\n'.join(scopes)
 
 
-def workflow_reply(facts,latest):
+def workflow_reply(facts,latest,current=None):
     from .selection_help import is_selection_request
     if is_selection_request(latest):return None
     lines=[line.strip() for line in latest.splitlines() if line.strip()]
@@ -187,6 +187,9 @@ def workflow_reply(facts,latest):
     parts=[];diagnostics=[];handoff=False;shared_links=[];needs_choice=False
     from .bot_guide import purchase_navigation
     navigation=purchase_navigation(facts,apple=apple_requested and not groups)
+    if current is not None and not re.search(r'как[^.!?\n]{0,35}(?:оформ|купить|оплат)|где[^.!?\n]{0,35}(?:купить|оплат)|'
+                                             r'что[^.!?\n]{0,35}(?:нужно|потребуется)|какие[^.!?\n]{0,25}данные',current,re.I):
+        navigation=''
     # Append navigation only if the whole answer has no unresolved procedure.
     # A valid catalogue button is not a reason to solicit payment first.
     for name,items in groups.items():
