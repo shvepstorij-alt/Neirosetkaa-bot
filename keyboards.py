@@ -81,7 +81,7 @@ def kb_main():
         *([[InlineKeyboardButton(text="Каталог", web_app=WebAppInfo(url=webapp_url("/webapp/shop")), icon_custom_emoji_id="5197260068562676798")]] if WEBAPP_BASE_URL else []),
         [_eib("Изображение",   "menu_image"),    _eib("Видео",     "menu_video")],
         [_eib("Редактировать...","menu_edit"),    _eib("Анимировать...","menu_anim")],
-        [_eib("Консультант AI", "menu_chat"),     _eib("Избранное", "menu_favorites")],
+        [_eib("Вопрос Александру", "menu_chat"),  _eib("Избранное", "menu_favorites")],
         [_eib("Купить кредиты","menu_buy"),       _eib("Магазин",   "menu_shop")],
         [_eib("Мой профиль",   "menu_profile")],
     ])
@@ -455,7 +455,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="Приветствие",         callback_data="adm_welcome",        icon_custom_emoji_id="5190859184312167965"),
          InlineKeyboardButton(text="Рассылка",            callback_data="adm_broadcast",      icon_custom_emoji_id="5907027384439148391")],
         [InlineKeyboardButton(text="Техобслуживание",     callback_data="adm_maintenance",    icon_custom_emoji_id="5458865216597012027")],
-        [InlineKeyboardButton(text="🤖 AI-Консультант (вкл/выкл)", callback_data="adm_assistant")],
+        [InlineKeyboardButton(text="Консультации — только в личке", callback_data="adm_assistant")],
         [InlineKeyboardButton(text="ChatGPT Mini App",    callback_data="adm_gpt_webapp", **_gpt)],
         [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
         [InlineKeyboardButton(text="Perplexity Mini App", callback_data="adm_perplexity_webapp", **_px)],
