@@ -184,7 +184,11 @@ class OpenAI:
             'Обычное Pro без слова про год — месячный тариф, если в списке есть и месяц, и год. '
             'Не переспрашивай факты из known_facts. Не утверждай, что оплата прошла, подписка активирована или возврат сделан. '
             'Цены в reply только из tariffs.price и nominals.price. '
-            'Если нужно проверить оплату или активацию, попроси номер заказа или FreeKassa и текст ошибки или скриншот, без результата операции.'
+            'Если клиент сообщает об оплате, попроси в одном сообщении номер заказа из бота или FreeKassa и чек из банка (скриншот или PDF), если их ещё нет в последних сообщениях. '
+            'Если receipt_attached=true, чек уже есть: не проси его снова и не описывай содержимое файла. '
+            'order_number — только цифры номера, который клиент уже назвал, иначе пусто. '
+            'receipt_amount_unverified — сумма с чека, если ты её разобрал, иначе пусто. Чек сам по себе оплату не подтверждает. '
+            'Не утверждай, что оплата прошла, подписка активирована или возврат сделан.'
         )
         schema = {'type': 'object', 'additionalProperties': False,
                   'properties': {
@@ -197,10 +201,13 @@ class OpenAI:
                       'missing_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
                       'risk': {'type': 'string', 'enum': ['collect', 'instruct', 'catalog_price', 'outcome',
                                                          'promise', 'unverified']},
+                      'order_number': {'type': 'string'},
+                      'receipt_amount_unverified': {'type': 'string'},
                       'reply': {'type': 'string', 'minLength': 1, 'maxLength': 1800},
                       'summary': {'type': 'string', 'maxLength': 700}},
                   'required': ['intent', 'service_id', 'tariff_id', 'topic_changed', 'known_facts',
-                               'missing_facts', 'risk', 'reply', 'summary']}
+                               'missing_facts', 'risk', 'order_number', 'receipt_amount_unverified',
+                               'reply', 'summary']}
         result = await self.request('responses', json={
             'model': self.model, 'store': False, 'instructions': instructions,
             'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]}],
@@ -212,6 +219,32 @@ class OpenAI:
         value = json.loads(''.join(chunks) or '{}')
         if value.get('intent') not in schema['properties']['intent']['enum']:
             raise ValueError('turn intent')
+        return value
+
+    async def draft_with_facts(self, facts):
+        """Second call only after a paid order lookup. Facts are the shop's, not the receipt."""
+        import json
+        instructions = (
+            'Оплата этого заказа уже подтверждена базой магазина. Напиши клиенту следующий шаг '
+            'строго по activation_note и service_key. Не пиши, что подписка уже активирована или что возврат сделан. '
+            'Чек оплату не подтверждает. Если receipt_missing=true, в том же сообщении попроси чек из банка: скриншот или PDF.'
+        )
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'properties': {'reply': {'type': 'string', 'minLength': 1, 'maxLength': 1800},
+                                 'summary': {'type': 'string', 'maxLength': 700},
+                                 'service_id': {'type': 'string'}},
+                  'required': ['reply', 'summary', 'service_id']}
+        result = await self.request('responses', json={
+            'model': self.model, 'store': False, 'instructions': instructions,
+            'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(facts, ensure_ascii=False, default=str)}]}],
+            'max_output_tokens': 700,
+            'text': {'format': {'type': 'json_schema', 'name': 'paid_next_step', 'strict': True, 'schema': schema}},
+        })
+        chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
+                  for c in item.get('content', []) if c.get('type') == 'output_text']
+        value = json.loads(''.join(chunks) or '{}')
+        if not isinstance(value.get('reply'), str) or not value['reply'].strip():
+            raise ValueError('paid next step')
         return value
 
     async def choose_tariff(self, candidates, text):
