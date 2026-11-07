@@ -154,6 +154,10 @@ class OpenAI:
         self.rules='\n\n'.join((root/f).read_text(encoding='utf-8') for f in ('SERVICE_RULES.md','STYLE.md','WORKFLOW_RULES.md'))
 
     async def request(self,path,**kwargs):
+        from .usage import current_meter
+        meter=current_meter()
+        if meter is not None:
+            meter.consume(path)
         try:
             async with self.session.post('https://api.openai.com/v1/'+path,headers=self.headers,**kwargs) as r:
                 if r.status!=200:
@@ -191,7 +195,10 @@ class OpenAI:
         facts=customer_facts(facts)
         from .workflow_policy import enrich
         facts=enrich(facts)
-        instructions=self.rules+'''
+        from .turn_stages import select_rules, relevant_history
+        question=str((facts.get('conversation') or {}).get('latest_client_message') or '')
+        history=relevant_history(history, question)
+        instructions=select_rules(question, facts)+'''
 Ты консультант магазина в текущей переписке с клиентом. Твоя цель — самостоятельно
 разобраться в вопросе, получить проверенные сведения и дать полезный дружелюбный
 ответ. Код отдельно проверит содержание и выбранный режим отправки.

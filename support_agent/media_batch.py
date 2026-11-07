@@ -124,7 +124,7 @@ async def prepare_media(service,job):
     for row,media,data in voices_to_process:
         if not service.store.still_current(job):return None,None
         try:
-            service.charge_call()
+            service.charge_call('transcribe')
         except Exception:
             return _manual('Не удалось выделить лимит API для расшифровки голосового.')
         media=dict(media,transcription_state='pending')
