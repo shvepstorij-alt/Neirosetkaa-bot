@@ -32,8 +32,10 @@ def _consultation_text(text):
     text=natural_reply(str(text or '')).replace('\r\n','\n').strip()
     if text.startswith(INTRO):
         text=text[len(INTRO):].strip()
-    return re.sub(r'^\s*(?:Здравствуйте|Приветствую|Добрый день|Добрый вечер|Доброе утро|Привет)[!.,:)\s]*',
-                  '',text,count=1,flags=re.I).strip()
+    text=re.sub(r'^\s*(?:Здравствуйте|Приветствую|Добрый день|Добрый вечер|Доброе утро|Привет)[!.,:)\s]*',
+                '',text,count=1,flags=re.I).strip()
+    # The send path joins lines after the seal. Wording, not spacing, is the proof.
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 def consultation_evidence(text,kind,**metadata):

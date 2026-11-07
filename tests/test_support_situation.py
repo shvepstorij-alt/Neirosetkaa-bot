@@ -165,14 +165,10 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn('Какой сервис', suno)
         self.assertNotIn('Какой регион', suno)
 
-        ambiguous = self.say('про')
-        self.assertIn('990', ambiguous)
-        self.assertIn('9590', ambiguous)
-        self.assertNotIn('Какой сервис', ambiguous)
-
-        yearly = self.say('на год')
-        self.assertIn('9590', yearly)
-        self.assertNotIn('2990', yearly)
+        chosen = self.say('про')
+        self.assertIn('990', chosen)
+        self.assertNotIn('9590', chosen)
+        self.assertNotIn('Какой сервис', chosen)
 
         cursor = self.say('а курсор про')
         self.assertIn('2100', cursor)

@@ -174,6 +174,36 @@ class OpenAI:
         except Exception:
             raise RemoteError('OpenAI transport failed; not retried',reason='api_transport') from None
 
+    async def choose_tariff(self, candidates, text):
+        """Pick one id from the list just shown, or say the reply is not a choice."""
+        import json
+        shown=[{'id':row.get('id'),'service':row.get('service'),'plan':row.get('plan'),'price':row.get('price')}
+               for row in candidates if isinstance(row,dict)]
+        instructions=('Выбери тариф только из переданного списка. '
+                      'Верни decision=chosen и tariff_id из списка, decision=ambiguous если подходят несколько, '
+                      'decision=new_topic если это новый вопрос, а не выбор. '
+                      'Обычное «Pro» без слова про год — месячный тариф, если в списке есть и месяц, и год. '
+                      '«на месяц» не бывает годовым тарифом. Не добавляй тарифы, которых нет в списке.')
+        schema={'type':'object','properties':{
+            'decision':{'type':'string','enum':['chosen','ambiguous','new_topic']},
+            'tariff_id':{'type':'string'},
+            'tariff_ids':{'type':'array','items':{'type':'string'}},
+            'reason':{'type':'string','maxLength':300}},
+            'required':['decision','tariff_id','tariff_ids','reason'],'additionalProperties':False}
+        result=await self.request('responses',json={
+            'model':self.model,'store':False,'instructions':instructions,
+            'input':[{'role':'user','content':[{'type':'input_text','text':json.dumps(
+                {'client_reply':text,'candidates':shown},ensure_ascii=False)}]}],
+            'max_output_tokens':300,
+            'text':{'format':{'type':'json_schema','name':'tariff_choice','strict':True,'schema':schema}},
+        })
+        chunks=[c['text'] for item in result.get('output',[]) if item.get('type')=='message'
+                for c in item.get('content',[]) if c.get('type')=='output_text']
+        value=json.loads(''.join(chunks) or '{}')
+        if value.get('decision') not in ('chosen','ambiguous','new_topic'):
+            raise ValueError('tariff decision')
+        return value
+
     async def transcribe(self,data):
         import aiohttp
         if not data.startswith(b'OggS'):

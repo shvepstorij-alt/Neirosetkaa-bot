@@ -141,6 +141,23 @@ def _burst_text(messages):
     return '\n'.join(part for part in burst if part).strip()
 
 
+def _mention(text, catalog):
+    """A distinctive catalogue word is enough. Short plan words are not a service."""
+    key, label = _service(text, catalog)
+    if key:
+        return key, label
+    from .catalog_context import ALIASES, _words
+    tokens = set(_words(text))
+    hits = []
+    for family, aliases in ALIASES.items():
+        distinctive = {word for alias in aliases for word in _words(alias) if len(word) >= 6}
+        if tokens & distinctive:
+            hits.append((family, aliases[0]))
+    if len(hits) == 1:
+        return hits[0]
+    return '', ''
+
+
 def _offers_in(text, service_label):
     rows = []
     for label, price in re.findall(r'([^\n:]{2,80}?):\s*(\d+)\s*₽', str(text or '')):
@@ -171,8 +188,15 @@ def _fill_catalog_offers(situation, catalog):
         mentioned = service_mentions(str(row.get('service', '')) + ' ' + str(row.get('service_key', '')), [])
         if situation.get('service_key') not in mentioned:
             continue
-        rows.append({'service': row.get('service') or situation.get('service_label') or '',
-                     'plan': row.get('plan'), 'price': price})
+        rows.append({'id': str(row.get('service_key') or situation.get('service_key') or '') + '|' + str(row.get('plan') or ''),
+                     'service': row.get('service') or situation.get('service_label') or '',
+                     'service_key': row.get('service_key') or situation.get('service_key') or '',
+                     'plan': row.get('plan'), 'price': price,
+                     'fulfillment': row.get('fulfillment') or ''})
+    shown = {row.get('id') for row in situation.get('offered') or [] if row.get('id')}
+    catalog_ids = {row['id'] for row in rows}
+    if shown and shown <= catalog_ids and not situation.get('service_changed'):
+        return
     if rows:
         situation['offered'] = rows
 
@@ -211,8 +235,10 @@ def analyze(messages, state=None, catalog=()):
                 if listed:
                     situation['offered'] = listed
             continue
-        key, label = _service(text, catalog)
-        if key and key != situation['service_key']:
+        key, label = _mention(text, catalog)
+        if key and situation.get('service_key') and key != situation['service_key']:
+            situation['service_changed'] = True
+            situation['asked_slots'] = []
             situation.update(service_key=key, service_label=label, region='', amount='',
                              currency='', option_label='', offered=[], matched_offers=[])
         elif key:
@@ -484,6 +510,22 @@ def respond(situation, facts):
     """Answer the current question. Background facts do not replace it."""
     if not situation:
         return None
+    if situation.get('service_changed') and situation.get('offered'):
+        from .tariff_choice import confirmation, suggest
+        choice = suggest(situation['offered'], situation.get('burst') or situation.get('latest_intent') or '')
+        if choice.get('decision') == 'chosen' and choice.get('row'):
+            confirmed = confirmation(choice['row'], facts)
+            if confirmed:
+                return confirmed
+        lines = [f"{format_offer(row['service'], row['plan'])}: {row['price']} ₽" for row in situation['offered']]
+        text = 'Цены из каталога:\n' + '\n'.join(lines)
+        if len(situation['offered']) > 1:
+            text += '\n\nКакой из этих тарифов вас интересует?'
+        return {'reply': text,
+                'summary': 'Новый сервис в текущем сообщении. Предыдущий выбор тарифа не перенесён.',
+                'handoff': False, 'source_ids': [],
+                'evidence': {'status': 'catalog_direct', 'sources': [],
+                             'diagnostic': 'Этап: смена темы. Показаны цены названного сервиса.'}}
     intent = situation.get('intent')
     if intent == 'capabilities':
         return None
@@ -503,11 +545,16 @@ def respond(situation, facts):
         if re.search(r'сколько|стоим|цен|тариф', situation.get('latest_intent') or '', re.I):
             lines = [f"{format_offer(row['service'], row['plan'])}: {row['price']} ₽" for row in situation['offered']]
             text = 'Цены из каталога:\n' + '\n'.join(lines)
+            if len(situation['offered']) > 1:
+                text += '\n\nКакой из этих тарифов вас интересует?'
             if not _same_question(text, situation.get('previous_question')):
                 return {'reply': text, 'summary': 'Цены сервиса из каталога по уже известной теме.',
                         'handoff': False, 'source_ids': [],
                         'evidence': {'status': 'catalog_direct', 'sources': [],
                                      'diagnostic': 'Этап: разбор диалога. Сервис известен, показаны цены каталога без нового вопроса о сервисе.'}}
+    if (situation.get('intent') == 'continuation' and situation.get('offered')
+            and 'option' in (situation.get('asked_slots') or [])):
+        return None
     if situation.get('want') == 'tariff' and ('option' in situation.get('known', []) or situation.get('matched_offers')):
         quoted = _tariff_fact(facts, situation)
         if quoted:
@@ -525,34 +572,15 @@ def prepare(db, chat, facts):
 
 
 def _known_statement(situation):
-    bits = []
-    if situation.get('region'):
-        bits.append('регион ' + situation['region'])
-    if situation.get('amount'):
-        bits.append(('сумма ' + situation['amount'] + ' ' + (situation.get('currency') or '')).strip())
-    if situation.get('option_label'):
-        bits.append('тариф ' + situation['option_label'])
-    if situation.get('service_label') and 'service' in situation.get('known', []):
-        bits.append(situation['service_label'])
-    missing = situation.get('missing') or []
-    names = {'region': 'регион', 'amount': 'сумма', 'currency': 'валюта', 'service': 'сервис', 'option': 'тариф'}
-    known = ', '.join(bits)
-    if missing:
-        need = ', '.join(names.get(item, item) for item in missing)
-        text = (f'Уже известно: {known}. ' if known else '') + f'Этого недостаточно без: {need}.'
-    else:
-        text = f'Уже известно: {known}.' if known else 'Повторно это не спрашиваю.'
-    if _same_question(text, situation.get('previous_question')):
-        text = 'Эти сведения уже есть в переписке, повторно не спрашиваю.'
-    return text
+    return 'Напишите, пожалуйста, название тарифа из последнего списка или задайте вопрос заново.'
 
 
 def guard_reply(answer, situation, facts=None):
     """Drop a question whose answer is already known, and do not repeat the previous one."""
     if not isinstance(answer, dict) or not situation:
         return answer
-    # A how-to or a capabilities question is not replaced by the previous price card.
-    if situation.get('intent') in ('capabilities', 'how_to'):
+    # A how-to, a capabilities question, or a newly named service is not the old tariff prompt.
+    if situation.get('intent') in ('capabilities', 'how_to') or situation.get('service_changed'):
         return answer
     text = str(answer.get('reply') or '')
     asked = question_targets(text)

@@ -33,6 +33,29 @@ def buttons(rows):
     return {'inline_keyboard':[[item(value) for value in row] for row in rows]}
 
 
+def present_outgoing(answer, info=None, introduced=False, facts=None):
+    """The exact text and seal the send path stores. Tests must use this, not a hand-built string."""
+    from .conversation_style import decorate_reply
+    from .dialog_state import prepare_outgoing
+    from .auto_policy import consultation_evidence, _local_consultation
+    result=dict(answer or {})
+    result['reply']=decorate_reply(result.get('reply') or '', info, introduced=introduced)
+    cleaned,replaced=prepare_outgoing(result['reply'], facts or {})
+    result['reply']=cleaned
+    evidence=dict(result.get('evidence') or {})
+    contract=evidence.get('consultation_contract')
+    if isinstance(contract,dict) and contract.get('kind') and not replaced:
+        from .auto_policy import _consultation_text
+        original=str((answer or {}).get('reply') or '')
+        if _consultation_text(original)==_consultation_text(cleaned) and not _local_consultation(cleaned, evidence):
+            fresh=consultation_evidence(cleaned, contract['kind'])
+            evidence['consultation_contract']=fresh['consultation_contract']
+            evidence['status']=fresh['status']
+            result['evidence']=evidence
+    result['_presentation_replaced']=replaced
+    return result,replaced
+
+
 class Service:
     def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None,
                  auto_test_ids=(),auto_for_all=False):
@@ -1094,8 +1117,10 @@ class Service:
         if not situation:
             return answer
         from .situation import guard_reply, remember
+        from .tariff_choice import safe_client_reply
         facts=getattr(self,'_last_dialog_facts',None) or {}
         guarded=guard_reply(answer,situation,facts) if isinstance(answer,dict) else answer
+        guarded=safe_client_reply(guarded)
         try:
             remember(self.store.db,job['chat'],situation)
         except Exception:
@@ -1178,6 +1203,23 @@ class Service:
         self._last_dialog_facts=facts
         # Quotes and slot questions for a topic the dialog already identified.
         # Unknown-service and safety turns stay on their own paths.
+        sit=prepared['situation']
+        if (not image and sit.get('intent')=='continuation' and sit.get('offered')
+                and 'option' in (sit.get('asked_slots') or []) and not sit.get('service_changed')):
+            from .tariff_choice import confirmation, narrowed_question, resolve_selection
+            choice=await resolve_selection(self.ai, sit['offered'], sit.get('burst') or raw_batch)
+            if choice.get('decision')=='chosen' and choice.get('row'):
+                sit['option_label']=choice['row'].get('plan') or ''
+                sit['offered']=[choice['row']]
+                sit['asked_slots']=[]
+                picked=confirmation(choice['row'], facts)
+                if picked:return picked
+            elif choice.get('decision')=='ambiguous' and choice.get('candidates'):
+                sit['offered']=choice['candidates']
+                asked=narrowed_question(choice['candidates'])
+                if asked:return asked
+            elif choice.get('decision')=='new_topic':
+                prepared['reply']=None
         if (prepared.get('reply') and not image and prepared['situation'].get('want') in ('appstore_topup','tariff')
                 and not re.search(r'возврат|верн\w*\s+деньг|парол|токен|сесси', raw_batch, re.I)):
             return prepared['reply']
@@ -1705,13 +1747,12 @@ class Service:
                         'api_reasons':reasons}
                     logging.info('support_turn chat=%s calls=%s reasons=%s batch_wait=%.1f generate=%.1f',
                                  job['chat'],len(meter.events),','.join(reasons),waited,generated)
-                    from .conversation_style import session_info,decorate_reply
-                    from .dialog_state import prepare_outgoing, record_outgoing
+                    from .conversation_style import session_info
+                    from .dialog_state import record_outgoing
                     first=self.store.chat(job['chat'])['batch_first']
-                    answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']),
-                                                   introduced=self.store.introduced(job['chat']))
-                    cleaned,replaced=prepare_outgoing(answer['reply'],getattr(self,'_last_dialog_facts',{}) or {})
-                    answer['reply']=cleaned
+                    answer,replaced=present_outgoing(answer,session_info(self.store.db,job['chat'],first,job['mid']),
+                                                     introduced=self.store.introduced(job['chat']),
+                                                     facts=getattr(self,'_last_dialog_facts',{}) or {})
                     if replaced:
                         answer['handoff']=True
                         answer['summary']='В черновике остались только неподтверждённые названия моделей. Клиенту оставлено ожидание владельца.'
