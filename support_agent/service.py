@@ -1143,7 +1143,7 @@ class Service:
         if scoped_question:latest=scoped_question
         if turn['inherited_goals']:
             labels=turn['reference_labels']
-            latest=', '.join(labels)+'\n'+intent_questions(turn['inherited_goals'])
+            latest=', '.join(labels)+'\n'+intent_questions(turn['inherited_goals'],turn['product_kind'])
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
             self._probe_question=latest

@@ -37,10 +37,36 @@ class IntentReference:
     context_condition: str = ''
     checked_sources: int = 0
     missing_sources: int = 0
+    product_kind: str = ''
 
     @property
     def question(self):
-        return ', '.join(self.entities.labels)+'\n'+'\n'.join(_PROMPTS[g] for g in self.goals)
+        return ', '.join(self.entities.labels)+'\n'+intent_questions(self.goals,self.product_kind)
+
+
+def product_kind(text):
+    """The requested object kind, not a plan, quantity or account condition."""
+    value=str(text)
+    credits=bool(re.search(r'кредит|\bcredits?\b',value,re.I))
+    if credits and re.search(r'пополн|докуп|купить|покупк',value,re.I):return 'credits'
+    if re.search(r'подписк',value,re.I):return 'subscription'
+    if credits and re.search(r'пакет',value,re.I):return 'credits'
+    if re.search(r'пополн',value,re.I):return 'balance_topup'
+    return ''
+
+
+def _historical_product_kind(history,catalog):
+    from .catalog_context import service_mentions
+    kind='';focus={}
+    for row in history:
+        text=row.get('text','')
+        named=service_mentions(text,catalog)
+        if named and focus and set(named)!=set(focus) and not entity_reference(text,catalog):
+            kind=''
+        explicit=product_kind(text)
+        if explicit:kind=explicit
+        if named:focus=named
+    return kind
 
 
 def entity_reference(text, catalog):
@@ -52,6 +78,12 @@ def entity_reference(text, catalog):
         return None
     tokens=list(_words(text))
     names=service_mentions(text, catalog)
+    if names and not re.search(r'кредит|\bcredits?\b',text,re.I):
+        # A family name must not expand into every separately sold product.
+        # With no explicit kind the catalogue may ask a choice afterwards.
+        from .catalog_context import _credit_product
+        regular={key:name for key,name in names.items() if not _credit_product({'service':name})}
+        if regular:names=regular
     if names:
         for name in sorted(_service_names(catalog), key=len, reverse=True):
             i=0
@@ -84,6 +116,16 @@ def reference_intent(current, history, catalog):
         focus=service_mentions(row.get('text',''),catalog)
         if focus:break
     same_entities=set(entities.identities)==set(focus)
+    kind=product_kind(current) or _historical_product_kind(history,catalog)
+    if kind in ('subscription','credits'):
+        scope_word='подписка' if kind=='subscription' else 'пополнение кредитов'
+        narrowed=service_mentions(current+'\n'+scope_word,catalog)
+        if narrowed:
+            entities=EntityReference(tuple(narrowed),tuple(dict.fromkeys(narrowed.values())))
+        from .catalog_context import _credit_product
+        scoped_focus={key:name for key,name in focus.items()
+                      if _credit_product({'service':name})==(kind=='credits')}
+        same_entities=set(entities.identities)==set(scoped_focus)
     for row in reversed(history):
         if row.get('role','client')!='client':continue
         text=str(row.get('text') or '')
@@ -98,7 +140,8 @@ def reference_intent(current, history, catalog):
         if intent-set(INFORMATION_GOALS):
             return IntentReference(entities,(),row.get('mid'),'previous_intent_requires_clarification')
         return IntentReference(entities,tuple(g for g in INFORMATION_GOALS if g in intent),
-                               row.get('mid'),'same_entity_reference' if same_entities else 'latest_client_question')
+                               row.get('mid'),'same_entity_reference' if same_entities else 'latest_client_question',
+                               product_kind=kind)
     return IntentReference(entities,(),None,'no_client_question')
 
 
@@ -146,11 +189,23 @@ def project_turn(facts, resolved, current, reference=None):
             'context_condition':reference.get('context_condition','') if reference else '',
             'checked_sources':reference.get('checked_sources',0) if reference else 0,
             'missing_sources':reference.get('missing_sources',0) if reference else 0,
+            'product_kind':product_kind(current) or (reference.get('product_kind','') if reference else ''),
             'reference_labels':reference.get('entities',{}).get('labels',[]) if reference else []}
 
 
-def intent_questions(goals):
-    return '\n'.join(_PROMPTS[g] for g in INFORMATION_GOALS if g in goals)
+def intent_questions(goals,kind=''):
+    prompts=_PROMPTS
+    names={'subscription':('подписка','подписки','подписку'),
+           'credits':('пополнение кредитов','пополнения кредитов','пополнение кредитов'),
+           'balance_topup':('пополнение баланса','пополнения баланса','пополнение баланса')}
+    if kind in names:
+        nominative,genitive,accusative=names[kind]
+        prompts={'price':f'Сколько стоит {nominative}?',
+                 'purchase':f'Что нужно для оформления {genitive}?',
+                 'features':f'Какие возможности и ограничения у {genitive}?',
+                 'activation':f'Как активировать {accusative}?',
+                 'installation':f'Как установить приложение для использования {genitive}?'}
+    return '\n'.join(prompts[g] for g in INFORMATION_GOALS if g in goals)
 
 
 def clause_requests(resolved,current,catalog):

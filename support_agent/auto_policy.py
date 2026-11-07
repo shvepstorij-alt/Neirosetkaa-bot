@@ -58,14 +58,39 @@ def _consultation_detection_copy(text):
     # them. Strip only bare field words in this detection copy. Credential
     # assignments/JWTs/API keys are rejected before this function is called;
     # unlabelled mixed values and unknown session URLs remain detectable.
+    # A signed renderer may state that a field is not required. Recognise the
+    # whole negative requirement, rather than erasing code words everywhere:
+    # positive requests and field/value pairs must retain their secret trigger.
+    code_qualifier=r'(?:одноразов|резервн)(?:ый|ые|ого|ых)'
+    code_field=(r'(?:'+code_qualifier+r'(?:\s*(?:,|и)\s*'+code_qualifier+r')*\s+код(?:ы|а|ов)?|'
+                r'код(?:ы)?\s+(?:для\s+)?(?:входа|подтверждения))')
+    field=r'(?:пароль|пароли|password|токен(?:ы)?|token|сессия|session|cookie|cvv|'+code_field+r')'
+    # Public labels are presentation names, not an unrestricted value slot.
+    # Payload punctuation, all-capital identifiers, numbers and bare lowercase
+    # strings do not qualify. The label stays in the sensitive detection copy.
+    label=r'(?-i:(?:[A-Z][a-z]+(?:[A-Z][a-z]+)*|[А-ЯЁ][а-яё]+(?:[А-ЯЁ][а-яё]+)*)(?:\s+ID)?)'
+    negative=re.compile(r'\s*'+field+r'(?:\s*(?:,|и)\s*'+field+r')*'
+        r'(?:\s+(?:(?:от|для)\s+)?'+label+r')?\s+'
+        r'(?:(?:присылать|отправлять|сообщать|передавать)\s+)?не\s+'
+        r'(?:нужен|нужна|нужны|нужно|требуется|требуются|надо)'
+        r'(?:\s+(?:присылать|отправлять|сообщать|передавать))?\s*',re.I)
     pieces=[]
     for part in re.split(r'(https?://[^\s<>]+)',str(text)):
         if part.startswith(('https://','http://')):
             url=part.rstrip('.,;)')
             pieces.append(part[len(url):] if url in _PUBLIC_SESSION_URLS else part)
         else:
+            fragments=re.split(r'([.!?](?:\s+|$)|\n)',part)
+            bare_value=any(re.fullmatch(r'\s*[A-Za-z0-9!@$%^&*_.+\-]{5,}\s*',fragment)
+                           for fragment in fragments if fragment.strip())
+            if not bare_value:
+                part=''.join(re.sub(code_field,'[поле]',fragment,flags=re.I)
+                             if negative.fullmatch(fragment) else
+                             re.sub(code_field,'код входа',fragment,flags=re.I) for fragment in fragments)
+            else:
+                part=re.sub(code_field,'код входа',part,flags=re.I)
             pieces.append(re.sub(r'(?<!\w)(?:парол[ьяеию]?|пароли|password|токен[а-яё]*|token|'
-                          r'сесси[яиюей]+|session|cookie|cvv|код\s+входа)(?!\w)','[поле]',part,flags=re.I))
+                          r'сесси[яиюей]+|session|cookie|cvv)(?!\w)','[поле]',part,flags=re.I))
     return ''.join(pieces)
 
 
@@ -170,15 +195,12 @@ def block_reason(answer,evidence=None,current_text=''):
     if consultation:
         # Local renderers describe checked observations or the next question;
         # this does not execute payment/refund/activation or grant eligibility.
-        if re.search(r'возврат[^.!?\n]{0,40}(?:одобрен|оформлен)|'
-                     r'подписк[а-яё]*\s+(?:уже\s+)?активирован[а-яё]*|'
-                     r'аккаунт\s+(?:уже\s+)?создан',text,re.I):
+        from .completion_claims import has_completion_claim
+        if has_completion_claim(text):
             return _reason('даже кодовая консультация не может утверждать выполнение возврата или оформления.')
         return None
-    if re.search(r'(?:возврат[^.!?\n]{0,40}(?:одобрен|оформлен|подтвержд[её]н)|'
-                 r'(?:одобрил|оформил|выполнил)[а-яё]*[^.!?\n]{0,25}возврат|'
-                 r'подписк[а-яё]*\s+(?:уже\s+)?активирован[а-яё]*|'
-                 r'аккаунт\s+(?:уже\s+)?создан|оплат[а-яё]*\s+(?:уже\s+)?(?:прошла|подтверждена))',text,re.I):
+    from .completion_claims import has_completion_claim
+    if has_completion_claim(text):
         return _reason('ответ утверждает завершение финансового действия или оформления; в пилоте нужен владелец.')
     from .order_status import is_status_request
     if is_status_request(current):

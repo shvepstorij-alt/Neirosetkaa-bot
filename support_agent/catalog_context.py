@@ -526,6 +526,7 @@ def direct_catalog_reply(facts, latest):
         if key in quotes and quotes[key]!=price:return None
         quotes[key]=price
     allowed=set('привет здравствуйте добрый день вечер какие тарифы тариф тарифов цены цену стоит стоят стоимость сколько можно оформить купить заказать через вас у вас есть и еще ещё также хочу пополнить пополнение баланс баланса что нужно уточнить подскажите пожалуйста мне для спасибо а по на подписку подписки подписок это в во сервис'.split())
+    allowed.update(('подписка','кредит','кредиты','кредитов'))
     for row in rows:
         allowed.update(_words(row.get('service_key')));allowed.update(_words(row.get('service')))
         families=_families(_words(row.get('service_key')))|_families(_words(row.get('service')))
