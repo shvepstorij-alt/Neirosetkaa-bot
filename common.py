@@ -1425,11 +1425,12 @@ async def _send_long_reply(message_or_cb, text: str, reply_markup=None,
 _conv_loaded: set = set()
 
 
-ASSISTANT_OFF_TEXT = (
-    "🔧 <b>AI-Консультант временно недоступен</b>\n\n"
-    "Сейчас чат с ассистентом на паузе. Уточнить информацию по сервисам и оформить "
-    "подписку можно в <b>Каталоге</b>, а по срочным вопросам пиши напрямую — помогу лично 🙌"
+CONSULT_MOVED_TEXT = (
+    "Консультации теперь только в личной переписке с Александром.\n\n"
+    "Напишите ему в личку: там отвечает ИИ-помощник и сразу помогает с вопросом. "
+    "Каталог, оплата и активация подписок по-прежнему в этом боте."
 )
+ASSISTANT_OFF_TEXT = CONSULT_MOVED_TEXT
 
 
 async def _assistant_enabled() -> bool:
@@ -16422,7 +16423,7 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🖼️ Создать фото", callback_data="menu_image"),
                      InlineKeyboardButton(text="🎬 Создать видео", callback_data="menu_video")],
-                    [InlineKeyboardButton(text="🤖 AI-Консультант", callback_data="menu_chat")],
+                    [InlineKeyboardButton(text="Вопрос Александру", callback_data="menu_chat")],
                     [_eib("Главное меню", "back_main")],
                 ])
             )

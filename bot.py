@@ -22,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from config import (
     ADMIN_ID, NSGIFTS_API_SECRET, NSGIFTS_LOGIN, NSGIFTS_PASSWORD, NSGIFTS_USER_ID, WEBSHARE_PROXY,
-    NSGIFTS_PROXY, bot, dp, validate_chat_prompt,
+    NSGIFTS_PROXY, bot, dp,
 )
 from runtime_state import (
     rt,
@@ -30,12 +30,10 @@ from runtime_state import (
 from db import (
     ensure_user, get_setting, init_db, is_blocked, load_prices_from_db,
 )
-from keyboards import (
-    kb_after_consultant_reply,
-)
 from common import (
-    _ensure_playwright_browser, claude_with_search, setup_webhook_server, process_linkpay_link,
-    load_miniapp_toggles, _assistant_enabled, ASSISTANT_OFF_TEXT, _assistant_off_kb,
+    _ensure_playwright_browser, setup_webhook_server, process_linkpay_link,
+    CONSULT_MOVED_TEXT, _assistant_off_kb,
+    load_miniapp_toggles,
     maintenance_on as _maintenance_on,
 )
 from background import (
@@ -101,23 +99,8 @@ async def handle_message(message: Message, state: FSMContext):
     except Exception:
         pass
 
-    # AI-Консультант выключен админом — показываем заглушку с каталогом/контактом
-    if not await _assistant_enabled():
-        await message.answer(ASSISTANT_OFF_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
-        return
-
-    # Валидация сообщения для консультанта
-    ok_v, err = validate_chat_prompt(message.text)
-    if not ok_v and err:
-        await message.answer(err)
-        return
-
-    await bot.send_chat_action(message.chat.id, "typing")
-    reply = await claude_with_search(uid, message.text)
-    try:
-        await message.answer(reply, reply_markup=kb_after_consultant_reply(), parse_mode="HTML")
-    except Exception:
-        await message.answer(reply, reply_markup=kb_after_consultant_reply())
+    # Консультации только в личке Александра. Каталог, оплата и ссылки остаются здесь.
+    await message.answer(CONSULT_MOVED_TEXT, reply_markup=_assistant_off_kb(), parse_mode="HTML")
 
 # ══════════════════════════════════════════════════════════
 #  ЗАПУСК

@@ -1,4 +1,8 @@
-"""Fixed synthetic acceptance inputs. No customer photos, IDs or credentials."""
+"""Fixed synthetic acceptance inputs. No customer photos, IDs or credentials.
+
+Живой прогон на тестовом аккаунте описан в DEPLOY.md. Старый консультант
+внутри магазинного бота в эти сценарии не входит.
+"""
 import io
 
 

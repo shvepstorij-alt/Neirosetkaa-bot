@@ -2788,32 +2788,24 @@ async def adm_maintenance(cb: CallbackQuery):
         await cb.answer()
 
 
-# ─── AI-Консультант: включение/выключение ─────────────────
-
-def _kb_assistant(on: bool):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=("🔴 Выключить консультанта" if on else "🟢 Включить консультанта"),
-            callback_data="adm_assistant_toggle")],
-        [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
-    ])
+# ─── Старый консультант в боте больше не включается ─────────
 
 
 async def _render_assistant(msg):
-    on = (await get_setting("assistant_enabled", "1") or "1") == "1"
-    status = "🟢 <b>ВКЛЮЧЁН</b>" if on else "🔴 <b>ВЫКЛЮЧЕН</b>"
     txt = (
-        f"🤖 <b>AI-Консультант</b>\n\n"
-        f"Статус: {status}\n\n"
-        + ("Клиенты общаются с ассистентом как обычно."
-           if on else
-           "Клиентам приходит сообщение, что чат на паузе, с кнопками «Каталог» и «Написать Александру». "
-           "Алерты о сбоях API тебе <b>не приходят</b>, пока выключен.")
+        "Консультации в этом боте отключены.\n\n"
+        "Клиенты пишут Александру в личку, там отвечает ИИ-помощник. "
+        "Каталог, оплата, ссылки на оплату и активация Claude, ChatGPT и остальных подписок остаются здесь.\n\n"
+        "Этот экран больше не включает старого консультанта. "
+        "Автоответы в личке выключаются отдельно, командой /stop у помощника."
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Панель", callback_data="adm_back")],
+    ])
     try:
-        await msg.edit_text(txt, parse_mode="HTML", reply_markup=_kb_assistant(on))
+        await msg.edit_text(txt, parse_mode="HTML", reply_markup=kb)
     except Exception:
-        await msg.answer(txt, parse_mode="HTML", reply_markup=_kb_assistant(on))
+        await msg.answer(txt, parse_mode="HTML", reply_markup=kb)
 
 
 @dp.callback_query(F.data == "adm_assistant")
@@ -2828,9 +2820,7 @@ async def adm_assistant(cb: CallbackQuery):
 async def adm_assistant_toggle(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("❌", show_alert=True); return
-    cur = (await get_setting("assistant_enabled", "1") or "1") == "1"
-    await set_setting("assistant_enabled", "0" if cur else "1")
-    await cb.answer("Консультант выключен" if cur else "Консультант включён")
+    await cb.answer("Старый консультант в боте больше не включается", show_alert=True)
     await _render_assistant(cb.message)
 
 
