@@ -281,7 +281,7 @@ def _purpose_answers_previous(db,chat,first,bounds,previous,catalog):
                      (chat,bounds[1],first)).fetchone()
     if not asked:return False
     from .session_context import SESSION_GAP
-    if isinstance(asked['at'],(int,float)) and not 0<=time.time()-asked['at']<=SESSION_GAP:return False
+    if type(asked['at']) not in (int,float) or not 0<=time.time()-asked['at']<=SESSION_GAP:return False
     return bool(re.search(r'для\s+каких\s+задач|что\s+(?:именно\s+)?(?:вы\s+)?хотите\s+делать|'
                           r'какие\s+задачи\s+(?:планируете|хотите)|под\s+какие\s+задачи',asked['text'] or '',re.I))
 
@@ -291,7 +291,9 @@ def _recent_service_labels(db,chat,first,catalog,source_mids=None):
     from .catalog_context import service_mentions
     from .session_context import _active,_boundary,_new_inquiry,SESSION_GAP
     now=time.time()
-    rows=db.execute("SELECT mid,text,at FROM messages WHERE chat=? AND role='client' AND mid<? AND (at IS NULL OR at>=?) ORDER BY mid DESC LIMIT 60",(chat,first,now-86400)).fetchall()
+    rows=db.execute("SELECT mid,text,at FROM messages WHERE chat=? AND role='client' AND mid<? ORDER BY mid DESC LIMIT 61",(chat,first)).fetchall()
+    from .context_validity import validate_client_rows
+    rows=reversed(validate_client_rows(rows,now=now).rows)
     kept=[];used=0;later=now
     for row in rows:
         text=row['text'] or '';used+=len(text)
@@ -348,10 +350,12 @@ def _reply_client_context(db,chat,first,last,text,catalog):
         boundary=db.execute("SELECT MAX(mid) AS mid FROM messages WHERE chat=? AND role IN ('assistant','owner') AND mid<?",(chat,end+1)).fetchone()['mid']
         bounds=((boundary+1) if boundary is not None else 0,end)
     else:return None
-    sources=db.execute("SELECT text,at FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
+    sources=db.execute("SELECT mid,text,at FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid LIMIT 61",(chat,*bounds)).fetchall()
     now=time.time()
     if not sources or len(sources)>60:return None
-    if any(not isinstance(r['at'],(int,float)) or not 0<=now-r['at']<=min(MAX_AGE,SESSION_GAP) for r in sources):return None
+    from .context_validity import validate_client_rows
+    valid=validate_client_rows(reversed(sources),now=now,max_age=min(MAX_AGE,SESSION_GAP))
+    if not valid.complete:return None
     previous='\n'.join(r['text'] for r in sources if r['text'] and not is_acknowledgement(r['text']))
     if not previous or len(previous)+len(text)>24000:return None
     current=set(service_mentions(text,catalog));prior=set(service_mentions(previous,catalog))
@@ -366,9 +370,16 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     bounded by the preceding draft. Never use generated draft text as evidence.
     """
     db.execute('CREATE TABLE IF NOT EXISTS request_context (chat INTEGER PRIMARY KEY, first_mid INTEGER, last_mid INTEGER)')
+    db.execute('CREATE TABLE IF NOT EXISTS request_context_sources (chat INTEGER PRIMARY KEY,mids TEXT)')
+    def point(start,end):
+        db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,start,end))
+        mids=[r['mid'] for r in db.execute("SELECT mid FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid",(chat,start,end))]
+        db.execute('INSERT OR REPLACE INTO request_context_sources VALUES (?,?)',(chat,json.dumps(mids)))
+    from .turn_contract import entity_reference, reference_intent, save_reference
+    save_reference(db,chat,last,None)
     replied=_reply_client_context(db,chat,first,last,text,catalog)
     if replied is not None:
-        db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
+        point(first,last)
         return replied
     text=_resolve_plural_reference(db,chat,first,text,catalog)
     if _has_apple_topic(text):
@@ -382,14 +393,14 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     # do not reduce the entire batch to only the last named product.
     leading_followup=(len(lines)>1 and _dependent_followup(lines[0]))
     from .catalog_context import _words,_contains
-    service_only=_only_service_names(text,catalog)
+    service_only=entity_reference(text,catalog) is not None
     purpose_candidate=_purpose_answer_candidate(text,catalog)
     reference_candidate=bool(re.search(r'\b(?:это|такое|эти\s+задачи|этой\s+задач[а-яё]*|для\s+этого|с\s+этим)\b',text,re.I))
     # Region-only replies are considered below only after examining prior client
     # content. A standalone region must never revive an unrelated service.
     region_candidate=_apple_details_candidate(text)
     if not reminder and not followup and not leading_followup and not region_candidate and not service_only and not purpose_candidate and not reference_candidate:
-        db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
+        point(first,last)
         return text
     pointer=db.execute('SELECT first_mid,last_mid FROM request_context WHERE chat=?',(chat,)).fetchone()
     if pointer:
@@ -398,7 +409,8 @@ def resolve_request(db, chat, first, last, text, catalog=()):
         drafts=db.execute('SELECT DISTINCT mid FROM drafts WHERE chat=? AND mid<? ORDER BY mid DESC LIMIT 2',(chat,first)).fetchall()
         if not drafts:
             if not reminder:
-                db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
+                point(first,last)
+                save_reference(db,chat,last,reference_intent(text,[],catalog))
                 return text
             return ''
         bounds=(drafts[1]['mid']+1 if len(drafts)>1 else drafts[0]['mid'],drafts[0]['mid'])
@@ -408,11 +420,16 @@ def resolve_request(db, chat, first, last, text, catalog=()):
     # dependent question can inherit a service, region or denomination.
     from .session_context import MAX_AGE,SESSION_GAP
     now=time.time()
-    timestamps=[r['at'] for r in rows if isinstance(r['at'],(int,float))]
-    stale=(any(not 0<=now-at<=MAX_AGE for at in timestamps)
-           or bool(timestamps and now-max(timestamps)>SESSION_GAP))
-    if stale:
-        db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
+    from .context_validity import validate_client_rows,require_sources
+    valid=validate_client_rows(reversed(rows),now=now,max_age=MAX_AGE,session_gap=SESSION_GAP)
+    original=db.execute('SELECT mids FROM request_context_sources WHERE chat=?',(chat,)).fetchone() if pointer else None
+    if original:valid=require_sources(valid,json.loads(original['mids']))
+    if not valid.complete:
+        point(first,last)
+        from .turn_contract import IntentReference,EntityReference
+        save_reference(db,chat,last,IntentReference(entity_reference(text,catalog) or EntityReference((),()),
+                                                    (),None,'unavailable_client_context',valid.reason,
+                                                    valid.checked_count,valid.missing_source_count))
         return '' if reminder else text
     if len(rows)>60:return '' if reminder else text
     parts=[_resolve_plural_reference(db,chat,r['mid'],_reply_client_context(db,chat,r['mid'],r['mid'],r['text'],catalog) or r['text'],catalog) for r in rows if r['text'] and not is_reminder(r['text'])
@@ -431,20 +448,19 @@ def resolve_request(db, chat, first, last, text, catalog=()):
         followup=True
     if not reminder:
         linked=_link_apple_turn(previous,text)
+        if linked is None:
+            reference=reference_intent(text,[dict(row) for row in rows],catalog)
+            if reference is not None:
+                save_reference(db,chat,last,reference)
+                if not reference.goals:
+                    point(first,last)
+                    return text
+                point(bounds[0],last)
+                if reference.reason=='same_entity_reference':return previous+'\n'+text
+                return reference.question if reference.goals else text
         if linked is None and reference_candidate and _same_service_reference(text,previous,catalog):
             linked=previous+'\n'+text
         if linked is None and service_only:
-            # «А на ChatGPT?» transfers the question, not the previous
-            # product, tariff or regional slots. Resolve only explicit, short
-            # brand-only continuations against a client-authored intent.
-            if re.match(r'^\s*а\s+',text,re.I):
-                from .request_goals import goals
-                prior_goals=goals(previous)
-                if 'purchase' in prior_goals or 'price' in prior_goals:
-                    brand=re.sub(r'^\s*а\s+(?:на\s+)?','',text,flags=re.I).strip(' ?!.')
-                    question=('Как оформить ' if 'purchase' in prior_goals else 'Сколько стоит ')+brand+'?'
-                    db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,bounds[0],last))
-                    return question
             previous_has_service=any(_contains(_words(previous),name) for name in _service_names(catalog))
             if not previous_has_service and (_dependent_followup(previous) or _contextual_followup(previous,catalog)):
                 linked=previous+'\n'+text
@@ -453,13 +469,13 @@ def resolve_request(db, chat, first, last, text, catalog=()):
                 previous_names={name for name in _service_names(catalog) if _contains(_words(previous),name)}
                 from .catalog_context import _families
                 same_families=_families(_words(text)) and _families(_words(text))<=_families(_words(previous))
-                if current_names<=previous_names or same_families:linked=previous+'\n'+text
+                if (current_names and current_names<=previous_names) or same_families:linked=previous+'\n'+text
         if followup or linked is not None:
             combined=linked if linked is not None else previous+'\n'+text
             if len(combined)>24000:return text
-            db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,bounds[0],last))
+            point(bounds[0],last)
             return combined
-        db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,first,last))
+        point(first,last)
         return text
-    db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,*bounds))
+    point(*bounds)
     return previous

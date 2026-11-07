@@ -107,7 +107,11 @@ def block_reason(answer,evidence=None,current_text=''):
     if not isinstance(answer,dict):return _reason('ответ отсутствует или имеет неверный тип.')
     if type(answer.get('handoff')) is not bool:
         return _reason('флаг участия владельца отсутствует или имеет неверный тип.')
-    if answer['handoff']:
+    meta=evidence if isinstance(evidence,dict) else answer.get('evidence',{})
+    from .response_decision import verified_atomic_decision
+    decision=verified_atomic_decision(answer,meta)
+    atomic_partial=bool(decision and decision['coverage_complete'] is False)
+    if answer['handoff'] and not atomic_partial:
         meta=evidence if isinstance(evidence,dict) else answer.get('evidence',{})
         detail=''
         if isinstance(meta,dict):
@@ -196,17 +200,17 @@ def block_reason(answer,evidence=None,current_text=''):
         if evidence.get('content_review',{}).get('supported') is False:
             return _reason('сохранён отказ проверки содержания ответа.')
         return None
-    if status not in ('checked','catalog_checked'):
+    if status not in ('checked','catalog_checked') and not (atomic_partial and status=='insufficient'):
         return _reason('статус подтверждений='+status_safe(status)+'; этот тип ответа не разрешён в автоматическом пилоте.')
     review=evidence.get('content_review')
     if not isinstance(review,dict) or review.get('supported') is not True:
         return _reason('нет сохранённого положительного результата проверки содержания.')
     projection=answer.get('feature_projection') or evidence.get('feature_projection')
-    if isinstance(projection,dict) and projection.get('incomplete_target_ids'):
+    if isinstance(projection,dict) and projection.get('incomplete_target_ids') and not atomic_partial:
         return _reason('сравнение содержит неподтверждённые цели; требуется проверка владельца.')
     from .response_policy import public_question
     sources=evidence.get('sources')
-    public=(status=='checked' or public_question(current) or bool(answer.get('source_ids')))
+    public=(atomic_partial or status=='checked' or public_question(current) or bool(answer.get('source_ids')))
     if public:
         if not isinstance(sources,list) or not sources:
             return _reason('для публичных утверждений нет сохранённых источников.')

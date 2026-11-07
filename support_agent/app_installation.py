@@ -27,11 +27,17 @@ def reply(facts,current):
     install=bool(re.search(r'(?:скача|установ)[а-яё]*[^.!?\n]{0,50}(?:прилож|chat\s*gpt|чат\s*гпт|апк|apk)|'
         r'(?:прилож|chat\s*gpt|чат\s*гпт)[^.!?\n]{0,45}(?:скача|установ)|как[^.!?\n]{0,35}(?:сменить|изменить)[^.!?\n]{0,30}регион',text,re.I))
     if not install:return None
+    from .request_goals import covers
+    if not covers(text,{'installation'},facts):return None
     if re.search(r'сколько|тариф|как[^.!?\n]{0,35}оплат|возврат|верн[а-я]*\s+деньг|что\s+входит',text,re.I):return None
     from .catalog_context import _families,_words
     families=_families(_words(text))
     known=families or set(facts.get('catalog_selection',{}).get('mentioned_known_services',[]))
     if known-{'chatgpt','appstore'}:return None
+    from .catalog_context import service_mentions
+    named=service_mentions(text,facts.get('catalog',[]))
+    selected=named or service_mentions(' '.join(str(r.get('service','')) for r in facts.get('requested_catalog',[])),facts.get('catalog',[]))
+    if set(selected)-{'chatgpt','appstore'}:return None
     android=bool(re.search(r'android|андроид|\bapk\b|апк',text,re.I))
     ios=bool(re.search(r'iphone|ipad|ios|айфон|айпад|apple\s*(?:id|аккаунт)|эпл|app\s*store|регион',text,re.I))
     if android and ios:return None

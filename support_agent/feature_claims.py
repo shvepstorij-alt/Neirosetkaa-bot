@@ -803,6 +803,10 @@ async def review_claims(ai,answer,facts):
     if diagnostics:reason+='\n'+'\n'.join(diagnostics)
     revised['summary']+=' Исключения и неполные пункты: '+str(len(diagnostics))+'.'
     revised['evidence']={'atomic_diagnostics':diagnostics,'atomic_review':True}
+    from .response_decision import _seal_verified_atomic
+    decision=_seal_verified_atomic(revised,facts.get('public_research',{}))
+    if decision is not None:
+        revised['evidence']['response_decision']=decision
     accepted_ids={c['claim_id'] for rows in accepted.values() for c in rows}
     original_supported=(not missing and all(
         c['claim_id'] in accepted_ids for c in claims)

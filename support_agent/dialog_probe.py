@@ -48,6 +48,22 @@ def report_details(answer, facts, question):
              +'; App Store='+str(facts.get('appstore',{}).get('status','not_connected'))
              +'; навигация='+str(facts.get('bot_navigation',{}).get('status','not_connected'))]
     checked_at=evidence.get('checked_at')
+    turn=facts.get('conversation_turn',{})
+    if turn.get('version')==1:
+        lines.append('Этап: текущий вопрос. Целей='+','.join(turn.get('goals',[]))
+                     +'; тип='+str(turn.get('current_act','unspecified'))
+                     +'; связь='+str(turn.get('relation','current_request'))
+                     +'; источник намерения mid='+str(turn.get('source_mid'))
+                     +'; вопросов с привязкой к товару='+str(len(turn.get('requests',[])))+'.')
+    from .response_decision import verified_atomic_decision
+    decision=verified_atomic_decision(answer,evidence)
+    if decision:
+        lines.append('Этап: решение об ответе. Отправляемый текст подтверждён; полное покрытие='
+                     +str(decision['coverage_complete'])+'; действие владельца='
+                     +str(decision['owner_action_required'])+'. Неполнота отделена от достоверности текста.')
+    from .auto_policy import block_reason
+    auto_reason=block_reason(answer,evidence,current_text=turn.get('current_text',question))
+    lines.append('Допуск содержания AUTO: '+(auto_reason or 'пройден; права и фактическая доставка этим прогоном не проверяются.'))
     if facts.get('live_shop_diagnostic'):
         lines.append('Диагностика подключения магазина: '+scrub(str(facts['live_shop_diagnostic']))[:700])
     if type(checked_at) in (int,float) and 0<checked_at<4102444800:

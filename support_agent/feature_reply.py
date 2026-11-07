@@ -77,6 +77,8 @@ def public_question(facts):
 
 
 def price_block(facts, question, topic=None):
+    from .request_goals import covers
+    if not covers(question,{'price','features'},facts):return ''
     if topic not in ('features','comparison','plans') and not re.search(r'возможност|сравни|отлич[аи]|разниц|функци',question,re.I):return ''
     if re.search(r'как\s+(?:оформ|оплат)|что\s+(?:нужно|потребуется)|возврат|заказ\s*№',question,re.I):return ''
     from .catalog_order import ordered_rows

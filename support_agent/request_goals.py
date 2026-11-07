@@ -19,6 +19,9 @@ PATTERNS={
 
 def goals(text, facts=None):
     result={name for name,pattern in PATTERNS.items() if re.search(pattern,str(text),re.I)}
+    turn=facts.get('conversation_turn',{}) if isinstance(facts,dict) else {}
+    if turn.get('version')==1 and str(text)==turn.get('current_text'):
+        result.update(g for g in turn.get('goals',[]) if g in PATTERNS or g=='recommendation')
     from .selection_help import is_selection_request
     from .consultation_intent import context
     if is_selection_request(text,facts) or context(text,facts).get('active'):

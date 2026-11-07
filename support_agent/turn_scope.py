@@ -2,9 +2,50 @@
 import re
 
 
+def _scoped_plans(groups, catalog, resolved, current):
+    """Resolve plan labels with their client-authored service scope.
+
+    A bare choice can continue the last single-service focus. It cannot apply
+    another service's plan just because both products offer a plan named Pro.
+    """
+    from .catalog_context import service_mentions
+    from .fulfillment_reply import _selected_plan_rows, _service_plan_scope
+    identities={name:set(service_mentions(' '.join(dict.fromkeys(
+        str(row.get(field,'')) for row in items for field in ('service','service_key'))),catalog))
+        for name,items in groups.items()}
+    chosen={};focus=set(groups) if len(groups)==1 else set()
+    # Reapply current independently: it may be absent from reconstructed text,
+    # and is always authoritative over older client selections.
+    turns=[*str(resolved).splitlines(),*str(current).splitlines()]
+    for line in (part for turn in turns for part in re.split(r'[.!?](?:\s+|$)',turn) if part.strip()):
+        mentioned=set(service_mentions(line,catalog))
+        named={name for name,ids in identities.items() if ids & mentioned}
+        if mentioned:
+            focus=named
+        shared=bool(re.search(r'\b(?:обоим|обоих|оба|обе|всем|всех)\b',line,re.I)
+                    and re.search(r'выбира|бер[уё]|давайте|хочу|тариф|план',line,re.I))
+        if shared and not mentioned:
+            focus=set(groups)
+        for name,items in groups.items():
+            if mentioned:
+                if name not in named:continue
+                local=line if len(mentioned)==1 and len(named)==1 else _service_plan_scope(name,groups,line)
+                if shared:local=line
+            elif name in focus and (len(focus)==1 or shared):
+                local=line
+            else:
+                # An unqualified new plan after multiple services is a pending
+                # choice, not confirmation of any earlier plans for that list.
+                if not mentioned and name in focus and _selected_plan_rows(items,line,require_match=True):
+                    chosen.pop(name,None)
+                continue
+            match=_selected_plan_rows(items,local,require_match=True)
+            if match:chosen[name]=match
+    return [row for name,items in groups.items() for row in chosen.get(name,items)]
+
+
 def scope(facts, resolved, current, discovered=False):
     from .catalog_context import annotate,service_mentions
-    from .fulfillment_reply import _selected_plan_rows
     from .consultation_intent import context
     from .request_context import is_reminder
     rows=facts.get('requested_catalog',[])
@@ -17,6 +58,11 @@ def scope(facts, resolved, current, discovered=False):
         if ids:
             rows=[r for r in rows if set(service_mentions(r.get('service',''),facts.get('catalog',[])))&ids]
             facts=dict(facts,requested_catalog=rows)
+        elif re.search(r'\bне\s+(?:нуж|буду|оформ)',current,re.I):
+            removed=set(service_mentions(current,facts.get('catalog',[])))
+            if removed:
+                rows=[r for r in rows if not set(service_mentions(r.get('service',''),facts.get('catalog',[])))&removed]
+                facts=dict(facts,requested_catalog=rows,cancelled_entities=sorted(removed))
     creative=context(current,facts).get('kind')=='creative_generation'
     explicit=service_mentions(current,facts.get('catalog',[]))
     if creative and not explicit and not discovered:
@@ -28,14 +74,7 @@ def scope(facts, resolved, current, discovered=False):
     if rows and not general and not (creative and not explicit):
         groups={}
         for row in rows:groups.setdefault(row.get('service',''),[]).append(row)
-        selected=[]
-        for group in groups.values():
-            chosen=_selected_plan_rows(group,current,require_match=True)
-            if not chosen:
-                for line in reversed(resolved.splitlines()):
-                    chosen=_selected_plan_rows(group,line,require_match=True)
-                    if chosen:break
-            selected.extend(chosen or group)
+        selected=_scoped_plans(groups,facts.get('catalog',[]),resolved,current)
         facts=dict(facts,requested_catalog=selected)
         rows=selected
     labels=list(dict.fromkeys(str(r.get('service','')) for r in rows if r.get('service')))
@@ -56,15 +95,14 @@ def scope(facts, resolved, current, discovered=False):
     from .workflow_policy import route_choice
     if route_choice(current) and re.search(r'оформ|что[^.!?\n]{0,30}нуж|данные',resolved,re.I):
         query+='\nЧто нужно для оформления?'
-    from .request_context import _only_service_names
-    if _only_service_names(current,facts.get('catalog',[])) and resolved.strip()!=current.strip():
+    from .turn_contract import entity_reference,intent_questions
+    if entity_reference(current,facts.get('catalog',[])) and resolved.strip()!=current.strip():
         from .request_goals import goals
         for line in reversed(resolved.splitlines()):
             previous_goals=goals(line,facts)
-            if 'purchase' in previous_goals:
-                query+='\nЧто нужно для оформления?';break
-            if 'price' in previous_goals:
-                query+='\nКакие тарифы есть?';break
+            questions=intent_questions(previous_goals)
+            if questions:
+                query+='\n'+questions;break
     return facts,query
 
 

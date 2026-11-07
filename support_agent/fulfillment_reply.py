@@ -252,14 +252,22 @@ def workflow_reply(facts,latest,current=None):
             handoff=True
             continue
         if methods=={'account_details'}:
-            fields={tuple(item.get('required_fields',[])) for item in items if item.get('required_fields_status')=='available'}
+            fields={tuple(sorted(item.get('required_fields',[]))) for item in items if item.get('required_fields_status')=='available'}
             complete=all(item.get('required_fields_status')=='available' for item in items)
-            if complete and fields=={('account_email','account_password')}:
-                parts.append(name+': после выбора тарифа и оплаты пришлите сюда, в эту переписку, почту и пароль от аккаунта.')
+            if complete and len(fields)==1 and next(iter(fields)) and set(next(iter(fields)))<={'account_email','account_password'}:
+                names={('account_email',):'почту от аккаунта',('account_password',):'пароль от аккаунта',
+                       ('account_email','account_password'):'почту и пароль от аккаунта'}
+                parts.append(name+': после выбора тарифа и оплаты пришлите сюда, в эту переписку, '+names[next(iter(fields))]+'.')
                 handoff=True
             else:
                 parts.append(name+': для оформления потребуются данные аккаунта. Точный список данных нужно проверить перед оформлением.')
-                diagnostics.append(name+': ветка account_details подтверждена; точный список полей не подтверждён для всех выбранных тарифов.')
+                condition=('точный список полей не подтверждён у части выбранных тарифов' if not complete else
+                           'подтверждённые наборы полей выбранных тарифов различаются' if len(fields)>1 else
+                           'подтверждённый набор полей пуст или содержит неподдерживаемые поля')
+                diagnostics.append(name+': ветка account_details подтверждена; '+condition
+                                   +'; тарифов='+str(len(items))
+                                   +'; подтверждённых списков полей='+str(sum(item.get('required_fields_status')=='available' for item in items))
+                                   +'; различных наборов полей='+str(len(fields))+'.')
                 handoff=True
         elif methods=={'checkout_link'}:
             expected=['open_service','login_own_account','open_plans','select_plan','open_checkout','copy_checkout_url','send_checkout_url']

@@ -66,6 +66,9 @@ def _new_inquiry(text):
 def _session_rows(db,chat,last,now):
     rows=db.execute("SELECT mid,text,at FROM messages WHERE chat=? AND role='client' AND mid<=? ORDER BY mid DESC LIMIT ?",
                     (chat,last,MAX_MESSAGES+1)).fetchall()
+    from .context_validity import validate_client_rows
+    rows=reversed(validate_client_rows(rows,now=now,max_age=MAX_AGE,session_gap=SESSION_GAP,
+                                      max_messages=MAX_MESSAGES,max_chars=MAX_CHARACTERS).rows)
     kept=[];chars=0;later=None
     for row in rows:
         at=row['at']

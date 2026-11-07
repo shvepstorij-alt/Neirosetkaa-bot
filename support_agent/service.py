@@ -1135,9 +1135,38 @@ class Service:
         from .turn_scope import scope as scope_turn,purchase_reply
         resolved_context=latest
         facts,latest=scope_turn(facts,resolved_context,raw_batch)
+        from .turn_contract import load_reference,project_turn,intent_questions,scoped_current_question
+        reference=load_reference(self.store.db,job['chat'],job['mid'])
+        turn=project_turn(facts,resolved_context,raw_batch,reference)
+        facts=dict(facts,conversation_turn=turn)
+        scoped_question=scoped_current_question(turn)
+        if scoped_question:latest=scoped_question
+        if turn['inherited_goals']:
+            labels=turn['reference_labels']
+            latest=', '.join(labels)+'\n'+intent_questions(turn['inherited_goals'])
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
             self._probe_question=latest
+        if turn['clarification_required'] and not image:
+            labels=', '.join(turn['reference_labels'])
+            reply=(f'Что хотите узнать о {labels}: стоимость, порядок оформления или возможности?' if labels else
+                   'О каком сервисе хотите узнать? Уточните, пожалуйста, название.')
+            return {'reply':reply,
+                    'summary':'Назван сервис, но текущая цель вопроса не подтверждена клиентским контекстом; задан уточняющий вопрос.',
+                    'handoff':False,'source_ids':[],'evidence':{'status':'clarification','sources':[],
+                    'diagnostic':('Этап: проверка истории клиента. Причина='+turn['context_condition']
+                                  +'; проверено источников='+str(turn['checked_sources'])
+                                  +'; отсутствующих источников='+str(turn['missing_sources'])
+                                  +'. История не использована; задан уточняющий вопрос.' if turn['context_condition'] else
+                                  'Этап: определение текущего вопроса. Причина='+turn['reference_reason']
+                                  +'; источник намерения mid='+str(turn['source_mid'])
+                                  +'. Подтверждённого информационного намерения нет; задан уточняющий вопрос.')}}
+        if facts.get('cancelled_entities') and not image and not (set(turn['goals'])-{'purchase'}) and '?' not in raw_batch:
+            from .catalog_context import service_mentions
+            labels=', '.join(service_mentions(raw_batch,facts.get('catalog',[])).values())
+            return {'reply':f'Хорошо, убираем {labels} из подбора.',
+                    'summary':'Подтверждённая клиентом отмена выбора; операций с заказом не выполнялось.',
+                    'handoff':False,'source_ids':[],'evidence':{'status':'clarification','sources':[]}}
         if image:
             boundary=missing_shop_reply(latest,facts,has_images=True)
             if boundary:return boundary
@@ -1320,7 +1349,7 @@ class Service:
             # one product has sources; unknown products get explicit blocks.
             # A feature table cannot represent a recommendation or a mixed
             # request with purchase steps. Keep these in full reviewed prose.
-            retail_block=price_block(facts,latest,topic=plan['topic']) if evidence.get('sources') and not course and not image and not selection else ''
+            retail_block=price_block(facts,latest,topic=plan['topic']) if evidence.get('sources') and not course and not image and not selection and covers(raw_batch,{'price','features'},facts) else ''
             if retail_block:
                 # Unknown services may need official prices; do not suppress
                 # that part of a mixed question with the store-price-only mode.
@@ -1356,14 +1385,22 @@ class Service:
                                        for t in final['feature_claims'].get('targets',[])}
                         final=review.get('revised_answer',final)
                         atomic_diagnostics=final.get('evidence',{}).get('atomic_diagnostics',[])
+                        from .response_decision import verified_atomic_decision
+                        decision_evidence={**evidence,**final.get('evidence',{}),
+                                           'feature_projection':final.get('feature_projection',{})}
+                        decision=verified_atomic_decision(final,decision_evidence)
                         checked=attach_evidence(dict(final),evidence,allow_catalog_only=True,semantic_review=True)
                         checked.setdefault('evidence',{})['content_review']={k:v for k,v in review.items() if k!='revised_answer'}
                         checked['evidence']['atomic_diagnostics']=atomic_diagnostics
+                        if decision:
+                            checked['evidence']['response_decision']=decision
+                            checked['evidence']['feature_projection']=final['feature_projection']
                         if final.get('handoff'):
                             checked['evidence']['status']='insufficient'
                             missing=[target_labels[tid] for tid in review.get('missing_targets',[]) if tid in target_labels]
-                            checked['evidence']['handoff_reason']=('Не подтверждены все запрошенные функции: '+', '.join(missing)+'.'
-                                if missing else 'Проверка оставила неполные публичные сведения; конкретные причины указаны в проверке утверждений.')
+                            if not decision:
+                                checked['evidence']['handoff_reason']=('Не подтверждены все запрошенные функции: '+', '.join(missing)+'.'
+                                    if missing else 'Проверка оставила неполные публичные сведения; конкретные причины указаны в проверке утверждений.')
                         return with_public_trace(checked,evidence)
                     if retail_block:
                         composed,reason=compose(final,retail_block)
