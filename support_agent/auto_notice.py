@@ -39,14 +39,16 @@ def kind_for(evidence, reason, current_text='', usable_reply=False):
                  r'(?:хочу|нужен|нужна)[^.!?\n]{0,25}(?:оператор|жив[а-яё]*\s+человек)', current, re.I)
         or 'клиент явно просит человека' in lower or 'human request' in lower):
         return 'human'
-    if (evidence.get('owner_action_required') is True or evidence.get('review_required') is True
-            or evidence.get('new_account_stage')
-            or evidence.get('status') in ('order_status', 'owner_policy')
-            or re.search(r'конфликт\s+(?:подтвержд[её]нных\s+)?(?:правил|политик|способов\s+оформления)', diagnostic, re.I)):
-        return 'manual'
     from .order_status import is_status_request
-    if (is_status_request(current) or re.search(r'возврат|верн[а-яё]*\s+деньг|я\s+оплатил|уже\s+оплатил|'
-            r'(?<!\w)(?:активируй(?:те)?|оформи(?:те)?|создай(?:те)?)\b', current, re.I)):
+    about_operation = (is_status_request(current) or bool(re.search(
+        r'возврат|верн[а-яё]*\s+деньг|я\s+оплатил|уже\s+оплатил|(?<!\w)активируй(?:те)?\b', current, re.I)))
+    # «Как оформить» is a how-to, not news that an operation failed.
+    if evidence.get('status') in ('order_status', 'owner_policy') or evidence.get('new_account_stage'):
+        return 'manual'
+    if (evidence.get('owner_action_required') is True or evidence.get('review_required') is True
+            or re.search(r'конфликт\s+(?:подтвержд[её]нных\s+)?(?:правил|политик|способов\s+оформления)', diagnostic, re.I)):
+        return 'manual' if about_operation else ('human' if usable_reply else 'information')
+    if about_operation:
         return 'manual'
     if any(x in lower for x in ('лимит запросов', 'telegram', '120 секунд', 'ошибка подготовки')):
         return 'technical'

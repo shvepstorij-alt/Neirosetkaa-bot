@@ -26,8 +26,12 @@ _PUBLIC_SESSION_URLS={
 
 
 def _consultation_text(text):
+    """Body the seal covers. A later greeting must not look like a different answer."""
     from .response_policy import natural_reply
+    from .conversation_style import INTRO
     text=natural_reply(str(text or '')).replace('\r\n','\n').strip()
+    if text.startswith(INTRO):
+        text=text[len(INTRO):].strip()
     return re.sub(r'^\s*(?:Здравствуйте|Приветствую|Добрый день|Добрый вечер|Доброе утро|Привет)[!.,:)\s]*',
                   '',text,count=1,flags=re.I).strip()
 

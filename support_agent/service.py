@@ -1726,6 +1726,9 @@ class Service:
                     if isinstance(answer.get('feature_projection'),dict):
                         answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
                     did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
+                    if did and not self.store.still_current(job):
+                        logging.info('support_turn chat=%s draft discarded: a newer client message arrived', job['chat'])
+                        did=None
                     if did:
                         if self.store.effective_mode(job['chat'])=='auto' and self.auto_permitted(self.store.chat(job['chat'])):
                             await self.auto_send(did)

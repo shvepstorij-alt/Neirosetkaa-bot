@@ -214,12 +214,16 @@ class Store:
             pending=self.db.execute("SELECT state FROM messages WHERE chat=? AND mid=?",
                                     (cid,chat['latest'])).fetchone()
             collecting=bool(pending and pending['state']=='queued' and chat['batch_due']>0)
+            # A message that arrives while this chat is being answered joins the
+            # unanswered burst. The in-flight draft is discarded and the next
+            # reply is generated for the whole burst, not for the previous line.
+            join_burst=collecting or bool(pending and pending['state']=='working' and role=='client')
             self.db.execute('UPDATE chats SET latest=MAX(latest,?),inbound=MAX(inbound,?),revision=revision+1 WHERE id=?', (mid,at,cid))
             self.db.execute("UPDATE messages SET state='stale' WHERE chat=? AND state IN ('queued','working')", (cid,))
             self.db.execute("UPDATE drafts SET state='stale' WHERE chat=? AND state='ready'", (cid,))
             chat = self.chat(cid)
             queued = role == 'client' and mid == chat['latest'] and self.effective_mode(cid)!='off'
-            if queued and not collecting:
+            if queued and not join_burst:
                 start=time.time() if edited else min(float(at),time.time())
                 from .turn_stages import next_batch_due
                 due=next_batch_due(start,time.time(),self.batch_seconds,0,False)
