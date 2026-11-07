@@ -373,8 +373,14 @@ def verified_catalog_reply(facts, reason):
                         +'; выбранные регионы='+','.join(facts.get('appstore_selection',{}).get('requested_codes',[]))}}
 
 
-def direct_apple_reply(facts, latest):
-    """Plain top-up questions use stock facts, not historical region guesses."""
+def direct_apple_reply(facts, latest, current=None):
+    """Use resolved slots for quotes, and the current turn for conversation.
+
+    A reconstructed request can retain the original «как пополнить» question.
+    That question supplies context, but must not restart the instructions when
+    the customer has just supplied a region or an amount.
+    """
+    current=latest if current is None else current
     words=set(_words(latest))
     if _families(_words(latest))-{'appstore'}:return None
     allowed=set('а как мне хочу пополнить пополнение баланс баланса appstore app store apple id icloud '
@@ -387,8 +393,10 @@ def direct_apple_reply(facts, latest):
     allowed.update(c.lower() for c in CURRENCIES)
     allowed.update(code.lower() for code in ALIASES)
     allowed.update(w for names in ALIASES.values() for name in names for w in _words(name))
-    allowed.update(('тенге','йен','иен','рублей','пополнить','хотел','бы','хотела','цену','для'))
-    if any(w not in allowed and not w.isdigit() and not region_codes(w) for w in words):return None
+    allowed.update(('тенге','йен','иен','рублей','пополнить','хотел','бы','хотела','цену','для',
+                    'р','руб','тыс','тысяч','тысячи','тысячу','нужен','нужна','нужно','это'))
+    if any(w not in allowed and not w.isdigit() and not region_codes(w)
+           and not re.fullmatch(r'\d+(?:р|руб|тыс|usd|eur|rub|try)',w,re.I) for w in words):return None
     if 'appstore' not in facts.get('catalog_selection',{}).get('mentioned_known_services',[]):return None
     selection=facts.get('appstore_selection',{})
     known=selection.get('requested_codes',[])
@@ -410,14 +418,15 @@ def direct_apple_reply(facts, latest):
     answer=verified_catalog_reply(facts,'')
     answer['evidence']={'status':'catalog_direct','sources':[]}
     quote=exact_quote(facts,latest)
-    if (not quote and re.search(r'как\s+(?:мне\s+)?пополнить|как\s+пополнение',latest,re.I)):
+    if (not quote and re.search(r'как\s+(?:мне\s+)?пополнить|как\s+пополнение',current,re.I)):
         from .bot_guide import purchase_navigation
+        from .apple_matching import amounts
         navigation=purchase_navigation(facts,apple=True)
         answer['reply']=((navigation+'\n\n') if navigation else '')+(
-            'Для пополнения нужен подарочный код того же региона, что и ваш Apple ID. '
-            'Выберите регион и номинал, оплатите заказ, затем погасите полученный код '
+            'Нужен подарочный код того же региона, что и ваш Apple ID. После оплаты погасите код '
             'в App Store: профиль → «Погасить подарочную карту или код».\n\n'
             +('Регион уже указан. На какую сумму хотите пополнить баланс?' if len(known)==1 else
+              'Какой регион у вашего Apple ID?' if amounts(latest) else
               'Подскажите регион Apple ID и сумму пополнения.'))
         answer['handoff']=False
         answer['summary']='Инструкция покупки подарочного кода; точная цена не запрошена и не обещана.'
@@ -429,11 +438,27 @@ def direct_apple_reply(facts, latest):
                 +'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))
                 +'. Показана общая инструкция; доступность и цены номиналов не подтверждены.'}
         return answer
+    if not quote and len(known)<=1 and not re.search(r'цен|стоим|вариант|номинал',current,re.I):
+        if re.search(r'\d+\s*(?:тысячи?|тысяч|тыс)(?!\w)',current,re.I):
+            answer['reply']=('Это сумма на баланс Apple ID или бюджет покупки кода? Уточните, пожалуйста, валюту.'
+                             if known else 'Уточните, пожалуйста, регион Apple ID и валюту суммы пополнения.')
+            answer['handoff']=False
+            answer['summary']='Сумма названа без валюты; уточняется её назначение, цена и наличие не обещаны.'
+            return answer
+        from .apple_matching import amounts
+        answer['reply']=('На какую сумму хотите пополнить баланс Apple ID?' if known else
+                         'Какой регион у вашего Apple ID?' if amounts(latest) else
+                         'Какой регион у вашего Apple ID и на какую сумму хотите пополнить баланс?')
+        answer['handoff']=False
+        answer['summary']='Уточнение недостающих параметров пополнения; инструкция из истории не повторялась, цена и доступность не обещаны.'
+        return answer
     if quote:
         amount=quote['amount'];unit=quote['currency'];code=quote['region']
         label={'US':'США','DE':'Германии','TR':'Турции','GB':'Великобритании','RU':'России'}.get(code,code)
         if quote['price'] is not None:
-            answer['reply']=f"Для Apple ID {label} есть пополнение на {amount:g} {unit} — {quote['price']} ₽. После оплаты код нужно погасить в App Store через профиль, пункт «Погасить подарочную карту или код»."
+            answer['reply']=f"Для Apple ID {label} есть пополнение на {amount:g} {unit} — {quote['price']} ₽."
+            if re.search(r'как\s+(?:мне\s+)?пополнить|как\s+пополнение',current,re.I):
+                answer['reply']+=' После оплаты погасите код в App Store: профиль → «Погасить подарочную карту или код».'
             answer['handoff']=False
         else:
             answer['reply']=f'Вы хотите пополнить Apple ID {label} на {amount:g} {unit}. Точную стоимость этого номинала сейчас подтвердить не получилось; потребуется проверка перед оформлением.'

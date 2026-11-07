@@ -128,13 +128,14 @@ def workflow_reply(facts,latest):
     from .selection_help import is_selection_request
     if is_selection_request(latest):return None
     lines=[line.strip() for line in latest.splitlines() if line.strip()]
+    waiting=bool(lines and re.fullmatch(r'(?:а\s+)?(?:долго\s+(?:ещ[её]\s+)?ждать|сколько\s+(?:ещ[её]\s+)?(?:ждать|времени\s+ждать))[.!?\s)]*',lines[-1],re.I))
     questions=[line for line in lines if re.search(
         r'оформ|(?:можно|могу)[^.!?\n]{0,35}(?:оплат|купить)|кроме оплаты|(?:что|какие).*(?:нужн|потреб|треб|данн|присл)|'
         r'как.*(?:получить|скопировать|найти).*ссылк|как.*(?:пополн|активир)|парол.*(?:нуж|треб)|'
         r'ссылк[а-яё]*[^.!?\n]{0,45}(?:кид|скин|скид|присл|отправ|переда)|'
         r'(?:куда|вам|сюда)[^.!?\n]{0,35}(?:кид|скин|присл|отправ)[^.!?\n]{0,25}ссылк|'
         r'если.*вход.*(?:google|гугл)',line,re.I)]
-    if not questions:return None
+    if not questions and not waiting:return None
     if re.search(r'функци|лимит|входит|отлич|модел|сравн|подробнее|возврат|ошиб|не работает|закуп|поставщик|себестоим|18\s*\+|порно|эротическ',latest,re.I):return None
     ambiguities=facts.get('catalog_selection',{}).get('variant_ambiguities',[])
     if ambiguities:
@@ -204,6 +205,28 @@ def workflow_reply(facts,latest):
             if prices:parts.append(f'Для {name} есть такие тарифы:\n'+'\n'.join(dict.fromkeys(prices)))
         owner_policies=policies_for({'requested_catalog':items})
         methods={item.get('fulfillment','not_verified') for item in items}
+        # Different verified routes belonging to different unselected plans
+        # are a product choice, not an unavailable source or an admin error.
+        known_methods={'manual','checkout_link','account_details','code_activation_conditional'}
+        if len(methods)>1 and methods<=known_methods and not owner_policies:
+            labels=list(dict.fromkeys(str(item.get('plan','')) for item in items if item.get('plan')))
+            plan_methods={label:{item.get('fulfillment') for item in items if str(item.get('plan',''))==label}
+                          for label in labels}
+            if len(labels)>1 and all(len(routes)==1 for routes in plan_methods.values()) and all(item.get('plan') for item in items):
+                parts.append(name+': порядок оформления зависит от тарифа. Какой вариант вы выбрали: '+', '.join(labels)+'?')
+                needs_choice=True
+            else:
+                parts.append(name+': порядок оформления этого тарифа нужно уточнить перед оплатой.')
+                diagnostics.append(name+': для одного тарифа или товара без названия получены разные ветки='
+                                   +','.join(sorted(methods))+'; тарифов с названием='+str(len(labels))
+                                   +'. Выбор тарифа не устраняет противоречие; нужно проверить настройки товара.')
+            continue
+        if waiting:
+            state='matched' if methods and methods<=known_methods else 'unavailable'
+            if owner_policies:state,_=route_evidence(owner_policies[0]['service'],items)
+            if state=='matched':
+                parts.append(name+': точный срок сейчас не подтверждён, поэтому обещать время не буду. Если заказ уже оплачен, пришлите его номер, чтобы проверить текущий статус и следующий шаг.')
+                continue
         if owner_policies:
             state,projected=route_evidence(owner_policies[0]['service'],items)
             policy=owner_policies[0]
@@ -254,11 +277,12 @@ def workflow_reply(facts,latest):
             diagnostics.append(name+': ручная ветка подтверждена; необходимые поля в данных магазина не указаны.')
             handoff=True
         elif methods=={'code_activation_conditional'}:
-            parts.append(name+': предусмотрено оформление по коду активации. Выдачу кода нужно проверить по заказу.')
+            parts.append(name+': предусмотрено оформление по коду активации. После оплаты следуйте инструкции в заказе.')
             instructions=_code_help(name)
             if instructions:parts.append(instructions)
-            diagnostics.append(name+': кодовая ветка подтверждена; наличие и выдача кода этим источником не подтверждаются.')
-            handoff=True
+            # The route is verified; the instructions remain conditional on
+            # the paid order's activation button. Explaining those steps does
+            # not assert that a code was issued or activation succeeded.
         else:
             if not (methods & {'manual','checkout_link','account_details','code_activation_conditional'}):
                 parts.append(name+': действующую инструкцию оформления сейчас подтвердить не получилось. Проверю необходимые шаги и данные до оплаты.')
@@ -293,7 +317,7 @@ def workflow_reply(facts,latest):
             parts.append('Текущие региональные номиналы сейчас не удалось проверить. Доступность и цену нужно подтвердить до оплаты.')
             diagnostics.append('App Store: региональный источник='+str(source)+'; живой экспорт='+str(facts.get('live_shop_status','not_connected'))+'; выбранные регионы='+','.join(codes)+'. Номиналы из обычного каталога не подтверждают региональное наличие.')
             handoff=True
-    if navigation and not diagnostics and not needs_choice:parts.insert(0,navigation)
+    if navigation and not diagnostics and not needs_choice and not waiting:parts.insert(0,navigation)
     result={'reply':'\n\n'.join(parts),'summary':'Объяснение оформления по данным магазина; сроки, отсутствие входа и успех не обещаны.',
             # Performing fulfilment is a separate responsibility from reviewing
             # the consultation. A verified instruction does not itself execute

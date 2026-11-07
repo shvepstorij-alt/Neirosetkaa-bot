@@ -25,6 +25,47 @@ def _scalar(value):
     return None
 
 
+def _price_check_text(text, facts):
+    """Exclude explicit monetary roles that do not assert a shop sale price.
+
+    Keep the original answer for semantic review. All deterministic price
+    checks use this same projection, so an ordinary budget clarification is
+    not rejected by a different price checker further down the pipeline.
+    Unlabelled amounts and offers remain subject to the existing strict checks.
+    """
+    money = re.compile(r'(?<![\w.,])(\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?)\s*'
+                       r'(?:₽|руб(?:лей|ля|ль|\.)?|р\.?)(?![\w])', re.I)
+    from .apple_matching import nominal
+    selection = facts.get('appstore_selection', {})
+    codes = selection.get('requested_codes', [])
+    regions = selection.get('matched_regions', []) if codes else []
+    def project(match):
+        start = max(text.rfind(mark, 0, match.start()) for mark in ('\n', '.', '!', '?', ';', ',')) + 1
+        end = min((pos for mark in ('\n', '.', '!', '?', ';', ',')
+                   if (pos := text.find(mark, match.end())) >= 0), default=len(text))
+        before = text[start:match.start()]
+        after = text[match.end():end]
+        clause = before + after
+        # A client budget does not excuse a sale claim in the same clause.
+        sale = re.search(r'стоит|стоимость|цен[аыуе]|обойд[её]тся|к\s+оплате|'
+                         r'оплатите|предлагаем|прода[её]м|в\s+наличии|доступн|есть\b', clause, re.I)
+        role = re.search(r'(?:ваш\w*\s+)?бюджет\w*\s*(?:—|-|:|до|около|в|на)?\s*$|'
+                         r'(?:текущий\s+|ваш\s+)?баланс\w*\s*(?:—|-|:|составляет)?\s*$|'
+                         r'(?:вы\s+хотите|вам\s+нужно|нужно|хотите)\s+пополнить\s+(?:баланс\s+)?на\s*$|'
+                         r'сумм[ауы]\s+(?:нужного\s+|желаемого\s+)?пополнения\s*(?:—|-|:|на)?\s*$', before, re.I)
+        role = role or re.match(r'\s*(?:у\s+вас\s+)?на\s+балансе\b', after, re.I)
+        amount = float(re.sub(r'[ \u00a0\u202f]', '', match[1]).replace(',', '.'))
+        face = re.search(r'номинал(?:ом|а)?\s*$', before, re.I)
+        verified_face = face and any(
+            identity and identity[1] == 'RUB' and float(identity[0]) == amount
+            for region in regions for row in region.get('denoms', [])
+            for identity in [nominal(row.get('nominal', ''))])
+        if not sale and (role or verified_face):
+            return ' ' * len(match[0])
+        return match[0]
+    return money.sub(project, str(text or ''))
+
+
 def _catalog_value(key, value):
     if key=='workflow_steps':
         allowed={'open_service','login_own_account','open_plans','select_plan','open_checkout','copy_checkout_url','send_checkout_url'}
@@ -193,7 +234,7 @@ def evidence_scope_issue(answer, facts):
             requested = apple_region_codes(current)
         active = 'appstore' in families and not families - {'appstore'}
         nav_available = facts.get('bot_navigation', {}).get('status') == 'available'
-        for sentence in re.split(r'(?<=[.!?])\s+|\n+', text):
+        for sentence in re.split(r'(?<=[.!?])\s+|\n+', _price_check_text(text, facts)):
             mentioned = _families(_words(sentence))
             if mentioned:
                 active = 'appstore' in mentioned
@@ -433,12 +474,13 @@ async def check_answer(ai,answer,facts,images=None):
     version_issue=unsupported_model_version(answer,facts)
     if version_issue:return {'supported':False,'reason':version_issue}
     from .reply_audit import catalogue_audit
-    audit=catalogue_audit(reply,facts)
+    price_text=_price_check_text(reply,facts)
+    audit=catalogue_audit(price_text,facts)
     if audit['issues']:
         return {'supported':False,'reason':'\n'.join(audit['issues'])}
     current=facts.get('conversation',{}).get('latest_client_message','')
     from .reply_audit import apple_audit
-    apple=apple_audit(reply,facts,current)
+    apple=apple_audit(price_text,facts,current)
     if apple['issues']:return {'supported':False,'reason':'\n'.join(apple['issues'])}
     # Retail amounts are structured facts, not something a second model may
     # approve approximately. Check before spending another model request.
@@ -481,7 +523,7 @@ async def check_answer(ai,answer,facts,images=None):
             if type(value) in (int,float) and value>0:
                 prices.add(float(value))
     if prices:
-        for match in re.finditer(r'(?<![\w.,])([0-9]+(?:[ \u00a0\u202f][0-9]{3})*(?:[.,][0-9]{1,2})?)\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',reply,re.I):
+        for match in re.finditer(r'(?<![\w.,])([0-9]+(?:[ \u00a0\u202f][0-9]{3})*(?:[.,][0-9]{1,2})?)\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',price_text,re.I):
             amount=float(re.sub(r'[ \u00a0\u202f]','',match[1]).replace(',','.'))
             # A Russian Apple gift card has two different RUB amounts: its
             # face value and the retail price. Explicit face-value wording
@@ -497,7 +539,7 @@ async def check_answer(ai,answer,facts,images=None):
                 continue
             if amount not in prices:
                 return {'supported':False,'reason':f'Этап: проверка рублёвой цены. Сумма ответа={amount:g}; обычных тарифов={len(retail)}; регионов в проверке={len(apple_regions)}; выбранные коды='+','.join(selection.get('requested_codes',[]))+'. Сумма не совпала с подтверждёнными розничными ценами; номинал карты и цена покупки проверяются раздельно.'}
-    elif 'requested_catalog' in facts and re.search(r'(?<!\w)\d+(?:[.,]\d+)?\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',reply,re.I):
+    elif 'requested_catalog' in facts and re.search(r'(?<!\w)\d+(?:[.,]\d+)?\s*(?:₽|руб(?:лей|ля|ль|\.)?)(?![а-яё])',price_text,re.I):
         return {'supported':False,'reason':'Этап: подтверждение рублёвой цены. Для текущего запроса нет подтверждённых розничных цен; обычных тарифов='+str(len(retail))+'; релевантных регионов Apple='+str(len(apple_regions))+'. Несвязанный ассортимент не использовался для проверки суммы.'}
     if not facts.get('public_research',{}).get('sources'):
         # These are external payment claims, not retail prices. Do not let an

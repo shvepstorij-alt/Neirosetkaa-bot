@@ -733,10 +733,12 @@ class Service:
                            'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
                                evidence['status'],'')
             if evidence['status'] in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
-                research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(evidence["diagnostic"][:1500])}\n\n'
+                from .auto_policy import owner_reason
+                research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(owner_reason(evidence["diagnostic"]))}\n\n'
         atomic_diagnostics=evidence.get('atomic_diagnostics',[])
         if evidence.get('auto_block_reason'):
-            research_note+='🛑 <b>Почему этот ответ не отправлен автоматически</b>\n'+html.escape(evidence['auto_block_reason'][:1400])+'\nВыбранный режим не изменён. Исходный ответ оставлен вам для проверки.\n\n'
+            from .auto_policy import owner_reason
+            research_note+='🛑 <b>Почему этот ответ не отправлен автоматически</b>\n'+html.escape(owner_reason(evidence['auto_block_reason']))+'\nВыбранный режим не изменён. Исходный ответ оставлен вам для проверки.\n\n'
         if atomic_diagnostics:
             research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
@@ -797,7 +799,8 @@ class Service:
         from .auto_panel import record
         record(self.store,d['chat'],did,'auto_blocked',reason)
         evidence=self.store.evidence(did)
-        evidence['auto_block_reason']=reason
+        from .auto_policy import owner_reason
+        evidence['auto_block_reason']=owner_reason(reason)
         self.store.db.execute('UPDATE draft_evidence SET data=? WHERE draft=?',(json.dumps(evidence),did))
         self.store.db.execute('UPDATE drafts SET handoff=1 WHERE id=?',(did,))
         if notify_client:
@@ -1196,7 +1199,7 @@ class Service:
         navigation=navigation_reply(facts,raw_batch or latest) if not image and covers(raw_batch,{'purchase'},facts) else None
         if navigation and not course:return navigation
         from .catalog_context import direct_workflow_reply,direct_apple_reply
-        apple=direct_apple_reply(facts,latest) if not image and not course and covers(raw_batch,{'purchase','price','activation'},facts) else None
+        apple=direct_apple_reply(facts,latest,current=raw_batch) if not image and not course and covers(raw_batch,{'purchase','price','activation'},facts) else None
         if apple:return apple
         from .fulfillment_reply import workflow_reply
         fulfillment=workflow_reply(facts,latest) if not image and not course and not selection and covers(raw_batch,{'purchase','price','activation'},facts) else None

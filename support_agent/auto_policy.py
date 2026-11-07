@@ -73,6 +73,30 @@ def _reason(condition):
     return 'Этап: допуск автоматического ответа. Причина: '+condition
 
 
+def owner_reason(value):
+    """Safe diagnostic body, with presentation headings owned by the UI only."""
+    from .privacy import scrub,sensitive
+    value=str(value or '')
+    value=re.sub(r'(?im)^\s*(?:🛑\s*)?(?:<b>|\*\*)?Почему этот ответ не отправлен автоматически(?:</b>|\*\*)?\s*[:\n]*','',value).strip()
+    safe=scrub(value)
+    detection=re.sub(r'(?<!\w)(?:account_email|account_password|checkout_url|course_registration_email|required_fields|workflow_steps|provided_fields|account_ownership)(?!\w)','[имя поля]',safe,flags=re.I)
+    # Only machine-owned status/count fields, not arbitrary key=value payloads.
+    detection=re.sub(r'(?i)(?:живой экспорт|источник|статус источника|полученные ветки|ветки|source|live_shop_status|fulfillment)\s*=\s*(?:http_[45]\d\d|not_verified|not_connected|unavailable|available|account_details|checkout_link|manual|code_activation_conditional)(?=$|[\s,;.])','[статус источника]',detection)
+    detection=re.sub(r'(?i)(?<!\w)(?:HTTP|Код Telegram)\s*=\s*[1-5]\d\d(?=$|[\s,;.])','[код протокола]',detection)
+    # Public diagnostic counters can include Latin source names (Apple=0).
+    # They are not mixed alphanumeric credentials. Recognise only complete,
+    # bounded numeric fields in the detection copy; keep their visible values.
+    detection=re.sub(r'(?i)(?<!\w)(?:релевантных регионов Apple|Apple|Сумма ответа|'
+                     r'обычных тарифов|регионов в проверке|регионов|совпадений|'
+                     r'разных корректных цен)\s*=\s*\d{1,9}(?:[.,]\d{1,2})?(?=$|[\s;.])',
+                     '[числовое поле диагностики]',detection)
+    detection=re.sub(r'(?i)(?:поле|поля|полей)\s+(?:пароля|токена|сессии)(?=[\s.,;:]|$)','[имя поля]',detection)
+    detection=re.sub(r'(?i)(\[имя поля\]\s*[/,]\s*)(?:пароля|токена|сессии)(?=$|[.,;!?]|\s+(?:не|подтвержден|проверен|отсутств|нуж|треб))',r'\1[имя поля]',detection)
+    if not sensitive(detection):return safe[:1400]
+    stage=re.search(r'Этап:\s*([А-Яа-яЁё ]{3,90})\.',safe)
+    return (('Этап: '+stage[1]+'. ' if stage else '')+'Остальные детали скрыты: возможны данные доступа.')
+
+
 def block_reason(answer,evidence=None,current_text=''):
     """Return a safe owner-only reason, or None for content eligible to send.
 
@@ -92,25 +116,7 @@ def block_reason(answer,evidence=None,current_text=''):
                 detail=meta['content_review'].get('reason','')
         if not isinstance(detail,str):detail=''
         if detail:
-            from .privacy import sensitive,scrub
-            safe=scrub(detail)
-            detection=re.sub(r'(?<!\w)(?:account_email|account_password|checkout_url|course_registration_email|'
-                             r'required_fields|workflow_steps|provided_fields|account_ownership)(?!\w)',
-                             '[имя поля]',safe,flags=re.I)
-            # An explicitly named schema field is not its value. Only the
-            # detection copy changes; actual assignments/JWTs stay redacted.
-            detection=re.sub(r'(?i)(?:поле|поля|полей)\s+(?:пароля|токена|сессии)(?=[\s.,;:]|$)',
-                             '[имя поля]',detection)
-            detection=re.sub(r'(?i)(\[имя поля\]\s*[/,]\s*)(?:пароля|токена|сессии)'
-                             r'(?=$|[.,;!?]|\s+(?:не|подтвержден|проверен|отсутств|нуж|треб))',
-                             r'\1[имя поля]',detection)
-            if sensitive(detection):
-                stage=re.match(r'^Этап:\s*([А-Яа-яЁё ]{3,90})\.',safe)
-                fields=sorted(set(re.findall(r'(?<!\w)(?:account_email|account_password|checkout_url|course_registration_email)(?!\w)',safe)))
-                detail=(('Этап: '+stage[1]+'. ' if stage else '')
-                        +('В диагностике указаны поля: '+', '.join(fields)+'. ' if fields else '')
-                        +'Остальные детали скрыты: возможны данные доступа.')
-            else:detail=safe[:1000]
+            detail=owner_reason(detail)
         return _reason('ответ требует участия владельца; автоматическая отправка не разрешена.'
                        +(' Основание: '+detail if detail else ' Конкретная причина в сохранённых подтверждениях отсутствует.'))
     text=answer.get('reply')

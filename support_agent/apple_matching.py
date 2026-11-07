@@ -39,7 +39,7 @@ REGIONS = {
 ALIASES={code:tuple(names.split('|')) for code,names in REGIONS.items()}
 CURRENCIES=('USD','EUR','TRY','GBP','AED','AUD','BRL','CAD','INR','JPY','KZT','PLN',
             'SAR','RUB','CHF','SGD','HKD','NZD','MXN','KRW','SEK','NOK','DKK','ZAR')
-TOKEN=r'(?:'+ '|'.join(CURRENCIES)+r'|\$|€|₺|£|₽|руб(?:лей|ля|ль)|евро|доллар(?:ов|а|ы)?|лир(?:ы)?|тенге|иен(?:ы)?|йен(?:ы)?)'
+TOKEN=r'(?:'+ '|'.join(CURRENCIES)+r'|\$|€|₺|£|₽|руб(?:лей|ля|ль)?|р|евро|доллар(?:ов|а|ы)?|лир(?:ы)?|тенге|иен(?:ы)?|йен(?:ы)?)'
 NUMBER=r'\d+(?:[.,]\d{1,2})?'
 PAIR=re.compile(r'(?<![\w.,])('+NUMBER+r')\s*('+TOKEN+r')(?!\w)|(?<!\w)('+TOKEN+r')\s*('+NUMBER+r')(?![\d.,])',re.I)
 
@@ -77,7 +77,7 @@ def canonical_currency(token):
     if t=='евро' or t=='€':return 'EUR'
     if t=='₺' or t.startswith('лир'):return 'TRY'
     if t=='£':return 'GBP'
-    if t=='₽' or t.startswith('руб'):return 'RUB'
+    if t in ('₽','р') or t.startswith('руб'):return 'RUB'
     if t.startswith('доллар') or t=='$':return '$'
     if t=='тенге':return 'KZT'
     if t.startswith(('иен','йен')):return 'JPY'

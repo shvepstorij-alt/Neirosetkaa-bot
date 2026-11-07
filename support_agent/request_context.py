@@ -50,8 +50,13 @@ def _apple_detail_kind(text):
     aliases.update(code.lower() for code in ALIASES)
     if region in aliases:return 'region',line
     amount=re.sub(r'^(?:а\s+)?(?:сколько\s+(?:будет\s+)?стоить|сколько\s+стоит|какая\s+цена(?:\s+на)?)\s+','',line)
+    amount=re.sub(r'^(?:(?:мне\s+)?(?:нужно|надо)\s+)?','',amount)
     amount=re.sub(r'^(?:(?:пополнить(?: баланс)?(?: хочу)?|хочу пополнить(?: баланс)?|сумма)\s+)?(?:на\s+)?','',amount)
     if PAIR.fullmatch(amount):return 'amount',line
+    # A short answer can specify the desired amount without its currency.
+    # Preserve it as client context; the renderer must ask for currency rather
+    # than manufacture a price or infer RUB from the conversation language.
+    if re.fullmatch(r'\d+(?:[.,]\d{1,2})?\s*(?:тысячи?|тысяч|тыс)',amount):return 'amount',line
     return None,line
 
 
@@ -67,6 +72,17 @@ def _current_apple_details(text):
         if kind and last[kind]!=i:continue
         if kind:
             line=re.sub(r'^(?:нет[, ]+|лучше |тогда |точнее |передумал[, ]+|передумала[, ]+)','',line.strip(),flags=re.I)
+        if kind=='amount':
+            from .apple_matching import amounts
+            shorthand=re.search(r'(\d+(?:[.,]\d{1,2})?)\s*(?:тысячи?|тысяч|тыс)(?!\w)',line,re.I)
+            if shorthand and not amounts(line):
+                from decimal import Decimal
+                value=Decimal(shorthand[1].replace(',','.'))*1000
+                # Restating «3000р» as «3 тысячи» keeps an explicitly given
+                # currency only when the numeric amount is exactly the same.
+                prior=[lines[j] for j in range(i) if kinds[j][0]=='amount' and
+                       len(amounts(lines[j]))==1 and next(iter(amounts(lines[j])))[0]==value]
+                if prior:line=prior[-1]
         kept.append(line)
     return '\n'.join(kept)
 
@@ -93,7 +109,8 @@ def _regional_question(text):
 
 def _apple_topic_only(text):
     from .catalog_context import ALIASES,_words
-    return _words(text) in {_words(alias) for alias in ALIASES['appstore']}
+    value=re.sub(r'\b(?:мне|нужен|нужна|нужно|именно|это)\b',' ',str(text),flags=re.I)
+    return _words(value) in {_words(alias) for alias in ALIASES['appstore']}
 
 
 def _link_apple_turn(previous,text):
@@ -142,7 +159,8 @@ def _only_service_names(text,catalog):
             if tuple(tokens[i:i+len(name)])==name:
                 del tokens[i:i+len(name)];matched=True
             else:i+=1
-    return matched and all(t in ('сервис','сервисы','сервиса','это','и','именно','про','подписка') for t in tokens)
+    return matched and all(t in ('сервис','сервисы','сервиса','это','и','именно','про','подписка',
+                                 'а','на','мне','нужен','нужна','нужно') for t in tokens)
 
 
 def _contextual_followup(text,catalog):
@@ -191,6 +209,7 @@ def _workflow_help_followup(text):
     normal expiry rules still decide whether any service can be inherited.
     """
     value=str(text)
+    if re.fullmatch(r'\s*(?:а\s+)?(?:что\s+(?:тогда\s+)?можно\s+сделать|долго\s+(?:ещ[её]\s+)?ждать|сколько\s+(?:ещ[её]\s+)?(?:ждать|времени\s+ждать))[.!?\s)]*',value,re.I):return True
     if re.search(r'\b(?:теперь|кстати|вместо|другой\s+сервис|новый\s+сервис|другая\s+тема|отменяю|забудь)\b',value,re.I):return False
     if re.search(r'генерир|генерац|создавать|монтаж|снимать\s+видео|делать\s+(?:фото|видео)',value,re.I):return False
     # A new Cyrillic login target is still a product name, not an implicit UI
@@ -415,6 +434,17 @@ def resolve_request(db, chat, first, last, text, catalog=()):
         if linked is None and reference_candidate and _same_service_reference(text,previous,catalog):
             linked=previous+'\n'+text
         if linked is None and service_only:
+            # «А на ChatGPT?» transfers the question, not the previous
+            # product, tariff or regional slots. Resolve only explicit, short
+            # brand-only continuations against a client-authored intent.
+            if re.match(r'^\s*а\s+на\s+',text,re.I):
+                from .request_goals import goals
+                prior_goals=goals(previous)
+                if 'purchase' in prior_goals or 'price' in prior_goals:
+                    brand=re.sub(r'^\s*а\s+на\s+','',text,flags=re.I).strip(' ?!.')
+                    question=('Как оформить ' if 'purchase' in prior_goals else 'Сколько стоит ')+brand+'?'
+                    db.execute('INSERT OR REPLACE INTO request_context VALUES (?,?,?)',(chat,bounds[0],last))
+                    return question
             previous_has_service=any(_contains(_words(previous),name) for name in _service_names(catalog))
             if not previous_has_service and (_dependent_followup(previous) or _contextual_followup(previous,catalog)):
                 linked=previous+'\n'+text
