@@ -155,6 +155,10 @@ def block_reason(answer,evidence=None,current_text=''):
     if not isinstance(evidence,dict):return _reason('сохранённые подтверждения ответа отсутствуют.')
     status=evidence.get('status')
     consultation=_local_consultation(text,evidence)
+    from .reviewed_workflow import detection_copy as reviewed_workflow_detection
+    reviewed_detection=reviewed_workflow_detection(answer,evidence)
+    if evidence.get('reviewed_workflow_contract') is not None and reviewed_detection is None:
+        return _reason('подтверждение проверенных полей оформления недействительно; нужна новая проверка ответа.')
     if status in {kind+'_consultation' for kind in _CONSULTATION_KINDS} and not consultation:
         return _reason('кодовая консультация не имеет действующего подтверждения неизменённого текста; нужна новая подготовка.')
     if evidence.get('review_required') is True:
@@ -174,13 +178,13 @@ def block_reason(answer,evidence=None,current_text=''):
         return _reason('в обращении сохранён признак скрытых данных доступа; нужен ручной разбор.')
     from .privacy import sensitive
     if sensitive(current):return _reason('обращение может содержать данные доступа; нужен ручной разбор.')
-    if consultation and evidence['consultation_contract']['kind']=='workflow' and re.search(r'\[email скрыт\]|\[ссылка скрыта\]',current,re.I):
+    if (reviewed_detection is not None or consultation and evidence['consultation_contract']['kind']=='workflow') and re.search(r'\[email скрыт\]|\[ссылка скрыта\]',current,re.I):
         return _reason('получены данные или ссылка для оформления; их обработку выполняет владелец.')
     # A short follow-up such as "да" may not repeat the financial/account
     # subject. Do not let a falsely optimistic review approve action claims or
     # collection of secrets merely because the current fragment looks benign.
-    if not consultation and re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
-                 r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код\s+входа)',text,re.I):
+    if not consultation and reviewed_detection is None and re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
+                 r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код(?:ы)?\s+(?:входа|подтверждения)|(?:одноразов|резервн)[а-яё]*\s+код)',text,re.I):
         return _reason('ответ запрашивает данные доступа; сбор этих данных оставлен владельцу.')
     # Mentioning that no password is needed is not providing its value. Strip
     # only this exact code-owned public sentence from the detection copy;
@@ -189,8 +193,11 @@ def block_reason(answer,evidence=None,current_text=''):
     if consultation and ({'access_secret','credential_line'} & set(redaction_categories(text))
             or re.search(r'(?i)(?:парол[ья]?|password|токен|token|session|cookie|cvv)\s*[:=]\s*\S',text)):
         return _reason('кодовая консультация содержит значение доступа или присваивание; автоматическая отправка запрещена.')
-    detection=(_consultation_detection_copy(text) if consultation else
+    detection=(reviewed_detection if reviewed_detection is not None else _consultation_detection_copy(text) if consultation else
                re.sub(r'(?<!\w)Пароль от аккаунта для этого способа не нужен\.(?=\s|$)','',text))
+    if decision is not None:
+        from .public_metrics import detection_copy as public_metric_detection
+        detection=public_metric_detection(detection)
     if sensitive(detection):return _reason('ответ может содержать данные доступа; автоматическая отправка запрещена.')
     if consultation:
         # Local renderers describe checked observations or the next question;

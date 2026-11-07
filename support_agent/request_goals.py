@@ -19,6 +19,9 @@ PATTERNS={
 
 def goals(text, facts=None):
     result={name for name,pattern in PATTERNS.items() if re.search(pattern,str(text),re.I)}
+    from .privacy import public_token_quantity_question
+    if any(public_token_quantity_question(line) for line in re.split(r'(?<=[?!])\s*|\n',str(text))):
+        result.add('features')
     turn=facts.get('conversation_turn',{}) if isinstance(facts,dict) else {}
     if turn.get('version')==1 and str(text)==turn.get('current_text'):
         result.update(g for g in turn.get('goals',[]) if g in PATTERNS or g=='recommendation')

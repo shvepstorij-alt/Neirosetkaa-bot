@@ -1282,12 +1282,13 @@ class Service:
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
         if plan['topic']=='none':
+            replanned=False
             if facts.get('public_research_required'):
                 # A router returning none is not evidence. Never let a second
                 # model approve public plans/features using its own memory.
                 return {'reply':'Пришлите, пожалуйста, ссылку на официальный сайт сервиса, чтобы я проверил нужные тарифы и условия.',
                         'summary':'Для публичного вопроса не определён проверяемый сервис; ответ из памяти модели не использован.',
-                        'handoff':True,'source_ids':[],'evidence':{'status':'unavailable','sources':[],
+                        'handoff':False,'source_ids':[],'evidence':{'status':'clarification','sources':[],
                         'diagnostic':'Этап: маршрутизация публичного вопроса. Запрос требует официальных сведений; тема поиска=none; подтверждённых названий сервисов=0; источников=0. Запрошена публичная ссылка вместо утверждений из памяти.'}}
             # An unknown product has no selected rows. That must not exempt a
             # free-form promise about our ability to fulfil/pay from review.
@@ -1304,11 +1305,19 @@ class Service:
                     answer=await self.ai.draft(history,corrected,image)
                     if not self.store.still_current(job):return None
                     if answer.get('research',{}).get('topic','none')!='none':
-                        return unavailable('После исправления ответа требуется отдельная проверка публичных сведений.')
-                    self.charge_call()
-                    review=await self.ai.check_answer(answer,corrected,**({'images':image} if image else {}))
-                    if not self.store.still_current(job):return None
-                    if not review['supported']:
+                        plan=consultation_plan(latest,answer['research'],facts)
+                        replanned=plan.get('topic')!='none'
+                        if replanned:
+                            facts=annotate(facts,latest,plan.get('products',[]))
+                            facts,_=scope_turn(facts,resolved_context,raw_batch,discovered=True)
+                            facts=dict(facts,public_research_required=True,
+                                       public_question_products=list(plan.get('products',[])),
+                                       autonomous_research_replan=True)
+                    if not replanned:
+                        self.charge_call()
+                        review=await self.ai.check_answer(answer,corrected,**({'images':image} if image else {}))
+                        if not self.store.still_current(job):return None
+                    if not replanned and not review['supported']:
                         if image:
                             from .troubleshooting import visual_failure
                             result=visual_failure(review['reason'],latest)
@@ -1318,10 +1327,16 @@ class Service:
                         from .consultation_intent import fallback as consultation_fallback
                         useful=consultation_fallback(facts,review['reason'])
                         if useful:return useful
+                        from .autonomous_fallback import reply as autonomous_continuation
+                        continuation=autonomous_continuation(facts,review['reason'],latest)
+                        if continuation:return continuation
                         from .catalog_context import verified_catalog_reply
                         return verified_catalog_reply(facts,review['reason'])
-                answer.setdefault('evidence',{'status':'catalog_checked','sources':[]})['content_review']=review
-            return answer
+                if not replanned:
+                    answer.setdefault('evidence',{'status':'catalog_checked','sources':[]})['content_review']=review
+            if not replanned:
+                from .consultation_delivery import finish as finish_consultation
+                return finish_consultation(answer,facts,latest)
         stage='search'
         evidence={}
         try:
@@ -1401,7 +1416,8 @@ class Service:
                             if not decision:
                                 checked['evidence']['handoff_reason']=('Не подтверждены все запрошенные функции: '+', '.join(missing)+'.'
                                     if missing else 'Проверка оставила неполные публичные сведения; конкретные причины указаны в проверке утверждений.')
-                        return with_public_trace(checked,evidence)
+                        from .consultation_delivery import finish as finish_consultation
+                        return finish_consultation(with_public_trace(checked,evidence),final_facts,latest)
                     if retail_block:
                         composed,reason=compose(final,retail_block)
                         if reason:
@@ -1421,11 +1437,38 @@ class Service:
                         if not review['supported']:
                             raise ValueError('Answer content unsupported')
                         checked.setdefault('evidence',{})['content_review']=review
+                        # The full prose was reviewed against all available
+                        # material, including its explicit gaps. Missing source
+                        # selection/formatting and a failed second provider do
+                        # not invalidate the verified statements of the first.
+                        # Keep actual owner/intake reasons and run the ordinary
+                        # delivery gate on the unchanged text before releasing
+                        # informational handoff flags introduced by attachment.
+                        original_meta=final.get('evidence',{})
+                        if not isinstance(original_meta,dict):original_meta={}
+                        for key in ('owner_action_required','manual_secret_intake','review_required',
+                                    'handoff_reason','new_account_stage'):
+                            if key in original_meta:checked['evidence'][key]=original_meta[key]
+                        source_gap=bool(evidence.get('failures') or checked['evidence'].get('coverage_review')
+                                        or checked['evidence'].get('missing_products')
+                                        or checked['evidence'].get('citation_mode'))
+                        from .autonomous_fallback import _requires_owner
+                        owner_needed=_requires_owner(raw_batch or latest)
+                        if not owner_needed and (final.get('handoff') is False or source_gap):
+                            candidate={**checked,'handoff':False,
+                                       'evidence':{**checked['evidence'],'status':'checked'}}
+                            from .reviewed_workflow import attach_reviewed_workflow
+                            from .auto_policy import block_reason
+                            candidate=attach_reviewed_workflow(candidate,final_facts)
+                            if (candidate['evidence'].get('owner_action_required') is not True
+                                    and block_reason(candidate,current_text=raw_batch or latest) is None):
+                                checked=candidate
                     if not missing or not covered or attempt:
                         if course:
                             checked['handoff']=True
                             checked.setdefault('evidence',{})['handoff_reason']='Доступность бонуса проверяет владелец вручную по почте регистрации на курсе.'
-                        return with_public_trace(checked,evidence)
+                        from .consultation_delivery import finish as finish_consultation
+                        return finish_consultation(with_public_trace(checked,evidence),final_facts,latest)
                     issue='missing_products'
                 except Exception as exc:
                     # Retry citation formatting only, not transport, privacy,
@@ -1442,7 +1485,7 @@ class Service:
                 correction={'missing_products':missing,'issue':issue,
                     'content_review':review['reason'] if issue=='unsupported_content' else '',
                     'allowed_source_ids':[s['id'] for s in evidence['sources']],
-                    'instruction':'Перепиши ответ только по имеющимся источникам. source_ids должен перечислять ID подтверждающих источников, а каждый [ID] в тексте должен входить в source_ids. Для каждого сервиса используй его источники. Не придумывай ссылки или факты. Если часть сведений отсутствует, сохрани подтверждённые сведения и их source_ids, handoff=true. Пустой source_ids допустим только без публичных фактических утверждений.'}
+                    'instruction':'Перепиши ответ только по имеющимся источникам. source_ids должен перечислять ID подтверждающих источников, а каждый [ID] в тексте должен входить в source_ids. Для каждого сервиса используй его источники. Не придумывай ссылки или факты. Если часть сведений отсутствует, сохрани подтверждённые сведения и их source_ids, явно обозначь пробел и продолжи консультацию с handoff=false. Не обещай последующую проверку без инструмента. handoff=true нужен для действия с заказом, полученных данных доступа, реального конфликта подтверждённых условий или прямой просьбы о человеке. Пустой source_ids допустим только без публичных фактических утверждений.'}
         except Exception as exc:
             if not self.store.still_current(job):
                 return None
@@ -1451,6 +1494,9 @@ class Service:
             if useful:return with_public_trace(useful,evidence)
             if (locals().get('final_facts') or {}).get('feature_claims_v2'):
                 diagnostic=failure_details(exc,stage)
+                from .autonomous_fallback import reply as autonomous_continuation
+                continuation=autonomous_continuation(facts,diagnostic,latest)
+                if continuation:return with_public_trace(continuation,evidence)
                 # A failed public-feature contract is not a purchase request.
                 # Keep exact retail facts without unrelated password/workflow
                 # fallback text; never release unchecked feature candidates.
@@ -1480,6 +1526,9 @@ class Service:
                     'handoff_reason':'Нужна ручная проверка бонуса и неподтверждённых условий сравнения.'}
                 return with_public_trace(result,evidence)
             if str(exc)=='Answer content unsupported' and facts.get('requested_catalog'):
+                from .autonomous_fallback import reply as autonomous_continuation
+                continuation=autonomous_continuation(facts,review['reason'],latest)
+                if continuation:return with_public_trace(continuation,evidence)
                 from .catalog_context import verified_catalog_reply
                 fallback=verified_catalog_reply(facts,review['reason'])
                 fallback['evidence'].update(sources=evidence.get('sources',[]),content_review=review,
@@ -1489,12 +1538,18 @@ class Service:
                     fallback['evidence']['rejected_reply']=scrub(final.get('reply',''))[:2500]
                 return with_public_trace(fallback,evidence)
             if str(getattr(exc,'reason','')).startswith('feature_') and facts.get('requested_catalog'):
+                from .autonomous_fallback import reply as autonomous_continuation
+                continuation=autonomous_continuation(facts,failure_details(exc,stage),latest)
+                if continuation:return with_public_trace(continuation,evidence)
                 from .catalog_context import verified_catalog_reply
                 fallback=verified_catalog_reply(facts,failure_details(exc,stage))
                 fallback['evidence'].update(sources=evidence.get('sources',[]),checked_at=evidence.get('checked_at'))
                 return with_public_trace(fallback,evidence)
             diagnostic=failure_details(exc,stage)
             logging.warning('Public research unavailable: %s',diagnostic)
+            from .autonomous_fallback import reply as autonomous_continuation
+            continuation=autonomous_continuation(facts,diagnostic,latest)
+            if continuation:return with_public_trace(continuation,evidence)
             result=unavailable(diagnostic)
             if getattr(exc,'discovery_reason',None)=='uncertain':
                 result['reply']='Не удалось однозначно определить официальный сайт сервиса. Уточните, пожалуйста, его полное название и для чего вы хотите его использовать?'

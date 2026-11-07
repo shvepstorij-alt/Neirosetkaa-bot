@@ -2,6 +2,41 @@
 import re
 
 
+_PUBLIC_MODEL_PATTERN = (r'(?:gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|pro|turbo|preview))?'
+                         r'|claude-(?:sonnet|opus|haiku)-\d+(?:[-.]\d+)?'
+                         r'|gemini-\d+(?:\.\d+)?-(?:pro|flash)'
+                         r'|glm-\d+(?:\.\d+)?(?:-(?:turbo|air|flash|vision))?)')
+
+
+def public_token_quantity_question(text):
+    """Recognise one bounded public quantity question, never a token value.
+
+    Unknown short brand names are allowed in the product position; mixed
+    identifiers are allowed only as explicit public model version syntax.
+    This is routing evidence for research, not proof of a quota or identity.
+    """
+    value = str(text or '').strip()
+    if not value or len(value) > 240 or '\n' in value or '\r' in value:
+        return False
+    if re.search(r'[:={}\[\]"\'`@/\\]|\b(?:мой|моя|мои|наш|ваш|твой|bearer|password|session|cookie)\b'
+                 r'|sk-|eyj|access.?token|refresh.?token|session.?key', value, re.I):
+        return False
+    # A one-word product label is deliberately narrower than arbitrary prose.
+    # Cyrillic labels and familiar model versions remain ordinary public text.
+    brand = r'(?:' + _PUBLIC_MODEL_PATTERN + r'|[a-zа-яё][a-zа-яё-]{1,35})'
+    scope = r'(?:(?:\s+в\s+(?:контексте|контекстном\s+окне))|(?:\s+на\s+(?:запрос|сообщение|ответ)))?'
+    product = r'(?:\s+(?:у|в|для)\s+(?:(?:модели|сервиса|модель|сервис)\s+)?' + brand + r')?'
+    question = (r'(?:а\s+)?(?:сколько\s+(?:всего\s+)?токен(?:ов|а)?'
+                r'|какой\s+(?:максимальный\s+)?лимит\s+токенов'
+                r'|каково\s+(?:максимальное\s+)?количество\s+токенов)'
+                + scope + product + r'\s*\??')
+    # Also accept «в контексте ChatGPT» without the extra preposition.
+    direct = (r'(?:а\s+)?сколько\s+(?:всего\s+)?токен(?:ов|а)?'
+              r'\s+в\s+(?:контексте|контекстном\s+окне)\s+'
+              + brand + r'\s*\??')
+    return bool(re.fullmatch(question, value, re.I) or re.fullmatch(direct, value, re.I))
+
+
 def _redact(text):
     text=str(text or '')[:16000]
     if re.search(r'(?i)access.?token|refresh.?token|session.?key|\bbearer\b|eyJ[\w-]{20}|sk-[\w-]{16}',text):
@@ -30,6 +65,10 @@ def redaction_categories(text):
 
 def sensitive(text):
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
+    if 'access_secret' in redaction_categories(text):return True
+    # Recognition uses the original model label, before model-name projection.
+    original_lines=re.split(r'(?<=[?!])\s*|\n',text or '')
+    quantity_questions=[public_token_quantity_question(line) for line in original_lines]
     text=re.sub(r'(?i)\b(?:gpt-\d+(?:\.\d+)?(?:-(?:mini|nano|pro|turbo|preview))?|claude-(?:sonnet|opus|haiku)-\d+(?:[-.]\d+)?|gemini-\d+(?:\.\d+)?-(?:pro|flash)|glm-\d+(?:\.\d+)?(?:-(?:turbo|air|flash|vision))?)(?![\w-]|\.(?=\S))',
                 '[название модели]',text or '')
     # An explicitly labelled public order reference is not an OTP merely
@@ -50,8 +89,13 @@ def sensitive(text):
     # at explicit question/exclamation boundaries (not dots in URLs/emails).
     # Keep every unrecognised fragment for the sensitive-value checks below.
     lines=re.split(r'(?<=[?!])\s*|\n',text)
-    field_questions=[_credential_field_question(line) or _credential_help_question(line) for line in lines]
+    field_questions=[_credential_field_question(line) or _credential_help_question(line)
+                     or (i<len(quantity_questions) and quantity_questions[i])
+                     for i,line in enumerate(lines)]
     remaining=[line for line,is_question in zip(lines,field_questions) if not is_question]
+    if any(quantity_questions) and any(re.fullmatch(
+            r'\s*(?:вот|держи(?:те)?)\s+[a-zA-Z0-9!@$%^&*_.+\-]{5,}\s*',line,re.I)
+            for line in remaining):return True
     if len(remaining)!=len(lines):
         # A password question followed by a bare Latin string can be the
         # supplied password on the next line. Do not erase that association.

@@ -6,6 +6,9 @@ def public_question(text):
     """Public product facts need research even when no retail SKU matched."""
     text=str(text or '')
     if re.search(r'закуп|поставщик|себестоим|18\s*\+|порно|эротическ',text,re.I):return False
+    from .privacy import public_token_quantity_question
+    if any(public_token_quantity_question(line) for line in re.split(r'(?<=[?!])\s*|\n',text)):
+        return True
     return bool(re.search(r'что\s+(?:в\s+них\s+)?входит|возможност|функци|лимит|ограничени|отлич|сравн|'
                           r'какие\s+(?:есть\s+|сейчас\s+|платные\s+)*(?:модел|тариф)|'
                           r'официальн[а-яё]*[^.!?\n]{0,50}(?:цен|валют|услов|сведен|описан|сайт)',text,re.I))
