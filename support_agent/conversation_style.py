@@ -35,14 +35,33 @@ def session_info(db,chat,first,last):
     return {'continuing':continuing,'current_client_greeting':bool(greeted)}
 
 
-def decorate_reply(reply,info):
-    """One natural greeting per new greeting exchange; factual text is untouched."""
-    reply=natural_reply(reply)
-    # Discard model/template salutations, then apply the independently computed
-    # raw-batch decision. Old questions reconstructed by context cannot greet again.
-    body=_OPENING.sub('',reply,count=1).strip()
+INTRO=('Здравствуйте! Я ИИ-помощник Александра, помогу с вопросами по нейросетям '
+       'и оформлению подписок)')
+
+
+def address_mode(text):
+    """Mirror the client's address. Formal вы wins if both appear."""
+    value=str(text or '').casefold().replace('ё','е')
+    formal=bool(re.search(r'\bвы\b|\bвас\b|\bвам\b|\bваш',value))
+    informal=bool(re.search(r'\bты\b|\bтебя\b|\bтебе\b|\bтвой\b|\bтвоя\b|\bтвои\b',value))
+    if informal and not formal:
+        return 'ты'
+    return 'вы'
+
+
+def decorate_reply(reply, info=None, introduced=False):
+    """First contact gets the agreed introduction once, then the answer itself.
+
+    `introduced` is persisted by the store, so a restart does not greet again.
+    Later messages are not given a second hello.
+    """
+    reply=natural_reply(reply).strip()
+    if reply.startswith(INTRO):
+        body=reply[len(INTRO):].strip()
+    else:
+        body=_OPENING.sub('',reply,count=1).strip()
     if not body:
         body='Чем могу помочь?'
-    if info.get('current_client_greeting') and not info.get('continuing'):
-        return 'Здравствуйте!)\n\n'+body
-    return body
+    if introduced:
+        return body
+    return INTRO+'\n\n'+body

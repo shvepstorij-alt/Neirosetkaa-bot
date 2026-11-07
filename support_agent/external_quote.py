@@ -5,8 +5,8 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from urllib.parse import urlsplit
 
 
-POLICY={'source':'owner_confirmed_2026_11_04','rub_per_usd':100,
-        'rounding':'ceil_to_100_rub_minus_10','final_owner_approval_required':True,
+POLICY={'source':'owner_confirmed_2026_11_07','rub_per_usd':100,
+        'rounding':'usd_times_100_minus_10_fractional_ceil_to_90','final_owner_approval_required':True,
         'absence_from_catalog_does_not_mean_unavailable':True}
 
 
@@ -33,9 +33,9 @@ def intake_reply(facts,question):
         if len(quoted)==1:
             try:
                 rub=estimate(quoted[0].replace(',','.'))
-                text+=f' Если указанная вами стоимость {quoted[0]} $ подтвердится для нужного периода оплаты, ориентир составит {rub} ₽.'
+                text+=f' Если на сайте подтвердится цена {quoted[0]} $, через нас это {rub} ₽: доллары × 100 − 10, дробные доллары округляются вверх до суммы на 90.'
             except ValueError:pass
-        text+=' Стоимость на сайте ещё не проверена. Окончательные сумму и возможность оформления подтвержу после проверки ссылки.'
+        text+=' Пришлите ссылку на сайт: сверю месячные и годовые тарифы. Других скидок, кроме прямого запроса промокода, нет.'
         answer=_answer(text,'Этап: индивидуальный запрос вне каталога. Публичный сайт не указан; сумма клиента не является подтверждённой официальной ценой.')
         answer['handoff']=False
         from .auto_policy import consultation_evidence
@@ -46,10 +46,17 @@ def intake_reply(facts,question):
 
 
 def estimate(usd):
+    """Whole dollars: amount × 100 − 10. Fractional dollars round up to the next …90."""
     try:value=Decimal(str(usd))
     except InvalidOperation:raise ValueError('USD amount invalid') from None
     if not value.is_finite() or value<=0 or value>10000:raise ValueError('USD amount outside estimate range')
-    return max(90,int((value*100/100).to_integral_value(rounding=ROUND_CEILING)*100)-10)
+    if value==value.to_integral_value():
+        rub=int(value)*100-10
+    else:
+        rub=int((value*100).to_integral_value(rounding=ROUND_CEILING))
+        remainder=rub%100
+        rub=rub-remainder+(90 if remainder<=90 else 190)
+    return max(90,rub)
 
 
 def _answer(text,reason,sources=()):
@@ -136,10 +143,12 @@ async def run(service,facts,question,plan,job):
             line=f"{row['plan']}: ${row['usd']} {labels[row['billing']]}{suffix}"
             if row['billing']=='annual_monthly_equivalent':
                 line+='; это не цена отдельного месяца. Итог за год нужно проверить перед расчётом.'
-            else:line+=f"; через нас ориентировочно {estimate(row['usd'])} ₽."
+            else:line+=f"; через нас {estimate(row['usd'])} ₽."
             lines.append(line)
         if not lines:raise ValueError('All official USD quotes rejected')
-        text='На сайте сервиса подтверждены такие варианты:\n\n'+'\n\n'.join(lines)+'\n\nЭто предварительный расчёт по курсу 100 ₽ за $1 с округлением. Окончательные сумму и возможность оформления подтвержу после проверки выбранного тарифа. Какой вариант вам нужен?)'
+        text=('На сайте сервиса подтверждены такие варианты:\n\n'+'\n\n'.join(lines)+
+              '\n\nЦена у нас: доллары × 100 − 10, дробные доллары округляются вверх до суммы на 90.'
+              '\n\nЕсли подходит, пришлите почту и пароль от аккаунта в этом сервисе и оплатите в каталоге товар «Другой сервис» с тарифом на нужную сумму в долларах. После данных и оплаты ожидайте Александра. Какой вариант вам нужен?)')
         return _answer(text,'Этап: предварительная оценка внешней услуги. Строк='+str(len(plans))+'; подтверждено='+str(len(lines))+'. Цены проверены моделью по сводке поиска, не гарантированы. Коммерческое подтверждение владельца ещё не получено.',sources)
     except Exception as exc:
         if str(exc) in ('Stale research job','Daily API request limit reached'):raise

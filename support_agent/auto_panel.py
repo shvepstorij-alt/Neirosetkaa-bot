@@ -58,7 +58,9 @@ def overview(service):
     quota=store.db.execute('SELECT calls FROM quota WHERE day=?',(day,)).fetchone()
     used=quota[0] if quota else 0
     ready=store.db.execute("SELECT count(*) FROM drafts WHERE state='ready'").fetchone()[0]
-    configured=('ID '+str(service.auto_test_id) if service.auto_test_id else 'не настроен; автоматическая отправка недоступна')
+    configured=('все разрешённые чаты' if service.auto_for_all else
+                'ID '+', '.join(str(i) for i in sorted(service.auto_test_ids)) if service.auto_test_ids else
+                'не настроена; автоматическая отправка недоступна')
     text=('🤖 Управление помощником\n\nРежим: '+MODES.get(store.get('mode'),'неизвестен; отправка запрещена')
           +'\nТестовый получатель AUTO: '+configured
           +f'\n\nАвтоответы: {counts["auto"]} чат(ов)\nТолько черновики: {counts["draft"]}\nНа паузе: {counts["off"]}'
@@ -106,21 +108,25 @@ def delay_settings(service):
 
 def settings(service):
     store=service.store
+    group=('все разрешённые чаты' if service.auto_for_all else
+           ', '.join(str(i) for i in sorted(service.auto_test_ids)) if service.auto_test_ids else 'не настроена')
     text=('⚙️ Автоответы · тестовый запуск\n\n'
-          'Автоматическая отправка доступна только одному явно настроенному тестовому Telegram ID и только после включения в карточке чата.'
+          'Автоматическая отправка доступна тестовой группе из переменных окружения и только после включения в карточке чата. Отдельный переключатель включает её для всех разрешённых чатов.'
           '\n\nНеподтверждённый ответ остаётся вам для проверки. Клиент получает короткое уведомление, если Telegram разрешает отправку. Режим не меняется из-за ошибок.'
           '\nРучное сообщение отменяет устаревшую подготовку, но не меняет режим. Остановить помощника можно в меню чата или командой /stop.'
           '\nПереключения не отправляют старые ответы. /stop не отзывает запрос, уже переданный Telegram.'
-          '\n\nПолучатель: '+(str(service.auto_test_id) if service.auto_test_id else 'не настроен')
+          '\n\nПолучатели: '+group
           +'\nТекущий общий режим: '+MODES.get(store.get('mode'),'неизвестен'))
     rows=[]
     if service.auto_suspended:text+='\nAUTO заблокирован после ошибки сохранения отправки. Сначала проверьте личку и состояние базы; затем перезапустите сервис.'
-    if service.auto_test_id and not service.auto_suspended and store.get('mode')!='auto':
+    if (service.auto_test_ids or service.auto_for_all) and not service.auto_suspended and store.get('mode')!='auto':
         rows.append([('Разрешить тестовый режим AUTO',f'auto:arm:{store.get("revision")}')])
-    if service.auto_test_id:
-        for c in store.db.execute('SELECT * FROM chats WHERE uid=? ORDER BY id DESC LIMIT 5',(service.auto_test_id,)):
+    if service.auto_test_ids and not service.auto_for_all:
+        marks=','.join('?' for _ in service.auto_test_ids)
+        for c in store.db.execute('SELECT * FROM chats WHERE uid IN ('+marks+') ORDER BY id DESC LIMIT 8',tuple(service.auto_test_ids)):
             rows.append([(f'Тестовый чат №{c["id"]}',f'view:{c["id"]}')])
-    else:text+='\nДобавьте SUPPORT_AUTO_TEST_CHAT_ID в Railway; ID должен входить в SUPPORT_TEST_CHAT_IDS. Значения ключей не нужны.'
+    elif not service.auto_for_all:
+        text+='\nЗадайте SUPPORT_AUTO_TEST_CHAT_IDS (список через запятую) или оставьте SUPPORT_AUTO_TEST_CHAT_ID. ID должны входить в SUPPORT_TEST_CHAT_IDS. Для всех чатов отдельно: SUPPORT_AUTO_FOR_ALL=yes.'
     rows.extend([[('Остановить всем','global:off')],[('Назад','control:refresh')]])
     return text,rows
 

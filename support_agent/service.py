@@ -34,11 +34,16 @@ def buttons(rows):
 
 
 class Service:
-    def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None):
+    def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None,
+                 auto_test_ids=(),auto_for_all=False):
         self.store,self.tg,self.ai,self.shop=store,tg,ai,shop
         self.owner,self.allowed,self.daily_limit=owner,set(allowed),daily_limit
-        self.auto_test_id=(auto_test_id if type(auto_test_id) is int and auto_test_id>0
-                           and auto_test_id in self.allowed and auto_test_id!=owner else None)
+        ids=set(auto_test_ids or ())
+        if type(auto_test_id) is int and auto_test_id>0:
+            ids.add(auto_test_id)
+        self.auto_test_ids=frozenset(i for i in ids if i in self.allowed and i!=owner)
+        self.auto_test_id=next(iter(sorted(self.auto_test_ids)), None)
+        self.auto_for_all=bool(auto_for_all)
         self.auto_suspended=False
         self.bot_id=None
         self.daily_cleanup=0
@@ -144,7 +149,11 @@ class Service:
         return controls
 
     def auto_permitted(self,c):
-        return bool(not self.auto_suspended and c and self.auto_test_id is not None and c['uid']==self.auto_test_id and c['uid'] in self.allowed)
+        if self.auto_suspended or not c or c['uid'] not in self.allowed:
+            return False
+        if self.auto_for_all:
+            return True
+        return c['uid'] in self.auto_test_ids
 
     async def show_control(self,admin_mid=None,settings=False):
         from .auto_panel import overview,settings as settings_view
@@ -488,8 +497,8 @@ class Service:
             await self.show_attention(int(cmd.split(':')[1]),admin_mid)
         elif cmd.startswith('auto:arm:'):
             expected=int(cmd.split(':')[2])
-            if not self.auto_test_id or expected!=int(self.store.get('revision')):
-                await self.owner_message('AUTO не включён: тестовый ID не настроен или кнопка устарела. Откройте /status.')
+            if not (self.auto_test_ids or self.auto_for_all) or expected!=int(self.store.get('revision')):
+                await self.owner_message('AUTO не включён: тестовая группа не настроена или кнопка устарела. Откройте /status.')
                 return
             self.store.switch('auto')
             await self.show_control(admin_mid,settings=True)
@@ -838,8 +847,8 @@ class Service:
     def auto_content_reason(self,d):
         notice=self.store.db.execute('SELECT kind FROM auto_notices WHERE draft=?',(d['id'],)).fetchone()
         if notice:
-            from .auto_notice import TEXTS
-            if not d['handoff'] and d['text']==TEXTS.get(notice['kind']):return None
+            from .auto_notice import matches_template
+            if not d['handoff'] and matches_template(notice['kind'], d['text']):return None
             return 'Этап: проверка служебного ответа. Сохранённый текст не совпал с шаблоном.'
         from .auto_policy import block_reason
         c=self.store.chat(d['chat'])
@@ -964,6 +973,9 @@ class Service:
                     self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
                     self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
                         (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
+                    from .conversation_style import INTRO
+                    if str(text or '').startswith(INTRO):
+                        self.store.mark_introduced(c['id'])
             except Exception:
                 self.auto_suspended=True
                 try:
@@ -1070,7 +1082,7 @@ class Service:
             WHERE chat=? AND role='client' AND mid>=? AND mid<=?''',
             (job['chat'],batch_first,job['mid'])).fetchone()
         if turn[0]>HISTORY_MESSAGES or turn[1]>HISTORY_CHARACTERS:
-            return {'reply':'Спасибо за подробности! Уточню ваше обращение и вернусь с ответом.',
+            return {'reply':'Обращение слишком большое, чтобы разобрать его целиком автоматически. Пришлите, пожалуйста, главный вопрос отдельно, и я отвечу по нему. Если нужно разобрать всё сообщение, ожидайте Александра.',
                     'summary':'Обращение превышает безопасный объём контекста. Автоматический анализ не запускался; проверьте весь диалог вручную.',
                     'handoff':True}
         from .media_batch import prepare_media
@@ -1082,7 +1094,7 @@ class Service:
             WHERE chat=? AND role='client' AND mid>=? AND mid<=?''',
             (job['chat'],batch_first,job['mid'])).fetchone()[0]
         if size>HISTORY_CHARACTERS:
-            return {'reply':'Уточню детали вашего обращения и вернусь с ответом.',
+            return {'reply':'После расшифровки обращение слишком большое для одного автоматического ответа. Пришлите, пожалуйста, главный вопрос отдельно. Если нужно разобрать всё, ожидайте Александра.',
                     'summary':'После расшифровки обращение превышает объём контекста. Проверьте весь диалог вручную; частичный ответ не подготовлен.',
                     'handoff':True}
         facts=await self.shop.facts(job['uid'])
@@ -1127,6 +1139,9 @@ class Service:
         if not image:
             unclear=ambiguity_reply(raw_batch)
             if unclear:return unclear
+            from .owner_scenarios import reply as scenario_reply
+            scenario=scenario_reply(raw_batch)
+            if scenario:return scenario
         facts=dict(facts,case_fields={
             'payment_reference_supplied':bool(re.search(r'(?:номер\s+(?:заказа|платежа)|intid|заказ\s*№)\s*[:#№]?\s*\d{3,12}(?!\d)',raw_batch,re.I)),
             'payment_provider_supplied':bool(re.search(r'free\s*kassa|фр[ие]кас[с]?а',raw_batch,re.I))})
@@ -1284,9 +1299,11 @@ class Service:
         if direct:return direct
         from .conversation_style import session_info
         replied=session_info(self.store.db,job['chat'],batch_first,job['mid'])['continuing']
+        from .conversation_style import address_mode
         facts=dict(facts,conversation={'continuing':replied,
                                       'latest_client_message':latest,
-                                      'latest_message':batch[-1]['text'] if batch else ''})
+                                      'latest_message':batch[-1]['text'] if batch else '',
+                                      'address_mode':address_mode(raw_batch)})
         if selection and not image and not course:
             from .recommendation_flow import run as recommend_for_task
             recommendation=await recommend_for_task(self,facts,latest,raw_batch,job)
@@ -1611,7 +1628,8 @@ class Service:
             if answer:
                 from .conversation_style import session_info,decorate_reply
                 first=self.store.chat(job['chat'])['batch_first']
-                answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']))
+                answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']),
+                                               introduced=self.store.introduced(job['chat']))
                 if isinstance(answer.get('feature_projection'),dict):
                     answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
                 did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
@@ -1704,11 +1722,12 @@ async def main():
     allowed={int(x.strip()) for x in os.environ.get('SUPPORT_TEST_CHAT_IDS','').split(',') if x.strip()}
     if owner<=0 or any(x<=0 or x==owner for x in allowed):
         raise ValueError('Positive, separate test client IDs are required')
-    raw_auto=os.environ.get('SUPPORT_AUTO_TEST_CHAT_ID','').strip()
-    if raw_auto and not raw_auto.isdecimal():raise ValueError('SUPPORT_AUTO_TEST_CHAT_ID must be one numeric test ID')
-    auto_id=int(raw_auto) if raw_auto else None
-    if auto_id is not None and (auto_id<=0 or auto_id==owner or auto_id not in allowed):
-        raise ValueError('SUPPORT_AUTO_TEST_CHAT_ID must be one separate allowed test client')
+    from .rollout import auto_recipients
+    auto_ids,auto_for_all=auto_recipients(
+        os.environ.get('SUPPORT_AUTO_TEST_CHAT_IDS',''),
+        os.environ.get('SUPPORT_AUTO_TEST_CHAT_ID',''),
+        os.environ.get('SUPPORT_AUTO_FOR_ALL',''),
+        allowed,owner)
     limit=int(os.environ.get('SUPPORT_DAILY_CALL_LIMIT','100'))
     if not 1<=limit<=2000:
         raise ValueError('Invalid daily request limit')
@@ -1740,11 +1759,13 @@ async def main():
             await shop.start()
             ai=OpenAI(session,os.environ['OPENAI_API_KEY'],os.environ['SUPPORT_MODEL'],
                       os.environ['SUPPORT_AUDIO_MODEL'],os.getenv('SUPPORT_SEARCH_MODEL'))
-            service=Service(store,tg,ai,shop,owner,allowed,limit,auto_test_id=auto_id);service.bot_id=me['id']
+            service=Service(store,tg,ai,shop,owner,allowed,limit,auto_test_ids=auto_ids,auto_for_all=auto_for_all);service.bot_id=me['id']
             service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. '+
-                ('AUTO доступен только явно настроенному тестовому ID после включения в карточке.' if auto_id else 'AUTO не настроен; автоматических отправок нет.')+
+                ('AUTO для всех разрешённых чатов после включения режима.' if auto_for_all else
+                 'AUTO доступен тестовой группе после включения в карточке: '+', '.join(str(i) for i in sorted(auto_ids))+'.' if auto_ids else
+                 'AUTO не настроен; автоматических отправок нет.')+
                 ('\nПрерванных подготовок ответа: '+str(interrupted)+'. Автоматически не повторяются; проверьте /chats.' if interrupted else '')+
                 ('\nНеопределённых отправок: '+str(interrupted_sends)+'. Режимы сохранены; повторы этих ответов запрещены. Проверьте личку и /pending.' if interrupted_sends else ''))
             from .probe_api import start_server,startup_diagnostic
