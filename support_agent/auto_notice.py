@@ -4,13 +4,13 @@ import re
 TEXTS = {
     'technical': 'Сейчас не удалось получить проверенные данные. Помогу разобраться по карточке тарифа или скриншоту ошибки без личных и платёжных данных. Также могу подобрать другой сервис под вашу задачу).',
     'information': 'Часть условий пока не подтверждена. Помогу разобраться по официальному описанию: пришлите ссылку на нужный пункт или скриншот без личных данных. Если хотите, подберём другой сервис под вашу задачу).',
-    'manual': 'Результат операции пока не подтверждён. Могу объяснить порядок действий по сообщению заказа или тексту ошибки без личных данных; оплату, возврат или активацию без проверки не подтверждаю. С другими вопросами тоже помогу.',
     'secret': 'Полученные данные доступа повторно присылать не нужно. С общими вопросами по сервису и дальнейшим шагам помогу).',
 }
 
 
 def text_for(kind, now=None):
-    if kind=='human':
+    # A held draft is the handoff sentence. The old operation-result template is gone.
+    if kind in ('human', 'manual'):
         from .handoff import handoff_text
         return handoff_text(now)
     return TEXTS[kind]
@@ -39,17 +39,11 @@ def kind_for(evidence, reason, current_text='', usable_reply=False):
                  r'(?:хочу|нужен|нужна)[^.!?\n]{0,25}(?:оператор|жив[а-яё]*\s+человек)', current, re.I)
         or 'клиент явно просит человека' in lower or 'human request' in lower):
         return 'human'
-    from .order_status import is_status_request
-    about_operation = (is_status_request(current) or bool(re.search(
-        r'возврат|верн[а-яё]*\s+деньг|я\s+оплатил|уже\s+оплатил|(?<!\w)активируй(?:те)?\b', current, re.I)))
-    # «Как оформить» is a how-to, not news that an operation failed.
-    if evidence.get('status') in ('order_status', 'owner_policy') or evidence.get('new_account_stage'):
-        return 'manual'
-    if (evidence.get('owner_action_required') is True or evidence.get('review_required') is True
+    # Held work tells the client that Alexander will reply. It does not describe an operation result.
+    if (evidence.get('status') in ('order_status', 'owner_policy') or evidence.get('new_account_stage')
+            or evidence.get('owner_action_required') is True or evidence.get('review_required') is True
             or re.search(r'конфликт\s+(?:подтвержд[её]нных\s+)?(?:правил|политик|способов\s+оформления)', diagnostic, re.I)):
-        return 'manual' if about_operation else ('human' if usable_reply else 'information')
-    if about_operation:
-        return 'manual'
+        return 'human'
     if any(x in lower for x in ('лимит запросов', 'telegram', '120 секунд', 'ошибка подготовки')):
         return 'technical'
     # Missing sources/coverage is informational even if an old route stored

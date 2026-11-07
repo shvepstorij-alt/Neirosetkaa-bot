@@ -199,9 +199,12 @@ def block_reason(answer,evidence=None,current_text=''):
     if not consultation and reviewed_detection is None and re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
                  r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код(?:ы)?\s+(?:входа|подтверждения)|(?:одноразов|резервн)[а-яё]*\s+код)',text,re.I):
         return _reason('ответ запрашивает данные доступа; сбор этих данных оставлен владельцу.')
+    from .reply_assertion import collects_case_data, asserts_outcome
+    if collects_case_data(text) and not asserts_outcome(text):
+        return None
     from .order_status import is_status_request
-    if is_status_request(current):
-        return _reason('обращение касается проверки оплаты или заказа; в пилоте требуется ручная проверка.')
+    if is_status_request(current) and asserts_outcome(text):
+        return _reason('ответ сообщает результат оплаты, активации или возврата; это проверяет владелец.')
     if re.search(r'возврат|верн[а-яё]*\s+деньг|чарджб[еэ]к|chargeback|'
                  r'чек\b|квитанци|резервн[а-яё]*\s+код|одноразов[а-яё]*\s+код',current,re.I):
         return _reason('обращение касается возврата, платёжного подтверждения или кодов доступа; нужен владелец.')
@@ -241,8 +244,8 @@ def block_reason(answer,evidence=None,current_text=''):
     if has_completion_claim(text):
         return _reason('ответ утверждает завершение финансового действия или оформления; в пилоте нужен владелец.')
     from .order_status import is_status_request
-    if is_status_request(current):
-        return _reason('обращение касается проверки оплаты или заказа; в пилоте требуется ручная проверка.')
+    if is_status_request(current) and asserts_outcome(text):
+        return _reason('ответ сообщает результат оплаты, активации или возврата; это проверяет владелец.')
     if re.search(r'возврат|верн[а-яё]*\s+деньг|чарджб[еэ]к|chargeback|'
                  r'чек\b|квитанци|резервн[а-яё]*\s+код|одноразов[а-яё]*\s+код',current,re.I):
         return _reason('обращение касается возврата, платёжного подтверждения или кодов доступа; нужен владелец.')
