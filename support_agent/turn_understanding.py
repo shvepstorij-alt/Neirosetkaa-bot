@@ -44,10 +44,24 @@ UNDERSTANDING_INSTRUCTIONS = (
     'не противоречь им, не повторяй их дословно и не спрашивай заново то, что он уже спросил. '
     'Продолжай с его последней реплики. owner_alignment: follows, contradicts, repeats или reasks. '
     'Если таких сообщений нет, owner_alignment=follows. '
+    'faq — ответы владельца. Если у темы known=false, не выдумывай гарантию, срок, сумму возврата, замену при блокировке или цену сервиса вне каталога. '
+    'owner_topic — id такой темы, либо none. '
+    'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
     'Не утверждай, что оплата прошла, подписка активирована или возврат сделан.'
 )
+
+DOCUMENTED_FACTS = (
+    'Обычная подписка ChatGPT: токен сессии вставляется в окно активации в боте, не в эту переписку. '
+    'Автоматически обычно 2–5 минут, вручную до получаса. Это не гарантия и не срок для других сервисов.',
+    'Россия не входит в официальный перечень доступа Claude. VPN и одна и та же локация — совет владельца. '
+    'Это не делает страну официально поддерживаемой и не обещает отсутствие блокировки.',
+    'Для рассмотрения возврата нужен номер платежа FreeKassa. Решение принимает только Александр. '
+    'Срок и одобрение возврата не обещать.',
+    'Гарантию отсутствия блокировки, замену аккаунта и точный срок выдачи без отдельной записи владельца давать нельзя.',
+)
 _RUBLE = re.compile(r'(\d{2,7})\s*(?:₽|руб(?:лей|ля|ль)?)', re.I)
-_PROMISE = re.compile(r'(?i)обещаю|гарантирую|точно\s+активир|возврат\s+одобрен|уже\s+оформил')
+# "не обещаю" refuses a promise. A bare "обещаю" still blocks the draft.
+_PROMISE = re.compile(r'(?i)(?<!не )обещаю|(?<!не )гарантирую|точно\s+активир|возврат\s+одобрен|уже\s+оформил')
 _INTERNAL = re.compile(
     r'(?i)уже\s+известно|недостаточно\s+без|результат\s+операции\s+пока\s+не\s+подтвержд|'
     r'часть\s+условий\s+пока\s+не\s+подтверждена|этап\s*:')
@@ -120,10 +134,15 @@ def build_context(db, chat, facts):
     tariffs = catalog_index(facts)
     from .payment_case import receipt_files
     from .glossary import for_context
+    from .faq import for_context as faq_context
     try:
         glossary = for_context(facts)
     except Exception:
         glossary = {'services': [], 'phrases': [], 'tariff_words': [], 'load_error': True}
+    try:
+        faq = faq_context()
+    except Exception:
+        faq = []
     return {'burst': burst,
             'receipt_attached': bool(receipt_files(db, chat)),
             'glossary': glossary,
@@ -136,17 +155,16 @@ def build_context(db, chat, facts):
             'tariffs': tariffs,
             'nominals': nominal_index(facts),
             'owner_statements': [item['text'] for item in window if item.get('authority') == 'owner' and item.get('text')],
+            'faq': faq,
+            'documented_facts': list(DOCUMENTED_FACTS),
             'hints': hint_services(burst, catalog)}
 
 
 def _allowed_prices(tariffs, nominals, service_id, tariff_id):
-    if tariff_id:
-        return {row['price'] for row in tariffs if row['id'] == tariff_id}
-    nominal_prices = {row['price'] for row in nominals}
-    if service_id in ('', 'appstore'):
-        service_prices = {row['price'] for row in tariffs if row['service_id'] == service_id} if service_id else set()
-        return nominal_prices | service_prices or nominal_prices or {row['price'] for row in tariffs}
-    return {row['price'] for row in tariffs if row['service_id'] == service_id}
+    """Every price in the facts given to the model. A number outside this set is invented."""
+    prices = {row['price'] for row in tariffs if type(row.get('price')) is int}
+    prices |= {row['price'] for row in nominals if type(row.get('price')) is int}
+    return prices
 
 
 def validate(understanding, context):
@@ -182,7 +200,22 @@ def validate(understanding, context):
             'conflict': _conflict(understanding),
             'conflict_reason': str((understanding or {}).get('conflict_reason') or '').strip()[:300],
             'owner_alignment': _alignment(understanding, context),
+            'owner_topic': _owner_topic(understanding, context),
             'allowed_prices': _allowed_prices(tariffs, context.get('nominals') or [], service_id, tariff_id)}
+
+
+def _owner_topic(understanding, context):
+    value = str((understanding or {}).get('owner_topic') or 'none').strip()
+    if value == 'none':
+        return 'none'
+    known = {row.get('id') for row in (context or {}).get('faq') or [] if isinstance(row, dict)}
+    if not known:
+        from .faq import load_faq
+        try:
+            known = {row['id'] for row in load_faq()['topics']}
+        except Exception:
+            known = set()
+    return value if value in known else 'none'
 
 
 def _conflict(understanding):
@@ -196,6 +229,25 @@ def _alignment(understanding, context):
         return 'follows'
     value = str((understanding or {}).get('owner_alignment') or 'follows')
     return value if value in ('follows', 'contradicts', 'repeats', 'reasks') else 'follows'
+
+
+def _topic_known(topic, context):
+    from .faq import usable_answer
+    return bool(usable_answer(topic, (context or {}).get('faq')))
+
+
+def _flat(text):
+    return ' '.join(str(text or '').casefold().split())
+
+
+def _repeats_assistant(reply, context):
+    current = _flat(reply)
+    if len(current) < 12:
+        return False
+    for item in (context or {}).get('history') or []:
+        if item.get('role') == 'assistant' and _flat(item.get('text')) == current:
+            return True
+    return False
 
 
 def states_price(reply):
@@ -381,7 +433,8 @@ def package(understanding, context, db=None, chat=None):
                          'questions': validated['questions'],
                          'vpn_advice': validated['vpn_advice'],
                          'conflict': validated['conflict'],
-                         'owner_alignment': validated['owner_alignment']},
+                         'owner_alignment': validated['owner_alignment'],
+                         'owner_topic': validated['owner_topic']},
                          'diagnostic': verdict['reason'],
                          'handoff_reason': '' if verdict['send'] else verdict['reason']}}
 
@@ -398,15 +451,25 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         holds.append('Черновик расходится с репликой владельца в этом чате.')
     if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
         holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')
+    topic = validated['owner_topic']
+    if topic != 'none':
+        from .faq import usable_answer
+        if not usable_answer(topic, (context or {}).get('faq')):
+            holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
+    if _repeats_assistant(answer.get('reply'), context):
+        holds.append('Черновик повторяет уже сказанное в этом чате.')
     evidence = dict(answer.get('evidence') or {})
     turn = dict(evidence.get('turn_understanding') or {})
-    turn.update(conflict=validated['conflict'], owner_alignment=validated['owner_alignment'])
+    turn.update(conflict=validated['conflict'], owner_alignment=validated['owner_alignment'],
+                owner_topic=validated['owner_topic'])
     evidence['turn_understanding'] = turn
     evidence['catalog_freshness'] = dict(freshness or {})
     if holds:
         evidence.update(status='owner_policy', conflict_hold=validated['conflict'] == 'high',
                         owner_alignment_hold=validated['owner_alignment'] != 'follows',
                         stale_price_hold=(freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')),
+                        owner_fact_hold=topic != 'none' and not _topic_known(topic, context),
+                        repeat_hold=_repeats_assistant(answer.get('reply'), context),
                         diagnostic=' '.join(holds), handoff_reason=' '.join(holds))
         answer = dict(answer, handoff=True, evidence=evidence)
         return answer

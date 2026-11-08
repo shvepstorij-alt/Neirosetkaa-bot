@@ -139,7 +139,9 @@ def block_reason(answer,evidence=None,current_text=''):
     if type(answer.get('handoff')) is not bool:
         return _reason('флаг участия владельца отсутствует или имеет неверный тип.')
     meta=evidence if isinstance(evidence,dict) else answer.get('evidence',{})
-    if isinstance(meta,dict) and (meta.get('conflict_hold') or meta.get('owner_alignment_hold') or meta.get('stale_price_hold')):
+    if isinstance(meta,dict) and (meta.get('conflict_hold') or meta.get('owner_alignment_hold')
+                                  or meta.get('stale_price_hold') or meta.get('owner_fact_hold')
+                                  or meta.get('repeat_hold')):
         detail=meta.get('diagnostic') or meta.get('handoff_reason') or ''
         return _reason(detail or 'черновик удержан по конфликту, реплике владельца или устаревшей цене.')
     from .response_decision import verified_atomic_decision
