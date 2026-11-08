@@ -18,10 +18,11 @@ def load_faq():
         topic_id = str(row.get('id') or '').strip()
         title = ' '.join(str(row.get('title') or '').split())
         answer = str(row.get('answer') or '').strip()
+        collect = [str(item).strip() for item in row.get('collect') or [] if str(item).strip()]
         if not topic_id or topic_id in seen or topic_id == 'none':
             continue
         seen.add(topic_id)
-        topics.append({'id': topic_id, 'title': title or topic_id, 'answer': answer})
+        topics.append({'id': topic_id, 'title': title or topic_id, 'answer': answer, 'collect': collect})
     return {'topics': topics}
 
 
@@ -37,9 +38,19 @@ def usable_answer(topic_id, topics=None):
     return ''
 
 
+def collect_fields(topic_id, topics=None):
+    rows = topics if topics is not None else load_faq()['topics']
+    for row in rows:
+        if row.get('id') == topic_id:
+            return [item for item in row.get('collect') or [] if item]
+    return []
+
+
 def for_context():
     rows = []
     for row in load_faq()['topics']:
         answer = usable_answer(row['id'], [row])
-        rows.append({'id': row['id'], 'title': row['title'], 'answer': answer, 'known': bool(answer)})
+        collect = list(row.get('collect') or [])
+        rows.append({'id': row['id'], 'title': row['title'], 'answer': answer,
+                     'collect': collect, 'known': bool(answer)})
     return rows

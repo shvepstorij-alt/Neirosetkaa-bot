@@ -44,20 +44,24 @@ UNDERSTANDING_INSTRUCTIONS = (
     'не противоречь им, не повторяй их дословно и не спрашивай заново то, что он уже спросил. '
     'Продолжай с его последней реплики. owner_alignment: follows, contradicts, repeats или reasks. '
     'Если таких сообщений нет, owner_alignment=follows. '
-    'faq — ответы владельца. Если у темы known=false, не выдумывай гарантию, срок, сумму возврата, замену при блокировке или цену сервиса вне каталога. '
+    'faq — ответы владельца. Если known=true, ответ клиенту должен содержать answer дословно и ничего сверх него. '
+    'Если клиент просит срок гарантии или другие условия, которых нет в answer, beyond_owner_fact=true. '
+    'Если у темы есть collect, это сбор сведений, а не текст обещания. '
+    'Для возврата заполни refund_order, refund_service и refund_reason только тем, что уже есть в последних сообщениях, иначе пустая строка. '
+    'Спроси только недостающее. Возврат не обещай. '
     'owner_topic — id такой темы, либо none. '
     'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
     'Не утверждай, что оплата прошла, подписка активирована или возврат сделан.'
 )
 
 DOCUMENTED_FACTS = (
-    'Обычная подписка ChatGPT: токен сессии вставляется в окно активации в боте, не в эту переписку. '
-    'Автоматически обычно 2–5 минут, вручную до получаса. Это не гарантия и не срок для других сервисов.',
+    'Обычная подписка ChatGPT: токен сессии вставляется в окно активации в боте, не в эту переписку.',
     'Россия не входит в официальный перечень доступа Claude. VPN и одна и та же локация — совет владельца. '
-    'Это не делает страну официально поддерживаемой и не обещает отсутствие блокировки.',
-    'Для рассмотрения возврата нужен номер платежа FreeKassa. Решение принимает только Александр. '
-    'Срок и одобрение возврата не обещать.',
-    'Гарантию отсутствия блокировки, замену аккаунта и точный срок выдачи без отдельной записи владельца давать нельзя.',
+    'Это не делает страну официально поддерживаемой.',
+    'Гарантия есть на все сервисы, кроме Claude. Других условий гарантии владелец не записал.',
+    'Claude может заблокировать аккаунт, гарантии на Claude нет. На остальные сервисы блокировка входит в гарантию. Срок замены не записан.',
+    'Подписка оформляется в течение 30–60 минут.',
+    'Возврат не обещать. Собрать номер заказа, сервис и причину. Когда все три есть, отвечает Александр.',
 )
 _RUBLE = re.compile(r'(\d{2,7})\s*(?:₽|руб(?:лей|ля|ль)?)', re.I)
 # "не обещаю" refuses a promise. A bare "обещаю" still blocks the draft.
@@ -201,7 +205,23 @@ def validate(understanding, context):
             'conflict_reason': str((understanding or {}).get('conflict_reason') or '').strip()[:300],
             'owner_alignment': _alignment(understanding, context),
             'owner_topic': _owner_topic(understanding, context),
+            'beyond_owner_fact': bool((understanding or {}).get('beyond_owner_fact')),
+            'refund_collected': _refund_collected(understanding),
             'allowed_prices': _allowed_prices(tariffs, context.get('nominals') or [], service_id, tariff_id)}
+
+
+def _refund_collected(understanding):
+    raw = (understanding or {}).get('refund_collected')
+    if not isinstance(raw, dict):
+        raw = {'order_number': (understanding or {}).get('refund_order'),
+               'service': (understanding or {}).get('refund_service'),
+               'reason': (understanding or {}).get('refund_reason')}
+    cleaned = {}
+    for key in ('order_number', 'service', 'reason'):
+        value = ' '.join(str((raw or {}).get(key) or '').split())
+        if value and len(value) <= 200:
+            cleaned[key] = value
+    return cleaned
 
 
 def _owner_topic(understanding, context):
@@ -452,10 +472,28 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
         holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')
     topic = validated['owner_topic']
-    if topic != 'none':
-        from .faq import usable_answer
-        if not usable_answer(topic, (context or {}).get('faq')):
-            holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
+    faq_rows = (context or {}).get('faq') or []
+    from .faq import collect_fields, usable_answer
+    answer_text = usable_answer(topic, faq_rows) if topic != 'none' else ''
+    collecting = collect_fields(topic, faq_rows) if topic != 'none' else []
+    refund_ready = False
+    beyond = bool(validated.get('beyond_owner_fact'))
+    if topic != 'none' and collecting:
+        needed = [key for key in ('order_number', 'service', 'reason') if key in collecting]
+        got = validated.get('refund_collected') or {}
+        missing = [key for key in needed if not got.get(key)]
+        reply = str(answer.get('reply') or '')
+        if not missing:
+            refund_ready = True
+            holds.append('Данные для возврата собраны. Клиенту оставлена фраза ожидания.')
+        elif asserts_outcome(reply) or _PROMISE.search(reply) or not re.search(r'(?i)пришлите|напишите|укажите|\?', reply):
+            holds.append('По возврату нельзя обещать результат, пока собраны не все сведения.')
+    elif topic != 'none' and not answer_text:
+        holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
+    elif answer_text:
+        reply = str(answer.get('reply') or '')
+        if beyond or _flat(answer_text) not in _flat(reply):
+            holds.append('Ответ выходит за записанный факт владельца.')
     if _repeats_assistant(answer.get('reply'), context):
         holds.append('Черновик повторяет уже сказанное в этом чате.')
     evidence = dict(answer.get('evidence') or {})
@@ -468,7 +506,10 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         evidence.update(status='owner_policy', conflict_hold=validated['conflict'] == 'high',
                         owner_alignment_hold=validated['owner_alignment'] != 'follows',
                         stale_price_hold=(freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')),
-                        owner_fact_hold=topic != 'none' and not _topic_known(topic, context),
+                        owner_fact_hold=bool(topic != 'none' and not collecting and (
+                            (not answer_text) or beyond or (answer_text and _flat(answer_text) not in _flat(answer.get('reply'))))),
+                        refund_hold=refund_ready,
+                        refund_collected=validated.get('refund_collected') or {},
                         repeat_hold=_repeats_assistant(answer.get('reply'), context),
                         diagnostic=' '.join(holds), handoff_reason=' '.join(holds))
         answer = dict(answer, handoff=True, evidence=evidence)
