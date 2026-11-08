@@ -1,0 +1,601 @@
+"""Offline dialog stress check. The stand-in model only reads the payload it is given.
+
+Expected prices come from SHOP_CATALOG in config.py. A business fact that is not
+there is a hold, unless faq.yaml already contains the owner's answer.
+"""
+import asyncio
+import io
+import re
+import tempfile
+import time
+from pathlib import Path
+
+from PIL import Image
+
+from support_agent.dialog_probe import NoTelegram
+from support_agent.faq import load_faq, usable_answer
+from support_agent.glossary import load_glossary
+from support_agent.service import Service
+from support_agent.storage import Store
+from support_agent.turn_understanding import enforce_turn_policy, package, states_price
+
+
+def _fold(value):
+    return ' '.join(str(value or '').casefold().replace('ё', 'е').split())
+
+
+def shop_catalog_from_config():
+    """Plans and prices exactly as written in config.py. No extra products."""
+    config_path = Path(__file__).resolve().parents[1] / 'config.py'
+    with config_path.open(encoding='utf-8') as source:
+        text = source.read()
+    start = text.find('SHOP_CATALOG = {')
+    if start < 0:
+        raise RuntimeError('SHOP_CATALOG missing')
+    i = start + len('SHOP_CATALOG = ')
+    depth = 0
+    end = None
+    for j, ch in enumerate(text[i:], i):
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end = j + 1
+                break
+    blob = text[i:end]
+    parts = re.split(r'\n    "([a-z0-9_.]+)": \{', blob)
+    catalog = []
+    for key, body in zip(parts[1::2], parts[2::2]):
+        name = re.search(r'"name":\s*"([^"]+)"', body)
+        plans = re.findall(r'\{"name":\s*"([^"]+)",\s*"price":\s*(\d+)', body)
+        for plan, price in plans:
+            catalog.append({'service': name.group(1) if name else key, 'service_key': key,
+                            'plan': plan, 'catalog_price_rub': int(price), 'fulfillment': 'not_verified'})
+    return catalog
+
+
+def _phrase_in(text, token):
+    folded = _fold(text)
+    needle = _fold(token)
+    return bool(needle) and (folded == needle or (' ' + needle + ' ') in (' ' + folded + ' '))
+
+
+def match_service(text, glossary):
+    best = None
+    best_len = 0
+    for row in glossary.get('services') or []:
+        for name in [row.get('name'), row.get('id'), *(row.get('aliases') or [])]:
+            if _phrase_in(text, name) and len(_fold(name)) > best_len:
+                best = row['id']
+                best_len = len(_fold(name))
+    return best
+
+
+def match_plan(text, tariffs, service_id):
+    rows = [row for row in tariffs if row.get('service_id') == service_id]
+    folded = _fold(text)
+    if not rows:
+        return None
+    if 'подешевл' in folded or 'дешевл' in folded:
+        shown = rows
+        return min(shown, key=lambda row: row['price'])
+    wanted = None
+    if 'pro+' in folded or 'про+' in folded:
+        wanted = 'pro+'
+    elif 'premier' in folded or 'премьер' in folded:
+        wanted = 'premier'
+    elif 'heavy' in folded or 'хеви' in folded:
+        wanted = 'heavy'
+    elif 'max 20' in folded or '20' in folded and 'макс' in folded:
+        wanted = 'max 20'
+    elif 'max 5' in folded or ('5' in folded and 'макс' in folded):
+        wanted = 'max 5'
+    elif 'плюс' in folded or re.search(r'(?<![a-z])plus(?![a-z])', folded):
+        wanted = 'plus'
+    elif 'basic' in folded or 'бейсик' in folded or 'базов' in folded:
+        wanted = 'basic'
+    elif 'standard' in folded or 'стандарт' in folded:
+        wanted = 'standard'
+    elif 'creator' in folded or 'креатор' in folded:
+        wanted = 'creator'
+    elif 'starter' in folded or 'стартер' in folded:
+        wanted = 'starter'
+    elif re.search(r'(?<![а-я])го(?![а-я])', folded) or re.search(r'(?<![a-z])go(?![a-z])', folded):
+        wanted = 'go'
+    elif re.search(r'(?<![а-я])про(?![а-я])', folded) or re.search(r'(?<![a-z])pro(?![a-z])', folded):
+        wanted = 'pro'
+    ordered = sorted(rows, key=lambda item: len(item['plan']), reverse=True)
+    if wanted == 'pro':
+        exact = [row for row in rows if row['plan'].casefold() == 'pro']
+        return exact[0] if exact else None
+    if wanted:
+        for row in ordered:
+            if wanted in row['plan'].casefold():
+                return row
+    for row in ordered:
+        if _phrase_in(text, row['plan']) or _fold(row['plan']) in folded:
+            return row
+    if 'годов' in folded and not any('год' in row['plan'].casefold() for row in rows):
+        return None
+    if len(rows) == 1 and 'годов' not in folded:
+        return rows[0]
+    return None
+
+
+class _Telegram(NoTelegram):
+    def __init__(self, fixtures):
+        super().__init__(fixtures)
+        self.sent = []
+
+    async def call(self, method, **kwargs):
+        self.sent.append((method, kwargs.get('text', '')))
+        return {'message_id': 1}
+
+
+class _Shop:
+    def __init__(self, catalog):
+        self.catalog = catalog
+
+    async def facts(self, uid):
+        return {'catalog': self.catalog, 'catalog_status': 'available',
+                'appstore': {'status': 'not_connected', 'regions': []},
+                'bot_navigation': {'status': 'available', 'username': 'neirosetkaa_bot', 'catalog_webapp': True}}
+
+    async def order_facts(self, uid, reference):
+        return {'orders_status': 'not_found', 'ownership_scope': 'authenticated_user', 'orders': []}
+
+
+class StressModel:
+    """Reads glossary, tariffs, state and the turn note. Does not invent a price."""
+
+    def __init__(self):
+        self.turn = {}
+        self.transcript = ''
+
+    async def transcribe(self, data):
+        return self.transcript or 'сколько стоит суно про'
+
+    async def understand_turn(self, context, images=None):
+        turn = self.turn or {}
+        glossary = context.get('glossary') or {}
+        tariffs = context.get('tariffs') or []
+        state = context.get('dialog_state') or {}
+        burst = context.get('burst') or ''
+        service_id = turn.get('service') or match_service(burst, glossary) or ''
+        if not service_id and turn.get('use_state'):
+            service_id = state.get('service_id') or ''
+        plan = None
+        if turn.get('cheaper') or 'подешевл' in _fold(burst):
+            shown = state.get('shown') or [row for row in tariffs if row.get('service_id') == service_id]
+            plan = min(shown, key=lambda row: row['price']) if shown else None
+            service_id = plan['service_id'] if plan else service_id
+        elif turn.get('use_state') and state.get('service_id') and not match_service(burst, glossary):
+            service_id = state.get('service_id')
+            shown = state.get('shown') or []
+            named = match_plan(burst, tariffs, service_id)
+            plan = named or (shown[0] if len(shown) == 1 else None)
+        else:
+            plan = match_plan(burst, tariffs, service_id) if service_id else None
+        topic = turn.get('owner_topic') or 'none'
+        if turn.get('reply'):
+            reply = turn['reply']
+        elif topic != 'none':
+            written = usable_answer(topic, context.get('faq'))
+            reply = written or turn.get('naive') or 'Сейчас скажу условия, которых у меня нет.'
+        elif images:
+            reply = 'Вижу изображение. Напишите, пожалуйста, что на нём не получается, без паролей и данных карты.'
+        elif 'годов' in _fold(burst) and service_id:
+            reply = 'Годового тарифа в текущем снимке каталога нет.'
+        elif plan:
+            reply = '%s %s: %s ₽.' % (plan['service'], plan['plan'], plan['price'])
+        elif service_id:
+            reply = 'Цены этого названия нет в текущем снимке каталога.'
+        else:
+            reply = 'Уточните, пожалуйста, о каком сервисе речь.'
+        questions = turn.get('questions') or [burst or 'вопрос']
+        return {'intent': turn.get('intent') or ('price' if plan else 'other'),
+                'service_id': service_id or '',
+                'tariff_id': plan['id'] if plan else '',
+                'confidence': 'high', 'clarify_ids': [],
+                'topic_changed': bool(turn.get('topic_changed') or (
+                    service_id and state.get('service_id') and service_id != state.get('service_id'))),
+                'known_facts': [], 'missing_facts': [], 'questions': questions,
+                'vpn_advice': bool(turn.get('vpn')),
+                'conflict': turn.get('conflict') or 'none',
+                'conflict_reason': turn.get('conflict_reason') or '',
+                'owner_alignment': turn.get('alignment') or 'follows',
+                'owner_topic': topic,
+                'risk': 'instruct', 'order_number': turn.get('order_number') or '',
+                'receipt_amount_unverified': '',
+                'reply': reply, 'summary': 'Проверка диалога ' + str(turn.get('id') or '')}
+
+
+def _jpeg():
+    buffer = io.BytesIO()
+    Image.new('RGB', (12, 12), (250, 250, 250)).save(buffer, 'JPEG')
+    return buffer.getvalue()
+
+
+def build_cases(catalog):
+    by_service = {}
+    for row in catalog:
+        by_service.setdefault(row['service_key'], []).append(row)
+    glossary = load_glossary()['services']
+    cases = []
+
+    def add(case_id, turns):
+        cases.append({'id': case_id, 'turns': turns})
+
+    for row in glossary:
+        key = row['id']
+        alias = next((item for item in row['aliases'] if _fold(item) != _fold(row['name'])), row['aliases'][0])
+        plans = by_service.get(key) or []
+        if plans:
+            plan = sorted(plans, key=lambda item: item['catalog_price_rub'])[0]
+            add('price-' + key, [{'role': 'client', 'text': 'скока стоит ' + alias + ' ' + plan['plan'],
+                                  'expect': {'hold': False, 'service': key, 'price': plan['catalog_price_rub'],
+                                             'forbid': ['гарант', 'вернём', 'этап:']}}])
+            add('yearly-' + key, [
+                {'role': 'client', 'text': 'хочу ' + alias, 'expect': {'hold': False, 'service': key}},
+                {'role': 'client', 'text': 'а годовая есть?', 'use_state': True,
+                 'expect': {'hold': False, 'service': key, 'forbid_price': not any('год' in item['plan'].casefold() for item in plans)}},
+            ])
+        else:
+            add('name-' + key, [{'role': 'client', 'text': 'как оформить ' + alias,
+                                 'expect': {'hold': False, 'forbid_price': True,
+                                            'forbid': ['гарант', 'вернём', 'этап:']}}])
+
+    add('follow-yes', [
+        {'role': 'client', 'text': 'сколько миджорни basic',
+         'expect': {'hold': False, 'service': 'midjourney', 'price': 1000}},
+        {'role': 'client', 'text': 'да', 'use_state': True,
+         'expect': {'hold': False, 'service': 'midjourney', 'price': 1000, 'forbid': ['5500']}},
+    ])
+    add('follow-how-much', [
+        {'role': 'client', 'text': 'хочу ловабл',
+         'expect': {'hold': False, 'service': 'lovable', 'price': 2300}},
+        {'role': 'client', 'text': 'а сколько?', 'use_state': True,
+         'expect': {'hold': False, 'service': 'lovable', 'price': 2300}},
+    ])
+    add('cheaper', [
+        {'role': 'client', 'text': 'какие цены миджа', 'intent': 'list_options',
+         'expect': {'hold': False, 'service': 'midjourney'}},
+        {'role': 'client', 'text': 'тот что подешевле', 'cheaper': True,
+         'expect': {'hold': False, 'service': 'midjourney', 'price': 1000, 'forbid': ['5500', '3000']}},
+    ])
+    add('switch-topic', [
+        {'role': 'client', 'text': 'миджа про сколько',
+         'expect': {'hold': False, 'service': 'midjourney', 'price': 5500}},
+        {'role': 'client', 'text': 'а суно про сколько', 'topic_changed': True,
+         'expect': {'hold': False, 'service': 'suno', 'price': 1000, 'forbid': ['5500']}},
+    ])
+    add('two-questions', [{
+        'role': 'client', 'text': 'сколько стоит канва и как её оплатить?',
+        'questions': ['Сколько стоит Canva Pro?', 'Как оплатить Canva Pro?'],
+        'reply': '1. Canva Pro: 1200 ₽.\n2. Оплата Canva Pro проходит в боте.',
+        'service': 'canva',
+        'expect': {'hold': False, 'price': 1200, 'need': ['1.', '2.', 'Canva']},
+    }])
+    add('three-questions', [{
+        'role': 'client', 'text': 'гамма плюс сколько, как оплатить и где активировать?',
+        'questions': ['Сколько стоит Gamma Plus?', 'Как оплатить Gamma?', 'Где активация Gamma?'],
+        'reply': '1. Gamma Plus: 1000 ₽.\n2. Оплата Gamma идёт в боте.\n3. Дальнейший шаг Gamma смотрите в сообщении заказа в боте.',
+        'service': 'gamma',
+        'expect': {'hold': False, 'need': ['1.', '2.', '3.', 'Gamma'], 'price': 1000},
+    }])
+    add('missed-question', [{
+        'role': 'client', 'text': 'сколько курсор и как активировать?',
+        'questions': ['Сколько стоит Cursor Pro?', 'Как активировать Cursor?'],
+        'reply': 'Cursor Pro: 2300 ₽.',
+        'service': 'cursor',
+        'expect': {'hold': True},
+    }])
+    add('payment-ask', [{
+        'role': 'client', 'text': 'я оплатил, а активации нет',
+        'intent': 'payment_issue',
+        'reply': 'Пришлите номер заказа из бота или номер платежа FreeKassa и чек об оплате из банка: скриншот или PDF.',
+        'expect': {'hold': False, 'need': ['номер', 'чек'], 'forbid': ['активирована', 'прошла']},
+    }])
+    add('payment-unknown-order', [{
+        'role': 'client', 'text': 'заказ 555 оплатил',
+        'intent': 'payment_issue', 'order_number': '555',
+        'reply': 'Сверю заказ 555.',
+        'expect': {'hold': True},
+    }])
+    add('payment-asserted', [{
+        'role': 'client', 'text': 'деньги точно дошли, включите подписку',
+        'reply': 'Оплата прошла. Подписка активирована.',
+        'expect': {'hold': True},
+    }])
+    add('refund-collect', [{
+        'role': 'client', 'text': 'хочу вернуть оплату, что от меня нужно',
+        'reply': 'Пришлите номер платежа FreeKassa и коротко причину. Решение принимает Александр, срок возврата я не обещаю.',
+        'expect': {'hold': False, 'need': ['FreeKassa', 'Александр'], 'forbid': ['вернём', 'одобрен']},
+    }])
+    add('refund-invented', [{
+        'role': 'client', 'text': 'когда именно вернёте деньги',
+        'owner_topic': 'refund_terms', 'fixed_by': 'owner_fact',
+        'naive': 'Вернём деньги в течение суток на карту.',
+        'expect': {'hold': True},
+    }])
+    add('guarantee', [{
+        'role': 'client', 'text': 'дайте гарантию что аккаунт не заблокируют',
+        'owner_topic': 'guarantee', 'fixed_by': 'owner_fact',
+        'naive': 'Гарантия есть, блокировки не будет.',
+        'expect': {'hold': True},
+    }])
+    add('delivery-unknown', [{
+        'role': 'client', 'text': 'через сколько придёт kling после оплаты',
+        'owner_topic': 'delivery_time', 'fixed_by': 'owner_fact',
+        'naive': 'Kling придёт за 10 минут.',
+        'expect': {'hold': True},
+    }])
+    add('chatgpt-activation', [{
+        'role': 'client', 'text': 'как активировать чат гпт плюс',
+        'reply': 'Для обычной подписки ChatGPT токен сессии вставляется в окно активации в боте, не в эту переписку. Обычно это 2–5 минут, вручную до получаса. Это не гарантия.',
+        'service': 'chatgpt',
+        'expect': {'hold': False, 'need': ['окно активации в боте', 'не в эту переписку'],
+                   'forbid': ['гарантир'], 'context': 'окно активации в боте'},
+    }])
+    add('ban', [{
+        'role': 'client', 'text': 'если аккаунт забанят, вы дадите новый?',
+        'owner_topic': 'account_ban', 'fixed_by': 'owner_fact',
+        'naive': 'Если аккаунт забанят, мы сразу заменим его на новый.',
+        'expect': {'hold': True},
+    }])
+    add('off-catalog', [{
+        'role': 'client', 'text': 'можно купить нетфликс и сколько он стоит',
+        'owner_topic': 'off_catalog', 'fixed_by': 'owner_fact',
+        'naive': 'Netflix оформим за 1500 ₽.',
+        'expect': {'hold': True},
+    }])
+    add('claude-region', [{
+        'role': 'client', 'text': 'клод работает в рф?',
+        'vpn': True,
+        'reply': 'Россия не входит в официальный перечень доступа Claude. Для доступа лучше включить VPN и по возможности всегда использовать одну и ту же локацию. Это не гарантия.',
+        'service': 'claude',
+        'expect': {'hold': False, 'need': ['VPN', 'локац'], 'forbid': ['гарантия есть'],
+                   'context': 'официальный перечень доступа Claude'},
+    }])
+    add('region-invented', [{
+        'role': 'client', 'text': 'в любой стране точно откроется?',
+        'owner_topic': 'region_policy', 'fixed_by': 'owner_fact',
+        'naive': 'Сервис официально открыт в любой стране, ограничений нет.',
+        'expect': {'hold': True},
+    }])
+    add('angry', [{
+        'role': 'client', 'text': 'верните всё немедленно, я буду жаловаться',
+        'conflict': 'high', 'conflict_reason': 'Клиент требует немедленный возврат и жалуется.',
+        'reply': 'Сейчас разберусь и всё верну.',
+        'expect': {'hold': True, 'owner_alert': True},
+    }])
+    add('annoyed-ok', [{
+        'role': 'client', 'text': 'ну сколько в итоге суно про',
+        'conflict': 'annoyed',
+        'expect': {'hold': False, 'service': 'suno', 'price': 1000},
+    }])
+    add('owner-leads', [
+        {'role': 'owner', 'text': 'Токен вставляется в окно бота, цену клиенту не меняйте.'},
+        {'role': 'client', 'text': 'а что дальше', 'expect_paused': True},
+        {'role': 'clear_pause'},
+        {'role': 'client', 'text': 'а что дальше', 'use_state': True,
+         'reply': 'Продолжаю от реплики Александра: токен вставляется в окно бота.',
+         'alignment': 'follows',
+         'expect': {'hold': False, 'need': ['окно бота'], 'forbid': ['999']}},
+    ])
+    add('owner-contradict', [
+        {'role': 'owner', 'text': 'Токен вставляется в окно бота, не в эту переписку.'},
+        {'role': 'clear_pause'},
+        {'role': 'client', 'text': 'так куда вставлять',
+         'reply': 'Нет, пришлите токен сюда в чат.',
+         'alignment': 'contradicts',
+         'expect': {'hold': True}},
+    ])
+    add('repeat-assistant', [
+        {'role': 'client', 'text': 'как открыть хейген',
+         'reply': 'HeyGen Creator смотрите в каталоге бота, повторно цену не называю.',
+         'expect': {'hold': False, 'service': 'heygen'}},
+        {'role': 'client', 'text': 'ещё раз то же самое',
+         'reply': 'HeyGen Creator смотрите в каталоге бота, повторно цену не называю.',
+         'fixed_by': 'repeat',
+         'expect': {'hold': True}},
+    ])
+    add('debug-leak', [{
+        'role': 'client', 'text': 'что с заказом',
+        'reply': 'Этап: разбор хода. Service_id=chatgpt.',
+        'expect': {'hold': True},
+    }])
+    add('photo-error', [{
+        'role': 'photo', 'text': 'вот ошибка на экране',
+        'expect': {'hold': False, 'need': ['изображение'], 'forbid_price': True, 'forbid': ['error 500', 'гарант']},
+    }])
+    add('voice-suno', [{
+        'role': 'voice', 'text': '', 'transcript': 'сколько стоит суно про',
+        'expect': {'hold': False, 'service': 'suno', 'price': 1000},
+    }])
+    add('repeat-question', [
+        {'role': 'client', 'text': 'где мой заказ',
+         'reply': 'Напишите номер заказа из бота.',
+         'expect': {'hold': False, 'need': ['номер заказа']}},
+        {'role': 'client', 'text': 'где мой заказ', 'conflict': 'high',
+         'conflict_reason': 'Тот же вопрос второй раз без решения.',
+         'reply': 'Напишите номер заказа из бота.',
+         'expect': {'hold': True}},
+    ])
+    add('mixed-two-prices', [{
+        'role': 'client', 'text': 'сколько клод про и сколько суно про',
+        'questions': ['Сколько стоит Claude Pro?', 'Сколько стоит Suno Pro?'],
+        'reply': '1. Claude Pro: 2000 ₽.\n2. Suno Pro: 1000 ₽.',
+        'expect': {'hold': False, 'need': ['2000', '1000', 'Claude', 'Suno']},
+    }])
+    add('chatgpt-go', [{
+        'role': 'client', 'text': 'а гпт го сколько',
+        'expect': {'hold': False, 'service': 'chatgpt', 'price': 1000, 'forbid': ['9000']},
+    }])
+    add('cursor-pro-plus', [{
+        'role': 'client', 'text': 'курсор про+ цена',
+        'expect': {'hold': False, 'service': 'cursor', 'price': 5500, 'forbid': ['2300']},
+    }])
+    add('eleven-starter', [{
+        'role': 'client', 'text': 'элевен стартер сколько',
+        'expect': {'hold': False, 'service': 'elevenlabs', 'price': 600},
+    }])
+    add('kling-standard-then-pro', [
+        {'role': 'client', 'text': 'клинг стандарт цена',
+         'expect': {'hold': False, 'service': 'kling', 'price': 900}},
+        {'role': 'client', 'text': 'а про?', 'use_state': True,
+         'expect': {'hold': False, 'service': 'kling', 'price': 2700, 'forbid': ['900']}},
+    ])
+    add('runway-pro', [{
+        'role': 'client', 'text': 'ранвей про сколько стоит',
+        'expect': {'hold': False, 'service': 'runway', 'price': 3700},
+    }])
+    add('thanks', [{
+        'role': 'client', 'text': 'ок спасибо',
+        'reply': 'Пожалуйста. Если появится вопрос по каталогу, напишите.',
+        'expect': {'hold': False, 'forbid_price': True},
+    }])
+    add('perplexity-pro', [{
+        'role': 'client', 'text': 'перплекс про сколько',
+        'expect': {'hold': False, 'service': 'perplexity', 'price': 2000},
+    }])
+    add('coins-unknown', [{
+        'role': 'client', 'text': 'сколько процентов дают монетки',
+        'reply': 'Процента монеток в этом снимке каталога нет. Его подтверждает Александр.',
+        'expect': {'hold': False, 'forbid_price': True, 'forbid': ['%', '10', '20']},
+    }])
+    return cases
+
+
+def _check(answer, turn, context):
+    expect = turn.get('expect') or {}
+    errors = []
+    if 'hold' in expect and bool(answer.get('handoff')) != bool(expect['hold']):
+        errors.append('hold got %s' % answer.get('handoff'))
+    turn_info = (answer.get('evidence') or {}).get('turn_understanding') or {}
+    if 'service' in expect and turn_info.get('service_id') != expect['service']:
+        errors.append('service got %s' % turn_info.get('service_id'))
+    reply = str(answer.get('reply') or '')
+    if expect.get('price') is not None and str(expect['price']) not in reply:
+        errors.append('price')
+    if expect.get('forbid_price') and states_price(reply):
+        errors.append('price invented')
+    for word in expect.get('need') or []:
+        if word.casefold() not in reply.casefold():
+            errors.append('need ' + word)
+    for word in expect.get('forbid') or []:
+        if word.casefold() in reply.casefold():
+            errors.append('forbid ' + word)
+    if not answer.get('handoff') and re.search(r'этап\s*:|service_id\s*=', reply, re.I):
+        errors.append('debug')
+    needle = expect.get('context')
+    if needle and needle.casefold() not in '\n'.join(context.get('documented_facts') or []).casefold():
+        errors.append('context fact missing')
+    return errors
+
+
+def _old_policy_holds(understanding, context):
+    """What the previous checker did: no owner-file hold and no repeat hold."""
+    stripped = dict(understanding, owner_topic='none')
+    quiet = dict(context, history=[item for item in context.get('history') or [] if item.get('role') != 'assistant'])
+    answer = package(stripped, quiet)
+    answer = enforce_turn_policy(answer, stripped, quiet, {'status': 'fresh'})
+    return bool(answer.get('handoff'))
+
+
+def run_suite():
+    catalog = shop_catalog_from_config()
+    cases = build_cases(catalog)
+    covered = set()
+    for case in cases:
+        for turn in case['turns']:
+            covered.add(case['id'].split('-', 1)[-1] if case['id'].startswith(('price-', 'name-')) else '')
+    shop_keys = {row['service_key'] for row in catalog}
+    named = {case['id'].split('-', 1)[-1] for case in cases if case['id'].startswith(('price-', 'name-'))}
+    glossary_ids = {row['id'] for row in load_glossary()['services']}
+    picture = _jpeg()
+    voice = b'OggS' + b'\x00' * 24
+    file = tempfile.NamedTemporaryFile(suffix='.sqlite')
+    store = Store(file.name, batch_seconds=0)
+    store.put('mode', 'auto')
+    tg = _Telegram({'shot-1': picture, 'voice-1': voice})
+    model = StressModel()
+    service = Service(store, tg, model, _Shop(catalog), owner=1, allowed={1, 50}, daily_limit=5000)
+    checked = 0
+    failed = []
+    before_fail = 0
+    before_total = 0
+    try:
+        for index, case in enumerate(cases):
+            conn = 'c%d' % index
+            store.connection(conn, True, True)
+            mid = 0
+            last_reply = ''
+            for turn in case['turns']:
+                role = turn['role']
+                if role == 'clear_pause':
+                    cid = store.db.execute('SELECT id FROM chats WHERE connection=?', (conn,)).fetchone()[0]
+                    store.db.execute('UPDATE chats SET manual_pause_until=0 WHERE id=?', (cid,))
+                    continue
+                if role == 'echo':
+                    mid += 1
+                    store.ingest(conn, 50, mid, 'assistant', last_reply, {}, time.time())
+                    continue
+                mid += 1
+                now = time.time()
+                media = {}
+                text = turn.get('text') or ''
+                if role == 'photo':
+                    media = {'kind': 'photo', 'file_id': 'shot-1', 'file_size': len(picture)}
+                    role = 'client'
+                elif role == 'voice':
+                    media = {'kind': 'voice', 'file_id': 'voice-1', 'file_size': len(voice), 'duration': 3}
+                    model.transcript = turn.get('transcript') or ''
+                    role = 'client'
+                cid = store.ingest(conn, 50, mid, role, text, media, now)
+                store.db.execute("UPDATE chats SET mode='auto' WHERE id=?", (cid,))
+                if role != 'client':
+                    continue
+                store.prepare_now(cid, now)
+                job = store.claim(now + 1)
+                if turn.get('expect_paused'):
+                    if job is not None:
+                        failed.append({'id': case['id'], 'errors': ['expected pause']})
+                    continue
+                if job is None:
+                    failed.append({'id': case['id'], 'errors': ['no job']})
+                    continue
+                model.turn = dict(turn, id=case['id'])
+                answer = asyncio.run(service.generate(job))
+                store.db.execute("UPDATE messages SET state='done' WHERE chat=? AND mid=?", (cid, job['mid']))
+                last_reply = answer.get('reply') or ''
+                context = service._last_turn_context or {}
+                if turn.get('expect'):
+                    checked += 1
+                    before_total += 1
+                    errors = _check(answer, turn, context)
+                    understanding = {'intent': 'other', 'service_id': turn.get('service') or '',
+                                     'tariff_id': '', 'confidence': 'high',
+                                     'reply': turn.get('naive') or turn.get('reply') or last_reply,
+                                     'summary': 'x', 'questions': turn.get('questions') or ['q'],
+                                     'vpn_advice': False, 'owner_topic': 'none',
+                                     'conflict': turn.get('conflict') or 'none',
+                                     'owner_alignment': turn.get('alignment') or 'follows'}
+                    old_hold = _old_policy_holds(understanding, context)
+                    expect_hold = bool(turn['expect'].get('hold'))
+                    if turn.get('fixed_by') and old_hold != expect_hold:
+                        before_fail += 1
+                    elif errors and not turn.get('fixed_by'):
+                        before_fail += 1
+                    if errors:
+                        failed.append({'id': case['id'], 'errors': errors, 'reply': last_reply[:180]})
+                mid += 1
+                spoken = last_reply if case['id'] == 'repeat-assistant' and not turn.get('fixed_by') else 'ок'
+                store.ingest(conn, 50, mid, 'assistant', spoken, {}, now)
+    finally:
+        file.close()
+    return {'cases': len(cases), 'checked': checked, 'failed': failed,
+            'passed': checked - len(failed), 'before_failed_turns': before_fail,
+            'before_checked': before_total, 'shop_keys': sorted(shop_keys),
+            'named': sorted(named), 'glossary_ids': sorted(glossary_ids)}

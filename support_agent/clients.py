@@ -194,6 +194,7 @@ class OpenAI:
                       'conflict': {'type': 'string', 'enum': ['none', 'annoyed', 'high']},
                       'conflict_reason': {'type': 'string'},
                       'owner_alignment': {'type': 'string', 'enum': ['follows', 'contradicts', 'repeats', 'reasks']},
+                      'owner_topic': {'type': 'string'},
                       'risk': {'type': 'string', 'enum': ['collect', 'instruct', 'catalog_price', 'outcome',
                                                          'promise', 'unverified']},
                       'order_number': {'type': 'string'},
@@ -202,7 +203,7 @@ class OpenAI:
                       'summary': {'type': 'string', 'maxLength': 700}},
                   'required': ['intent', 'service_id', 'tariff_id', 'confidence', 'clarify_ids',
                                'topic_changed', 'known_facts', 'missing_facts', 'questions', 'vpn_advice',
-                               'conflict', 'conflict_reason', 'owner_alignment',
+                               'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic',
                                'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}
         content = [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]
         for picture in images or []:
@@ -218,6 +219,11 @@ class OpenAI:
                             'detail': 'high'})
         if images and len(images) > 3:
             raise ValueError('Image batch exceeds supported limits')
+        from .faq import load_faq
+        try:
+            schema['properties']['owner_topic']['enum'] = ['none'] + [row['id'] for row in load_faq()['topics']]
+        except Exception:
+            schema['properties']['owner_topic']['enum'] = ['none']
         result = await self.request('responses', json={
             'model': self.model, 'store': False, 'instructions': UNDERSTANDING_INSTRUCTIONS,
             'input': [{'role': 'user', 'content': content}],

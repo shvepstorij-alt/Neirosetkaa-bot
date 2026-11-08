@@ -1,10 +1,11 @@
-"""Optional live check of the owner dialogs. Does not change the daily limit by itself.
+"""Offline stress check, plus an optional live model pass.
 
 Run from the repository root:
 
-    OPENAI_API_KEY=... python -m support_agent.eval_dialogs
+    python -m support_agent.eval_dialogs
 
-Without a key the command lists the dialogs and exits. It never prints the key.
+The offline pass does not need a key and checks outcomes. A live key is optional
+and is never printed.
 """
 import asyncio
 import os
@@ -29,12 +30,20 @@ FIXTURES = (
 
 
 def main():
+    from support_agent.stress_suite import run_suite
+    report = run_suite()
+    print('Офлайн-диалоги: %s, проверено реплик: %s, прошли: %s, не прошли: %s.' % (
+        report['cases'], report['checked'], report['passed'], len(report['failed'])))
+    print('До правки по темам владельца и повторам не проходили реплик: %s.' % report['before_failed_turns'])
+    for item in report['failed']:
+        print('-', item['id'], ', '.join(item['errors']))
+    if report['failed']:
+        return 1
     key = os.environ.get('OPENAI_API_KEY', '').strip()
     if not key:
-        print('Ключ API не задан. Диалоги для проверки:')
+        print('Ключ API не задан, живой прогон модели пропущен. Примеры для него:')
         for line in FIXTURES:
             print('-', line.replace('\n', ' / '))
-        print('Запуск: OPENAI_API_KEY=... python -m support_agent.eval_dialogs')
         return 0
     try:
         import aiohttp
