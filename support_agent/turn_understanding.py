@@ -37,6 +37,13 @@ UNDERSTANDING_INSTRUCTIONS = (
     'поставь vpn_advice=true и напиши, что нужен VPN и лучше всегда одна и та же локация. '
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
     'Голос уже расшифрован в тексте сообщения. '
+    'conflict: none — спокойный тон, annoyed — раздражён без угрозы, '
+    'high — злится, угрожает возвратом, чарджбеком или жалобой, либо тот же вопрос уже повторяется второй раз и дольше без решения. '
+    'conflict_reason — короткая причина для владельца, пусто если conflict не high. '
+    'Сообщения history с authority=owner — слова Александра. Они главнее черновика: '
+    'не противоречь им, не повторяй их дословно и не спрашивай заново то, что он уже спросил. '
+    'Продолжай с его последней реплики. owner_alignment: follows, contradicts, repeats или reasks. '
+    'Если таких сообщений нет, owner_alignment=follows. '
     'Не утверждай, что оплата прошла, подписка активирована или возврат сделан.'
 )
 _RUBLE = re.compile(r'(\d{2,7})\s*(?:₽|руб(?:лей|ля|ль)?)', re.I)
@@ -51,7 +58,9 @@ def burst_and_window(db, chat, limit=10):
         '''SELECT mid, role, text FROM messages
            WHERE chat=? AND role IN ('client','assistant','owner')
            ORDER BY mid DESC LIMIT ?''', (chat, limit)).fetchall()
-    window = [{'role': row['role'], 'text': row['text'] or ''} for row in reversed(rows)]
+    window = [{'role': row['role'],
+               'authority': 'owner' if row['role'] == 'owner' else 'untrusted',
+               'text': row['text'] or ''} for row in reversed(rows)]
     burst = []
     for message in reversed(window):
         if message['role'] in ('assistant', 'owner') and burst:
@@ -126,6 +135,7 @@ def build_context(db, chat, facts):
                              'shown': state.get('offered') or []},
             'tariffs': tariffs,
             'nominals': nominal_index(facts),
+            'owner_statements': [item['text'] for item in window if item.get('authority') == 'owner' and item.get('text')],
             'hints': hint_services(burst, catalog)}
 
 
@@ -169,7 +179,28 @@ def validate(understanding, context):
             'missing_facts': [str(item) for item in understanding.get('missing_facts') or [] if isinstance(item, str)][:12],
             'questions': _texts(understanding.get('questions'), 6),
             'vpn_advice': bool((understanding or {}).get('vpn_advice')),
+            'conflict': _conflict(understanding),
+            'conflict_reason': str((understanding or {}).get('conflict_reason') or '').strip()[:300],
+            'owner_alignment': _alignment(understanding, context),
             'allowed_prices': _allowed_prices(tariffs, context.get('nominals') or [], service_id, tariff_id)}
+
+
+def _conflict(understanding):
+    value = str((understanding or {}).get('conflict') or 'none')
+    return value if value in ('none', 'annoyed', 'high') else 'none'
+
+
+def _alignment(understanding, context):
+    owners = [item for item in (context or {}).get('history') or [] if item.get('authority') == 'owner' and item.get('text')]
+    if not owners:
+        return 'follows'
+    value = str((understanding or {}).get('owner_alignment') or 'follows')
+    return value if value in ('follows', 'contradicts', 'repeats', 'reasks') else 'follows'
+
+
+def states_price(reply):
+    """The draft names a ruble amount. This does not look at the client's words."""
+    return bool(_RUBLE.search(str(reply or '')))
 
 
 def _texts(values, limit):
@@ -347,7 +378,37 @@ def package(understanding, context, db=None, chat=None):
                                                 'topic_changed': validated['topic_changed'],
                                                 'known_facts': validated['known_facts'],
                                                 'missing_facts': validated['missing_facts'],
-                                                'questions': validated['questions'],
-                                                'vpn_advice': validated['vpn_advice']},
+                         'questions': validated['questions'],
+                         'vpn_advice': validated['vpn_advice'],
+                         'conflict': validated['conflict'],
+                         'owner_alignment': validated['owner_alignment']},
                          'diagnostic': verdict['reason'],
                          'handoff_reason': '' if verdict['send'] else verdict['reason']}}
+
+
+def enforce_turn_policy(answer, understanding, context, freshness=None):
+    """Hold a draft the model marked as conflict, a clash with the owner, or a stale price."""
+    if not isinstance(answer, dict):
+        return answer
+    validated = validate(understanding or {}, context or {})
+    holds = []
+    if validated['conflict'] == 'high':
+        holds.append('Модель отметила высокий конфликт. Клиенту оставлена фраза ожидания.')
+    if validated['owner_alignment'] != 'follows':
+        holds.append('Черновик расходится с репликой владельца в этом чате.')
+    if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
+        holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')
+    evidence = dict(answer.get('evidence') or {})
+    turn = dict(evidence.get('turn_understanding') or {})
+    turn.update(conflict=validated['conflict'], owner_alignment=validated['owner_alignment'])
+    evidence['turn_understanding'] = turn
+    evidence['catalog_freshness'] = dict(freshness or {})
+    if holds:
+        evidence.update(status='owner_policy', conflict_hold=validated['conflict'] == 'high',
+                        owner_alignment_hold=validated['owner_alignment'] != 'follows',
+                        stale_price_hold=(freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')),
+                        diagnostic=' '.join(holds), handoff_reason=' '.join(holds))
+        answer = dict(answer, handoff=True, evidence=evidence)
+        return answer
+    answer = dict(answer, evidence=evidence)
+    return answer
