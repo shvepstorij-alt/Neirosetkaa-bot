@@ -91,6 +91,8 @@ def match_plan(text, tariffs, service_id):
         wanted = 'max 20'
     elif 'max 5' in folded or ('5' in folded and 'макс' in folded):
         wanted = 'max 5'
+    elif 'pro 5' in folded or 'про 5' in folded or '5×' in folded or '5x' in folded:
+        wanted = 'pro 5'
     elif 'плюс' in folded or re.search(r'(?<![a-z])plus(?![a-z])', folded):
         wanted = 'plus'
     elif 'basic' in folded or 'бейсик' in folded or 'базов' in folded:
@@ -136,10 +138,12 @@ class _Telegram(NoTelegram):
 class _Shop:
     def __init__(self, catalog):
         self.catalog = catalog
+        self.extra = []
+        self.appstore = {'status': 'not_connected', 'regions': []}
 
     async def facts(self, uid):
-        return {'catalog': self.catalog, 'catalog_status': 'available',
-                'appstore': {'status': 'not_connected', 'regions': []},
+        return {'catalog': list(self.catalog) + list(self.extra or []), 'catalog_status': 'available',
+                'appstore': self.appstore,
                 'bot_navigation': {'status': 'available', 'username': 'neirosetkaa_bot', 'catalog_webapp': True}}
 
     async def order_facts(self, uid, reference):
@@ -214,6 +218,14 @@ class StressModel:
                     service_id and state.get('service_id') and service_id != state.get('service_id'))),
                 'known_facts': [], 'missing_facts': [], 'questions': questions,
                 'vpn_advice': bool(turn.get('vpn')),
+                'payment_asked': bool(turn.get('payment_asked')),
+                'fulfillment_choice': turn.get('fulfillment_choice') or '',
+                'setup_email': str((turn.get('setup') or {}).get('setup_email') or ''),
+                'setup_password': str((turn.get('setup') or {}).get('setup_password') or ''),
+                'setup_recovery': str((turn.get('setup') or {}).get('setup_recovery') or ''),
+                'reask_advisories': list(turn.get('reask') or []),
+                'matched_tariff_ids': list(turn.get('matched') or []),
+                'region': turn.get('region') or '',
                 'conflict': turn.get('conflict') or 'none',
                 'conflict_reason': turn.get('conflict_reason') or '',
                 'owner_alignment': turn.get('alignment') or 'follows',
@@ -364,7 +376,7 @@ def build_cases(catalog):
     add('delivery-time', [{
         'role': 'client', 'text': 'когда я её получу',
         'owner_topic': 'delivery_time',
-        'expect': {'hold': False, 'need': ['30', '60']},
+        'expect': {'hold': False, 'need': ['5', '30', '2', 'автоактивац']},
     }])
     add('delivery-invented', [{
         'role': 'client', 'text': 'через сколько придёт kling после оплаты',
@@ -506,6 +518,184 @@ def build_cases(catalog):
         'reply': 'Процента монеток в этом снимке каталога нет. Его подтверждает Александр.',
         'expect': {'hold': False, 'forbid_price': True, 'forbid': ['%', '10', '20']},
     }])
+    add('casual-suno-timing', [{
+        'role': 'client', 'text': 'суно про сколько и когда будет',
+        'owner_topic': 'delivery_time', 'beyond': True,
+        'questions': ['Сколько стоит Suno Pro?', 'Когда будет Suno?'],
+        'reply': 'Suno Pro: 1000 ₽.\n\nАктивация занимает 5–30 минут. У сервисов с автоактивацией — 2–5 минут.',
+        'expect': {'hold': False, 'service': 'suno', 'price': 1000, 'casual': True,
+                   'need': ['1000', '5', '30', '2']},
+    }])
+    add('vpn-once', [
+        {'role': 'client', 'text': 'клод работает в рф?', 'vpn': True, 'service': 'claude',
+         'reply': 'Россия не входит в официальный перечень доступа Claude.',
+         'expect': {'hold': False, 'need': ['VPN', 'локац'], 'service': 'claude'}},
+        {'role': 'client', 'text': 'а тариф дальше', 'vpn': True, 'use_state': True,
+         'reply': 'Дальше подскажу тариф.\n\nДля доступа лучше включить VPN и одну и ту же локацию.',
+         'expect': {'hold': False, 'need': ['тариф'], 'forbid': ['VPN', 'локац'], 'casual': True}},
+        {'role': 'client', 'text': 'а про vpn ещё раз', 'vpn': True, 'reask': ['vpn_location'],
+         'reply': 'Да. Для доступа лучше включить VPN и всегда одну и ту же локацию.',
+         'expect': {'hold': False, 'need': ['VPN', 'локац']}},
+    ])
+    add('vpn-owner-said', [
+        {'role': 'owner', 'text': 'Клиенту уже сказал: включите VPN и держите одну локацию.'},
+        {'role': 'clear_pause'},
+        {'role': 'client', 'text': 'сколько клод про', 'vpn': True,
+         'expect': {'hold': False, 'service': 'claude', 'price': 2000, 'forbid': ['VPN', 'локац']}},
+    ])
+    add('icloud-region-followup', [
+        {'role': 'client', 'text': 'Хочу пополнить айклауд на регион США',
+         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': True,
+                    'need': ['5 USD', '450', 'США'], 'forbid': ['Росси', '640']}},
+        {'role': 'client', 'text': 'На 30$ есть?', 'use_state': True, 'service': 'chatgpt',
+         'reply': '1. Да, есть пополнение ChatGPT на 30$.\n2. Стоимость 3090 ₽.',
+         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': True,
+                    'need': ['нет', '5 USD'], 'forbid': ['3090', 'ChatGPT']}},
+        {'role': 'client', 'text': 'А Айклауд?', 'use_state': True,
+         'expect': {'hold': False, 'service': 'appstore', 'region': 'US', 'casual': True,
+                    'need': ['5 USD'], 'forbid': ['3090']}},
+    ])
+    add('plus-two-options', [
+        {'role': 'client', 'text': 'Хочу чат гпт',
+         'expect': {'hold': False, 'service': 'chatgpt'}},
+        {'role': 'client', 'text': 'Тариф плюс', 'use_state': True,
+         'reply': '1. ChatGPT Plus: 2000 ₽.\n2. Новый аккаунт с подпиской Plus: 2090 ₽.\n3. ChatGPT Go: 1000 ₽.',
+         'expect': {'hold': False, 'service': 'chatgpt', 'casual': True,
+                    'need': ['Plus', 'Новый аккаунт'], 'forbid_plans': ['Go'],
+                    'forbid': ['1000', '1.']}},
+    ])
+    add('pay-chatgpt-plus', [
+        {'role': 'client', 'text': 'Хочу чат гпт плюс',
+         'expect': {'hold': False, 'service': 'chatgpt', 'price': 2000, 'casual': True}},
+        {'role': 'client', 'text': 'как оплатить?', 'use_state': True, 'payment_asked': True,
+         'reply': 'Для оплаты тарифа ChatGPT Plus используйте токен сессии в окне активации бота.',
+         'expect': {'hold': False, 'service': 'chatgpt',
+                    'need': ['СБП', 'Картой', 'Активировать подписку', 'После оплаты', '2-5'],
+                    'forbid': ['используйте токен сессии в окне активации', '5-30', '30-60',
+                               'Я оплатил']}},
+    ])
+    add('pay-link', [{
+        'role': 'client', 'text': 'как оплатить клинг',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'kling',
+                   'need': ['ссылк', 'не плат', 'не нужны', '5-30'],
+                   'forbid': ['Я оплатил', '2-5']}},
+    ])
+    add('pay-suno-password', [{
+        'role': 'client', 'text': 'как оплатить суно',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'suno',
+                   'need': ['почт', 'парол', '5-30'],
+                   'forbid': ['пришлите ссылку', 'Я оплатил']}},
+    ])
+    add('pay-zai-choice', [
+        {'role': 'client', 'text': 'как оплатить z.ai',
+         'payment_asked': True,
+         'expect': {'hold': False, 'service': 'zai',
+                    'need': ['почт', 'ссылк', 'не нужны'],
+                    'forbid': ['СБП', 'Я оплатил']}},
+        {'role': 'client', 'text': 'давайте по ссылке', 'use_state': True,
+         'payment_asked': True, 'fulfillment_choice': 'link',
+         'expect': {'hold': False, 'service': 'zai',
+                    'need': ['СБП', 'не плат', '5-30'],
+                    'forbid': ['Я оплатил']}},
+    ])
+    add('pay-telegram-username', [{
+        'role': 'client', 'text': 'как оплатить телеграм премиум',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'telegram_premium',
+                   'need': ['ник', '5-30'],
+                   'forbid': ['пришлите пароль', 'Я оплатил']}},
+    ])
+    add('pay-capcut-new', [{
+        'role': 'client', 'text': 'как оплатить капкат',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'capcut',
+                   'need': ['новый аккаунт', 'Александр', '5-30'],
+                   'forbid': ['пришлите пароль', 'Я оплатил']}},
+    ])
+    add('pay-claude-max', [{
+        'role': 'client', 'text': 'как оплатить клод макс 20',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'claude',
+                   'need': ['Александр', 'почт', 'парол', '5-30'],
+                   'forbid': ['Organization', 'Активировать Claude', '2-5', 'Я оплатил']}},
+    ])
+    add('pay-claude-pro-auto', [{
+        'role': 'client', 'text': 'как оплатить клод про',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'claude',
+                   'need': ['Активировать Claude', 'Organization', '2-5'],
+                   'forbid': ['парол', '5-30', 'Я оплатил']}},
+    ])
+    add('pay-chatgpt-pro5', [{
+        'role': 'client', 'text': 'как оплатить чат гпт про 5',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'chatgpt',
+                   'need': ['токен', 'Александр', '5-30'],
+                   'forbid': ['Активировать подписку', 'почту и пароль', 'Я оплатил']}},
+    ])
+    add('new-account-plus', [
+        {'role': 'client', 'text': 'Как оплатить новый аккаунт с подпиской Plus',
+         'service': 'chatgpt', 'payment_asked': True,
+         'expect': {'hold': False, 'service': 'chatgpt',
+                    'need': ['Активировать', 'почту, которую поставить', 'пароль для этого ящика',
+                             'настоящую почту', '5-30'],
+                    'forbid': ['Активировать подписку', 'Я оплатил']}},
+        {'role': 'client', 'text': 'Почта для ящика newbox@example.com',
+         'service': 'chatgpt', 'use_state': True,
+         'setup': {'setup_email': 'newbox@example.com'},
+         'expect': {'hold': False, 'need': ['пароль для этого ящика', 'настоящую почту'],
+                    'forbid': ['newbox@example.com', 'Активировать подписку']}},
+        {'role': 'client', 'text': 'Пароль Secret1 и восстановление real@example.com',
+         'service': 'chatgpt', 'use_state': True,
+         'setup': {'setup_password': 'Secret1', 'setup_recovery': 'real@example.com'},
+         'expect': {'hold': True, 'owner_has': ['newbox@example.com', 'Secret1', 'real@example.com']}},
+    ])
+    add('chosen-plan-not-relisted', [
+        {'role': 'client', 'text': 'суно про сколько',
+         'expect': {'hold': False, 'service': 'suno', 'price': 1000}},
+        {'role': 'client', 'text': 'беру этот', 'use_state': True,
+         'reply': 'Suno Pro: 1000 ₽.\nSuno Premier: 3000 ₽.\nКакой из них?',
+         'expect': {'hold': False, 'service': 'suno', 'need': ['1000'],
+                    'forbid': ['3000', 'Premier'], 'casual': True}},
+    ])
+    by_id = {case['id']: case for case in cases}
+    by_id['icloud-region-followup']['extra_catalog'] = [{
+        'service': 'App Store / iCloud', 'service_key': 'appstore', 'plan': '',
+        'catalog_price_rub': 0, 'fulfillment': 'not_verified',
+    }]
+    by_id['icloud-region-followup']['appstore'] = {
+        'status': 'available',
+        'regions': [
+            {'name': 'США | US', 'denoms': [
+                {'nominal': '5 USD', 'price_rub': 450},
+                {'nominal': '10 USD', 'price_rub': 910},
+                {'nominal': '15 USD', 'price_rub': 1365},
+            ]},
+            {'name': 'Россия | RU', 'denoms': [
+                {'nominal': '500 RUB', 'price_rub': 640},
+                {'nominal': '1000 RUB', 'price_rub': 1280},
+            ]},
+        ],
+    }
+    # Цена 2090 в этом прогоне взята из живого ответа на скриншоте, в config.py тарифа нет.
+    # Ответ уточнения цену не называет.
+    def _bare(service_id, service):
+        return {'service': service, 'service_key': service_id, 'plan': '',
+                'catalog_price_rub': 0, 'fulfillment': 'not_verified'}
+
+    by_id['pay-zai-choice']['extra_catalog'] = [_bare('zai', 'Z.ai')]
+    by_id['pay-telegram-username']['extra_catalog'] = [_bare('telegram_premium', 'Telegram Premium')]
+    by_id['pay-capcut-new']['extra_catalog'] = [_bare('capcut', 'CapCut')]
+    by_id['new-account-plus']['extra_catalog'] = [{
+        'service': 'ChatGPT', 'service_key': 'chatgpt', 'plan': 'Новый аккаунт с подпиской Plus',
+        'catalog_price_rub': 2090, 'fulfillment': 'not_verified',
+    }]
+    by_id['plus-two-options']['extra_catalog'] = [{
+        'service': 'ChatGPT', 'service_key': 'chatgpt', 'plan': 'Новый аккаунт с подпиской Plus',
+        'catalog_price_rub': 2090, 'fulfillment': 'not_verified',
+    }]
     return cases
 
 
@@ -533,6 +723,18 @@ def _check(answer, turn, context):
     needle = expect.get('context')
     if needle and needle.casefold() not in '\n'.join(context.get('documented_facts') or []).casefold():
         errors.append('context fact missing')
+    if 'region' in expect and (turn_info.get('region') or '') != expect['region']:
+        errors.append('region got %s' % turn_info.get('region'))
+    if expect.get('casual'):
+        if re.search(r'(?m)^\s*\d+[.)]\s+\S', reply):
+            errors.append('numbered list')
+        if len(reply) > int(expect.get('max_chars') or 500):
+            errors.append('too long')
+        if len(reply) > 220 and '\n' not in reply:
+            errors.append('dense block')
+    for name in expect.get('forbid_plans') or []:
+        if name.casefold() in reply.casefold():
+            errors.append('relisted ' + name)
     return errors
 
 
@@ -562,7 +764,8 @@ def run_suite():
     store.put('mode', 'auto')
     tg = _Telegram({'shot-1': picture, 'voice-1': voice})
     model = StressModel()
-    service = Service(store, tg, model, _Shop(catalog), owner=1, allowed={1, 50}, daily_limit=5000)
+    shop = _Shop(catalog)
+    service = Service(store, tg, model, shop, owner=1, allowed={1, 50}, daily_limit=5000)
     checked = 0
     failed = []
     before_fail = 0
@@ -570,6 +773,9 @@ def run_suite():
     try:
         for index, case in enumerate(cases):
             conn = 'c%d' % index
+            shop.extra = case.get('extra_catalog') or []
+            shop.appstore = case.get('appstore') or {'status': 'not_connected', 'regions': []}
+            service.catalog_cache._rows.clear()
             store.connection(conn, True, True)
             mid = 0
             last_reply = ''

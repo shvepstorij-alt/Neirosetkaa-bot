@@ -1,0 +1,98 @@
+# Как клиент платит в магазине и что нужно уже после оплаты.
+# Кнопки оплаты сняты с кода бота. Способ оформления после оплаты — из ответов владельца.
+# Кнопку «Я оплатил - написать Александру» клиенту не называть.
+
+entry:
+  webapp:
+    menu_button: "Каталог"
+    pay_buttons: ["СБП", "Картой"]
+    coins_note: "Если на балансе есть монетки, на карточке есть оплата монетками или часть монетками и остаток по СБП."
+    go_button: "Перейти к оплате"
+    check_button: "Проверить оплату"
+  chat:
+    menu_button: "Магазин"
+    confirm_button: "Оплатить"
+    pay_buttons: ["Оплатить через СБП", "Оплатить картой"]
+    promo_button: "Применить промокод"
+    coins_buttons: ["Оплатить монетками", "Применить монетками + СБП", "Оплатить СБП без монеток"]
+
+timing:
+  shop: "Активация занимает 5-30 минут."
+  auto: "Автоактивация занимает 2-5 минут."
+
+modes:
+  link_pay:
+    # Эти сервисы не просят почту и пароль. Z.ai сюда не входит: у него два способа.
+    services: [genspark, elevenlabs, heygen, higgsfield, kimi, kling, lovable, make, manus, runway]
+    timing: shop
+    after: "После оплаты в магазине зайдите в свой аккаунт, выберите тариф и откройте страницу оплаты сервиса. Сами там не платите. Скопируйте ссылку и пришлите её сюда. Почта и пароль для этого не нужны."
+  zai:
+    services: [zai]
+    timing: shop
+    choose: "Для Z.ai можно прислать почту и пароль от аккаунта или ссылку на оплату. Напишите, какой способ удобнее. Оба сразу не нужны."
+    link_after: "После оплаты зайдите в свой аккаунт Z.ai, выберите тариф и откройте страницу оплаты. Сами там не платите. Скопируйте ссылку и пришлите её сюда."
+    email_after: "После оплаты пришлите сюда почту и пароль от аккаунта Z.ai. Ссылку отдельно присылать не нужно."
+  suno:
+    services: [suno]
+    timing: shop
+    after: "После оплаты пришлите сюда почту и пароль от аккаунта Suno. Ссылку на оплату для Suno не присылайте."
+  telegram_premium:
+    services: [telegram_premium]
+    timing: shop
+    after: "Нужен только ник аккаунта, которому оформить Telegram Premium. Пароль и коды Telegram не нужны."
+  capcut:
+    services: [capcut]
+    timing: shop
+    after: "CapCut — это новый аккаунт на месяц. Почту и пароль этого аккаунта пришлёт Александр. Данные вашего текущего аккаунта не нужны."
+  chatgpt_auto:
+    services: [chatgpt]
+    plans: [plus, go]
+    timing: auto
+    button: "Активировать подписку"
+    page: "chatgpt.com/api/auth/session"
+    where: "В окно активации в боте, по кнопке. В эту переписку токен не вставляется."
+  chatgpt_new_account:
+    services: [chatgpt]
+    timing: shop
+    after: "Кнопки «Активировать» у этого тарифа нет. Она есть только у Go и Plus."
+    collect:
+      - id: setup_email
+        ask: "почту, которую поставить на новый ящик"
+      - id: setup_password
+        ask: "пароль для этого ящика"
+      - id: setup_recovery
+        ask: "вашу настоящую почту для восстановления"
+  chatgpt_manual:
+    services: [chatgpt]
+    timing: shop
+    after: "Тарифы ChatGPT от Pro 5× и выше активирует Александр. Кнопки самостоятельной активации нет. Пришлите сюда токен аккаунта со страницы chatgpt.com/api/auth/session. Пароль аккаунта для этого тарифа не нужен."
+  claude_auto:
+    services: [claude]
+    timing: auto
+    button: "Активировать Claude"
+    page: "claude.ai/settings/account"
+    client_provides: "Organization ID"
+    where: "В мини-приложение по кнопке, не в эту переписку."
+  claude_manual:
+    services: [claude]
+    timing: shop
+    after: "Максимальный тариф Claude активирует Александр. Пришлите сюда почту и пароль от аккаунта Claude."
+  perplexity:
+    services: [perplexity]
+    timing: auto
+    button: "Активировать Perplexity"
+    page: "perplexity.ai/api/auth/session"
+    client_provides: "Perplexity User ID, поле id со страницы сессии"
+    where: "В мини-приложение по кнопке, не в эту переписку."
+  appstore:
+    services: [appstore]
+    timing: ""
+  shop:
+    timing: shop
+    after: "Дальше активация идёт в боте магазина."
+
+appstore:
+  menu_name: "App Store / iCloud"
+  pay_button: "Оплатить"
+  check_button: "Проверить оплату"
+  after: "Код приходит в чат бота автоматически. Отдельно для активации ничего присылать не нужно."

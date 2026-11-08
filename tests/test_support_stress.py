@@ -21,7 +21,8 @@ class StressTests(unittest.TestCase):
         self.assertEqual(usable_answer('guarantee'), 'Гарантия есть на все сервисы, кроме Claude.')
         self.assertIn('заблокировать', usable_answer('account_ban'))
         self.assertIn('гарантии на Claude нет', usable_answer('account_ban'))
-        self.assertEqual(usable_answer('delivery_time'), 'Подписка оформляется в течение 30–60 минут.')
+        self.assertEqual(usable_answer('delivery_time'),
+                         'Активация занимает 5–30 минут. У сервисов с автоактивацией — 2–5 минут.')
         self.assertEqual(usable_answer('refund_terms'), '')
         self.assertEqual(collect_fields('refund_terms'), ['order_number', 'service', 'reason'])
         self.assertEqual(usable_answer('off_catalog'), '')
