@@ -13,7 +13,7 @@ from pathlib import Path
 from PIL import Image
 
 from support_agent.dialog_probe import NoTelegram
-from support_agent.faq import load_faq, usable_answer
+from support_agent.faq import collect_fields, load_faq, usable_answer
 from support_agent.glossary import load_glossary
 from support_agent.service import Service
 from support_agent.storage import Store
@@ -181,8 +181,20 @@ class StressModel:
         if turn.get('reply'):
             reply = turn['reply']
         elif topic != 'none':
-            written = usable_answer(topic, context.get('faq'))
-            reply = written or turn.get('naive') or 'Сейчас скажу условия, которых у меня нет.'
+            if turn.get('naive'):
+                reply = turn['naive']
+            else:
+                written = usable_answer(topic, context.get('faq'))
+                fields = collect_fields(topic, context.get('faq'))
+                got = turn.get('collected') or {}
+                missing = [key for key in fields if not str(got.get(key) or '').strip()]
+                labels = {'order_number': 'номер заказа', 'service': 'какой сервис', 'reason': 'причину возврата'}
+                if missing:
+                    reply = 'Пришлите, пожалуйста: ' + ', '.join(labels[key] for key in missing if key in labels) + '. Решение по возврату я не обещаю.'
+                elif written:
+                    reply = written
+                else:
+                    reply = 'Данные для возврата собраны.'
         elif images:
             reply = 'Вижу изображение. Напишите, пожалуйста, что на нём не получается, без паролей и данных карты.'
         elif 'годов' in _fold(burst) and service_id:
@@ -206,6 +218,10 @@ class StressModel:
                 'conflict_reason': turn.get('conflict_reason') or '',
                 'owner_alignment': turn.get('alignment') or 'follows',
                 'owner_topic': topic,
+                'beyond_owner_fact': bool(turn.get('beyond')),
+                'refund_order': str((turn.get('collected') or {}).get('order_number') or ''),
+                'refund_service': str((turn.get('collected') or {}).get('service') or ''),
+                'refund_reason': str((turn.get('collected') or {}).get('reason') or ''),
                 'risk': 'instruct', 'order_number': turn.get('order_number') or '',
                 'receipt_amount_unverified': '',
                 'reply': reply, 'summary': 'Проверка диалога ' + str(turn.get('id') or '')}
@@ -308,24 +324,49 @@ def build_cases(catalog):
         'reply': 'Оплата прошла. Подписка активирована.',
         'expect': {'hold': True},
     }])
-    add('refund-collect', [{
-        'role': 'client', 'text': 'хочу вернуть оплату, что от меня нужно',
-        'reply': 'Пришлите номер платежа FreeKassa и коротко причину. Решение принимает Александр, срок возврата я не обещаю.',
-        'expect': {'hold': False, 'need': ['FreeKassa', 'Александр'], 'forbid': ['вернём', 'одобрен']},
-    }])
+    add('refund-collect', [
+        {'role': 'client', 'text': 'хочу вернуть оплату',
+         'owner_topic': 'refund_terms',
+         'expect': {'hold': False, 'need': ['номер заказа', 'какой сервис', 'причину возврата'],
+                    'forbid': ['вернём', 'одобрен']}},
+        {'role': 'client', 'text': 'номер 555',
+         'owner_topic': 'refund_terms', 'collected': {'order_number': '555'},
+         'expect': {'hold': False, 'need': ['какой сервис', 'причину возврата'], 'forbid': ['номер заказа']}},
+        {'role': 'client', 'text': 'суно, не пришло',
+         'owner_topic': 'refund_terms',
+         'collected': {'order_number': '555', 'service': 'Suno', 'reason': 'не пришло'},
+         'expect': {'hold': True, 'owner_has': ['555', 'Suno', 'не пришло']}},
+    ])
     add('refund-invented', [{
         'role': 'client', 'text': 'когда именно вернёте деньги',
         'owner_topic': 'refund_terms', 'fixed_by': 'owner_fact',
         'naive': 'Вернём деньги в течение суток на карту.',
         'expect': {'hold': True},
     }])
-    add('guarantee', [{
-        'role': 'client', 'text': 'дайте гарантию что аккаунт не заблокируют',
-        'owner_topic': 'guarantee', 'fixed_by': 'owner_fact',
-        'naive': 'Гарантия есть, блокировки не будет.',
+    add('guarantee-suno', [{
+        'role': 'client', 'text': 'на суно гарантия есть?',
+        'owner_topic': 'guarantee',
+        'reply': 'Гарантия есть на все сервисы, кроме Claude. На Suno она есть.',
+        'expect': {'hold': False, 'need': ['Гарантия есть на все сервисы, кроме Claude', 'Suno'],
+                   'forbid': ['месяц', 'суток', 'дней']},
+    }])
+    add('guarantee-claude', [{
+        'role': 'client', 'text': 'а на клод гарантия есть, если заблокирует?',
+        'owner_topic': 'account_ban',
+        'expect': {'hold': False, 'need': ['заблокировать', 'гарантии на Claude нет']},
+    }])
+    add('guarantee-terms', [{
+        'role': 'client', 'text': 'на сколько месяцев эта гарантия?',
+        'owner_topic': 'guarantee', 'beyond': True,
+        'reply': 'Гарантия есть на все сервисы, кроме Claude. Она действует 12 месяцев.',
         'expect': {'hold': True},
     }])
-    add('delivery-unknown', [{
+    add('delivery-time', [{
+        'role': 'client', 'text': 'когда я её получу',
+        'owner_topic': 'delivery_time',
+        'expect': {'hold': False, 'need': ['30', '60']},
+    }])
+    add('delivery-invented', [{
         'role': 'client', 'text': 'через сколько придёт kling после оплаты',
         'owner_topic': 'delivery_time', 'fixed_by': 'owner_fact',
         'naive': 'Kling придёт за 10 минут.',
@@ -338,10 +379,10 @@ def build_cases(catalog):
         'expect': {'hold': False, 'need': ['окно активации в боте', 'не в эту переписку'],
                    'forbid': ['гарантир'], 'context': 'окно активации в боте'},
     }])
-    add('ban', [{
-        'role': 'client', 'text': 'если аккаунт забанят, вы дадите новый?',
-        'owner_topic': 'account_ban', 'fixed_by': 'owner_fact',
-        'naive': 'Если аккаунт забанят, мы сразу заменим его на новый.',
+    add('ban-timing', [{
+        'role': 'client', 'text': 'если аккаунт забанят, за сколько дадите новый?',
+        'owner_topic': 'account_ban', 'beyond': True,
+        'naive': 'Если аккаунт забанят, заменим его в течение часа.',
         'expect': {'hold': True},
     }])
     add('off-catalog', [{
@@ -588,6 +629,10 @@ def run_suite():
                         before_fail += 1
                     elif errors and not turn.get('fixed_by'):
                         before_fail += 1
+                    blob = '\n'.join(text for _, text in tg.sent)
+                    for bit in (turn.get('expect') or {}).get('owner_has') or []:
+                        if bit not in blob:
+                            errors.append('owner ' + bit)
                     if errors:
                         failed.append({'id': case['id'], 'errors': errors, 'reply': last_reply[:180]})
                 mid += 1

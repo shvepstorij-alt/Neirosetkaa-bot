@@ -195,6 +195,10 @@ class OpenAI:
                       'conflict_reason': {'type': 'string'},
                       'owner_alignment': {'type': 'string', 'enum': ['follows', 'contradicts', 'repeats', 'reasks']},
                       'owner_topic': {'type': 'string'},
+                      'beyond_owner_fact': {'type': 'boolean'},
+                      'refund_order': {'type': 'string'},
+                      'refund_service': {'type': 'string'},
+                      'refund_reason': {'type': 'string'},
                       'risk': {'type': 'string', 'enum': ['collect', 'instruct', 'catalog_price', 'outcome',
                                                          'promise', 'unverified']},
                       'order_number': {'type': 'string'},
@@ -204,6 +208,7 @@ class OpenAI:
                   'required': ['intent', 'service_id', 'tariff_id', 'confidence', 'clarify_ids',
                                'topic_changed', 'known_facts', 'missing_facts', 'questions', 'vpn_advice',
                                'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic',
+                               'beyond_owner_fact', 'refund_order', 'refund_service', 'refund_reason',
                                'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}
         content = [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]
         for picture in images or []:

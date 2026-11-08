@@ -1156,7 +1156,24 @@ class Service:
         if turn.get('conflict')=='high':
             answer.setdefault('evidence',{}).setdefault('turn_understanding',{})['conflict_reason']=str((understanding or {}).get('conflict_reason') or '')[:300]
         await self.maybe_conflict_alert(job, answer, context)
+        await self.maybe_refund_alert(job, answer)
         return answer
+
+    async def maybe_refund_alert(self, job, answer):
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('refund_hold'):
+            return
+        collected=evidence.get('refund_collected') or {}
+        from .privacy import scrub
+        lines=[self.chat_identity(job['chat']),
+               'Возврат: номер, сервис и причина собраны. Клиенту обещания нет.',
+               'Номер заказа: '+scrub(str(collected.get('order_number') or '')),
+               'Сервис: '+scrub(str(collected.get('service') or '')),
+               'Причина: '+scrub(str(collected.get('reason') or ''))]
+        try:
+            await self.owner_message('\n'.join(lines))
+        except Exception:
+            logging.warning('Refund note was not delivered')
 
     async def _generate_legacy(self,job):
         """Owned payment evidence composes with, never replaces, another goal."""

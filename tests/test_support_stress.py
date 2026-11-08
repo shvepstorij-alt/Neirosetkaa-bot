@@ -1,7 +1,7 @@
 """The offline stress dialogs and an owner answer that replaces a hold."""
 import unittest
 
-from support_agent.faq import load_faq, usable_answer
+from support_agent.faq import collect_fields, load_faq, usable_answer
 from support_agent.stress_suite import run_suite
 from support_agent.turn_understanding import enforce_turn_policy, package
 
@@ -17,10 +17,16 @@ class StressTests(unittest.TestCase):
         self.assertEqual(report['failed'], [])
         self.assertEqual(report['passed'], report['checked'])
 
-    def test_empty_faq_is_not_an_answer(self):
-        topics = load_faq()['topics']
-        self.assertGreaterEqual(len(topics), 6)
-        self.assertTrue(all(usable_answer(row['id']) == '' for row in topics))
+    def test_owner_facts_match_the_given_words_only(self):
+        self.assertEqual(usable_answer('guarantee'), 'Гарантия есть на все сервисы, кроме Claude.')
+        self.assertIn('заблокировать', usable_answer('account_ban'))
+        self.assertIn('гарантии на Claude нет', usable_answer('account_ban'))
+        self.assertEqual(usable_answer('delivery_time'), 'Подписка оформляется в течение 30–60 минут.')
+        self.assertEqual(usable_answer('refund_terms'), '')
+        self.assertEqual(collect_fields('refund_terms'), ['order_number', 'service', 'reason'])
+        self.assertEqual(usable_answer('off_catalog'), '')
+        self.assertEqual(usable_answer('region_policy'), '')
+        self.assertGreaterEqual(len(load_faq()['topics']), 6)
 
     def test_owner_answer_is_sent_when_the_file_has_text(self):
         context = {'tariffs': [], 'nominals': [], 'history': [],
