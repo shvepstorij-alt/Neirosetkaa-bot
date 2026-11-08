@@ -10756,7 +10756,13 @@ pre.open{max-height:none}
 button{display:block;width:100%;border:0;border-radius:12px;padding:14px;font-size:16px;font-weight:600;margin-top:12px;cursor:pointer}
 .b1{background:var(--acc);color:#fff}.b2{background:var(--box);color:var(--fg)}
 .ok{color:var(--ok);text-align:center;margin-top:10px;min-height:20px;font-weight:600}
-.lg{font-size:14px;margin:0 0 10px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.lg{font-size:14px;margin:0 0 10px}.lg .row{display:flex;align-items:center;flex-wrap:wrap}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;flex:none}
+.lg .cv{display:inline-flex;align-items:center;min-width:0;max-width:100%}
+.lg .cv b{word-break:break-all;min-width:0}
+b.copyv{cursor:pointer;-webkit-tap-highlight-color:transparent}
+button.cp{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin:0 0 0 6px;padding:0;border-radius:8px;font-size:13px;font-weight:500;line-height:1;background:var(--box);color:var(--fg);flex:none}
+b.copyv:active,button.cp:active{opacity:.6}
 mark{color:#fff;border-radius:4px;padding:0 2px;font-weight:700}
 .email{background:#2a7cf6}.emailt{color:#2a7cf6}.id{background:#1f9d55}.idt{color:#1f9d55}.plan{background:#e8590c}.plant{color:#e8590c}
 </style></head><body><div class="w">
@@ -10771,15 +10777,35 @@ var K=new URLSearchParams(location.search).get('k')||'', T='';
 fetch('/api/admin/token',{method:'POST',headers:{'Content-Type':'application/json'},
  body:JSON.stringify({k:K,initData:tg?tg.initData:''})}).then(function(r){return r.json()}).then(function(d){
  if(!d||!d.ok){document.getElementById('m').textContent=(d&&d.msg)||'Нет доступа или ссылка устарела';return;}
- T=d.t;var P=document.getElementById('t'),pos=0,L={email:'Почта',id:'ID аккаунта',plan:'Тариф аккаунта'},lg=document.getElementById('lg');(d.marks||[]).forEach(function(m){P.appendChild(document.createTextNode(T.slice(pos,m[0])));var e=document.createElement('mark');e.className=m[2];e.textContent=T.slice(m[0],m[1]);P.appendChild(e);pos=m[1];var r=document.createElement('div');var dt=document.createElement('span');dt.className='dot '+m[2];r.appendChild(dt);r.appendChild(document.createTextNode((L[m[2]]||m[2])+': '));var bb=document.createElement('b');bb.className=m[2]+'t';bb.textContent=T.slice(m[0],m[1]);r.appendChild(bb);lg.appendChild(r);});P.appendChild(document.createTextNode(T.slice(pos)));
+ T=d.t;var P=document.getElementById('t'),pos=0,L={email:'Почта',id:'ID аккаунта',plan:'Тариф аккаунта'},lg=document.getElementById('lg');
+ (d.marks||[]).forEach(function(m){
+  P.appendChild(document.createTextNode(T.slice(pos,m[0])));
+  var e=document.createElement('mark');e.className=m[2];e.textContent=T.slice(m[0],m[1]);P.appendChild(e);pos=m[1];
+  var val=T.slice(m[0],m[1]),r=document.createElement('div');r.className='row';
+  var dt=document.createElement('span');dt.className='dot '+m[2];r.appendChild(dt);
+  r.appendChild(document.createTextNode((L[m[2]]||m[2])+': '));
+  var bb=document.createElement('b');bb.className=m[2]+'t';bb.textContent=val;
+  if(m[2]==='id'||m[2]==='email'){
+   var cv=document.createElement('span');cv.className='cv';
+   bb.className+=' copyv';bb.onclick=function(){copyText(val,'✅ Скопировано');};
+   cv.appendChild(bb);
+   var btn=document.createElement('button');btn.type='button';btn.className='cp';btn.textContent='📋';
+   btn.setAttribute('aria-label',m[2]==='id'?'Скопировать ID аккаунта':'Скопировать почту');
+   btn.onclick=function(ev){if(ev&&ev.stopPropagation)ev.stopPropagation();copyText(val,'✅ Скопировано');};
+   cv.appendChild(btn);r.appendChild(cv);
+  }else r.appendChild(bb);
+  lg.appendChild(r);
+ });
+ P.appendChild(document.createTextNode(T.slice(pos)));
  document.getElementById('m').textContent=(d.who||'')+(d.code?(' · код '+d.code):'')+' · '+T.length+' симв.';
 }).catch(function(){document.getElementById('m').textContent='Не удалось загрузить';});
-function done(ok){var o=document.getElementById('ok');o.textContent=ok?'✅ Скопировано целиком ('+T.length+' симв.)':'Не получилось — выдели текст вручную';
+function done(ok,msg){var o=document.getElementById('ok');o.textContent=ok?(msg||('✅ Скопировано целиком ('+T.length+' симв.)')):'Не получилось — выдели текст вручную';
  try{tg&&tg.HapticFeedback&&tg.HapticFeedback.notificationOccurred(ok?'success':'error');}catch(e){}}
-function fb(){try{var a=document.createElement('textarea');a.value=T;a.setAttribute('readonly','');a.style.position='absolute';a.style.left='-9999px';
- document.body.appendChild(a);a.select();a.setSelectionRange(0,T.length);var ok=document.execCommand('copy');document.body.removeChild(a);done(ok);}catch(e){done(false);}}
-document.getElementById('c').onclick=function(){if(!T)return;
- if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(T).then(function(){done(true)},fb);}else fb();};
+function fb(text,msg){try{var a=document.createElement('textarea');a.value=text;a.setAttribute('readonly','');a.style.position='absolute';a.style.left='-9999px';
+ document.body.appendChild(a);a.select();a.setSelectionRange(0,text.length);var okc=document.execCommand('copy');document.body.removeChild(a);done(!!okc,msg);}catch(e){done(false);}}
+function copyText(text,msg){if(!text)return;
+ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){done(true,msg);},function(){fb(text,msg);});}else fb(text,msg);}
+document.getElementById('c').onclick=function(){copyText(T);};
 document.getElementById('x').onclick=function(){var p=document.getElementById('t');p.classList.toggle('open');
  this.textContent=p.classList.contains('open')?'Свернуть':'Показать полностью';};
 </script></body></html>"""
