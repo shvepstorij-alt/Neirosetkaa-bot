@@ -80,6 +80,8 @@ class Service:
         self.admin_retiring=set()
         self.admin_sequence=0
         self._business_locks={}
+        from .catalog_cache import CatalogCache
+        self.catalog_cache=CatalogCache()
 
     def _business_lock(self, ident, uid):
         key=(str(ident), int(uid))
@@ -1059,18 +1061,69 @@ class Service:
 
     async def generate(self,job):
         """One structured reading when the model supports it. Older routers stay for tests."""
-        if hasattr(self.ai,'understand_turn') and not job.get('_legacy'):
-            try:
-                understood=await self._understood_reply(job)
-                if understood is not None:
-                    return understood
-            except Exception as exc:
-                from .handoff import handoff_text
-                return {'reply':handoff_text(),'summary':'Разбор хода не завершился. Клиенту оставлено ожидание владельца.',
-                        'handoff':True,'source_ids':[],
-                        'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',
-                                    'diagnostic':'Этап: разбор хода. Тип='+type(exc).__name__+'. Текст клиента не отправлялся.'}}
-        return await self._generate_legacy(job)
+        try:
+            if hasattr(self.ai,'understand_turn') and not job.get('_legacy'):
+                try:
+                    understood=await self._understood_reply(job)
+                    if understood is not None:
+                        return understood
+                except Exception as exc:
+                    from .handoff import handoff_text
+                    return {'reply':handoff_text(),'summary':'Разбор хода не завершился. Клиенту оставлено ожидание владельца.',
+                            'handoff':True,'source_ids':[],
+                            'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',
+                                        'diagnostic':'Этап: разбор хода. Тип='+type(exc).__name__+'. Текст клиента не отправлялся.'}}
+            return await self._generate_legacy(job)
+        finally:
+            await self.maybe_quota_notice()
+
+    async def maybe_quota_notice(self):
+        """One owner note at 80% of the daily call limit and one when it is full."""
+        try:
+            count=self.store.calls_today()
+            limit=int(self.daily_limit)
+            if limit<1 or count<1:
+                return
+            day=dt.datetime.now(dt.timezone.utc).date().isoformat()
+            if count>=limit:
+                await self._quota_notice(day,'100','Дневной лимит запросов к модели исчерпан: %s из %s. Новым клиентам уходит фраза про Александра, пока сутки не сменятся.'%(count,limit))
+            elif count>=max(1,(limit*80+99)//100):
+                await self._quota_notice(day,'80','Использовано %s из %s запросов к модели за сутки, это уже 80%% или больше.'%(count,limit))
+        except Exception:
+            logging.warning('Quota notice was not sent')
+
+    async def _quota_notice(self,day,level,text):
+        key='quota_notice_%s:%s'%(level,day)
+        if self.store.db.execute('SELECT 1 FROM settings WHERE key=?',(key,)).fetchone():
+            return
+        await self.owner_message(text)
+        self.store.put(key,'1')
+
+    async def maybe_conflict_alert(self,job,answer,context):
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('conflict_hold'):
+            return
+        now=time.time()
+        key='conflict_alert:%s'%job['chat']
+        row=self.store.db.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
+        previous=float(row[0]) if row else 0.0
+        if now-previous<1800:
+            return
+        from .privacy import scrub
+        turn=evidence.get('turn_understanding') or {}
+        reason=scrub(str(turn.get('conflict_reason') or evidence.get('diagnostic') or 'Высокий конфликт.'))[:300]
+        lines=[self.chat_identity(job['chat']),'Конфликт, нужна ваша реплика.','Причина: '+reason,'Последние сообщения:']
+        for item in (context or {}).get('history') or []:
+            role={'owner':'владелец','assistant':'помощник'}.get(item.get('role'),'клиент')
+            text=scrub(str(item.get('text') or '')).replace('\n',' ')[:240]
+            if text:
+                lines.append(role+': '+text)
+        try:
+            await self.owner_message('\n'.join(lines)[:3500])
+        except Exception:
+            logging.warning('Conflict alert was not delivered')
+            return
+        self.store.put(key,str(now))
 
     async def _understood_reply(self,job):
         from .turn_understanding import build_context, package
@@ -1084,7 +1137,8 @@ class Service:
             notice.setdefault('evidence',{'status':'owner_policy','sources':[],'reply_class':'unverified',
                                           'diagnostic':notice.get('summary') or 'Вложение не передано в разбор.'})
             return notice
-        facts=await self.shop.facts(job['uid'])
+        from .catalog_cache import load_catalog
+        facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
         self.charge_call('understand_image' if images else 'understand')
         understanding=await self.ai.understand_turn(context, images=images or None)
@@ -1095,9 +1149,14 @@ class Service:
         payment=await resolve_payment(self, job, understanding, context)
         if not self.store.still_current(job):
             return None
-        if payment is not None:
-            return payment
-        return package(understanding, context, self.store.db, job['chat'])
+        answer=payment if payment is not None else package(understanding, context, self.store.db, job['chat'])
+        from .turn_understanding import enforce_turn_policy
+        answer=enforce_turn_policy(answer, understanding, context, freshness)
+        turn=answer.get('evidence',{}).get('turn_understanding') or {}
+        if turn.get('conflict')=='high':
+            answer.setdefault('evidence',{}).setdefault('turn_understanding',{})['conflict_reason']=str((understanding or {}).get('conflict_reason') or '')[:300]
+        await self.maybe_conflict_alert(job, answer, context)
+        return answer
 
     async def _generate_legacy(self,job):
         """Owned payment evidence composes with, never replaces, another goal."""
