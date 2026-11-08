@@ -1157,6 +1157,7 @@ class Service:
             answer.setdefault('evidence',{}).setdefault('turn_understanding',{})['conflict_reason']=str((understanding or {}).get('conflict_reason') or '')[:300]
         await self.maybe_conflict_alert(job, answer, context)
         await self.maybe_refund_alert(job, answer)
+        await self.maybe_account_setup_alert(job, answer)
         return answer
 
     async def maybe_refund_alert(self, job, answer):
@@ -1174,6 +1175,21 @@ class Service:
             await self.owner_message('\n'.join(lines))
         except Exception:
             logging.warning('Refund note was not delivered')
+
+    async def maybe_account_setup_alert(self, job, answer):
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('account_setup_hold'):
+            return
+        got=evidence.get('account_setup') or {}
+        lines=[self.chat_identity(job['chat']),
+               'Новый аккаунт ChatGPT Plus: почта, пароль и почта восстановления собраны. Клиенту обещания нет.',
+               'Почта ящика: '+str(got.get('setup_email') or ''),
+               'Пароль ящика: '+str(got.get('setup_password') or ''),
+               'Почта восстановления: '+str(got.get('setup_recovery') or '')]
+        try:
+            await self.owner_message('\n'.join(lines))
+        except Exception:
+            logging.warning('New-account note was not delivered')
 
     async def _generate_legacy(self,job):
         """Owned payment evidence composes with, never replaces, another goal."""

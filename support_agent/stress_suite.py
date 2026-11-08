@@ -91,6 +91,8 @@ def match_plan(text, tariffs, service_id):
         wanted = 'max 20'
     elif 'max 5' in folded or ('5' in folded and 'макс' in folded):
         wanted = 'max 5'
+    elif 'pro 5' in folded or 'про 5' in folded or '5×' in folded or '5x' in folded:
+        wanted = 'pro 5'
     elif 'плюс' in folded or re.search(r'(?<![a-z])plus(?![a-z])', folded):
         wanted = 'plus'
     elif 'basic' in folded or 'бейсик' in folded or 'базов' in folded:
@@ -217,6 +219,10 @@ class StressModel:
                 'known_facts': [], 'missing_facts': [], 'questions': questions,
                 'vpn_advice': bool(turn.get('vpn')),
                 'payment_asked': bool(turn.get('payment_asked')),
+                'fulfillment_choice': turn.get('fulfillment_choice') or '',
+                'setup_email': str((turn.get('setup') or {}).get('setup_email') or ''),
+                'setup_password': str((turn.get('setup') or {}).get('setup_password') or ''),
+                'setup_recovery': str((turn.get('setup') or {}).get('setup_recovery') or ''),
                 'reask_advisories': list(turn.get('reask') or []),
                 'matched_tariff_ids': list(turn.get('matched') or []),
                 'region': turn.get('region') or '',
@@ -370,7 +376,7 @@ def build_cases(catalog):
     add('delivery-time', [{
         'role': 'client', 'text': 'когда я её получу',
         'owner_topic': 'delivery_time',
-        'expect': {'hold': False, 'need': ['30', '60']},
+        'expect': {'hold': False, 'need': ['5', '30', '2', 'автоактивац']},
     }])
     add('delivery-invented', [{
         'role': 'client', 'text': 'через сколько придёт kling после оплаты',
@@ -516,9 +522,9 @@ def build_cases(catalog):
         'role': 'client', 'text': 'суно про сколько и когда будет',
         'owner_topic': 'delivery_time', 'beyond': True,
         'questions': ['Сколько стоит Suno Pro?', 'Когда будет Suno?'],
-        'reply': 'Suno Pro: 1000 ₽.\n\nОформление 30-60 минут.',
+        'reply': 'Suno Pro: 1000 ₽.\n\nАктивация занимает 5–30 минут. У сервисов с автоактивацией — 2–5 минут.',
         'expect': {'hold': False, 'service': 'suno', 'price': 1000, 'casual': True,
-                   'need': ['1000', '30', '60']},
+                   'need': ['1000', '5', '30', '2']},
     }])
     add('vpn-once', [
         {'role': 'client', 'text': 'клод работает в рф?', 'vpn': True, 'service': 'claude',
@@ -564,8 +570,87 @@ def build_cases(catalog):
         {'role': 'client', 'text': 'как оплатить?', 'use_state': True, 'payment_asked': True,
          'reply': 'Для оплаты тарифа ChatGPT Plus используйте токен сессии в окне активации бота.',
          'expect': {'hold': False, 'service': 'chatgpt',
-                    'need': ['СБП', 'Картой', 'Активировать подписку', 'После оплаты', '30-60'],
-                    'forbid': ['используйте токен сессии в окне активации']}},
+                    'need': ['СБП', 'Картой', 'Активировать подписку', 'После оплаты', '2-5'],
+                    'forbid': ['используйте токен сессии в окне активации', '5-30', '30-60',
+                               'Я оплатил']}},
+    ])
+    add('pay-link', [{
+        'role': 'client', 'text': 'как оплатить клинг',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'kling',
+                   'need': ['ссылк', 'не плат', 'не нужны', '5-30'],
+                   'forbid': ['Я оплатил', '2-5']}},
+    ])
+    add('pay-suno-password', [{
+        'role': 'client', 'text': 'как оплатить суно',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'suno',
+                   'need': ['почт', 'парол', '5-30'],
+                   'forbid': ['пришлите ссылку', 'Я оплатил']}},
+    ])
+    add('pay-zai-choice', [
+        {'role': 'client', 'text': 'как оплатить z.ai',
+         'payment_asked': True,
+         'expect': {'hold': False, 'service': 'zai',
+                    'need': ['почт', 'ссылк', 'не нужны'],
+                    'forbid': ['СБП', 'Я оплатил']}},
+        {'role': 'client', 'text': 'давайте по ссылке', 'use_state': True,
+         'payment_asked': True, 'fulfillment_choice': 'link',
+         'expect': {'hold': False, 'service': 'zai',
+                    'need': ['СБП', 'не плат', '5-30'],
+                    'forbid': ['Я оплатил']}},
+    ])
+    add('pay-telegram-username', [{
+        'role': 'client', 'text': 'как оплатить телеграм премиум',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'telegram_premium',
+                   'need': ['ник', '5-30'],
+                   'forbid': ['пришлите пароль', 'Я оплатил']}},
+    ])
+    add('pay-capcut-new', [{
+        'role': 'client', 'text': 'как оплатить капкат',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'capcut',
+                   'need': ['новый аккаунт', 'Александр', '5-30'],
+                   'forbid': ['пришлите пароль', 'Я оплатил']}},
+    ])
+    add('pay-claude-max', [{
+        'role': 'client', 'text': 'как оплатить клод макс 20',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'claude',
+                   'need': ['Александр', 'почт', 'парол', '5-30'],
+                   'forbid': ['Organization', 'Активировать Claude', '2-5', 'Я оплатил']}},
+    ])
+    add('pay-claude-pro-auto', [{
+        'role': 'client', 'text': 'как оплатить клод про',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'claude',
+                   'need': ['Активировать Claude', 'Organization', '2-5'],
+                   'forbid': ['парол', '5-30', 'Я оплатил']}},
+    ])
+    add('pay-chatgpt-pro5', [{
+        'role': 'client', 'text': 'как оплатить чат гпт про 5',
+        'payment_asked': True,
+        'expect': {'hold': False, 'service': 'chatgpt',
+                   'need': ['токен', 'Александр', '5-30'],
+                   'forbid': ['Активировать подписку', 'почту и пароль', 'Я оплатил']}},
+    ])
+    add('new-account-plus', [
+        {'role': 'client', 'text': 'Как оплатить новый аккаунт с подпиской Plus',
+         'service': 'chatgpt', 'payment_asked': True,
+         'expect': {'hold': False, 'service': 'chatgpt',
+                    'need': ['Активировать', 'почту, которую поставить', 'пароль для этого ящика',
+                             'настоящую почту', '5-30'],
+                    'forbid': ['Активировать подписку', 'Я оплатил']}},
+        {'role': 'client', 'text': 'Почта для ящика newbox@example.com',
+         'service': 'chatgpt', 'use_state': True,
+         'setup': {'setup_email': 'newbox@example.com'},
+         'expect': {'hold': False, 'need': ['пароль для этого ящика', 'настоящую почту'],
+                    'forbid': ['newbox@example.com', 'Активировать подписку']}},
+        {'role': 'client', 'text': 'Пароль Secret1 и восстановление real@example.com',
+         'service': 'chatgpt', 'use_state': True,
+         'setup': {'setup_password': 'Secret1', 'setup_recovery': 'real@example.com'},
+         'expect': {'hold': True, 'owner_has': ['newbox@example.com', 'Secret1', 'real@example.com']}},
     ])
     add('chosen-plan-not-relisted', [
         {'role': 'client', 'text': 'суно про сколько',
@@ -596,6 +681,17 @@ def build_cases(catalog):
     }
     # Цена 2090 в этом прогоне взята из живого ответа на скриншоте, в config.py тарифа нет.
     # Ответ уточнения цену не называет.
+    def _bare(service_id, service):
+        return {'service': service, 'service_key': service_id, 'plan': '',
+                'catalog_price_rub': 0, 'fulfillment': 'not_verified'}
+
+    by_id['pay-zai-choice']['extra_catalog'] = [_bare('zai', 'Z.ai')]
+    by_id['pay-telegram-username']['extra_catalog'] = [_bare('telegram_premium', 'Telegram Premium')]
+    by_id['pay-capcut-new']['extra_catalog'] = [_bare('capcut', 'CapCut')]
+    by_id['new-account-plus']['extra_catalog'] = [{
+        'service': 'ChatGPT', 'service_key': 'chatgpt', 'plan': 'Новый аккаунт с подпиской Plus',
+        'catalog_price_rub': 2090, 'fulfillment': 'not_verified',
+    }]
     by_id['plus-two-options']['extra_catalog'] = [{
         'service': 'ChatGPT', 'service_key': 'chatgpt', 'plan': 'Новый аккаунт с подпиской Plus',
         'catalog_price_rub': 2090, 'fulfillment': 'not_verified',

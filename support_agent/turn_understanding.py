@@ -41,7 +41,13 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Цены в reply только из tariffs.price и nominals.price. '
     'payment_asked=true, если клиент спрашивает, как или где оплатить. '
     'Тогда шаги оплаты бери из payment: кнопки и способы оттуда. '
+    'Что нужно после оплаты, бери из payment.modes для этого сервиса. '
+    'Кнопку «Я оплатил - написать Александру» не называй. '
     'Токен сессии, Organization ID и Perplexity User ID — это данные после оплаты, не способ оплаты. '
+    'Для нового аккаунта ChatGPT Plus кнопки активации нет. '
+    'setup_email, setup_password и setup_recovery заполняй только тем, что клиент уже написал: '
+    'почта нового ящика, пароль для него и настоящая почта для восстановления. Иначе пустая строка. '
+    'fulfillment_choice для Z.ai: email, link или пусто, если способ ещё не выбран. '
     'Если клиент сообщает об оплате, попроси в одном сообщении номер заказа из бота или FreeKassa и чек из банка (скриншот или PDF), если их ещё нет в последних сообщениях. '
     'Если receipt_attached=true, чек уже есть: не проси его снова и не описывай содержимое файла. '
     'order_number — только цифры номера, который клиент уже назвал, иначе пусто. '
@@ -77,7 +83,7 @@ DOCUMENTED_FACTS = (
     'Это не делает страну официально поддерживаемой.',
     'Гарантия есть на все сервисы, кроме Claude. Других условий гарантии владелец не записал.',
     'Claude может заблокировать аккаунт, гарантии на Claude нет. На остальные сервисы блокировка входит в гарантию. Срок замены не записан.',
-    'Подписка оформляется в течение 30–60 минут.',
+    'Активация занимает 5–30 минут. У сервисов с автоактивацией — 2–5 минут.',
     'Возврат не обещать. Собрать номер заказа, сервис и причину. Когда все три есть, отвечает Александр.',
 )
 _RUBLE = re.compile(r'(\d{2,7})\s*(?:₽|руб(?:лей|ля|ль)?)', re.I)
@@ -198,6 +204,20 @@ def _allowed_prices(tariffs, nominals, service_id, tariff_id):
     return prices
 
 
+def _setup(understanding):
+    found = {}
+    for key in ('setup_email', 'setup_password', 'setup_recovery'):
+        value = ' '.join(str((understanding or {}).get(key) or '').split())
+        if value and len(value) <= 200:
+            found[key] = value
+    return found
+
+
+def _choice(understanding):
+    value = str((understanding or {}).get('fulfillment_choice') or '').strip().casefold()
+    return value if value in ('email', 'link') else ''
+
+
 def _id_list(understanding, key):
     values = []
     for item in (understanding or {}).get(key) or []:
@@ -244,6 +264,8 @@ def validate(understanding, context):
             'vpn_advice': bool((understanding or {}).get('vpn_advice')),
             'reask_advisories': _id_list(understanding, 'reask_advisories'),
             'payment_asked': bool((understanding or {}).get('payment_asked')),
+            'fulfillment_choice': _choice(understanding),
+            'setup': _setup(understanding),
             'region': '',
             'conflict': _conflict(understanding),
             'conflict_reason': str((understanding or {}).get('conflict_reason') or '').strip()[:300],
@@ -448,19 +470,28 @@ def active_region(burst, state, model_region=''):
     return ''
 
 
+_ADVISORIES = ('vpn_location', 'activation_shop', 'activation_auto')
+
+
+def _has_number(text, number):
+    return bool(re.search(r'(?<!\d)' + str(number) + r'(?!\d)', text))
+
+
 def advisory_present(advisory_id, text):
     low = str(text or '').casefold().replace('ё', 'е')
     if advisory_id == 'vpn_location':
         return ('vpn' in low or 'впн' in low) and 'локац' in low
-    if advisory_id == 'delivery_time':
-        return bool(re.search(r'(?<!\d)30(?!\d)', low) and re.search(r'(?<!\d)60(?!\d)', low) and 'минут' in low)
+    if advisory_id == 'activation_shop':
+        return _has_number(low, 5) and _has_number(low, 30) and 'минут' in low
+    if advisory_id == 'activation_auto':
+        return _has_number(low, 2) and _has_number(low, 5) and 'минут' in low and 'авто' in low
     return False
 
 
 def advisories_already(history, state):
     found = {str(item) for item in ((state or {}).get('advisories') or []) if item}
     for item in history or []:
-        for advisory_id in ('vpn_location', 'delivery_time'):
+        for advisory_id in _ADVISORIES:
             if advisory_present(advisory_id, (item or {}).get('text')):
                 found.add(advisory_id)
     return sorted(found)
@@ -649,7 +680,7 @@ def shape_advisories(reply, validated, context):
     kept = []
     for part in parts:
         if any(advisory_id in already and advisory_id not in reask and advisory_present(advisory_id, part)
-               for advisory_id in ('vpn_location', 'delivery_time')):
+               for advisory_id in _ADVISORIES):
             continue
         if part.strip():
             kept.append(part.strip())
@@ -748,7 +779,10 @@ def remember_turn(db, chat, validated, context, reply=''):
     elif validated.get('service_id') and validated['service_id'] != 'appstore':
         collected.pop('region', None)
     state['collected'] = collected
-    for advisory_id in ('vpn_location', 'delivery_time'):
+    for key, value in (validated.get('setup') or {}).items():
+        if value:
+            collected[key] = value
+    for advisory_id in _ADVISORIES:
         if advisory_present(advisory_id, reply) and advisory_id not in advisories:
             advisories.append(advisory_id)
     state['advisories'] = advisories
@@ -762,10 +796,19 @@ def package(understanding, context, db=None, chat=None):
     validated = attach_region(validated, understanding, context)
     reply = str((understanding or {}).get('reply') or '').strip()
     from .handoff import handoff_text
-    from .payment_guide import mixes_activation_into_payment, render
+    from .payment_guide import (kind_for, merged_setup, missing_setup, mixes_activation_into_payment,
+                                render, setup_ask, setup_ready)
+    plan_name = (validated.get('tariff') or {}).get('plan') or (context.get('dialog_state') or {}).get('tariff') or ''
+    kind = kind_for(validated.get('service_id') or '', plan_name, context.get('tariffs') or [])
+    setup = merged_setup(validated.get('setup'), (context.get('dialog_state') or {}).get('collected'))
     composed = False
-    options = [] if validated.get('payment_asked') else matching_tariffs(context, validated.get('service_id'))
-    if len(options) >= 2:
+    if kind == 'chatgpt_new_account' and setup_ready(setup):
+        reply = handoff_text()
+        validated['questions'] = [reply]
+        composed = True
+        verdict = {'send': False, 'class': 'collect', 'reason': 'Данные для нового аккаунта Plus собраны.'}
+    options = [] if validated.get('payment_asked') or composed else matching_tariffs(context, validated.get('service_id'))
+    if not composed and len(options) >= 2:
         reply = tariff_question(options)
         validated['tariff_id'] = ''
         validated['tariff'] = None
@@ -773,22 +816,27 @@ def package(understanding, context, db=None, chat=None):
         validated['questions'] = [reply]
         composed = True
         verdict = classify_draft(reply, validated['allowed_prices'])
-    elif validated.get('payment_asked') or mixes_activation_into_payment(reply):
+    elif not composed and (validated.get('payment_asked') or mixes_activation_into_payment(reply)
+            or (kind == 'chatgpt_new_account' and setup and missing_setup(setup))):
         service_id = validated.get('service_id') or ''
         tariff = validated.get('tariff') or {}
         service_name = tariff.get('service') or ''
         if not service_name:
             match = next((row for row in context.get('tariffs') or [] if row.get('service_id') == service_id), None)
             service_name = match.get('service') if match else ''
-        reply = render(service_id, service_name, (tariff or {}).get('plan') or '',
-                       {'bot_navigation': context.get('bot_navigation') or {}},
-                       context.get('advisories_already_said') or [])
+        if kind == 'chatgpt_new_account' and setup and not validated.get('payment_asked') and not mixes_activation_into_payment(reply):
+            reply = setup_ask(missing_setup(setup))
+        else:
+            reply = render(service_id, service_name, plan_name or (tariff or {}).get('plan') or '',
+                           {'bot_navigation': context.get('bot_navigation') or {}},
+                           context.get('advisories_already_said') or [],
+                           context.get('tariffs') or [], validated.get('fulfillment_choice') or '', setup)
         if 'vpn_location' not in (validated.get('reask_advisories') or []):
             validated['vpn_advice'] = False
         validated['questions'] = [reply]
         composed = True
         verdict = classify_draft(reply, validated['allowed_prices'])
-    elif validated['confidence'] == 'low':
+    elif not composed and validated['confidence'] == 'low':
         options = clarify_options(understanding, context)
         validated['service_id'] = ''
         validated['tariff_id'] = ''
@@ -803,7 +851,7 @@ def package(understanding, context, db=None, chat=None):
         else:
             reply = _clarify_reply(reply, options)
             verdict = classify_draft(reply, validated['allowed_prices'])
-    else:
+    elif not composed:
         grounded, composed = ground_nominals(reply, context, validated)
         reply = grounded
         if not composed and validated.get('tariff'):
@@ -863,6 +911,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         holds.append('Черновик расходится с репликой владельца в этом чате.')
     if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
         holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')
+    from .payment_guide import kind_for, merged_setup, setup_ready
+    plan_name = (validated.get('tariff') or {}).get('plan') or ((context or {}).get('dialog_state') or {}).get('tariff') or ''
+    account = merged_setup(validated.get('setup'), ((context or {}).get('dialog_state') or {}).get('collected'))
+    account_ready = (kind_for(validated.get('service_id') or '', plan_name, (context or {}).get('tariffs') or [])
+                     == 'chatgpt_new_account' and setup_ready(account))
+    if account_ready:
+        holds.append('Данные для нового аккаунта Plus собраны. Клиенту оставлена фраза ожидания.')
     topic = validated['owner_topic']
     faq_rows = (context or {}).get('faq') or []
     from .faq import collect_fields, usable_answer
@@ -909,9 +964,15 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                                 context))),
                         refund_hold=refund_ready,
                         refund_collected=validated.get('refund_collected') or {},
+                        account_setup_hold=account_ready,
+                        account_setup=account if account_ready else {},
                         repeat_hold=_repeats_assistant(answer.get('reply'), context),
                         diagnostic=' '.join(holds), handoff_reason=' '.join(holds))
-        answer = dict(answer, handoff=True, evidence=evidence)
+        if account_ready:
+            from .handoff import handoff_text
+            answer = dict(answer, reply=handoff_text(), handoff=True, evidence=evidence)
+        else:
+            answer = dict(answer, handoff=True, evidence=evidence)
         return answer
     answer = dict(answer, evidence=evidence)
     return answer
