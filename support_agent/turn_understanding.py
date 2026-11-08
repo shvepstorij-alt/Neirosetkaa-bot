@@ -19,22 +19,38 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Разбери текущую реплику клиента по истории, состоянию диалога, глоссарию и спискам тарифов и номиналов. '
     'glossary — разговорные названия и слова тарифов. Это подсказка смысла. '
     'intent — тип вопроса. service_id и tariff_id только из tariffs, иначе пустая строка. '
-    'confidence=high, только когда сервис или тариф понятен. '
-    'confidence=low, если есть сомнение: service_id и tariff_id оставь пустыми, '
-    'clarify_ids — два или три id из tariffs (id или service_id), '
-    'reply — короткий вопрос ровно с этими вариантами, без выбора одного из них. '
-    'topic_changed=true, если реплика про другой сервис или другой тип вопроса. '
+    'Короткая реплика без нового сервиса остаётся на dialog_state.service_id. '
+    'topic_changed=true только если клиент сам назвал другой сервис. '
+    'Сумма или номинал в таком продолжении относится к текущему сервису и региону, а не к другому товару с похожей цифрой. '
+    'region — код или название региона из nominals, если речь о пополнении. '
+    'Если клиент назвал регион, отвечай только его номиналами. Если регион уже есть в dialog_state.region и нового региона нет, оставь его. '
+    'Нет такого номинала в этом регионе — так и скажи и предложи номиналы из списка, не переключайся на другой сервис. '
+    'confidence=high, только когда сервис или тариф понятен однозначно. '
+    'matched_tariff_ids — все id тарифов текущего сервиса, которые подходят под слова клиента. '
+    'Если их два или три, confidence=low, clarify_ids равны только им, tariff_id пустой, '
+    'reply — один короткий вопрос ровно с этими вариантами. Остальные тарифы сервиса не перечисляй. '
     'Обычное Pro без слова про год — месячный тариф, если в списке есть и месяц, и год. '
+    'Если выбран один тариф, не перечисляй остальные. '
     'questions — все отдельные вопросы этого обращения, коротко и с названием из каталога, если оно известно. '
-    'reply отвечает на каждый вопрос отдельным коротким пунктом: 1. 2. 3. '
+    'На каждый вопрос ответь отдельно, с пустой строкой между мыслями. В обычном ответе не нумеруй пункты 1. 2. 3. '
+    'Нумеруй только настоящую инструкцию, как оплатить или что сделать после оплаты, и только шагами из payment. '
+    'Пиши как живой продавец в личке: коротко, тепло, по-человечески. '
+    'Короткие фразы, между мыслями пустая строка. Не канцелярия и не сплошной абзац. '
+    'Точку ставь там, где фраза правда кончилась. Скобка или один эмодзи уместны редко, не в каждой реплике. '
     'Не переспрашивай факты из known_facts. Не утверждай, что оплата прошла, подписка активирована или возврат сделан. '
     'Цены в reply только из tariffs.price и nominals.price. '
+    'payment_asked=true, если клиент спрашивает, как или где оплатить. '
+    'Тогда шаги оплаты бери из payment: кнопки и способы оттуда. '
+    'Токен сессии, Organization ID и Perplexity User ID — это данные после оплаты, не способ оплаты. '
     'Если клиент сообщает об оплате, попроси в одном сообщении номер заказа из бота или FreeKassa и чек из банка (скриншот или PDF), если их ещё нет в последних сообщениях. '
     'Если receipt_attached=true, чек уже есть: не проси его снова и не описывай содержимое файла. '
     'order_number — только цифры номера, который клиент уже назвал, иначе пусто. '
     'receipt_amount_unverified — сумма с чека, если ты её разобрал, иначе пусто. Чек сам по себе оплату не подтверждает. '
-    'Если вопрос про работу сервиса в стране клиента, доступ, соединение или обычное использование сервисов, '
-    'поставь vpn_advice=true и напиши, что нужен VPN и лучше всегда одна и та же локация. '
+    'advisories_already_said — советы, которые уже прозвучали в этом разговоре. Не повторяй их. '
+    'vpn_advice=true только если вопрос про страну, доступ, соединение или VPN и vpn_location ещё нет в advisories_already_said. '
+    'Тогда напиши, что лучше включить VPN и по возможности всегда одна и та же локация. '
+    'Если клиент снова прямо спрашивает про этот совет, добавь его id в reask_advisories и можно повторить. '
+    'Иначе vpn_advice=false и reask_advisories пустой. '
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
     'Голос уже расшифрован в тексте сообщения. '
     'conflict: none — спокойный тон, annoyed — раздражён без угрозы, '
@@ -44,12 +60,13 @@ UNDERSTANDING_INSTRUCTIONS = (
     'не противоречь им, не повторяй их дословно и не спрашивай заново то, что он уже спросил. '
     'Продолжай с его последней реплики. owner_alignment: follows, contradicts, repeats или reasks. '
     'Если таких сообщений нет, owner_alignment=follows. '
-    'faq — ответы владельца. Если known=true, ответ клиенту должен содержать answer дословно и ничего сверх него. '
-    'Если клиент просит срок гарантии или другие условия, которых нет в answer, beyond_owner_fact=true. '
+    'faq — ответы владельца. Если known=true, передай смысл answer. Дословно копировать необязательно. '
+    'Рядом можно назвать цену и тариф из tariffs или nominals. Это не новое условие. '
+    'beyond_owner_fact=true только если в ответе есть срок, гарантия или другое условие, которого нет в answer и нет среди цен каталога. '
     'Если у темы есть collect, это сбор сведений, а не текст обещания. '
     'Для возврата заполни refund_order, refund_service и refund_reason только тем, что уже есть в последних сообщениях, иначе пустая строка. '
     'Спроси только недостающее. Возврат не обещай. '
-    'owner_topic — id такой темы, либо none. '
+    'owner_topic — id такой темы, либо none. Отсутствие номинала в каталоге — не owner_topic. '
     'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
     'Не утверждай, что оплата прошла, подписка активирована или возврат сделан.'
 )
@@ -139,6 +156,7 @@ def build_context(db, chat, facts):
     from .payment_case import receipt_files
     from .glossary import for_context
     from .faq import for_context as faq_context
+    from .payment_guide import for_context as payment_context
     try:
         glossary = for_context(facts)
     except Exception:
@@ -147,6 +165,11 @@ def build_context(db, chat, facts):
         faq = faq_context()
     except Exception:
         faq = []
+    try:
+        payment = payment_context(facts)
+    except Exception:
+        payment = {}
+    region = active_region(burst, state)
     return {'burst': burst,
             'receipt_attached': bool(receipt_files(db, chat)),
             'glossary': glossary,
@@ -154,12 +177,16 @@ def build_context(db, chat, facts):
             'dialog_state': {'service_id': state.get('service_key') or '',
                              'service': state.get('service_label') or '',
                              'tariff': state.get('option_label') or '',
+                             'region': region,
                              'collected': state.get('collected') or {},
                              'shown': state.get('offered') or []},
             'tariffs': tariffs,
             'nominals': nominal_index(facts),
             'owner_statements': [item['text'] for item in window if item.get('authority') == 'owner' and item.get('text')],
             'faq': faq,
+            'payment': payment,
+            'bot_navigation': (facts or {}).get('bot_navigation') or {},
+            'advisories_already_said': advisories_already(window, state),
             'documented_facts': list(DOCUMENTED_FACTS),
             'hints': hint_services(burst, catalog)}
 
@@ -171,11 +198,25 @@ def _allowed_prices(tariffs, nominals, service_id, tariff_id):
     return prices
 
 
+def _id_list(understanding, key):
+    values = []
+    for item in (understanding or {}).get(key) or []:
+        text = str(item or '').strip()
+        if text and text not in values:
+            values.append(text)
+        if len(values) == 4:
+            break
+    return values
+
+
 def validate(understanding, context):
     """Drop ids that are not in the catalogue. Do not invent a price."""
     tariffs = context.get('tariffs') or []
     by_tariff = {row['id']: row for row in tariffs}
     services = {row['service_id'] for row in tariffs}
+    services |= {str(row.get('id')) for row in ((context.get('glossary') or {}).get('services') or []) if row.get('id')}
+    if context.get('nominals'):
+        services.add('appstore')
     service_id = str((understanding or {}).get('service_id') or '')
     tariff_id = str((understanding or {}).get('tariff_id') or '')
     if service_id not in services:
@@ -201,6 +242,9 @@ def validate(understanding, context):
             'missing_facts': [str(item) for item in understanding.get('missing_facts') or [] if isinstance(item, str)][:12],
             'questions': _texts(understanding.get('questions'), 6),
             'vpn_advice': bool((understanding or {}).get('vpn_advice')),
+            'reask_advisories': _id_list(understanding, 'reask_advisories'),
+            'payment_asked': bool((understanding or {}).get('payment_asked')),
+            'region': '',
             'conflict': _conflict(understanding),
             'conflict_reason': str((understanding or {}).get('conflict_reason') or '').strip()[:300],
             'owner_alignment': _alignment(understanding, context),
@@ -323,7 +367,10 @@ def _clarify_reply(reply, options):
 
 def _answer_blocks(reply):
     parts = re.split(r'(?m)^\s*\d+[.)]\s+', str(reply or ''))
-    return [part.strip() for part in parts[1:] if part.strip()]
+    numbered = [part.strip() for part in parts[1:] if part.strip()]
+    if len(numbered) >= 2:
+        return numbered
+    return [part.strip() for part in re.split(r'\n+', str(reply or '')) if part.strip()]
 
 
 def _catalog_tokens(context):
@@ -336,7 +383,7 @@ def _catalog_tokens(context):
 
 
 def questions_addressed(reply, questions, context):
-    """A multi-question turn needs one numbered point per question the model listed."""
+    """A multi-question turn needs a separate line or point per question."""
     items = [item for item in questions or [] if item]
     if len(items) < 2:
         return True
@@ -382,8 +429,305 @@ def classify_draft(reply, allowed_prices):
     return {'send': True, 'class': 'instruct', 'reason': 'Ответ объясняет порядок и не сообщает результат операции.'}
 
 
-def remember_turn(db, chat, validated, context):
+def active_region(burst, state, model_region=''):
+    """Region slot: one region named now, otherwise the region already stored."""
+    from .apple_matching import ALIASES, region_codes
+    named = region_codes(burst or '')
+    if len(named) == 1:
+        return next(iter(named))
+    if len(named) > 1:
+        return ''
+    saved = str(((state or {}).get('collected') or {}).get('region') or '')
+    if saved not in ALIASES:
+        saved = str((state or {}).get('region') or '')
+    if saved in ALIASES:
+        return saved
+    model = region_codes(model_region or '')
+    if len(model) == 1:
+        return next(iter(model))
+    return ''
+
+
+def advisory_present(advisory_id, text):
+    low = str(text or '').casefold().replace('ё', 'е')
+    if advisory_id == 'vpn_location':
+        return ('vpn' in low or 'впн' in low) and 'локац' in low
+    if advisory_id == 'delivery_time':
+        return bool(re.search(r'(?<!\d)30(?!\d)', low) and re.search(r'(?<!\d)60(?!\d)', low) and 'минут' in low)
+    return False
+
+
+def advisories_already(history, state):
+    found = {str(item) for item in ((state or {}).get('advisories') or []) if item}
+    for item in history or []:
+        for advisory_id in ('vpn_location', 'delivery_time'):
+            if advisory_present(advisory_id, (item or {}).get('text')):
+                found.add(advisory_id)
+    return sorted(found)
+
+
+def _named_services(context):
+    found = set()
+    burst = ' ' + _flat(context.get('burst') or '') + ' '
+    for item in context.get('hints') or []:
+        if isinstance(item, dict) and item.get('service_id'):
+            found.add(str(item['service_id']))
+    for row in ((context.get('glossary') or {}).get('services') or []):
+        names = [row.get('name'), row.get('id'), *(row.get('aliases') or [])]
+        for name in names:
+            token = _flat(name)
+            if token and ((' ' + token + ' ') in burst or burst.strip() == token):
+                found.add(str(row.get('id') or ''))
+    return {item for item in found if item}
+
+
+def _clear_tariff_if_other(validated, service_id):
+    tariff = validated.get('tariff')
+    if tariff and tariff.get('service_id') != service_id:
+        validated['tariff'] = None
+        validated['tariff_id'] = ''
+
+
+def bind_service(validated, context):
+    """Keep the open service when a short follow-up does not name a new one.
+
+    An empty service_id stays empty. The glossary is not a router.
+    """
+    state_id = str((context.get('dialog_state') or {}).get('service_id') or '')
+    named = _named_services(context)
+    proposed = validated.get('service_id') or ''
+    if not proposed:
+        if state_id and (not named or state_id in named):
+            validated['service_id'] = state_id
+            validated['topic_changed'] = False
+        return validated
+    if proposed in named or (not named and not state_id):
+        return validated
+    if not named and state_id and proposed != state_id:
+        validated['service_id'] = state_id
+        validated['topic_changed'] = False
+        _clear_tariff_if_other(validated, state_id)
+        return validated
+    if named and proposed not in named and len(named) == 1:
+        only = next(iter(named))
+        validated['service_id'] = only
+        validated['topic_changed'] = bool(state_id and only != state_id)
+        _clear_tariff_if_other(validated, only)
+    return validated
+
+
+def attach_region(validated, understanding, context):
+    if validated.get('service_id') != 'appstore':
+        validated['region'] = ''
+        return validated
+    state = context.get('dialog_state') or {}
+    validated['region'] = active_region(context.get('burst') or '', state, (understanding or {}).get('region') or '')
+    return validated
+
+
+def _plan_tokens(text):
+    return set(re.findall(r'[a-zа-яё0-9+]+', _flat(text)))
+
+
+def matching_tariffs(context, service_id):
+    """Tariffs of the open service whose names fit the client's words."""
+    if not service_id:
+        return []
+    burst_tokens = _plan_tokens(context.get('burst') or '')
+    if not burst_tokens:
+        return []
+    forms = []
+    for spec in ((context.get('glossary') or {}).get('tariff_words') or []):
+        words = [_flat(item) for item in spec.get('words') or [] if _flat(item)]
+        if any(word in burst_tokens for word in words):
+            forms.extend(words)
+    rows = [row for row in context.get('tariffs') or [] if row.get('service_id') == service_id]
+    scored = []
+    for row in rows:
+        tokens = _plan_tokens(row.get('plan') or '')
+        score = len(tokens & burst_tokens)
+        if forms and tokens & set(forms):
+            score = max(score, 1)
+        if score:
+            scored.append((score, row))
+    if not scored:
+        return []
+    burst_flat = _flat(context.get('burst') or '')
+    padded = ' ' + burst_flat + ' '
+    exact = []
+    for _score, row in scored:
+        name = _flat(row.get('plan') or '')
+        if name and (' ' + name + ' ') in padded:
+            exact.append(row)
+    if len(exact) == 1:
+        return exact
+    best = max(score for score, _row in scored)
+    winners = [row for score, row in scored if score == best]
+    if 'год' not in burst_flat and 'year' not in burst_flat:
+        plain = [row for row in winners if 'год' not in _flat(row.get('plan')) and 'year' not in _flat(row.get('plan'))]
+        if len(plain) == 1:
+            return plain
+        if plain:
+            winners = plain
+    return winners
+
+
+def tariff_question(rows):
+    labels = []
+    for row in rows:
+        label = (str(row.get('service') or '') + ' ' + str(row.get('plan') or '')).strip()
+        if label and label not in labels:
+            labels.append(label)
+    if len(labels) == 2:
+        body = labels[0] + ' или ' + labels[1]
+    else:
+        body = ', '.join(labels[:-1]) + ' или ' + labels[-1]
+    return body + '?\n\nЭто разные варианты, напишите какой из них'
+
+
+def drop_other_plans(reply, validated):
+    chosen = validated.get('tariff')
+    if not chosen or validated.get('intent') == 'list_options':
+        return reply
+    lines = str(reply or '').split('\n')
+    kept = []
+    for line in lines:
+        dropped = False
+        low = line.casefold()
+        for row in validated.get('_others') or []:
+            plan = str(row.get('plan') or '')
+            if plan and plan.casefold() in low and str(row.get('price')) in line:
+                dropped = True
+        if not dropped:
+            kept.append(line)
+    text = '\n'.join(kept).strip()
+    return text or str(reply or '').strip()
+
+
+def ground_nominals(reply, context, validated):
+    if validated.get('service_id') != 'appstore':
+        return reply, False
+    code = validated.get('region') or ''
+    from .apple_matching import amounts, nominal, region_codes
+    rows = [row for row in context.get('nominals') or []
+            if code and code in region_codes(row.get('region') or '', stock=True)]
+    if not code or not rows:
+        return reply, False
+    title = str(rows[0].get('region') or code).split('|')[0].strip() or code
+    asked = amounts(context.get('burst') or '')
+    if len(asked) == 1:
+        amount, unit = next(iter(asked))
+        if unit == '$' and code == 'US':
+            unit = 'USD'
+        matched = []
+        for row in rows:
+            ident = nominal(str(row.get('nominal') or ''))
+            if ident and ident[0] == amount and (ident[1] == unit or (unit == 'USD' and ident[1] in ('USD', '$'))):
+                matched.append(row)
+        if not matched:
+            lines = [f"{row['nominal']}: {row['price']} ₽" for row in rows]
+            text = (f"Номинала {amount:g} {unit} в регионе {title} нет.\n\n"
+                    'Сейчас есть:\n' + '\n'.join(lines) + '\n\nКакой оформить?')
+            return text, True
+        price = matched[0]['price']
+        if str(price) not in str(reply or ''):
+            return f"В регионе {title} есть {amount:g} {unit}, это {price} ₽.", True
+        return reply, False
+    prices = {row.get('price') for row in rows}
+    stated = {int(item) for item in _RUBLE.findall(str(reply or ''))}
+    if stated and stated <= prices:
+        return reply, False
+    lines = [f"{row['nominal']}: {row['price']} ₽" for row in rows]
+    text = 'Для региона ' + title + ' сейчас такие номиналы:\n\n' + '\n'.join(lines) + '\n\nКакой оформить?'
+    return text, True
+
+
+def shape_advisories(reply, validated, context):
+    already = set(context.get('advisories_already_said') or [])
+    reask = set(validated.get('reask_advisories') or [])
+    parts = re.split(r'(?<=[.!?])\s+|\n+', str(reply or ''))
+    kept = []
+    for part in parts:
+        if any(advisory_id in already and advisory_id not in reask and advisory_present(advisory_id, part)
+               for advisory_id in ('vpn_location', 'delivery_time')):
+            continue
+        if part.strip():
+            kept.append(part.strip())
+    shaped = '\n\n'.join(kept).strip()
+    if not shaped:
+        shaped = str(reply or '').strip()
+    want_vpn = bool(validated.get('vpn_advice')) and ('vpn_location' not in already or 'vpn_location' in reask)
+    if want_vpn:
+        shaped = _with_vpn(shaped, True)
+    return shaped
+
+
+def fact_stated(answer, reply):
+    if _flat(answer) in _flat(reply):
+        return True
+    folded = _flat(reply)
+    numbers = re.findall(r'\d+', answer or '')
+    words = re.findall(r'[a-zа-яё]{5,}', _flat(answer))
+    if numbers:
+        if any(not re.search(r'(?<!\d)' + number + r'(?!\d)', folded) for number in numbers):
+            return False
+        return not words or any(word in folded for word in words)
+    if not words:
+        return False
+    hits = sum(1 for word in words if word in folded)
+    return hits >= max(2, (len(words) + 1) // 2)
+
+
+def extra_numbers_ok(answer, reply, allowed_prices, context):
+    fact_numbers = set(re.findall(r'\d+', answer or ''))
+    price_numbers = {str(price) for price in allowed_prices or ()}
+    plan_numbers = set()
+    low = str(reply or '').casefold()
+    for row in (context or {}).get('tariffs') or []:
+        plan = str(row.get('plan') or '')
+        if plan and plan.casefold() in low:
+            plan_numbers.update(re.findall(r'\d+', plan))
+    for number in re.findall(r'\d+', str(reply or '')):
+        if number in fact_numbers or number in price_numbers or number in plan_numbers:
+            continue
+        if int(number) <= 3:
+            continue
+        return False
+    return True
+
+
+def addition_is_catalog(answer, reply, context):
+    text = _RUBLE.sub(' ', str(reply or ''))
+    for number in re.findall(r'\d+', answer or ''):
+        text = re.sub(r'(?<!\d)' + number + r'(?!\d)', ' ', text)
+    for row in (context or {}).get('tariffs') or []:
+        for part in (row.get('service'), row.get('plan')):
+            if part and len(str(part)) >= 3:
+                text = re.sub(re.escape(str(part)), ' ', text, flags=re.I)
+    fact_words = re.findall(r'[A-Za-zА-Яа-яЁё]{5,}', answer or '')
+    for word in re.findall(r'[A-Za-zА-Яа-яЁё]{5,}', text):
+        stem = word.casefold().replace('ё', 'е')[:5]
+        if any(stem == fact.casefold().replace('ё', 'е')[:5] for fact in fact_words):
+            continue
+        return False
+    return True
+
+
+def fact_gap(answer_text, reply, beyond, allowed_prices, context):
+    if not answer_text:
+        return False
+    if not fact_stated(answer_text, reply):
+        return True
+    if not extra_numbers_ok(answer_text, reply, allowed_prices, context):
+        return True
+    if beyond and not addition_is_catalog(answer_text, reply, context):
+        return True
+    return False
+
+
+def remember_turn(db, chat, validated, context, reply=''):
     state = load(db, chat)
+    advisories = [str(item) for item in (state.get('advisories') or []) if item]
     if validated.get('topic_changed'):
         state['collected'] = {}
         state['offered'] = []
@@ -398,20 +742,58 @@ def remember_turn(db, chat, validated, context):
     elif validated.get('service_id') and validated.get('intent') in ('price', 'list_options'):
         state['offered'] = [row for row in context.get('tariffs') or []
                             if row['service_id'] == validated['service_id']][:12]
+    collected = dict(state.get('collected') or {})
+    if validated.get('service_id') == 'appstore' and validated.get('region'):
+        collected['region'] = validated['region']
+    elif validated.get('service_id') and validated['service_id'] != 'appstore':
+        collected.pop('region', None)
+    state['collected'] = collected
+    for advisory_id in ('vpn_location', 'delivery_time'):
+        if advisory_present(advisory_id, reply) and advisory_id not in advisories:
+            advisories.append(advisory_id)
+    state['advisories'] = advisories
     state['active'] = bool(state.get('service_key') or state.get('offered'))
     state['pending_slot'] = ''
     save(db, chat, state)
 
 
 def package(understanding, context, db=None, chat=None):
-    validated = validate(understanding or {}, context)
+    validated = bind_service(validate(understanding or {}, context), context)
+    validated = attach_region(validated, understanding, context)
     reply = str((understanding or {}).get('reply') or '').strip()
     from .handoff import handoff_text
-    if validated['confidence'] == 'low':
+    from .payment_guide import mixes_activation_into_payment, render
+    composed = False
+    options = [] if validated.get('payment_asked') else matching_tariffs(context, validated.get('service_id'))
+    if len(options) >= 2:
+        reply = tariff_question(options)
+        validated['tariff_id'] = ''
+        validated['tariff'] = None
+        validated['intent'] = 'choose_tariff'
+        validated['questions'] = [reply]
+        composed = True
+        verdict = classify_draft(reply, validated['allowed_prices'])
+    elif validated.get('payment_asked') or mixes_activation_into_payment(reply):
+        service_id = validated.get('service_id') or ''
+        tariff = validated.get('tariff') or {}
+        service_name = tariff.get('service') or ''
+        if not service_name:
+            match = next((row for row in context.get('tariffs') or [] if row.get('service_id') == service_id), None)
+            service_name = match.get('service') if match else ''
+        reply = render(service_id, service_name, (tariff or {}).get('plan') or '',
+                       {'bot_navigation': context.get('bot_navigation') or {}},
+                       context.get('advisories_already_said') or [])
+        if 'vpn_location' not in (validated.get('reask_advisories') or []):
+            validated['vpn_advice'] = False
+        validated['questions'] = [reply]
+        composed = True
+        verdict = classify_draft(reply, validated['allowed_prices'])
+    elif validated['confidence'] == 'low':
         options = clarify_options(understanding, context)
         validated['service_id'] = ''
         validated['tariff_id'] = ''
         validated['tariff'] = None
+        validated['region'] = ''
         validated['allowed_prices'] = _allowed_prices(
             context.get('tariffs') or [], context.get('nominals') or [], '', '')
         if len(options) < 2:
@@ -421,20 +803,29 @@ def package(understanding, context, db=None, chat=None):
         else:
             reply = _clarify_reply(reply, options)
             verdict = classify_draft(reply, validated['allowed_prices'])
-    elif not reply:
-        reply = handoff_text()
-        verdict = {'send': False, 'class': 'unverified', 'reason': 'Модель не дала текст ответа.'}
     else:
-        verdict = classify_draft(reply, validated['allowed_prices'])
+        grounded, composed = ground_nominals(reply, context, validated)
+        reply = grounded
+        if not composed and validated.get('tariff'):
+            others = [row for row in context.get('tariffs') or []
+                      if row.get('service_id') == validated['tariff'].get('service_id')
+                      and row.get('id') != validated['tariff'].get('id')]
+            validated['_others'] = others
+            reply = drop_other_plans(reply, validated)
+        if not reply:
+            reply = handoff_text()
+            verdict = {'send': False, 'class': 'unverified', 'reason': 'Модель не дала текст ответа.'}
+        else:
+            verdict = classify_draft(reply, validated['allowed_prices'])
     if verdict['send']:
-        reply = _with_vpn(reply, validated['vpn_advice'])
+        reply = shape_advisories(reply, validated, context)
         if len(reply) > 1800:
             verdict = {'send': False, 'class': 'unverified', 'reason': 'Ответ с правилом VPN длиннее 1800 символов.'}
-    if verdict['send'] and not questions_addressed(reply, validated['questions'], context):
+    if verdict['send'] and not composed and not questions_addressed(reply, validated['questions'], context):
         verdict = {'send': False, 'class': 'unverified',
                    'reason': 'В ответе нет отдельного пункта на каждый вопрос из разбора.'}
     if db is not None and chat is not None:
-        remember_turn(db, chat, validated, context)
+        remember_turn(db, chat, validated, context, reply if verdict['send'] else '')
     summary = str((understanding or {}).get('summary') or verdict['reason'])[:700]
     return {'reply': reply or handoff_text(),
             'summary': summary,
@@ -452,6 +843,7 @@ def package(understanding, context, db=None, chat=None):
                                                 'missing_facts': validated['missing_facts'],
                          'questions': validated['questions'],
                          'vpn_advice': validated['vpn_advice'],
+                         'region': validated.get('region') or '',
                          'conflict': validated['conflict'],
                          'owner_alignment': validated['owner_alignment'],
                          'owner_topic': validated['owner_topic']},
@@ -492,7 +884,10 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
     elif answer_text:
         reply = str(answer.get('reply') or '')
-        if beyond or _flat(answer_text) not in _flat(reply):
+        prices = validated.get('allowed_prices')
+        if prices is None:
+            prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '')
+        if fact_gap(answer_text, reply, beyond, prices, context):
             holds.append('Ответ выходит за записанный факт владельца.')
     if _repeats_assistant(answer.get('reply'), context):
         holds.append('Черновик повторяет уже сказанное в этом чате.')
@@ -507,7 +902,11 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                         owner_alignment_hold=validated['owner_alignment'] != 'follows',
                         stale_price_hold=(freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')),
                         owner_fact_hold=bool(topic != 'none' and not collecting and (
-                            (not answer_text) or beyond or (answer_text and _flat(answer_text) not in _flat(answer.get('reply'))))),
+                            (not answer_text) or fact_gap(
+                                answer_text, str(answer.get('reply') or ''), beyond,
+                                validated.get('allowed_prices') or _allowed_prices(
+                                    (context or {}).get('tariffs') or [], (context or {}).get('nominals') or [], '', ''),
+                                context))),
                         refund_hold=refund_ready,
                         refund_collected=validated.get('refund_collected') or {},
                         repeat_hold=_repeats_assistant(answer.get('reply'), context),

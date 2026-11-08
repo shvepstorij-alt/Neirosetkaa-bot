@@ -191,6 +191,10 @@ class OpenAI:
                       'missing_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
                       'questions': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 6},
                       'vpn_advice': {'type': 'boolean'},
+                      'region': {'type': 'string'},
+                      'payment_asked': {'type': 'boolean'},
+                      'reask_advisories': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 4},
+                      'matched_tariff_ids': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 4},
                       'conflict': {'type': 'string', 'enum': ['none', 'annoyed', 'high']},
                       'conflict_reason': {'type': 'string'},
                       'owner_alignment': {'type': 'string', 'enum': ['follows', 'contradicts', 'repeats', 'reasks']},
@@ -207,6 +211,7 @@ class OpenAI:
                       'summary': {'type': 'string', 'maxLength': 700}},
                   'required': ['intent', 'service_id', 'tariff_id', 'confidence', 'clarify_ids',
                                'topic_changed', 'known_facts', 'missing_facts', 'questions', 'vpn_advice',
+                               'region', 'payment_asked', 'reask_advisories', 'matched_tariff_ids',
                                'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic',
                                'beyond_owner_fact', 'refund_order', 'refund_service', 'refund_reason',
                                'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}

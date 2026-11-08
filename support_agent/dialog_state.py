@@ -30,7 +30,7 @@ _GRANT = re.compile(
 def empty():
     return {'version': 1, 'active': False, 'bound': False, 'service_key': '', 'service_label': '',
             'option_label': '', 'topic': '', 'pending_slot': '', 'pending_question': '',
-            'collected': {}, 'offered': []}
+            'collected': {}, 'offered': [], 'advisories': []}
 
 
 def _ensure(db):
@@ -53,6 +53,8 @@ def load(db, chat):
         state['collected'] = {}
     if not isinstance(state.get('offered'), list):
         state['offered'] = []
+    if not isinstance(state.get('advisories'), list):
+        state['advisories'] = []
     state['active'] = bool(state.get('service_label') or state.get('pending_slot') or state.get('topic'))
     state['bound'] = False
     return state
