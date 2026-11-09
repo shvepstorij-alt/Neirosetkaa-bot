@@ -1177,6 +1177,9 @@ class Service:
             self._probe_facts=facts
             self._probe_question=latest
         if turn['clarification_required'] and not image:
+            from .app_installation import reply as installation_reply
+            installation=installation_reply(facts,raw_batch,guide_history)
+            if installation:return installation
             labels=', '.join(turn['reference_labels'])
             reply=(f'Что хотите узнать о {labels}: стоимость, порядок оформления или возможности?' if labels else
                    'О каком сервисе хотите узнать? Уточните, пожалуйста, название.')

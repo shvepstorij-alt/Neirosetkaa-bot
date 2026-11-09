@@ -28,7 +28,7 @@ def policy_facts():
 
 
 def _install_intent(text):
-    return bool(re.search(r'(?:скача|установ)[а-яё]*[^.!?\n]{0,50}(?:прилож|chat\s*gpt|чат\s*гпт|апк|apk)|'
+    return bool(re.search(r'(?:скача|установ)[а-яё]*[^.!?\n]{0,50}(?:прилож|chat\s*gpt|чат\s*гпт|гпт|апк|apk)|'
         r'(?:прилож|chat\s*gpt|чат\s*гпт)[^.!?\n]{0,45}(?:скача|установ)|как[^.!?\n]{0,35}(?:сменить|изменить)[^.!?\n]{0,30}регион',text,re.I))
 
 
@@ -41,7 +41,7 @@ def _platforms(text):
 
 
 def _platform_slot(text):
-    return bool(re.fullmatch(r'\s*(?:(?:у\s+меня|на|это|а)\s+)?(?:android|андроид[а-яё]*|iphone|айфон[а-яё]*|ipad|айпад[а-яё]*|ios|компьютер[а-яё]*|ноутбук[а-яё]*|пк|pc|windows|macos|mac)[.!?\s]*',text,re.I))
+    return bool(re.fullmatch(r'\s*(?:(?:у\s+меня|нужно\s+на|на|это|а)\s+)?(?:android|андроид[а-яё]*|iphone|айфон[а-яё]*|ipad|айпад[а-яё]*|ios|компьютер[а-яё]*|ноутбук[а-яё]*|пк|pc|windows|macos|mac)[.!?\s]*',text,re.I))
 
 
 def _identity(text,catalog):
@@ -73,7 +73,7 @@ def _previous_installation(facts,current,history):
     context=validate_client_rows(reversed(clients),now=time.time(),max_messages=40)
     valid={r['mid'] for r in context.rows}
     last_prompt=next((r for r in reversed(rows) if r.get('role') in ('assistant','owner')),None)
-    prompt=bool(last_prompt and _consultation_text(last_prompt.get('text')) in (PLATFORM_QUESTION,_LEGACY_PLATFORM_QUESTION)
+    prompt=bool(last_prompt and any(_consultation_text(last_prompt.get('text')).endswith(q) for q in (PLATFORM_QUESTION,_LEGACY_PLATFORM_QUESTION))
                 and type(last_prompt.get('at')) in (int,float)
                 and 0<=time.time()-last_prompt['at']<=14400)
     platform_hint=set()
@@ -83,7 +83,7 @@ def _previous_installation(facts,current,history):
         if text==current:continue  # Service history includes the current batch.
         identity=_identity(text,facts.get('catalog',[]))
         if identity=='other':break
-        if _install_intent(text) and identity=='chatgpt':
+        if _install_intent(text) and identity in ('chatgpt', None):
             return text,prompt,platform_hint or _platforms(text)
         if _platform_slot(text):
             if not platform_hint:platform_hint=_platforms(text)
@@ -115,9 +115,19 @@ def reply(facts,current,history=()):
     prior,prompt,prior_platforms=_previous_installation(facts,text,history)
     accepted_platforms=_accepted_install_offer(text,history)
     slot=_platform_slot(text)
+    rows=[r for r in list(history)[-40:] if isinstance(r,dict)]
+    last=next((r for r in reversed(rows) if r.get('role') in ('assistant','owner')),None)
+    from .auto_policy import _consultation_text
+    fresh_last=bool(last and type(last.get('at')) in (int,float) and 0<=time.time()-last['at']<=14400)
+    app_slot=bool(prior and identity=='chatgpt' and fresh_last and _consultation_text(last.get('text')).endswith('Какое приложение хотите установить?'))
+    unavailable=bool(prior and fresh_last and 'App Store' in str(last.get('text','')) and re.search(r'chat\s*gpt|чат\s*гпт',str(last.get('text','')),re.I) and re.fullmatch(r'\s*(?:у\s+меня\s+)?(?:он|оно|приложение)\s+недоступен(?:о)?[.!?\s]*',text,re.I))
+    if unavailable:
+        from .auto_policy import consultation_evidence
+        body='Что именно недоступно: приложение ChatGPT в App Store или вход в него? Если магазин показывает сообщение, пришлите его текст или скриншот.'
+        return {'reply':body,'summary':'Уточнение недоступности приложения без предположения о причине.','handoff':False,'source_ids':[],'evidence':consultation_evidence(body,'installation',diagnostic='Этап: уточнение проблемы установки; причина недоступности не установлена.')}
     short_install=bool(re.fullmatch(r'\s*(?:а\s+)?(?:как|где)\s+(?:его\s+)?(?:скачать|установить)(?:\s+приложение)?[.!?\s]*',text,re.I))
     install=_install_intent(text) or short_install
-    if not install and not (slot and prompt and prior) and not accepted_platforms:return None
+    if not install and not (slot and prompt and prior) and not accepted_platforms and not app_slot:return None
     from .request_goals import covers
     if not covers(text,{'installation'},facts):return None
     if re.search(r'сколько|тариф|как[^.!?\n]{0,35}оплат|возврат|верн[а-я]*\s+деньг|что\s+входит',text,re.I):return None
@@ -130,7 +140,7 @@ def reply(facts,current,history=()):
     android='android' in platforms;ios='ios' in platforms;desktop='desktop' in platforms
     apple_region=bool(re.search(r'как[^.!?\n]{0,35}(?:сменить|изменить)[^.!?\n]{0,30}регион',text,re.I)
                       and re.search(r'apple\s*(?:id|account|аккаунт)|app\s*store|эпл',text,re.I))
-    if identity!='chatgpt' and not prior and not apple_region:
+    if identity!='chatgpt' and (not prior or _identity(prior,facts.get('catalog',[]))!='chatgpt') and not apple_region:
         body='Какое приложение хотите установить?'
     elif desktop:
         body=('Для компьютера откройте официальную страницу загрузки ChatGPT:\n'+DESKTOP+'\n\n'
