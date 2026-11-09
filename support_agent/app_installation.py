@@ -91,6 +91,21 @@ def _previous_installation(facts,current,history):
     return '',False,set()
 
 
+def _accepted_install_offer(current,history):
+    """A short acceptance refers only to the last, recent explicit app offer."""
+    if not re.fullmatch(r'\s*(?:да|ага|хорошо|помогите|да[,.!\s]+помогите|да[,.!\s]+подскажите)[.!\s]*',str(current),re.I):
+        return set()
+    rows=[row for row in list(history)[-40:] if isinstance(row,dict)]
+    previous=next((row for row in reversed(rows) if row.get('role') in ('assistant','owner')),None)
+    if not previous or type(previous.get('at')) not in (int,float) or not 0<=time.time()-previous['at']<=14400:
+        return set()
+    offer=str(previous.get('text') or '')
+    if not re.search(r'помогу\s+с\s+установк[а-яё]*\s+приложени[а-яё]*\s+(?:ChatGPT|чат\s*гпт)',offer,re.I):
+        return set()
+    platforms=_platforms(offer)
+    return platforms if len(platforms)==1 else set()
+
+
 def reply(facts,current,history=()):
     text=str(current or '')
     from .privacy import sensitive
@@ -98,14 +113,18 @@ def reply(facts,current,history=()):
     identity=_identity(text,facts.get('catalog',[]))
     if identity=='other':return None
     prior,prompt,prior_platforms=_previous_installation(facts,text,history)
+    accepted_platforms=_accepted_install_offer(text,history)
     slot=_platform_slot(text)
     short_install=bool(re.fullmatch(r'\s*(?:а\s+)?(?:как|где)\s+(?:его\s+)?(?:скачать|установить)(?:\s+приложение)?[.!?\s]*',text,re.I))
     install=_install_intent(text) or short_install
-    if not install and not (slot and prompt and prior):return None
+    if not install and not (slot and prompt and prior) and not accepted_platforms:return None
     from .request_goals import covers
     if not covers(text,{'installation'},facts):return None
     if re.search(r'сколько|тариф|как[^.!?\n]{0,35}оплат|возврат|верн[а-я]*\s+деньг|что\s+входит',text,re.I):return None
     platforms=_platforms(text)
+    if not platforms and accepted_platforms:
+        platforms=accepted_platforms
+        identity='chatgpt'
     if not platforms and prior:platforms=prior_platforms
     if len(platforms)>1:return None
     android='android' in platforms;ios='ios' in platforms;desktop='desktop' in platforms
@@ -114,8 +133,9 @@ def reply(facts,current,history=()):
     if identity!='chatgpt' and not prior and not apple_region:
         body='Какое приложение хотите установить?'
     elif desktop:
-        from install_guides import DESKTOP_PLAIN
-        body=DESKTOP_PLAIN
+        body=('Для компьютера откройте официальную страницу загрузки ChatGPT:\n'+DESKTOP+'\n\n'
+              'Выберите доступный вариант для своей системы и следуйте шагам на странице. '
+              'После установки войдите в тот же аккаунт ChatGPT. Установка приложения сама по себе не подключает подписку.')
     elif android:
         body=('Для Android можно скачать приложение здесь:\n'+ANDROID+'\n\n'
               'Это сторонний каталог APK, не сайт OpenAI. Проверку конкретного файла я не выполнял, поэтому гарантировать его безопасность не могу. '
