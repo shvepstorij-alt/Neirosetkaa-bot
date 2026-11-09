@@ -994,11 +994,32 @@ class Service:
         from .privacy import sensitive
         from .payment_guard import reply as payment_guard_reply
         has_media=False
+        has_context_media=False
         for row in rows:
-            try: has_media=has_media or bool(json.loads(row['media'] or '{}').get('kind'))
-            except (ValueError,TypeError,AttributeError): has_media=True
+            try:
+                kind=json.loads(row['media'] or '{}').get('kind')
+                has_media=has_media or kind not in (None,'none')
+                has_context_media=has_context_media or kind not in (None,'none')
+            except (ValueError,TypeError,AttributeError):
+                has_media=True
+                has_context_media=True
         guarded=payment_guard_reply(current) if not has_media and not sensitive(current) else None
         if guarded:return guarded
+        if not has_context_media and not sensitive(current):
+            from .expired_activation_context import reply as expired_activation_reply
+            prior_client=self.store.db.execute("SELECT mid,at,text FROM messages WHERE chat=? AND role='client' AND mid<? ORDER BY mid DESC LIMIT 1",(job['chat'],first)).fetchone()
+            prior_assistant=self.store.db.execute("SELECT mid,at,role,text FROM messages WHERE chat=? AND role IN ('assistant','owner') AND mid<? ORDER BY mid DESC LIMIT 1",(job['chat'],first)).fetchone()
+            safe_context=bool(prior_client and prior_assistant)
+            if safe_context:
+                span=self.store.db.execute("SELECT role,media FROM messages WHERE chat=? AND mid>=? AND mid<? ORDER BY mid",(job['chat'],prior_client['mid'],first)).fetchall()
+                for item in span:
+                    try: has_prior_media=json.loads(item['media'] or '{}').get('kind') not in (None,'none')
+                    except (ValueError,TypeError,AttributeError): has_prior_media=True
+                    if item['role']=='owner' or has_prior_media:
+                        safe_context=False
+                        break
+            continued=expired_activation_reply(current,dict(prior_client),dict(prior_assistant)) if safe_context else None
+            if continued:return continued
         previous=self.store.db.execute("SELECT text FROM messages WHERE chat=? AND role='client' AND mid<? ORDER BY mid DESC LIMIT 1",
                                        (job['chat'],first)).fetchone()
         order=await order_reply(self.shop,job['uid'],current,context=previous['text'] if previous else '')
