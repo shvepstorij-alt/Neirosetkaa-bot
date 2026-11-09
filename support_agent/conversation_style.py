@@ -37,6 +37,7 @@ def session_info(db,chat,first,last):
 
 INTRO=('Здравствуйте! Я ИИ-помощник Александра, помогу с вопросами по нейросетям '
        'и оформлению подписок)')
+INTRO_PLAIN=INTRO.removeprefix('Здравствуйте! ')
 
 
 def address_mode(text):
@@ -58,10 +59,13 @@ def decorate_reply(reply, info=None, introduced=False):
     reply=natural_reply(reply).strip()
     if reply.startswith(INTRO):
         body=reply[len(INTRO):].strip()
+    elif reply.startswith(INTRO_PLAIN):
+        body=reply[len(INTRO_PLAIN):].strip()
     else:
         body=_OPENING.sub('',reply,count=1).strip()
     if not body:
         body='Чем могу помочь?'
+    greeted=bool((info or {}).get('current_client_greeting'))
     if introduced:
-        return body
-    return INTRO+'\n\n'+body
+        return ('Здравствуйте!\n\n' if greeted else '')+body
+    return (INTRO if greeted else INTRO_PLAIN)+'\n\n'+body

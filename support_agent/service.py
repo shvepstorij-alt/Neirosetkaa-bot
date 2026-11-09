@@ -939,6 +939,8 @@ class Service:
                 raise ValueError('Telegram message confirmation missing')
             with self.store.transaction():
                 self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
+                from .conversation_style import INTRO,INTRO_PLAIN
+                if text.startswith((INTRO,INTRO_PLAIN)):self.store.mark_introduced(c['id'])
                 self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
                     (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
         except Exception:
@@ -1611,7 +1613,7 @@ class Service:
                 first=self.store.chat(job['chat'])['batch_first']
                 if not answer.get('evidence',{}).get('consultation_contract'):
                     answer['reply']=sort_price_lines(answer['reply'])
-                answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']))
+                answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']), introduced=self.store.introduced(job['chat']))
                 if isinstance(answer.get('feature_projection'),dict):
                     answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
                 did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))

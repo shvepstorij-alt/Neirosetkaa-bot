@@ -28,10 +28,12 @@ _PUBLIC_SESSION_URLS={
 def _consultation_text(text):
     """Body the seal covers. A later greeting must not look like a different answer."""
     from .response_policy import natural_reply
-    from .conversation_style import INTRO
+    from .conversation_style import INTRO,INTRO_PLAIN
     text=natural_reply(str(text or '')).replace('\r\n','\n').strip()
     if text.startswith(INTRO):
         text=text[len(INTRO):].strip()
+    elif text.startswith(INTRO_PLAIN):
+        text=text[len(INTRO_PLAIN):].strip()
     text=re.sub(r'^\s*(?:Здравствуйте|Приветствую|Добрый день|Добрый вечер|Доброе утро|Привет)[!.,:)\s]*',
                 '',text,count=1,flags=re.I).strip()
     # The send path joins lines after the seal. Wording, not spacing, is the proof.

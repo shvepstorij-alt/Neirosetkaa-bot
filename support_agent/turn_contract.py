@@ -60,6 +60,26 @@ def canonical_plan_words(value):
     return tuple(aliases.get(word,word) for word in _words(value))
 
 
+def normalize_plan_choice(text, catalog):
+    """Normalize only a complete, catalog-backed plan choice, never prose."""
+    from .catalog_context import _words
+    words=list(_words(str(text)))
+    if not words or len(words)>18:return str(text)
+    prefix={'а','и','нет','лучше','тогда','выбираю','беру','хочу','давайте','давай',
+            'мне','нужен','нужна','нужно','именно','пожалуйста','тариф','тарифа','план','плана'}
+    while words and words[0] in prefix:words.pop(0)
+    while words and words[-1] in {'пожалуйста'}:words.pop()
+    if not words:return str(text)
+    aliases={'про':'pro','стандарт':'standard','стандартный':'standard','ультра':'ultra',
+             'тим':'team','премиум':'premium','плюс':'plus','макс':'max','го':'go',
+             'бизнес':'business','бейсик':'basic','бэйсик':'basic'}
+    proposed=canonical_plan_words(' '.join(aliases.get(w,w) for w in words))
+    options={canonical_plan_words(row.get('plan','')) for row in catalog if isinstance(row,dict)}
+    if proposed and proposed in options:
+        return ' '.join(proposed)
+    return str(text)
+
+
 def plan_reference(text,catalog):
     """A whole catalogue plan-only reply, never an arbitrary new task."""
     from .fulfillment_reply import _selected_plan_rows
@@ -67,7 +87,7 @@ def plan_reference(text,catalog):
     if len(str(text))>350 or service_mentions(text,catalog):return []
     matched=_selected_plan_rows(catalog,text,require_match=True)
     if not matched:return []
-    tokens=list(canonical_plan_words(text))
+    tokens=list(canonical_plan_words(normalize_plan_choice(text,catalog)))
     for plan in sorted({canonical_plan_words(row.get('plan','')) for row in matched},key=len,reverse=True):
         if not plan:continue
         for start in range(len(tokens)-len(plan),-1,-1):

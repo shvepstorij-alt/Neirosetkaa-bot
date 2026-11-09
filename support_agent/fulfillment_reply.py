@@ -45,8 +45,8 @@ def _selected_plan_rows(items,latest,require_match=False):
     from .catalog_context import _words
     # Transliteration of plan labels is shared by every service. Avoid Russian
     # «про»: it is also a preposition, not evidence of choosing a Pro plan.
-    from .turn_contract import canonical_plan_words as canonical
-    words=canonical(latest)
+    from .turn_contract import canonical_plan_words as canonical, normalize_plan_choice
+    words=canonical(normalize_plan_choice(latest,items))
     hits=[]
     for index,item in enumerate(items):
         plan=canonical(item.get('plan',''))
