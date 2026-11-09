@@ -823,8 +823,9 @@ class Service:
     def auto_content_reason(self,d):
         notice=self.store.db.execute('SELECT kind FROM auto_notices WHERE draft=?',(d['id'],)).fetchone()
         if notice:
-            from .auto_notice import TEXTS
-            if not d['handoff'] and d['text']==TEXTS.get(notice['kind']):return None
+            from .handoff import HANDOFF, OFF_HOURS, CONTINUE
+            allowed_notices={HANDOFF+'. '+CONTINUE, HANDOFF+'. '+OFF_HOURS+'. '+CONTINUE}
+            if not d['handoff'] and d['text'] in allowed_notices:return None
             return 'Этап: проверка служебного ответа. Сохранённый текст не совпал с шаблоном.'
         from .auto_policy import block_reason
         c=self.store.chat(d['chat'])
@@ -990,6 +991,14 @@ class Service:
         current='\n'.join(r['text'] or '' for r in rows)
         from .topic_boundary import boundary_reply
         if boundary_reply(current):return await self._generate_body(job)
+        from .privacy import sensitive
+        from .payment_guard import reply as payment_guard_reply
+        has_media=False
+        for row in rows:
+            try: has_media=has_media or bool(json.loads(row['media'] or '{}').get('kind'))
+            except (ValueError,TypeError,AttributeError): has_media=True
+        guarded=payment_guard_reply(current) if not has_media and not sensitive(current) else None
+        if guarded:return guarded
         previous=self.store.db.execute("SELECT text FROM messages WHERE chat=? AND role='client' AND mid<? ORDER BY mid DESC LIMIT 1",
                                        (job['chat'],first)).fetchone()
         order=await order_reply(self.shop,job['uid'],current,context=previous['text'] if previous else '')
