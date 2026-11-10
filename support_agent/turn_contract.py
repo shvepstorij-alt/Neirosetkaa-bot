@@ -8,13 +8,14 @@ from dataclasses import dataclass, asdict
 import re
 
 
-INFORMATION_GOALS = ('price', 'purchase', 'features', 'activation', 'installation')
+INFORMATION_GOALS = ('price', 'purchase', 'features', 'activation', 'installation', 'setup')
 _PROMPTS = {
     'price': 'Сколько стоит?',
     'purchase': 'Что нужно для оформления?',
     'features': 'Какие возможности и ограничения?',
     'activation': 'Как активировать?',
     'installation': 'Как установить приложение?',
+    'setup': 'Нужна ли дополнительная настройка?',
 }
 _REFERENCE_WORDS = frozenset('а и или на у с для про по поводу насчет насчёт тогда '
     'то же самое еще ещё также это сервис сервиса сервисы подписка подписку '
@@ -338,7 +339,8 @@ def intent_questions(goals,kind=''):
                  'purchase':f'Что нужно для оформления {genitive}?',
                  'features':f'Какие возможности и ограничения у {genitive}?',
                  'activation':f'Как активировать {accusative}?',
-                 'installation':f'Как установить приложение для использования {genitive}?'}
+                 'installation':f'Как установить приложение для использования {genitive}?',
+                 'setup':f'Нужна ли дополнительная настройка для {genitive}?'}
     return '\n'.join(prompts[g] for g in INFORMATION_GOALS if g in goals)
 
 
