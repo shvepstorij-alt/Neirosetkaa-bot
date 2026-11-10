@@ -992,6 +992,7 @@ class Service:
         from .topic_boundary import boundary_reply
         if boundary_reply(current):return await self._generate_body(job)
         from .privacy import sensitive
+        from .legal_payment_question import reply as legal_payment_reply
         from .payment_guard import reply as payment_guard_reply
         has_media=False
         has_context_media=False
@@ -1003,8 +1004,17 @@ class Service:
             except (ValueError,TypeError,AttributeError):
                 has_media=True
                 has_context_media=True
+        legal=legal_payment_reply(current)
         guarded=payment_guard_reply(current) if not has_media and not sensitive(current) else None
-        if guarded:return guarded
+        if legal and guarded:
+            legal=dict(legal,
+                reply=guarded['reply']+'\n\n'+legal['reply'],
+                summary=guarded.get('summary','')+' '+legal['summary'])
+            legal['evidence']=dict(legal['evidence'],
+                payment_guard_diagnostic=guarded.get('evidence',{}).get('diagnostic',''))
+            if not is_status_request(current):return legal
+        elif legal and not is_status_request(current):return legal
+        if guarded and not legal:return guarded
         if not has_context_media and not sensitive(current):
             from .expired_activation_context import reply as expired_activation_reply
             prior_client=self.store.db.execute("SELECT mid,at,text FROM messages WHERE chat=? AND role='client' AND mid<? ORDER BY mid DESC LIMIT 1",(job['chat'],first)).fetchone()
@@ -1024,7 +1034,9 @@ class Service:
                                        (job['chat'],first)).fetchone()
         order=await order_reply(self.shop,job['uid'],current,context=previous['text'] if previous else '')
         if not self.store.still_current(job):return None
-        if order is None:return await self._generate_body(job)
+        if order is None:
+            if legal:return legal
+            return await self._generate_body(job)
         if order.get('order_context',{}).get('status')=='pending':
             has_photo=False
             for row in rows:
@@ -1036,6 +1048,13 @@ class Service:
                 from .auto_policy import consultation_evidence
                 order['evidence']=consultation_evidence(order['reply'],'order',owner_action_required=True,
                     diagnostic=order['evidence']['diagnostic'])
+        if legal:
+            body=order['reply']+'\n\n'+legal['reply']
+            legal=dict(legal,reply=body,
+                       summary=order.get('summary','')+' '+legal['summary'])
+            legal['evidence']=dict(legal['evidence'],
+                order_status_diagnostic=order.get('evidence',{}).get('diagnostic',''))
+            return legal
         from .request_goals import goals
         other=goals(current)-{'problem'}
         # A bank receipt is not proof of settlement and need not be downloaded
