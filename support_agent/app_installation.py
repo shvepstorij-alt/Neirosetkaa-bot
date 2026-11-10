@@ -49,6 +49,11 @@ def _identity(text,catalog):
     from .catalog_context import _families,_words,service_mentions
     families=_families(_words(text))
     names=service_mentions(text,catalog)
+    # A reply to the app question can name ChatGPT together with another known
+    # app.  That is still an installation turn, not an implicit tariff query.
+    # Keep it distinct from a single ChatGPT request so later platform answers
+    # retain both requested apps.
+    if 'chatgpt' in families and len(families-{'appstore'})>1:return 'multiple'
     if families-{'chatgpt','appstore'}:return 'other'
     if any(_families(_words(name))-{'chatgpt','appstore'} or not _families(_words(name))
            for name in names.values()):return 'other'
@@ -83,7 +88,7 @@ def _previous_installation(facts,current,history):
         if text==current:continue  # Service history includes the current batch.
         identity=_identity(text,facts.get('catalog',[]))
         if identity=='other':break
-        if _install_intent(text) and identity in ('chatgpt', None):
+        if _install_intent(text) and identity in ('chatgpt', 'multiple', None):
             return text,prompt,platform_hint or _platforms(text)
         if _platform_slot(text):
             if not platform_hint:platform_hint=_platforms(text)
@@ -119,7 +124,9 @@ def reply(facts,current,history=()):
     last=next((r for r in reversed(rows) if r.get('role') in ('assistant','owner')),None)
     from .auto_policy import _consultation_text
     fresh_last=bool(last and type(last.get('at')) in (int,float) and 0<=time.time()-last['at']<=14400)
-    app_slot=bool(prior and identity=='chatgpt' and fresh_last and _consultation_text(last.get('text')).endswith('Какое приложение хотите установить?'))
+    app_slot=bool(prior and identity in ('chatgpt','multiple') and fresh_last and _consultation_text(last.get('text')).endswith('Какое приложение хотите установить?'))
+    multi_platform_slot=bool(fresh_last and re.search(r'ChatGPT\s+и\s+Claude\).*?(?:Android|iPhone|компьютер)',
+                                                       _consultation_text(last.get('text')),re.I))
     unavailable=bool(prior and fresh_last and 'App Store' in str(last.get('text','')) and re.search(r'chat\s*gpt|чат\s*гпт',str(last.get('text','')),re.I) and re.fullmatch(r'\s*(?:у\s+меня\s+)?(?:он|оно|приложение)\s+недоступен(?:о)?[.!?\s]*',text,re.I))
     if unavailable:
         from .auto_policy import consultation_evidence
@@ -127,7 +134,9 @@ def reply(facts,current,history=()):
         return {'reply':body,'summary':'Уточнение недоступности приложения без предположения о причине.','handoff':False,'source_ids':[],'evidence':consultation_evidence(body,'installation',diagnostic='Этап: уточнение проблемы установки; причина недоступности не установлена.')}
     short_install=bool(re.fullmatch(r'\s*(?:а\s+)?(?:как|где)\s+(?:его\s+)?(?:скачать|установить)(?:\s+приложение)?[.!?\s]*',text,re.I))
     install=_install_intent(text) or short_install
-    if not install and not (slot and prompt and prior) and not accepted_platforms and not app_slot:return None
+    if identity is None and multi_platform_slot and (install or slot):
+        identity='multiple'
+    if not install and not (slot and prompt and prior) and not (slot and multi_platform_slot) and not accepted_platforms and not app_slot:return None
     from .request_goals import covers
     if not covers(text,{'installation'},facts):return None
     if re.search(r'сколько|тариф|как[^.!?\n]{0,35}оплат|возврат|верн[а-я]*\s+деньг|что\s+входит',text,re.I):return None
@@ -140,7 +149,20 @@ def reply(facts,current,history=()):
     android='android' in platforms;ios='ios' in platforms;desktop='desktop' in platforms
     apple_region=bool(re.search(r'как[^.!?\n]{0,35}(?:сменить|изменить)[^.!?\n]{0,30}регион',text,re.I)
                       and re.search(r'apple\s*(?:id|account|аккаунт)|app\s*store|эпл',text,re.I))
-    if identity!='chatgpt' and (not prior or _identity(prior,facts.get('catalog',[]))!='chatgpt') and not apple_region:
+    prior_identity=_identity(prior,facts.get('catalog',[])) if prior else None
+    if identity is None and prior_identity=='multiple':identity='multiple'
+    if identity=='multiple' and not platforms:
+        body='Понял, нужна установка ChatGPT и Claude) На чём хотите установить: Android, iPhone или компьютер?'
+    elif identity=='multiple' and (android or ios):
+        store='Google Play' if android else 'App Store'
+        chatgpt_link=PLAY if android else IOS
+        body=(f'Для ChatGPT откройте официальную страницу OpenAI в {store}:\n{chatgpt_link}\n\n'
+              f'Для Claude откройте {store}, найдите приложение «Claude» и проверьте, что разработчик указан как Anthropic. '
+              'После установки войдите в нужные аккаунты. Установка приложений сама по себе не оформляет подписки.')
+    elif identity=='multiple' and desktop:
+        body=('Для ChatGPT на компьютере используйте официальную страницу загрузки:\n'+DESKTOP+
+              '\n\nClaude можно открыть в браузере на официальном сайте сервиса. Установка и вход не оформляют подписки автоматически.')
+    elif identity!='chatgpt' and prior_identity!='chatgpt' and not apple_region:
         body='Какое приложение хотите установить?'
     elif desktop:
         body=('Для компьютера откройте официальную страницу загрузки ChatGPT:\n'+DESKTOP+'\n\n'

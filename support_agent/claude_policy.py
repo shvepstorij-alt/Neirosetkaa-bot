@@ -2,6 +2,56 @@
 import re
 
 SOURCE='https://support.claude.com/en/articles/8461763-where-can-i-access-claude'
+PURCHASE_DISCLOSURE_MARKER='Перед оформлением Claude важное предупреждение'
+
+
+def _claude_purchase_request(text, facts):
+    """Whether this turn moves toward a Claude purchase, not mere app help.
+
+    The warning is an owner condition for selling Claude through this shop.  It
+    is deliberately separate from public facts about how Claude itself works.
+    """
+    value=str(text or '')
+    named=bool(re.search(r'claude|клод',value,re.I))
+    rows=facts.get('requested_catalog',[]) if isinstance(facts,dict) else []
+    contextual=bool(rows) and any(str(row.get('service_key','')).casefold()=='claude' or
+                                  re.search(r'claude|клод',str(row.get('service','')),re.I)
+                                  for row in rows)
+    if not (named or contextual):return False
+    if re.search(r'(?:скача|установ)[а-яё]*|приложени|android|андроид|iphone|айфон|компьютер',value,re.I):
+        return False
+    return bool(re.search(r'оформ|оплат|куп|подписк|тариф|план|стоим|стоит|сколько|цен|продл|хочу',value,re.I))
+
+
+def _accepts_disclosure(text):
+    value=str(text or '').strip()
+    return len(value)<=180 and bool(re.match(r'^(?:да|согласен|согласна|подтверждаю|понял(?:а)?|готов(?:а)?)(?:\b|[,.!\s])',value,re.I))
+
+
+def claude_purchase_disclosure(facts,current,history=()):
+    """Gate Claude purchase guidance until the client accepts owner terms."""
+    rows=[row for row in list(history)[-40:] if isinstance(row,dict)]
+    prior=next((row for row in reversed(rows)
+                if row.get('role') in ('assistant','owner') and PURCHASE_DISCLOSURE_MARKER in str(row.get('text',''))),None)
+    if prior and _accepts_disclosure(current):
+        return None
+    if not _claude_purchase_request(current,facts):
+        return None
+    if prior:
+        body=('Чтобы продолжить оформление Claude, подтвердите, пожалуйста, что вы согласны с условиями из предыдущего сообщения.')
+    else:
+        body=(PURCHASE_DISCLOSURE_MARKER+':\n\n'
+              'По условиям оформления через нас для Claude потребуется пройти верификацию личности. '
+              'Для попытки прохождения можно использовать загранпаспорт РФ или водительское удостоверение РФ.\n\n'
+              'Мы не можем гарантировать успешное прохождение верификации или то, что аккаунт не будет заблокирован системой Claude.\n\n'
+              'Оформляя этот сервис, вы подтверждаете, что готовы при необходимости пройти верификацию личности Claude. '
+              'Если верификацию не удастся пройти или аккаунт будет заблокирован, возврат по этому сервису не оформляется.\n\n'
+              'Если условия подходят, напишите «согласен» — и помогу продолжить.')
+    return {'reply':body,
+            'summary':'Перед оформлением Claude показано обязательное условие владельца; инструкция оплаты и цена до согласия не выдавались.',
+            'handoff':False,'source_ids':[],
+            'evidence':{'status':'owner_policy','sources':[],
+                        'diagnostic':'Этап: условия оформления Claude. Правило подтверждено владельцем 10.11.2026; это условие магазина, а не утверждение о публичном универсальном требовании Claude. До явного согласия клиента оформление не продолжается.'}}
 
 
 def claude_policy_facts():
@@ -81,7 +131,9 @@ def public_region_issue(answer,facts=None):
         universal_check=bool(re.search(r'(?:всегда|обязательно|у\s+каждого|для\s+всех)[^.!?\n]{0,65}верификац|'
                                        r'верификац[^.!?\n]{0,40}(?:обязательна|для\s+всех)|'
                                        r'при\s+оформлении[^.!?\n]{0,65}(?:затребует|потребует)[^.!?\n]{0,25}верификац',low))
-        if universal_check and not re.search(r'не\s+обязатель|не\s+всегда|может\s+(?:потребова|запроси)|нельзя\s+утверждать',low):
+        owner_sale_term=bool(re.search(r'услови[яе]\s+(?:оформления|магазина)[^.!?\n]{0,25}(?:через\s+нас|у\s+нас)|'
+                                       r'(?:через|у)\s+нас[^.!?\n]{0,30}услови[яе]\s+оформления',low))
+        if universal_check and not owner_sale_term and not re.search(r'не\s+обязатель|не\s+всегда|может\s+(?:потребова|запроси)|нельзя\s+утверждать',low):
             return 'Этап: проверка условий верификации Claude. Не подтверждено, что каждый покупатель обязательно проходит проверку личности. Наличие запроса в конкретном аккаунте и универсальная обязательность — разные факты.'
         # Separate warning that an outcome cannot be guaranteed is permitted.
         disclaimer=bool(re.search(r'(?:не\s+(?:могу|можем|да[её]м)|нельзя|невозможно)\s+гарантир|'
