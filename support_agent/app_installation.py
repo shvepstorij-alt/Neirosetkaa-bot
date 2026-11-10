@@ -10,6 +10,7 @@ PLAY='https://play.google.com/store/apps/details?id=com.openai.chatgpt'
 IOS='https://apps.apple.com/us/app/chatgpt/id6448311069'
 APPLE='https://support.apple.com/en-ca/118283'
 DESKTOP='https://chatgpt.com/ru-RU/download/'
+MIDJOURNEY='https://www.midjourney.com/'
 PLATFORM_QUESTION='Подскажу пошагово) У вас Android, iPhone или компьютер?'
 _LEGACY_PLATFORM_QUESTION='Подскажу пошагово) У вас Android или iPhone?'
 
@@ -115,6 +116,17 @@ def reply(facts,current,history=()):
     text=str(current or '')
     from .privacy import sensitive
     if sensitive(text):return None
+    # Midjourney's documented supported entry points are its website and
+    # Discord.  Do not turn a request for an app into a recommendation for an
+    # APK or an unrelated product with a similar name.
+    if re.search(r'midjourney|миджорни|миджерни',text,re.I) and re.search(r'приложени|скача|установ',text,re.I):
+        from .auto_policy import consultation_evidence
+        body=('По официальной документации Midjourney начать работу можно на официальном сайте:\n'+MIDJOURNEY+
+              '\n\nMidjourney также работает через Discord: при необходимости подключите свой Discord-аккаунт в настройках Midjourney. '
+              'Не рекомендую скачивать APK или приложение из неофициального источника.')
+        return {'reply':body,'summary':'Для Midjourney предложены подтверждённые официальный сайт и Discord без рекомендации стороннего приложения.',
+                'handoff':False,'source_ids':[],
+                'evidence':consultation_evidence(body,'installation',diagnostic='Этап: установка/доступ Midjourney. Официальная документация Midjourney проверена 10.11.2026: описаны работа на midjourney.com и через подключённый Discord; приложение как единственный или отсутствующий способ доступа не утверждается. Неофициальный APK не рекомендован.')}
     identity=_identity(text,facts.get('catalog',[]))
     if identity=='other':return None
     prior,prompt,prior_platforms=_previous_installation(facts,text,history)

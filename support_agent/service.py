@@ -1195,13 +1195,15 @@ class Service:
                 facts=annotate(facts,latest)
                 raw_batch=latest
         from .referral_guide import referral_reply
+        from .suno_guidance import reply as suno_reply
+        from .gemini_guidance import reply as gemini_reply
         from .claude_policy import claude_risk_reply,claude_purchase_disclosure
         # Claude purchase terms are an owner-set prerequisite.  Keep this
         # before all catalogue/payment paths so a price or checkout instruction
         # cannot bypass the client's explicit acknowledgement.
         claude_disclosure=claude_purchase_disclosure(facts,raw_batch,guide_history)
         if claude_disclosure and not image:return claude_disclosure
-        known_reply=referral_reply(facts,raw_batch) or claude_risk_reply(facts,raw_batch)
+        known_reply=referral_reply(facts,raw_batch) or suno_reply(raw_batch) or gemini_reply(raw_batch) or claude_risk_reply(facts,raw_batch)
         if known_reply and not image:return known_reply
         from .external_quote import intake_reply
         external_intake=intake_reply(facts,raw_batch)
