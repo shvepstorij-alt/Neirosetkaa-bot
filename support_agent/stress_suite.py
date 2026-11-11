@@ -563,11 +563,15 @@ def build_cases(catalog):
     add('plus-two-options', [
         {'role': 'client', 'text': 'Хочу чат гпт',
          'expect': {'hold': False, 'service': 'chatgpt'}},
+        # Owner 11.11.2026: plain «плюс» is plain Plus; the new-account plan only when the client asks for it.
         {'role': 'client', 'text': 'Тариф плюс', 'use_state': True,
-         'reply': '1. ChatGPT Plus: 2000 ₽.\n2. Новый аккаунт с подпиской Plus: 2090 ₽.\n3. ChatGPT Go: 1000 ₽.',
+         'reply': 'ChatGPT Plus: 2000 ₽.',
          'expect': {'hold': False, 'service': 'chatgpt', 'casual': True,
-                    'need': ['Plus', 'Новый аккаунт'], 'forbid_plans': ['Go'],
-                    'forbid': ['1000', '1.']}},
+                    'need': ['Plus'], 'forbid_plans': ['Go'],
+                    'forbid': ['1000', 'Новый аккаунт']}},
+        {'role': 'client', 'text': 'А на новый аккаунт plus?', 'use_state': True,
+         'reply': 'Новый аккаунт с подпиской Plus: 2090 ₽.',
+         'expect': {'hold': False, 'service': 'chatgpt', 'need': ['Новый аккаунт']}},
     ])
     add('pay-chatgpt-plus', [
         {'role': 'client', 'text': 'Хочу чат гпт плюс',

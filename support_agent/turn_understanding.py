@@ -82,6 +82,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Скачать приложение на телефон — тема app_download. Блокировка аккаунта Claude — claude_account_blocked. '
     'Бонусная или подарочная подписка от курса, почта с курса — course_bonus. '
     'Пополнение кредитов ChatGPT — отдельный товар каталога: service_id бери у строки «Пополнение кредитов ChatGPT», не у ChatGPT. '
+    'Срок подписки, можно ли на год — subscription_term: год только если такой тариф есть в tariffs. Риск блокировки Claude — claude_block_risk. Claude просит документ или номер — claude_verification. '
     'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. '
     'Почта клиента в тексте заменена на [email скрыт]: значит, клиент прислал почту. '
     'Монетки: начисляются только по реферальной программе — 10% с первой покупки каждого приглашённого; ссылка в @neirosetkaa_bot, главное меню → «Мой профиль» → «Пригласить друга»; тратятся на оплату подписки в боте. Других способов нет, не выдумывай задания или бонусы за покупки. '
@@ -579,9 +580,35 @@ def advisories_already(history, state):
     return sorted(found)
 
 
+_SERVICE_TITLES = {'capcut': 'CapCut', 'suno': 'Suno', 'zoom': 'Zoom', 'openrouter': 'OpenRouter', 'spotify': 'Spotify',
+                   'youtube': 'YouTube', 'gemini': 'Gemini', 'grok': 'Grok', 'midjourney': 'Midjourney',
+                   'github': 'GitHub', 'krea': 'Krea', 'canva': 'Canva', 'cursor': 'Cursor'}
+
+
+def _state_plan(validated, context):
+    """The remembered tariff belongs to the remembered service only."""
+    state = (context or {}).get('dialog_state') or {}
+    if str(state.get('service_id') or '') != str(validated.get('service_id') or ''):
+        return ''
+    return str(state.get('tariff') or '')
+
+
+def _compact(text):
+    return re.sub(r'[^a-zа-яё0-9]+', '', str(text or '').casefold())
+
+
+def _compact_mentions(burst, name):
+    """«кап ката», «капкатом», «Cap-Cut» all mention CapCut. Short names need an exact word."""
+    key = _compact(name)
+    if len(key) < 4:
+        return False
+    return key in _compact(burst)
+
+
 def _named_services(context):
     found = set()
-    burst = ' ' + _flat(context.get('burst') or '') + ' '
+    raw_burst = context.get('burst') or ''
+    burst = ' ' + _flat(raw_burst) + ' '
     for item in context.get('hints') or []:
         if isinstance(item, dict) and item.get('service_id'):
             found.add(str(item['service_id']))
@@ -589,9 +616,34 @@ def _named_services(context):
         names = [row.get('name'), row.get('id'), *(row.get('aliases') or [])]
         for name in names:
             token = _flat(name)
-            if token and ((' ' + token + ' ') in burst or burst.strip() == token):
+            if token and ((' ' + token + ' ') in burst or burst.strip() == token or _compact_mentions(raw_burst, name)):
                 found.add(str(row.get('id') or ''))
+    for row in context.get('tariffs') or []:
+        if _compact_mentions(raw_burst, row.get('service')) or _compact_mentions(raw_burst, row.get('service_id')):
+            found.add(str(row.get('service_id') or ''))
     return {item for item in found if item}
+
+
+def _names_unknown_service(context):
+    """The client names a service we know from the payment rules but it is not the open one."""
+    try:
+        from .payment_guide import load_guide
+        modes = (load_guide().get('modes') or {})
+    except Exception:
+        modes = {}
+    burst = (context or {}).get('burst') or ''
+    names = set()
+    for row in modes.values():
+        if isinstance(row, dict):
+            names.update(str(item) for item in (row.get('services') or []) + (row.get('names') or []) if item)
+    extra = {'capcut': ('капкат', 'кап кат'), 'suno': ('суно',), 'zoom': ('зум',), 'grok': ('грок',),
+             'midjourney': ('миджорни', 'мидджорни'), 'gemini': ('джемини', 'гемини'), 'cursor': ('курсор',),
+             'canva': ('канва',), 'openrouter': ('опенроутер',), 'spotify': ('спотифай',)}
+    hits = set()
+    for name in names:
+        if _compact_mentions(burst, name) or any(_compact_mentions(burst, alias) for alias in extra.get(name, ())):
+            hits.add(name)
+    return hits
 
 
 def _clear_tariff_if_other(validated, service_id):
@@ -609,6 +661,16 @@ def bind_service(validated, context):
     state_id = str((context.get('dialog_state') or {}).get('service_id') or '')
     named = _named_services(context)
     proposed = validated.get('service_id') or ''
+    other = {name for name in _names_unknown_service(context) if name != state_id}
+    if other and state_id not in named and not (state_id and _compact_mentions(context.get('burst') or '', state_id)):
+        # The client moved to another service. Never answer about the previous one.
+        if proposed == state_id or not proposed:
+            validated['service_id'] = ''
+            validated['tariff'] = None
+            validated['tariff_id'] = ''
+            validated['topic_changed'] = True
+            validated['_other_service'] = sorted(other)[0]
+        return validated
     if not proposed:
         if state_id and (not named or state_id in named):
             validated['service_id'] = state_id
@@ -709,10 +771,29 @@ def matching_tariffs(context, service_id):
         name = _flat(row.get('plan') or '')
         if name and (' ' + name + ' ') in padded:
             exact.append(row)
+    if len(exact) == 1 and len(scored) > 1:
+        # «новый аккаунт plus» names the longer plan even though «plus» alone matches exactly.
+        known = burst_tokens | set(forms)
+        rows_ = [row for _score, row in scored]
+        shared = set.intersection(*[_plan_tokens(row.get('plan') or '') for row in rows_])
+        named = [row for row in rows_ if (_plan_tokens(row.get('plan') or '') - shared) & known]
+        if len(named) == 1:
+            return named
     if len(exact) == 1:
         return exact
     best = max(score for score, _row in scored)
     winners = [row for score, row in scored if score == best]
+    if len(winners) >= 2:
+        # «Plus» means plain Plus; «Новый аккаунт с подпиской Plus» only when the client says so.
+        known = burst_tokens | set(forms)
+        shared = set.intersection(*[_plan_tokens(row.get('plan') or '') for row in winners])
+        named = [row for row in winners if (_plan_tokens(row.get('plan') or '') - shared) & known]
+        if len(named) == 1:
+            return named
+        if not named:
+            plain = [row for row in winners if not (_plan_tokens(row.get('plan') or '') - known)]
+            if len(plain) == 1:
+                return plain
     if 'год' not in burst_flat and 'year' not in burst_flat:
         plain = [row for row in winners if 'год' not in _flat(row.get('plan')) and 'year' not in _flat(row.get('plan'))]
         if len(plain) == 1:
@@ -885,6 +966,15 @@ def remember_turn(db, chat, validated, context, reply=''):
         state['collected'] = {}
         state['offered'] = []
         state['option_label'] = ''
+    if validated.get('service_id') and state.get('service_key') and validated['service_id'] != state.get('service_key'):
+        # A new service: the old tariff and the options shown for it no longer apply.
+        state['option_label'] = ''
+        state['offered'] = []
+    if validated.get('_other_service') and not validated.get('service_id'):
+        state['service_key'] = ''
+        state['service_label'] = ''
+        state['option_label'] = ''
+        state['offered'] = []
     if validated.get('service_id'):
         state['service_key'] = validated['service_id']
         match = next((row for row in context.get('tariffs') or [] if row['service_id'] == validated['service_id']), None)
@@ -930,7 +1020,7 @@ def package(understanding, context, db=None, chat=None):
     from .handoff import handoff_text
     from .payment_guide import (kind_for, merged_setup, missing_setup, mixes_activation_into_payment,
                                 render, setup_ask, setup_ready)
-    plan_name = (validated.get('tariff') or {}).get('plan') or (context.get('dialog_state') or {}).get('tariff') or ''
+    plan_name = (validated.get('tariff') or {}).get('plan') or _state_plan(validated, context)
     kind = kind_for(validated.get('service_id') or '', plan_name, context.get('tariffs') or [])
     setup = merged_setup(validated.get('setup'), (context.get('dialog_state') or {}).get('collected'))
     composed = False
@@ -960,9 +1050,11 @@ def package(understanding, context, db=None, chat=None):
         verdict = classify_draft(reply, validated['allowed_prices'])
     elif not composed and (validated.get('payment_asked') or mixes_activation_into_payment(reply)
             or (kind == 'chatgpt_new_account' and setup and missing_setup(setup))):
-        service_id = validated.get('service_id') or ''
+        service_id = validated.get('service_id') or validated.get('_other_service') or ''
         tariff = validated.get('tariff') or {}
         service_name = tariff.get('service') or ''
+        if not service_name and service_id and service_id == validated.get('_other_service'):
+            service_name = _SERVICE_TITLES.get(service_id, service_id.capitalize())
         if not service_name:
             match = next((row for row in context.get('tariffs') or [] if row.get('service_id') == service_id), None)
             service_name = match.get('service') if match else ''
@@ -1055,7 +1147,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
         holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')
     from .payment_guide import kind_for, merged_setup, missing_setup, setup_ready
-    plan_name = (validated.get('tariff') or {}).get('plan') or ((context or {}).get('dialog_state') or {}).get('tariff') or ''
+    plan_name = (validated.get('tariff') or {}).get('plan') or _state_plan(validated, context or {})
     account = merged_setup(validated.get('setup'), ((context or {}).get('dialog_state') or {}).get('collected'))
     topic = validated['owner_topic']
     collected_state = ((context or {}).get('dialog_state') or {}).get('collected') or {}

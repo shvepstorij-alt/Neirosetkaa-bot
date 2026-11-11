@@ -4,6 +4,7 @@ The card is the text we send when the client asks how to pay. Activation
 secrets are never the payment method. The button that tells the client to
 write Alexander about a finished payment is not part of the instruction.
 """
+import re
 from pathlib import Path
 
 import yaml
@@ -111,7 +112,8 @@ def kind_for(service_id, plan_name, tariffs=None, service_name=''):
         return 'email_only'
     if service_id == 'chatgpt' and _new_plus_plan(plan_name):
         return 'chatgpt_new_account'
-    if service_id == 'chatgpt' and _plan_key(plan_name) in _AUTO_PLANS:
+    if service_id == 'chatgpt' and (_plan_key(plan_name) in _AUTO_PLANS
+                                    or re.match(r'\s*(?:plus|go)\b', plan_name.casefold())):
         return 'chatgpt_auto'
     if service_id == 'chatgpt' and plan_name:
         return 'chatgpt_manual'
