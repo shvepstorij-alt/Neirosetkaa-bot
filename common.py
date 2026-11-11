@@ -5785,8 +5785,10 @@ async def _admin_service_edit_snapshot(conn, key, rate):
         p = {'idx':ri,'planId':pid,'name':row['plan_name'],'price':price,
              'costUsd':usd,'margin':round((price-usd*rate)/price*100) if price>0 else 0,
              'manual':settings.get(f'manual:{key}:{ri}')=='1','desc':row['plan_desc'] or ''}
-        p['renameEditable'] = key not in ('chatgpt','claude','perplexity')
-        p['renameReason'] = '' if p['renameEditable'] else 'Название используется для выбора кода активации; можно менять цену, закуп, описание и ручную выдачу'
+        # Переименование разрешено всем: у ChatGPT и Claude ключ пула кодов
+        # сохраняется отдельно (PLAN_CODE_KEYS), у Perplexity ключ всегда pro.
+        p['renameEditable'] = True
+        p['renameReason'] = ''
         if key=='chatgpt':
             for route in ('ph','ios'):p['cost'+route.capitalize()]=float(settings.get(f'cost_usd:{key}:{ri}:{route}') or 0)
         plans.append(p)
@@ -5960,10 +5962,15 @@ async def api_admin_catalog_edit_handler(request: web.Request) -> web.Response:
                 # Persistent description overrides must follow rename, including
                 # an intentionally empty description. No old order is rewritten.
                 await conn.execute("INSERT INTO shop_desc_overrides (key,plan_name,descr) VALUES ($1,'',$2) ON CONFLICT (key,plan_name) DO UPDATE SET descr=EXCLUDED.descr,updated_at=NOW()",key,data['desc'])
+                code_keys = []
                 for plan in data['plans']:
                     old = by_id[plan['planId']]
-                    if not old.get('renameEditable',True) and old['name']!=plan['name']:
-                        raise AdminConflict('Тариф '+old['name']+': название используется маршрутом активации. Переименование не выполнено; остальные изменения также не сохранены')
+                    if key in ('chatgpt','claude') and old['name']!=plan['name']:
+                        # Новое название получает ключ кодов старого: выдача не меняется.
+                        old_key = plan_name_to_key(old['name']) if key=='chatgpt' else _claude_plan_key(old['name'])
+                        await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',
+                                           f'code_key:{key}:{plan["name"]}',old_key)
+                        code_keys.append((plan['name'],old_key))
                     await conn.execute('UPDATE bot_shop_items SET plan_name=$1,price=$2,plan_desc=$3 WHERE key=$4 AND plan_idx=$5',plan['name'],plan['price'],plan['desc'],key,plan['planId'])
                     await conn.execute('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',f'admin_plan_desc:{key}:{plan["planId"]}',plan['desc'])
                     for setting,value in ((f'cost_usd:{key}:{old["idx"]}',str(plan['costUsd'])),(f'manual:{key}:{old["idx"]}','1' if plan['manual'] else '0')):
@@ -5976,6 +5983,10 @@ async def api_admin_catalog_edit_handler(request: web.Request) -> web.Response:
                 await conn.execute('INSERT INTO events (user_id,kind,data) VALUES ($1,$2,$3)',ADMIN_ID,'admin_catalog_edit','key='+key+'; plans='+str(len(data['plans']))+'; stable IDs retained')
             committed = True
             stage = 'обновление рабочего каталога'
+            if code_keys:
+                from config import PLAN_CODE_KEYS as _pck
+                for _nm,_ck in code_keys:
+                    _pck.setdefault(key,{})[_nm] = _ck
             scat = SHOP_CATALOG[key]
             scat.update(name=data['name'],emoji=data['emoji'],desc=data['desc'])
             for plan in data['plans']:
@@ -7688,7 +7699,7 @@ async def api_admin_feed_order_action_handler(request: web.Request) -> web.Respo
             # ВАЖНО: ключ тарифа должен совпадать с тем, что используется при ПОКУПКЕ,
             # иначе коды не находятся. Claude/Perplexity имеют свою карту (не plan_name_to_key).
             if svc_key == "claude":
-                plan_key = {"Pro": "pro", "Max 5×": "max_5x", "Max 20×": "max_20x"}.get(plan_name, "pro")
+                plan_key = _claude_plan_key(plan_name)
             elif svc_key == "perplexity":
                 plan_key = "pro"
             else:
@@ -22921,6 +22932,10 @@ def _claude_plan_key(plan_name: str) -> str:
     («Max 5x» с латинской x, переименованный тариф) превращалось в "pro" — и
     заказ Max получал код Pro. Теперь «max» в названии — всегда Max. 14.10.2026"""
     _n = str(plan_name or "").strip()
+    from config import PLAN_CODE_KEYS as _pck
+    _renamed = _pck.get("claude", {}).get(_n)
+    if _renamed:
+        return _renamed
     _k = {"Pro": "pro", "Max 5×": "max_5x", "Max 20×": "max_20x"}.get(_n)
     if _k:
         return _k

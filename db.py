@@ -1633,6 +1633,16 @@ async def load_prices_from_db():
 
             # _nsgifts-сервисы (App Store / NS Gifts) живут только в коде (без тарифов в БД),
             # поэтому при пересборке каталога из БД их нужно вернуть — иначе кнопка пропадает.
+            # Ключи пулов кодов у переименованных тарифов ChatGPT/Claude. 12.11.2026
+            try:
+                from config import PLAN_CODE_KEYS as _pck
+                for _r_ck in await conn.fetch("SELECT key, value FROM settings WHERE key LIKE 'code_key:%'"):
+                    _p_ck = str(_r_ck["key"]).split(":", 2)
+                    if len(_p_ck) == 3 and _p_ck[1] in _pck and _r_ck["value"]:
+                        _pck[_p_ck[1]][_p_ck[2]] = _r_ck["value"]
+            except Exception as _e_ck:
+                logging.warning(f"code_key load: {_e_ck}")
+
             for _k, _svc in _code_catalog.items():
                 if _svc.get("_nsgifts"):
                     if _k not in SHOP_CATALOG:

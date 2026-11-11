@@ -841,9 +841,19 @@ def _rand_sfx(n: int = 3) -> str:
     return "".join(_r.choices(_st.ascii_lowercase + _st.digits, k=n))
 
 
+# Ключ пула кодов у переименованных тарифов: название → ключ, по сервисам.
+# Заполняется из settings (code_key:<сервис>:<название>) при запуске и при
+# переименовании в админке: новое название получает ключ старого, поэтому
+# переименование не меняет, какие коды выдаются. 12.11.2026
+PLAN_CODE_KEYS = {"chatgpt": {}, "claude": {}}
+
+
 def plan_name_to_key(plan_name: str) -> str:
     """Стабильный ключ тарифа для пула кодов. Существующие имена — фиксированы,
     новые тарифы получают уникальный slug (коды разных тарифов не смешиваются)."""
+    _renamed = PLAN_CODE_KEYS.get("chatgpt", {}).get(plan_name or "")
+    if _renamed:
+        return _renamed
     explicit = {"Plus": "plus", "Pro 5×": "pro_5x", "Pro Max": "pro_max", "Go": "go"}
     if plan_name in explicit:
         return explicit[plan_name]
