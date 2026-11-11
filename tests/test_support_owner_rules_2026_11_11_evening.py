@@ -103,9 +103,12 @@ class CourseTests(unittest.TestCase):
         asked = _turn('course_bonus', 'Подписку от курса уже активировали.', burst='Мне положен бонус Клод от курса')
         self.assertFalse(asked['handoff'])
         self.assertEqual(asked['reply'], usable_answer('course_bonus'))
-        got = _turn('none', 'Спасибо!', burst='вот почта anna.k@gmail.com', state={'collected': {'course_topic': 1}})
-        self.assertTrue(got['handoff'])
-        self.assertEqual(got['evidence'].get('course_email'), 'anna.k@gmail.com')
+        # Stored client text has the address masked; the owner reads it in the chat.
+        got = _turn('new_account_email', 'Пришлите почту с курса.', burst='[email скрыт]',
+                    state={'collected': {'course_topic': 1}})
+        self.assertFalse(got['handoff'], got.get('evidence', {}).get('diagnostic'))
+        self.assertIn('Александр скоро проверит', got['reply'])
+        self.assertTrue(got['evidence'].get('course_email_hold'))
 
 
 if __name__ == '__main__':
