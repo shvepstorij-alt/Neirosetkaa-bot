@@ -79,10 +79,20 @@ def claude_is_maximum(plan_name, tariffs):
     return any(row['price'] == top and _plan_key(row.get('plan')) == key for row in rows)
 
 
-def kind_for(service_id, plan_name, tariffs=None):
+def _named(guide, key, service_name):
+    name = str(service_name or '').casefold()
+    return bool(name) and any(str(item).casefold() in name for item in (_mode(guide, key).get('names') or []) if item)
+
+
+def kind_for(service_id, plan_name, tariffs=None, service_name=''):
     guide = load_guide()
     service_id = str(service_id or '')
     plan_name = str(plan_name or '')
+    if not service_name:
+        row = next((r for r in tariffs or [] if r.get('service_id') == service_id), None)
+        service_name = (row or {}).get('service') or ''
+    if 'кредит' in str(service_name).casefold() or 'кредит' in service_id.casefold() or 'credit' in service_id.casefold():
+        return 'chatgpt_credits'
     if service_id in _service_ids(guide, 'appstore') or service_id == 'appstore':
         return 'appstore'
     if service_id in _service_ids(guide, 'link_pay'):
@@ -95,6 +105,10 @@ def kind_for(service_id, plan_name, tariffs=None):
         return 'telegram_premium'
     if service_id in _service_ids(guide, 'capcut'):
         return 'capcut'
+    if service_id in _service_ids(guide, 'credentials') or _named(guide, 'credentials', service_name):
+        return 'credentials'
+    if service_id in _service_ids(guide, 'email_only') or _named(guide, 'email_only', service_name):
+        return 'email_only'
     if service_id == 'chatgpt' and _new_plus_plan(plan_name):
         return 'chatgpt_new_account'
     if service_id == 'chatgpt' and _plan_key(plan_name) in _AUTO_PLANS:
@@ -160,11 +174,14 @@ def _timing_line(guide, kind, already):
     return str(timing.get(slot) or '').strip()
 
 
-def _after(guide, kind, choice, have):
+def _after(guide, kind, choice, have, service_name=''):
     row = _mode(guide, kind)
+    if kind in ('credentials', 'email_only'):
+        return _sentence(str(row.get('after') or '').replace('{name}', str(service_name or 'сервиса')))
     if kind == 'appstore':
         apple = guide.get('appstore') if isinstance(guide.get('appstore'), dict) else {}
-        return 'После оплаты. ' + _sentence(apple.get('after'))
+        text = str(apple.get('after') or '').strip()
+        return 'После оплаты: ' + text[:1].lower() + text[1:]
     if kind == 'zai':
         if choice == 'link':
             return _sentence(row.get('link_after'))
@@ -191,7 +208,7 @@ def _after(guide, kind, choice, have):
 def render(service_id, service_name, plan_name, facts, already=(), tariffs=None, choice='', have=None):
     """One payment instruction. Z.ai asks for the method before the shop steps."""
     guide = load_guide()
-    kind = kind_for(service_id, plan_name, tariffs)
+    kind = kind_for(service_id, plan_name, tariffs, service_name)
     if kind == 'zai' and choice not in ('email', 'link'):
         return _after(guide, kind, '', have)
     nav = (facts or {}).get('bot_navigation') if isinstance(facts, dict) else {}
@@ -203,6 +220,8 @@ def render(service_id, service_name, plan_name, facts, already=(), tariffs=None,
     where = ('@' + username) if username else 'боте магазина'
     menu = str(path.get('menu_button') or ('Каталог' if webapp else 'Магазин'))
     choice_name = ' '.join(part for part in (service_name, plan_name) if part).strip() or 'нужный сервис и тариф'
+    if kind == 'chatgpt_credits':
+        choice_name = '«' + (service_name or 'Пополнение кредитов ChatGPT') + '»' + (', затем ' + plan_name if plan_name else '')
     pay = ' или '.join('«' + str(item) + '»' for item in (path.get('pay_buttons') or []) if item)
     apple = guide.get('appstore') if isinstance(guide.get('appstore'), dict) else {}
     if kind == 'appstore':
@@ -231,7 +250,7 @@ def render(service_id, service_name, plan_name, facts, already=(), tariffs=None,
     lines = ['Оплата в ' + where + '.', '']
     lines.extend(str(index) + '. ' + step for index, step in enumerate(steps, 1))
     lines.append('')
-    lines.append(_after(guide, kind, choice, have))
+    lines.append(_after(guide, kind, choice, have, service_name))
     timing = _timing_line(guide, kind, already)
     if timing:
         lines.append('')

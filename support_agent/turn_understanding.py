@@ -81,6 +81,11 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Просьба посоветовать VPN или помочь с ним — тема vpn_help: только два VPN из ответа владельца, по настройке VPN не подсказываем. '
     'Скачать приложение на телефон — тема app_download. Блокировка аккаунта Claude — claude_account_blocked. '
     'Бонусная или подарочная подписка от курса, почта с курса — course_bonus. '
+    'Пополнение кредитов ChatGPT — отдельный товар каталога: service_id бери у строки «Пополнение кредитов ChatGPT», не у ChatGPT. '
+    'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. '
+    'Почта клиента в тексте заменена на [email скрыт]: значит, клиент прислал почту. '
+    'Монетки: начисляются только по реферальной программе — 10% с первой покупки каждого приглашённого; ссылка в @neirosetkaa_bot, главное меню → «Мой профиль» → «Пригласить друга»; тратятся на оплату подписки в боте. Других способов нет, не выдумывай задания или бонусы за покупки. '
+    'Промокод только по прямому запросу: NAVSEX, скидка 10%. '
     'Спроси только недостающее. Возврат не обещай. '
     'owner_topic — id такой темы, либо none. Отсутствие номинала в каталоге — не owner_topic. '
     'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
@@ -131,7 +136,7 @@ def burst_and_window(db, chat, limit=10):
     return '\n'.join(part for part in burst if part).strip(), window
 
 
-def catalog_index(facts, limit=120):
+def catalog_index(facts, limit=400):
     rows = []
     for row in (facts or {}).get('catalog') or []:
         if not isinstance(row, dict):
@@ -221,6 +226,14 @@ def _allowed_prices(tariffs, nominals, service_id, tariff_id):
     prices = {row['price'] for row in tariffs if type(row.get('price')) is int}
     prices |= {row['price'] for row in nominals if type(row.get('price')) is int}
     return prices
+
+
+COURSE_RECEIVED = 'Спасибо! Александр скоро проверит информацию и ответит по оформлению бонусной подписки.'
+
+
+def composed_card(answer):
+    """Payment card or owner request assembled by code, not written by the model."""
+    return bool(((answer or {}).get('evidence') or {}).get('composed_by_code'))
 
 
 _EMAIL = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
@@ -616,6 +629,43 @@ def _plan_tokens(text):
     return set(re.findall(r'[a-zа-яё0-9+]+', _flat(text)))
 
 
+def _asked_tariff_before(context):
+    last = next((str(row.get('text') or '') for row in reversed((context or {}).get('history') or [])
+                 if isinstance(row, dict) and row.get('role') in ('assistant', 'owner')), '')
+    return 'Это разные варианты' in last
+
+
+def _closest_option(options, burst):
+    words = _plan_tokens(burst)
+    scored = sorted(((len(_plan_tokens(row.get('plan') or '') - words), row) for row in options), key=lambda x: x[0])
+    if len(scored) >= 2 and scored[0][0] < scored[1][0]:
+        return scored[0][1]
+    return None
+
+
+def _bind_credits(validated, context):
+    """«Пополнить кредиты ChatGPT» is its own catalog product, not the ChatGPT subscription."""
+    burst = str((context or {}).get('burst') or '')
+    last = next((str(row.get('text') or '') for row in reversed((context or {}).get('history') or [])
+                 if isinstance(row, dict) and row.get('role') in ('assistant', 'owner')), '')
+    asked_now = bool(re.search(r'(?i)кредит|credit', burst))
+    follow_up = bool(re.search(r'(?i)кредит', last)) and not validated.get('tariff')
+    if not (asked_now or follow_up) or validated.get('service_id') not in ('', 'chatgpt', None):
+        return
+    if (validated.get('tariff') or {}).get('service_id') == 'chatgpt' and not asked_now:
+        return
+    row = next((r for r in (context or {}).get('tariffs') or [] if 'кредит' in str(r.get('service') or '').casefold()), None)
+    if not row:
+        return
+    if validated.get('service_id') == row['service_id']:
+        return
+    validated['service_id'] = row['service_id']
+    tariff = validated.get('tariff') or {}
+    if tariff and tariff.get('service_id') != row['service_id']:
+        validated['tariff'] = None
+        validated['tariff_id'] = ''
+
+
 def matching_tariffs(context, service_id):
     """Tariffs of the open service whose names fit the client's words."""
     if not service_id:
@@ -862,6 +912,7 @@ def package(understanding, context, db=None, chat=None):
         # «Как оформить», «что нужно кроме оплаты» get the payment card, not a nearby topic.
         validated['payment_asked'] = True
         validated['owner_topic'] = 'none'
+    _bind_credits(validated, context)
     reply = str((understanding or {}).get('reply') or '').strip()
     from .handoff import handoff_text
     from .payment_guide import (kind_for, merged_setup, missing_setup, mixes_activation_into_payment,
@@ -876,6 +927,16 @@ def package(understanding, context, db=None, chat=None):
         composed = True
         verdict = {'send': False, 'class': 'collect', 'reason': 'Данные для нового аккаунта Plus собраны.'}
     options = [] if validated.get('payment_asked') or composed else matching_tariffs(context, validated.get('service_id'))
+    if len(options) >= 2 and _asked_tariff_before(context):
+        # The client answered our «X или Y?» — take the option with no extra words, do not ask again.
+        picked = _closest_option(options, context.get('burst') or '')
+        if picked:
+            validated['tariff'] = picked
+            validated['tariff_id'] = picked.get('id') or ''
+            validated['payment_asked'] = True
+            plan_name = picked.get('plan') or ''
+            kind = kind_for(validated.get('service_id') or '', plan_name, context.get('tariffs') or [])
+            options = []
     if not composed and len(options) >= 2:
         reply = tariff_question(options)
         validated['tariff_id'] = ''
@@ -949,6 +1010,7 @@ def package(understanding, context, db=None, chat=None):
             'source_ids': [],
             'evidence': {'status': 'catalog_direct' if verdict['send'] else 'owner_policy',
                          'sources': [],
+                         'composed_by_code': bool(composed),
                          'reply_class': verdict['class'],
                          'turn_understanding': {'intent': validated['intent'],
                                                 'service_id': validated['service_id'],
@@ -990,10 +1052,12 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     account_ready = setup_dialog and setup_ready(account) and bool(validated.get('setup'))
     if account_ready:
         holds.append('Данные для новой почты outlook.com собраны. Клиенту оставлена фраза ожидания.')
-    course_email = _email_in((context or {}).get('burst')) if (
+    burst_text = str((context or {}).get('burst') or '')
+    course_email = (_email_in(burst_text) or ('[email скрыт]' if '[email скрыт]' in burst_text else '')) if (
         topic == 'course_bonus' or collected_state.get('course_topic')) else ''
     if course_email:
-        holds.append('Почта с курса получена. Нужен Александр. Клиенту оставлена фраза ожидания.')
+        # Owner 11.11.2026: tell the client Alexander will check it; notify the owner. No hold.
+        answer = dict(answer, reply=COURSE_RECEIVED, handoff=False)
     if (topic == 'activation_where' and asks_how_to_pay((context or {}).get('burst'))
             and len((understanding or {}).get('questions') or []) <= 1):
         topic = 'none'  # the payment card already answers; see package()
@@ -1002,7 +1066,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     answer_text = usable_answer(topic, faq_rows) if topic != 'none' else ''
     collecting = collect_fields(topic, faq_rows) if topic != 'none' else []
     refund_ready = False
-    owner_text_used = False
+    owner_text_used = bool(course_email)
     beyond = bool(validated.get('beyond_owner_fact'))
     if topic != 'none' and collecting and set(collecting) & {'setup_email', 'setup_password', 'setup_recovery', 'course_email'}:
         reply = str(answer.get('reply') or '')
@@ -1065,8 +1129,12 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                 owner_topic=validated['owner_topic'])
     evidence['turn_understanding'] = turn
     evidence['catalog_freshness'] = dict(freshness or {})
+    if course_email:
+        evidence.update(course_email_hold=True, course_email=course_email)
+    if composed_card(answer):
+        evidence['owner_approved_wording'] = True
     if owner_text_used and not holds:
-        evidence.update(status='catalog_direct', reply_class='instruct', owner_text_used=True,
+        evidence.update(status='catalog_direct', reply_class='instruct', owner_text_used=True, owner_approved_wording=True,
                         diagnostic='Черновик модели заменён записанным ответом владельца по теме «' + topic + '».',
                         handoff_reason='')
     if holds:
@@ -1086,11 +1154,10 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                         account_setup=account if account_ready else {},
                         account_service=(validated.get('tariff') or {}).get('service') or validated.get('service_id')
                                         or ((context or {}).get('dialog_state') or {}).get('service_label') or '',
-                        course_email_hold=bool(course_email),
-                        course_email=course_email,
+
                         repeat_hold=_repeats_assistant(answer.get('reply'), context),
                         diagnostic=' '.join(holds), handoff_reason=' '.join(holds))
-        if account_ready or course_email:
+        if account_ready:
             from .handoff import handoff_text
             answer = dict(answer, reply=handoff_text(), handoff=True, evidence=evidence)
         else:

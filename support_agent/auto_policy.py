@@ -203,7 +203,7 @@ def block_reason(answer,evidence=None,current_text=''):
     # A short follow-up such as "да" may not repeat the financial/account
     # subject. Do not let a falsely optimistic review approve action claims or
     # collection of secrets merely because the current fragment looks benign.
-    if not consultation and reviewed_detection is None and re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
+    if not consultation and reviewed_detection is None and not evidence.get('owner_approved_wording') and re.search(r'(?:пришлите|отправьте|передайте|сообщите|укажите)[^.!?\n]{0,120}'
                  r'(?:парол|токен|текст\s+сесси|данные\s+(?:для\s+)?входа|код(?:ы)?\s+(?:входа|подтверждения)|(?:одноразов|резервн)[а-яё]*\s+код)',text,re.I):
         return _reason('ответ запрашивает данные доступа; сбор этих данных оставлен владельцу.')
     from .reply_assertion import collects_case_data, asserts_outcome

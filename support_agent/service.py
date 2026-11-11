@@ -1145,6 +1145,13 @@ class Service:
                                           'diagnostic':notice.get('summary') or 'Вложение не передано в разбор.'})
             notice=await self.maybe_secret_setup_notice(job,notice)
             return notice
+        if not images:
+            from .turn_understanding import burst_and_window
+            from .owner_scenarios import quick_reply
+            quick=quick_reply(burst_and_window(self.store.db, job['chat'])[0])
+            if quick:
+                quick.setdefault('evidence',{}).update(reply_class='instruct',owner_approved_wording=True)
+                return quick
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
@@ -1238,8 +1245,9 @@ class Service:
         if evidence.get('course_email_hold'):
             try:
                 await self.owner_message('\n'.join([self.chat_identity(job['chat']),
-                    '🎓 Бонус от курса: клиент прислал почту с курса.',
-                    'Почта: '+str(evidence.get('course_email') or '')[:200]]))
+                    '🎓 Бонус от курса: клиент прислал почту с курса. Клиенту ответили, что вы проверите и ответите.',
+                    ('Почта в переписке с клиентом (помощник её не хранит).' if '[' in str(evidence.get('course_email') or '')
+                     else 'Почта: '+str(evidence.get('course_email') or '')[:200])]))
             except Exception:
                 logging.warning('Course note was not delivered')
         if not evidence.get('account_setup_hold'):
