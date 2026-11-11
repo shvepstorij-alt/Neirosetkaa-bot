@@ -696,77 +696,126 @@ async def fav_save(cb: CallbackQuery):
     await cb.answer("❤️ Сохранено в избранное!")
 
 
-@dp.callback_query(F.data == "profile_history")
+PURCHASES_PAGE = 10  # сколько заказов показывать за раз в «Мой профиль → Покупки»
+
+_PURCHASE_PACKS = {
+    "p15":   "🎯 Пробный (150 кр)",
+    "p25":   "🥉 Начальный (250 кр)",
+    "p50":   "🥈 Старт (500 кр)",
+    "p150":  "🏅 Базовый (1500 кр)",
+    "p500":  "🥇 Про (5000 кр)",
+    "p1200": "💎 Бизнес (12000 кр)",
+}
+_PURCHASE_PAY = {"sbp": "СБП", "card": "карта", "stars": "Telegram Stars", "coins": "монетки"}
+
+
+def _purchase_card(p) -> str:
+    """Карточка одного заказа для клиента: номер, товар, дата, сумма, оплата, выдача."""
+    pack = p["pack"] or ""
+    if pack.startswith("shop:"):
+        parts = pack.split(":")
+        svc_key = parts[1] if len(parts) > 1 else pack
+        svc = SHOP_CATALOG.get(svc_key, {}) or {}
+        idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
+        plans = svc.get("plans", []) or []
+        plan = plans[idx].get("name", "") if 0 <= idx < len(plans) else ""
+        title = f"{svc.get('emoji', '🛍')} {svc.get('name', svc_key)}" + (f" · {plan}" if plan else "")
+    else:
+        title = _PURCHASE_PACKS.get(pack, f"+{p['credits'] or 0} кр")
+    dt = p["paid_at"] or p["created_at"]
+    date_str = dt.strftime("%d.%m.%Y %H:%M") if dt else "—"
+    status = (p["status"] or "").lower()
+    if status == "refunded":
+        pay_state = "↩️ возврат"
+    elif status == "paid":
+        pay_state = "✅ оплачен"
+    else:
+        pay_state = status or "—"
+    if status == "refunded":
+        give_state = ""
+    elif not pack.startswith("shop:"):
+        give_state = ""  # кредиты зачисляются сразу, отметки выдачи у них нет
+    elif p["fulfilled_at"]:
+        give_state = "✅ выдан"
+    elif status == "paid":
+        give_state = "⏳ в обработке"
+    else:
+        give_state = ""
+    pm = _PURCHASE_PAY.get((p["payment_method"] or "").lower(), (p["payment_method"] or ""))
+    lines = [f"🧾 <b>Заказ #{p['num']}</b> — {title}",
+             f"📅 {date_str} · 💰 <b>{p['amount_rub'] or 0}₽</b>" + (f" · {pm}" if pm else ""),
+             f"💳 Оплата: {pay_state}" + (f" · 📦 Выдача: {give_state}" if give_state else "")]
+    if p["fk_intid"]:
+        lines.append(f"🔖 Номер платежа FreeKassa: <code>{p['fk_intid']}</code>")
+    if p["promo_code"]:
+        lines.append(f"🏷 Промокод: <code>{p['promo_code']}</code>")
+    return "\n".join(lines)
+
+
+@dp.callback_query(F.data.startswith("profile_history"))
 async def profile_history(cb: CallbackQuery):
-    """История покупок пользователя."""
+    """История покупок: полная карточка каждого заказа, по 10 штук, кнопка «Ещё»."""
     uid = cb.from_user.id
     await cb.answer()
     try:
+        _tail = (cb.data or "").split(":", 1)
+        offset = int(_tail[1]) if len(_tail) > 1 and _tail[1].isdigit() else 0
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT pack, amount_rub, credits, paid_at
+                """SELECT num, order_id, pack, amount_rub, credits, status, paid_at, created_at,
+                          fulfilled_at, fk_intid, payment_method, promo_code
                    FROM fk_orders
-                   WHERE user_id=$1 AND status='paid'
-                   ORDER BY paid_at DESC NULLS LAST
-                   LIMIT 20""",
-                uid
+                   WHERE user_id=$1 AND status IN ('paid','refunded')
+                   ORDER BY COALESCE(paid_at, created_at) DESC NULLS LAST, num DESC
+                   LIMIT $2 OFFSET $3""",
+                uid, PURCHASES_PAGE + 1, offset
             )
-        _kb_back = InlineKeyboardMarkup(inline_keyboard=[
+        has_more = len(rows) > PURCHASES_PAGE
+        rows = rows[:PURCHASES_PAGE]
+        _nav = []
+        if has_more:
+            _nav.append([InlineKeyboardButton(text="⬇️ Ещё", callback_data=f"profile_history:{offset + PURCHASES_PAGE}")])
+        if offset > 0:
+            _nav.append([InlineKeyboardButton(text="⬆️ В начало списка", callback_data="profile_history")])
+        _kb_back = InlineKeyboardMarkup(inline_keyboard=_nav + [
             [InlineKeyboardButton(text="👤 Мой профиль", callback_data="menu_profile")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
         ])
-        if not rows:
-            _t0 = "🧾 <b>История покупок</b>\n\nПокупок пока нет."
+
+        async def _out(txt):
+            txt = strip_surrogates(txt)
             try:
-                await cb.message.edit_text(_t0, reply_markup=_kb_back, parse_mode="HTML")
+                await cb.message.edit_text(txt, reply_markup=_kb_back, parse_mode="HTML")
             except Exception:
                 try:
                     await cb.message.delete()
                 except Exception:
                     pass
-                await cb.message.answer(_t0, reply_markup=_kb_back, parse_mode="HTML")
+                await cb.message.answer(txt, reply_markup=_kb_back, parse_mode="HTML")
+
+        if not rows:
+            await _out("🧾 <b>Мои покупки</b>\n\nПокупок пока нет.")
             return
-
-        PACK_NAMES = {
-            "p15":   "🎯 Пробный (150 кр)",
-            "p25":   "🥉 Начальный (250 кр)",
-            "p50":   "🥈 Старт (500 кр)",
-            "p150":  "🏅 Базовый (1500 кр)",
-            "p500":  "🥇 Про (5000 кр)",
-            "p1200": "💎 Бизнес (12000 кр)",
-        }
-        lines = []
-        for p in rows:
-            pack = p["pack"] or ""
-            dt = p["paid_at"]
-            date_str = dt.strftime("%d.%m.%Y") if dt else "—"
-            amount = p["amount_rub"] or 0
-            if pack.startswith("shop:"):
-                parts = pack.split(":")
-                svc_key = parts[1] if len(parts) > 1 else pack
-                svc = SHOP_CATALOG.get(svc_key, {})
-                label = f"{svc.get('emoji','🛍')} {svc.get('name', svc_key)}"
-            else:
-                credits_val = p["credits"] or 0
-                label = PACK_NAMES.get(pack, f"+{credits_val} кр")
-            lines.append(f"• {date_str} — {label} — <b>{amount}₽</b>")
-
-        total = sum(r["amount_rub"] or 0 for r in rows)
-        text = (
-            f"🧾 <b>История покупок</b>\n"
-            f"<i>Последние {len(rows)} операций · итого {total}₽</i>\n\n"
-            + "\n".join(lines)
-        )
-        _txt = strip_surrogates(text)
-        try:
-            await cb.message.edit_text(_txt, reply_markup=_kb_back, parse_mode="HTML")
-        except Exception:
-            try:
-                await cb.message.delete()
-            except Exception:
-                pass
-            await cb.message.answer(_txt, reply_markup=_kb_back, parse_mode="HTML")
+        cards = [_purchase_card(p) for p in rows]
+        head = (f"🧾 <b>Мои покупки</b>\n<i>Заказы {offset + 1}–{offset + len(rows)}"
+                f"{' · есть ещё' if has_more else ''}</i>\n\n")
+        text = head + "\n\n".join(cards)
+        # Лимит Telegram — 4096 символов; при превышении убираем карточки с конца
+        # и сдвигаем «Ещё» на столько же, чтобы заказы не терялись.
+        shown = len(cards)
+        while len(text) > 3900 and shown > 1:
+            shown -= 1
+            text = head + "\n\n".join(cards[:shown])
+        if shown < len(rows):
+            _nav2 = [[InlineKeyboardButton(text="⬇️ Ещё", callback_data=f"profile_history:{offset + shown}")]]
+            if offset > 0:
+                _nav2.append([InlineKeyboardButton(text="⬆️ В начало списка", callback_data="profile_history")])
+            _kb_back = InlineKeyboardMarkup(inline_keyboard=_nav2 + [
+                [InlineKeyboardButton(text="👤 Мой профиль", callback_data="menu_profile")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_main")],
+            ])
+        await _out(text)
     except Exception as e:
         logging.error(f"profile_history error uid={uid}: {e}")
         await cb.message.answer("⚠️ Не удалось загрузить историю покупок.")
