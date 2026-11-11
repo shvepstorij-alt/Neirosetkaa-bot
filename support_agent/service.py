@@ -1168,8 +1168,15 @@ class Service:
             return
         collected=evidence.get('refund_collected') or {}
         from .privacy import scrub
+        topic=str(evidence.get('collect_topic') or 'refund_terms')
+        head='Возврат: номер, сервис и причина собраны. Клиенту обещания нет.'
+        if topic!='refund_terms':
+            from .faq import load_faq
+            try:title=next((row['title'] for row in load_faq()['topics'] if row['id']==topic),topic)
+            except Exception:title=topic
+            head='Нужна ваша помощь: '+title+'. Номер заказа получен. Клиенту обещания нет.'
         lines=[self.chat_identity(job['chat']),
-               'Возврат: номер, сервис и причина собраны. Клиенту обещания нет.',
+               head,
                'Номер заказа: '+scrub(str(collected.get('order_number') or '')),
                'Сервис: '+scrub(str(collected.get('service') or '')),
                'Причина: '+scrub(str(collected.get('reason') or ''))]

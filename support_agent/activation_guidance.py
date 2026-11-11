@@ -4,7 +4,7 @@ import re
 
 _TIMING=('Автоматическая активация через бота обычно занимает 2–5 минут. '
           'Ручная активация — в течение получаса. Кнопка активации действует 2 часа.')
-_BROWSERS='Подойдут Chrome, Safari, Opera и Google.'
+_BROWSERS='Подойдут Google, Chrome, Safari, Opera и Яндекс. Лучше всего Google.'
 _STEPS=('1. Зайдите на сайт ChatGPT.com\n'
         '2. Авторизуйтесь в ваш аккаунт\n'
         '3. Перейдите по ссылке в этом же браузере https://chatgpt.com/api/auth/session\n'
