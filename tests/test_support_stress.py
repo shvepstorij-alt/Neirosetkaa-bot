@@ -25,7 +25,7 @@ class StressTests(unittest.TestCase):
                          'Активация занимает 5–30 минут. У сервисов с автоактивацией — 2–5 минут.')
         self.assertEqual(usable_answer('refund_terms'), '')
         self.assertEqual(collect_fields('refund_terms'), ['order_number', 'service', 'reason'])
-        self.assertEqual(usable_answer('off_catalog'), '')
+        self.assertIn('название или ссылку на сайт', usable_answer('off_catalog'))
         self.assertEqual(usable_answer('region_policy'), '')
         self.assertGreaterEqual(len(load_faq()['topics']), 6)
 

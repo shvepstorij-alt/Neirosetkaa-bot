@@ -167,7 +167,7 @@ class SendPathTests(unittest.TestCase):
         answer = {'reply': body, 'summary': 'Как оформить Zoom.', 'handoff': False,
                   'evidence': consultation_evidence(body, 'workflow', owner_action_required=False,
                                                     diagnostic='Этап: консультация об оформлении.')}
-        presented, replaced = present_outgoing(answer, introduced=False)
+        presented, replaced = present_outgoing(answer, {'current_client_greeting': True}, introduced=False)
         self.assertFalse(replaced)
         self.assertIn('Здравствуйте', presented['reply'])
         reason = block_reason(presented, presented['evidence'], 'Как оформить подписку на Zoom?')

@@ -15,11 +15,13 @@ from install_guides import DESKTOP_PLAIN, load_guides, setting_key
 
 class GreetingTests(unittest.TestCase):
     def test_first_contact_then_not_again(self):
-        first = decorate_reply('Тариф Plus стоит 1990 ₽.', introduced=False)
+        first = decorate_reply('Тариф Plus стоит 1990 ₽.', {'current_client_greeting': True}, introduced=False)
         self.assertTrue(first.startswith(INTRO))
         self.assertIn('1990', first)
         self.assertEqual(first.count('Здравствуйте'), 1)
         later = decorate_reply(first, introduced=True)
+        plain = decorate_reply('Тариф Plus стоит 1990 ₽.', introduced=False)
+        self.assertTrue(plain.startswith('Я ИИ-помощник Александра'))
         self.assertFalse(later.startswith('Здравствуйте'))
         self.assertIn('1990', later)
 
