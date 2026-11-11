@@ -33,12 +33,40 @@ def buttons(rows):
     return {'inline_keyboard':[[item(value) for value in row] for row in rows]}
 
 
+def present_outgoing(answer, info=None, introduced=False, facts=None):
+    """The exact text and seal the send path stores. Tests must use this, not a hand-built string."""
+    from .conversation_style import decorate_reply
+    from .dialog_state import prepare_outgoing
+    from .auto_policy import consultation_evidence, _local_consultation
+    result=dict(answer or {})
+    result['reply']=decorate_reply(result.get('reply') or '', info, introduced=introduced)
+    cleaned,replaced=prepare_outgoing(result['reply'], facts or {})
+    result['reply']=cleaned
+    evidence=dict(result.get('evidence') or {})
+    contract=evidence.get('consultation_contract')
+    if isinstance(contract,dict) and contract.get('kind') and not replaced:
+        from .auto_policy import _consultation_text
+        original=str((answer or {}).get('reply') or '')
+        if _consultation_text(original)==_consultation_text(cleaned) and not _local_consultation(cleaned, evidence):
+            fresh=consultation_evidence(cleaned, contract['kind'])
+            evidence['consultation_contract']=fresh['consultation_contract']
+            evidence['status']=fresh['status']
+            result['evidence']=evidence
+    result['_presentation_replaced']=replaced
+    return result,replaced
+
+
 class Service:
-    def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None):
+    def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None,
+                 auto_test_ids=(),auto_for_all=False):
         self.store,self.tg,self.ai,self.shop=store,tg,ai,shop
         self.owner,self.allowed,self.daily_limit=owner,set(allowed),daily_limit
-        self.auto_test_id=(auto_test_id if type(auto_test_id) is int and auto_test_id>0
-                           and auto_test_id in self.allowed and auto_test_id!=owner else None)
+        ids=set(auto_test_ids or ())
+        if type(auto_test_id) is int and auto_test_id>0:
+            ids.add(auto_test_id)
+        self.auto_test_ids=frozenset(i for i in ids if i in self.allowed and i!=owner)
+        self.auto_test_id=next(iter(sorted(self.auto_test_ids)), None)
+        self.auto_for_all=bool(auto_for_all)
         self.auto_suspended=False
         self.bot_id=None
         self.daily_cleanup=0
@@ -51,6 +79,17 @@ class Service:
         self.callback_tasks={}
         self.admin_retiring=set()
         self.admin_sequence=0
+        self._business_locks={}
+        from .catalog_cache import CatalogCache
+        self.catalog_cache=CatalogCache()
+
+    def _business_lock(self, ident, uid):
+        key=(str(ident), int(uid))
+        lock=self._business_locks.get(key)
+        if lock is None:
+            lock=asyncio.Lock()
+            self._business_locks[key]=lock
+        return lock
 
     def release_command_io_gate(self):
         gate=_COMMAND_IO_GATE.get()
@@ -135,7 +174,11 @@ class Service:
         return controls
 
     def auto_permitted(self,c):
-        return bool(not self.auto_suspended and c and self.auto_test_id is not None and c['uid']==self.auto_test_id and c['uid'] in self.allowed)
+        if self.auto_suspended or not c or c['uid'] not in self.allowed:
+            return False
+        if self.auto_for_all:
+            return True
+        return c['uid'] in self.auto_test_ids
 
     async def show_control(self,admin_mid=None,settings=False):
         from .auto_panel import overview,settings as settings_view
@@ -291,6 +334,9 @@ class Service:
             media={k:v for k,v in m['document'].items() if k in ('file_id','file_size')}
             media['kind']='photo'
             media['delivery_kind']='document'
+        elif m.get('document') and m['document'].get('mime_type')=='application/pdf':
+            # Bank receipt. Keep the file id only; never the name or the bytes.
+            media={'kind':'document','file_id':str(m['document'].get('file_id') or '')[:128]}
         elif m.get('document') and (m['document'].get('mime_type') in ('text/plain','application/json')
                 or str(m['document'].get('file_name','')).casefold().endswith(('.txt','.json'))):
             # These files can contain the entire session. Do not download them
@@ -311,15 +357,21 @@ class Service:
             media['reply_mid']=reply_mid
         # Never persist supplied credentials, or forward raw content to the admin bot.
         text='[Сообщение скрыто: возможны данные доступа; нужна ручная проверка]' if secret else scrub(raw)
-        cid=self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
-                              edited='edited_business_message' in update)
-        if role=='client':
-            person=m.get('from',{})
-            name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
-            self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
-        else:
-            from .auto_panel import record
-            record(self.store,cid,None,'manual')
+        # Same lock as dispatch, so a stored manual reply cannot race an auto-send
+        # that has not yet been handed to Telegram.
+        async with self._business_lock(ident, uid):
+            cid=self.store.ingest(ident,uid,m['message_id'],role,text,media,m['date'],
+                                  edited='edited_business_message' in update)
+            if role=='client':
+                person=m.get('from',{})
+                name=' '.join(str(person.get(k) or '') for k in ('first_name','last_name')).strip()
+                self.store.save_profile(cid,str(person.get('username') or '')[:64],name[:160])
+            else:
+                stored=self.store.db.execute('SELECT role FROM messages WHERE chat=? AND mid=?',
+                                             (cid,m['message_id'])).fetchone()
+                if stored and stored['role']=='owner':
+                    from .auto_panel import record
+                    record(self.store,cid,None,'manual')
 
     async def admin_panel(self,text,rows,admin_mid=None,parse_mode=None):
         """Bounded owner-only pages; callback navigation edits the existing panel."""
@@ -473,8 +525,8 @@ class Service:
             await self.show_attention(int(cmd.split(':')[1]),admin_mid)
         elif cmd.startswith('auto:arm:'):
             expected=int(cmd.split(':')[2])
-            if not self.auto_test_id or expected!=int(self.store.get('revision')):
-                await self.owner_message('AUTO не включён: тестовый ID не настроен или кнопка устарела. Откройте /status.')
+            if not (self.auto_test_ids or self.auto_for_all) or expected!=int(self.store.get('revision')):
+                await self.owner_message('AUTO не включён: тестовая группа не настроена или кнопка устарела. Откройте /status.')
                 return
             self.store.switch('auto')
             await self.show_control(admin_mid,settings=True)
@@ -811,7 +863,7 @@ class Service:
             current='\n'.join(row['text'] or '' for row in self.store.db.execute(
                 "SELECT text FROM messages WHERE chat=? AND role='client' AND mid BETWEEN ? AND ? ORDER BY mid",
                 (d['chat'],first,d['mid'])).fetchall())
-            nid=self.store.auto_notice(did,kind_for(evidence,reason,current))
+            nid=self.store.auto_notice(did,kind_for(evidence,reason,current,usable_reply=bool(str(d['text'] or '').strip())))
             if nid:
                 await self.auto_send(nid)
         try:await self.show_draft(did,d['admin_mid'])
@@ -823,9 +875,10 @@ class Service:
     def auto_content_reason(self,d):
         notice=self.store.db.execute('SELECT kind FROM auto_notices WHERE draft=?',(d['id'],)).fetchone()
         if notice:
+            from .auto_notice import matches_template
             from .handoff import HANDOFF, OFF_HOURS, CONTINUE
             allowed_notices={HANDOFF+'. '+CONTINUE, HANDOFF+'. '+OFF_HOURS+'. '+CONTINUE}
-            if not d['handoff'] and d['text'] in allowed_notices:return None
+            if not d['handoff'] and (matches_template(notice['kind'], d['text']) or d['text'] in allowed_notices):return None
             return 'Этап: проверка служебного ответа. Сохранённый текст не совпал с шаблоном.'
         from .auto_policy import block_reason
         c=self.store.chat(d['chat'])
@@ -896,65 +949,76 @@ class Service:
             reason=self.auto_content_reason(fresh)
             if reason:
                 await self.auto_review(did,reason);return
-        reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_send(did,time.time()))
-        if not reserved:
-            if automatic:
-                current=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
-                now=time.time()
-                if current and current['state']=='ready' and self.store.still_current(current):
-                    chat=self.store.chat(current['chat'])
-                    if not 0<=now-current['created']<=120 or not 0<=now-chat['inbound']<86340:
-                        await self.auto_review(did,'Этап: актуальность перед AUTO-отправкой. '+str(self.store.auto_send_block_reason(did,now)))
-                return
-            reason=self.store.send_block_reason(did,time.time())
-            if d['admin_mid']:
-                await self.show_draft(did,d['admin_mid'])
-            await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: отправка заблокирована. Этап: проверка перед отправкой. Причина: {reason}. Клиенту ничего не отправлено этим нажатием.')
-            return
-        if pause_after:
-            # Pause before yielding to the network so a new incoming message cannot
-            # be queued and then silently discarded after this send completes.
-            self.store.switch('off',c['id'])
+        lock=self._business_lock(c['connection'], c['uid'])
+        await lock.acquire()
         try:
-            text=outgoing_text(reserved['text'],self.store.evidence(did))
-            from .customer_format import customer_payload
-            text,payload=customer_payload(text)
-            sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],**payload)
-        except Exception:
-            self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
-            if automatic:
-                from .auto_panel import record
-                record(self.store,c['id'],did,'send_uncertain','Этап: отправка AUTO. Telegram не подтвердил результат. Повтор запрещён; проверьте личку.')
-                try:
-                    await self.owner_message(self.chat_identity(c['id'])+'\nНеизвестен результат AUTO-отправки. Режим сохранён; проверьте личку. Повтора этого ответа не будет.',
-                                             buttons([[('Карточка чата',f'view:{c["id"]}')]]))
-                except Exception:logging.warning('AUTO uncertain notification unavailable; persistent pause saved')
+            if self.store.manual_pause_blocks(c['id'], time.time()):
                 return
-            if d['admin_mid']:
-                await self.show_draft(did,d['admin_mid'])
-            await self.owner_message(self.chat_identity(c['id'])+f'\nНеизвестен результат отправки черновика №{did}. Режим сохранён. Проверьте личку. Автоматического повтора не будет.',
-                                     buttons([self.chat_controls(self.store.chat(c['id']))]))
-            return
-        try:
-            if not isinstance(sent,dict) or type(sent.get('message_id')) is not int:
-                raise ValueError('Telegram message confirmation missing')
-            with self.store.transaction():
-                self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
-                from .conversation_style import INTRO,INTRO_PLAIN
-                if text.startswith((INTRO,INTRO_PLAIN)):self.store.mark_introduced(c['id'])
-                self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
-                    (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
-        except Exception:
-            self.auto_suspended=True
+            reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_send(did,time.time()))
+            if not reserved:
+                if automatic:
+                    current=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+                    now=time.time()
+                    if current and current['state']=='ready' and self.store.still_current(current):
+                        chat=self.store.chat(current['chat'])
+                        if not 0<=now-current['created']<=120 or not 0<=now-chat['inbound']<86340:
+                            await self.auto_review(did,'Этап: актуальность перед AUTO-отправкой. '+str(self.store.auto_send_block_reason(did,now)))
+                    return
+                reason=self.store.send_block_reason(did,time.time())
+                if d['admin_mid']:
+                    await self.show_draft(did,d['admin_mid'])
+                await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: отправка заблокирована. Этап: проверка перед отправкой. Причина: {reason}. Клиенту ничего не отправлено этим нажатием.')
+                return
+            if pause_after:
+                # Pause before yielding to the network so a new incoming message cannot
+                # be queued and then silently discarded after this send completes.
+                self.store.switch('off',c['id'])
+            if self.store.manual_pause_blocks(c['id'], time.time()):
+                self.store.release_unsent(did)
+                return
             try:
+                text=outgoing_text(reserved['text'],self.store.evidence(did))
+                from .customer_format import customer_payload
+                text,payload=customer_payload(text)
+                sent=await self.tg.call('sendMessage',chat_id=c['uid'],business_connection_id=c['connection'],**payload)
+            except Exception:
                 self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
-            except Exception:logging.warning('Send result persistence unavailable; AUTO suspended in memory')
+                if automatic:
+                    from .auto_panel import record
+                    record(self.store,c['id'],did,'send_uncertain','Этап: отправка AUTO. Telegram не подтвердил результат. Повтор запрещён; проверьте личку.')
+                    try:
+                        await self.owner_message(self.chat_identity(c['id'])+'\nНеизвестен результат AUTO-отправки. Режим сохранён; проверьте личку. Повтора этого ответа не будет.',
+                                                 buttons([[('Карточка чата',f'view:{c["id"]}')]]))
+                    except Exception:logging.warning('AUTO uncertain notification unavailable; persistent pause saved')
+                    return
+                if d['admin_mid']:
+                    await self.show_draft(did,d['admin_mid'])
+                await self.owner_message(self.chat_identity(c['id'])+f'\nНеизвестен результат отправки черновика №{did}. Режим сохранён. Проверьте личку. Автоматического повтора не будет.',
+                                         buttons([self.chat_controls(self.store.chat(c['id']))]))
+                return
             try:
-                await self.owner_message(f'Чат №{c["id"]} · ID {c["uid"]}\nЭтап: сохранение результата отправки. '
-                    'Запрос уже передан Telegram, но подтверждённый результат не удалось сохранить или проверить. '
-                    'AUTO остановлен в этом процессе; повтор запрещён. Проверьте личку перед продолжением.')
-            except Exception:logging.warning('Send persistence failure notification unavailable')
-            return
+                if not isinstance(sent,dict) or type(sent.get('message_id')) is not int:
+                    raise ValueError('Telegram message confirmation missing')
+                with self.store.transaction():
+                    self.store.db.execute("UPDATE drafts SET state='sent',telegram_mid=? WHERE id=?",(sent['message_id'],did))
+                    self.store.db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?,?)',
+                        (c['id'],sent['message_id'],'assistant',text,'{}',time.time(),'done'))
+                    from .conversation_style import INTRO,INTRO_PLAIN
+                    if str(text or '').startswith((INTRO,INTRO_PLAIN)):
+                        self.store.mark_introduced(c['id'])
+            except Exception:
+                self.auto_suspended=True
+                try:
+                    self.store.db.execute("UPDATE drafts SET state='uncertain' WHERE id=?",(did,))
+                except Exception:logging.warning('Send result persistence unavailable; AUTO suspended in memory')
+                try:
+                    await self.owner_message(f'Чат №{c["id"]} · ID {c["uid"]}\nЭтап: сохранение результата отправки. '
+                        'Запрос уже передан Telegram, но подтверждённый результат не удалось сохранить или проверить. '
+                        'AUTO остановлен в этом процессе; повтор запрещён. Проверьте личку перед продолжением.')
+                except Exception:logging.warning('Send persistence failure notification unavailable')
+                return
+        finally:
+            lock.release()
         current=self.store.chat(c['id'])
         if automatic:
             from .auto_panel import record
@@ -962,6 +1026,12 @@ class Service:
                 notice=self.store.db.execute('SELECT 1 FROM auto_notices WHERE draft=?',(did,)).fetchone()
                 record(self.store,c['id'],did,'notice_sent' if notice else 'auto_sent')
             except Exception:logging.warning('AUTO action log unavailable; confirmed send is persisted')
+            from .dialog_state import asks_for_check
+            if asks_for_check(text):
+                try:
+                    await self.owner_message(self.chat_identity(c['id'])+'\nКлиенту отправлен вопрос для проверки. '
+                                             'Причина: ответ собирает данные, решение по ним остаётся за вами. Ничего не оформлено.')
+                except Exception:logging.warning('Owner check notice unavailable; client question remains sent')
             # The confirmed customer result is persisted before optional UI I/O.
             if d['admin_mid']:
                 try:await self.show_draft(did,d['admin_mid'])
@@ -977,12 +1047,153 @@ class Service:
             'Помощник продолжит готовить черновики следующих сообщений.'),
             buttons([self.chat_controls(current),[('Все чаты','chats:0'),('Обновить',f'draft:{did}')]]))
 
-    def charge_call(self):
+    def _mark_stage(self,job,name):
+        job.setdefault('_stages',[]).append((str(name)[:40],time.time()))
+
+    def charge_call(self, reason='model'):
+        """Reserve intent for the next real API request. The quota moves in request()."""
+        from .usage import current_meter
+        meter=current_meter()
+        if meter is not None:
+            meter.arm(reason)
+            return
         day=dt.datetime.now(dt.timezone.utc).date().isoformat()
         if not self.store.reserve_call(day,self.daily_limit):
             raise ValueError('Daily API request limit reached')
 
     async def generate(self,job):
+        """One structured reading when the model supports it. Older routers stay for tests."""
+        try:
+            if hasattr(self.ai,'understand_turn') and not job.get('_legacy'):
+                try:
+                    understood=await self._understood_reply(job)
+                    if understood is not None:
+                        return understood
+                except Exception as exc:
+                    from .handoff import handoff_text
+                    return {'reply':handoff_text(),'summary':'Разбор хода не завершился. Клиенту оставлено ожидание владельца.',
+                            'handoff':True,'source_ids':[],
+                            'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',
+                                        'diagnostic':'Этап: разбор хода. Тип='+type(exc).__name__+'. Текст клиента не отправлялся.'}}
+            return await self._generate_legacy(job)
+        finally:
+            await self.maybe_quota_notice()
+
+    async def maybe_quota_notice(self):
+        """One owner note at 80% of the daily call limit and one when it is full."""
+        try:
+            count=self.store.calls_today()
+            limit=int(self.daily_limit)
+            if limit<1 or count<1:
+                return
+            day=dt.datetime.now(dt.timezone.utc).date().isoformat()
+            if count>=limit:
+                await self._quota_notice(day,'100','Дневной лимит запросов к модели исчерпан: %s из %s. Новым клиентам уходит фраза про Александра, пока сутки не сменятся.'%(count,limit))
+            elif count>=max(1,(limit*80+99)//100):
+                await self._quota_notice(day,'80','Использовано %s из %s запросов к модели за сутки, это уже 80%% или больше.'%(count,limit))
+        except Exception:
+            logging.warning('Quota notice was not sent')
+
+    async def _quota_notice(self,day,level,text):
+        key='quota_notice_%s:%s'%(level,day)
+        if self.store.db.execute('SELECT 1 FROM settings WHERE key=?',(key,)).fetchone():
+            return
+        await self.owner_message(text)
+        self.store.put(key,'1')
+
+    async def maybe_conflict_alert(self,job,answer,context):
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('conflict_hold'):
+            return
+        now=time.time()
+        key='conflict_alert:%s'%job['chat']
+        row=self.store.db.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
+        previous=float(row[0]) if row else 0.0
+        if now-previous<1800:
+            return
+        from .privacy import scrub
+        turn=evidence.get('turn_understanding') or {}
+        reason=scrub(str(turn.get('conflict_reason') or evidence.get('diagnostic') or 'Высокий конфликт.'))[:300]
+        lines=[self.chat_identity(job['chat']),'Конфликт, нужна ваша реплика.','Причина: '+reason,'Последние сообщения:']
+        for item in (context or {}).get('history') or []:
+            role={'owner':'владелец','assistant':'помощник'}.get(item.get('role'),'клиент')
+            text=scrub(str(item.get('text') or '')).replace('\n',' ')[:240]
+            if text:
+                lines.append(role+': '+text)
+        try:
+            await self.owner_message('\n'.join(lines)[:3500])
+        except Exception:
+            logging.warning('Conflict alert was not delivered')
+            return
+        self.store.put(key,str(now))
+
+    async def _understood_reply(self,job):
+        from .turn_understanding import build_context, package
+        from .media_batch import prepare_media
+        if not self.store.still_current(job):
+            return None
+        images,notice=await prepare_media(self,job)
+        if images is None and notice is None:
+            return None
+        if notice:
+            notice.setdefault('evidence',{'status':'owner_policy','sources':[],'reply_class':'unverified',
+                                          'diagnostic':notice.get('summary') or 'Вложение не передано в разбор.'})
+            return notice
+        from .catalog_cache import load_catalog
+        facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
+        context=build_context(self.store.db, job['chat'], facts)
+        self.charge_call('understand_image' if images else 'understand')
+        understanding=await self.ai.understand_turn(context, images=images or None)
+        if not self.store.still_current(job):
+            return None
+        self._last_turn_context=context
+        from .payment_case import resolve_payment
+        payment=await resolve_payment(self, job, understanding, context)
+        if not self.store.still_current(job):
+            return None
+        answer=payment if payment is not None else package(understanding, context, self.store.db, job['chat'])
+        from .turn_understanding import enforce_turn_policy
+        answer=enforce_turn_policy(answer, understanding, context, freshness)
+        turn=answer.get('evidence',{}).get('turn_understanding') or {}
+        if turn.get('conflict')=='high':
+            answer.setdefault('evidence',{}).setdefault('turn_understanding',{})['conflict_reason']=str((understanding or {}).get('conflict_reason') or '')[:300]
+        await self.maybe_conflict_alert(job, answer, context)
+        await self.maybe_refund_alert(job, answer)
+        await self.maybe_account_setup_alert(job, answer)
+        return answer
+
+    async def maybe_refund_alert(self, job, answer):
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('refund_hold'):
+            return
+        collected=evidence.get('refund_collected') or {}
+        from .privacy import scrub
+        lines=[self.chat_identity(job['chat']),
+               'Возврат: номер, сервис и причина собраны. Клиенту обещания нет.',
+               'Номер заказа: '+scrub(str(collected.get('order_number') or '')),
+               'Сервис: '+scrub(str(collected.get('service') or '')),
+               'Причина: '+scrub(str(collected.get('reason') or ''))]
+        try:
+            await self.owner_message('\n'.join(lines))
+        except Exception:
+            logging.warning('Refund note was not delivered')
+
+    async def maybe_account_setup_alert(self, job, answer):
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('account_setup_hold'):
+            return
+        got=evidence.get('account_setup') or {}
+        lines=[self.chat_identity(job['chat']),
+               'Новый аккаунт ChatGPT Plus: почта, пароль и почта восстановления собраны. Клиенту обещания нет.',
+               'Почта ящика: '+str(got.get('setup_email') or ''),
+               'Пароль ящика: '+str(got.get('setup_password') or ''),
+               'Почта восстановления: '+str(got.get('setup_recovery') or '')]
+        try:
+            await self.owner_message('\n'.join(lines))
+        except Exception:
+            logging.warning('New-account note was not delivered')
+
+    async def _generate_legacy(self,job):
         """Owned payment evidence composes with, never replaces, another goal."""
         from .order_status import order_reply,is_status_request
         first=self.store.chat(job['chat'])['batch_first']
@@ -1083,6 +1294,29 @@ class Service:
         return inner
 
     async def _generate_body(self,job):
+        """Classify, then keep the reply consistent with the last 10 messages."""
+        self._situation=None
+        answer=await self._generate_body_inner(job)
+        return self._guard_situation(job,answer)
+
+    def _guard_situation(self,job,answer):
+        situation=getattr(self,'_situation',None)
+        if not situation:
+            return answer
+        from .situation import guard_reply, remember
+        from .tariff_choice import safe_client_reply
+        facts=getattr(self,'_last_dialog_facts',None) or {}
+        guarded=guard_reply(answer,situation,facts) if isinstance(answer,dict) else answer
+        guarded=safe_client_reply(guarded)
+        try:
+            remember(self.store.db,job['chat'],situation)
+        except Exception:
+            logging.warning('Situation was not saved')
+        return guarded
+
+    async def _generate_body_inner(self,job):
+        """Classify the turn and gather facts. Model work continues in _draft_checked."""
+        self._mark_stage(job,'classify')
         from .storage import HISTORY_MESSAGES,HISTORY_CHARACTERS
         batch_first=self.store.chat(job['chat'])['batch_first']
         from .topic_boundary import boundary_reply
@@ -1096,7 +1330,7 @@ class Service:
             WHERE chat=? AND role='client' AND mid>=? AND mid<=?''',
             (job['chat'],batch_first,job['mid'])).fetchone()
         if turn[0]>HISTORY_MESSAGES or turn[1]>HISTORY_CHARACTERS:
-            return {'reply':'Спасибо за подробности! Уточню ваше обращение и вернусь с ответом.',
+            return {'reply':'Обращение слишком большое, чтобы разобрать его целиком автоматически. Пришлите, пожалуйста, главный вопрос отдельно, и я отвечу по нему. Если нужно разобрать всё сообщение, ожидайте Александра.',
                     'summary':'Обращение превышает безопасный объём контекста. Автоматический анализ не запускался; проверьте весь диалог вручную.',
                     'handoff':True}
         from .media_batch import prepare_media
@@ -1108,7 +1342,7 @@ class Service:
             WHERE chat=? AND role='client' AND mid>=? AND mid<=?''',
             (job['chat'],batch_first,job['mid'])).fetchone()[0]
         if size>HISTORY_CHARACTERS:
-            return {'reply':'Уточню детали вашего обращения и вернусь с ответом.',
+            return {'reply':'После расшифровки обращение слишком большое для одного автоматического ответа. Пришлите, пожалуйста, главный вопрос отдельно. Если нужно разобрать всё, ожидайте Александра.',
                     'summary':'После расшифровки обращение превышает объём контекста. Проверьте весь диалог вручную; частичный ответ не подготовлен.',
                     'handoff':True}
         facts=await self.shop.facts(job['uid'])
@@ -1155,6 +1389,15 @@ class Service:
                 break
         from .current_questions import reply as current_questions_reply
         current_answer=current_questions_reply(raw_batch,previous_assistant['text'] if previous_assistant else '')
+        if current_answer and not image and 'устройствам ChatGPT=0' in current_answer['evidence']['diagnostic']:
+            # The dialog may already hold the Apple region; then the stored situation answers, not a new region question.
+            try:
+                from .dialog_state import load as load_dialog
+                from .situation import analyze, window
+                known=analyze(window(self.store.db,job['chat']),load_dialog(self.store.db,job['chat']),facts.get('catalog',[])).get('known') or {}
+                if 'region' in known:current_answer=None
+            except Exception:
+                logging.warning('Dialog situation was not read')
         if current_answer and not image:return current_answer
         latest=current_request(batch,batch_first,job['mid'])
         from .request_context import resolve_request
@@ -1169,6 +1412,41 @@ class Service:
                     'handoff':True}
         from .catalog_context import annotate
         facts=annotate(facts,latest)
+        raw_batch='\n'.join(row['text'] or '' for row in batch)
+        from .situation import prepare as prepare_situation
+        prepared=prepare_situation(self.store.db,job['chat'],facts)
+        self._situation=prepared['situation']
+        facts=dict(facts,situation=prepared['situation'])
+        self._last_dialog_facts=facts
+        # Quotes and slot questions for a topic the dialog already identified.
+        # Unknown-service and safety turns stay on their own paths.
+        sit=prepared['situation']
+        if (not image and sit.get('intent')=='continuation' and sit.get('offered')
+                and 'option' in (sit.get('asked_slots') or []) and not sit.get('service_changed')):
+            from .tariff_choice import confirmation, narrowed_question, resolve_selection
+            choice=await resolve_selection(self.ai, sit['offered'], sit.get('burst') or raw_batch)
+            if choice.get('decision')=='chosen' and choice.get('row'):
+                sit['option_label']=choice['row'].get('plan') or ''
+                sit['offered']=[choice['row']]
+                sit['asked_slots']=[]
+                picked=confirmation(choice['row'], facts)
+                if picked:return picked
+            elif choice.get('decision')=='ambiguous' and choice.get('candidates'):
+                sit['offered']=choice['candidates']
+                asked=narrowed_question(choice['candidates'])
+                if asked:return asked
+            elif choice.get('decision')=='new_topic':
+                prepared['reply']=None
+        if (prepared.get('reply') and not image and prepared['situation'].get('want') in ('appstore_topup','tariff')
+                and not re.search(r'возврат|верн\w*\s+деньг|парол|токен|сесси', raw_batch, re.I)):
+            return prepared['reply']
+        from .workflow_policy import ambiguity_reply
+        if not image:
+            unclear=ambiguity_reply(raw_batch)
+            if unclear:return unclear
+            from .owner_scenarios import reply as scenario_reply
+            scenario=scenario_reply(raw_batch)
+            if scenario:return scenario
         from .catalog_context import apple_region_intake_reply
         apple_intake=apple_region_intake_reply(facts,raw_batch)
         if apple_intake and not image:return apple_intake
@@ -1223,7 +1501,16 @@ class Service:
             consultation={'active':False}
         if consultation.get('active'):
             facts=dict(facts,consultation_intent=consultation)
-        # Old questions provide reference slots, not the newest turn's intent.
+        from .dialog_state import bind_turn
+        binding=bind_turn(self.store.db,job['chat'],raw_batch,facts)
+        facts=binding['facts']
+        self._last_dialog_facts=facts
+        if binding.get('grounded') and not image:
+            return binding['grounded']
+        if binding.get('continue_text'):
+            latest=binding['continue_text']
+            facts=annotate(facts,latest)
+            self._last_dialog_facts=facts
         from .turn_scope import scope as scope_turn,purchase_reply
         resolved_context=latest
         facts,latest=scope_turn(facts,resolved_context,raw_batch)
@@ -1239,7 +1526,7 @@ class Service:
         if getattr(self,'_probe_capture',False):
             self._probe_facts=facts
             self._probe_question=latest
-        if turn['clarification_required'] and not image:
+        if turn['clarification_required'] and not image and not (facts.get('situation') or {}).get('service_key'):
             from .app_installation import reply as installation_reply
             installation=installation_reply(facts,raw_batch,guide_history)
             if installation:return installation
@@ -1284,7 +1571,6 @@ class Service:
         # and deterministic renderers instead of abandoning the conversation.
         job['_consultation_facts']=facts
         job['_consultation_question']=latest
-        raw_batch='\n'.join(row['text'] or '' for row in batch)
         from .fulfillment_reply import transaction_ack
         acknowledgement=transaction_ack(raw_batch)
         if acknowledgement and not image:return acknowledgement
@@ -1344,9 +1630,11 @@ class Service:
         if direct:return direct
         from .conversation_style import session_info
         replied=session_info(self.store.db,job['chat'],batch_first,job['mid'])['continuing']
+        from .conversation_style import address_mode
         facts=dict(facts,conversation={'continuing':replied,
                                       'latest_client_message':latest,
-                                      'latest_message':batch[-1]['text'] if batch else ''})
+                                      'latest_message':batch[-1]['text'] if batch else '',
+                                      'address_mode':address_mode(raw_batch)})
         if selection and not image and not course:
             from .recommendation_flow import run as recommend_for_task
             recommendation=await recommend_for_task(self,facts,latest,raw_batch,job)
@@ -1355,7 +1643,16 @@ class Service:
             from .external_quote import run as quote_external
             external=await quote_external(self,facts,latest,{'products':[]},job)
             if external is not None:return external
-        self.charge_call()
+        self._mark_stage(job,'draft')
+        return await self._draft_checked(job,facts,history,image,latest,course,selection,raw_batch,resolved_context)
+
+    async def _draft_checked(self,job,facts,history,image,latest,course,selection,raw_batch,resolved_context):
+        """Draft, check, and look up official pages when the route still needs them."""
+        from .catalog_context import annotate
+        from .turn_scope import scope as scope_turn
+        from .request_goals import covers
+        batch_first=self.store.chat(job['chat'])['batch_first']
+        self.charge_call('draft')
         answer=await self.ai.draft(history,facts,image)
         if not self.store.still_current(job):
             return None
@@ -1667,21 +1964,56 @@ class Service:
             self.active_chats.discard(job['chat'])
             return True
         try:
-            answer=await self.generate(job)
-            if answer:
-                from .conversation_style import session_info,decorate_reply
-                from .catalog_order import sort_price_lines
-                first=self.store.chat(job['chat'])['batch_first']
-                if not answer.get('evidence',{}).get('consultation_contract'):
-                    answer['reply']=sort_price_lines(answer['reply'])
-                answer['reply']=decorate_reply(answer['reply'],session_info(self.store.db,job['chat'],first,job['mid']), introduced=self.store.introduced(job['chat']))
-                if isinstance(answer.get('feature_projection'),dict):
-                    answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
-                did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
-                if did:
-                    if self.store.effective_mode(job['chat'])=='auto' and self.auto_permitted(self.store.chat(job['chat'])):
-                        await self.auto_send(did)
-                    else:await self.show_draft(did)
+            from .usage import CallMeter, reset_meter, use_meter
+            started=time.time()
+            meter=CallMeter(self.store,self.daily_limit,job['chat'])
+            token=use_meter(meter)
+            try:
+                answer=await self.generate(job)
+                if answer:
+                    chat=self.store.chat(job['chat'])
+                    waited=max(0.0,started-float(chat['batch_start'] or started)) if chat else 0.0
+                    generated=time.time()-started
+                    reasons=[event['reason'] for event in meter.events]
+                    answer.setdefault('evidence',{})['timing']={
+                        'batch_wait_seconds':round(waited,1),
+                        'generate_seconds':round(generated,1),
+                        'api_calls':len(meter.events),
+                        'api_reasons':reasons}
+                    logging.info('support_turn chat=%s calls=%s reasons=%s batch_wait=%.1f generate=%.1f',
+                                 job['chat'],len(meter.events),','.join(reasons),waited,generated)
+                    from .conversation_style import session_info
+                    from .catalog_order import sort_price_lines
+                    if not answer.get('evidence',{}).get('consultation_contract'):
+                        answer['reply']=sort_price_lines(answer['reply'])
+                    from .dialog_state import record_outgoing
+                    first=self.store.chat(job['chat'])['batch_first']
+                    answer,replaced=present_outgoing(answer,session_info(self.store.db,job['chat'],first,job['mid']),
+                                                     introduced=self.store.introduced(job['chat']),
+                                                     facts=getattr(self,'_last_dialog_facts',{}) or {})
+                    if replaced:
+                        answer['handoff']=True
+                        answer['summary']='В черновике остались только неподтверждённые названия моделей. Клиенту оставлено ожидание владельца.'
+                        answer.setdefault('evidence',{})['diagnostic']=(
+                            'Этап: проверка утверждений. Названия моделей не найдены в каталоге и переданных источниках. '
+                            'Клиенту отправлена фраза ожидания.')
+                    if not replaced:
+                        try:
+                            record_outgoing(self.store.db,job['chat'],answer['reply'],getattr(self,'_last_dialog_facts',{}) or {})
+                        except Exception:
+                            logging.warning('Dialog state was not saved')
+                    if isinstance(answer.get('feature_projection'),dict):
+                        answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
+                    did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
+                    if did and not self.store.still_current(job):
+                        logging.info('support_turn chat=%s draft discarded: a newer client message arrived', job['chat'])
+                        did=None
+                    if did:
+                        if self.store.effective_mode(job['chat'])=='auto' and self.auto_permitted(self.store.chat(job['chat'])):
+                            await self.auto_send(did)
+                        else:await self.show_draft(did)
+            finally:
+                reset_meter(token)
         except Exception as exc:
             self.store.db.execute("UPDATE messages SET state='failed' WHERE chat=? AND mid=? AND state='working'",(job['chat'],job['mid']))
             diagnostic=failure_details(exc,'draft')
@@ -1767,11 +2099,12 @@ async def main():
     allowed={int(x.strip()) for x in os.environ.get('SUPPORT_TEST_CHAT_IDS','').split(',') if x.strip()}
     if owner<=0 or any(x<=0 or x==owner for x in allowed):
         raise ValueError('Positive, separate test client IDs are required')
-    raw_auto=os.environ.get('SUPPORT_AUTO_TEST_CHAT_ID','').strip()
-    if raw_auto and not raw_auto.isdecimal():raise ValueError('SUPPORT_AUTO_TEST_CHAT_ID must be one numeric test ID')
-    auto_id=int(raw_auto) if raw_auto else None
-    if auto_id is not None and (auto_id<=0 or auto_id==owner or auto_id not in allowed):
-        raise ValueError('SUPPORT_AUTO_TEST_CHAT_ID must be one separate allowed test client')
+    from .rollout import auto_recipients
+    auto_ids,auto_for_all=auto_recipients(
+        os.environ.get('SUPPORT_AUTO_TEST_CHAT_IDS',''),
+        os.environ.get('SUPPORT_AUTO_TEST_CHAT_ID',''),
+        os.environ.get('SUPPORT_AUTO_FOR_ALL',''),
+        allowed,owner)
     limit=int(os.environ.get('SUPPORT_DAILY_CALL_LIMIT','100'))
     if not 1<=limit<=2000:
         raise ValueError('Invalid daily request limit')
@@ -1803,11 +2136,13 @@ async def main():
             await shop.start()
             ai=OpenAI(session,os.environ['OPENAI_API_KEY'],os.environ['SUPPORT_MODEL'],
                       os.environ['SUPPORT_AUDIO_MODEL'],os.getenv('SUPPORT_SEARCH_MODEL'))
-            service=Service(store,tg,ai,shop,owner,allowed,limit,auto_test_id=auto_id);service.bot_id=me['id']
+            service=Service(store,tg,ai,shop,owner,allowed,limit,auto_test_ids=auto_ids,auto_for_all=auto_for_all);service.bot_id=me['id']
             service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. '+
-                ('AUTO доступен только явно настроенному тестовому ID после включения в карточке.' if auto_id else 'AUTO не настроен; автоматических отправок нет.')+
+                ('AUTO для всех разрешённых чатов после включения режима.' if auto_for_all else
+                 'AUTO доступен тестовой группе после включения в карточке: '+', '.join(str(i) for i in sorted(auto_ids))+'.' if auto_ids else
+                 'AUTO не настроен; автоматических отправок нет.')+
                 ('\nПрерванных подготовок ответа: '+str(interrupted)+'. Автоматически не повторяются; проверьте /chats.' if interrupted else '')+
                 ('\nНеопределённых отправок: '+str(interrupted_sends)+'. Режимы сохранены; повторы этих ответов запрещены. Проверьте личку и /pending.' if interrupted_sends else ''))
             from .probe_api import start_server,startup_diagnostic

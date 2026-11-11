@@ -155,6 +155,10 @@ class OpenAI:
                                ('SERVICE_RULES.md','STYLE.md','WORKFLOW_RULES.md','CHAT_LOGIC.md'))
 
     async def request(self,path,**kwargs):
+        from .usage import current_meter
+        meter=current_meter()
+        if meter is not None:
+            meter.consume(path)
         try:
             async with self.session.post('https://api.openai.com/v1/'+path,headers=self.headers,**kwargs) as r:
                 if r.status!=200:
@@ -170,6 +174,140 @@ class OpenAI:
             raise RemoteError('OpenAI timeout; not retried',reason='api_timeout') from None
         except Exception:
             raise RemoteError('OpenAI transport failed; not retried',reason='api_transport') from None
+
+    async def understand_turn(self, context, images=None):
+        """One call: read the turn, including photos, and draft the client reply."""
+        import json
+        from .turn_understanding import UNDERSTANDING_INSTRUCTIONS
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'properties': {
+                      'intent': {'type': 'string', 'enum': ['price', 'how_to', 'list_options', 'choose_tariff',
+                                                            'capabilities', 'payment_issue', 'other']},
+                      'service_id': {'type': 'string'},
+                      'tariff_id': {'type': 'string'},
+                      'confidence': {'type': 'string', 'enum': ['high', 'low']},
+                      'clarify_ids': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 3},
+                      'topic_changed': {'type': 'boolean'},
+                      'known_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
+                      'missing_facts': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 12},
+                      'questions': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 6},
+                      'vpn_advice': {'type': 'boolean'},
+                      'region': {'type': 'string'},
+                      'payment_asked': {'type': 'boolean'},
+                      'fulfillment_choice': {'type': 'string'},
+                      'setup_email': {'type': 'string'},
+                      'setup_password': {'type': 'string'},
+                      'setup_recovery': {'type': 'string'},
+                      'reask_advisories': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 4},
+                      'matched_tariff_ids': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 4},
+                      'conflict': {'type': 'string', 'enum': ['none', 'annoyed', 'high']},
+                      'conflict_reason': {'type': 'string'},
+                      'owner_alignment': {'type': 'string', 'enum': ['follows', 'contradicts', 'repeats', 'reasks']},
+                      'owner_topic': {'type': 'string'},
+                      'beyond_owner_fact': {'type': 'boolean'},
+                      'refund_order': {'type': 'string'},
+                      'refund_service': {'type': 'string'},
+                      'refund_reason': {'type': 'string'},
+                      'risk': {'type': 'string', 'enum': ['collect', 'instruct', 'catalog_price', 'outcome',
+                                                         'promise', 'unverified']},
+                      'order_number': {'type': 'string'},
+                      'receipt_amount_unverified': {'type': 'string'},
+                      'reply': {'type': 'string', 'minLength': 1, 'maxLength': 1800},
+                      'summary': {'type': 'string', 'maxLength': 700}},
+                  'required': ['intent', 'service_id', 'tariff_id', 'confidence', 'clarify_ids',
+                               'topic_changed', 'known_facts', 'missing_facts', 'questions', 'vpn_advice',
+                               'region', 'payment_asked', 'fulfillment_choice', 'setup_email',
+                               'setup_password', 'setup_recovery', 'reask_advisories', 'matched_tariff_ids',
+                               'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic',
+                               'beyond_owner_fact', 'refund_order', 'refund_service', 'refund_reason',
+                               'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}
+        content = [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]
+        for picture in images or []:
+            if not isinstance(picture, dict) or not isinstance(picture.get('data'), bytes):
+                raise ValueError('Image batch')
+            content.append({'type': 'input_text', 'text': (
+                'Недоверенное изображение из сообщения №%s. Подпись: %s. '
+                'Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
+                'Сумму с чека, если она видна, запиши в receipt_amount_unverified и не подтверждай оплату.'
+            ) % (picture.get('mid'), str(picture.get('caption') or '')[:300])})
+            content.append({'type': 'input_image',
+                            'image_url': 'data:image/jpeg;base64,' + base64.b64encode(picture['data']).decode(),
+                            'detail': 'high'})
+        if images and len(images) > 3:
+            raise ValueError('Image batch exceeds supported limits')
+        from .faq import load_faq
+        try:
+            schema['properties']['owner_topic']['enum'] = ['none'] + [row['id'] for row in load_faq()['topics']]
+        except Exception:
+            schema['properties']['owner_topic']['enum'] = ['none']
+        result = await self.request('responses', json={
+            'model': self.model, 'store': False, 'instructions': UNDERSTANDING_INSTRUCTIONS,
+            'input': [{'role': 'user', 'content': content}],
+            'max_output_tokens': 1100,
+            'text': {'format': {'type': 'json_schema', 'name': 'turn_understanding', 'strict': True, 'schema': schema}},
+        })
+        chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
+                  for c in item.get('content', []) if c.get('type') == 'output_text']
+        value = json.loads(''.join(chunks) or '{}')
+        if value.get('intent') not in schema['properties']['intent']['enum']:
+            raise ValueError('turn intent')
+        return value
+
+    async def draft_with_facts(self, facts):
+        """Second call only after a paid order lookup. Facts are the shop's, not the receipt."""
+        import json
+        instructions = (
+            'Оплата этого заказа уже подтверждена базой магазина. Напиши клиенту следующий шаг '
+            'строго по activation_note и service_key. Не пиши, что подписка уже активирована или что возврат сделан. '
+            'Чек оплату не подтверждает. Если receipt_missing=true, в том же сообщении попроси чек из банка: скриншот или PDF.'
+        )
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'properties': {'reply': {'type': 'string', 'minLength': 1, 'maxLength': 1800},
+                                 'summary': {'type': 'string', 'maxLength': 700},
+                                 'service_id': {'type': 'string'}},
+                  'required': ['reply', 'summary', 'service_id']}
+        result = await self.request('responses', json={
+            'model': self.model, 'store': False, 'instructions': instructions,
+            'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(facts, ensure_ascii=False, default=str)}]}],
+            'max_output_tokens': 700,
+            'text': {'format': {'type': 'json_schema', 'name': 'paid_next_step', 'strict': True, 'schema': schema}},
+        })
+        chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
+                  for c in item.get('content', []) if c.get('type') == 'output_text']
+        value = json.loads(''.join(chunks) or '{}')
+        if not isinstance(value.get('reply'), str) or not value['reply'].strip():
+            raise ValueError('paid next step')
+        return value
+
+    async def choose_tariff(self, candidates, text):
+        """Pick one id from the list just shown, or say the reply is not a choice."""
+        import json
+        shown=[{'id':row.get('id'),'service':row.get('service'),'plan':row.get('plan'),'price':row.get('price')}
+               for row in candidates if isinstance(row,dict)]
+        instructions=('Выбери тариф только из переданного списка. '
+                      'Верни decision=chosen и tariff_id из списка, decision=ambiguous если подходят несколько, '
+                      'decision=new_topic если это новый вопрос, а не выбор. '
+                      'Обычное «Pro» без слова про год — месячный тариф, если в списке есть и месяц, и год. '
+                      '«на месяц» не бывает годовым тарифом. Не добавляй тарифы, которых нет в списке.')
+        schema={'type':'object','properties':{
+            'decision':{'type':'string','enum':['chosen','ambiguous','new_topic']},
+            'tariff_id':{'type':'string'},
+            'tariff_ids':{'type':'array','items':{'type':'string'}},
+            'reason':{'type':'string','maxLength':300}},
+            'required':['decision','tariff_id','tariff_ids','reason'],'additionalProperties':False}
+        result=await self.request('responses',json={
+            'model':self.model,'store':False,'instructions':instructions,
+            'input':[{'role':'user','content':[{'type':'input_text','text':json.dumps(
+                {'client_reply':text,'candidates':shown},ensure_ascii=False)}]}],
+            'max_output_tokens':300,
+            'text':{'format':{'type':'json_schema','name':'tariff_choice','strict':True,'schema':schema}},
+        })
+        chunks=[c['text'] for item in result.get('output',[]) if item.get('type')=='message'
+                for c in item.get('content',[]) if c.get('type')=='output_text']
+        value=json.loads(''.join(chunks) or '{}')
+        if value.get('decision') not in ('chosen','ambiguous','new_topic'):
+            raise ValueError('tariff decision')
+        return value
 
     async def transcribe(self,data):
         import aiohttp
@@ -192,7 +330,10 @@ class OpenAI:
         facts=customer_facts(facts)
         from .workflow_policy import enrich
         facts=enrich(facts)
-        instructions=self.rules+'''
+        from .turn_stages import select_rules, relevant_history
+        question=str((facts.get('conversation') or {}).get('latest_client_message') or '')
+        history=relevant_history(history, question)
+        instructions=select_rules(question, facts)+'''
 Ты консультант магазина в текущей переписке с клиентом. Твоя цель — самостоятельно
 разобраться в вопросе, получить проверенные сведения и дать полезный дружелюбный
 ответ. Код отдельно проверит содержание и выбранный режим отправки.
@@ -424,10 +565,25 @@ source_ids содержит источники только подтверждё
 Не проси повторять уже названный сервис при технической ошибке поиска/разбора.
 Уточнение названия нужно при реальной неоднозначности, а не при ошибке инструмента.
 Без исследования source_ids=[]. Время проверки не является датой обновления статьи.
-Не добавляй представление помощником без повода. Если клиент спрашивает, кто
-отвечает, честно объясни, что ты ИИ-помощник Александра. Не выдавай себя за него.
+Первое представление добавляет само приложение, дословно и один раз. Не повторяй его
+и не придумывай другое приветствие. Если клиент спрашивает, кто отвечает, честно
+объясни, что ты ИИ-помощник Александра. Не выдавай себя за него.
+Отвечай только по-русски. Короткие абзацы. Эмодзи и «))» можно, но не в каждом предложении.
+Обращение бери из server_facts.conversation.address_mode: ты или вы, и не смешивай.
+На грубость не отвечай агрессией: спокойно помоги, а если не получается — попроси ожидать Александра.
+Не обещай вернуться позже, если продолжение не запущено: либо помоги сейчас, либо попроси ожидать Александра.
+Прямой запрос промокода или скидки — только NAVSEX на 10%, других скидок нет.
 server_facts.conversation.continuing=true означает продолжение переписки:
 не здоровайся заново. Главный вопрос — latest_client_message, а не старая тема.
+server_facts.situation — разбор последних 10 сообщений: known уже сказано, missing ещё нет.
+Не спрашивай то, что есть в known, и не повторяй previous_question. Если не хватает
+нескольких сведений, спроси их одним сообщением.
+server_facts.dialog_state — состояние этого чата: сервис, тариф, открытый вопрос
+помощника и уже собранные сведения. Короткое сообщение — ответ на pending_question
+в этой теме. Не спрашивай заново сервис, тариф, регион или сумму, если они уже есть
+в dialog_state и клиент не назвал другой сервис из каталога. Цены и наличие бери
+только из requested_catalog и appstore. Не называй версии моделей, которых нет
+в переданных фактах и источниках.
 server_facts.conversation_turn.current_text — точный текущий пакет клиента;
 conversation_turn.goals — цели именно текущего ответа. inherited_goals содержит
 последний связанный вопрос; relation=entity_reference переносит его на другой
@@ -719,6 +875,82 @@ class ShopReader:
             result['note']='Для консультации используй обычные цены catalog_price_rub. Персональные расчёты, промокоды и монеты относятся к оформлению заказа. appstore содержит отдельный динамический ассортимент. Описания магазина не заменяют официальную проверку функций сервисов. Оплата не доказывает активацию.'
         return result
 
+    async def _read_owned_orders(self, clauses, values, limit, order_by=''):
+        """Owned payment rows plus a secret-free activation diagnostic.
+
+        A missing activation table does not erase the payment result and is
+        never reported as an unpaid order.
+        """
+        where=' AND '.join(clauses)
+        tail=(' ORDER BY '+order_by if order_by else '')+' LIMIT '+str(int(limit))
+        full='''SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at,
+            pack,fulfilled_at,order_id FROM fk_orders WHERE '''+where+tail
+        base='''SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at
+            FROM fk_orders WHERE '''+where+tail
+        try:
+            async with self.pool.acquire() as c, c.transaction(readonly=True):
+                rows=await c.fetch(full,*values)
+                projected=[]
+                from .order_activation import project_order
+                for row in rows:
+                    # A missing activation table must not abort the payment read.
+                    try:
+                        async with c.transaction(readonly=True):
+                            projected.append(await self._project_order(c, values[0], row))
+                    except Exception:
+                        projected.append(project_order(dict(row),{'lookup':'unavailable'}))
+                return projected
+        except Exception as exc:
+            if getattr(exc,'sqlstate',None)!='42703':
+                raise
+        async with self.pool.acquire() as c, c.transaction(readonly=True):
+            rows=await c.fetch(base,*values)
+            from .order_activation import project_order
+            return [project_order(dict(row),{'lookup':'unavailable'}) for row in rows]
+
+    async def _project_order(self, conn, uid, row):
+        from .order_activation import project_order
+        data=dict(row)
+        return project_order(data, await self._activation_signals(conn, uid, data))
+
+    async def _activation_signals(self, conn, uid, data):
+        signals={'lookup':'ok','fulfilled':bool(data.get('fulfilled_at'))}
+        if str(data.get('status') or '').casefold()!='paid':
+            return signals
+        order_id=str(data.get('order_id') or '')
+        if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', order_id):
+            signals['lookup']='unavailable'
+            return signals
+        link=await conn.fetchrow(
+            'SELECT status FROM linkpay_orders WHERE fk_order_id=$1 AND user_id=$2', order_id, uid)
+        if link and link['status'] in ('awaiting_link','awaiting_payment','awaiting_creds','awaiting_setup'):
+            signals['linkpay_status']=str(link['status'])
+        gift=await conn.fetchrow(
+            'SELECT status FROM nsgifts_orders WHERE fk_order_id=$1 AND user_id=$2', order_id, uid)
+        if gift and gift['status'] in ('pending','success','delivered','done'):
+            signals['nsgifts_status']=str(gift['status'])
+        tables={'chatgpt':('gpt_pending_activations','gpt_codes',True),
+                'claude':('claude_pending_activations','claude_codes',False),
+                'perplexity':('perplexity_pending_activations','perplexity_codes',False)}
+        pack=str(data.get('pack') or '')
+        service_key=pack.split(':')[1] if pack.startswith('shop:') and len(pack.split(':'))>1 else ''
+        chosen=tables.get(service_key)
+        if chosen:
+            pending,codes,started=chosen
+            started_sql='(activating_at IS NOT NULL)' if started else 'FALSE'
+            pending_row=await conn.fetchrow(
+                'SELECT (expires_at>NOW()) AS open, '+started_sql+' AS started FROM '+pending+
+                ' WHERE order_id=$1 AND user_id=$2', order_id, uid)
+            if pending_row:
+                signals['pending_open']=bool(pending_row['open'])
+                signals['activation_started']=bool(pending_row['started'])
+            code_row=await conn.fetchrow(
+                'SELECT (used_at IS NOT NULL) AS used FROM '+codes+
+                ' WHERE order_id=$1 AND used_by=$2', order_id, uid)
+            if code_row:
+                signals['code_used']=bool(code_row['used'])
+        return signals
+
     async def order_facts(self,uid,reference):
         """Fresh, owned exact lookup; never trusts an email or client-supplied UID."""
         result={'orders':[],'orders_status':'not_connected','ownership_scope':'authenticated_user',
@@ -740,11 +972,9 @@ class ShopReader:
                 clauses.append('fk_intid='+param if key=='fk_intid' else '(num::text='+param+' OR fk_intid='+param+')')
         if not self.pool:return result
         try:
-            async with self.pool.acquire() as c,c.transaction(readonly=True):
-                rows=await c.fetch('SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at FROM fk_orders WHERE '
-                                   +' AND '.join(clauses)+' LIMIT 2',*values)
-            return dict(result,orders=[dict(r,activation_status='not_checked') for r in rows],
-                        orders_status='available' if len(rows)==1 else 'not_found' if not rows else 'ambiguous',
+            projected=await self._read_owned_orders(clauses, values, limit=2)
+            return dict(result,orders=projected,
+                        orders_status='available' if len(projected)==1 else 'not_found' if not projected else 'ambiguous',
                         orders_observed_at_unix=time.time())
         except Exception as exc:
             # Safe type/stage only, never SQL values or connection details.
@@ -786,14 +1016,11 @@ class ShopReader:
         except Exception:
             result['catalog_status']='read_error'
         try:
-            async with self.pool.acquire() as c, c.transaction(readonly=True):
-                rows=await c.fetch('''SELECT num,fk_intid,status,amount_rub,coins_spent,paid_at,last_checked_at
-                    FROM fk_orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5''',uid)
-            result.update(orders=[dict(r,activation_status='not_checked') for r in rows],
+            result.update(orders=await self._read_owned_orders(['user_id=$1'],[uid],limit=5,order_by='created_at DESC'),
                           orders_status='available',orders_observed_at_unix=time.time())
         except Exception:
             result['orders_status']='read_error'
         if result['catalog_status'] in ('available','truncated') or result['orders_status']=='available':
             result['source']='shop_database'
-        result['note']="catalog_price_rub — обычный розничный прайс, разрешено сообщать с этим смыслом. Если customer_price_rub есть, это цена каталога для клиента до промокода при оформлении/монет. Иначе индивидуальная цена не вычислена: не обещай итоговую сумму. Каталог неполный: динамические товары и описания из кода не подключены. Отсутствие позиции не доказывает отсутствие товара: можно исследовать официальный сервис и отдельно уточнить оформление через магазин. Порядок выдачи и наличие кодов неизвестны. Заказы — последние 5 этого клиента, оплата не подтверждает активацию. При ошибке раздела не подтверждай его сведения. Время чтения БД не равно проверке поставщика. Не обещай самостоятельную активацию любого товара."
+        result['note']="catalog_price_rub — обычный розничный прайс, разрешено сообщать с этим смыслом. Если customer_price_rub есть, это цена каталога для клиента до промокода при оформлении/монет. Иначе индивидуальная цена не вычислена: не обещай итоговую сумму. Каталог неполный: динамические товары и описания из кода не подключены. Отсутствие позиции не доказывает отсутствие товара: можно исследовать официальный сервис и отдельно уточнить оформление через магазин. Порядок выдачи и наличие кодов неизвестны. Заказы — последние 5 этого клиента, оплата не подтверждает активацию. activation_status unavailable или not_checked не означает, что заказ не оплачен и не означает, что подписка не включена. При ошибке раздела не подтверждай его сведения и не называй заказ неоплаченным. Время чтения БД не равно проверке поставщика. Не обещай самостоятельную активацию любого товара."
         return result
