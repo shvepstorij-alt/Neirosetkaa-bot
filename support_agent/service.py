@@ -1180,8 +1180,18 @@ class Service:
                'Номер заказа: '+scrub(str(collected.get('order_number') or '')),
                'Сервис: '+scrub(str(collected.get('service') or '')),
                'Причина: '+scrub(str(collected.get('reason') or ''))]
+        markup=None
+        number=re.sub(r'\D','',str(collected.get('order_number') or ''))
+        if topic in ('activation_expired','activation_failed') and 0<len(number)<=20 and type(job.get('uid')) is int:
+            # The link opens the shop bot for the owner only; the shop shows the order and asks to confirm.
+            nav=(getattr(self,'_last_dialog_facts',None) or {}).get('bot_navigation') or {}
+            username=nav.get('username') if nav.get('status')=='available' else ''
+            if not (isinstance(username,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}',username)):
+                username='neirosetkaa_bot'
+            lines.append('Кнопка ниже откроет бота магазина с карточкой этого заказа и кнопкой повторной активации.')
+            markup=buttons([[{'text':'📨 Повторная активация','url':'https://t.me/'+username+'?start=resend_'+str(job['uid'])+'_'+number}]])
         try:
-            await self.owner_message('\n'.join(lines))
+            await self.owner_message('\n'.join(lines),markup)
         except Exception:
             logging.warning('Refund note was not delivered')
 

@@ -26,7 +26,7 @@ def reply(facts, text, current=None):
     current=text if current is None else current
     if not _chatgpt(facts, current):return None
     if re.search(r'возврат|другие сервис|генерац|выбрать|тарифы|сравн|сколько|как оплатить|как купить',current,re.I):return None
-    expired=bool(re.search(r'(?:ист[её]к|протух)[^.!?\n]{0,20}токен|токен[^.!?\n]{0,20}(?:ист[её]к|протух)',current,re.I))
+    expired=bool(re.search(r'(?:ист[её]к|протух|недействит|невалид|не\s+действит)[^.!?\n]{0,20}токен|токен[^.!?\n]{0,20}(?:ист[её]к|протух|недействит|невалид|не\s+действит|invalid)',current,re.I))
     paste=bool(re.search(r'не\s+вставля[^.!?\n]{0,30}сесс',current,re.I))
     new_plus=bool(re.search(r'нов\w*\s+аккаунт',current,re.I) and re.search(r'plus|плюс',current,re.I))
     overlay=bool(re.search(r'активир\w*\s+поверх|уже\s+есть\s+подписк',current,re.I))
@@ -42,7 +42,7 @@ def reply(facts, text, current=None):
     if new_plus:
         body=('Для товара «Новый аккаунт Plus» кнопки самостоятельной активации нет. Пришлите токен аккаунта сюда, в эту переписку.')
     elif expired:
-        body=('Похоже, токен истёк. Сначала полностью выйдите из аккаунта ChatGPT и войдите заново в том же браузере, затем получите новый токен и повторите активацию.\n\n'
+        body=('Похоже, токен истёк. Закрыть и открыть сайт недостаточно: выйдите из аккаунта ChatGPT через настройки и войдите заново в том же браузере, затем откройте страницу с токеном и активируйте с новым токеном через бота.\n\n'
               'Если не помогло, попробуйте другой браузер. '+_BROWSERS+'\n\n'+_STEPS+'\n\n'+_TIMING)
     elif paste:
         body=('Если сессия не вставляется с компьютера, вставьте текст с клавиатуры через Ctrl+V.\n\n'+_STEPS)

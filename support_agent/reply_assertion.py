@@ -28,7 +28,15 @@ def _asks_secret(text):
 def asserts_outcome(text):
     """The reply states that a payment, activation or refund already happened."""
     value = str(text or '')
-    return has_completion_claim(value) or bool(_OUTCOME.search(value))
+    if has_completion_claim(value):
+        return True
+    for match in _OUTCOME.finditer(value):
+        before = value[max(0, match.start() - 30):match.start()]
+        # «Если оплата прошла…» is a condition, not a statement that it happened.
+        if re.search(r'(?i)(?:если|когда|как\s+только|после\s+того,?\s+как)\s+(?:\w+\s+){0,2}$', before):
+            continue
+        return True
+    return False
 
 
 def collects_case_data(text):

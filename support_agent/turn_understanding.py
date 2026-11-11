@@ -72,6 +72,8 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Если у темы есть collect, это сбор сведений, а не текст обещания. '
     'Для возврата и любой другой темы с collect заполни refund_order (номер заказа), refund_service и refund_reason только тем, что уже есть в последних сообщениях, иначе пустая строка. '
     'Если у темы с collect есть answer, передай его смысл и попроси недостающее из collect. Не обещай результат. '
+    'В таком ответе больше ничего не добавляй: ни инструкции по оплате, ни шагов активации. '
+    'Если на вопрос отвечает тема из faq, отвечай по ней, а не товарами каталога. Сроки из других тем к ней не добавляй. '
     'Спроси только недостающее. Возврат не обещай. '
     'owner_topic — id такой темы, либо none. Отсутствие номинала в каталоге — не owner_topic. '
     'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
@@ -934,6 +936,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     answer_text = usable_answer(topic, faq_rows) if topic != 'none' else ''
     collecting = collect_fields(topic, faq_rows) if topic != 'none' else []
     refund_ready = False
+    owner_text_used = False
     beyond = bool(validated.get('beyond_owner_fact'))
     if topic != 'none' and collecting:
         needed = [key for key in ('order_number', 'service', 'reason') if key in collecting]
@@ -945,7 +948,15 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
             holds.append('Данные для возврата собраны. Клиенту оставлена фраза ожидания.' if topic == 'refund_terms'
                          else 'Номер заказа по теме «' + topic + '» получен. Нужен Александр. Клиенту оставлена фраза ожидания.')
         elif asserts_outcome(reply) or _PROMISE.search(reply) or not re.search(r'(?i)пришлите|напишите|укажите|\?', reply):
-            holds.append('По возврату нельзя обещать результат, пока собраны не все сведения.')
+            if answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
+                # The owner's own request for the missing details replaces a draft that promised something.
+                answer = dict(answer, reply=answer_text, handoff=False)
+                owner_text_used = True
+            else:
+                holds.append('По возврату нельзя обещать результат, пока собраны не все сведения.')
+        elif answer.get('handoff') and answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
+            answer = dict(answer, reply=answer_text, handoff=False)
+            owner_text_used = True
     elif topic != 'none' and not answer_text:
         holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
     elif answer_text:
@@ -953,8 +964,15 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         prices = validated.get('allowed_prices')
         if prices is None:
             prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '')
-        if fact_gap(answer_text, reply, beyond, prices, context):
-            holds.append('Ответ выходит за записанный факт владельца.')
+        if fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff'):
+            # A draft that drifted from the owner's fact, or was held for its wording, is replaced
+            # by the owner's own text. Conflict, owner clash and stale price still hold below.
+            # When the model itself marks a condition beyond the fact, the question needs the owner.
+            if not beyond and classify_draft(answer_text, prices)['send']:
+                answer = dict(answer, reply=answer_text, handoff=False)
+                owner_text_used = True
+            else:
+                holds.append('Ответ выходит за записанный факт владельца.')
     if _repeats_assistant(answer.get('reply'), context):
         holds.append('Черновик повторяет уже сказанное в этом чате.')
     evidence = dict(answer.get('evidence') or {})
@@ -963,6 +981,10 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                 owner_topic=validated['owner_topic'])
     evidence['turn_understanding'] = turn
     evidence['catalog_freshness'] = dict(freshness or {})
+    if owner_text_used and not holds:
+        evidence.update(status='catalog_direct', reply_class='instruct', owner_text_used=True,
+                        diagnostic='Черновик модели заменён записанным ответом владельца по теме «' + topic + '».',
+                        handoff_reason='')
     if holds:
         evidence.update(status='owner_policy', conflict_hold=validated['conflict'] == 'high',
                         owner_alignment_hold=validated['owner_alignment'] != 'follows',

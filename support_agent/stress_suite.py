@@ -382,7 +382,8 @@ def build_cases(catalog):
         'role': 'client', 'text': 'через сколько придёт kling после оплаты',
         'owner_topic': 'delivery_time', 'fixed_by': 'owner_fact',
         'naive': 'Kling придёт за 10 минут.',
-        'expect': {'hold': True},
+        # The invented term is replaced by the owner's own text, not sent and not held.
+        'expect': {'hold': False, 'need': ['5–30 минут']},
     }])
     add('chatgpt-activation', [{
         'role': 'client', 'text': 'как активировать чат гпт плюс',
@@ -401,7 +402,7 @@ def build_cases(catalog):
         'role': 'client', 'text': 'можно купить нетфликс и сколько он стоит',
         'owner_topic': 'off_catalog', 'fixed_by': 'owner_fact',
         'naive': 'Netflix оформим за 1500 ₽.',
-        'expect': {'hold': True},
+        'expect': {'hold': False, 'need': ['название или ссылку']},
     }])
     add('claude-region', [{
         'role': 'client', 'text': 'клод работает в рф?',
