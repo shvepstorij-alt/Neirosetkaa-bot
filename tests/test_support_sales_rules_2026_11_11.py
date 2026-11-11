@@ -94,3 +94,22 @@ class OwnerRuleTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ServiceGuideTests(unittest.TestCase):
+    def test_guide_has_dated_official_facts_and_no_prices(self):
+        import re
+        from support_agent.service_guide import for_context as guide
+        data = guide()
+        self.assertEqual(data['checked'], '11.11.2026')
+        self.assertIn('Ultra', data['services']['claude']['plans'])
+        self.assertIn('Max 20×', data['services']['claude']['plans']['Ultra'])
+        self.assertIn('Codex', data['choose']['chatgpt_vs_claude'])
+        text = str(data)
+        self.assertIsNone(re.search(r'\d+\s*(?:₽|руб|\$)', text))
+
+    def test_guide_reaches_the_model_context(self):
+        import sqlite3
+        from support_agent import turn_understanding as tu
+        self.assertIn('service_guide', tu.UNDERSTANDING_INSTRUCTIONS)
+        self.assertTrue(tu._service_guide().get('services'))
