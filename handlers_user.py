@@ -39,10 +39,75 @@ from common import (
     _show_profile, fk_credit_paid_order,
 )
 
+async def _support_resend_prompt(message: Message, payload: str):
+    """Карточка заказа клиента и кнопка повторной активации для владельца.
+
+    Ничего не выдаёт сама: кнопка ведёт в прежний обработчик adm_resend2,
+    который проверяет владельца и вызывает gpt_resend_activation.
+    """
+    _m = re.fullmatch(r"resend_(\d{1,20})_(\d{1,20})", payload or "")
+    if not _m:
+        await message.answer("Не разобрал ссылку повторной активации.")
+        return
+    _cuid, _ref = int(_m.group(1)), _m.group(2)
+    _pool = await get_pool()
+    async with _pool.acquire() as _c:
+        _rows = await _c.fetch(
+            "SELECT order_id, num, fk_intid, status, pack, amount_rub FROM fk_orders "
+            "WHERE user_id=$1 AND (num::text=$2 OR fk_intid=$2) ORDER BY num DESC LIMIT 3",
+            _cuid, _ref)
+    if not _rows:
+        await message.answer(
+            f"Заказ <code>{_ref}</code> у клиента <code>{_cuid}</code> не найден. "
+            f"Проверьте номер в админ-панели.", parse_mode="HTML")
+        return
+    if len(_rows) > 1:
+        await message.answer(
+            f"По номеру <code>{_ref}</code> у клиента <code>{_cuid}</code> найдено несколько заказов. "
+            f"Выдайте активацию из админ-панели.", parse_mode="HTML")
+        return
+    _o = _rows[0]
+    _pack = str(_o["pack"] or "")
+    _plan = ""
+    if _pack.startswith("shop:"):
+        _pp = _pack.split(":")
+        _sv = SHOP_CATALOG.get(_pp[1] if len(_pp) > 1 else "", {}) or {}
+        _ix = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+        _pl = _sv.get("plans", [])
+        _plan = ((_sv.get("name") or (_pp[1] if len(_pp) > 1 else "")) + " · "
+                 + (_pl[_ix].get("name", "") if 0 <= _ix < len(_pl) else ""))
+    _oid = str(_o["order_id"])
+    _kb = None
+    if len(("adm_resend2:" + _oid).encode()) <= 64:
+        _kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📨 Выдать повторную активацию", callback_data=f"adm_resend2:{_oid}")],
+            [InlineKeyboardButton(text="↩️ Отмена", callback_data="adm_resend_no")]])
+    await message.answer(
+        "📨 <b>Повторная активация по обращению в личке</b>\n\n"
+        f"👤 {await _who_user(_cuid)}\n"
+        + (f"📦 {_plan}\n" if _plan else "")
+        + f"🧾 Заказ #{_o['num']}" + (f" · FreeKassa {_o['fk_intid']}" if _o["fk_intid"] else "") + "\n"
+        + f"💳 Статус оплаты: <b>{_o['status']}</b>" + (f" · {_o['amount_rub']} ₽" if _o["amount_rub"] is not None else "") + "\n"
+        + f"🆔 <code>{_oid}</code>\n\n"
+        + ("Клиенту придёт новое сообщение с кнопкой активации. Код возьму тот, что закреплён за заказом; если его нет — новый из пула."
+           if _kb else "Номер заказа слишком длинный для кнопки. Выдайте активацию из админ-панели."),
+        parse_mode="HTML", reply_markup=_kb)
+
+
 @dp.message(F.text.startswith("/start"), StateFilter("*"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
+
+    # Помощник в личке присылает владельцу ссылку /start resend_<клиент>_<номер заказа>.
+    # Только для владельца. Сама выдача идёт прежней кнопкой со вторым подтверждением.
+    try:
+        _sp = (message.text or "").strip().split()
+        if uid == ADMIN_ID and len(_sp) > 1 and _sp[1].startswith("resend_"):
+            await _support_resend_prompt(message, _sp[1])
+            return
+    except Exception as _e_rs:
+        logging.warning(f"support resend prompt: {_e_rs}")
 
     # Заблокированный юзер получает короткое сообщение и ничего не происходит
     if await is_blocked(uid):
