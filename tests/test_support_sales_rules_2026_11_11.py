@@ -113,3 +113,53 @@ class ServiceGuideTests(unittest.TestCase):
         from support_agent import turn_understanding as tu
         self.assertIn('service_guide', tu.UNDERSTANDING_INSTRUCTIONS)
         self.assertTrue(tu._service_guide().get('services'))
+
+
+class TopicSwitchTests(unittest.TestCase):
+    """Owner test 11.11.2026 23:46: CapCut question answered about Suno with a ChatGPT plan name."""
+
+    def _run(self, burst, understanding, state):
+        context = {'tariffs': GPT, 'nominals': [], 'history': [{'role': 'client', 'text': burst}],
+                   'faq': for_context(), 'burst': burst, 'bot_navigation': NAV, 'dialog_state': state}
+        base = {'intent': 'how_to', 'service_id': '', 'tariff_id': '', 'confidence': 'high', 'reply': 'x',
+                'summary': 'x', 'questions': ['q'], 'owner_topic': 'none', 'beyond_owner_fact': False,
+                'conflict': 'none', 'owner_alignment': 'follows'}
+        base.update(understanding)
+        return enforce_turn_policy(package(base, context), base, context, {'status': 'fresh'})['reply']
+
+    def test_remembered_plan_of_another_service_is_not_used(self):
+        reply = self._run('А как оплатить суно?', {'service_id': 'suno', 'payment_asked': True},
+                          {'service_id': 'chatgpt', 'tariff': 'Новый аккаунт с подпиской Plus'})
+        self.assertIn('Выберите Suno', reply)
+        self.assertNotIn('Новый аккаунт', reply)
+
+    def test_new_service_named_with_a_space_is_not_replaced_by_the_old_one(self):
+        for proposed in ('suno', ''):
+            reply = self._run('А что нужно для кап ката?', {'service_id': proposed, 'payment_asked': True},
+                              {'service_id': 'suno'})
+            self.assertIn('CapCut', reply)
+            self.assertNotIn('Suno', reply)
+
+    def test_short_follow_up_keeps_the_open_service(self):
+        reply = self._run('а как оплатить?', {'service_id': '', 'payment_asked': True}, {'service_id': 'suno'})
+        self.assertIn('Suno', reply)
+
+    def test_course_word_is_not_cursor(self):
+        from support_agent.turn_understanding import _names_unknown_service
+        self.assertEqual(_names_unknown_service({'burst': 'я с курсов, где бонус'}), set())
+
+
+class TermAndClaudeRulesTests(unittest.TestCase):
+    def test_owner_rules_12_11(self):
+        self.assertIn('Spotify', usable_answer('subscription_term'))
+        self.assertIn('один VPN', usable_answer('claude_block_risk'))
+        self.assertIn('загранпаспорт', usable_answer('claude_verification'))
+        self.assertIn('Российские номера', usable_answer('claude_verification'))
+        for topic in ('subscription_term', 'claude_block_risk', 'claude_verification'):
+            answer = _turn('вопрос', {'owner_topic': topic, 'reply': usable_answer(topic)})
+            self.assertFalse(answer['handoff'], (topic, answer['evidence'].get('diagnostic')))
+
+    def test_renamed_chatgpt_plus_keeps_the_activation_button(self):
+        from support_agent.payment_guide import kind_for
+        self.assertEqual(kind_for('chatgpt', 'Plus 1 месяц', []), 'chatgpt_auto')
+        self.assertEqual(kind_for('chatgpt', 'Новый аккаунт с подпиской Plus', []), 'chatgpt_new_account')
