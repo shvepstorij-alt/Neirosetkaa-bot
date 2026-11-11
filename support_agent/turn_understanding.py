@@ -45,8 +45,9 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Кнопку «Я оплатил - написать Александру» не называй. '
     'Токен сессии, Organization ID и Perplexity User ID — это данные после оплаты, не способ оплаты. '
     'Для нового аккаунта ChatGPT Plus кнопки активации нет. '
+    'Нужен новый аккаунт в любом сервисе или нет почты для регистрации — тема new_account_email: сначала gmail.com без прежнего аккаунта в сервисе, иначе новая outlook.com от нас. '
     'setup_email, setup_password и setup_recovery заполняй только тем, что клиент уже написал: '
-    'почта нового ящика, пароль для него и настоящая почта для восстановления. Иначе пустая строка. '
+    'адрес нового ящика outlook.com, пароль для него и настоящая почта клиента для восстановления. Иначе пустая строка. '
     'fulfillment_choice для Z.ai: email, link или пусто, если способ ещё не выбран. '
     'Если клиент сообщает об оплате, попроси в одном сообщении номер заказа из бота или FreeKassa и чек из банка (скриншот или PDF), если их ещё нет в последних сообщениях. '
     'Если receipt_attached=true, чек уже есть: не проси его снова и не описывай содержимое файла. '
@@ -77,7 +78,9 @@ UNDERSTANDING_INSTRUCTIONS = (
     'owner_topic выбирай, только если клиент спрашивает именно об этой теме. '
     '«Как оформить», «как купить», «как оплатить», «что нужно кроме оплаты» до оплаты — это payment_asked=true и owner_topic=none, а не тема про кнопку активации. '
     'Пополнение App Store или iCloud: пока неизвестны регион Apple ID и сумма, сначала спроси регион и сумму одним вопросом, номиналы не перечисляй. '
-    'С VPN не помогай и конкретный VPN не советуй: это тема vpn_help. '
+    'Просьба посоветовать VPN или помочь с ним — тема vpn_help: только два VPN из ответа владельца, по настройке VPN не подсказываем. '
+    'Скачать приложение на телефон — тема app_download. Блокировка аккаунта Claude — claude_account_blocked. '
+    'Бонусная или подарочная подписка от курса, почта с курса — course_bonus. '
     'Спроси только недостающее. Возврат не обещай. '
     'owner_topic — id такой темы, либо none. Отсутствие номинала в каталоге — не owner_topic. '
     'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
@@ -218,6 +221,26 @@ def _allowed_prices(tariffs, nominals, service_id, tariff_id):
     prices = {row['price'] for row in tariffs if type(row.get('price')) is int}
     prices |= {row['price'] for row in nominals if type(row.get('price')) is int}
     return prices
+
+
+_EMAIL = re.compile(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+')
+_SETUP_LABELS = {'setup_email': 'какой адрес дать новой почте outlook.com',
+                 'setup_password': 'какой пароль поставить на неё',
+                 'setup_recovery': 'какую вашу почту привязать как резервную'}
+
+
+def _email_in(text):
+    match = _EMAIL.search(str(text or ''))
+    return match.group(0) if match else ''
+
+
+def _setup_missing_text(missing):
+    items = [_SETUP_LABELS[key] for key in ('setup_email', 'setup_password', 'setup_recovery') if key in (missing or [])]
+    if not items:
+        return ''
+    if len(items) == 1:
+        return 'Осталось написать, ' + items[0] + '.'
+    return 'Осталось написать:\n' + '\n'.join(f'{n}. {t[:1].upper() + t[1:]}.' for n, t in enumerate(items, 1))
 
 
 def _setup(understanding):
@@ -818,6 +841,10 @@ def remember_turn(db, chat, validated, context, reply=''):
     for key, value in (validated.get('setup') or {}).items():
         if value:
             collected[key] = value
+    if validated.get('owner_topic') == 'new_account_email':
+        collected['setup_topic'] = 1
+    if validated.get('owner_topic') == 'course_bonus':
+        collected['course_topic'] = 1
     for advisory_id in _ADVISORIES:
         if advisory_present(advisory_id, reply) and advisory_id not in advisories:
             advisories.append(advisory_id)
@@ -952,14 +979,21 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         holds.append('Черновик расходится с репликой владельца в этом чате.')
     if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
         holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')
-    from .payment_guide import kind_for, merged_setup, setup_ready
+    from .payment_guide import kind_for, merged_setup, missing_setup, setup_ready
     plan_name = (validated.get('tariff') or {}).get('plan') or ((context or {}).get('dialog_state') or {}).get('tariff') or ''
     account = merged_setup(validated.get('setup'), ((context or {}).get('dialog_state') or {}).get('collected'))
-    account_ready = (kind_for(validated.get('service_id') or '', plan_name, (context or {}).get('tariffs') or [])
-                     == 'chatgpt_new_account' and setup_ready(account))
-    if account_ready:
-        holds.append('Данные для нового аккаунта Plus собраны. Клиенту оставлена фраза ожидания.')
     topic = validated['owner_topic']
+    collected_state = ((context or {}).get('dialog_state') or {}).get('collected') or {}
+    setup_dialog = (kind_for(validated.get('service_id') or '', plan_name, (context or {}).get('tariffs') or [])
+                    == 'chatgpt_new_account' or topic == 'new_account_email' or bool(collected_state.get('setup_topic')))
+    # Ready only on the turn that brought new data, so later «спасибо» does not alert again.
+    account_ready = setup_dialog and setup_ready(account) and bool(validated.get('setup'))
+    if account_ready:
+        holds.append('Данные для новой почты outlook.com собраны. Клиенту оставлена фраза ожидания.')
+    course_email = _email_in((context or {}).get('burst')) if (
+        topic == 'course_bonus' or collected_state.get('course_topic')) else ''
+    if course_email:
+        holds.append('Почта с курса получена. Нужен Александр. Клиенту оставлена фраза ожидания.')
     if (topic == 'activation_where' and asks_how_to_pay((context or {}).get('burst'))
             and len((understanding or {}).get('questions') or []) <= 1):
         topic = 'none'  # the payment card already answers; see package()
@@ -970,7 +1004,25 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     refund_ready = False
     owner_text_used = False
     beyond = bool(validated.get('beyond_owner_fact'))
-    if topic != 'none' and collecting:
+    if topic != 'none' and collecting and set(collecting) & {'setup_email', 'setup_password', 'setup_recovery', 'course_email'}:
+        reply = str(answer.get('reply') or '')
+        missing = missing_setup(account) if 'setup_email' in collecting else []
+        if account_ready or course_email:
+            pass
+        elif account and missing:
+            answer = dict(answer, reply=_setup_missing_text(missing), handoff=False)
+            owner_text_used = True
+        elif (answer.get('handoff') or asserts_outcome(reply) or _PROMISE.search(reply)
+              or fact_gap(answer_text, reply, bool(validated.get('beyond_owner_fact')),
+                          validated.get('allowed_prices') or _allowed_prices(
+                              (context or {}).get('tariffs') or [], (context or {}).get('nominals') or [], '', ''),
+                          context)):
+            if answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
+                answer = dict(answer, reply=answer_text, handoff=False)
+                owner_text_used = True
+            else:
+                holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
+    elif topic != 'none' and collecting:
         needed = [key for key in ('order_number', 'service', 'reason') if key in collecting]
         got = validated.get('refund_collected') or {}
         missing = [key for key in needed if not got.get(key)]
@@ -1032,9 +1084,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                         refund_collected=validated.get('refund_collected') or {},
                         account_setup_hold=account_ready,
                         account_setup=account if account_ready else {},
+                        account_service=(validated.get('tariff') or {}).get('service') or validated.get('service_id')
+                                        or ((context or {}).get('dialog_state') or {}).get('service_label') or '',
+                        course_email_hold=bool(course_email),
+                        course_email=course_email,
                         repeat_hold=_repeats_assistant(answer.get('reply'), context),
                         diagnostic=' '.join(holds), handoff_reason=' '.join(holds))
-        if account_ready:
+        if account_ready or course_email:
             from .handoff import handoff_text
             answer = dict(answer, reply=handoff_text(), handoff=True, evidence=evidence)
         else:

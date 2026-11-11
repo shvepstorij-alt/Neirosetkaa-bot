@@ -1143,6 +1143,7 @@ class Service:
         if notice:
             notice.setdefault('evidence',{'status':'owner_policy','sources':[],'reply_class':'unverified',
                                           'diagnostic':notice.get('summary') or 'Вложение не передано в разбор.'})
+            notice=await self.maybe_secret_setup_notice(job,notice)
             return notice
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
@@ -1200,16 +1201,56 @@ class Service:
         except Exception:
             logging.warning('Refund note was not delivered')
 
+    async def maybe_secret_setup_notice(self, job, notice):
+        """Client sent the new-mailbox password while we were collecting Outlook details.
+
+        The message itself is never stored or forwarded (privacy rule), so the owner
+        gets a note to open the chat, and the client gets the usual waiting line.
+        """
+        if 'данные доступа' not in str(notice.get('summary') or ''):
+            return notice
+        try:
+            from .dialog_state import load as load_dialog
+            state=load_dialog(self.store.db, job['chat'])
+        except Exception:
+            return notice
+        collected=state.get('collected') or {}
+        if not collected.get('setup_topic'):
+            return notice
+        from .handoff import handoff_text
+        service=str(state.get('service_label') or state.get('service_key') or '')
+        lines=[self.chat_identity(job['chat']),
+               '📨 Новая почта outlook.com'+(' для '+service if service else '')+': клиент прислал данные доступа.',
+               'Сами данные помощник не хранит и не пересылает, они в переписке с клиентом.']
+        for key,label in (('setup_email','Адрес нового ящика'),('setup_recovery','Резервная почта')):
+            if collected.get(key):
+                lines.append(label+': '+str(collected[key])[:200])
+        try:
+            await self.owner_message('\n'.join(lines))
+        except Exception:
+            logging.warning('Outlook setup note was not delivered')
+        evidence=dict(notice.get('evidence') or {})
+        evidence['account_setup_manual']=True
+        return dict(notice, reply=handoff_text(), evidence=evidence)
+
     async def maybe_account_setup_alert(self, job, answer):
         evidence=(answer or {}).get('evidence') or {}
+        if evidence.get('course_email_hold'):
+            try:
+                await self.owner_message('\n'.join([self.chat_identity(job['chat']),
+                    '🎓 Бонус от курса: клиент прислал почту с курса.',
+                    'Почта: '+str(evidence.get('course_email') or '')[:200]]))
+            except Exception:
+                logging.warning('Course note was not delivered')
         if not evidence.get('account_setup_hold'):
             return
         got=evidence.get('account_setup') or {}
+        service=str(evidence.get('account_service') or '')
         lines=[self.chat_identity(job['chat']),
-               'Новый аккаунт ChatGPT Plus: почта, пароль и почта восстановления собраны. Клиенту обещания нет.',
-               'Почта ящика: '+str(got.get('setup_email') or ''),
+               '📨 Заказ: новая почта outlook.com и аккаунт'+(' '+service if service else '')+'. Данные собраны, клиенту обещания нет.',
+               'Адрес нового ящика: '+str(got.get('setup_email') or ''),
                'Пароль ящика: '+str(got.get('setup_password') or ''),
-               'Почта восстановления: '+str(got.get('setup_recovery') or '')]
+               'Резервная почта: '+str(got.get('setup_recovery') or '')]
         try:
             await self.owner_message('\n'.join(lines))
         except Exception:
