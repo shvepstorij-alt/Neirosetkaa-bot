@@ -38,6 +38,12 @@ class OwnerRulesTests(unittest.TestCase):
                        'Как продлить подписку?', beyond=True)
         self.assertTrue(answer['handoff'])
 
+    def test_drifted_draft_is_replaced_by_the_owner_text(self):
+        answer = _turn('renewal', 'Продление спишется автоматически через 30 дней.', 'Как продлить подписку?')
+        self.assertFalse(answer['handoff'])
+        self.assertEqual(answer['reply'], usable_answer('renewal'))
+        self.assertTrue(answer['evidence'].get('owner_text_used'))
+
     def test_key_wording(self):
         self.assertIn('/start', usable_answer('card_payment'))
         self.assertIn('СБП', usable_answer('card_payment'))
