@@ -400,13 +400,21 @@ def ground_claims(reply, facts=None):
     corpus = ''
     if isinstance(facts, dict):
         corpus = re.sub(r'\s+', '', json.dumps(facts, ensure_ascii=False, default=str).casefold())
+    # Keep the original line breaks: numbered steps must stay one step per line.
+    pieces = re.split(r'((?<=[.!?])\s+)', text)
     kept = []
-    for part in re.split(r'(?<=[.!?])\s+', text):
+    dropped = False
+    for index in range(0, len(pieces), 2):
+        part = pieces[index]
+        gap = pieces[index + 1] if index + 1 < len(pieces) else ''
         claims = _VERSION_CLAIM.findall(part)
         if claims and not all(re.sub(r'\s+', '', claim.casefold()) in corpus for claim in claims):
+            dropped = True
             continue
-        kept.append(part.strip())
-    return ' '.join(part for part in kept if part).strip()
+        kept.append(part + gap)
+    if not dropped:
+        return text
+    return re.sub(r'\n{3,}', '\n\n', ''.join(kept)).strip()
 
 
 def prepare_outgoing(reply, facts=None):

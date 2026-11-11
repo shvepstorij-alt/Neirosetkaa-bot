@@ -910,7 +910,12 @@ class Service:
         # Recheck current Telegram permissions, then atomically consume draft.
         try:
             if automatic:
-                value=await self.tg.call('getBusinessConnection',business_connection_id=c['connection'])
+                try:
+                    value=await self.tg.call('getBusinessConnection',business_connection_id=c['connection'])
+                except Exception:
+                    # One short retry: a single network hiccup must not stop an answer.
+                    await asyncio.sleep(1.5)
+                    value=await self.tg.call('getBusinessConnection',business_connection_id=c['connection'])
                 if (not isinstance(value,dict) or value.get('id')!=c['connection']
                         or not isinstance(value.get('user'),dict) or value['user'].get('id')!=self.owner
                         or type(value.get('is_enabled')) is not bool

@@ -450,7 +450,11 @@ def build_cases(catalog):
         {'role': 'client', 'text': 'как открыть хейген',
          'reply': 'HeyGen Creator смотрите в каталоге бота, повторно цену не называю.',
          'expect': {'hold': False, 'service': 'heygen'}},
+        # One repeat is allowed: clients do ask the same thing again. The third identical text goes to the owner.
         {'role': 'client', 'text': 'ещё раз то же самое',
+         'reply': 'HeyGen Creator смотрите в каталоге бота, повторно цену не называю.',
+         'expect': {'hold': False}},
+        {'role': 'client', 'text': 'и ещё раз',
          'reply': 'HeyGen Creator смотрите в каталоге бота, повторно цену не называю.',
          'fixed_by': 'repeat',
          'expect': {'hold': True}},

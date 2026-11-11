@@ -74,6 +74,10 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Если у темы с collect есть answer, передай его смысл и попроси недостающее из collect. Не обещай результат. '
     'В таком ответе больше ничего не добавляй: ни инструкции по оплате, ни шагов активации. '
     'Если на вопрос отвечает тема из faq, отвечай по ней, а не товарами каталога. Сроки из других тем к ней не добавляй. '
+    'owner_topic выбирай, только если клиент спрашивает именно об этой теме. '
+    '«Как оформить», «как купить», «как оплатить», «что нужно кроме оплаты» до оплаты — это payment_asked=true и owner_topic=none, а не тема про кнопку активации. '
+    'Пополнение App Store или iCloud: пока неизвестны регион Apple ID и сумма, сначала спроси регион и сумму одним вопросом, номиналы не перечисляй. '
+    'С VPN не помогай и конкретный VPN не советуй: это тема vpn_help. '
     'Спроси только недостающее. Возврат не обещай. '
     'owner_topic — id такой темы, либо none. Отсутствие номинала в каталоге — не owner_topic. '
     'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
@@ -142,7 +146,7 @@ def catalog_index(facts, limit=120):
     return rows
 
 
-def nominal_index(facts, limit=80):
+def nominal_index(facts, limit=400):
     rows = []
     for region in ((facts or {}).get('appstore') or {}).get('regions') or []:
         if not isinstance(region, dict):
@@ -339,13 +343,30 @@ def _flat(text):
 
 
 def _repeats_assistant(reply, context):
+    """The same text was already sent twice. One repeat is allowed: clients do ask again."""
     current = _flat(reply)
     if len(current) < 12:
         return False
+    said = 0
     for item in (context or {}).get('history') or []:
-        if item.get('role') == 'assistant' and _flat(item.get('text')) == current:
-            return True
-    return False
+        if item.get('role') == 'assistant' and _flat(item.get('text')).endswith(current):
+            said += 1
+    return said >= 2
+
+
+_PAY_HOW = re.compile(
+    r'(?i)как\s+(?:мне\s+|нам\s+|его\s+|е[её]\s+|это\s+|можно\s+|тогда\s+|теперь\s+)*'
+    r'(?:оформ|купи|оплат|оплач|приобр|заказа|подключи)|'
+    r'инструкци\w*\s+(?:по\s+|для\s+)?(?:оплат|покупк|оформлен)|где\s+(?:оплат|купи|оформ)|'
+    r'что\s+(?:ещ[её]\s+)?(?:нужно|надо|потребуется|понадобится)\s+(?:будет\s+)?(?:кроме|помимо|после)\s+оплат|'
+    r'что\s+(?:нужно|надо)\s+(?:будет\s+)?для\s+(?:оформлен|покупк|оплат)')
+_ALREADY_PAID = re.compile(r'(?i)\bоплатил[аи]?\b|\bоплачено\b|оплата\s+прошла|после\s+оплаты\s+(?:не|нет|ничего)')
+
+
+def asks_how_to_pay(text):
+    """The client asks how to buy or what is needed besides paying. Not a report of a payment."""
+    value = str(text or '')
+    return bool(_PAY_HOW.search(value)) and not _ALREADY_PAID.search(value)
 
 
 def states_price(reply):
@@ -688,15 +709,18 @@ def ground_nominals(reply, context, validated):
 def shape_advisories(reply, validated, context):
     already = set(context.get('advisories_already_said') or [])
     reask = set(validated.get('reask_advisories') or [])
-    parts = re.split(r'(?<=[.!?])\s+|\n+', str(reply or ''))
+    # Drop only a repeated advisory sentence. Line breaks and numbered steps stay as written.
+    pieces = re.split(r'((?<=[.!?])\s+|\n+)', str(reply or ''))
     kept = []
-    for part in parts:
+    for index in range(0, len(pieces), 2):
+        part = pieces[index]
+        gap = pieces[index + 1] if index + 1 < len(pieces) else ''
         if any(advisory_id in already and advisory_id not in reask and advisory_present(advisory_id, part)
                for advisory_id in _ADVISORIES):
             continue
         if part.strip():
-            kept.append(part.strip())
-    shaped = '\n\n'.join(kept).strip()
+            kept.append(part + gap)
+    shaped = re.sub(r'\n{3,}', '\n\n', ''.join(kept)).strip()
     if not shaped:
         shaped = str(reply or '').strip()
     want_vpn = bool(validated.get('vpn_advice')) and ('vpn_location' not in already or 'vpn_location' in reask)
@@ -806,6 +830,11 @@ def remember_turn(db, chat, validated, context, reply=''):
 def package(understanding, context, db=None, chat=None):
     validated = bind_service(validate(understanding or {}, context), context)
     validated = attach_region(validated, understanding, context)
+    if (asks_how_to_pay(context.get('burst')) and validated['owner_topic'] in ('none', 'activation_where')
+            and len((understanding or {}).get('questions') or []) <= 1):
+        # «Как оформить», «что нужно кроме оплаты» get the payment card, not a nearby topic.
+        validated['payment_asked'] = True
+        validated['owner_topic'] = 'none'
     reply = str((understanding or {}).get('reply') or '').strip()
     from .handoff import handoff_text
     from .payment_guide import (kind_for, merged_setup, missing_setup, mixes_activation_into_payment,
@@ -931,6 +960,9 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     if account_ready:
         holds.append('Данные для нового аккаунта Plus собраны. Клиенту оставлена фраза ожидания.')
     topic = validated['owner_topic']
+    if (topic == 'activation_where' and asks_how_to_pay((context or {}).get('burst'))
+            and len((understanding or {}).get('questions') or []) <= 1):
+        topic = 'none'  # the payment card already answers; see package()
     faq_rows = (context or {}).get('faq') or []
     from .faq import collect_fields, usable_answer
     answer_text = usable_answer(topic, faq_rows) if topic != 'none' else ''
