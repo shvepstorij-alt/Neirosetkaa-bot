@@ -86,6 +86,10 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Почта клиента в тексте заменена на [email скрыт]: значит, клиент прислал почту. '
     'Монетки: начисляются только по реферальной программе — 10% с первой покупки каждого приглашённого; ссылка в @neirosetkaa_bot, главное меню → «Мой профиль» → «Пригласить друга»; тратятся на оплату подписки в боте. Других способов нет, не выдумывай задания или бонусы за покупки. '
     'Промокод только по прямому запросу: NAVSEX, скидка 10%. '
+    'Что входит в тариф, чем тарифы или сервисы отличаются, что выбрать — только из service_guide, своими словами и коротко. '
+    'Для выбора между ChatGPT и Claude опирайся на service_guide.choose. Цены в таком ответе только из tariffs. '
+    'Чего нет в service_guide, не утверждай: скажи, что точные детали уточнит Александр. Версии моделей не называй. '
+    'Тариф Claude Max 20× теперь называется Ultra, Max 5× — Max: если в tariffs старое название, называй его и поясни новое. '
     'Спроси только недостающее. Возврат не обещай. '
     'owner_topic — id такой темы, либо none. Отсутствие номинала в каталоге — не owner_topic. '
     'documented_facts — уже записанные правила. Их можно сказать. Не добавляй к ним новых сроков и гарантий. '
@@ -218,7 +222,16 @@ def build_context(db, chat, facts):
             'bot_navigation': (facts or {}).get('bot_navigation') or {},
             'advisories_already_said': advisories_already(window, state),
             'documented_facts': list(DOCUMENTED_FACTS),
+            'service_guide': _service_guide(),
             'hints': hint_services(burst, catalog)}
+
+
+def _service_guide():
+    try:
+        from .service_guide import for_context
+        return for_context()
+    except Exception:
+        return {}
 
 
 def _allowed_prices(tariffs, nominals, service_id, tariff_id):
