@@ -63,7 +63,7 @@ class GuardTests(unittest.TestCase):
         self.assertIn('Россия', {row['region'] for row in nominal_index(facts)})
 
     def test_owner_wording(self):
-        self.assertIn('помочь не можем', usable_answer('vpn_help'))
+        self.assertIn('подсказать не можем', usable_answer('vpn_help'))
         self.assertIn('Пополнение кредитов ChatGPT', usable_answer('limits_exhausted'))
         self.assertTrue(usable_answer('limits_exhausted').startswith('Лимиты ChatGPT можно пополнить'))
 
