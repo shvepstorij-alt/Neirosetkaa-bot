@@ -1113,8 +1113,14 @@ class Service:
         if research.get('status')!='checked':
             names=', '.join(str(x) for x in research.get('products') or [] if x) or 'сервиса'
             return dict(answer,reply='Актуальный список моделей '+names+' уточнит Александр и ответит здесь.')
-        url=next((str(src.get('url')) for src in research.get('sources') or [] if str(src.get('url') or '').startswith('https://')),'')
-        if url and url not in reply and str(research.get('checked') or '') not in reply:
+        # Clean link for the client: no tracking query, the shortest official page.
+        urls=sorted({str(src.get('url')).split('?')[0].split('#')[0] for src in research.get('sources') or []
+                     if str(src.get('url') or '').startswith('https://')},key=len)
+        url=urls[0] if urls else ''
+        reply=re.sub(r'https?://[^\s<>]+',lambda m:m[0].split('?')[0].split('#')[0],reply)
+        reply=re.sub(r'(?m)^.*(?:Проверено\s+\d|Источник:|можно посмотреть страниц|Для подробностей).*$\n?','',reply).rstrip()
+        answer=dict(answer,reply=reply)
+        if url and str(research.get('checked') or '') not in reply:
             reply=reply.rstrip()+'\n\nПроверено '+str(research.get('checked') or '')+' на официальном сайте: '+url
             return dict(answer,reply=reply)
         return answer

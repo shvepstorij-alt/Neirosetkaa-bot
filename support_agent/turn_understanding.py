@@ -66,7 +66,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Если в сообщении несколько вопросов (цена и как оформить, цена и что входит), ответь на каждый. '
     'Нужен ли VPN из России — тема vpn_needed: да, нужен для всех сервисов, включая ChatGPT. Продлить CapCut на своём аккаунте — capcut_renewal. '
     'Оплата из-за границы, Kaspi, иностранная или белорусская карта, PayPal — тема foreign_payment, не card_payment. '
-    'На вопрос о текущих моделях сервиса отвечай только по official_research: назови модели оттуда и не добавляй своих; если данных нет — скажи, что уточнит Александр. '
+    'На вопрос о текущих моделях сервиса отвечай только по official_research: назови точные названия и версии моделей оттуда, самую новую первой, и в каком тарифе она доступна; своих не добавляй. Ссылку и дату не пиши — их добавит система. Не предлагай «подготовить таблицу». Если данных нет — скажи, что уточнит Александр. '
     'conflict: none — спокойный тон, annoyed — раздражён без угрозы, '
     'high — злится, угрожает возвратом, чарджбеком или жалобой, либо тот же вопрос уже повторяется второй раз и дольше без решения. '
     'conflict_reason — короткая причина для владельца, пусто если conflict не high. '
@@ -355,6 +355,11 @@ def _allowed_prices(tariffs, nominals, service_id, tariff_id, extra=()):
     """Every price in the facts given to the model. A number outside this set is invented."""
     prices = {row['price'] for row in tariffs if type(row.get('price')) is int}
     prices |= {row['price'] for row in nominals if type(row.get('price')) is int}
+    for row in nominals:
+        # «3000 ₽ — 4250 ₽»: the face value of an App Store code is a catalog fact too.
+        face = re.fullmatch(r'\s*(\d{2,7})\s*(?:₽|руб\w*|rub)?\s*', str(row.get('nominal') or ''), re.I)
+        if face:
+            prices.add(int(face.group(1)))
     prices |= {value for value in extra or () if type(value) is int}
     return prices
 
@@ -1017,8 +1022,12 @@ def _with_price_line(card, context, service_id, tariff, kind):
     if isinstance(tariff, dict) and type(tariff.get('price')) is int:
         label = ' '.join(part for part in (str(tariff.get('service') or ''), str(tariff.get('plan') or '')) if part)
         return label + ' — ' + str(tariff['price']) + ' ₽.\n\n' + card
-    rows = [row for row in (context or {}).get('tariffs') or []
-            if row.get('service_id') == service_id and type(row.get('price')) is int]
+    priced = [row for row in (context or {}).get('tariffs') or [] if type(row.get('price')) is int]
+    rows = [row for row in priced if row.get('service_id') == service_id]
+    if not rows and len(str(service_id or '')) >= 4:
+        key = re.sub(r'[^a-zа-яё0-9]+', '', str(service_id).casefold())
+        rows = [row for row in priced
+                if key in re.sub(r'[^a-zа-яё0-9]+', '', (str(row.get('service')) + str(row.get('service_id'))).casefold())]
     if not rows or len(rows) > 8:
         return card
     lines = ['• ' + str(row.get('plan') or row.get('service') or '') + ' — ' + str(row['price']) + ' ₽' for row in rows]
@@ -1032,7 +1041,9 @@ def _offcat_asked(context):
     """The service name when our last message was the off-catalog question, else ''."""
     history = [row for row in (context or {}).get('history') or [] if isinstance(row, dict)]
     last = next((i for i in range(len(history) - 1, -1, -1) if history[i].get('role') in ('assistant', 'owner')), None)
-    if last is None or 'Какой регион у вашего аккаунта' not in str(history[last].get('text') or ''):
+    text = str(history[last].get('text') or '') if last is not None else ''
+    if last is None or not (re.search(r'(?i)регион\w*[^.?!\n]{0,40}аккаунт|аккаунт\w*[^.?!\n]{0,40}регион', text)
+                            and re.search(r'(?i)срок', text) and re.search(r'(?i)тариф', text)):
         return ''
     asked = next((str(history[i].get('text') or '') for i in range(last - 1, -1, -1)
                   if history[i].get('role') == 'client'), '')
@@ -1041,6 +1052,25 @@ def _offcat_asked(context):
 
 _INFO_QUESTION = re.compile(r'(?i)сколько|цен[аыу]\b|стоит|стоимост|что такое|что входит|что умеет|чем\s|разниц|отлич|'
                             r'работает ли|можно ли|какие|как[ао][йя]\s+лучше|сравн|how much|what is|difference')
+
+
+def _plans_summary(rows):
+    """Price and the guide's description for each plan the client named."""
+    try:
+        from .service_guide import for_context
+        services = for_context().get('services') or {}
+    except Exception:
+        services = {}
+    parts = []
+    for row in rows[:6]:
+        name = (str(row.get('service') or '') + ' ' + str(row.get('plan') or '')).strip()
+        flat = re.sub(r'[^a-zа-яё0-9]+', '', (str(row.get('service')) + str(row.get('service_id'))).casefold())
+        guide = next((value for key, value in services.items() if key.replace('_', '') in flat), {})
+        plans = guide.get('plans') if isinstance(guide, dict) else {}
+        plan_key = _flat(row.get('plan') or '')
+        text = next((str(desc) for label, desc in (plans or {}).items() if _flat(label) == plan_key), '')
+        parts.append(name + ' — ' + str(row.get('price')) + ' ₽.' + ((' ' + text) if text else ''))
+    return '\n\n'.join(parts)
 
 
 def tariff_question(rows):
@@ -1282,7 +1312,12 @@ def package(understanding, context, db=None, chat=None):
             options = []
     if not composed and len(options) >= 2 and reply and _INFO_QUESTION.search(str(context.get('burst') or '')) \
             and not _asked_tariff_before(context):
-        # «Сколько стоит Pro и что такое Max?» — the model's answer stands; no «X или Y?».
+        # «Сколько стоит Pro и что такое Max?» — answer both plans; no «X или Y?».
+        if not all(str(row.get('price')) in reply.replace(' ', '').replace('\u00a0', '') for row in options):
+            reply = _plans_summary(options)
+            validated['questions'] = [reply]
+            composed = True
+            verdict = classify_draft(reply, validated['allowed_prices'])
         options = []
     if not composed and len(options) >= 2:
         reply = tariff_question(options)
@@ -1500,6 +1535,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                 owner_followup = beyond
             else:
                 holds.append('Ответ выходит за записанный факт владельца.')
+    asked_tariff = validated.get('tariff') or {}
+    if (not holds and not answer.get('handoff') and type(asked_tariff.get('price')) is int
+            and _ASKS_PRICE.search(burst_text) and '₽' not in str(answer.get('reply') or '')
+            and not composed_card(answer)):
+        # «How much is Plus and how can I pay from abroad?» — the owner's rule answers the second half only.
+        label = ' '.join(part for part in (str(asked_tariff.get('service') or ''), str(asked_tariff.get('plan') or '')) if part)
+        answer = dict(answer, reply=label + ' — ' + str(asked_tariff['price']) + ' ₽.\n\n' + str(answer.get('reply') or ''))
     if _repeats_assistant(answer.get('reply'), context):
         holds.append('Черновик повторяет уже сказанное в этом чате.')
     evidence = dict(answer.get('evidence') or {})

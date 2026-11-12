@@ -287,7 +287,7 @@ class OpenAI:
         """
         import json
         instructions = (
-            'Translate the support reply into the language of client_message. Translate faithfully: '
+            'Translate the support reply into the language of client_message. client_message may be Kazakh, Ukrainian or Uzbek written in Cyrillic: then the translation must be in that language, never left in Russian. Translate faithfully: '
             'do not add, drop or soften any fact, step, price, number, promo code, link or @username. '
             'Keep URLs, @usernames, promo codes, prices with ₽ and numbers exactly as written. '
             'Keep button and menu names in «» in Russian as written, and you may add a short translation in brackets after them, '

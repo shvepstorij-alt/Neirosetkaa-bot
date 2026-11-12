@@ -32,7 +32,7 @@ def _official_cache_put(key, evidence):
             _OFFICIAL_CACHE.pop(oldest, None)
 
 TOPICS = {
-    'models': 'currently available models and recent model release notes',
+    'models': 'the exact names and version numbers of the models available right now in the consumer app, newest first (for example the newest flagship model and its version), and the plan each one needs; use the official models overview page and the latest release notes',
     'features': 'current product capabilities, limitations and supported workflows for the requested subscription plans',
     'plans': 'current official subscription plans features limits prices currencies regions; distinguish API pricing',
     'comparison': 'current subscription plans, plan-specific capabilities and limits; compare the actual products, not only AI models',
