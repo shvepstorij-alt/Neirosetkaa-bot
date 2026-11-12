@@ -85,6 +85,20 @@ def _named(guide, key, service_name):
     return bool(name) and any(str(item).casefold() in name for item in (_mode(guide, key).get('names') or []) if item)
 
 
+def _hit(guide, key, service_id, service_name):
+    """Catalog ids differ from ours («capcut_pro», «telegram premium»): match the name too."""
+    if service_id in _service_ids(guide, key):
+        return True
+    row = _mode(guide, key)
+    flat = ' ' + re.sub(r'[^a-zа-яё0-9]+', ' ', (str(service_name or '') + ' ' + str(service_id or '')).casefold()) + ' '
+    squeezed = flat.replace(' ', '')
+    for item in list(row.get('names') or []) + list(row.get('services') or []):
+        word = re.sub(r'[^a-zа-яё0-9]+', ' ', str(item).casefold()).strip()
+        if word and ((' ' + word + ' ') in flat or (len(word) >= 6 and word.replace(' ', '') in squeezed)):
+            return True
+    return False
+
+
 def kind_for(service_id, plan_name, tariffs=None, service_name=''):
     guide = load_guide()
     service_id = str(service_id or '')
@@ -94,17 +108,17 @@ def kind_for(service_id, plan_name, tariffs=None, service_name=''):
         service_name = (row or {}).get('service') or ''
     if 'кредит' in str(service_name).casefold() or 'кредит' in service_id.casefold() or 'credit' in service_id.casefold():
         return 'chatgpt_credits'
-    if service_id in _service_ids(guide, 'appstore') or service_id == 'appstore':
+    if _hit(guide, 'appstore', service_id, service_name) or service_id == 'appstore':
         return 'appstore'
-    if service_id in _service_ids(guide, 'link_pay'):
+    if _hit(guide, 'link_pay', service_id, service_name):
         return 'link_pay'
-    if service_id in _service_ids(guide, 'zai'):
+    if _hit(guide, 'zai', service_id, service_name):
         return 'zai'
-    if service_id in _service_ids(guide, 'suno'):
+    if _hit(guide, 'suno', service_id, service_name):
         return 'suno'
-    if service_id in _service_ids(guide, 'telegram_premium'):
+    if _hit(guide, 'telegram_premium', service_id, service_name):
         return 'telegram_premium'
-    if service_id in _service_ids(guide, 'capcut'):
+    if _hit(guide, 'capcut', service_id, service_name):
         return 'capcut'
     if service_id in _service_ids(guide, 'credentials_email_code') or _named(guide, 'credentials_email_code', service_name):
         return 'credentials_email_code'

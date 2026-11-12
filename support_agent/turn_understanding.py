@@ -61,6 +61,12 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
     'Голос уже расшифрован в тексте сообщения. '
     'Пиши о себе только в мужском роде: «рад помочь», «проверил», «уточнил», «готов». '
+    'К клиенту только на «вы», даже если он пишет на «ты». Не заканчивай ответ фразами «Рад помочь», «Обращайтесь», «Если хотите, могу…». '
+    'Цены клиенту только в рублях (₽): из каталога, а если тарифа в каталоге нет — пересчёт из official_prices по правилу. Доллары, тенге и цену за 100 кредитов в ответе не пиши. '
+    'Если в сообщении несколько вопросов (цена и как оформить, цена и что входит), ответь на каждый. '
+    'Нужен ли VPN из России — тема vpn_needed: да, нужен для всех сервисов, включая ChatGPT. Продлить CapCut на своём аккаунте — capcut_renewal. '
+    'Оплата из-за границы, Kaspi, иностранная или белорусская карта, PayPal — тема foreign_payment, не card_payment. '
+    'На вопрос о текущих моделях сервиса отвечай только по official_research: назови модели оттуда и не добавляй своих; если данных нет — скажи, что уточнит Александр. '
     'conflict: none — спокойный тон, annoyed — раздражён без угрозы, '
     'high — злится, угрожает возвратом, чарджбеком или жалобой, либо тот же вопрос уже повторяется второй раз и дольше без решения. '
     'conflict_reason — короткая причина для владельца, пусто если conflict не high. '
@@ -287,6 +293,8 @@ def foreign_language(text):
     brands = {'chatgpt', 'gpt', 'claude', 'plus', 'pro', 'max', 'go', 'grok', 'gemini', 'codex', 'cursor', 'suno',
               'perplexity', 'ok', 'vpn', 'app', 'store', 'icloud', 'apple', 'id', 'premium'}
     plain = [w for w in words if w.casefold() not in brands]
+    if len(re.findall(r'[ӘәҒғҚқҢңӨөҰұҮүҺһІіЎўЇїЄєҐґ]', text)) >= 2:
+        return True  # Kazakh, Uzbek Cyrillic, Ukrainian: Cyrillic, but not Russian
     return cyrillic == 0 and latin >= 6 and len(plain) >= 2
 
 
@@ -385,7 +393,13 @@ def _usd_context(burst, state_service):
 
 
 def _context_prices(context):
-    return tuple(((context or {}).get('usd_to_rub') or {}).get('prices', {}).values())
+    prices = list(((context or {}).get('usd_to_rub') or {}).get('prices', {}).values())
+    # Credit packs of the bot's own generation are catalog prices too.
+    generation = (context or {}).get('bot_generation')
+    if isinstance(generation, dict):
+        prices.extend(row['price_rub'] for row in generation.get('packs') or []
+                      if isinstance(row, dict) and type(row.get('price_rub')) is int)
+    return tuple(prices)
 
 
 COURSE_RECEIVED = 'Спасибо! Александр скоро проверит информацию и ответит по оформлению бонусной подписки.'
@@ -908,7 +922,12 @@ def _bind_credits(validated, context):
     burst = str((context or {}).get('burst') or '')
     last = next((str(row.get('text') or '') for row in reversed((context or {}).get('history') or [])
                  if isinstance(row, dict) and row.get('role') in ('assistant', 'owner')), '')
-    asked_now = bool(re.search(r'(?i)кредит|credit', burst))
+    state_service = str(((context or {}).get('dialog_state') or {}).get('service_id') or '')
+    about_gpt = bool(re.search(r'(?i)gpt|гпт|джипити|codex|кодекс|openai', burst)) or 'chatgpt' in state_service \
+        or 'кредит' in state_service or validated.get('service_id') == 'chatgpt'
+    other_brand = bool(re.search(r'(?i)\b(?!chatgpt|gpt|codex|openai|credits?\b)[a-z][a-z.]{2,}', burst)) or bool(
+        validated.get('_other_service')) or bool(_names_unknown_service(context))
+    asked_now = bool(re.search(r'(?i)кредит|credit', burst)) and (about_gpt or not other_brand)
     follow_up = bool(re.search(r'(?i)кредит', last)) and not validated.get('tariff')
     if not (asked_now or follow_up) or validated.get('service_id') not in ('', 'chatgpt', None):
         return
@@ -986,6 +1005,42 @@ def matching_tariffs(context, service_id):
         if plain:
             winners = plain
     return winners
+
+
+_ASKS_PRICE = re.compile(r'(?i)сколько|цен[аыу]\b|стоит|стоимост|почём|почем|price|how much|cost')
+
+
+def _with_price_line(card, context, service_id, tariff, kind):
+    """«Perplexity Pro цена? Как активировать?» — the card alone skips the price."""
+    if kind == 'appstore' or not _ASKS_PRICE.search(str((context or {}).get('burst') or '')) or '₽' in card:
+        return card
+    if isinstance(tariff, dict) and type(tariff.get('price')) is int:
+        label = ' '.join(part for part in (str(tariff.get('service') or ''), str(tariff.get('plan') or '')) if part)
+        return label + ' — ' + str(tariff['price']) + ' ₽.\n\n' + card
+    rows = [row for row in (context or {}).get('tariffs') or []
+            if row.get('service_id') == service_id and type(row.get('price')) is int]
+    if not rows or len(rows) > 8:
+        return card
+    lines = ['• ' + str(row.get('plan') or row.get('service') or '') + ' — ' + str(row['price']) + ' ₽' for row in rows]
+    return 'Цены ' + str(rows[0].get('service') or '') + ':\n' + '\n'.join(lines) + '\n\n' + card
+
+
+_OFFCAT_NO = re.compile(r'(?i)^\s*(?:нет|не надо|не нужно|спасибо|ок|понял|хорошо|ладно)\b')
+
+
+def _offcat_asked(context):
+    """The service name when our last message was the off-catalog question, else ''."""
+    history = [row for row in (context or {}).get('history') or [] if isinstance(row, dict)]
+    last = next((i for i in range(len(history) - 1, -1, -1) if history[i].get('role') in ('assistant', 'owner')), None)
+    if last is None or 'Какой регион у вашего аккаунта' not in str(history[last].get('text') or ''):
+        return ''
+    asked = next((str(history[i].get('text') or '') for i in range(last - 1, -1, -1)
+                  if history[i].get('role') == 'client'), '')
+    return ' '.join(asked.split())[:80] or 'сервис вне каталога'
+
+
+_INFO_QUESTION = re.compile(r'(?i)сколько|цен[аыу]\b|стоит|стоимост|что такое|что входит|что умеет|чем\s|разниц|отлич|'
+                            r'работает ли|можно ли|какие|как[ао][йя]\s+лучше|сравн|how much|what is|difference')
 
 
 def tariff_question(rows):
@@ -1225,6 +1280,10 @@ def package(understanding, context, db=None, chat=None):
             plan_name = picked.get('plan') or ''
             kind = kind_for(validated.get('service_id') or '', plan_name, context.get('tariffs') or [])
             options = []
+    if not composed and len(options) >= 2 and reply and _INFO_QUESTION.search(str(context.get('burst') or '')) \
+            and not _asked_tariff_before(context):
+        # «Сколько стоит Pro и что такое Max?» — the model's answer stands; no «X или Y?».
+        options = []
     if not composed and len(options) >= 2:
         reply = tariff_question(options)
         validated['tariff_id'] = ''
@@ -1250,6 +1309,7 @@ def package(understanding, context, db=None, chat=None):
                            {'bot_navigation': context.get('bot_navigation') or {}},
                            context.get('advisories_already_said') or [],
                            context.get('tariffs') or [], validated.get('fulfillment_choice') or '', setup)
+        reply = _with_price_line(reply, context, service_id, tariff, kind)
         if 'vpn_location' not in (validated.get('reask_advisories') or []):
             validated['vpn_advice'] = False
         validated['questions'] = [reply]
@@ -1288,7 +1348,10 @@ def package(understanding, context, db=None, chat=None):
         reply = shape_advisories(reply, validated, context)
         if len(reply) > 3500:
             verdict = {'send': False, 'class': 'unverified', 'reason': 'Ответ с правилом VPN длиннее 3500 символов.'}
-    if verdict['send'] and not composed and not questions_addressed(reply, validated['questions'], context):
+    # Owner 12.11.2026: a detailed answer without a separate paragraph per question is not a reason
+    # to stop; only a one-line reply to several questions still is.
+    if verdict['send'] and not composed and len(reply) < 160 \
+            and not questions_addressed(reply, validated['questions'], context):
         verdict = {'send': False, 'class': 'unverified',
                    'reason': 'В ответе нет отдельного пункта на каждый вопрос из разбора.'}
     if db is not None and chat is not None:
@@ -1338,6 +1401,18 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     plan_name = (validated.get('tariff') or {}).get('plan') or _state_plan(validated, context or {})
     account = merged_setup(validated.get('setup'), ((context or {}).get('dialog_state') or {}).get('collected'))
     topic = validated['owner_topic']
+    offcat_asked = _offcat_asked(context)
+    offcat_burst = str((context or {}).get('burst') or '').strip()
+    if offcat_asked and '?' not in offcat_burst and 0 < len(offcat_burst) <= 160 and not _OFFCAT_NO.search(offcat_burst):
+        # «Премиум, Турция, на 3 месяца» after our question is the order, not a new catalog request.
+        topic = validated['owner_topic'] = 'off_catalog'
+        validated['refund_collected'] = {'service': offcat_asked, 'reason': offcat_burst[:200]}
+        answer = dict(answer, handoff=False)
+    elif topic == 'off_catalog' and not offcat_asked:
+        # First mention: always ask tariff, region and term before calling the owner.
+        got_first = dict(validated.get('refund_collected') or {})
+        got_first['reason'] = ''
+        validated['refund_collected'] = got_first
     collected_state = ((context or {}).get('dialog_state') or {}).get('collected') or {}
     setup_dialog = (kind_for(validated.get('service_id') or '', plan_name, (context or {}).get('tariffs') or [])
                     == 'chatgpt_new_account' or topic == 'new_account_email' or bool(collected_state.get('setup_topic')))

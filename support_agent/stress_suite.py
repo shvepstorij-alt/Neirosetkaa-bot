@@ -614,7 +614,7 @@ def build_cases(catalog):
         'role': 'client', 'text': 'как оплатить телеграм премиум',
         'payment_asked': True,
         'expect': {'hold': False, 'service': 'telegram_premium',
-                   'need': ['ник', '5-30'],
+                   'need': ['username', '5-30'],
                    'forbid': ['пришлите пароль', 'Я оплатил']}},
     ])
     add('pay-capcut-new', [{

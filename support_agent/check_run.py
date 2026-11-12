@@ -68,7 +68,8 @@ async def run_check(service, part):
                 answer = await asyncio.wait_for(isolated.generate(job), timeout=180)
                 if not answer:
                     raise RuntimeError('ответ не получен')
-                reply = masculine(str(answer.get('reply') or ''))
+                from .voice import trim_filler
+                reply = trim_filler(masculine(str(answer.get('reply') or '')))
                 stop = bool(answer.get('handoff'))
                 gate = None if stop else block_reason(dict(answer, reply=reply), answer.get('evidence'), question)
                 store.finish(job, reply, answer.get('summary', ''), answer.get('handoff', True))

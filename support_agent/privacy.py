@@ -82,8 +82,16 @@ PROMO_CODES = ('NAVSEX', 'CHATIK10')
 _PROMO = re.compile(r'(?i)(?<![\w-])(?:' + '|'.join(PROMO_CODES) + r')(?![\w-])')
 
 
+# «Пароля нет», «вхожу по коду с почты» describe how the client logs in; no secret is given.
+_NO_SECRET = re.compile(
+    r'(?i)парол\w*\s+(?:нет|нету|не\s+(?:нужен|помню|знаю|устанавливал\w*|создавал\w*))|(?:нет|нету|без)\s+парол\w+|'
+    r'не\s+(?:помню|знаю)\s+парол\w+|(?:по|через)\s+код\w*\s+(?:с|из|на|от)\s+(?:почт\w+|email|e-mail|смс|sms)(?!\s*[:\-—]?\s*\w*\d)|'
+    r'код\w*\s+(?:с|из|на)\s+почт\w+(?=\s*(?:[,.!?]|$|\s+(?:не|и|а|но)\b))')
+
+
 def sensitive(text):
     text = _PROMO.sub('[промокод]', str(text or ''))
+    text = _NO_SECRET.sub('[упоминание]', text)
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
     if 'access_secret' in redaction_categories(text):return True
     if _embedded_secret(text):return True

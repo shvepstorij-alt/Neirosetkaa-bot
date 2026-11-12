@@ -1104,6 +1104,21 @@ class Service:
         evidence['translated_from_russian']=reply
         return dict(answer, reply=translated, evidence=evidence)
 
+    def _models_answer_checked(self, answer, context):
+        """Model versions go out only with the check date and the official link; otherwise Alexander answers."""
+        research=(context or {}).get('official_research')
+        if not isinstance(research,dict) or not isinstance(answer,dict) or answer.get('handoff'):
+            return answer
+        reply=str(answer.get('reply') or '')
+        if research.get('status')!='checked':
+            names=', '.join(str(x) for x in research.get('products') or [] if x) or 'сервиса'
+            return dict(answer,reply='Актуальный список моделей '+names+' уточнит Александр и ответит здесь.')
+        url=next((str(src.get('url')) for src in research.get('sources') or [] if str(src.get('url') or '').startswith('https://')),'')
+        if url and url not in reply and str(research.get('checked') or '') not in reply:
+            reply=reply.rstrip()+'\n\nПроверено '+str(research.get('checked') or '')+' на официальном сайте: '+url
+            return dict(answer,reply=reply)
+        return answer
+
     async def _attach_official_research(self, context):
         """Owner 12.11.2026: questions about current models are checked on the official site.
 
@@ -1243,6 +1258,7 @@ class Service:
         answer=payment if payment is not None else package(understanding, context, self.store.db, job['chat'])
         from .turn_understanding import enforce_turn_policy
         answer=enforce_turn_policy(answer, understanding, context, freshness)
+        answer=self._models_answer_checked(answer, context)
         answer=await self._in_client_language(job, answer, context)
         if answer is None:
             return None
@@ -2186,7 +2202,8 @@ class Service:
                     if isinstance(answer.get('feature_projection'),dict):
                         answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
                     from .voice import masculine
-                    answer['reply']=masculine(answer['reply'])  # owner 12.11.2026: masculine voice
+                    from .voice import trim_filler
+                    answer['reply']=trim_filler(masculine(answer['reply']))  # owner 12.11.2026: masculine voice, no filler tail
                     did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
                     if did and not self.store.still_current(job):
                         logging.info('support_turn chat=%s draft discarded: a newer client message arrived', job['chat'])

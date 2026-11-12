@@ -21,3 +21,16 @@ def masculine(text):
     value = _I_ADJ.sub(lambda m: m.group(1) + _case(_STEMS.get(m.group(2).lower(), m.group(2)[:-1]), m.group(2)), value)
     value = _OPEN.sub(lambda m: m.group(1) + _case(_STEMS[m.group(2).lower()], m.group(2)), value)
     return value
+
+
+_FILLER = re.compile(r'(?:\s|\n)*(?:(?:Всегда\s+|Буду\s+|Очень\s+)?[Рр]ад\s+помочь[^.!?\n]{0,40}[.!)]+|'
+                     r'Готов\s+помочь[^.!?\n]{0,60}[.!)]+|Обращайтесь[^.!?\n]{0,60}[.!)]+)\s*$')
+
+
+def trim_filler(text):
+    """«…цена 1490 ₽. Рад помочь!» — the tail adds nothing. A reply that is only thanks stays."""
+    value = str(text or '')
+    cut = value
+    for _ in range(2):
+        cut = _FILLER.sub('', cut)
+    return cut.rstrip() if len(cut.strip()) >= 25 else value
