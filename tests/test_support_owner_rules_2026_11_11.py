@@ -33,10 +33,16 @@ class OwnerRulesTests(unittest.TestCase):
             answer = _turn(topic, usable_answer(topic), question)
             self.assertFalse(answer['handoff'], (topic, answer.get('evidence', {}).get('diagnostic')))
 
-    def test_invented_condition_is_held(self):
+    def test_invented_condition_is_not_sent(self):
+        # Owner 12.11.2026: the invented condition is dropped, the owner's rule goes out
+        # with «остальное уточнит Александр» instead of stopping the reply.
         answer = _turn('renewal', 'Продление спишется автоматически через 30 дней, вернём деньги за 14 дней.',
                        'Как продлить подписку?', beyond=True)
-        self.assertTrue(answer['handoff'])
+        self.assertFalse(answer['handoff'])
+        self.assertTrue(answer['reply'].startswith(usable_answer('renewal').rstrip()))
+        self.assertIn('уточнит Александр', answer['reply'])
+        self.assertNotIn('14 дней', answer['reply'])
+        self.assertTrue(answer['evidence'].get('owner_followup'))
 
     def test_drifted_draft_is_replaced_by_the_owner_text(self):
         answer = _turn('renewal', 'Продление спишется автоматически через 30 дней.', 'Как продлить подписку?')

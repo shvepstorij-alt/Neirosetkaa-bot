@@ -281,3 +281,92 @@ class UsdConversionTests(unittest.TestCase):
 def UNDERSTANDING():
     from support_agent.turn_understanding import UNDERSTANDING_INSTRUCTIONS
     return UNDERSTANDING_INSTRUCTIONS
+
+
+class FewerStopsTests(unittest.TestCase):
+    def test_rounding_and_price_slips(self):
+        from support_agent.turn_understanding import classify_draft, snap_prices, usd_to_rub
+        self.assertEqual(usd_to_rub('24.99'), 2490)
+        self.assertEqual(usd_to_rub(19), 1890)
+        self.assertEqual(snap_prices('Цена 2489 ₽', {2490}), ('Цена 2490 ₽', True))
+        self.assertTrue(classify_draft('Цена 2489 ₽', {2490})['send'])
+        self.assertFalse(classify_draft('Цена 3990 ₽', {3890})['send'])
+        answer = _turn('сколько стоит?', {'service_id': 'suno', 'tariff_id': 'suno|Pro', 'reply': 'Suno Pro — 989 ₽.'})
+        self.assertIn('990 ₽', answer['reply'])
+        self.assertFalse(answer['handoff'], answer['evidence'].get('diagnostic'))
+
+    def test_holds_summary(self):
+        import json, sqlite3, time
+        from support_agent.hold_stats import summary
+        db = sqlite3.connect(':memory:')
+        db.row_factory = sqlite3.Row
+        db.execute('CREATE TABLE drafts(id INTEGER PRIMARY KEY, chat INTEGER, state TEXT, handoff INTEGER, created REAL)')
+        db.execute('CREATE TABLE draft_evidence(draft INTEGER PRIMARY KEY, data TEXT)')
+        now = time.time()
+        for i, (handoff, reason) in enumerate([(1, 'Черновик повторяет уже сказанное в этом чате.'),
+                                               (1, 'Черновик повторяет уже сказанное в этом чате.'),
+                                               (0, ''), (1, 'Ответ выходит за записанный факт владельца.')], 1):
+            db.execute('INSERT INTO drafts VALUES (?,?,?,?,?)', (i, 100 + i, 'done', handoff, now))
+            db.execute('INSERT INTO draft_evidence VALUES (?,?)', (i, json.dumps({'diagnostic': reason})))
+        text = summary(db, 7, now)
+        self.assertIn('3 из 4', text)
+        self.assertIn('• 2 — Черновик повторяет уже сказанное в этом чате', text)
+
+
+class SofterStopsTests(unittest.TestCase):
+    def test_conflict_needs_a_named_reason(self):
+        from support_agent.turn_understanding import _conflict
+        self.assertEqual(_conflict({'conflict': 'high', 'conflict_reason': ''}), 'annoyed')
+        self.assertEqual(_conflict({'conflict': 'high', 'conflict_reason': 'неуверенность в ответе'}), 'annoyed')
+        self.assertEqual(_conflict({'conflict': 'high', 'conflict_reason': 'угрожает чарджбеком'}), 'high')
+        self.assertEqual(_conflict({'conflict': 'high', 'conflict_reason': 'просит позвать человека'}), 'high')
+
+    def test_long_reply_fits(self):
+        from support_agent.auto_policy import REPLY_LIMIT, block_reason
+        self.assertEqual(REPLY_LIMIT, 3500)
+        reason = block_reason({'reply': 'а' * 2500, 'summary': 's', 'handoff': False}, {})
+        self.assertNotIn('лимит', str(reason or ''))
+
+    def test_drafts_for_all_never_widen_auto(self):
+        from support_agent.rollout import allowed_chats
+        chats = allowed_chats('111', owner=5, drafts_for_all_raw='yes')
+        self.assertIn(111, chats)
+        self.assertIn(222, chats)
+        self.assertNotIn(5, chats)
+        self.assertNotIn(-100, chats)
+        self.assertEqual(list(chats), [111])
+        closed = allowed_chats('111', owner=5)
+        self.assertNotIn(222, closed)
+
+    def test_service_auto_only_for_test_ids(self):
+        import sqlite3
+        from support_agent.rollout import allowed_chats
+        from support_agent.service import Service
+        chats = allowed_chats('111', owner=5, drafts_for_all_raw='yes')
+        svc = Service.__new__(Service)
+        Service.__init__(svc, type('S', (), {})(), None, None, None, 5, chats, 600,
+                         auto_test_ids=(111,), auto_for_all=True)
+        self.assertTrue(svc.auto_permitted({'uid': 111}))
+        self.assertFalse(svc.auto_permitted({'uid': 222}))
+        self.assertIn(222, svc.allowed)
+
+
+class MasculineVoiceTests(unittest.TestCase):
+    def test_first_person_is_masculine(self):
+        from support_agent.voice import masculine
+        self.assertEqual(masculine('Рада помочь! Я проверила каталог.'), 'Рад помочь! Я проверил каталог.')
+        self.assertEqual(masculine('Я бы посоветовала Plus, я уверена.'), 'Я бы посоветовал Plus, я уверен.')
+        self.assertEqual(masculine('Я сама разобралась'), 'Я сам разобрался')
+
+    def test_other_subjects_untouched(self):
+        from support_agent.voice import masculine
+        for text in ('Подписка оформлена и готова.', 'Карта прошла, оплата поступила.',
+                     'Если вы уже оплатили, пришлите номер заказа.'):
+            self.assertEqual(masculine(text), text)
+
+    def test_fixed_texts_are_masculine(self):
+        import pathlib, re
+        bad = re.compile(r'(?i)\bя(?:\s+\w+){0,2}\s+\w+ла\b|\b(?:рада|готова помочь)\b')
+        for path in pathlib.Path('support_agent/data').glob('*.yaml'):
+            text = path.read_text(encoding='utf-8')
+            self.assertIsNone(bad.search(text), path.name)
