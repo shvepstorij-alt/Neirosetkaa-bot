@@ -16921,6 +16921,22 @@ async def setup_webhook_server():
         return project_details(catalog,{r['key']:r['value'] for r in rows},plan_name_to_key,GPT_AUTO_PLANS,
                                default_creds_instruction=_CREDS_DEFAULT_INSTR,
                                default_linkpay_instruction=_LINKPAY_DEFAULT_INSTR)
+    def _support_generation():
+        # Live in-memory state: packs and model credits are reloaded from the DB
+        # and changed by the admin panel; disabled and retired models are skipped.
+        from config import (CREDIT_PACKS, IMAGE_MODELS, VIDEO_MODELS, EDIT_MODELS,
+                            ANIM_MODELS, DISABLED_MODELS, RETIRED_MODELS)
+        def _models(d):
+            return [{'name':m.get('name',k),'credits':m.get('credits',0),'desc':m.get('desc',''),
+                     'quality':m.get('res') or m.get('resolution') or ''}
+                    for k,m in d.items()
+                    if k not in DISABLED_MODELS and k not in RETIRED_MODELS and not m.get('retired')]
+        return {'buy_menu':'Купить кредиты',
+                'packs':[dict(p) for p in CREDIT_PACKS.values()],
+                'sections':[{'menu':'Изображение','title':'Генерация фото','models':_models(IMAGE_MODELS)},
+                            {'menu':'Видео','title':'Генерация видео','models':_models(VIDEO_MODELS)},
+                            {'menu':'Редактировать...','title':'Редактирование фото','models':_models(EDIT_MODELS)},
+                            {'menu':'Анимировать...','title':'Анимация фото','models':_models(ANIM_MODELS)}]}
     async def _support_bot_identity():
         me=await bot.get_me()
         return {'username':me.username,'catalog_webapp':bool(WEBAPP_BASE_URL)}
@@ -16931,7 +16947,7 @@ async def setup_webhook_server():
         folder_for_category=_support_nsg.get_folder_by_category,
         markup_for_category=_appstore_markup_web,usd_rate=_nsg_usd_rate,
         calc_price=_support_nsg.calc_price_rub,workflow_snapshot=_support_workflows,
-        bot_identity=_support_bot_identity))
+        bot_identity=_support_bot_identity,generation=_support_generation))
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)

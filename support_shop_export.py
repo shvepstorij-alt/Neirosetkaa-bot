@@ -28,10 +28,33 @@ def _positive(value):
     return int(number)
 
 
+def _generation_snapshot(source):
+    """Credit packs and enabled generation models as the bot sells them right now."""
+    if source is None:return {'status':'not_connected'}
+    try:
+        raw=source()
+        if not isinstance(raw,dict):return {'status':'invalid_response'}
+        packs=[]
+        for row in (raw.get('packs') or [])[:30]:
+            packs.append({'name':_text(row.get('name'),80),'credits':int(row.get('credits') or 0),
+                          'price_rub':_positive(row.get('price')),'note':_text(row.get('desc'),160)})
+        sections=[]
+        for sec in (raw.get('sections') or [])[:6]:
+            models=[{'name':_text(m.get('name'),80),'credits':int(m.get('credits') or 0),
+                     'note':_text(m.get('desc'),200),'quality':_text(m.get('quality'),80)}
+                    for m in (sec.get('models') or [])[:60]]
+            sections.append({'menu':_text(sec.get('menu'),60),'title':_text(sec.get('title'),60),'models':models})
+        return {'status':'available','packs':packs,'sections':sections,
+                'buy_menu':_text(raw.get('buy_menu'),60)}
+    except Exception:
+        return {'status':'read_error'}
+
+
 def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
                                  stock, apple_categories, stock_age,
                                  folder_for_category, markup_for_category,
-                                 usd_rate, calc_price, workflow_snapshot=None, bot_identity=None):
+                                 usd_rate, calc_price, workflow_snapshot=None, bot_identity=None,
+                                 generation=None):
     """All network/DB dependencies are read-only functions already used by the shop.
 
     catalog() is sync; hidden/price_for/prepare_stock/stock/markup_for_category/
@@ -221,6 +244,7 @@ def make_support_catalog_handler(*, catalog, hidden, price_for, prepare_stock,
             if isinstance(values[0],dict):result.update(values[0])
             if isinstance(values[1],dict):result['appstore']=values[1]
             result['bot_navigation']=values[2] if isinstance(values[2],dict) else {'status':'read_error'}
+            result['generation']=_generation_snapshot(generation)
             encoded=json.dumps(result,ensure_ascii=False,allow_nan=False)
             if len(encoded.encode())>1_500_000:
                 return web.json_response({'ok':False,'error':'response_size'},status=503)
