@@ -527,7 +527,7 @@ class AndroidInstallTests(unittest.TestCase):
         import yaml
         guide = yaml.safe_load(open('support_agent/data/service_guide.yaml', encoding='utf-8'))['services']['higgsfield']
         self.assertEqual(list(guide['plans']), ['Starter', 'Pro', 'Plus', 'Ultra'])
-        self.assertIn('200 кредитов', guide['plans']['Pro'])
+        self.assertIn('200 кредитов', guide['plans']['Starter'])
 
 
 class FourthCheckTests(unittest.TestCase):
