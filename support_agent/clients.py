@@ -279,6 +279,36 @@ class OpenAI:
             raise ValueError('paid next step')
         return value
 
+    async def translate_reply(self, reply, client_text):
+        """Owner 12.11.2026: foreign clients get the answer in their own language.
+
+        The reply is already checked; translation must not add or drop facts.
+        """
+        import json
+        instructions = (
+            'Translate the support reply into the language of client_message. Translate faithfully: '
+            'do not add, drop or soften any fact, step, price, number, promo code, link or @username. '
+            'Keep URLs, @usernames, promo codes, prices with ₽ and numbers exactly as written. '
+            'Keep button and menu names in «» in Russian as written, and you may add a short translation in brackets after them, '
+            'because the bot interface is in Russian. Keep line breaks and numbered steps.'
+        )
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'properties': {'reply': {'type': 'string', 'minLength': 1, 'maxLength': 3800}},
+                  'required': ['reply']}
+        result = await self.request('responses', json={
+            'model': self.model, 'store': False, 'instructions': instructions,
+            'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(
+                {'client_message': str(client_text or '')[:600], 'reply': str(reply or '')}, ensure_ascii=False)}]}],
+            'max_output_tokens': 1600,
+            'text': {'format': {'type': 'json_schema', 'name': 'translated_reply', 'strict': True, 'schema': schema}},
+        })
+        chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
+                  for c in item.get('content', []) if c.get('type') == 'output_text']
+        value = json.loads(''.join(chunks) or '{}')
+        if not isinstance(value.get('reply'), str) or not value['reply'].strip():
+            raise ValueError('translation')
+        return value['reply']
+
     async def choose_tariff(self, candidates, text):
         """Pick one id from the list just shown, or say the reply is not a choice."""
         import json

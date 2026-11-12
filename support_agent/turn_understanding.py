@@ -84,6 +84,8 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Пополнение кредитов ChatGPT — отдельный товар каталога: service_id бери у строки «Пополнение кредитов ChatGPT», не у ChatGPT. '
     'Срок подписки, можно ли на год — subscription_term: год только если такой тариф есть в tariffs. Риск блокировки Claude — claude_block_risk. Claude просит документ или номер — claude_verification. '
     'Ошибки: оплата в боте не проходит — payment_error; вход в аккаунт, коды, сеанс — login_problem; непонятная ошибка в сервисе — service_error; пропала функция — feature_missing; установка и настройка программ — tech_setup; Claude проверяет запрос — claude_review_pending. Ошибка активации — по-прежнему activation_failed. '
+    'Сервис просит номер телефона (ChatGPT, Codex, Claude) — phone_number; Claude просит документ — claude_verification. Нужен ли VPN за границей — vpn_abroad. '
+    'Клиент пишет не по-русски — отвечай на его языке. '
     'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. '
     'Почта клиента в тексте заменена на [email скрыт]: значит, клиент прислал почту. '
     'Монетки: начисляются только по реферальной программе — 10% с первой покупки каждого приглашённого; ссылка в @neirosetkaa_bot, главное меню → «Мой профиль» → «Пригласить друга»; тратятся на оплату подписки в боте. Других способов нет, не выдумывай задания или бонусы за покупки. '
@@ -94,7 +96,9 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Предложения рекламы, сотрудничества, партнёрства с вашим сервисом — тема partnership: ответ даёт Александр. Вопрос клиента про партнёрскую или реферальную ссылку — это реферальная программа. '
     'Что входит в тариф, чем тарифы или сервисы отличаются, что выбрать — только из service_guide, своими словами и коротко. '
     'Для выбора между ChatGPT и Claude опирайся на service_guide.choose. Цены в таком ответе только из tariffs. '
-    'Чего нет в service_guide, не утверждай: скажи, что точные детали уточнит Александр. Версии моделей не называй. '
+    'Чего нет в service_guide, не утверждай: скажи, что точные детали уточнит Александр. '
+    'Версии моделей называй только из official_research со status=checked: перескажи коротко, укажи дату проверки (checked) и одну ссылку из sources на официальный сайт. '
+    'Если official_research нет или status=unavailable, версий не называй и скажи, что актуальный список уточнит Александр. '
     'Тариф Claude Max 20× теперь называется Ultra, Max 5× — Max: если в tariffs старое название, называй его и поясни новое. '
     'Спроси только недостающее. Возврат не обещай. '
     'owner_topic — id такой темы, либо none. Отсутствие номинала в каталоге — не owner_topic. '
@@ -252,6 +256,48 @@ def _bot_generation(facts, burst):
     if not _GENERATION.search(str(burst or '')):
         return {'status': 'not_requested'}
     return data or {'status': 'not_connected'}
+
+
+_MODELS_Q = re.compile(r'(?i)модел|верси[яюи]|какой\s+(?:gpt|гпт|клод|claude|джемини|gemini|грок|grok)\s+(?:сейчас|стоит|внутри|последн)|'
+                       r'что\s+нового|последн\w+\s+(?:модел|верси|обновлен)|\bgpt-?\d|\bopus\b|\bsonnet\b|\bhaiku\b')
+_RESEARCH_ALIASES = {'chatgpt': ('chatgpt', 'gpt', 'гпт', 'чатгпт', 'openai'), 'codex': ('codex', 'кодекс'),
+                     'claude': ('claude', 'клод', 'клауд', 'anthropic', 'opus', 'sonnet'), 'gemini': ('gemini', 'джемини', 'гемини'),
+                     'supergrok': ('grok', 'грок'), 'perplexity': ('perplexity', 'перплекс'), 'cursor': ('cursor', 'курсор'),
+                     'midjourney': ('midjourney', 'миджорни', 'мидджорни'), 'kling': ('kling', 'клинг'),
+                     'suno': ('suno', 'суно'), 'runway': ('runway', 'ранвей'), 'heygen': ('heygen', 'хейген')}
+_STATE_TO_PRODUCT = {'grok': 'supergrok'}
+
+
+def foreign_language(text):
+    """The client writes in a non-Cyrillic language (English, Turkish, ...)."""
+    text = str(text or '')
+    latin = len(re.findall(r'[A-Za-zÀ-ÿĞğŞşİıÇçÖöÜü]', text))
+    cyrillic = len(re.findall(r'[А-Яа-яЁё]', text))
+    words = re.findall(r'[A-Za-zÀ-ÿĞğŞşİıÇçÖöÜü]{2,}', text)
+    brands = {'chatgpt', 'gpt', 'claude', 'plus', 'pro', 'max', 'go', 'grok', 'gemini', 'codex', 'cursor', 'suno',
+              'perplexity', 'ok', 'vpn', 'app', 'store', 'icloud', 'apple', 'id', 'premium'}
+    plain = [w for w in words if w.casefold() not in brands]
+    return cyrillic == 0 and latin >= 6 and len(plain) >= 2
+
+
+def research_request(context):
+    """A fixed official lookup when the client asks which models a service has now."""
+    burst = str((context or {}).get('burst') or '')
+    if not _MODELS_Q.search(burst):
+        return None
+    found = []
+    for product, names in _RESEARCH_ALIASES.items():
+        if any(_compact_mentions(burst, name) if len(name) >= 4 else
+               re.search(r'(?i)(?<![а-яёa-z])' + re.escape(name), burst) for name in names):
+            found.append(product)
+    if not found:
+        state = str(((context or {}).get('dialog_state') or {}).get('service_id') or '')
+        state = _STATE_TO_PRODUCT.get(state, state)
+        if state in _RESEARCH_ALIASES:
+            found.append(state)
+    if not found:
+        return None
+    return {'topic': 'models', 'products': found[:2]}
 
 
 _COMPARE = re.compile(r'(?i)что\s+(?:лучше|выбрать|посовету|взять)|чем\s+отлича|отличи|разниц|сравн|какой\s+(?:сервис|лучше|тариф)|какую\s+нейросет|vs\b|или\s+(?:chatgpt|gpt|гпт|claude|клод|gemini|grok)')

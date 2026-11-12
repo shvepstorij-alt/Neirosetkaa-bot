@@ -1055,6 +1055,57 @@ class Service:
     def _mark_stage(self,job,name):
         job.setdefault('_stages',[]).append((str(name)[:40],time.time()))
 
+    async def _in_client_language(self, job, answer, context):
+        """Translate a ready Russian reply for a client who writes in another language."""
+        from .turn_understanding import foreign_language
+        reply=str((answer or {}).get('reply') or '')
+        if (not answer or answer.get('handoff') or not foreign_language(context.get('burst'))
+                or not re.search(r'[А-Яа-яЁё]',reply) or not hasattr(self.ai,'translate_reply')):
+            return answer
+        try:
+            self.charge_call('translate')
+            translated=await self.ai.translate_reply(reply, context.get('burst'))
+        except Exception as exc:
+            logging.info('translation unavailable: %s',type(exc).__name__)
+            evidence=dict(answer.get('evidence') or {})
+            evidence['diagnostic']='Клиент пишет не по-русски, перевод ответа не получен. Ответ оставлен вам.'
+            return dict(answer, handoff=True, evidence=evidence)
+        if not self.store.still_current(job):
+            return None
+        # Links, promo codes and prices must survive translation unchanged.
+        must=set(re.findall(r'https?://\S+|@[A-Za-z0-9_]{4,}|\b(?:NAVSEX|CHATIK10)\b|\d[\d\s]*₽',reply))
+        if any(item.strip() not in translated for item in must):
+            evidence=dict(answer.get('evidence') or {})
+            evidence['diagnostic']='Перевод потерял ссылку, промокод или цену. Ответ оставлен вам.'
+            return dict(answer, handoff=True, evidence=evidence)
+        evidence=dict(answer.get('evidence') or {})
+        evidence['translated_from_russian']=reply
+        return dict(answer, reply=translated, evidence=evidence)
+
+    async def _attach_official_research(self, context):
+        """Owner 12.11.2026: questions about current models are checked on the official site.
+
+        One cached search per service per day; only a fixed product label and topic reach
+        the search, never the client's words. On any failure the model is told it is
+        unavailable and must not name versions.
+        """
+        from .turn_understanding import research_request
+        plan=research_request(context)
+        if not plan:
+            return
+        try:
+            from .research import lookup
+            self.charge_call('research')
+            evidence=await asyncio.wait_for(lookup(self.ai,plan),timeout=40)
+            checked=dt.datetime.fromtimestamp(float(evidence.get('checked_at') or time.time()),
+                                              dt.timezone(dt.timedelta(hours=5))).strftime('%d.%m.%Y')
+            context['official_research']={'status':'checked','products':list(plan['products']),'checked':checked,
+                'digest':str(evidence.get('digest') or '')[:4000],
+                'sources':[{'id':src.get('id'),'url':src.get('url')} for src in (evidence.get('sources') or [])[:6]]}
+        except Exception as exc:
+            logging.info('official research unavailable: %s',type(exc).__name__)
+            context['official_research']={'status':'unavailable','products':list(plan['products'])}
+
     def charge_call(self, reason='model'):
         """Reserve intent for the next real API request. The quota moves in request()."""
         from .usage import current_meter
@@ -1155,6 +1206,9 @@ class Service:
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
+        await self._attach_official_research(context)
+        if not self.store.still_current(job):
+            return None
         self.charge_call('understand_image' if images else 'understand')
         understanding=await self.ai.understand_turn(context, images=images or None)
         if not self.store.still_current(job):
@@ -1167,6 +1221,9 @@ class Service:
         answer=payment if payment is not None else package(understanding, context, self.store.db, job['chat'])
         from .turn_understanding import enforce_turn_policy
         answer=enforce_turn_policy(answer, understanding, context, freshness)
+        answer=await self._in_client_language(job, answer, context)
+        if answer is None:
+            return None
         turn=answer.get('evidence',{}).get('turn_understanding') or {}
         if turn.get('conflict')=='high':
             answer.setdefault('evidence',{}).setdefault('turn_understanding',{})['conflict_reason']=str((understanding or {}).get('conflict_reason') or '')[:300]
