@@ -4,7 +4,7 @@ Each entry is one isolated dialog: a tuple of client turns. No client receives a
 """
 
 def _one(*questions):
-    return tuple((q,) for q in questions)
+    return tuple(((q,),) for q in questions)  # dialog → one turn → one message
 
 
 PARTS = {
