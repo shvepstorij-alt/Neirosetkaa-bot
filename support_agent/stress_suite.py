@@ -585,16 +585,24 @@ def build_cases(catalog):
                                'Я оплатил']}},
     ])
     add('pay-link', [{
+        # Owner 12.11.2026: the tariff first (cheapest first, with prices), then the card.
         'role': 'client', 'text': 'как оплатить клинг',
         'payment_asked': True,
         'expect': {'hold': False, 'service': 'kling',
-                   'need': ['ссылк', 'не плат', 'не нужны', '5-30'],
-                   'forbid': ['Я оплатил', '2-5']}},
+                   'need': ['Standard', 'Pro', 'какой тариф оформить'],
+                   'forbid': ['Я оплатил']}},
+        {'role': 'client', 'text': 'Standard',
+         'payment_asked': True,
+         'expect': {'hold': False, 'service': 'kling',
+                    'need': ['ссылк', 'не плат', 'не нужны', '5-30'],
+                    'forbid': ['Я оплатил', '2-5']}},
     ])
     add('pay-suno-password', [{
         'role': 'client', 'text': 'как оплатить суно',
         'payment_asked': True,
-        'expect': {'hold': False, 'service': 'suno',
+        'expect': {'hold': False, 'service': 'suno', 'need': ['Pro', 'Premier', 'какой тариф оформить']}},
+        {'role': 'client', 'text': 'Pro', 'payment_asked': True,
+         'expect': {'hold': False, 'service': 'suno',
                    'need': ['почт', 'парол', '5-30'],
                    'forbid': ['пришлите ссылку', 'Я оплатил']}},
     ])

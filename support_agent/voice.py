@@ -34,3 +34,26 @@ def trim_filler(text):
     for _ in range(2):
         cut = _FILLER.sub('', cut)
     return cut.rstrip() if len(cut.strip()) >= 25 else value
+
+
+_HELLO = re.compile(r'(?i)^\W{0,3}(?:[а-яё]+,\s*)?(здравствуй(?:те)?|добр(?:ый|ое|ого)\s+(?:день|вечер|утро|времени\s+суток)|доброго|привет(?:ствую)?|хай|салам|hello|hi)\b')
+_HELLO_REPLY = re.compile(r'(?i)^\W{0,3}(?:здравствуй|добр(?:ый|ое|ого)|привет|hello|hi\b)')
+
+
+def greet_back(reply, burst, history):
+    """Owner 12.11.2026: a client who says hello gets a hello back, once, at the start of the talk."""
+    text = str(reply or '')
+    hello = _HELLO.search(str(burst or ''))
+    if not text or not hello or _HELLO_REPLY.search(text):
+        return text
+    if any(isinstance(row, dict) and row.get('role') in ('assistant', 'owner') for row in history or []):
+        return text
+    word = hello.group(1).casefold()
+    if word.startswith('добр') and ' ' in word and 'времени' not in word:
+        greeting = word[:1].upper() + word[1:] + '!'
+        greeting = greeting.replace('Доброго', 'Добрый').replace('Доброе утро', 'Доброе утро')
+    else:
+        greeting = 'Здравствуйте!'
+    if re.match(r'(?i)[a-z]', word):
+        return text
+    return greeting + ' ' + text if len(text) < 200 and '\n' not in text else greeting + '\n' + text

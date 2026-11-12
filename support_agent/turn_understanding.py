@@ -64,7 +64,8 @@ UNDERSTANDING_INSTRUCTIONS = (
     'К клиенту только на «вы», даже если он пишет на «ты». Не заканчивай ответ фразами «Рад помочь», «Обращайтесь», «Если хотите, могу…». '
     'Цены клиенту только в рублях (₽): из каталога, а если тарифа в каталоге нет — пересчёт из official_prices по правилу. Доллары, тенге и цену за 100 кредитов в ответе не пиши. '
     'Если в сообщении несколько вопросов (цена и как оформить, цена и что входит), ответь на каждый. '
-    'Перечисляя тарифы сервиса, у каждого называй цену в ₽ из каталога. '
+    'Перечисляя тарифы сервиса, у каждого называй цену в ₽ из каталога; тарифы всегда в порядке возрастания цены. '
+    'Если клиент поздоровался, начни ответ с приветствия. '
     'Рассказывая о тарифах, моделях и сервисах, не давай ссылок на источники и не пиши «по официальным данным», «данные официального сайта», «проверено»: это и так понятно. '
     'Работает ли SuperGrok с Grok Bot — тема supergrok_grokbot. '
     'Если клиент оплатил и ждёт дольше обычного (вчера, несколько часов, «до сих пор») — тема activation_overdue, а не срок активации. '
@@ -243,7 +244,8 @@ def build_context(db, chat, facts):
                              'region': region,
                              'collected': state.get('collected') or {},
                              'shown': state.get('offered') or []},
-            'tariffs': tariffs,
+            # Owner 12.11.2026: tariffs always in ascending price order.
+            'tariffs': sorted(tariffs, key=lambda row: (str(row.get('service_id') or ''), row.get('price') if type(row.get('price')) is int else 10**9)),
             'nominals': nominal_index(facts),
             'owner_statements': [item['text'] for item in window if item.get('authority') == 'owner' and item.get('text')],
             'faq': faq,
@@ -915,7 +917,7 @@ def _plan_tokens(text):
 def _asked_tariff_before(context):
     last = next((str(row.get('text') or '') for row in reversed((context or {}).get('history') or [])
                  if isinstance(row, dict) and row.get('role') in ('assistant', 'owner')), '')
-    return 'Это разные варианты' in last
+    return 'Это разные варианты' in last or TARIFF_ASK in last
 
 
 def _closest_option(options, burst):
@@ -1034,32 +1036,50 @@ def _with_price_line(card, context, service_id, tariff, kind):
                 if key in re.sub(r'[^a-zа-яё0-9]+', '', (str(row.get('service')) + str(row.get('service_id'))).casefold())]
     if not rows or len(rows) > 8:
         return card
+    rows = sorted(rows, key=lambda row: row['price'])
     lines = ['• ' + str(row.get('plan') or row.get('service') or '') + ' — ' + str(row['price']) + ' ₽' for row in rows]
     return 'Цены ' + str(rows[0].get('service') or '') + ':\n' + '\n'.join(lines) + '\n\n' + card
 
 
-_ANDROID_APPS = (('Claude', r'claude|клод|клауд', 'https://claude.ru.uptodown.com/android'),
-                 ('ChatGPT', r'chat\s*gpt|gpt|гпт|чат\s*джипити', 'https://chatgpt.ru.uptodown.com/android'))
+_LONG_WAIT = re.compile(r'(?i)вчера|позавчера|до\s+сих\s+пор|сутки|сутк|давно|долго|уже\s+(?:\d+|час|два|три|нескольк|полдня|день)|'
+                        r'несколько\s+час|с\s+утра|вс[её]\s+ещ[её]\s+не|никак\s+не\s+(?:приход|активир)')
+
+_APPS = (('Claude', r'claude|cloud|клод\w*|клауд\w*|клоуд\w*',
+          'https://claude.ru.uptodown.com/android', 'https://claude.com/download'),
+         ('ChatGPT', r'chat\s*gpt|gpt|гпт|джипити|jpt|\bчат\b|чатик',
+          'https://chatgpt.ru.uptodown.com/android', 'https://chatgpt.com/ru-RU/download/'))
+# Owner 12.11.2026: clients spell these any way they like — every slang form counts.
+_ANDROID = r'андро[ийеэ]д\w*|андрюх\w*|андрюш\w*|\bандр\b|android|самсунг\w*|samsung|xiaomi|сяоми|ксиаоми|редми|redmi|huawei|хуавей|honor|хонор|pixel|пиксел\w*|realme|реалми|\bpoco\b|\bпоко\b|\bapk\b|\bапк\b'
+_IPHONE = r'айфон\w*|афон\w*|ифон\w*|iphone|\bios\b|ipad|айпад\w*|ипад\w*|app\s*store|апп?\s*стор\w*|эп+\s*стор\w*|яблок\w*'
+_DESKTOP = r'винд\w*|windows|\bwin\b|\bмак\w*|\bmac\w*|макбук\w*|ноут\w*|ноутбук\w*|компьютер\w*|\bкомп\w*|\bпк\b|\bpc\b|десктоп\w*|desktop|linux|линукс\w*'
+_INSTALL = r'установ\w*|скача\w*|скачива\w*|постав\w*|загруз\w*|настро\w*|инсталл\w*|download|install|\bнет\s+(?:gpt|гпт|чат\w*|claude|клод\w*)|как\s+(?:мне\s+)?(?:получить|открыть)\s+приложени'
+
+
+def _install_reply(burst, context=None):
+    """One polite line with the right link for Android or a computer; iPhone keeps the full instruction."""
+    text = str(burst or '')
+    if re.search('(?i)' + _IPHONE, text) or not re.search('(?i)' + _INSTALL, text) \
+            or re.search(r'(?i)впн|vpn|v2ray|прокси|proxy|расширени|скил|skill|плагин', text):
+        return ''
+    android = bool(re.search('(?i)' + _ANDROID, text))
+    desktop = bool(re.search('(?i)' + _DESKTOP, text))
+    if android == desktop:
+        return ''
+    state = str(((context or {}).get('dialog_state') or {}).get('service_id') or '')
+    apps = [row for row in _APPS if re.search('(?i)' + row[1], text)]
+    if not apps:
+        apps = [row for row in _APPS if row[0].casefold() in state.casefold()] or list(_APPS)
+    where = 'на Android' if android else 'на компьютер (Windows и Mac)'
+    link = 2 if android else 3
+    if len(apps) == 1:
+        return 'Вы можете установить приложение ' + apps[0][0] + ' ' + where + ' по этой ссылке: ' + apps[0][link] + ' )'
+    return ('Вы можете установить приложение ' + where + ' по этим ссылкам:\n'
+            + '\n'.join('• ' + row[0] + ': ' + row[link] for row in apps) + ' )')
 
 
 def _android_install(burst, context=None):
-    """Owner 12.11.2026: an Android question gets only the Android link, politely; no iPhone part."""
-    text = str(burst or '')
-    if not re.search(r'(?i)андро[ий]д|android|самсунг|samsung|xiaomi|сяоми|редми|redmi|huawei|хуавей|honor|хонор|pixel|\bapk\b', text) \
-            or re.search(r'(?i)айфон|iphone|ios\b|ipad|айпад|app\s*store|эп\s*стор', text):
-        return ''
-    state = str(((context or {}).get('dialog_state') or {}).get('service_id') or '')
-    apps = [row for row in _ANDROID_APPS if re.search('(?i)' + row[1], text)]
-    if not apps:
-        apps = [row for row in _ANDROID_APPS if row[0].casefold() in state.casefold()] or list(_ANDROID_APPS)
-    if len(apps) == 1:
-        return 'Вы можете установить приложение ' + apps[0][0] + ' на Android по этой ссылке: ' + apps[0][2] + ' )'
-    return ('Вы можете установить приложение на Android по этим ссылкам:\n'
-            + '\n'.join('• ' + name + ': ' + url for name, _pattern, url in apps) + ' )')
-
-
-CLARIFY = 'Уточните, пожалуйста, о каком сервисе идёт речь и что именно нужно сделать?'
-_MONEY_COMPLAINT = re.compile(r'(?i)обман|мошенн|развод|деньги\s+(?:списа|ушли|снял)|списал\w*\s+деньги|верн\w+\s+деньги|возврат')
+    text = _install_reply(burst, context)
+    return text if 'Android' in text else ''
 
 
 _OFFCAT_NO = re.compile(r'(?i)^\s*(?:нет|не надо|не нужно|спасибо|ок|понял|хорошо|ладно)\b')
@@ -1090,7 +1110,7 @@ def _plans_summary(rows):
     except Exception:
         services = {}
     parts = []
-    for row in rows[:6]:
+    for row in sorted(rows, key=lambda r: r.get('price') if type(r.get('price')) is int else 10**9)[:6]:
         name = (str(row.get('service') or '') + ' ' + str(row.get('plan') or '')).strip()
         flat = re.sub(r'[^a-zа-яё0-9]+', '', (str(row.get('service')) + str(row.get('service_id'))).casefold())
         guide = next((value for key, value in services.items() if key.replace('_', '') in flat), {})
@@ -1101,17 +1121,26 @@ def _plans_summary(rows):
     return '\n\n'.join(parts)
 
 
+def _service_rows(context, service_id):
+    if not service_id:
+        return []
+    return [row for row in (context or {}).get('tariffs') or []
+            if row.get('service_id') == service_id and type(row.get('price')) is int][:8]
+
+
+TARIFF_ASK = 'Напишите, какой тариф оформить.'
+
+
 def tariff_question(rows):
-    labels = []
-    for row in rows:
+    """Owner 12.11.2026: ask the tariff first; list them cheapest first, each with its price."""
+    seen, lines = set(), []
+    for row in sorted(rows, key=lambda r: r.get('price') if type(r.get('price')) is int else 10**9):
         label = (str(row.get('service') or '') + ' ' + str(row.get('plan') or '')).strip()
-        if label and label not in labels:
-            labels.append(label)
-    if len(labels) == 2:
-        body = labels[0] + ' или ' + labels[1]
-    else:
-        body = ', '.join(labels[:-1]) + ' или ' + labels[-1]
-    return body + '?\n\nЭто разные варианты, напишите какой из них'
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        lines.append('• ' + label + (' — ' + str(row['price']) + ' ₽' if type(row.get('price')) is int else ''))
+    return 'Есть такие варианты:\n' + '\n'.join(lines) + '\n\n' + TARIFF_ASK
 
 
 def drop_other_plans(reply, validated):
@@ -1329,6 +1358,13 @@ def package(understanding, context, db=None, chat=None):
         validated['questions'] = [reply]
         composed = True
         verdict = {'send': False, 'class': 'collect', 'reason': 'Данные для нового аккаунта Plus собраны.'}
+    if validated.get('payment_asked') and not composed and not (validated.get('tariff') or {}):
+        # «Standard» after our tariff question, or «как оплатить Kling Standard»: the plan is named.
+        named_plan = matching_tariffs(context, validated.get('service_id') or validated.get('_other_service') or '')
+        if len(named_plan) == 1:
+            validated['tariff'] = named_plan[0]
+            validated['tariff_id'] = named_plan[0].get('id') or ''
+            kind = kind_for(validated.get('service_id') or '', named_plan[0].get('plan') or '', context.get('tariffs') or [])
     options = [] if validated.get('payment_asked') or composed else matching_tariffs(context, validated.get('service_id'))
     if len(options) >= 2 and _asked_tariff_before(context):
         # The client answered our «X или Y?» — take the option with no extra words, do not ask again.
@@ -1354,6 +1390,15 @@ def package(understanding, context, db=None, chat=None):
         reply = tariff_question(options)
         validated['tariff_id'] = ''
         validated['tariff'] = None
+        validated['intent'] = 'choose_tariff'
+        validated['questions'] = [reply]
+        composed = True
+        verdict = classify_draft(reply, validated['allowed_prices'])
+    elif (not composed and validated.get('payment_asked') and not (validated.get('tariff') or {})
+            and kind != 'appstore' and not _asked_tariff_before(context)
+            and len(_service_rows(context, validated.get('service_id') or validated.get('_other_service') or '')) >= 2):
+        # «Хочу оплатить чат» — first which tariff, then the card for that tariff.
+        reply = tariff_question(_service_rows(context, validated.get('service_id') or validated.get('_other_service') or ''))
         validated['intent'] = 'choose_tariff'
         validated['questions'] = [reply]
         composed = True
@@ -1502,6 +1547,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         got_first = dict(validated.get('refund_collected') or {})
         got_first['reason'] = ''
         validated['refund_collected'] = got_first
+    if topic in ('vpn_needed', 'vpn_help', 'vpn_abroad') and offcat_burst and not re.search(r'(?i)vpn|впн|в\.п\.н|випиэн|прокси|v2ray', offcat_burst):
+        # «Я то в России» in a question about a billing address is not a VPN question.
+        topic = validated['owner_topic'] = 'none'
+    if topic == 'activation_overdue' and not _LONG_WAIT.search(offcat_burst):
+        topic = validated['owner_topic'] = 'delivery_time'
+    if _install_reply(offcat_burst, context) and topic in ('app_download', 'tech_setup', 'none', 'new_account_email'):
+        topic = validated['owner_topic'] = 'app_download'
     collected_state = ((context or {}).get('dialog_state') or {}).get('collected') or {}
     setup_dialog = (kind_for(validated.get('service_id') or '', plan_name, (context or {}).get('tariffs') or [])
                     == 'chatgpt_new_account' or topic == 'new_account_email' or bool(collected_state.get('setup_topic')))
@@ -1576,7 +1628,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         if prices is None:
             prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '',
                                      _context_prices(context))
-        platform_text = _android_install(burst_text, context) if topic == 'app_download' else ''
+        platform_text = _install_reply(burst_text, context) if topic == 'app_download' else ''
         if platform_text:
             answer_text = platform_text
         if platform_text or fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):

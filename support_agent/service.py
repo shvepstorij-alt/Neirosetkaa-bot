@@ -1261,6 +1261,9 @@ class Service:
         from .turn_understanding import enforce_turn_policy
         answer=enforce_turn_policy(answer, understanding, context, freshness)
         answer=self._models_answer_checked(answer, context)
+        if isinstance(answer,dict) and not answer.get('handoff'):
+            from .voice import greet_back
+            answer=dict(answer,reply=greet_back(answer.get('reply'),context.get('burst'),context.get('history')))
         answer=await self._in_client_language(job, answer, context)
         if answer is None:
             return None
