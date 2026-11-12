@@ -379,7 +379,8 @@ class CheckRunTests(unittest.TestCase):
         for dialogs in PARTS.values():
             for turns in dialogs:
                 for fragments in turns:
-                    self.assertTrue(all(isinstance(f, str) and f for f in fragments))
+                    self.assertIsInstance(fragments, tuple)
+                    self.assertTrue(all(isinstance(f, str) and len(f) >= 4 for f in fragments), fragments)
 
     def test_check_runs_isolated_and_reports(self):
         import asyncio
