@@ -65,9 +65,11 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Цены клиенту только в рублях (₽): из каталога, а если тарифа в каталоге нет — пересчёт из official_prices по правилу. Доллары, тенге и цену за 100 кредитов в ответе не пиши. '
     'Если в сообщении несколько вопросов (цена и как оформить, цена и что входит), ответь на каждый. '
     'Перечисляя тарифы сервиса, у каждого называй цену в ₽ из каталога. '
+    'Рассказывая о тарифах, моделях и сервисах, не давай ссылок на источники и не пиши «по официальным данным», «данные официального сайта», «проверено»: это и так понятно. '
+    'Работает ли SuperGrok с Grok Bot — тема supergrok_grokbot. '
     'Нужен ли VPN из России — тема vpn_needed: да, нужен для всех сервисов, включая ChatGPT. Продлить CapCut на своём аккаунте — capcut_renewal. '
     'Оплата из-за границы, Kaspi, иностранная или белорусская карта, PayPal — тема foreign_payment, не card_payment. '
-    'На вопрос о текущих моделях сервиса отвечай только по official_research: назови точные названия и версии моделей оттуда, самую новую первой, и в каком тарифе она доступна; своих не добавляй. Ссылки на источники клиенту не давай; дату добавит система. Не предлагай «подготовить таблицу». Если данных нет — скажи, что уточнит Александр. '
+    'На вопрос о текущих моделях сервиса отвечай только по official_research: назови точные названия и версии моделей оттуда, самую новую первой, и в каком тарифе она доступна; своих не добавляй. Ссылки на источники клиенту не давай. Не предлагай «подготовить таблицу». Если данных нет — скажи, что уточнит Александр. '
     'conflict: none — спокойный тон, annoyed — раздражён без угрозы, '
     'high — злится, угрожает возвратом, чарджбеком или жалобой, либо тот же вопрос уже повторяется второй раз и дольше без решения. '
     'conflict_reason — короткая причина для владельца, пусто если conflict не high. '
@@ -112,7 +114,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Наша цена: если тариф есть в tariffs — только цена оттуда. Если тарифа в tariffs нет — пересчитай цену в $ по usd_to_rub.prices (правило: $ × 100 − 10, например $19 → 1890 ₽) и бери число только из этой таблицы. '
     'official_prices в service_guide — цена на сайте сервиса в $; называй её, только если клиент спрашивает о цене на сайте или сравнивает, и прямо говори, что это официальная цена сервиса. '
     'Чего нет в service_guide, не утверждай: скажи, что точные детали уточнит Александр. '
-    'Версии моделей называй только из official_research со status=checked: перескажи коротко, ссылки на источники клиенту не давай, дату добавит система. '
+    'Версии моделей называй только из official_research со status=checked: перескажи коротко, ссылки на источники клиенту не давай. '
     'Если official_research нет или status=unavailable, версий не называй и скажи, что актуальный список уточнит Александр. '
     'Тариф Claude Max 20× теперь называется Ultra, Max 5× — Max: если в tariffs старое название, называй его и поясни новое. '
     'Спроси только недостающее. Возврат не обещай. '
@@ -1152,9 +1154,11 @@ def ground_nominals(reply, context, validated):
                     'Сейчас есть:\n' + '\n'.join(lines) + '\n\nКакой оформить?')
             return text, True
         price = matched[0]['price']
-        if str(price) not in str(reply or ''):
-            return f"В регионе {title} есть {amount:g} {unit}, это {price} ₽.", True
-        return reply, False
+        shown = '₽' if unit in ('RUB', 'руб', '₽') else unit
+        # Always the code's own sentence: the model's wording around nominals contradicted itself.
+        return (f"В регионе {title} есть {amount:g} {shown}, это {price} ₽.\n\n"
+                'Оформить можно в боте: «Каталог» → «App Store / iCloud» → регион → номинал. '
+                'Код придёт в чат бота сразу после оплаты.'), True
     prices = {row.get('price') for row in rows}
     stated = {int(item) for item in _RUBLE.findall(str(reply or ''))}
     if stated and stated <= prices:
@@ -1335,7 +1339,7 @@ def package(understanding, context, db=None, chat=None):
             and not _asked_tariff_before(context):
         # «Сколько стоит Pro и что такое Max?» — answer both plans; no «X или Y?».
         bounced = len(reply) < 160 and bool(re.search(r'(?i)уточните|какой из|\bили\b[^.!\n]{0,60}\?\s*$', reply))
-        if bounced and len(options) <= 3:
+        if (bounced or validated['confidence'] == 'low') and len(options) <= 3:
             reply = _plans_summary(options)
             validated['questions'] = [reply]
             composed = True
@@ -1570,7 +1574,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                 if len(found) == 1 and _compact_mentions(burst_text, str(found[0].get('service') or '')):
                     named = found
                     break
-        asked_tariff = named[0] if len(named) == 1 else {}
+        asked_tariff = named[0] if len(named) == 1 else (_closest_option(named, burst_text) or {}) if named else {}
     if (not holds and not answer.get('handoff') and type(asked_tariff.get('price')) is int
             and _ASKS_PRICE.search(burst_text) and '₽' not in str(answer.get('reply') or '')
             and not composed_card(answer)):

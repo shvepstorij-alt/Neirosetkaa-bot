@@ -1115,10 +1115,10 @@ class Service:
             return dict(answer,reply='Актуальный список моделей '+names+' уточнит Александр и ответит здесь.')
         # Owner 12.11.2026 (evening): no source links for the client; only the check date.
         reply=re.sub(r'\s*\(?https?://[^\s<>)]+\)?','',reply)
-        reply=re.sub(r'(?m)^.*(?:Проверено\s+\d|Источник|можно посмотреть страниц|Для подробностей|официальн\w+ информаци|в табличном виде|таблиц).*$\n?','',reply).rstrip()
-        checked=str(research.get('checked') or '')
-        if checked and checked not in reply:
-            reply=reply+'\n\nДанные официального сайта на '+checked+'.'
+        reply=re.sub(r'(?m)^.*(?:Проверено\s+\d|Данные официального|Источник|можно посмотреть страниц|Для подробностей|в табличном виде|подготовить таблиц).*$\n?','',reply).rstrip()
+        # Owner 12.11.2026: no «официальные данные» signature either; it goes without saying.
+        reply=re.sub(r'(?i),?\s*по\s+официальн\w+\s+(?:данным|информации)(?:\s+на\s+[а-яё]+\s+\d{4}(?:\s+года)?)?','',reply)
+        reply=re.sub(r'(?i)\bофициально\s+','',reply).strip()
         return dict(answer,reply=reply)
 
     async def _attach_official_research(self, context):
