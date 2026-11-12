@@ -585,3 +585,35 @@ class RealQuestionFixTests(unittest.TestCase):
     def test_overdue_rule_exists(self):
         from support_agent.faq import usable_answer
         self.assertIn('номер заказа', usable_answer('activation_overdue'))
+
+
+class LateEveningRulesTests(unittest.TestCase):
+    def test_install_links_and_slang(self):
+        from support_agent.turn_understanding import _install_reply
+        self.assertIn('https://claude.com/download', _install_reply('как установить клод на ноутбук виндос?'))
+        self.assertIn('https://chatgpt.com/ru-RU/download/', _install_reply('скачать чат гпт на мак'))
+        for word in ('андроид', 'андройд', 'андроед', 'андрюху', 'самсунг'):
+            self.assertIn('uptodown', _install_reply('как скачать gpt на ' + word), word)
+        self.assertEqual(_install_reply('как установить впн на Mac'), '')
+        self.assertEqual(_install_reply('как скачать ChatGPT на айфон'), '')
+
+    def test_tariffs_ascend_with_prices(self):
+        from support_agent.turn_understanding import tariff_question
+        text = tariff_question([{'service': 'ChatGPT', 'plan': 'Pro', 'price': 9990},
+                                {'service': 'ChatGPT', 'plan': 'Go', 'price': 990},
+                                {'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990}])
+        self.assertLess(text.index('Go'), text.index('Plus'))
+        self.assertLess(text.index('Plus'), text.index('Pro —'))
+        self.assertIn('990 ₽', text)
+
+    def test_greeting_once(self):
+        from support_agent.voice import greet_back
+        self.assertEqual(greet_back('Да, можно.', 'Добрый день! Можно оформить?', []), 'Добрый день! Да, можно.')
+        self.assertEqual(greet_back('Да, можно.', 'Добрый день! Можно?', [{'role': 'assistant', 'text': 'x'}]), 'Да, можно.')
+        self.assertEqual(greet_back('Да, можно.', 'Можно оформить?', []), 'Да, можно.')
+
+    def test_new_owner_topics(self):
+        from support_agent.faq import usable_answer
+        self.assertIn('другой регион в VPN', usable_answer('activation_button_fails'))
+        self.assertIn('одним текстовым файлом', usable_answer('activate_for_me'))
+        self.assertIn('ChatGPT или Claude', usable_answer('course_subscriptions'))
