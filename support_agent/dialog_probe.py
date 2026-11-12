@@ -29,7 +29,7 @@ class CatalogOnly:
         facts = await self.shop.facts(self.owner)
         allowed = ('catalog', 'catalog_status', 'catalog_complete', 'appstore', 'bot_navigation',
                    'live_shop_status', 'live_shop_diagnostic','live_shop_attempts','live_shop_reason',
-                   'workflow_status', 'catalog_observed_at_unix', 'note', 'source')
+                   'workflow_status', 'catalog_observed_at_unix', 'note', 'source', 'generation')
         self.last_facts = {k: v for k, v in facts.items() if k in allowed}
         return self.last_facts
 

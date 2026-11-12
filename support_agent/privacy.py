@@ -77,7 +77,13 @@ def _embedded_secret(text):
     return False
 
 
+# Public promo codes the owner approved (12.11.2026). They look like passwords, but are not.
+PROMO_CODES = ('NAVSEX', 'CHATIK10')
+_PROMO = re.compile(r'(?i)(?<![\w-])(?:' + '|'.join(PROMO_CODES) + r')(?![\w-])')
+
+
 def sensitive(text):
+    text = _PROMO.sub('[промокод]', str(text or ''))
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
     if 'access_secret' in redaction_categories(text):return True
     if _embedded_secret(text):return True
