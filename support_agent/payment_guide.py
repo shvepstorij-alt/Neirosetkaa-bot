@@ -106,6 +106,8 @@ def kind_for(service_id, plan_name, tariffs=None, service_name=''):
         return 'telegram_premium'
     if service_id in _service_ids(guide, 'capcut'):
         return 'capcut'
+    if service_id in _service_ids(guide, 'credentials_email_code') or _named(guide, 'credentials_email_code', service_name):
+        return 'credentials_email_code'
     if service_id in _service_ids(guide, 'credentials') or _named(guide, 'credentials', service_name):
         return 'credentials'
     if service_id in _service_ids(guide, 'email_only') or _named(guide, 'email_only', service_name):
@@ -178,7 +180,7 @@ def _timing_line(guide, kind, already):
 
 def _after(guide, kind, choice, have, service_name=''):
     row = _mode(guide, kind)
-    if kind in ('credentials', 'email_only'):
+    if kind in ('credentials', 'credentials_email_code', 'email_only'):
         return _sentence(str(row.get('after') or '').replace('{name}', str(service_name or 'сервиса')))
     if kind == 'appstore':
         apple = guide.get('appstore') if isinstance(guide.get('appstore'), dict) else {}

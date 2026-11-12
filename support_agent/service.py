@@ -1245,11 +1245,15 @@ class Service:
             try:title=next((row['title'] for row in load_faq()['topics'] if row['id']==topic),topic)
             except Exception:title=topic
             head='Нужна ваша помощь: '+title+'. Номер заказа получен. Клиенту обещания нет.'
-        lines=[self.chat_identity(job['chat']),
-               head,
-               'Номер заказа: '+scrub(str(collected.get('order_number') or '')),
-               'Сервис: '+scrub(str(collected.get('service') or '')),
-               'Причина: '+scrub(str(collected.get('reason') or ''))]
+        reason_label='Причина: '
+        if topic=='off_catalog':
+            head='🛒 Заказ сервиса вне каталога: клиент описал, что нужно. Клиенту обещания нет.'
+            reason_label='Тариф, регион, срок: '
+        lines=[self.chat_identity(job['chat']),head]
+        if collected.get('order_number'):
+            lines.append('Номер заказа: '+scrub(str(collected.get('order_number') or '')))
+        lines+=['Сервис: '+scrub(str(collected.get('service') or '')),
+                reason_label+scrub(str(collected.get('reason') or ''))]
         markup=None
         number=re.sub(r'\D','',str(collected.get('order_number') or ''))
         if topic in ('activation_expired','activation_failed') and 0<len(number)<=20 and type(job.get('uid')) is int:

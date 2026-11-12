@@ -84,6 +84,9 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Пополнение кредитов ChatGPT — отдельный товар каталога: service_id бери у строки «Пополнение кредитов ChatGPT», не у ChatGPT. '
     'Срок подписки, можно ли на год — subscription_term: год только если такой тариф есть в tariffs. Риск блокировки Claude — claude_block_risk. Claude просит документ или номер — claude_verification. '
     'Ошибки: оплата в боте не проходит — payment_error; вход в аккаунт, коды, сеанс — login_problem; непонятная ошибка в сервисе — service_error; пропала функция — feature_missing; установка и настройка программ — tech_setup; Claude проверяет запрос — claude_review_pending. Ошибка активации — по-прежнему activation_failed. '
+    'Сервиса нет в каталоге — off_catalog: refund_service = название сервиса, refund_reason = тариф, регион аккаунта и срок, только если клиент их написал. '
+    'Пополнить DeepSeek или другой API, которого нет в каталоге, — deepseek_topup. Ссылка на оплату не в долларах — linkpay_currency; если клиент не может сменить страну в VPN — linkpay_no_vpn. '
+    'Продлить сервис, где оформляли по почте и паролю, — renewal_same_account. Gemini или Google One — gemini_google. Приложение ChatGPT для компьютера — chatgpt_desktop_app. '
     'Сервис просит номер телефона (ChatGPT, Codex, Claude) — phone_number; Claude просит документ — claude_verification. Нужен ли VPN за границей — vpn_abroad. '
     'Клиент пишет не по-русски — отвечай на его языке. '
     'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. '
@@ -95,7 +98,10 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Розыгрышей сейчас нет; к Новому году могут появиться — следите за каналом https://t.me/AleksandrOii. '
     'Предложения рекламы, сотрудничества, партнёрства с вашим сервисом — тема partnership: ответ даёт Александр. Вопрос клиента про партнёрскую или реферальную ссылку — это реферальная программа. '
     'Что входит в тариф, чем тарифы или сервисы отличаются, что выбрать — только из service_guide, своими словами и коротко. '
-    'Для выбора между ChatGPT и Claude опирайся на service_guide.choose. Цены в таком ответе только из tariffs. '
+    'Для выбора между ChatGPT и Claude опирайся на service_guide.choose. '
+    'Описывай клиенту каждый тариф по service_guide на русском, помогай сравнить тарифы и сервисы между собой. '
+    'Наша цена: если тариф есть в tariffs — только цена оттуда. Если тарифа в tariffs нет — пересчитай цену в $ по usd_to_rub.prices (правило: $ × 100 − 10, например $19 → 1890 ₽) и бери число только из этой таблицы. '
+    'official_prices в service_guide — цена на сайте сервиса в $; называй её, только если клиент спрашивает о цене на сайте или сравнивает, и прямо говори, что это официальная цена сервиса. '
     'Чего нет в service_guide, не утверждай: скажи, что точные детали уточнит Александр. '
     'Версии моделей называй только из official_research со status=checked: перескажи коротко, укажи дату проверки (checked) и одну ссылку из sources на официальный сайт. '
     'Если official_research нет или status=unavailable, версий не называй и скажи, что актуальный список уточнит Александр. '
@@ -233,6 +239,7 @@ def build_context(db, chat, facts):
             'advisories_already_said': advisories_already(window, state),
             'documented_facts': list(DOCUMENTED_FACTS),
             'service_guide': _service_guide(burst, state.get('service_key') or ''),
+            'usd_to_rub': _usd_context(burst, state.get('service_key') or ''),
             'bot_generation': _bot_generation(facts, burst),
             'hints': hint_services(burst, catalog)}
 
@@ -318,7 +325,11 @@ def _service_guide(burst='', state_service=''):
                'midjourney': ('миджорни', 'мидджорни'), 'grok': ('грок',), 'suno': ('суно',),
                'elevenlabs': ('элевен', 'eleven'), 'heygen': ('хейген',), 'runway': ('ранвей',),
                'lovable': ('лавабл',), 'gamma': ('гамма',), 'kling': ('клинг',), 'canva': ('канва',), 'zoom': ('зум',),
-               'spotify': ('спотифай', 'спотик'), 'youtube': ('ютуб', 'ютюб'), 'notion': ('ноушн', 'ноушен', 'нотион')}
+               'spotify': ('спотифай', 'спотик'), 'youtube': ('ютуб', 'ютюб'), 'notion': ('ноушн', 'ноушен', 'нотион'),
+               'freepik': ('фрипик', 'magnific', 'магнифик'), 'krea': ('креа',), 'github': ('гитхаб', 'copilot', 'копилот'),
+               'openrouter': ('опенроутер', 'deepseek', 'дипсик'), 'telegram_premium': ('телеграм премиум', 'тг премиум', 'premium'),
+               'kimi': ('кими',), 'zai': ('z.ai', 'glm'), 'make': ('мейк',), 'capcut': ('капкат', 'кап кат'),
+               'higgsfield': ('хиггс',), 'genspark': ('генспарк',), 'manus': ('манус',)}
     def said(name):
         if len(name) < 4:
             return bool(re.search(r'(?i)(?<![а-яёa-z])' + re.escape(name), str(burst or '')))
@@ -329,11 +340,48 @@ def _service_guide(burst='', state_service=''):
                 omitted='Сводки других сервисов не переданы: клиент о них не спрашивал.')
 
 
-def _allowed_prices(tariffs, nominals, service_id, tariff_id):
+def _allowed_prices(tariffs, nominals, service_id, tariff_id, extra=()):
     """Every price in the facts given to the model. A number outside this set is invented."""
     prices = {row['price'] for row in tariffs if type(row.get('price')) is int}
     prices |= {row['price'] for row in nominals if type(row.get('price')) is int}
+    prices |= {value for value in extra or () if type(value) is int}
     return prices
+
+
+_USD = re.compile(r'\$\s?(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s?(?:\$|долл|usd)', re.I)
+
+
+def usd_to_rub(amount):
+    """Owner 12.11.2026: a tariff not in the catalog is priced $ × 100 − 10 (19$ → 1890 ₽)."""
+    return int(round(float(str(amount).replace(',', '.')) * 100)) - 10
+
+
+def usd_table(guide, burst):
+    """$ amounts from the official prices in this turn's guide and from the client's message, in ₽."""
+    texts = [str(burst or '')]
+    for row in ((guide or {}).get('services') or {}).values():
+        texts += [str(value) for value in ((row or {}).get('official_prices') or {}).values()]
+    table = {}
+    for text in texts:
+        for match in _USD.finditer(text):
+            raw = match.group(1) or match.group(2)
+            try:
+                value = float(raw.replace(',', '.'))
+            except ValueError:
+                continue
+            if 0 < value <= 5000:
+                table['$' + raw.replace(',', '.')] = usd_to_rub(raw)
+    return table
+
+
+def _usd_context(burst, state_service):
+    table = usd_table(_service_guide(burst, state_service), burst)
+    return {'rule': 'Тарифа нет в каталоге — наша цена в ₽ = цена в $ × 100 − 10. Есть в tariffs — только цена из tariffs.',
+            'prices': table}
+
+
+def _context_prices(context):
+    return tuple(((context or {}).get('usd_to_rub') or {}).get('prices', {}).values())
 
 
 COURSE_RECEIVED = 'Спасибо! Александр скоро проверит информацию и ответит по оформлению бонусной подписки.'
@@ -433,7 +481,8 @@ def validate(understanding, context):
             'owner_topic': _owner_topic(understanding, context),
             'beyond_owner_fact': bool((understanding or {}).get('beyond_owner_fact')),
             'refund_collected': _refund_collected(understanding),
-            'allowed_prices': _allowed_prices(tariffs, context.get('nominals') or [], service_id, tariff_id)}
+            'allowed_prices': _allowed_prices(tariffs, context.get('nominals') or [], service_id, tariff_id,
+                                              _context_prices(context))}
 
 
 def _refund_collected(understanding):
@@ -1171,7 +1220,7 @@ def package(understanding, context, db=None, chat=None):
         validated['tariff'] = None
         validated['region'] = ''
         validated['allowed_prices'] = _allowed_prices(
-            context.get('tariffs') or [], context.get('nominals') or [], '', '')
+            context.get('tariffs') or [], context.get('nominals') or [], '', '', _context_prices(context))
         if len(options) < 2:
             reply = handoff_text()
             verdict = {'send': False, 'class': 'unverified',
@@ -1278,7 +1327,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         elif (answer.get('handoff') or asserts_outcome(reply) or _PROMISE.search(reply)
               or fact_gap(answer_text, reply, bool(validated.get('beyond_owner_fact')),
                           validated.get('allowed_prices') or _allowed_prices(
-                              (context or {}).get('tariffs') or [], (context or {}).get('nominals') or [], '', ''),
+                              (context or {}).get('tariffs') or [], (context or {}).get('nominals') or [], '', '', _context_prices(context)),
                           context)):
             if answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
                 answer = dict(answer, reply=answer_text, handoff=False)
@@ -1293,6 +1342,8 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         if not missing:
             refund_ready = True
             holds.append('Данные для возврата собраны. Клиенту оставлена фраза ожидания.' if topic == 'refund_terms'
+                         else 'Заказ вне каталога: сервис и детали получены. Нужен Александр. Клиенту оставлена фраза ожидания.'
+                         if topic == 'off_catalog'
                          else 'Номер заказа по теме «' + topic + '» получен. Нужен Александр. Клиенту оставлена фраза ожидания.')
         elif _verbatim(topic) and answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
             answer = dict(answer, reply=answer_text, handoff=False)
@@ -1313,7 +1364,8 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         reply = str(answer.get('reply') or '')
         prices = validated.get('allowed_prices')
         if prices is None:
-            prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '')
+            prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '',
+                                     _context_prices(context))
         if fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
             # A draft that drifted from the owner's fact, or was held for its wording, is replaced
             # by the owner's own text. Conflict, owner clash and stale price still hold below.
@@ -1347,7 +1399,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                             (not answer_text) or fact_gap(
                                 answer_text, str(answer.get('reply') or ''), beyond,
                                 validated.get('allowed_prices') or _allowed_prices(
-                                    (context or {}).get('tariffs') or [], (context or {}).get('nominals') or [], '', ''),
+                                    (context or {}).get('tariffs') or [], (context or {}).get('nominals') or [], '', '', _context_prices(context)),
                                 context))),
                         refund_hold=refund_ready,
                         collect_topic=topic if collecting else '',
