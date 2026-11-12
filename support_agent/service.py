@@ -60,11 +60,15 @@ class Service:
     def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None,
                  auto_test_ids=(),auto_for_all=False):
         self.store,self.tg,self.ai,self.shop=store,tg,ai,shop
-        self.owner,self.allowed,self.daily_limit=owner,set(allowed),daily_limit
+        from .rollout import AllowedChats
+        self.owner,self.daily_limit=owner,daily_limit
+        self.allowed=allowed if isinstance(allowed,AllowedChats) else set(allowed)
+        # AUTO is possible only for clients named in the settings, never for «drafts for all».
+        self.test_ids=frozenset(getattr(self.allowed,'explicit',self.allowed))
         ids=set(auto_test_ids or ())
         if type(auto_test_id) is int and auto_test_id>0:
             ids.add(auto_test_id)
-        self.auto_test_ids=frozenset(i for i in ids if i in self.allowed and i!=owner)
+        self.auto_test_ids=frozenset(i for i in ids if i in self.test_ids and i!=owner)
         self.auto_test_id=next(iter(sorted(self.auto_test_ids)), None)
         self.auto_for_all=bool(auto_for_all)
         self.auto_suspended=False
@@ -144,7 +148,7 @@ class Service:
         parts=text.strip().split()
         if not parts:return
         cmd=parts[0].split('@')[0]
-        readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','control:refresh','auto:settings')
+        readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','control:refresh','auto:settings')
                   or cmd in ('delay:view','delay:custom') or cmd=='/delay' and len(parts)==1
                   or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:')))
         gate=self.schedule_admin_job(lambda:self.command(text,admin_mid),readonly=readonly)
@@ -177,7 +181,7 @@ class Service:
         if self.auto_suspended or not c or c['uid'] not in self.allowed:
             return False
         if self.auto_for_all:
-            return True
+            return c['uid'] in self.test_ids
         return c['uid'] in self.auto_test_ids
 
     async def show_control(self,admin_mid=None,settings=False):
@@ -706,6 +710,10 @@ class Service:
                 'подготовка ответов включена для новых сообщений.' if mode=='draft' else
                 'помощник на паузе. Ожидающие черновики отменены.'),
                 buttons([self.chat_controls(self.store.chat(cid))]))
+        elif cmd=='/holds':
+            from .hold_stats import summary
+            days=int(parts[1]) if len(parts)==2 and parts[1].isdigit() and 0<int(parts[1])<=60 else 7
+            await self.owner_message(summary(self.store.db,days))
         elif cmd=='/pending' or cmd.startswith('pending:'):
             await self.list_pending(int(cmd.split(':')[1]) if ':' in cmd else 0,admin_mid)
         elif cmd.startswith('send:'):
@@ -1230,7 +1238,34 @@ class Service:
         await self.maybe_conflict_alert(job, answer, context)
         await self.maybe_refund_alert(job, answer)
         await self.maybe_account_setup_alert(job, answer)
+        await self.maybe_followup_alert(job, answer)
         return answer
+
+    async def maybe_followup_alert(self, job, answer):
+        """The client got the owner's rule plus «остальное уточнит Александр».
+
+        In draft mode the draft card already reaches the owner, so the note is sent
+        only when the reply may go out automatically.
+        """
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('owner_followup') or (answer or {}).get('handoff'):
+            return
+        try:
+            if self.store.effective_mode(job['chat'])!='auto':
+                return
+        except Exception:
+            return
+        topic=str(evidence.get('owner_followup_topic') or '')
+        try:
+            from .faq import load_faq
+            title=next((row['title'] for row in load_faq()['topics'] if row['id']==topic),topic)
+        except Exception:
+            title=topic
+        try:
+            await self.owner_message('\n'.join([self.chat_identity(job['chat']),
+                '❓ Клиент спросил шире вашего правила «'+title+'». Помощник отправил ваш ответ и написал, что остальное уточните вы.']))
+        except Exception:
+            logging.warning('Follow-up note was not delivered')
 
     async def maybe_refund_alert(self, job, answer):
         evidence=(answer or {}).get('evidence') or {}
@@ -1415,10 +1450,10 @@ class Service:
         if inner is None:return None
         if inner.get('evidence',{}).get('manual_secret_intake') and status!='paid':return order
         body=order['reply']+'\n\n'+inner['reply']
-        if len(body)>1800:
+        if len(body)>3500:
             order['reply']+='\n\nВопрос по оформлению тоже требует ответа; разберём его отдельно после проверки оплаты.'
             order['handoff']=True
-            order['evidence']['diagnostic']+=' Этап: сборка нескольких целей. Длина='+str(len(body))+'; лимит=1800. Инструкция не обрезалась.'
+            order['evidence']['diagnostic']+=' Этап: сборка нескольких целей. Длина='+str(len(body))+'; лимит=3500. Инструкция не обрезалась.'
             return order
         inner=dict(inner,reply=body,handoff=bool(order.get('handoff') or inner.get('handoff')))
         inner.setdefault('evidence',{})['order_status_diagnostic']=order.get('evidence',{}).get('diagnostic','')
@@ -2136,6 +2171,8 @@ class Service:
                             logging.warning('Dialog state was not saved')
                     if isinstance(answer.get('feature_projection'),dict):
                         answer.setdefault('evidence',{})['feature_projection']=answer['feature_projection']
+                    from .voice import masculine
+                    answer['reply']=masculine(answer['reply'])  # owner 12.11.2026: masculine voice
                     did=self.store.finish(job,answer['reply'],answer['summary'],answer['handoff'],answer.get('evidence'))
                     if did and not self.store.still_current(job):
                         logging.info('support_turn chat=%s draft discarded: a newer client message arrived', job['chat'])
@@ -2228,10 +2265,10 @@ async def main():
     if os.environ.get('SUPPORT_MEDIA_CONSENT')!='yes':
         raise ValueError('Set SUPPORT_MEDIA_CONSENT=yes only after approving transfer of test chat media to OpenAI')
     owner=int(os.environ['SUPPORT_OWNER_ID'])
-    allowed={int(x.strip()) for x in os.environ.get('SUPPORT_TEST_CHAT_IDS','').split(',') if x.strip()}
-    if owner<=0 or any(x<=0 or x==owner for x in allowed):
+    from .rollout import allowed_chats,auto_recipients
+    allowed=allowed_chats(os.environ.get('SUPPORT_TEST_CHAT_IDS',''),owner,os.environ.get('SUPPORT_DRAFTS_FOR_ALL',''))
+    if owner<=0 or any(x<=0 or x==owner for x in allowed.explicit):
         raise ValueError('Positive, separate test client IDs are required')
-    from .rollout import auto_recipients
     auto_ids,auto_for_all=auto_recipients(
         os.environ.get('SUPPORT_AUTO_TEST_CHAT_IDS',''),
         os.environ.get('SUPPORT_AUTO_TEST_CHAT_ID',''),
@@ -2272,6 +2309,7 @@ async def main():
             service.owner_interval=1.05
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. '+
+                ('Черновики для всех клиентов: включены, AUTO только для тестовых ID. ' if allowed.drafts_for_all else '')+
                 ('AUTO для всех разрешённых чатов после включения режима.' if auto_for_all else
                  'AUTO доступен тестовой группе после включения в карточке: '+', '.join(str(i) for i in sorted(auto_ids))+'.' if auto_ids else
                  'AUTO не настроен; автоматических отправок нет.')+

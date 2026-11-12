@@ -371,7 +371,8 @@ def build_cases(catalog):
         'role': 'client', 'text': 'на сколько месяцев эта гарантия?',
         'owner_topic': 'guarantee', 'beyond': True,
         'reply': 'Гарантия есть на все сервисы, кроме Claude. Она действует 12 месяцев.',
-        'expect': {'hold': True},
+        # Owner 12.11.2026: send the rule, the rest goes to Alexander, no stop.
+        'expect': {'hold': False, 'need': ['уточнит Александр'], 'forbid': ['12 месяцев']},
     }])
     add('delivery-time', [{
         'role': 'client', 'text': 'когда я её получу',
@@ -396,7 +397,7 @@ def build_cases(catalog):
         'role': 'client', 'text': 'если аккаунт забанят, за сколько дадите новый?',
         'owner_topic': 'account_ban', 'beyond': True,
         'naive': 'Если аккаунт забанят, заменим его в течение часа.',
-        'expect': {'hold': True},
+        'expect': {'hold': False, 'need': ['уточнит Александр'], 'forbid': ['в течение часа']},
     }])
     add('off-catalog', [{
         'role': 'client', 'text': 'можно купить нетфликс и сколько он стоит',

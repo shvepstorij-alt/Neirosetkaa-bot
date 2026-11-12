@@ -130,6 +130,10 @@ def owner_reason(value):
     return (('Этап: '+stage[1]+'. ' if stage else '')+'Остальные детали скрыты: возможны данные доступа.')
 
 
+# Owner 12.11.2026: long tariff comparisons are normal; Telegram allows 4096.
+REPLY_LIMIT=3500
+
+
 def block_reason(answer,evidence=None,current_text=''):
     """Return a safe owner-only reason, or None for content eligible to send.
 
@@ -168,7 +172,7 @@ def block_reason(answer,evidence=None,current_text=''):
                          ' Основание: модель запросила владельца, отдельная диагностика не сохранена.'))
     text=answer.get('reply')
     if not isinstance(text,str) or not text.strip():return _reason('текст ответа пуст или имеет неверный тип.')
-    if len(text)>1800:return _reason('текст превышает проверенный лимит 1800 символов.')
+    if len(text)>REPLY_LIMIT:return _reason('текст превышает лимит '+str(REPLY_LIMIT)+' символов.')
     if evidence is None:evidence=answer.get('evidence')
     if not isinstance(evidence,dict):return _reason('сохранённые подтверждения ответа отсутствуют.')
     status=evidence.get('status')

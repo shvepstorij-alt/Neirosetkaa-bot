@@ -60,9 +60,11 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Иначе vpn_advice=false и reask_advisories пустой. '
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
     'Голос уже расшифрован в тексте сообщения. '
+    'Пиши о себе только в мужском роде: «рад помочь», «проверил», «уточнил», «готов». '
     'conflict: none — спокойный тон, annoyed — раздражён без угрозы, '
     'high — злится, угрожает возвратом, чарджбеком или жалобой, либо тот же вопрос уже повторяется второй раз и дольше без решения. '
     'conflict_reason — короткая причина для владельца, пусто если conflict не high. '
+    'Не ставь high из-за одной неуверенности или пробела в данных: тогда ответь по известному и уточни недостающее. '
     'Сообщения history с authority=owner — слова Александра. Они главнее черновика: '
     'не противоречь им, не повторяй их дословно и не спрашивай заново то, что он уже спросил. '
     'Продолжай с его последней реплики. owner_alignment: follows, contradicts, repeats или reasks. '
@@ -131,6 +133,7 @@ DOCUMENTED_FACTS = (
     'Описание возможностей сервиса и тарифов — только по актуальным официальным источникам, не по памяти.',
 )
 _RUBLE = re.compile(r'(\d{2,7})\s*(?:₽|руб(?:лей|ля|ль)?)', re.I)
+_RUBLE_SUB = _RUBLE
 # "не обещаю" refuses a promise. A bare "обещаю" still blocks the draft.
 _PROMISE = re.compile(r'(?i)(?<!не )обещаю|(?<!не )гарантирую|точно\s+активир|возврат\s+одобрен|уже\s+оформил')
 _INTERNAL = re.compile(
@@ -353,7 +356,8 @@ _USD = re.compile(r'\$\s?(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s?(?:\$|д�
 
 def usd_to_rub(amount):
     """Owner 12.11.2026: a tariff not in the catalog is priced $ × 100 − 10 (19$ → 1890 ₽)."""
-    return int(round(float(str(amount).replace(',', '.')) * 100)) - 10
+    value = float(str(amount).replace(',', '.')) * 100 - 10
+    return int(round(value / 10.0)) * 10  # owner: round to whole tens (24.99$ → 2490 ₽)
 
 
 def usd_table(guide, burst):
@@ -515,7 +519,22 @@ def _owner_topic(understanding, context):
 
 def _conflict(understanding):
     value = str((understanding or {}).get('conflict') or 'none')
-    return value if value in ('none', 'annoyed', 'high') else 'none'
+    value = value if value in ('none', 'annoyed', 'high') else 'none'
+    # Owner 12.11.2026: the owner is called only for a named reason, not on a vague feeling.
+    if value == 'high' and not CONFLICT_REASON.search(str((understanding or {}).get('conflict_reason') or '')):
+        return 'annoyed'
+    return value
+
+
+# Reasons the model may call the owner for: refund, chargeback, complaint, threat,
+# insults, «позовите человека», a problem left unsolved after several replies.
+CONFLICT_REASON = re.compile(
+    r'(?i)возврат|верн[иу]|чарджбек|chargeback|оспор|жалоб|пожалу|\bсуд|прокурат|роспотреб|полици|угрож|'
+    r'мошенн|обман|развод|кидал|оскорб|\bмат\b|груб|челове|оператор|александр|'
+    r'не\s+работа|не\s+реш|без\s+решен|третий\s+раз|повторя|снова|опять|refund|scam|complain')
+
+
+OWNER_FOLLOWUP = 'Остальное по вашему вопросу уточнит Александр и ответит здесь.'
 
 
 def _alignment(understanding, context):
@@ -667,7 +686,7 @@ def classify_draft(reply, allowed_prices):
         return {'send': False, 'class': 'outcome',
                 'reason': 'Ответ утверждает результат оплаты, активации, возврата или обещает его.'}
     stated = {int(amount) for amount in _RUBLE.findall(text)}
-    if stated - set(allowed_prices or ()):
+    if stated - set(allowed_prices or ()) and not snap_prices(text, allowed_prices)[1]:
         return {'send': False, 'class': 'unverified',
                 'reason': 'В ответе есть цена, которой нет в переданных ценах каталога или номиналов.'}
     if collects_case_data(text):
@@ -675,6 +694,29 @@ def classify_draft(reply, allowed_prices):
     if stated:
         return {'send': True, 'class': 'catalog_price', 'reason': 'Цены в ответе есть в переданных фактах.'}
     return {'send': True, 'class': 'instruct', 'reason': 'Ответ объясняет порядок и не сообщает результат операции.'}
+
+
+def snap_prices(text, allowed_prices):
+    """A ₽ amount a few rubles off a known price is a typo, not an invented price.
+
+    Returns (fixed_text, ok). ok is False when some amount has no single close known price.
+    """
+    allowed = sorted(set(allowed_prices or ()))
+    ok = True
+
+    def fix(match):
+        nonlocal ok
+        amount = int(match.group(1))
+        if amount in allowed:
+            return match.group(0)
+        near = [p for p in allowed if abs(p - amount) <= max(20, p * 0.02)]
+        if len(near) != 1:
+            ok = False
+            return match.group(0)
+        return match.group(0).replace(match.group(1), str(near[0]), 1)
+
+    fixed = _RUBLE_SUB.sub(fix, str(text or ''))
+    return fixed, ok
 
 
 def active_region(burst, state, model_region=''):
@@ -1244,8 +1286,8 @@ def package(understanding, context, db=None, chat=None):
             verdict = classify_draft(reply, validated['allowed_prices'])
     if verdict['send']:
         reply = shape_advisories(reply, validated, context)
-        if len(reply) > 1800:
-            verdict = {'send': False, 'class': 'unverified', 'reason': 'Ответ с правилом VPN длиннее 1800 символов.'}
+        if len(reply) > 3500:
+            verdict = {'send': False, 'class': 'unverified', 'reason': 'Ответ с правилом VPN длиннее 3500 символов.'}
     if verdict['send'] and not composed and not questions_addressed(reply, validated['questions'], context):
         verdict = {'send': False, 'class': 'unverified',
                    'reason': 'В ответе нет отдельного пункта на каждый вопрос из разбора.'}
@@ -1282,10 +1324,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     if not isinstance(answer, dict):
         return answer
     validated = validate(understanding or {}, context or {})
+    if isinstance(answer.get('reply'), str) and validated.get('allowed_prices'):
+        # 2489 ₽ instead of 2490 ₽ is a slip, not a reason to stop the answer.
+        answer = dict(answer, reply=snap_prices(answer['reply'], validated['allowed_prices'])[0])
     holds = []
     if validated['conflict'] == 'high':
         holds.append('Модель отметила высокий конфликт. Клиенту оставлена фраза ожидания.')
-    if validated['owner_alignment'] != 'follows':
+    if validated['owner_alignment'] not in ('follows', 'repeats'):
         holds.append('Черновик расходится с репликой владельца в этом чате.')
     if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
         holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')
@@ -1315,6 +1360,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     collecting = collect_fields(topic, faq_rows) if topic != 'none' else []
     refund_ready = False
     owner_text_used = bool(course_email)
+    owner_followup = False
     beyond = bool(validated.get('beyond_owner_fact'))
     if topic != 'none' and collecting and set(collecting) & {'setup_email', 'setup_password', 'setup_recovery', 'course_email'}:
         reply = str(answer.get('reply') or '')
@@ -1370,9 +1416,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
             # A draft that drifted from the owner's fact, or was held for its wording, is replaced
             # by the owner's own text. Conflict, owner clash and stale price still hold below.
             # When the model itself marks a condition beyond the fact, the question needs the owner.
-            if not beyond and classify_draft(answer_text, prices)['send']:
-                answer = dict(answer, reply=answer_text, handoff=False)
+            # Owner 12.11.2026: a question wider than the rule still gets the rule;
+            # the rest goes to Alexander without stopping the reply.
+            if classify_draft(answer_text, prices)['send']:
+                reply_text = answer_text.rstrip() + ('\n\n' + OWNER_FOLLOWUP if beyond and OWNER_FOLLOWUP not in answer_text else '')
+                answer = dict(answer, reply=reply_text, handoff=False)
                 owner_text_used = True
+                owner_followup = beyond
             else:
                 holds.append('Ответ выходит за записанный факт владельца.')
     if _repeats_assistant(answer.get('reply'), context):
@@ -1385,6 +1435,8 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     evidence['catalog_freshness'] = dict(freshness or {})
     if course_email:
         evidence.update(course_email_hold=True, course_email=course_email)
+    if owner_followup and not holds:
+        evidence.update(owner_followup=True, owner_followup_topic=topic)
     if composed_card(answer):
         evidence['owner_approved_wording'] = True
     if owner_text_used and not holds:
@@ -1393,7 +1445,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                         handoff_reason='')
     if holds:
         evidence.update(status='owner_policy', conflict_hold=validated['conflict'] == 'high',
-                        owner_alignment_hold=validated['owner_alignment'] != 'follows',
+                        owner_alignment_hold=validated['owner_alignment'] not in ('follows', 'repeats'),
                         stale_price_hold=(freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')),
                         owner_fact_hold=bool(topic != 'none' and not collecting and (
                             (not answer_text) or fact_gap(

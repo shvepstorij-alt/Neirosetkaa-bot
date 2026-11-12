@@ -212,7 +212,7 @@ class OpenAI:
                                                          'promise', 'unverified']},
                       'order_number': {'type': 'string'},
                       'receipt_amount_unverified': {'type': 'string'},
-                      'reply': {'type': 'string', 'minLength': 1, 'maxLength': 1800},
+                      'reply': {'type': 'string', 'minLength': 1, 'maxLength': 3000},
                       'summary': {'type': 'string', 'maxLength': 700}},
                   'required': ['intent', 'service_id', 'tariff_id', 'confidence', 'clarify_ids',
                                'topic_changed', 'known_facts', 'missing_facts', 'questions', 'vpn_advice',
@@ -243,7 +243,8 @@ class OpenAI:
         result = await self.request('responses', json={
             'model': self.model, 'store': False, 'instructions': UNDERSTANDING_INSTRUCTIONS,
             'input': [{'role': 'user', 'content': content}],
-            'max_output_tokens': 1100,
+            # A cut-off JSON fails the whole turn; long comparisons need room.
+            'max_output_tokens': 3000,
             'text': {'format': {'type': 'json_schema', 'name': 'turn_understanding', 'strict': True, 'schema': schema}},
         })
         chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
@@ -299,7 +300,7 @@ class OpenAI:
             'model': self.model, 'store': False, 'instructions': instructions,
             'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(
                 {'client_message': str(client_text or '')[:600], 'reply': str(reply or '')}, ensure_ascii=False)}]}],
-            'max_output_tokens': 1600,
+            'max_output_tokens': 2600,
             'text': {'format': {'type': 'json_schema', 'name': 'translated_reply', 'strict': True, 'schema': schema}},
         })
         chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
@@ -503,6 +504,7 @@ base_price_rub со старым price_scope=base_not_customer_quote нельз�
 Не повторяй в каждом ответе оговорку о промокодах и списании монет: она нужна
 только если клиент спрашивает про скидку или итоговую персональную оплату.
 Не пиши «сейчас я онлайн».
+О себе пиши только в мужском роде: «рад помочь», «проверил», «готов».
 Нет каталога — сообщи об этом только в summary. Не проси клиента дать список
 товаров, цены или ассортимент. Для уточнения задачи каталог не нужен: handoff=false.
 Если конкретная цена/наличие не подтверждены, не выдумывай их: сохрани проверенную
