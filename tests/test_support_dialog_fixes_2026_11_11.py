@@ -65,7 +65,8 @@ class GuardTests(unittest.TestCase):
     def test_owner_wording(self):
         self.assertIn('подсказать не можем', usable_answer('vpn_help'))
         self.assertIn('Пополнение кредитов ChatGPT', usable_answer('limits_exhausted'))
-        self.assertTrue(usable_answer('limits_exhausted').startswith('Лимиты ChatGPT можно пополнить'))
+        # Owner 12.11.2026: the general advice first, ChatGPT credits as an extra option.
+        self.assertTrue(usable_answer('limits_exhausted').startswith('Расход лимитов виден'))
 
 
 if __name__ == '__main__':

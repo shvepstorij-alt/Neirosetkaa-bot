@@ -375,7 +375,7 @@ class MasculineVoiceTests(unittest.TestCase):
 class CheckRunTests(unittest.TestCase):
     def test_parts_shape(self):
         from support_agent.check_cases import PARTS
-        self.assertEqual(sorted(PARTS), [1, 2, 3, 4])
+        self.assertEqual(sorted(PARTS), [1, 2, 3, 4, 5])
         for dialogs in PARTS.values():
             for turns in dialogs:
                 for fragments in turns:
@@ -420,3 +420,65 @@ class PromoIsNotSecretTests(unittest.TestCase):
         self.assertFalse(sensitive(NAVSEX))
         self.assertFalse(sensitive('промокод CHATIK10 не применяется'))
         self.assertTrue(sensitive('пароль qwerty12345'))
+
+
+class CheckFindingsTests(unittest.TestCase):
+    """Errors found by the owner's /check run on 12.11.2026."""
+
+    def test_cards_match_catalog_names(self):
+        from support_agent.payment_guide import kind_for, render
+        self.assertEqual(kind_for('capcut_pro', 'Pro', [], 'CapCut Pro'), 'capcut')
+        self.assertEqual(kind_for('x', '12 месяцев', [], 'Telegram premium'), 'telegram_premium')
+        self.assertEqual(kind_for('y', '', [], 'iCloud/AppStore'), 'appstore')
+        card = render('capcut_pro', 'CapCut Pro', '', {})
+        self.assertIn('новый готовый аккаунт', card)
+        self.assertNotIn('активация идёт в боте', card)
+        self.assertIn('username', render('x', 'Telegram premium', '12 месяцев', {}))
+
+    def test_login_description_is_not_a_secret(self):
+        from support_agent.privacy import sensitive
+        self.assertFalse(sensitive('В OpenRouter я вхожу только по коду с почты, пароля нет'))
+        self.assertTrue(sensitive('вхожу по коду с почты 771204'))
+        self.assertTrue(sensitive('пароля нет, вот он: qwerty12345'))
+
+    def test_who_and_language(self):
+        from support_agent.owner_scenarios import WHO, quick_reply
+        from support_agent.turn_understanding import foreign_language
+        self.assertEqual(quick_reply('Вы бот или человек?')['reply'], WHO)
+        self.assertEqual(quick_reply('Вы девушка или парень?')['reply'], WHO)
+        self.assertIsNone(quick_reply('Нужен бот для телеграм'))
+        self.assertTrue(foreign_language('Сәлем! Claude Pro қанша тұрады?'))
+        self.assertFalse(foreign_language('Привет, сколько стоит Claude?'))
+
+    def test_credits_stay_with_the_named_service(self):
+        from support_agent.turn_understanding import _bind_credits
+        rows = [{'service_id': 'gpt_credits', 'service': 'Пополнение кредитов ChatGPT', 'plan': '250 кредитов'}]
+        validated = {'service_id': '', 'tariff': None}
+        _bind_credits(validated, {'burst': 'Higgsfield какие тарифы и сколько кредитов?', 'tariffs': rows, 'history': []})
+        self.assertEqual(validated['service_id'], '')
+        validated = {'service_id': '', 'tariff': None}
+        _bind_credits(validated, {'burst': 'как пополнить кредиты в чат гпт?', 'tariffs': rows, 'history': []})
+        self.assertEqual(validated['service_id'], 'gpt_credits')
+
+    def test_price_line_and_filler(self):
+        from support_agent.turn_understanding import _with_price_line
+        from support_agent.voice import trim_filler
+        card = 'Оплата в боте.\n1. Откройте бота.'
+        tariff = {'service': 'Perplexity', 'plan': 'Pro', 'price': 1990}
+        out = _with_price_line(card, {'burst': 'Perplexity Pro цена? Как активировать?'}, 'perplexity', tariff, 'perplexity')
+        self.assertTrue(out.startswith('Perplexity Pro — 1990 ₽.'))
+        self.assertEqual(_with_price_line(card, {'burst': 'как оформить?'}, 'perplexity', tariff, 'perplexity'), card)
+        self.assertEqual(trim_filler('Цена тарифа Standard — 1490 ₽ в месяц. Рад помочь!'), 'Цена тарифа Standard — 1490 ₽ в месяц.')
+
+    def test_models_answer_needs_the_official_check(self):
+        from support_agent.service import Service
+        svc = Service.__new__(Service)
+        gone = svc._models_answer_checked({'reply': 'Новейшая модель — X-9.', 'handoff': False},
+                                          {'official_research': {'status': 'unavailable', 'products': ['ChatGPT']}})
+        self.assertNotIn('X-9', gone['reply'])
+        self.assertIn('уточнит Александр', gone['reply'])
+        ok = svc._models_answer_checked({'reply': 'Сейчас доступны модели A и B.', 'handoff': False},
+                                        {'official_research': {'status': 'checked', 'checked': '12.11.2026',
+                                                               'sources': [{'url': 'https://openai.com/models'}]}})
+        self.assertIn('Проверено 12.11.2026', ok['reply'])
+        self.assertIn('https://openai.com/models', ok['reply'])
