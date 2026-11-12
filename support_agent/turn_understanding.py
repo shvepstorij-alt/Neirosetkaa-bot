@@ -67,6 +67,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Перечисляя тарифы сервиса, у каждого называй цену в ₽ из каталога. '
     'Рассказывая о тарифах, моделях и сервисах, не давай ссылок на источники и не пиши «по официальным данным», «данные официального сайта», «проверено»: это и так понятно. '
     'Работает ли SuperGrok с Grok Bot — тема supergrok_grokbot. '
+    'Если клиент оплатил и ждёт дольше обычного (вчера, несколько часов, «до сих пор») — тема activation_overdue, а не срок активации. '
     'Нужен ли VPN из России — тема vpn_needed: да, нужен для всех сервисов, включая ChatGPT. Продлить CapCut на своём аккаунте — capcut_renewal. '
     'Оплата из-за границы, Kaspi, иностранная или белорусская карта, PayPal — тема foreign_payment, не card_payment. '
     'На вопрос о текущих моделях сервиса отвечай только по official_research: назови точные названия и версии моделей оттуда, самую новую первой, и в каком тарифе она доступна; своих не добавляй. Ссылки на источники клиенту не давай. Не предлагай «подготовить таблицу». Если данных нет — скажи, что уточнит Александр. '
@@ -1015,7 +1016,7 @@ def matching_tariffs(context, service_id):
     return winners
 
 
-_ASKS_PRICE = re.compile(r'(?i)сколько|цен[аыу]\b|стоит|стоимост|почём|почем|price|how much|cost')
+_ASKS_PRICE = re.compile(r'(?i)сколько\s+(?:это\s+|он[аи]?\s+|будет\s+)?(?:стоит|стоят|стоить)|цен[аыу]\b|\bстоимост|\bпоч[ёе]м\b|\bprice|how much|\bcost')
 
 
 def _with_price_line(card, context, service_id, tariff, kind):
@@ -1044,7 +1045,7 @@ _ANDROID_APPS = (('Claude', r'claude|клод|клауд', 'https://claude.ru.up
 def _android_install(burst, context=None):
     """Owner 12.11.2026: an Android question gets only the Android link, politely; no iPhone part."""
     text = str(burst or '')
-    if not re.search(r'(?i)андроид|android|самсунг|samsung|xiaomi|сяоми|редми|redmi|huawei|хуавей|honor|хонор|pixel|\bapk\b', text) \
+    if not re.search(r'(?i)андро[ий]д|android|самсунг|samsung|xiaomi|сяоми|редми|redmi|huawei|хуавей|honor|хонор|pixel|\bapk\b', text) \
             or re.search(r'(?i)айфон|iphone|ios\b|ipad|айпад|app\s*store|эп\s*стор', text):
         return ''
     state = str(((context or {}).get('dialog_state') or {}).get('service_id') or '')
@@ -1055,6 +1056,10 @@ def _android_install(burst, context=None):
         return 'Вы можете установить приложение ' + apps[0][0] + ' на Android по этой ссылке: ' + apps[0][2] + ' )'
     return ('Вы можете установить приложение на Android по этим ссылкам:\n'
             + '\n'.join('• ' + name + ': ' + url for name, _pattern, url in apps) + ' )')
+
+
+CLARIFY = 'Уточните, пожалуйста, о каком сервисе идёт речь и что именно нужно сделать?'
+_MONEY_COMPLAINT = re.compile(r'(?i)обман|мошенн|развод|деньги\s+(?:списа|ушли|снял)|списал\w*\s+деньги|верн\w+\s+деньги|возврат')
 
 
 _OFFCAT_NO = re.compile(r'(?i)^\s*(?:нет|не надо|не нужно|спасибо|ок|понял|хорошо|ладно)\b')
@@ -1385,9 +1390,31 @@ def package(understanding, context, db=None, chat=None):
         validated['allowed_prices'] = _allowed_prices(
             context.get('tariffs') or [], context.get('nominals') or [], '', '', _context_prices(context))
         if len(options) < 2:
-            reply = handoff_text()
-            verdict = {'send': False, 'class': 'unverified',
-                       'reason': 'Уверенность низкая, а двух вариантов из каталога модель не назвала.'}
+            # Owner 12.11.2026 (real questions): an unclear message gets one clarifying
+            # question, not a stop. A complaint about money, or a second unclear message
+            # in a row, still goes to Alexander.
+            burst_low = str(context.get('burst') or '')
+            last_said = next((str(row.get('text') or '') for row in reversed(context.get('history') or [])
+                              if isinstance(row, dict) and row.get('role') in ('assistant', 'owner')), '')
+            own_question = ' '.join(str(reply or '').split())
+            if _MONEY_COMPLAINT.search(burst_low):
+                reply = handoff_text()
+                verdict = {'send': False, 'class': 'unverified',
+                           'reason': 'Клиент жалуется на оплату или списание. Нужен Александр.'}
+            elif CLARIFY in last_said or last_said.rstrip().endswith('?') and 'Уточните' in last_said:
+                reply = handoff_text()
+                verdict = {'send': False, 'class': 'unverified',
+                           'reason': 'Сообщение непонятно второй раз подряд. Нужен Александр.'}
+            else:
+                # Low confidence used to throw the whole draft away. It only means «do not
+                # name a tariff or a price»: an answer without prices that passes the
+                # safety check goes out; anything else becomes one clarifying question.
+                if not (len(own_question) >= 20 and '₽' not in own_question and '$' not in own_question
+                        and own_question != ' '.join(handoff_text().split())
+                        and classify_draft(str(reply or ''), validated['allowed_prices'])['send']):
+                    reply = CLARIFY
+                validated['questions'] = [reply]
+                verdict = classify_draft(reply, validated['allowed_prices'])
         else:
             reply = _clarify_reply(reply, options)
             verdict = classify_draft(reply, validated['allowed_prices'])
@@ -1574,7 +1601,10 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                 if len(found) == 1 and _compact_mentions(burst_text, str(found[0].get('service') or '')):
                     named = found
                     break
-        asked_tariff = named[0] if len(named) == 1 else (_closest_option(named, burst_text) or {}) if named else {}
+        asked_tariff = named[0] if len(named) == 1 else {}
+        if not asked_tariff and named and _plan_tokens(burst_text):
+            plain = [row for row in named if _plan_tokens(row.get('plan') or '') <= _plan_tokens(burst_text)]
+            asked_tariff = plain[0] if len(plain) == 1 else {}
     if (not holds and not answer.get('handoff') and type(asked_tariff.get('price')) is int
             and _ASKS_PRICE.search(burst_text) and '₽' not in str(answer.get('reply') or '')
             and not composed_card(answer)):

@@ -89,9 +89,19 @@ _NO_SECRET = re.compile(
     r'код\w*\s+(?:с|из|на)\s+почт\w+(?=\s*(?:[,.!?]|$|\s+(?:не|и|а|но)\b))')
 
 
+# The activation instruction itself names these pages and the word «токен»; a client
+# quoting the step («не получается открыть страницу с токеном chatgpt.com/api/auth/session»)
+# gives no secret. A real token is long and is still caught by the checks below.
+_PUBLIC_STEP = re.compile(
+    r'(?i)(?:https?://)?(?:chatgpt\.com|perplexity\.ai)/api/auth/session|(?:https?://)?claude\.ai/settings/account|'
+    r'страниц\w*\s+с\s+токеном|(?:куда|где|как)\s+(?:мне\s+)?(?:вставить|вставлять|взять|найти|скопировать|получить)\s+(?:этот\s+)?токен\w*'
+    r'(?=\s*(?:[?.!,]|$))')
+
+
 def sensitive(text):
     text = _PROMO.sub('[промокод]', str(text or ''))
     text = _NO_SECRET.sub('[упоминание]', text)
+    text = _PUBLIC_STEP.sub('[шаг инструкции]', text)
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
     if 'access_secret' in redaction_categories(text):return True
     if _embedded_secret(text):return True
