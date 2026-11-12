@@ -1034,6 +1034,26 @@ def _with_price_line(card, context, service_id, tariff, kind):
     return 'Цены ' + str(rows[0].get('service') or '') + ':\n' + '\n'.join(lines) + '\n\n' + card
 
 
+_ANDROID_APPS = (('Claude', r'claude|клод|клауд', 'https://claude.ru.uptodown.com/android'),
+                 ('ChatGPT', r'chat\s*gpt|gpt|гпт|чат\s*джипити', 'https://chatgpt.ru.uptodown.com/android'))
+
+
+def _android_install(burst, context=None):
+    """Owner 12.11.2026: an Android question gets only the Android link, politely; no iPhone part."""
+    text = str(burst or '')
+    if not re.search(r'(?i)андроид|android|самсунг|samsung|xiaomi|сяоми|редми|redmi|huawei|хуавей|honor|хонор|pixel|\bapk\b', text) \
+            or re.search(r'(?i)айфон|iphone|ios\b|ipad|айпад|app\s*store|эп\s*стор', text):
+        return ''
+    state = str(((context or {}).get('dialog_state') or {}).get('service_id') or '')
+    apps = [row for row in _ANDROID_APPS if re.search('(?i)' + row[1], text)]
+    if not apps:
+        apps = [row for row in _ANDROID_APPS if row[0].casefold() in state.casefold()] or list(_ANDROID_APPS)
+    if len(apps) == 1:
+        return 'Вы можете установить приложение ' + apps[0][0] + ' на Android по этой ссылке: ' + apps[0][2] + ' )'
+    return ('Вы можете установить приложение на Android по этим ссылкам:\n'
+            + '\n'.join('• ' + name + ': ' + url for name, _pattern, url in apps) + ' )')
+
+
 _OFFCAT_NO = re.compile(r'(?i)^\s*(?:нет|не надо|не нужно|спасибо|ок|понял|хорошо|ладно)\b')
 
 
@@ -1522,7 +1542,10 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         if prices is None:
             prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '',
                                      _context_prices(context))
-        if fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
+        platform_text = _android_install(burst_text, context) if topic == 'app_download' else ''
+        if platform_text:
+            answer_text = platform_text
+        if platform_text or fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
             # A draft that drifted from the owner's fact, or was held for its wording, is replaced
             # by the owner's own text. Conflict, owner clash and stale price still hold below.
             # When the model itself marks a condition beyond the fact, the question needs the owner.
