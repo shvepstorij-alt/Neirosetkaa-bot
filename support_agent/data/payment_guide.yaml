@@ -38,11 +38,14 @@ modes:
   telegram_premium:
     services: [telegram_premium]
     timing: shop
-    after: "Нужен только ник аккаунта, которому оформить Telegram Premium. Пароль и коды Telegram не нужны."
+    names: [telegram]
+    # Владелец 12.11.2026: нужен username, помощник подсказывает, где его взять.
+    after: "После оплаты пришлите сюда username аккаунта, которому оформить Telegram Premium (вида @name). Где его взять: Telegram → «Настройки» → строка «Имя пользователя». Если имени пользователя нет, задайте его там же. Пароль и коды Telegram не нужны."
   capcut:
     services: [capcut]
     timing: shop
-    after: "CapCut — это новый аккаунт на месяц. Почту и пароль этого аккаунта пришлёт Александр. Данные вашего текущего аккаунта не нужны. Продлить на том же аккаунте нельзя: каждый месяц выдаётся новый аккаунт."
+    names: [capcut, кап кат, капкат]
+    after: "После оплаты Александр выдаст новый готовый аккаунт CapCut с подпиской Pro на месяц и пришлёт его почту и пароль. Данные вашего текущего аккаунта не нужны. Продлить на своём или том же аккаунте нельзя: каждый месяц выдаётся новый аккаунт."
   credentials:
     # Владелец 29.10 и 04.11.2026: оформление по почте и паролю аккаунта клиента.
     services: [zoom, spotify, youtube, gemini, grok, supergrok, midjourney, github, krea, gamma, freepik, notion, motion]
@@ -107,6 +110,7 @@ modes:
     where: "В мини-приложение по кнопке, не в эту переписку."
   appstore:
     services: [appstore]
+    names: [app store, appstore, icloud, apple]
     timing: ""
   shop:
     timing: shop
