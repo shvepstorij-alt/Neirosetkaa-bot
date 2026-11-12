@@ -163,3 +163,23 @@ class TermAndClaudeRulesTests(unittest.TestCase):
         from support_agent.payment_guide import kind_for
         self.assertEqual(kind_for('chatgpt', 'Plus 1 месяц', []), 'chatgpt_auto')
         self.assertEqual(kind_for('chatgpt', 'Новый аккаунт с подпиской Plus', []), 'chatgpt_new_account')
+
+
+class DiagnosticsRulesTests(unittest.TestCase):
+    def test_owner_rules_12_11_errors(self):
+        for topic in ('payment_error', 'login_problem', 'service_error', 'feature_missing', 'tech_setup',
+                      'claude_review_pending'):
+            answer = _turn('вопрос', {'owner_topic': topic, 'reply': usable_answer(topic)})
+            self.assertFalse(answer['handoff'], (topic, answer['evidence'].get('diagnostic')))
+        self.assertIn('выключите VPN', usable_answer('payment_error'))
+        self.assertNotIn('Александр', usable_answer('payment_error'))
+        self.assertIn('Спам', usable_answer('login_problem'))
+        self.assertIn('CHATIK10', usable_answer('subscription_ended_early'))
+
+
+class VerbatimTests(unittest.TestCase):
+    def test_early_drop_answer_keeps_the_promo_codes(self):
+        answer = _turn('У меня слетела подписка', {'owner_topic': 'subscription_ended_early', 'reply': 'Пришлите скрин.'})
+        self.assertFalse(answer['handoff'])
+        self.assertIn('NAVSEX', answer['reply'])
+        self.assertIn('CHATIK10', answer['reply'])
