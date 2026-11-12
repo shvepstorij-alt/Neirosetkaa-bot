@@ -22,7 +22,10 @@ def load_faq():
         if not topic_id or topic_id in seen or topic_id == 'none':
             continue
         seen.add(topic_id)
-        topics.append({'id': topic_id, 'title': title or topic_id, 'answer': answer, 'collect': collect})
+        row_out = {'id': topic_id, 'title': title or topic_id, 'answer': answer, 'collect': collect}
+        if row.get('verbatim') is True:
+            row_out['verbatim'] = True
+        topics.append(row_out)
     return {'topics': topics}
 
 
@@ -36,6 +39,12 @@ def usable_answer(topic_id, topics=None):
                 return ''
             return answer
     return ''
+
+
+def verbatim(topic_id, topics=None):
+    """The owner wants this answer sent word for word (for example, it carries promo codes)."""
+    rows = topics if topics is not None else load_faq()['topics']
+    return any(row.get('id') == topic_id and row.get('verbatim') is True for row in rows)
 
 
 def collect_fields(topic_id, topics=None):

@@ -83,6 +83,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Бонусная или подарочная подписка от курса, почта с курса — course_bonus. '
     'Пополнение кредитов ChatGPT — отдельный товар каталога: service_id бери у строки «Пополнение кредитов ChatGPT», не у ChatGPT. '
     'Срок подписки, можно ли на год — subscription_term: год только если такой тариф есть в tariffs. Риск блокировки Claude — claude_block_risk. Claude просит документ или номер — claude_verification. '
+    'Ошибки: оплата в боте не проходит — payment_error; вход в аккаунт, коды, сеанс — login_problem; непонятная ошибка в сервисе — service_error; пропала функция — feature_missing; установка и настройка программ — tech_setup; Claude проверяет запрос — claude_review_pending. Ошибка активации — по-прежнему activation_failed. '
     'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. '
     'Почта клиента в тексте заменена на [email скрыт]: значит, клиент прислал почту. '
     'Монетки: начисляются только по реферальной программе — 10% с первой покупки каждого приглашённого; ссылка в @neirosetkaa_bot, главное меню → «Мой профиль» → «Пригласить друга»; тратятся на оплату подписки в боте. Других способов нет, не выдумывай задания или бонусы за покупки. '
@@ -225,6 +226,14 @@ def build_context(db, chat, facts):
             'documented_facts': list(DOCUMENTED_FACTS),
             'service_guide': _service_guide(),
             'hints': hint_services(burst, catalog)}
+
+
+def _verbatim(topic):
+    try:
+        from .faq import verbatim
+        return verbatim(topic)
+    except Exception:
+        return False
 
 
 def _service_guide():
@@ -1200,6 +1209,9 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
             refund_ready = True
             holds.append('Данные для возврата собраны. Клиенту оставлена фраза ожидания.' if topic == 'refund_terms'
                          else 'Номер заказа по теме «' + topic + '» получен. Нужен Александр. Клиенту оставлена фраза ожидания.')
+        elif _verbatim(topic) and answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
+            answer = dict(answer, reply=answer_text, handoff=False)
+            owner_text_used = True
         elif asserts_outcome(reply) or _PROMISE.search(reply) or not re.search(r'(?i)пришлите|напишите|укажите|\?', reply):
             if answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
                 # The owner's own request for the missing details replaces a draft that promised something.
@@ -1217,7 +1229,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         prices = validated.get('allowed_prices')
         if prices is None:
             prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '')
-        if fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff'):
+        if fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
             # A draft that drifted from the owner's fact, or was held for its wording, is replaced
             # by the owner's own text. Conflict, owner clash and stale price still hold below.
             # When the model itself marks a condition beyond the fact, the question needs the owner.
