@@ -564,3 +564,24 @@ class ReasoningModelTests(unittest.TestCase):
         for turns in PARTS[6]:
             text = turns[0][0]
             self.assertIsNone(re.search(r'@\w|https?://|\d{5,}|[\w.]+@[\w.]+', text), text)
+
+
+class RealQuestionFixTests(unittest.TestCase):
+    def test_quoting_the_instruction_step_is_not_a_secret(self):
+        from support_agent.privacy import sensitive
+        self.assertFalse(sensitive('не получается выполнить шаг 2: открыть страницу с токеном chatgpt.com/api/auth/session'))
+        self.assertTrue(sensitive('вот токен eyJhbGciOiJIUzI1NiJ9.abc.def12345'))
+
+    def test_price_words(self):
+        from support_agent.turn_understanding import _ASKS_PRICE
+        self.assertIsNone(_ASKS_PRICE.search('Сейчас почему-то пишет, что недоступен'))
+        self.assertIsNone(_ASKS_PRICE.search('В день сколько могу работать с GPT?'))
+        self.assertIsNotNone(_ASKS_PRICE.search('сколько будет стоить про версию?'))
+
+    def test_android_misspelled(self):
+        from support_agent.turn_understanding import _android_install
+        self.assertIn('chatgpt.ru.uptodown.com', _android_install('теперь у меня андройд, здесь нет GPT'))
+
+    def test_overdue_rule_exists(self):
+        from support_agent.faq import usable_answer
+        self.assertIn('номер заказа', usable_answer('activation_overdue'))
