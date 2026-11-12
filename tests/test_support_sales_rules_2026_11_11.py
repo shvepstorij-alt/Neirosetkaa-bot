@@ -112,7 +112,7 @@ class ServiceGuideTests(unittest.TestCase):
         self.assertIn('Codex', data['choose']['chatgpt_vs_claude'])
         text = str(data)
         self.assertIsNone(re.search(r'\d+\s*(?:₽|руб)', text))  # our ₽ prices come only from the catalog
-        self.assertIn('$49', data['services']['higgsfield']['official_prices']['Plus'])
+        self.assertIn('$129', data['services']['higgsfield']['official_prices']['Ultra'])  # catalog plans carry catalog prices
         self.assertEqual(set(data['services']['kimi']['plans']), {'Plus', 'Pro', 'Max', 'Ultra'})
         self.assertIn('official_prices', tu_text())
 
@@ -513,3 +513,16 @@ class SecondCheckTests(unittest.TestCase):
         self.assertIn('https://claude.com/pricing', out['reply'])
         self.assertNotIn('aad=', out['reply'])
         self.assertNotIn('Источник:', out['reply'])
+
+
+class AndroidInstallTests(unittest.TestCase):
+    def test_android_question_gets_only_android(self):
+        from support_agent.turn_understanding import _android_install
+        text = _android_install('Как установить Claude на андроид?')
+        self.assertEqual(text, 'Вы можете установить приложение Claude на Android по этой ссылке: https://claude.ru.uptodown.com/android )')
+        self.assertEqual(_android_install('Как скачать ChatGPT на айфон'), '')
+
+    def test_higgsfield_follows_the_catalog(self):
+        import yaml
+        guide = yaml.safe_load(open('support_agent/data/service_guide.yaml', encoding='utf-8'))['services']['higgsfield']
+        self.assertEqual(list(guide['plans']), ['Starter', 'Pro', 'Plus'])
