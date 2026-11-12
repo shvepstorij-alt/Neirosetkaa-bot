@@ -6,6 +6,7 @@ from support_agent.activation_guidance import reply as activation_reply
 from support_agent.conversation_style import INTRO, address_mode, decorate_reply
 from support_agent.external_quote import estimate
 from support_agent.handoff import handoff_text, outside_working_hours
+from support_agent import owner_scenarios
 from support_agent.owner_scenarios import reply as scenario
 from support_agent.rollout import auto_recipients
 from support_agent.storage import Store
@@ -90,7 +91,7 @@ class ScenarioTests(unittest.TestCase):
         self.assertIn('10%', coins['reply'])
         self.assertIn('оплату подписки', coins['reply'])
         self.assertIn('Других способов', coins['reply'])
-        self.assertEqual(scenario('есть розыгрыш?')['reply'], 'Активных розыгрышей сейчас нет.')
+        self.assertEqual(scenario('есть розыгрыш?')['reply'], owner_scenarios.GIVEAWAY)
         generated = scenario('как сгенерировать видео в боте')
         self.assertIn('Видео', generated['reply'])
         self.assertIn('Анимировать', generated['reply'])

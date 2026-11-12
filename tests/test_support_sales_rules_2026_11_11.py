@@ -186,3 +186,70 @@ class VerbatimTests(unittest.TestCase):
         self.assertFalse(answer['handoff'])
         self.assertIn('NAVSEX', answer['reply'])
         self.assertIn('CHATIK10', answer['reply'])
+
+
+class OwnerAnswers12_11Tests(unittest.TestCase):
+    def test_giveaway_promo_partnership(self):
+        self.assertIn('t.me/AleksandrOii', quick_reply('А розыгрыш сейчас есть?')['reply'])
+        promo = quick_reply('Есть промокод?')['reply']
+        self.assertIn('NAVSEX', promo)
+        self.assertIn('CHATIK10', promo)
+        held = _turn('Предлагаю рекламу в моём канале', {'owner_topic': 'partnership', 'reply': 'Давайте!'})
+        self.assertTrue(held['handoff'])
+
+
+def _need_aiohttp(test):
+    try:
+        import aiohttp  # noqa: F401  (installed on Railway)
+    except ImportError:
+        test.skipTest('aiohttp is not installed here')
+
+
+class BotGenerationTests(unittest.TestCase):
+    def setUp(self):
+        _need_aiohttp(self)
+
+    RAW = {'status': 'available', 'buy_menu': 'Купить кредиты',
+           'packs': [{'name': '🎯 Пробный', 'credits': 150, 'price_rub': 99, 'note': '13 фото'},
+                     {'name': 'плохой', 'credits': 0, 'price_rub': 10}],
+           'sections': [{'menu': 'Изображение', 'title': 'Генерация фото',
+                         'models': [{'name': '🍌 Nano Banana', 'credits': 11, 'note': 'быстро', 'quality': ''}]}]}
+
+    def test_export_is_cleaned(self):
+        from support_agent.shop_export_client import clean_generation
+        data = clean_generation(self.RAW)
+        self.assertEqual(data['status'], 'available')
+        self.assertEqual([p['name'] for p in data['packs']], ['🎯 Пробный'])
+        self.assertEqual(data['sections'][0]['models'][0]['credits'], 11)
+        self.assertEqual(clean_generation(None)['status'], 'not_connected')
+
+    def test_generation_reaches_the_model_only_when_asked(self):
+        from support_agent.shop_export_client import clean_generation
+        from support_agent.turn_understanding import _bot_generation, UNDERSTANDING_INSTRUCTIONS
+        facts = {'generation': clean_generation(self.RAW)}
+        self.assertEqual(_bot_generation(facts, 'хочу сгенерировать картинку')['status'], 'available')
+        self.assertEqual(_bot_generation(facts, 'пришлите фото ошибки')['status'], 'not_requested')
+        self.assertIn('«Анимировать...»', UNDERSTANDING_INSTRUCTIONS)
+
+
+class ShopExportGenerationTests(unittest.TestCase):
+    def setUp(self):
+        _need_aiohttp(self)
+
+    def test_shop_snapshot_shape(self):
+        import importlib.util, os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, 'support_shop_export.py')
+        if not os.path.exists(path):
+            self.skipTest('shop export is not in this checkout')
+        spec = importlib.util.spec_from_file_location('sse', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        snap = module._generation_snapshot(lambda: {'buy_menu': 'Купить кредиты',
+            'packs': [{'name': 'Старт', 'credits': 500, 'price': 279, 'desc': '45 фото'}],
+            'sections': [{'menu': 'Видео', 'title': 'Генерация видео',
+                          'models': [{'name': 'Kling', 'credits': 150, 'desc': '5 сек', 'quality': '1080p'}]}]})
+        self.assertEqual(snap['status'], 'available')
+        self.assertEqual(snap['packs'][0]['price_rub'], 279)
+        self.assertEqual(module._generation_snapshot(None)['status'], 'not_connected')
+        self.assertEqual(module._generation_snapshot(lambda: 1 / 0)['status'], 'read_error')
