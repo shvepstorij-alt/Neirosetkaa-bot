@@ -75,6 +75,8 @@ services:
       SuperGrok Heavy: "Максимальные лимиты и самая мощная конфигурация моделей."
     notes:
       - "У платных тарифов Grok один общий недельный лимит на чат, картинки, голос и Build."
+      - "Тариф SuperGrok не распространяется на бота Grok в Telegram (со слов Александра)."
+      - "Grok и Cursor объединились: модели Grok входят в новые тарифы Cursor."
 
   suno:
     source: "suno.com/pricing"
