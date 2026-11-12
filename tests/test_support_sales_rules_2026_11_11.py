@@ -480,8 +480,9 @@ class CheckFindingsTests(unittest.TestCase):
         ok = svc._models_answer_checked({'reply': 'Сейчас доступны модели A и B.', 'handoff': False},
                                         {'official_research': {'status': 'checked', 'checked': '12.11.2026',
                                                                'sources': [{'url': 'https://openai.com/models'}]}})
-        self.assertIn('Проверено 12.11.2026', ok['reply'])
-        self.assertIn('https://openai.com/models', ok['reply'])
+        # Owner 12.11.2026 (evening): the date, but no source link for the client.
+        self.assertIn('12.11.2026', ok['reply'])
+        self.assertNotIn('http', ok['reply'])
 
 
 class SecondCheckTests(unittest.TestCase):
@@ -510,8 +511,8 @@ class SecondCheckTests(unittest.TestCase):
         out = svc._models_answer_checked({'reply': 'Новейшая модель — A 1.\nИсточник: страницы сервиса.', 'handoff': False},
             {'official_research': {'status': 'checked', 'checked': '12.11.2026',
                                    'sources': [{'url': 'https://claude.com/pricing?aad=XYZ&_ref=finder'}]}})
-        self.assertIn('https://claude.com/pricing', out['reply'])
-        self.assertNotIn('aad=', out['reply'])
+        self.assertNotIn('http', out['reply'])
+        self.assertIn('12.11.2026', out['reply'])
         self.assertNotIn('Источник:', out['reply'])
 
 
