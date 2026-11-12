@@ -224,7 +224,7 @@ def build_context(db, chat, facts):
             'bot_navigation': (facts or {}).get('bot_navigation') or {},
             'advisories_already_said': advisories_already(window, state),
             'documented_facts': list(DOCUMENTED_FACTS),
-            'service_guide': _service_guide(),
+            'service_guide': _service_guide(burst, state.get('service_key') or ''),
             'hints': hint_services(burst, catalog)}
 
 
@@ -236,12 +236,28 @@ def _verbatim(topic):
         return False
 
 
-def _service_guide():
+_COMPARE = re.compile(r'(?i)что\s+(?:лучше|выбрать|посовету|взять)|чем\s+отлича|отличи|разниц|сравн|какой\s+(?:сервис|лучше|тариф)|какую\s+нейросет|vs\b|или\s+(?:chatgpt|gpt|гпт|claude|клод|gemini|grok)')
+
+
+def _service_guide(burst='', state_service=''):
+    """Only the services in this conversation; the whole guide when the client compares or chooses."""
     try:
         from .service_guide import for_context
-        return for_context()
+        guide = for_context()
     except Exception:
         return {}
+    services = guide.get('services') or {}
+    if _COMPARE.search(str(burst or '')):
+        return guide
+    aliases = {'chatgpt': ('gpt', 'гпт', 'чатгпт', 'chatgpt', 'codex', 'кодекс'), 'claude': ('клод', 'клауд'),
+               'gemini': ('джемини', 'гемини'), 'perplexity': ('перплекс',), 'cursor': ('курсор',),
+               'midjourney': ('миджорни', 'мидджорни'), 'grok': ('грок',), 'suno': ('суно',),
+               'elevenlabs': ('элевен', 'eleven'), 'heygen': ('хейген',), 'runway': ('ранвей',),
+               'lovable': ('лавабл',), 'gamma': ('гамма',), 'kling': ('клинг',), 'canva': ('канва',)}
+    wanted = {key for key in services if key == state_service or _compact_mentions(burst, key)
+              or any(_compact_mentions(burst, alias) for alias in aliases.get(key, ()))}
+    return dict(guide, services={key: value for key, value in services.items() if key in wanted},
+                omitted='Сводки других сервисов не переданы: клиент о них не спрашивал.')
 
 
 def _allowed_prices(tariffs, nominals, service_id, tariff_id):
