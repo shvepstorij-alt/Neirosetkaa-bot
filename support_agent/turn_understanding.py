@@ -87,7 +87,11 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. '
     'Почта клиента в тексте заменена на [email скрыт]: значит, клиент прислал почту. '
     'Монетки: начисляются только по реферальной программе — 10% с первой покупки каждого приглашённого; ссылка в @neirosetkaa_bot, главное меню → «Мой профиль» → «Пригласить друга»; тратятся на оплату подписки в боте. Других способов нет, не выдумывай задания или бонусы за покупки. '
-    'Промокод только по прямому запросу: NAVSEX, скидка 10%. '
+    'Промокод только по прямому запросу: NAVSEX или CHATIK10, скидка 10%. '
+    'Генерация фото или видео: всегда скажи, что в нашем боте @neirosetkaa_bot это тоже есть — в главном меню разделы «Изображение», «Видео», «Редактировать...» и «Анимировать...», кредиты — «Купить кредиты». '
+    'Модели, их стоимость в кредитах и пакеты кредитов бери только из bot_generation; помогай сравнить модели по note, quality и кредитам. Если bot_generation недоступен, цифр не называй. '
+    'Розыгрышей сейчас нет; к Новому году могут появиться — следите за каналом https://t.me/AleksandrOii. '
+    'Предложения рекламы, сотрудничества, партнёрства с вашим сервисом — тема partnership: ответ даёт Александр. Вопрос клиента про партнёрскую или реферальную ссылку — это реферальная программа. '
     'Что входит в тариф, чем тарифы или сервисы отличаются, что выбрать — только из service_guide, своими словами и коротко. '
     'Для выбора между ChatGPT и Claude опирайся на service_guide.choose. Цены в таком ответе только из tariffs. '
     'Чего нет в service_guide, не утверждай: скажи, что точные детали уточнит Александр. Версии моделей не называй. '
@@ -225,6 +229,7 @@ def build_context(db, chat, facts):
             'advisories_already_said': advisories_already(window, state),
             'documented_facts': list(DOCUMENTED_FACTS),
             'service_guide': _service_guide(burst, state.get('service_key') or ''),
+            'bot_generation': _bot_generation(facts, burst),
             'hints': hint_services(burst, catalog)}
 
 
@@ -234,6 +239,19 @@ def _verbatim(topic):
         return verbatim(topic)
     except Exception:
         return False
+
+
+_GENERATION = re.compile(r'(?i)генер|нарис|картин|изображен|(?:сделать|создать|оживить)\s+(?:фото|видео)|ролик|анимир|анимац|оживи|редактир|отредакт|'
+                         r'нейросет\w*\s+для|кредит\w*\s+(?:в|для)\s+бот|модел|nano\s*banana|flux|ideogram|kling|клинг|veo|'
+                         r'sora|seedance|imagine|midjourney|миджорни')
+
+
+def _bot_generation(facts, burst):
+    """The bot's own photo/video sections: only when the client talks about generating."""
+    data = (facts or {}).get('generation') if isinstance((facts or {}).get('generation'), dict) else {}
+    if not _GENERATION.search(str(burst or '')):
+        return {'status': 'not_requested'}
+    return data or {'status': 'not_connected'}
 
 
 _COMPARE = re.compile(r'(?i)что\s+(?:лучше|выбрать|посовету|взять)|чем\s+отлича|отличи|разниц|сравн|какой\s+(?:сервис|лучше|тариф)|какую\s+нейросет|vs\b|или\s+(?:chatgpt|gpt|гпт|claude|клод|gemini|grok)')
@@ -253,9 +271,14 @@ def _service_guide(burst='', state_service=''):
                'gemini': ('джемини', 'гемини'), 'perplexity': ('перплекс',), 'cursor': ('курсор',),
                'midjourney': ('миджорни', 'мидджорни'), 'grok': ('грок',), 'suno': ('суно',),
                'elevenlabs': ('элевен', 'eleven'), 'heygen': ('хейген',), 'runway': ('ранвей',),
-               'lovable': ('лавабл',), 'gamma': ('гамма',), 'kling': ('клинг',), 'canva': ('канва',)}
-    wanted = {key for key in services if key == state_service or _compact_mentions(burst, key)
-              or any(_compact_mentions(burst, alias) for alias in aliases.get(key, ()))}
+               'lovable': ('лавабл',), 'gamma': ('гамма',), 'kling': ('клинг',), 'canva': ('канва',), 'zoom': ('зум',),
+               'spotify': ('спотифай', 'спотик'), 'youtube': ('ютуб', 'ютюб'), 'notion': ('ноушн', 'ноушен', 'нотион')}
+    def said(name):
+        if len(name) < 4:
+            return bool(re.search(r'(?i)(?<![а-яёa-z])' + re.escape(name), str(burst or '')))
+        return _compact_mentions(burst, name)
+    wanted = {key for key in services if key == state_service or said(key)
+              or any(said(alias) for alias in aliases.get(key, ()))}
     return dict(guide, services={key: value for key, value in services.items() if key in wanted},
                 omitted='Сводки других сервисов не переданы: клиент о них не спрашивал.')
 

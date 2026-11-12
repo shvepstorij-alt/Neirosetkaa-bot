@@ -78,7 +78,33 @@ def clean_export(data):
                       customer_prices_status='available' if cleaned and all('customer_price_rub' in r for r in cleaned) else 'partial')
     try:result['appstore']=clean_apple(data.get('appstore',{}))
     except (ValueError,TypeError,KeyError,AttributeError):result['appstore']={'status':'read_error','regions':[]}
+    result['generation']=clean_generation(data.get('generation'))
     return result
+
+
+def clean_generation(raw):
+    """Credit packs and enabled models of the bot's own generation sections."""
+    if not isinstance(raw,dict) or raw.get('status')!='available':
+        return {'status':(raw or {}).get('status','not_connected') if isinstance(raw,dict) else 'not_connected'}
+    try:
+        packs=[]
+        for row in (raw.get('packs') or [])[:30]:
+            price=row.get('price_rub');credits=row.get('credits')
+            if type(price) is not int or price<=0 or type(credits) is not int or credits<=0:continue
+            packs.append({'name':scrub(str(row.get('name','')))[:80],'credits':credits,'price_rub':price,
+                          'note':scrub(str(row.get('note','')))[:160]})
+        sections=[]
+        for sec in (raw.get('sections') or [])[:6]:
+            models=[]
+            for m in (sec.get('models') or [])[:60]:
+                if type(m.get('credits')) is not int or m['credits']<=0:continue
+                models.append({'name':scrub(str(m.get('name','')))[:80],'credits':m['credits'],
+                               'note':scrub(str(m.get('note','')))[:200],'quality':scrub(str(m.get('quality','')))[:80]})
+            sections.append({'menu':scrub(str(sec.get('menu','')))[:60],'title':scrub(str(sec.get('title','')))[:60],
+                             'models':models})
+        return {'status':'available','buy_menu':scrub(str(raw.get('buy_menu','')))[:60],'packs':packs,'sections':sections}
+    except (TypeError,AttributeError):
+        return {'status':'read_error'}
 
 
 def clean_apple(apple):
