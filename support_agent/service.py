@@ -1113,17 +1113,13 @@ class Service:
         if research.get('status')!='checked':
             names=', '.join(str(x) for x in research.get('products') or [] if x) or 'сервиса'
             return dict(answer,reply='Актуальный список моделей '+names+' уточнит Александр и ответит здесь.')
-        # Clean link for the client: no tracking query, the shortest official page.
-        urls=sorted({str(src.get('url')).split('?')[0].split('#')[0] for src in research.get('sources') or []
-                     if str(src.get('url') or '').startswith('https://')},key=len)
-        url=urls[0] if urls else ''
-        reply=re.sub(r'https?://[^\s<>]+',lambda m:m[0].split('?')[0].split('#')[0],reply)
-        reply=re.sub(r'(?m)^.*(?:Проверено\s+\d|Источник:|можно посмотреть страниц|Для подробностей).*$\n?','',reply).rstrip()
-        answer=dict(answer,reply=reply)
-        if url and str(research.get('checked') or '') not in reply:
-            reply=reply.rstrip()+'\n\nПроверено '+str(research.get('checked') or '')+' на официальном сайте: '+url
-            return dict(answer,reply=reply)
-        return answer
+        # Owner 12.11.2026 (evening): no source links for the client; only the check date.
+        reply=re.sub(r'\s*\(?https?://[^\s<>)]+\)?','',reply)
+        reply=re.sub(r'(?m)^.*(?:Проверено\s+\d|Источник|можно посмотреть страниц|Для подробностей|официальн\w+ информаци|в табличном виде|таблиц).*$\n?','',reply).rstrip()
+        checked=str(research.get('checked') or '')
+        if checked and checked not in reply:
+            reply=reply+'\n\nДанные официального сайта на '+checked+'.'
+        return dict(answer,reply=reply)
 
     async def _attach_official_research(self, context):
         """Owner 12.11.2026: questions about current models are checked on the official site.

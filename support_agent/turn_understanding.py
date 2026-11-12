@@ -64,9 +64,10 @@ UNDERSTANDING_INSTRUCTIONS = (
     'К клиенту только на «вы», даже если он пишет на «ты». Не заканчивай ответ фразами «Рад помочь», «Обращайтесь», «Если хотите, могу…». '
     'Цены клиенту только в рублях (₽): из каталога, а если тарифа в каталоге нет — пересчёт из official_prices по правилу. Доллары, тенге и цену за 100 кредитов в ответе не пиши. '
     'Если в сообщении несколько вопросов (цена и как оформить, цена и что входит), ответь на каждый. '
+    'Перечисляя тарифы сервиса, у каждого называй цену в ₽ из каталога. '
     'Нужен ли VPN из России — тема vpn_needed: да, нужен для всех сервисов, включая ChatGPT. Продлить CapCut на своём аккаунте — capcut_renewal. '
     'Оплата из-за границы, Kaspi, иностранная или белорусская карта, PayPal — тема foreign_payment, не card_payment. '
-    'На вопрос о текущих моделях сервиса отвечай только по official_research: назови точные названия и версии моделей оттуда, самую новую первой, и в каком тарифе она доступна; своих не добавляй. Ссылку и дату не пиши — их добавит система. Не предлагай «подготовить таблицу». Если данных нет — скажи, что уточнит Александр. '
+    'На вопрос о текущих моделях сервиса отвечай только по official_research: назови точные названия и версии моделей оттуда, самую новую первой, и в каком тарифе она доступна; своих не добавляй. Ссылки на источники клиенту не давай; дату добавит система. Не предлагай «подготовить таблицу». Если данных нет — скажи, что уточнит Александр. '
     'conflict: none — спокойный тон, annoyed — раздражён без угрозы, '
     'high — злится, угрожает возвратом, чарджбеком или жалобой, либо тот же вопрос уже повторяется второй раз и дольше без решения. '
     'conflict_reason — короткая причина для владельца, пусто если conflict не high. '
@@ -111,7 +112,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Наша цена: если тариф есть в tariffs — только цена оттуда. Если тарифа в tariffs нет — пересчитай цену в $ по usd_to_rub.prices (правило: $ × 100 − 10, например $19 → 1890 ₽) и бери число только из этой таблицы. '
     'official_prices в service_guide — цена на сайте сервиса в $; называй её, только если клиент спрашивает о цене на сайте или сравнивает, и прямо говори, что это официальная цена сервиса. '
     'Чего нет в service_guide, не утверждай: скажи, что точные детали уточнит Александр. '
-    'Версии моделей называй только из official_research со status=checked: перескажи коротко, укажи дату проверки (checked) и одну ссылку из sources на официальный сайт. '
+    'Версии моделей называй только из official_research со status=checked: перескажи коротко, ссылки на источники клиенту не давай, дату добавит система. '
     'Если official_research нет или status=unavailable, версий не называй и скажи, что актуальный список уточнит Александр. '
     'Тариф Claude Max 20× теперь называется Ultra, Max 5× — Max: если в tariffs старое название, называй его и поясни новое. '
     'Спроси только недостающее. Возврат не обещай. '
@@ -690,7 +691,7 @@ def _with_vpn(reply, needed):
     if not needed:
         return reply
     folded = reply.casefold()
-    if ('vpn' in folded or 'впн' in folded) and 'локац' in folded:
+    if ('vpn' in folded or 'впн' in folded) and re.search(r'локац|одн\w+ и т\w+ же|одного и того же|одну и ту же', folded):
         return reply
     return (reply.rstrip() + '\n\n' + VPN_SENTENCE).strip()
 
@@ -767,7 +768,7 @@ def _has_number(text, number):
 def advisory_present(advisory_id, text):
     low = str(text or '').casefold().replace('ё', 'е')
     if advisory_id == 'vpn_location':
-        return ('vpn' in low or 'впн' in low) and 'локац' in low
+        return ('vpn' in low or 'впн' in low) and bool(re.search(r'локац|одн\w+ и т\w+ же|одного и того же|одну и ту же', low))
     if advisory_id == 'activation_shop':
         return _has_number(low, 5) and _has_number(low, 30) and 'минут' in low
     if advisory_id == 'activation_auto':
@@ -1333,7 +1334,8 @@ def package(understanding, context, db=None, chat=None):
     if not composed and len(options) >= 2 and reply and _INFO_QUESTION.search(str(context.get('burst') or '')) \
             and not _asked_tariff_before(context):
         # «Сколько стоит Pro и что такое Max?» — answer both plans; no «X или Y?».
-        if not all(str(row.get('price')) in reply.replace(' ', '').replace('\u00a0', '') for row in options):
+        bounced = len(reply) < 160 and bool(re.search(r'(?i)уточните|какой из|\bили\b[^.!\n]{0,60}\?\s*$', reply))
+        if bounced and len(options) <= 3:
             reply = _plans_summary(options)
             validated['questions'] = [reply]
             composed = True
@@ -1462,7 +1464,8 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         # «Премиум, Турция, на 3 месяца» after our question is the order, not a new catalog request.
         topic = validated['owner_topic'] = 'off_catalog'
         validated['refund_collected'] = {'service': offcat_asked, 'reason': offcat_burst[:200]}
-        answer = dict(answer, handoff=False)
+        from .handoff import handoff_text as _wait
+        answer = dict(answer, reply=_wait(), handoff=False)
     elif topic == 'off_catalog' and not offcat_asked:
         # First mention: always ask tariff, region and term before calling the owner.
         got_first = dict(validated.get('refund_collected') or {})
@@ -1559,6 +1562,15 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
             else:
                 holds.append('Ответ выходит за записанный факт владельца.')
     asked_tariff = validated.get('tariff') or {}
+    if not asked_tariff and _ASKS_PRICE.search(burst_text):
+        named = matching_tariffs(context or {}, validated.get('service_id') or validated.get('_other_service') or '')
+        if not named:
+            for sid in {row.get('service_id') for row in (context or {}).get('tariffs') or []}:
+                found = matching_tariffs(context or {}, sid)
+                if len(found) == 1 and _compact_mentions(burst_text, str(found[0].get('service') or '')):
+                    named = found
+                    break
+        asked_tariff = named[0] if len(named) == 1 else {}
     if (not holds and not answer.get('handoff') and type(asked_tariff.get('price')) is int
             and _ASKS_PRICE.search(burst_text) and '₽' not in str(answer.get('reply') or '')
             and not composed_card(answer)):
