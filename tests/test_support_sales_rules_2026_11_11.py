@@ -112,7 +112,7 @@ class ServiceGuideTests(unittest.TestCase):
         self.assertIn('Codex', data['choose']['chatgpt_vs_claude'])
         text = str(data)
         self.assertIsNone(re.search(r'\d+\s*(?:₽|руб)', text))  # our ₽ prices come only from the catalog
-        self.assertIn('$129', data['services']['higgsfield']['official_prices']['Ultra'])  # catalog plans carry catalog prices
+        self.assertIn('3 000', data['services']['higgsfield']['plans']['Ultra'])  # catalog prices only
         self.assertEqual(set(data['services']['kimi']['plans']), {'Plus', 'Pro', 'Max', 'Ultra'})
         self.assertIn('official_prices', tu_text())
 
@@ -375,7 +375,7 @@ class MasculineVoiceTests(unittest.TestCase):
 class CheckRunTests(unittest.TestCase):
     def test_parts_shape(self):
         from support_agent.check_cases import PARTS
-        self.assertEqual(sorted(PARTS), [1, 2, 3, 4, 5])
+        self.assertEqual(sorted(PARTS), [1, 2, 3, 4, 5, 6])
         for dialogs in PARTS.values():
             for turns in dialogs:
                 for fragments in turns:
@@ -526,7 +526,7 @@ class AndroidInstallTests(unittest.TestCase):
     def test_higgsfield_follows_the_catalog(self):
         import yaml
         guide = yaml.safe_load(open('support_agent/data/service_guide.yaml', encoding='utf-8'))['services']['higgsfield']
-        self.assertEqual(list(guide['plans']), ['Starter', 'Pro', 'Plus', 'Ultra'])
+        self.assertEqual(list(guide['plans']), ['Starter', 'Plus', 'Ultra'])
         self.assertIn('200 кредитов', guide['plans']['Starter'])
 
 
@@ -549,3 +549,18 @@ class FourthCheckTests(unittest.TestCase):
         if composed:  # region table present in this build
             self.assertIn('4250 ₽', text)
             self.assertNotIn('нет', text)
+
+
+class ReasoningModelTests(unittest.TestCase):
+    def test_reasoning_models_get_room_to_think(self):
+        from support_agent.clients import reasoning_model
+        for name in ('gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-5.4-mini', 'o3'):
+            self.assertTrue(reasoning_model(name), name)
+        self.assertFalse(reasoning_model('gpt-4.1-mini'))
+
+    def test_real_questions_have_no_personal_data(self):
+        import re
+        from support_agent.check_cases import PARTS
+        for turns in PARTS[6]:
+            text = turns[0][0]
+            self.assertIsNone(re.search(r'@\w|https?://|\d{5,}|[\w.]+@[\w.]+', text), text)
