@@ -34,7 +34,7 @@ modes:
   suno:
     services: [suno]
     timing: shop
-    after: "После оплаты пришлите сюда почту и пароль от аккаунта Suno. Ссылку на оплату для Suno не присылайте."
+    after: "После оплаты пришлите сюда почту и пароль от аккаунта Suno. Если входите в Suno через Google, нужен пароль от этой почты Google. Ссылку на оплату для Suno не присылайте."
   telegram_premium:
     services: [telegram_premium]
     timing: shop
@@ -45,10 +45,17 @@ modes:
     after: "CapCut — это новый аккаунт на месяц. Почту и пароль этого аккаунта пришлёт Александр. Данные вашего текущего аккаунта не нужны. Продлить на том же аккаунте нельзя: каждый месяц выдаётся новый аккаунт."
   credentials:
     # Владелец 29.10 и 04.11.2026: оформление по почте и паролю аккаунта клиента.
-    services: [zoom, openrouter, spotify, youtube, gemini, grok, supergrok, midjourney, github, krea]
-    names: [zoom, openrouter, spotify, youtube, gemini, grok, midjourney, github, krea]
+    services: [zoom, spotify, youtube, gemini, grok, supergrok, midjourney, github, krea, gamma, freepik, notion, motion]
+    names: [zoom, spotify, youtube, gemini, grok, midjourney, github, krea, gamma, freepik, notion, motion]
     timing: shop
-    after: "После оплаты пришлите сюда почту и пароль от аккаунта {name}. Если входите в сервис только по коду с почты, достаточно почты."
+    # Владелец 12.11.2026: вход через Google — нужен пароль от этой почты Google.
+    after: "После оплаты пришлите сюда почту и пароль от аккаунта {name}. Если входите в {name} через Google, нужен пароль от этой почты Google."
+  credentials_email_code:
+    # OpenRouter: можно войти просто по коду с почты (владелец 12.11.2026).
+    services: [openrouter]
+    names: [openrouter]
+    timing: shop
+    after: "После оплаты пришлите сюда почту и пароль от аккаунта {name}. Если входите только по коду с почты, достаточно почты."
   email_only:
     services: [canva, cursor]
     names: [canva, cursor]
