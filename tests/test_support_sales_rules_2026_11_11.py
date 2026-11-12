@@ -112,7 +112,10 @@ class ServiceGuideTests(unittest.TestCase):
         import sqlite3
         from support_agent import turn_understanding as tu
         self.assertIn('service_guide', tu.UNDERSTANDING_INSTRUCTIONS)
-        self.assertTrue(tu._service_guide().get('services'))
+        self.assertTrue(tu._service_guide('что лучше: chatgpt или claude?').get('services'))
+        only = tu._service_guide('а что входит в суно про?')['services']
+        self.assertEqual(list(only), ['suno'])
+        self.assertEqual(list(tu._service_guide('а сколько кредитов?', 'suno')['services']), ['suno'])
 
 
 class TopicSwitchTests(unittest.TestCase):
