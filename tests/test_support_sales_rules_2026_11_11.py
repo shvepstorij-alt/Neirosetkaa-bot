@@ -370,3 +370,52 @@ class MasculineVoiceTests(unittest.TestCase):
         for path in pathlib.Path('support_agent/data').glob('*.yaml'):
             text = path.read_text(encoding='utf-8')
             self.assertIsNone(bad.search(text), path.name)
+
+
+class CheckRunTests(unittest.TestCase):
+    def test_parts_shape(self):
+        from support_agent.check_cases import PARTS
+        self.assertEqual(sorted(PARTS), [1, 2, 3, 4])
+        for dialogs in PARTS.values():
+            for turns in dialogs:
+                for fragments in turns:
+                    self.assertTrue(all(isinstance(f, str) and f for f in fragments))
+
+    def test_check_runs_isolated_and_reports(self):
+        import asyncio
+        from support_agent import check_run
+        from support_agent.storage import Store
+
+        class Shop:
+            async def facts(self, uid):
+                return {'catalog': [], 'catalog_status': 'available'}
+
+        class Owner:
+            def __init__(self):
+                self.store = Store(':memory:'); self.sent = []; self.owner = 5; self.shop = Shop()
+                self.ai = object(); self.charged = 0
+            def charge_call(self, reason='model'):
+                self.charged += 1
+            async def owner_message(self, text, *a, **k):
+                self.sent.append(text)
+
+        owner = Owner()
+        original = check_run.PARTS
+        check_run.PARTS = {1: ((('Мой пароль qwerty12345',),), (('привет',),))}
+        try:
+            asyncio.run(check_run.run_check(owner, 1))
+        finally:
+            check_run.PARTS = original
+        text = '\n'.join(owner.sent)
+        self.assertIn('#1.1', text)
+        self.assertIn('Часть 1', text)
+        self.assertNotIn('qwerty12345', text.split('О:', 1)[1] if 'О:' in text else '')
+
+
+class PromoIsNotSecretTests(unittest.TestCase):
+    def test_promo_codes_pass_the_secret_check(self):
+        from support_agent.owner_scenarios import NAVSEX
+        from support_agent.privacy import sensitive
+        self.assertFalse(sensitive(NAVSEX))
+        self.assertFalse(sensitive('промокод CHATIK10 не применяется'))
+        self.assertTrue(sensitive('пароль qwerty12345'))
