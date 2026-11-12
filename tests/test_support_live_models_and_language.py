@@ -105,3 +105,23 @@ class OwnerRules12_11bTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ServiceRules12_11Tests(unittest.TestCase):
+    def test_new_topics_and_cards(self):
+        from support_agent.faq import collect_fields
+        from support_agent.payment_guide import render
+        nav = {'bot_navigation': {'status': 'available', 'username': 'neirosetkaa_bot', 'catalog_webapp': True}}
+        self.assertIn('OpenRouter', usable_answer('deepseek_topup'))
+        self.assertIn('в долларах', usable_answer('linkpay_currency'))
+        self.assertEqual(usable_answer('linkpay_no_vpn'), '')
+        self.assertIn('тот же аккаунт', usable_answer('renewal_same_account'))
+        self.assertIn('российский аккаунт', usable_answer('gemini_google'))
+        self.assertIn('chatgpt.com/download', usable_answer('chatgpt_desktop_app'))
+        self.assertIn('регион', usable_answer('off_catalog'))
+        self.assertEqual(collect_fields('off_catalog'), ['service', 'reason'])
+        zoom = render('zoom', 'Zoom', '', nav, [], [], '', None)
+        self.assertIn('через Google', zoom)
+        self.assertNotIn('достаточно почты', zoom)
+        self.assertIn('достаточно почты', render('openrouter', 'OpenRouter', '', nav, [], [], '', None))
+        self.assertIn('почту и пароль', render('grok', 'Grok', '', nav, [], [], '', None))

@@ -44,7 +44,7 @@ class PaymentCardTests(unittest.TestCase):
     def test_credentials_and_email_only_services(self):
         zoom = render('zoom', 'Zoom', 'Pro', {'bot_navigation': NAV}, [], [], '', None)
         self.assertIn('почту и пароль от аккаунта Zoom', zoom)
-        self.assertIn('только по коду с почты', zoom)
+        self.assertIn('через Google', zoom)
         canva = render('canva', 'Canva', 'Pro', {'bot_navigation': NAV}, [], [], '', None)
         self.assertIn('Пароль не нужен', canva)
 
@@ -96,17 +96,25 @@ if __name__ == '__main__':
     unittest.main()
 
 
+def tu_text():
+    from support_agent import turn_understanding as tu
+    return tu.UNDERSTANDING_INSTRUCTIONS
+
+
 class ServiceGuideTests(unittest.TestCase):
     def test_guide_has_dated_official_facts_and_no_prices(self):
         import re
         from support_agent.service_guide import for_context as guide
         data = guide()
-        self.assertEqual(data['checked'], '11.11.2026')
+        self.assertEqual(data['checked'], '12.11.2026')
         self.assertIn('Ultra', data['services']['claude']['plans'])
         self.assertIn('Max 20×', data['services']['claude']['plans']['Ultra'])
         self.assertIn('Codex', data['choose']['chatgpt_vs_claude'])
         text = str(data)
-        self.assertIsNone(re.search(r'\d+\s*(?:₽|руб|\$)', text))
+        self.assertIsNone(re.search(r'\d+\s*(?:₽|руб)', text))  # our ₽ prices come only from the catalog
+        self.assertIn('$49', data['services']['higgsfield']['official_prices']['Plus'])
+        self.assertEqual(set(data['services']['kimi']['plans']), {'Plus', 'Pro', 'Max', 'Ultra'})
+        self.assertIn('official_prices', tu_text())
 
     def test_guide_reaches_the_model_context(self):
         import sqlite3
@@ -253,3 +261,23 @@ class ShopExportGenerationTests(unittest.TestCase):
         self.assertEqual(snap['packs'][0]['price_rub'], 279)
         self.assertEqual(module._generation_snapshot(None)['status'], 'not_connected')
         self.assertEqual(module._generation_snapshot(lambda: 1 / 0)['status'], 'read_error')
+
+
+class UsdConversionTests(unittest.TestCase):
+    def test_owner_formula_and_allowed_prices(self):
+        from support_agent.turn_understanding import (_allowed_prices, _usd_context, classify_draft, usd_to_rub)
+        self.assertEqual(usd_to_rub(19), 1890)
+        self.assertEqual(usd_to_rub(20), 1990)
+        self.assertEqual(usd_to_rub(50), 4990)
+        table = _usd_context('сколько у вас kimi pro?', '')['prices']
+        self.assertEqual(table['$39'], 3890)
+        self.assertEqual(_usd_context('нужно оплатить тариф за 35$ на сайте', '')['prices'], {'$35': 3490})
+        allowed = _allowed_prices([], [], '', '', tuple(table.values()))
+        self.assertTrue(classify_draft('Kimi Pro у нас — 3890 ₽.', allowed)['send'])
+        self.assertFalse(classify_draft('Kimi Pro у нас — 3990 ₽.', allowed)['send'])
+        self.assertIn('× 100 − 10', UNDERSTANDING())
+
+
+def UNDERSTANDING():
+    from support_agent.turn_understanding import UNDERSTANDING_INSTRUCTIONS
+    return UNDERSTANDING_INSTRUCTIONS
