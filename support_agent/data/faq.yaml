@@ -195,3 +195,7 @@ topics:
     title: Продлить CapCut на своём или прежнем аккаунте
     verbatim: true
     answer: "К сожалению, продлить CapCut на вашем аккаунте нельзя: мы выдаём только новый готовый аккаунт с подпиской Pro на месяц. Оформите CapCut в каталоге бота, после оплаты Александр пришлёт данные нового аккаунта."
+  - id: supergrok_grokbot
+    title: Работает ли SuperGrok с Grok Bot или с ботом Grok, нужен Grok вместе с Cursor
+    verbatim: true
+    answer: "Тарифы SuperGrok из нашего каталога не работают с Grok Bot. Grok и Cursor объединились: чтобы оформить подписку Grok + Cursor, нужно оформить сервис Cursor в каталоге бота."
