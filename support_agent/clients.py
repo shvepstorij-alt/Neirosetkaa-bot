@@ -11,6 +11,12 @@ from .privacy import scrub
 from .research import PRODUCTS, TOPICS, valid_plan, DEFAULT_SEARCH_MODEL
 
 
+def reasoning_model(name):
+    """gpt-5.x, gpt-6.x and o-series think before answering; gpt-4.x does not."""
+    import re as _re
+    return bool(_re.match(r'(?i)(?:gpt-[5-9]|o[1-9])', str(name or '')))
+
+
 class RemoteError(Exception):
     """Never include a URL, credentials, request body or provider body in logs."""
     def __init__(self,message,*,reason='remote_error',status=None,api_code=None,param=None,api_hint=None):
@@ -35,7 +41,7 @@ API_PARAMS={'model','tools','tools[0]','tools[0].type','tools[0].filters',
 ERROR_WORDS=set('''a an the this that these those is are was be been being not no only
     and or for to of in on at with without by from as it you your we our please
     tool tools web search web_search web_search_preview web_search_2025_08_26
-    model models gpt-4.1-mini gpt-5.4-mini supported support supports unsupported
+    model models gpt-4.1-mini gpt-5.4-mini gpt-6.1-sol gpt-6.1-terra gpt-6-luna gpt-6-astra supported support supports unsupported
     available unavailable allowed allow enabled enable disabled access accessible
     denied permission permissions organization organisation project account verified
     verify verification must required requires require need needs tier usage country
@@ -89,6 +95,24 @@ class Telegram:
         self.session=session
         self.base='https://api.telegram.org/bot'+token+'/'
         self.files='https://api.telegram.org/file/bot'+token+'/'
+
+    async def send_text_file(self, chat_id, filename, text, caption=''):
+        """A long report as one .txt document: one file to forward instead of many messages."""
+        import aiohttp
+        form=aiohttp.FormData()
+        form.add_field('chat_id',str(chat_id))
+        if caption:form.add_field('caption',caption[:900])
+        form.add_field('document',text.encode('utf-8'),filename=filename,content_type='text/plain')
+        try:
+            async with self.session.post(self.base+'sendDocument',data=form) as r:
+                result=await r.json()
+                if r.status!=200 or not result.get('ok'):
+                    raise RemoteError('Telegram request rejected',reason='telegram_rejected',status=r.status)
+                return result['result']
+        except RemoteError:
+            raise
+        except Exception:
+            raise RemoteError('Telegram transport uncertain',reason='telegram_transport_uncertain') from None
 
     async def call(self, method, **data):
         try:
@@ -159,6 +183,15 @@ class OpenAI:
         meter=current_meter()
         if meter is not None:
             meter.consume(path)
+        payload=kwargs.get('json')
+        if path=='responses' and isinstance(payload,dict) and reasoning_model(payload.get('model')):
+            # Reasoning models (gpt-5.x, gpt-6.x) spend output tokens on thinking: without room the
+            # JSON reply is cut off and the whole turn fails. Assistant replies think briefly.
+            payload=dict(payload)
+            payload.setdefault('reasoning',{'effort':'low'})
+            if type(payload.get('max_output_tokens')) is int:
+                payload['max_output_tokens']+=4000
+            kwargs=dict(kwargs,json=payload)
         try:
             async with self.session.post('https://api.openai.com/v1/'+path,headers=self.headers,**kwargs) as r:
                 if r.status!=200:

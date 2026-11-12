@@ -10,7 +10,7 @@ from .check_cases import PARTS
 from .dialog_probe import CatalogOnly, NoTelegram
 from .storage import Store
 
-MAX_CALLS = 90
+MAX_CALLS = 140
 
 
 def _reason(answer):
@@ -42,6 +42,7 @@ async def run_check(service, part):
     store.switch('draft')
     store.connection('test-only', True, True)
     blocks, sent, held, number = [], 0, 0, 0
+    full = []
 
     async def flush(final=False):
         nonlocal blocks
@@ -83,8 +84,16 @@ async def run_check(service, part):
                 label = ('СТОП: ' + _reason(answer)) if stop else ('СТОП АВТО: ' + str(gate)[:300]) if gate else 'ОТПРАВИЛ БЫ'
                 head = '#%d.%d' % (part, number) + (' (диалог, шаг %d)' % step if len(turns) > 1 else '')
                 blocks.append(head + '\nВ: ' + question + '\n[' + label + ']\nО: ' + reply.replace('\n\n', '\n'))
+                full.append(blocks[-1])
                 await flush()
         await flush(final=True)
+        try:
+            model = str(getattr(service.ai, 'model', '') or '')
+            await service.tg.send_text_file(service.owner, 'check_%d.txt' % part,
+                                            'Модель: ' + model + '\n\n' + '\n\n'.join(full),
+                                            'Все ответы части %d одним файлом. Перешлите его Claude.' % part)
+        except Exception:
+            pass
         await service.owner_message('Часть %d готова: вопросов %d, отправил бы %d, остановок %d, запросов к модели %d. '
                                     'Клиентам ничего не отправлено. Перешлите эти сообщения Claude.' % (part, number, sent, held, calls))
     except asyncio.CancelledError:
