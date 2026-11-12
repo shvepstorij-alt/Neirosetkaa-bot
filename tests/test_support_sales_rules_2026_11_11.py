@@ -482,3 +482,34 @@ class CheckFindingsTests(unittest.TestCase):
                                                                'sources': [{'url': 'https://openai.com/models'}]}})
         self.assertIn('Проверено 12.11.2026', ok['reply'])
         self.assertIn('https://openai.com/models', ok['reply'])
+
+
+class SecondCheckTests(unittest.TestCase):
+    def test_offcatalog_question_is_recognised_when_reworded(self):
+        from support_agent.turn_understanding import _offcat_asked
+        history = [{'role': 'client', 'text': 'Можно купить Netflix?'},
+                   {'role': 'assistant', 'text': 'Какой тариф Netflix вас интересует?\nВ каком регионе у вас аккаунт?\nНа какой срок нужна подписка?'}]
+        self.assertEqual(_offcat_asked({'history': history}), 'Можно купить Netflix?')
+        self.assertEqual(_offcat_asked({'history': history[:1]}), '')
+        self.assertEqual(_offcat_asked({'history': []}), '')
+
+    def test_two_plans_question_gets_both_prices(self):
+        from support_agent.turn_understanding import _plans_summary
+        text = _plans_summary([{'service': 'Claude', 'service_id': 'claude', 'plan': 'Pro', 'price': 2090},
+                               {'service': 'Claude', 'service_id': 'claude', 'plan': 'Max', 'price': 9990}])
+        self.assertIn('Claude Pro — 2090 ₽', text)
+        self.assertIn('Claude Max — 9990 ₽', text)
+
+    def test_nominal_face_value_is_allowed(self):
+        from support_agent.turn_understanding import _allowed_prices
+        self.assertIn(3000, _allowed_prices([], [{'nominal': '3000 ₽', 'price': 4250}], '', ''))
+
+    def test_model_link_is_clean(self):
+        from support_agent.service import Service
+        svc = Service.__new__(Service)
+        out = svc._models_answer_checked({'reply': 'Новейшая модель — A 1.\nИсточник: страницы сервиса.', 'handoff': False},
+            {'official_research': {'status': 'checked', 'checked': '12.11.2026',
+                                   'sources': [{'url': 'https://claude.com/pricing?aad=XYZ&_ref=finder'}]}})
+        self.assertIn('https://claude.com/pricing', out['reply'])
+        self.assertNotIn('aad=', out['reply'])
+        self.assertNotIn('Источник:', out['reply'])
