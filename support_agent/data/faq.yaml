@@ -17,6 +17,7 @@ topics:
     collect: [order_number, service, reason]
   - id: off_catalog
     title: Сервис, которого нет в текущем каталоге
+    verbatim: true
     answer: "Да, можем оформить. Уточните, пожалуйста:\n1. Какой тариф нужен.\n2. Какой регион у вашего аккаунта.\n3. На какой срок.\nЕсли есть, пришлите и ссылку на сайт сервиса."
     collect: [service, reason]
   - id: region_policy
