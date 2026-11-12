@@ -481,7 +481,7 @@ class CheckFindingsTests(unittest.TestCase):
                                         {'official_research': {'status': 'checked', 'checked': '12.11.2026',
                                                                'sources': [{'url': 'https://openai.com/models'}]}})
         # Owner 12.11.2026 (evening): the date, but no source link for the client.
-        self.assertIn('12.11.2026', ok['reply'])
+        self.assertEqual(ok['reply'], 'Сейчас доступны модели A и B.')  # no link, no «официальные данные» line
         self.assertNotIn('http', ok['reply'])
 
 
@@ -512,7 +512,7 @@ class SecondCheckTests(unittest.TestCase):
             {'official_research': {'status': 'checked', 'checked': '12.11.2026',
                                    'sources': [{'url': 'https://claude.com/pricing?aad=XYZ&_ref=finder'}]}})
         self.assertNotIn('http', out['reply'])
-        self.assertIn('12.11.2026', out['reply'])
+        self.assertEqual(out['reply'], 'Новейшая модель — A 1.')
         self.assertNotIn('Источник:', out['reply'])
 
 
@@ -526,4 +526,26 @@ class AndroidInstallTests(unittest.TestCase):
     def test_higgsfield_follows_the_catalog(self):
         import yaml
         guide = yaml.safe_load(open('support_agent/data/service_guide.yaml', encoding='utf-8'))['services']['higgsfield']
-        self.assertEqual(list(guide['plans']), ['Starter', 'Pro', 'Plus'])
+        self.assertEqual(list(guide['plans']), ['Starter', 'Pro', 'Plus', 'Ultra'])
+        self.assertIn('200 кредитов', guide['plans']['Pro'])
+
+
+class FourthCheckTests(unittest.TestCase):
+    def test_official_signature_is_removed(self):
+        from support_agent.service import Service
+        svc = Service.__new__(Service)
+        out = svc._models_answer_checked(
+            {'reply': 'Самая новая модель по официальным данным на ноябрь 2026 года — это X.\nДанные официального сайта на 12.11.2026.', 'handoff': False},
+            {'official_research': {'status': 'checked', 'checked': '12.11.2026', 'sources': []}})
+        self.assertEqual(out['reply'], 'Самая новая модель — это X.')
+
+    def test_appstore_amount_gets_one_clear_line(self):
+        from support_agent.turn_understanding import ground_nominals
+        context = {'burst': 'Хочу пополнить App Store на 3000 рублей, регион Россия',
+                   'nominals': [{'region': 'Россия | RU', 'nominal': '3000 RUB', 'price': 4250},
+                                {'region': 'Россия | RU', 'nominal': '500 RUB', 'price': 700}]}
+        text, composed = ground_nominals('Суммы точно подходящего номинала нет, самый близкий — 3000 RUB за 4250 ₽.', context,
+                                         {'service_id': 'appstore', 'region': 'RU'})
+        if composed:  # region table present in this build
+            self.assertIn('4250 ₽', text)
+            self.assertNotIn('нет', text)
