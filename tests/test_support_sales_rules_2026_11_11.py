@@ -692,3 +692,26 @@ class PaidNoticeTests(unittest.TestCase):
         pending, notes = run('pending')
         self.assertTrue(pending['handoff'])
         self.assertTrue(notes)
+
+
+class StepByStepTests(unittest.TestCase):
+    """Owner 13.11.2026: the link and the ChatGPT token are explained step by step."""
+
+    def test_steps(self):
+        from support_agent.paid_notice import compose
+        rows = [{'service_id': 'kimi', 'service': 'Kimi', 'plan': 'Plus', 'price': 1990},
+                {'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990},
+                {'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Pro 5×', 'price': 9990}]
+        _k, link = compose({'order': '1', 'service': 'Kimi', 'plan': 'Plus', 'fk': ''}, rows)
+        for part in ('1. ', '5. ', 'адресной строки', 'не оплачивайте', 'в долларах'):
+            self.assertIn(part, link)
+        _k, auto = compose({'order': '1', 'service': 'ChatGPT', 'plan': 'Plus', 'fk': ''}, rows)
+        for part in ('chatgpt.com/api/auth/session', 'Ctrl+A', 'окно активации', '{}'):
+            self.assertIn(part, auto)
+        _k, manual = compose({'order': '1', 'service': 'ChatGPT', 'plan': 'Pro 5×', 'fk': ''}, rows)
+        self.assertIn('одним файлом', manual)
+
+    def test_follow_up_topics(self):
+        from support_agent.faq import usable_answer
+        self.assertIn('адресной строки', usable_answer('linkpay_how'))
+        self.assertIn('Ctrl+A', usable_answer('chatgpt_token_how'))
