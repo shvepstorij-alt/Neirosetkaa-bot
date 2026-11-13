@@ -162,7 +162,7 @@ class TopicSwitchTests(unittest.TestCase):
 
 class TermAndClaudeRulesTests(unittest.TestCase):
     def test_owner_rules_12_11(self):
-        self.assertIn('Spotify', usable_answer('subscription_term'))
+        self.assertIn('на месяц', usable_answer('subscription_term'))  # owner 13.11.2026: monthly by default
         self.assertIn('один VPN', usable_answer('claude_block_risk'))
         self.assertIn('загранпаспорт', usable_answer('claude_verification'))
         self.assertIn('Российские номера', usable_answer('claude_verification'))
@@ -202,8 +202,11 @@ class OwnerAnswers12_11Tests(unittest.TestCase):
         promo = quick_reply('Есть промокод?')['reply']
         self.assertIn('NAVSEX', promo)
         self.assertIn('CHATIK10', promo)
-        held = _turn('Предлагаю рекламу в моём канале', {'owner_topic': 'partnership', 'reply': 'Давайте!'})
-        self.assertTrue(held['handoff'])
+        # Owner 13.11.2026: the assistant asks for details and promises nothing; Alexander answers.
+        asked = _turn('Предлагаю рекламу в моём канале', {'owner_topic': 'partnership', 'reply': 'Давайте!'})
+        self.assertFalse(asked['handoff'])
+        self.assertIn('какое сотрудничество', asked['reply'])
+        self.assertNotIn('Давайте', asked['reply'])
 
 
 def _need_aiohttp(test):
@@ -715,3 +718,93 @@ class StepByStepTests(unittest.TestCase):
         from support_agent.faq import usable_answer
         self.assertIn('адресной строки', usable_answer('linkpay_how'))
         self.assertIn('Ctrl+A', usable_answer('chatgpt_token_how'))
+
+
+class NoUndefinedNamesTests(unittest.TestCase):
+    """13.11.2026: an edit deleted two constants and every unclear message crashed with NameError.
+    The offline tests did not run that branch. This check reads the code itself."""
+
+    FILES = ('turn_understanding.py', 'paid_notice.py', 'voice.py', 'owner_scenarios.py', 'privacy.py',
+             'payment_guide.py', 'research.py', 'hold_stats.py', 'check_cases.py')
+
+    def test_every_name_is_defined(self):
+        import ast, builtins, pathlib
+        missing = []
+        for name in self.FILES:
+            tree = ast.parse(pathlib.Path('support_agent', name).read_text(encoding='utf-8'))
+            known = set(dir(builtins)) | {'__file__', '__name__'}
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    known.add(node.name)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    known.update((a.asname or a.name).split('.')[0] for a in node.names)
+                elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    known.add(node.id)
+                elif isinstance(node, ast.arg):
+                    known.add(node.arg)
+                elif isinstance(node, ast.ExceptHandler) and node.name:
+                    known.add(node.name)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in known:
+                    missing.append(name + ':' + str(node.lineno) + ' ' + node.id)
+        self.assertEqual(missing, [])
+
+
+class UnclearMessageTests(unittest.TestCase):
+    """The branch that crashed: low confidence, no two tariffs named."""
+
+    def _run(self, burst, reply, history=()):
+        from support_agent.faq import for_context
+        from support_agent.turn_understanding import enforce_turn_policy, package
+        context = {'tariffs': [], 'nominals': [], 'history': list(history), 'faq': for_context(), 'burst': burst,
+                   'dialog_state': {}}
+        understanding = {'intent': 'question', 'service_id': '', 'tariff_id': '', 'confidence': 'low',
+                         'reply': reply, 'summary': 'Ответ.', 'questions': ['Вопрос клиента'],
+                         'owner_topic': 'none', 'beyond_owner_fact': False, 'refund_order': '',
+                         'refund_service': '', 'refund_reason': '', 'conflict': 'none', 'owner_alignment': 'follows'}
+        return enforce_turn_policy(package(understanding, context), understanding, context, {'status': 'fresh'})
+
+    def test_unclear_message_gets_a_question(self):
+        from support_agent.turn_understanding import CLARIFY
+        answer = self._run('Не получается', 'Тариф стоит 100 ₽.')
+        self.assertFalse(answer['handoff'], answer.get('evidence', {}).get('diagnostic'))
+        self.assertEqual(answer['reply'], CLARIFY)
+
+    def test_models_own_question_is_kept(self):
+        answer = self._run('сколько будет стоить про версию?', 'Для какого сервиса вам нужна Pro-версия?')
+        self.assertFalse(answer['handoff'])
+        self.assertIn('Для какого сервиса', answer['reply'])
+
+    def test_second_unclear_message_goes_to_owner(self):
+        from support_agent.turn_understanding import CLARIFY
+        answer = self._run('ну не получается же', 'Тариф стоит 100 ₽.', [{'role': 'assistant', 'text': CLARIFY}])
+        self.assertTrue(answer['handoff'])
+
+
+class ThirdRealRunTests(unittest.TestCase):
+    def test_service_kinds_by_live_names(self):
+        from support_agent.payment_guide import kind_for
+        self.assertEqual(kind_for('perplexity_pro', 'Pro', [], 'Perplexity'), 'perplexity')
+        self.assertEqual(kind_for('z_ai', 'lite', [], 'Z.ai'), 'zai')
+        self.assertEqual(kind_for('kimi', 'Plus', [], 'Kimi'), 'link_pay')
+        self.assertEqual(kind_for('gpt_credits', '250', [], 'Пополнение кредитов ChatGPT'), 'chatgpt_credits')
+
+    def test_money_complaint_gets_the_owner_question(self):
+        from support_agent.owner_scenarios import quick_reply
+        self.assertIn('номер заказа', quick_reply('Вы что меня обманываете? Деньги списались')['reply'])
+        self.assertIsNone(quick_reply('Деньги списались, верните деньги'))
+
+    def test_codex_rule_needs_the_word(self):
+        from support_agent.turn_understanding import _TOPIC_NEEDS
+        import re
+        self.assertIsNone(re.search('(?i)' + _TOPIC_NEEDS['codex'], 'хочу оплатить подписку за клод код'))
+        self.assertIsNotNone(re.search('(?i)' + _TOPIC_NEEDS['codex'], 'нужен кодекс'))
+
+    def test_new_rules(self):
+        from support_agent.faq import usable_answer
+        self.assertIn('@neirosetkaa_bot', usable_answer('renewal'))
+        self.assertIn('на месяц', usable_answer('subscription_term'))
+        self.assertIn('раздел оплаты', usable_answer('subscription_status'))
+        self.assertIn('outlook.com', usable_answer('russian_email'))
+        self.assertIn('скриншот', usable_answer('login_problem'))
+        self.assertTrue(usable_answer('partnership'))
