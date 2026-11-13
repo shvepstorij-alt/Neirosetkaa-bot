@@ -1104,6 +1104,47 @@ class Service:
         evidence['translated_from_russian']=reply
         return dict(answer, reply=translated, evidence=evidence)
 
+    async def _paid_notice_reply(self, job, context):
+        """The shop's «Оплатил заказ #N» message: look the order up, then name the next step."""
+        from . import paid_notice
+        found=paid_notice.parse(context.get('burst'))
+        if not found:
+            return None
+        status,row='не проверен',None
+        if found.get('order'):
+            try:
+                lookup=await self.shop.order_facts(job['uid'],{'untyped':found['order']})
+            except Exception:
+                lookup={'orders_status':'read_error','orders':[]}
+            orders=lookup.get('orders') if isinstance(lookup,dict) and isinstance(lookup.get('orders'),list) else []
+            state=str((lookup or {}).get('orders_status') or 'read_error') if isinstance(lookup,dict) else 'read_error'
+            row=orders[0] if state=='available' and len(orders)==1 and isinstance(orders[0],dict) else None
+            status=str(row.get('status') or 'нет статуса') if row else state
+        kind,reply=paid_notice.compose(found,context.get('tariffs') or [])
+        note=paid_notice.owner_note(found,kind,status)
+        refused=row is not None and str(row.get('status') or '').casefold() not in ('paid','')
+        if refused or status=='not_found':
+            # The shop does not show this order as paid for this client: Alexander decides.
+            from .handoff import handoff_text
+            try:
+                await self.owner_message(self.chat_identity(job['chat'])+'\n'+note)
+            except Exception:
+                logging.warning('Paid-order note was not delivered')
+            return {'reply':handoff_text(),'summary':'Клиент сообщил об оплате; заказ в базе не оплачен или не найден.',
+                    'handoff':True,'source_ids':[],
+                    'evidence':{'status':'owner_policy','sources':[],'reply_class':'outcome','diagnostic':note,
+                                'handoff_reason':'Заказ не найден или не оплачен в базе магазина. Нужен Александр.'}}
+        try:
+            if self.store.effective_mode(job['chat'])=='auto':
+                await self.owner_message(self.chat_identity(job['chat'])+'\n'+note)
+        except Exception:
+            logging.warning('Paid-order note was not delivered')
+        return {'reply':reply,'summary':'Клиент сообщил об оплате заказа; назван следующий шаг.',
+                'handoff':False,'source_ids':[],
+                'evidence':{'status':'checked','sources':[],'reply_class':'instruct','owner_approved_wording':True,
+                            'owner_text_used':True,'paid_notice':dict(found,kind=kind,shop_status=status),
+                            'content_review':{'passed':True,'issues':[]},'diagnostic':note}}
+
     def _models_answer_checked(self, answer, context):
         """Model versions go out only with the check date and the official link; otherwise Alexander answers."""
         research=(context or {}).get('official_research')
@@ -1245,6 +1286,9 @@ class Service:
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
+        paid=await self._paid_notice_reply(job, context)
+        if paid is not None:
+            return paid
         await self._attach_official_research(context)
         if not self.store.still_current(job):
             return None

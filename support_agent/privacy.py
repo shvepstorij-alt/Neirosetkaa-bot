@@ -98,10 +98,18 @@ _PUBLIC_STEP = re.compile(
     r'(?=\s*(?:[?.!,]|$))')
 
 
+# The shop bot prepares «Оплатил заказ #N / Номер FreeKassa: … / ID: shop_…» for the client.
+# Order numbers are not credentials; without this the most common first message was hidden.
+_ORDER_LINES = re.compile(
+    r'(?im)^\s*(?:ID:\s*shop_[\w-]{3,60}|Номер\s+(?:FreeKassa|заказа):\s*[\w-]{1,40}|'
+    r'Монетки:[^\n]{0,60})\s*$|оплатил\w*\s+заказ\s*#?\s*[\w-]{1,40}')
+
+
 def sensitive(text):
     text = _PROMO.sub('[промокод]', str(text or ''))
     text = _NO_SECRET.sub('[упоминание]', text)
     text = _PUBLIC_STEP.sub('[шаг инструкции]', text)
+    text = _ORDER_LINES.sub('[данные заказа]', text)
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
     if 'access_secret' in redaction_categories(text):return True
     if _embedded_secret(text):return True
