@@ -375,7 +375,7 @@ class MasculineVoiceTests(unittest.TestCase):
 class CheckRunTests(unittest.TestCase):
     def test_parts_shape(self):
         from support_agent.check_cases import PARTS
-        self.assertEqual(sorted(PARTS), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(sorted(PARTS), [1, 2, 3, 4, 5, 6, 7])
         for dialogs in PARTS.values():
             for turns in dialogs:
                 for fragments in turns:
@@ -617,3 +617,78 @@ class LateEveningRulesTests(unittest.TestCase):
         self.assertIn('другой регион в VPN', usable_answer('activation_button_fails'))
         self.assertIn('одним текстовым файлом', usable_answer('activate_for_me'))
         self.assertIn('ChatGPT или Claude', usable_answer('course_subscriptions'))
+
+
+PAID = ('Приветствую! Оплатил заказ #10502\nСервис: Kimi\nТариф: Plus\n'
+        'Номер FreeKassa: 347952003\nID: shop_452472535_1794563601858')
+
+
+class PaidNoticeTests(unittest.TestCase):
+    """Owner 13.11.2026: the shop's «Оплатил заказ» message gets the next step for that service."""
+
+    ROWS = [{'service_id': 'kimi', 'service': 'Kimi', 'plan': 'Plus', 'price': 1990},
+            {'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990},
+            {'service_id': 'claude', 'service': 'Claude', 'plan': 'Pro', 'price': 2090},
+            {'service_id': 'claude', 'service': 'Claude', 'plan': 'Ultra', 'price': 19990},
+            {'service_id': 'zoom', 'service': 'Zoom', 'plan': 'Pro', 'price': 1890}]
+
+    def test_message_is_not_hidden_as_a_secret(self):
+        from support_agent.privacy import sensitive
+        self.assertFalse(sensitive(PAID))
+        self.assertTrue(sensitive(PAID + '\nпароль qwerty12345'))
+
+    def test_parse(self):
+        from support_agent.paid_notice import parse
+        self.assertEqual(parse(PAID), {'order': '10502', 'service': 'Kimi', 'plan': 'Plus', 'fk': '347952003'})
+        self.assertIsNone(parse('Я оплатил, что дальше?'))
+
+    def test_next_step_per_kind(self):
+        from support_agent.paid_notice import compose
+        cases = {('Kimi', 'Plus'): 'ссылку', ('ChatGPT', 'Plus'): 'Активировать подписку',
+                 ('Claude', 'Pro'): 'Organization ID', ('Zoom', 'Pro'): 'почту и пароль'}
+        for (service, plan), expected in cases.items():
+            _kind, text = compose({'order': '10502', 'service': service, 'plan': plan, 'fk': ''}, self.ROWS)
+            self.assertIn(expected, text, service)
+            self.assertIn('Заказ #10502 вижу', text)
+            self.assertNotIn('После оплаты', text)
+            self.assertNotIn('оплата прошла', text.casefold())
+
+    def test_reply_passes_the_auto_gate(self):
+        from support_agent.auto_policy import block_reason
+        from support_agent.paid_notice import compose
+        evidence = {'status': 'checked', 'sources': [], 'reply_class': 'instruct', 'owner_approved_wording': True,
+                    'owner_text_used': True, 'content_review': {'passed': True, 'issues': []}}
+        for service, plan in (('Kimi', 'Plus'), ('ChatGPT', 'Plus'), ('Claude', 'Ultra'), ('Zoom', 'Pro')):
+            _kind, text = compose({'order': '10502', 'service': service, 'plan': plan, 'fk': ''}, self.ROWS)
+            self.assertIsNone(block_reason({'reply': text, 'summary': 's', 'handoff': False}, dict(evidence), PAID), service)
+
+    def test_unpaid_order_goes_to_owner(self):
+        import asyncio
+        from support_agent.service import Service
+
+        class Shop:
+            def __init__(self, status):
+                self.status = status
+            async def order_facts(self, uid, reference):
+                return {'orders_status': 'available', 'orders': [{'status': self.status}]}
+
+        class Store:
+            def effective_mode(self, chat):
+                return 'draft'
+
+        def run(status):
+            svc = Service.__new__(Service)
+            svc.shop, svc.store, sent = Shop(status), Store(), []
+            async def owner_message(text, *a, **k):
+                sent.append(text)
+            svc.owner_message = owner_message
+            svc.chat_identity = lambda chat: 'Клиент'
+            out = asyncio.run(svc._paid_notice_reply({'uid': 7, 'chat': 1}, {'burst': PAID, 'tariffs': self.ROWS}))
+            return out, sent
+
+        paid, _ = run('paid')
+        self.assertFalse(paid['handoff'])
+        self.assertIn('ссылку', paid['reply'])
+        pending, notes = run('pending')
+        self.assertTrue(pending['handoff'])
+        self.assertTrue(notes)
