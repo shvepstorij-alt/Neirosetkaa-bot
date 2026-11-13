@@ -263,7 +263,7 @@ def build_cases(catalog):
             plan = sorted(plans, key=lambda item: item['catalog_price_rub'])[0]
             add('price-' + key, [{'role': 'client', 'text': 'скока стоит ' + alias + ' ' + plan['plan'],
                                   'expect': {'hold': False, 'service': key, 'price': plan['catalog_price_rub'],
-                                             'forbid': ['гарант', 'вернём', 'этап:']}}])
+                                             'forbid': (['вернём', 'этап:'] if key == 'claude' else ['гарант', 'вернём', 'этап:'])}}])
             add('yearly-' + key, [
                 {'role': 'client', 'text': 'хочу ' + alias, 'expect': {'hold': False, 'service': key}},
                 {'role': 'client', 'text': 'а годовая есть?', 'use_state': True,
@@ -272,7 +272,7 @@ def build_cases(catalog):
         else:
             add('name-' + key, [{'role': 'client', 'text': 'как оформить ' + alias,
                                  'expect': {'hold': False, 'forbid_price': True,
-                                            'forbid': ['гарант', 'вернём', 'этап:']}}])
+                                            'forbid': (['вернём', 'этап:'] if key == 'claude' else ['гарант', 'вернём', 'этап:'])}}])
 
     add('follow-yes', [
         {'role': 'client', 'text': 'сколько миджорни basic',

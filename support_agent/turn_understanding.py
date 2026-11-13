@@ -1078,9 +1078,48 @@ def _install_reply(burst, context=None):
             + '\n'.join('• ' + row[0] + ': ' + row[link] for row in apps) + ' )')
 
 
+CLAUDE_RISK = ('Важно: гарантии на Claude нет. Claude может заблокировать аккаунт, при блокировке деньги не возвращаются. '
+               'Чтобы снизить риск, работайте через один VPN и одну страну.')
+_CLAUDE_BUY = re.compile(r'(?i)оформ|куп|приобр|подписк|оплат|стоит|стоимост|цен[аыу]\b|тариф|можно\s+ли|есть\s+ли\s+возможност|перейти\s+на')
+
+DEVICE_ASK = 'Подскажите, пожалуйста, на какое устройство нужно приложение: iPhone, Android или компьютер (Windows, Mac)?'
+
+
 def _android_install(burst, context=None):
     text = _install_reply(burst, context)
     return text if 'Android' in text else ''
+
+
+# Owner 13.11.2026: «помощник должен помогать, а не убегать».
+CLARIFY = ('Подскажите, пожалуйста, о каком сервисе идёт речь и что именно нужно сделать или что не получается? '
+           'Помогу разобраться.')
+CHARGED = ('Уточните, пожалуйста, за что именно списались средства, и пришлите номер заказа из бота. '
+           'После оплаты проверьте бота @neirosetkaa_bot: туда обычно приходит инструкция, что делать дальше.')
+_MONEY_COMPLAINT = re.compile(r'(?i)обман|мошенн|развод|(?:деньги|средства|оплата)\s+(?:списа|ушл|снял)|списал\w*\s+(?:деньги|средства)')
+_REFUND_WORD = re.compile(r'(?i)возврат|верн\w+\s+(?:мне\s+)?(?:деньги|средства|оплату)|чарджбек|chargeback')
+
+# A dictated topic needs its own word in the message: «клод код» is not Codex.
+_TOPIC_NEEDS = {
+    'codex': r'codex|кодекс',
+    'vpn_needed': r'vpn|впн|випиэн|прокси|v2ray', 'vpn_help': r'vpn|впн|випиэн|прокси|v2ray',
+    'vpn_abroad': r'vpn|впн|випиэн|прокси|v2ray',
+    'capcut_renewal': r'cap\s*cut|кап\s*кат|капкат',
+    'supergrok_grokbot': r'grok|грок',
+    'gemini_google': r'gemini|гемини|джемини|джимини|google|гугл',
+    'deepseek_topup': r'deep\s*seek|дипсик|дип\s*сик',
+    'chatgpt_token_how': r'токен|сесси|session|token',
+    'linkpay_how': r'ссылк|link',
+    'course_bonus': r'курс|обучени|бонус|подар|эксперт|expert',
+    'course_subscriptions': r'курс|обучени',
+    'foreign_payment': r'карт|paypal|пейпал|kaspi|каспи|заграниц|за\s+границ|abroad|из\s+(?:казахстан|беларус|украин|европ|сша|герман)\w*|иностран|зарубеж|валют',
+}
+
+
+def _asks_only(reply, prices):
+    """A clarifying question with no price, promise or request for access data."""
+    text = ' '.join(str(reply or '').split())
+    return (10 <= len(text) <= 400 and '?' in text and '₽' not in text and '$' not in text
+            and not re.search(r'(?i)парол|токен|код\s+из', text) and classify_draft(str(reply), prices)['send'])
 
 
 _OFFCAT_NO = re.compile(r'(?i)^\s*(?:нет|не надо|не нужно|спасибо|ок|понял|хорошо|ладно)\b')
@@ -1125,8 +1164,13 @@ def _plans_summary(rows):
 def _service_rows(context, service_id):
     if not service_id:
         return []
-    return [row for row in (context or {}).get('tariffs') or []
-            if row.get('service_id') == service_id and type(row.get('price')) is int][:8]
+    priced = [row for row in (context or {}).get('tariffs') or [] if type(row.get('price')) is int]
+    rows = [row for row in priced if row.get('service_id') == service_id]
+    if not rows and len(str(service_id)) >= 4:
+        key = re.sub(r'[^a-zа-яё0-9]+', '', str(service_id).casefold())
+        rows = [row for row in priced
+                if key in re.sub(r'[^a-zа-яё0-9]+', '', (str(row.get('service')) + str(row.get('service_id'))).casefold())]
+    return rows[:8]
 
 
 TARIFF_ASK = 'Напишите, какой тариф оформить.'
@@ -1404,6 +1448,10 @@ def package(understanding, context, db=None, chat=None):
         validated['questions'] = [reply]
         composed = True
         verdict = classify_draft(reply, validated['allowed_prices'])
+    elif not composed and str((understanding or {}).get('owner_topic') or '') == 'off_catalog' \
+            and not (validated.get('service_id') or validated.get('_other_service')):
+        validated['owner_topic'] = 'off_catalog'  # «премьер про хочу оплатить»: ask tariff, region, term
+        verdict = classify_draft(reply, validated['allowed_prices'])
     elif not composed and (validated.get('payment_asked') or mixes_activation_into_payment(reply)
             or (kind == 'chatgpt_new_account' and setup and missing_setup(setup))):
         service_id = validated.get('service_id') or validated.get('_other_service') or ''
@@ -1443,10 +1491,14 @@ def package(understanding, context, db=None, chat=None):
             last_said = next((str(row.get('text') or '') for row in reversed(context.get('history') or [])
                               if isinstance(row, dict) and row.get('role') in ('assistant', 'owner')), '')
             own_question = ' '.join(str(reply or '').split())
-            if _MONEY_COMPLAINT.search(burst_low):
+            if _MONEY_COMPLAINT.search(burst_low) and _REFUND_WORD.search(burst_low):
                 reply = handoff_text()
                 verdict = {'send': False, 'class': 'unverified',
-                           'reason': 'Клиент жалуется на оплату или списание. Нужен Александр.'}
+                           'reason': 'Клиент требует возврат. Нужен Александр.'}
+            elif _MONEY_COMPLAINT.search(burst_low) and CHARGED not in last_said:
+                reply = CHARGED
+                validated['questions'] = [reply]
+                verdict = classify_draft(reply, validated['allowed_prices'])
             elif CLARIFY in last_said or last_said.rstrip().endswith('?') and 'Уточните' in last_said:
                 reply = handoff_text()
                 verdict = {'send': False, 'class': 'unverified',
@@ -1548,8 +1600,10 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         got_first = dict(validated.get('refund_collected') or {})
         got_first['reason'] = ''
         validated['refund_collected'] = got_first
-    if topic in ('vpn_needed', 'vpn_help', 'vpn_abroad') and offcat_burst and not re.search(r'(?i)vpn|впн|в\.п\.н|випиэн|прокси|v2ray', offcat_burst):
-        # «Я то в России» in a question about a billing address is not a VPN question.
+    need = _TOPIC_NEEDS.get(topic)
+    if need and offcat_burst and not re.search('(?i)' + need, offcat_burst + ' ' + str(
+            ((context or {}).get('dialog_state') or {}).get('service') or '')):
+        # «Я то в России» is not a VPN question; «клод код» is not Codex.
         topic = validated['owner_topic'] = 'none'
     if topic == 'activation_overdue' and not _LONG_WAIT.search(offcat_burst):
         topic = validated['owner_topic'] = 'delivery_time'
@@ -1622,7 +1676,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
             answer = dict(answer, reply=answer_text, handoff=False)
             owner_text_used = True
     elif topic != 'none' and not answer_text:
-        holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
+        # Owner 13.11.2026: without his rule the assistant may ask what the client needs,
+        # but gives no concrete answer. He still gets a note.
+        if topic not in ('linkpay_no_vpn', 'refund_terms') and not answer.get('handoff') \
+                and _asks_only(answer.get('reply'), validated.get('allowed_prices')):
+            owner_followup = True
+        else:
+            holds.append('Для этой темы нет записанного ответа владельца. Клиенту оставлена фраза ожидания.')
     elif answer_text:
         reply = str(answer.get('reply') or '')
         prices = validated.get('allowed_prices')
@@ -1630,6 +1690,9 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
             prices = _allowed_prices(context.get('tariffs') or [], context.get('nominals') or [], '', '',
                                      _context_prices(context))
         platform_text = _install_reply(burst_text, context) if topic == 'app_download' else ''
+        if topic == 'app_download' and not platform_text and not re.search(
+                '(?i)' + _IPHONE + '|' + _ANDROID + '|' + _DESKTOP, burst_text):
+            platform_text = DEVICE_ASK
         if platform_text:
             answer_text = platform_text
         if platform_text or fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
@@ -1645,6 +1708,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
                 owner_followup = beyond
             else:
                 holds.append('Ответ выходит за записанный факт владельца.')
+    if (not holds and not answer.get('handoff') and _CLAUDE_BUY.search(burst_text)
+            and re.search(r'(?i)claude|клод|клауд|клоуд|\bcloud\b', burst_text)
+            and not re.search(r'(?i)гаранти\w+\s+на\s+Claude\s+нет|заблокир', str(answer.get('reply') or ''))
+            and not any(CLAUDE_RISK[:40] in str(row.get('text') or '') for row in (context or {}).get('history') or []
+                        if isinstance(row, dict))):
+        # Owner 13.11.2026: anyone asking to buy Claude hears the risks first.
+        answer = dict(answer, reply=str(answer.get('reply') or '').rstrip() + '\n\n' + CLAUDE_RISK)
     asked_tariff = validated.get('tariff') or {}
     if not asked_tariff and _ASKS_PRICE.search(burst_text):
         named = matching_tariffs(context or {}, validated.get('service_id') or validated.get('_other_service') or '')

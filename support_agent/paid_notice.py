@@ -66,7 +66,7 @@ def next_step(found, tariffs):
 # Owner 13.11.2026: step by step, so the client does not have to guess.
 LINK_STEPS = (
     'Как получить ссылку на оплату:\n'
-    '1. Включите VPN, откройте сайт {name} в браузере и войдите в свой аккаунт.\n'
+    '1. Включите VPN, откройте сайт {site} в браузере и войдите в свой аккаунт.\n'
     '2. Откройте раздел с тарифами: обычно это кнопка Upgrade, Pricing или Subscription.\n'
     '3. Выберите тариф{plan} и нажмите кнопку оплаты.\n'
     '4. Откроется страница оплаты с полем для карты. Ничего не вводите и не оплачивайте.\n'
@@ -94,11 +94,18 @@ TOKEN_STEPS_MANUAL = (
 def steps_for(kind, service_name, plan):
     """The detailed steps for the kinds where clients get stuck; '' keeps the short rule."""
     if kind == 'link_pay':
-        return LINK_STEPS.format(name=service_name, plan=(' ' + plan) if plan else '')
+        site = re.sub(r'(?i)\s+(?:pro|ai|gen-\d+|premium)$', '', str(service_name)).strip() or service_name
+        return LINK_STEPS.format(site=site, plan=(' ' + plan) if plan else '')
     if kind == 'chatgpt_auto':
         return TOKEN_STEPS_AUTO.format()
     if kind == 'chatgpt_manual':
         return TOKEN_STEPS_MANUAL.format()
+    if kind == 'chatgpt_new_account':
+        return ('Для этого тарифа мы создаём новый аккаунт. Пришлите, пожалуйста, сюда:\n'
+                '1. Какой адрес дать новой почте outlook.com.\n'
+                '2. Какой пароль поставить на неё.\n'
+                '3. Вашу почту, которую привязать как резервную.\n'
+                'Когда всё будет, Александр оформит аккаунт и пришлёт данные.')
     return ''
 
 

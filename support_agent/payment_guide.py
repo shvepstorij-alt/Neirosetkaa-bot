@@ -94,7 +94,8 @@ def _hit(guide, key, service_id, service_name):
     squeezed = flat.replace(' ', '')
     for item in list(row.get('names') or []) + list(row.get('services') or []):
         word = re.sub(r'[^a-zа-яё0-9]+', ' ', str(item).casefold()).strip()
-        if word and ((' ' + word + ' ') in flat or (len(word) >= 6 and word.replace(' ', '') in squeezed)):
+        if word and ((' ' + word + ' ') in flat or (len(word) >= 6 and word.replace(' ', '') in squeezed)
+                     or (len(word) >= 3 and squeezed.startswith(word.replace(' ', '')) and len(squeezed) <= len(word) + 6)):
             return True
     return False
 
@@ -106,6 +107,13 @@ def kind_for(service_id, plan_name, tariffs=None, service_name=''):
     if not service_name:
         row = next((r for r in tariffs or [] if r.get('service_id') == service_id), None)
         service_name = (row or {}).get('service') or ''
+    squeezed_name = re.sub(r'[^a-zа-яё0-9]+', '', (str(service_name) + ' ' + service_id).casefold())
+    if 'кредит' not in squeezed_name and 'credit' not in squeezed_name:
+        # The live catalog may call the service «perplexity_pro»: the rule keys on the plain id.
+        for plain in ('perplexity', 'chatgpt', 'claude'):
+            if plain in squeezed_name:
+                service_id = plain
+                break
     if 'кредит' in str(service_name).casefold() or 'кредит' in service_id.casefold() or 'credit' in service_id.casefold():
         return 'chatgpt_credits'
     if _hit(guide, 'appstore', service_id, service_name) or service_id == 'appstore':
