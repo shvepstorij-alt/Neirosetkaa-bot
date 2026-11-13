@@ -52,12 +52,54 @@ def next_step(found, tariffs):
     service_id = str((row or {}).get('service_id') or '')
     service_name = str((row or {}).get('service') or found.get('service') or '')
     kind = kind_for(service_id, found.get('plan') or '', tariffs or [], service_name)
+    detailed = steps_for(kind, service_name, str(found.get('plan') or ''))
+    if detailed:
+        return kind, detailed
     text = _after(load_guide(), kind, '', None, service_name)
     text = re.sub(r'^После оплаты в магазине\s+', '', text)
     text = re.sub(r'^После оплаты:?\s+', '', text)
     text = re.sub(r'(?m)^Дальше активация идёт в боте магазина\.$',
                   'Александр оформит подписку и напишет здесь, если понадобятся данные.', text)
     return kind, text[:1].upper() + text[1:]
+
+
+# Owner 13.11.2026: step by step, so the client does not have to guess.
+LINK_STEPS = (
+    'Как получить ссылку на оплату:\n'
+    '1. Включите VPN, откройте сайт {name} в браузере и войдите в свой аккаунт.\n'
+    '2. Откройте раздел с тарифами: обычно это кнопка Upgrade, Pricing или Subscription.\n'
+    '3. Выберите тариф{plan} и нажмите кнопку оплаты.\n'
+    '4. Откроется страница оплаты с полем для карты. Ничего не вводите и не оплачивайте.\n'
+    '5. Скопируйте ссылку из адресной строки браузера целиком и пришлите её сюда.\n'
+    'Цена на странице оплаты должна быть в долларах. Если там другая валюта, поставьте в VPN другую страну и откройте страницу заново. '
+    'Почта и пароль не нужны.')
+
+_TOKEN_COPY = (
+    '1. Откройте chatgpt.com в браузере и войдите в аккаунт, на который нужна подписка.\n'
+    '2. В том же браузере откройте новую вкладку с адресом chatgpt.com/api/auth/session\n'
+    '3. Появится страница с текстом в фигурных скобках. Выделите весь текст: на компьютере Ctrl+A, на телефоне долгое нажатие и «Выбрать всё».\n'
+    '4. Скопируйте его: на компьютере Ctrl+C, на телефоне «Копировать».\n')
+TOKEN_STEPS_AUTO = (
+    'Как активировать подписку:\n' + _TOKEN_COPY +
+    '5. В боте нажмите «Активировать подписку» и вставьте текст целиком в окно активации. В эту переписку токен вставлять не нужно.\n'
+    'Если на странице пустые скобки {{}}, вы не вошли в аккаунт в этом браузере: вернитесь к шагу 1. '
+    'Кнопка активации действует 2 часа.')
+TOKEN_STEPS_MANUAL = (
+    'Этот тариф активирует Александр, кнопки самостоятельной активации у него нет. Нужен токен аккаунта:\n' + _TOKEN_COPY +
+    '5. Сохраните текст в текстовый файл и пришлите его сюда одним файлом, не несколькими сообщениями.\n'
+    'Если на странице пустые скобки {{}}, вы не вошли в аккаунт в этом браузере: вернитесь к шагу 1. '
+    'Пароль от аккаунта не нужен.')
+
+
+def steps_for(kind, service_name, plan):
+    """The detailed steps for the kinds where clients get stuck; '' keeps the short rule."""
+    if kind == 'link_pay':
+        return LINK_STEPS.format(name=service_name, plan=(' ' + plan) if plan else '')
+    if kind == 'chatgpt_auto':
+        return TOKEN_STEPS_AUTO.format()
+    if kind == 'chatgpt_manual':
+        return TOKEN_STEPS_MANUAL.format()
+    return ''
 
 
 _SELF = {'chatgpt_auto', 'claude_auto', 'perplexity', 'appstore'}
