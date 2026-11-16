@@ -953,3 +953,24 @@ class OwnerAskedForIdTests(unittest.TestCase):
                          'conflict': 'none', 'owner_alignment': 'follows'}
         answer = enforce_turn_policy(package(understanding, context), understanding, context, {'status': 'fresh'})
         self.assertNotIn('не сюда', answer['reply'])
+
+
+class DraftStatsTests(unittest.TestCase):
+    def test_stats_and_review(self):
+        import json, time
+        from support_agent.draft_stats import review_file, summary
+        from support_agent.storage import Store
+        store = Store(':memory:')
+        db = store.db
+        now = time.time()
+        for i, (state, owner, topic) in enumerate([('sent', '', 'renewal'), ('stale', 'Мой ответ', 'renewal'), ('ready', '', 'none')], 1):
+            db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)', (i, 1, 'client', 'вопрос %d' % i, '{}', now - 10, 'stored'))
+            db.execute("INSERT INTO drafts(id,chat,mid,revision,global_revision,text,summary,handoff,created,state) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (i, i, 1, 0, 0, 'черновик %d' % i, '', 0, now - 5, state))
+            db.execute('INSERT INTO draft_evidence VALUES (?,?)', (i, json.dumps({'owner_topic': topic})))
+            if owner:
+                db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)', (i, 2, 'owner', owner, '{}', now, 'stored'))
+        text = summary(db, 7)
+        self.assertIn('Отправлено как есть: 1', text)
+        self.assertIn('вы ответили сами: 1', text)
+        self.assertIn('Вы ответили: Мой ответ', review_file(db, 7))
