@@ -808,3 +808,52 @@ class ThirdRealRunTests(unittest.TestCase):
         self.assertIn('outlook.com', usable_answer('russian_email'))
         self.assertIn('скриншот', usable_answer('login_problem'))
         self.assertTrue(usable_answer('partnership'))
+
+
+class DialogCheckTests(unittest.TestCase):
+    def test_cases_are_clean(self):
+        import re
+        from support_agent.dialog_check import load_cases
+        cases = load_cases()
+        self.assertGreaterEqual(len(cases), 300)
+        for case in cases:
+            text = case['client'] + ' ' + case['owner'] + ' ' + ' '.join(t for _r, t in case['history'])
+            self.assertIsNone(re.search(r'[\w.+-]+@[\w-]+\.[a-z]{2,}|\b\d{7,}\b|eyJ|shop_\d', text), text[:120])
+
+    def test_run_and_report(self):
+        import asyncio
+        from support_agent import dialog_check
+        from support_agent.storage import Store
+
+        class Shop:
+            async def facts(self, uid):
+                return {'catalog': [], 'catalog_status': 'available'}
+
+        class AI:
+            model = 'test'
+            async def grade_reply(self, case, reply, stopped):
+                return {'verdict': 'needless_stop' if stopped else 'good', 'category': 'needless_stop' if stopped else 'none',
+                        'problem': 'x' if stopped else '', 'fix': ''}
+
+        class TG:
+            def __init__(self): self.files = []
+            async def send_text_file(self, chat, name, text, caption=''): self.files.append((name, text))
+
+        class Owner:
+            def __init__(self):
+                self.store = Store(':memory:'); self.sent = []; self.owner = 5; self.shop = Shop()
+                self.ai = AI(); self.tg = TG()
+            def charge_call(self, reason='model'): pass
+            async def owner_message(self, text, *a, **k): self.sent.append(text)
+
+        owner = Owner()
+        original = dialog_check.load_cases
+        dialog_check.load_cases = lambda: [{'history': [['client', 'Привет'], ['owner', 'Здравствуйте!']],
+                                            'client': 'Есть промокод?', 'owner': 'NAVSEX'}]
+        try:
+            asyncio.run(dialog_check.run_dialogs(owner, 1))
+        finally:
+            dialog_check.load_cases = original
+        self.assertTrue(owner.tg.files)
+        self.assertIn('Александр ответил: NAVSEX', owner.tg.files[0][1])
+        self.assertIn('Оценки:', owner.sent[-1])
