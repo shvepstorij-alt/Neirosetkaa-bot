@@ -601,8 +601,8 @@ def _conflict(understanding):
 # insults, «позовите человека», a problem left unsolved after several replies.
 CONFLICT_REASON = re.compile(
     r'(?i)возврат|верн[иу]|чарджбек|chargeback|оспор|жалоб|пожалу|\bсуд|прокурат|роспотреб|полици|угрож|'
-    r'мошенн|обман|развод|кидал|оскорб|\bмат\b|груб|челове|оператор|александр|'
-    r'не\s+работа|не\s+реш|без\s+решен|третий\s+раз|повторя|снова|опять|refund|scam|complain')
+    r'мошенн|обман|развод|кидал|оскорб|\bмат\b|груб|челове|оператор|повторя|'
+    r'без\s+решен|третий\s+раз|refund|scam|complain')
 
 
 OWNER_FOLLOWUP = 'Остальное по вашему вопросу уточнит Александр и ответит здесь.'
@@ -1146,6 +1146,7 @@ _REFUND_WORD = re.compile(r'(?i)возврат|верн\w+\s+(?:мне\s+)?(?:д
 # A dictated topic needs its own word in the message: «клод код» is not Codex.
 _TOPIC_NEEDS = {
     'codex': r'codex|кодекс',
+    'codex_install': r'codex|кодекс|кодэкс',
     'vpn_needed': r'vpn|впн|випиэн|прокси|v2ray', 'vpn_help': r'vpn|впн|випиэн|прокси|v2ray',
     'vpn_abroad': r'vpn|впн|випиэн|прокси|v2ray',
     'capcut_renewal': r'cap\s*cut|кап\s*кат|капкат',
@@ -1613,7 +1614,24 @@ def package(understanding, context, db=None, chat=None):
                          'handoff_reason': '' if verdict['send'] else verdict['reason']}}
 
 
+_BUY_OR_RENEW = re.compile(r'(?i)как\s+(?:мне\s+)?(?:купить|оформить|приобрести|оплатить|продлить|взять)|где\s+(?:купить|продлить|оформить)|хочу\s+(?:купить|продлить|оформить)')
+_RENEW = re.compile(r'(?i)продл')
+_CODEX_HOW = re.compile(r'(?i)(?:codex|кодекс).{0,200}(?:установ|пользова|инструкц|впн|vpn|настро)|(?:установ|пользова|инструкц|настро).{0,200}(?:codex|кодекс)', re.S)
+BUY_STEPS = ('Оформить подписку можно в нашем боте @neirosetkaa_bot:\n'
+             '1. Откройте бота и нажмите «Каталог».\n'
+             '2. Выберите сервис и нужный тариф.\n'
+             '3. Оплатите по СБП или картой «Мир».\n'
+             'После оплаты бот подскажет следующий шаг, а если что-то будет непонятно — я помогу здесь.')
+RENEW_LINE = 'Продление оформляется так же, как новая покупка. Подписка на месяц, автосписаний нет.'
+
+
 def enforce_turn_policy(answer, understanding, context, freshness=None):
+    """Owner 16.11.2026: a held draft gets the most useful safe answer unless the stop is real."""
+    from .rescue import answer_instead_of_stop
+    return answer_instead_of_stop(_enforce_turn_policy_core(answer, understanding, context, freshness), understanding, context)
+
+
+def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
     """Hold a draft the model marked as conflict, a clash with the owner, or a stale price."""
     if not isinstance(answer, dict):
         return answer
@@ -1624,7 +1642,7 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
     holds = []
     if validated['conflict'] == 'high':
         holds.append('Модель отметила высокий конфликт. Клиенту оставлена фраза ожидания.')
-    if validated['owner_alignment'] not in ('follows', 'repeats'):
+    if validated['owner_alignment'] == 'contradicts':
         holds.append('Черновик расходится с репликой владельца в этом чате.')
     if (freshness or {}).get('status') == 'refresh_failed' and states_price(answer.get('reply')):
         holds.append('Каталог старше порога, повторное чтение не удалось. Цену клиенту не отправляю.')

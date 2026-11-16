@@ -371,7 +371,10 @@ class Service:
         if role=='client' and type(reply_mid) is int and 0<reply_mid<m['message_id']:
             media['reply_mid']=reply_mid
         # Never persist supplied credentials, or forward raw content to the admin bot.
-        text='[Сообщение скрыто: возможны данные доступа; нужна ручная проверка]' if secret else scrub(raw)
+        if secret:
+            from .privacy import masked_preview
+            text='🔒 [данные доступа скрыты] '+masked_preview(raw)
+        else:text=scrub(raw)
         # Same lock as dispatch, so a stored manual reply cannot race an auto-send
         # that has not yet been handed to Telegram.
         async with self._business_lock(ident, uid):
@@ -1237,6 +1240,9 @@ class Service:
             return answer
         reply=str(answer.get('reply') or '')
         if research.get('status')!='checked':
+            # Owner 16.11.2026: keep a useful answer; only an unchecked model version is the problem.
+            if not re.search(r'(?i)\b(?:gpt|o\d|claude|opus|sonnet|haiku|fable|gemini|grok|luna|terra|sol|astra|mythos)[-\s]?\d|\b\d+\.\d+\b|\b[A-Z][A-Za-z]*-\d',reply):
+                return answer
             names=', '.join(str(x) for x in research.get('products') or [] if x) or 'сервиса'
             return dict(answer,reply='Актуальный список моделей '+names+' уточнит Александр и ответит здесь.')
         # Owner 12.11.2026 (evening): no source links for the client; only the check date.
@@ -1387,9 +1393,13 @@ class Service:
         if not self.store.still_current(job):
             return None
         answer=payment if payment is not None else package(understanding, context, self.store.db, job['chat'])
+        if payment is not None and isinstance(answer,dict) and isinstance(answer.get('evidence'),dict):
+            answer['evidence']['payment_case']=True
         from .turn_understanding import enforce_turn_policy
         answer=enforce_turn_policy(answer, understanding, context, freshness)
         answer=self._models_answer_checked(answer, context)
+        from .rescue import answer_instead_of_stop
+        answer=answer_instead_of_stop(answer, understanding, context)
         if isinstance(answer,dict) and not answer.get('handoff'):
             from .voice import greet_back
             answer=dict(answer,reply=greet_back(answer.get('reply'),context.get('burst'),context.get('history')))

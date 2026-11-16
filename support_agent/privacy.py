@@ -243,3 +243,33 @@ def _credential_field_question(text):
     field_syntax=re.sub(r'\b(пароль|password)\s+(apple\s+id)\b',r'\1 от \2',lower)
     if re.search(r'(?:пароль|password|токен|token)\s+(?!от\b|для\b|вам\b|мне\b|нуж\w*\b|надо\b|треб\w*\b|присыл\w*\b|отправ\w*\b|перед\w*\b|в\b|это\b|тоже\b|можно\b|обязател\w*\b)[a-zа-я]+',field_syntax):return False
     return True
+
+
+def masked_preview(text):
+    """Owner 16.11.2026: show the owner what the client sent, with secret-looking parts hidden.
+
+    Ordinary words stay; emails keep their first letter and domain; any token with
+    digits or symbols (passwords, codes, tokens) becomes •••. Nothing secret is stored.
+    """
+    def email(m):
+        return m.group(1)[0] + '***@' + m.group(2)
+    safe_latin = {'gmail', 'outlook', 'chatgpt', 'gpt', 'claude', 'plus', 'pro', 'max', 'email', 'mail', 'login',
+                  'password', 'pass', 'apple', 'id', 'google', 'token', 'ok', 'hi', 'hello'}
+    out = []
+    for line in str(text or '').splitlines()[:12]:
+        words = []
+        hide_next = False
+        for word in line.split()[:60]:
+            bare = word.strip('.,:;!?)(«»"-').casefold()
+            m = re.fullmatch(r'([\w.+-]+)@([\w-]+(?:\.[\w-]+)+)', word)
+            if m:
+                words.append(email(m))
+            elif hide_next:
+                words.append('•••')
+            elif re.fullmatch(r'[А-Яа-яЁё]{1,20}[.,:;!?)(«»"-]*', word) or bare in safe_latin:
+                words.append(word)
+            else:
+                words.append('•••')
+            hide_next = bool(re.fullmatch(r'(?:пароль|парол\w*|password|pass|код|code|токен|token)[:\-—]*', bare))
+        out.append(' '.join(words))
+    return '\n'.join(out)[:500]

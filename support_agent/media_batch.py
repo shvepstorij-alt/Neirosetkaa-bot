@@ -67,7 +67,9 @@ async def prepare_media(service,job):
                     'handoff':True,'evidence':{'status':'owner_policy','manual_secret_intake':True,
                         'diagnostic':'Этап: приём файла для ручной обработки. Тип=text/json; загрузка=не выполнялась; модель=не вызывалась. Содержимое и наличие токена не устанавливались.'}}
             if kind=='sensitive' or media.get('blocked_transcript'):
-                return _manual('В обращении возможны данные доступа. Они не переданы в подготовку ответа.')
+                return [], {'reply':'Спасибо, данные получил. Александр проверит и продолжит оформление здесь.',
+                            'summary':'Клиент прислал данные доступа (почта, пароль или токен). Они не переданы модели — откройте личку.',
+                            'handoff':True}
             if kind=='document':
                 # A PDF receipt stays with the owner. It is not sent to the model.
                 continue
