@@ -1299,11 +1299,14 @@ class Service:
                 except Exception as exc:
                     logging.exception('Turn reading failed')
                     from .handoff import handoff_text
-                    fallback={'reply':handoff_text(),'summary':'Разбор хода не завершился ('+type(exc).__name__+').',
+                    why=('дневной лимит запросов к модели исчерпан — поднимите SUPPORT_DAILY_CALL_LIMIT'
+                         if 'limit' in str(exc).lower() else 'модель вернула ответ не по формату' if 'intent' in str(exc)
+                         else type(exc).__name__)
+                    fallback={'reply':handoff_text(),'summary':'Разбор хода не завершился: '+why+'.',
                               'handoff':True,'source_ids':[],
                               'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',
-                                          'diagnostic':'Сбой разбора: '+type(exc).__name__+'.'}}
-                    if self.store.calls_today()<self.daily_limit:
+                                          'diagnostic':'Сбой разбора: '+why+'.'}}
+                    if True:  # the rescue needs no model call, so it works after the daily limit too
                       try:
                         # Owner 16.11.2026: a crash still gives an answerable question its answer.
                         from .turn_understanding import burst_and_window
@@ -1316,7 +1319,7 @@ class Service:
                     return {'reply':handoff_text(),'summary':'Разбор хода не завершился. Клиенту оставлено ожидание владельца.',
                             'handoff':True,'source_ids':[],
                             'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',
-                                        'diagnostic':'Этап: разбор хода. Тип='+type(exc).__name__+'. Текст клиента не отправлялся.'}}
+                                        'diagnostic':'Сбой разбора: '+why+'. Текст клиента не отправлялся.'}}
             return await self._generate_legacy(job)
         finally:
             await self.maybe_quota_notice()

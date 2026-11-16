@@ -116,6 +116,10 @@ _SHOP_CODES = re.compile(
 
 
 def sensitive(text):
+    # Owner 16.11.2026 (systemic): a message made only of ordinary words holds no secret value,
+    # whatever it says about passwords or tokens. Only something that looks like a value can be one.
+    if not _has_value(text):
+        return False
     text = _PROMO.sub('[промокод]', str(text or ''))
     text = _NO_SECRET.sub('[упоминание]', text)
     text = _PUBLIC_STEP.sub('[шаг инструкции]', text)
@@ -273,3 +277,8 @@ def masked_preview(text):
             hide_next = bool(re.fullmatch(r'(?:пароль|парол\w*|password|pass|код|code|токен|token)[:\-—]*', bare))
         out.append(' '.join(words))
     return '\n'.join(out)[:500]
+
+
+def _has_value(text):
+    """True when some word could be a password, code or token (what masked_preview would hide)."""
+    return '•••' in masked_preview(text) or len(str(text or '').splitlines()) > 12 or len(str(text or '').split()) > 60 * 12

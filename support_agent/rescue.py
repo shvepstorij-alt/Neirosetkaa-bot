@@ -12,7 +12,11 @@ HARD_CONFLICT = re.compile(r'(?i)возврат|верн[иу]|чарджбек|
                            r'угрож|мошенн|обман|развод|кидал|оскорб|\bмат\b|груб|refund|scam')
 BUY_INTENT = re.compile(r'(?i)купить|покупк|оформ|приобр|оплат|продл|платн|подписк|тариф|сколько\s+стои|цен[аыу]|хочу\s+\w+|нужн\w*\s+(?:плат|подпис|тариф)')
 PAID_CLAIM = re.compile(r'(?i)оплатил|оплатила|оплачен|деньги\s+(?:точно\s+)?(?:дошли|ушли|пришли)|оплата\s+прошла|перев[её]л|включите\s+подписк|активируйте')
-PROBLEM = re.compile(r'(?i)не\s+получа|не\s+работа|не\s+актив|не\s+пришл|не\s+приш[её]л|ошибк|не\s+открыва|не\s+вход|не\s+могу')
+PROBLEM = re.compile(r'(?i)не\s+ответ|нет\s+(?:плюса|подписки|про\b|pro\b|plus)|не\s+вижу|не\s+отображ|отклон|заблок|не\s+получа|не\s+работа|не\s+актив|не\s+пришл|не\s+приш[её]л|ошибк|не\s+открыва|не\s+вход|не\s+могу')
+HAVE = re.compile(r'(?i)у\s+меня\s+(?:сейчас\s+|уже\s+)?(?:есть\s+)?(?:подписк|тариф|plus|плюс|pro\b|про\b)|уже\s+(?:оплат|купил|оформил|есть\s+подписк)')
+ORDER_NO = re.compile(r'(?i)заказ\w*\s*(?:№|#)?\s*\d{4,}|#\s?\d{4,}')
+ASK_SCREEN = ('Здравствуйте! Номер заказа вижу. Пришлите, пожалуйста, скриншот того, что не получается: '
+              'по нему Александр проверит и поможет.')
 ASK_ORDER = ('Здравствуйте! Подскажите, пожалуйста, номер заказа и пришлите скриншот того, что не получается. '
              'По ним Александр проверит заказ и поможет.')
 OWNER_ACTION_KEYS = ('refund_hold', 'account_setup_hold', 'manual_secret_intake', 'owner_action_required',
@@ -99,8 +103,10 @@ def answer_instead_of_stop(result, understanding, context):
         return dict(result, handoff=True) if self_stop else result
     from .turn_understanding import _CODEX_HOW, classify_draft
     burst = str((context or {}).get('burst') or '')
-    if PAID_CLAIM.search(burst) or PROBLEM.search(burst):
+    if PAID_CLAIM.search(burst) or PROBLEM.search(burst) or HAVE.search(burst):
         # Owner 13.11 (6.48, 6.56): paid or something fails — ask the order number and a screenshot.
+        if ORDER_NO.search(burst):
+            return _clean(result, ASK_SCREEN, 'номер заказа есть, запросил скриншот')
         return _clean(result, ASK_ORDER, 'запросил номер заказа и скриншот')
     if _CODEX_HOW.search(burst) and _faq('codex_install'):
         return _clean(result, 'Здравствуйте!\n\n' + _faq('codex_install'), 'инструкция по Codex')
