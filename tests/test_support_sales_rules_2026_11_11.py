@@ -1000,3 +1000,69 @@ class OwnerUiTests(unittest.TestCase):
         labels = [b[0] for row in draft_rows({'id': 1}, 1, True, False) for b in row]
         self.assertIn('✏️ Исправить', labels)
         self.assertIn('🙅 Не отвечать', labels)
+
+
+class BuyRenewAndSecretsTests(unittest.TestCase):
+    def test_buy_or_renew_is_not_a_stop(self):
+        from support_agent import turn_understanding as tu
+        from support_agent.handoff import HANDOFF
+        orig = tu._enforce_turn_policy_core
+        tu._enforce_turn_policy_core = lambda a, u, c, f=None: {'reply': 'Здравствуйте!\n\n' + HANDOFF, 'summary': '', 'handoff': True}
+        try:
+            out = tu.enforce_turn_policy({}, {}, {'burst': 'Здравствуйте! А как купить подписку чата Гпт?\nПривет\nКак продлить Гпт'})
+        finally:
+            tu._enforce_turn_policy_core = orig
+        self.assertFalse(out['handoff'])
+        self.assertIn('@neirosetkaa_bot', out['reply'])
+        self.assertIn('Продление', out['reply'])
+
+    def test_masked_preview_hides_secrets(self):
+        from support_agent.privacy import masked_preview
+        text = masked_preview('Почта ivan@gmail.com\nПароль: qwerty\nKx9!aa22')
+        self.assertIn('i***@gmail.com', text)
+        self.assertNotIn('qwerty', text)
+        self.assertNotIn('Kx9', text)
+
+
+class CodexInstallTests(unittest.TestCase):
+    def test_codex_install_question_gets_instruction(self):
+        from support_agent import turn_understanding as tu
+        from support_agent.handoff import HANDOFF
+        orig = tu._enforce_turn_policy_core
+        tu._enforce_turn_policy_core = lambda a, u, c, f=None: {'reply': HANDOFF, 'summary': '', 'handoff': True}
+        try:
+            out = tu.enforce_turn_policy({}, {}, {'burst': 'хочу сестре установить CODEX, она в Беларуси. как ей пользоваться им? это ВПН нужно ставить?'})
+        finally:
+            tu._enforce_turn_policy_core = orig
+        self.assertFalse(out['handoff'])
+        self.assertIn('chatgpt.com/codex', out['reply'])
+        self.assertIn('VPN', out['reply'])
+
+
+class AnswerInsteadOfStopTests(unittest.TestCase):
+    CTX = {'burst': 'Пользуюсь gpt бесплатной версией, не хватает, надо платную версию',
+           'tariffs': [{'service': 'ChatGPT', 'service_id': 'chatgpt', 'plan': 'Pro', 'price': 19990},
+                       {'service': 'ChatGPT', 'service_id': 'chatgpt', 'plan': 'Plus', 'price': 2490}],
+           'hints': [{'service_id': 'chatgpt'}]}
+
+    def test_paid_version_request_gets_plans_cheapest_first(self):
+        from support_agent.rescue import answer_instead_of_stop
+        out = answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {'handoff_reason': 'тема без ответа'}}, {}, self.CTX)
+        self.assertFalse(out['handoff'])
+        self.assertLess(out['reply'].index('Plus'), out['reply'].index('Pro —'))
+        self.assertIn('@neirosetkaa_bot', out['reply'])
+        self.assertNotIn('handoff_reason', out['evidence'])
+
+    def test_model_written_handoff_is_replaced(self):
+        from support_agent.handoff import HANDOFF
+        from support_agent.rescue import answer_instead_of_stop
+        out = answer_instead_of_stop({'reply': HANDOFF, 'handoff': False, 'evidence': {}}, {}, self.CTX)
+        self.assertNotIn(HANDOFF, out['reply'])
+
+    def test_real_stops_stay(self):
+        from support_agent.rescue import answer_instead_of_stop
+        for burst in ('верните деньги за подписку', 'позовите человека', 'я оплатил, включите подписку'):
+            ctx = dict(self.CTX, burst=burst)
+            self.assertTrue(answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {}, ctx)['handoff'], burst)
+        ctx = dict(self.CTX, answers_to_who='Александр')
+        self.assertTrue(answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {}, ctx)['handoff'])

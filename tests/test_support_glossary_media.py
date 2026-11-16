@@ -188,8 +188,10 @@ class GlossaryMediaTests(unittest.TestCase):
         self.assertIn('1.', answered['reply'])
         self.assertIn('2.', answered['reply'])
         self.assertIn('Zoom', answered['reply'])
+        # Owner 16.11.2026: a price question is answered from the catalog, never a stop.
         skipped = self.ask('только цена зума')
-        self.assertTrue(skipped['handoff'])
+        self.assertFalse(skipped['handoff'])
+        self.assertIn('Zoom', skipped['reply'])
 
     def test_error_photo_is_part_of_understanding(self):
         before = self.store.calls_today()

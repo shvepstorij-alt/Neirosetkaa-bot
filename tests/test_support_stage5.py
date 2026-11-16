@@ -162,9 +162,9 @@ class Stage5Tests(unittest.TestCase):
         self.assertTrue(clash['handoff'])
         self.assertTrue(clash['evidence']['owner_alignment_hold'])
         self.model.alignment = 'reasks'
+        # Owner 16.11.2026: a client re-asking is answered, only a contradiction holds.
         reask = self.ask('и куда всё-таки')
-        self.assertTrue(reask['handoff'])
-        self.assertTrue(reask['evidence']['owner_alignment_hold'])
+        self.assertFalse(reask['evidence'].get('owner_alignment_hold'))
 
     def test_daily_limit_warns_and_then_uses_the_hold_phrase(self):
         self.service.daily_limit = 5
