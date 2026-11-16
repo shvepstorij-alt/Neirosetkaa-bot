@@ -618,7 +618,7 @@ class LateEveningRulesTests(unittest.TestCase):
     def test_new_owner_topics(self):
         from support_agent.faq import usable_answer
         self.assertIn('другой регион в VPN', usable_answer('activation_button_fails'))
-        self.assertIn('одним текстовым файлом', usable_answer('activate_for_me'))
+        self.assertIn('одним файлом', usable_answer('activate_for_me'))
         self.assertIn('ChatGPT или Claude', usable_answer('course_subscriptions'))
 
 
@@ -886,3 +886,55 @@ class DialogCheckFindingsTests(unittest.TestCase):
         self.assertIn('токен', usable_answer('activation_failed'))
         self.assertIn('втором шаге', usable_answer('org_id_sent_here'))
         self.assertIn('новый токен', usable_answer('renewal_token'))
+
+
+class SecondDialogRunTests(unittest.TestCase):
+    def test_token_error_is_not_a_secret(self):
+        from support_agent.privacy import sensitive
+        self.assertFalse(sensitive('Привет\nПишет токен не найден\nПытаюсь продлить'))
+
+    def test_rules(self):
+        from support_agent.faq import usable_answer
+        text = usable_answer('activate_for_me')
+        self.assertLess(text.index('токен'), text.index('пароль'))
+        self.assertIn('chatgpt.com', usable_answer('gmail_confirmed'))
+
+
+class ConversationFocusTests(unittest.TestCase):
+    """Owner 16.11.2026: the latest message is the question; the assistant knows what it answers."""
+
+    def test_focus(self):
+        from support_agent.turn_understanding import conversation_focus
+        window = [{'role': 'client', 'text': 'Хочу ChatGPT'},
+                  {'role': 'owner', 'text': 'Добрый вечер! Подскажите, у вас есть почта gmail.com?'},
+                  {'role': 'client', 'text': 'Да'}, {'role': 'client', 'text': '[email скрыт]'}]
+        focus = conversation_focus(window, 'Да\n[email скрыт]', {})
+        self.assertIn('gmail', focus['answers_to'])
+        self.assertEqual(focus['who'], 'Александр')
+        self.assertIn('почту gmail', focus['stage'])
+        self.assertEqual(conversation_focus([{'role': 'client', 'text': 'Привет'}], 'Привет', {})['answers_to'], '')
+
+    def _turn(self, said, burst, reply):
+        from support_agent.faq import for_context
+        from support_agent.turn_understanding import enforce_turn_policy, package
+        context = {'tariffs': [], 'nominals': [], 'faq': for_context(), 'burst': burst, 'answers_to': said,
+                   'history': [{'role': 'owner', 'text': said}, {'role': 'client', 'text': burst}],
+                   'dialog_state': {'service': 'ChatGPT'}}
+        understanding = {'intent': 'question', 'service_id': '', 'tariff_id': '', 'confidence': 'high',
+                         'reply': reply, 'summary': 'Ответ.', 'questions': ['Вопрос'], 'owner_topic': 'new_account_email',
+                         'beyond_owner_fact': False, 'refund_order': '', 'refund_service': '', 'refund_reason': '',
+                         'conflict': 'none', 'owner_alignment': 'follows'}
+        return enforce_turn_policy(package(understanding, context), understanding, context, {'status': 'fresh'})
+
+    def test_gmail_yes_continues(self):
+        answer = self._turn('Подскажите, у вас есть почта gmail.com?', 'Да\n[email скрыт]',
+                            'Если такой почты нет, создадим outlook.com: пришлите пароль.')
+        self.assertFalse(answer['handoff'])
+        self.assertIn('Зарегистрируйтесь на эту почту', answer['reply'])
+        self.assertNotIn('outlook', answer['reply'])
+
+    def test_registered_gets_token_steps(self):
+        answer = self._turn('Можете через эту почту зарегистрироваться на сайте ChatGPT.com', 'Сейчас\nЗарегистрировалась',
+                            'Пришлите почту и пароль от аккаунта.')
+        self.assertIn('api/auth/session', answer['reply'])
+        self.assertNotIn('пароль', answer['reply'])
