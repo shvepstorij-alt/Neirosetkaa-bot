@@ -585,7 +585,17 @@ def _owner_topic(understanding, context):
             known = {row['id'] for row in load_faq()['topics']}
         except Exception:
             known = set()
-    return value if value in known else 'none'
+    if value not in known:
+        return 'none'
+    # Owner 16.11.2026: «спасибо» at the end of a question does not make the whole message a thank-you.
+    if value in SMALL_TALK_TOPICS:
+        burst = str((context or {}).get('burst') or '')
+        if '?' in burst or len(burst.strip()) > 80:
+            return 'none'
+    return value
+
+
+SMALL_TALK_TOPICS = {'thanks', 'greeting', 'who_answers', 'on_line'}
 
 
 def _conflict(understanding):

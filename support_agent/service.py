@@ -1297,7 +1297,22 @@ class Service:
                     if understood is not None:
                         return understood
                 except Exception as exc:
+                    logging.exception('Turn reading failed')
                     from .handoff import handoff_text
+                    fallback={'reply':handoff_text(),'summary':'Разбор хода не завершился ('+type(exc).__name__+').',
+                              'handoff':True,'source_ids':[],
+                              'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',
+                                          'diagnostic':'Сбой разбора: '+type(exc).__name__+'.'}}
+                    if self.store.calls_today()<self.daily_limit:
+                      try:
+                        # Owner 16.11.2026: a crash still gives an answerable question its answer.
+                        from .turn_understanding import burst_and_window
+                        from .rescue import answer_instead_of_stop
+                        rescued=answer_instead_of_stop(fallback,{},{'burst':burst_and_window(self.store.db,job['chat'])[0]})
+                        if not rescued.get('handoff'):
+                            return rescued
+                      except Exception:
+                        logging.exception('Rescue after failure failed')
                     return {'reply':handoff_text(),'summary':'Разбор хода не завершился. Клиенту оставлено ожидание владельца.',
                             'handoff':True,'source_ids':[],
                             'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified',

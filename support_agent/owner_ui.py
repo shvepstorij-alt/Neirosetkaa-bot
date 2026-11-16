@@ -86,8 +86,11 @@ def compact_card(service, d, c, client_label, state_label, customer_preview, rea
     head = f'💬 {client_label}' + (f' · {html.escape(topic)}' if topic else '') + f' · №{d["id"]}'
     text = (f'{head}\n<b>Клиент:</b> «{html.escape(question)}»\n\n'
             f'<b>Ответ помощника:</b>\n{customer_preview}')
-    if d['handoff'] and reason:
-        text += f'\n\n🛑 <i>Нужна ваша проверка: {html.escape(reason[:200])}</i>'
+    if d['handoff']:
+        why = reason or str(evidence.get('diagnostic') or '') or str(d['summary'] or '')
+        text += f'\n\n🛑 <i>Почему стоп: {html.escape(why[:250] or "причина не записана")}</i>'
+    elif evidence.get('rescued'):
+        text += f'\n\n🔁 <i>Был бы стоп — помощник ответил сам ({html.escape(str(evidence["rescued"]))}).</i>'
     if evidence.get('owner_edited'):
         text += '\n\n✏️ <i>Текст исправлен вами.</i>'
     text += f'\n\n<i>{state_label}</i>'

@@ -334,7 +334,7 @@ def build_cases(catalog):
     add('payment-asserted', [{
         'role': 'client', 'text': 'деньги точно дошли, включите подписку',
         'reply': 'Оплата прошла. Подписка активирована.',
-        'expect': {'hold': True},
+        'expect': {'hold': False, 'need': ['номер заказа']},
     }])
     add('refund-collect', [
         {'role': 'client', 'text': 'хочу вернуть оплату',
