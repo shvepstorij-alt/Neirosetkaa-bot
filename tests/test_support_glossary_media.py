@@ -231,7 +231,8 @@ class GlossaryMediaTests(unittest.TestCase):
     def test_daily_limit_counts_transcription_before_the_reply(self):
         self.service.daily_limit = 1
         answer = self.ask('', {'kind': 'voice', 'file_id': 'voice-1', 'file_size': 36, 'duration': 4})
-        self.assertTrue(answer['handoff'])
+        # Owner 16.11.2026: after the limit only answers that need no model call may go out.
+        self.assertTrue(answer['handoff'] or 'Здравствуйте' in answer['reply'])
         self.assertEqual(self.model.calls, 0)
         self.assertEqual(self.store.calls_today(), 1)
 

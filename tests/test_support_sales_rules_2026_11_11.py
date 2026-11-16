@@ -1089,3 +1089,21 @@ class ThanksAtTheEndTests(unittest.TestCase):
         burst = 'хочу сестре установить CODEX, как ей пользоваться? Какой ВПН порекомендовать можете?\nБлагодарю'
         self.assertEqual(_owner_topic({'owner_topic': 'thanks'}, {'burst': burst}), 'none')
         self.assertEqual(_owner_topic({'owner_topic': 'thanks'}, {'burst': 'Благодарю'}), 'thanks')
+
+
+class EveningFindingsTests(unittest.TestCase):
+    def test_words_about_a_token_are_not_a_secret(self):
+        from support_agent.privacy import sensitive
+        self.assertFalse(sensitive('всю процедуру с токеном сделал'))
+        self.assertTrue(sensitive('пароль qwerty'))
+        self.assertTrue(sensitive('почта ivan@gmail.com пароль ivan123'))
+
+    def test_already_subscribed_is_not_sent_buy_steps(self):
+        from support_agent.rescue import answer_instead_of_stop
+        out = answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {},
+                                     {'burst': 'у меня сейчас подписка plus, и там нет плюса, что делать?'})
+        self.assertIn('скриншот', out['reply'])
+        self.assertNotIn('Каталог', out['reply'])
+        out = answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {},
+                                     {'burst': 'что то там не ответило\nЗаказ #10829 · FreeKassa 348752373'})
+        self.assertIn('Номер заказа вижу', out['reply'])
