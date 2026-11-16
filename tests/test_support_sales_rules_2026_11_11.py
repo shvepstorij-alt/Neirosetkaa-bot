@@ -972,5 +972,31 @@ class DraftStatsTests(unittest.TestCase):
                 db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)', (i, 2, 'owner', owner, '{}', now, 'stored'))
         text = summary(db, 7)
         self.assertIn('Отправлено как есть: 1', text)
-        self.assertIn('вы ответили сами: 1', text)
+        self.assertIn('исправили или ответили сами: 1', text)
         self.assertIn('Вы ответили: Мой ответ', review_file(db, 7))
+
+
+class OwnerUiTests(unittest.TestCase):
+    def test_edit_marks_draft_and_stats_counts_it(self):
+        import json, time
+        from support_agent.draft_stats import review_file, summary
+        from support_agent.owner_ui import draft_rows, mark_edited
+        from support_agent.storage import Store
+        db = Store(':memory:').db
+        now = time.time()
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)', (1, 1, 'client', 'вопрос', '{}', now - 10, 'stored'))
+        db.execute("INSERT INTO drafts(id,chat,mid,revision,global_revision,text,summary,handoff,created,state) VALUES (1,1,1,0,0,'старый','',0,?,'sent')", (now - 5,))
+        db.execute('INSERT INTO draft_evidence VALUES (1,?)', (json.dumps({'owner_topic': 'renewal'}),))
+
+        class S:
+            pass
+        s = S(); s.db = db
+        mark_edited(s, 1, 'старый')
+        db.execute("UPDATE drafts SET text='новый' WHERE id=1")
+        self.assertIn('исправили или ответили сами: 1', summary(db, 7))
+        report = review_file(db, 7)
+        self.assertIn('Черновик помощника: старый', report)
+        self.assertIn('Вы ответили: новый', report)
+        labels = [b[0] for row in draft_rows({'id': 1}, 1, True, False) for b in row]
+        self.assertIn('✏️ Исправить', labels)
+        self.assertIn('🙅 Не отвечать', labels)
