@@ -347,6 +347,47 @@ class OpenAI:
             raise ValueError('translation')
         return value['reply']
 
+    async def grade_reply(self, case, reply, stopped):
+        """Owner check (16.11.2026): compare the assistant with what Alexander really answered."""
+        import json
+        instructions = (
+            'Ты проверяешь ИИ-помощника поддержки магазина подписок на нейросети. Дан фрагмент настоящей переписки, '
+            'сообщение клиента, ответ владельца магазина Александра (эталон по смыслу) и ответ помощника. '
+            'Ответ Александра написан 1–3 месяца назад: цены и названия тарифов с тех пор могли измениться, '
+            'поэтому другая цена сама по себе не ошибка, если помощник не выдумывает. '
+            'Александр иногда сам выполняет действие (активирует, присылает данные аккаунта, проверяет оплату). '
+            'Помощник этого не умеет: для таких случаев верный ответ — собрать нужные данные или передать Александру (stopped=true тоже верно). '
+            'Оцени: verdict=good если помощник по смыслу ответил так же или полезнее; '
+            'partial если ответил по делу, но упустил важное из ответа Александра или задал лишний вопрос; '
+            'wrong если ответил не на тот вопрос, не про тот сервис или дал неверный порядок действий; '
+            'harmful если выдумал факт, цену, обещание или результат, или попросил лишнее; '
+            'needless_stop если помощник остановился (stopped=true), а Александр ответил простым фактом или вопросом, который помощник мог дать сам; '
+            'right_stop если остановка правильная. '
+            'category — одна главная причина проблемы. problem — одна короткая фраза по-русски, что не так; для good пусто. '
+            'fix — одна короткая фраза, как должен был ответить помощник; для good пусто.')
+        cats = ['none', 'wrong_service', 'missed_question', 'wrong_steps', 'invented_fact', 'price', 'too_vague',
+                'too_long', 'lost_context', 'should_ask', 'should_handoff', 'needless_stop', 'tone', 'language', 'other']
+        schema = {'type': 'object', 'additionalProperties': False,
+                  'properties': {'verdict': {'type': 'string', 'enum': ['good', 'partial', 'wrong', 'harmful', 'needless_stop', 'right_stop']},
+                                 'category': {'type': 'string', 'enum': cats},
+                                 'problem': {'type': 'string', 'maxLength': 200},
+                                 'fix': {'type': 'string', 'maxLength': 250}},
+                  'required': ['verdict', 'category', 'problem', 'fix']}
+        payload = {'history': case.get('history') or [], 'client': case.get('client'), 'alexander': case.get('owner'),
+                   'assistant': reply, 'stopped': bool(stopped)}
+        result = await self.request('responses', json={
+            'model': self.model, 'store': False, 'instructions': instructions,
+            'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': json.dumps(payload, ensure_ascii=False)[:6000]}]}],
+            'max_output_tokens': 600,
+            'text': {'format': {'type': 'json_schema', 'name': 'grade', 'strict': True, 'schema': schema}},
+        })
+        chunks = [c['text'] for item in result.get('output', []) if item.get('type') == 'message'
+                  for c in item.get('content', []) if c.get('type') == 'output_text']
+        value = json.loads(''.join(chunks) or '{}')
+        if value.get('verdict') not in schema['properties']['verdict']['enum']:
+            raise ValueError('grade')
+        return value
+
     async def choose_tariff(self, candidates, text):
         """Pick one id from the list just shown, or say the reply is not a choice."""
         import json

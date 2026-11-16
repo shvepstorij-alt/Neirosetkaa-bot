@@ -571,6 +571,20 @@ class Service:
             from .dialog_probe import run_probe
             self.research_probe_task=asyncio.create_task(run_probe(self))
             await self.owner_message('Запускаю 3 тестовых диалога, 6 ответов. До 20 учтённых этапов API в пределах дневного лимита; это не денежный лимит. История изолирована, отправки клиентам запрещены. /stop остановит следующие этапы; начатый запрос может списать средства.')
+        elif cmd=='/dialogs':
+            from .dialog_check import parts as dialog_parts,run_dialogs
+            total=dialog_parts()
+            arg=parts[1] if len(parts)>1 else ''
+            if not arg.isdecimal() or not 1<=int(arg)<=total:
+                await self.owner_message('Проверка на настоящих диалогах с оценкой. Команды: '+', '.join('/dialogs %d'%k for k in range(1,total+1))
+                    +'. В части 100 диалогов, около 250–350 запросов к модели. Клиентам ничего не отправляется.')
+                return
+            running=getattr(self,'research_probe_task',None)
+            if running and not running.done():
+                await self.owner_message('Другая проверка уже выполняется. Дождитесь её окончания.')
+                return
+            self.research_probe_task=asyncio.create_task(run_dialogs(self,int(arg)))
+            await self.owner_message('Запускаю проверку диалогов, часть %s. Сообщу о ходе каждые 25 диалогов; в конце придут сводка и файл.'%arg)
         elif cmd=='/check':
             from .check_cases import PARTS
             arg=parts[1] if len(parts)>1 else ''
