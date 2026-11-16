@@ -105,11 +105,21 @@ _ORDER_LINES = re.compile(
     r'Монетки:[^\n]{0,60})\s*$|оплатил\w*\s+заказ\s*#?\s*[\w-]{1,40}')
 
 
+# Codes printed by the shop bot itself («Код активации: GPTP-5CWM-AXF9-RFV0», «Ключ: …»), masked
+# e-mails from those messages and promo codes the client asks about are not the client's secrets.
+_SHOP_CODES = re.compile(
+    r'(?im)(?:код\s+активации|ключ)\s*:?\s*[A-Z0-9]{3,6}(?:-[A-Z0-9]{3,6}){0,4}\b|'
+    r'(?:промо\w*|промик\w*)[^\n]{0,30}?\b[A-Z][A-Z0-9]{3,14}\b|'
+    r'(?:токен|token)\w*\s+(?:надо|нужно|нужен|заново|снова|ещ[её]|опять|присылать|отправлять)[^?\n]{0,50}\?|'
+    r'\b[A-Z]{3,5}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}\b|\b[\w.]{1,4}\*{2,}@[\w.\[\]-]+')
+
+
 def sensitive(text):
     text = _PROMO.sub('[промокод]', str(text or ''))
     text = _NO_SECRET.sub('[упоминание]', text)
     text = _PUBLIC_STEP.sub('[шаг инструкции]', text)
     text = _ORDER_LINES.sub('[данные заказа]', text)
+    text = _SHOP_CODES.sub('[код магазина]', text)
     # Prefer manual handling over leaking unlabelled passwords or one-time codes.
     if 'access_secret' in redaction_categories(text):return True
     if _embedded_secret(text):return True

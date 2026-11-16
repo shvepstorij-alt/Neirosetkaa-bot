@@ -373,6 +373,16 @@ class OpenAI:
                                  'problem': {'type': 'string', 'maxLength': 200},
                                  'fix': {'type': 'string', 'maxLength': 250}},
                   'required': ['verdict', 'category', 'problem', 'fix']}
+        try:
+            from .faq import load_faq
+            rules = '\n'.join('- ' + row['title'] + ': ' + str(row.get('answer') or '')[:300]
+                               for row in load_faq()['topics'] if row.get('answer'))[:9000]
+        except Exception:
+            rules = ''
+        instructions += (' Ниже действующие правила Александра (ноябрь 2026). Всё, что в них написано (промокоды NAVSEX и CHATIK10, '
+                         'риски Claude, оплата только СБП или «Мир», подписка на месяц без автосписаний, новая почта outlook.com и т. д.), '
+                         'НЕ выдумка: если помощник повторил правило, это не ошибка, даже если Александр тогда ответил иначе. '
+                         'Ошибка — если правило не подходит к вопросу клиента или помощник проигнорировал контекст.\n' + rules)
         payload = {'history': case.get('history') or [], 'client': case.get('client'), 'alexander': case.get('owner'),
                    'assistant': reply, 'stopped': bool(stopped)}
         result = await self.request('responses', json={
