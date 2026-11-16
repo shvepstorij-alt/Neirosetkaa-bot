@@ -938,3 +938,18 @@ class ConversationFocusTests(unittest.TestCase):
                             'Пришлите почту и пароль от аккаунта.')
         self.assertIn('api/auth/session', answer['reply'])
         self.assertNotIn('пароль', answer['reply'])
+
+
+class OwnerAskedForIdTests(unittest.TestCase):
+    def test_id_asked_by_owner_is_accepted(self):
+        from support_agent.faq import for_context
+        from support_agent.turn_understanding import enforce_turn_policy, package
+        said = 'Для оформления подписки нужен organization id, отправьте сюда'
+        context = {'tariffs': [], 'nominals': [], 'faq': for_context(), 'burst': '[id]', 'answers_to': said,
+                   'answers_to_who': 'Александр', 'history': [{'role': 'owner', 'text': said}], 'dialog_state': {}}
+        understanding = {'intent': 'question', 'service_id': '', 'tariff_id': '', 'confidence': 'high',
+                         'reply': 'x', 'summary': 'Ответ.', 'questions': ['Вопрос'], 'owner_topic': 'org_id_sent_here',
+                         'beyond_owner_fact': False, 'refund_order': '', 'refund_service': '', 'refund_reason': '',
+                         'conflict': 'none', 'owner_alignment': 'follows'}
+        answer = enforce_turn_policy(package(understanding, context), understanding, context, {'status': 'fresh'})
+        self.assertNotIn('не сюда', answer['reply'])
