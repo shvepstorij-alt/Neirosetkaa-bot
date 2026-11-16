@@ -60,6 +60,10 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Иначе vpn_advice=false и reask_advisories пустой. '
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
     'Голос уже расшифрован в тексте сообщения. '
+    'Главное — latest_client_message: на него и отвечай. answers_to — последняя реплика помощника или Александра перед ним, '
+    'answers_to_who — кто её написал, stage — этап разговора. Короткий ответ клиента («да», «нет», «сейчас», «готово», почта, номер, ID) '
+    'продолжает именно answers_to и stage: не начинай шаблон заново и не переспрашивай то, что клиент уже сообщил. '
+    'Если answers_to написал Александр, продолжай его шаг. '
     'Пиши о себе только в мужском роде: «рад помочь», «проверил», «уточнил», «готов». '
     'К клиенту только на «вы», даже если он пишет на «ты». Не заканчивай ответ фразами «Рад помочь», «Обращайтесь», «Если хотите, могу…». '
     'Цены клиенту только в рублях (₽): из каталога, а если тарифа в каталоге нет — пересчёт из official_prices по правилу. Доллары, тенге и цену за 100 кредитов в ответе не пиши. '
@@ -216,6 +220,38 @@ def hint_services(text, catalog):
     return [{'service_id': key, 'label': label} for key, label in found.items()]
 
 
+_STAGES = (
+    (r'(?i)почт\w*\s+gmail|gmail\.com\?|есть\s+(?:ли\s+)?почт', 'выясняем почту gmail для регистрации'),
+    (r'(?i)зарегистр\w+[^.?!\n]{0,40}(?:chatgpt|сайт|почт)', 'клиент регистрирует аккаунт на своей почте; дальше нужен токен'),
+    (r'(?i)api/auth/session|токен', 'ждём токен от клиента'),
+    (r'(?i)ссылк\w*\s+на\s+оплат|адресной\s+строк', 'ждём ссылку на оплату тарифа'),
+    (r'(?i)organization\s+id', 'ждём, что клиент вставит Organization ID в окно активации'),
+    (r'(?i)почт\w*\s+и\s+пароль', 'ждём почту и пароль от аккаунта'),
+    (r'(?i)username|имя\s+пользовател', 'ждём username Telegram'),
+    (r'(?i)номер\s+заказа', 'ждём номер заказа'),
+    (r'(?i)какой\s+тариф|напишите,\s+какой\s+тариф', 'клиент выбирает тариф'),
+    (r'(?i)перейти\s+к\s+оплате|каталог', 'клиент оплачивает в боте'),
+    (r'(?i)подписка\s+успешно\s+активирована|активирован', 'подписка уже активирована'),
+)
+
+
+def conversation_focus(window, burst, state):
+    """What the client's latest message answers, and at which step the talk is."""
+    rows = [row for row in window or [] if isinstance(row, dict)]
+    count = 0
+    for index in range(len(rows) - 1, -1, -1):
+        if rows[index].get('role') == 'client':
+            count += 1
+            continue
+        if count:
+            said = ' '.join(str(rows[index].get('text') or '').split())
+            who = 'Александр' if rows[index].get('role') == 'owner' else 'помощник'
+            stage = next((label for pattern, label in _STAGES if re.search(pattern, said)), '')
+            return {'answers_to': said[-400:], 'who': who, 'stage': stage}
+        break
+    return {'answers_to': '', 'who': '', 'stage': ''}
+
+
 def build_context(db, chat, facts):
     burst, window = burst_and_window(db, chat)
     state = load(db, chat)
@@ -238,7 +274,13 @@ def build_context(db, chat, facts):
     except Exception:
         payment = {}
     region = active_region(burst, state)
+    focus = conversation_focus(window, burst, state)
     return {'burst': burst,
+            # Owner 16.11.2026: the latest message is the question; this says what it answers.
+            'latest_client_message': burst,
+            'answers_to': focus['answers_to'],
+            'answers_to_who': focus['who'],
+            'stage': focus['stage'],
             'receipt_attached': bool(receipt_files(db, chat)),
             'glossary': glossary,
             'history': window,
@@ -1608,6 +1650,13 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
             ((context or {}).get('dialog_state') or {}).get('service') or '')):
         # «Я то в России» is not a VPN question; «клод код» is not Codex.
         topic = validated['owner_topic'] = 'none'
+    focus_said = str((context or {}).get('answers_to') or '')
+    if re.search(r'(?i)gmail', focus_said) and re.search(r'(?i)^\W*(?:да|есть|ага|конечно)\b|gmail|\[email', offcat_burst) \
+            and not re.search(r'(?i)\bнет\b|нету', offcat_burst) and len(offcat_burst) <= 160:
+        topic = validated['owner_topic'] = 'gmail_confirmed'
+    elif re.search(r'(?i)зарегистр', focus_said) and re.search(r'(?i)зарегистр\w*|готово|сделал\w*|создал\w*|^\W*да\W*$', offcat_burst) \
+            and len(offcat_burst) <= 120 and re.search(r'(?i)chatgpt|gpt', focus_said + ' ' + str(((context or {}).get('dialog_state') or {}).get('service') or '')):
+        topic = validated['owner_topic'] = 'chatgpt_token_after_register'
     if topic == 'activation_overdue' and not _LONG_WAIT.search(offcat_burst):
         topic = validated['owner_topic'] = 'delivery_time'
     if _install_reply(offcat_burst, context) and topic in ('app_download', 'tech_setup', 'none', 'new_account_email'):
