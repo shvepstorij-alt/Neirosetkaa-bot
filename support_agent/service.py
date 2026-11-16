@@ -60,6 +60,7 @@ class Service:
     def __init__(self,store,tg,ai,shop,owner,allowed,daily_limit=100,auto_test_id=None,
                  auto_test_ids=(),auto_for_all=False):
         self.store,self.tg,self.ai,self.shop=store,tg,ai,shop
+        self.edit_prompts={}
         from .rollout import AllowedChats
         self.owner,self.daily_limit=owner,daily_limit
         self.allowed=allowed if isinstance(allowed,AllowedChats) else set(allowed)
@@ -150,7 +151,8 @@ class Service:
         cmd=parts[0].split('@')[0]
         readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','/stats','/review','control:refresh','auto:settings')
                   or cmd in ('delay:view','delay:custom') or cmd=='/delay' and len(parts)==1
-                  or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:')))
+                  or cmd in ('/help','menu:settings','menu:tests','menu:stats')
+                  or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:','more:','info:')))
         gate=self.schedule_admin_job(lambda:self.command(text,admin_mid),readonly=readonly)
         if gate is not None and not readonly:
             # Stop/resume/retry/prepare mutate state synchronously before their
@@ -186,7 +188,8 @@ class Service:
 
     async def show_control(self,admin_mid=None,settings=False):
         from .auto_panel import overview,settings as settings_view
-        text,rows=settings_view(self) if settings else overview(self)
+        from .owner_ui import main_menu
+        text,rows=settings_view(self) if settings else main_menu(self)
         await self.admin_panel(text,rows,admin_mid)
 
     async def show_attention(self,page=0,admin_mid=None):
@@ -297,6 +300,14 @@ class Service:
                     await self.tg.call('sendMessage',chat_id=m['chat']['id'],text=f'Ваш Telegram ID: {m["chat"]["id"]}')
                 return
             if m.get('from',{}).get('id')==self.owner and m.get('chat',{}).get('id')==self.owner:
+                did=self.edit_target(m)
+                if did:
+                    job=lambda:self.owner_edit(did,m.get('text',''))
+                    if _POLL_INGEST.get():
+                        gate=self.schedule_admin_job(job,readonly=False)
+                        if gate is not None:await gate.wait()
+                    else:await job()
+                    return
                 try:
                     if _POLL_INGEST.get():await self.dispatch_polled_command(m.get('text',''))
                     else:await self.command(m.get('text',''))
@@ -738,6 +749,32 @@ class Service:
                 'подготовка ответов включена для новых сообщений.' if mode=='draft' else
                 'помощник на паузе. Ожидающие черновики отменены.'),
                 buttons([self.chat_controls(self.store.chat(cid))]))
+        elif cmd=='/help':
+            from .owner_ui import HELP
+            await self.owner_message(HELP)
+        elif cmd in ('menu:settings','menu:tests'):
+            from .owner_ui import settings_menu,tests_menu
+            text,rows=settings_menu(self) if cmd=='menu:settings' else tests_menu()
+            await self.admin_panel(text,rows,admin_mid)
+        elif cmd=='menu:stats':
+            from .draft_stats import summary as draft_summary
+            await self.admin_panel(draft_summary(self.store.db,7),[[('📄 Файл с исправлениями','/review')],[('← Назад','control:refresh')]],admin_mid)
+        elif cmd.startswith(('more:','info:')):
+            await self.show_draft(int(cmd.split(':')[1]),admin_mid,view='more' if cmd.startswith('more:') else 'info')
+        elif cmd.startswith('skip:'):
+            did=int(cmd.split(':')[1])
+            self.store.db.execute("UPDATE drafts SET state='stale' WHERE id=? AND state='ready'",(did,))
+            await self.show_draft(did,admin_mid)
+        elif cmd.startswith('edit:'):
+            did=int(cmd.split(':')[1])
+            d=self.store.db.execute('SELECT state FROM drafts WHERE id=?',(did,)).fetchone()
+            if not d or d['state']!='ready':
+                await self.owner_message('Этот черновик уже неактуален. Откройте свежий в /pending.')
+            else:
+                sent=await self.tg.call('sendMessage',chat_id=self.owner,
+                                        text=f'✏️ Черновик №{did}: пришлите исправленный текст ответом на это сообщение. Клиент получит именно его.',
+                                        reply_markup={'force_reply':True,'input_field_placeholder':'Исправленный ответ клиенту'})
+                self.edit_prompts[sent['message_id']]=did
         elif cmd=='/stats':
             from .draft_stats import summary as draft_summary
             days=int(parts[1]) if len(parts)>1 and parts[1].isdecimal() and 1<=int(parts[1])<=60 else 7
@@ -783,20 +820,34 @@ class Service:
                 self.store.prepare_now(cid,time.time())
                 await self.owner_message(self.chat_identity(cid)+'\nПодготовка поставлена в очередь заново. Это может расходовать API-баланс.')
 
-    async def show_draft(self,did,admin_mid=None):
+    def edit_target(self,m):
+        text=str(m.get('text') or '').strip()
+        reply=(m.get('reply_to_message') or {}).get('message_id')
+        if not text or text.startswith('/') or not reply:return None
+        if reply in self.edit_prompts:return self.edit_prompts[reply]
+        row=self.store.db.execute("SELECT id FROM drafts WHERE admin_mid=? AND state='ready'",(reply,)).fetchone()
+        return row['id'] if row else None
+
+    async def owner_edit(self,did,text):
+        d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+        if not d or d['state']!='ready':
+            await self.owner_message('Черновик уже неактуален — исправление не отправлено. Ответьте клиенту в личке.');return
+        from .owner_ui import mark_edited
+        mark_edited(self.store,did,d['text'])
+        self.store.db.execute('UPDATE drafts SET text=? WHERE id=?',(text.strip()[:3800],did))
+        self.edit_prompts={k:v for k,v in self.edit_prompts.items() if v!=did}
+        if not self.schedule_approval(did):
+            await self.owner_message('Сейчас отправляются другие ответы. Исправленный текст сохранён — нажмите «Отправить» в карточке.')
+
+    async def show_draft(self,did,admin_mid=None,view='card'):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
         if not d:
             return
         c=self.store.chat(d['chat'])
-        rows=[self.chat_controls(c)]
-        rows.append([('Весь диалог',f'dialog:{c["id"]}')])
-        rows.append([('Все чаты','chats:0'),('Обновить',f'draft:{did}')])
+        from .owner_ui import compact_card,draft_rows,more_rows
         expired=d['state']=='ready' and time.time()-d['created']>=900
-        if d['state']=='ready' and not expired:
-            rows.insert(0,[('Отправить и продолжить',f'send:{did}')])
-            rows.insert(1,[('Отправить и взять чат себе',f'sendpause:{did}')])
-        elif expired:
-            rows.insert(0,[('Подготовить свежий ответ',f'retry:{c["id"]}')])
+        rows=draft_rows(d,c['id'],d['state']=='ready' and not expired,expired)
+        if view=='more':rows=[r for r in more_rows(self,d,c) if r]
         profile=self.store.profile(c['id'])
         label=('@'+profile['username']) if profile and profile['username'] else (
             profile['name'] if profile and profile['name'] else 'Клиент')
@@ -849,7 +900,7 @@ class Service:
         _,customer_preview=format_customer(d['text'][:1800])
         from .auto_panel import MODES
         mode_label=MODES.get(self.store.effective_mode(c['id']),'неизвестно')
-        text=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
+        full=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
               f'👤 <b>Клиент:</b> {client}\n'
               f'<b>Telegram ID:</b> <code>{c["uid"]}</code> · <b>Чат:</b> №{c["id"]}\n\n'
               f'<b>Статус:</b> {state}\n'
@@ -861,8 +912,16 @@ class Service:
               f'💬 <b>Ответ клиенту</b>\n{customer_preview}\n\n'
               f'{research_note}'
               f'<i>{note}</i>')
+        if view=='info':
+            text=full;rows=[[('← К черновику',f'draft:{did}')]]
+        else:
+            from .auto_policy import owner_reason
+            reason=evidence.get('auto_block_reason') or evidence.get('handoff_reason') or ''
+            try:reason=owner_reason(reason) if reason else ''
+            except Exception:reason=str(reason)
+            text=compact_card(self,d,c,client,state,customer_preview,reason)
         if admin_mid is not None:
-            if len(html.unescape(re.sub(r'<[^>]*>','',text)).encode('utf-16-le'))//2>3900:
+            if view=='info' and len(html.unescape(re.sub(r'<[^>]*>','',text)).encode('utf-16-le'))//2>3900:
                 # A long draft was initially sent in several parts. Its final
                 # action panel is updated without duplicating those parts.
                 text=(f'📝 <b>Черновик ответа №{did}</b>\n\n'
@@ -2413,6 +2472,12 @@ async def main():
                       os.environ['SUPPORT_AUDIO_MODEL'],os.getenv('SUPPORT_SEARCH_MODEL'))
             service=Service(store,tg,ai,shop,owner,allowed,limit,auto_test_ids=auto_ids,auto_for_all=auto_for_all);service.bot_id=me['id']
             service.owner_interval=1.05
+            try:
+                from .owner_ui import COMMANDS
+                await tg.call('setMyCommands',commands=[{'command':c,'description':d} for c,d in COMMANDS],
+                              scope={'type':'chat','chat_id':owner})
+            except Exception:
+                logging.warning('Command menu not updated')
             # Fail startup if owner has not started the bot; no client processing yet.
             await service.owner_message('Тестовый помощник запущен. Режим: '+store.get('mode')+'. /status — управление. '+
                 ('Черновики для всех клиентов: включены, AUTO только для тестовых ID. ' if allowed.drafts_for_all else '')+

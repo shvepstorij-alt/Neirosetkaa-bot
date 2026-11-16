@@ -41,14 +41,17 @@ def _rows(db, days, now=None):
                            (row['chat'], row['created'])).fetchall()
         client = db.execute("SELECT text FROM messages WHERE chat=? AND role='client' AND mid<=? ORDER BY mid DESC LIMIT 3",
                             (row['chat'], row['mid'])).fetchall()
-        if row['state'] == 'sent':
+        if row['state'] == 'sent' and isinstance(evidence, dict) and evidence.get('owner_edited'):
+            outcome = 'replaced'
+            owner = [{'text': row['text']}]
+        elif row['state'] == 'sent':
             outcome = 'sent'
         elif owner:
             outcome = 'replaced'
         else:
             outcome = 'idle'
         out.append({'id': row['id'], 'topic': _topic(evidence, row['text']), 'outcome': outcome, 'held': bool(row['handoff']),
-                    'draft': row['text'] or '', 'owner': '\n'.join(r['text'] or '' for r in owner),
+                    'draft': (evidence.get('original_text') if isinstance(evidence, dict) else None) or row['text'] or '', 'owner': '\n'.join(r['text'] or '' for r in owner),
                     'client': '\n'.join(r['text'] or '' for r in reversed(client))})
     return out
 
@@ -69,8 +72,8 @@ def summary(db, days=7, now=None):
         by[row['topic']][row['outcome']] += 1
     total = Counter(row['outcome'] for row in rows)
     lines = [f'Черновики за {days} дн.: {len(rows)}. Отправлено как есть: {total["sent"]}, '
-             f'вы ответили сами: {total["replaced"]}, без действия: {total["idle"]}.', '',
-             'По темам (как есть / сами / без действия):']
+             f'исправили или ответили сами: {total["replaced"]}, без действия: {total["idle"]}.', '',
+             'По темам (как есть / исправлено / без действия):']
     order = sorted(by.items(), key=lambda item: -sum(item[1].values()))
     for topic, count in order[:20]:
         decided = count['sent'] + count['replaced']
@@ -78,7 +81,7 @@ def summary(db, days=7, now=None):
         ready = ' ✅ можно в автоответ' if decided >= 10 and count['sent'] >= 0.9 * decided else ''
         lines.append(f'• {_name(topic, titles)}: {count["sent"]} / {count["replaced"]} / {count["idle"]}{share}{ready}')
     lines += ['', 'Тема готова к автоответу, когда в ней ≥10 решённых черновиков и ≥90% отправлены без правки.',
-              '/review — файл с черновиками, которые вы заменили своим ответом.']
+              '/review — файл с черновиками, которые вы исправили или заменили.']
     return '\n'.join(lines)
 
 
@@ -89,4 +92,4 @@ def review_file(db, days=7, now=None):
         blocks.append('\n'.join([f'#R{row["id"]}  [{row["topic"]}]' + ('  (стоп)' if row['held'] else ''),
                                  'Клиент: ' + row['client'], 'Черновик помощника: ' + row['draft'],
                                  'Вы ответили: ' + row['owner']]))
-    return f'Черновики, которые вы заменили своим ответом, за {days} дн.: {len(rows)}\n\n' + '\n\n'.join(blocks)
+    return f'Черновики, которые вы исправили или заменили, за {days} дн.: {len(rows)}\n\n' + '\n\n'.join(blocks)
