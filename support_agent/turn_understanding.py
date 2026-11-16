@@ -1651,6 +1651,11 @@ def enforce_turn_policy(answer, understanding, context, freshness=None):
         # «Я то в России» is not a VPN question; «клод код» is not Codex.
         topic = validated['owner_topic'] = 'none'
     focus_said = str((context or {}).get('answers_to') or '')
+    if topic == 'org_id_sent_here' and re.search(r'(?i)organization|org\w*\s*id|отправ\w+\s+(?:сюда|мне)|скин\w+', focus_said) \
+            and str((context or {}).get('answers_to_who') or '') == 'Александр':
+        # Alexander himself asked for the ID in this chat: it is expected here, he takes it from here.
+        topic = validated['owner_topic'] = 'none'
+        answer = dict(answer, reply='Спасибо, получил. Александр продолжит оформление и ответит здесь.', handoff=False)
     if re.search(r'(?i)gmail', focus_said) and re.search(r'(?i)^\W*(?:да|есть|ага|конечно)\b|gmail|\[email', offcat_burst) \
             and not re.search(r'(?i)\bнет\b|нету', offcat_burst) and len(offcat_burst) <= 160:
         topic = validated['owner_topic'] = 'gmail_confirmed'
