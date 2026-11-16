@@ -148,7 +148,7 @@ class Service:
         parts=text.strip().split()
         if not parts:return
         cmd=parts[0].split('@')[0]
-        readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','control:refresh','auto:settings')
+        readonly=(cmd in ('/start','/status','/auto','/shop_status','/workflow_test','/catalog_test','/chats','/pending','/holds','/stats','/review','control:refresh','auto:settings')
                   or cmd in ('delay:view','delay:custom') or cmd=='/delay' and len(parts)==1
                   or cmd.startswith(('chats:','pending:','view:','draft:','dialog:','dlg:','attention:')))
         gate=self.schedule_admin_job(lambda:self.command(text,admin_mid),readonly=readonly)
@@ -738,6 +738,18 @@ class Service:
                 'подготовка ответов включена для новых сообщений.' if mode=='draft' else
                 'помощник на паузе. Ожидающие черновики отменены.'),
                 buttons([self.chat_controls(self.store.chat(cid))]))
+        elif cmd=='/stats':
+            from .draft_stats import summary as draft_summary
+            days=int(parts[1]) if len(parts)>1 and parts[1].isdecimal() and 1<=int(parts[1])<=60 else 7
+            await self.owner_message(draft_summary(self.store.db,days))
+        elif cmd=='/review':
+            from .draft_stats import review_file
+            days=int(parts[1]) if len(parts)>1 and parts[1].isdecimal() and 1<=int(parts[1])<=60 else 7
+            try:
+                await self.tg.send_text_file(self.owner,'review_%dd.txt'%days,review_file(self.store.db,days),
+                                             'Черновики, которые вы заменили. Перешлите файл Claude.')
+            except Exception:
+                await self.owner_message('Не удалось отправить файл. Попробуйте позже.')
         elif cmd=='/holds':
             from .hold_stats import summary
             days=int(parts[1]) if len(parts)==2 and parts[1].isdigit() and 0<int(parts[1])<=60 else 7
