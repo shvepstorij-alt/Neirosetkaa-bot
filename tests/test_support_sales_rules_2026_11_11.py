@@ -778,7 +778,9 @@ class UnclearMessageTests(unittest.TestCase):
     def test_second_unclear_message_goes_to_owner(self):
         from support_agent.turn_understanding import CLARIFY
         answer = self._run('ну не получается же', 'Тариф стоит 100 ₽.', [{'role': 'assistant', 'text': CLARIFY}])
-        self.assertTrue(answer['handoff'])
+        # Owner 16.11.2026: «не получается» gets the order number and screenshot question, not a stop.
+        self.assertFalse(answer['handoff'])
+        self.assertIn('скриншот', answer['reply'])
 
 
 class ThirdRealRunTests(unittest.TestCase):
@@ -1061,8 +1063,29 @@ class AnswerInsteadOfStopTests(unittest.TestCase):
 
     def test_real_stops_stay(self):
         from support_agent.rescue import answer_instead_of_stop
-        for burst in ('верните деньги за подписку', 'позовите человека', 'я оплатил, включите подписку'):
+        for burst in ('верните деньги за подписку', 'позовите человека'):
             ctx = dict(self.CTX, burst=burst)
             self.assertTrue(answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {}, ctx)['handoff'], burst)
         ctx = dict(self.CTX, answers_to_who='Александр')
         self.assertTrue(answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {}, ctx)['handoff'])
+
+
+class PaidButNotWorkingTests(unittest.TestCase):
+    def test_paid_and_failing_asks_order_and_screenshot(self):
+        from support_agent.rescue import answer_instead_of_stop
+        for burst in ('Оплатил gpt, активировал, но что то не получается. Уже два часа прошло',
+                      'оплата дпт плюс на личный аккаунт?'):
+            out = answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {}, {'burst': burst})
+            self.assertFalse(out['handoff'], burst)
+        out = answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {},
+                                     {'burst': 'Оплатил gpt, но не получается'})
+        self.assertIn('номер заказа', out['reply'])
+        self.assertIn('скриншот', out['reply'])
+
+
+class ThanksAtTheEndTests(unittest.TestCase):
+    def test_question_with_thanks_is_not_a_thank_you(self):
+        from support_agent.turn_understanding import _owner_topic
+        burst = 'хочу сестре установить CODEX, как ей пользоваться? Какой ВПН порекомендовать можете?\nБлагодарю'
+        self.assertEqual(_owner_topic({'owner_topic': 'thanks'}, {'burst': burst}), 'none')
+        self.assertEqual(_owner_topic({'owner_topic': 'thanks'}, {'burst': 'Благодарю'}), 'thanks')
