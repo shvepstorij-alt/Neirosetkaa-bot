@@ -857,3 +857,32 @@ class DialogCheckTests(unittest.TestCase):
         self.assertTrue(owner.tg.files)
         self.assertIn('Александр ответил: NAVSEX', owner.tg.files[0][1])
         self.assertIn('Оценки:', owner.sent[-1])
+
+
+class DialogCheckFindingsTests(unittest.TestCase):
+    """16.11.2026: what the 400-dialog check found."""
+
+    def test_shop_messages_and_questions_are_not_secrets(self):
+        from support_agent.privacy import sensitive
+        for text in ('Нет плюс\n🎉 Оплата прошла!\n🧾 Заказ #8465\n🎟 Код активации: GPTP-5CWM-AXF9-RFV0',
+                     '🎉 Подписка ChatGPT активирована!\n📧 Аккаунт: ju***@gmail.com\n🔑 Ключ: GPTI-LBW0-MUF4-K1LJ\nА плюс не подтянулся',
+                     'промик не работает GPTWEEK2. Могу актуальный?',
+                     'хочу снова оплатить подписку, токен надо заново присылать?'):
+            self.assertFalse(sensitive(text), text)
+        self.assertTrue(sensitive('мой пароль Qwerty12345!'))
+        self.assertTrue(sensitive('вот токен eyJhbGciOiJIUzI1NiJ9.abcdefghijklmnopqrstu'))
+
+    def test_thanks(self):
+        from support_agent.owner_scenarios import quick_reply
+        self.assertEqual(quick_reply('Спасибо!')['reply'], 'Обращайтесь! Хорошего дня)')
+        self.assertIsNone(quick_reply('Спасибо, а как продлить?'))
+
+    def test_long_wait_words(self):
+        from support_agent.turn_understanding import _LONG_WAIT
+        self.assertIsNotNone(_LONG_WAIT.search('Жду весь день, когда продлите'))
+
+    def test_new_rules(self):
+        from support_agent.faq import usable_answer
+        self.assertIn('токен', usable_answer('activation_failed'))
+        self.assertIn('втором шаге', usable_answer('org_id_sent_here'))
+        self.assertIn('новый токен', usable_answer('renewal_token'))
