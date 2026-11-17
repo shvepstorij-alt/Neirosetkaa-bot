@@ -48,6 +48,18 @@ CREATE TABLE IF NOT EXISTS community_likes (
     user_id BIGINT NOT NULL,
     PRIMARY KEY (post_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS community_reports (
+    id SERIAL PRIMARY KEY,
+    post_id INT NOT NULL REFERENCES community_posts(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    reason TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (post_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS community_bans (
+    user_id BIGINT PRIMARY KEY,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS community_posts_created ON community_posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS community_comments_post ON community_comments(post_id);
 """
@@ -90,6 +102,8 @@ def _api(fn):
             async with (await get_pool()).acquire() as conn:
                 if not await _allowed(conn, int(uid)):
                     return web.json_response({"error": "closed"}, status=403)
+                if await conn.fetchval("SELECT 1 FROM community_bans WHERE user_id=$1", int(uid)):
+                    return web.json_response({"error": "banned"}, status=403)
                 res = await fn(conn, int(uid), body, _tg_user(init_data))
             return web.json_response(res)
         except web.HTTPException:
@@ -118,7 +132,8 @@ async def me(conn, uid, body, user):
     stats = await conn.fetchrow(
         "SELECT (SELECT count(*) FROM community_posts WHERE user_id=$1 AND NOT hidden) AS posts,"
         " (SELECT count(*) FROM community_comments WHERE user_id=$1 AND NOT is_ai) AS comments", uid)
-    return {"profile": _row(p) if p else None, "stats": _row(stats),
+    from config import ADMIN_ID
+    return {"profile": _row(p) if p else None, "stats": _row(stats), "is_admin": uid == ADMIN_ID,
             "tg": {"first_name": user.get("first_name", ""), "username": user.get("username", "")}}
 
 
@@ -173,23 +188,22 @@ async def create_post(conn, uid, body, user):
     pid = await conn.fetchval(
         "INSERT INTO community_posts (user_id,type,tag,text) VALUES ($1,$2,$3,$4) RETURNING id",
         uid, ptype, _clip(body.get("tag"), 40), text)
-    if ptype in ("Вопрос", "Разбор"):
-        asyncio.create_task(_ai_first_answer(pid))
+    asyncio.create_task(_after_post(pid, ptype))
     return {"ok": True, "id": pid}
 
 
 async def post_detail(conn, uid, body, user):
     pid = int(body.get("id") or 0)
     p = await conn.fetchrow(
-        """SELECT p.id,p.type,p.tag,p.text,p.created_at,coalesce(pr.name,'Участник') AS author,
+        """SELECT p.id,p.user_id,p.type,p.tag,p.text,p.created_at,p.hidden,coalesce(pr.name,'Участник') AS author,
            (SELECT count(*) FROM community_likes l WHERE l.post_id=p.id) AS likes,
            EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id=$2) AS liked
            FROM community_posts p LEFT JOIN community_profiles pr ON pr.user_id=p.user_id
-           WHERE p.id=$1 AND NOT p.hidden""", pid, uid)
+           WHERE p.id=$1 AND (NOT p.hidden OR $2=$3)""", pid, uid, __import__("config").ADMIN_ID)
     if not p:
         return {"error": "not_found"}
     cs = await conn.fetch(
-        """SELECT c.id,c.text,c.is_ai,c.created_at,
+        """SELECT c.id,c.user_id,c.text,c.is_ai,c.created_at,
            CASE WHEN c.is_ai THEN 'Neirosetka' ELSE coalesce(pr.name,'Участник') END AS author
            FROM community_comments c LEFT JOIN community_profiles pr ON pr.user_id=c.user_id
            WHERE c.post_id=$1 ORDER BY c.created_at""", pid)
@@ -225,7 +239,9 @@ async def like(conn, uid, body, user):
 async def people(conn, uid, body, user):
     q = _clip(body.get("q"), 60)
     rows = await conn.fetch(
-        """SELECT user_id,name,niche,looking,offering,open_collab,username FROM community_profiles
+        """SELECT user_id,name,niche,looking,offering,open_collab,username,
+           EXISTS(SELECT 1 FROM community_bans b WHERE b.user_id=community_profiles.user_id) AS banned
+           FROM community_profiles
            WHERE ($1='' OR name ILIKE '%'||$1||'%' OR niche ILIKE '%'||$1||'%'
                   OR looking ILIKE '%'||$1||'%' OR offering ILIKE '%'||$1||'%')
            ORDER BY updated_at DESC LIMIT 100""", q)
@@ -351,6 +367,78 @@ async def collabs(conn, uid, body, user):
     return await feed(conn, uid, body, user)
 
 
+# ─────────────── Модерация ───────────────
+REPORT_REASONS = ("Спам", "Оскорбления", "Не по теме", "Мошенничество", "Другое")
+
+
+async def _after_post(pid, ptype):
+    """Проверка нового поста ИИ-модератором, затем первый ответ Neirosetka."""
+    from db import get_pool
+    from config import ADMIN_ID
+    verdict = "OK"
+    try:
+        async with (await get_pool()).acquire() as conn:
+            text = await conn.fetchval("SELECT text FROM community_posts WHERE id=$1", pid)
+        verdict = (await _claude(
+            "Ты модератор сообщества про нейросети. Ответь ОДНИМ словом: OK — обычный пост (вопрос, кейс, "
+            "коллаб, самопиар по теме тоже OK); SPAM — массовая реклама не по теме, казино, крипто-схемы, ставки, "
+            "рассылки, подозрительные ссылки; ABUSE — оскорбления, травля, 18+, призывы к насилию, мошенничество.",
+            [{"role": "user", "content": text or ""}], max_tokens=5)).strip().upper()
+    except Exception:
+        logging.exception("community: модерация не сработала (post %s)", pid)
+    if verdict.startswith(("SPAM", "ABUSE")):
+        async with (await get_pool()).acquire() as conn:
+            await conn.execute("UPDATE community_posts SET hidden=TRUE WHERE id=$1", pid)
+        await _notify(ADMIN_ID, "🛡 ИИ-модератор скрыл пост #%s (%s). Открой, чтобы проверить — "
+                                "вернуть можно кнопкой «Вернуть пост»." % (pid, verdict[:5]), pid)
+        return
+    if ptype in ("Вопрос", "Разбор"):
+        await _ai_first_answer(pid)
+
+
+async def report(conn, uid, body, user):
+    await _need_profile(conn, uid)
+    from config import ADMIN_ID
+    pid = int(body.get("post_id") or 0)
+    reason = body.get("reason") if body.get("reason") in REPORT_REASONS else "Другое"
+    if not await conn.fetchval("SELECT 1 FROM community_posts WHERE id=$1", pid):
+        return {"error": "not_found"}
+    res = await conn.execute(
+        "INSERT INTO community_reports (post_id,user_id,reason) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+        pid, uid, reason)
+    if res.endswith(" 1"):
+        cnt = await conn.fetchval("SELECT count(*) FROM community_reports WHERE post_id=$1", pid)
+        if cnt >= 3:  # три жалобы — скрываем до решения админа
+            await conn.execute("UPDATE community_posts SET hidden=TRUE WHERE id=$1", pid)
+        asyncio.create_task(_notify(ADMIN_ID, "⚑ Жалоба на пост #%s: %s (всего жалоб: %s)%s" % (
+            pid, reason, cnt, "\nПост автоматически скрыт." if cnt >= 3 else ""), pid))
+    return {"ok": True}
+
+
+async def mod(conn, uid, body, user):
+    from config import ADMIN_ID
+    if uid != ADMIN_ID:
+        return {"error": "forbidden"}
+    action, oid = body.get("action"), int(body.get("id") or 0)
+    if action == "hide_post":
+        await conn.execute("UPDATE community_posts SET hidden=TRUE WHERE id=$1", oid)
+    elif action == "unhide_post":
+        await conn.execute("UPDATE community_posts SET hidden=FALSE WHERE id=$1", oid)
+        await conn.execute("DELETE FROM community_reports WHERE post_id=$1", oid)
+    elif action == "del_comment":
+        await conn.execute("DELETE FROM community_comments WHERE id=$1", oid)
+    elif action == "ban":
+        if oid == ADMIN_ID:
+            return {"error": "self"}
+        await conn.execute("INSERT INTO community_bans (user_id) VALUES ($1) ON CONFLICT DO NOTHING", oid)
+        await conn.execute("UPDATE community_posts SET hidden=TRUE WHERE user_id=$1", oid)
+    elif action == "unban":
+        await conn.execute("DELETE FROM community_bans WHERE user_id=$1", oid)
+    else:
+        return {"error": "bad_action"}
+    return {"ok": True}
+
+
 async def open_message(message):
     """Ответ на кнопку «🧠 Сообщество»: инлайн-кнопка открытия мини-аппа.
     Инлайн web_app-кнопка передаёт initData, кнопка нижней клавиатуры — нет."""
@@ -360,6 +448,10 @@ async def open_message(message):
     uid = message.from_user.id
     async with (await get_pool()).acquire() as conn:
         ok = await _allowed(conn, uid)
+        banned = await conn.fetchval("SELECT 1 FROM community_bans WHERE user_id=$1", uid)
+    if banned:
+        await message.answer("Доступ к сообществу ограничен.")
+        return
     if not ok:
         await message.answer("🧠 Сообщество Neirosetka скоро откроется — следи за новостями!")
         return
@@ -390,6 +482,7 @@ def install(app):
     app.router.add_get("/webapp/community", page)
     for name, fn in {"me": me, "profile": save_profile, "feed": feed, "post": create_post,
                      "post_detail": post_detail, "comment": create_comment, "like": like,
-                     "people": people, "ask": ask, "collabs": collabs}.items():
+                     "people": people, "ask": ask, "collabs": collabs,
+                     "report": report, "mod": mod}.items():
         app.router.add_post(f"/api/community/{name}", _api(fn))
     app.cleanup_ctx.append(_lifecycle)
