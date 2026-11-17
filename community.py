@@ -351,6 +351,28 @@ async def collabs(conn, uid, body, user):
     return await feed(conn, uid, body, user)
 
 
+async def open_message(message):
+    """Ответ на кнопку «🧠 Сообщество»: инлайн-кнопка открытия мини-аппа.
+    Инлайн web_app-кнопка передаёт initData, кнопка нижней клавиатуры — нет."""
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+    from config import webapp_url, WEBAPP_BASE_URL
+    from db import get_pool
+    uid = message.from_user.id
+    async with (await get_pool()).acquire() as conn:
+        ok = await _allowed(conn, uid)
+    if not ok:
+        await message.answer("🧠 Сообщество Neirosetka скоро откроется — следи за новостями!")
+        return
+    if not WEBAPP_BASE_URL:
+        await message.answer("Сообщество временно недоступно.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text="🧠 Открыть сообщество", web_app=WebAppInfo(url=webapp_url("/webapp/community")))]])
+    await message.answer(
+        "<b>Сообщество Neirosetka</b>\n\nВопросы по нейросетям, пошаговые рецепты, коллабы и полезные люди. "
+        "Neirosetka отвечает первым 👇", reply_markup=kb, parse_mode="HTML")
+
+
 async def _lifecycle(app):
     from db import get_pool
     try:

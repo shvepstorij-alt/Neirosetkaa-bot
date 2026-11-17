@@ -172,7 +172,7 @@ async function loadMe(){const d=await api('me',{});if(!d.profile)return;me=d.pro
 document.getElementById('editp').addEventListener('click',()=>{document.getElementById('navwrap').style.display='none';show('p-onb');if(me){const i=onb.querySelectorAll('input,textarea');i[0].value=me.name;onb.querySelectorAll('textarea')[0].value=me.looking||'';onb.querySelectorAll('textarea')[1].value=me.offering||'';onb.querySelector('input[type=checkbox]').checked=me.open_collab;const ns=(me.niche||'').split(', ');onb.querySelectorAll('button[data-f]').forEach(b=>{b.dataset.on=ns.includes(b.dataset.f)?'1':'';b.style.background=b.dataset.on?'#9cc0ff':'#1a2335';b.style.color=b.dataset.on?'#0f1420':'#e6ebf5';});}});
 (async()=>{if(!LIVE){show('p-onb');return;}
  const fail=t=>{show('p-onb');onb.innerHTML='<div style="'+CARD2+'"><b>Не получилось тебя узнать</b><span style="font-size:13px;line-height:1.5;color:#b7c2d8">'+t+'</span><button onclick="location.reload()" style="font-family:inherit;min-height:44px;border-radius:4px;border:0;background:#9cc0ff;color:#0f1420;font-weight:800">Попробовать снова</button></div>';};
- if(!INIT){fail('Telegram не передал данные входа. Закрой сообщество и открой его снова кнопкой «🧠 Сообщество» в боте. Если не поможет — обнови Telegram.');return;}
+ if(!INIT){fail('Telegram не передал данные входа. Нажми в боте «🧠 Сообщество», а затем кнопку «Открыть сообщество» под сообщением бота.');return;}
  const c0=cachedMe();if(c0){me=c0;enter();}
  const d=await api('me',{});
  if(d.error==='network'){if(!c0)fail('Нет связи с сервером. Проверь интернет.');return;}

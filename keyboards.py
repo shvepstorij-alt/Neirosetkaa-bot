@@ -353,7 +353,8 @@ def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
     if is_admin:
         # Сообщество — пока тест, кнопка видна только админу
         if WEBAPP_BASE_URL:
-            rows.append([KeyboardButton(text="🧠 Сообщество", web_app=WebAppInfo(url=webapp_url("/webapp/community")))])
+            # обычная кнопка: бот ответит инлайн-кнопкой — только так Telegram передаёт данные входа
+            rows.append([KeyboardButton(text="🧠 Сообщество")])
         rows.append([KeyboardButton(text="🛠️ Админ панель")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, persistent=True)
 
@@ -463,6 +464,7 @@ def kb_admin_panel():
         [InlineKeyboardButton(text="Claude Mini App",     callback_data="adm_claude_webapp", **_cl)],
         [InlineKeyboardButton(text="Perplexity Mini App", callback_data="adm_perplexity_webapp", **_px)],
         [InlineKeyboardButton(text="Настройка App Store", callback_data="adm_nsgifts", **_ap)],
+        *([[InlineKeyboardButton(text="🧠 Сообщество (тест)", web_app=WebAppInfo(url=webapp_url("/webapp/community")))]] if WEBAPP_BASE_URL else []),
         *([[InlineKeyboardButton(text="🎛️ Mini App (бета)", web_app=WebAppInfo(url=webapp_url("/webapp/admin")))]] if WEBAPP_BASE_URL else []),
         [_eib("Главное меню", "back_main")],
     ])

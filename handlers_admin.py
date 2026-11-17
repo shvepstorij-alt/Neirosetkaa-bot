@@ -751,6 +751,14 @@ async def reply_admin(message: Message, state: FSMContext):
     await show_admin_panel(message)
 
 
+@dp.message(F.text.in_({"🧠 Сообщество", "/community"}), StateFilter("*"))
+async def reply_community(message: Message, state: FSMContext):
+    """Открывает сообщество инлайн-кнопкой (reply-кнопка не передаёт initData)."""
+    from community import open_message
+    await state.clear()
+    await open_message(message)
+
+
 # ─── Меню выбора периода статистики ──────────────────────
 
 # ─── Папка "Аналитика" (Топ моделей / Топ юзеров / Активность / Пользователи) ──
