@@ -17030,6 +17030,8 @@ async def setup_webhook_server():
     app.router.add_post("/api/activate-chatgpt", api_activate_chatgpt_handler)
     from activation_help import install as _install_activation_help
     _install_activation_help(app)
+    from community import install as _install_community
+    _install_community(app)
     app.router.add_get("/api/activate-status/{job_id}", api_activation_status_handler)
     logging.info("Mini App: /webapp/chatgpt + /api/activate-chatgpt + /api/activate-status")
     try:

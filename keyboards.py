@@ -351,6 +351,9 @@ def kb_reply(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="🏡 Главное меню")],
     ]
     if is_admin:
+        # Сообщество — пока тест, кнопка видна только админу
+        if WEBAPP_BASE_URL:
+            rows.append([KeyboardButton(text="🧠 Сообщество", web_app=WebAppInfo(url=webapp_url("/webapp/community")))])
         rows.append([KeyboardButton(text="🛠️ Админ панель")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, persistent=True)
 
