@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS community_bans (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS best_comment_id INT;
+ALTER TABLE community_profiles ADD COLUMN IF NOT EXISTS avatar BYTEA;
+ALTER TABLE community_profiles ADD COLUMN IF NOT EXISTS avatar_mime TEXT;
+ALTER TABLE community_profiles ADD COLUMN IF NOT EXISTS avatar_v INT DEFAULT 0;
 CREATE TABLE IF NOT EXISTS community_ai_log (
     id SERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL,
@@ -144,7 +147,7 @@ def _row(r):
 
 # ─────────────── Опыт и уровни ───────────────
 XP_SQL = """
-SELECT pr.user_id, pr.name, pr.niche,
+SELECT pr.user_id, pr.name, pr.niche, coalesce(pr.avatar_v,0) AS avatar_v,
   (SELECT count(*) FROM community_posts p WHERE p.user_id=pr.user_id AND NOT p.hidden) AS posts,
   (SELECT count(*) FROM community_posts p WHERE p.user_id=pr.user_id AND NOT p.hidden AND p.type='Коллаб') AS collabs,
   (SELECT count(DISTINCT c.post_id) FROM community_comments c JOIN community_posts p ON p.id=c.post_id
@@ -175,12 +178,12 @@ def _xp(r):
 
 
 async def me(conn, uid, body, user):
-    p = await conn.fetchrow("SELECT * FROM community_profiles WHERE user_id=$1", uid)
+    p = await conn.fetchrow("SELECT user_id,username,name,niche,looking,offering,open_collab,created_at,updated_at,coalesce(avatar_v,0) AS avatar_v FROM community_profiles WHERE user_id=$1", uid)
     uname = _clip(user.get("username"), 64)
     if p and uname and p["username"] != uname:
         # ник в Telegram сменился — обновляем, чтобы кнопка «Написать» вела куда нужно
         await conn.execute("UPDATE community_profiles SET username=$2 WHERE user_id=$1", uid, uname)
-        p = await conn.fetchrow("SELECT * FROM community_profiles WHERE user_id=$1", uid)
+        p = await conn.fetchrow("SELECT user_id,username,name,niche,looking,offering,open_collab,created_at,updated_at,coalesce(avatar_v,0) AS avatar_v FROM community_profiles WHERE user_id=$1", uid)
     stats = await conn.fetchrow(
         "SELECT (SELECT count(*) FROM community_posts WHERE user_id=$1 AND NOT hidden) AS posts,"
         " (SELECT count(*) FROM community_comments WHERE user_id=$1 AND NOT is_ai) AS comments", uid)
@@ -222,7 +225,7 @@ async def feed(conn, uid, body, user):
     having = ""
     q = f"""SELECT * FROM (
         SELECT p.id,p.user_id,p.type,p.tag,p.text,p.created_at,
-               coalesce(pr.name,'Участник') AS author,
+               coalesce(pr.name,'Участник') AS author, coalesce(pr.avatar_v,0) AS avatar_v,
                (SELECT count(*) FROM community_likes l WHERE l.post_id=p.id) AS likes,
                (SELECT count(*) FROM community_comments c WHERE c.post_id=p.id) AS comments,
                EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id=$1) AS liked
@@ -255,7 +258,7 @@ async def create_post(conn, uid, body, user):
 async def post_detail(conn, uid, body, user):
     pid = _int(body.get("id"))
     p = await conn.fetchrow(
-        """SELECT p.id,p.user_id,p.type,p.tag,p.text,p.created_at,p.hidden,p.best_comment_id,coalesce(pr.name,'Участник') AS author,
+        """SELECT p.id,p.user_id,p.type,p.tag,p.text,p.created_at,p.hidden,p.best_comment_id,coalesce(pr.name,'Участник') AS author,coalesce(pr.avatar_v,0) AS avatar_v,
            (SELECT count(*) FROM community_likes l WHERE l.post_id=p.id) AS likes,
            EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id=$2) AS liked
            FROM community_posts p LEFT JOIN community_profiles pr ON pr.user_id=p.user_id
@@ -264,7 +267,8 @@ async def post_detail(conn, uid, body, user):
         return {"error": "not_found"}
     cs = await conn.fetch(
         """SELECT c.id,c.user_id,c.text,c.is_ai,c.created_at,
-           CASE WHEN c.is_ai THEN 'Neirosetka' ELSE coalesce(pr.name,'Участник') END AS author
+           CASE WHEN c.is_ai THEN 'Neirosetka' ELSE coalesce(pr.name,'Участник') END AS author,
+           CASE WHEN c.is_ai THEN 0 ELSE coalesce(pr.avatar_v,0) END AS avatar_v
            FROM community_comments c LEFT JOIN community_profiles pr ON pr.user_id=c.user_id
            WHERE c.post_id=$1 ORDER BY c.created_at LIMIT 200""", pid)
     return {"post": _row(p), "comments": [_row(c) for c in cs]}
@@ -305,7 +309,7 @@ async def like(conn, uid, body, user):
 async def people(conn, uid, body, user):
     q = _clip(body.get("q"), 60).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     rows = await conn.fetch(
-        """SELECT user_id,name,niche,looking,offering,open_collab,
+        """SELECT user_id,name,niche,looking,offering,open_collab,coalesce(avatar_v,0) AS avatar_v,
            CASE WHEN open_collab THEN username END AS username,
            ($2 AND EXISTS(SELECT 1 FROM community_bans b WHERE b.user_id=community_profiles.user_id)) AS banned
            FROM community_profiles
@@ -459,6 +463,33 @@ async def collabs(conn, uid, body, user):
     return await feed(conn, uid, body, user)
 
 
+_IMG_MAGIC = {b"\xff\xd8\xff": "image/jpeg", b"\x89PNG": "image/png", b"RIFF": "image/webp"}
+
+
+async def avatar(conn, uid, body, user):
+    """Загрузка своей аватарки: dataURL, сжатый на телефоне до 256×256 (до 200 КБ)."""
+    import base64
+    await _need_profile(conn, uid)
+    data = str(body.get("data") or "")
+    if data == "":  # удалить аватарку
+        await conn.execute("UPDATE community_profiles SET avatar=NULL,avatar_mime=NULL,avatar_v=0 WHERE user_id=$1", uid)
+        return {"ok": True, "avatar_v": 0}
+    if "," not in data or len(data) > 300_000:
+        return {"error": "too_big"}
+    try:
+        raw = base64.b64decode(data.split(",", 1)[1], validate=True)
+    except Exception:
+        return {"error": "bad_image"}
+    mime = next((m for sig, m in _IMG_MAGIC.items() if raw.startswith(sig)), None)
+    if not mime or len(raw) > 200_000 or (mime == "image/webp" and raw[8:12] != b"WEBP"):
+        return {"error": "bad_image"}
+    v = await conn.fetchval(
+        "UPDATE community_profiles SET avatar=$2,avatar_mime=$3,avatar_v=coalesce(avatar_v,0)+1 WHERE user_id=$1 RETURNING avatar_v",
+        uid, raw, mime)
+    _top_cache[0] = 0
+    return {"ok": True, "avatar_v": v}
+
+
 async def delete_post(conn, uid, body, user):
     from config import ADMIN_ID
     pid = _int(body.get("id"))
@@ -493,7 +524,7 @@ async def top(conn, uid, body, user):
         return _top_cache[1]
     rows = await conn.fetch(XP_SQL + """ WHERE NOT EXISTS (SELECT 1 FROM community_bans b WHERE b.user_id=pr.user_id)""")
     ppl = sorted((_xp(r) for r in rows), key=lambda d: -d["xp"])[:10]
-    res = {"top": [{k: d[k] for k in ("user_id", "name", "niche", "xp", "level", "level_name")} for d in ppl]}
+    res = {"top": [{k: d[k] for k in ("user_id", "name", "niche", "xp", "level", "level_name", "avatar_v")} for d in ppl]}
     _top_cache[0], _top_cache[1] = time.time(), res
     return res
 
@@ -578,6 +609,8 @@ async def mod(conn, uid, body, user):
         await conn.execute("INSERT INTO community_bans (user_id) VALUES ($1) ON CONFLICT DO NOTHING", oid)
         await conn.execute("UPDATE community_posts SET hidden=TRUE WHERE user_id=$1", oid)
         await conn.execute("DELETE FROM community_comments WHERE user_id=$1", oid)
+    elif action == "reset_avatar":
+        await conn.execute("UPDATE community_profiles SET avatar=NULL,avatar_mime=NULL,avatar_v=0 WHERE user_id=$1", oid)
     elif action == "unban":
         await conn.execute("DELETE FROM community_bans WHERE user_id=$1", oid)
     else:
@@ -626,9 +659,23 @@ def install(app):
     async def page(request):
         return web.FileResponse(HTML, headers={"Cache-Control": "no-cache"})
     app.router.add_get("/webapp/community", page)
+
+    async def ava(request):
+        from db import get_pool
+        try:
+            uid = int(request.match_info["uid"])
+        except ValueError:
+            raise web.HTTPNotFound()
+        async with (await get_pool()).acquire() as conn:
+            r = await conn.fetchrow("SELECT avatar,avatar_mime FROM community_profiles WHERE user_id=$1 AND avatar IS NOT NULL", uid)
+        if not r:
+            raise web.HTTPNotFound()
+        return web.Response(body=bytes(r["avatar"]), content_type=r["avatar_mime"],
+                            headers={"Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff"})
+    app.router.add_get(r"/webapp/community/ava/{uid:\d+}", ava)
     for name, fn in {"me": me, "profile": save_profile, "feed": feed, "post": create_post,
                      "post_detail": post_detail, "comment": create_comment, "like": like,
                      "people": people, "ask": ask, "collabs": collabs,
-                     "report": report, "mod": mod, "best": best, "top": top, "delete_post": delete_post}.items():
+                     "report": report, "mod": mod, "best": best, "top": top, "delete_post": delete_post, "avatar": avatar}.items():
         app.router.add_post(f"/api/community/{name}", _api(fn))
     app.cleanup_ctx.append(_lifecycle)
