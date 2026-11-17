@@ -110,6 +110,11 @@ def _row(r):
 
 async def me(conn, uid, body, user):
     p = await conn.fetchrow("SELECT * FROM community_profiles WHERE user_id=$1", uid)
+    uname = _clip(user.get("username"), 64)
+    if p and uname and p["username"] != uname:
+        # ник в Telegram сменился — обновляем, чтобы кнопка «Написать» вела куда нужно
+        await conn.execute("UPDATE community_profiles SET username=$2 WHERE user_id=$1", uid, uname)
+        p = await conn.fetchrow("SELECT * FROM community_profiles WHERE user_id=$1", uid)
     stats = await conn.fetchrow(
         "SELECT (SELECT count(*) FROM community_posts WHERE user_id=$1 AND NOT hidden) AS posts,"
         " (SELECT count(*) FROM community_comments WHERE user_id=$1 AND NOT is_ai) AS comments", uid)
@@ -168,6 +173,8 @@ async def create_post(conn, uid, body, user):
     pid = await conn.fetchval(
         "INSERT INTO community_posts (user_id,type,tag,text) VALUES ($1,$2,$3,$4) RETURNING id",
         uid, ptype, _clip(body.get("tag"), 40), text)
+    if ptype in ("Вопрос", "Разбор"):
+        asyncio.create_task(_ai_first_answer(pid))
     return {"ok": True, "id": pid}
 
 
@@ -198,6 +205,10 @@ async def create_comment(conn, uid, body, user):
     if not await conn.fetchval("SELECT 1 FROM community_posts WHERE id=$1 AND NOT hidden", pid):
         return {"error": "not_found"}
     await conn.execute("INSERT INTO community_comments (post_id,user_id,text) VALUES ($1,$2,$3)", pid, uid, text)
+    author = await conn.fetchval("SELECT user_id FROM community_posts WHERE id=$1", pid)
+    if author and author != uid:
+        name = await conn.fetchval("SELECT name FROM community_profiles WHERE user_id=$1", uid) or "Участник"
+        asyncio.create_task(_notify(author, "💬 %s ответил(а) на твой пост в сообществе:\n\n«%s»" % (name, text[:200]), pid))
     return {"ok": True}
 
 
@@ -221,6 +232,125 @@ async def people(conn, uid, body, user):
     return {"people": [_row(r) for r in rows]}
 
 
+# ─────────────── Neirosetka (ИИ) ───────────────
+import asyncio
+import time
+
+AI_UID = 0
+MODELS = ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"]
+RECIPES = "Видео-аватар из одного текста; Один персонаж на серии фото; Оживить фото без артефактов; Карточки товара для WB и Ozon; Трек с обложкой и клипом; Как оплатить подписку и не потерять аккаунт; Аватарка для резюме и соцсетей из селфи; Предметная съёмка без фотографа; Реставрация и раскраска старых фото; Нарезка Reels из длинного видео; Рекламный ролик 15 сек для бизнеса; Контент-план на месяц за вечер; Карусель, которую сохраняют; Презентация за 10 минут; Конспект лекции, вебинара или созвона; Формулы Excel и Google Таблиц словами; Резюме и отклик под вакансию; Сайт-визитка или лендинг за вечер; Первое приложение через вайб-кодинг; Заявки с сайта → ИИ → Telegram; Анализ рынка и конкурентов с источниками; Перевод видео на другой язык своим голосом; Эстетичные визуалы в Midjourney; Первые клиенты на ИИ-услуги; Нейрофотосессии на продажу; Бесплатно или Pro: что выбрать"
+PERSONA = (
+    "Ты — Neirosetka, ИИ-персонаж сообщества в Telegram-боте @neirosetkaa_bot (автор — Александр, канал «Александр ИИ»). "
+    "Стиль: дружелюбный, на «ты», коротко и по делу, без воды и канцелярита, иногда «йо»/«хэй». Пиши по-русски, обычным текстом без markdown-разметки и без эмодзи-спама. "
+    "Ты эксперт по нейросетям: тексты, фото, видео, музыка, озвучка, код, автоматизация, заработок на ИИ. "
+    "Давай конкретику: какой сервис, какой шаг, пример промпта. Не выдумывай цены и точные лимиты — если не уверен, так и скажи. "
+    "В боте можно генерировать за кредиты: Изображение (Nano Banana Pro, GPT Image 2.5, Ideogram 4.5, Flux 3, Imagen 4, Grok Imagine), "
+    "Редактировать фото (Nano Banana, GPT Image 2.5, Flux 3), Анимировать фото (Kling 2.5 Turbo, Gemini Omni, Wan 3.0), Видео (Seedance 2.5, Kling 3.0 Pro, Gemini Omni). "
+    "В Каталоге бота — подписки: ChatGPT, Claude, Gemini, Midjourney, Kling, Runway, HeyGen, ElevenLabs, Suno, Gamma, Canva, CapCut, Higgsfield, Krea, Perplexity, Cursor, Lovable, Make и др. "
+    "Рекомендуй их, когда это реально подходит задаче, без навязывания. "
+    "В сообществе есть вкладки: Лента, Рецепты (пошаговые инструкции: " + RECIPES + "), Коллабы, Люди, Профиль. Если подходит рецепт — назови его."
+)
+_ask_hits = {}
+
+
+def _rate_ok(uid, limit=20, window=3600):
+    now = time.time()
+    hits = [t for t in _ask_hits.get(uid, []) if now - t < window]
+    if len(hits) >= limit:
+        _ask_hits[uid] = hits
+        return False
+    hits.append(now)
+    _ask_hits[uid] = hits
+    return True
+
+
+async def _claude(system, messages, max_tokens=700):
+    from config import claude_client
+    loop = asyncio.get_event_loop()
+    last = None
+    for m in MODELS:
+        try:
+            resp = await loop.run_in_executor(None, lambda: claude_client.messages.create(
+                model=m, max_tokens=max_tokens, system=system, messages=messages))
+            return "".join(getattr(b, "text", "") for b in resp.content).strip()
+        except Exception as e:  # пробуем следующую модель
+            last = e
+    raise last or RuntimeError("claude failed")
+
+
+async def _ai_first_answer(pid):
+    """Фоновая задача: первый ответ Neirosetka под вопросом."""
+    from db import get_pool
+    try:
+        async with (await get_pool()).acquire() as conn:
+            p = await conn.fetchrow("SELECT type,tag,text FROM community_posts WHERE id=$1", pid)
+        if not p:
+            return
+        task = ("Участник опубликовал в ленте сообщества пост типа «%s»%s. Дай первый ответ: 3–8 коротких предложений или короткий список шагов. "
+                "Если это «Разбор» — что хорошо, что улучшить и как. В конце можно предложить участникам дополнить.") % (
+                p["type"], (" с тегом " + p["tag"]) if p["tag"] else "")
+        text = await _claude(PERSONA + "\n\n" + task, [{"role": "user", "content": p["text"]}])
+        if not text:
+            return
+        async with (await get_pool()).acquire() as conn:
+            await conn.execute("INSERT INTO community_comments (post_id,user_id,text,is_ai) VALUES ($1,$2,$3,TRUE)",
+                               pid, AI_UID, text[:3000])
+    except Exception:
+        logging.exception("community: ИИ-ответ не получился (post %s)", pid)
+
+
+async def _notify(user_id, text, post_id=None):
+    """Уведомление в бот с кнопкой открыть пост."""
+    try:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+        from config import bot, webapp_url
+        kb = None
+        if post_id:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text="Открыть", web_app=WebAppInfo(url=webapp_url("/webapp/community", post=post_id)))]])
+        await bot.send_message(user_id, text, reply_markup=kb, disable_web_page_preview=True)
+    except Exception:
+        logging.info("community: не удалось отправить уведомление %s", user_id)
+
+
+async def ask(conn, uid, body, user):
+    """Чат с Neirosetka во вкладке «Нейро» + подбор людей."""
+    q = _clip(body.get("q"), 1500)
+    if not q:
+        return {"error": "empty"}
+    if not _rate_ok(uid):
+        return {"error": "slow_down"}
+    me = await conn.fetchrow("SELECT name,niche,looking,offering FROM community_profiles WHERE user_id=$1", uid)
+    ppl = await conn.fetch(
+        "SELECT name,niche,looking,offering FROM community_profiles WHERE open_collab AND user_id<>$1 "
+        "ORDER BY updated_at DESC LIMIT 40", uid)
+    ctx = PERSONA
+    if me:
+        ctx += "\n\nСобеседник: %s. Ниша: %s. Ищет: %s. Может предложить: %s." % (
+            me["name"], me["niche"] or "-", me["looking"] or "-", me["offering"] or "-")
+    if ppl:
+        ctx += "\n\nУчастники, открытые к знакомствам (рекомендуй по имени, только если реально подходят; не выдумывай других людей):\n" + \
+            "\n".join("- %s | ниша: %s | ищет: %s | полезен: %s" % (p["name"], p["niche"] or "-", p["looking"] or "-", p["offering"] or "-") for p in ppl)
+    hist = body.get("history") if isinstance(body.get("history"), list) else []
+    msgs = []
+    for h in hist[-8:]:
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("text"):
+            msgs.append({"role": h["role"], "content": _clip(h["text"], 1500)})
+    if msgs and msgs[0]["role"] != "user":
+        msgs = msgs[1:]
+    msgs.append({"role": "user", "content": q})
+    try:
+        return {"answer": await _claude(ctx, msgs)}
+    except Exception:
+        logging.exception("community ask failed")
+        return {"error": "ai"}
+
+
+async def collabs(conn, uid, body, user):
+    body = dict(body, type="Коллаб")
+    return await feed(conn, uid, body, user)
+
+
 async def _lifecycle(app):
     from db import get_pool
     try:
@@ -238,6 +368,6 @@ def install(app):
     app.router.add_get("/webapp/community", page)
     for name, fn in {"me": me, "profile": save_profile, "feed": feed, "post": create_post,
                      "post_detail": post_detail, "comment": create_comment, "like": like,
-                     "people": people}.items():
+                     "people": people, "ask": ask, "collabs": collabs}.items():
         app.router.add_post(f"/api/community/{name}", _api(fn))
     app.cleanup_ctx.append(_lifecycle)
