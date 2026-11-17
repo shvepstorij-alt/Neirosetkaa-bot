@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS community_bans (
     user_id BIGINT PRIMARY KEY,
     created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE community_posts ADD COLUMN IF NOT EXISTS best_comment_id INT;
 CREATE INDEX IF NOT EXISTS community_posts_created ON community_posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS community_comments_post ON community_comments(post_id);
 """
@@ -122,6 +123,38 @@ def _row(r):
     return d
 
 
+# ─────────────── Опыт и уровни ───────────────
+XP_SQL = """
+SELECT pr.user_id, pr.name, pr.niche,
+  (SELECT count(*) FROM community_posts p WHERE p.user_id=pr.user_id AND NOT p.hidden) AS posts,
+  (SELECT count(*) FROM community_posts p WHERE p.user_id=pr.user_id AND NOT p.hidden AND p.type='Коллаб') AS collabs,
+  (SELECT count(*) FROM community_comments c JOIN community_posts p ON p.id=c.post_id
+     WHERE c.user_id=pr.user_id AND NOT c.is_ai AND p.user_id<>pr.user_id) AS answers,
+  (SELECT count(*) FROM community_likes l JOIN community_posts p ON p.id=l.post_id
+     WHERE p.user_id=pr.user_id AND l.user_id<>pr.user_id) AS likes_got,
+  (SELECT count(*) FROM community_posts p JOIN community_comments c ON c.id=p.best_comment_id
+     WHERE c.user_id=pr.user_id AND p.user_id<>pr.user_id) AS best
+FROM community_profiles pr
+"""
+XP_RULES = {"profile": 20, "post": 10, "answer": 5, "like": 2, "best": 25}
+LEVELS = [(0, "Новичок"), (50, "Исследователь"), (150, "Промптер"), (300, "Практик"), (500, "Знаток"),
+          (800, "Мастер связок"), (1200, "Наставник"), (1700, "Эксперт"), (2300, "Нейро-гуру"), (3000, "Легенда")]
+ACHIEVEMENTS = [("Первый пост", "posts", 1), ("Помощник", "answers", 5), ("Лучший ответ", "best", 1),
+                ("Коннектор", "collabs", 1), ("Популярный", "likes_got", 20), ("Наставник", "best", 5),
+                ("Активист", "answers", 30), ("Автор", "posts", 10)]
+
+
+def _xp(r):
+    d = dict(r)
+    xp = XP_RULES["profile"] + d["posts"] * XP_RULES["post"] + d["answers"] * XP_RULES["answer"] + \
+        d["likes_got"] * XP_RULES["like"] + d["best"] * XP_RULES["best"]
+    lvl = max(i for i, (t, _) in enumerate(LEVELS) if xp >= t)
+    nxt = LEVELS[lvl + 1][0] if lvl + 1 < len(LEVELS) else None
+    d.update(xp=xp, level=lvl + 1, level_name=LEVELS[lvl][1], level_from=LEVELS[lvl][0], level_to=nxt,
+             achievements=[{"name": n, "done": d[k] >= v, "need": "%s: %s" % (k, v)} for n, k, v in ACHIEVEMENTS])
+    return d
+
+
 async def me(conn, uid, body, user):
     p = await conn.fetchrow("SELECT * FROM community_profiles WHERE user_id=$1", uid)
     uname = _clip(user.get("username"), 64)
@@ -133,7 +166,9 @@ async def me(conn, uid, body, user):
         "SELECT (SELECT count(*) FROM community_posts WHERE user_id=$1 AND NOT hidden) AS posts,"
         " (SELECT count(*) FROM community_comments WHERE user_id=$1 AND NOT is_ai) AS comments", uid)
     from config import ADMIN_ID
+    xr = await conn.fetchrow(XP_SQL + " WHERE pr.user_id=$1", uid) if p else None
     return {"profile": _row(p) if p else None, "stats": _row(stats), "is_admin": uid == ADMIN_ID,
+            "xp": _xp(xr) if xr else None, "rules": XP_RULES,
             "tg": {"first_name": user.get("first_name", ""), "username": user.get("username", "")}}
 
 
@@ -195,7 +230,7 @@ async def create_post(conn, uid, body, user):
 async def post_detail(conn, uid, body, user):
     pid = int(body.get("id") or 0)
     p = await conn.fetchrow(
-        """SELECT p.id,p.user_id,p.type,p.tag,p.text,p.created_at,p.hidden,coalesce(pr.name,'Участник') AS author,
+        """SELECT p.id,p.user_id,p.type,p.tag,p.text,p.created_at,p.hidden,p.best_comment_id,coalesce(pr.name,'Участник') AS author,
            (SELECT count(*) FROM community_likes l WHERE l.post_id=p.id) AS likes,
            EXISTS(SELECT 1 FROM community_likes l WHERE l.post_id=p.id AND l.user_id=$2) AS liked
            FROM community_posts p LEFT JOIN community_profiles pr ON pr.user_id=p.user_id
@@ -367,6 +402,31 @@ async def collabs(conn, uid, body, user):
     return await feed(conn, uid, body, user)
 
 
+async def best(conn, uid, body, user):
+    """Автор поста (или админ) отмечает лучший ответ. Повторное нажатие снимает отметку."""
+    from config import ADMIN_ID
+    pid, cid = int(body.get("post_id") or 0), int(body.get("comment_id") or 0)
+    p = await conn.fetchrow("SELECT user_id,best_comment_id FROM community_posts WHERE id=$1", pid)
+    if not p or (p["user_id"] != uid and uid != ADMIN_ID):
+        return {"error": "forbidden"}
+    c = await conn.fetchrow("SELECT user_id,is_ai FROM community_comments WHERE id=$1 AND post_id=$2", cid, pid)
+    if not c:
+        return {"error": "not_found"}
+    if p["best_comment_id"] == cid:
+        await conn.execute("UPDATE community_posts SET best_comment_id=NULL WHERE id=$1", pid)
+        return {"ok": True, "best": None}
+    await conn.execute("UPDATE community_posts SET best_comment_id=$2 WHERE id=$1", pid, cid)
+    if not c["is_ai"] and c["user_id"] != p["user_id"]:
+        asyncio.create_task(_notify(c["user_id"], "★ Твой ответ отметили лучшим! +%s XP" % XP_RULES["best"], pid))
+    return {"ok": True, "best": cid}
+
+
+async def top(conn, uid, body, user):
+    rows = await conn.fetch(XP_SQL + """ WHERE NOT EXISTS (SELECT 1 FROM community_bans b WHERE b.user_id=pr.user_id)""")
+    ppl = sorted((_xp(r) for r in rows), key=lambda d: -d["xp"])[:10]
+    return {"top": [{k: d[k] for k in ("user_id", "name", "niche", "xp", "level", "level_name")} for d in ppl]}
+
+
 # ─────────────── Модерация ───────────────
 REPORT_REASONS = ("Спам", "Оскорбления", "Не по теме", "Мошенничество", "Другое")
 
@@ -483,6 +543,6 @@ def install(app):
     for name, fn in {"me": me, "profile": save_profile, "feed": feed, "post": create_post,
                      "post_detail": post_detail, "comment": create_comment, "like": like,
                      "people": people, "ask": ask, "collabs": collabs,
-                     "report": report, "mod": mod}.items():
+                     "report": report, "mod": mod, "best": best, "top": top}.items():
         app.router.add_post(f"/api/community/{name}", _api(fn))
     app.cleanup_ctx.append(_lifecycle)
