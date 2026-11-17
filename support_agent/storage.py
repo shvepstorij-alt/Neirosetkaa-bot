@@ -435,7 +435,7 @@ class Store:
         if self.db.execute("SELECT 1 FROM drafts WHERE chat=? AND state='sending' LIMIT 1",(d['chat'],)).fetchone():
             return 'в этом чате уже отправляется другой ответ'
         if not 0<=now-c['inbound']<86340:return 'истекло допустимое окно ответа Telegram либо время последнего обращения некорректно'
-        if not 0<=now-d['created']<900:return 'истёк срок проверки черновика (15 минут) либо время его создания некорректно'
+        if not 0<=now-d['created']<86340:return 'черновику больше суток — подготовьте свежий ответ'
         return 'первопричина отказа не установлена; требуется проверка состояния отправки'
 
     def reserve_send(self, did, now):
@@ -447,8 +447,8 @@ class Store:
                 return None
             c=self.chat(d['chat'])
             b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
-            if not b['can_reply'] or not 0<=now-c['inbound']<86340 or not 0<=now-d['created']<900:
-                return None
+            if not b['can_reply'] or not 0<=now-c['inbound']<86340 or not 0<=now-d['created']<86340:
+                return None  # owner 17.11.2026: a current draft can be sent by hand within Telegram's day
             if float(c['manual_pause_until'] or 0)>now:
                 return None
             self.db.execute("UPDATE drafts SET state='sending' WHERE id=?",(did,))

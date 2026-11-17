@@ -313,6 +313,21 @@ class Service:
                     else:await self.command(m.get('text',''))
                 except (ValueError,IndexError):
                     await self.owner_message('Некорректная команда. Используйте /status.')
+            elif m.get('chat',{}).get('type')=='private' and m.get('from',{}).get('id') not in (None,self.owner):
+                # Owner 17.11.2026: a client who found the service bot gets pointed to the shop, once a day.
+                uid=m['from']['id']
+                key='stranger_note:%s:%s'%(uid,dt.date.today().isoformat())
+                if not self.store.db.execute('SELECT 1 FROM settings WHERE key=?',(key,)).fetchone():
+                    self.store.put(key,'1')
+                    text=('Здравствуйте! Это служебный бот, он не принимает заказы. '
+                          'Оформить подписку можно в нашем боте @neirosetkaa_bot, а с вопросами пишите в личные сообщения Александру — там вам ответят.')
+                    try:
+                        if _POLL_INGEST.get():
+                            self.schedule_admin_job(lambda:self.tg.call('sendMessage',chat_id=uid,text=text),readonly=True)
+                        else:
+                            await self.tg.call('sendMessage',chat_id=uid,text=text)
+                    except Exception:
+                        logging.warning('Stranger note not sent')
             return
         if 'deleted_business_messages' in update:
             d=update['deleted_business_messages']
@@ -448,7 +463,7 @@ class Service:
         for d in drafts:
             label=self.chat_label(d['chat'],d['uid'])
             state=('исход отправки неизвестен — проверить личку' if d['state']=='uncertain' else
-                   'истёк срок отправки — нужна новая подготовка' if time.time()-d['created']>=900 else
+                   'черновику больше суток — нужна новая подготовка' if time.time()-d['created']>=86340 else
                    'готов к проверке')
             lines.append(f'Черновик №{d["id"]} · чат №{d["chat"]} · {label} · ID {d["uid"]}\n{state}')
             rows.append([(f'№{d["id"]} · {label}',f'draft:{d["id"]}')])
@@ -848,7 +863,7 @@ class Service:
             return
         c=self.store.chat(d['chat'])
         from .owner_ui import compact_card,draft_rows,more_rows
-        expired=d['state']=='ready' and time.time()-d['created']>=900
+        expired=d['state']=='ready' and time.time()-d['created']>=86340
         rows=draft_rows(d,c['id'],d['state']=='ready' and not expired,expired)
         if view=='more':rows=[r for r in more_rows(self,d,c) if r]
         profile=self.store.profile(c['id'])
