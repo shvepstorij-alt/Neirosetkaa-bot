@@ -64,7 +64,7 @@ def finalize(answer, understanding, context):
         part = ''
         if row.get('tariffs'):
             part = _tariffs(context)
-            if part and row.get('add_buy_steps') and '@neirosetkaa_bot' not in reply:
+            if row.get('add_buy_steps') and '@neirosetkaa_bot' not in reply + part:
                 part += '\n\n' + BUY_STEPS
         elif row.get('add'):
             part = row['add']

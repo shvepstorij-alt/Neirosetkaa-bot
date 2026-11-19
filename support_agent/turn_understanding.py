@@ -43,7 +43,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Тогда шаги оплаты бери из payment: кнопки и способы оттуда. '
     'Что нужно после оплаты, бери из payment.modes для этого сервиса. '
     'Кнопку «Я оплатил - написать Александру» не называй. '
-    'Токен сессии, Organization ID и Perplexity User ID — это данные после оплаты, не способ оплаты. '
+    'Токен сессии ChatGPT, sessionKey Claude и Perplexity User ID — это данные после оплаты, не способ оплаты. Claude Pro сейчас активирует Александр вручную по sessionKey и согласию клиента с рисками — тема claude_activation; Claude Max и Ultra — со входом в аккаунт (почта и пароль) и нашей иностранной картой — тема claude_max_login; Organization ID больше не нужен. '
     'Для нового аккаунта ChatGPT Plus кнопки активации нет. '
     'Нужен новый аккаунт в любом сервисе или нет почты для регистрации — тема new_account_email: сначала gmail.com без прежнего аккаунта в сервисе, иначе новая outlook.com от нас. '
     'setup_email, setup_password и setup_recovery заполняй только тем, что клиент уже написал: '
@@ -227,7 +227,7 @@ _STAGES = (
     (r'(?i)зарегистр\w+[^.?!\n]{0,40}(?:chatgpt|сайт|почт)', 'клиент регистрирует аккаунт на своей почте; дальше нужен токен'),
     (r'(?i)api/auth/session|токен', 'ждём токен от клиента'),
     (r'(?i)ссылк\w*\s+на\s+оплат|адресной\s+строк', 'ждём ссылку на оплату тарифа'),
-    (r'(?i)organization\s+id', 'ждём, что клиент вставит Organization ID в окно активации'),
+    (r'(?i)organization\s+id|sessionkey|cookie', 'ждём от клиента sessionKey Claude и согласие с рисками'),
     (r'(?i)почт\w*\s+и\s+пароль', 'ждём почту и пароль от аккаунта'),
     (r'(?i)username|имя\s+пользовател', 'ждём username Telegram'),
     (r'(?i)номер\s+заказа', 'ждём номер заказа'),
@@ -523,6 +523,17 @@ def _situation(value):
 
 
 def validate(understanding, context):
+    return _situation_consistent(_validate(understanding, context))
+
+
+def _situation_consistent(v):
+    """Owner 19.11.2026: the situation outranks a small-talk or partnership label."""
+    if v.get('situation') and v['situation'] not in ('thanks_only', 'other') and v.get('owner_topic') in SMALL_TALK_TOPICS | {'partnership'}:
+        v['owner_topic'] = 'none'
+    return v
+
+
+def _validate(understanding, context):
     """Drop ids that are not in the catalogue. Do not invent a price."""
     tariffs = context.get('tariffs') or []
     by_tariff = {row['id']: row for row in tariffs}
@@ -1169,6 +1180,7 @@ _REFUND_WORD = re.compile(r'(?i)возврат|верн\w+\s+(?:мне\s+)?(?:д
 _TOPIC_NEEDS = {
     'codex': r'codex|кодекс',
     'codex_install': r'codex|кодекс|кодэкс',
+    'partnership': r'(?i)сотруднич|партн[её]р|коллаб|интеграц|предлагаю\s+реклам|реклам\w*\s+(?:у\s+вас|в\s+(?:вашем|моём|моем|канал))|взаимн',
     'off_catalog_app': r'(?i)приложени|прилож|\bapp\b|айфон|iphone|ios|app\s*store',
     'vpn_needed': r'vpn|впн|випиэн|прокси|v2ray', 'vpn_help': r'vpn|впн|випиэн|прокси|v2ray',
     'vpn_abroad': r'vpn|впн|випиэн|прокси|v2ray',
@@ -1243,6 +1255,8 @@ def _service_rows(context, service_id):
 
 
 TARIFF_ASK = 'Напишите, какой тариф оформить.'
+PAY_LINE = 'Оплатить можно в боте @neirosetkaa_bot: «Каталог» → сервис → тариф, по СБП или картой «Мир».'
+ORG_ID_NEXT = None  # replaced by the claude_activation owner answer (19.11.2026)
 
 
 def tariff_question(rows):
@@ -1254,7 +1268,8 @@ def tariff_question(rows):
             continue
         seen.add(label)
         lines.append('• ' + label + (' — ' + str(row['price']) + ' ₽' if type(row.get('price')) is int else ''))
-    return 'Есть такие варианты:\n' + '\n'.join(lines) + '\n\n' + TARIFF_ASK
+    # Owner 19.11.2026: tariffs first, and always how to pay right under them.
+    return 'Есть такие варианты:\n' + '\n'.join(lines) + '\n\n' + TARIFF_ASK + '\n' + PAY_LINE
 
 
 def drop_other_plans(reply, validated):
@@ -1696,7 +1711,8 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
             and str((context or {}).get('answers_to_who') or '') == 'Александр':
         # Alexander himself asked for the ID in this chat: it is expected here, he takes it from here.
         topic = validated['owner_topic'] = 'none'
-        answer = dict(answer, reply='Спасибо, получил. Александр продолжит оформление и ответит здесь.', handoff=False)
+        # Owner's real next step (dialogs 19.11): pay in the bot, then activate with this ID on step 2.
+        answer = dict(answer, reply=_faq_answer('org_id_sent_here'), handoff=False)
     if re.search(r'(?i)gmail', focus_said) and re.search(r'(?i)^\W*(?:да|есть|ага|конечно)\b|gmail|\[email', offcat_burst) \
             and not re.search(r'(?i)\bнет\b|нету', offcat_burst) and len(offcat_burst) <= 160:
         topic = validated['owner_topic'] = 'gmail_confirmed'
@@ -1878,3 +1894,8 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
         return answer
     answer = dict(answer, evidence=evidence)
     return answer
+
+
+def _faq_answer(topic_id):
+    from .faq import load_faq
+    return next((t['answer'] for t in load_faq()['topics'] if t['id'] == topic_id), '')

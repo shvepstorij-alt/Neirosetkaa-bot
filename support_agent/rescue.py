@@ -67,7 +67,8 @@ def _buy_answer(context):
     parts = ['Здравствуйте!']
     if rows:
         parts.append(tariff_question(rows))
-    parts.append(BUY_STEPS)
+    if not rows:
+        parts.append(BUY_STEPS)
     if _RENEW.search(burst):
         parts.append(RENEW_LINE)
     return '\n\n'.join(parts)

@@ -95,7 +95,7 @@ async def run_dialogs(service, part):
             reason = str(ev.get('auto_block_reason') or ev.get('handoff_reason') or ev.get('diagnostic') or gate or '')[:200]
             try:
                 charge('grade')
-                grade = await asyncio.wait_for(service.ai.grade_reply(case, reply, stopped), timeout=90)
+                grade = await asyncio.wait_for(service.ai.grade_reply(case, reply, stopped, getattr(isolated, 'last_tariffs', None) or []), timeout=90)
             except RuntimeError:
                 raise
             except Exception as exc:

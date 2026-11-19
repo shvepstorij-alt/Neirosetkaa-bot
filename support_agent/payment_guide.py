@@ -141,10 +141,11 @@ def kind_for(service_id, plan_name, tariffs=None, service_name=''):
         return 'chatgpt_auto'
     if service_id == 'chatgpt' and plan_name:
         return 'chatgpt_manual'
-    if service_id == 'claude' and claude_is_maximum(plan_name, tariffs):
-        return 'claude_manual'
+    if service_id == 'claude' and (re.search(r'(?i)max|ultra|макс|ультра', plan_name or '')
+                                   or claude_is_maximum(plan_name, tariffs)):
+        return 'claude_login'  # owner 19.11.2026: Max and Ultra — login to the account, our foreign card
     if service_id == 'claude':
-        return 'claude_auto'
+        return 'claude_manual'  # owner 19.11.2026: Pro — by hand via sessionKey and consent
     if service_id == 'perplexity':
         return 'perplexity'
     return 'shop'
@@ -204,6 +205,9 @@ def _after(guide, kind, choice, have, service_name=''):
     row = _mode(guide, kind)
     if kind in ('credentials', 'credentials_email_code', 'email_only'):
         return _sentence(str(row.get('after') or '').replace('{name}', str(service_name or 'сервиса')))
+    if kind == 'claude_manual':
+        from .turn_understanding import _faq_answer
+        return _faq_answer('claude_activation')  # owner 19.11.2026, keeps its line breaks
     if kind == 'appstore':
         apple = guide.get('appstore') if isinstance(guide.get('appstore'), dict) else {}
         text = str(apple.get('after') or '').strip()
@@ -249,6 +253,8 @@ def render(service_id, service_name, plan_name, facts, already=(), tariffs=None,
     if kind == 'chatgpt_credits':
         choice_name = '«' + (service_name or 'Пополнение кредитов ChatGPT') + '»' + (', затем ' + plan_name if plan_name else '')
     pay = ' или '.join('«' + str(item) + '»' for item in (path.get('pay_buttons') or []) if item)
+    if 'Картой' in pay:
+        pay += ' (подходят только карты «Мир»)'
     apple = guide.get('appstore') if isinstance(guide.get('appstore'), dict) else {}
     if kind == 'appstore':
         steps = [
@@ -277,7 +283,7 @@ def render(service_id, service_name, plan_name, facts, already=(), tariffs=None,
     lines.extend(str(index) + '. ' + step for index, step in enumerate(steps, 1))
     lines.append('')
     lines.append(_after(guide, kind, choice, have, service_name))
-    timing = _timing_line(guide, kind, already)
+    timing = '' if kind == 'claude_manual' else _timing_line(guide, kind, already)
     if timing:
         lines.append('')
         lines.append(timing)

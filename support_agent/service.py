@@ -1433,6 +1433,7 @@ class Service:
         answer=self._models_answer_checked(answer, context)
         from .rescue import answer_instead_of_stop
         answer=answer_instead_of_stop(answer, understanding, context)
+        self.last_tariffs=context.get('tariffs') or []
         from .playbook import finalize
         from .rescue import issue_first
         validated_situation=(understanding or {}).get('situation') if isinstance(understanding,dict) else ''

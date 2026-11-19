@@ -636,15 +636,15 @@ def build_cases(catalog):
         'role': 'client', 'text': 'как оплатить клод макс 20',
         'payment_asked': True,
         'expect': {'hold': False, 'service': 'claude',
-                   'need': ['Александр', 'почт', 'парол', '5-30'],
-                   'forbid': ['Organization', 'Активировать Claude', '2-5', 'Я оплатил']}},
+                   'need': ['почту и пароль', 'иностранной карты', 'согласн'],
+                   'forbid': ['Organization', 'Активировать Claude', 'sessionKey', '2-5', 'Я оплатил']}},
     ])
     add('pay-claude-pro-auto', [{
         'role': 'client', 'text': 'как оплатить клод про',
         'payment_asked': True,
         'expect': {'hold': False, 'service': 'claude',
-                   'need': ['Активировать Claude', 'Organization', '2-5'],
-                   'forbid': ['парол', '5-30', 'Я оплатил']}},
+                   'need': ['sessionKey', 'Cookie-Editor', 'верификац'],
+                   'forbid': ['Organization', 'парол', 'Я оплатил']}},
     ])
     add('pay-chatgpt-pro5', [{
         'role': 'client', 'text': 'как оплатить чат гпт про 5',

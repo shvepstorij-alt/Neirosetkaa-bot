@@ -361,7 +361,7 @@ class OpenAI:
             raise ValueError('translation')
         return value['reply']
 
-    async def grade_reply(self, case, reply, stopped):
+    async def grade_reply(self, case, reply, stopped, tariffs=()):
         """Owner check (16.11.2026): compare the assistant with what Alexander really answered."""
         import json
         instructions = (
@@ -397,6 +397,18 @@ class OpenAI:
                          'риски Claude, оплата только СБП или «Мир», подписка на месяц без автосписаний, новая почта outlook.com и т. д.), '
                          'НЕ выдумка: если помощник повторил правило, это не ошибка, даже если Александр тогда ответил иначе. '
                          'Ошибка — если правило не подходит к вопросу клиента или помощник проигнорировал контекст.\n' + rules)
+        try:
+            from .playbook import load as load_playbook
+            book = '\n'.join('- ' + row['title'] + ': ' + row['rule'] for row in load_playbook().values())
+        except Exception:
+            book = ''
+        prices = '\n'.join('- %s %s — %s ₽' % (row.get('service'), row.get('plan'), row.get('price'))
+                           for row in tariffs or [] if isinstance(row, dict) and type(row.get('price')) is int)[:6000]
+        instructions += ('\n\nНовые правила владельца по ситуациям (ноябрь 2026, важнее старых ответов Александра в истории): '
+                         'на покупку сразу предлагать тарифы по возрастанию с ценами из каталога и как оплатить. '
+                         'Старые ответы Александра без цен — не эталон для цен.\n' + book +
+                         '\n\nДействующий каталог магазина. Цена из этого списка — НЕ выдумка и не ошибка «цена»; '
+                         'ошибка — только цена, которой здесь нет, или не тот тариф/сервис:\n' + (prices or '(каталог не передан)'))
         payload = {'history': case.get('history') or [], 'client': case.get('client'), 'alexander': case.get('owner'),
                    'assistant': reply, 'stopped': bool(stopped)}
         result = await self.request('responses', json={
