@@ -1264,3 +1264,87 @@ class ClientOrdersTests(unittest.TestCase):
         self.assertIn('Вижу заказ #10946', out['reply'])
         self.assertIn('Активировать подписку', out['reply'])
         self.assertNotIn('номер заказа', out['reply'])
+
+
+class OwnerButtons12hTests(unittest.TestCase):
+    def setUp(self):
+        import time
+        from support_agent import service as S
+        from support_agent.rollout import AllowedChats
+        from support_agent.storage import Store
+
+        class TG:
+            def __init__(s):
+                s.out = []
+
+            async def call(s, method, **kw):
+                s.out.append((method, kw))
+                return {'message_id': 900 + len(s.out)}
+        self.store = Store(':memory:')
+        self.tg = TG()
+        self.sv = S.Service(self.store, self.tg, None, None, 1, AllowedChats((5,), 1), 2000)
+        self.sv.owner_interval = 0
+        self.store.put('mode', 'draft')
+        self.store.connection('biz', True, True)
+        now = time.time()
+        self.cid = self.store.ingest('biz', 5, 10, 'client', 'Сколько стоит Plus?', {}, now - 60)
+        self.store.db.execute("INSERT INTO drafts(id,chat,mid,revision,global_revision,text,summary,handoff,created,state,admin_mid) "
+                              "VALUES (1,?,10,0,0,'ChatGPT Plus — 1990 ₽.','',0,?,'ready',700)", (self.cid, now - 4 * 60))
+
+    def sent_texts(self):
+        return [kw.get('text') for m, kw in self.tg.out if m == 'sendMessage' and kw.get('business_connection_id')]
+
+    def run_cmd(self, *cmds):
+        import asyncio
+
+        async def go():
+            for c in cmds:
+                await self.sv.command(c, admin_mid=700)
+            for t in list(self.sv.approval_tasks.values()):
+                await t
+        asyncio.run(go())
+
+    def test_send_after_a_new_client_message(self):
+        import time
+        self.store.ingest('biz', 5, 11, 'client', 'а Pro?', {}, time.time())
+        self.run_cmd('send:1')
+        self.assertTrue(any('ChatGPT Plus' in t for t in self.sent_texts()))
+
+    def test_edit_after_four_minutes_and_staleness(self):
+        import asyncio
+        import time
+        self.store.ingest('biz', 5, 11, 'client', 'и ещё вопрос', {}, time.time())
+        self.run_cmd('edit:1')
+        prompt = [kw for m, kw in self.tg.out if m == 'sendMessage' and kw.get('reply_markup', {}).get('force_reply')]
+        self.assertTrue(prompt)
+        prompt_mid = 900 + len(self.tg.out)
+
+        async def go():
+            await self.sv.owner_edit(self.sv.edit_target({'text': 'Мой исправленный ответ',
+                                                          'reply_to_message': {'message_id': prompt_mid}}) or 1,
+                                     'Мой исправленный ответ')
+            for t in list(self.sv.approval_tasks.values()):
+                await t
+        asyncio.run(go())
+        self.assertIn('Мой исправленный ответ', self.sent_texts())
+
+    def test_owner_manual_pause_does_not_block_his_press(self):
+        import time
+        self.store.db.execute('UPDATE chats SET manual_pause_until=? WHERE id=?', (time.time() + 3600, self.cid))
+        self.run_cmd('send:1')
+        self.assertTrue(self.sent_texts())
+
+    def test_twelve_hours_limit_and_no_double_send(self):
+        import time
+        self.run_cmd('send:1', 'send:1')
+        self.assertEqual(len(self.sent_texts()), 1)
+        self.store.db.execute("INSERT INTO drafts(id,chat,mid,revision,global_revision,text,summary,handoff,created,state) "
+                              "VALUES (2,?,10,0,0,'old','',0,?,'ready')", (self.cid, time.time() - 13 * 3600))
+        self.run_cmd('send:2')
+        self.assertNotIn('old', self.sent_texts())
+
+    def test_every_card_button_answers(self):
+        self.run_cmd('draft:1', 'more:1', 'info:1', 'draft:1', 'skip:1', 'retry:%d' % self.cid,
+                     '/start', 'pending:0', 'attention:0', 'chats:0', 'menu:stats', 'menu:settings', 'menu:tests')
+        edits = [m for m, kw in self.tg.out if m in ('editMessageText', 'sendMessage')]
+        self.assertGreaterEqual(len(edits), 10)
