@@ -90,17 +90,14 @@ modes:
     services: [chatgpt]
     timing: shop
     after: "Тарифы ChatGPT от Pro 5× и выше активирует Александр. Кнопки самостоятельной активации нет. Пришлите сюда токен аккаунта со страницы chatgpt.com/api/auth/session. Пароль аккаунта для этого тарифа не нужен."
-  claude_auto:
-    services: [claude]
-    timing: auto
-    button: "Активировать Claude"
-    page: "claude.ai/settings/account"
-    client_provides: "Organization ID"
-    where: "В мини-приложение по кнопке, не в эту переписку."
   claude_manual:
     services: [claude]
     timing: shop
-    after: "Максимальный тариф Claude активирует Александр. Пришлите сюда почту и пароль от аккаунта Claude."
+    after: "Подписку Claude сейчас активирует Александр вручную. Для этого нужны две вещи:\n\n1. Ваше согласие с рисками: гарантии на Claude нет, Claude может заблокировать аккаунт, при блокировке деньги не возвращаются. Напишите, пожалуйста, что согласны.\n\n2. sessionKey вашего аккаунта Claude:\n1️⃣ Установите расширение Cookie-Editor (https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) в браузер (Chrome / Edge / Firefox).\n2️⃣ Откройте claude.ai и войдите в свой аккаунт.\n3️⃣ Нажмите на иконку Cookie-Editor в правом верхнем углу → найдите cookie с именем sessionKey.\n4️⃣ Скопируйте его значение (Value, начинается на sk-ant-sid02-...) и отправьте сюда.\n\nПосле этого Александр активирует подписку и пришлёт ссылку на прохождение верификации."
+  claude_login:
+    services: [claude]
+    timing: shop
+    after: "Тарифы Claude Max и Ultra оформляем со входом в ваш аккаунт: оплачиваем их с нашей иностранной карты. Пришлите, пожалуйста, сюда почту и пароль от аккаунта Claude и напишите, что согласны с рисками: гарантии на Claude нет, Claude может заблокировать аккаунт, при блокировке деньги не возвращаются."
   perplexity:
     services: [perplexity]
     timing: auto
