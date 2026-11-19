@@ -1441,6 +1441,8 @@ class Service:
             answer=finalize(answer, __import__('support_agent.turn_understanding',fromlist=['validate']).validate(understanding, context), context)
         else:
             answer=issue_first(answer, context)
+        from .playbook import tidy
+        answer=tidy(answer, context)
         if isinstance(answer,dict) and not answer.get('handoff'):
             from .voice import greet_back
             answer=dict(answer,reply=greet_back(answer.get('reply'),context.get('burst'),context.get('history')))

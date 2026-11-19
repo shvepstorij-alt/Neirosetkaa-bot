@@ -64,7 +64,7 @@ def finalize(answer, understanding, context):
         part = ''
         if row.get('tariffs'):
             part = _tariffs(context)
-            if row.get('add_buy_steps') and '@neirosetkaa_bot' not in reply + part:
+            if part and row.get('add_buy_steps') and '@neirosetkaa_bot' not in reply + part:
                 part += '\n\n' + BUY_STEPS
         elif row.get('add'):
             part = row['add']
@@ -77,3 +77,27 @@ def finalize(answer, understanding, context):
     evidence['playbook'] = situations
     return dict(answer, reply=reply, evidence=evidence,
                 summary=(str(answer.get('summary') or '') + ' Дополнено по сценарию: ' + ', '.join(situations) + '.').strip())
+
+
+_GPT_LINE = re.compile(r'\n?• Если это ChatGPT — [^\n]*')
+_CLAUDE_LINE = re.compile(r'\n?• Если это Claude — [^\n]*')
+
+
+def tidy(answer, context):
+    """Owner 19.11.2026 (dialogs): keep only the bullet for the client's service; no empty gaps."""
+    if not isinstance(answer, dict):
+        return answer
+    reply = str(answer.get('reply') or '')
+    if '• Если это ChatGPT' in reply and '• Если это Claude' in reply:
+        try:
+            from .turn_understanding import _named_services
+            named = set(_named_services(context or {}))
+        except Exception:
+            named = set()
+        named.add(str(((context or {}).get('dialog_state') or {}).get('service') or ''))
+        if 'chatgpt' in named and 'claude' not in named:
+            reply = _CLAUDE_LINE.sub('', reply).replace('• Если это ChatGPT — пришлите ещё', 'Ещё пришлите')
+        elif 'claude' in named and 'chatgpt' not in named:
+            reply = _GPT_LINE.sub('', reply).replace('• Если это Claude — пришлите', 'Ещё пришлите')
+    reply = re.sub(r'\n{3,}', '\n\n', reply).strip()
+    return dict(answer, reply=reply) if reply != answer.get('reply') else answer

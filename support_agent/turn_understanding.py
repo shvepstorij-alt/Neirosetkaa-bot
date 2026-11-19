@@ -530,6 +530,9 @@ def _situation_consistent(v):
     """Owner 19.11.2026: the situation outranks a small-talk or partnership label."""
     if v.get('situation') and v['situation'] not in ('thanks_only', 'other') and v.get('owner_topic') in SMALL_TALK_TOPICS | {'partnership'}:
         v['owner_topic'] = 'none'
+    # Owner 19.11.2026 (dialogs): Claude activation data is asked after payment, not while choosing or buying.
+    if v.get('situation') in ('buy', 'price', 'compare_choose') and v.get('owner_topic') in ('claude_activation', 'claude_max_login'):
+        v['owner_topic'] = 'none'
     return v
 
 
