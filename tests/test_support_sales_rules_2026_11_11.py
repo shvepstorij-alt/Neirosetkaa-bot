@@ -1107,3 +1107,82 @@ class EveningFindingsTests(unittest.TestCase):
         out = answer_instead_of_stop({'reply': 'x', 'handoff': True, 'evidence': {}}, {},
                                      {'burst': 'что то там не ответило\nЗаказ #10829 · FreeKassa 348752373'})
         self.assertIn('Номер заказа вижу', out['reply'])
+
+
+class Owner17NovTests(unittest.TestCase):
+    def test_paid_problem_reply_asks_order_number(self):
+        from support_agent.rescue import issue_first
+        burst = 'Оплатила чат гпт через вашего бота, но не прошла активация\nПробую)'
+        out = issue_first({'reply': 'Хорошо, попробуйте.', 'handoff': False, 'evidence': {}}, {'burst': burst, 'window': []})
+        self.assertIn('номер заказа', out['reply'])
+        self.assertIn('повторную активацию', out['reply'])
+        kept = issue_first({'reply': 'Хорошо, попробуйте.', 'handoff': False, 'evidence': {}},
+                           {'burst': burst, 'window': [{'text': 'Заказ #10946'}]})
+        self.assertEqual(kept['reply'], 'Хорошо, попробуйте.')
+
+    def test_vpn_names_carry_referral_links(self):
+        from support_agent.customer_format import customer_payload
+        plain, payload = customer_payload('• @DureVpnBot - https://telegram.me/DureVpnBot?start=YYFpHPog9')
+        self.assertIn('<a href="https://telegram.me/DureVpnBot?start=YYFpHPog9">DureVpnBot</a>', payload['text'])
+        self.assertNotIn('https://', plain)
+
+    def test_new_account_paid_notice_asks_for_mail(self):
+        from support_agent.paid_notice import compose, parse
+        found = parse('Оплатил заказ #10946\nСервис: ✨ ChatGPT - Новый аккаунт с подпиской Plus\nНомер заказа: 349007419')
+        kind, reply = compose(found, [])
+        self.assertEqual(kind, 'chatgpt_new_account')
+        self.assertIn('outlook.com', reply)
+
+    def test_receipt_is_acknowledged(self):
+        from support_agent.owner_scenarios import quick_reply
+        self.assertIn('чек получил', quick_reply('Чек об оплате✅')['reply'])
+
+    def test_new_topics_present(self):
+        from support_agent.faq import load_faq
+        topics = {t['id']: t['answer'] for t in load_faq()['topics']}
+        self.assertIn('App Store / iCloud', topics['off_catalog_app'])
+        self.assertIn('Kimi', next(a for a in topics.values() if 'восстановить заблокированный аккаунт Claude' in a))
+
+
+class PlaybookTests(unittest.TestCase):
+    CTX = {'burst': 'пользуюсь бесплатной gpt, надо платную', 'window': [],
+           'tariffs': [{'service': 'ChatGPT', 'service_id': 'chatgpt', 'plan': 'Pro', 'price': 19990},
+                       {'service': 'ChatGPT', 'service_id': 'chatgpt', 'plan': 'Plus', 'price': 2490}],
+           'hints': [{'service_id': 'chatgpt'}]}
+
+    def test_buy_gets_tariffs_and_steps(self):
+        from support_agent.playbook import finalize
+        out = finalize({'reply': 'Конечно, поможем!', 'handoff': False}, {'situation': 'buy'}, self.CTX)
+        self.assertIn('Plus', out['reply'])
+        self.assertIn('@neirosetkaa_bot', out['reply'])
+
+    def test_paid_not_working_asks_order_and_bank_receipt(self):
+        from support_agent.playbook import finalize
+        ctx = dict(self.CTX, burst='Оплатила, но не активировалось\nПробую)')
+        out = finalize({'reply': 'Хорошо, попробуйте.', 'handoff': False}, {'situation': 'paid_not_working'}, ctx)
+        self.assertIn('номер заказа', out['reply'])
+        self.assertIn('чек', out['reply'])
+        self.assertIn('повторную активацию', out['reply'])
+        known = finalize({'reply': 'Хорошо.', 'handoff': False}, {'situation': 'paid_not_working'},
+                         dict(ctx, window=[{'text': 'Заказ #10946'}]))
+        self.assertEqual(known['reply'], 'Хорошо.')
+
+    def test_not_showing_and_multiple_situations(self):
+        from support_agent.playbook import finalize
+        out = finalize({'reply': 'Понял.', 'handoff': False},
+                       {'situation': 'has_sub_not_showing', 'situations': ['has_sub_not_showing', 'price']}, self.CTX)
+        self.assertIn('10–15 минут', out['reply'])
+        self.assertIn('₽', out['reply'])
+
+    def test_complete_reply_untouched_and_stops_untouched(self):
+        from support_agent.playbook import finalize
+        good = {'reply': 'ChatGPT Plus — 2490 ₽ в месяц.', 'handoff': False}
+        self.assertIs(finalize(good, {'situation': 'price'}, self.CTX), good)
+        stop = {'reply': 'x', 'handoff': True}
+        self.assertIs(finalize(stop, {'situation': 'buy'}, self.CTX), stop)
+
+    def test_prompt_lists_every_situation(self):
+        from support_agent.playbook import names, prompt_block
+        block = prompt_block()
+        for name in names():
+            self.assertIn(name + ':', block)

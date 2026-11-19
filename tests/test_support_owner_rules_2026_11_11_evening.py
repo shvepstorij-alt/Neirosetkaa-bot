@@ -25,8 +25,8 @@ class VpnTests(unittest.TestCase):
         self.assertFalse(answer['handoff'], answer.get('evidence', {}).get('diagnostic'))
         shown, _ = present_outgoing({'reply': answer['reply'], 'evidence': {}}, {}, True)
         plain, _html = format_customer(shown['reply'])
-        self.assertIn('https://telegram.me/DureVpnBot?start=YYFpHPog9', plain)
-        self.assertIn('https://t.me/v2raytnn_bot?start=facdaf71-69b8-4155-a3f7-bc245a6135fe', plain)
+        self.assertIn('href="https://telegram.me/DureVpnBot?start=YYFpHPog9"', _html)  # owner 17.11: the link sits under the name
+        self.assertIn('https://t.me/v2raytnn_bot?start=facdaf71-69b8-4155-a3f7-bc245a6135fe', _html)
         self.assertIn('поддержку самого VPN', plain)
 
 
