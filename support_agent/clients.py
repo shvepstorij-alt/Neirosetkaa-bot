@@ -212,6 +212,15 @@ class OpenAI:
         """One call: read the turn, including photos, and draft the client reply."""
         import json
         from .turn_understanding import UNDERSTANDING_INSTRUCTIONS
+        from .playbook import prompt_block
+        # Owner 19.11.2026: first the situation of each question, then the reply; priorities first.
+        instructions = ('ПОРЯДОК ВАЖНОСТИ:\n'
+                        '1. Прочитай все новые сообщения клиента (latest_client_message) целиком. Приписки «спасибо», «пробую», «жду» не главное.\n'
+                        '2. Определи ситуацию по каждому вопросу клиента: главная — в situation, все — в situations.\n'
+                        '3. Ответь на каждый вопрос по правилу его ситуации.\n'
+                        '4. Если клиент продолжает шаг Александра (answers_to) — продолжи этот шаг.\n'
+                        '5. Остальные правила ниже — уточнения.\n\n'
+                        + prompt_block() + '\n\n' + UNDERSTANDING_INSTRUCTIONS)
         schema = {'type': 'object', 'additionalProperties': False,
                   'properties': {
                       'intent': {'type': 'string', 'enum': ['price', 'how_to', 'list_options', 'choose_tariff',
@@ -237,6 +246,8 @@ class OpenAI:
                       'conflict_reason': {'type': 'string'},
                       'owner_alignment': {'type': 'string', 'enum': ['follows', 'contradicts', 'repeats', 'reasks']},
                       'owner_topic': {'type': 'string'},
+                      'situation': {'type': 'string'},
+                      'situations': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 4},
                       'beyond_owner_fact': {'type': 'boolean'},
                       'refund_order': {'type': 'string'},
                       'refund_service': {'type': 'string'},
@@ -251,7 +262,7 @@ class OpenAI:
                                'topic_changed', 'known_facts', 'missing_facts', 'questions', 'vpn_advice',
                                'region', 'payment_asked', 'fulfillment_choice', 'setup_email',
                                'setup_password', 'setup_recovery', 'reask_advisories', 'matched_tariff_ids',
-                               'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic',
+                               'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic', 'situation', 'situations',
                                'beyond_owner_fact', 'refund_order', 'refund_service', 'refund_reason',
                                'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}
         content = [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]
@@ -271,10 +282,13 @@ class OpenAI:
         from .faq import load_faq
         try:
             schema['properties']['owner_topic']['enum'] = ['none'] + [row['id'] for row in load_faq()['topics']]
+            from .playbook import names as situation_names
+            schema['properties']['situation']['enum'] = situation_names()
+            schema['properties']['situations']['items']['enum'] = situation_names()
         except Exception:
             schema['properties']['owner_topic']['enum'] = ['none']
         result = await self.request('responses', json={
-            'model': self.model, 'store': False, 'instructions': UNDERSTANDING_INSTRUCTIONS,
+            'model': self.model, 'store': False, 'instructions': instructions,
             'input': [{'role': 'user', 'content': content}],
             # A cut-off JSON fails the whole turn; long comparisons need room.
             'max_output_tokens': 3000,

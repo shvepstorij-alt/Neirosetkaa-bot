@@ -13,6 +13,29 @@ def _inline(value):
     return safe
 
 
+# Owner 17.11.2026: the VPN names themselves carry the owner's referral links.
+# Only these approved links become clickable names; model text can never add links.
+REF_LINKS = {
+    'DureVpnBot': 'https://telegram.me/DureVpnBot?start=YYFpHPog9',
+    'v2raytnn_bot': 'https://t.me/v2raytnn_bot?start=facdaf71-69b8-4155-a3f7-bc245a6135fe',
+}
+
+
+def _referral_names(text):
+    for name, url in REF_LINKS.items():
+        # «@Name - link» / «@Name: link» / «@Name (link)» → just the name; the link goes under it.
+        text = re.sub(r'@' + re.escape(name) + r'\s*(?:[-—–:]\s*|\()\s*' + re.escape(url) + r'\)?', '@' + name, text)
+        text = re.sub(r'(?<![\w/@])' + re.escape(url) + r'(?![\w?=&-])', '@' + name, text)
+    return text
+
+
+def _link_names(rendered):
+    for name, url in REF_LINKS.items():
+        rendered = re.sub(r'(?<![\w/>])@' + re.escape(name) + r'(?!\w)',
+                          '<a href="' + html.escape(url) + '">' + name + '</a>', rendered)
+    return rendered
+
+
 def format_customer(value):
     """Return readable plain history and safe HTML with identical visible text.
 
@@ -24,6 +47,7 @@ def format_customer(value):
     # Telegram cannot render Markdown links in HTML mode. Preserve the visible
     # label AND URL rather than silently dropping a useful instruction target.
     text=re.sub(r'\[([^\]\n]+)\]\((https?://[^\s)]+)\)',r'\1 (\2)',text)
+    text=_referral_names(text)
     blocks=[]
     for block in re.split(r'\n\s*\n',text):
         lines=[]
@@ -46,8 +70,8 @@ def format_customer(value):
                 (line.endswith(':') or re.fullmatch(r'[^\n:]{1,65}:\s*\d[\d .,]*\s*(?:₽|руб(?:лей|ля|ль)?\.?|RUB)',line,re.I))):
             formatted='<b>'+formatted+'</b>'
         rendered.append(formatted)
-    rendered='\n'.join(rendered)
-    plain=html.unescape(re.sub(r'</?(?:b|i|code)>','',rendered))
+    rendered=_link_names('\n'.join(rendered))
+    plain=html.unescape(re.sub(r'</?(?:b|i|code|a)(?: href="[^"]*")?>','',rendered))
     return plain,rendered
 
 

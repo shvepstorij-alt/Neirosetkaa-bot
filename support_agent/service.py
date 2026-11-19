@@ -1433,6 +1433,13 @@ class Service:
         answer=self._models_answer_checked(answer, context)
         from .rescue import answer_instead_of_stop
         answer=answer_instead_of_stop(answer, understanding, context)
+        from .playbook import finalize
+        from .rescue import issue_first
+        validated_situation=(understanding or {}).get('situation') if isinstance(understanding,dict) else ''
+        if validated_situation:
+            answer=finalize(answer, __import__('support_agent.turn_understanding',fromlist=['validate']).validate(understanding, context), context)
+        else:
+            answer=issue_first(answer, context)
         if isinstance(answer,dict) and not answer.get('handoff'):
             from .voice import greet_back
             answer=dict(answer,reply=greet_back(answer.get('reply'),context.get('burst'),context.get('history')))
@@ -2393,6 +2400,7 @@ class Service:
                 reset_meter(token)
         except Exception as exc:
             self.store.db.execute("UPDATE messages SET state='failed' WHERE chat=? AND mid=? AND state='working'",(job['chat'],job['mid']))
+            logging.error('Draft processing crashed', exc_info=exc)
             diagnostic=failure_details(exc,'draft')
             if self.store.still_current(job) and self.store.effective_mode(job['chat'])=='auto':
                 from .auto_panel import record

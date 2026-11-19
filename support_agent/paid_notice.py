@@ -52,6 +52,10 @@ def next_step(found, tariffs):
     service_id = str((row or {}).get('service_id') or '')
     service_name = str((row or {}).get('service') or found.get('service') or '')
     kind = kind_for(service_id, found.get('plan') or '', tariffs or [], service_name)
+    # The shop names it «ChatGPT - Новый аккаунт с подпиской Plus»: we create the account (owner 17.11.2026).
+    if re.search(r'(?i)chat\s*gpt|чат\s*гпт', str(found.get('service') or '')) and re.search(
+            r'(?i)нов\w*\s+аккаунт', str(found.get('service') or '') + ' ' + str(found.get('plan') or '')):
+        kind = 'chatgpt_new_account'
     detailed = steps_for(kind, service_name, str(found.get('plan') or ''))
     if detailed:
         return kind, detailed

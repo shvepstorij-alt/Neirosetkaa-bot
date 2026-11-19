@@ -12,7 +12,7 @@ HARD_CONFLICT = re.compile(r'(?i)возврат|верн[иу]|чарджбек|
                            r'угрож|мошенн|обман|развод|кидал|оскорб|\bмат\b|груб|refund|scam')
 BUY_INTENT = re.compile(r'(?i)купить|покупк|оформ|приобр|оплат|продл|платн|подписк|тариф|сколько\s+стои|цен[аыу]|хочу\s+\w+|нужн\w*\s+(?:плат|подпис|тариф)')
 PAID_CLAIM = re.compile(r'(?i)оплатил|оплатила|оплачен|деньги\s+(?:точно\s+)?(?:дошли|ушли|пришли)|оплата\s+прошла|перев[её]л|включите\s+подписк|активируйте')
-PROBLEM = re.compile(r'(?i)не\s+ответ|нет\s+(?:плюса|подписки|про\b|pro\b|plus)|не\s+вижу|не\s+отображ|отклон|заблок|не\s+получа|не\s+работа|не\s+актив|не\s+пришл|не\s+приш[её]л|ошибк|не\s+открыва|не\s+вход|не\s+могу')
+PROBLEM = re.compile(r'(?i)не\s+ответ|нет\s+(?:плюса|подписки|про\b|pro\b|plus)|не\s+вижу|не\s+отображ|отклонил|заблокировал|заблокирован|не\s+получа|не\s+работа|не\s+актив|не\s+пришл|не\s+приш[её]л|ошибк|не\s+открыва|не\s+вход|не\s+могу')
 HAVE = re.compile(r'(?i)у\s+меня\s+(?:сейчас\s+|уже\s+)?(?:есть\s+)?(?:подписк|тариф|plus|плюс|pro\b|про\b)|уже\s+(?:оплат|купил|оформил|есть\s+подписк)')
 ORDER_NO = re.compile(r'(?i)заказ\w*\s*(?:№|#)?\s*\d{4,}|#\s?\d{4,}')
 ASK_SCREEN = ('Здравствуйте! Номер заказа вижу. Пришлите, пожалуйста, скриншот того, что не получается: '
@@ -30,7 +30,7 @@ def _must_stop(result, understanding, context):
     from .privacy import sensitive
     from .turn_understanding import _MONEY_COMPLAINT, _REFUND_WORD
     evidence = result.get('evidence') if isinstance(result.get('evidence'), dict) else {}
-    burst = str((context or {}).get('burst') or '')
+    burst = _client_text(context)
     if not burst.strip() or len(burst) > 1500:
         return 'нет текста клиента'
     if any(evidence.get(key) for key in OWNER_ACTION_KEYS):
@@ -56,7 +56,7 @@ def _must_stop(result, understanding, context):
 
 def _buy_answer(context):
     from .turn_understanding import BUY_STEPS, RENEW_LINE, _RENEW, _named_services, _service_rows, tariff_question
-    burst = str((context or {}).get('burst') or '')
+    burst = _client_text(context)
     if not BUY_INTENT.search(burst):
         return ''
     rows = []
@@ -102,7 +102,7 @@ def answer_instead_of_stop(result, understanding, context):
     if _must_stop(result, understanding, context):
         return dict(result, handoff=True) if self_stop else result
     from .turn_understanding import _CODEX_HOW, classify_draft
-    burst = str((context or {}).get('burst') or '')
+    burst = _client_text(context)
     if PAID_CLAIM.search(burst) or PROBLEM.search(burst) or HAVE.search(burst):
         # Owner 13.11 (6.48, 6.56): paid or something fails — ask the order number and a screenshot.
         if ORDER_NO.search(burst):
@@ -124,3 +124,40 @@ def answer_instead_of_stop(result, understanding, context):
 
 def evidence_of(result):
     return result.get('evidence') if isinstance(result.get('evidence'), dict) else {}
+
+
+ASK_ORDER_REACTIVATE = ('Здравствуйте! Подскажите, пожалуйста, номер заказа и пришлите чек об оплате из банка. '
+                        'По ним Александр проверит оплату и, если активация не прошла, выдаст повторную активацию.')
+_ASKS_SOMETHING = re.compile(r'(?i)изображени|на\s+экране|на\s+скрин|номер\s+заказа|заказ\s*#|скриншот|скрин\b|токен|почт[уы]\s+и\s+парол|пришлите|подскажите')
+
+
+def issue_first(answer, context):
+    """Owner 17.11.2026: a client who paid or has a problem must be asked for what is needed.
+
+    The model sometimes answers only the last line («Пробую)»). When the client's messages
+    report a payment or a failure, no order number is known yet, and the reply asks for
+    nothing, the reply becomes the order-number question.
+    """
+    if not isinstance(answer, dict) or answer.get('handoff'):
+        return answer
+    evidence = answer.get('evidence') if isinstance(answer.get('evidence'), dict) else {}
+    if evidence.get('paid_notice') or evidence.get('payment_case'):
+        return answer
+    burst = _client_text(context)
+    window = ' '.join(str(row.get('text') or '') for row in (context or {}).get('window') or [] if isinstance(row, dict))
+    if not (PAID_CLAIM.search(burst) or PROBLEM.search(burst)):
+        return answer
+    reply = str(answer.get('reply') or '')
+    # Only a reply that ignores the problem: short and asking for nothing.
+    if len(re.sub(r'(?s)^Я ИИ-помощник.*?\)\s*', '', reply)) > 160 or '?' in reply:
+        return answer
+    if ORDER_NO.search(burst + ' ' + window) or _ASKS_SOMETHING.search(reply):
+        return answer
+    if str((context or {}).get('answers_to_who') or '') in ('Александр', 'owner'):
+        return answer
+    return _clean(dict(answer, handoff=True), ASK_ORDER_REACTIVATE, 'клиент сообщил об оплате или проблеме — запрошен номер заказа')
+
+
+def _client_text(context):
+    """The client's own words: service markers like «[Расшифровка голосового; возможны ошибки]» removed."""
+    return re.sub(r'\[[^\]\n]{0,120}\]', ' ', str((context or {}).get('burst') or ''))

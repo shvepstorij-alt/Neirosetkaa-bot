@@ -60,7 +60,9 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Иначе vpn_advice=false и reask_advisories пустой. '
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
     'Голос уже расшифрован в тексте сообщения. '
-    'Главное — latest_client_message: на него и отвечай. answers_to — последняя реплика помощника или Александра перед ним, '
+    'Главное — latest_client_message: это ВСЕ новые сообщения клиента подряд, ответь на всю его суть. '
+    'Короткая приписка в конце («пробую», «жду», «спасибо», «благодарю», смайлик) не заменяет главный вопрос или проблему выше: отвечай на них. '
+    'Если клиент сообщает об оплате или о том, что что-то не работает, и номера заказа ещё нет — попроси номер заказа. answers_to — последняя реплика помощника или Александра перед ним, '
     'answers_to_who — кто её написал, stage — этап разговора. Короткий ответ клиента («да», «нет», «сейчас», «готово», почта, номер, ID) '
     'продолжает именно answers_to и stage: не начинай шаблон заново и не переспрашивай то, что клиент уже сообщил. '
     'Если answers_to написал Александр, продолжай его шаг. '
@@ -70,7 +72,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Если в сообщении несколько вопросов (цена и как оформить, цена и что входит), ответь на каждый. '
     'Перечисляя тарифы сервиса, у каждого называй цену в ₽ из каталога; тарифы всегда в порядке возрастания цены. '
     'Если клиент поздоровался, начни ответ с приветствия. '
-    'Отвечай на последнее сообщение клиента (burst). История — только контекст: не отвечай повторно на вопросы, на которые там уже ответили, и не возвращайся к старой теме, если клиент сменил её. '
+    'История — только контекст: не отвечай повторно на вопросы, на которые там уже ответили, и не возвращайся к старой теме, если клиент сменил её. '
     'Короткий ответ клиента («да», «нет», почта, номер) — это ответ на последний вопрос в истории: продолжай с того шага. '
     'Если клиент просто благодарит или пишет, что всё получилось, — тема thanks. '
     'Рассказывая о тарифах, моделях и сервисах, не давай ссылок на источники и не пиши «по официальным данным», «данные официального сайта», «проверено»: это и так понятно. '
@@ -110,7 +112,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Продлить сервис, где оформляли по почте и паролю, — renewal_same_account. Gemini или Google One — gemini_google. Приложение ChatGPT для компьютера — chatgpt_desktop_app. '
     'Сервис просит номер телефона (ChatGPT, Codex, Claude) — phone_number; Claude просит документ — claude_verification. Нужен ли VPN за границей — vpn_abroad. '
     'Клиент пишет не по-русски — отвечай на его языке. '
-    'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. '
+    'Codex — тема codex. Готовый аккаунт Claude — claude_ready_account. Как активировать код App Store или iCloud — appstore_redeem. Оплата мобильного приложения, которого нет в каталоге (Trendy и подобные), — off_catalog_app, а не off_catalog. '
     'Почта клиента в тексте заменена на [email скрыт]: значит, клиент прислал почту. '
     'Монетки: начисляются только по реферальной программе — 10% с первой покупки каждого приглашённого; ссылка в @neirosetkaa_bot, главное меню → «Мой профиль» → «Пригласить друга»; тратятся на оплату подписки в боте. Других способов нет, не выдумывай задания или бонусы за покупки. '
     'Промокод только по прямому запросу: NAVSEX или CHATIK10, скидка 10%. '
@@ -512,6 +514,14 @@ def _id_list(understanding, key):
     return values
 
 
+def _situation(value):
+    try:
+        from .playbook import names
+        return value if value in names() else ''
+    except Exception:
+        return ''
+
+
 def validate(understanding, context):
     """Drop ids that are not in the catalogue. Do not invent a price."""
     tariffs = context.get('tariffs') or []
@@ -554,6 +564,8 @@ def validate(understanding, context):
             'conflict_reason': str((understanding or {}).get('conflict_reason') or '').strip()[:300],
             'owner_alignment': _alignment(understanding, context),
             'owner_topic': _owner_topic(understanding, context),
+            'situation': _situation((understanding or {}).get('situation')),
+            'situations': [x for x in map(_situation, (understanding or {}).get('situations') or [])][:4],
             'beyond_owner_fact': bool((understanding or {}).get('beyond_owner_fact')),
             'refund_collected': _refund_collected(understanding),
             'allowed_prices': _allowed_prices(tariffs, context.get('nominals') or [], service_id, tariff_id,
@@ -1157,6 +1169,7 @@ _REFUND_WORD = re.compile(r'(?i)возврат|верн\w+\s+(?:мне\s+)?(?:д
 _TOPIC_NEEDS = {
     'codex': r'codex|кодекс',
     'codex_install': r'codex|кодекс|кодэкс',
+    'off_catalog_app': r'(?i)приложени|прилож|\bapp\b|айфон|iphone|ios|app\s*store',
     'vpn_needed': r'vpn|впн|випиэн|прокси|v2ray', 'vpn_help': r'vpn|впн|випиэн|прокси|v2ray',
     'vpn_abroad': r'vpn|впн|випиэн|прокси|v2ray',
     'capcut_renewal': r'cap\s*cut|кап\s*кат|капкат',
