@@ -1891,14 +1891,44 @@ async def msg_gpt_new_account_outlook(message: Message, state: FSMContext):
     await state.clear()
     # Пароль НЕ сохраняем — только пересылаем Александру.
     import html as _html
+    _inf = {}
     try:
-        await bot.send_message(ADMIN_ID,
-            f"📮 <b>Новый аккаунт + Plus — создать Outlook</b>\n"
-            f"👤 {await _who_user(message.from_user.id)}\n"
-            f"🆔 <code>{order_id}</code>\n\n"
-            f"<code>{_html.escape(txt)}</code>\n\n"
-            f"Создай почту и аккаунт ChatGPT, затем активируй Plus.",
-            parse_mode="HTML")
+        _inf = json.loads(await get_setting(f"gpt_newacc_info:{order_id}", "") or "{}")
+    except Exception:
+        _inf = {}
+    _e = lambda x: _html.escape(str(x or ""))
+    _u = message.from_user
+    _lines = [l.strip() for l in txt.splitlines() if l.strip()]
+    _mails = [l for l in _lines if "@" in l]
+    _other = [l for l in _lines if "@" not in l]
+    _data_block = (
+        (f"📧 Новая почта: <code>{_e(_mails[0])}</code>\n" if _mails else "")
+        + (f"🔑 Пароль: <code>{_e(_other[0])}</code>\n" if _other else "")
+        + (f"🛟 Резервная: <code>{_e(_mails[1])}</code>\n" if len(_mails) > 1 else "")
+    ) if len(_mails) >= 2 and _other else f"<code>{_e(txt)}</code>\n"
+    _card = (
+        f"📮 <b>Новый аккаунт + Plus — создать Outlook</b>\n\n"
+        f"👤 <b>Клиент:</b> {await _who_user(_u.id)}\n"
+        f"🙍 Имя: {_e(_u.full_name)}"
+        + (f" · @{_e(_u.username)}" if _u.username else "") + "\n"
+        f"🆔 <code>{order_id}</code>\n"
+        + (f"🧾 {_e(_inf.get('ref'))}\n" if _inf.get("ref") else "")
+        + (f"📦 {_e(_inf.get('service') or 'ChatGPT')} · <b>{_e(_inf.get('plan'))}</b>\n" if _inf else "")
+        + (f"💵 Оплачено: <b>{_e(_inf.get('amount'))}₽</b>"
+           + (f" · {_e(_inf.get('paid'))}" if _inf.get("paid") else "") + "\n" if _inf.get("amount") else "")
+        + f"\n<b>Данные для почты:</b>\n{_data_block}\n"
+        f"Создай почту Outlook (резервную привяжи), зарегистрируй аккаунт ChatGPT "
+        f"и активируй Plus. Данные для входа отправь клиенту."
+    )
+    try:
+        from gpt_order_card import send as _gcard_send
+        try:
+            await _gcard_send(order_id, ADMIN_ID, _card, parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="💬 Написать клиенту",
+                                         url=f"tg://user?id={_u.id}")]]))
+        except Exception:
+            await bot.send_message(ADMIN_ID, _card, parse_mode="HTML")
     except Exception as e:
         logging.error(f"gptna outlook → admin: {e}")
         await message.answer("❌ Не получилось передать данные. Напишите Александру: "

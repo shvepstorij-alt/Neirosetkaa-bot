@@ -16179,6 +16179,16 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                 # ── «Новый аккаунт + Plus» (Александр 19.11.2026) ──
                 # Код сразу НЕ выдаём: сначала узнаём, есть ли у клиента Gmail.
                 await set_setting(f"gpt_newacc:{order_id}", str(user_id))
+                try:
+                    import datetime as _dt_na
+                    await set_setting(f"gpt_newacc_info:{order_id}", json.dumps({
+                        "service": str(service_name), "plan": p.get("name", ""),
+                        "amount": str(amount_rub),
+                        "ref": re.sub(r"<[^>]+>", "", _oref_pay or "").strip(),
+                        "paid": _dt_na.datetime.now(_BOT_TZ).strftime("%d.%m.%Y %H:%M"),
+                    }, ensure_ascii=False))
+                except Exception as _e_na:
+                    logging.warning(f"gpt_newacc_info {order_id}: {_e_na}")
                 await bot.send_message(
                     user_id,
                     f"🎉 <b>Оплата прошла успешно!</b>\n\n"
