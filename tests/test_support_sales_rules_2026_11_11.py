@@ -1240,3 +1240,27 @@ class Dialogs19NovEveningTests(unittest.TestCase):
         from support_agent.playbook import finalize
         out = finalize({'reply': 'Оплаты не нужно, попробуйте ещё раз.', 'handoff': False}, {'situation': 'buy'}, {'burst': 'сколько перевести?'})
         self.assertNotIn('@neirosetkaa_bot', out['reply'])
+
+
+class ClientOrdersTests(unittest.TestCase):
+    FACTS = {'orders_status': 'available',
+             'catalog': [{'service_key': 'chatgpt', 'service': 'ChatGPT'}],
+             'orders': [{'num': 10946, 'status': 'paid', 'service_key': 'chatgpt', 'plan_name': 'Plus',
+                         'paid_at': '2026-11-19 12:00', 'activation_status': 'pending_window'}]}
+
+    def test_orders_brief(self):
+        from support_agent.turn_understanding import orders_brief
+        brief = orders_brief(self.FACTS)
+        self.assertEqual(brief['orders'][0]['order'], '#10946')
+        self.assertEqual(brief['orders'][0]['service'], 'ChatGPT')
+        self.assertIn('кнопка активации', brief['orders'][0]['state'])
+        self.assertEqual(orders_brief({'orders_status': 'read_error'})['status'], 'unknown')
+
+    def test_paid_problem_uses_the_known_order(self):
+        from support_agent.playbook import finalize
+        from support_agent.turn_understanding import orders_brief
+        ctx = {'burst': 'оплатила, но не активируется', 'window': [], 'client_orders': orders_brief(self.FACTS)}
+        out = finalize({'reply': 'Хорошо.', 'handoff': False}, {'situation': 'paid_not_working'}, ctx)
+        self.assertIn('Вижу заказ #10946', out['reply'])
+        self.assertIn('Активировать подписку', out['reply'])
+        self.assertNotIn('номер заказа', out['reply'])
