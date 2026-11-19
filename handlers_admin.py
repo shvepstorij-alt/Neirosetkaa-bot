@@ -5435,3 +5435,49 @@ async def admin_balance_report(message: Message):
         return
     for _chunk in tg_chunks(_t):
         await message.answer(_chunk, parse_mode="HTML")
+
+
+
+# ── «🧹 Очистить fulfilled» под сообщением «в пуле есть потраченные коды» ──
+# Александр 19.11.2026. Убираем из пула ТОЛЬКО коды, которые сайт прямо сейчас
+# называет «fulfilled» (активация завершена). «claimed» не трогаем — это
+# середина процесса, такой код ещё может дозреть у клиента.
+# Коды не удаляются физически: помечаются использованными (check_status='used'),
+# чтобы в выдачу они больше не попадали, а история осталась.
+@dp.callback_query(F.data == "gpt_purge_fulfilled")
+async def cb_gpt_purge_fulfilled(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        await cb.answer("Только для администратора", show_alert=True)
+        return
+    await cb.answer("Сверяю с сайтом…")
+    try:
+        from common import gpt_pool_audit
+        from db import get_pool
+        _audit = await gpt_pool_audit(include_reserved=True)
+        _ful = [c for c, v in (_audit.get("spent") or [])
+                if "fulfilled" in str(v).lower()]
+        _left = [(c, v) for c, v in (_audit.get("spent") or [])
+                 if "fulfilled" not in str(v).lower()]
+        n = 0
+        if _ful:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                r = await conn.execute(
+                    "UPDATE gpt_codes SET is_used=TRUE, check_status='used' "
+                    "WHERE code = ANY($1::text[]) AND used_by IS NULL", _ful)
+            try:
+                n = int(str(r).split()[-1])
+            except Exception:
+                n = len(_ful)
+        logging.info(f"gpt_purge_fulfilled: убрано {n}: {_ful}")
+        txt = (f"🧹 <b>Очищено fulfilled: {n}</b>\n"
+               + "\n".join(f"• <code>{c}</code>" for c in _ful[:20]))
+        if _left:
+            txt += ("\n\n⏳ <b>Оставил (не fulfilled):</b>\n"
+                    + "\n".join(f"• <code>{c}</code> — {v}" for c, v in _left[:15]))
+        if not _ful and not _left:
+            txt = "✅ Потраченных кодов в пуле уже нет."
+        await cb.message.edit_text(txt, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"gpt_purge_fulfilled: {e}", exc_info=True)
+        await cb.message.answer(f"❌ Не удалось очистить: {str(e)[:200]}")

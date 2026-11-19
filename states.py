@@ -158,3 +158,7 @@ class CredsState(StatesGroup):
 
 class OrderReplyState(StatesGroup):
     waiting = State()            # клиент пишет ответ по заказу (тред)
+
+
+class GptNewAccState(StatesGroup):
+    waiting_outlook = State()  # «Новый аккаунт + Plus»: ждём адрес/пароль Outlook и резервную почту

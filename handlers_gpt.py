@@ -1757,3 +1757,163 @@ async def cb_service_order_card(cb: CallbackQuery):
     except Exception:
         logging.exception('Service order card action failed')
         await cb.answer('Не удалось завершить действие. Обнови карточку перед повтором.', show_alert=True)
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  «Новый аккаунт + Plus» — вопрос про Gmail после оплаты (19.11.2026)
+# ══════════════════════════════════════════════════════════════════════
+from states import GptNewAccState
+
+
+async def _gptna_owner_ok(order_id: str, user_id: int) -> bool:
+    return (await get_setting(f"gpt_newacc:{order_id}", "")) == str(user_id)
+
+
+def _gptna_back_kb(order_id: str):
+    return [InlineKeyboardButton(text="← Назад", callback_data=f"gptna:q:{order_id}")]
+
+
+@dp.callback_query(F.data.startswith("gptna:"), StateFilter("*"))
+async def cb_gpt_new_account(cb: CallbackQuery, state: FSMContext):
+    try:
+        _, act, order_id = cb.data.split(":", 2)
+    except ValueError:
+        await cb.answer()
+        return
+    uid = cb.from_user.id
+    if not await _gptna_owner_ok(order_id, uid):
+        await cb.answer("Заказ не найден", show_alert=True)
+        return
+
+    if act == "q":   # вернуться к вопросу
+        await state.clear()
+        await cb.message.edit_text(
+            "Подскажите, у вас есть почта <b>Gmail.com</b>?", parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Да", callback_data=f"gptna:y:{order_id}"),
+                InlineKeyboardButton(text="❌ Нет", callback_data=f"gptna:n:{order_id}")]]))
+        await cb.answer()
+        return
+
+    if act == "y":
+        await cb.message.edit_text(
+            "📧 <b>Отлично! Создаём новый аккаунт на ваш Gmail</b>\n\n"
+            "1️⃣ Включите <b>VPN</b>.\n"
+            "2️⃣ Перейдите на <b>chatgpt.com</b> и зарегистрируйтесь на вашу почту "
+            "<b>gmail.com</b>.\n"
+            "3️⃣ Когда войдёте в новый аккаунт — нажмите кнопку ниже: бот выдаст "
+            "код и откроет активацию. Там нужно будет вставить токен аккаунта "
+            "(текст со страницы <code>chatgpt.com/api/auth/session</code>).",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✨ Я зарегистрировался — активировать Plus",
+                                      callback_data=f"gptna:act:{order_id}")],
+                _gptna_back_kb(order_id)]))
+        await cb.answer()
+        return
+
+    if act == "n":
+        await state.set_state(GptNewAccState.waiting_outlook)
+        await state.update_data(gptna_order=order_id, gptna_mid=cb.message.message_id)
+        await cb.message.edit_text(
+            "📮 <b>Создадим для вас новую почту Outlook.com</b>\n\n"
+            "Отправьте <b>одним сообщением</b>:\n"
+            "1️⃣ Желаемый адрес — например <code>ivan.petrov2026@outlook.com</code>\n"
+            "2️⃣ Пароль для этой почты (не используйте пароль от других ваших сервисов)\n"
+            "3️⃣ Вашу текущую почту — её привяжем как резервную\n\n"
+            "Данные увидит только Александр; сообщение с паролем бот удалит из чата.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[_gptna_back_kb(order_id)]))
+        await cb.answer()
+        return
+
+    if act == "act":
+        # Повторное нажатие — тот же код, второй не выдаём.
+        code = await get_setting(f"gpt_newacc_code:{order_id}", "")
+        prov = "bpa"
+        if not code:
+            from common import _gpt_pick_code
+            code, prov = await _gpt_pick_code("plus")
+            if not code:
+                await cb.answer()
+                await cb.message.answer(
+                    "⚠️ Коды временно закончились. Оплата сохранена — Александр "
+                    "активирует подписку вручную, сообщение придёт сюда 🙌")
+                await bot.send_message(ADMIN_ID,
+                    f"🚨 <b>Новый аккаунт + Plus: нет кодов Plus</b>\n"
+                    f"👤 {await _who_user(uid)}\n🆔 <code>{order_id}</code>",
+                    parse_mode="HTML")
+                return
+            await set_setting(f"gpt_newacc_code:{order_id}", code)
+        await save_pending_activation(uid, code, order_id, "plus", "Plus", prov or "bpa")
+        from aiogram.types import WebAppInfo
+        from config import webapp_url
+        url = webapp_url("/webapp/chatgpt", plan="Plus", code=code)
+        await cb.message.edit_text(
+            "✅ <b>Аккаунт создан — осталось активировать Plus</b>\n\n"
+            "Нажмите «Активировать подписку», в мини-приложении вставьте весь текст "
+            "со страницы <code>chatgpt.com/api/auth/session</code> (в браузере, где "
+            "вы вошли в НОВЫЙ аккаунт).\n\n"
+            f"🎟 Код активации: <code>{code}</code>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✨ Активировать подписку",
+                                      web_app=WebAppInfo(url=url))],
+                [InlineKeyboardButton(text="❓ Нужна помощь", web_app=WebAppInfo(
+                    url=url + ("&" if "?" in url else "?") + "help=1"))]]))
+        await cb.answer()
+        try:
+            await bot.send_message(ADMIN_ID,
+                f"🆕 Новый аккаунт + Plus: клиент {await _who_user(uid)} "
+                f"зарегистрировался на Gmail, выдан код <code>{code}</code> "
+                f"(заказ <code>{order_id}</code>).", parse_mode="HTML")
+        except Exception:
+            pass
+        return
+    await cb.answer()
+
+
+@dp.message(GptNewAccState.waiting_outlook)
+async def msg_gpt_new_account_outlook(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = data.get("gptna_order", "")
+    txt = (message.text or "").strip()
+    if not txt or txt.startswith("/"):
+        await state.clear()
+        return
+    if txt.count("@") < 2:
+        await message.answer(
+            "Нужны адрес новой почты, пароль и ваша резервная почта — одним "
+            "сообщением. Пример:\n<code>ivan.petrov2026@outlook.com\n"
+            "MyPass123!\nivan@mail.ru</code>", parse_mode="HTML")
+        return
+    await state.clear()
+    # Пароль НЕ сохраняем — только пересылаем Александру.
+    import html as _html
+    try:
+        await bot.send_message(ADMIN_ID,
+            f"📮 <b>Новый аккаунт + Plus — создать Outlook</b>\n"
+            f"👤 {await _who_user(message.from_user.id)}\n"
+            f"🆔 <code>{order_id}</code>\n\n"
+            f"<code>{_html.escape(txt)}</code>\n\n"
+            f"Создай почту и аккаунт ChatGPT, затем активируй Plus.",
+            parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"gptna outlook → admin: {e}")
+        await message.answer("❌ Не получилось передать данные. Напишите Александру: "
+                             f"@{PERSONAL_USERNAME}")
+        return
+    try:
+        await message.delete()   # пароль не висит в чате
+    except Exception:
+        pass
+    try:
+        await bot.edit_message_text(
+            chat_id=message.chat.id, message_id=data.get("gptna_mid"),
+            text="✅ <b>Данные получены</b>\n\nАлександр создаст почту Outlook и "
+                 "аккаунт ChatGPT с подпиской Plus, а затем пришлёт данные для входа "
+                 "сюда в чат. Обычно это занимает до нескольких часов 🙌",
+            parse_mode="HTML")
+    except Exception:
+        await message.answer("✅ Данные получены — Александр пришлёт данные для входа сюда.")

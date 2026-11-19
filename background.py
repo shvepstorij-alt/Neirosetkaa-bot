@@ -1003,7 +1003,10 @@ async def gpt_codes_cleanup_loop():
                         f"Ничего не гасил и не удалял — проверь сам. "
                         f"В пул автоматически они не вернутся, и в выдаче "
                         f"стоят последними. Удалить можно в админ-панели.",
-                        parse_mode="HTML")
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="🧹 Очистить fulfilled",
+                                                 callback_data="gpt_purge_fulfilled")]]))
             except Exception as _e_au:
                 logging.warning(f"gpt_pool_audit перед возвратом: {_e_au}")
             async with pool.acquire() as conn:

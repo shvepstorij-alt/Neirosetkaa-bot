@@ -2844,7 +2844,69 @@ def _gpt_bpa_session_failure(http_status, error_code='', **meta):
     return result
 
 
+# ── Повтор при «зависшем» ответе поставщика ─────────────────────────────
+# Александр 19.11.2026: «❗️ Ошибка обработки ответа поставщика: TimeoutError» —
+# сайт просто не успел ответить за 30 с, а клиент видел ошибку. Это НЕ исход:
+# повторяем ту же активацию тем же кодом и той же сессией, пока сайт не даст
+# ясный ответ (успех / понятная ошибка) или не выйдут ~5 минут.
+# Повтор безопасен: если первый POST сайт всё-таки принял, на повторе он
+# вернёт existing=true, и ниже уже есть проверка, ЧЕЙ это заказ (по почте).
+BPA_TRANSIENT_EXC = {"TimeoutError", "CancelledError", "ServerDisconnectedError",
+                     "ClientOSError", "ClientConnectorError", "ClientPayloadError",
+                     "ContentTypeError", "JSONDecodeError"}
+BPA_RETRY_WINDOW = 300.0   # сек — столько клиент видит анимацию загрузки
+BPA_RETRY_PAUSE = 15.0
+
+
+def _bpa_is_transient(res: dict) -> bool:
+    if not isinstance(res, dict) or res.get("success"):
+        return False
+    if res.get("provider_exception") in BPA_TRANSIENT_EXC:
+        return True
+    _e = str(res.get("error") or "")
+    return _e.startswith("Сеть/сайт недоступен") or "TimeoutError" in _e
+
+
 async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False) -> dict:
+    """Обёртка над _activate_chatgpt_bpa_once: сетевые сбои/таймауты поставщика
+    повторяются автоматически до ясного исхода (≈5 мин)."""
+    import asyncio as _aio, time as _time
+    _t0 = _time.monotonic()
+    _try = 0
+    while True:
+        _try += 1
+        res = await _activate_chatgpt_bpa_once(code, session_raw, force=force)
+        if not _bpa_is_transient(res):
+            if _try > 1 and isinstance(res, dict):
+                res["provider_retries"] = _try - 1
+            return res
+        _left = BPA_RETRY_WINDOW - (_time.monotonic() - _t0)
+        logger.warning(f"bpa gpt: {code} попытка {_try} — сбой связи "
+                       f"({res.get('provider_exception') or res.get('error')}), "
+                       f"повтор через {BPA_RETRY_PAUSE:.0f}с, осталось {max(0,_left):.0f}с")
+        if _left <= BPA_RETRY_PAUSE:
+            break
+        await _aio.sleep(BPA_RETRY_PAUSE)
+    # Окно вышло, ясного ответа нет. Спросим сайт про сам код: если он уже
+    # потрачен — пусть разбирается сверка (site_claimed), не пугаем клиента.
+    try:
+        _q = await bpa_query_codes([code])
+        _st = ((_q.get((code or "").strip().upper()) or {}).get("status", "") or "").lower()
+        if _st in BPA_USED_STATUSES:
+            return {"success": False, "site_claimed": True, "site_status": _st,
+                    "provider_retries": _try,
+                    "error": f"Сайт не ответил вовремя, но код у него уже «{_st}» — проверяю сверкой."}
+    except Exception as _e_q:
+        logger.warning(f"bpa gpt: после повторов не спросил статус {code}: {_e_q}")
+    return {"success": False, "manual": True, "provider_retries": _try,
+            "provider_exception": res.get("provider_exception") or "TimeoutError",
+            "error": ("Сайт активации не отвечает уже 5 минут (сделано попыток: "
+                      f"{_try}). Оплата сохранена, код за тобой и НЕ потрачен. "
+                      "Ничего повторять не нужно — Александр завершит активацию "
+                      "и пришлёт сообщение в чат бота.")}
+
+
+async def _activate_chatgpt_bpa_once(code: str, session_raw: str, force: bool = False) -> dict:
     """bypriceactivate.pro — ChatGPT Plus Direct (АСИНХРОННЫЙ API, без браузера).
 
     POST /api/gpt/activate {code, session} -> {order_id}; далее опрос
@@ -3228,7 +3290,8 @@ async def activate_chatgpt_bpa(code: str, session_raw: str, force: bool = False)
             return {"success": False,
                     "error": "Сайт долго обрабатывал заказ (>5 мин). Александр проверит вручную."}
     except _aiohttp.ClientError as e:
-        return {"success": False, "error": "Сеть/сайт недоступен: " + str(e)[:120]}
+        return {"success": False, "error": "Сеть/сайт недоступен: " + str(e)[:120],
+                'provider_exception': type(e).__name__}
     except Exception as e:
         return {"success": False, "error": str(e)[:200] or 'Ошибка обработки ответа поставщика: '+type(e).__name__,
                 'provider_error_stage':'request_or_poll','provider_exception':type(e).__name__}

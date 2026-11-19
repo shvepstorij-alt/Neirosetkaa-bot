@@ -848,6 +848,12 @@ def _rand_sfx(n: int = 3) -> str:
 PLAN_CODE_KEYS = {"chatgpt": {}, "claude": {}}
 
 
+def gpt_is_new_account_plan(plan_name: str) -> bool:
+    """Тариф «Новый аккаунт + Plus» (по названию: «новый» + «аккаунт»)."""
+    _n = (plan_name or "").lower()
+    return "нов" in _n and "аккаунт" in _n
+
+
 def plan_name_to_key(plan_name: str) -> str:
     """Стабильный ключ тарифа для пула кодов. Существующие имена — фиксированы,
     новые тарифы получают уникальный slug (коды разных тарифов не смешиваются)."""

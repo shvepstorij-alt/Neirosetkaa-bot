@@ -23,6 +23,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+from config import gpt_is_new_account_plan
 from config import (
     ACTIVITY_DAYS_PER_PAGE, ADMIN_ID, ANIM_LIMIT_PER_HOUR, CLAUDE_API_KEY, COINS_REF_PERCENT, FK_ALLOWED_IPS,
     FK_API_KEY, FK_IP_CHECK_DISABLED, FK_SECRET2, FK_SHOP_ID, MAX_CONCURRENT_GENS, MOTION_LIMIT_PER_HOUR,
@@ -14795,6 +14796,27 @@ async def api_activate_chatgpt_handler(request: web.Request) -> web.Response:
                 _mk_ios = ""
             if _mk_ios:
                 _need_route, _why_route = "ios", f"филиппинский уже отбит: {_mk_ios}"
+        # Александр 19.11.2026: если на аккаунте ТОЧНО действующая подписка
+        # (оба источника плана согласны, план не free) и есть iOS-сток —
+        # сразу iOS: филиппинский такой аккаунт всё равно отобьёт.
+        # Бесплатный план (или план не определён / источники разошлись) —
+        # филиппинский, как раньше.
+        if _need_route == "ph":
+            _paid_sure0 = bool((_acc_plan or "").strip() and _has_sub
+                               and "расхождение" not in (_plan_src or ""))
+            if _paid_sure0:
+                try:
+                    from db import count_gpt_free_by_route
+                    _ios_free = sum(int(r.get("free") or 0)
+                                    for r in (await count_gpt_free_by_route() or [])
+                                    if r.get("route") == "ios"
+                                    and (r.get("plan") or "") == _pk_rt)
+                except Exception as _e_is:
+                    logging.warning(f"GPT route iOS stock: {_e_is}")
+                    _ios_free = 0
+                if _ios_free > 0:
+                    _need_route = "ios"
+                    _why_route = f"активная подписка {_acc_plan}, iOS-сток {_ios_free}"
         _cur_route = gpt_route_for_code(code)
         logging.info(
             f"GPT route: uid={user_id} тариф={_pk_rt} план={_acc_plan or '(не определён)'} "
@@ -16153,7 +16175,33 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         parse_mode="HTML")
                 except Exception:
                     pass
-            if not p or await _is_manual_plan(shop_key, plan_idx, p):
+            if p and _svc_kind == "chatgpt" and gpt_is_new_account_plan(p.get("name", "")):
+                # ── «Новый аккаунт + Plus» (Александр 19.11.2026) ──
+                # Код сразу НЕ выдаём: сначала узнаём, есть ли у клиента Gmail.
+                await set_setting(f"gpt_newacc:{order_id}", str(user_id))
+                await bot.send_message(
+                    user_id,
+                    f"🎉 <b>Оплата прошла успешно!</b>\n\n"
+                    f"📦 <b>{service_name}</b> — {amount_rub}₽\n"
+                    f"{_oref_pay}{delayed_note}",
+                    parse_mode="HTML")
+                await bot.send_message(
+                    user_id,
+                    "Подскажите, у вас есть почта <b>Gmail.com</b>?",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="✅ Да", callback_data=f"gptna:y:{order_id}"),
+                        InlineKeyboardButton(text="❌ Нет", callback_data=f"gptna:n:{order_id}"),
+                    ]]))
+                try:
+                    await gpt_card_send(order_id, ADMIN_ID,
+                        f"🆕 <b>ChatGPT — новый аккаунт + Plus</b>\n"
+                        f"👤 {await _who_user(user_id)}  📦 {service_name}\n"
+                        f"💵 {amount_rub}₽  🆔 <code>{order_id}</code>\n"
+                        f"Спросил клиента про Gmail.", parse_mode="HTML")
+                except Exception:
+                    pass
+            elif not p or await _is_manual_plan(shop_key, plan_idx, p):
                 await _send_manual_order(
                     user_id=user_id, shop_key=shop_key,
                     service_name=service_name, plan_name=p.get("name", ""),

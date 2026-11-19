@@ -636,7 +636,21 @@
     .rec-card .pr{font-size:11.5px;color:var(--text2)}
     .rec-card .go{margin-top:3px;background:var(--green);color:#fff;text-align:center;font-size:11.5px;font-weight:700;
       padding:7px;border-radius:9px;cursor:pointer}
-  </style>
+  
+    /* 5-минутный прогресс активации (19.11.2026) */
+    .ld-bar{width:240px;height:6px;border-radius:6px;background:var(--bg3);overflow:hidden;margin-top:18px}
+    .ld-fill{height:100%;width:0;background:linear-gradient(90deg,var(--green),#3ee0b0);border-radius:6px;transition:width 1s linear;
+      background-size:200% 100%;animation:ld-shine 1.6s linear infinite}
+    @keyframes ld-shine{from{background-position:200% 0}to{background-position:0 0}}
+    .ld-meta{width:240px;display:flex;justify-content:space-between;font-size:12px;color:var(--text2,#888);margin-top:8px}
+    .ld-steps{width:240px;margin-top:16px;display:flex;flex-direction:column;gap:9px}
+    .ld-step{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text2,#888);opacity:.55;transition:.4s}
+    .ld-step i{width:14px;height:14px;border-radius:50%;border:2px solid var(--border,#333);flex:none;transition:.4s}
+    .ld-step.on{opacity:1;color:var(--text)}
+    .ld-step.on i{border-color:var(--green);border-top-color:transparent;animation:spin-cw .9s linear infinite}
+    .ld-step.ok{opacity:1;color:var(--text)}
+    .ld-step.ok i{background:var(--green);border-color:var(--green)}
+</style>
 </head>
 <body>
 
@@ -836,8 +850,16 @@
 
     </div>
 
-    <div class="loader-title">Активируем...</div>
-    <div class="loader-sub">Подключаемся к ChatGPT.<br>Не закрывай приложение — обычно 1–3 минуты.</div>
+    <div class="loader-title" id="ld-title">Активируем подписку</div>
+    <div class="loader-sub">Подключаемся к ChatGPT.<br>Не закрывай приложение — это может занять до 5 минут.</div>
+    <div class="ld-bar"><div class="ld-fill" id="ld-fill"></div></div>
+    <div class="ld-meta"><span id="ld-stage">Проверяем код</span><span id="ld-time">0:00</span></div>
+    <div class="ld-steps" id="ld-steps">
+      <div class="ld-step"><i></i>Проверяем код активации</div>
+      <div class="ld-step"><i></i>Подключаем Plus к аккаунту</div>
+      <div class="ld-step"><i></i>OpenAI подтверждает оплату</div>
+      <div class="ld-step"><i></i>Проверяем, что Plus включился</div>
+    </div>
     <div class="prog-dots">
       <div class="prog-dot"></div>
       <div class="prog-dot"></div>
@@ -932,6 +954,7 @@ var forceMode = false;  // ?force=1 — принудительная актив�
 
 // ─── Навигация ───────────────────────────────────────────────────
 function showScreen(id) {
+  if (id !== 's3' && typeof stopLoader === 'function') stopLoader(id === 's4');
   document.querySelectorAll('.screen').forEach(function(s) { s.classList.remove('active'); });
   var el = document.getElementById(id);
   if (el) el.classList.add('active');
@@ -1527,6 +1550,33 @@ function showManual(msg) {
   showScreen('s5');
 }
 
+
+// ─── 5-минутный загрузчик ─────────────────────────────────────────
+// Сбой связи с поставщиком бот повторяет сам; клиент всё это время
+// видит спокойную загрузку, а не ошибку.
+var _ldTimer=null;
+function startLoader(){
+  stopLoader();
+  var t0=Date.now(), TOTAL=300, marks=[0,20,90,200];
+  var stg=['Проверяем код','Оформляем подписку','Ждём подтверждение OpenAI','Проверяем аккаунт'];
+  var steps=document.querySelectorAll('#ld-steps .ld-step');
+  function tick(){
+    var sec=Math.floor((Date.now()-t0)/1000);
+    // быстро в начале, медленнее к концу, не доходим до 100% без ответа
+    var pct=Math.min(96, 100*(1-Math.exp(-sec/110)));
+    var f=document.getElementById('ld-fill'); if(f) f.style.width=pct+'%';
+    var tm=document.getElementById('ld-time'); if(tm) tm.textContent=Math.floor(sec/60)+':'+('0'+sec%60).slice(-2);
+    var k=0; for(var j=0;j<marks.length;j++) if(sec>=marks[j]) k=j;
+    for(var j=0;j<steps.length;j++) steps[j].className='ld-step'+(j<k?' ok':(j===k?' on':''));
+    var st=document.getElementById('ld-stage'); if(st) st.textContent=sec>TOTAL?'Почти готово, ещё чуть-чуть':stg[k];
+  }
+  tick(); _ldTimer=setInterval(tick,1000);
+}
+function stopLoader(done){
+  if(_ldTimer){clearInterval(_ldTimer);_ldTimer=null;}
+  if(done){var f=document.getElementById('ld-fill'); if(f) f.style.width='100%';
+    document.querySelectorAll('#ld-steps .ld-step').forEach(function(e){e.className='ld-step ok';});}
+}
 // ─── Polling ─────────────────────────────────────────────────────
 async function pollResult(jobId) {
   for (var i = 0; i < 120; i++) {
@@ -1587,6 +1637,7 @@ async function startActivation() {
   }
 
   showScreen('s3');
+  startLoader();
 
   // force — РАЗОВОЕ подтверждение. Раньше флаг не сбрасывался нигде: один
   // раз подтвердив принудительную активацию, клиент дальше молча отправлял
