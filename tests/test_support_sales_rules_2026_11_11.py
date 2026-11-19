@@ -1220,3 +1220,23 @@ class ClaudePlans19NovTests(unittest.TestCase):
             self.assertIn('почту и пароль', text)
             self.assertIn('иностранной карты', text)
             self.assertNotIn('sessionKey', text)
+
+
+class Dialogs19NovEveningTests(unittest.TestCase):
+    def test_claude_data_not_asked_while_buying(self):
+        from support_agent.turn_understanding import _situation_consistent
+        self.assertEqual(_situation_consistent({'situation': 'buy', 'owner_topic': 'claude_activation'})['owner_topic'], 'none')
+        self.assertEqual(_situation_consistent({'situation': 'activation_step', 'owner_topic': 'claude_activation'})['owner_topic'], 'claude_activation')
+
+    def test_tidy_keeps_only_the_clients_service(self):
+        from support_agent.playbook import tidy
+        text = ('Подскажите, пожалуйста, номер заказа из бота и пришлите скриншот ошибки.\n'
+                '• Если это ChatGPT — пришлите ещё токен аккаунта.\n• Если это Claude — пришлите sessionKey аккаунта.\n\n\n\nКонец.')
+        out = tidy({'reply': text}, {'hints': [{'service_id': 'chatgpt'}], 'burst': 'гпт не активируется'})
+        self.assertNotIn('sessionKey', out['reply'])
+        self.assertNotIn('\n\n\n', out['reply'])
+
+    def test_buy_steps_not_glued_without_tariffs(self):
+        from support_agent.playbook import finalize
+        out = finalize({'reply': 'Оплаты не нужно, попробуйте ещё раз.', 'handoff': False}, {'situation': 'buy'}, {'burst': 'сколько перевести?'})
+        self.assertNotIn('@neirosetkaa_bot', out['reply'])
