@@ -44,7 +44,7 @@ class PaymentQuestionTests(unittest.TestCase):
         self.assertFalse(answer['handoff'], answer.get('evidence', {}).get('diagnostic'))
         self.assertIn('«Каталог»', answer['reply'])
         self.assertIn('1. Откройте бота', answer['reply'])
-        self.assertIn('Organization ID', answer['reply'])
+        self.assertIn('sessionKey', answer['reply'])  # owner 19.11.2026
         self.assertNotEqual(answer['reply'], usable_answer('activation_where'))
 
 

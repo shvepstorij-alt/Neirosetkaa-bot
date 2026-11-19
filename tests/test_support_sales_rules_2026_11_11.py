@@ -648,7 +648,7 @@ class PaidNoticeTests(unittest.TestCase):
     def test_next_step_per_kind(self):
         from support_agent.paid_notice import compose
         cases = {('Kimi', 'Plus'): 'ссылку', ('ChatGPT', 'Plus'): 'Активировать подписку',
-                 ('Claude', 'Pro'): 'Organization ID', ('Zoom', 'Pro'): 'почту и пароль'}
+                 ('Claude', 'Pro'): 'sessionKey', ('Zoom', 'Pro'): 'почту и пароль'}
         for (service, plan), expected in cases.items():
             _kind, text = compose({'order': '10502', 'service': service, 'plan': plan, 'fk': ''}, self.ROWS)
             self.assertIn(expected, text, service)
@@ -886,7 +886,7 @@ class DialogCheckFindingsTests(unittest.TestCase):
     def test_new_rules(self):
         from support_agent.faq import usable_answer
         self.assertIn('токен', usable_answer('activation_failed'))
-        self.assertIn('втором шаге', usable_answer('org_id_sent_here'))
+        self.assertIn('sessionKey', usable_answer('org_id_sent_here'))  # owner 19.11.2026
         self.assertIn('новый токен', usable_answer('renewal_token'))
 
 
@@ -1186,3 +1186,37 @@ class PlaybookTests(unittest.TestCase):
         block = prompt_block()
         for name in names():
             self.assertIn(name + ':', block)
+
+
+class Dialogs19NovTests(unittest.TestCase):
+    def test_situation_outranks_small_talk_topic(self):
+        from support_agent.turn_understanding import _situation_consistent
+        v = _situation_consistent({'situation': 'buy', 'owner_topic': 'thanks'})
+        self.assertEqual(v['owner_topic'], 'none')
+        v = _situation_consistent({'situation': 'thanks_only', 'owner_topic': 'thanks'})
+        self.assertEqual(v['owner_topic'], 'thanks')
+
+    def test_tariff_list_carries_how_to_pay(self):
+        from support_agent.turn_understanding import tariff_question
+        text = tariff_question([{'service': 'Suno', 'plan': 'Pro', 'price': 990}])
+        self.assertIn('@neirosetkaa_bot', text)
+        self.assertIn('«Мир»', text)
+
+    def test_activation_help_is_service_aware(self):
+        from support_agent.faq import load_faq
+        answer = next(t['answer'] for t in load_faq()['topics'] if 'Если это Claude' in t['answer'])
+        self.assertIn('sessionKey', answer)
+        self.assertIn('номер заказа', answer)
+
+
+class ClaudePlans19NovTests(unittest.TestCase):
+    def test_pro_uses_session_key_max_ultra_use_login(self):
+        from support_agent.paid_notice import compose, parse
+        pro = compose(parse('Оплатил заказ #1\nСервис: Claude\nТариф: Pro\nID: 5'), [])[1]
+        self.assertIn('sessionKey', pro)
+        self.assertNotIn('пароль', pro)
+        for plan in ('Max', 'Ultra'):
+            text = compose(parse('Оплатил заказ #1\nСервис: Claude\nТариф: %s\nID: 5' % plan), [])[1]
+            self.assertIn('почту и пароль', text)
+            self.assertIn('иностранной карты', text)
+            self.assertNotIn('sessionKey', text)
