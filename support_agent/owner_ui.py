@@ -92,6 +92,8 @@ def compact_card(service, d, c, client_label, state_label, customer_preview, rea
         text += f'\n\n🛑 <i>Почему стоп: {html.escape(why[:250] or "причина не записана")}</i>'
     elif evidence.get('rescued'):
         text += f'\n\n🔁 <i>Был бы стоп — помощник ответил сам ({html.escape(str(evidence["rescued"]))}).</i>'
+    if d['state'] == 'stale':
+        text += '\n\n⚠️ <i>После этого черновика в чате были новые сообщения. Проверьте, что ответ всё ещё подходит — отправить или исправить можно в течение 12 часов.</i>'
     if evidence.get('owner_edited'):
         text += '\n\n✏️ <i>Текст исправлен вами.</i>'
     text += f'\n\n<i>{state_label}</i>'

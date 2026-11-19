@@ -786,8 +786,9 @@ class Service:
         elif cmd.startswith('edit:'):
             did=int(cmd.split(':')[1])
             d=self.store.db.execute('SELECT state FROM drafts WHERE id=?',(did,)).fetchone()
-            if not d or d['state']!='ready':
-                await self.owner_message('Этот черновик уже неактуален. Откройте свежий в /pending.')
+            d=self.store.db.execute('SELECT state,created FROM drafts WHERE id=?',(did,)).fetchone()
+            if not d or d['state'] not in ('ready','stale') or time.time()-d['created']>=self.store.OWNER_WINDOW:
+                await self.owner_message('Этот черновик уже отправлен или ему больше 12 часов. Нажмите «Переписать» или ответьте в личке.')
             else:
                 sent=await self.tg.call('sendMessage',chat_id=self.owner,
                                         text=f'✏️ Черновик №{did}: пришлите исправленный текст ответом на это сообщение. Клиент получит именно его.',
@@ -843,13 +844,13 @@ class Service:
         reply=(m.get('reply_to_message') or {}).get('message_id')
         if not text or text.startswith('/') or not reply:return None
         if reply in self.edit_prompts:return self.edit_prompts[reply]
-        row=self.store.db.execute("SELECT id FROM drafts WHERE admin_mid=? AND state='ready'",(reply,)).fetchone()
+        row=self.store.db.execute("SELECT id FROM drafts WHERE admin_mid=? AND state IN ('ready','stale')",(reply,)).fetchone()
         return row['id'] if row else None
 
     async def owner_edit(self,did,text):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
-        if not d or d['state']!='ready':
-            await self.owner_message('Черновик уже неактуален — исправление не отправлено. Ответьте клиенту в личке.');return
+        if not d or d['state'] not in ('ready','stale') or time.time()-d['created']>=self.store.OWNER_WINDOW:
+            await self.owner_message('Черновик уже отправлен или ему больше 12 часов — исправление не отправлено. Ответьте клиенту в личке.');return
         from .owner_ui import mark_edited
         mark_edited(self.store,did,d['text'])
         self.store.db.execute('UPDATE drafts SET text=? WHERE id=?',(text.strip()[:3800],did))
@@ -863,8 +864,9 @@ class Service:
             return
         c=self.store.chat(d['chat'])
         from .owner_ui import compact_card,draft_rows,more_rows
-        expired=d['state']=='ready' and time.time()-d['created']>=86340
-        rows=draft_rows(d,c['id'],d['state']=='ready' and not expired,expired)
+        usable=d['state'] in ('ready','stale')
+        expired=usable and time.time()-d['created']>=self.store.OWNER_WINDOW
+        rows=draft_rows(d,c['id'],usable and not expired,expired)
         if view=='more':rows=[r for r in more_rows(self,d,c) if r]
         profile=self.store.profile(c['id'])
         label=('@'+profile['username']) if profile and profile['username'] else (
@@ -1082,9 +1084,10 @@ class Service:
         lock=self._business_lock(c['connection'], c['uid'])
         await lock.acquire()
         try:
-            if self.store.manual_pause_blocks(c['id'], time.time()):
+            # The owner's own press is never blocked by the pause his manual replies create.
+            if automatic and self.store.manual_pause_blocks(c['id'], time.time()):
                 return
-            reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_send(did,time.time()))
+            reserved=(self.store.reserve_auto_send(did,time.time()) if automatic else self.store.reserve_owner_send(did,time.time()))
             if not reserved:
                 if automatic:
                     current=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
@@ -1094,7 +1097,7 @@ class Service:
                         if not 0<=now-current['created']<=120 or not 0<=now-chat['inbound']<86340:
                             await self.auto_review(did,'Этап: актуальность перед AUTO-отправкой. '+str(self.store.auto_send_block_reason(did,now)))
                     return
-                reason=self.store.send_block_reason(did,time.time())
+                reason=self.store.owner_send_block_reason(did,time.time())
                 if d['admin_mid']:
                     await self.show_draft(did,d['admin_mid'])
                 await self.owner_message(self.chat_identity(c['id'])+f'\nЧерновик №{did}: отправка заблокирована. Этап: проверка перед отправкой. Причина: {reason}. Клиенту ничего не отправлено этим нажатием.')
@@ -1103,7 +1106,7 @@ class Service:
                 # Pause before yielding to the network so a new incoming message cannot
                 # be queued and then silently discarded after this send completes.
                 self.store.switch('off',c['id'])
-            if self.store.manual_pause_blocks(c['id'], time.time()):
+            if automatic and self.store.manual_pause_blocks(c['id'], time.time()):
                 self.store.release_unsent(did)
                 return
             try:

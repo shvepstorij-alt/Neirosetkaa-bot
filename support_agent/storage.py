@@ -454,6 +454,46 @@ class Store:
             self.db.execute("UPDATE drafts SET state='sending' WHERE id=?",(did,))
             return dict(d, connection=c['connection'], uid=c['uid'])
 
+    OWNER_WINDOW = 12 * 3600
+
+    def reserve_owner_send(self, did, now):
+        """Owner 19.11.2026: a draft the owner sends or corrects by hand stays usable for 12 hours.
+
+        The owner is looking at the card, so a newer client message, a mode change or a
+        manual pause do not cancel his decision. Still enforced: the chat and Telegram
+        Business connection with reply rights, Telegram's 24-hour reply window, one send
+        at a time, no double sending.
+        """
+        with self.transaction():
+            d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+            if not d or d['state'] not in ('ready','stale'):
+                return None
+            c=self.chat(d['chat'])
+            if not c:
+                return None
+            b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone()
+            if not b or not b['enabled'] or not b['can_reply']:
+                return None
+            if not 0<=now-c['inbound']<86340 or not 0<=now-d['created']<self.OWNER_WINDOW:
+                return None
+            if self.db.execute("SELECT 1 FROM drafts WHERE chat=? AND state='sending' LIMIT 1",(d['chat'],)).fetchone():
+                return None
+            self.db.execute("UPDATE drafts SET state='sending' WHERE id=?",(did,))
+            return dict(d, connection=c['connection'], uid=c['uid'])
+
+    def owner_send_block_reason(self, did, now):
+        d=self.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+        if not d:return 'черновик не найден'
+        if d['state']=='sent':return 'черновик уже отправлен'
+        if d['state']=='sending':return 'отправка уже выполняется'
+        if d['state']=='uncertain':return 'результат прошлой отправки неизвестен; проверьте личку'
+        c=self.chat(d['chat'])
+        b=self.db.execute('SELECT * FROM connections WHERE id=?',(c['connection'],)).fetchone() if c else None
+        if not b or not b['enabled'] or not b['can_reply']:return 'подключение Telegram Business отключено или без права ответа'
+        if not 0<=now-c['inbound']<86340:return 'прошло больше суток с последнего сообщения клиента — Telegram не даёт ответить через бота'
+        if not 0<=now-d['created']<self.OWNER_WINDOW:return 'черновику больше 12 часов — нажмите «Переписать»'
+        return 'в этом чате уже отправляется другой ответ'
+
     def auto_send_block_reason(self,did,now):
         """Return a safe exact reason, or None if AUTO dispatch may be reserved.
 
