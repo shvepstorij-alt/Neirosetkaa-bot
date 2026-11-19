@@ -62,7 +62,8 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Голос уже расшифрован в тексте сообщения. '
     'Главное — latest_client_message: это ВСЕ новые сообщения клиента подряд, ответь на всю его суть. '
     'Короткая приписка в конце («пробую», «жду», «спасибо», «благодарю», смайлик) не заменяет главный вопрос или проблему выше: отвечай на них. '
-    'Если клиент сообщает об оплате или о том, что что-то не работает, и номера заказа ещё нет — попроси номер заказа. answers_to — последняя реплика помощника или Александра перед ним, '
+    'client_orders — последние заказы ЭТОГО клиента в магазине (номер, сервис, тариф, оплачен ли, состояние активации). Если клиент пишет об оплате или проблеме и подходящий заказ там есть — не спрашивай номер заказа, назови его («Вижу заказ #N, ChatGPT Plus, оплачен») и ответь по его состоянию: открыта кнопка активации — подскажи нажать её в сообщении после оплаты; код уже использован или выдача отмечена — перезайти в аккаунт через 10–15 минут с VPN одной страны, если подписки нет — скриншот; не оплачен — попроси чек из банка. Не утверждай, что подписка точно включилась. '
+    'Если клиент сообщает об оплате или о том, что что-то не работает, а подходящего заказа в client_orders нет — попроси номер заказа и чек из банка. answers_to — последняя реплика помощника или Александра перед ним, '
     'answers_to_who — кто её написал, stage — этап разговора. Короткий ответ клиента («да», «нет», «сейчас», «готово», почта, номер, ID) '
     'продолжает именно answers_to и stage: не начинай шаблон заново и не переспрашивай то, что клиент уже сообщил. '
     'Если answers_to написал Александр, продолжай его шаг. '
@@ -299,6 +300,8 @@ def build_context(db, chat, facts):
             'faq': faq,
             'payment': payment,
             'bot_navigation': (facts or {}).get('bot_navigation') or {},
+            # Owner 19.11.2026: the assistant sees this client's own recent orders, like the owner does in the shop.
+            'client_orders': orders_brief(facts),
             'advisories_already_said': advisories_already(window, state),
             'documented_facts': list(DOCUMENTED_FACTS),
             'service_guide': _service_guide(burst, state.get('service_key') or ''),
@@ -1902,3 +1905,41 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
 def _faq_answer(topic_id):
     from .faq import load_faq
     return next((t['answer'] for t in load_faq()['topics'] if t['id'] == topic_id), '')
+
+
+ORDER_STATE_RU = {
+    'pending_window': 'оплачен, в боте открыта кнопка активации',
+    'in_progress': 'оплачен, активация запускалась',
+    'code_consumed': 'оплачен, код активации использован',
+    'fulfilled_recorded': 'оплачен, в магазине отмечена выдача',
+    'manual_pending': 'оплачен, в ручном оформлении у Александра',
+    'not_checked': 'оплачен, отметки об активации нет',
+    'unavailable': 'оплачен, статус активации прочитать не удалось',
+    'not_applicable': 'не оплачен',
+}
+
+
+def orders_brief(facts):
+    """Last orders of this client in plain words: number, service, plan, payment, activation."""
+    facts = facts if isinstance(facts, dict) else {}
+    if facts.get('orders_status') != 'available':
+        return {'status': 'unknown'}
+    names = {}
+    for row in facts.get('catalog') or []:
+        if isinstance(row, dict) and row.get('service_key'):
+            names.setdefault(str(row['service_key']), str(row.get('service') or ''))
+    out = []
+    for row in (facts.get('orders') or [])[:5]:
+        if not isinstance(row, dict):
+            continue
+        paid = str(row.get('status') or '').casefold() == 'paid'
+        state = str(row.get('activation_status') or ('not_applicable' if not paid else 'not_checked'))
+        when = row.get('paid_at')
+        out.append({'order': '#' + str(row.get('num')) if row.get('num') else '',
+                    'service': names.get(str(row.get('service_key') or ''), str(row.get('service_key') or '')),
+                    'plan': str(row.get('plan_name') or ''),
+                    'paid': paid,
+                    'paid_at': str(when)[:16] if when else '',
+                    'state': ORDER_STATE_RU.get(state, state),
+                    'state_code': state})
+    return {'status': 'available', 'orders': out}

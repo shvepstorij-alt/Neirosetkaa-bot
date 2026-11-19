@@ -3,7 +3,7 @@ import datetime as dt
 import html
 import json
 
-COMMANDS = [('start', 'Главное меню'), ('pending', 'Черновики, ждущие ответа'), ('stats', 'Статистика по темам'),
+COMMANDS = [('start', 'Главное меню'), ('draft', 'Включить черновики'), ('pending', 'Черновики, ждущие ответа'), ('stats', 'Статистика по темам'),
             ('review', 'Файл с исправленными ответами'), ('stop', 'Остановить помощника'), ('help', 'Все команды')]
 
 HELP = ('📖 Команды\n\n'
@@ -32,7 +32,8 @@ def main_menu(service):
     rows = [[(f'📝 Черновики ({ready})', 'pending:0'), (f'⚠️ Внимание ({attention})', 'attention:0')],
             [('💬 Все чаты', 'chats:0'), ('📈 Статистика', 'menu:stats')],
             [('⚙️ Настройки', 'menu:settings')],
-            [('🛑 Остановить всё', 'global:off')]]
+            # Owner 19.11.2026: on pause the main menu shows how to start again.
+            [('▶️ Включить черновики', 'global:draft')] if store.get('mode') == 'off' else [('🛑 Остановить всё', 'global:off')]]
     return text, rows
 
 

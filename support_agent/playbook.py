@@ -61,6 +61,13 @@ def finalize(answer, understanding, context):
             continue
         if row.get('skip_if_order_known') and ORDER_NO.search(burst + ' ' + window):
             continue
+        if row.get('skip_if_order_known'):
+            known = order_status_reply(context)
+            if known:
+                if known not in reply and not re.search(r'#\d{3,}', reply):
+                    added.append(known)
+                    reply = (reply + '\n\n' + known).strip() if not _has(reply, ['номер заказа']) else known
+                continue
         part = ''
         if row.get('tariffs'):
             part = _tariffs(context)
@@ -101,3 +108,24 @@ def tidy(answer, context):
             reply = _GPT_LINE.sub('', reply).replace('• Если это Claude — пришлите', 'Ещё пришлите')
     reply = re.sub(r'\n{3,}', '\n\n', reply).strip()
     return dict(answer, reply=reply) if reply != answer.get('reply') else answer
+
+
+def order_status_reply(context):
+    """Owner 19.11.2026: when the shop shows this client's paid order, say what it shows instead of asking."""
+    orders = ((context or {}).get('client_orders') or {}).get('orders') or []
+    if not orders:
+        return ''
+    row = orders[0]
+    label = ' '.join(x for x in (row.get('service'), row.get('plan')) if x).strip()
+    head = 'Вижу заказ ' + (row.get('order') or '') + (', ' + label if label else '')
+    code = row.get('state_code')
+    if not row.get('paid'):
+        return head + ', но оплата по нему пока не прошла. Если деньги списались, пришлите, пожалуйста, чек из банка — Александр проверит.'
+    if code == 'pending_window':
+        return head + ', он оплачен. В боте открыта активация: нажмите «Активировать подписку» в сообщении после оплаты и следуйте инструкции.'
+    if code in ('code_consumed', 'fulfilled_recorded', 'in_progress'):
+        return (head + ', активация по нему уже проходила. Выйдите из аккаунта и зайдите снова через 10–15 минут, с VPN одной страны. '
+                'Если подписка так и не появится, пришлите скриншот настроек аккаунта — Александр проверит.')
+    if code == 'manual_pending':
+        return head + ', он оплачен и сейчас в ручном оформлении у Александра — он напишет здесь.'
+    return head + ', он оплачен. Если кнопка активации больше не работает, Александр выдаст повторную активацию — напишите, что именно не получается, или пришлите скриншот.'
