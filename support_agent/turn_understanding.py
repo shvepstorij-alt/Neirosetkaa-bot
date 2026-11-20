@@ -402,6 +402,16 @@ def _service_guide(burst='', state_service=''):
                'openrouter': ('опенроутер', 'deepseek', 'дипсик'), 'telegram_premium': ('телеграм премиум', 'тг премиум', 'premium'),
                'kimi': ('кими',), 'zai': ('z.ai', 'glm'), 'make': ('мейк',), 'capcut': ('капкат', 'кап кат'),
                'higgsfield': ('хиггс',), 'genspark': ('генспарк',), 'manus': ('манус',)}
+    try:
+        # Owner 20.11.2026 (bench): one alias list for the whole assistant — data/aliases.yaml.
+        import yaml
+        from pathlib import Path
+        rows = yaml.safe_load((Path(__file__).with_name('data') / 'aliases.yaml').read_text(encoding='utf-8'))['services']
+        aliases = dict(aliases)
+        for row in rows:
+            aliases[row['id']] = tuple(aliases.get(row['id'], ())) + tuple(str(a) for a in row.get('aliases') or [])
+    except Exception:
+        pass
     def said(name):
         if len(name) < 4:
             return bool(re.search(r'(?i)(?<![а-яёa-z])' + re.escape(name), str(burst or '')))
@@ -1190,6 +1200,9 @@ _REFUND_WORD = re.compile(r'(?i)возврат|верн\w+\s+(?:мне\s+)?(?:д
 _TOPIC_NEEDS = {
     'codex': r'codex|кодекс',
     'codex_install': r'codex|кодекс|кодэкс',
+    'games_buy': r'(?i)игр[уыа]|\bгта\b|\bgta\b|\bfc\s?\d|издани|ключ',
+    'chatgpt_credits': r'(?i)кредит',
+    'appstore_region': r'(?i)регион|стран',
     'games_consoles': r'(?i)\bps\s?[345]?\b|playstation|плейстейшн|плойк|xbox|иксбокс|хбокс|game\s*pass|гейм\s*пасс|psn|игр[уыа]|\bгта\b|\bgta\b|консол',
     'course_bonus_claude': r'(?i)клод|claude|клауд',
     'course_bonus_start': r'(?i)бонус|курс|напишите[^\n]{0,40}александр|neirosetkaalex',
@@ -1830,6 +1843,12 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
             # the rest goes to Alexander without stopping the reply.
             if classify_draft(answer_text, prices)['send']:
                 reply_text = answer_text.rstrip() + ('\n\n' + OWNER_FOLLOWUP if beyond and OWNER_FOLLOWUP not in answer_text else '')
+                # Owner 20.11.2026 (bench): several questions — the owner's text answers one of them,
+                # the model's checked draft keeps the answers to the others.
+                many = len(validated.get('questions') or []) > 1 or len(set(validated.get('situations') or [])) > 1
+                if (many and reply and not answer.get('handoff') and answer_text[:60] not in reply
+                        and classify_draft(reply, prices)['send']):
+                    reply_text = reply.rstrip() + '\n\n' + reply_text
                 answer = dict(answer, reply=reply_text, handoff=False)
                 owner_text_used = True
                 owner_followup = beyond
