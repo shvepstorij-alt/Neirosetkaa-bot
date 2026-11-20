@@ -169,12 +169,12 @@ _INTERNAL = re.compile(
 
 def burst_and_window(db, chat, limit=10):
     rows = db.execute(
-        '''SELECT mid, role, text FROM messages
+        '''SELECT mid, role, text, at FROM messages
            WHERE chat=? AND role IN ('client','assistant','owner')
            ORDER BY mid DESC LIMIT ?''', (chat, limit)).fetchall()
     window = [{'role': row['role'],
                'authority': 'owner' if row['role'] == 'owner' else 'untrusted',
-               'text': row['text'] or ''} for row in reversed(rows)]
+               'text': row['text'] or '', 'at': row['at']} for row in reversed(rows)]
     burst = []
     for message in reversed(window):
         if message['role'] in ('assistant', 'owner') and burst:
@@ -317,7 +317,7 @@ def build_context(db, chat, facts):
 OWNER_CATALOG = {'chatgpt', 'claude', 'grok', 'supergrok', 'zoom', 'perplexity', 'lovable', 'gamma', 'appstore', 'freepik',
                  'telegrampremium', 'suno', 'kling', 'higgsfield', 'runway', 'midjourney', 'github', 'elevenlabs', 'heygen',
                  'youtube', 'kimi', 'openrouter', 'spotify', 'zai', 'capcut', 'make', 'krea', 'genspark', 'canva', 'manus',
-                 'gemini', 'cursor'}
+                 'gemini', 'cursor', 'виртуальныеномера', 'virtualnumbers', 'smsnumbers'}
 
 
 def _verbatim(topic):
@@ -546,11 +546,69 @@ def _situation(value):
 
 
 def validate(understanding, context):
-    return _situation_consistent(_validate(understanding, context))
+    return _situation_consistent(_validate(understanding, context), context)
 
 
-def _situation_consistent(v):
+_QUESTION = re.compile(r'(?i)\?|\b(?:как|какой|какая|какие|сколько|можно|почему|зачем|где|когда|куда|что\s+делать|подскажите|помогите|поможете|имеется\s+ли|есть\s+ли|нужно\s+ли)\b')
+
+
+# Owner 20.11.2026 (live.txt, 32 из 100 «потерял нить»): when Alexander himself asked the client for
+# something or is doing a step right now (код с почты, пароль, пуш Google, номер, «5 минут», «пробуем»),
+# the client's next message belongs to that step. A template answer here only harms.
+_OWNER_OPEN_STEP = re.compile(  # Alexander is doing a hands-on operation, not asking a sales question
+    r'(?i)код\s+(?:с|из)\s+почты|новый\s+код|код\w*\s+почты|резервн\w*\s+код|'
+    r'(?:дать|дайте|пришлите|отправьте|нужн\w*)\s+(?:ещ[её]\s+)?(?:почту\s+и\s+)?парол|'
+    r'уведомлен\w*\s+о\s+входе|подтверд\w*\s+вход|выбрать\s+число|скажу\s+какое|пуш|'
+    r'удобно\s+(?:сейчас|ввести)|минут|пробуем|попробуем|позже\s+ещ[её]\s+раз|отпишу|'
+    r'сейчас\s+(?:провер|оформ|сдела|отправ)|отключите|ключ\s+доступа|по\s+ожиданию|'
+    r'пройти\s+верификаци|дадим\s+номер|другую\s+почт|как\s+(?:она\s+)?законч|'
+    r'1\s+more|one\s+more')
+_STATUS_PING = re.compile(r'(?i)как\s+там|как\s+успехи|когда\s+(?:сможете|будет)|что\s+не\s+так|получилось\s*\?|'
+                          r'долго|скоро|ещ[её]\s+ссылк|нов\w+\s+ссылк|ссылку\s+скин')
+
+
+def owner_open_step(context, hours=12):
+    """True when the last word before the client's messages is Alexander's own open step."""
+    history = list((context or {}).get('history') or [])
+    burst_at = None
+    clients = []
+    while history and history[-1].get('role') == 'client':
+        clients.insert(0, str(history[-1].get('text') or ''))
+        burst_at = history[-1].get('at') if burst_at is None else burst_at
+        history.pop()
+    if not history or history[-1].get('role') != 'owner':
+        return False
+    last = history[-1]
+    if burst_at is not None and last.get('at') is not None:
+        try:
+            if float(burst_at) - float(last['at']) > hours * 3600:
+                return False
+        except (TypeError, ValueError):
+            pass
+    text = str(last.get('text') or '').strip()
+    if re.search(r'(?i)подписка\s+успешно\s+активирована|обращайтесь|хорошего\s+(?:дня|вечера)', text):
+        return False  # the step is finished; a new question is a new turn
+    if not text or not _OWNER_OPEN_STEP.search(text):
+        return False
+    burst = str((context or {}).get('burst') or '') or '\n'.join(clients)
+    # A new, independent question is answered; an answer, data or a status ping belongs to Alexander's step.
+    if has_question(burst) and not _STATUS_PING.search(burst):
+        return False
+    return True
+
+
+def has_question(burst):
+    """Owner 20.11.2026 (№1487): a question anywhere in the client's messages outranks a closing «спасибо»."""
+    return bool(_QUESTION.search(str(burst or '')))
+
+
+def _situation_consistent(v, context=None):
     """Owner 19.11.2026: the situation outranks a small-talk or partnership label."""
+    burst = str((context or {}).get('burst') or '')
+    if (v.get('situation') == 'thanks_only' or v.get('owner_topic') == 'thanks') and has_question(burst):
+        v['situation'] = 'other' if v.get('situation') == 'thanks_only' else v.get('situation')
+        if v.get('owner_topic') == 'thanks':
+            v['owner_topic'] = 'none'
     if v.get('situation') and v['situation'] not in ('thanks_only', 'other') and v.get('owner_topic') in SMALL_TALK_TOPICS | {'partnership'}:
         v['owner_topic'] = 'none'
     # Owner 19.11.2026 (dialogs): Claude activation data is asked after payment, not while choosing or buying.

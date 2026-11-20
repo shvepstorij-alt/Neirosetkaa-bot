@@ -67,7 +67,9 @@ async def run_bench(service, mode='new'):
     rows = []
     try:
         for number, case in enumerate(cases, 1):
-            history = case.get('history') or []
+            # history: earlier messages, either [role, text] pairs or {role: client|owner, text: ...}.
+            history = [(item.get('role'), item.get('text') or '') if isinstance(item, dict) else tuple(item)
+                       for item in case.get('history') or []]
             from .privacy import masked_preview, sensitive
             secret = sensitive(case['client'])  # the same path as a real client message
             text = '🔒 [данные доступа скрыты] ' + masked_preview(case['client']) if secret else scrub(case['client'])

@@ -150,3 +150,21 @@ def business_profile():
         return (PATH.parent / 'business_profile.md').read_text(encoding='utf-8').strip()
     except OSError:
         return ''
+
+
+# Owner 20.11.2026: auto-replies go out only in situations where the assistant already answers right.
+# Everything else stays a draft for the owner. Edit this list to widen the auto-reply.
+AUTO_SITUATIONS = {'buy', 'price', 'compare_choose', 'thanks_only', 'vpn_access', 'howto_usage',
+                   'off_catalog_or_app', 'has_sub_not_showing', 'paid_not_working'}
+
+
+def auto_hold_reason(situation, understanding=None):
+    """None when the situation may be answered automatically, otherwise the reason it stays a draft."""
+    situations = [situation] + list((understanding or {}).get('situations') or []) if isinstance(understanding, dict) else [situation]
+    situations = [str(item) for item in situations if item]
+    if not situations:
+        return None  # deterministic paths (payment case, quick replies) carry their own gates
+    blocked = [item for item in situations if item not in AUTO_SITUATIONS]
+    if blocked:
+        return 'Ситуация «' + blocked[0] + '» отвечается только черновиком.'
+    return None

@@ -1436,6 +1436,13 @@ class Service:
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
+        from .turn_understanding import owner_open_step
+        if owner_open_step(context):
+            # Owner 20.11.2026: Alexander is in the middle of his own step — the assistant does not cut in.
+            return {'reply':'Хорошо, Александр продолжит здесь.','handoff':True,
+                    'summary':'Александр ведёт шаг оформления сам.',
+                    'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified','owner_step_hold':True,
+                                'handoff_reason':'Александр сам ведёт этот шаг (просил данные, код или подтверждение) — ответ клиенту за вами.'}}
         paid=await self._paid_notice_reply(job, context)
         if paid is not None:
             return paid
@@ -1469,6 +1476,13 @@ class Service:
             answer=issue_first(answer, context)
         from .playbook import tidy
         answer=tidy(answer, context)
+        from .playbook import auto_hold_reason
+        hold=auto_hold_reason(validated_situation, understanding)
+        if hold and isinstance(answer,dict):
+            answer.setdefault('evidence',{})
+            if isinstance(answer['evidence'],dict):
+                answer['evidence']['situation_hold']=True
+                answer['evidence'].setdefault('diagnostic',hold)
         if isinstance(answer,dict) and not answer.get('handoff'):
             from .voice import greet_back
             answer=dict(answer,reply=greet_back(answer.get('reply'),context.get('burst'),context.get('history')))
