@@ -900,6 +900,7 @@ function openCard(key, _silent){
   if(!_silent){ try{ _track('card:'+key); }catch(e){} }
   var c=CATALOG[key]; var nm=(c&&c.name)||key;
   if(_isAppStore(key,nm)){ openAppstore(); return; }
+  if(_isSms(key,nm)){ openSms(key); return; }
   // Промокод действует в рамках одной карточки — при открытии другого сервиса сбрасываем
   if(window._shopPromoKey!==key){ window._shopPromo=null; window._shopPromoKey=key; }
   var body=document.getElementById('card-body'); if(!body||!c) return;
@@ -1288,6 +1289,88 @@ function asPay(el,catId,serviceId,method,price,useCoins){
   });
 }
 
+
+/* ─── Виртуальные номера для SMS (20.11.2026) ─── */
+function _isSms(key,name){ var s=((key||'')+' '+(name||'')).toLowerCase();
+  return /(^|[^a-z])sms([^a-z]|$)/.test(s)||s.indexOf('смс')>=0||(s.indexOf('номер')>=0&&s.indexOf('виртуал')>=0); }
+window._smsKey=''; window._smsProd=null; window._smsAll=[];
+var _ruRegion=null; try{ _ruRegion=new Intl.DisplayNames(['ru'],{type:'region'}); }catch(e){}
+function _smsCountry(it){ try{ if(_ruRegion&&it.iso) return _ruRegion.of(it.iso)||it.en; }catch(e){} return it.en; }
+function _smsHead(sub){
+  var c=CATALOG[window._smsKey]||{}; var lg=c.logo||'';
+  return '<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(window._smsKey,lg)+'">'+_iconHtml(lg,'📱')+'</div>'
+    +'<div class="card-name">'+_h(c.name||'Виртуальные номера')+'</div></div>'
+    +'<div class="card-desc">'+(sub||'Номер для приёма SMS-кода при регистрации. Номер и код придут в чат бота автоматически.')+'</div>';
+}
+function openSms(key){
+  window._smsKey=key||window._smsKey;
+  var body=document.getElementById('card-body'); if(!body) return;
+  body.innerHTML=_smsHead()+'<div class="card-plans-h">Для какого сервиса нужен номер?</div>'
+    +'<div class="promo-box"><input id="sms-q" class="promo-inp" placeholder="Поиск: telegram, openai, google…" oninput="smsFilter()"></div>'
+    +'<div id="sms-body" style="margin-top:10px"><div class="pm-wait">Загружаю сервисы…</div></div>';
+  _showCard();
+  if(window._smsAll.length){ smsFilter(); return; }
+  _api('/api/sms/products').then(function(d){
+    var el=document.getElementById('sms-body'); if(!el)return;
+    if(!d||!d.ok||!d.items||!d.items.length){ el.innerHTML='<div class="pm-err">'+_h((d&&d.msg)||'Не удалось загрузить сервисы. Попробуй позже.')+'</div>'; return; }
+    window._smsAll=d.items; smsFilter();
+  });
+}
+function smsFilter(){
+  var el=document.getElementById('sms-body'); if(!el)return;
+  var q=((document.getElementById('sms-q')||{}).value||'').trim().toLowerCase();
+  var list=window._smsAll.filter(function(p){ return !q||p.id.indexOf(q)>=0||p.name.toLowerCase().indexOf(q)>=0; });
+  if(!q) list=list.slice(0,60);
+  if(!list.length){ el.innerHTML='<div class="pm-err">Ничего не нашлось. Попробуй «other» — номер для любого сервиса.</div>'; return; }
+  el.innerHTML='<div class="as-grid">'+list.map(function(p){
+    return '<div class="as-region" onclick="smsOffers(\''+_h(p.id)+'\')"><span class="as-flag">'+(p.top?'⭐':'📩')+'</span><span class="as-rname">'+_h(p.name)+'</span></div>';
+  }).join('')+'</div>'+(q?'':'<div class="note" style="margin-top:8px;color:var(--text3);font-size:12px">Показаны популярные — для остальных воспользуйся поиском.</div>');
+}
+function smsOffers(pid){
+  var body=document.getElementById('card-body'); if(!body) return;
+  if(window._coins===undefined){ _loadCoins(function(){ smsOffers(pid); }); return; }
+  window._smsProd=pid;
+  var coinsLine=(window._coins>0)?'<div class="promo-box on" style="margin-top:8px"><span>🪙 У тебя <b>'+Math.floor(window._coins)+'₽</b> монетками — можно оплатить ими</span></div>':'';
+  body.innerHTML=_smsHead('Выбери страну номера. Если код не придёт — бесплатно заменим номер или вернём деньги монетками.')
+    +coinsLine+'<div class="card-plans-h">Страна</div><div id="sms-body"><div class="pm-wait">Загружаю страны…</div></div>'
+    +'<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="openSms()">← Сервисы</div>';
+  _api('/api/sms/offers',{product:pid}).then(function(d){
+    var el=document.getElementById('sms-body'); if(!el)return;
+    if(!d||!d.ok||!d.items||!d.items.length){ el.innerHTML='<div class="pm-err">'+_h((d&&d.msg)||'Сейчас нет номеров для этого сервиса.')+'</div>'; return; }
+    el.innerHTML=d.items.map(function(o){
+      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+o.flag+' '+_h(_smsCountry(o))+'</div><div class="plan-p">'+o.price+'₽</div></div>'
+        +'<div class="plan-d" style="color:var(--text3);font-size:12px">в наличии: '+o.count+'</div>'
+        +'<div class="plan-buy" onclick="smsMethod(this,\''+_h(o.country)+'\','+o.price+')">Купить за '+o.price+'₽</div></div>';
+    }).join('');
+  });
+}
+function smsMethod(btn,country,price){
+  if(!btn)return; var w=document.createElement('div'); w.className='pay-methods';
+  var coins=Math.floor(window._coins||0); var h='';
+  if(coins>=1&&price>0){
+    h+= coins>=price
+      ? '<div class="pm" style="background:var(--green);color:#fff" onclick="smsPay(this,\''+country+'\',\'coins\','+price+',1)">🪙 Монетками '+price+'₽</div>'
+      : '<div class="pm" style="background:var(--green);color:#fff" onclick="smsPay(this,\''+country+'\',\'sbp\','+price+',1)">🪙 '+coins+'₽ + СБП '+(price-coins)+'₽</div>';
+  }
+  h+='<div class="pm sbp" onclick="smsPay(this,\''+country+'\',\'sbp\','+price+')">⚡ СБП</div>'
+    +'<div class="pm card" onclick="smsPay(this,\''+country+'\',\'card\','+price+')">💳 Картой</div>';
+  w.innerHTML=h; btn.parentNode.replaceChild(w,btn);
+}
+function smsPay(el,country,method,price,useCoins){
+  var row=el.parentNode; row.innerHTML='<div class="pm-wait">'+(useCoins?'Списываю монетки…':'Создаю ссылку на оплату…')+'</div>';
+  _api('/api/sms/pay',{product:window._smsProd,country:country,method:method,useCoins:!!useCoins,expPrice:price}).then(function(d){
+    if(d&&d.ok&&d.paidByCoins){
+      window._coins=Math.max(0,(window._coins||0)-(d.coinsUsed||0));
+      row.innerHTML='<div class="pm-wait" style="color:var(--green)">🪙 Оплачено!<br>Номер придёт в чат бота через несколько секунд, а затем и код из SMS.</div>'; return; }
+    if(d&&d.ok&&d.url){ if(d.coinsUsed){ window._coins=Math.max(0,(window._coins||0)-d.coinsUsed); } _afterPay(row,d.url,d.orderId); return; }
+    var m;
+    if(d&&d.error==='stale') m='Цена обновилась 🔄 — открой список стран заново.';
+    else if(d&&d.error==='card_failed') m='Картой не удалось — попробуй СБП'+(d.coinsBack?('. 🪙 '+d.coinsBack+'₽ вернулись на баланс.'):'');
+    else if(d&&d.error==='unavailable') m='Сервис временно недоступен';
+    else m=_h((d&&d.msg)||'Не получилось. Попробуй ещё раз');
+    row.innerHTML='<div class="pm-err">'+m+'</div>'+(d&&d.error==='stale'?'<div class="plan-buy" style="margin-top:8px" onclick="smsOffers(window._smsProd)">Обновить цены</div>':'');
+  });
+}
 /* ─── Панель ─── */
 function _kbHide(){ try{var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){} }
 function _min(){ _kbHide(); try{ if(tg&&typeof tg.minimize==='function'){tg.minimize();return;} }catch(e){} }

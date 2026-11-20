@@ -16109,6 +16109,12 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
 
         # Определяем тип заказа - магазин или кредиты
         # NS Gifts (App Store / iCloud) — мгновенная доставка кода
+        if order_id.startswith("sms_"):
+            # Виртуальный номер: покупаем у поставщика и шлём клиенту в чат.
+            from sms_numbers import fulfill as _sms_fulfill
+            asyncio.create_task(_sms_fulfill(order_id, user_id))
+            await _mark_order_fulfilled(order_id)
+            return True
         if order_id.startswith("nsg_"):
             await nsgifts_fulfill_after_payment(order_id, user_id)
             # Выдача App Store живёт по своему состоянию в nsgifts_orders и
@@ -16211,6 +16217,13 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
                         f"Спросил клиента про Gmail.", parse_mode="HTML")
                 except Exception:
                     pass
+            elif p and _svc_kind is None and await __import__("stock_accounts").stock_try_deliver(
+                    bot=bot, admin_id=ADMIN_ID, user_id=user_id, shop_key=shop_key,
+                    service_name=service_name, plan_name=p.get("name", ""),
+                    order_id=order_id, amount_rub=amount_rub, order_ref=_oref_pay,
+                    delayed_note=delayed_note):
+                # Аккаунт из запаса выдан (CapCut и др.) — заказ закрыт.
+                await _mark_order_fulfilled(order_id)
             elif not p or await _is_manual_plan(shop_key, plan_idx, p):
                 await _send_manual_order(
                     user_id=user_id, shop_key=shop_key,
@@ -16608,6 +16621,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         except Exception:
             pass
 
+        try:
+            from stock_accounts import stock_admin_line
+            admin_msg += await stock_admin_line(order_id)
+        except Exception:
+            pass
         # Тип заказа (ручной/вход/ссылка) — добавляем футер и кнопки → единое сообщение
         _lp_admin_kb = None
         try:
@@ -17027,6 +17045,13 @@ async def setup_webhook_server():
     app.router.add_post("/api/admin/stats", api_admin_stats_handler)
     app.router.add_post("/api/admin/sales", api_admin_sales_handler)
     app.router.add_post("/api/admin/plan-add", api_admin_plan_add_handler)
+    from stock_accounts import (api_admin_stock_list_handler,
+                                api_admin_stock_add_handler, api_admin_stock_delete_handler)
+    app.router.add_post("/api/admin/stock-list", api_admin_stock_list_handler)
+    app.router.add_post("/api/admin/stock-add", api_admin_stock_add_handler)
+    app.router.add_post("/api/admin/stock-delete", api_admin_stock_delete_handler)
+    from sms_numbers import register_routes as _sms_routes
+    _sms_routes(app)
     app.router.add_post("/api/admin/plan-delete", api_admin_plan_delete_handler)
     app.router.add_post("/api/admin/analytics", api_admin_analytics_handler)
     app.router.add_post("/api/admin/promos", api_admin_promos_handler)

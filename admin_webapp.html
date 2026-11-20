@@ -387,7 +387,7 @@ window._navN=0;window._apiStale=false;
    выплату» дважды — две выплаты. Теперь такой же запрос, пока первый не
    вернулся, не отправляется. Чтения (загрузка экранов) не трогаем.
    Ревью 06.10.2026. */
-var _MUT_RE=/\/api\/admin\/(promo-create|promo-deactivate|plan-add|plan-delete|service-add|service-delete|balance|coins-grant|catalog\/edit|block|referral-set|feed-order-action|order-action|order-delete|shop-order-action|add-codes|release-codes|code-delete|claude-code-action|broadcast|prices-save|recs-save|shopcats-save|shopdisplay-save|catsmeta-save|logo-save|logo-del|banners-save|banner-media|packs-save|model-price|setting-save|svc-save|claude-provider|nsg-product|nsg-bulk|giveaway-action|fin-settings)$/;
+var _MUT_RE=/\/api\/admin\/(promo-create|promo-deactivate|plan-add|plan-delete|service-add|service-delete|balance|coins-grant|catalog\/edit|block|referral-set|feed-order-action|order-action|order-delete|shop-order-action|add-codes|release-codes|code-delete|claude-code-action|broadcast|prices-save|recs-save|shopcats-save|shopdisplay-save|catsmeta-save|logo-save|logo-del|banners-save|banner-media|packs-save|model-price|setting-save|svc-save|claude-provider|nsg-product|nsg-bulk|giveaway-action|fin-settings|stock-add|stock-delete|sms)$/;
 var _MUT_PARTNER=['add','remove','payout','promo_set','fee_set','rate_set','bcstart'];
 var _inflight={};
 function _isMut(path,body){
@@ -3832,7 +3832,7 @@ function home(){
    ["👥","Клиенты",[["🔎","Найти по ID","Найти по ID"],["👥","Кто кого привёл","Рефералы"],["💳","Балансы","Балансы"],["🚫","Блокировки","Блокировки"],["🤝","Премиум-рефералы (%)","Премиум-рефералка"],["🏢","Партнёры B2B","Партнёры"]]],
    ["🛒","Каталог и цены",[["💵","Цены и себестоимость","Редактор цен"],["🤖","Модели и стоимость","Модели"],["🎟️","Промокоды","Промокоды"],["🍎","App Store (NS Gifts)","NS Gifts каталог"],["🏷️","Шапка магазина","Шапка магазина"],["✨","Лента реко.","Лента рекомендаций"],["🗂️","Категории магазина","Категории магазина"],["📁","Разделы (ред.)","Разделы категорий"],["↕️","Витрина: порядок/показ","Витрина магазина"],["🖼️","Логотипы","Логотипы сервисов"],["📢","Баннеры","Баннеры",1]]],
    ["⚙️","Управление",[["🎁","Розыгрыш","Розыгрыш"],["👋","Приветствие","Приветствие"],["📣","Рассылка","Рассылка"],["🎉","Промо после активации","Промо активации"],["⏱","Время активации","Время активации"],["🛠️","Техобслуживание","Техобслуживание"]]],
-   ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🖼","Фото/видео активации","Медиа активации"]]]
+   ["📱","Mini Apps",[["✨","ChatGPT","ChatGPT Mini App"],["⚡","Claude","Claude Mini App"],["🔍","Perplexity","Perplexity Mini App"],["🖼","Фото/видео активации","Медиа активации"],["🎬","CapCut","Аккаунты на выдачу"],["📱","Номера SMS","Номера SMS"]]]
   ];
   groups.forEach(function(g){h+='<div class="glabel">'+g[0]+' '+g[1]+'</div><div class="grid">';g[2].forEach(function(c){h+='<div class="card'+(c[3]?' full':'')+'" onclick="open2(\''+c[2]+'\')"><span class="ic">'+c[0]+'</span><span class="lbl">'+c[1]+'</span></div>'});h+='</div>'});
   return h+'</div>';
@@ -3846,6 +3846,83 @@ function _attGo(g){
 /* ═════════════════════════════ ДЕНЬГИ ═══════════════════════════════════ */
 var _M_PERIODS=[['today','Сегодня'],['yesterday','Вчера'],['7d','7 дн'],['30d','30 дн'],['month','Месяц']];
 function _mSet(p){window._mP=p;window._mDate='';open2('Деньги');}
+
+/* ===== Аккаунты на выдачу (автовыдача CapCut и др., 20.11.2026) ===== */
+var _stKey='capcut';
+SCREENS["Аккаунты на выдачу"]=function(){setTimeout(_stLoad,30);
+  return hdr("Аккаунты на выдачу","1 аккаунт — 1 клиенту после оплаты")+'<div class="wrap"><div id="stbody"><div class="note">Загружаю…</div></div></div>'};
+function _stLoad(){
+  api('/api/admin/stock-list',{key:_stKey}).then(function(d){
+    var el=document.getElementById('stbody'); if(!el)return;
+    if(!d||!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка загрузки.</div>';return;}
+    var h='<div class="block"><div style="display:flex;justify-content:space-between;align-items:center">'
+      +'<b>'+esc(d.name)+'</b><span class="'+(d.free.length>1?'pos':'neg')+'">свободно: '+d.free.length+'</span></div>'
+      +'<div class="note" style="margin-top:6px">Каждая строка — один аккаунт (например <code>почта:пароль</code>). '
+      +'После оплаты бот выдаёт клиенту одну строку. Запас кончился — заказ уходит в ручную выдачу.</div>'
+      +'<label class="fl">Тариф</label><select class="f" id="stplan"><option value="">Любой тариф</option>'
+      +d.plans.map(function(p){return '<option>'+esc(p)+'</option>'}).join('')+'</select>'
+      +'<label class="fl">Аккаунты</label><textarea class="f" id="sttext" rows="5" placeholder="mail1@gmail.com:pass1&#10;mail2@gmail.com:pass2"></textarea>'
+      +'<label class="fl">Подсказка клиенту (необязательно)</label><input class="f" id="stnote" maxlength="300" placeholder="Например: вход через «Войти по почте»"/>'
+      +'<button class="btn" style="margin-top:10px" onclick="_stAdd()">➕ Добавить</button></div>';
+    h+='<div class="glabel">🟢 Свободные ('+d.free.length+')</div><div class="block">';
+    if(!d.free.length)h+='<div class="note">Пусто — загрузи аккаунты выше.</div>';
+    d.free.forEach(function(a){h+='<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line,#2a2a2a)">'
+      +'<div style="flex:1;min-width:0"><div style="font-size:13px;word-break:break-all">'+esc(a.payload)+'</div>'
+      +'<div class="sub">#'+a.id+' · '+esc(a.plan||'любой тариф')+' · '+esc(a.added)+'</div></div>'
+      +'<button class="btn sec" style="width:auto;padding:6px 10px" onclick="_stDel('+a.id+')">🗑</button></div>';});
+    h+='</div><div class="glabel">📤 Выданные (последние 30)</div><div class="block">';
+    if(!d.issued.length)h+='<div class="note">Пока никому не выдавали.</div>';
+    d.issued.forEach(function(a){h+='<div style="padding:7px 0;border-bottom:1px solid var(--line,#2a2a2a)">'
+      +'<div style="font-size:13px;word-break:break-all">'+esc(a.payload)+'</div>'
+      +'<div class="sub">#'+a.id+' · клиент '+esc(a.user)+' · '+esc(a.when)+'<br>'+esc(a.order||'')+'</div></div>';});
+    el.innerHTML=h+'</div>';
+  });
+}
+function _stAdd(){
+  var t=(document.getElementById('sttext')||{}).value||'';
+  if(!t.trim()){toast('Вставь аккаунты');return;}
+  toast('Сохраняю…');
+  api('/api/admin/stock-add',{key:_stKey,plan:document.getElementById('stplan').value,
+      note:document.getElementById('stnote').value,text:t}).then(function(d){
+    toast(d&&d.ok?('Добавлено: '+d.added+(d.dup?(' · дубли пропущены: '+d.dup):'')):((d&&d.msg)||'Ошибка'));
+    if(d&&d.ok)_stLoad();});
+}
+function _stDel(id){
+  var go_=function(){api('/api/admin/stock-delete',{id:id}).then(function(d){toast(d&&d.ok?'Удалён':((d&&d.msg)||'Ошибка'));if(d&&d.ok)_stLoad();});};
+  var tg=window.Telegram&&window.Telegram.WebApp;
+  if(tg&&tg.showConfirm){try{tg.showConfirm('Удалить аккаунт #'+id+' из запаса?',function(ok){if(ok)go_();});return;}catch(e){}}
+  go_();
+}
+
+/* ===== Номера SMS (20.11.2026) ===== */
+SCREENS["Номера SMS"]=function(){setTimeout(function(){_smsAdm({})},30);
+  return hdr("Номера SMS","виртуальные номера в магазине")+'<div class="wrap"><div id="smsbody"><div class="note">Загружаю…</div></div></div>'};
+function _smsAdm(body){
+  api('/api/admin/sms',body).then(function(d){
+    var el=document.getElementById('smsbody'); if(!el)return;
+    if(!d||!d.ok){el.innerHTML='<div class="note">Нет доступа или ошибка.</div>';return;}
+    if(body&&body.save)toast('Сохранено ✓');
+    var h='<div class="block">'
+      +'<div style="display:flex;justify-content:space-between"><b>Баланс поставщика</b><span class="'+(d.balance!=null?'pos':'neg')+'">'+(d.balance!=null?('$'+(+d.balance).toFixed(2)):(d.hasToken?'—':'ключ не задан'))+'</span></div>'
+      +(d.error?'<div class="note neg" style="margin-top:6px">'+esc(d.error)+'</div>':'')
+      +'<label class="fl">Ключ API'+(d.hasToken?' (задан — вставь новый, чтобы заменить)':'')+'</label><input class="f" id="smstok" placeholder="eyJ…"/>'
+      +'<div style="display:flex;gap:8px"><div style="flex:1"><label class="fl">Наценка ₽</label><input class="f" id="smsmk" inputmode="numeric" value="'+d.markup+'"/></div>'
+      +'<div style="flex:1"><label class="fl">Курс $ → ₽</label><input class="f" id="smsrate" inputmode="decimal" value="'+d.rate+'"/></div></div>'
+      +'<div class="note">Цена клиенту = цена номера × курс + наценка.</div>'
+      +'<label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="smson" '+(d.enabled?'checked':'')+'/> Продажа номеров включена</label>'
+      +'<button class="btn" style="margin-top:10px" onclick="_smsSave()">💾 Сохранить</button></div>';
+    h+='<div class="glabel">🧾 Последние заказы</div><div class="block">';
+    if(!d.orders.length)h+='<div class="note">Заказов пока нет.</div>';
+    d.orders.forEach(function(o){h+='<div style="padding:7px 0;border-bottom:1px solid var(--line,#2a2a2a)">'
+      +'<div style="display:flex;justify-content:space-between;font-size:13px"><span>'+esc(o.product)+' · '+esc(o.country)+'</span><b>'+o.price+'₽</b></div>'
+      +'<div class="sub">'+esc(o.status)+(o.phone?(' · '+esc(o.phone)):'')+(o.code?(' · код '+esc(o.code)):'')+'<br>клиент '+esc(o.user)+' · '+esc(o.when)+' · '+esc(o.id)+'</div></div>';});
+    el.innerHTML=h+'</div>';
+  });
+}
+function _smsSave(){
+  _smsAdm({save:1,token:document.getElementById('smstok').value,markup:document.getElementById('smsmk').value,
+           rate:document.getElementById('smsrate').value,enabled:document.getElementById('smson').checked?1:0});
+}
 SCREENS["Деньги"]=function(){
   var per=window._mP||'today', dts=window._mDate||'';
   if(per==='date'&&!dts)per='today';

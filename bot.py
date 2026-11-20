@@ -58,6 +58,7 @@ import handlers_giveaway
 import handlers_linkpay
 import handlers_nsgifts
 import handlers_desc
+import sms_numbers   # виртуальные номера: кнопки в чате + фоновая проверка SMS
 
 # ── Premium-эмодзи: middleware подменяет обычные эмодзи на custom во всех
 # исходящих сообщениях (HTML-текст → <tg-emoji>, инлайн-кнопки → иконка). ──
@@ -395,6 +396,7 @@ async def main():
     _spawn_bg(claude_watch_loop, "claude_watch_loop")
     _spawn_bg(perplexity_codes_cleanup_loop, "perplexity_codes_cleanup_loop")
     _spawn_bg(coins_refund_loop, "coins_refund_loop")
+    _spawn_bg(sms_numbers.poll_loop, "sms_poll_loop")
     _spawn_bg(models_desc_refresh_loop, "models_desc_refresh_loop")
     _spawn_bg(_claude_job_results_cleanup_loop, "_claude_job_results_cleanup_loop")
     _spawn_bg(webgen_lost_jobs_loop, "webgen_lost_jobs_loop")
