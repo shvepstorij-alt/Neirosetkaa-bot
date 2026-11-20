@@ -5442,8 +5442,7 @@ async def admin_balance_report(message: Message):
 # Александр 19.11.2026. Убираем из пула ТОЛЬКО коды, которые сайт прямо сейчас
 # называет «fulfilled» (активация завершена). «claimed» не трогаем — это
 # середина процесса, такой код ещё может дозреть у клиента.
-# Коды не удаляются физически: помечаются использованными (check_status='used'),
-# чтобы в выдачу они больше не попадали, а история осталась.
+# Коды удаляются из пула (кроме тех, по которым сейчас идёт активация клиента).
 @dp.callback_query(F.data == "gpt_purge_fulfilled")
 async def cb_gpt_purge_fulfilled(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
@@ -5462,15 +5461,19 @@ async def cb_gpt_purge_fulfilled(cb: CallbackQuery):
         if _ful:
             pool = await get_pool()
             async with pool.acquire() as conn:
+                # Удаляем из пула совсем (Александр 20.11.2026: пометка «used»
+                # оставляла код в сверке). Код, по которому идёт активация
+                # клиента (есть живой резерв), не трогаем.
                 r = await conn.execute(
-                    "UPDATE gpt_codes SET is_used=TRUE, check_status='used' "
-                    "WHERE code = ANY($1::text[]) AND used_by IS NULL", _ful)
+                    "DELETE FROM gpt_codes WHERE code = ANY($1::text[]) "
+                    "AND NOT EXISTS (SELECT 1 FROM gpt_pending_activations p "
+                    "WHERE p.code = gpt_codes.code)", _ful)
             try:
                 n = int(str(r).split()[-1])
             except Exception:
                 n = len(_ful)
         logging.info(f"gpt_purge_fulfilled: убрано {n}: {_ful}")
-        txt = (f"🧹 <b>Очищено fulfilled: {n}</b>\n"
+        txt = (f"🧹 <b>Удалено fulfilled: {n} из {len(_ful)}</b>\n"
                + "\n".join(f"• <code>{c}</code>" for c in _ful[:20]))
         if _left:
             txt += ("\n\n⏳ <b>Оставил (не fulfilled):</b>\n"

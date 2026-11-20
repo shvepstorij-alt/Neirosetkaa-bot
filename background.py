@@ -1294,8 +1294,11 @@ async def gpt_pool_audit_loop():
             _r = await pool_audit(include_reserved=True)
             if _r.get("ok") and (_r.get("spent") or _r.get("odd")):
                 try:
-                    for _part in tg_chunks(pool_audit_report(_r)):
-                        await bot.send_message(ADMIN_ID, _part, parse_mode="HTML")
+                    _parts = list(tg_chunks(pool_audit_report(_r)))
+                    _has_ful = "fulfilled" in pool_audit_report(_r)
+                    for _n, _part in enumerate(_parts):
+                        await bot.send_message(ADMIN_ID, _part, parse_mode="HTML",
+                            reply_markup=(InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🧹 Очистить fulfilled", callback_data="gpt_purge_fulfilled")]]) if _has_ful and _n == len(_parts) - 1 else None))
                 except Exception:
                     pass
         except Exception as e:

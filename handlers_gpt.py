@@ -248,8 +248,11 @@ async def admin_gpt_check_pool(message: Message):
     except Exception as _e:
         await message.answer(f"❌ Не вышло: <code>{_e}</code>", parse_mode="HTML")
         return
-    for _part in tg_chunks(pool_audit_report(r)):
-        await message.answer(_part, parse_mode="HTML")
+    _rep = pool_audit_report(r)
+    _parts = list(tg_chunks(_rep))
+    for _n, _part in enumerate(_parts):
+        await message.answer(_part, parse_mode="HTML",
+            reply_markup=(InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🧹 Очистить fulfilled", callback_data="gpt_purge_fulfilled")]]) if "fulfilled" in _rep and _n == len(_parts) - 1 else None))
 
 
 @dp.message(F.text.startswith("/gpt_tz"), StateFilter("*"))
