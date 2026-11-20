@@ -41,6 +41,9 @@ def _tariffs(context):
     return tariff_question(rows) if rows else ''
 
 
+_PAID = re.compile(r'(?i)оплатил\w*|оплачен\w*|оплата\s+(?:прошла|получена)|списал\w*|сняли\s+деньги|заплатил\w*|\bpaid\b|заказ\w*\s*[#№]?\s*\d{3,}')
+
+
 def finalize(answer, understanding, context):
     """Complete the reply for each situation the model reported. Never turns an answer into a stop."""
     if not isinstance(answer, dict) or answer.get('handoff'):
@@ -69,6 +72,8 @@ def finalize(answer, understanding, context):
             continue
         if row.get('skip_if_order_known') and ORDER_NO.search(burst + ' ' + window):
             continue
+        if name == 'paid_not_working' and not _PAID.search(burst + ' ' + window):
+            continue  # owner 20.11.2026 (live2): «по кнопкам никак» before paying is not a paid order
         if row.get('skip_if_order_known'):
             known = order_status_reply(context)
             if known:

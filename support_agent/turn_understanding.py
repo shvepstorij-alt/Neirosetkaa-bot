@@ -43,7 +43,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Тогда шаги оплаты бери из payment: кнопки и способы оттуда. '
     'Что нужно после оплаты, бери из payment.modes для этого сервиса. '
     'Кнопку «Я оплатил - написать Александру» не называй. '
-    'Токен сессии ChatGPT, sessionKey Claude и Perplexity User ID — это данные после оплаты, не способ оплаты. Claude Pro сейчас активирует Александр вручную по sessionKey и согласию клиента с рисками — тема claude_activation; Claude Max и Ultra — со входом в аккаунт (почта и пароль) и нашей иностранной картой — тема claude_max_login; Organization ID больше не нужен. '
+    'Токен сессии ChatGPT, sessionKey Claude, почта для Perplexity — это данные после оплаты, не способ оплаты. Claude Pro сейчас активирует Александр вручную по sessionKey и согласию клиента с рисками — тема claude_activation; рядом всегда называй вариант «Claude Pro + прохождение верификации личности» из каталога. Claude Max и Ultra — после оплаты нужна почта от аккаунта Claude, код с неё и верификация личности — тема claude_max_login; Organization ID больше не нужен. Любой вопрос про Grok — тарифы Cursor (Grok и Cursor объединили тарифы), SuperGrok не предлагай. Перекупщик, опт, продажа на Plati — тема reseller. Если ответа нет ни в правилах, ни в фактах — тема unknown_answer. '
     'Для нового аккаунта ChatGPT Plus кнопки активации нет. '
     'Нужен новый аккаунт в любом сервисе или нет почты для регистрации — тема new_account_email: сначала gmail.com без прежнего аккаунта в сервисе, иначе новая outlook.com от нас. '
     'setup_email, setup_password и setup_recovery заполняй только тем, что клиент уже написал: '
@@ -474,8 +474,18 @@ def _usd_context(burst, state_service):
             'prices': table}
 
 
+def _owner_profile_prices():
+    """Owner 20.11.2026: prices the owner wrote into the business profile (Business 4990 ₽, Claude + KYC 6990 ₽)."""
+    try:
+        from .playbook import business_profile
+        return tuple(int(m.replace(' ', '')) for m in re.findall(r'(\d[\d ]{2,6})\s*₽', business_profile() or ''))
+    except Exception:
+        return ()
+
+
 def _context_prices(context):
     prices = list(((context or {}).get('usd_to_rub') or {}).get('prices', {}).values())
+    prices.extend(_owner_profile_prices())
     # Credit packs of the bot's own generation are catalog prices too.
     generation = (context or {}).get('bot_generation')
     if isinstance(generation, dict):
@@ -549,7 +559,7 @@ def validate(understanding, context):
     return _situation_consistent(_validate(understanding, context), context)
 
 
-_QUESTION = re.compile(r'(?i)\?|\b(?:как|какой|какая|какие|сколько|можно|почему|зачем|где|когда|куда|что\s+делать|подскажите|помогите|поможете|имеется\s+ли|есть\s+ли|нужно\s+ли)\b')
+_QUESTION = re.compile(r'(?i)\?|\b(?:как|какой|какая|какие|сколько|можно|почему|зачем|где|когда|куда|что\s+делать|подскажите|подскажи|помогите|помоги|поможете|имеется\s+ли|есть\s+ли|нужно\s+ли)\b')
 
 
 # Owner 20.11.2026 (live.txt, 32 из 100 «потерял нить»): when Alexander himself asked the client for
@@ -563,6 +573,7 @@ _OWNER_OPEN_STEP = re.compile(  # Alexander is doing a hands-on operation, not a
     r'сейчас\s+(?:провер|оформ|сдела|отправ)|отключите|ключ\s+доступа|по\s+ожиданию|'
     r'пройти\s+верификаци|дадим\s+номер|другую\s+почт|как\s+(?:она\s+)?законч|'
     r'1\s+more|one\s+more')
+_STEP_DONE = re.compile(r'(?i)вс[её]\s+(?:хорошо|получилось|работает|ок)|подписка\s+(?:есть|появилась)|получилось|заработал|спасибо\s+большое|благодарю')
 _STATUS_PING = re.compile(r'(?i)как\s+там|как\s+успехи|когда\s+(?:сможете|будет)|что\s+не\s+так|получилось\s*\?|'
                           r'долго|скоро|ещ[её]\s+ссылк|нов\w+\s+ссылк|ссылку\s+скин')
 
@@ -590,11 +601,37 @@ def owner_open_step(context, hours=12):
         return False  # the step is finished; a new question is a new turn
     if not text or not _OWNER_OPEN_STEP.search(text):
         return False
+    done = str((context or {}).get('burst') or '') or '\n'.join(clients)
+    if _STEP_DONE.search(done) and not has_question(done):
+        return False  # «всё получилось, спасибо» closes the step: a short thanks is the reply
     burst = str((context or {}).get('burst') or '') or '\n'.join(clients)
     # A new, independent question is answered; an answer, data or a status ping belongs to Alexander's step.
     if has_question(burst) and not _STATUS_PING.search(burst):
         return False
     return True
+
+
+def ongoing_dialog(context, hours=12):
+    """Owner 20.11.2026 (live2): Alexander already took part in this conversation recently.
+
+    In an ongoing dialog a stored FAQ text is reference for the model, not a ready answer:
+    it is pasted only when the model's own checked draft is unusable.
+    """
+    history = list((context or {}).get('history') or [])
+    burst_at = None
+    while history and history[-1].get('role') == 'client':
+        burst_at = history[-1].get('at') if burst_at is None else burst_at
+        history.pop()
+    for item in reversed(history):
+        if item.get('role') != 'owner' or not str(item.get('text') or '').strip():
+            continue
+        if burst_at is not None and item.get('at') is not None:
+            try:
+                return float(burst_at) - float(item['at']) <= hours * 3600
+            except (TypeError, ValueError):
+                return True
+        return True
+    return False
 
 
 def has_question(burst):
@@ -1346,10 +1383,18 @@ def _plans_summary(rows):
     return '\n\n'.join(parts)
 
 
+_OTHER_SERVICE = re.compile(r'(?i)друг\w*\s+сервис|other\s*service')
+
+
 def _service_rows(context, service_id):
     if not service_id:
         return []
-    priced = [row for row in (context or {}).get('tariffs') or [] if type(row.get('price')) is int]
+    # Owner 20.11.2026: Grok and Cursor merged their plans — any Grok question gets Cursor's tariffs.
+    if re.sub(r'[^a-z]', '', str(service_id).casefold()) in ('grok', 'supergrok', 'xai'):
+        service_id = 'cursor'
+    # «Другой сервис 10$…16$» is a payment slot for Alexander's quote, never a tariff list for the client.
+    priced = [row for row in (context or {}).get('tariffs') or [] if type(row.get('price')) is int
+              and not _OTHER_SERVICE.search(str(row.get('service') or '') + ' ' + str(row.get('service_id') or ''))]
     rows = [row for row in priced if row.get('service_id') == service_id]
     if not rows and len(str(service_id)) >= 4:
         key = re.sub(r'[^a-zа-яё0-9]+', '', str(service_id).casefold())
@@ -1946,7 +1991,13 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
             platform_text = DEVICE_ASK
         if platform_text:
             answer_text = platform_text
-        if platform_text or fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
+        keep_draft = (ongoing_dialog(context) and not platform_text and reply.strip() and not answer.get('handoff')
+                      and classify_draft(reply, prices)['send']
+                      # a draft that asks for access data is never preferred over the owner's approved text
+                      and not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply))
+        if keep_draft:
+            pass  # ongoing dialog: the model's own checked answer stays; the FAQ was its reference
+        elif platform_text or fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
             # A draft that drifted from the owner's fact, or was held for its wording, is replaced
             # by the owner's own text. Conflict, owner clash and stale price still hold below.
             # When the model itself marks a condition beyond the fact, the question needs the owner.
@@ -1959,7 +2010,9 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                 many = (len(validated.get('questions') or []) > 1 or len(set(validated.get('situations') or [])) > 1
                         or validated.get('situation') == 'compare_choose')
                 if (many and reply and not answer.get('handoff') and answer_text[:60] not in reply
-                        and classify_draft(reply, prices)['send']):
+                        and classify_draft(reply, prices)['send']
+                      # a draft that asks for access data is never preferred over the owner's approved text
+                      and not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply)):
                     reply_text = reply.rstrip() + '\n\n' + reply_text
                 answer = dict(answer, reply=reply_text, handoff=False)
                 owner_text_used = True

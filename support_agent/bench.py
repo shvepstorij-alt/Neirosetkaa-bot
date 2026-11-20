@@ -35,7 +35,7 @@ def check(case, reply, stopped):
 
 
 async def run_bench(service, mode='new'):
-    from .auto_policy import block_reason
+    from .auto_policy import block_reason, real_stop_reason
     from .privacy import scrub
     from .service import Service
     from .voice import masculine, trim_filler
@@ -87,13 +87,16 @@ async def run_bench(service, mode='new'):
                 answer = {'reply': '', 'handoff': True, 'evidence': {'diagnostic': type(exc).__name__}}
             answer = answer or {'reply': '', 'handoff': True}
             reply = trim_filler(masculine(str(answer.get('reply') or '')))
-            stopped = bool(answer.get('handoff')) or bool(block_reason(dict(answer, reply=reply), answer.get('evidence'), case['client']))
+            evidence = answer.get('evidence') if isinstance(answer.get('evidence'), dict) else {}
+            gate = None if answer.get('handoff') else real_stop_reason(dict(answer, reply=reply), evidence, case['client'])
+            stopped = bool(answer.get('handoff')) or bool(gate)
             if job:
                 store.finish(job, reply, answer.get('summary', ''), answer.get('handoff', True))
-            evidence = answer.get('evidence') if isinstance(answer.get('evidence'), dict) else {}
-            why = (str(evidence.get('handoff_reason') or evidence.get('diagnostic') or '')
-                   or str(block_reason(dict(answer, reply=reply), evidence, case['client']) or '')) if stopped else ''
-            rows.append((case, reply + ('\n  [почему стоп: ' + why[:200] + ']' if why else ''), stopped, check(case, reply, stopped)))
+            why = (str(evidence.get('handoff_reason') or '') or str(gate or '') or str(evidence.get('diagnostic') or '')) if stopped else ''
+            note = ''
+            if not stopped and evidence.get('situation_hold'):
+                note = '\n  [только черновик, без автоотправки: ситуация не в списке автоответа]'
+            rows.append((case, reply + ('\n  [почему стоп: ' + why[:200] + ']' if why else '') + note, stopped, check(case, reply, stopped)))
     except Exception as exc:
         await service.owner_message('Эталонная проверка остановлена: %s.' % (str(exc) or type(exc).__name__))
     finally:

@@ -323,3 +323,13 @@ def status_safe(value):
            'checked','catalog_checked','topic_boundary',
            'order_consultation','course_consultation','workflow_consultation','activation_consultation','external_consultation','creative_consultation','installation_consultation'}
     return value if value in known else 'unknown'
+
+
+def real_stop_reason(answer, evidence=None, current_text=''):
+    """Owner 20.11.2026: a draft kept from auto-send only by its situation is not a stop.
+
+    Checks (/bench, /live) report «остановился» separately from «только черновик».
+    """
+    meta = dict(evidence if isinstance(evidence, dict) else (answer or {}).get('evidence') or {})
+    meta.pop('situation_hold', None)
+    return block_reason(answer, meta, current_text)

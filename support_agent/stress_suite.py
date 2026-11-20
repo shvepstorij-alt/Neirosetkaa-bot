@@ -636,8 +636,8 @@ def build_cases(catalog):
         'role': 'client', 'text': 'как оплатить клод макс 20',
         'payment_asked': True,
         'expect': {'hold': False, 'service': 'claude',
-                   'need': ['почту и пароль', 'иностранной карты', 'согласн'],
-                   'forbid': ['Organization', 'Активировать Claude', 'sessionKey', '2-5', 'Я оплатил']}},
+                   'need': ['почт', 'иностранной карты', 'согласн'],
+                   'forbid': ['Organization', 'Активировать Claude', 'sessionKey', '2-5', 'Я оплатил', 'почту и пароль']}},
     ])
     add('pay-claude-pro-auto', [{
         'role': 'client', 'text': 'как оплатить клод про',

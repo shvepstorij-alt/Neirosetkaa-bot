@@ -278,17 +278,25 @@ class Store:
                                  AND d.state IN ('sent','sending'))""",
                 (cid, int(latest), cid))
 
-    def introduced(self, cid):
+    def introduced(self, cid, now=None):
+        """Owner 20.11.2026: the assistant introduces itself in its first reply of the day (Moscow time).
+
+        If Alexander or the assistant already wrote in this chat today, no introduction.
+        """
+        import datetime
+        now = time.time() if now is None else float(now)
+        msk = datetime.timezone(datetime.timedelta(hours=3))
+        day = datetime.datetime.fromtimestamp(now, msk).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         c=self.chat(cid)
-        if c and int(c['introduced'] or 0):
+        if c and float(c['introduced'] or 0) >= day:
             return True
         row=self.db.execute(
-            "SELECT 1 FROM messages WHERE chat=? AND role='assistant' AND text LIKE ? LIMIT 1",
-            (cid, 'Здравствуйте! Я ИИ-помощник Александра%')).fetchone()
+            "SELECT 1 FROM messages WHERE chat=? AND role IN ('assistant','owner') AND at>=? LIMIT 1",
+            (cid, day)).fetchone()
         return bool(row)
 
-    def mark_introduced(self, cid):
-        self.db.execute('UPDATE chats SET introduced=1 WHERE id=?', (cid,))
+    def mark_introduced(self, cid, now=None):
+        self.db.execute('UPDATE chats SET introduced=? WHERE id=?', (int(time.time() if now is None else now), cid))
 
     def manual_pause_blocks(self, cid, now):
         c=self.chat(cid)

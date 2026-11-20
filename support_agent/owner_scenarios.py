@@ -58,6 +58,17 @@ def _referral(text):
     return bool(re.search(r'реферал|рефк|партн[её]рск\w*\s+(?:программ|ссылк)|пригласи\w*\s+друз|пригласить\s+друга|за\s+друзей', text, re.I))
 
 
+_WISH = re.compile(r'(?i)(хорошего|отличного|прекрасного|приятного|доброго)\s+(дня|вечера|утра|выходных|отдыха)|спокойной\s+ночи|доброй\s+ночи')
+
+
+def closing(text):
+    """Owner 20.11.2026: answer a wish with the same wish; otherwise «Рад помочь, обращайтесь!»."""
+    wish = _WISH.search(str(text or ''))
+    if wish:
+        return 'Рад помочь! И вам ' + wish.group(0).casefold() + '!'
+    return 'Рад помочь, обращайтесь!'
+
+
 def quick_reply(text, now=None):
     """Owner rules that answer the whole short message: promo, coins, referral, a human."""
     text = str(text or '')
@@ -79,7 +90,11 @@ def quick_reply(text, now=None):
                      'После оплаты проверьте бота @neirosetkaa_bot: туда обычно приходит инструкция, что делать дальше.',
                      'Клиент пишет, что деньги списались.', 'Этап: уточнение по списанию. Ответ владельца.')
     if len(text) <= 70 and re.search(r'(?i)^\W*(?:спасибо|благодарю|спс|пасиб\w*|ура|отлично|супер|всё\s+получилось|все\s+получилось|получилось|работает|заработало|прошло)\W*(?:большое|огромное|вам|\W)*(?:всё|все)?\W*(?:получилось|работает|прошло)?\W*$', text):
-        return _pack('Обращайтесь! Хорошего дня)', 'Клиент благодарит.', 'Этап: благодарность. Ответ владельца.')
+        return _pack(closing(text), 'Клиент благодарит.', 'Этап: благодарность. Ответ владельца.')
+    if (len(text) <= 90 and re.search(r'(?i)спасибо|благодар|спс\b|пасиб', text)
+            and not re.search(r'(?i)\?|\bне\b|ошибк|проблем|как\s|можно|подскаж|помогите|а\s+ещ', text)):
+        # Owner 20.11.2026: thanks with a wish or «всё получилось» — a short closing, the wish mirrored.
+        return _pack(closing(text), 'Клиент благодарит.', 'Этап: благодарность. Ответ владельца.')
     if _who(text) and len(text) <= 80:
         return _pack(WHO, 'Клиент спрашивает, бот это или человек.', 'Этап: кто отвечает. Ответ владельца.')
     if _promo(text):
