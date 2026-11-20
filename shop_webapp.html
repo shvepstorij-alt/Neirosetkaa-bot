@@ -296,7 +296,7 @@ function _api(path, body){
   body = body||{}; try{ body.initData=_getInitData(); }catch(e){ body.initData=''; }
   return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(d){
-      if(r.status===403 && d && d.error==='auth'){ _authExpired(); d.msg=d.msg||'Сессия Telegram устарела — открой магазин заново.'; }
+      if(r.status===403 && d && d.error==='auth' && /^\/api\/(sms|appstore)\//.test(path)){ _authExpired(); d.msg=d.msg||'Отправь боту /start и открой «Каталог» заново.'; }
       return d; })}).catch(function(){return{ok:false}});
 }
 /* Телефон держит свёрнутую мини-аппку днями, и данные запуска устаревают.
@@ -305,7 +305,7 @@ function _authExpired(){
   if(document.getElementById('auth-exp'))return;
   var d=document.createElement('div'); d.id='auth-exp';
   d.style.cssText='position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;background:var(--bg2,#1c1c1e);border:1px solid var(--border,#333);border-radius:16px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);font-size:14px;line-height:1.4';
-  d.innerHTML='<b>🔄 Нужно перезапустить магазин</b><div style="margin:6px 0 10px;color:var(--text2,#aaa)">Telegram держал магазин открытым слишком долго. Закрой его и открой снова кнопкой «Каталог» в боте — всё заработает.</div>'
+  d.innerHTML='<b>🔄 Обнови магазин</b><div style="margin:6px 0 10px;color:var(--text2,#aaa)">Для покупки нужно обновить данные Telegram: закрой магазин, отправь боту <b>/start</b> и открой «Каталог» заново.</div>'
     +'<div class="plan-buy" style="margin:0" onclick="try{Telegram.WebApp.close()}catch(e){location.reload()}">Закрыть магазин</div>';
   document.body.appendChild(d);
 }
