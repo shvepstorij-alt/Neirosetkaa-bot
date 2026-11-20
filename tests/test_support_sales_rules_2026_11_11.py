@@ -371,6 +371,8 @@ class MasculineVoiceTests(unittest.TestCase):
         import pathlib, re
         bad = re.compile(r'(?i)\bя(?:\s+\w+){0,2}\s+\w+ла\b|\b(?:рада|готова помочь)\b')
         for path in pathlib.Path('support_agent/data').glob('*.yaml'):
+            if path.name == 'benchmark.yaml':
+                continue  # client words, not the assistant's
             text = path.read_text(encoding='utf-8')
             self.assertIsNone(bad.search(text), path.name)
 
@@ -1348,3 +1350,41 @@ class OwnerButtons12hTests(unittest.TestCase):
                      '/start', 'pending:0', 'attention:0', 'chats:0', 'menu:stats', 'menu:settings', 'menu:tests')
         edits = [m for m, kw in self.tg.out if m in ('editMessageText', 'sendMessage')]
         self.assertGreaterEqual(len(edits), 10)
+
+
+class Owner20NovTests(unittest.TestCase):
+    def test_never_send_client_to_write_to_this_chat(self):
+        from support_agent.playbook import tidy
+        out = tidy({'reply': 'Напишите ему, пожалуйста, в @Neirosetkaalex, как вам и подсказали.'}, {})
+        self.assertNotIn('@Neirosetkaalex', out['reply'])
+        self.assertIn('бонусной подписке', out['reply'])
+
+    def test_token_steps_do_not_push_the_bot(self):
+        from support_agent.faq import load_faq
+        answer = next(t['answer'] for t in load_faq()['topics'] if t['id'] == 'chatgpt_token_after_register')
+        self.assertNotIn('Активировать подписку', answer)
+        self.assertIn('текстовым файлом', answer)
+
+    def test_games_topic_and_short_off_catalog(self):
+        from support_agent.faq import load_faq
+        topics = {t['id']: t for t in load_faq()['topics']}
+        self.assertIn('PlayStation', topics['games_consoles']['answer'])
+        self.assertNotIn('На какой срок', topics['off_catalog']['answer'])
+
+
+class BenchTests(unittest.TestCase):
+    def test_benchmark_loads_and_checks(self):
+        from support_agent.bench import check, load
+        cases = load()
+        self.assertGreaterEqual(len(cases), 30)
+        self.assertEqual(len({c['id'] for c in cases}), len(cases))
+        self.assertEqual(check({'need': ['₽'], 'forbid': ['будет на связи']}, 'Plus — 1990 ₽', False), [])
+        self.assertTrue(check({'stop': True}, 'x', False))
+
+    def test_profile_and_course_claude(self):
+        from support_agent.faq import load_faq
+        from support_agent.playbook import business_profile
+        self.assertIn('Гифт-карты и игры', business_profile())
+        topics = {t['id']: t['answer'] for t in load_faq()['topics']}
+        self.assertIn('бонус с курса сгорит', topics['course_bonus_claude'])
+        self.assertIn('резервные коды', topics['games_consoles'])
