@@ -33,6 +33,65 @@ def buttons(rows):
     return {'inline_keyboard':[[item(value) for value in row] for row in rows]}
 
 
+
+def _research_note(evidence):
+    """Owner 20.11.2026 (№302, systemic): one card section. A missing field drops this section, never the card."""
+    try:
+        return _research_note_unsafe(evidence if isinstance(evidence, dict) else {})
+    except Exception as exc:
+        logging.error('Draft card section failed', exc_info=exc)
+        return '🛠 <i>Часть служебных сведений не показана: ' + html.escape(where_failed(exc)) + '</i>\n\n'
+
+
+def where_failed(exc):
+    """«KeyError 'checked_at' — service.py:905»: the exact place, so any crash is found in a minute."""
+    import traceback
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    own = [f for f in frames if 'support_agent' in f.filename] or frames
+    place = (own[-1].filename.rsplit('/', 1)[-1] + ':' + str(own[-1].lineno)) if own else '?'
+    return type(exc).__name__ + ' ' + str(exc)[:80] + ' — ' + place
+
+
+def _research_note_unsafe(evidence):
+    # Owner 20.11.2026 (№302): a paid-order reply has no web research — the card must not need checked_at.
+    if evidence.get('status') in ('checked','insufficient') and evidence.get('checked_at'):
+        checked=dt.datetime.fromtimestamp(evidence['checked_at'],dt.timezone(dt.timedelta(hours=5)))
+        label=('Источники проверены' if evidence.get('status')=='checked'
+               else 'Поиск выполнен, сведений недостаточно для ответа')
+        research_note=f'🌐 <b>{label}:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
+        for index,source in enumerate(evidence.get('sources') or []):
+            research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
+            if (index+1)%8==0:research_note+='\n'
+        for name,identity in evidence.get('discoveries',{}).items():
+            research_note+=f'Сайт {html.escape(name)} найден поиском: <a href="{html.escape(identity["corroboration_url"],quote=True)}">проверка принадлежности</a>\n'
+        for name,reason in evidence.get('failures',{}).items():
+            research_note+=f'Не проверено: <b>{html.escape(name)}</b> — {html.escape(str(reason)[:180])}\n'
+        research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
+        if evidence.get('citation_mode')=='bibliography':
+            research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
+    else:
+        research_note={'catalog_direct':'📋 <b>Цены:</b> ответ собран из каталога без генерации моделью.\n\n',
+                       'installation_consultation':'📲 <b>Установка:</b> инструкция или уточнение собраны по подтверждённым правилам; оформление заказа не выполнялось.\n\n',
+                       'owner_policy':'📋 <b>Условия:</b> ответ по правилам владельца; право клиента ещё не подтверждено.\n\n',
+                       'clarification':'💬 <b>Уточнение:</b> запрошены сведения для разбора; причина проблемы не установлена.\n\n',
+                       'visual_clarification':'📷 <b>Фото:</b> нужна более чёткая деталь; распознавание не запускалось.\n\n',
+                       'visual_review':'📷 <b>Фото:</b> ответ не прошёл проверку; нужен ручной разбор.\n\n',
+                       'catalog_review':'📋 <b>Каталог:</b> показана только подтверждённая часть; свободный ответ отклонён проверкой.\n\n',
+                       'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
+                       'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
+                           evidence.get('status'),'')
+        if evidence.get('status') in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
+            from .auto_policy import owner_reason
+            research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(owner_reason(evidence["diagnostic"]))}\n\n'
+    atomic_diagnostics=evidence.get('atomic_diagnostics',[])
+    if evidence.get('auto_block_reason'):
+        from .auto_policy import owner_reason
+        research_note+='🛑 <b>Почему этот ответ не отправлен автоматически</b>\n'+html.escape(owner_reason(evidence['auto_block_reason']))+'\nВыбранный режим не изменён. Исходный ответ оставлен вам для проверки.\n\n'
+    if atomic_diagnostics:
+        research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
+    return research_note
+
+
 def present_outgoing(answer, info=None, introduced=False, facts=None):
     """The exact text and seal the send path stores. Tests must use this, not a hand-built string."""
     from .conversation_style import decorate_reply
@@ -2608,61 +2667,3 @@ if __name__=='__main__':
         # Config errors have controlled messages; network exceptions never expose URLs.
         logging.error('Startup failed: %s',str(exc) if isinstance(exc,ValueError) else type(exc).__name__)
         raise SystemExit(1)
-
-
-def _research_note(evidence):
-    """Owner 20.11.2026 (№302, systemic): one card section. A missing field drops this section, never the card."""
-    try:
-        return _research_note_unsafe(evidence if isinstance(evidence, dict) else {})
-    except Exception as exc:
-        logging.error('Draft card section failed', exc_info=exc)
-        return '🛠 <i>Часть служебных сведений не показана: ' + html.escape(where_failed(exc)) + '</i>\n\n'
-
-
-def where_failed(exc):
-    """«KeyError 'checked_at' — service.py:905»: the exact place, so any crash is found in a minute."""
-    import traceback
-    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
-    own = [f for f in frames if 'support_agent' in f.filename] or frames
-    place = (own[-1].filename.rsplit('/', 1)[-1] + ':' + str(own[-1].lineno)) if own else '?'
-    return type(exc).__name__ + ' ' + str(exc)[:80] + ' — ' + place
-
-
-def _research_note_unsafe(evidence):
-    # Owner 20.11.2026 (№302): a paid-order reply has no web research — the card must not need checked_at.
-    if evidence.get('status') in ('checked','insufficient') and evidence.get('checked_at'):
-        checked=dt.datetime.fromtimestamp(evidence['checked_at'],dt.timezone(dt.timedelta(hours=5)))
-        label=('Источники проверены' if evidence.get('status')=='checked'
-               else 'Поиск выполнен, сведений недостаточно для ответа')
-        research_note=f'🌐 <b>{label}:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
-        for index,source in enumerate(evidence.get('sources') or []):
-            research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
-            if (index+1)%8==0:research_note+='\n'
-        for name,identity in evidence.get('discoveries',{}).items():
-            research_note+=f'Сайт {html.escape(name)} найден поиском: <a href="{html.escape(identity["corroboration_url"],quote=True)}">проверка принадлежности</a>\n'
-        for name,reason in evidence.get('failures',{}).items():
-            research_note+=f'Не проверено: <b>{html.escape(name)}</b> — {html.escape(str(reason)[:180])}\n'
-        research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
-        if evidence.get('citation_mode')=='bibliography':
-            research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
-    else:
-        research_note={'catalog_direct':'📋 <b>Цены:</b> ответ собран из каталога без генерации моделью.\n\n',
-                       'installation_consultation':'📲 <b>Установка:</b> инструкция или уточнение собраны по подтверждённым правилам; оформление заказа не выполнялось.\n\n',
-                       'owner_policy':'📋 <b>Условия:</b> ответ по правилам владельца; право клиента ещё не подтверждено.\n\n',
-                       'clarification':'💬 <b>Уточнение:</b> запрошены сведения для разбора; причина проблемы не установлена.\n\n',
-                       'visual_clarification':'📷 <b>Фото:</b> нужна более чёткая деталь; распознавание не запускалось.\n\n',
-                       'visual_review':'📷 <b>Фото:</b> ответ не прошёл проверку; нужен ручной разбор.\n\n',
-                       'catalog_review':'📋 <b>Каталог:</b> показана только подтверждённая часть; свободный ответ отклонён проверкой.\n\n',
-                       'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
-                       'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
-                           evidence.get('status'),'')
-        if evidence.get('status') in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
-            from .auto_policy import owner_reason
-            research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(owner_reason(evidence["diagnostic"]))}\n\n'
-    atomic_diagnostics=evidence.get('atomic_diagnostics',[])
-    if evidence.get('auto_block_reason'):
-        from .auto_policy import owner_reason
-        research_note+='🛑 <b>Почему этот ответ не отправлен автоматически</b>\n'+html.escape(owner_reason(evidence['auto_block_reason']))+'\nВыбранный режим не изменён. Исходный ответ оставлен вам для проверки.\n\n'
-    if atomic_diagnostics:
-        research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
-    return research_note
