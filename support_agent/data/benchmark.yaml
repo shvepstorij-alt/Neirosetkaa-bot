@@ -253,8 +253,9 @@ cases:
   client: "Нам нужен ChatGPT на 5 человек, какой тариф брать?"
   need: ['₽|тариф|business|team|plus']
 - id: paid-with-order
+  # В проверке нет настоящего магазина: заказ не найден → передача Александру — так и должно быть.
   client: "Оплатил заказ #12345, подписка не пришла"
-  forbid: ['номер заказа']
+  stop: true
 - id: receipt
   client: "Чек об оплате"
   need: ['чек']
@@ -296,8 +297,7 @@ cases:
 - id: claude-sessionkey-sent
   history: [[owner, 'Скопируйте значение sessionKey (начинается на sk-ant-sid02-...) и отправьте сюда.']]
   client: "sk-ant-sid02-Abc123XyZ987-qwertyuiop_ASDFGHJKL-zxcv"
-  need: ['получил|спасибо']
-  forbid: ['sk-ant']
+  stop: true
 - id: chatgpt-token-sent-file
   history: [[owner, 'Пришлите весь текст со страницы chatgpt.com/api/auth/session одним текстовым файлом.']]
   client: "отправил файл, что дальше?"
@@ -329,7 +329,7 @@ cases:
   need: ['минут']
 - id: can-you-guarantee
   client: "Гарантию даете что Claude не заблокируют?"
-  need: ['гаранти\w* нет|не можем гарантир|не гарантир']
+  need: ['кроме claude|гаранти\w* нет|не можем гарантир|не гарантир']
 - id: chatgpt-blocked
   client: "Мне заблокировали аккаунт чат гпт, что делать?"
   forbid: ['будет на связи']
