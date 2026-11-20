@@ -89,12 +89,25 @@ async def _get(path: str, auth: bool = False, params=None, timeout=20):
 
 
 async def _cached(key, ttl, fn):
+    """Кэш с запасом: если поставщик не ответил — отдаём прошлые данные,
+    а пустой ответ не кэшируем (иначе «не удалось загрузить» висит долго)."""
     v = _cache.get(key)
     if v and time.time() - v[0] < ttl:
         return v[1]
-    data = await fn()
-    _cache[key] = (time.time(), data)
-    return data
+    data = None
+    for _try in range(2):
+        try:
+            data = await fn()
+        except Exception as e:
+            logging.warning(f"sms cache {key} попытка {_try + 1}: {e}")
+            data = None
+        if data:
+            break
+        await asyncio.sleep(1)
+    if data:
+        _cache[key] = (time.time(), data)
+        return data
+    return v[1] if v else data
 
 
 async def countries() -> dict:
@@ -107,7 +120,7 @@ async def countries() -> dict:
 async def products() -> list:
     """Список сервисов, у которых сейчас есть номера (любая страна)."""
     async def _f():
-        st, d = await _get("/guest/products/any/any")
+        st, d = await _get("/guest/products/any/any", timeout=40)
         if st != 200 or not isinstance(d, dict):
             return []
         out = []
@@ -120,33 +133,44 @@ async def products() -> list:
 
 
 async def offers(product: str) -> list:
-    """Страны для сервиса: самая дешёвая доступная линия в каждой стране."""
+    """Страны для сервиса. По каждой стране — все линии (операторы) с ценой,
+    количеством и процентом успешных активаций, как на сайте поставщика."""
     async def _f():
-        st, d = await _get("/guest/prices", params={"product": product})
+        st, d = await _get("/guest/prices", params={"product": product}, timeout=30)
         if st != 200 or not isinstance(d, dict):
             return []
         by = (d.get(product) or {})
         out = []
         for country, ops in by.items():
-            best = None
+            lines = []
             for op, v in (ops or {}).items():
-                if int((v or {}).get("count") or 0) <= 0:
+                cnt = int((v or {}).get("count") or 0)
+                c = float((v or {}).get("cost") or 0)
+                if cnt <= 0 or c <= 0:
                     continue
-                c = float(v.get("cost") or 0)
-                if c <= 0:
-                    continue
-                if not best or c < best[1]:
-                    best = (op, c, int(v.get("count") or 0), v.get("rate"))
-            if best:
-                out.append({"country": country, "operator": best[0], "cost": best[1],
-                            "count": best[2], "rate": best[3]})
+                r = v.get("rate")
+                lines.append({"operator": op, "cost": c, "count": cnt,
+                              "rate": float(r) if r is not None else None})
+            if not lines:
+                continue
+            lines.sort(key=lambda x: (x["cost"], -(x["rate"] or 0)))
+            b = lines[0]
+            out.append({"country": country, "operator": b["operator"], "cost": b["cost"],
+                        "count": sum(x["count"] for x in lines), "rate": b["rate"],
+                        "lines": lines})
         return out
     return await _cached(f"offers:{product}", 120, _f)
 
 
-async def find_offer(product: str, country: str):
+async def find_offer(product: str, country: str, operator: str = ""):
     for o in await offers(product):
         if o["country"] == country:
+            if operator:
+                for ln in o.get("lines") or []:
+                    if ln["operator"] == operator:
+                        return {**o, "operator": ln["operator"], "cost": ln["cost"],
+                                "count": ln["count"], "rate": ln["rate"]}
+                return None
             return o
     return None
 
@@ -219,6 +243,37 @@ _PRODUCT_NAMES = {
     "paypal": "PayPal", "linkedin": "LinkedIn", "snapchat": "Snapchat", "line": "LINE",
     "signal": "Signal", "spotify": "Spotify", "airbnb": "Airbnb", "aliexpress": "AliExpress",
 }
+
+
+# Сервис каталога → id сервиса у поставщика (если называются по-разному).
+_CATALOG_ALIASES = {
+    "chatgpt": ["openai"], "gpt": ["openai"], "openai": ["openai"],
+    "claude": ["claude", "anthropic"], "gemini": ["google"], "google": ["google"],
+    "youtube": ["google"], "grok": ["twitter"], "supergrok": ["twitter"],
+    "x": ["twitter"], "midjourney": ["discord"], "capcut": ["capcut", "tiktok"],
+    "microsoft": ["microsoft"], "copilot": ["microsoft"], "kimi": ["moonshot"],
+}
+
+
+def _norm(s: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+def catalog_matches() -> dict:
+    """{id поставщика: ключ сервиса каталога} для сервисов, которые есть у меня."""
+    try:
+        from config import SHOP_CATALOG
+    except Exception:
+        return {}
+    out = {}
+    for k, v in SHOP_CATALOG.items():
+        for tok in {_norm(k), _norm((v or {}).get("name", ""))}:
+            if not tok:
+                continue
+            for pid in _CATALOG_ALIASES.get(tok, []) + [tok]:
+                out.setdefault(pid, k)
+    return out
 
 
 def product_name(pid: str) -> str:
@@ -412,6 +467,11 @@ async def _check_one(o) -> None:
 async def poll_loop():
     """Фоновая проверка активных номеров."""
     await asyncio.sleep(20)
+    try:
+        await countries()
+        await products()
+    except Exception as e:
+        logging.warning(f"sms warmup: {e}")
     while True:
         try:
             p = await _pool()
@@ -557,11 +617,17 @@ async def api_sms_products_handler(request):
     except Exception as e:
         logging.error(f"sms products: {e}")
         return _json({"ok": False, "msg": "Не удалось загрузить список. Попробуйте позже."})
+    if not pr:
+        return _json({"ok": False, "msg": "Не удалось загрузить сервисы. Попробуйте через минуту."})
+    ids = {p["id"] for p in pr}
+    cat = {pid: ck for pid, ck in catalog_matches().items() if pid in ids}
+    mine = [p["id"] for p in pr if p["id"] in cat]            # есть в моём каталоге
     top = [k for k in ("telegram", "whatsapp", "openai", "google", "instagram", "tiktok",
-                       "microsoft", "claude", "discord", "apple") if any(p["id"] == k for p in pr)]
-    rest = [p["id"] for p in pr if p["id"] not in top]
-    return _json({"ok": True, "items": [{"id": k, "name": product_name(k), "top": k in top}
-                                        for k in top + rest]})
+                       "microsoft", "claude", "discord", "apple") if k in ids and k not in cat]
+    rest = [p["id"] for p in pr if p["id"] not in cat and p["id"] not in top]
+    return _json({"ok": True, "items": [
+        {"id": k, "name": product_name(k), "cat": cat.get(k, ""), "top": k in top}
+        for k in mine + top + rest]})
 
 
 async def api_sms_offers_handler(request):
@@ -581,7 +647,11 @@ async def api_sms_offers_handler(request):
     for o in offs:
         ci = await country_info(o["country"])
         out.append({"country": o["country"], "iso": ci["iso"], "flag": _flag(ci["iso"]),
-                    "en": ci["en"], "price": price_rub(o["cost"], rate, mk), "count": o["count"]})
+                    "en": ci["en"], "price": price_rub(o["cost"], rate, mk), "count": o["count"],
+                    "rate": o.get("rate"),
+                    "lines": [{"op": ln["operator"], "price": price_rub(ln["cost"], rate, mk),
+                               "count": ln["count"], "rate": ln["rate"]}
+                              for ln in (o.get("lines") or [])]})
     out.sort(key=lambda x: x["price"])
     return _json({"ok": True, "name": product_name(product), "items": out})
 
@@ -599,9 +669,10 @@ async def api_sms_pay_handler(request):
         return _json({"ok": False, "error": "unavailable"})
     product = str(body.get("product") or "").strip().lower()[:60]
     country = str(body.get("country") or "").strip().lower()[:60]
+    operator = str(body.get("operator") or "").strip().lower()[:60]
     method = str(body.get("method", "sbp")).strip().lower()
     use_coins = bool(body.get("useCoins"))
-    off = await find_offer(product, country)
+    off = await find_offer(product, country, operator)
     if not off:
         return _json({"ok": False, "error": "not_found", "msg": "Номеров этой страны сейчас нет."})
     price = price_rub(off["cost"], await _rate(), await _markup())

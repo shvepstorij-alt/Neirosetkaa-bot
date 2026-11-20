@@ -270,7 +270,19 @@ function _getInitData(){
 function _api(path, body){
   body = body||{}; try{ body.initData=_getInitData(); }catch(e){ body.initData=''; }
   return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(function(r){return r.json().catch(function(){return{ok:false}})}).catch(function(){return{ok:false}});
+    .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(d){
+      if(r.status===403 && d && d.error==='auth'){ _authExpired(); d.msg=d.msg||'Сессия Telegram устарела — открой магазин заново.'; }
+      return d; })}).catch(function(){return{ok:false}});
+}
+/* Телефон держит свёрнутую мини-аппку днями, и данные запуска устаревают.
+   Вместо непонятной ошибки — подсказка и кнопка перезапуска. 20.11.2026 */
+function _authExpired(){
+  if(document.getElementById('auth-exp'))return;
+  var d=document.createElement('div'); d.id='auth-exp';
+  d.style.cssText='position:fixed;left:12px;right:12px;bottom:16px;z-index:99999;background:var(--bg2,#1c1c1e);border:1px solid var(--border,#333);border-radius:16px;padding:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);font-size:14px;line-height:1.4';
+  d.innerHTML='<b>🔄 Нужно перезапустить магазин</b><div style="margin:6px 0 10px;color:var(--text2,#aaa)">Telegram держал магазин открытым слишком долго. Закрой его и открой снова кнопкой «Каталог» в боте — всё заработает.</div>'
+    +'<div class="plan-buy" style="margin:0" onclick="try{Telegram.WebApp.close()}catch(e){location.reload()}">Закрыть магазин</div>';
+  document.body.appendChild(d);
 }
 function _track(ev){ try{ var b={ev:ev}; b.initData=_getInitData();
   fetch('/api/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),keepalive:true}).catch(function(){}); }catch(e){} }
@@ -1296,6 +1308,12 @@ function _isSms(key,name){ var s=((key||'')+' '+(name||'')).toLowerCase();
 window._smsKey=''; window._smsProd=null; window._smsAll=[];
 var _ruRegion=null; try{ _ruRegion=new Intl.DisplayNames(['ru'],{type:'region'}); }catch(e){}
 function _smsCountry(it){ try{ if(_ruRegion&&it.iso) return _ruRegion.of(it.iso)||it.en; }catch(e){} return it.en; }
+function _smsFlag(o){ var iso=(o.iso||'').toLowerCase();
+  if(!/^[a-z]{2}$/.test(iso)) return '<span style="font-size:18px">🌍</span>';
+  return '<img src="https://flagcdn.com/w40/'+iso+'.png" alt="" style="width:26px;height:26px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:8px;box-shadow:0 0 0 1px rgba(255,255,255,.12)" onerror="this.outerHTML=\''+(o.flag||'🌍')+' \'">'; }
+var _SMS_DOM={google:'google.com',openai:'openai.com',microsoft:'microsoft.com',twitter:'x.com',vkontakte:'vk.com',mailru:'mail.ru',yandex:'ya.ru',claude:'claude.ai',anthropic:'claude.ai',googlevoice:'voice.google.com',wildberries:'wildberries.ru',avito:'avito.ru',ozon:'ozon.ru'};
+function _smsLogo(p){ var d=_SMS_DOM[p.id]||(p.id.replace(/[^a-z0-9]/g,'')+'.com');
+  return '<img src="https://www.google.com/s2/favicons?domain='+d+'&sz=64" alt="" style="width:26px;height:26px;border-radius:7px;background:#fff;object-fit:contain;padding:2px;box-sizing:border-box" onerror="this.outerHTML=\'<span>📩</span>\'">'; }
 function _smsHead(sub){
   var c=CATALOG[window._smsKey]||{}; var lg=c.logo||'';
   return '<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(window._smsKey,lg)+'">'+_iconHtml(lg,'📱')+'</div>'
@@ -1320,11 +1338,19 @@ function smsFilter(){
   var el=document.getElementById('sms-body'); if(!el)return;
   var q=((document.getElementById('sms-q')||{}).value||'').trim().toLowerCase();
   var list=window._smsAll.filter(function(p){ return !q||p.id.indexOf(q)>=0||p.name.toLowerCase().indexOf(q)>=0; });
-  if(!q) list=list.slice(0,60);
+  if(!q) list=list.filter(function(p,i){return p.cat||i<60;});
   if(!list.length){ el.innerHTML='<div class="pm-err">Ничего не нашлось. Попробуй «other» — номер для любого сервиса.</div>'; return; }
-  el.innerHTML='<div class="as-grid">'+list.map(function(p){
-    return '<div class="as-region" onclick="smsOffers(\''+_h(p.id)+'\')"><span class="as-flag">'+(p.top?'⭐':'📩')+'</span><span class="as-rname">'+_h(p.name)+'</span></div>';
-  }).join('')+'</div>'+(q?'':'<div class="note" style="margin-top:8px;color:var(--text3);font-size:12px">Показаны популярные — для остальных воспользуйся поиском.</div>');
+  var _tile=function(p){
+    var ic;
+    if(p.cat&&CATALOG[p.cat]&&CATALOG[p.cat].logo){ var lg=CATALOG[p.cat].logo;
+      ic='<span class="as-flag" style="width:26px;height:26px;border-radius:7px;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;background:'+_tileBg2(p.cat,lg)+'">'+_iconHtml(lg,p.name)+'</span>'; }
+    else ic='<span class="as-flag">'+_smsLogo(p)+'</span>';
+    return '<div class="as-region" onclick="smsOffers(\''+_h(p.id)+'\')">'+ic+'<span class="as-rname">'+_h(p.name)+'</span></div>';
+  };
+  var mine=list.filter(function(p){return !!p.cat;}), other=list.filter(function(p){return !p.cat;});
+  el.innerHTML=(mine.length?'<div class="card-plans-h" style="margin-top:0">Сервисы из нашего каталога</div><div class="as-grid">'+mine.map(_tile).join('')+'</div>':'')
+    +(other.length?'<div class="card-plans-h">'+(mine.length?'Другие сервисы':'Сервисы')+'</div><div class="as-grid">'+other.map(_tile).join('')+'</div>':'')
+    +(q?'':'<div class="note" style="margin-top:8px;color:var(--text3);font-size:12px">Показаны популярные — для остальных воспользуйся поиском.</div>');
 }
 function smsOffers(pid){
   var body=document.getElementById('card-body'); if(!body) return;
@@ -1337,28 +1363,42 @@ function smsOffers(pid){
   _api('/api/sms/offers',{product:pid}).then(function(d){
     var el=document.getElementById('sms-body'); if(!el)return;
     if(!d||!d.ok||!d.items||!d.items.length){ el.innerHTML='<div class="pm-err">'+_h((d&&d.msg)||'Сейчас нет номеров для этого сервиса.')+'</div>'; return; }
-    el.innerHTML=d.items.map(function(o){
-      return '<div class="plan"><div class="plan-h"><div class="plan-n">'+o.flag+' '+_h(_smsCountry(o))+'</div><div class="plan-p">'+o.price+'₽</div></div>'
-        +'<div class="plan-d" style="color:var(--text3);font-size:12px">в наличии: '+o.count+'</div>'
-        +'<div class="plan-buy" onclick="smsMethod(this,\''+_h(o.country)+'\','+o.price+')">Купить за '+o.price+'₽</div></div>';
+    window._smsOff={}; d.items.forEach(function(o){ window._smsOff[o.country]=o; });
+    el.innerHTML='<div class="note" style="color:var(--text3);font-size:12px;margin-bottom:8px">📦 — номеров в наличии · ✅ — процент успешных получений кода</div>'
+      +d.items.map(function(o){
+      var rate=(o.rate!=null)?(' · ✅ '+Math.round(o.rate)+'%'):'';
+      var more=(o.lines&&o.lines.length>1)?('<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="smsLines(this,\''+_h(o.country)+'\')">Варианты номеров ('+o.lines.length+')</div>'):'';
+      return '<div class="plan"><div class="plan-h"><div class="plan-n" style="display:flex;align-items:center">'+_smsFlag(o)+_h(_smsCountry(o))+'</div><div class="plan-p">'+(o.lines&&o.lines.length>1?'от ':'')+o.price+'₽</div></div>'
+        +'<div class="plan-d" style="color:var(--text3);font-size:12px">📦 '+o.count+' шт'+rate+'</div>'
+        +'<div class="plan-buy" onclick="smsMethod(this,\''+_h(o.country)+'\','+o.price+',\''+_h(o.lines&&o.lines[0]?o.lines[0].op:'')+'\')">Купить за '+o.price+'₽</div>'+more+'</div>';
     }).join('');
   });
 }
-function smsMethod(btn,country,price){
+function smsLines(btn,country){
+  var o=(window._smsOff||{})[country]; if(!o||!btn)return;
+  var w=document.createElement('div');
+  w.innerHTML=o.lines.map(function(l,i){
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)">'
+      +'<div style="flex:1;font-size:13px">Вариант '+(i+1)+'<div style="color:var(--text3);font-size:12px">📦 '+l.count+' шт'+(l.rate!=null?(' · ✅ '+Math.round(l.rate)+'%'):'')+'</div></div>'
+      +'<div class="plan-buy" style="width:auto;padding:8px 12px;margin:0" onclick="smsMethod(this,\''+_h(country)+'\','+l.price+',\''+_h(l.op)+'\')">'+l.price+'₽</div></div>';
+  }).join('');
+  btn.parentNode.replaceChild(w,btn);
+}
+function smsMethod(btn,country,price,op){ op=op||'';
   if(!btn)return; var w=document.createElement('div'); w.className='pay-methods';
   var coins=Math.floor(window._coins||0); var h='';
   if(coins>=1&&price>0){
     h+= coins>=price
-      ? '<div class="pm" style="background:var(--green);color:#fff" onclick="smsPay(this,\''+country+'\',\'coins\','+price+',1)">🪙 Монетками '+price+'₽</div>'
-      : '<div class="pm" style="background:var(--green);color:#fff" onclick="smsPay(this,\''+country+'\',\'sbp\','+price+',1)">🪙 '+coins+'₽ + СБП '+(price-coins)+'₽</div>';
+      ? '<div class="pm" style="background:var(--green);color:#fff" onclick="smsPay(this,\''+country+'\',\'coins\','+price+',1,\''+op+'\')">🪙 Монетками '+price+'₽</div>'
+      : '<div class="pm" style="background:var(--green);color:#fff" onclick="smsPay(this,\''+country+'\',\'sbp\','+price+',1,\''+op+'\')">🪙 '+coins+'₽ + СБП '+(price-coins)+'₽</div>';
   }
-  h+='<div class="pm sbp" onclick="smsPay(this,\''+country+'\',\'sbp\','+price+')">⚡ СБП</div>'
-    +'<div class="pm card" onclick="smsPay(this,\''+country+'\',\'card\','+price+')">💳 Картой</div>';
+  h+='<div class="pm sbp" onclick="smsPay(this,\''+country+'\',\'sbp\','+price+',0,\''+op+'\')">⚡ СБП</div>'
+    +'<div class="pm card" onclick="smsPay(this,\''+country+'\',\'card\','+price+',0,\''+op+'\')">💳 Картой</div>';
   w.innerHTML=h; btn.parentNode.replaceChild(w,btn);
 }
-function smsPay(el,country,method,price,useCoins){
+function smsPay(el,country,method,price,useCoins,op){
   var row=el.parentNode; row.innerHTML='<div class="pm-wait">'+(useCoins?'Списываю монетки…':'Создаю ссылку на оплату…')+'</div>';
-  _api('/api/sms/pay',{product:window._smsProd,country:country,method:method,useCoins:!!useCoins,expPrice:price}).then(function(d){
+  _api('/api/sms/pay',{product:window._smsProd,country:country,operator:op||'',method:method,useCoins:!!useCoins,expPrice:price}).then(function(d){
     if(d&&d.ok&&d.paidByCoins){
       window._coins=Math.max(0,(window._coins||0)-(d.coinsUsed||0));
       row.innerHTML='<div class="pm-wait" style="color:var(--green)">🪙 Оплачено!<br>Номер придёт в чат бота через несколько секунд, а затем и код из SMS.</div>'; return; }

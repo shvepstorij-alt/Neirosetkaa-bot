@@ -2201,12 +2201,18 @@ def _verify_tg_init_data(init_data: str) -> int | None:
         if not ok:
             logging.warning("initData verify: hash mismatch")
             return None
-        # Защита от replay: отклоняем initData старше 24ч
+        # Защита от replay. Telegram на телефоне держит свёрнутую мини-аппку
+        # днями и при возврате отдаёт СТАРЫЕ данные запуска — при сроке 7 дней
+        # клиенты ловили «не удалось загрузить», пока не напишут /start
+        # (Александр 20.11.2026). Клиентам — 30 дней; владельцу (админ-методы)
+        # строже — 7 дней, проверяется ниже, когда id уже известен.
+        _age = 0
         try:
             import time as _t_iv
             _ad = int(params.get("auth_date", "0") or "0")
-            if _ad and (_t_iv.time() - _ad) > 604800:  # 7 дней (Telegram кэширует мини-аппку)
-                logging.warning("initData verify: auth_date too old (replay?)")
+            _age = (_t_iv.time() - _ad) if _ad else 0
+            if _age > 30 * 86400:
+                logging.warning(f"initData verify: auth_date too old ({int(_age // 86400)} дн.)")
                 return None
         except Exception:
             pass
@@ -2243,6 +2249,9 @@ def _verify_tg_init_data(init_data: str) -> int | None:
         # bool — подкласс int, поэтому проверяем его отдельно.
         if isinstance(_uid, bool) or not isinstance(_uid, int) or not (0 < _uid < (1 << 53)):
             logging.warning("initData verify: некорректный id в user")
+            return None
+        if _uid == ADMIN_ID and _age > 7 * 86400:
+            logging.warning("initData verify: данные владельца старше 7 дней")
             return None
         return _uid
     except Exception as _e:
