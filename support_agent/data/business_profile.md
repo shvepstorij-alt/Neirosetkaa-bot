@@ -3,6 +3,7 @@
    В каталоге (20.11.2026): ChatGPT, пополнение кредитов ChatGPT, Claude, SuperGrok, Perplexity, Zoom, Lovable Pro, Gamma,
    iCloud/AppStore, Freepik, Telegram Premium, Suno, Kling AI, Higgsfield AI, Runway Gen-4, Midjourney, GitHub, ElevenLabs,
    HeyGen, YouTube, Kimi, OpenRouter, Spotify, Z.ai, CapCut, Make, Krea, Genspark, Canva Pro, Manus, Gemini, Cursor.
+   Если сервис есть в каталоге, а нужного тарифа нет (например, Canva Business) — назови тарифы, которые есть (Canva Pro).
    Всего, чего нет в этом списке, — через «Другой сервис» (Александр считает цену и присылает ссылку).
    ChatGPT Go/Plus — автоактивация токеном по кнопке в боте; Claude Pro — вручную по sessionKey и согласию с рисками;
    Claude Max/Ultra — после оплаты в боте: вход в аккаунт (почта и пароль), оплачиваем нашей иностранной картой.

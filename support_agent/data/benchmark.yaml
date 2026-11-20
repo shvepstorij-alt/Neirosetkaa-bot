@@ -260,7 +260,7 @@ cases:
   need: ['чек']
 - id: complaint-charged-twice
   client: "У меня списали деньги два раза!"
-  stop: true
+  need: ['номер заказа']
 - id: cancel-subscription
   client: "Как отменить подписку, чтобы не списывали?"
   need: ['автосписан|не списыва|не продлева|вручную']
@@ -287,3 +287,154 @@ cases:
 - id: price-unknown-plan
   client: "Сколько стоит ChatGPT Pro 20x?"
   need: ['₽']
+# ── Порция 3 (20.11.2026): продолжение диалогов, опечатки, сложные и пограничные случаи ──
+- id: claude-consent
+  history: [[owner, 'Подписку Claude сейчас активирует Александр вручную. Для этого нужны две вещи: 1. Ваше согласие с рисками... 2. sessionKey вашего аккаунта Claude...']]
+  client: "согласен"
+  need: ['sessionKey|cookie']
+  forbid: ['будет на связи', '₽']
+- id: claude-sessionkey-sent
+  history: [[owner, 'Скопируйте значение sessionKey (начинается на sk-ant-sid02-...) и отправьте сюда.']]
+  client: "sk-ant-sid02-Abc123XyZ987-qwertyuiop_ASDFGHJKL-zxcv"
+  need: ['получил|спасибо']
+  forbid: ['sk-ant']
+- id: chatgpt-token-sent-file
+  history: [[owner, 'Пришлите весь текст со страницы chatgpt.com/api/auth/session одним текстовым файлом.']]
+  client: "отправил файл, что дальше?"
+  need: ['александр|активир|получил']
+  forbid: ['api/auth/session']
+- id: typo-chatgtp
+  client: "скок стоит чат гтп плюс"
+  need: ['₽']
+- id: typo-claud
+  client: "клауд про сколько"
+  need: ['₽']
+- id: typo-midj
+  client: "мидж нужен"
+  need: ['₽|тариф']
+- id: kazakh-language
+  client: "Сәлеметсіз бе, ChatGPT Plus қанша тұрады?"
+  need: ['₽']
+- id: ukrainian-language
+  client: "Скільки коштує Claude Pro?"
+  need: ['₽']
+- id: price-in-dollars
+  client: "Сколько это в долларах ChatGPT Plus на сайте?"
+  need: ['\$|долл']
+- id: discount-ask
+  client: "А можно дешевле? Скидку сделаете?"
+  forbid: ['скидк\w* \d+ ?%', 'будет на связи']
+- id: promise-time
+  client: "Через сколько активируется подписка после оплаты?"
+  need: ['минут']
+- id: can-you-guarantee
+  client: "Гарантию даете что Claude не заблокируют?"
+  need: ['гаранти\w* нет|не можем гарантир|не гарантир']
+- id: chatgpt-blocked
+  client: "Мне заблокировали аккаунт чат гпт, что делать?"
+  forbid: ['будет на связи']
+- id: use-on-phone
+  client: "Как установить чат гпт на айфон?"
+  need: ['app store|chatgpt.com']
+- id: claude-android
+  client: "клод на андроид как поставить"
+  need: ['uptodown|google play|android']
+  forbid: ['iphone|айфон']
+- id: claude-windows
+  client: "Как скачать клод на компьютер?"
+  need: ['claude.com/download|claude.ai/download']
+- id: shared-account
+  client: "Можно ли одним аккаунтом пользоваться вдвоём?"
+  forbid: ['будет на связи']
+- id: chatgpt-plus-limits
+  client: "Какие лимиты у Plus?"
+  forbid: ['будет на связи']
+- id: what-is-go
+  client: "Что такое ChatGPT Go?"
+  need: ['go']
+- id: pro-vs-max-claude
+  client: "Чем Claude Max отличается от Pro?"
+  need: ['max', 'pro']
+- id: video-generation-which
+  client: "Какую нейросеть взять для генерации видео?"
+  need: ['kling|runway|higgsfield|veo|sora']
+- id: music-generation
+  client: "Нужна нейросеть для музыки"
+  need: ['suno']
+- id: presentation-tool
+  client: "Чем сделать презентацию через ИИ?"
+  need: ['gamma']
+- id: voiceover
+  client: "Нужна озвучка голосом через нейросеть"
+  need: ['elevenlabs']
+- id: avatar-video
+  client: "Нужен говорящий аватар для видео"
+  need: ['heygen']
+- id: coding-assistant
+  client: "Что лучше для кода — Cursor или Codex?"
+  need: ['cursor', 'codex']
+- id: wrong-email-registered
+  client: "Я зарегистрировался на почту mail.ru, это проблема?"
+  need: ['gmail|outlook']
+- id: forgot-password
+  client: "Забыл пароль от аккаунта чат гпт"
+  need: ['восстанов|сброс|забыли пароль|forgot']
+- id: two-subscriptions
+  client: "Хочу купить и ChatGPT Plus и Midjourney, сколько всё вместе?"
+  need: ['₽']
+- id: order-for-friend
+  client: "Хочу подарить подписку другу, как это сделать?"
+  forbid: ['будет на связи']
+- id: invoice-legal
+  client: "Можно оплатить от юрлица по счёту?"
+  forbid: ['да, можно']
+- id: crypto-pay
+  client: "Можно оплатить криптой?"
+  need: ['сбп|мир']
+- id: refund-policy-question
+  client: "Если не подойдёт, можно вернуть деньги?"
+  forbid: ['да, вернём', 'гарантируем возврат']
+- id: angry-wait
+  client: "Я жду уже 3 часа!!! Где моя подписка???"
+  need: ['номер заказа|заказ #|александр']
+- id: thanks-plus-question
+  client: "Спасибо! А ещё подскажите, нужен ли VPN для Claude?"
+  need: ['vpn|впн']
+  forbid: ['^Обращайтесь']
+- id: hello-only
+  client: "Здравствуйте"
+  need: ['здравствуйте']
+  forbid: ['будет на связи']
+- id: emoji-only
+  client: "👍"
+  forbid: ['будет на связи', '₽']
+- id: voice-transcript
+  client: "[Расшифровка голосового; возможны ошибки] здравствуйте хотел узнать сколько стоит курсор и как его оплатить"
+  need: ['₽', '@neirosetkaa_bot|сбп']
+- id: link-sent
+  client: "https://openai.com/chatgpt/pricing/ вот этот тариф нужен"
+  forbid: ['будет на связи']
+- id: off-topic
+  client: "Какая погода завтра в Москве?"
+  forbid: ['₽', 'будет на связи']
+- id: insult
+  client: "Вы мошенники, верните мои деньги!"
+  stop: true
+- id: owner-asked-region
+  history: [[owner, 'Подскажите, пожалуйста, в каком регионе ваш аккаунт Apple ID?']]
+  client: "Турция"
+  need: ['тур|tl|лир|номинал|app store']
+  forbid: ['будет на связи']
+- id: owner-asked-which-service
+  history: [[owner, 'Какой сервис хотите оформить?']]
+  client: "мидджорни"
+  need: ['₽|тариф']
+- id: owner-asked-plan
+  history: [[client, 'Хочу ChatGPT'], [owner, 'Есть такие варианты: Go, Plus, Pro. Какой тариф оформить?']]
+  client: "плюс"
+  need: ['@neirosetkaa_bot|оплат']
+- id: after-reactivation
+  history: [[owner, 'Выдал повторную активацию, нажмите кнопку «Активировать подписку» в боте.']]
+  client: "не нажимается"
+  need: ['vpn|впн|регион|скрин|токен']
+  forbid: ['номер заказа']
