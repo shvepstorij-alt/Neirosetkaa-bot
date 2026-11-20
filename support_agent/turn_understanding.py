@@ -43,7 +43,7 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Тогда шаги оплаты бери из payment: кнопки и способы оттуда. '
     'Что нужно после оплаты, бери из payment.modes для этого сервиса. '
     'Кнопку «Я оплатил - написать Александру» не называй. '
-    'Токен сессии ChatGPT, sessionKey Claude, почта для Perplexity — это данные после оплаты, не способ оплаты. Claude Pro сейчас активирует Александр вручную по sessionKey и согласию клиента с рисками — тема claude_activation; рядом всегда называй вариант «Claude Pro + прохождение верификации личности» из каталога. Claude Max и Ultra — после оплаты нужна почта от аккаунта Claude, код с неё и верификация личности — тема claude_max_login; Organization ID больше не нужен. Любой вопрос про Grok — тарифы Cursor (Grok и Cursor объединили тарифы), SuperGrok не предлагай. Перекупщик, опт, продажа на Plati — тема reseller. Если ответа нет ни в правилах, ни в фактах — тема unknown_answer. '
+    'Токен сессии ChatGPT, sessionKey Claude, почта для Perplexity — это данные после оплаты, не способ оплаты. Claude Pro сейчас активирует Александр вручную по sessionKey и согласию клиента с рисками — тема claude_activation; рядом всегда называй вариант «Claude Pro + прохождение верификации личности» из каталога. Claude Max и Ultra — после оплаты нужна почта от аккаунта Claude, код с неё и верификация личности — тема claude_max_login; Organization ID больше не нужен. Любой вопрос про Grok — тарифы Cursor (Grok и Cursor объединили тарифы), SuperGrok не предлагай. ChatGPT Business, Team, бизнес-тариф — тема chatgpt_business (не перечисляй личные тарифы). Перекупщик, опт, продажа на Plati — тема reseller. Если ответа нет ни в правилах, ни в фактах — тема unknown_answer. '
     'Для нового аккаунта ChatGPT Plus кнопки активации нет. '
     'Нужен новый аккаунт в любом сервисе или нет почты для регистрации — тема new_account_email: сначала gmail.com без прежнего аккаунта в сервисе, иначе новая outlook.com от нас. '
     'setup_email, setup_password и setup_recovery заполняй только тем, что клиент уже написал: '
@@ -1702,6 +1702,8 @@ def package(understanding, context, db=None, chat=None):
         verdict = classify_draft(reply, validated['allowed_prices'])
     elif (not composed and validated.get('payment_asked') and not (validated.get('tariff') or {})
             and kind != 'appstore' and not _asked_tariff_before(context)
+            and str(validated.get('owner_topic') or 'none') in ('none', '')  # a topic answer (Business, Grok) wins over the list
+            and not re.search(r'(?i)бизнес|business|\bteam\b', str(context.get('burst') or ''))
             and len(_service_rows(context, validated.get('service_id') or validated.get('_other_service') or '')) >= 2):
         # «Хочу оплатить чат» — first which tariff, then the card for that tariff.
         rows = _service_rows(context, validated.get('service_id') or validated.get('_other_service') or '')

@@ -390,12 +390,17 @@ class OpenAI:
         try:
             from .faq import load_faq
             rules = '\n'.join('- ' + row['title'] + ': ' + str(row.get('answer') or '')[:300]
-                               for row in load_faq()['topics'] if row.get('answer'))[:9000]
+                               for row in load_faq()['topics'] if row.get('answer'))[:30000]
+            # Owner 20.11.2026: the business profile holds the newest decisions; the grader must know them all.
+            from .playbook import business_profile
+            rules = 'ПРОФИЛЬ МАГАЗИНА (самые свежие решения владельца, главнее старых ответов Александра):\n' + business_profile() + '\n\nТЕМЫ:\n' + rules
         except Exception:
             rules = ''
         instructions += (' Ниже действующие правила Александра (ноябрь 2026). Всё, что в них написано (промокоды NAVSEX и CHATIK10, '
                          'риски Claude, оплата только СБП или «Мир», подписка на месяц без автосписаний, новая почта outlook.com и т. д.), '
                          'НЕ выдумка: если помощник повторил правило, это не ошибка, даже если Александр тогда ответил иначе. '
+                         'Например: услуга Claude Pro + прохождение верификации за 6990 ₽, только загранпаспорт для Claude, '
+                         'код с почты для Perplexity и Claude Max, Grok → тарифы Cursor, Business 4990 ₽ — это действующие правила. '
                          'Ошибка — если правило не подходит к вопросу клиента или помощник проигнорировал контекст.\n' + rules)
         try:
             from .playbook import load as load_playbook

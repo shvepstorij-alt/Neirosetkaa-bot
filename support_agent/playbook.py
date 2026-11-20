@@ -123,8 +123,52 @@ def tidy(answer, context):
         # Owner 20.11.2026: this chat IS @Neirosetkaalex — never send the client to write here.
         from .turn_understanding import _faq_answer
         reply = _faq_answer('course_bonus_start') or reply
+    reply = owner_actions(reply)
+    burst = str((context or {}).get('burst') or '')
+    if re.search(r'NAVSEX|CHATIK10', reply) and not re.search(r'(?i)промо|скидк|дешевл|купон|акци|бонус', burst):
+        # Owner 20.11.2026 (live3): a promo code only when the client asks about a discount.
+        reply = '\n'.join(line for line in reply.split('\n') if not re.search(r'NAVSEX|CHATIK10', line))
+        reply = re.sub(r'[^.!?\n]*(?:промокод)[^.!?\n]*[.!?]?', '', reply)
+    hold = None
+    if CLARIFY_PREFIX in reply:
+        try:
+            from .turn_understanding import ongoing_dialog
+            if ongoing_dialog(context):
+                hold = 'В переписке уже идёт разговор с Александром — общий вопрос «о каком сервисе речь» не подходит.'
+        except Exception:
+            pass
     reply = re.sub(r'\n{3,}', '\n\n', reply).strip()
+    if hold:
+        evidence = dict(answer.get('evidence') or {})
+        evidence.update(owner_step_hold=True, handoff_reason=hold)
+        return dict(answer, reply=reply, evidence=evidence)
     return dict(answer, reply=reply) if reply != answer.get('reply') else answer
+
+
+CLARIFY_PREFIX = 'о каком сервисе идёт речь и что именно нужно сделать'
+_ACTIONS = {'проверю': 'проверит', 'продолжу': 'продолжит', 'активирую': 'активирует', 'посчитаю': 'посчитает',
+            'оформлю': 'оформит', 'выдам': 'выдаст', 'пришлю': 'пришлёт', 'отправлю': 'отправит', 'передам': 'передаст'}
+_ACTION_RE = re.compile(r'(?i)(?:\bя\s+|\bсейчас\s+|\bсам\s+)?\b(' + '|'.join(_ACTIONS) + r')\b')
+
+
+def owner_actions(reply):
+    """Owner 20.11.2026 (live3): the assistant cannot act — «проверю», «продолжу активацию» become Alexander's.
+
+    «Передам Александру» stays as it is: handing over is the assistant's own action.
+    """
+    def swap(m):
+        verb = m.group(1)
+        if verb.casefold() == 'передам':
+            return m.group(0)
+        word = _ACTIONS[verb.casefold()]
+        start = m.start() == 0 or reply[max(0, m.start() - 2):m.start()].strip() in ('', '.', '!', '?', '\n')
+        return ('Александр ' if start else 'Александр ') + word
+    out = _ACTION_RE.sub(swap, str(reply or ''))
+    out = re.sub(r'(Александр\s+\w+[^.!?\n]{0,60}?\s+и\s+)Александр\s+', r'\1', out)
+    for first, third in (('подскажу', 'подскажет'), ('напишу', 'напишет'), ('отвечу', 'ответит'), ('скажу', 'скажет')):
+        out = re.sub(r'(Александр\s+\w+[^.!?\n]{0,60}?\s+и\s+)' + first + r'\b', r'\1' + third, out)
+    out = re.sub(r'(^|[.!?]\s+|\n)александр', lambda m: m.group(1) + 'Александр', out)
+    return out
 
 
 def order_status_reply(context):
