@@ -5502,6 +5502,15 @@ async def admin_other_tiers(message: Message):
     have = {(p.get("name") or "").strip() for p in plans}
     added, skipped = [], []
     pool = await get_pool()
+    # Описание у этих тарифов не нужно (Александр 20.11.2026): убираем
+    # автоматическое «Оплата подписки другого сервиса на …» у уже созданных.
+    async with pool.acquire() as conn:
+        _cl = await conn.execute(
+            "UPDATE bot_shop_items SET plan_desc='' WHERE key=$1 "
+            "AND plan_desc LIKE 'Оплата подписки другого сервиса на%'", _key)
+    for _p in plans:
+        if str(_p.get("desc") or "").startswith("Оплата подписки другого сервиса на"):
+            _p["desc"] = ""
     for usd in range(10, 101):
         name, price = f"{usd}$", usd * 100 - 10
         if name in have:
@@ -5516,13 +5525,13 @@ async def admin_other_tiers(message: Message):
                 "INSERT INTO bot_shop_items (key, plan_idx, service_name, emoji, service_desc, "
                 "plan_name, price, stars, plan_desc, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
                 _key, new_idx, scat.get("name", _key), scat.get("emoji", ""), scat.get("desc", ""),
-                name, price, 0, f"Оплата подписки другого сервиса на {usd}$", new_sort)
+                name, price, 0, "", new_sort)
             await conn.execute(
                 "INSERT INTO settings (key,value) VALUES ($1,$2) "
                 "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
                 f"cost_usd:{_key}:{runtime_idx}", str(usd))
         plans.append({"name": name, "price": price, "stars": 0,
-                      "desc": f"Оплата подписки другого сервиса на {usd}$", "_db_plan_idx": new_idx})
+                      "desc": "", "_db_plan_idx": new_idx})
         added.append(f"{name} — {price}₽ (закуп {usd}$)")
     await message.answer(
         f"🧩 <b>{scat.get('name')}</b>\n\n"
