@@ -2620,15 +2620,15 @@ async def main():
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=75)) as session:
             tg=Telegram(session,os.environ['SUPPORT_BOT_TOKEN'])
             me=None
-            for attempt in range(6):
+            for attempt in range(10**6):  # Owner 21.11.2026: wait for Telegram as long as it takes, never crash-loop
                 # Owner 21.11.2026: a passing Telegram network hiccup must not kill the start.
                 try:
                     me=await tg.call('getMe');break
                 except RemoteError as exc:
                     if getattr(exc,'reason','') not in ('telegram_timeout','telegram_transport_uncertain') and getattr(exc,'status',None) not in (429,500,502,503,504):
                         raise
-                    logging.warning('Startup: Telegram unavailable, retry %s/6: %s',attempt+1,remote_detail(exc))
-                    await asyncio.sleep(10*(attempt+1))
+                    logging.warning('Startup: Telegram unavailable, attempt %s, next in %ss: %s',attempt+1,min(60,10*(attempt+1)),remote_detail(exc))
+                    await asyncio.sleep(min(60,10*(attempt+1)))
             if me is None:
                 raise RemoteError('Telegram transport uncertain',reason='telegram_transport_uncertain')
             if me.get('username','').lower()!='neirosetkaalexbot':
