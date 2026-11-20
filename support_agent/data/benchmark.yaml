@@ -46,7 +46,7 @@ cases:
   forbid: ['гарантии на claude', 'на какой срок']
 - id: course-referred
   client: "Здравтвуйте\nсказали вам написать\nПодписка на нейросеть вам доступна, напишите, пожалуйста, Александру @Neirosetkaalex"
-  need: ['chatgpt или claude']
+  need: ['chatgpt', 'почт']  # owner 20.11.2026: ChatGPT by default, course email + token
   forbid: ['в @neirosetkaalex']
 - id: course-registered-gpt
   history: [[owner, 'По бонусу с курса: зарегистрируйтесь на chatgpt.com с почтой gmail.com и напишите сюда.']]
@@ -676,3 +676,573 @@ cases:
   client: "Оплатил Claude Max, что от меня нужно?"
   need: ['почт', 'код|верификац']
   forbid: ['пароль']
+# ── Выпускной экзамен (20.11.2026): A — каждая тема faq, B — покупка каждого сервиса каталога, C — сложные случаи ──
+- id: exam-a-guarantee
+  client: "а гарантия у вас на подписки есть вообще?"
+  need: ["гаранти", "claude"]
+  forbid: ["гарантируем возврат"]
+- id: exam-a-account-ban
+  client: "если акк забанят деньги вернете?"
+  need: ["claude", "гаранти"]
+  forbid: ["будет на связи"]
+- id: exam-a-delivery-time
+  client: "через скок времени после оплаты подписка заработает?"
+  need: ["минут"]
+  forbid: ["24 час|до суток"]
+- id: exam-a-refund-terms
+  client: "хочу вернуть деньги за подписку, так и не пользовался ей"
+  stop: true
+- id: exam-a-off-catalog
+  client: "можно оплатить курс на зарубежном сайте? там только иностранные карты принимают"
+  need: ["ссылк"]
+  forbid: ["не можем помочь|не оплачиваем"]
+- id: exam-a-games-consoles
+  client: "пс плюс эссеншиал на польский акк есть?"
+  need: ["гифт-карт"]
+  forbid: ["парол"]
+- id: exam-a-course-bonus-start
+  client: "Здравствуйте, мне сказали что с курса подписка на нейросеть доступна и надо написать Александру"
+  need: ["chatgpt", "токен|api/auth/session"]
+  forbid: ["оплат\\w* в боте"]
+- id: exam-a-course-bonus-claude
+  history:
+  - {role: owner, text: "По бонусной подписке с курса оформим ChatGPT на 1 месяц. Пришлите, пожалуйста, почту с курса и токен аккаунта ChatGPT."}
+  client: "а можно вместо чатгпт бонусом клод взять?"
+  need: ["сгор", "гаранти"]
+  forbid: ["₽"]
+- id: exam-a-games-buy
+  client: "нужна гта 5 на иксбокс, можете купить?"
+  need: ["\\$|доллар", "другой сервис"]
+  forbid: ["будет на связи"]
+- id: exam-a-chatgpt-credits
+  client: "кредиты для кодекса кончились, где докупить можно"
+  need: ["пополнение кредитов|кредит"]
+  forbid: ["нельзя пополнить|не пополняем"]
+- id: exam-a-appstore-region
+  client: "как поменять страну в эпл айди на америку"
+  need: ["медиаматериалы|страна или регион|регион"]
+  forbid: ["будет на связи"]
+- id: exam-a-forgot-password
+  client: "не помню пароль от клода, как зайти теперь?"
+  need: ["забыли пароль|forgot|сброс"]
+  forbid: ["пришлите\\W+(\\w+\\W+)?парол"]
+- id: exam-a-off-catalog-app
+  client: "можно оплатить подписку в приложении Flo на айфоне?"
+  need: ["app store|icloud", "регион"]
+  forbid: ["будет на связи"]
+- id: exam-a-region-policy
+  client: "а Claude официально в Казахстане доступен или нет?"
+  stop: true
+- id: exam-a-card-payment
+  client: "картой сбера не проходит оплата"
+  need: ["сбп", "/start"]
+  forbid: ["будет на связи"]
+- id: exam-a-bot-stuck
+  client: "бот завис ничего не нажимается"
+  need: ["/start"]
+  forbid: ["переустанов"]
+- id: exam-a-renewal
+  client: "а как продлевать потом, само будет списываться?"
+  need: ["автосписан|не спис"]
+  forbid: ["спиш\\w+ автоматически"]
+- id: exam-a-cancel-notice
+  client: "только активировали и пришло письмо что подписка отменена?? это норм вообще"
+  need: ["автопродлен"]
+  forbid: ["оформим возврат"]
+- id: exam-a-transfer
+  client: "можно перекинуть подписку на другой акк?"
+  need: ["нельзя"]
+  forbid: ["можно перенести|перенес[её]м"]
+- id: exam-a-foreign-payment
+  client: "я в германии сейчас, могу оплатить пейпалом?"
+  need: ["сбп|мир"]
+  forbid: ["да, можно"]
+- id: exam-a-for-other-person
+  client: "хочу оформить гпт маме на ее аккаунт, так можно?"
+  need: ["@neirosetkaa_bot|бот"]
+  forbid: ["нельзя оформить"]
+- id: exam-a-receipt
+  client: "чек скидывать надо после оплаты?"
+  need: ["не обязател|не нужно"]
+  forbid: ["будет на связи"]
+- id: exam-a-activation-where
+  client: "оплатил плюс, а где кнопка активировать?"
+  need: ["активировать подписку", "2 час"]
+  forbid: ["почт\\w* и парол"]
+- id: exam-a-activation-expired
+  client: "время на активацию вышло, кнопка уже не работает"
+  need: ["номер заказа", "повторн"]
+  forbid: ["оплатите заново|новый заказ"]
+- id: exam-a-activation-failed
+  client: "оплатила гпт в боте, активация не проходит, выдает ошибку"
+  need: ["номер заказа", "скрин"]
+  forbid: ["будет на связи"]
+- id: exam-a-subscription-ended-early
+  client: "подписка слетела через неделю, опять фри стоит"
+  need: ["номер заказа", "скрин"]
+  forbid: ["будет на связи"]
+- id: exam-a-token-copy
+  client: "на странице с токеном что копировать, все или только кусок?"
+  need: ["весь|целиком"]
+  forbid: ["только (часть|кусок|accesstoken)"]
+- id: exam-a-token-expired
+  client: "бот пишет токен недействителен"
+  need: ["выйд|выйти"]
+  forbid: ["будет на связи"]
+- id: exam-a-must-be-free
+  client: "бот пишет аккаунт должен быть на бесплатном тарифе, а у меня плюс еще не кончился"
+  need: ["закончится|бесплатн", "сохран|позже"]
+  forbid: ["возврат"]
+- id: exam-a-still-free-after-activation
+  client: "активировал а там все равно free написано"
+  need: ["10[–-]15"]
+  forbid: ["оплат\\w* заново"]
+- id: exam-a-page-not-opening
+  client: "страница api auth session у меня не открывается"
+  need: ["браузер"]
+  forbid: ["будет на связи"]
+- id: exam-a-wrong-account
+  client: "активировалось не на тот аккаунт, перекиньте пожалуйста"
+  need: ["нельзя"]
+  forbid: ["перенес[её]м"]
+- id: exam-a-claude-org-id
+  client: "где найти organization id в клоде, не вижу его"
+  need: ["бесплатн\\w* план|регистрац"]
+  forbid: ["будет на связи"]
+- id: exam-a-plan-upgrade
+  client: "у меня плюс еще 2 недели, хочу про, можно сразу перейти?"
+  need: ["сгор"]
+  forbid: ["дождитесь окончания"]
+- id: exam-a-claude-plan-change
+  client: "у меня клод про, хочу макс прям щас"
+  need: ["после окончания|бесплатн"]
+  forbid: ["сгор"]
+- id: exam-a-limits-exhausted
+  client: "лимиты кончились, где посмотреть сколько осталось"
+  need: ["usage"]
+  forbid: ["будет на связи"]
+- id: exam-a-google-login-notice
+  history:
+  - {role: owner, text: "Пришлите, пожалуйста, почту и пароль от аккаунта Google, через который входите в сервис."}
+  client: "у меня вход через гугл, мне что-то на телефон придет?"
+  need: ["уведомлен", "числ"]
+  forbid: ["будет на связи"]
+- id: exam-a-token-as-file
+  client: "токен длинный, его частями слать сообщениями?"
+  need: ["одним\\W+(\\w+\\W+)?файл"]
+  forbid: ["будет на связи"]
+- id: exam-a-vpn-help
+  client: "впн не подключается помогите настроить"
+  need: ["поддержк"]
+  forbid: ["будет на связи"]
+- id: exam-a-new-account-email
+  client: "нужен новый акк в гпт, а гмейла нет"
+  need: ["outlook"]
+  forbid: ["mail\\.ru подойд|яндекс подойд"]
+- id: exam-a-app-download
+  client: "чатгпт нет в аппсторе, как скачать на айфон?"
+  need: ["регион|сша", "подписк"]
+  forbid: ["будет на связи"]
+- id: exam-a-claude-account-blocked
+  client: "клод забанил акк, что делать теперь"
+  need: ["не получится|восстанов"]
+  forbid: ["восстановим"]
+- id: exam-a-course-bonus
+  client: "я студентка курса, нам обещали подарочную подписку"
+  need: ["chatgpt", "месяц"]
+  forbid: ["оплат\\w* в боте"]
+- id: exam-a-codex
+  client: "кодекс отдельно сколько стоит?"
+  need: ["входит"]
+  forbid: ["будет на связи"]
+- id: exam-a-claude-ready-account
+  client: "продаете готовые аккаунты клода?"
+  need: ["не выда"]
+  forbid: ["готов\\w* аккаунт\\w* (есть|можем выдать|продаём)"]
+- id: exam-a-appstore-redeem
+  client: "бот прислал код эпстор, куда его вводить"
+  need: ["погасить|ввести код"]
+  forbid: ["будет на связи"]
+- id: exam-a-subscription-term
+  client: "гпт на год можно оформить сразу?"
+  need: ["месяц"]
+  forbid: ["на год можно"]
+- id: exam-a-claude-block-risk
+  client: "как сделать чтоб клод не забанил?"
+  need: ["vpn|впн", "гарантир"]
+  forbid: ["гарантируем"]
+- id: exam-a-claude-verification
+  client: "для верификации в клоде российский паспорт подойдет?"
+  need: ["загранпаспорт"]
+  forbid: ["водительск"]
+- id: exam-a-payment-error
+  client: "оплата в боте не проходит ошибку выдает"
+  need: ["vpn|впн", "сбп|друг\\w* способ"]
+  forbid: ["будет на связи"]
+- id: exam-a-login-problem
+  client: "не могу зайти в клод, пишет слишком много кодов"
+  need: ["скрин", "спам|10[–-]15"]
+  forbid: ["будет на связи"]
+- id: exam-a-service-error
+  client: "в гпт постоянно ошибка something went wrong"
+  need: ["скрин", "браузер|vpn|впн"]
+  forbid: ["будет на связи"]
+- id: exam-a-feature-missing
+  client: "пропал кодекс в аккаунте куда делся"
+  need: ["выйд|войд\\w* заново|перезайд"]
+  forbid: ["будет на связи"]
+- id: exam-a-tech-setup
+  client: "помогите поставить mcp сервер в клод десктоп"
+  need: ["не можем|не подскаж"]
+  forbid: ["npm install"]
+- id: exam-a-claude-review-pending
+  client: "клод пишет что запрос отправлен на проверку, это что"
+  need: ["дожд|провер"]
+  forbid: ["будет на связи"]
+- id: exam-a-partnership
+  client: "можем сделать взаимный пиар? у меня блог про ии"
+  need: ["подробн"]
+  forbid: ["\\d+\\s?₽"]
+- id: exam-a-phone-number
+  client: "кодекс просит номер телефона, а российский не принимает"
+  need: ["виртуальн\\w* номер"]
+  forbid: ["может выдать александр", "александр\\W+(\\w+\\W+)?(пришлёт|выдаст|даст)\\W+(\\w+\\W+)?номер"]
+- id: exam-a-vpn-abroad
+  client: "я живу в германии, впн для гпт нужен?"
+  need: ["не нужен"]
+  forbid: ["будет на связи"]
+- id: exam-a-deepseek-topup
+  client: "можно пополнить апи дипсика?"
+  need: ["openrouter"]
+  forbid: ["нельзя"]
+- id: exam-a-linkpay-currency
+  client: "ссылка на оплату в евро открывается, так норм?"
+  need: ["доллар|\\$", "vpn|впн"]
+  forbid: ["будет на связи"]
+- id: exam-a-linkpay-no-vpn
+  client: "не могу поменять страну в впн, ссылка все время в рублях"
+  stop: true
+- id: exam-a-renewal-same-account
+  client: "суно хочу продлить на тот же акк что в прошлый раз"
+  need: ["@neirosetkaa_bot|каталог"]
+  forbid: ["парол"]
+- id: exam-a-gemini-google
+  client: "джемини про можно на мой гугл акк оформить?"
+  need: ["почт", "российск|провер"]
+  forbid: ["будет на связи"]
+- id: exam-a-chatgpt-desktop-app
+  client: "приложение чатгпт на винду пропало из microsoft store"
+  need: ["chatgpt\\.com/download"]
+  forbid: ["будет на связи"]
+- id: exam-a-codex-install
+  client: "кодекс как установить на комп и пользоваться?"
+  need: ["vpn|впн", "plus|плюс"]
+  forbid: ["отдельн\\w* (купить|оплатить) codex"]
+- id: exam-a-vpn-needed
+  client: "для мидджорни нужен впн если я в москве?"
+  need: ["нужен", "DureVpnBot|v2raytnn"]
+  forbid: ["будет на связи"]
+- id: exam-a-capcut-renewal
+  client: "капкат продлите на моем акке пожалуйста"
+  need: ["нов\\w* (\\w+ )?аккаунт"]
+  forbid: ["продлим на ваш"]
+- id: exam-a-supergrok-grokbot
+  client: "грок подписка сколько стоит?"
+  need: ["cursor|курсор"]
+  forbid: ["supergrok"]
+- id: exam-a-activation-overdue
+  client: "оплатил вчера вечером, до сих пор ничего"
+  need: ["номер заказа"]
+  forbid: ["подождите ещё"]
+- id: exam-a-activation-button-fails
+  client: "жму активировать подписку и белый экран"
+  need: ["vpn|впн|регион", "токен"]
+  forbid: ["будет на связи"]
+- id: exam-a-activate-for-me
+  client: "оплатил гпт плюс, сам не разберусь, активируйте за меня плиз"
+  need: ["активировать подписку", "токен|api/auth/session"]
+  forbid: ["будет на связи"]
+- id: exam-a-course-subscriptions
+  client: "какие подписки нужны для курса по нейросетям?"
+  need: ["на курсе"]
+  forbid: ["₽"]
+- id: exam-a-claude-already-subscribed-new
+  client: "клод при активации пишет что подписка уже есть, а акк новый"
+  need: ["номер заказа"]
+  forbid: ["будет на связи"]
+- id: exam-a-linkpay-how
+  client: "что за ссылка на оплату, где ее взять?"
+  need: ["адресн", "ничего не вводите|не оплачивайте"]
+- id: exam-a-chatgpt-token-how
+  client: "как с телефона скопировать токен для гпт?"
+  need: ["api/auth/session", "выбрать вс|долг"]
+- id: exam-a-subscription-status
+  client: "где глянуть когда заканчивается подписка клода"
+  need: ["настройк|billing|оплат"]
+  forbid: ["будет на связи"]
+- id: exam-a-russian-email
+  client: "на яндекс почту не регает"
+  need: ["gmail", "outlook"]
+- id: exam-a-what-next
+  client: "всё оплатила в боте, а дальше что?"
+  need: ["активировать подписку|инструкц"]
+  forbid: ["пришлите\\W+(\\w+\\W+)?(почту и )?парол"]
+- id: exam-a-thanks
+  client: "всё заработало, спасибо огромное!"
+  need: ["обращайтесь|рад"]
+  forbid: ["₽"]
+- id: exam-a-claude-activation
+  client: "оплатил клод про, кнопка активировать claude не работает"
+  need: ["sessionkey", "согласн"]
+- id: exam-a-claude-max-login
+  client: "как оформить клод макс, что от меня нужно?"
+  need: ["почт", "загранпаспорт|верификац"]
+  forbid: ["почт\\w* и парол"]
+- id: exam-a-org-id-sent-here
+  client: "скинул organization id из настроек клода, что теперь?"
+  need: ["sessionkey"]
+  forbid: ["будет на связи"]
+- id: exam-a-renewal-token
+  client: "при продлении гпт опять токен надо присылать?"
+  need: ["токен", "выйд|выйти"]
+- id: exam-a-gmail-confirmed
+  history:
+  - {role: owner, text: "Для регистрации нужна почта gmail.com, на которой раньше не было аккаунта в этом сервисе. Есть такая?"}
+  client: "да есть гмейл"
+  need: ["зарегистрир"]
+  forbid: ["outlook"]
+- id: exam-a-chatgpt-token-after-register
+  history:
+  - {role: owner, text: "Зарегистрируйтесь, пожалуйста, на chatgpt.com на эту почту и напишите сюда."}
+  client: "зарегался, дальше что"
+  need: ["api/auth/session", "файл"]
+  forbid: ["будет на связи"]
+- id: exam-a-chatgpt-business
+  client: "сколько стоит чатгпт бизнес на двоих?"
+  need: ["4\\s?990", "другой сервис"]
+  forbid: ["будет на связи"]
+- id: exam-a-claude-buy
+  client: "хочу клод про, какой лучше брать?"
+  need: ["6\\s?990", "загранпаспорт"]
+  forbid: ["sessionkey", "водительск"]
+- id: exam-a-midjourney-how
+  client: "как вообще мидж у вас оформляется?"
+  need: ["ссылк", "доллар|\\$"]
+  forbid: ["будет на связи"]
+- id: exam-a-perplexity-how
+  client: "перплексити как оформить, что от меня нужно?"
+  need: ["код", "зарегистрир"]
+  forbid: ["парол"]
+- id: exam-a-referral
+  client: "у вас есть рефералка? сколько платите за друзей"
+  need: ["10", "мой профиль"]
+  forbid: ["\\d+\\s?₽ за (каждого|приглаш)"]
+- id: exam-a-payment-form-email
+  client: "в форме оплаты какую почту писать?"
+  need: ["любую"]
+  forbid: ["только (ту же|почту аккаунта)"]
+- id: exam-a-appstore-balance-withdraw
+  client: "можно вывести деньги с баланса эпл айди обратно?"
+  need: ["нельзя", "поддержк"]
+- id: exam-a-unknown-answer
+  client: "а с вашей подпиской гпт будет работать озвучка на умной колонке алиса?"
+  need: ["уточн|перефраз|подскаж"]
+  forbid: ["да, будет"]
+- id: exam-a-reseller
+  client: "беру подписки оптом для перепродажи, какие у вас цены для партнеров?"
+  stop: true
+- id: exam-a-claude-refuses-account
+  client: "клод не дает пройти верификацию на моем аккаунте, пишет недоступно"
+  stop: true
+- id: exam-a-call-request
+  client: "можно созвониться? так быстрее будет"
+  need: ["текст|голосов"]
+  forbid: ["позвоню|наберу"]
+- id: exam-a-refund-timing
+  client: "возврат оформили, когда деньги придут на карту?"
+  need: ["3[–-]5|рабоч"]
+  forbid: ["активировать подписку"]
+- id: exam-b-chatgpt
+  client: "сколько стоит чатгпт плюс в месяц?"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-claude
+  client: "клод про хочу купить"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-perplexity
+  client: "перплексити сколько стоит?"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-zoom
+  client: "зум про нужен, почем?"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-lovable
+  client: "lovable pro есть? сколько"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-gamma
+  client: "гамма для презентаций сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-appstore
+  client: "пополнить app store сколько стоит на 10 долларов"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-freepik
+  client: "фрипик премиум хочу"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-tgpremium
+  client: "тг премиум на год почем?"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-suno
+  client: "суно надо, сколько?"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-kling
+  client: "клинг хочу оформить"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-higgsfield
+  client: "higgsfield цена?"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-runway
+  client: "ранвей сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-midjourney
+  client: "мидджорни хочу купить"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-github
+  client: "гитхаб копилот можно купить? цена"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-elevenlabs
+  client: "элевенлабс сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-heygen
+  client: "хейген сколько в месяц"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-youtube
+  client: "ютуб премиум почем у вас"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-kimi
+  client: "кими нужен, сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-openrouter
+  client: "openrouter пополнить хочу, какие цены"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-spotify
+  client: "спотифай премиум сколько"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-zai
+  client: "z.ai glm подписка сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-capcut
+  client: "капкат про цена?"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-make
+  client: "make.com подписка нужна, сколько"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-krea
+  client: "krea ai хочу, почем"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-genspark
+  client: "генспарк сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-canva
+  client: "канва про сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-manus
+  client: "манус хочу купить"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-gemini
+  client: "джемини про сколько стоит"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-cursor
+  client: "курсор про хочу, сколько"
+  need: ["₽"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-b-grok
+  client: "хочу грок для генерации видео, сколько стоит?"
+  need: ["₽", "cursor|курсор"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d", "supergrok"]
+- id: exam-b-numbers
+  client: "виртуальный номер для телеграма сколько стоит?"
+  need: ["₽", "виртуальн"]
+  forbid: ["пароль|токен|sessionkey", "Другой сервис \\d"]
+- id: exam-c-two-services
+  client: "нужен клод про и перплексити, сколько за оба выйдет?"
+  need: ["claude|клод", "perplexity|перплексити", "₽"]
+  forbid: ["пароль|токен|sessionkey"]
+- id: exam-c-question-then-thanks
+  client: "подскажите, для суно нужен впн? спасибо"
+  need: ["vpn|впн"]
+  forbid: ["^\\W*(рад помочь|обращайтесь)"]
+- id: exam-c-owner-email-code
+  history:
+  - {role: client, text: "Оплатил Perplexity, вот почта от аккаунта."}
+  - {role: owner, text: "Сейчас запрошу код, он придёт вам на почту — пришлите его сюда."}
+  client: "жду, пока не пришло"
+  stop: true
+- id: exam-c-owner-five-minutes
+  history:
+  - {role: owner, text: "Оформляю, 5 минут."}
+  client: "ок жду"
+  stop: true
+- id: exam-c-paid-not-working
+  client: "оплатила перплексити вчера, а про так и не работает"
+  need: ["номер заказа|заказ"]
+  forbid: ["пароль"]
+- id: exam-c-off-catalog
+  client: "а Character.ai plus можете оплатить?"
+  need: ["другой сервис|александр|ссылк"]
+  forbid: ["\\d+\\s?₽", "будет на связи"]
+- id: exam-c-english
+  client: "Hello! Do you sell Claude Pro? How can I pay for it?"
+  need: ["claude", "\\b(you|your|the|pay|subscription)\\b"]
+  forbid: ["пароль|токен|sessionkey"]
+- id: exam-c-reseller-plati
+  client: "Здравствуйте, продаю подписки на плати маркет, хочу брать у вас на постоянке, дадите цену ниже?"
+  stop: true
+- id: exam-c-unknown
+  client: "а через вашу подписку гпт можно пользоваться sora на смарт часах гармин?"
+  need: ["уточн|перефраз|подскаж"]
+  forbid: ["будет на связи"]
+- id: exam-c-claude-max-password
+  history:
+  - {role: owner, text: "Пришлите, пожалуйста, почту от аккаунта Claude."}
+  client: "а пароль тоже нужен?"
+  need: ["не нужен"]
+  forbid: ["пришлите\\W+(\\w+\\W+)?парол"]
+- id: exam-c-grok-and-vpn
+  client: "грок для видео хочу и впн нужен для него?"
+  need: ["cursor|курсор", "vpn|впн"]
+  forbid: ["supergrok"]
+- id: exam-c-claude-phone
+  client: "клод просит номер, а мой российский не принимает, можете дать номер?"
+  need: ["виртуальн"]
+  forbid: ["может выдать александр", "александр\\W+(\\w+\\W+)?(пришлёт|выдаст|даст)\\W+(\\w+\\W+)?номер"]
+- id: exam-c-price-and-kz-card
+  client: "Привет! сколько стоит chatgpt plus и можно оплатить казахстанской картой?"
+  need: ["₽", "сбп|мир"]
+  forbid: ["да, можно"]
