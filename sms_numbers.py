@@ -27,7 +27,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import ADMIN_ID, bot, dp
 
 API = "https://5sim.net/v1"
-SMS_MAX_ATTEMPTS = 3
+SMS_MAX_ATTEMPTS = 5   # Александр 20.11.2026: до 5 номеров на один заказ
 POLL_SEC = 8
 
 _cache: dict = {}
@@ -200,6 +200,10 @@ CREATE TABLE IF NOT EXISTS sms_orders (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_sms_active ON sms_orders(status) WHERE status='active';
+ALTER TABLE sms_orders ADD COLUMN IF NOT EXISTS admin_msg_id BIGINT;
+ALTER TABLE sms_orders ADD COLUMN IF NOT EXISTS log TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_orders ADD COLUMN IF NOT EXISTS tried TEXT NOT NULL DEFAULT '';
+ALTER TABLE sms_orders ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
 """
 _ready = False
 
@@ -308,25 +312,59 @@ def _flag(iso: str) -> str:
 
 
 # ── покупка у поставщика ───────────────────────────────────────────────
+async def _budget_cost(o: dict) -> float:
+    """Сколько можно заплатить поставщику за номер, чтобы не уйти в минус:
+    цена клиента минус наценка, в долларах. Замена номера идёт в этих рамках."""
+    try:
+        return max(0.0, (int(o["price_rub"]) - await _markup()) / await _rate())
+    except Exception:
+        return float(o.get("cost_usd") or 0)
+
+
+async def _candidates(o: dict) -> list:
+    """Линии для покупки: выбранная, потом остальные линии этой страны по
+    надёжности (в рамках оплаченной суммы). Уже пробованные — в конец."""
+    tried = [t for t in (o.get("tried") or "").split(",") if t]
+    budget = await _budget_cost(o) * 1.02
+    ops = [o["operator"]] if o.get("operator") and o["operator"] != "any" else []
+    try:
+        off = await find_offer(o["product"], o["country"])
+        for ln in (off or {}).get("lines") or []:
+            if ln["cost"] <= budget and ln["operator"] not in ops:
+                ops.append(ln["operator"])
+    except Exception as e:
+        logging.warning(f"sms candidates {o['order_id']}: {e}")
+    fresh = [x for x in ops if x not in tried]
+    return fresh + [x for x in ops if x in tried]
+
+
+def _reason(st, d) -> str:
+    t = (d if isinstance(d, str) else json.dumps(d, ensure_ascii=False))[:160]
+    return f"HTTP {st}: {t}"
+
+
 async def _buy(o: dict):
-    """→ (ok, data|reason)."""
+    """→ (ok, data|reason, errors). Пробует несколько линий страны."""
     if not await _token():
-        return False, "no_token"
-    maxp = float(o["cost_usd"] or 0) * 1.3 if o.get("cost_usd") else None
-    params = {"maxPrice": f"{maxp:.4f}"} if maxp else None
-    for op in (o["operator"], "any"):
+        return False, "no_token", ["не задан ключ API"]
+    errors = []
+    budget = await _budget_cost(o)
+    for op in (await _candidates(o))[:6] + ["any"]:
+        # maxPrice поставщик принимает только для operator=any.
+        params = {"maxPrice": f"{budget:.4f}"} if op == "any" and budget > 0 else None
         try:
             st, d = await _get(f"/user/buy/activation/{o['country']}/{op}/{o['product']}",
                                auth=True, params=params)
         except Exception as e:
-            logging.warning(f"sms buy {o['order_id']}: {e}")
+            errors.append(f"{op}: {str(e)[:80]}")
             continue
         if st == 200 and isinstance(d, dict) and d.get("id"):
-            return True, d
+            return True, d, errors
+        errors.append(f"{op}: {_reason(st, d)}")
         logging.warning(f"sms buy {o['order_id']} op={op}: {st} {str(d)[:200]}")
         if isinstance(d, str) and "not enough user balance" in d.lower():
-            return False, "balance"
-    return False, "no_numbers"
+            return False, "balance", errors
+    return False, "no_numbers", errors
 
 
 async def _provider(action: str, pid) -> dict:
@@ -341,16 +379,51 @@ async def _provider(action: str, pid) -> dict:
 def _kb_active(order_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Проверить SMS", callback_data=f"smsn:chk:{order_id}")],
-        [InlineKeyboardButton(text="🚫 Номер уже занят", callback_data=f"smsn:ban:{order_id}"),
+        [InlineKeyboardButton(text="🚫 Номер занят / ошибка", callback_data=f"smsn:ban:{order_id}"),
          InlineKeyboardButton(text="⏹ Код не пришёл", callback_data=f"smsn:cnl:{order_id}")],
+        [InlineKeyboardButton(text="🔁 Нужен номер для другого сервиса", callback_data=f"smsn:svc:{order_id}")],
     ])
 
 
-def _kb_offer(order_id, can_new: bool):
+async def _alt_countries(o: dict, n: int = 3) -> list:
+    """Топ-N стран по % получения кода, которые укладываются в оплаченную сумму."""
+    try:
+        budget = await _budget_cost(o) * 1.02
+        offs = [x for x in await offers(o["product"])
+                if x["country"] != o["country"] and (x.get("rate") or 0) > 0]
+        good = []
+        for x in offs:
+            ln = next((l for l in x.get("lines") or [] if l["cost"] <= budget), None)
+            if ln:
+                good.append({"country": x["country"], "rate": ln["rate"] or 0, "count": ln["count"]})
+        good.sort(key=lambda x: -x["rate"])
+        return good[:n]
+    except Exception as e:
+        logging.warning(f"sms alt countries: {e}")
+        return []
+
+
+async def _kb_offer(o: dict, alts: list):
+    oid = o["order_id"]
+    left = SMS_MAX_ATTEMPTS - int(o.get("attempts") or 0)
     rows = []
-    if can_new:
-        rows.append([InlineKeyboardButton(text="🔄 Взять новый номер", callback_data=f"smsn:new:{order_id}")])
-    rows.append([InlineKeyboardButton(text="🪙 Вернуть деньги монетками", callback_data=f"smsn:ref:{order_id}")])
+    if left > 0:
+        rows.append([InlineKeyboardButton(text=f"🔄 Новый номер этой страны (осталось {left})",
+                                          callback_data=f"smsn:new:{oid}")])
+        for a in alts:
+            ci = await country_info(a["country"])
+            rows.append([InlineKeyboardButton(
+                text=f"{_flag(ci['iso'])} {ci['en']} · ✅ {a['rate']:.0f}%",
+                callback_data=f"smsn:cty:{oid}:{a['country']}"[:64])])
+        rows.append([InlineKeyboardButton(text="🔁 Другой сервис", callback_data=f"smsn:svc:{oid}")])
+    rows.append([InlineKeyboardButton(text="🪙 Вернуть деньги монетками", callback_data=f"smsn:ref:{oid}")])
+    if left <= 0:
+        try:
+            from config import PERSONAL_USERNAME
+            rows.append([InlineKeyboardButton(text="✍️ Написать Александру",
+                                              url=f"https://t.me/{PERSONAL_USERNAME}")])
+        except Exception:
+            pass
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -384,22 +457,66 @@ def _left(o) -> str:
 
 
 async def _render_active(o):
+    att = int(o.get("attempts") or 1)
     t = (await _head(o)
          + f"\n☎️ Номер: <code>{_esc(o['phone'])}</code>\n"
-           f"⏳ Ждём SMS · осталось {_left(o)}\n\n"
-           "Введите номер в сервисе и запросите код — он придёт сюда автоматически.\n"
-           "<i>Совет: включите VPN той же страны, что и номер.</i>")
+           f"⏳ Ждём SMS · осталось {_left(o)} · номер {att} из {SMS_MAX_ATTEMPTS}\n\n"
+           "<b>Что делать:</b>\n"
+           "1. Скопируйте номер (нажмите на него) и введите в сервисе.\n"
+           "2. Запросите код — он придёт сюда сам, обычно за 1–3 минуты.\n"
+           "3. Включите VPN той же страны, что и номер.\n\n"
+           "<b>Если что-то не так:</b>\n"
+           "• Сервис пишет, что номер недоступен, уже используется или выдаёт другую ошибку — «🚫 Номер занят / ошибка».\n"
+           "• Ошиблись сервисом (нужен, например, ChatGPT, а не Telegram) — «🔁 Нужен номер для другого сервиса».\n"
+           "• Код не пришёл за 3–5 минут — «⏹ Код не пришёл».\n"
+           f"<i>Виртуальные номера иногда срабатывают не с первого раза — может понадобиться "
+           f"до {SMS_MAX_ATTEMPTS} попыток. Замена номера бесплатная.</i>")
     await _show(o, t, _kb_active(o["order_id"]))
 
 
+async def _render_services(o):
+    """Смена сервиса: свои сервисы из каталога + популярные."""
+    try:
+        pr = await products()
+    except Exception:
+        pr = []
+    ids = {p["id"] for p in pr}
+    cat = [pid for pid in catalog_matches() if pid in ids]
+    top = [k for k in ("telegram", "whatsapp", "openai", "claudeai", "google", "instagram",
+                       "tiktok", "microsoft", "discord", "apple", "other") if k in ids]
+    seen, lst = set(), []
+    for k in cat + top:
+        if k not in seen and k != o["product"]:
+            seen.add(k); lst.append(k)
+    lst = lst[:20]
+    rows, row = [], []
+    for k in lst:
+        row.append(InlineKeyboardButton(text=product_name(k)[:28], callback_data=f"smsn:sp:{o['order_id']}:{k}"[:64]))
+        if len(row) == 2:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"smsn:back:{o['order_id']}")])
+    t = (await _head(o) + "\n🔁 <b>Для какого сервиса нужен номер?</b>\n"
+         "Смена бесплатная, если номер укладывается в оплаченную сумму. "
+         "Нужного сервиса нет в списке — выберите «Любой другой» или напишите Александру.")
+    await _show(o, t, InlineKeyboardMarkup(inline_keyboard=rows))
+
+
 async def _render_offer(o, why: str):
-    can_new = int(o.get("attempts") or 0) < SMS_MAX_ATTEMPTS
-    t = (await _head(o)
-         + f"\n⚠️ {why}\n\n"
-         + ("Можем бесплатно выдать новый номер или вернуть "
-            if can_new else "Попытки замены закончились. Можем вернуть ")
-         + f"<b>{o['price_rub']}₽</b> монетками на баланс — ими можно оплатить любой товар в боте.")
-    await _show(o, t, _kb_offer(o["order_id"], can_new))
+    left = SMS_MAX_ATTEMPTS - int(o.get("attempts") or 0)
+    alts = await _alt_countries(o) if left > 0 else []
+    if left > 0:
+        tip = (f"Можно бесплатно взять новый номер — осталось попыток: <b>{left}</b>.\n"
+               + ("Если номера этой страны не подходят, попробуйте страну, где код "
+                  "приходит чаще всего (✅ — % получения кода):\n" if alts else "")
+               + f"\nИли вернём <b>{o['price_rub']}₽</b> монетками на баланс — ими можно оплатить "
+                 "любой товар в боте.")
+    else:
+        tip = (f"Все {SMS_MAX_ATTEMPTS} попыток использованы. Вернём <b>{o['price_rub']}₽</b> "
+               "монетками на баланс или напишите Александру — подберём номер вручную.")
+    t = await _head(o) + f"\n⚠️ {why}\n\n" + tip
+    await _show(o, t, await _kb_offer(o, alts))
 
 
 async def _ref(order_id: str) -> str:
@@ -411,24 +528,68 @@ async def _ref(order_id: str) -> str:
         return f"🧾 Заказ {order_id}"
 
 
+_ST_RU = {"pending": "⏳ ждёт оплату", "paid": "💳 оплачен, покупаю номер",
+          "active": "📲 номер выдан, ждём SMS", "received": "✅ код получен",
+          "done": "✅ завершён", "offer": "⚠️ ждёт выбор клиента",
+          "refunded": "🪙 возврат монетками", "cancelled": "❌ отменён"}
+_admin_locks: dict = {}
+
+
 async def _admin(o: dict, title: str, extra: str = "") -> None:
-    """Сообщение владельцу по заказу номера — всегда с полными данными заказа."""
-    try:
-        from common import _who_user
-        ci = await country_info(o["country"])
-        await bot.send_message(
-            ADMIN_ID,
-            f"📱 <b>{title}</b>\n\n"
-            f"👤 {await _who_user(o['user_id'])}\n"
-            f"📦 {_esc(product_name(o['product']))} · {_flag(ci['iso'])} {_esc(ci['en'])}"
-            f" · линия {_esc(o.get('operator') or 'any')}\n"
-            f"💵 <b>{o['price_rub']}₽</b> · закуп ${float(o.get('cost_usd') or 0):g}\n"
-            f"{_esc(await _ref(o['order_id']))}\n"
-            f"🆔 <code>{_esc(o['order_id'])}</code>"
-            + (f"\n\n{extra}" if extra else ""),
-            parse_mode="HTML")
-    except Exception as e:
-        logging.warning(f"sms admin msg {o.get('order_id')}: {e}")
+    """ОДНА карточка заказа у владельца: при каждом событии дописываем строку
+    в хронологию и редактируем то же сообщение (Александр 20.11.2026)."""
+    import re as _re
+    oid = o["order_id"]
+    lock = _admin_locks.setdefault(oid, asyncio.Lock())
+    async with lock:
+        try:
+            from common import _who_user
+            from config import _BOT_TZ
+            import datetime as _dt
+            o = await _order(oid) or o
+            now = _dt.datetime.now(_BOT_TZ).strftime("%H:%M")
+            plain = _re.sub(r"<[^>]+>", "", extra or "").replace("\n", " · ")
+            log = (o.get("log") or "") + f"{now} {title}" + (f" — {plain}" if plain else "") + "\n"
+            log = "\n".join(log.strip().splitlines()[-25:]) + "\n"
+            await _upd(oid, log=log)
+            ci = await country_info(o["country"])
+            fo = {}
+            try:
+                from db import fk_get_order
+                fo = await fk_get_order(oid) or {}
+            except Exception:
+                pass
+            coins = int(fo.get("coins_spent") or 0)
+            paid_rub = int(fo.get("amount_rub") or 0)
+            pm = {"card": "Карта"}.get(str(fo.get("payment_method") or ""), "СБП")
+            txt = (
+                f"📱 <b>Номер для SMS</b> · {_ST_RU.get(o['status'], o['status'])}\n\n"
+                f"👤 {await _who_user(o['user_id'])}\n"
+                f"📦 {_esc(product_name(o['product']))} · {_flag(ci['iso'])} {_esc(ci['en'])}"
+                f" · линия {_esc(o.get('operator') or 'any')}\n"
+                f"💵 <b>{o['price_rub']}₽</b> · закуп ${float(o.get('cost_usd') or 0):g}\n"
+                + (f"🪙 Монетками: {coins}₽\n" if coins else "")
+                + (f"💳 {pm}: {paid_rub}₽\n" if paid_rub else "")
+                + f"{_esc(await _ref(oid))}\n"
+                f"🆔 <code>{_esc(oid)}</code>\n"
+                + (f"☎️ <code>{_esc(o['phone'])}</code>" if o.get("phone") else "")
+                + (f" · код <code>{_esc(o['code'])}</code>" if o.get("code") else "")
+                + (f"\n🔁 Номеров выдано: {o.get('attempts') or 0} из {SMS_MAX_ATTEMPTS}" if o.get("attempts") else "")
+                + (f"\n⚠️ Последняя ошибка: <i>{_esc(o.get('last_error'))}</i>" if o.get("last_error") else "")
+                + f"\n\n<b>Хронология</b>\n<blockquote>{_esc(log.strip())}</blockquote>"
+            )
+            mid = o.get("admin_msg_id")
+            if mid:
+                try:
+                    await bot.edit_message_text(txt, chat_id=ADMIN_ID, message_id=mid, parse_mode="HTML")
+                    return
+                except Exception as e:
+                    if "not modified" in str(e).lower():
+                        return
+            m = await bot.send_message(ADMIN_ID, txt, parse_mode="HTML")
+            await _upd(oid, admin_msg_id=m.message_id)
+        except Exception as e:
+            logging.warning(f"sms admin card {oid}: {e}")
 
 
 async def notify_paid(order_id: str, method: str = "", amount=None) -> None:
@@ -448,7 +609,7 @@ async def notify_paid(order_id: str, method: str = "", amount=None) -> None:
         pay.append(f"🪙 Монетками: <b>{coins}₽</b>")
     if amount:
         pay.append(f"💳 {_esc(method or 'СБП')}: <b>{amount}₽</b>")
-    await _admin(o, "Номер оплачен ✅", "\n".join(pay) + "\n⏳ Покупаю номер…")
+    await _admin(o, "Оплачен ✅", " · ".join(pay))
 
 
 # ── выдача после оплаты ────────────────────────────────────────────────
@@ -459,24 +620,21 @@ async def fulfill(order_id: str, user_id: int = 0):
     if o["status"] == "pending":
         await _upd(order_id, status="paid")
         o["status"] = "paid"
-    ok, d = await _buy(o)
+    ok, d, errs = await _buy(o)
     if not ok:
-        await _upd(order_id, status="offer")
+        await _upd(order_id, status="offer", last_error="; ".join(errs)[-300:])
         o = await _order(order_id)
         if d in ("balance", "no_token"):
-            try:
-                await bot.send_message(
-                    ADMIN_ID,
-                    "🚨 <b>Номера: не удалось купить</b> — "
-                    + ("закончился баланс у поставщика" if d == "balance" else "не задан ключ API")
-                    + f"\n🆔 <code>{_esc(order_id)}</code> · {_esc(product_name(o['product']))} · "
-                      f"{_esc(o['country'])} · {o['price_rub']}₽", parse_mode="HTML")
-            except Exception:
-                pass
-            # Клиенту — возврат сразу, «новый номер» тут не поможет.
-            o["attempts"] = SMS_MAX_ATTEMPTS
+            # Клиенту — сразу возврат: замена номера тут не поможет.
             await _upd(order_id, attempts=SMS_MAX_ATTEMPTS)
-        await _render_offer(o, "Сейчас нет свободных номеров для этой страны.")
+            o = await _order(order_id)
+            await _admin(o, "🚨 Не купился номер",
+                         "закончился баланс у поставщика" if d == "balance" else "не задан ключ API")
+            await _render_offer(o, "Сервис номеров временно недоступен.")
+            return
+        await _admin(o, "Нет номеров у этой страны", f"перепробовано линий: {len(errs)}")
+        await _render_offer(o, "Сейчас не удалось взять номер этой страны — "
+                               "попробуйте ещё раз или выберите другую страну.")
         return
     exp = None
     try:
@@ -484,14 +642,15 @@ async def fulfill(order_id: str, user_id: int = 0):
         exp = _dt.datetime.fromisoformat(str(d.get("expires")).replace("Z", "+00:00"))
     except Exception:
         pass
+    op = str(d.get("operator") or o["operator"] or "any")
+    tried = ",".join(sorted(set([t for t in (o.get("tried") or "").split(",") if t] + [op])))
     await _upd(order_id, status="active", provider_id=int(d["id"]), phone=str(d.get("phone") or ""),
-               expires_at=exp, attempts=int(o.get("attempts") or 0) + 1,
-               cost_usd=float(d.get("price") or o["cost_usd"] or 0), code=None, sms_text=None)
+               expires_at=exp, attempts=int(o.get("attempts") or 0) + 1, operator=op, tried=tried,
+               cost_usd=float(d.get("price") or o["cost_usd"] or 0), code=None, sms_text=None,
+               last_error="")
     o = await _order(order_id)
     await _render_active(o)
-    await _admin(o, "Номер выдан клиенту",
-                 f"☎️ <code>{_esc(o['phone'])}</code> · попытка {o['attempts']} из {SMS_MAX_ATTEMPTS}\n"
-                 f"⏳ Ждём SMS (до {_left(o)})")
+    await _admin(o, f"Номер {o['attempts']} выдан", f"{o['phone']} · линия {op} · ${float(o['cost_usd']):g}")
 
 
 # ── слежение за SMS ─────────────────────────────────────────────────────
@@ -508,9 +667,9 @@ async def _check_one(o) -> None:
         if code != (o.get("code") or "") or text != (o.get("sms_text") or ""):
             _first = not (o.get("code") or o.get("sms_text"))
             await _upd(o["order_id"], status="received", code=code, sms_text=text)
-            if _first:
-                await _admin(o, "Код получен ✅", f"☎️ <code>{_esc(o['phone'])}</code> · код <code>{_esc(code or '—')}</code>")
             o = await _order(o["order_id"])
+            if _first:
+                await _admin(o, "Код получен ✅", f"{o['phone']} · {code or '—'}")
             t = (await _head(o)
                  + f"\n☎️ Номер: <code>{_esc(o['phone'])}</code>\n\n"
                    f"✅ <b>Код: <code>{_esc(code or '—')}</code></b>\n"
@@ -523,6 +682,7 @@ async def _check_one(o) -> None:
         await _upd(o["order_id"], status="offer")
         o = await _order(o["order_id"])
         await _render_offer(o, "SMS не пришла за отведённое время, номер отменён.")
+        await _admin(o, "Время номера вышло", f"{o.get('phone') or ''} · SMS не пришла")
 
 
 async def poll_loop():
@@ -570,6 +730,9 @@ async def cb_sms(cb: CallbackQuery):
     except ValueError:
         await cb.answer()
         return
+    new_c = ""
+    if act in ("cty", "sp") and ":" in order_id:
+        order_id, new_c = order_id.rsplit(":", 1)
     o = await _order(order_id)
     if not o or int(o["user_id"]) != cb.from_user.id:
         await cb.answer("Заказ не найден", show_alert=True)
@@ -608,9 +771,9 @@ async def cb_sms(cb: CallbackQuery):
             o = await _order(order_id)
             await _render_offer(o, "Номер занят — отменили его." if act == "ban"
                                 else "Код не пришёл — номер отменён.")
-            await _admin(o, "Клиент отменил номер",
-                         ("🚫 «Номер уже занят» (ban)" if act == "ban" else "⏹ «Код не пришёл» (cancel)")
-                         + f"\n☎️ <code>{_esc(o.get('phone') or '')}</code> · ждём выбор: новый номер или возврат")
+            await _admin(o, "Клиент: «Номер занят» (ban)" if act == "ban"
+                         else "Клиент: «Код не пришёл» (cancel)",
+                         f"{o.get('phone') or ''} · у поставщика: {st or d.get('_err', '?')}")
             await cb.answer()
             return
 
@@ -622,6 +785,78 @@ async def cb_sms(cb: CallbackQuery):
                 await cb.answer("Попытки закончились — можно вернуть монетками", show_alert=True)
                 return
             await cb.answer("Ищу новый номер…")
+            await _admin(o, "Клиент: новый номер той же страны")
+            await fulfill(order_id)
+            return
+
+        if act == "svc":
+            # Клиент ошибся сервисом. Активный номер сначала отменяем у поставщика.
+            if o["status"] == "active":
+                d = await _provider("cancel", o["provider_id"])
+                st = str(d.get("status") or "").upper()
+                if st not in ("CANCELED", "BANNED"):
+                    await _check_one(o)
+                    if (await _order(order_id))["status"] == "received":
+                        await cb.answer("На этот номер уже пришёл код — сменить сервис нельзя", show_alert=True)
+                        return
+                await _upd(order_id, status="offer")
+                o = await _order(order_id)
+                await _admin(o, "Клиент: сменить сервис", f"номер {o.get('phone') or ''} отменён · {st or '?'}")
+            if o["status"] != "offer":
+                await cb.answer("Недоступно для этого заказа", show_alert=True)
+                return
+            if int(o.get("attempts") or 0) >= SMS_MAX_ATTEMPTS:
+                await cb.answer("Попытки закончились — можно вернуть монетками", show_alert=True)
+                return
+            await _render_services(o)
+            await cb.answer()
+            return
+
+        if act == "back":
+            if o["status"] == "offer":
+                await _render_offer(o, "Выберите, что сделать дальше.")
+            await cb.answer()
+            return
+
+        if act == "sp":
+            if not new_c or o["status"] != "offer" or int(o.get("attempts") or 0) >= SMS_MAX_ATTEMPTS:
+                await cb.answer("Недоступно для этого заказа", show_alert=True)
+                return
+            budget = await _budget_cost(o) * 1.02
+            offs = await offers(new_c)
+            # Та же страна, если есть номер в рамках оплаты, иначе — самая надёжная подходящая.
+            pick = None
+            for x in sorted(offs, key=lambda x: (x["country"] != o["country"], -(x.get("rate") or 0))):
+                ln = next((l for l in x.get("lines") or [] if l["cost"] <= budget), None)
+                if ln:
+                    pick = (x["country"], ln["operator"]); break
+            if not pick:
+                await cb.answer("Для этого сервиса нет номеров в рамках оплаты. Можно вернуть монетками "
+                                "и купить заново.", show_alert=True)
+                return
+            await _upd(order_id, product=new_c, country=pick[0], operator=pick[1], tried="")
+            o = await _order(order_id)
+            await _admin(o, "Клиент сменил сервис", f"{product_name(new_c)} · {pick[0]}")
+            await cb.answer(f"Сервис: {product_name(new_c)}")
+            await _render_offer(o, f"Сервис изменён на <b>{_esc(product_name(new_c))}</b>. "
+                                   "Возьмите номер — страну можно выбрать ниже.")
+            return
+
+        if act.startswith("cty"):
+            # smsn:cty:{order}:{страна} — номер другой страны в рамках оплаты
+            if not new_c or o["status"] != "offer" or int(o.get("attempts") or 0) >= SMS_MAX_ATTEMPTS:
+                await cb.answer("Недоступно для этого заказа", show_alert=True)
+                return
+            off = await find_offer(o["product"], new_c)
+            budget = await _budget_cost(o) * 1.02
+            ln = next((l for l in (off or {}).get("lines") or [] if l["cost"] <= budget), None)
+            if not ln:
+                await cb.answer("Номера этой страны закончились — выберите другую", show_alert=True)
+                return
+            await _upd(order_id, country=new_c, operator=ln["operator"], tried="")
+            await cb.answer("Беру номер другой страны…")
+            o = await _order(order_id)
+            await _admin(o, "Клиент сменил страну", new_c)
             await fulfill(order_id)
             return
 
@@ -643,7 +878,7 @@ async def cb_sms(cb: CallbackQuery):
             o = await _order(order_id)
             await _show(o, await _head(o) + f"\n🪙 Вернули <b>{o['price_rub']}₽</b> монетками на баланс.", None)
             await cb.answer("Монетки зачислены")
-            await _admin(o, "Возврат монетками 🪙", f"Клиенту вернули <b>{o['price_rub']}₽</b> на баланс.")
+            await _admin(o, "Возврат монетками 🪙", f"{o['price_rub']}₽ на баланс")
             return
     await cb.answer()
 
@@ -788,23 +1023,12 @@ async def api_sms_pay_handler(request):
         else:
             from config import fk_pay_url
             url = fk_pay_url(rest, order_id)
-    try:
-        ci = await country_info(country)
-        await bot.send_message(
-            ADMIN_ID,
-            f"📱 <b>Заказ номера</b> (магазин)\n"
-            f"👤 {await C._who_user(uid)}\n"
-            f"📦 {_esc(product_name(product))} · {_flag(ci['iso'])} {_esc(ci['en'])}\n"
-            f"💵 <b>{price}₽</b> · закуп ${off['cost']}\n"
-            + (f"🪙 Монетками: <b>{coins_used}₽</b>\n" if coins_used else "")
-            + (f"💳 {'Карта' if method == 'card' else 'СБП'}: <b>{rest}₽</b>\n" if rest else "")
-            + f"{_esc(await _ref(order_id))}\n"
-            + f"🆔 <code>{order_id}</code>\n"
-            + ("✅ Оплачен монетками — покупаю номер" if full_coins
-               else "⏳ Ожидает оплаты · номер FreeKassa придёт в карточке «Номер оплачен»"),
-            parse_mode="HTML")
-    except Exception:
-        pass
+    o_new = await _order(order_id)
+    if o_new:
+        await _admin(o_new, "Заказ создан",
+                     f"монетками {coins_used}₽" if full_coins
+                     else f"{'карта' if method == 'card' else 'СБП'} {rest}₽"
+                          + (f" + монетки {coins_used}₽" if coins_used else "") + " · ждём оплату")
     if full_coins:
         asyncio.create_task(fulfill(order_id, int(uid)))
     return _json({"ok": True, "url": url, "orderId": order_id, "coinsUsed": coins_used,
