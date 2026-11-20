@@ -6951,6 +6951,35 @@ async def api_admin_plan_add_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "msg": f'Этап: {stage}. Причина: {reason}. Точная первопричина требует проверки журнала.'}, status=500)
 
 
+
+async def shift_plan_settings(conn, key: str, removed_idx: int) -> None:
+    """Себестоимость и «ручная выдача» хранятся по НОМЕРУ тарифа в списке
+    (cost_usd:{key}:{N}, cost_usd:{key}:{N}:{маршрут}, manual:{key}:{N}).
+    После удаления тарифа номера ниже него сдвигаются на 1 — и без этого
+    сдвига закуп «переезжал» на соседний тариф (Александр 20.11.2026).
+    Удаляем настройки удалённого тарифа и сдвигаем остальные на место."""
+    import re as _re_sh
+    rows = await conn.fetch(
+        "SELECT key, value FROM settings WHERE key LIKE $1 OR key LIKE $2",
+        f"cost_usd:{key}:%", f"manual:{key}:%")
+    pat = _re_sh.compile(r"^(cost_usd|manual):" + _re_sh.escape(key) + r":(\d+)(:.*)?$")
+    moves = []
+    for r in rows:
+        m = pat.match(r["key"])
+        if not m:
+            continue
+        n = int(m.group(2))
+        if n == removed_idx:
+            await conn.execute("DELETE FROM settings WHERE key=$1", r["key"])
+        elif n > removed_idx:
+            moves.append((n, m.group(1), m.group(3) or "", r["key"], r["value"]))
+    for n, pref, tail, old_key, val in sorted(moves):
+        new_key = f"{pref}:{key}:{n - 1}{tail}"
+        await conn.execute("DELETE FROM settings WHERE key=$1", old_key)
+        await conn.execute(
+            "INSERT INTO settings (key,value) VALUES ($1,$2) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", new_key, val)
+
 @_serialized_admin_catalog
 async def api_admin_plan_delete_handler(request: web.Request) -> web.Response:
     """Удалить тариф из сервиса. Admin-only."""
@@ -6963,10 +6992,15 @@ async def api_admin_plan_delete_handler(request: web.Request) -> web.Response:
         scat = SHOP_CATALOG.get(k)
         if not k or not scat or not name:
             return web.json_response({"ok": False})
+        _plans = scat.get("plans", [])
+        _rm = [i for i, p in enumerate(_plans) if p.get("name") == name]
         pool = await get_pool()
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
             await conn.execute("DELETE FROM bot_shop_items WHERE key=$1 AND plan_name=$2", k, name)
-        scat["plans"] = [p for p in scat.get("plans", []) if p.get("name") != name]
+            # С конца: так номера ещё не удалённых совпадают с текущими.
+            for _i in sorted(_rm, reverse=True):
+                await shift_plan_settings(conn, k, _i)
+        scat["plans"] = [p for p in _plans if p.get("name") != name]
         return web.json_response({"ok": True})
     except Exception as _e:
         logging.error(f"api_admin_plan_delete: {_e}")
@@ -16111,7 +16145,11 @@ async def fk_credit_paid_order(order_id: str, payment: dict, source: str = "webh
         # NS Gifts (App Store / iCloud) — мгновенная доставка кода
         if order_id.startswith("sms_"):
             # Виртуальный номер: покупаем у поставщика и шлём клиенту в чат.
-            from sms_numbers import fulfill as _sms_fulfill
+            from sms_numbers import fulfill as _sms_fulfill, notify_paid as _sms_paid
+            try:
+                await _sms_paid(order_id, "Карта" if method_used_msg == "card" else "СБП", amount_rub)
+            except Exception as _e_sp:
+                logging.warning(f"sms notify_paid {order_id}: {_e_sp}")
             asyncio.create_task(_sms_fulfill(order_id, user_id))
             await _mark_order_fulfilled(order_id)
             return True

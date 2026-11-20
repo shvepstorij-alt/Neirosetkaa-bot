@@ -402,6 +402,55 @@ async def _render_offer(o, why: str):
     await _show(o, t, _kb_offer(o["order_id"], can_new))
 
 
+async def _ref(order_id: str) -> str:
+    """«🧾 Заказ #N · FreeKassa NNN» — номер FreeKassa появляется после оплаты."""
+    try:
+        from common import _order_ref_line
+        return await _order_ref_line(order_id)
+    except Exception:
+        return f"🧾 Заказ {order_id}"
+
+
+async def _admin(o: dict, title: str, extra: str = "") -> None:
+    """Сообщение владельцу по заказу номера — всегда с полными данными заказа."""
+    try:
+        from common import _who_user
+        ci = await country_info(o["country"])
+        await bot.send_message(
+            ADMIN_ID,
+            f"📱 <b>{title}</b>\n\n"
+            f"👤 {await _who_user(o['user_id'])}\n"
+            f"📦 {_esc(product_name(o['product']))} · {_flag(ci['iso'])} {_esc(ci['en'])}"
+            f" · линия {_esc(o.get('operator') or 'any')}\n"
+            f"💵 <b>{o['price_rub']}₽</b> · закуп ${float(o.get('cost_usd') or 0):g}\n"
+            f"{_esc(await _ref(o['order_id']))}\n"
+            f"🆔 <code>{_esc(o['order_id'])}</code>"
+            + (f"\n\n{extra}" if extra else ""),
+            parse_mode="HTML")
+    except Exception as e:
+        logging.warning(f"sms admin msg {o.get('order_id')}: {e}")
+
+
+async def notify_paid(order_id: str, method: str = "", amount=None) -> None:
+    """Вызывается при оплате (вебхук FreeKassa) — карточка «оплачен» с номером FK."""
+    o = await _order(order_id)
+    if not o:
+        return
+    coins = 0
+    try:
+        from db import fk_get_order
+        fo = await fk_get_order(order_id) or {}
+        coins = int(fo.get("coins_spent") or 0)
+    except Exception:
+        pass
+    pay = []
+    if coins:
+        pay.append(f"🪙 Монетками: <b>{coins}₽</b>")
+    if amount:
+        pay.append(f"💳 {_esc(method or 'СБП')}: <b>{amount}₽</b>")
+    await _admin(o, "Номер оплачен ✅", "\n".join(pay) + "\n⏳ Покупаю номер…")
+
+
 # ── выдача после оплаты ────────────────────────────────────────────────
 async def fulfill(order_id: str, user_id: int = 0):
     o = await _order(order_id)
@@ -440,6 +489,9 @@ async def fulfill(order_id: str, user_id: int = 0):
                cost_usd=float(d.get("price") or o["cost_usd"] or 0), code=None, sms_text=None)
     o = await _order(order_id)
     await _render_active(o)
+    await _admin(o, "Номер выдан клиенту",
+                 f"☎️ <code>{_esc(o['phone'])}</code> · попытка {o['attempts']} из {SMS_MAX_ATTEMPTS}\n"
+                 f"⏳ Ждём SMS (до {_left(o)})")
 
 
 # ── слежение за SMS ─────────────────────────────────────────────────────
@@ -454,7 +506,10 @@ async def _check_one(o) -> None:
         code = str(last.get("code") or "").strip()
         text = str(last.get("text") or "").strip()
         if code != (o.get("code") or "") or text != (o.get("sms_text") or ""):
+            _first = not (o.get("code") or o.get("sms_text"))
             await _upd(o["order_id"], status="received", code=code, sms_text=text)
+            if _first:
+                await _admin(o, "Код получен ✅", f"☎️ <code>{_esc(o['phone'])}</code> · код <code>{_esc(code or '—')}</code>")
             o = await _order(o["order_id"])
             t = (await _head(o)
                  + f"\n☎️ Номер: <code>{_esc(o['phone'])}</code>\n\n"
@@ -553,6 +608,9 @@ async def cb_sms(cb: CallbackQuery):
             o = await _order(order_id)
             await _render_offer(o, "Номер занят — отменили его." if act == "ban"
                                 else "Код не пришёл — номер отменён.")
+            await _admin(o, "Клиент отменил номер",
+                         ("🚫 «Номер уже занят» (ban)" if act == "ban" else "⏹ «Код не пришёл» (cancel)")
+                         + f"\n☎️ <code>{_esc(o.get('phone') or '')}</code> · ждём выбор: новый номер или возврат")
             await cb.answer()
             return
 
@@ -585,14 +643,7 @@ async def cb_sms(cb: CallbackQuery):
             o = await _order(order_id)
             await _show(o, await _head(o) + f"\n🪙 Вернули <b>{o['price_rub']}₽</b> монетками на баланс.", None)
             await cb.answer("Монетки зачислены")
-            try:
-                from common import _who_user
-                await bot.send_message(ADMIN_ID,
-                    f"🪙 <b>Номер: возврат монетками</b> {o['price_rub']}₽\n"
-                    f"👤 {await _who_user(o['user_id'])}\n🆔 <code>{_esc(order_id)}</code>",
-                    parse_mode="HTML")
-            except Exception:
-                pass
+            await _admin(o, "Возврат монетками 🪙", f"Клиенту вернули <b>{o['price_rub']}₽</b> на баланс.")
             return
     await cb.answer()
 
@@ -747,8 +798,10 @@ async def api_sms_pay_handler(request):
             f"💵 <b>{price}₽</b> · закуп ${off['cost']}\n"
             + (f"🪙 Монетками: <b>{coins_used}₽</b>\n" if coins_used else "")
             + (f"💳 {'Карта' if method == 'card' else 'СБП'}: <b>{rest}₽</b>\n" if rest else "")
+            + f"{_esc(await _ref(order_id))}\n"
             + f"🆔 <code>{order_id}</code>\n"
-            + ("✅ Оплачен монетками — покупаю номер" if full_coins else "⏳ Ожидает оплаты"),
+            + ("✅ Оплачен монетками — покупаю номер" if full_coins
+               else "⏳ Ожидает оплаты · номер FreeKassa придёт в карточке «Номер оплачен»"),
             parse_mode="HTML")
     except Exception:
         pass
