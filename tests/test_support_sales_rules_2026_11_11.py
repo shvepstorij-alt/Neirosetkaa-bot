@@ -1399,3 +1399,29 @@ class Bench20NovTests(unittest.TestCase):
         self.assertIn('После оплаты', out['reply'])
         paid = finalize({'reply': reply, 'handoff': False}, {'situation': 'paid_not_working'}, {'burst': 'оплатил Max'})
         self.assertIn('пароль', paid['reply'])
+
+
+class LiveCasesTests(unittest.TestCase):
+    def test_owner_corrections_become_checks(self):
+        import json, time
+        from support_agent.draft_stats import live_cases
+        from support_agent.owner_ui import mark_edited
+        from support_agent.storage import Store
+        store = Store(':memory:')
+        db = store.db
+        now = time.time()
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)', (1, 1, 'owner', 'Какой сервис нужен?', '{}', now - 30, 'stored'))
+        db.execute('INSERT INTO messages VALUES (?,?,?,?,?,?,?)', (1, 2, 'client', 'гпт', '{}', now - 20, 'stored'))
+        db.execute("INSERT INTO drafts(id,chat,mid,revision,global_revision,text,summary,handoff,created,state) VALUES (1,1,2,0,0,'старый','',0,?,'sent')", (now - 10,))
+        db.execute('INSERT INTO draft_evidence VALUES (1,?)', (json.dumps({}),))
+
+        class S:
+            pass
+        holder = S(); holder.db = db
+        mark_edited(holder, 1, 'старый')
+        db.execute("UPDATE drafts SET text='ChatGPT Plus — 1990 ₽' WHERE id=1")
+        cases = live_cases(db, 7)
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0]['client'], 'гпт')
+        self.assertEqual(cases[0]['owner'], 'ChatGPT Plus — 1990 ₽')
+        self.assertEqual(cases[0]['history'], [['owner', 'Какой сервис нужен?']])
