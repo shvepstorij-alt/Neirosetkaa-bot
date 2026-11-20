@@ -239,7 +239,10 @@ _PRODUCT_NAMES = {
     "discord": "Discord", "viber": "Viber", "wechat": "WeChat", "yandex": "Яндекс",
     "mailru": "Mail.ru", "avito": "Авито", "ozon": "Ozon", "wildberries": "Wildberries",
     "uber": "Uber", "netflix": "Netflix", "steam": "Steam", "tinder": "Tinder",
-    "claude": "Claude (Anthropic)", "anthropic": "Claude (Anthropic)", "other": "Любой другой",
+    "claude": "Claude", "claudeai": "Claude", "anthropic": "Claude",
+    "gemini": "Gemini", "genspark": "Genspark", "manus": "Manus", "suno": "Suno",
+    "heygen": "HeyGen", "kimi": "Kimi", "perplexity": "Perplexity", "cursor": "Cursor",
+    "capcut": "CapCut", "canva": "Canva", "other": "Любой другой",
     "paypal": "PayPal", "linkedin": "LinkedIn", "snapchat": "Snapchat", "line": "LINE",
     "signal": "Signal", "spotify": "Spotify", "airbnb": "Airbnb", "aliexpress": "AliExpress",
 }
@@ -248,7 +251,7 @@ _PRODUCT_NAMES = {
 # Сервис каталога → id сервиса у поставщика (если называются по-разному).
 _CATALOG_ALIASES = {
     "chatgpt": ["openai"], "gpt": ["openai"], "openai": ["openai"],
-    "claude": ["claude", "anthropic"], "gemini": ["google"], "google": ["google"],
+    "claude": ["claudeai", "claude", "anthropic"], "gemini": ["google"], "google": ["google"],
     "youtube": ["google"], "grok": ["twitter"], "supergrok": ["twitter"],
     "x": ["twitter"], "midjourney": ["discord"], "capcut": ["capcut", "tiktok"],
     "microsoft": ["microsoft"], "copilot": ["microsoft"], "kimi": ["moonshot"],
@@ -623,7 +626,7 @@ async def api_sms_products_handler(request):
     cat = {pid: ck for pid, ck in catalog_matches().items() if pid in ids}
     mine = [p["id"] for p in pr if p["id"] in cat]            # есть в моём каталоге
     top = [k for k in ("telegram", "whatsapp", "openai", "google", "instagram", "tiktok",
-                       "microsoft", "claude", "discord", "apple") if k in ids and k not in cat]
+                       "microsoft", "claudeai", "discord", "apple") if k in ids and k not in cat]
     rest = [p["id"] for p in pr if p["id"] not in cat and p["id"] not in top]
     return _json({"ok": True, "items": [
         {"id": k, "name": product_name(k), "cat": cat.get(k, ""), "top": k in top}

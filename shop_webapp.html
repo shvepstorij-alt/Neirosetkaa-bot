@@ -1311,9 +1311,21 @@ function _smsCountry(it){ try{ if(_ruRegion&&it.iso) return _ruRegion.of(it.iso)
 function _smsFlag(o){ var iso=(o.iso||'').toLowerCase();
   if(!/^[a-z]{2}$/.test(iso)) return '<span style="font-size:18px">🌍</span>';
   return '<img src="https://flagcdn.com/w40/'+iso+'.png" alt="" style="width:26px;height:26px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:8px;box-shadow:0 0 0 1px rgba(255,255,255,.12)" onerror="this.outerHTML=\''+(o.flag||'🌍')+' \'">'; }
-var _SMS_DOM={google:'google.com',openai:'openai.com',microsoft:'microsoft.com',twitter:'x.com',vkontakte:'vk.com',mailru:'mail.ru',yandex:'ya.ru',claude:'claude.ai',anthropic:'claude.ai',googlevoice:'voice.google.com',wildberries:'wildberries.ru',avito:'avito.ru',ozon:'ozon.ru'};
+var _SMS_DOM={google:'google.com',gmail:'gmail.com',googlevoice:'voice.google.com',gemini:'gemini.google.com',youtube:'youtube.com',
+  openai:'openai.com',claudeai:'claude.ai',claude:'claude.ai',anthropic:'claude.ai',microsoft:'microsoft.com',twitter:'x.com',
+  discord:'discord.com',tiktok:'tiktok.com',genspark:'genspark.ai',manus:'manus.im',spotify:'spotify.com',perplexity:'perplexity.ai',
+  suno:'suno.com',heygen:'heygen.com',kimi:'kimi.com',capcut:'capcut.com',cursor:'cursor.com',canva:'canva.com',telegram:'telegram.org',
+  whatsapp:'whatsapp.com',instagram:'instagram.com',facebook:'facebook.com',apple:'apple.com',amazon:'amazon.com',viber:'viber.com',
+  vkontakte:'vk.com',mailru:'mail.ru',yandex:'ya.ru',wildberries:'wildberries.ru',avito:'avito.ru',ozon:'ozon.ru',uber:'uber.com',
+  netflix:'netflix.com',steam:'steampowered.com',tinder:'tinder.com',paypal:'paypal.com',linkedin:'linkedin.com',snapchat:'snapchat.com',
+  signal:'signal.org',airbnb:'airbnb.com',aliexpress:'aliexpress.com',yahoo:'yahoo.com',wechat:'wechat.com',line:'line.me',
+  kakaotalk:'kakaocorp.com',xiaomi:'mi.com',baidu:'baidu.com',faceit:'faceit.com',iqos:'iqos.com',bigolive:'bigo.tv',iqiyi:'iq.com'};
+/* Официальные иконки сайтов (высокое качество), запасной вариант — обычный favicon. */
 function _smsLogo(p){ var d=_SMS_DOM[p.id]||(p.id.replace(/[^a-z0-9]/g,'')+'.com');
-  return '<img src="https://www.google.com/s2/favicons?domain='+d+'&sz=64" alt="" style="width:26px;height:26px;border-radius:7px;background:#fff;object-fit:contain;padding:2px;box-sizing:border-box" onerror="this.outerHTML=\'<span>📩</span>\'">'; }
+  var hi='https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&size=128&url=https://'+d;
+  var lo='https://www.google.com/s2/favicons?sz=64&domain='+d;
+  return '<img src="'+hi+'" alt="" style="width:28px;height:28px;border-radius:8px;object-fit:contain" '
+    +'onerror="if(this.dataset.f){this.outerHTML=\'<span>📩</span>\'}else{this.dataset.f=1;this.src=\''+lo+'\'}">'; }
 function _smsHead(sub){
   var c=CATALOG[window._smsKey]||{}; var lg=c.logo||'';
   return '<div class="card-head"><div class="card-ic" style="background:'+_tileBg2(window._smsKey,lg)+'">'+_iconHtml(lg,'📱')+'</div>'
@@ -1342,9 +1354,7 @@ function smsFilter(){
   if(!list.length){ el.innerHTML='<div class="pm-err">Ничего не нашлось. Попробуй «other» — номер для любого сервиса.</div>'; return; }
   var _tile=function(p){
     var ic;
-    if(p.cat&&CATALOG[p.cat]&&CATALOG[p.cat].logo){ var lg=CATALOG[p.cat].logo;
-      ic='<span class="as-flag" style="width:26px;height:26px;border-radius:7px;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;background:'+_tileBg2(p.cat,lg)+'">'+_iconHtml(lg,p.name)+'</span>'; }
-    else ic='<span class="as-flag">'+_smsLogo(p)+'</span>';
+    ic='<span class="as-flag">'+_smsLogo(p)+'</span>';
     return '<div class="as-region" onclick="smsOffers(\''+_h(p.id)+'\')">'+ic+'<span class="as-rname">'+_h(p.name)+'</span></div>';
   };
   var mine=list.filter(function(p){return !!p.cat;}), other=list.filter(function(p){return !p.cat;});
