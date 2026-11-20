@@ -1425,3 +1425,25 @@ class LiveCasesTests(unittest.TestCase):
         self.assertEqual(cases[0]['client'], 'гпт')
         self.assertEqual(cases[0]['owner'], 'ChatGPT Plus — 1990 ₽')
         self.assertEqual(cases[0]['history'], [['owner', 'Какой сервис нужен?']])
+
+
+class Bench20Nov3Tests(unittest.TestCase):
+    """bench 20.11.2026: product names are not secrets, totals are checked, other services hit the catalog gate."""
+
+    def test_product_names_are_not_secrets(self):
+        from support_agent.privacy import sensitive
+        for text in ('Game Pass Ultimate на месяц можно?', 'Можно оплатить Notion Plus?', 'Хочу ChatGPT Plus и Midjourney'):
+            self.assertFalse(sensitive(text), text)
+        for text in ('пароль qwerty', 'код 482913', 'почта ivan@mail.ru пароль Kj8#ss21'):
+            self.assertTrue(sensitive(text), text)
+
+    def test_total_of_stated_prices_is_allowed(self):
+        from support_agent.turn_understanding import classify_draft
+        self.assertTrue(classify_draft('Plus — 1990 ₽, Basic — 990 ₽. Вместе 2980 ₽.', [990, 1990])['send'])
+        self.assertFalse(classify_draft('Plus — 1990 ₽. Вместе 5000 ₽.', [990, 1990])['send'])
+
+    def test_tariffs_grouped_by_service(self):
+        from support_agent.turn_understanding import tariff_question
+        text = tariff_question([{'service_id': 'b', 'service': 'B', 'plan': 'x', 'price': 500},
+                                {'service_id': 'a', 'service': 'A', 'plan': 'y', 'price': 100}])
+        self.assertLess(text.index('B x'), text.index('A y'))
