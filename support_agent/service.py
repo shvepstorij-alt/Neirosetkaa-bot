@@ -10,7 +10,7 @@ import re
 import time
 from pathlib import Path
 
-from .clients import OpenAI, ShopReader, Telegram
+from .clients import OpenAI, RemoteError, ShopReader, Telegram
 from .privacy import scrub, sensitive
 from .storage import Store
 from .research import lookup, attach_evidence, outgoing_text, unavailable, failure_details, with_public_trace
@@ -91,6 +91,23 @@ def _research_note_unsafe(evidence):
         research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
     return research_note
 
+
+
+TELEGRAM_HINTS={401:'токен бота недействителен — проверьте SUPPORT_BOT_TOKEN',
+                404:'неверный токен бота — проверьте SUPPORT_BOT_TOKEN',
+                409:'этим же токеном одновременно пользуется второй экземпляр бота — оставьте один сервис или одну реплику в Railway',
+                429:'Telegram временно ограничил частоту запросов — подождите несколько минут'}
+
+
+def remote_detail(exc):
+    """Owner 21.11.2026: «Polling failed: RemoteError» said nothing. Name the safe reason, HTTP status and what to do."""
+    reason=str(getattr(exc,'reason','') or '')
+    code=getattr(exc,'telegram_code',None) or getattr(exc,'status',None)
+    text=type(exc).__name__+(' '+reason if reason else '')+(' '+str(code) if code else '')
+    hint=TELEGRAM_HINTS.get(code) if type(code) is int else None
+    if not hint and reason in ('telegram_timeout','telegram_transport_uncertain'):
+        hint='нет связи с Telegram со стороны сервера — обычно проходит само'
+    return text+(' — '+hint if hint else '')
 
 def present_outgoing(answer, info=None, introduced=False, facts=None):
     """The exact text and seal the send path stores. Tests must use this, not a hand-built string."""
@@ -2527,7 +2544,7 @@ class Service:
                     self.store.cleanup(time.time()-7*86400)
                     self.daily_cleanup=time.time()
             except Exception as exc:
-                logging.warning('Worker unavailable: %s',type(exc).__name__)
+                logging.warning('Worker unavailable: %s',remote_detail(exc))
             await asyncio.sleep(1)
 
     async def poll(self):
@@ -2543,7 +2560,7 @@ class Service:
                     finally:_POLL_INGEST.reset(token)
                     self.store.put('offset',update['update_id']+1)
             except Exception as exc:
-                logging.warning('Polling failed: %s',type(exc).__name__)
+                logging.warning('Polling failed: %s',remote_detail(exc))
                 await asyncio.sleep(5)
 
 
@@ -2602,7 +2619,18 @@ async def main():
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=75)) as session:
             tg=Telegram(session,os.environ['SUPPORT_BOT_TOKEN'])
-            me=await tg.call('getMe')
+            me=None
+            for attempt in range(6):
+                # Owner 21.11.2026: a passing Telegram network hiccup must not kill the start.
+                try:
+                    me=await tg.call('getMe');break
+                except RemoteError as exc:
+                    if getattr(exc,'reason','') not in ('telegram_timeout','telegram_transport_uncertain') and getattr(exc,'status',None) not in (429,500,502,503,504):
+                        raise
+                    logging.warning('Startup: Telegram unavailable, retry %s/6: %s',attempt+1,remote_detail(exc))
+                    await asyncio.sleep(10*(attempt+1))
+            if me is None:
+                raise RemoteError('Telegram transport uncertain',reason='telegram_transport_uncertain')
             if me.get('username','').lower()!='neirosetkaalexbot':
                 raise ValueError('Token must belong to neirosetkaalexbot, not the shop bot')
             webhook=await tg.call('getWebhookInfo')
@@ -2665,5 +2693,5 @@ if __name__=='__main__':
         pass
     except Exception as exc:
         # Config errors have controlled messages; network exceptions never expose URLs.
-        logging.error('Startup failed: %s',str(exc) if isinstance(exc,ValueError) else type(exc).__name__)
+        logging.error('Startup failed: %s',str(exc) if isinstance(exc,ValueError) else remote_detail(exc))
         raise SystemExit(1)
