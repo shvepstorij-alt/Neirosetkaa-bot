@@ -882,6 +882,29 @@ class Service:
             await self.owner_message('Сейчас отправляются другие ответы. Исправленный текст сохранён — нажмите «Отправить» в карточке.')
 
     async def show_draft(self,did,admin_mid=None,view='card'):
+        """Owner 20.11.2026 (systemic): the owner always gets the draft and its buttons, whatever breaks."""
+        try:
+            return await self._show_draft_full(did,admin_mid,view)
+        except Exception as exc:
+            logging.error('Draft card failed; sending the short card', exc_info=exc)
+            d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
+            if not d:
+                return
+            c=self.store.chat(d['chat'])
+            from .owner_ui import draft_rows
+            usable=d['state'] in ('ready','stale')
+            expired=usable and time.time()-d['created']>=self.store.OWNER_WINDOW
+            rows=draft_rows(d,c['id'],usable and not expired,expired)
+            text=(f'📝 <b>Черновик №{did}</b> · Чат №{c["id"]} · ID <code>{c["uid"]}</code>\n\n'
+                  f'💬 <b>Ответ клиенту</b>\n{html.escape(str(d["text"] or "")[:3000])}\n\n'
+                  f'🛠 <i>Полная карточка не собралась: {html.escape(where_failed(exc))}</i>')
+            if admin_mid is not None:
+                await self.admin_panel(text,rows,admin_mid,parse_mode='HTML')
+            else:
+                sent=await self.owner_message(text,buttons(rows),parse_mode='HTML')
+                self.store.db.execute('UPDATE drafts SET admin_mid=? WHERE id=?',(sent['message_id'],did))
+
+    async def _show_draft_full(self,did,admin_mid=None,view='card'):
         d=self.store.db.execute('SELECT * FROM drafts WHERE id=?',(did,)).fetchone()
         if not d:
             return
@@ -901,41 +924,7 @@ class Service:
         if expired:
             state='Истёк срок проверки (15 минут) — подготовьте свежий ответ'
         evidence=self.store.evidence(did)
-        if evidence['status'] in ('checked','insufficient'):
-            checked=dt.datetime.fromtimestamp(evidence['checked_at'],dt.timezone(dt.timedelta(hours=5)))
-            label=('Источники проверены' if evidence['status']=='checked'
-                   else 'Поиск выполнен, сведений недостаточно для ответа')
-            research_note=f'🌐 <b>{label}:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
-            for index,source in enumerate(evidence['sources']):
-                research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
-                if (index+1)%8==0:research_note+='\n'
-            for name,identity in evidence.get('discoveries',{}).items():
-                research_note+=f'Сайт {html.escape(name)} найден поиском: <a href="{html.escape(identity["corroboration_url"],quote=True)}">проверка принадлежности</a>\n'
-            for name,reason in evidence.get('failures',{}).items():
-                research_note+=f'Не проверено: <b>{html.escape(name)}</b> — {html.escape(str(reason)[:180])}\n'
-            research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
-            if evidence.get('citation_mode')=='bibliography':
-                research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
-        else:
-            research_note={'catalog_direct':'📋 <b>Цены:</b> ответ собран из каталога без генерации моделью.\n\n',
-                           'installation_consultation':'📲 <b>Установка:</b> инструкция или уточнение собраны по подтверждённым правилам; оформление заказа не выполнялось.\n\n',
-                           'owner_policy':'📋 <b>Условия:</b> ответ по правилам владельца; право клиента ещё не подтверждено.\n\n',
-                           'clarification':'💬 <b>Уточнение:</b> запрошены сведения для разбора; причина проблемы не установлена.\n\n',
-                           'visual_clarification':'📷 <b>Фото:</b> нужна более чёткая деталь; распознавание не запускалось.\n\n',
-                           'visual_review':'📷 <b>Фото:</b> ответ не прошёл проверку; нужен ручной разбор.\n\n',
-                           'catalog_review':'📋 <b>Каталог:</b> показана только подтверждённая часть; свободный ответ отклонён проверкой.\n\n',
-                           'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
-                           'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
-                               evidence['status'],'')
-            if evidence['status'] in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
-                from .auto_policy import owner_reason
-                research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(owner_reason(evidence["diagnostic"]))}\n\n'
-        atomic_diagnostics=evidence.get('atomic_diagnostics',[])
-        if evidence.get('auto_block_reason'):
-            from .auto_policy import owner_reason
-            research_note+='🛑 <b>Почему этот ответ не отправлен автоматически</b>\n'+html.escape(owner_reason(evidence['auto_block_reason']))+'\nВыбранный режим не изменён. Исходный ответ оставлен вам для проверки.\n\n'
-        if atomic_diagnostics:
-            research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
+        research_note=_research_note(evidence)
         note=('Проверьте личку перед дальнейшими действиями. Автоповтора нет.'
               if d['state']=='uncertain' else 'Клиент получит только текст ответа после вашего одобрения.'
               if d['state']=='ready' else 'Эта карточка показывает сохранённый черновик.')
@@ -1270,7 +1259,7 @@ class Service:
             logging.warning('Paid-order note was not delivered')
         return {'reply':reply,'summary':'Клиент сообщил об оплате заказа; назван следующий шаг.',
                 'handoff':False,'source_ids':[],
-                'evidence':{'status':'checked','sources':[],'reply_class':'instruct','owner_approved_wording':True,
+                'evidence':{'status':'catalog_direct','sources':[],'reply_class':'instruct','owner_approved_wording':True,
                             'owner_text_used':True,'paid_notice':dict(found,kind=kind,shop_status=status),
                             'content_review':{'passed':True,'issues':[]},'diagnostic':note}}
 
@@ -1437,7 +1426,8 @@ class Service:
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
         from .turn_understanding import owner_open_step
-        if owner_open_step(context):
+        from . import paid_notice as _paid
+        if owner_open_step(context) and not _paid.parse(context.get('burst')):
             # Owner 20.11.2026: Alexander is in the middle of his own step — the assistant does not cut in.
             return {'reply':'Хорошо, Александр продолжит здесь.','handoff':True,
                     'summary':'Александр ведёт шаг оформления сам.',
@@ -2444,7 +2434,7 @@ class Service:
         except Exception as exc:
             self.store.db.execute("UPDATE messages SET state='failed' WHERE chat=? AND mid=? AND state='working'",(job['chat'],job['mid']))
             logging.error('Draft processing crashed', exc_info=exc)
-            diagnostic=failure_details(exc,'draft')
+            diagnostic=failure_details(exc,'draft')+' Место: '+where_failed(exc)+'.'
             if self.store.still_current(job) and self.store.effective_mode(job['chat'])=='auto':
                 from .auto_panel import record
                 record(self.store,job['chat'],None,'auto_blocked',diagnostic)
@@ -2618,3 +2608,61 @@ if __name__=='__main__':
         # Config errors have controlled messages; network exceptions never expose URLs.
         logging.error('Startup failed: %s',str(exc) if isinstance(exc,ValueError) else type(exc).__name__)
         raise SystemExit(1)
+
+
+def _research_note(evidence):
+    """Owner 20.11.2026 (№302, systemic): one card section. A missing field drops this section, never the card."""
+    try:
+        return _research_note_unsafe(evidence if isinstance(evidence, dict) else {})
+    except Exception as exc:
+        logging.error('Draft card section failed', exc_info=exc)
+        return '🛠 <i>Часть служебных сведений не показана: ' + html.escape(where_failed(exc)) + '</i>\n\n'
+
+
+def where_failed(exc):
+    """«KeyError 'checked_at' — service.py:905»: the exact place, so any crash is found in a minute."""
+    import traceback
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    own = [f for f in frames if 'support_agent' in f.filename] or frames
+    place = (own[-1].filename.rsplit('/', 1)[-1] + ':' + str(own[-1].lineno)) if own else '?'
+    return type(exc).__name__ + ' ' + str(exc)[:80] + ' — ' + place
+
+
+def _research_note_unsafe(evidence):
+    # Owner 20.11.2026 (№302): a paid-order reply has no web research — the card must not need checked_at.
+    if evidence.get('status') in ('checked','insufficient') and evidence.get('checked_at'):
+        checked=dt.datetime.fromtimestamp(evidence['checked_at'],dt.timezone(dt.timedelta(hours=5)))
+        label=('Источники проверены' if evidence.get('status')=='checked'
+               else 'Поиск выполнен, сведений недостаточно для ответа')
+        research_note=f'🌐 <b>{label}:</b> {checked:%d.%m.%Y %H:%M} (UTC+5)\n'
+        for index,source in enumerate(evidence.get('sources') or []):
+            research_note+=f'<a href="{html.escape(source["url"],quote=True)}">Официальный источник [{source["id"]}]</a>\n'
+            if (index+1)%8==0:research_note+='\n'
+        for name,identity in evidence.get('discoveries',{}).items():
+            research_note+=f'Сайт {html.escape(name)} найден поиском: <a href="{html.escape(identity["corroboration_url"],quote=True)}">проверка принадлежности</a>\n'
+        for name,reason in evidence.get('failures',{}).items():
+            research_note+=f'Не проверено: <b>{html.escape(name)}</b> — {html.escape(str(reason)[:180])}\n'
+        research_note+='<i>Проверьте соответствие источников ответу. Это не прайс магазина.</i>\n\n'
+        if evidence.get('citation_mode')=='bibliography':
+            research_note+='<i>Модель не привязала все источники к фразам. Перед отправкой проверьте, подтверждают ли они ответ. Ссылки видны только вам.</i>\n\n'
+    else:
+        research_note={'catalog_direct':'📋 <b>Цены:</b> ответ собран из каталога без генерации моделью.\n\n',
+                       'installation_consultation':'📲 <b>Установка:</b> инструкция или уточнение собраны по подтверждённым правилам; оформление заказа не выполнялось.\n\n',
+                       'owner_policy':'📋 <b>Условия:</b> ответ по правилам владельца; право клиента ещё не подтверждено.\n\n',
+                       'clarification':'💬 <b>Уточнение:</b> запрошены сведения для разбора; причина проблемы не установлена.\n\n',
+                       'visual_clarification':'📷 <b>Фото:</b> нужна более чёткая деталь; распознавание не запускалось.\n\n',
+                       'visual_review':'📷 <b>Фото:</b> ответ не прошёл проверку; нужен ручной разбор.\n\n',
+                       'catalog_review':'📋 <b>Каталог:</b> показана только подтверждённая часть; свободный ответ отклонён проверкой.\n\n',
+                       'unavailable':'🌐 <b>Интернет:</b> свежие сведения не подтверждены; нужна ручная проверка.\n\n',
+                       'not_recorded':'🌐 <i>Для старого черновика сведения о проверке не сохранены.</i>\n\n'}.get(
+                           evidence.get('status'),'')
+        if evidence.get('status') in ('unavailable','catalog_review','visual_clarification','visual_review') and evidence.get('diagnostic'):
+            from .auto_policy import owner_reason
+            research_note+=f'🛠 <b>Диагностика для владельца</b>\n{html.escape(owner_reason(evidence["diagnostic"]))}\n\n'
+    atomic_diagnostics=evidence.get('atomic_diagnostics',[])
+    if evidence.get('auto_block_reason'):
+        from .auto_policy import owner_reason
+        research_note+='🛑 <b>Почему этот ответ не отправлен автоматически</b>\n'+html.escape(owner_reason(evidence['auto_block_reason']))+'\nВыбранный режим не изменён. Исходный ответ оставлен вам для проверки.\n\n'
+    if atomic_diagnostics:
+        research_note+='🛠 <b>Проверка отдельных утверждений</b>\n'+html.escape('\n'.join(str(x) for x in atomic_diagnostics)[:1500])+'\n\n'
+    return research_note
