@@ -816,7 +816,8 @@ def classify_draft(reply, allowed_prices):
         return {'send': False, 'class': 'outcome',
                 'reason': 'Ответ утверждает результат оплаты, активации, возврата или обещает его.'}
     stated = {int(amount) for amount in _RUBLE.findall(text)}
-    if stated - set(allowed_prices or ()) and not snap_prices(text, allowed_prices)[1]:
+    unknown = stated - set(allowed_prices or ()) - _stated_totals(stated, allowed_prices)
+    if unknown and not snap_prices(text, allowed_prices)[1]:
         return {'send': False, 'class': 'unverified',
                 'reason': 'В ответе есть цена, которой нет в переданных ценах каталога или номиналов.'}
     if collects_case_data(text):
@@ -826,18 +827,30 @@ def classify_draft(reply, allowed_prices):
     return {'send': True, 'class': 'instruct', 'reason': 'Ответ объясняет порядок и не сообщает результат операции.'}
 
 
+def _stated_totals(stated, allowed_prices):
+    """Owner 20.11.2026: «сколько всё вместе» — a total of catalog prices named in the same reply is checked too."""
+    from itertools import combinations
+    known = sorted(set(stated) & set(allowed_prices or ()))
+    totals = set()
+    for size in (2, 3):
+        for combo in combinations(known, size):
+            totals.add(sum(combo))
+    return totals
+
+
 def snap_prices(text, allowed_prices):
     """A ₽ amount a few rubles off a known price is a typo, not an invented price.
 
     Returns (fixed_text, ok). ok is False when some amount has no single close known price.
     """
     allowed = sorted(set(allowed_prices or ()))
+    totals = _stated_totals({int(a) for a in _RUBLE.findall(str(text or ''))}, allowed)
     ok = True
 
     def fix(match):
         nonlocal ok
         amount = int(match.group(1))
-        if amount in allowed:
+        if amount in allowed or amount in totals:
             return match.group(0)
         near = [p for p in allowed if abs(p - amount) <= max(20, p * 0.02)]
         if len(near) != 1:
@@ -1295,7 +1308,11 @@ ORG_ID_NEXT = None  # replaced by the claude_activation owner answer (19.11.2026
 def tariff_question(rows):
     """Owner 12.11.2026: ask the tariff first; list them cheapest first, each with its price."""
     seen, lines = set(), []
-    for row in sorted(rows, key=lambda r: r.get('price') if type(r.get('price')) is int else 10**9):
+    order = []
+    for row in rows:  # several services: grouped by service, each cheapest first
+        if row.get('service_id') not in order:
+            order.append(row.get('service_id'))
+    for row in sorted(rows, key=lambda r: (order.index(r.get('service_id')), r.get('price') if type(r.get('price')) is int else 10**9)):
         label = (str(row.get('service') or '') + ' ' + str(row.get('plan') or '')).strip()
         if not label or label in seen:
             continue
@@ -1515,7 +1532,8 @@ def package(understanding, context, db=None, chat=None):
             catalog_ids |= {norm(row.get('service_id')), norm(row.get('service_key')), norm(row.get('service'))}
     catalog_ids.discard('')
     catalog_ids |= OWNER_CATALOG  # owner's catalog screenshot, 20.11.2026 — the snapshot may be partial
-    sid = norm(validated.get('service_id'))
+    # A service the client named but the catalog does not know sits in _other_service: check it too.
+    sid = norm(validated.get('service_id') or validated.get('_other_service'))
     if sid and any(sid in item or item in sid for item in catalog_ids if len(item) >= 3):
         sid_known = True
     else:
@@ -1525,7 +1543,7 @@ def package(understanding, context, db=None, chat=None):
         catalog_ids.add(sid)
     if catalog_ids and sid and sid not in catalog_ids:
         validated['payment_asked'] = False  # no payment card for a service the shop does not list
-        if validated.get('owner_topic') in ('none', 'activation_where'):
+        if validated.get('owner_topic') in ('none', 'activation_where', '', None):
             validated['owner_topic'] = 'off_catalog'
     elif catalog_ids and sid in catalog_ids and validated.get('owner_topic') == 'off_catalog':
         validated['owner_topic'] = 'none'  # the service is sold: name its plans instead of «какой тариф нужен»
@@ -1583,7 +1601,12 @@ def package(understanding, context, db=None, chat=None):
             and kind != 'appstore' and not _asked_tariff_before(context)
             and len(_service_rows(context, validated.get('service_id') or validated.get('_other_service') or '')) >= 2):
         # «Хочу оплатить чат» — first which tariff, then the card for that tariff.
-        reply = tariff_question(_service_rows(context, validated.get('service_id') or validated.get('_other_service') or ''))
+        rows = _service_rows(context, validated.get('service_id') or validated.get('_other_service') or '')
+        # Owner 20.11.2026: «и ChatGPT, и Midjourney» — the tariffs of every service the client named.
+        for other in sorted(_named_services(context)):
+            if other and other != (validated.get('service_id') or ''):
+                rows = rows + [row for row in _service_rows(context, other) if row not in rows]
+        reply = tariff_question(rows)
         validated['intent'] = 'choose_tariff'
         validated['questions'] = [reply]
         composed = True

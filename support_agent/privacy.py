@@ -280,5 +280,30 @@ def masked_preview(text):
 
 
 def _has_value(text):
-    """True when some word could be a password, code or token (what masked_preview would hide)."""
-    return '•••' in masked_preview(text) or len(str(text or '').splitlines()) > 12 or len(str(text or '').split()) > 60 * 12
+    """True when some word could be a password, code or token.
+
+    Owner 20.11.2026 (systemic): plain words are not secrets — «Game Pass Ultimate», «Notion Plus»
+    are product names. A value is a token with digits or symbols, an email, or any word that
+    directly follows a password/code label («пароль qwerty», «pass: abc»).
+    """
+    raw = str(text or '')
+    if len(raw.splitlines()) > 12 or len(raw.split()) > 60 * 12:
+        return True
+    label = re.compile(r'(?i)(?:пароль|парол\w*|password|код|code|токен|token)[:\-—]*|pass[:\-—]+')
+    words = raw.split()
+    for i, word in enumerate(words):
+        bare = word.strip('.,;!?)(«»"')
+        if not bare:
+            continue
+        if re.fullmatch(r'[\w.+-]+@[\w-]+(?:\.[\w-]+)+', bare):
+            return True
+        if label.fullmatch(bare.rstrip(':')) or label.fullmatch(bare):
+            if i + 1 < len(words) and not re.fullmatch(r'[А-Яа-яЁё]{1,20}[.,:;!?)(«»"-]*', words[i + 1]):
+                return True
+            continue
+        core = bare.strip(':-—')
+        if re.search(r'\d', core) and len(core) >= 4:
+            return True
+        if re.search(r'[^\w\s.,:;!?()«»"\'—-]', core) and len(core) >= 6:
+            return True
+    return False
