@@ -35,11 +35,10 @@ def _has(reply, patterns):
 
 def _tariffs(context):
     from .turn_understanding import _named_services, _service_rows, tariff_question
+    rows = []
     for service in sorted(_named_services(context or {})):
-        rows = _service_rows(context, service)
-        if rows:
-            return tariff_question(rows)
-    return ''
+        rows += _service_rows(context, service) or []  # owner 20.11.2026: every named service, not the first
+    return tariff_question(rows) if rows else ''
 
 
 def finalize(answer, understanding, context):

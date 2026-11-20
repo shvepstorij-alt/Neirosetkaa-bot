@@ -36,12 +36,13 @@ def parts():
     return (total + PART_SIZE - 1) // PART_SIZE
 
 
-async def run_dialogs(service, part):
+async def run_dialogs(service, part, cases=None, label=None):
     from .auto_policy import block_reason
     from .privacy import scrub, sensitive
     from .service import Service
     from .voice import masculine, trim_filler
-    cases = load_cases()[(part - 1) * PART_SIZE: part * PART_SIZE]
+    if cases is None:
+        cases = load_cases()[(part - 1) * PART_SIZE: part * PART_SIZE]
     revision = service.store.get('revision')
     calls = 0
 
@@ -111,7 +112,7 @@ async def run_dialogs(service, part):
     finally:
         store.db.close()
     if rows:
-        await _report(service, part, rows, calls)
+        await _report(service, part, rows, calls, label)
 
 
 def _block(row):
@@ -130,14 +131,14 @@ def _block(row):
     return '\n'.join(lines)
 
 
-async def _report(service, part, rows, calls):
+async def _report(service, part, rows, calls, label=None):
     verdicts = collections.Counter(row['grade']['verdict'] for row in rows)
     cats = collections.Counter(row['grade']['category'] for row in rows
                                if row['grade']['verdict'] not in ('good', 'right_stop') and row['grade']['category'] != 'none')
     stops = sum(1 for row in rows if row['stopped'])
     order = ['harmful', 'wrong', 'needless_stop', 'partial', 'error', 'right_stop', 'good']
     rows.sort(key=lambda row: (order.index(row['grade']['verdict']) if row['grade']['verdict'] in order else 9, row['n']))
-    summary = ['Проверка диалогов, часть %d: %d диалогов, запросов к модели %d. Клиентам ничего не отправлено.' % (part, len(rows), calls),
+    summary = [(label or 'Проверка диалогов, часть %d' % part) + ': %d диалогов, запросов к модели %d. Клиентам ничего не отправлено.' % (len(rows), calls),
                '', 'Оценки:']
     summary += ['• %s — %d' % (VERDICTS[key], verdicts[key]) for key in order if verdicts.get(key)]
     summary.append('Остановок всего: %d' % stops)
@@ -147,7 +148,7 @@ async def _report(service, part, rows, calls):
     model = str(getattr(service.ai, 'model', '') or '')
     body = 'Модель: ' + model + '\n\n' + text + '\n\n' + '=' * 40 + '\n\n' + '\n\n'.join(_block(row) for row in rows)
     try:
-        await service.tg.send_text_file(service.owner, 'dialogs_%d.txt' % part, body,
+        await service.tg.send_text_file(service.owner, ('live.txt' if label else 'dialogs_%d.txt' % part), body,
                                         'Все диалоги части %d, сначала проблемные. Перешлите файл Claude.' % part)
     except Exception:
         pass

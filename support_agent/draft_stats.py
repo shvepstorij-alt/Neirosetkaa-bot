@@ -93,3 +93,30 @@ def review_file(db, days=7, now=None):
                                  'Клиент: ' + row['client'], 'Черновик помощника: ' + row['draft'],
                                  'Вы ответили: ' + row['owner']]))
     return f'Черновики, которые вы исправили или заменили, за {days} дн.: {len(rows)}\n\n' + '\n\n'.join(blocks)
+
+
+
+def live_cases(db, days=30, limit=100, now=None):
+    """Owner 20.11.2026: every draft the owner corrected or replaced is a permanent check.
+
+    Case = what the client wrote, the conversation before it, and the owner's own answer
+    as the reference. /live re-answers them with the current assistant and grades it.
+    """
+    out = []
+    for row in _rows(db, days, now):
+        if row['outcome'] != 'replaced' or not row['owner'].strip():
+            continue
+        d = db.execute('SELECT chat, mid FROM drafts WHERE id=?', (row['id'],)).fetchone()
+        if not d:
+            continue
+        before = db.execute("SELECT role, text FROM messages WHERE chat=? AND mid<=? ORDER BY mid DESC LIMIT 12",
+                            (d['chat'], d['mid'])).fetchall()
+        before = list(reversed(before))
+        burst = []
+        while before and before[-1]['role'] == 'client':
+            burst.insert(0, before.pop()['text'] or '')
+        history = [['client' if r['role'] == 'client' else 'owner', r['text'] or ''] for r in before[-6:]]
+        if burst:
+            out.append({'history': history, 'client': '\n'.join(burst), 'owner': row['owner'].strip()[:1500],
+                        'draft_id': row['id']})
+    return out[-limit:]

@@ -314,6 +314,12 @@ def build_context(db, chat, facts):
             'hints': hint_services(burst, catalog)}
 
 
+OWNER_CATALOG = {'chatgpt', 'claude', 'grok', 'supergrok', 'zoom', 'perplexity', 'lovable', 'gamma', 'appstore', 'freepik',
+                 'telegrampremium', 'suno', 'kling', 'higgsfield', 'runway', 'midjourney', 'github', 'elevenlabs', 'heygen',
+                 'youtube', 'kimi', 'openrouter', 'spotify', 'zai', 'capcut', 'make', 'krea', 'genspark', 'canva', 'manus',
+                 'gemini', 'cursor'}
+
+
 def _verbatim(topic):
     try:
         from .faq import verbatim
@@ -1202,6 +1208,7 @@ _TOPIC_NEEDS = {
     'codex_install': r'codex|кодекс|кодэкс',
     'games_buy': r'(?i)игр[уыа]|\bгта\b|\bgta\b|\bfc\s?\d|издани|ключ',
     'chatgpt_credits': r'(?i)кредит',
+    'forgot_password': r'(?i)забыл|не\s+помню|сброс',
     'appstore_region': r'(?i)регион|стран',
     'games_consoles': r'(?i)\bps\s?[345]?\b|playstation|плейстейшн|плойк|xbox|иксбокс|хбокс|game\s*pass|гейм\s*пасс|psn|игр[уыа]|\bгта\b|\bgta\b|консол',
     'course_bonus_claude': r'(?i)клод|claude|клауд',
@@ -1500,6 +1507,29 @@ def package(understanding, context, db=None, chat=None):
         validated['payment_asked'] = True
         validated['owner_topic'] = 'none'
     _bind_credits(validated, context)
+    # Owner 20.11.2026 (bench): what the catalog has decides the route, not the topic label.
+    norm = lambda v: re.sub(r'[^a-zа-я0-9]', '', str(v or '').casefold())
+    catalog_ids = set()
+    for row in context.get('tariffs') or []:
+        if isinstance(row, dict):
+            catalog_ids |= {norm(row.get('service_id')), norm(row.get('service_key')), norm(row.get('service'))}
+    catalog_ids.discard('')
+    catalog_ids |= OWNER_CATALOG  # owner's catalog screenshot, 20.11.2026 — the snapshot may be partial
+    sid = norm(validated.get('service_id'))
+    if sid and any(sid in item or item in sid for item in catalog_ids if len(item) >= 3):
+        sid_known = True
+    else:
+        sid_known = False
+    sid = sid if not sid_known else next(iter(catalog_ids & {sid}), sid) or sid
+    if sid_known:
+        catalog_ids.add(sid)
+    if catalog_ids and sid and sid not in catalog_ids:
+        validated['payment_asked'] = False  # no payment card for a service the shop does not list
+        if validated.get('owner_topic') in ('none', 'activation_where'):
+            validated['owner_topic'] = 'off_catalog'
+    elif catalog_ids and sid in catalog_ids and validated.get('owner_topic') == 'off_catalog':
+        validated['owner_topic'] = 'none'  # the service is sold: name its plans instead of «какой тариф нужен»
+        validated['payment_asked'] = True
     reply = str((understanding or {}).get('reply') or '').strip()
     from .handoff import handoff_text
     from .payment_guide import (kind_for, merged_setup, missing_setup, mixes_activation_into_payment,
@@ -1845,7 +1875,8 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                 reply_text = answer_text.rstrip() + ('\n\n' + OWNER_FOLLOWUP if beyond and OWNER_FOLLOWUP not in answer_text else '')
                 # Owner 20.11.2026 (bench): several questions — the owner's text answers one of them,
                 # the model's checked draft keeps the answers to the others.
-                many = len(validated.get('questions') or []) > 1 or len(set(validated.get('situations') or [])) > 1
+                many = (len(validated.get('questions') or []) > 1 or len(set(validated.get('situations') or [])) > 1
+                        or validated.get('situation') == 'compare_choose')
                 if (many and reply and not answer.get('handoff') and answer_text[:60] not in reply
                         and classify_draft(reply, prices)['send']):
                     reply_text = reply.rstrip() + '\n\n' + reply_text

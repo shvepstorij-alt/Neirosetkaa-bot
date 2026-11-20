@@ -68,7 +68,10 @@ async def run_bench(service, mode='new'):
     try:
         for number, case in enumerate(cases, 1):
             history = case.get('history') or []
-            cid = store.ingest('bench', -number, len(history) + 1, 'client', scrub(case['client']), {}, time.time())
+            from .privacy import masked_preview, sensitive
+            secret = sensitive(case['client'])  # the same path as a real client message
+            text = '🔒 [данные доступа скрыты] ' + masked_preview(case['client']) if secret else scrub(case['client'])
+            cid = store.ingest('bench', -number, len(history) + 1, 'client', text, {'kind': 'sensitive'} if secret else {}, time.time())
             for mid, (role, said) in enumerate(history, 1):
                 store.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)',
                                  (cid, mid, 'owner' if role == 'owner' else 'client', said, '{}', time.time() - 600 + mid, 'stored'))
@@ -85,7 +88,10 @@ async def run_bench(service, mode='new'):
             stopped = bool(answer.get('handoff')) or bool(block_reason(dict(answer, reply=reply), answer.get('evidence'), case['client']))
             if job:
                 store.finish(job, reply, answer.get('summary', ''), answer.get('handoff', True))
-            rows.append((case, reply, stopped, check(case, reply, stopped)))
+            evidence = answer.get('evidence') if isinstance(answer.get('evidence'), dict) else {}
+            why = (str(evidence.get('handoff_reason') or evidence.get('diagnostic') or '')
+                   or str(block_reason(dict(answer, reply=reply), evidence, case['client']) or '')) if stopped else ''
+            rows.append((case, reply + ('\n  [почему стоп: ' + why[:200] + ']' if why else ''), stopped, check(case, reply, stopped)))
     except Exception as exc:
         await service.owner_message('Эталонная проверка остановлена: %s.' % (str(exc) or type(exc).__name__))
     finally:

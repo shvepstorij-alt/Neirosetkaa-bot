@@ -600,6 +600,19 @@ class Service:
             from .dialog_probe import run_probe
             self.research_probe_task=asyncio.create_task(run_probe(self))
             await self.owner_message('Запускаю 3 тестовых диалога, 6 ответов. До 20 учтённых этапов API в пределах дневного лимита; это не денежный лимит. История изолирована, отправки клиентам запрещены. /stop остановит следующие этапы; начатый запрос может списать средства.')
+        elif cmd=='/live':
+            from .dialog_check import run_dialogs
+            from .draft_stats import live_cases
+            running=getattr(self,'research_probe_task',None)
+            if running and not running.done():
+                await self.owner_message('Другая проверка уже выполняется. Дождитесь её окончания.')
+                return
+            cases=live_cases(self.store.db,30)
+            if not cases:
+                await self.owner_message('Пока нет черновиков, которые вы исправили или заменили своим ответом. Исправляйте неверные черновики кнопкой «✏️ Исправить» — они станут проверкой.')
+                return
+            self.research_probe_task=asyncio.create_task(run_dialogs(self,0,cases,'Проверка на ваших исправлениях'))
+            await self.owner_message('Запускаю проверку на ваших исправлениях: %d случаев за 30 дней. Помощник отвечает заново, ответ сравнивается с вашим. Клиентам ничего не отправляется.'%len(cases))
         elif cmd=='/bench':
             from .bench import load as bench_cases,run_bench
             running=getattr(self,'research_probe_task',None)
