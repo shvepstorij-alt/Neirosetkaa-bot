@@ -153,9 +153,12 @@ async def offers(product: str) -> list:
                               "rate": float(r) if r is not None else None})
             if not lines:
                 continue
-            lines.sort(key=lambda x: (x["cost"], -(x["rate"] or 0)))
+            # Сначала самые надёжные линии (процент получения кода), при
+            # равенстве — дешевле. Покупка по умолчанию — самая надёжная.
+            lines.sort(key=lambda x: (-(x["rate"] or 0), x["cost"]))
             b = lines[0]
             out.append({"country": country, "operator": b["operator"], "cost": b["cost"],
+                        "min_cost": min(x["cost"] for x in lines),
                         "count": sum(x["count"] for x in lines), "rate": b["rate"],
                         "lines": lines})
         return out
@@ -651,11 +654,13 @@ async def api_sms_offers_handler(request):
         ci = await country_info(o["country"])
         out.append({"country": o["country"], "iso": ci["iso"], "flag": _flag(ci["iso"]),
                     "en": ci["en"], "price": price_rub(o["cost"], rate, mk), "count": o["count"],
+                    "minPrice": price_rub(o.get("min_cost", o["cost"]), rate, mk),
                     "rate": o.get("rate"),
                     "lines": [{"op": ln["operator"], "price": price_rub(ln["cost"], rate, mk),
                                "count": ln["count"], "rate": ln["rate"]}
                               for ln in (o.get("lines") or [])]})
-    out.sort(key=lambda x: x["price"])
+    # Страны: сначала с самым высоким процентом получения кода.
+    out.sort(key=lambda x: (-(x["rate"] or 0), x["price"], -x["count"]))
     return _json({"ok": True, "name": product_name(product), "items": out})
 
 

@@ -181,6 +181,31 @@
   .acc{width:42px;height:42px;border-radius:50%;cursor:pointer;border:3px solid transparent;transition:transform .1s}
   .acc:active{transform:scale(.9)}
   .acc.on{border-color:var(--text)}
+
+/* Виртуальные номера */
+.sms-legend{font-size:12px;color:var(--text3);margin:0 2px 10px;line-height:1.4}
+.sms-c{padding:14px}
+.sms-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sms-cn{display:flex;align-items:center;font-weight:600;font-size:16px;min-width:0}
+.sms-cn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sms-pr{font-weight:700;font-size:17px;color:var(--green);white-space:nowrap}
+.sms-from{font-size:12px;font-weight:500;color:var(--text3);margin-right:4px}
+.sms-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 10px;font-size:12.5px}
+.sms-rate{padding:2px 8px;border-radius:8px;font-weight:600}
+.sms-rate.hi{background:rgba(48,209,88,.15);color:#30d158}
+.sms-rate.mid{background:rgba(255,204,0,.15);color:#ffcc00}
+.sms-rate.lo{background:rgba(255,69,58,.15);color:#ff6961}
+.sms-rate.na{color:var(--text3);font-weight:500;padding-left:0}
+.sms-qty{color:#30d158}
+.sms-more{margin-top:8px;text-align:center;font-size:13px;color:var(--text2);padding:9px;border:1px solid var(--border);border-radius:12px;cursor:pointer}
+.sms-lines{margin-top:8px}
+.sms-line{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border)}
+.sms-ln{flex:1;min-width:0}
+.sms-op{font-weight:600;font-size:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sms-badge{font-size:9.5px;font-weight:700;letter-spacing:.4px;padding:2px 6px;border-radius:6px}
+.sms-badge.best{background:rgba(90,200,250,.18);color:#5ac8fa}
+.sms-badge.low{background:rgba(48,209,88,.18);color:#30d158}
+.sms-buy{background:var(--green);color:#fff;font-weight:700;border-radius:10px;padding:9px 12px;cursor:pointer;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -1374,23 +1399,34 @@ function smsOffers(pid){
     var el=document.getElementById('sms-body'); if(!el)return;
     if(!d||!d.ok||!d.items||!d.items.length){ el.innerHTML='<div class="pm-err">'+_h((d&&d.msg)||'Сейчас нет номеров для этого сервиса.')+'</div>'; return; }
     window._smsOff={}; d.items.forEach(function(o){ window._smsOff[o.country]=o; });
-    el.innerHTML='<div class="note" style="color:var(--text3);font-size:12px;margin-bottom:8px">📦 — номеров в наличии · ✅ — процент успешных получений кода</div>'
+    el.innerHTML='<div class="sms-legend">Страны отсортированы по надёжности. <b>% получения</b> — какая доля покупателей получила код на номер этой линии.</div>'
       +d.items.map(function(o){
-      var rate=(o.rate!=null)?(' · ✅ '+Math.round(o.rate)+'%'):'';
-      var more=(o.lines&&o.lines.length>1)?('<div class="plan-buy" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--text2)" onclick="smsLines(this,\''+_h(o.country)+'\')">Варианты номеров ('+o.lines.length+')</div>'):'';
-      return '<div class="plan"><div class="plan-h"><div class="plan-n" style="display:flex;align-items:center">'+_smsFlag(o)+_h(_smsCountry(o))+'</div><div class="plan-p">'+(o.lines&&o.lines.length>1?'от ':'')+o.price+'₽</div></div>'
-        +'<div class="plan-d" style="color:var(--text3);font-size:12px">📦 '+o.count+' шт'+rate+'</div>'
-        +'<div class="plan-buy" onclick="smsMethod(this,\''+_h(o.country)+'\','+o.price+',\''+_h(o.lines&&o.lines[0]?o.lines[0].op:'')+'\')">Купить за '+o.price+'₽</div>'+more+'</div>';
+      var n=o.lines?o.lines.length:0;
+      return '<div class="plan sms-c">'
+        +'<div class="sms-row"><div class="sms-cn">'+_smsFlag(o)+'<span>'+_h(_smsCountry(o))+'</span></div>'
+        +'<div class="sms-pr">'+(n>1&&o.minPrice<o.price?'<span class="sms-from">от</span>'+o.minPrice:o.price)+'₽</div></div>'
+        +'<div class="sms-meta">'+_smsRate(o.rate)+'<span class="sms-qty">'+_smsNum(o.count)+' номеров</span></div>'
+        +'<div class="plan-buy" onclick="smsMethod(this,\''+_h(o.country)+'\','+o.price+',\''+_h(n?o.lines[0].op:'')+'\')">Купить самый надёжный · '+o.price+'₽</div>'
+        +(n>1?'<div class="sms-more" onclick="smsLines(this,\''+_h(o.country)+'\')">Все линии ('+n+') ▾</div>':'')
+        +'</div>';
     }).join('');
   });
 }
+function _smsNum(n){ return String(n||0).replace(/\B(?=(\d{3})+(?!\d))/g,' '); }
+function _smsRate(r){
+  if(r==null||!(r>0)) return '<span class="sms-rate na">% получения: нет данных</span>';
+  var v=Math.round(r*100)/100, cls=v>=50?'hi':(v>=20?'mid':'lo');
+  return '<span class="sms-rate '+cls+'">✉️ '+v+'%</span>';
+}
 function smsLines(btn,country){
   var o=(window._smsOff||{})[country]; if(!o||!btn)return;
-  var w=document.createElement('div');
+  var minP=Math.min.apply(null,o.lines.map(function(l){return l.price;}));
+  var w=document.createElement('div'); w.className='sms-lines';
   w.innerHTML=o.lines.map(function(l,i){
-    return '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)">'
-      +'<div style="flex:1;font-size:13px">Вариант '+(i+1)+'<div style="color:var(--text3);font-size:12px">📦 '+l.count+' шт'+(l.rate!=null?(' · ✅ '+Math.round(l.rate)+'%'):'')+'</div></div>'
-      +'<div class="plan-buy" style="width:auto;padding:8px 12px;margin:0" onclick="smsMethod(this,\''+_h(country)+'\','+l.price+',\''+_h(l.op)+'\')">'+l.price+'₽</div></div>';
+    var badge=(i===0&&l.rate>0)?'<span class="sms-badge best">ЛУЧШИЙ %</span>':(l.price===minP?'<span class="sms-badge low">ДЕШЕВЛЕ</span>':'');
+    return '<div class="sms-line"><div class="sms-ln"><div class="sms-op">'+_h(l.op.charAt(0).toUpperCase()+l.op.slice(1))+badge+'</div>'
+      +'<div class="sms-meta" style="margin:3px 0 0">'+_smsRate(l.rate)+'<span class="sms-qty">'+_smsNum(l.count)+' номеров</span></div></div>'
+      +'<div class="sms-buy" onclick="smsMethod(this,\''+_h(country)+'\','+l.price+',\''+_h(l.op)+'\')">'+l.price+'₽</div></div>';
   }).join('');
   btn.parentNode.replaceChild(w,btn);
 }
