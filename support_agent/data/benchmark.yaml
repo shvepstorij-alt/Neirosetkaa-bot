@@ -66,7 +66,7 @@ cases:
   need: ['sessionKey', 'согласн']
 - id: claude-max-paid
   client: "Оплатил Claude Max, что дальше?"
-  need: ['почт\\w* и парол']
+  need: ['почт\w* и парол']
   forbid: ['sessionKey']
 - id: thanks-only
   client: "Спасибо большое!"
@@ -110,3 +110,180 @@ cases:
   client: "Пришел ответ и Claude отклонил мою апелляцию\nЯ не понимаю в чем проблема?!"
   need: ['восстановить|новый аккаунт|заблокир']
   forbid: ['будет на связи']
+# ── Расширенный набор (20.11.2026): все направления магазина и типовые ситуации ──
+- id: suno-price
+  client: "сколько стоит суно про?"
+  need: ['₽']
+- id: kling-plans
+  client: "Какие тарифы есть у Kling?"
+  need: ['₽']
+  forbid: ['будет на связи']
+- id: higgsfield-credits
+  client: "Хигсфилд сколько кредитов на тарифе плюс?"
+  need: ['1\s?000|1000']
+- id: canva-business
+  client: "У вас есть Canva Business?"
+  need: ['pro']
+- id: gemini-want
+  client: "Хочу оформить Gemini"
+  need: ['₽|тариф']
+  forbid: ['парол']
+- id: cursor-price
+  client: "сколько курсор стоит в месяц"
+  need: ['₽']
+- id: telegram-premium
+  client: "Телеграм премиум можно у вас купить?"
+  need: ['₽|@neirosetkaa_bot']
+- id: spotify
+  client: "Spotify premium есть?"
+  need: ['₽|@neirosetkaa_bot']
+- id: youtube-premium
+  client: "ютуб премиум без рекламы есть?"
+  need: ['₽|@neirosetkaa_bot']
+- id: chatgpt-credits
+  client: "Как пополнить кредиты ChatGPT для Codex?"
+  need: ['кредит']
+  forbid: ['будет на связи']
+- id: perplexity-pro
+  client: "перплексити про хочу"
+  need: ['₽|тариф']
+- id: midjourney-which
+  client: "Какой тариф Midjourney лучше для начала?"
+  need: ['₽']
+- id: off-catalog-notion
+  client: "Можно оплатить Notion Plus?"
+  need: ['другой сервис|александр|ссылк']
+  forbid: ['на какой срок', 'будет на связи']
+- id: appstore-turkey
+  client: "Нужно пополнить App Store турецкий на 500 лир"
+  need: ['app store|icloud']
+- id: appstore-region-change
+  client: "Как сменить регион Apple ID?"
+  need: ['регион']
+- id: steam-wallet
+  client: "Пополнение Steam есть?"
+  need: ['гифт-карты и игры']
+- id: xbox-game-pass
+  client: "Game Pass Ultimate на месяц можно?"
+  need: ['гифт-карты и игры']
+- id: buy-game-ps5
+  client: "Хочу купить игру на PS5, EA FC 26"
+  need: ['резервн', 'почт']
+- id: roblox
+  client: "робуксы есть?"
+  need: ['гифт-карты и игры|roblox']
+- id: generation-coins
+  client: "Как купить монетки для генерации видео в боте?"
+  need: ['кредит|монет']
+  forbid: ['будет на связи']
+- id: course-which
+  client: "Я с курса, какую подписку мне дадут?"
+  need: ['chatgpt', 'claude']
+- id: course-chose-claude
+  history: [[owner, 'По бонусной подписке с курса можно оформить ChatGPT или Claude. Какой сервис выберете?']]
+  client: "Клод"
+  need: ['сгорит', 'sessionKey']
+- id: course-chose-gpt
+  history: [[owner, 'По бонусной подписке с курса можно оформить ChatGPT или Claude. Какой сервис выберете?']]
+  client: "чат гпт"
+  need: ['chatgpt|регистр|почт']
+  forbid: ['оплат\w* в боте', 'sessionKey']
+- id: vpn-needed-russia
+  client: "А чат гпт работает без впн в России?"
+  need: ['vpn|впн']
+- id: claude-russia
+  client: "клод работает в рф?"
+  need: ['vpn|впн']
+- id: token-how
+  client: "Где взять токен для активации чата гпт?"
+  need: ['api/auth/session']
+- id: activation-button-fails
+  client: "Нажимаю Активировать подписку, а мини-приложение не открывается"
+  need: ['регион|vpn|впн|токен']
+  forbid: ['будет на связи']
+- id: activation-error-screenshot
+  client: "При активации пишет ошибку, что делать?"
+  need: ['скрин|номер заказа']
+- id: login-problem
+  client: "не могу войти в аккаунт chatgpt"
+  need: ['скрин|куда']
+  forbid: ['будет на связи']
+- id: russian-email
+  client: "Можно зарегистрировать чат гпт на почту mail.ru?"
+  need: ['gmail|outlook']
+- id: subscription-term
+  client: "Подписка на сколько оформляется? На год можно?"
+  need: ['месяц']
+- id: autopay
+  client: "Деньги будут списываться автоматически каждый месяц?"
+  need: ['автосписан|не списыва|вручную|сам']
+- id: renew-same-account
+  client: "Хочу продлить подписку на тот же аккаунт"
+  need: ['@neirosetkaa_bot|почт']
+- id: end-date
+  client: "Как посмотреть до какого числа у меня подписка в чате гпт?"
+  need: ['настройк|settings|аккаунт|подписк']
+  forbid: ['будет на связи']
+- id: foreign-card
+  client: "Можно оплатить казахстанской картой?"
+  need: ['сбп|мир']
+- id: belarus-card
+  client: "У меня белорусская карта, пройдет оплата?"
+  need: ['мир|сбп|из рф|росси']
+- id: promo
+  client: "Есть промокод на скидку?"
+  forbid: ['будет на связи']
+- id: giveaway
+  client: "Как участвовать в розыгрыше?"
+  forbid: ['будет на связи']
+- id: who-are-you
+  client: "Это бот отвечает?"
+  need: ['помощник']
+- id: still-there
+  client: "Вы тут?"
+  need: ['связи|здесь|тут']
+- id: multi-question
+  client: "Сколько стоит ChatGPT Plus? И нужен ли VPN? И можно ли оплатить картой Мир?"
+  need: ['₽', 'vpn|впн', 'мир']
+- id: compare-gpt-claude
+  client: "Что лучше для программирования, ChatGPT или Claude?"
+  need: ['chatgpt|codex', 'claude']
+  forbid: ['будет на связи']
+- id: pro-for-team
+  client: "Нам нужен ChatGPT на 5 человек, какой тариф брать?"
+  need: ['₽|тариф|business|team|plus']
+- id: paid-with-order
+  client: "Оплатил заказ #12345, подписка не пришла"
+  forbid: ['номер заказа']
+- id: receipt
+  client: "Чек об оплате"
+  need: ['чек']
+- id: complaint-charged-twice
+  client: "У меня списали деньги два раза!"
+  stop: true
+- id: cancel-subscription
+  client: "Как отменить подписку, чтобы не списывали?"
+  need: ['автосписан|не списыва|не продлева|вручную']
+- id: english-client
+  client: "Hi, how much is ChatGPT Plus?"
+  need: ['₽|rub']
+- id: owner-step-email
+  history: [[owner, 'Пришлите, пожалуйста, почту, на которую оформить подписку.']]
+  client: "ivan.petrov@gmail.com"
+  forbid: ['тариф\w* по возраст', 'будет на связи']
+- id: owner-step-done
+  history: [[owner, 'Зарегистрируйтесь на chatgpt.com с этой почтой и напишите, когда будет готово.']]
+  client: "готово"
+  need: ['api/auth/session|токен']
+- id: grok-bot
+  client: "Нужен SuperGrok для Grok Bot в Telegram"
+  need: ['cursor|grok']
+- id: zoom-renew
+  client: "Продлите пожалуйста Zoom"
+  need: ['почт|парол|@neirosetkaa_bot']
+- id: capcut-account
+  client: "Капкат про на мой аккаунт можно?"
+  need: ['нов\w* аккаунт|аккаунт']
+- id: price-unknown-plan
+  client: "Сколько стоит ChatGPT Pro 20x?"
+  need: ['₽']
