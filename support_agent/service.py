@@ -606,8 +606,10 @@ class Service:
             if running and not running.done():
                 await self.owner_message('Другая проверка уже выполняется. Дождитесь её окончания.')
                 return
-            self.research_probe_task=asyncio.create_task(run_bench(self))
-            await self.owner_message('Запускаю эталонную проверку: %d случаев, около %d запросов к модели. Клиентам ничего не отправляется.'%(len(bench_cases()),len(bench_cases())*2))
+            mode='all' if len(parts)>1 and parts[1]=='all' else 'new'
+            self.research_probe_task=asyncio.create_task(run_bench(self,mode))
+            await self.owner_message(('Запускаю полную эталонную проверку: %d случаев.'%len(bench_cases()) if mode=='all'
+                                      else 'Запускаю проверку новых и непрошедших случаев эталона.')+' Клиентам ничего не отправляется.')
         elif cmd=='/dialogs':
             from .dialog_check import parts as dialog_parts,run_dialogs
             total=dialog_parts()

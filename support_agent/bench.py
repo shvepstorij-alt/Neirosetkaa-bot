@@ -34,12 +34,23 @@ def check(case, reply, stopped):
     return problems
 
 
-async def run_bench(service):
+async def run_bench(service, mode='new'):
     from .auto_policy import block_reason
     from .privacy import scrub
     from .service import Service
     from .voice import masculine, trim_filler
     cases = load()
+    # Owner 20.11.2026: «/bench» runs only new and previously failed cases; «/bench all» runs everything.
+    import json
+    try:
+        passed_before = set(json.loads(service.store.get('bench_passed') or '[]'))
+    except Exception:
+        passed_before = set()
+    if mode != 'all':
+        cases = [case for case in cases if case['id'] not in passed_before]
+        if not cases:
+            await service.owner_message('Все случаи эталона уже прошли. Новых нет. Полный прогон перед релизом: /bench all.')
+            return
     store = Store(':memory:', batch_seconds=300)
     isolated = Service(store, NoTelegram(), service.ai, CatalogOnly(service.shop, service.owner), 0, {-1})
     calls = 0
@@ -82,7 +93,10 @@ async def run_bench(service):
     if not rows:
         return
     passed = sum(1 for row in rows if not row[3])
-    lines = ['Эталонная проверка: %d из %d прошли. Запросов к модели: %d.' % (passed, len(rows), calls), '']
+    now_passed = {case['id'] for case, _, _, problems in rows if not problems}
+    now_failed = {case['id'] for case, _, _, problems in rows if problems}
+    service.store.put('bench_passed', json.dumps(sorted((passed_before - now_failed) | now_passed)))
+    lines = ['Эталонная проверка (%s): %d из %d прошли. Запросов к модели: %d.' % ('полная' if mode == 'all' else 'новые и непрошедшие', passed, len(rows), calls), '']
     for case, reply, stopped, problems in sorted(rows, key=lambda r: not r[3]):
         if not problems:
             continue
