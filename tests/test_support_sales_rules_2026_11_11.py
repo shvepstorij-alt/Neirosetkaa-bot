@@ -1368,7 +1368,7 @@ class Owner20NovTests(unittest.TestCase):
     def test_games_topic_and_short_off_catalog(self):
         from support_agent.faq import load_faq
         topics = {t['id']: t for t in load_faq()['topics']}
-        self.assertIn('PlayStation', topics['games_consoles']['answer'])
+        self.assertIn('Гифт-карты и игры', topics['games_consoles']['answer'])
         self.assertNotIn('На какой срок', topics['off_catalog']['answer'])
 
 
@@ -1387,7 +1387,7 @@ class BenchTests(unittest.TestCase):
         self.assertIn('Гифт-карты и игры', business_profile())
         topics = {t['id']: t['answer'] for t in load_faq()['topics']}
         self.assertIn('бонус с курса сгорит', topics['course_bonus_claude'])
-        self.assertIn('резервные коды', topics['games_consoles'])
+        self.assertIn('резервные коды', topics['games_buy'])
 
 
 class Bench20NovTests(unittest.TestCase):
