@@ -1388,3 +1388,14 @@ class BenchTests(unittest.TestCase):
         topics = {t['id']: t['answer'] for t in load_faq()['topics']}
         self.assertIn('бонус с курса сгорит', topics['course_bonus_claude'])
         self.assertIn('резервные коды', topics['games_consoles'])
+
+
+class Bench20NovTests(unittest.TestCase):
+    def test_no_activation_data_before_payment(self):
+        from support_agent.playbook import finalize
+        reply = ('Claude Max стоит 9 990 ₽.\n\nПришлите почту и пароль от аккаунта Claude и напишите, что согласны с рисками.')
+        out = finalize({'reply': reply, 'handoff': False}, {'situation': 'buy'}, {'burst': 'Хочу оформить Claude Max'})
+        self.assertNotIn('пароль', out['reply'])
+        self.assertIn('После оплаты', out['reply'])
+        paid = finalize({'reply': reply, 'handoff': False}, {'situation': 'paid_not_working'}, {'burst': 'оплатил Max'})
+        self.assertIn('пароль', paid['reply'])
