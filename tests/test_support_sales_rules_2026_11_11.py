@@ -900,7 +900,8 @@ class SecondDialogRunTests(unittest.TestCase):
     def test_rules(self):
         from support_agent.faq import usable_answer
         text = usable_answer('activate_for_me')
-        self.assertLess(text.index('токен'), text.index('пароль'))
+        self.assertIn('Активировать подписку', text)
+        self.assertNotIn('пароль', text)  # owner 20.11.2026: no email+password fallback
         self.assertIn('chatgpt.com', usable_answer('gmail_confirmed'))
 
 
@@ -1206,9 +1207,11 @@ class Dialogs19NovTests(unittest.TestCase):
 
     def test_activation_help_is_service_aware(self):
         from support_agent.faq import load_faq
-        answer = next(t['answer'] for t in load_faq()['topics'] if 'Если это Claude' in t['answer'])
-        self.assertIn('sessionKey', answer)
+        # Owner 20.11.2026 (live.txt): first the order number and the bot button, no token or sessionKey up front.
+        answer = next(t['answer'] for t in load_faq()['topics'] if t['id'] == 'activation_failed')
         self.assertIn('номер заказа', answer)
+        self.assertIn('Активировать подписку', answer)
+        self.assertNotIn('sessionKey', answer)
 
 
 class ClaudePlans19NovTests(unittest.TestCase):
@@ -1447,3 +1450,45 @@ class Bench20Nov3Tests(unittest.TestCase):
         text = tariff_question([{'service_id': 'b', 'service': 'B', 'plan': 'x', 'price': 500},
                                 {'service_id': 'a', 'service': 'A', 'plan': 'y', 'price': 100}])
         self.assertLess(text.index('B x'), text.index('A y'))
+
+
+class OwnerStepAndAutoGateTests(unittest.TestCase):
+    """live.txt 20.11.2026: Alexander's open step is his; auto-reply only in proven situations."""
+
+    def _h(self, *messages):
+        return {'history': [{'role': r, 'text': t, 'at': 1000 + i * 60} for i, (r, t) in enumerate(messages)]}
+
+    def test_owner_open_step(self):
+        from support_agent.turn_understanding import owner_open_step
+        self.assertTrue(owner_open_step(self._h(('owner', 'Можете пожалуйста дать еще пароль'), ('client', 'Сейчас отправлю'))))
+        self.assertTrue(owner_open_step(self._h(('owner', 'Код с почты'), ('client', '483920'))))
+        self.assertTrue(owner_open_step(self._h(('owner', '5 минут пожалуйста'), ('client', 'Что не так?'))))
+        self.assertFalse(owner_open_step(self._h(('owner', '🎉 Ваша подписка успешно активирована!'), ('client', 'Что делать?'))))
+        self.assertFalse(owner_open_step(self._h(('owner', 'Да, чат Гпт хорошо подходит'), ('client', 'Давайте оплатим'))))
+        self.assertFalse(owner_open_step(self._h(('client', 'Хочу Plus'),)))
+        # a sales question from Alexander is continued by the assistant
+        self.assertFalse(owner_open_step(self._h(('owner', 'В каком регионе ваш Apple ID?'), ('client', 'Турция'))))
+        # an independent question is answered; a status ping is Alexander's
+        self.assertFalse(owner_open_step(self._h(('owner', 'Напишите как она закончится'), ('client', 'Это которую я через кодекс оплачивала?'))))
+        self.assertTrue(owner_open_step(self._h(('owner', 'можем позже еще раз попробовать'), ('client', 'Как там?'))))
+
+    def test_question_beats_thanks(self):
+        from support_agent.turn_understanding import _situation_consistent
+        burst = 'После авторизации можно оплатить Codex через бота?\nхорошо. большое спасибо.'
+        v = _situation_consistent({'situation': 'thanks_only', 'owner_topic': 'thanks'}, {'burst': burst})
+        self.assertNotEqual(v['situation'], 'thanks_only')
+        self.assertNotEqual(v['owner_topic'], 'thanks')
+        v = _situation_consistent({'situation': 'thanks_only', 'owner_topic': 'thanks'}, {'burst': 'большое спасибо!'})
+        self.assertEqual(v['situation'], 'thanks_only')
+
+    def test_auto_only_in_proven_situations(self):
+        from support_agent.playbook import auto_hold_reason
+        self.assertIsNone(auto_hold_reason('buy', {'situations': ['price']}))
+        self.assertIsNotNone(auto_hold_reason('owner_step'))
+        self.assertIsNotNone(auto_hold_reason('buy', {'situations': ['account_login']}))
+        self.assertIsNone(auto_hold_reason(''))
+
+    def test_holds_block_auto(self):
+        from support_agent.auto_policy import block_reason
+        for key in ('owner_step_hold', 'situation_hold'):
+            self.assertIsNotNone(block_reason({'reply': 'Хорошо', 'handoff': False}, {key: True}))

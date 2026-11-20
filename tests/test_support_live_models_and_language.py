@@ -98,7 +98,7 @@ class LanguageTests(unittest.TestCase):
 
 class OwnerRules12_11bTests(unittest.TestCase):
     def test_phone_vpn_abroad_app_update(self):
-        self.assertIn('Александр', usable_answer('phone_number'))
+        self.assertIn('Виртуальные номера', usable_answer('phone_number'))  # owner 20.11.2026: sold in the bot
         self.assertIn('не нужен', usable_answer('vpn_abroad'))
         self.assertIn('просит обновиться', usable_answer('app_download'))
 
