@@ -967,6 +967,27 @@ async def _a9527_release_expired_claude(conn) -> int:
     return n
 
 
+
+async def _released_codes_text(rows) -> str:
+    """Список возвращённых в пул кодов: код · тариф · клиент · заказ."""
+    import re as _re_rc
+    out = []
+    for r in list(rows)[:20]:
+        _oid = r.get("order_id") or ""
+        _m = _re_rc.match(r"^[a-z]+_(\d+)_", _oid)
+        _who = ""
+        if _m:
+            try:
+                _who = await _who_user(int(_m.group(1)))
+            except Exception:
+                _who = f"<code>{_m.group(1)}</code>"
+        out.append(f"• <code>{r['code']}</code> · {r.get('plan') or '—'}"
+                   + (f" · 👤 {_who}" if _who else "")
+                   + (f"\n   🆔 <code>{_oid}</code>" if _oid else ""))
+    if len(rows) > 20:
+        out.append(f"… и ещё {len(rows) - 20}")
+    return "\n".join(out)
+
 async def gpt_codes_cleanup_loop():
     """Раз в 30 минут освобождает коды, зарезервированные дольше окна активации.
 
@@ -1013,7 +1034,7 @@ async def gpt_codes_cleanup_loop():
                 await conn.execute(
                     "DELETE FROM gpt_pending_activations WHERE expires_at < NOW()")
                 # aichongz — отдельно и только с подтверждением сайта (ниже).
-                released = await conn.execute(
+                released = await conn.fetch(
                     """UPDATE gpt_codes
                        SET is_used=FALSE, reserved_at=NULL
                        WHERE is_used=TRUE
@@ -1024,7 +1045,8 @@ async def gpt_codes_cleanup_loop():
                          AND NOT EXISTS (
                              SELECT 1 FROM gpt_pending_activations p
                              WHERE p.code = gpt_codes.code
-                         )""",
+                         )
+                       RETURNING code, plan, order_id""",
                     _release_after_h
                 )
                 try:
@@ -1033,14 +1055,14 @@ async def gpt_codes_cleanup_loop():
                         logging.info(f"🔑 gpt_codes cleanup aichongz: вернул {_a9n} (сайт: свободны)")
                 except Exception as _e_a9c:
                     logging.warning(f"gpt_codes cleanup aichongz: {_e_a9c}")
-                if released and released != "UPDATE 0":
-                    logging.info(f"🔑 gpt_codes cleanup: {released}")
+                if released:
+                    logging.info(f"🔑 gpt_codes cleanup: вернул {len(released)}")
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"🔑 <b>Коды ChatGPT возвращены в пул</b>\n"
-                            f"Клиенты оплатили но не активировали за {_release_after_h} ч.\n"
-                            f"<i>{released}</i>",
+                            f"🔑 <b>Коды ChatGPT возвращены в пул ({len(released)})</b>\n"
+                            f"Клиенты оплатили, но не активировали за {_release_after_h} ч.\n\n"
+                            + await _released_codes_text([dict(r) for r in released]),
                             parse_mode="HTML"
                         )
                     except Exception:
@@ -2119,15 +2141,20 @@ async def perplexity_codes_cleanup_loop():
                     "SELECT code, user_id FROM perplexity_pending_activations "
                     "WHERE expires_at < NOW() "
                     "  AND (bpa_order_id IS NOT NULL OR COALESCE(org_id,'') <> '')")
-                released = await conn.execute(
-                    """UPDATE perplexity_codes
+                released = await conn.fetch(
+                    """WITH old AS (
+                           SELECT id, order_id FROM perplexity_codes
+                           WHERE is_used=TRUE
+                             AND used_by IS NULL
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM perplexity_pending_activations p
+                                 WHERE p.code = perplexity_codes.code
+                             )
+                           FOR UPDATE)
+                       UPDATE perplexity_codes c
                        SET is_used=FALSE, used_by=NULL, used_at=NULL, order_id=NULL, org_id=NULL
-                       WHERE is_used=TRUE
-                         AND used_by IS NULL
-                         AND NOT EXISTS (
-                             SELECT 1 FROM perplexity_pending_activations p
-                             WHERE p.code = perplexity_codes.code
-                         )"""
+                       FROM old WHERE c.id = old.id
+                       RETURNING c.code, c.plan, old.order_id"""
                 )
                 if _stuck_px:
                     logging.warning(f"perplexity: {len(_stuck_px)} кодов с начатой активацией "
@@ -2147,14 +2174,14 @@ async def perplexity_codes_cleanup_loop():
                             parse_mode="HTML")
                     except Exception as _e_px_n:
                         logging.error(f"perplexity stuck notify: {_e_px_n}")
-                if released and released != "UPDATE 0":
-                    logging.info(f"\U0001f511 perplexity_codes cleanup: {released}")
+                if released:
+                    logging.info(f"\U0001f511 perplexity_codes cleanup: вернул {len(released)}")
                     try:
                         await bot.send_message(
                             ADMIN_ID,
-                            f"\U0001f511 <b>Коды Perplexity возвращены в пул</b>\n"
-                            f"Клиенты оплатили но не активировали в течение 2 часов.\n"
-                            f"<i>{released}</i>",
+                            f"\U0001f511 <b>Коды Perplexity возвращены в пул ({len(released)})</b>\n"
+                            f"Клиенты оплатили, но не активировали за 2 часа.\n\n"
+                            + await _released_codes_text([dict(r) for r in released]),
                             parse_mode="HTML"
                         )
                     except Exception:

@@ -310,9 +310,14 @@ async def menu_subs(cb: CallbackQuery):
     kb_rows = []
     for r in rows:
         try:
-            # expires_at — aware (TIMESTAMPTZ). Берём aware-now, иначе вычитание падает и дни=0.
-            _now_aw = _dt_s.datetime.now(r["expires_at"].tzinfo or _dt_s.timezone.utc)
-            days = max(0, (r["expires_at"] - _now_aw).days)
+            # user_subscriptions.expires_at — TIMESTAMP БЕЗ зоны (naive). Раньше
+            # из него вычиталось aware-now → TypeError → «ещё 0 дн.» у всех
+            # (скрин 20.11.2026: «0 дн. (до 25.11.2026)»). Считаем по датам,
+            # приводя обе стороны к одному виду.
+            _exp = r["expires_at"]
+            _now = (_dt_s.datetime.now(_exp.tzinfo) if _exp.tzinfo
+                    else _dt_s.datetime.now())
+            days = max(0, (_exp.date() - _now.date()).days)
         except Exception:
             days = 0
         nm = r["service_name"]; pl = r["plan_name"] or ""

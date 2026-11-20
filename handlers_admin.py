@@ -5481,3 +5481,51 @@ async def cb_gpt_purge_fulfilled(cb: CallbackQuery):
     except Exception as e:
         logging.error(f"gpt_purge_fulfilled: {e}", exc_info=True)
         await cb.message.answer(f"❌ Не удалось очистить: {str(e)[:200]}")
+
+
+# ── /other_tiers — тарифы «Другой сервис» 10$…100$ с шагом 1$ (Александр 20.11.2026) ──
+# Цена = $ × 100 − 10 ₽ (60$ → 5990₽). Закуп $ = номиналу тарифа.
+# Повторный запуск безопасен: тарифы с уже существующим названием пропускаются.
+@dp.message(F.text.startswith("/other_tiers"), StateFilter("*"))
+async def admin_other_tiers(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    from config import SHOP_CATALOG
+    from db import get_pool
+    _key = next((k for k, v in SHOP_CATALOG.items()
+                 if "другой" in str((v or {}).get("name", "")).lower()), None)
+    if not _key:
+        await message.answer("❌ Не нашёл в каталоге сервис «Другой сервис».")
+        return
+    scat = SHOP_CATALOG[_key]
+    plans = scat.setdefault("plans", [])
+    have = {(p.get("name") or "").strip() for p in plans}
+    added, skipped = [], []
+    pool = await get_pool()
+    for usd in range(10, 101):
+        name, price = f"{usd}$", usd * 100 - 10
+        if name in have:
+            skipped.append(name); continue
+        runtime_idx = len(plans)
+        async with pool.acquire() as conn, conn.transaction():
+            new_idx = int(await conn.fetchval(
+                "SELECT COALESCE(MAX(plan_idx),-1) FROM bot_shop_items WHERE key=$1", _key)) + 1
+            new_sort = int(await conn.fetchval(
+                "SELECT COALESCE(MAX(sort_order),-1) FROM bot_shop_items WHERE key=$1", _key)) + 1
+            await conn.execute(
+                "INSERT INTO bot_shop_items (key, plan_idx, service_name, emoji, service_desc, "
+                "plan_name, price, stars, plan_desc, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                _key, new_idx, scat.get("name", _key), scat.get("emoji", ""), scat.get("desc", ""),
+                name, price, 0, f"Оплата подписки другого сервиса на {usd}$", new_sort)
+            await conn.execute(
+                "INSERT INTO settings (key,value) VALUES ($1,$2) "
+                "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+                f"cost_usd:{_key}:{runtime_idx}", str(usd))
+        plans.append({"name": name, "price": price, "stars": 0,
+                      "desc": f"Оплата подписки другого сервиса на {usd}$", "_db_plan_idx": new_idx})
+        added.append(f"{name} — {price}₽ (закуп {usd}$)")
+    await message.answer(
+        f"🧩 <b>{scat.get('name')}</b>\n\n"
+        + ("✅ Добавлено:\n" + "\n".join(f"• {a}" for a in added) if added else "Новых тарифов нет.")
+        + (f"\n\n⏭ Уже были: {', '.join(skipped)}" if skipped else ""),
+        parse_mode="HTML")
