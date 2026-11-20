@@ -9,6 +9,8 @@ import yaml
 
 PATH = pathlib.Path(__file__).with_name('data') / 'playbook.yaml'
 HARD_STOP = {'refund_complaint'}
+_ASKS_DATA = re.compile(r'(?i)(?:пришлите|отправьте|нужн[ыа])[^.\n]{0,80}(?:почт\w*\s+и\s+парол|парол|sessionkey|токен|резервн\w+\s+код)')
+AFTER_PAY = 'Оплатить можно в боте @neirosetkaa_bot: «Каталог» → сервис → тариф, по СБП или картой «Мир». После оплаты подскажу, что понадобится для активации.'
 
 
 @functools.lru_cache(maxsize=1)
@@ -53,6 +55,13 @@ def finalize(answer, understanding, context):
     from .turn_understanding import BUY_STEPS
     reply = str(answer.get('reply') or '').strip()
     burst = str((context or {}).get('burst') or '')
+    stripped = False
+    if set(situations) & {'buy', 'price', 'compare_choose'} and not set(situations) & {'paid_not_working', 'activation_step', 'owner_step'}:
+        # Owner 20.11.2026 (bench): activation data is asked only after payment.
+        kept = [p for p in re.split(r'\n\s*\n', reply) if not _ASKS_DATA.search(p)]
+        if len(kept) != len(re.split(r'\n\s*\n', reply)):
+            reply = '\n\n'.join(kept + [AFTER_PAY]).strip()
+            stripped = True
     window = ' '.join(str(r.get('text') or '') for r in (context or {}).get('window') or [] if isinstance(r, dict))
     added = []
     for name in dict.fromkeys(situations):
@@ -78,7 +87,7 @@ def finalize(answer, understanding, context):
         if part and part not in reply:
             added.append(part)
             reply = (reply + '\n\n' + part).strip()
-    if not added:
+    if not added and not stripped:
         return answer
     evidence = dict(answer.get('evidence') or {})
     evidence['playbook'] = situations
