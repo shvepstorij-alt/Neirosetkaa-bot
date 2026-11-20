@@ -621,7 +621,7 @@ class LateEveningRulesTests(unittest.TestCase):
         from support_agent.faq import usable_answer
         self.assertIn('другой регион в VPN', usable_answer('activation_button_fails'))
         self.assertIn('одним файлом', usable_answer('activate_for_me'))
-        self.assertIn('ChatGPT или Claude', usable_answer('course_subscriptions'))
+        self.assertIn('ChatGPT', usable_answer('course_subscriptions'))  # owner 20.11.2026: ChatGPT by default
 
 
 PAID = ('Приветствую! Оплатил заказ #10502\nСервис: Kimi\nТариф: Plus\n'
@@ -788,7 +788,7 @@ class UnclearMessageTests(unittest.TestCase):
 class ThirdRealRunTests(unittest.TestCase):
     def test_service_kinds_by_live_names(self):
         from support_agent.payment_guide import kind_for
-        self.assertEqual(kind_for('perplexity_pro', 'Pro', [], 'Perplexity'), 'perplexity')
+        self.assertEqual(kind_for('perplexity_pro', 'Pro', [], 'Perplexity'), 'email_only')  # owner 20.11.2026: email + code
         self.assertEqual(kind_for('z_ai', 'lite', [], 'Z.ai'), 'zai')
         self.assertEqual(kind_for('kimi', 'Plus', [], 'Kimi'), 'link_pay')
         self.assertEqual(kind_for('gpt_credits', '250', [], 'Пополнение кредитов ChatGPT'), 'chatgpt_credits')
@@ -878,7 +878,9 @@ class DialogCheckFindingsTests(unittest.TestCase):
 
     def test_thanks(self):
         from support_agent.owner_scenarios import quick_reply
-        self.assertEqual(quick_reply('Спасибо!')['reply'], 'Обращайтесь! Хорошего дня)')
+        self.assertEqual(quick_reply('Спасибо!')['reply'], 'Рад помочь, обращайтесь!')  # owner 20.11.2026
+        self.assertEqual(quick_reply('Спасибо, хорошего вечера')['reply'], 'Рад помочь! И вам хорошего вечера!')
+        self.assertIsNone(quick_reply('Спасибо, а как скачать на айфон?'))
         self.assertIsNone(quick_reply('Спасибо, а как продлить?'))
 
     def test_long_wait_words(self):
@@ -901,7 +903,7 @@ class SecondDialogRunTests(unittest.TestCase):
         from support_agent.faq import usable_answer
         text = usable_answer('activate_for_me')
         self.assertIn('Активировать подписку', text)
-        self.assertNotIn('пароль', text)  # owner 20.11.2026: no email+password fallback
+        self.assertLess(text.index('Активировать подписку'), text.index('пароль'))  # owner 20.11.2026: bot first, email+password only as a fallback
         self.assertIn('chatgpt.com', usable_answer('gmail_confirmed'))
 
 
@@ -1222,7 +1224,8 @@ class ClaudePlans19NovTests(unittest.TestCase):
         self.assertNotIn('пароль', pro)
         for plan in ('Max', 'Ultra'):
             text = compose(parse('Оплатил заказ #1\nСервис: Claude\nТариф: %s\nID: 5' % plan), [])[1]
-            self.assertIn('почту и пароль', text)
+            self.assertIn('почт', text)  # owner 20.11.2026: email of the Claude account, a code from it, verification
+            self.assertNotRegex(text, r'(?i)пришлите[^.]{0,40}пароль|почту\s+и\s+пароль')
             self.assertIn('иностранной карты', text)
             self.assertNotIn('sessionKey', text)
 
@@ -1492,3 +1495,47 @@ class OwnerStepAndAutoGateTests(unittest.TestCase):
         from support_agent.auto_policy import block_reason
         for key in ('owner_step_hold', 'situation_hold'):
             self.assertIsNotNone(block_reason({'reply': 'Хорошо', 'handoff': False}, {key: True}))
+
+
+class Live2Fixes20NovTests(unittest.TestCase):
+    """live2 / bench6 20.11.2026: systemic fixes."""
+
+    rows = [{'service_id': 'cursor', 'service': 'Cursor', 'plan': 'Plus', 'price': 990},
+            {'service_id': 'supergrok', 'service': 'SuperGrok', 'plan': 'SuperGrok', 'price': 3090},
+            {'service_id': 'other', 'service': 'Другой сервис', 'plan': '10$', 'price': 990}]
+
+    def test_grok_gets_cursor_and_no_other_service_slots(self):
+        from support_agent.turn_understanding import _service_rows
+        self.assertEqual([r['service'] for r in _service_rows({'tariffs': self.rows}, 'grok')], ['Cursor'])
+        self.assertEqual(_service_rows({'tariffs': self.rows}, 'other'), [])
+
+    def test_owner_profile_prices_are_known(self):
+        from support_agent.turn_understanding import _owner_profile_prices
+        import support_agent.playbook as pb
+        old = pb.business_profile
+        pb.business_profile = lambda: 'ChatGPT Business: 2 аккаунта = 4990 ₽; Claude Pro + верификация — 6990 ₽'
+        try:
+            self.assertIn(4990, _owner_profile_prices())
+            self.assertIn(6990, _owner_profile_prices())
+        finally:
+            pb.business_profile = old
+
+    def test_paid_line_only_after_payment(self):
+        from support_agent.playbook import finalize
+        answer = {'reply': 'Какую ошибку показывает кнопка и какой товар оплачиваете?', 'handoff': False, 'evidence': {}}
+        out = finalize(answer, {'situation': 'paid_not_working'},
+                       {'burst': 'пришлите номер карты, по этим кнопкам никак', 'history': []})
+        self.assertNotIn('номер заказа', out['reply'])
+
+    def test_draft_only_is_not_a_stop(self):
+        from support_agent.auto_policy import block_reason, real_stop_reason
+        answer = {'reply': 'Скопируйте ссылку из адресной строки.', 'handoff': False}
+        evidence = {'situation_hold': True, 'status': 'catalog_direct'}
+        self.assertIsNotNone(block_reason(answer, evidence))
+        self.assertNotEqual(real_stop_reason(answer, evidence), block_reason(answer, evidence))
+
+    def test_ongoing_dialog(self):
+        from support_agent.turn_understanding import ongoing_dialog
+        self.assertTrue(ongoing_dialog({'history': [{'role': 'owner', 'text': 'Да', 'at': 1}, {'role': 'client', 'text': 'ок', 'at': 60}]}))
+        self.assertFalse(ongoing_dialog({'history': [{'role': 'client', 'text': 'Хочу Plus', 'at': 1}]}))
+        self.assertFalse(ongoing_dialog({'history': [{'role': 'owner', 'text': 'Да', 'at': 1}, {'role': 'client', 'text': 'ок', 'at': 1 + 13 * 3600}]}))

@@ -19,6 +19,9 @@ FORBIDDEN = [
     (r'(?i)(?:уточните|подскажите)[^\n]{0,160}на какой срок|\\n\d\.\s*на какой срок', 'срок не спрашивать — по умолчанию месяц (20.11)'),
     (r'(?i)напишите[^.\n]{0,40}@neirosetkaalex', 'этот чат и есть @Neirosetkaalex (20.11)'),
     (r'(?i)официальн\w+ данн', 'без подписей «официальные данные»'),
+    (r'(?i)водительск\w*\s+прав', 'Claude: только загранпаспорт, права убраны (20.11)'),
+    (r'(?i)тарифы\s+SuperGrok[^.\n]{0,40}не\s+работают', 'Grok → тарифы Cursor (20.11)'),
+    (r'(?i)выдаст\s+номер|номер\s+(?:может\s+)?выдаст\s+Александр|Александр\s+может\s+выдать', 'номер клиент покупает сам в «Виртуальных номерах» (20.11)'),
 ]
 
 
@@ -38,7 +41,7 @@ class KnowledgeConsistencyTests(unittest.TestCase):
         topics = yaml.safe_load((DATA / 'faq.yaml').read_text(encoding='utf-8'))['topics']
         ids = [t['id'] for t in topics]
         self.assertEqual(len(ids), len(set(ids)), 'повторяющиеся темы')
-        owner_only = {'refund_terms', 'region_policy', 'linkpay_no_vpn'}  # отвечает сам владелец
+        owner_only = {'refund_terms', 'region_policy', 'linkpay_no_vpn', 'reseller', 'claude_refuses_account'}  # отвечает сам владелец
         for topic in topics:
             self.assertTrue(str(topic.get('title') or '').strip(), topic['id'])
             if topic['id'] not in owner_only:
