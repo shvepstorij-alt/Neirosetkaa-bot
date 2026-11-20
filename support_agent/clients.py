@@ -212,7 +212,7 @@ class OpenAI:
         """One call: read the turn, including photos, and draft the client reply."""
         import json
         from .turn_understanding import UNDERSTANDING_INSTRUCTIONS
-        from .playbook import prompt_block
+        from .playbook import business_profile, prompt_block
         # Owner 19.11.2026: first the situation of each question, then the reply; priorities first.
         instructions = ('ПОРЯДОК ВАЖНОСТИ:\n'
                         '1. Прочитай все новые сообщения клиента (latest_client_message) целиком. Приписки «спасибо», «пробую», «жду» не главное.\n'
@@ -220,7 +220,7 @@ class OpenAI:
                         '3. Ответь на каждый вопрос по правилу его ситуации.\n'
                         '4. Если клиент продолжает шаг Александра (answers_to) — продолжи этот шаг.\n'
                         '5. Остальные правила ниже — уточнения.\n\n'
-                        + prompt_block() + '\n\n' + UNDERSTANDING_INSTRUCTIONS)
+                        + business_profile() + '\n\n' + prompt_block() + '\n\n' + UNDERSTANDING_INSTRUCTIONS)
         schema = {'type': 'object', 'additionalProperties': False,
                   'properties': {
                       'intent': {'type': 'string', 'enum': ['price', 'how_to', 'list_options', 'choose_tariff',

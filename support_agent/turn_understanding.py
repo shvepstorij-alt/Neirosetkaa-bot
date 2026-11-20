@@ -60,6 +60,10 @@ UNDERSTANDING_INSTRUCTIONS = (
     'Иначе vpn_advice=false и reask_advisories пустой. '
     'Изображение смотри вместе с текстом. Это может быть скрин ошибки или чек. Чек оплату не подтверждает. '
     'Голос уже расшифрован в тексте сообщения. '
+    '@Neirosetkaalex — это и есть этот чат с Александром: никогда не предлагай клиенту «написать Александру в @Neirosetkaalex». Если клиента направили сюда за подпиской с курса — тема course_bonus_start; если по бонусу с курса выбран Claude — course_bonus_claude. '
+    'Кроме нейросетей Александр помогает с PlayStation и Xbox: подписки, покупка игр, пополнение баланса — тема games_consoles. '
+    'Не проси срок подписки и ссылку на сайт, если это не нужно; спрашивай только недостающее. '
+    'По бонусной подписке с курса не говори про оплату в боте, пока клиент сам не спросит. '
     'Главное — latest_client_message: это ВСЕ новые сообщения клиента подряд, ответь на всю его суть. '
     'Короткая приписка в конце («пробую», «жду», «спасибо», «благодарю», смайлик) не заменяет главный вопрос или проблему выше: отвечай на них. '
     'client_orders — последние заказы ЭТОГО клиента в магазине (номер, сервис, тариф, оплачен ли, состояние активации). Если клиент пишет об оплате или проблеме и подходящий заказ там есть — не спрашивай номер заказа, назови его («Вижу заказ #N, ChatGPT Plus, оплачен») и ответь по его состоянию: открыта кнопка активации — подскажи нажать её в сообщении после оплаты; код уже использован или выдача отмечена — перезайти в аккаунт через 10–15 минут с VPN одной страны, если подписки нет — скриншот; не оплачен — попроси чек из банка. Не утверждай, что подписка точно включилась. '
@@ -1186,6 +1190,9 @@ _REFUND_WORD = re.compile(r'(?i)возврат|верн\w+\s+(?:мне\s+)?(?:д
 _TOPIC_NEEDS = {
     'codex': r'codex|кодекс',
     'codex_install': r'codex|кодекс|кодэкс',
+    'games_consoles': r'(?i)\bps\s?[345]?\b|playstation|плейстейшн|плойк|xbox|иксбокс|хбокс|game\s*pass|гейм\s*пасс|psn|игр[уыа]|\bгта\b|\bgta\b|консол',
+    'course_bonus_claude': r'(?i)клод|claude|клауд',
+    'course_bonus_start': r'(?i)бонус|курс|напишите[^\n]{0,40}александр|neirosetkaalex',
     'partnership': r'(?i)сотруднич|партн[её]р|коллаб|интеграц|предлагаю\s+реклам|реклам\w*\s+(?:у\s+вас|в\s+(?:вашем|моём|моем|канал))|взаимн',
     'off_catalog_app': r'(?i)приложени|прилож|\bapp\b|айфон|iphone|ios|app\s*store',
     'vpn_needed': r'vpn|впн|випиэн|прокси|v2ray', 'vpn_help': r'vpn|впн|випиэн|прокси|v2ray',
@@ -1830,6 +1837,10 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                 holds.append('Ответ выходит за записанный факт владельца.')
     if (not holds and not answer.get('handoff') and _CLAUDE_BUY.search(burst_text)
             and re.search(r'(?i)claude|клод|клауд|клоуд|\bcloud\b', burst_text)
+            # Owner 20.11.2026: only when Claude is what the client is buying now, not «с Клодом пока отмена».
+            and not re.search(r'(?i)(?:claude|клод\w*)\W+(?:\w+\W+){0,2}(?:отмен|не\s+надо|не\s+буд|передума)', burst_text)
+            and validated.get('owner_topic') not in ('games_consoles', 'off_catalog_app')
+            and validated.get('situation') in ('', None, 'buy', 'price', 'compare_choose')
             and not re.search(r'(?i)гаранти\w+\s+на\s+Claude\s+нет|заблокир', str(answer.get('reply') or ''))
             and not any(CLAUDE_RISK[:40] in str(row.get('text') or '') for row in (context or {}).get('history') or []
                         if isinstance(row, dict))):

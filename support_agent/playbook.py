@@ -106,6 +106,10 @@ def tidy(answer, context):
             reply = _CLAUDE_LINE.sub('', reply).replace('• Если это ChatGPT — пришлите ещё', 'Ещё пришлите')
         elif 'claude' in named and 'chatgpt' not in named:
             reply = _GPT_LINE.sub('', reply).replace('• Если это Claude — пришлите', 'Ещё пришлите')
+    if re.search(r'(?i)(?:напиш|обрат)\w*[^.\n]{0,80}@?neirosetkaalex', reply):
+        # Owner 20.11.2026: this chat IS @Neirosetkaalex — never send the client to write here.
+        from .turn_understanding import _faq_answer
+        reply = _faq_answer('course_bonus_start') or reply
     reply = re.sub(r'\n{3,}', '\n\n', reply).strip()
     return dict(answer, reply=reply) if reply != answer.get('reply') else answer
 
@@ -129,3 +133,12 @@ def order_status_reply(context):
     if code == 'manual_pending':
         return head + ', он оплачен и сейчас в ручном оформлении у Александра — он напишет здесь.'
     return head + ', он оплачен. Если кнопка активации больше не работает, Александр выдаст повторную активацию — напишите, что именно не получается, или пришлите скриншот.'
+
+
+@functools.lru_cache(maxsize=1)
+def business_profile():
+    """Owner 20.11.2026: the whole business, so no question about a product line is a surprise."""
+    try:
+        return (PATH.parent / 'business_profile.md').read_text(encoding='utf-8').strip()
+    except OSError:
+        return ''

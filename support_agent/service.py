@@ -600,6 +600,14 @@ class Service:
             from .dialog_probe import run_probe
             self.research_probe_task=asyncio.create_task(run_probe(self))
             await self.owner_message('Запускаю 3 тестовых диалога, 6 ответов. До 20 учтённых этапов API в пределах дневного лимита; это не денежный лимит. История изолирована, отправки клиентам запрещены. /stop остановит следующие этапы; начатый запрос может списать средства.')
+        elif cmd=='/bench':
+            from .bench import load as bench_cases,run_bench
+            running=getattr(self,'research_probe_task',None)
+            if running and not running.done():
+                await self.owner_message('Другая проверка уже выполняется. Дождитесь её окончания.')
+                return
+            self.research_probe_task=asyncio.create_task(run_bench(self))
+            await self.owner_message('Запускаю эталонную проверку: %d случаев, около %d запросов к модели. Клиентам ничего не отправляется.'%(len(bench_cases()),len(bench_cases())*2))
         elif cmd=='/dialogs':
             from .dialog_check import parts as dialog_parts,run_dialogs
             total=dialog_parts()

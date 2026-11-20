@@ -403,7 +403,7 @@ def build_cases(catalog):
         'role': 'client', 'text': 'можно купить нетфликс и сколько он стоит',
         'owner_topic': 'off_catalog', 'fixed_by': 'owner_fact',
         'naive': 'Netflix оформим за 1500 ₽.',
-        'expect': {'hold': False, 'need': ['какой тариф', 'регион', 'срок']},
+        'expect': {'hold': False, 'need': ['какой тариф', 'регион'], 'forbid': ['На какой срок']},  # owner 20.11: no term question
     }])
     add('claude-region', [{
         'role': 'client', 'text': 'клод работает в рф?',
