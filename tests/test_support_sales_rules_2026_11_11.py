@@ -620,7 +620,7 @@ class LateEveningRulesTests(unittest.TestCase):
     def test_new_owner_topics(self):
         from support_agent.faq import usable_answer
         self.assertIn('другой регион в VPN', usable_answer('activation_button_fails'))
-        self.assertIn('одним файлом', usable_answer('activate_for_me'))
+        self.assertIn('Активировать подписку', usable_answer('activate_for_me'))  # token file is the next step (token_as_file)
         self.assertIn('ChatGPT', usable_answer('course_subscriptions'))  # owner 20.11.2026: ChatGPT by default
 
 
@@ -889,7 +889,7 @@ class DialogCheckFindingsTests(unittest.TestCase):
 
     def test_new_rules(self):
         from support_agent.faq import usable_answer
-        self.assertIn('токен', usable_answer('activation_failed'))
+        self.assertIn('номер заказа', usable_answer('activation_failed'))  # owner 20.11.2026 (live3): token comes later
         self.assertIn('sessionKey', usable_answer('org_id_sent_here'))  # owner 19.11.2026
         self.assertIn('новый токен', usable_answer('renewal_token'))
 
@@ -903,7 +903,8 @@ class SecondDialogRunTests(unittest.TestCase):
         from support_agent.faq import usable_answer
         text = usable_answer('activate_for_me')
         self.assertIn('Активировать подписку', text)
-        self.assertLess(text.index('Активировать подписку'), text.index('пароль'))  # owner 20.11.2026: bot first, email+password only as a fallback
+        self.assertIn('Активировать подписку', text)  # owner 20.11.2026 (live3): first answer = the bot button only
+        self.assertIn('одним текстовым файлом', usable_answer('token_as_file'))  # the next step: token as one file
         self.assertIn('chatgpt.com', usable_answer('gmail_confirmed'))
 
 
@@ -1539,3 +1540,33 @@ class Live2Fixes20NovTests(unittest.TestCase):
         self.assertTrue(ongoing_dialog({'history': [{'role': 'owner', 'text': 'Да', 'at': 1}, {'role': 'client', 'text': 'ок', 'at': 60}]}))
         self.assertFalse(ongoing_dialog({'history': [{'role': 'client', 'text': 'Хочу Plus', 'at': 1}]}))
         self.assertFalse(ongoing_dialog({'history': [{'role': 'owner', 'text': 'Да', 'at': 1}, {'role': 'client', 'text': 'ок', 'at': 1 + 13 * 3600}]}))
+
+
+class Live3Fixes20NovTests(unittest.TestCase):
+    """live3 20.11.2026: the assistant does not act, promo only on request, Business is not a tariff list."""
+
+    def test_actions_belong_to_alexander(self):
+        from support_agent.playbook import owner_actions
+        self.assertEqual(owner_actions('Спасибо, код получил. Сейчас продолжу активацию.'),
+                         'Спасибо, код получил. Александр продолжит активацию.')
+        self.assertIn('Александр посчитает стоимость и подскажет', owner_actions('Пришлите ссылку — я посчитаю стоимость и подскажу, как оплатить.'))
+        self.assertEqual(owner_actions('Передам Александру.'), 'Передам Александру.')
+
+    def test_promo_only_when_asked(self):
+        from support_agent.playbook import tidy
+        answer = {'reply': 'Пришлите номер заказа.\nЗа неудобство можете использовать промокод NAVSEX.', 'handoff': False}
+        self.assertNotIn('NAVSEX', tidy(answer, {'burst': 'зум прерывается после 30 минут'})['reply'])
+        self.assertIn('NAVSEX', tidy(answer, {'burst': 'есть промокод?'})['reply'])
+
+    def test_generic_clarifier_in_ongoing_dialog_is_held(self):
+        from support_agent.playbook import tidy
+        from support_agent.turn_understanding import CLARIFY
+        ctx = {'burst': 'что делать?', 'history': [{'role': 'owner', 'text': 'дадим номер телефона', 'at': 1},
+                                                   {'role': 'client', 'text': 'что делать?', 'at': 60}]}
+        self.assertTrue(tidy({'reply': CLARIFY, 'handoff': False}, ctx)['evidence']['owner_step_hold'])
+
+    def test_first_activation_answer_is_short(self):
+        from support_agent.faq import usable_answer
+        for topic in ('activation_failed', 'activate_for_me'):
+            self.assertNotIn('пароль', usable_answer(topic))
+            self.assertNotIn('api/auth/session', usable_answer(topic))
