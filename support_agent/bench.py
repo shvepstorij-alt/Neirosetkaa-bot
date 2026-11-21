@@ -59,7 +59,7 @@ async def run_bench(service, mode='new'):
         nonlocal calls
         if calls >= len(cases) * 4:
             raise RuntimeError('лимит запросов проверки')
-        service.charge_call()
+        # 22.11.2026: a check never spends the clients' daily limit — it has its own cap above.
         calls += 1
     isolated.charge_call = charge
     store.switch('draft')
@@ -76,7 +76,7 @@ async def run_bench(service, mode='new'):
             cid = store.ingest('bench', -number, len(history) + 1, 'client', text, {'kind': 'sensitive'} if secret else {}, time.time())
             for mid, (role, said) in enumerate(history, 1):
                 store.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)',
-                                 (cid, mid, 'owner' if role == 'owner' else 'client', said, '{}', time.time() - 600 + mid, 'stored'))
+                                 (cid, mid, role if role in ('owner', 'assistant') else 'client', said, '{}', time.time() - 600 + mid, 'stored'))
             store.prepare_now(cid, time.time())
             job = store.claim(time.time())
             try:

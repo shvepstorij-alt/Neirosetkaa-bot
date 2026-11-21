@@ -1523,6 +1523,21 @@ class Service:
             notice.setdefault('evidence',{'status':'owner_policy','sources':[],'reply_class':'unverified',
                                           'diagnostic':notice.get('summary') or 'Вложение не передано в разбор.'})
             notice=await self.maybe_secret_setup_notice(job,notice)
+            if notice.get('handoff') and 'Сообщение получил' in str(notice.get('reply') or ''):
+                # Bench 14 (22.11.2026): a code or data that Alexander himself asked for is his step going on —
+                # «Получил, Александр продолжит здесь» goes out, the data stays hidden from the model, he is alerted.
+                try:
+                    from .turn_understanding import build_context, owner_open_step
+                    step_context=build_context(self.store.db, job['chat'], {})
+                    if owner_open_step(step_context):
+                        ack={'reply':'Получил, Александр продолжит здесь.','handoff':False,'summary':notice.get('summary'),
+                             'evidence':{'status':'owner_policy','sources':[],'reply_class':'instruct','owner_approved_wording':True,
+                                         'owner_step_ack':True,'owner_step_ack_kind':'data','owner_alert':True,'continue_step':True,
+                                         'diagnostic':'Клиент прислал данные по шагу, который ведёт Александр. Данные модели не передавались — откройте личку.'}}
+                        await self.maybe_owner_alert(job, ack)
+                        return ack
+                except Exception:
+                    logging.warning('Owner step check for hidden data failed')
             return notice
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
@@ -1649,7 +1664,8 @@ class Service:
     _ALERT_REASONS={'refund_request':'просьба о возврате','wrong_plan':'оплачен не тот тариф или сервис',
                     'claude_consent':'клиент согласился с рисками Claude — нужна почта и оформление',
                     'human_or_bot':'клиент зовёт Александра','paid_issue_draft_only':'оплатил, но не работает',
-                    'invoice_legal':'документы или оплата от юрлица/ИП'}
+                    'invoice_legal':'документы или оплата от юрлица/ИП','receipt_no_order':'чек есть, а заказа в боте нет — проверьте оплату',
+                    'claude_blocked_money':'Claude заблокировал аккаунт, клиент просит деньги','chatgpt_team':'ChatGPT на команду'}
 
     async def maybe_owner_alert(self, job, answer):
         """Owner 21.11.2026: in AUTO the owner hears only when he is needed — one short note, not every reply.

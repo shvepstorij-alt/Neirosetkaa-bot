@@ -51,7 +51,7 @@ async def run_dialogs(service, part, cases=None, label=None):
             raise RuntimeError('остановлено: режим изменён')
         if calls >= MAX_CALLS:
             raise RuntimeError('лимит запросов этой части')
-        service.charge_call()
+        # 22.11.2026: a check never spends the clients' daily limit — it has its own cap above.
         calls += 1
 
     store = Store(':memory:', batch_seconds=300)

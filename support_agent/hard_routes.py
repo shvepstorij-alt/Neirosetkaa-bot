@@ -429,8 +429,11 @@ def _asked_rows(burst, context):
     tariffs = [r for r in (context or {}).get('tariffs') or () if isinstance(r, dict) and type(r.get('price')) is int]
     names = _asked(burst, _services())
     flat = lambda v: re.sub(r'[^a-zа-яё0-9]+', '', str(v or '').casefold())
-    rows = [r for r in tariffs if any(flat(n) and (flat(n) == flat(r.get('service')) or flat(n) == flat(r.get('service_id')))
-                                       for n in names)]
+    def same(name, row):
+        # bench 14: the catalogue may say «Suno AI» or «Google Gemini» — a name inside the other is the same service.
+        a, b, c = flat(name), flat(row.get('service')), flat(row.get('service_id'))
+        return bool(a) and (a == b or a == c or (len(a) >= 4 and (a in b or a in c)) or (len(b) >= 4 and b in a))
+    rows = [r for r in tariffs if any(same(n, r) for n in names)]
     rows = [r for r in rows if not _NOT_OFFERED.search(str(r.get('service') or ''))]
     words = {(_PLAN_RU.get(w, w)) for w in re.findall(r'[a-zа-яё]+', burst.casefold()) if w in _PLAN_WORDS}
     if words:
@@ -458,8 +461,11 @@ def _missing_rows(burst, context, reply):
 
 
 def latin_only(burst):
-    """A client writing without Cyrillic (English and the like) gets the model's reply in his language, no Russian template."""
+    """A client writing in another language (English, Kazakh, Ukrainian…) gets the model's reply in his language:
+    no Russian template is added (owner 22.11.2026: «на казахском — на казахском»)."""
     text = str(burst or '')
+    if re.search(r'[әғқңөұүһ]', text, re.I) or re.search(r'[іїєґ]', text, re.I):
+        return True  # Kazakh or Ukrainian letters
     return not re.search(r'[а-яё]', text, re.I) and bool(re.search(r'[a-z]{3}', text, re.I))
 
 
@@ -593,8 +599,141 @@ def _invoice_act(answer, burst, context):
     return dict(answer, reply=_faq('invoice_legal') or answer.get('reply'), handoff=False, evidence=evidence)
 
 
+# --- 19. a receipt but no order in the bot → Alexander checks the payment (owner 21.11.2026, answer 19) -------
+_RECEIPT_NO_ORDER = re.compile(r'(?i)(?:чек|квитанц|скрин\w*\s+оплат)[^.!?\n]{0,60}(?:заказ\w*\s+(?:нет|не\s+(?:вижу|видно|появил|приш))|нет\s+заказ|не\s+(?:появил|приш|вижу))'
+                               r'|(?:заказ\w*\s+(?:нет|не\s+(?:вижу|видно|появил))|нет\s+заказ)[^.!?\n]{0,60}(?:чек|квитанц)')
+RECEIPT_TAKEN = 'Чек получил — Александр проверит оплату и ответит здесь при первой возможности 🙂'
+
+
+def _receipt_detect(burst, context, answer):
+    return bool(_RECEIPT_NO_ORDER.search(burst))
+
+
+def _receipt_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_alert=True, owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=RECEIPT_TAKEN, handoff=False, evidence=evidence)
+
+
+# --- 20. link-pay service, the client cannot get the payment link → email and password (owner 21.11.2026, answer 5)
+_NO_LINK = re.compile(r'(?i)(?:ссылк\w*)[^.!?\n]{0,50}(?:не\s+(?:могу|получа|выход|найт|открыва)\w*|никак)|не\s+(?:могу|получа\w*)\s+(?:\w+\s+){0,3}ссылк')
+
+
+def _nolink_detect(burst, context, answer):
+    if not _NO_LINK.search(burst):
+        return False
+    try:
+        from .payment_guide import kind_for
+    except Exception:
+        return False
+    rows = _asked_rows(burst, context)
+    return bool(rows) and kind_for(rows[0].get('service_id'), '', (context or {}).get('tariffs'), rows[0].get('service')) == 'link_pay'
+
+
+def _nolink_act(answer, burst, context):
+    name = str(_asked_rows(burst, context)[0].get('service') or '').strip()
+    paid = bool(_PAID_FREE.search(burst))
+    text = ('Ничего страшного, оформим сами 🙂 ' + ('Пришлите' if paid else 'После оплаты в боте @neirosetkaa_bot пришлите')
+            + ' сюда почту и пароль от аккаунта ' + name + '. Если на почту придёт код подтверждения — его тоже пришлите сюда.')
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=text, handoff=False, evidence=evidence)
+
+
+# --- 21. an older owner line superseded by his newer rule is not a «clash» (bench 9-14: driving licence) -----------
+def _superseded_detect(burst, context, answer):
+    evidence = answer.get('evidence') or {}
+    if not evidence.get('owner_alignment_hold'):
+        return False
+    owner = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or ()
+                     if isinstance(m, dict) and m.get('role') == 'owner')
+    reply = str(answer.get('reply') or '')
+    # Owner 20.11.2026: Claude verification — driving licences are not accepted any more (his old line said they are).
+    return bool(re.search(r'(?i)водительск', owner)) and bool(re.search(r'(?i)загран|паспорт|верификац', reply))
+
+
+def _superseded_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_alignment_hold=False, superseded_owner_line=True)
+    reply = str(answer.get('reply') or '')
+    if not re.search(r'(?i)загран', reply):
+        reply = (reply + '\n\n' + _faq('claude_verification').split('\n\n')[0]).strip()
+    return dict(answer, reply=reply, handoff=False, evidence=evidence)
+
+
+# --- 22. owner 22.11.2026: FKwallet QR, Claude blocked + money back, team plan, «где мой заказ» -----------------
+_FKWALLET = re.compile(r'(?i)fk\s*wallet|фк\s*валл?ет|кошел[её]к\w*\s+(?:скачать|просит|установ)|(?:скачать|установить)\s+(?:какой-то\s+)?кошел')
+FKWALLET_REPLY = ('Этот QR — для оплаты через приложение FKwallet, ставить его не обязательно 🙂 Рядом должен быть способ '
+                  'оплаты просто по СБП — выберите его. Если его нет, пропишите в боте @neirosetkaa_bot /start и оформите новый заказ.')
+_CLAUDE_BLOCK_MONEY = re.compile(r'(?i)(?:клод|claude)[^.!?\n]{0,80}(?:заблок|бан|блокир)|(?:заблок|бан|блокир)[^.!?\n]{0,80}(?:клод|claude)')
+CLAUDE_BLOCK_REPLY = ('Понимаю, очень неприятно. К сожалению, гарантии на Claude нет: при блокировке аккаунта деньги не возвращаются — '
+                      'мы предупреждаем об этом до оплаты. Передал Александру, он посмотрит вашу ситуацию и ответит здесь при первой возможности.')
+_TEAM = re.compile(r'(?i)на\s+команд\w*|для\s+команд\w*|на\s+\d+\s+(?:человек|сотрудник|пользовател)|для\s+сотрудник\w*|\bteam\b')  # «Business» itself stays with the owner's chatgpt_business rule
+_WHERE_ORDER = re.compile(r'(?i)где\s+(?:мой\s+|мой\s+оплаченный\s+)?заказ|заказ\w*\s+(?:так\s+и\s+)?не\s+(?:приш|появил|пришёл)|'
+                          r'оплатил\w*[^.!?\n]{0,40}(?:ничего\s+не\s+(?:приш|пришло)|ничего\s+нет|тишина)')
+
+
+def _fkwallet_detect(burst, context, answer):
+    return bool(_FKWALLET.search(burst))
+
+
+def _fkwallet_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=FKWALLET_REPLY, handoff=False, evidence=evidence)
+
+
+def _claude_block_detect(burst, context, answer):
+    return bool(_CLAUDE_BLOCK_MONEY.search(burst)) and bool(re.search(r'(?i)верн|возврат|деньг', burst))
+
+
+def _claude_block_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_alert=True, owner_text_used=True, hard_route_auto=True, conflict_hold=False, refund_hold=False)
+    return dict(answer, reply=CLAUDE_BLOCK_REPLY, handoff=False, evidence=evidence)
+
+
+def _team_detect(burst, context, answer):
+    return bool(_TEAM.search(burst)) and bool(re.search(r'(?i)гпт|gpt|чат|chatgpt|джипити', burst))
+
+
+def _team_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    rows = [r for r in (context or {}).get('tariffs') or () if isinstance(r, dict) and type(r.get('price')) is int
+            and re.search(r'(?i)chat\s*gpt', str(r.get('service') or '') + str(r.get('service_id') or ''))
+            and re.search(r'(?i)business|team|бизнес|команд', str(r.get('plan') or ''))]
+    if rows:
+        from .turn_understanding import tariff_question
+        return dict(answer, reply='Для команды есть такой вариант 🙂\n\n' + tariff_question(rows), handoff=False, evidence=evidence)
+    evidence['owner_alert'] = True
+    return dict(answer, reply='Понял вас! По подписке ChatGPT на команду подскажет Александр — он ответит здесь при первой возможности 🙂',
+                handoff=False, evidence=evidence)
+
+
+def _where_order_detect(burst, context, answer):
+    evidence = answer.get('evidence') or {}
+    if evidence.get('order_action') or evidence.get('conflict_hold') or re.search(r'(?i)#\s?\d{4,}|\b\d{5,}\b', burst):
+        return False  # with a number the order flow checks the shop itself
+    return bool(_WHERE_ORDER.search(burst))
+
+
+def _where_order_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply='Подскажите, пожалуйста, номер заказа из бота — проверю его статус и подскажу, что дальше 🙂',
+                handoff=False, evidence=evidence)
+
+
 RULES = (
+    ('superseded_owner_line', _superseded_detect, _superseded_act),
+    ('claude_blocked_money', _claude_block_detect, _claude_block_act),
+    ('fkwallet_qr', _fkwallet_detect, _fkwallet_act),
+    ('chatgpt_team', _team_detect, _team_act),
+    ('where_is_my_order', _where_order_detect, _where_order_act),
     ('conflict', _conflict_detect, _conflict_act),
+    ('receipt_no_order', _receipt_detect, _receipt_act),
+    ('linkpay_no_link', _nolink_detect, _nolink_act),
     ('invoice_legal', _invoice_detect, _invoice_act),
     ('paid_without_order', _paid_free_detect, _paid_free_act),
     ('wrong_plan', _wrong_plan_detect, _wrong_plan_act),
@@ -613,7 +752,7 @@ RULES = (
     ('price_without_price', _price_detect, _price_act),
     ('paid_issue_draft_only', _paidissue_detect, _paidissue_act),
 )
-STOP_AFTER = {'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
+STOP_AFTER = {'claude_blocked_money', 'fkwallet_qr', 'chatgpt_team', 'where_is_my_order', 'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'receipt_no_order', 'linkpay_no_link', 'invoice_legal', 'yearly_plan', 'appstore_region_exists', 'refund_request', 'claude_consent'}
 
 
 def apply(answer, context):

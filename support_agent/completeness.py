@@ -94,6 +94,10 @@ def _rules(context=None):
         # Renewal: where and how to buy it.
         # A discount request always gets the owner's promo codes.
         ('discount', lambda b, r: bool(_DISCOUNT.search(b)), lambda r: 'NAVSEX' in r, _promo),
+        # A renewal problem: the order and a screenshot, so Alexander can see what happened.
+        ('renewal_problem', lambda b, r: bool(_RENEW.search(b)) and bool(_PROBLEM.search(b)),
+         lambda r: bool(re.search(r'(?i)заказ|скрин|чек', r)),
+         lambda: 'Пришлите, пожалуйста, номер заказа из бота и скриншот того, что происходит, — разберёмся 🙂'),
         ('renewal_where', lambda b, r: bool(_RENEW.search(b)) and not _PROBLEM.search(b),
          lambda r: bool(re.search(r'(?i)@neirosetkaa_bot|«каталог»|каталог', r)), lambda: RENEW_LINE),
         # Games, gift cards, console subscriptions: the bot section.
@@ -129,7 +133,11 @@ def complete(answer, context):
     burst = str((context or {}).get('burst') or '')
     from .hard_routes import latin_only
     if latin_only(burst):
-        return answer  # owner 21.11.2026: English stays English — the owner's Russian texts are not appended
+        # owner 21.11.2026: English stays English — the owner's Russian texts are not appended; the bot is named.
+        reply = str(answer.get('reply') or '')
+        if '₽' in reply and BOT not in reply:
+            answer = dict(answer, reply=reply.rstrip() + '\n\nYou can pay in our bot ' + BOT + ': Catalog → service → plan, by SBP or a Mir card.')
+        return answer
     reply = str(answer.get('reply') or '').strip()
     added, names = [], []
     for rule in _rules(context):
