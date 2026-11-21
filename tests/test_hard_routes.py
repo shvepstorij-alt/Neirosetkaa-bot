@@ -360,3 +360,104 @@ class OwnerAnswers21NovRound5(unittest.TestCase):
         from support_agent.faq import load_faq
         answer = next(t['answer'] for t in load_faq()['topics'] if t['answer'].startswith('Для верификации личности в Claude'))
         self.assertNotIn('Российские номера', answer)
+
+
+class Bench11PaidTopics(unittest.TestCase):
+    """bench 11: the order-first rule must not replace a service-specific owner answer."""
+
+    def _go(self, burst, topic):
+        return hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {'turn_understanding': {'owner_topic': topic}}},
+                                 {'burst': burst, 'history': []})['evidence'].get('hard_routes') or []
+
+    def test_specific_owner_answer_stays(self):
+        self.assertNotIn('paid_without_order', self._go('Оплатил Claude Max, что от меня нужно?', 'claude_max_login'))
+        self.assertNotIn('paid_without_order', self._go('Оплатил Perplexity Pro, что дальше?', 'perplexity_how'))
+        self.assertNotIn('paid_without_order', self._go('Оплатила ChatGPT Plus, помогите активировать', 'activate_for_me'))
+
+    def test_where_is_the_button_keeps_its_answer(self):
+        self.assertNotIn('paid_without_order', self._go('оплатил плюс, а где кнопка активировать?', 'none'))
+
+    def test_generic_what_next_asks_the_order(self):
+        self.assertIn('paid_without_order', self._go('Здравствуйте! Я оплатила zoom', 'what_next'))
+
+
+class AndroidAppQuestion(unittest.TestCase):
+    """@tatnua_z 21.11.2026: «Мне на андроид можно поставить чат джи пи ти / На ноут поставила»."""
+    BURST = 'Александр, добрый вечер\nМне на андроид можно поставить чат джи пи ти\nНа ноут поставила'
+
+    def test_done_device_is_not_the_question(self):
+        from support_agent.turn_understanding import _install_reply
+        text = _install_reply(self.BURST)
+        self.assertIn('chatgpt.ru.uptodown.com/android', text)
+        self.assertNotIn('Claude', text)
+
+    def test_owner_app_answer_keeps_only_android_and_the_named_service(self):
+        from support_agent.faq import load_faq
+        from support_agent.playbook import only_asked_platform
+        faq = next(t['answer'] for t in load_faq()['topics'] if t['id'] == 'app_download')
+        out = only_asked_platform(faq, self.BURST)
+        self.assertNotIn('iPhone', out)
+        self.assertNotIn('Apple ID', out)
+        self.assertNotIn('claude.ru.uptodown', out)
+        self.assertIn('chatgpt.ru.uptodown.com/android', out)
+
+    def test_iphone_question_drops_android_links(self):
+        from support_agent.faq import load_faq
+        from support_agent.playbook import only_asked_platform
+        faq = next(t['answer'] for t in load_faq()['topics'] if t['id'] == 'app_download')
+        out = only_asked_platform(faq, 'как скачать чат гпт на айфон?')
+        self.assertIn('App Store', out)
+        self.assertNotIn('uptodown', out)
+
+
+class SystemicFit21Nov(unittest.TestCase):
+    """«Реши системно» (21.11.2026): the reply fits the question — asked platform/service only, price when asked."""
+    T = [{'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': p, 'price': c}
+         for p, c in [('Go', 990), ('Plus', 1990), ('Pro 5×', 9990), ('Pro 20x', 19990), ('Pro50', 48990)]]
+
+    def test_price_question_gets_the_price_not_only_payment_steps(self):
+        from support_agent.payment_guide import render
+        steps = render('', '', '', {'bot_navigation': {'status': 'available', 'username': 'neirosetkaa_bot', 'catalog_webapp': True}})
+        out = hard_routes.apply({'reply': steps, 'handoff': False, 'evidence': {}},
+                                {'burst': 'Здравствуйте сколько стоит у вас оформить (оплатить) подписку pro на чат gpt.', 'tariffs': self.T})
+        self.assertIn('Pro 5× — 9990 ₽', out['reply'])
+        self.assertNotIn('Plus — 1990', out['reply'])
+        self.assertNotIn('Откройте бота', out['reply'])
+
+    def test_price_and_how_to_pay_keeps_both(self):
+        out = hard_routes.apply({'reply': 'Оплата в @neirosetkaa_bot.\n\n1. Откройте бота и нажмите «Каталог».', 'handoff': False, 'evidence': {}},
+                                {'burst': 'сколько стоит гпт плюс и как оплатить?', 'tariffs': self.T})
+        self.assertIn('1990 ₽', out['reply'])
+        self.assertIn('Откройте бота', out['reply'])
+
+    def test_reply_with_a_price_is_left_alone(self):
+        out = hard_routes.apply({'reply': 'ChatGPT Plus — 1990 ₽.', 'handoff': False, 'evidence': {}},
+                                {'burst': 'сколько стоит гпт плюс', 'tariffs': self.T})
+        self.assertEqual(out['reply'], 'ChatGPT Plus — 1990 ₽.')
+
+    def test_unknown_service_payment_steps_promise_nothing_about_activation(self):
+        from support_agent.payment_guide import render
+        text = render('', '', '', {})
+        self.assertNotIn('5-30 минут', text)
+        self.assertNotIn('активация идёт в боте', text)
+
+    def test_fit_keeps_list_lines_of_the_asked_service(self):
+        from support_agent.fit_answer import fit_to_question
+        reply = 'Claude Pro — 2090 ₽.\n\nЕсли это ChatGPT: кнопка в боте.\nЕсли это Claude: Александр вручную.'
+        out = fit_to_question(reply, 'не могу активировать клод')
+        self.assertIn('Если это Claude', out)
+        self.assertNotIn('Если это ChatGPT', out)
+        self.assertIn('2090', out)
+
+    def test_fit_keeps_a_plain_heading(self):
+        from support_agent.fit_answer import fit_to_question
+        reply = 'Для региона США сейчас такие номиналы:\n\n5 USD: 450 ₽'
+        self.assertEqual(fit_to_question(reply, 'Хочу пополнить айклауд на регион США'), reply)
+
+    def test_games_answer_keeps_only_the_asked_console(self):
+        from support_agent.faq import load_faq
+        from support_agent.fit_answer import fit_to_question
+        games = next(t['answer'] for t in load_faq()['topics'] if t['id'] == 'games_buy')
+        out = fit_to_question(games, 'хочу купить игру на xbox')
+        self.assertIn('Xbox', out)
+        self.assertNotIn('PlayStation:', out)
