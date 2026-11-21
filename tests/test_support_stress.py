@@ -21,8 +21,8 @@ class StressTests(unittest.TestCase):
         self.assertIn('на весь срок подписки', usable_answer('guarantee'))  # owner 21.11.2026
         self.assertIn('заблокировать', usable_answer('account_ban'))
         self.assertIn('гарантии на Claude нет', usable_answer('account_ban'))
-        self.assertEqual(usable_answer('delivery_time'),
-                         'Активация занимает 5–30 минут. У сервисов с автоактивацией — 2–5 минут.')
+        self.assertIn('2–5 минут', usable_answer('delivery_time'))  # owner 21.11.2026: manual plans — «при первой возможности»
+        self.assertIn('при первой возможности', usable_answer('delivery_time'))
         self.assertEqual(usable_answer('refund_terms'), '')
         self.assertEqual(collect_fields('refund_terms'), ['order_number', 'service', 'reason'])
         self.assertIn('регион у вашего аккаунта', usable_answer('off_catalog'))  # owner 20.11.2026

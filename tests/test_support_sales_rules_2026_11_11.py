@@ -186,15 +186,16 @@ class DiagnosticsRulesTests(unittest.TestCase):
         self.assertIn('/start', usable_answer('payment_error'))
         self.assertNotIn('Александр', usable_answer('payment_error'))
         self.assertIn('Спам', usable_answer('login_problem'))
-        self.assertIn('CHATIK10', usable_answer('subscription_ended_early'))
+        self.assertIn('восстановит', usable_answer('subscription_ended_early'))  # owner 21.11.2026: restore, no promo
 
 
 class VerbatimTests(unittest.TestCase):
     def test_early_drop_answer_keeps_the_promo_codes(self):
         answer = _turn('У меня слетела подписка', {'owner_topic': 'subscription_ended_early', 'reply': 'Пришлите скрин.'})
         self.assertFalse(answer['handoff'])
-        self.assertIn('NAVSEX', answer['reply'])
-        self.assertIn('CHATIK10', answer['reply'])
+        # Owner 21.11.2026: under the guarantee Alexander checks and restores; no promo code is offered.
+        self.assertIn('восстановит', answer['reply'])
+        self.assertNotIn('NAVSEX', answer['reply'])
 
 
 class OwnerAnswers12_11Tests(unittest.TestCase):

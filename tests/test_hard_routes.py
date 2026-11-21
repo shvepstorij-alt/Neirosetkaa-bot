@@ -461,3 +461,103 @@ class SystemicFit21Nov(unittest.TestCase):
         out = fit_to_question(games, 'хочу купить игру на xbox')
         self.assertIn('Xbox', out)
         self.assertNotIn('PlayStation:', out)
+
+
+class Completeness21Nov(unittest.TestCase):
+    """Bench 12 (21.11.2026): «помощник должен больше подсказывать» — the minimum of a consultation."""
+    T = ([{'service_id': 'midjourney', 'service': 'Midjourney', 'plan': p, 'price': c} for p, c in [('Basic', 1000), ('Standard', 3000), ('Pro', 5500)]]
+         + [{'service_id': 'claude', 'service': 'Claude', 'plan': p, 'price': c} for p, c in [('Pro', 2090), ('Max', 9990), ('Ultra', 19990)]]
+         + [{'service_id': 'perplexity', 'service': 'Perplexity', 'plan': 'Pro', 'price': 1990}])
+
+    def _tidy(self, burst, reply):
+        from support_agent.playbook import tidy
+        return tidy({'reply': reply, 'handoff': False, 'evidence': {}}, {'burst': burst, 'tariffs': self.T})['reply']
+
+    def test_vpn_question_gets_the_owner_recommendations(self):
+        self.assertIn('DureVpnBot', self._tidy('VPN / Есть в каталоге ? / Подскажите', 'VPN в каталоге нет — мы его не продаём.'))
+
+    def test_vpn_trouble_is_not_padded(self):
+        self.assertNotIn('DureVpnBot', self._tidy('впн не работает', 'Попробуйте сменить страну.'))
+
+    def test_passport_question_names_the_documents(self):
+        out = self._tidy('а по российскому паспорту можно верификацию?', 'По внутреннему паспорту не стоит.')
+        self.assertIn('загранпаспорт', out)
+        self.assertIn('иностранные документы', out)
+
+    def test_renewal_says_where(self):
+        out = self._tidy('Хочу продлить подписку на тот же аккаунт', 'Продление — новая покупка.\n\nКакой сервис нужно продлить?')
+        self.assertIn('@neirosetkaa_bot', out)
+        self.assertTrue(out.rstrip().endswith('?'))  # the client's question stays last
+
+    def test_games_fact_replaces_the_contrary_claim(self):
+        out = self._tidy('робуксы есть?', 'Robux в каталоге нет.')
+        self.assertIn('Гифт-карты и игры', out)
+        self.assertNotIn('в каталоге нет', out)
+
+    def test_buy_wish_gets_prices(self):
+        out = self._tidy('мидджорни хочу купить', 'Уточните, пожалуйста: Midjourney Basic, Midjourney Standard или Midjourney Pro?')
+        self.assertIn('Midjourney Basic — 1000 ₽', out)
+        self.assertNotIn('Уточните', out)
+
+    def test_every_named_service_gets_a_price(self):
+        out = self._tidy('нужен клод про и перплексити, сколько за оба выйдет?', 'Claude Pro — 2090 ₽.')
+        self.assertIn('Perplexity Pro — 1990 ₽', out)
+
+    def test_what_do_you_need_names_the_after_payment_step(self):
+        out = self._tidy('как оформить клод макс, что от меня нужно?', 'Оплата в @neirosetkaa_bot.\n\n1. Откройте бота и нажмите «Каталог».')
+        self.assertIn('почт', out)
+
+    def test_handover_is_not_padded(self):
+        from support_agent.playbook import tidy
+        out = tidy({'reply': 'x', 'handoff': True, 'evidence': {}}, {'burst': 'VPN есть?'})
+        self.assertEqual(out['reply'], 'x')
+
+    def test_how_many_days_is_not_a_price_question(self):
+        self.assertEqual(self._tidy('сколько дней действует подписка на клод?', 'Месяц.'), 'Месяц.')
+
+
+class OwnerAnswers21NovTwenty(unittest.TestCase):
+    """Owner's 20 answers (21.11.2026, evening)."""
+    T = [{'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990},
+         {'service_id': 'canva', 'service': 'Canva', 'plan': 'Pro', 'price': 990},
+         {'service_id': 'canva', 'service': 'Canva', 'plan': 'Pro на год', 'price': 5990}]
+    N = [{'region': 'Турция | TR', 'nominal': '25 TRY', 'price': 120}, {'region': 'Турция | TR', 'nominal': '50 TRY', 'price': 230}]
+
+    def _go(self, burst, reply='x'):
+        return hard_routes.apply({'reply': reply, 'handoff': False, 'evidence': {}},
+                                 {'burst': burst, 'tariffs': self.T, 'nominals': self.N})
+
+    def test_bot_is_always_named(self):
+        from support_agent.playbook import tidy
+        out = tidy({'reply': 'ChatGPT Plus стоит 1990 ₽. Оформить можно в боте: «Каталог» → ChatGPT → Plus.', 'handoff': False,
+                    'evidence': {}}, {'burst': 'Хотела бы подписку оформить, плюс)'})
+        self.assertIn('в боте @neirosetkaa_bot', out['reply'])
+
+    def test_yearly_without_a_yearly_plan_is_honest(self):
+        out = self._go('можно чат гпт сразу на год?')
+        self.assertIn('Годового тарифа на ChatGPT', out['reply'])
+
+    def test_yearly_plan_from_the_catalogue(self):
+        self.assertIn('Canva Pro на год — 5990 ₽', self._go('канву на год есть?')['reply'])
+
+    def test_region_present_is_never_denied(self):
+        out = self._go('есть пополнение турецкого эпл айди?', 'К сожалению, для Турции пополнения нет.')
+        self.assertIn('25 TRY: 120 ₽', out['reply'])
+        self.assertNotIn('нет', out['reply'].split('\n')[0])
+
+    def test_company_documents_go_to_the_owner(self):
+        out = self._go('нужен счёт для ИП')
+        self.assertTrue(out['evidence']['owner_alert'])
+        self.assertIn('Александр', out['reply'])
+
+    def test_friendly_owner_texts(self):
+        from support_agent.faq import load_faq
+        faq = {t['id']: t['answer'] for t in load_faq()['topics']}
+        self.assertIn('восстановит', faq['subscription_ended_early'])
+        self.assertIn('Другой сервис', faq['off_catalog'])
+        self.assertIn('реферальной ссылкой', faq['for_other_person'])
+        self.assertIn('после оплаты', faq['gemini_google'].casefold())
+        self.assertTrue(faq['gemini_google'].index('Каталог') < faq['gemini_google'].index('пароль'))
+        self.assertIn('Plus', faq['chatgpt_which'])
+        self.assertIn('Автосписаний у нас нет', faq['autopay_cancel'])
+        self.assertIn('при первой возможности', faq['delivery_time'])
