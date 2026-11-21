@@ -440,7 +440,7 @@ class CheckFindingsTests(unittest.TestCase):
         self.assertEqual(kind_for('x', '12 месяцев', [], 'Telegram premium'), 'telegram_premium')
         self.assertEqual(kind_for('y', '', [], 'iCloud/AppStore'), 'appstore')
         card = render('capcut_pro', 'CapCut Pro', '', {})
-        self.assertIn('новый готовый аккаунт', card)
+        self.assertIn('готовый аккаунт CapCut', card)
         self.assertNotIn('активация идёт в боте', card)
         self.assertIn('username', render('x', 'Telegram premium', '12 месяцев', {}))
 
@@ -658,7 +658,8 @@ class PaidNoticeTests(unittest.TestCase):
         for (service, plan), expected in cases.items():
             _kind, text = compose({'order': '10502', 'service': service, 'plan': plan, 'fk': ''}, self.ROWS)
             self.assertIn(expected, text, service)
-            self.assertIn('Заказ #10502 вижу', text)
+            self.assertIn('Заказ #10502: ' + service, text)
+            self.assertNotIn('вижу', text)  # live 6: no claim of a shop check
             self.assertNotIn('После оплаты', text)
             self.assertNotIn('оплата прошла', text.casefold())
 

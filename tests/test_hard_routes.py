@@ -561,3 +561,70 @@ class OwnerAnswers21NovTwenty(unittest.TestCase):
         self.assertIn('Plus', faq['chatgpt_which'])
         self.assertIn('Автосписаний у нас нет', faq['autopay_cancel'])
         self.assertIn('при первой возможности', faq['delivery_time'])
+
+
+class Live6Fixes(unittest.TestCase):
+    """live 6 (22.11.2026): the five bad auto-sends."""
+    T = [{'service_id': 'zoom', 'service': 'Zoom', 'plan': 'Pro', 'price': 1500},
+         {'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Go', 'price': 990}]
+
+    def _go(self, burst):
+        return hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {'turn_understanding': {'owner_topic': 'what_next'}}},
+                                 {'burst': burst, 'tariffs': self.T})
+
+    def test_notice_never_claims_a_check(self):
+        from support_agent.paid_notice import compose
+        kind, text = compose({'order': '11332', 'service': 'ChatGPT', 'plan': 'Plus'}, [])
+        self.assertNotIn('вижу', text)
+
+    def test_zoom_paid_gets_the_zoom_step(self):
+        out = self._go('Здравствуйте, Александр!\nЯ оплатила zoom\n[клиент прислал скриншот]')
+        self.assertIn('почту и пароль от аккаунта Zoom', out['reply'])
+
+    def test_a_wish_is_not_a_payment(self):
+        out = self._go('Что нужно, чтобы оплатить ГПТ? хочется всё же сейчас оплаченный текущий профиль')
+        self.assertNotIn('paid_without_order', out['evidence'].get('hard_routes') or [])
+
+    def test_a_problem_is_not_a_purchase(self):
+        out = self._go('Я оформила подписку на чат Go, но не отражается. Здесь просит оформить подписку')
+        self.assertNotIn('price_without_price', out['evidence'].get('hard_routes') or [])
+
+    def test_success_inside_owner_step_is_a_happy_end(self):
+        from support_agent.service import Service
+        out = Service._owner_step_ack(None, {'burst': 'Нет ничего\nЕсть подписка👌'})
+        self.assertIn('получилось', out['reply'])
+        self.assertFalse(out['evidence']['owner_alert'])
+
+    def test_discount_gets_both_codes(self):
+        from support_agent.playbook import tidy
+        out = tidy({'reply': 'Подскажите, о каком сервисе речь?', 'handoff': False, 'evidence': {}}, {'burst': 'Скидку сделаете?'})
+        self.assertIn('NAVSEX', out['reply'])
+        self.assertIn('@neirosetkaa_bot', out['reply'])
+
+    def test_grok_price_never_offers_supergrok(self):
+        rows = [{'service_id': 'supergrok', 'service': 'SuperGrok', 'plan': 'SuperGrok', 'price': 3090}]
+        out = hard_routes.apply({'reply': 'Cursor Plus — 990 ₽', 'handoff': False, 'evidence': {}}, {'burst': 'грок сколько стоит?', 'tariffs': rows})
+        self.assertNotIn('SuperGrok', out['reply'])
+
+
+class FreshSet22Nov(unittest.TestCase):
+    def test_english_client_gets_no_russian_template(self):
+        from support_agent.playbook import tidy
+        rows = [{'service_id': 'chatgpt', 'service': 'ChatGPT', 'plan': 'Plus', 'price': 1990}]
+        out = tidy({'reply': 'ChatGPT Plus costs 1990 RUB, pay in @neirosetkaa_bot.', 'handoff': False, 'evidence': {}},
+                   {'burst': 'Hi! How much is ChatGPT Plus? Any discount?', 'tariffs': rows})
+        self.assertNotRegex(out['reply'], r'[а-яё]')
+
+    def test_ooo_documents_go_to_the_owner(self):
+        out = hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}}, {'burst': 'нужны закрывающие документы для ООО'})
+        self.assertIn('invoice_legal', out['evidence']['hard_routes'])
+
+    def test_fresh_cases_are_valid(self):
+        import re
+        import yaml
+        cases = yaml.safe_load(open('support_agent/data/benchmark.yaml', encoding='utf-8'))['cases']
+        fresh = [c for c in cases if c['id'].startswith('fresh-')]
+        self.assertGreaterEqual(len(fresh), 60)
+        for case in fresh:
+            for pattern in (case.get('need') or []) + (case.get('forbid') or []):
+                re.compile('(?im)' + pattern)
