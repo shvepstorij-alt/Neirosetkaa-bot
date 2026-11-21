@@ -361,8 +361,9 @@ def _wrong_plan_act(answer, burst, context):
 
 
 # --- 14. «я оплатила Zoom» without the bot's notice → the order number first (owner 21.11.2026, round 5) --------
-_PAID_FREE = re.compile(r'(?i)(?:^|[\s,.!])(?:я\s+)?(?:уже\s+)?(?:оплатил\w*|оплачен\w*|купил\w*)(?!\s*\?)')
-_NOT_YET = re.compile(r'(?i)\bесли\b|\bкак\b[^\n]{0,20}оплат|можно\s+(?:ли\s+)?оплат|хочу\s+оплат|не\s+(?:могу|получается)\s+оплат|ещё\s+не|еще\s+не')
+# live 6: «хочется оплаченный текущий профиль» is a wish, not a payment — only the client's own «оплатил(а)/купил(а)».
+_PAID_FREE = re.compile(r'(?i)(?:^|[\s,.!])(?:я\s+)?(?:уже\s+)?(?:оплатил|оплатила|оплатили|купил|купила|купили)\b(?!\s*\?)')
+_NOT_YET = re.compile(r'(?i)\bесли\b|\bкак\b[^\n]{0,20}оплат|можно\s+(?:ли\s+)?оплат|хочу\s+оплат|хочется|чтобы\s+оплат|не\s+(?:могу|получа\w*|вышло)\s+оплат|ещё\s+не|еще\s+не')
 ORDER_FIRST = 'Подскажите, пожалуйста, номер заказа из бота — проверю и подскажу следующий шаг.'
 
 
@@ -384,7 +385,7 @@ def _paid_free_detect(burst, context, answer):
         return False
     if re.search(r'(?i)\b(?:где|как|куда)\b', burst):
         return False
-    if re.search(r'(?i)скрин|\[клиент\s+прислал|чек', burst) or (context or {}).get('images'):
+    if (re.search(r'(?i)скрин|\[клиент\s+прислал|чек', burst) or (context or {}).get('images')) and not _paid_service_step(burst, context):
         return False  # a screenshot may be the order itself: the normal flow reads it
     history = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or () if isinstance(m, dict))
     if re.search(r'(?i)#\s?\d{4,}|заказ\w*\s*(?:№|номер)?\s*\d{4,}|free\s*kassa|\b\d{9}\b', burst + ' ' + history):
@@ -392,10 +393,28 @@ def _paid_free_detect(burst, context, answer):
     return 'номер заказа' not in str(answer.get('reply') or '')
 
 
+def _paid_service_step(burst, context):
+    """Live 6 (#D-48): «Я оплатила zoom» → what Zoom needs now («почта и пароль»), as Alexander answered."""
+    try:
+        from .payment_guide import _after, kind_for, load_guide
+    except Exception:
+        return ''
+    rows = _asked_rows(burst, context)
+    if len({str(r.get('service_id') or '') for r in rows}) != 1:
+        return ''
+    row = rows[0]
+    kind = kind_for(row.get('service_id'), row.get('plan') if len(rows) == 1 else '', (context or {}).get('tariffs'), row.get('service'))
+    if kind in ('shop', 'chatgpt_auto', 'chatgpt_manual', 'chatgpt_new_account', 'claude_manual', 'claude_login'):
+        return ''  # these need the order itself: the button, the plan or the risks come from the order flow
+    step = str(_after(load_guide(), kind, '', None, row.get('service')) or '').strip()
+    step = re.sub(r'^После оплаты\s+', '', step)
+    return ('Спасибо за оплату 🙂 ' + step[:1].upper() + step[1:]) if step else ''
+
+
 def _paid_free_act(answer, burst, context):
     evidence = dict(answer.get('evidence') or {})
     evidence.update(owner_text_used=True, hard_route_auto=True)
-    return dict(answer, reply=ORDER_FIRST, handoff=False, evidence=evidence)
+    return dict(answer, reply=_paid_service_step(burst, context) or ORDER_FIRST, handoff=False, evidence=evidence)
 
 
 # --- 15. a price question gets the price (owner 21.11.2026, @Vmiti: «сколько стоит pro на чат gpt» got only payment steps)
@@ -412,6 +431,7 @@ def _asked_rows(burst, context):
     flat = lambda v: re.sub(r'[^a-zа-яё0-9]+', '', str(v or '').casefold())
     rows = [r for r in tariffs if any(flat(n) and (flat(n) == flat(r.get('service')) or flat(n) == flat(r.get('service_id')))
                                        for n in names)]
+    rows = [r for r in rows if not _NOT_OFFERED.search(str(r.get('service') or ''))]
     words = {(_PLAN_RU.get(w, w)) for w in re.findall(r'[a-zа-яё]+', burst.casefold()) if w in _PLAN_WORDS}
     if words:
         narrowed = [r for r in rows if any(re.search(r'(?i)(?<![a-z])' + w, str(r.get('plan') or '')) for w in words)]
@@ -419,7 +439,12 @@ def _asked_rows(burst, context):
     return rows
 
 
+_TROUBLE = re.compile(r'(?i)оформил\w*|оплатил\w*|купил\w*|не\s+(?:работа|отража|появ|приш|активир|получа|грузит|открыва)\w*|'
+                      r'слетел\w*|пропал\w*|отключил\w*|ошибк\w*|проблем\w*|просит\s+оформить|не\s+видн\w*')
 _BUY_Q = re.compile(r'(?i)\bхочу\b|\bнуж(?:ен|на|но)\b|купить|куплю|оформить|возьму|приобрест|подключить')
+
+
+_NOT_OFFERED = re.compile(r'(?i)supergrok')  # owner: Grok is sold through Cursor's unified plans
 
 
 def _missing_rows(burst, context, reply):
@@ -429,16 +454,26 @@ def _missing_rows(burst, context, reply):
     rows = _asked_rows(burst, context)
     if '₽' not in reply:
         return rows
-    return [r for r in rows if flat(r.get('service')) not in said]
+    return [r for r in rows if flat(r.get('service')) not in said and not _NOT_OFFERED.search(str(r.get('service') or ''))]
+
+
+def latin_only(burst):
+    """A client writing without Cyrillic (English and the like) gets the model's reply in his language, no Russian template."""
+    text = str(burst or '')
+    return not re.search(r'[а-яё]', text, re.I) and bool(re.search(r'[a-z]{3}', text, re.I))
 
 
 def _price_detect(burst, context, answer):
     evidence = answer.get('evidence') or {}
+    if latin_only(burst):
+        return False
     reply = str(answer.get('reply') or '')
     if answer.get('handoff') or evidence.get('continue_step') or evidence.get('owner_step_ack') or evidence.get('order_action'):
         return False
     if _PAID_FREE.search(burst) or _PAID_ISSUE.search(burst):
         return False
+    if _TROUBLE.search(burst):
+        return False  # live 6 (#D-60): «оформила Go, но не отражается» is a problem, not a purchase
     priced = bool(_PRICE_Q.search(burst))
     buying = bool(_BUY_Q.search(burst)) and '₽' not in reply  # «мидджорни хочу купить» gets the prices too
     if not (priced or buying):
@@ -524,7 +559,8 @@ def _yearly_act(answer, burst, context):
         names = [state] if state else []
         service_rows = [r for r in (context or {}).get('tariffs') or () if isinstance(r, dict) and str(r.get('service') or '') == state]
     if not names:
-        text = 'Подскажите, пожалуйста, какой сервис нужен — проверю, есть ли на него годовой тариф 🙂'
+        text = ('Подписки оформляются на месяц, автосписаний нет 🙂 Годовые тарифы есть не на все сервисы — '
+                'подскажите, какой сервис нужен, проверю по каталогу.')
     else:
         yearly = [r for r in service_rows if _YEAR_PLAN.search(str(r.get('plan') or '') + ' ' + str(r.get('service') or ''))
                   and type(r.get('price')) is int]
@@ -543,7 +579,7 @@ def _yearly_act(answer, burst, context):
 
 
 # --- 18. documents or payment from a company → the owner (owner 21.11.2026) -------------------------------------
-_INVOICE = re.compile(r'(?i)юр\.?\s*лиц\w*|юрлиц\w*|\bип\b|счёт\s+на\s+оплату|счет\s+на\s+оплату|закрывающ\w*|\bдоговор\w*|безнал\w*|'
+_INVOICE = re.compile(r'(?i)юр\.?\s*лиц\w*|юрлиц\w*|\bип\b|\bооо\b|\bоао\b|\bзао\b|счёт\s+на\s+оплату|счет\s+на\s+оплату|закрывающ\w*|\bдоговор\w*|безнал\w*|'
                       r'от\s+(?:компании|организации|фирмы)|с\s+р/?с|расч[её]тн\w+\s+сч[её]т|\bупд\b|акт\w*\s+выполненных')
 
 

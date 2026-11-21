@@ -1625,7 +1625,13 @@ class Service:
         """Owner 21.11.2026: the client answered Alexander's hands-on step (code, password, screenshot, data)."""
         from .turn_understanding import _STATUS_PING
         burst=str((context or {}).get('burst') or '')
-        if _STATUS_PING.search(burst) and not images:
+        if re.search(r'(?i)есть\s+подписк|подписк\w*\s+(?:появил|есть|активн|работа)|вс[её]\s+(?:получилось|работает|ок|готово)|'
+                     r'получилось|заработал\w*|появил\w*\s+(?:подписк|plus|плюс|pro)|👌|спасибо,?\s+всё',burst) \
+                and not re.search(r'(?i)не\s+(?:получилось|работает|появил)',burst):
+            # Live 6 (#D-24): «Есть подписка👌» is the happy end of the step, not a hand-over.
+            reply='Отлично, рад, что всё получилось! 🙂 Обращайтесь, если что-то понадобится.'
+            kind='done'
+        elif _STATUS_PING.search(burst) and not images:
             reply='Александр продолжит здесь при первой возможности.'
             kind='ping'
         elif images or re.search(r'\d{4,}|@|\[email|\[(?:фото|файл|документ|скрин|изображ)|\S{25,}',burst,re.I) or len(burst)>60:
@@ -1637,7 +1643,7 @@ class Service:
         return {'reply':reply,'handoff':False,
                 'summary':'Клиент ответил на шаг Александра.',
                 'evidence':{'status':'owner_policy','sources':[],'reply_class':'instruct','owner_approved_wording':True,
-                            'owner_step_ack':True,'owner_step_ack_kind':kind,'owner_alert':True,'continue_step':True,
+                            'owner_step_ack':True,'owner_step_ack_kind':kind,'owner_alert':kind!='done','continue_step':True,
                             'diagnostic':'Александр сам ведёт этот шаг (просил данные, код или подтверждение) — клиенту отправлено короткое подтверждение, дальше ответ за вами.'}}
 
     _ALERT_REASONS={'refund_request':'просьба о возврате','wrong_plan':'оплачен не тот тариф или сервис',

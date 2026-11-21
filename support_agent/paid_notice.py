@@ -124,6 +124,10 @@ def steps_for(kind, service_name, plan):
         lines.append('')
         lines.append('Напишите, пожалуйста, что согласны с этими рисками — после этого Александр продолжит оформление.')
         return '\n'.join(lines)
+    if kind == 'capcut':
+        # Live 6: the ready account comes from the bot; Alexander asked «пришёл аккаунт от бота?».
+        return ('Готовый аккаунт CapCut с подпиской придёт в чат бота @neirosetkaa_bot — почта и пароль. Пришёл? '
+                'Если нет, напишите здесь — Александр пришлёт данные при первой возможности.')
     if kind == 'chatgpt_new_account':
         return ('Для этого тарифа мы создаём новый аккаунт. Пришлите, пожалуйста, сюда:\n'
                 '1. Какой адрес дать новой почте outlook.com.\n'
@@ -139,7 +143,8 @@ _SELF = {'chatgpt_auto', 'claude_auto', 'perplexity', 'appstore'}
 def compose(found, tariffs):
     kind, step = next_step(found, tariffs)
     label = found['service'] + (', тариф ' + found['plan'] if found.get('plan') else '')
-    head = 'Здравствуйте! Заказ ' + ('#' + found['order'] + ' ' if found.get('order') else '') + 'вижу: ' + label + '.'
+    # live 6 (22.11.2026): «Заказ вижу» claimed a shop check that did not happen — the client's own data is repeated.
+    head = ('Здравствуйте! Спасибо за оплату 🙂 ' + ('Заказ #' + found['order'] + ': ' if found.get('order') else '') + label + '.')
     return kind, head + '\n\n' + step
 
 

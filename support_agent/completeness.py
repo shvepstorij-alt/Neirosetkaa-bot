@@ -30,6 +30,8 @@ _VPN_TROUBLE = re.compile(r'(?i)настро|не\s+(?:работа|подклю
 _KYC = re.compile(r'(?i)верификац|kyc|паспорт|документ\w*\s+(?:для|на)\s+клод|права\b')
 _KYC_BY_US = re.compile(r'(?i)kyc|за\s+(?:меня|вас|нас)|проходите\s+вы|прохождени\w*\s+верификац')
 _RENEW = re.compile(r'(?i)продл\w*|продолжить\s+подписк|ещё\s+на\s+месяц|еще\s+на\s+месяц')
+_PROBLEM = re.compile(r'(?i)проблем\w*|не\s+(?:получа|работа|прош|приход|активир|отража)\w*|ошибк\w*|слетел\w*|снова\s+как')
+_DISCOUNT = re.compile(r'(?i)скидк\w*|дешевле|промокод\w*|подешевле|акци[ия]')
 _GAMES = re.compile(r'(?i)robux|робукс\w*|roblox|роблокс\w*|ps\s*plus|пс\s*плюс|game\s*pass|гейм\s*пасс|steam|стим\w*|nintendo|нинтендо|'
                     r'пополн\w*\s+(?:пс|ps|playstation|xbox|иксбокс)|гифт|подарочн\w*\s+карт')
 _NOT_IN_CATALOG = re.compile(r'(?i)[^.!?\n]*(?:в\s+каталоге\s+(?:сейчас\s+)?нет|нет\s+в\s+каталоге|не\s+прода[её]м)[^.!?\n]*[.!?]?')
@@ -47,7 +49,9 @@ def _handover(answer):
                 or not reply.strip())
 
 
-_NEEDS = re.compile(r'(?i)что\s+(?:от\s+меня\s+)?(?:нужно|надо|понадобится|потребуется|требуется)|что\s+нужно\s+для|как\s+(?:оформить|подключить|активировать)')
+_NEEDS = re.compile(r'(?i)что\s+(?:от\s+меня\s+)?(?:нужно|надо|понадобится|потребуется|требуется)|что\s+нужно\s+для|как\s+(?:оформить|подключить|активировать)|'
+                    r'можно\s+(?:ли\s+)?(?:на\s+(?:мой|свой)|оформить|купить|подключить)|хочу\s+(?:купить|оформить|подключить)')
+GENERIC_AFTER = 'После оплаты подскажу, что понадобится для активации.'
 
 
 def _after_pay(burst, context):
@@ -69,11 +73,17 @@ def _after_pay(burst, context):
     return ('После оплаты: ' + text[:1].lower() + text[1:]) if text and not text.startswith('После оплаты') else text
 
 
+def _promo():
+    from .owner_scenarios import NAVSEX
+    return NAVSEX
+
+
 def _rules(context=None):
     return (
         # «Что от меня нужно?» about one service: what is needed after payment.
         ('after_pay', lambda b, r: bool(_NEEDS.search(b)) and not re.search(r'(?i)оплатил|оплачен', b),
-         lambda r: bool(re.search(r'(?i)после\s+оплаты', r)), lambda: _after_pay((context or {}).get('burst') or '', context)),
+         lambda r: bool(re.search(r'(?i)после\s+оплаты\s+(?:пришлите|понадоб|нужн|потребу|готовый|бот|придёт|придет)', r)),
+         lambda: _after_pay((context or {}).get('burst') or '', context)),
         # VPN: the owner's recommended VPNs whenever a client asks about getting one (not about fixing one).
         ('vpn', lambda b, r: bool(_VPN_ASK.search(b)) and not _VPN_TROUBLE.search(b),
          lambda r: 'DureVpnBot' in r, lambda: _faq('vpn_help', 2)),
@@ -82,7 +92,9 @@ def _rules(context=None):
          and bool(re.search(r'(?i)клод|claude|верификац|паспорт', b + ' ' + r)),
          lambda r: bool(re.search(r'(?i)загран', r) and re.search(r'(?i)иностран', r)), lambda: _faq('claude_verification', 1)),
         # Renewal: where and how to buy it.
-        ('renewal_where', lambda b, r: bool(_RENEW.search(b)),
+        # A discount request always gets the owner's promo codes.
+        ('discount', lambda b, r: bool(_DISCOUNT.search(b)), lambda r: 'NAVSEX' in r, _promo),
+        ('renewal_where', lambda b, r: bool(_RENEW.search(b)) and not _PROBLEM.search(b),
          lambda r: bool(re.search(r'(?i)@neirosetkaa_bot|«каталог»|каталог', r)), lambda: RENEW_LINE),
         # Games, gift cards, console subscriptions: the bot section.
         ('games_section', lambda b, r: bool(_GAMES.search(b)),
@@ -115,6 +127,9 @@ def complete(answer, context):
     if not isinstance(answer, dict) or _handover(answer):
         return answer
     burst = str((context or {}).get('burst') or '')
+    from .hard_routes import latin_only
+    if latin_only(burst):
+        return answer  # owner 21.11.2026: English stays English — the owner's Russian texts are not appended
     reply = str(answer.get('reply') or '').strip()
     added, names = [], []
     for rule in _rules(context):
@@ -125,6 +140,10 @@ def complete(answer, context):
                 continue
             extra = text()
         except Exception:
+            continue
+        if name == 'after_pay' and extra and GENERIC_AFTER in reply:
+            reply = reply.replace(GENERIC_AFTER, extra)  # the specific step replaces «подскажу, что понадобится»
+            names.append(name)
             continue
         if extra and extra[:60] not in reply:
             if contradicts is not None:  # the owner's fact wins over the model's contrary sentence
@@ -138,4 +157,4 @@ def complete(answer, context):
     text = '\n\n'.join(paragraphs + added + ([question] if question else [])).strip()
     evidence = dict(answer.get('evidence') or {})
     evidence['completed_with'] = names
-    return dict(answer, reply=text, evidence=evidence)
+    return dict(answer, reply=link_the_bot(text), evidence=evidence)
