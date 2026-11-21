@@ -799,8 +799,10 @@
         oninput="validateToken()"
         autocomplete="off" autocorrect="off" spellcheck="false"
       ></textarea>
+      <button type="button" id="paste-btn" onclick="pasteToken()"
+        style="width:100%;margin-top:8px;padding:11px;border-radius:10px;border:1px solid var(--green);background:transparent;color:var(--green);font-weight:600;font-size:14px;cursor:pointer">📋 Вставить скопированный текст</button>
       <div class="field-hint">
-        Скопируй <b>весь</b> текст страницы целиком — от начала до конца
+        Скопируй <b>весь</b> текст страницы целиком — от начала до конца. На компьютере можно нажать в поле и <b>Ctrl+V</b> (на Mac — <b>⌘+V</b>).
       </div>
       <div id="tok-hint" class="field-hint" style="display:none;color:#ff6b6b;font-size:11px;"></div>
     </div>
@@ -1577,6 +1579,21 @@ function stopLoader(done){
   if(done){var f=document.getElementById('ld-fill'); if(f) f.style.width='100%';
     document.querySelectorAll('#ld-steps .ld-step').forEach(function(e){e.className='ld-step ok';});}
 }
+
+// Вставка кнопкой: в Telegram на компьютере у поля нет меню по правой
+// кнопке мыши, и клиенты не могли вставить текст мышью. 21.11.2026
+async function pasteToken(){
+  var ta=document.getElementById('token-input'), b=document.getElementById('paste-btn');
+  var done=function(t){ if(!t){return false;} ta.value=t; try{validateToken();}catch(e){}
+    if(b){b.textContent='✅ Вставлено';setTimeout(function(){b.textContent='📋 Вставить скопированный текст';},1800);} return true; };
+  try{ if(navigator.clipboard&&navigator.clipboard.readText){ if(done(await navigator.clipboard.readText()))return; } }catch(e){}
+  try{ var tg=window.Telegram&&window.Telegram.WebApp;
+    if(tg&&tg.readTextFromClipboard){ tg.readTextFromClipboard(function(t){ if(!done(t)) _pasteHint(); }); return; } }catch(e){}
+  _pasteHint();
+}
+function _pasteHint(){ var ta=document.getElementById('token-input'); try{ta.focus();}catch(e){}
+  var h=document.getElementById('tok-hint'); if(h){h.style.display='block';h.style.color='var(--text2)';
+  h.textContent='Браузер не дал прочитать буфер — нажми в поле и Ctrl+V (на телефоне: долгое нажатие → «Вставить»).';} }
 // ─── Polling ─────────────────────────────────────────────────────
 async function pollResult(jobId) {
   for (var i = 0; i < 120; i++) {

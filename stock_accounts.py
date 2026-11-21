@@ -53,13 +53,54 @@ def _esc(s) -> str:
     return html.escape(str(s or ""))
 
 
+# ── ключ сервиса ────────────────────────────────────────────────────────
+# 21.11.2026: CapCut в каталоге хранится не под ключом «capcut», а под
+# сгенерированным (например «capcut_pro_1a2b3»). Аккаунты из админки ложились
+# под «capcut», оплата приходила с другим ключом — и автовыдача молчала.
+# Теперь сервис узнаётся по ключу ИЛИ по названию.
+def _norm(x) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]", "", str(x or "").lower())
+
+
+def _keys(service_key: str) -> list:
+    out = {service_key}
+    try:
+        from config import SHOP_CATALOG
+        nm = (SHOP_CATALOG.get(service_key) or {}).get("name", "")
+        if nm:
+            out.add(_norm(nm))
+            out.add(_norm(str(nm).split()[0]))
+    except Exception:
+        pass
+    out.add(_norm(service_key))
+    out.add(_norm(str(service_key).split("_")[0]))
+    return [k for k in out if k]
+
+
+def resolve_key(key: str) -> str:
+    """Ключ из админки («capcut») → настоящий ключ сервиса в каталоге."""
+    try:
+        from config import SHOP_CATALOG
+        if key in SHOP_CATALOG:
+            return key
+        n = _norm(key)
+        for k, v in SHOP_CATALOG.items():
+            if _norm(k).startswith(n) or _norm((v or {}).get("name", "")).startswith(n):
+                return k
+    except Exception:
+        pass
+    return key
+
+
 # ── выдача ──────────────────────────────────────────────────────────────
 async def stock_enabled(service_key: str) -> bool:
     """Сервис работает через запас, если в него хоть раз загружали аккаунты."""
     p = await _pool()
     async with p.acquire() as c:
         return bool(await c.fetchval(
-            "SELECT 1 FROM stock_accounts WHERE service_key=$1 LIMIT 1", service_key))
+            "SELECT 1 FROM stock_accounts WHERE service_key = ANY($1::text[]) LIMIT 1",
+            _keys(service_key)))
 
 
 async def stock_free_count(service_key: str, plan_name: str = None) -> int:
@@ -67,11 +108,11 @@ async def stock_free_count(service_key: str, plan_name: str = None) -> int:
     async with p.acquire() as c:
         if plan_name is None:
             return int(await c.fetchval(
-                "SELECT COUNT(*) FROM stock_accounts WHERE service_key=$1 AND issued_to IS NULL",
-                service_key) or 0)
+                "SELECT COUNT(*) FROM stock_accounts WHERE service_key = ANY($1::text[]) "
+                "AND issued_to IS NULL", _keys(service_key)) or 0)
         return int(await c.fetchval(
-            "SELECT COUNT(*) FROM stock_accounts WHERE service_key=$1 AND issued_to IS NULL "
-            "AND plan_name IN ($2, '')", service_key, plan_name or "") or 0)
+            "SELECT COUNT(*) FROM stock_accounts WHERE service_key = ANY($1::text[]) "
+            "AND issued_to IS NULL AND plan_name IN ($2, '')", _keys(service_key), plan_name or "") or 0)
 
 
 async def stock_take(service_key: str, plan_name: str, user_id: int, order_id: str):
@@ -85,11 +126,11 @@ async def stock_take(service_key: str, plan_name: str, user_id: int, order_id: s
             """UPDATE stock_accounts SET issued_to=$3, issued_at=NOW(), order_id=$4
                WHERE id = (
                    SELECT id FROM stock_accounts
-                   WHERE service_key=$1 AND issued_to IS NULL AND plan_name IN ($2, '')
+                   WHERE service_key = ANY($1::text[]) AND issued_to IS NULL AND plan_name IN ($2, '')
                    ORDER BY (plan_name = $2) DESC, id
                    LIMIT 1 FOR UPDATE SKIP LOCKED)
                RETURNING *""",
-            service_key, plan_name or "", user_id, order_id)
+            _keys(service_key), plan_name or "", user_id, order_id)
         return dict(row) if row else None
 
 
@@ -177,9 +218,8 @@ async def stock_admin_line(order_id: str) -> str:
         left = await stock_free_count(acc["service_key"])
     except Exception:
         left = "?"
-    _login = (acc["payload"] or "").split()[0] if acc.get("payload") else ""
-    return (f"\n\n📦 <b>Выдан аккаунт из запаса</b> #{acc['id']}: "
-            f"<code>{_esc(_login)}</code>\nОсталось в запасе: <b>{left}</b>")
+    return (f"\n\n📦 <b>Выдан аккаунт из запаса</b> #{acc['id']}:\n"
+            f"<code>{_esc(acc.get('payload') or '')}</code>\nОсталось в запасе: <b>{left}</b>")
 
 
 # ── админ-панель ────────────────────────────────────────────────────────
@@ -193,15 +233,16 @@ async def api_admin_stock_list_handler(request):
         body = {}
     if _admin_uid_from_body(body) != ADMIN_ID:
         return web.json_response({"ok": False}, status=403)
-    key = str(body.get("key") or "capcut")
+    key = resolve_key(str(body.get("key") or "capcut"))
     p = await _pool()
     async with p.acquire() as c:
         free = await c.fetch(
             "SELECT id, plan_name, payload, note, added_at FROM stock_accounts "
-            "WHERE service_key=$1 AND issued_to IS NULL ORDER BY id", key)
+            "WHERE service_key = ANY($1::text[]) AND issued_to IS NULL ORDER BY id", _keys(key))
         issued = await c.fetch(
             "SELECT id, plan_name, payload, issued_to, issued_at, order_id FROM stock_accounts "
-            "WHERE service_key=$1 AND issued_to IS NOT NULL ORDER BY issued_at DESC LIMIT 30", key)
+            "WHERE service_key = ANY($1::text[]) AND issued_to IS NOT NULL "
+            "ORDER BY issued_at DESC LIMIT 30", _keys(key))
     svc = SHOP_CATALOG.get(key) or {}
     _f = lambda d: d.strftime("%d.%m %H:%M") if d else ""
     return web.json_response({
@@ -225,7 +266,7 @@ async def api_admin_stock_add_handler(request):
         body = {}
     if _admin_uid_from_body(body) != ADMIN_ID:
         return web.json_response({"ok": False}, status=403)
-    key = str(body.get("key") or "capcut")
+    key = resolve_key(str(body.get("key") or "capcut"))
     plan = str(body.get("plan") or "").strip()
     note = str(body.get("note") or "").strip()[:300]
     lines = [l.strip() for l in str(body.get("text") or "").splitlines() if l.strip()]
@@ -235,8 +276,8 @@ async def api_admin_stock_add_handler(request):
     added = dup = 0
     async with p.acquire() as c:
         for l in lines[:200]:
-            if await c.fetchval("SELECT 1 FROM stock_accounts WHERE service_key=$1 AND payload=$2",
-                                key, l):
+            if await c.fetchval("SELECT 1 FROM stock_accounts WHERE service_key = ANY($1::text[]) "
+                                "AND payload=$2", _keys(key), l):
                 dup += 1
                 continue
             await c.execute(
@@ -266,3 +307,56 @@ async def api_admin_stock_delete_handler(request):
             "DELETE FROM stock_accounts WHERE id=$1 AND issued_to IS NULL", _id)
     return web.json_response({"ok": r.endswith(" 1"),
                               "msg": "" if r.endswith(" 1") else "Уже выдан или не найден"})
+
+
+# ── /stock_give <заказ> — выдать аккаунт из запаса по уже оплаченному заказу ──
+# Для заказов, по которым автовыдача не сработала (21.11.2026, CapCut).
+def _register_cmd():
+    try:
+        from aiogram import F
+        from aiogram.filters import StateFilter
+        from aiogram.types import Message
+        from config import dp, ADMIN_ID, bot, SHOP_CATALOG
+    except Exception as e:
+        logging.warning(f"stock: команда не зарегистрирована: {e}")
+        return
+
+    @dp.message(F.text.startswith("/stock_give"), StateFilter("*"))
+    async def _stock_give(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            await message.answer("Формат: <code>/stock_give shop_…</code> (ID заказа из карточки)",
+                                 parse_mode="HTML")
+            return
+        oid = parts[1].strip()
+        from db import fk_get_order
+        o = await fk_get_order(oid)
+        if not o or str(o.get("status")) != "paid":
+            await message.answer("❌ Заказ не найден или не оплачен.")
+            return
+        pack = str(o.get("pack") or "")
+        bits = pack.split(":")
+        shop_key = bits[1] if len(bits) > 1 else ""
+        plan_name = ""
+        try:
+            from common import _plan_by_order, _pack_plan_name
+            plan_name = (_plan_by_order(shop_key, int(bits[2]) if len(bits) > 2 else 0,
+                                        _pack_plan_name(pack))[1] or {}).get("name", "")
+        except Exception:
+            pass
+        svc = (SHOP_CATALOG.get(shop_key) or {}).get("name", shop_key)
+        ok = await stock_try_deliver(
+            bot=bot, admin_id=ADMIN_ID, user_id=int(o["user_id"]), shop_key=shop_key,
+            service_name=f"{svc} {plan_name}".strip(), plan_name=plan_name, order_id=oid,
+            amount_rub=o.get("amount_rub") or "")
+        if ok:
+            await message.answer(f"✅ Аккаунт выдан по заказу <code>{_esc(oid)}</code>"
+                                 + await stock_admin_line(oid), parse_mode="HTML")
+        else:
+            await message.answer("❌ Не выдал: в запасе нет аккаунтов для этого сервиса "
+                                 f"(ключ <code>{_esc(shop_key)}</code>).", parse_mode="HTML")
+
+
+_register_cmd()

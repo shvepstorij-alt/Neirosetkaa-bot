@@ -59,6 +59,8 @@ import handlers_linkpay
 import handlers_nsgifts
 import handlers_desc
 import sms_numbers   # виртуальные номера: кнопки в чате + фоновая проверка SMS
+import stock_accounts  # автовыдача аккаунтов (CapCut): команда /stock_give
+import catalog_ops     # /catalog_update: годовые тарифы и переименования
 
 # ── Premium-эмодзи: middleware подменяет обычные эмодзи на custom во всех
 # исходящих сообщениях (HTML-текст → <tg-emoji>, инлайн-кнопки → иконка). ──
