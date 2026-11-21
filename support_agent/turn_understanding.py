@@ -1637,6 +1637,9 @@ _DESKTOP = r'винд\w*|windows|\bwin\b|\bмак\w*|\bmac\w*|макбук\w*|н
 _INSTALL = r'установ\w*|скача\w*|скачива\w*|постав\w*|загруз\w*|настро\w*|инсталл\w*|download|install|\bнет\s+(?:gpt|гпт|чат\w*|claude|клод\w*)|как\s+(?:мне\s+)?(?:получить|открыть)\s+приложени'
 
 
+_DONE_INSTALL = re.compile(r'(?i)(?:поставил|установил|скачал|загрузил)\w*|уже\s+(?:стоит|есть|работает)|работает\s+на')
+
+
 def _install_reply(burst, context=None):
     """One polite line with the right link for Android or a computer; iPhone keeps the full instruction."""
     text = str(burst or '')
@@ -1645,6 +1648,11 @@ def _install_reply(burst, context=None):
         return ''
     android = bool(re.search('(?i)' + _ANDROID, text))
     desktop = bool(re.search('(?i)' + _DESKTOP, text))
+    if android and desktop:
+        # «Мне на андроид можно поставить? На ноут поставила» — the device already done is not the one asked about.
+        wanted = ' '.join(part for part in re.split(r'[.!?\n]+', text) if not _DONE_INSTALL.search(part))
+        android = bool(re.search('(?i)' + _ANDROID, wanted))
+        desktop = bool(re.search('(?i)' + _DESKTOP, wanted))
     if android == desktop:
         return ''
     state = str(((context or {}).get('dialog_state') or {}).get('service_id') or '')

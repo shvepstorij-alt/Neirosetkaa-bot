@@ -377,6 +377,13 @@ def _paid_free_detect(burst, context, answer):
         return False
     if evidence.get('order_action') or evidence.get('paid_notice') or evidence.get('owner_step_ack') or evidence.get('continue_step'):
         return False
+    # bench 11 (21.11.2026): a service-specific owner answer («Оплатил Claude Max» → почта, «где кнопка» → кнопка в боте)
+    # already names the next step; the order number is asked only when the reply is the generic «что дальше».
+    topic = str((evidence.get('turn_understanding') or {}).get('owner_topic') or '')
+    if topic not in ('', 'none', 'what_next', 'unknown_answer'):
+        return False
+    if re.search(r'(?i)\b(?:где|как|куда)\b', burst):
+        return False
     if re.search(r'(?i)скрин|\[клиент\s+прислал|чек', burst) or (context or {}).get('images'):
         return False  # a screenshot may be the order itself: the normal flow reads it
     history = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or () if isinstance(m, dict))
@@ -389,6 +396,50 @@ def _paid_free_act(answer, burst, context):
     evidence = dict(answer.get('evidence') or {})
     evidence.update(owner_text_used=True, hard_route_auto=True)
     return dict(answer, reply=ORDER_FIRST, handoff=False, evidence=evidence)
+
+
+# --- 15. a price question gets the price (owner 21.11.2026, @Vmiti: «сколько стоит pro на чат gpt» got only payment steps)
+_PRICE_Q = re.compile(r'(?i)сколько\s+(?:стоит|стоят|будет|выйдет|по\s+цене|по\s+деньгам)|\bскок\b|\bцен[аыуе]\b|стоимост\w*|почём|почем|прайс|'
+                      r'how\s+much|\bprice')
+_PLAN_WORDS = ('pro', 'plus', 'go', 'max', 'ultra', 'premium', 'business', 'team', 'basic', 'standard', 'плюс', 'про', 'макс')
+_PLAN_RU = {'плюс': 'plus', 'про': 'pro', 'макс': 'max'}
+
+
+def _asked_rows(burst, context):
+    from .fit_answer import _asked, _services
+    tariffs = [r for r in (context or {}).get('tariffs') or () if isinstance(r, dict) and type(r.get('price')) is int]
+    names = _asked(burst, _services())
+    flat = lambda v: re.sub(r'[^a-zа-яё0-9]+', '', str(v or '').casefold())
+    rows = [r for r in tariffs if any(flat(n) and (flat(n) == flat(r.get('service')) or flat(n) == flat(r.get('service_id')))
+                                       for n in names)]
+    words = {(_PLAN_RU.get(w, w)) for w in re.findall(r'[a-zа-яё]+', burst.casefold()) if w in _PLAN_WORDS}
+    if words:
+        narrowed = [r for r in rows if any(re.search(r'(?i)(?<![a-z])' + w, str(r.get('plan') or '')) for w in words)]
+        rows = narrowed or rows
+    return rows
+
+
+def _price_detect(burst, context, answer):
+    evidence = answer.get('evidence') or {}
+    if not _PRICE_Q.search(burst) or '₽' in str(answer.get('reply') or '') or answer.get('handoff'):
+        return False
+    if evidence.get('continue_step') or evidence.get('owner_step_ack') or evidence.get('order_action'):
+        return False
+    return 0 < len(_asked_rows(burst, context)) <= 12
+
+
+def _price_act(answer, burst, context):
+    from .turn_understanding import tariff_question
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    prices = tariff_question(_asked_rows(burst, context))
+    rest = str(answer.get('reply') or '').strip()
+    # The reply keeps whatever else it answered («сколько стоит зум и как оплатить»); a «no price» line goes.
+    rest = '\n'.join(l for l in rest.split('\n') if not re.search(r'(?i)цен\w*\s+(?:сейчас\s+)?не\s+вижу|цены\s+этого|не\s+вижу\s+цен|точн\w+\s+цен\w*\s+не', l)).strip()
+    if re.search(r'Откройте бота и нажмите', rest) and not re.search(r'(?i)как\s+(?:мне\s+)?(?:оплат|купит|оформ|приобр)', burst):
+        rest = ''  # only the price was asked: the tariff list already says how to pay in one line
+    from .playbook import dedupe
+    return dict(answer, reply=dedupe((prices + ('\n\n' + rest if rest else '')).strip()), handoff=False, evidence=evidence)
 
 
 RULES = (
@@ -405,6 +456,7 @@ RULES = (
     ('unknown_phrase_glued', _glued_detect, _glued_act),
     ('payment_method_unknown', _pay_detect, _pay_act),
     ('claude_no_driving_licence', _licence_detect, _licence_act),
+    ('price_without_price', _price_detect, _price_act),
     ('paid_issue_draft_only', _paidissue_detect, _paidissue_act),
 )
 STOP_AFTER = {'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'refund_request', 'claude_consent'}

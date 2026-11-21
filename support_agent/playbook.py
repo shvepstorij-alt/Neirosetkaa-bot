@@ -146,7 +146,8 @@ def tidy(answer, context):
                 hold = 'В переписке уже идёт разговор с Александром — общий вопрос «о каком сервисе речь» не подходит.'
         except Exception:
             pass
-    reply = dedupe(re.sub(r'\n{3,}', '\n\n', reply).strip())
+    reply = dedupe(only_asked_platform(re.sub(r'\n{3,}', '\n\n', reply).strip(), str((context or {}).get('burst') or ''),
+                                       str(((context or {}).get('dialog_state') or {}).get('service') or '')))
     if not reply:
         reply = str(answer.get('reply') or '').strip()  # a filter must never leave the client an empty answer
     if hold:
@@ -164,6 +165,12 @@ def tidy(answer, context):
 
 _PAY_PARA = re.compile(r'(?i)^(?:оплатить\s+можно\s+в\s+боте\s+@neirosetkaa_bot|оплата\s+в\s+@neirosetkaa_bot)')
 _SAYS_HOW_TO_PAY = re.compile(r'(?i)@neirosetkaa_bot[\s\S]{0,300}каталог|каталог[\s\S]{0,300}(?:сбп|оплат)')
+
+
+def only_asked_platform(reply, burst, service=''):
+    """Kept for callers and tests: the systemic filter lives in fit_answer.fit_to_question."""
+    from .fit_answer import fit_to_question
+    return fit_to_question(reply, burst, service)
 
 
 def dedupe(reply):

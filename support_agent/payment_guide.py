@@ -282,8 +282,11 @@ def render(service_id, service_name, plan_name, facts, already=(), tariffs=None,
     lines = ['Оплата в ' + where + '.', '']
     lines.extend(str(index) + '. ' + step for index, step in enumerate(steps, 1))
     lines.append('')
-    lines.append(_after(guide, kind, choice, have, service_name))
-    timing = '' if kind == 'claude_manual' else _timing_line(guide, kind, already)
+    # Owner 21.11.2026 (@Vmiti): with the service or plan unknown, «активация идёт в боте, 5-30 минут» was a guess —
+    # wrong for ChatGPT Pro, Claude and every manual service. Then only the neutral promise of the next step.
+    unknown = kind == 'shop' and (not str(service_id or '').strip() or str(service_id) in ('chatgpt', 'claude', 'perplexity'))
+    lines.append('После оплаты подскажу, что понадобится для активации.' if unknown else _after(guide, kind, choice, have, service_name))
+    timing = '' if kind == 'claude_manual' or unknown else _timing_line(guide, kind, already)
     if timing:
         lines.append('')
         lines.append(timing)
