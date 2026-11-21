@@ -73,10 +73,10 @@ cases:
   need: ['обращайтесь|хорошего|рад']
 - id: refund
   client: "верните деньги, подписка не работает уже неделю"
-  stop: true
+  need: ['номер заказа', 'что именно не подошло']  # owner 21.11.2026
 - id: human
   client: "позовите человека пожалуйста"
-  stop: true
+  need: ['ИИ-помощник Александра', 'при первой возможности']  # owner 21.11.2026
 - id: netflix-off-catalog
   client: "можно купить нетфликс и сколько он стоит"
   forbid: ['на какой срок', 'будет на связи']
@@ -421,7 +421,7 @@ cases:
   forbid: ['₽', 'будет на связи']
 - id: insult
   client: "Вы мошенники, верните мои деньги!"
-  stop: true
+  need: ['Понимаю вас', 'Передал Александру']  # owner 21.11.2026: calm reply + urgent alert
 - id: owner-asked-region
   history: [[owner, 'Подскажите, пожалуйста, в каком регионе ваш аккаунт Apple ID?']]
   client: "Турция"
@@ -447,19 +447,19 @@ cases:
   - {role: client, text: 'Александр, здравствуйте. Я оплатила зум, но он все равно прерывается после 30 мин.'}
   - {role: owner, text: 'Здравствуйте! Прошу прощения, не оформили подписку. Удобно сейчас?'}
   client: "Да."
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-suno-convenient-now
   history:
   - {role: client, text: 'Добрый вечер! Продолжим оформление подписки суно?'}
   - {role: owner, text: 'Добрый вечер! Удобно сейчас?'}
   client: "Удобно"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-google-push-youtube
   history:
   - {role: client, text: 'Можно новый все же аккаунт, сорри, устану удалять на старом хлам)'}
   - {role: owner, text: 'На телефон придет уведомление о входе в почту. Нужно будет подтвердить вход и выбрать число - скажу какое. Если у вас айфон, то уведомление может быть в Gmail почте и YouTube.'}
   client: "Через ютуб все верно подтверждение\nЯ все правильно делаю"
-  stop: true
+  forbid: ['₽', 'в течение|минут|получаса', 'это Александр']  # owner 21.11.2026: continue the step, no stop
 - id: live-token-file-sent-what-wrong
   history:
   - {role: owner, text: 'Отправьте пожалуйста весь текст в 1 текстовом файле'}
@@ -471,46 +471,46 @@ cases:
   - {role: owner, text: 'пока такую ошибку выдает на все карты('}
   - {role: owner, text: 'можем позже еще раз попробовать'}
   client: "Окей\nКак там ?"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-owner-doing-status
   history:
   - {role: owner, text: 'попробуйте зайти в почту и в аккаунт чата гпт пожалуйста'}
   - {role: client, text: 'профиль есть, пока фришка'}
   - {role: owner, text: 'Да, отпишу как оформим тариф'}
   client: "спс\nКак успехи, когда сможете?\nМне бы уже активировать если возможно"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-claude-verification-link-again
   history:
   - {role: owner, text: 'Можете здесь пройти верификацию личности'}
   client: "Сделаешь мне еще ссылку скинуть?\nУ меня на стране вылетело"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-ps-passkey-ok
   history:
   - {role: owner, text: 'Нужна почта и пароль от аккаунта PS. И можно пожалуйста резервные коды аккаунта'}
   - {role: owner, text: 'На аккаунте включен ключ доступа. Его необходимо отключить, мы так не сможем войти. Как настроите пароль — передайте нам актуальные данные, пожалуйста'}
   client: "Ok"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-backup-codes-sent
   history:
   - {role: owner, text: 'И можно пожалуйста резервные коды аккаунта'}
   client: "XXXXXX\nYYYYYY"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-owner-asked-wait-time
   history:
   - {role: owner, text: 'Подскажите пожалуйста сколько примерно по ожиданию?'}
   client: "Принято\nМинут 40 ожидание"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: live-old-plus-ended
   history:
   - {role: owner, text: 'У вас еще активная старая подписка плюс, напишите пожалуйста как она закончится)'}
   client: "Хорошо 👌\nПривет. Закончилась."
-  stop: true
+  forbid: ['₽', 'в течение|минут|получаса', 'это Александр']  # owner 21.11.2026: continue the step, no stop
 - id: live-blocked-other-email
   history:
   - {role: client, text: 'меня заблокировали.. не знаете как сюда можно зайти?'}
   - {role: owner, text: 'ох, можно попробовать войти через другую почту, у вас есть еще?'}
   client: "да, я уже пробовала.. не даёт через неё зарегистрироваться, узнаёт меня и пишет что уже есть аккаунт и он помечен.."
-  stop: true
+  forbid: ['₽', 'в течение|минут|получаса', 'это Александр']  # owner 21.11.2026: continue the step, no stop
 - id: live-refund-claude-fear
   history:
   - {role: client, text: 'Так, это с компьютера надо делать я так понял. Только поздно вечером смогу'}
@@ -1208,12 +1208,12 @@ cases:
   - {role: client, text: "Оплатил Perplexity, вот почта от аккаунта."}
   - {role: owner, text: "Сейчас запрошу код, он придёт вам на почту — пришлите его сюда."}
   client: "жду, пока не пришло"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: exam-c-owner-five-minutes
   history:
   - {role: owner, text: "Оформляю, 5 минут."}
   client: "ок жду"
-  stop: true
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
 - id: exam-c-paid-not-working
   client: "оплатила перплексити вчера, а про так и не работает"
   need: ["номер заказа|заказ"]
