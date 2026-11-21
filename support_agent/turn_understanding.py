@@ -432,6 +432,11 @@ def relevant_faq(faq, context, limit=FAQ_TOPICS_FOR_MODEL):
 
 _CATALOG_WIDE = re.compile(r'(?i)какие\s+(?:есть\s+|у\s+вас\s+)?(?:сервис|подписк|нейросет|тариф|товар)|что\s+(?:у\s+вас\s+)?(?:есть|продаете|продаёте)|'
                            r'весь\s+(?:список|каталог)|список\s+(?:сервис|подписок|нейросет)|ассортимент')
+# A price, purchase or availability question keeps the whole catalogue: typos and slang names («чат гтп», «фрипик»,
+# «робуксы») are not recognised by code, and a cut catalogue made the model say «цену не вижу» (bench 10, 21.11.2026).
+_SALES_TURN = re.compile(r'(?i)сколько|скок|цен[аыуе]|стои[тм]|почём|почем|прайс|дешевл|выгодн|купить|куплю|покуп|приобр|оплатить|'
+                         r'оформ|хочу|нужен|нужна|нужно\s+(?:купить|оплатить)|есть\s+ли|\bесть\b\s*\?|\bесть\?|в\s+наличии|продаете|продаёте|'
+                         r'тариф|подписк|доллар|\$|рубл|₽|how\s+much|price|buy')
 _APPLE = re.compile(r'(?i)app\s*store|apple|айклауд|icloud|эпл|аппстор|апстор|itunes')
 
 
@@ -467,8 +472,9 @@ def model_view(context):
                             'owner_topic можно выбрать и из faq_index, ответ по такой теме подставит код.')
     tariffs = context.get('tariffs') or []
     burst = str(context.get('burst') or '')
-    if isinstance(tariffs, list) and len(tariffs) > 40 and not (_COMPARE.search(burst) or _CATALOG_WIDE.search(burst)):
-        named = services_in_play(context)
+    named = services_in_play(context) if isinstance(tariffs, list) and len(tariffs) > 40 else set()
+    if (isinstance(tariffs, list) and len(tariffs) > 40 and named
+            and not (_COMPARE.search(burst) or _CATALOG_WIDE.search(burst) or _SALES_TURN.search(burst))):
         def wanted(row):
             sid = str(row.get('service_id') or '')
             return sid in named or any(_compact(sid) and (_compact(sid) in _compact(item) or _compact(item) in _compact(sid))
@@ -1635,7 +1641,7 @@ def _install_reply(burst, context=None):
     """One polite line with the right link for Android or a computer; iPhone keeps the full instruction."""
     text = str(burst or '')
     if re.search('(?i)' + _IPHONE, text) or not re.search('(?i)' + _INSTALL, text) \
-            or re.search(r'(?i)впн|vpn|v2ray|прокси|proxy|расширени|скил|skill|плагин', text):
+            or re.search(r'(?i)впн|vpn|v2ray|прокси|proxy|расширени|скил|skill|плагин|\bmcp\b|мсп|сервер|\bapi\b|апи\b|коннектор|интеграц|оркестратор', text):
         return ''
     android = bool(re.search('(?i)' + _ANDROID, text))
     desktop = bool(re.search('(?i)' + _DESKTOP, text))
@@ -2276,7 +2282,7 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
         step_topic = True
     if topic == 'activation_overdue' and not _LONG_WAIT.search(offcat_burst):
         topic = validated['owner_topic'] = 'delivery_time'
-    if _install_reply(offcat_burst, context) and topic in ('app_download', 'tech_setup', 'none', 'new_account_email'):
+    if _install_reply(offcat_burst, context) and topic in ('app_download', 'tech_setup', 'none', 'new_account_email', 'unknown_answer'):
         topic = validated['owner_topic'] = 'app_download'
     collected_state = ((context or {}).get('dialog_state') or {}).get('collected') or {}
     setup_dialog = (kind_for(validated.get('service_id') or '', plan_name, (context or {}).get('tariffs') or [])

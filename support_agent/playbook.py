@@ -146,7 +146,7 @@ def tidy(answer, context):
                 hold = 'В переписке уже идёт разговор с Александром — общий вопрос «о каком сервисе речь» не подходит.'
         except Exception:
             pass
-    reply = re.sub(r'\n{3,}', '\n\n', reply).strip()
+    reply = dedupe(re.sub(r'\n{3,}', '\n\n', reply).strip())
     if not reply:
         reply = str(answer.get('reply') or '').strip()  # a filter must never leave the client an empty answer
     if hold:
@@ -160,6 +160,39 @@ def tidy(answer, context):
         return hard_routes.apply(result, context)
     except Exception:
         return result
+
+
+_PAY_PARA = re.compile(r'(?i)^(?:оплатить\s+можно\s+в\s+боте\s+@neirosetkaa_bot|оплата\s+в\s+@neirosetkaa_bot)')
+_SAYS_HOW_TO_PAY = re.compile(r'(?i)@neirosetkaa_bot[\s\S]{0,300}каталог|каталог[\s\S]{0,300}(?:сбп|оплат)')
+
+
+def dedupe(reply):
+    """Bench 10 (21.11.2026): appended blocks repeated what the reply already said — drop the repeats.
+
+    A line that already appeared is removed; a «how to pay in the bot» line or paragraph is removed when the reply
+    already explained paying in the bot; a second tariff list is removed."""
+    paragraphs = [p for p in re.split(r'\n\s*\n', str(reply or '')) if p.strip()]
+    kept, seen_lines, said_list = [], set(), False
+    for para in paragraphs:
+        if para.strip().startswith('Есть такие варианты:'):
+            if said_list:
+                continue
+            said_list = True
+        lines = []
+        for line in para.split('\n'):
+            key = re.sub(r'\W+', ' ', line).strip().casefold()
+            so_far = '\n'.join(kept + lines)
+            if _PAY_PARA.search(line.strip()) and _SAYS_HOW_TO_PAY.search(so_far):
+                continue
+            if key and len(key) > 25 and key in seen_lines:
+                continue
+            if key:
+                seen_lines.add(key)
+            lines.append(line)
+        text = '\n'.join(lines).strip()
+        if text:
+            kept.append(text)
+    return '\n\n'.join(kept)
 
 
 _CLAIMS_OWNER = re.compile(r'(?im)(^|[.!?]\s+)(?:да[,!]?\s*)?(?:это|я)\s+(?:и\s+есть\s+)?Александр(?=\s*(?:[).!,;:🙂😊]|$))[).!,;:🙂😊 ]*')

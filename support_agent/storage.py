@@ -182,6 +182,9 @@ class Store:
         global_mode=self.get('mode')
         if not c or global_mode not in ('draft','auto') or c['mode'] not in ('draft','auto'):
             return 'off'
+        row=self.db.execute("SELECT value FROM settings WHERE key='auto_all'").fetchone()
+        if global_mode=='auto' and c['mode']=='draft' and row is not None and row[0]=='1':
+            return 'auto'  # owner 21.11.2026: AUTO for every client once the global switch is on
         return 'auto' if global_mode=='auto' and c['mode']=='auto' else 'draft'
 
     def connection(self, ident, enabled, can_reply):

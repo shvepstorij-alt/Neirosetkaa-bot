@@ -67,7 +67,7 @@ async def prepare_media(service,job):
                     'handoff':True,'evidence':{'status':'owner_policy','manual_secret_intake':True,
                         'diagnostic':'Этап: приём файла для ручной обработки. Тип=text/json; загрузка=не выполнялась; модель=не вызывалась. Содержимое и наличие токена не устанавливались.'}}
             if kind=='sensitive' or media.get('blocked_transcript'):
-                return [], {'reply':'Спасибо, данные получил. Александр проверит и продолжит оформление здесь.',
+                return [], {'reply':'Сообщение получил — Александр посмотрит и ответит здесь при первой возможности.',
                             'summary':'Клиент прислал данные доступа (почта, пароль или токен). Они не переданы модели — откройте личку.',
                             'handoff':True}
             if kind=='document':

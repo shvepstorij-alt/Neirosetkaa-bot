@@ -83,6 +83,11 @@ def has_completion_claim(text):
                     continue
                 if re.match(r'\s+(?:не\s+был[ао]?|не\s+были)\b', after, re.I):
                     continue
+                # A relative clause names an existing account, it reports no action of ours:
+                # «пришлите почту, на которую зарегистрирован аккаунт» (bench 10, 21.11.2026).
+                if re.search(r'(?i)(?:\b(?:на|в|с|под|для)\s+)?\bкотор\w+\s+(?:\w+\s+){0,2}$|\bгде\s+(?:\w+\s+){0,2}$',
+                             before_predicate):
+                    continue
                 if _NOT_ENTAILED.search(before_subject) or _ANTECEDENT.search(before_subject):
                     continue
                 return True

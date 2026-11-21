@@ -212,7 +212,9 @@ def _licence_act(answer, burst, context):
 
 # --- 7. payment fails right now → the owner's answer (21.11.2026) -----------------------------------
 _PAY_FAIL = re.compile(r'(?i)не\s+(?:могу|получается|выходит)\s+оплат|оплат\w*\s+не\s+(?:проход|прош)|не\s+проходит\s+оплат'
-                       r'|не\s+принима\w*|по\s+(?:этим\s+)?кнопкам\s+никак|карт\w*\s+заблокир|заблокировал\w*\s+карт'
+                       # «не принимает» only about payment: «российский номер не принимает» is a phone question (bench 10)
+                       r'|(?:карт\w*|сбп|оплат\w*|qr|qr-код\w*|банк\w*|плат[её]ж\w*)[^.?!\n]{0,40}не\s+принима\w*'
+                       r'|не\s+принима\w*[^.?!\n]{0,30}(?:карт|сбп|оплат|qr|банк|плат[её]ж)|по\s+(?:этим\s+)?кнопкам\s+никак|карт\w*\s+заблокир|заблокировал\w*\s+карт'
                        r'|ошибк\w*\s+(?:при\s+)?оплат|оплата\s+не\s+идёт|платёж\s+не\s+проход')
 _PAID_ALREADY = re.compile(r'(?i)оплатил\w*|оплачен\w*|списал\w*|деньги\s+ушли')
 
@@ -252,7 +254,7 @@ def _paidissue_act(answer, burst, context):
 
 
 # --- 9. angry / complaint / threat → calm short reply + urgent alert (owner 21.11.2026) ----------------
-_CONFLICT = re.compile(r'(?i)мошенник|обман\w*|развод\w*\s+(?:на\s+деньги|людей)|кидал|верните\s+деньги|'
+_CONFLICT = re.compile(r'(?i)(?<!не\s)(?<!не\s\s)\bмошенник|обман\w*|(?:буду|напишу|подам)\s+жалоб\w*|буду\s+жаловат\w*|пожалуюсь|развод\w*\s+(?:на\s+деньги|людей)|кидал|'
                        r'спор\w*\s+в\s+банк|оспор\w*\s+(?:платёж|платеж|операци)|chargeback|чарджбэк|'
                        r'(?:напишу|оставлю)\s+(?:плохой\s+|негативн\w*\s+)?отзыв|в\s+полици|заявлени\w*\s+в|в\s+суд|роспотребнадзор|прокуратур')
 CONFLICT_REPLY = 'Понимаю вас. Передал Александру — он разберётся и ответит здесь при первой возможности.'
@@ -260,7 +262,10 @@ CONFLICT_REPLY = 'Понимаю вас. Передал Александру —
 
 def _conflict_detect(burst, context, answer):
     # The model's own «high conflict» verdict gets the same calm reply (owner 21.11.2026: «спокойно + сразу вам»).
-    return bool(_CONFLICT.search(burst)) or bool((answer.get('evidence') or {}).get('conflict_hold'))
+    if _CONFLICT.search(burst):
+        return True
+    model_only = bool((answer.get('evidence') or {}).get('conflict_hold'))
+    return model_only and not (_REFUND.search(burst) and not _REFUND_QUESTION.search(burst))
 
 
 def _conflict_act(answer, burst, context):
@@ -309,7 +314,7 @@ def _refund_detect(burst, context, answer):
 
 def _refund_act(answer, burst, context):
     evidence = dict(answer.get('evidence') or {})
-    evidence.update(owner_alert=True, owner_text_used=True, refund_hold=False, hard_route_auto=True)
+    evidence.update(owner_alert=True, owner_text_used=True, refund_hold=False, conflict_hold=False, hard_route_auto=True)
     history = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or () if isinstance(m, dict))
     has_order = bool(re.search(r'#?\b\d{4,}\b', burst + ' ' + history))
     has_reason = len(_REFUND.sub('', burst).strip(' ,.!?')) > 15
@@ -355,8 +360,40 @@ def _wrong_plan_act(answer, burst, context):
     return dict(answer, reply=reply, handoff=False, evidence=evidence)
 
 
+# --- 14. «я оплатила Zoom» without the bot's notice → the order number first (owner 21.11.2026, round 5) --------
+_PAID_FREE = re.compile(r'(?i)(?:^|[\s,.!])(?:я\s+)?(?:уже\s+)?(?:оплатил\w*|оплачен\w*|купил\w*)(?!\s*\?)')
+_NOT_YET = re.compile(r'(?i)\bесли\b|\bкак\b[^\n]{0,20}оплат|можно\s+(?:ли\s+)?оплат|хочу\s+оплат|не\s+(?:могу|получается)\s+оплат|ещё\s+не|еще\s+не')
+ORDER_FIRST = 'Подскажите, пожалуйста, номер заказа из бота — проверю и подскажу следующий шаг.'
+
+
+def _paid_free_detect(burst, context, answer):
+    evidence = answer.get('evidence') or {}
+    if not _PAID_FREE.search(burst) or _NOT_YET.search(burst) or _PAID_ISSUE.search(burst):
+        return False
+    if _WRONG_PLAN.search(burst) or _REFUND.search(burst) or re.search(r'(?m)^\s*#?\d{3,}\s*$', burst):
+        return False  # another rule owns it, or the client is answering with a number
+    asked = [m for m in (context or {}).get('history') or () if isinstance(m, dict) and m.get('role') in ('assistant', 'owner')]
+    if asked and re.search(r'(?i)номер\w*\s+заказ', str(asked[-1].get('text') or '')):
+        return False
+    if evidence.get('order_action') or evidence.get('paid_notice') or evidence.get('owner_step_ack') or evidence.get('continue_step'):
+        return False
+    if re.search(r'(?i)скрин|\[клиент\s+прислал|чек', burst) or (context or {}).get('images'):
+        return False  # a screenshot may be the order itself: the normal flow reads it
+    history = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or () if isinstance(m, dict))
+    if re.search(r'(?i)#\s?\d{4,}|заказ\w*\s*(?:№|номер)?\s*\d{4,}|free\s*kassa|\b\d{9}\b', burst + ' ' + history):
+        return False
+    return 'номер заказа' not in str(answer.get('reply') or '')
+
+
+def _paid_free_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=ORDER_FIRST, handoff=False, evidence=evidence)
+
+
 RULES = (
     ('conflict', _conflict_detect, _conflict_act),
+    ('paid_without_order', _paid_free_detect, _paid_free_act),
     ('wrong_plan', _wrong_plan_detect, _wrong_plan_act),
     ('refund_request', _refund_detect, _refund_act),
     ('claude_consent', _claude_consent_detect, _claude_consent_act),
@@ -370,7 +407,7 @@ RULES = (
     ('claude_no_driving_licence', _licence_detect, _licence_act),
     ('paid_issue_draft_only', _paidissue_detect, _paidissue_act),
 )
-STOP_AFTER = {'reseller', 'conflict', 'wrong_plan', 'refund_request', 'claude_consent'}
+STOP_AFTER = {'reseller', 'conflict', 'wrong_plan', 'paid_without_order', 'refund_request', 'claude_consent'}
 
 
 def apply(answer, context):

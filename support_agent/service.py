@@ -148,6 +148,11 @@ class Service:
         self.auto_test_ids=frozenset(i for i in ids if i in self.test_ids and i!=owner)
         self.auto_test_id=next(iter(sorted(self.auto_test_ids)), None)
         self.auto_for_all=bool(auto_for_all)
+        try:
+            # A chat left in the default (draft) state follows the global AUTO switch; «Отвечаю сам» (off) stays off.
+            store.put('auto_all','1' if self.auto_for_all else '0')
+        except Exception:
+            pass
         self.auto_suspended=False
         self.bot_id=None
         self.daily_cleanup=0
@@ -259,7 +264,8 @@ class Service:
         if self.auto_suspended or not c or c['uid'] not in self.allowed:
             return False
         if self.auto_for_all:
-            return c['uid'] in self.test_ids
+            # Owner 21.11.2026: «сразу для всех» — every client the assistant reads (SUPPORT_DRAFTS_FOR_ALL=yes covers all).
+            return c['uid'] in self.allowed
         return c['uid'] in self.auto_test_ids
 
     async def show_control(self,admin_mid=None,settings=False):
@@ -1524,10 +1530,12 @@ class Service:
         from .turn_understanding import owner_open_step
         from . import paid_notice as _paid
         from .playbook import tidy
-        if owner_open_step(context) and not _paid.parse(context.get('burst')):
+        if owner_open_step(context) and not _paid.parse(context.get('burst')) and not self._step_question(context, images):
             # Owner 21.11.2026: Alexander is doing his own step — the client gets a short honest ack
             # (may be auto-sent), and the owner is alerted. Hard rules (anger, «вы бот?») still apply.
-            return tidy(self._owner_step_ack(context, images), context)
+            ack=tidy(self._owner_step_ack(context, images), context)
+            await self.maybe_owner_alert(job, ack)
+            return ack
         if not images:
             # Owner 21.11.2026: quick answers see the chat — mid-step «спасибо, пошла искать» is not a closing.
             from .owner_scenarios import quick_reply
@@ -1598,7 +1606,20 @@ class Service:
         await self.maybe_refund_alert(job, answer)
         await self.maybe_account_setup_alert(job, answer)
         await self.maybe_followup_alert(job, answer)
+        await self.maybe_owner_alert(job, answer)
         return answer
+
+    @staticmethod
+    def _step_question(context, images=None):
+        """Owner 21.11.2026 (round 5): a simple question inside Alexander's step is answered by the assistant
+        («куда вставить?», «с телефона или с компьютера?»); data, codes, screenshots and «как там?» still get the ack."""
+        from .turn_understanding import _STATUS_PING
+        burst=str((context or {}).get('burst') or '')
+        if images or _STATUS_PING.search(burst):
+            return False
+        if re.search(r'\d{4,}|@|\[email|\[(?:фото|файл|документ|скрин|изображ)|\S{25,}',burst,re.I):
+            return False
+        return bool(re.search(r'\?|(?i:\b(?:как|куда|где|что|чем|можно|почему|зачем|какой|какая|какое|какие|нужно\s+ли|надо\s+ли|или)\b)',burst))
 
     def _owner_step_ack(self, context, images=None):
         """Owner 21.11.2026: the client answered Alexander's hands-on step (code, password, screenshot, data)."""
@@ -1618,6 +1639,40 @@ class Service:
                 'evidence':{'status':'owner_policy','sources':[],'reply_class':'instruct','owner_approved_wording':True,
                             'owner_step_ack':True,'owner_step_ack_kind':kind,'owner_alert':True,'continue_step':True,
                             'diagnostic':'Александр сам ведёт этот шаг (просил данные, код или подтверждение) — клиенту отправлено короткое подтверждение, дальше ответ за вами.'}}
+
+    _ALERT_REASONS={'refund_request':'просьба о возврате','wrong_plan':'оплачен не тот тариф или сервис',
+                    'claude_consent':'клиент согласился с рисками Claude — нужна почта и оформление',
+                    'human_or_bot':'клиент зовёт Александра','paid_issue_draft_only':'оплатил, но не работает'}
+
+    async def maybe_owner_alert(self, job, answer):
+        """Owner 21.11.2026: in AUTO the owner hears only when he is needed — one short note, not every reply.
+
+        Conflicts (urgent) and order actions have their own notes; a draft card already reaches the owner in DRAFT mode."""
+        evidence=(answer or {}).get('evidence') or {}
+        if not evidence.get('owner_alert') or evidence.get('urgent') or evidence.get('order_action') or (answer or {}).get('handoff'):
+            return
+        try:
+            if self.store.effective_mode(job['chat'])!='auto':
+                return
+        except Exception:
+            return
+        key='owner_alert:%s'%job['chat']
+        row=self.store.db.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
+        now=time.time()
+        if row and now-float(row[0])<600:
+            return  # one note per chat per 10 minutes
+        routes=evidence.get('hard_routes') or []
+        reason=next((self._ALERT_REASONS[r] for r in routes if r in self._ALERT_REASONS),'')
+        if not reason and evidence.get('owner_step_ack'):
+            reason='клиент ответил на ваш шаг'
+        if not reason:
+            reason=str(evidence.get('diagnostic') or 'нужен ваш ответ')[:200]
+        try:
+            await self.owner_message('\n'.join([self.chat_identity(job['chat']),'🔔 Нужны вы: '+reason,
+                                                 'Помощник ответил: '+str((answer or {}).get('reply') or '')[:300]]))
+            self.store.put(key,str(now))
+        except Exception:
+            logging.warning('Owner alert was not delivered')
 
     async def maybe_followup_alert(self, job, answer):
         """The client got the owner's rule plus «остальное уточнит Александр».

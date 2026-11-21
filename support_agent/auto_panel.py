@@ -120,7 +120,8 @@ def settings(service):
     rows=[]
     if service.auto_suspended:text+='\nAUTO заблокирован после ошибки сохранения отправки. Сначала проверьте личку и состояние базы; затем перезапустите сервис.'
     if (service.auto_test_ids or service.auto_for_all) and not service.auto_suspended and store.get('mode')!='auto':
-        rows.append([('Разрешить тестовый режим AUTO',f'auto:arm:{store.get("revision")}')])
+        rows.append([('Включить AUTO для всех клиентов' if service.auto_for_all else 'Разрешить тестовый режим AUTO',
+                      f'auto:arm:{store.get("revision")}')])
     if service.auto_test_ids and not service.auto_for_all:
         marks=','.join('?' for _ in service.auto_test_ids)
         for c in store.db.execute('SELECT * FROM chats WHERE uid IN ('+marks+') ORDER BY id DESC LIMIT 8',tuple(service.auto_test_ids)):
