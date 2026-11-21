@@ -1481,7 +1481,7 @@ class Service:
 
     async def maybe_conflict_alert(self,job,answer,context):
         evidence=(answer or {}).get('evidence') or {}
-        if not evidence.get('conflict_hold'):
+        if not (evidence.get('conflict_hold') or evidence.get('urgent')):
             return
         now=time.time()
         key='conflict_alert:%s'%job['chat']
@@ -1518,24 +1518,23 @@ class Service:
                                           'diagnostic':notice.get('summary') or 'Вложение не передано в разбор.'})
             notice=await self.maybe_secret_setup_notice(job,notice)
             return notice
-        if not images:
-            from .turn_understanding import burst_and_window
-            from .owner_scenarios import quick_reply
-            quick=quick_reply(burst_and_window(self.store.db, job['chat'])[0])
-            if quick:
-                quick.setdefault('evidence',{}).update(reply_class='instruct',owner_approved_wording=True)
-                return quick
         from .catalog_cache import load_catalog
         facts,freshness=await load_catalog(self.catalog_cache,self.shop,job['uid'])
         context=build_context(self.store.db, job['chat'], facts)
         from .turn_understanding import owner_open_step
         from . import paid_notice as _paid
+        from .playbook import tidy
         if owner_open_step(context) and not _paid.parse(context.get('burst')):
-            # Owner 20.11.2026: Alexander is in the middle of his own step — the assistant does not cut in.
-            return {'reply':'Хорошо, Александр продолжит здесь.','handoff':True,
-                    'summary':'Александр ведёт шаг оформления сам.',
-                    'evidence':{'status':'owner_policy','sources':[],'reply_class':'unverified','owner_step_hold':True,
-                                'handoff_reason':'Александр сам ведёт этот шаг (просил данные, код или подтверждение) — ответ клиенту за вами.'}}
+            # Owner 21.11.2026: Alexander is doing his own step — the client gets a short honest ack
+            # (may be auto-sent), and the owner is alerted. Hard rules (anger, «вы бот?») still apply.
+            return tidy(self._owner_step_ack(context, images), context)
+        if not images:
+            # Owner 21.11.2026: quick answers see the chat — mid-step «спасибо, пошла искать» is not a closing.
+            from .owner_scenarios import quick_reply
+            quick=quick_reply(context.get('burst'), context=context)
+            if quick:
+                quick.setdefault('evidence',{}).update(reply_class='instruct',owner_approved_wording=True)
+                return tidy(quick, context)
         paid=await self._paid_notice_reply(job, context)
         if paid is not None:
             return paid
@@ -1575,8 +1574,10 @@ class Service:
             answer=finalize(answer, __import__('support_agent.turn_understanding',fromlist=['validate']).validate(understanding, context), context)
         else:
             answer=issue_first(answer, context)
-        from .playbook import tidy
         answer=tidy(answer, context)
+        from .turn_understanding import continue_step
+        if continue_step(context) and isinstance(answer,dict) and isinstance(answer.get('evidence'),dict):
+            answer['evidence']['continue_step']=True
         from .playbook import auto_hold_reason
         hold=auto_hold_reason(validated_situation, understanding)
         if hold and isinstance(answer,dict):
@@ -1598,6 +1599,25 @@ class Service:
         await self.maybe_account_setup_alert(job, answer)
         await self.maybe_followup_alert(job, answer)
         return answer
+
+    def _owner_step_ack(self, context, images=None):
+        """Owner 21.11.2026: the client answered Alexander's hands-on step (code, password, screenshot, data)."""
+        from .turn_understanding import _STATUS_PING
+        burst=str((context or {}).get('burst') or '')
+        if _STATUS_PING.search(burst) and not images:
+            reply='Александр продолжит здесь при первой возможности.'
+            kind='ping'
+        elif images or re.search(r'\d{4,}|@|\[email|\[(?:фото|файл|документ|скрин|изображ)|\S{25,}',burst,re.I) or len(burst)>60:
+            reply='Получил, Александр продолжит здесь.'
+            kind='data'
+        else:
+            reply='Хорошо, Александр продолжит здесь.'
+            kind='answer'
+        return {'reply':reply,'handoff':False,
+                'summary':'Клиент ответил на шаг Александра.',
+                'evidence':{'status':'owner_policy','sources':[],'reply_class':'instruct','owner_approved_wording':True,
+                            'owner_step_ack':True,'owner_step_ack_kind':kind,'owner_alert':True,'continue_step':True,
+                            'diagnostic':'Александр сам ведёт этот шаг (просил данные, код или подтверждение) — клиенту отправлено короткое подтверждение, дальше ответ за вами.'}}
 
     async def maybe_followup_alert(self, job, answer):
         """The client got the owner's rule plus «остальное уточнит Александр».

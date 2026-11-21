@@ -53,6 +53,12 @@ def finalize(answer, understanding, context):
     situations = [s for s in [u.get('situation')] + list(u.get('situations') or []) if s in book]
     if not situations:
         return answer
+    from .turn_understanding import continue_step
+    if continue_step(context):
+        # Owner 21.11.2026: inside Alexander's step nothing is added or stripped by the situation book.
+        evidence = dict(answer.get('evidence') or {})
+        evidence['continue_step'] = True
+        return dict(answer, evidence=evidence)
     from .rescue import ORDER_NO
     from .turn_understanding import BUY_STEPS
     reply = str(answer.get('reply') or '').strip()
@@ -64,7 +70,7 @@ def finalize(answer, understanding, context):
         if len(kept) != len(re.split(r'\n\s*\n', reply)):
             reply = '\n\n'.join(kept + [AFTER_PAY]).strip()
             stripped = True
-    window = ' '.join(str(r.get('text') or '') for r in (context or {}).get('window') or [] if isinstance(r, dict))
+    window = ' '.join(str(r.get('text') or '') for r in ((context or {}).get('history') or (context or {}).get('window') or []) if isinstance(r, dict))
     added = []
     for name in dict.fromkeys(situations):
         row = book[name]
@@ -124,6 +130,7 @@ def tidy(answer, context):
         from .turn_understanding import _faq_answer
         reply = _faq_answer('course_bonus_start') or reply
     reply = owner_actions(reply)
+    reply = not_alexander(reply)
     burst = str((context or {}).get('burst') or '')
     owner_text = bool((answer.get('evidence') or {}).get('owner_text_used')) if isinstance(answer.get('evidence'), dict) else False
     if (re.search(r'NAVSEX|CHATIK10', reply) and not owner_text
@@ -153,6 +160,16 @@ def tidy(answer, context):
         return hard_routes.apply(result, context)
     except Exception:
         return result
+
+
+_CLAIMS_OWNER = re.compile(r'(?im)(^|[.!?]\s+)(?:да[,!]?\s*)?(?:это|я)\s+(?:и\s+есть\s+)?Александр(?=\s*(?:[).!,;:🙂😊]|$))[).!,;:🙂😊 ]*')
+
+
+def not_alexander(reply):
+    """Owner 21.11.2026: the assistant never claims to be Alexander («Да, это Александр»)."""
+    out = _CLAIMS_OWNER.sub(lambda m: m.group(1) + 'Я ИИ-помощник Александра. ', str(reply or ''))
+    out = re.sub(r'(Я ИИ-помощник Александра\. )([а-яёa-z])', lambda m: m.group(1) + m.group(2).upper(), out)
+    return out.rstrip() if out != str(reply or '') else out
 
 
 CLARIFY_PREFIX = 'о каком сервисе идёт речь и что именно нужно сделать'

@@ -100,10 +100,30 @@ def answer_instead_of_stop(result, understanding, context):
     self_stop = not result.get('handoff') and HANDOFF in str(result.get('reply') or '')
     if not result.get('handoff') and not self_stop:
         return result
-    if _must_stop(result, understanding, context):
+    from .turn_understanding import _CODEX_HOW, classify_draft, continue_step
+    reason = _must_stop(result, understanding, context)
+    if self_stop and reason in ('', 'чат ведёт владелец') and continue_step(context):
+        # Owner 21.11.2026: «Александр продолжит/ответит здесь при первой возможности» inside his own step is
+        # the right answer, not a stop: it goes to the client and the owner is alerted.
+        prices = {row['price'] for row in (context or {}).get('tariffs') or [] if type(row.get('price')) is int}
+        if classify_draft(str(result.get('reply') or ''), prices).get('send'):
+            evidence = dict(evidence_of(result))
+            evidence.update(continue_step=True, owner_alert=True, owner_followup=True)
+            return dict(result, evidence=evidence)
+    if reason:
         return dict(result, handoff=True) if self_stop else result
-    from .turn_understanding import _CODEX_HOW, classify_draft
     burst = _client_text(context)
+    if continue_step(context):
+        # Owner 21.11.2026: inside Alexander's step no template replaces the draft; only the model's
+        # own checked answer may go instead of a stop.
+        draft = str(result.get('reply') or '').strip()
+        prices = {row['price'] for row in (context or {}).get('tariffs') or [] if type(row.get('price')) is int}
+        if (draft and HANDOFF not in draft and len(draft) > 20 and not evidence_of(result).get('owner_fact_hold')
+                and classify_draft(draft, prices).get('send')):
+            rescued = _clean(result, draft, 'черновик помощника в шаге Александра прошёл проверку')
+            rescued['evidence']['continue_step'] = True
+            return rescued
+        return dict(result, handoff=True) if self_stop else result
     if PAID_CLAIM.search(burst) or PROBLEM.search(burst) or HAVE.search(burst):
         # Owner 13.11 (6.48, 6.56): paid or something fails — ask the order number and a screenshot.
         if ORDER_NO.search(burst):
@@ -144,8 +164,11 @@ def issue_first(answer, context):
     evidence = answer.get('evidence') if isinstance(answer.get('evidence'), dict) else {}
     if evidence.get('paid_notice') or evidence.get('payment_case'):
         return answer
+    from .turn_understanding import continue_step
+    if continue_step(context):
+        return answer  # owner 21.11.2026: Alexander's step — no order-number template
     burst = _client_text(context)
-    window = ' '.join(str(row.get('text') or '') for row in (context or {}).get('window') or [] if isinstance(row, dict))
+    window = ' '.join(str(row.get('text') or '') for row in ((context or {}).get('history') or (context or {}).get('window') or []) if isinstance(row, dict))
     if not (PAID_CLAIM.search(burst) or PROBLEM.search(burst)):
         return answer
     reply = str(answer.get('reply') or '')

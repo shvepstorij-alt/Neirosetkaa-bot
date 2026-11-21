@@ -69,18 +69,58 @@ def closing(text):
     return 'Рад помочь, обращайтесь!'
 
 
-def quick_reply(text, now=None):
-    """Owner rules that answer the whole short message: promo, coins, referral, a human."""
+# Owner 21.11.2026: the assistant never claims to be Alexander and never promises when he answers.
+HUMAN = 'Я ИИ-помощник Александра. Александр ответит при первой возможности, а пока я могу помочь — что подсказать?'
+STEP_PING = 'Я ИИ-помощник Александра. Александр продолжит здесь при первой возможности.'
+_CALLS_OWNER = re.compile(r'(?i)^\W*(?:александр|саша|алекс)\W*(?:(?:вы|ты)\s+(?:тут|здесь|на\s+связи)|на\s+связи|ау)?\W*$')
+_HERE = re.compile(r'(?i)(?:вы|ты)\s+(?:тут|здесь|на\s+связи|на\s+месте|онлайн)\s*\??\W*$|^\W*(?:ау|алло|есть\s+кто)\W*$')
+# «спасибо, пошла искать», «спс, щас попробую» — the client is still doing the step, not closing the talk.
+_STILL_DOING = re.compile(r'(?i)пош[её]л|пошла|пойду|сейчас|щас|попроб|поищ|ищу|посмотр|жду|подожд|найду|скину|пришлю|'
+                          r'отправлю|напишу|проверю|сделаю|займусь|ок\s*,?\s*(?:понял|поняла)|понял|поняла')
+_STEP_CLOSED = re.compile(r'(?i)подписка\s+успешно\s+активирована|обращайтесь|хорошего\s+(?:дня|вечера)|рад\s+помочь')
+_DONE = re.compile(r'(?i)вс[её]\s+(?:хорошо|получилось|работает|ок)|подписка\s+(?:есть|появилась)|получилось|заработал|работает')
+
+
+def mid_step(context):
+    """Alexander wrote here in the last 12 h and his step is not closed («подписка активирована», «обращайтесь»)."""
+    if not isinstance(context, dict) or not context.get('history'):
+        return False
+    try:
+        from .turn_understanding import current_step, ongoing_dialog
+        if not ongoing_dialog(context):
+            return False
+        step = current_step(context.get('history'))
+    except Exception:
+        return False
+    if not step:
+        return False
+    last = (step.get('owner_messages') or [''])[-1]
+    return not _STEP_CLOSED.search(last) and not any(_STEP_CLOSED.search(t) for t in step.get('assistant_after') or [])
+
+
+def quick_reply(text, now=None, context=None):
+    """Owner rules that answer the whole short message: promo, coins, referral, a human.
+
+    Owner 21.11.2026: history-aware — inside Alexander's open step a «спасибо, пошла искать» is not a
+    closing and «Александр?)» is answered honestly as the assistant, never as Alexander.
+    """
     text = str(text or '')
     if not text.strip() or len(text) > 220:
         return None
+    step_open = mid_step(context)
     if _human(text) and not re.search(r'тариф|оплат|активир|установ', text, re.I):
-        return _pack(handoff_text(now), 'Клиент просит человека.', 'Этап: передача Александру. Режим чата не выключен.')
+        return _pack(STEP_PING if step_open else HUMAN, 'Клиент просит человека.',
+                     'Этап: передача Александру. Режим чата не выключен.')
+    if len(text) <= 40 and _CALLS_OWNER.search(text.strip()):
+        return _pack(STEP_PING if step_open else HUMAN, 'Клиент зовёт Александра.', 'Этап: кто отвечает. Ответ владельца.')
     if re.fullmatch(r'(?i)\W*(?:вот\s+)?(?:чек|квитанци\w*|скрин\w*\s+оплат\w*)(?:\s+(?:об?|по|за)\s+оплат\w*|\s+оплат\w*)?\W*', text.strip()):
         # Owner 17.11.2026: a receipt sent after the order is acknowledged, not questioned.
         return _pack('Спасибо, чек получил. Александр проверит оплату и продолжит здесь.',
                      'Клиент прислал чек об оплате.', 'Этап: чек об оплате. Ответ владельца.')
-    if len(text) <= 60 and re.search(r'(?i)(?:вы|ты)\s+(?:тут|здесь|на\s+связи|на\s+месте|онлайн)\s*\??$|^\W*(?:ау|алло|есть\s+кто)\W*$', text.strip()):
+    if len(text) <= 60 and _HERE.search(text.strip()):
+        if step_open:
+            return _pack(STEP_PING, 'Клиент спрашивает, на связи ли Александр, посреди его шага.',
+                         'Этап: шаг Александра. Ответ владельца.')
         return _pack('Я ИИ-помощник Александра, на связи. Чем помочь?', 'Клиент спрашивает, на связи ли Александр.',
                      'Этап: кто отвечает. Ответ владельца.')
     if len(text) <= 160 and re.search(r'(?i)обманыва|(?:деньги|средства)\s+(?:списал|ушли|сняли)|списал\w*\s+(?:деньги|средства)', text) \
@@ -89,9 +129,10 @@ def quick_reply(text, now=None):
         return _pack('Уточните, пожалуйста, за что именно списались средства, и пришлите номер заказа из бота. '
                      'После оплаты проверьте бота @neirosetkaa_bot: туда обычно приходит инструкция, что делать дальше.',
                      'Клиент пишет, что деньги списались.', 'Этап: уточнение по списанию. Ответ владельца.')
-    if len(text) <= 70 and re.search(r'(?i)^\W*(?:спасибо|благодарю|спс|пасиб\w*|ура|отлично|супер|всё\s+получилось|все\s+получилось|получилось|работает|заработало|прошло)\W*(?:большое|огромное|вам|\W)*(?:всё|все)?\W*(?:получилось|работает|прошло)?\W*$', text):
+    thanks_ok = not _STILL_DOING.search(text) and (not step_open or _DONE.search(text))
+    if thanks_ok and len(text) <= 70 and re.search(r'(?i)^\W*(?:спасибо|благодарю|спс|пасиб\w*|ура|отлично|супер|всё\s+получилось|все\s+получилось|получилось|работает|заработало|прошло)\W*(?:большое|огромное|вам|\W)*(?:всё|все)?\W*(?:получилось|работает|прошло)?\W*$', text):
         return _pack(closing(text), 'Клиент благодарит.', 'Этап: благодарность. Ответ владельца.')
-    if (len(text) <= 90 and re.search(r'(?i)спасибо|благодар|спс\b|пасиб', text)
+    if (thanks_ok and len(text) <= 90 and re.search(r'(?i)спасибо|благодар|спс\b|пасиб', text)
             and not re.search(r'(?i)\?|\bне\b|ошибк|проблем|как\s|можно|подскаж|помогите|а\s+ещ', text)):
         # Owner 20.11.2026: thanks with a wish or «всё получилось» — a short closing, the wish mirrored.
         return _pack(closing(text), 'Клиент благодарит.', 'Этап: благодарность. Ответ владельца.')

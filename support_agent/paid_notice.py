@@ -26,8 +26,14 @@ def parse(text):
     number = re.sub(r'\D', '', head.group(1)) if '#' in head.group(1) or head.group(1).strip().isdigit() else ''
     plan = _FIELD['plan'].search(value)
     fk = _FIELD['fk'].search(value)
-    return {'order': number, 'service': ' '.join(service.group(1).split()),
-            'plan': ' '.join(plan.group(1).split()) if plan else '',
+    service_text = ' '.join(service.group(1).split())
+    plan_text = ' '.join(plan.group(1).split()) if plan else ''
+    if not plan_text:
+        # «Сервис: ✨ ChatGPT - Pro 5×» has no «Тариф:» line: the plan sits after the dash.
+        parts = re.split(r'\s+[-–—]\s+', service_text, maxsplit=1)
+        if len(parts) == 2:
+            service_text, plan_text = parts[0], parts[1]
+    return {'order': number, 'service': service_text, 'plan': plan_text,
             'fk': fk.group(1) if fk else ''}
 
 
@@ -105,6 +111,19 @@ def steps_for(kind, service_name, plan):
         return TOKEN_STEPS_AUTO.format()
     if kind == 'chatgpt_manual':
         return TOKEN_STEPS_MANUAL.format()
+    if kind in ('claude_manual', 'claude_login'):
+        # Owner 21.11.2026: after a Claude payment the assistant starts with the risks and asks for consent.
+        kyc = bool(re.search(r'(?i)kyc|верификац', str(plan) + ' ' + str(service_name)))
+        lines = ['Прежде чем начать, важно знать:',
+                 '• гарантии на Claude нет — Claude может заблокировать аккаунт, и при блокировке деньги не возвращаются;']
+        if kyc:
+            lines.append('• верификацию личности по этому тарифу проходим мы, не с российскими документами.')
+        else:
+            lines.append('• потребуется пройти верификацию личности: лучше иностранные документы, из российских — только '
+                         'загранпаспорт РФ; проходит примерно в половине случаев, гарантировать не можем.')
+        lines.append('')
+        lines.append('Напишите, пожалуйста, что согласны с этими рисками — после этого Александр продолжит оформление.')
+        return '\n'.join(lines)
     if kind == 'chatgpt_new_account':
         return ('Для этого тарифа мы создаём новый аккаунт. Пришлите, пожалуйста, сюда:\n'
                 '1. Какой адрес дать новой почте outlook.com.\n'

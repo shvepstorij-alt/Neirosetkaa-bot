@@ -136,7 +136,7 @@ def _drop_order_request(reply):
     pieces = re.split(r'(?<=[.!?])(\s+)', reply)
     out = []
     for piece in pieces:
-        if _ASKS_ORDER.search(piece) and not re.search(r'(?i)вижу', piece):
+        if _ASKS_ORDER.search(piece) and not re.search(r'(?i)вижу|получил', piece):
             continue
         out.append(piece)
     return _tidy_text(''.join(out))
@@ -146,7 +146,8 @@ def _order_act(answer, burst, context):
     order, fk = _order_refs(_client_text(context) or burst)
     reply = str(answer.get('reply') or '')
     rest = _drop_order_request(reply)
-    head = ('Заказ #' + order + ' вижу.') if order else ('Номер FreeKassa ' + fk + ' вижу.')
+    # Only the shop lookup may say «вижу»; here the number came from the client's own words.
+    head = ('Номер заказа #' + order + ' получил.') if order else ('Номер FreeKassa ' + fk + ' получил.')
     greet = re.match(r'(?i)((?:здравствуйте|добрый\s+(?:день|вечер)|доброе\s+утро|привет)[^.!?\n]{0,30}[.!?]?)\s*', rest)
     if greet:
         new = greet.group(1).strip() + ' ' + head + ' ' + rest[greet.end():]
@@ -209,15 +210,167 @@ def _licence_act(answer, burst, context):
     return dict(answer, reply=_tidy_text(reply))
 
 
+# --- 7. payment fails right now → the owner's answer (21.11.2026) -----------------------------------
+_PAY_FAIL = re.compile(r'(?i)не\s+(?:могу|получается|выходит)\s+оплат|оплат\w*\s+не\s+(?:проход|прош)|не\s+проходит\s+оплат'
+                       r'|не\s+принима\w*|по\s+(?:этим\s+)?кнопкам\s+никак|карт\w*\s+заблокир|заблокировал\w*\s+карт'
+                       r'|ошибк\w*\s+(?:при\s+)?оплат|оплата\s+не\s+идёт|платёж\s+не\s+проход')
+_PAID_ALREADY = re.compile(r'(?i)оплатил\w*|оплачен\w*|списал\w*|деньги\s+ушли')
+
+
+def _payfail_detect(burst, context, answer):
+    reply = str(answer.get('reply') or '')
+    return bool(_PAY_FAIL.search(burst)) and not _PAID_ALREADY.search(burst) and '/start' not in reply
+
+
+def _payfail_act(answer, burst, context):
+    text = _faq('payment_error')
+    if not text:
+        return answer
+    evidence = dict(answer.get('evidence') or {})
+    evidence['owner_text_used'] = True
+    reply = str(answer.get('reply') or '')
+    greet = re.match(r'(?i)((?:здравствуйте|добрый\s+(?:день|вечер)|доброе\s+утро|привет)[^.!?\n]{0,30}[.!?]?)', reply.strip())
+    return dict(answer, reply=((greet.group(1) + ' ') if greet else '') + text, evidence=evidence)
+
+
+# --- 8. «оплатил, не работает»: only the owner's own text goes out by itself (21.11.2026) ------------
+_PAID_ISSUE = re.compile(r'(?i)(?:оплатил\w*|оплачен\w*)[^\n]{0,120}(?:не\s+(?:работа|пришл|активир|появ|отобража|вид)|нет\s+подписк)'
+                         r'|(?:не\s+(?:работа|пришл|активир|появ|отобража)\w*)[^\n]{0,120}(?:оплатил\w*|оплачен\w*)')
+
+
+def _paidissue_detect(burst, context, answer):
+    evidence = answer.get('evidence') if isinstance(answer.get('evidence'), dict) else {}
+    return (bool(_PAID_ISSUE.search(burst)) and not evidence.get('owner_text_used')
+            and not evidence.get('order_action') and not answer.get('handoff'))
+
+
+def _paidissue_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence['situation_hold'] = True
+    evidence.setdefault('diagnostic', 'Оплатил, не работает: свой текст модели уходит только черновиком.')
+    return dict(answer, evidence=evidence)
+
+
+# --- 9. angry / complaint / threat → calm short reply + urgent alert (owner 21.11.2026) ----------------
+_CONFLICT = re.compile(r'(?i)мошенник|обман\w*|развод\w*\s+(?:на\s+деньги|людей)|кидал|верните\s+деньги|'
+                       r'спор\w*\s+в\s+банк|оспор\w*\s+(?:платёж|платеж|операци)|chargeback|чарджбэк|'
+                       r'(?:напишу|оставлю)\s+(?:плохой\s+|негативн\w*\s+)?отзыв|в\s+полици|заявлени\w*\s+в|в\s+суд|роспотребнадзор|прокуратур')
+CONFLICT_REPLY = 'Понимаю вас. Передал Александру — он разберётся и ответит здесь при первой возможности.'
+
+
+def _conflict_detect(burst, context, answer):
+    # The model's own «high conflict» verdict gets the same calm reply (owner 21.11.2026: «спокойно + сразу вам»).
+    return bool(_CONFLICT.search(burst)) or bool((answer.get('evidence') or {}).get('conflict_hold'))
+
+
+def _conflict_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    # Owner 21.11.2026: the calm reply is sent automatically and the owner gets an urgent alert.
+    evidence.update(urgent=True, owner_alert=True, owner_text_used=True, conflict_hold=False, hard_route_auto=True)
+    return dict(answer, reply=CONFLICT_REPLY, handoff=False, evidence=evidence)
+
+
+# --- 10. «позовите Александра / вы бот?» → honest, and keep helping (owner 21.11.2026) -----------------
+_HUMAN = re.compile(r'(?i)позов\w*\s+(?:александра|сашу|человека|оператора|живого)|хочу\s+(?:с\s+)?(?:человек|живым|оператор|александр)'
+                    r'|живой\s+человек|\bвы\s+бот\b|\bты\s+бот\b|это\s+бот\b|с\s+ботом\s+общаюсь|нейросеть\s+отвечает')
+HUMAN_LINE = 'Я ИИ-помощник Александра. Александр ответит при первой возможности, а пока я могу помочь'
+
+
+def _human_detect(burst, context, answer):
+    return bool(_HUMAN.search(burst)) and 'ИИ-помощник' not in str(answer.get('reply') or '')
+
+
+def _human_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence['owner_alert'] = True
+    rest = _HUMAN.sub('', burst)
+    reply = str(answer.get('reply') or '')
+    reply = re.sub(r'(?i)(?:^|\n)[^\n]*(?:это\s+александр|я\s+александр|александр\s+на\s+связи)[^\n]*', '', reply).strip()
+    if re.search(r'\?|(?i:как|сколько|можно|какой|где|почему)', rest) and len(reply) > 40:
+        return dict(answer, reply=HUMAN_LINE + '.\n\n' + reply, evidence=evidence)
+    return dict(answer, reply=HUMAN_LINE + ' — что подсказать?', evidence=evidence, handoff=False)
+
+
+# --- 11. calm refund request → reason and order number, the owner decides (owner 21.11.2026) ----------
+_REFUND = re.compile(r'(?i)верн\w*\s+(?:мне\s+)?(?:деньг|средств|оплат)|возврат\w*\s+(?:денег|средств|оплаты)|хочу\s+возврат|оформ\w*\s+возврат|refund')
+REFUND_ASK = ('Подскажите, пожалуйста, номер заказа и что именно не подошло — Александр посмотрит и ответит здесь '
+              'при первой возможности.')
+REFUND_TAKEN = 'Спасибо, передал Александру — он посмотрит и ответит здесь при первой возможности.'
+
+
+_REFUND_QUESTION = re.compile(r'(?i)\bесли\b|можно\s+ли|возмож\w*\s+ли|бывает\s+ли|а\s+можно|можно\s+(?:будет\s+)?вернуть|'
+                              r'какие\s+условия|условия\s+возврат|когда\s+(?:деньги\s+)?при(?:дут|йдут)|оформили')
+
+
+def _refund_detect(burst, context, answer):
+    # A question about the refund policy or timing is not a refund request: it keeps its FAQ answer.
+    return bool(_REFUND.search(burst)) and not _REFUND_QUESTION.search(burst)
+
+
+def _refund_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_alert=True, owner_text_used=True, refund_hold=False, hard_route_auto=True)
+    history = ' '.join(str(m.get('text') or '') for m in (context or {}).get('history') or () if isinstance(m, dict))
+    has_order = bool(re.search(r'#?\b\d{4,}\b', burst + ' ' + history))
+    has_reason = len(_REFUND.sub('', burst).strip(' ,.!?')) > 15
+    reply = REFUND_TAKEN if (has_order and has_reason) else REFUND_ASK
+    return dict(answer, reply=reply, handoff=False, evidence=evidence)
+
+
+# --- 12. Claude: the client agreed to the risks → next step (owner 21.11.2026) --------------------------
+_AGREE = re.compile(r'(?i)^\W*(?:да\b|согла\w*|ок\b|окей|хорошо|понял\w*|принима\w*|готов\w*)')
+CLAUDE_EMAIL_ASK = 'Спасибо! Пришлите, пожалуйста, почту вашего аккаунта Claude — дальше Александр продолжит оформление.'
+
+
+def _claude_consent_detect(burst, context, answer):
+    history = [m for m in (context or {}).get('history') or () if isinstance(m, dict)]
+    last_ours = next((str(m.get('text') or '') for m in reversed(history)
+                      if m.get('role') in ('assistant', 'owner')), '')
+    return 'согласны с этими рисками' in last_ours and bool(_AGREE.search(burst)) \
+        and bool(re.search(r'(?i)\b(?:max|ultra|макс|ультра)\b', last_ours))
+
+
+def _claude_consent_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_alert=True, owner_text_used=True, hard_route_auto=True)
+    return dict(answer, reply=CLAUDE_EMAIL_ASK, handoff=False, evidence=evidence)
+
+
+# --- 13. paid the wrong plan/service → order number and the needed plan, the owner decides (21.11.2026) --
+_WRONG_PLAN = re.compile(r'(?i)(?:оплатил\w*|купил\w*|выбрал\w*|взял\w*)\s+не\s+(?:тот|ту|то)\b|ошибл\w*\s+(?:с\s+)?(?:тариф|сервис)|'
+                         r'(?:поменять|сменить|заменить|изменить)\s+(?:мне\s+)?(?:тариф|сервис|заказ)')
+WRONG_PLAN_ASK = 'Подскажите, пожалуйста, номер заказа и какой тариф нужен — Александр поменяет при первой возможности.'
+WRONG_PLAN_TAKEN = 'Спасибо, передал Александру — он поменяет при первой возможности.'
+
+
+def _wrong_plan_detect(burst, context, answer):
+    return bool(_WRONG_PLAN.search(burst))
+
+
+def _wrong_plan_act(answer, burst, context):
+    evidence = dict(answer.get('evidence') or {})
+    evidence.update(owner_alert=True, owner_text_used=True, hard_route_auto=True)
+    has_order = bool(re.search(r'#?\b\d{4,}\b', burst))
+    reply = WRONG_PLAN_TAKEN if has_order and re.search(r'(?i)\bна\s+\w+', burst) else WRONG_PLAN_ASK
+    return dict(answer, reply=reply, handoff=False, evidence=evidence)
+
+
 RULES = (
+    ('conflict', _conflict_detect, _conflict_act),
+    ('wrong_plan', _wrong_plan_detect, _wrong_plan_act),
+    ('refund_request', _refund_detect, _refund_act),
+    ('claude_consent', _claude_consent_detect, _claude_consent_act),
     ('reseller', _reseller_detect, _reseller_act),
+    ('human_or_bot', _human_detect, _human_act),
+    ('payment_failure', _payfail_detect, _payfail_act),
     ('chatgpt_business', _business_detect, _business_act),
     ('known_order_number', _order_detect, _order_act),
     ('unknown_phrase_glued', _glued_detect, _glued_act),
     ('payment_method_unknown', _pay_detect, _pay_act),
     ('claude_no_driving_licence', _licence_detect, _licence_act),
+    ('paid_issue_draft_only', _paidissue_detect, _paidissue_act),
 )
-STOP_AFTER = {'reseller'}
+STOP_AFTER = {'reseller', 'conflict', 'wrong_plan', 'refund_request', 'claude_consent'}
 
 
 def apply(answer, context):

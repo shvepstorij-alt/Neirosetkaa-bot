@@ -167,6 +167,45 @@ def normalize_image(data):
         return out.getvalue()
 
 
+
+# Owner 21.11.2026: the assistant is never Alexander and never promises when he answers.
+IDENTITY_RULES = (
+    'КТО ТЫ: ты ИИ-помощник Александра, а не Александр. Никогда не пиши «это Александр», «да, я Александр» '
+    'и не подписывайся его именем. Про действия Александра пиши в третьем лице: «Александр проверит», «Александр продолжит».\n'
+    'Сроков за Александра не называй («через 5 минут», «сегодня вечером», «скоро»): только «Александр ответит здесь при первой возможности» '
+    'или «Александр продолжит здесь при первой возможности».\n'
+    'Если клиент зовёт Александра, просит человека или спрашивает, бот ли ты: «Я ИИ-помощник Александра. Александр ответит '
+    'при первой возможности, а пока я могу помочь — что подсказать?» Если в том же сообщении есть вопрос, ответь на него после этой фразы.\n'
+    'Если клиент злится, жалуется или угрожает (мошенники, обман, спор в банке, отзыв, полиция): коротко и спокойно — '
+    '«Понимаю вас. Передал Александру — он разберётся и ответит здесь при первой возможности.» Без оправданий и без обещаний.')
+
+
+def priority_header(context):
+    """The order of importance. In Alexander's ongoing conversation (≤12 h) his step comes first."""
+    from .turn_understanding import ongoing_dialog
+    try:
+        ongoing = bool((context or {}).get('ongoing_dialog')) if 'ongoing_dialog' in (context or {}) else ongoing_dialog(context)
+    except Exception:
+        ongoing = False
+    if ongoing:
+        return ('ПОРЯДОК ВАЖНОСТИ (в этом чате за последние 12 часов писал Александр — ты продолжаешь ЕГО разговор):\n'
+                '1. Прочитай ПЕРЕПИСКУ и ТЕКУЩИЙ ШАГ в начале входа. Главное — продолжить шаг Александра: ответь на то, '
+                'что клиент пишет в рамках этого шага, опираясь на слова и факты Александра из переписки. '
+                'Не начинай продажу заново, не присылай общие шаблоны, списки тарифов и инструкции по оплате, если клиент о них сейчас не спросил. '
+                'Не проси то, что клиент уже прислал или что уже обсудили.\n'
+                '2. Если для шага нужно то, что может сделать только Александр (ввести код или пароль, проверить скриншот или оплату, '
+                'выдать активацию), коротко скажи, что Александр продолжит или проверит здесь при первой возможности. Результат не обещай.\n'
+                '3. Если клиент задал новый отдельный вопрос — ответь на него коротко, не теряя шаг Александра.\n'
+                '4. situation и situations заполни, но правило ситуации — уточнение, а не повод сменить тему или начать шаблон.\n'
+                '5. Остальные правила ниже — уточнения.')
+    return ('ПОРЯДОК ВАЖНОСТИ:\n'
+            '1. Прочитай ПЕРЕПИСКУ в начале входа и все новые сообщения клиента целиком. Приписки «спасибо», «пробую», «жду» не главное.\n'
+            '2. Если клиент продолжает предыдущий шаг (ТЕКУЩИЙ ШАГ, answers_to) — продолжи этот шаг, не начинай заново.\n'
+            '3. Определи ситуацию по каждому вопросу клиента: главная — в situation, все — в situations.\n'
+            '4. Ответь на каждый вопрос по правилу его ситуации.\n'
+            '5. Остальные правила ниже — уточнения.')
+
+
 class OpenAI:
     def __init__(self,session,key,model,audio_model,search_model=None):
         self.session=session
@@ -213,13 +252,8 @@ class OpenAI:
         import json
         from .turn_understanding import UNDERSTANDING_INSTRUCTIONS
         from .playbook import business_profile, prompt_block
-        # Owner 19.11.2026: first the situation of each question, then the reply; priorities first.
-        instructions = ('ПОРЯДОК ВАЖНОСТИ:\n'
-                        '1. Прочитай все новые сообщения клиента (latest_client_message) целиком. Приписки «спасибо», «пробую», «жду» не главное.\n'
-                        '2. Определи ситуацию по каждому вопросу клиента: главная — в situation, все — в situations.\n'
-                        '3. Ответь на каждый вопрос по правилу его ситуации.\n'
-                        '4. Если клиент продолжает шаг Александра (answers_to) — продолжи этот шаг.\n'
-                        '5. Остальные правила ниже — уточнения.\n\n'
+        # Owner 21.11.2026: the dialog comes first; in Alexander's ongoing conversation his step is priority #1.
+        instructions = (priority_header(context) + '\n\n' + IDENTITY_RULES + '\n\n'
                         + business_profile() + '\n\n' + prompt_block() + '\n\n' + UNDERSTANDING_INSTRUCTIONS)
         schema = {'type': 'object', 'additionalProperties': False,
                   'properties': {
@@ -265,7 +299,8 @@ class OpenAI:
                                'conflict', 'conflict_reason', 'owner_alignment', 'owner_topic', 'situation', 'situations',
                                'beyond_owner_fact', 'refund_order', 'refund_service', 'refund_reason',
                                'risk', 'order_number', 'receipt_amount_unverified', 'reply', 'summary']}
-        content = [{'type': 'input_text', 'text': json.dumps(context, ensure_ascii=False, default=str)}]
+        from .turn_understanding import model_input_text
+        content = [{'type': 'input_text', 'text': model_input_text(context)}]
         for picture in images or []:
             if not isinstance(picture, dict) or not isinstance(picture.get('data'), bytes):
                 raise ValueError('Image batch')

@@ -1,9 +1,9 @@
-"""Owner handoff wording. Working hours are 10:00–22:00 Europe/Moscow."""
+"""Owner handoff wording. Owner 21.11.2026: he is online almost 24/7 — never promise times."""
 import datetime as dt
 from zoneinfo import ZoneInfo
 
 MOSCOW = ZoneInfo('Europe/Moscow')
-HANDOFF = 'Александр будет на связи в течение получаса-часа'
+HANDOFF = 'Александр ответит здесь при первой возможности'
 OFF_HOURS = ('Сейчас вне обычного времени 10:00–22:00 по Москве, '
              'Александр может ответить в рабочий день или с задержкой')
 CONTINUE = 'Пока могу помочь с другими вопросами)'
@@ -15,7 +15,7 @@ def outside_working_hours(now=None):
         current = current.replace(tzinfo=MOSCOW)
     else:
         current = current.astimezone(MOSCOW)
-    return not 10 <= current.hour < 22
+    return False  # owner 21.11.2026: almost 24/7, no off-hours note
 
 
 def handoff_text(now=None):

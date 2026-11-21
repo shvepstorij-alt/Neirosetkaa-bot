@@ -339,7 +339,7 @@ def build_cases(catalog):
     add('refund-collect', [
         {'role': 'client', 'text': 'хочу вернуть оплату',
          'owner_topic': 'refund_terms',
-         'expect': {'hold': False, 'need': ['номер заказа', 'какой сервис', 'причину возврата'],
+         'expect': {'hold': False, 'need': ['номер заказа', 'что именно не подошло'],  # owner 21.11.2026
                     'forbid': ['вернём', 'одобрен']}},
         {'role': 'client', 'text': 'номер 555',
          'owner_topic': 'refund_terms', 'collected': {'order_number': '555'},
@@ -353,13 +353,13 @@ def build_cases(catalog):
         'role': 'client', 'text': 'когда именно вернёте деньги',
         'owner_topic': 'refund_terms', 'fixed_by': 'owner_fact',
         'naive': 'Вернём деньги в течение суток на карту.',
-        'expect': {'hold': True},
+        'expect': {'hold': False, 'need': ['Александр посмотрит'], 'forbid': ['Вернём', 'суток']},
     }])
     add('guarantee-suno', [{
         'role': 'client', 'text': 'на суно гарантия есть?',
         'owner_topic': 'guarantee',
         'reply': 'Гарантия есть на все сервисы, кроме Claude. На Suno она есть.',
-        'expect': {'hold': False, 'need': ['Гарантия есть на все сервисы, кроме Claude', 'Suno'],
+        'expect': {'hold': False, 'need': ['на весь срок подписки', 'кроме Claude'],
                    'forbid': ['месяц', 'суток', 'дней']},
     }])
     add('guarantee-claude', [{
@@ -423,7 +423,7 @@ def build_cases(catalog):
         'role': 'client', 'text': 'верните всё немедленно, я буду жаловаться',
         'conflict': 'high', 'conflict_reason': 'Клиент требует немедленный возврат и жалуется.',
         'reply': 'Сейчас разберусь и всё верну.',
-        'expect': {'hold': True, 'owner_alert': True},
+        'expect': {'hold': False, 'owner_alert': True, 'need': ['Понимаю вас'], 'forbid': ['верну']},
     }])
     add('annoyed-ok', [{
         'role': 'client', 'text': 'ну сколько в итоге суно про',
@@ -480,7 +480,7 @@ def build_cases(catalog):
         {'role': 'client', 'text': 'где мой заказ', 'conflict': 'high',
          'conflict_reason': 'Тот же вопрос второй раз без решения.',
          'reply': 'Напишите номер заказа из бота.',
-         'expect': {'hold': True}},
+         'expect': {'hold': False, 'need': ['Понимаю вас']}},  # owner 21.11.2026: calm reply + urgent
     ])
     add('mixed-two-prices', [{
         'role': 'client', 'text': 'сколько клод про и сколько суно про',

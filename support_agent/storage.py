@@ -226,13 +226,13 @@ class Store:
             if queued and not join_burst:
                 start=time.time() if edited else min(float(at),time.time())
                 from .turn_stages import next_batch_due
-                due=next_batch_due(start,time.time(),self.batch_seconds,0,False)
+                due=next_batch_due(start,time.time(),self.answer_wait(cid),0,False)
                 self.db.execute('UPDATE chats SET batch_start=?,batch_due=?,batch_first=? WHERE id=?',
                                 (start,due,mid,cid))
             elif queued and collecting:
                 # A later fragment joins the open batch. It must not push the deadline out.
                 from .turn_stages import next_batch_due
-                due=next_batch_due(chat['batch_start'],time.time(),self.batch_seconds,chat['batch_due'],True)
+                due=next_batch_due(chat['batch_start'],time.time(),self.answer_wait(cid),chat['batch_due'],True)
                 self.db.execute('UPDATE chats SET batch_due=? WHERE id=? AND batch_due>?',(due,cid,due))
             self.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?)',
                             (cid,mid,role,text,json.dumps(media),at,'queued' if queued else 'stored'))
@@ -297,6 +297,27 @@ class Store:
 
     def mark_introduced(self, cid, now=None):
         self.db.execute('UPDATE chats SET introduced=? WHERE id=?', (int(time.time() if now is None else now), cid))
+
+    OWNER_GRACE_SECONDS = 600
+    OWNER_ACTIVE_SECONDS = 24 * 3600
+
+    def answer_wait(self, cid, now=None):
+        """Owner 21.11.2026: in a chat Alexander is handling, give him 10 minutes to answer first.
+
+        With AUTO on and an owner message in the last 24 hours, the assistant answers only when the client's
+        message has waited 10 minutes; an owner reply in that time cancels it (his reply marks the burst stale).
+        Fresh chats and draft mode keep the normal short batching.
+        """
+        now = time.time() if now is None else float(now)
+        try:
+            if self.effective_mode(cid) != 'auto':
+                return self.batch_seconds
+            row = self.db.execute("SELECT MAX(at) FROM messages WHERE chat=? AND role='owner'", (cid,)).fetchone()
+            if row and row[0] and now - float(row[0]) <= self.OWNER_ACTIVE_SECONDS:
+                return max(self.batch_seconds, self.OWNER_GRACE_SECONDS)
+        except Exception:
+            pass
+        return self.batch_seconds
 
     def manual_pause_blocks(self, cid, now):
         c=self.chat(cid)

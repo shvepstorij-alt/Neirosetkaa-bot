@@ -167,7 +167,16 @@ _INTERNAL = re.compile(
     r'часть\s+условий\s+пока\s+не\s+подтверждена|этап\s*:')
 
 
-def burst_and_window(db, chat, limit=10):
+DIALOG_LIMIT = 15
+DIALOG_CHARS = 6000
+
+
+def burst_and_window(db, chat, limit=DIALOG_LIMIT, max_chars=DIALOG_CHARS):
+    """The client's newest messages (burst) and the last ~15 messages of the chat (≤6k chars).
+
+    Owner 21.11.2026: the assistant continues Alexander's conversation, so it must see enough of it.
+    The oldest messages are dropped first when the window is longer than max_chars; the burst stays.
+    """
     rows = db.execute(
         '''SELECT mid, role, text, at FROM messages
            WHERE chat=? AND role IN ('client','assistant','owner')
@@ -182,7 +191,350 @@ def burst_and_window(db, chat, limit=10):
         if message['role'] == 'client':
             burst.append(message['text'])
     burst.reverse()
+    if max_chars:
+        kept, total = [], 0
+        tail = 0  # trailing client messages: the burst is never dropped
+        for message in reversed(window):
+            if message['role'] != 'client':
+                break
+            tail += 1
+        for index, message in enumerate(reversed(window)):
+            size = len(message['text'])
+            if index >= tail and kept and total + size > max_chars:
+                break
+            kept.append(message)
+            total += size
+        window = list(reversed(kept))
     return '\n'.join(part for part in burst if part).strip(), window
+
+
+# ---------- Dialog-first view (owner 21.11.2026: the assistant continues Alexander's conversation) ----------
+
+ROLE_LABELS = {'client': 'Клиент', 'owner': 'Александр', 'assistant': 'Помощник'}
+GAP_SECONDS = 6 * 3600
+_MESSAGE_CHARS = 1500
+
+
+def _plural(number, one, few, many):
+    n = abs(int(number)) % 100
+    if 11 <= n <= 14:
+        return many
+    n %= 10
+    return one if n == 1 else few if 2 <= n <= 4 else many
+
+
+def _span(seconds):
+    """Human length of a pause: «40 мин», «7 ч», «2 дня»."""
+    seconds = max(0, float(seconds))
+    if seconds < 3600:
+        return '%d мин' % max(1, int(seconds // 60))
+    if seconds < 86400:
+        return '%d ч' % int(seconds // 3600)
+    days = int(seconds // 86400)
+    return '%d %s' % (days, _plural(days, 'день', 'дня', 'дней'))
+
+
+def _ago(seconds):
+    """Short relative stamp for a message line: [-3 дн], [-12 мин], [только что]."""
+    seconds = float(seconds)
+    if seconds < 60:
+        return '[только что]'
+    if seconds < 3600:
+        return '[-%d мин]' % int(seconds // 60)
+    if seconds < 86400:
+        return '[-%d ч]' % int(seconds // 3600)
+    return '[-%d дн]' % int(seconds // 86400)
+
+
+def _when(value):
+    try:
+        return float(value) if value is not None and value != '' else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _line(row, now):
+    role = ROLE_LABELS.get(str(row.get('role') or ''), str(row.get('role') or ''))
+    text = str(row.get('text') or '').strip() or '(без текста)'
+    if len(text) > _MESSAGE_CHARS:
+        text = text[:_MESSAGE_CHARS].rstrip() + ' …'
+    text = text.replace('\n', '\n    ')
+    at = _when(row.get('at'))
+    stamp = _ago(max(0.0, now - at)) + ' ' if (at is not None and now is not None) else ''
+    return stamp + role + ': ' + text
+
+
+def render_dialog(history, now=None):
+    """The conversation as plain lines, oldest first, with «— перерыв 2 дня —» between far-apart messages."""
+    import time
+    rows = [row for row in history or [] if isinstance(row, dict)]
+    if now is None:
+        now = time.time()
+    lines, previous = [], None
+    for row in rows:
+        at = _when(row.get('at'))
+        if previous is not None and at is not None and at - previous >= GAP_SECONDS:
+            lines.append('— перерыв ' + _span(at - previous) + ' —')
+        if at is not None:
+            previous = at
+        lines.append(_line(row, now))
+    return '\n'.join(lines)
+
+
+_OWNER_ASKS = re.compile(
+    r'(?i)\?|\b(?:пришлите|присылайте|пришли|напишите|напиши|отправьте|скиньте|скинь|дайте|укажите|нажмите|зайдите|'
+    r'войдите|выйдите|введите|вставьте|попробуйте|подтвердите|сделайте|скажите|проверьте|выберите|подождите|'
+    r'откройте|скопируйте|перезайдите|оплатите|включите|отключите|сообщите|ждите)\b')
+
+
+def _owner_requests(texts):
+    found = []
+    for text in texts:
+        for part in re.split(r'(?<=[.!?])\s+|\n+', str(text or '')):
+            part = part.strip()
+            if part and _OWNER_ASKS.search(part) and part not in found:
+                found.append(part)
+    return found
+
+
+def current_step(history):
+    """Alexander's open step: his last consecutive messages, what he asked, what the client answered."""
+    rows = [row for row in history or [] if isinstance(row, dict)]
+    end = len(rows)
+    while end and rows[end - 1].get('role') == 'client':
+        end -= 1
+    burst_rows = rows[end:]
+    stop = end
+    while stop and rows[stop - 1].get('role') != 'owner':
+        stop -= 1
+    if not stop:
+        return {}
+    start = stop
+    while start and rows[start - 1].get('role') == 'owner':
+        start -= 1
+    owner_rows = [row for row in rows[start:stop] if str(row.get('text') or '').strip()]
+    if not owner_rows:
+        return {}
+    between = rows[stop:end]
+    client_after = [str(row.get('text') or '').strip() for row in between + burst_rows
+                    if row.get('role') == 'client' and str(row.get('text') or '').strip()]
+    assistant_after = [str(row.get('text') or '').strip() for row in between
+                       if row.get('role') == 'assistant' and str(row.get('text') or '').strip()]
+    return {'owner_messages': [str(row.get('text') or '').strip() for row in owner_rows],
+            'owner_rows': owner_rows,
+            'asked': _owner_requests(row.get('text') for row in owner_rows),
+            'client_answered': client_after,
+            'assistant_after': assistant_after,
+            'owner_at': _when(owner_rows[-1].get('at'))}
+
+
+def _clip(text, size):
+    text = ' '.join(str(text or '').split())
+    return text if len(text) <= size else text[:size].rstrip() + ' …'
+
+
+def render_current_step(step, now=None):
+    import time
+    if not step:
+        return ''
+    if now is None:
+        now = time.time()
+    lines = ['ТЕКУЩИЙ ШАГ — последние сообщения Александра клиенту (дословно):']
+    lines += [_line(row, now) for row in step.get('owner_rows') or []]
+    asked = '; '.join(step.get('asked') or []) or 'явной просьбы нет — смысл в его сообщениях выше'
+    answered = ' / '.join(step.get('client_answered') or []) or 'пока ничего'
+    lines.append('Александр просил у клиента: ' + _clip(asked, 700) + '; клиент ответил: ' + _clip(answered, 900))
+    if step.get('assistant_after'):
+        lines.append('После Александра помощник уже писал: ' + _clip(' / '.join(step['assistant_after']), 600))
+    return '\n'.join(lines)
+
+
+def dialog_input(context):
+    """The text placed FIRST in the model input: the dialog, Alexander's current step, the new messages."""
+    context = context or {}
+    parts = []
+    dialog = str(context.get('dialog_text') or '')
+    if not dialog and context.get('history'):
+        dialog = render_dialog(context.get('history'), context.get('now'))
+    if dialog:
+        parts.append('ПЕРЕПИСКА (последние сообщения этого чата, сверху старые; время — сколько назад):\n' + dialog)
+    step = str(context.get('current_step_text') or '')
+    if not step and context.get('history'):
+        step = render_current_step(current_step(context.get('history')), context.get('now'))
+    if step:
+        parts.append(step)
+    if ongoing_dialog(context):
+        parts.append('РЕЖИМ: в этом чате недавно писал Александр — ты продолжаешь ЕГО разговор. '
+                     'Ответь на новые сообщения клиента в рамках его шага.')
+    burst = str(context.get('burst') or '').strip()
+    if burst:
+        parts.append('НОВЫЕ СООБЩЕНИЯ КЛИЕНТА (на них ты отвечаешь):\n' + burst)
+    return '\n\n'.join(parts)
+
+
+_STEM_STOP = {'здрав', 'добры', 'пожал', 'спаси', 'можно', 'нужно', 'хочу', 'этот', 'есть', 'меня', 'вашем',
+              'ваши', 'вашу', 'когда', 'какой', 'какая', 'какие', 'сейчас', 'тоже', 'было', 'будет', 'тогда',
+              'только', 'просто', 'очень', 'если', 'чтобы', 'после', 'потом', 'также', 'через', 'вообщ'}
+
+
+def _stems(text):
+    words = re.findall(r'[a-zа-яё0-9]{4,}', str(text or '').casefold().replace('ё', 'е'))
+    return {word[:5] for word in words if word[:5] not in _STEM_STOP}
+
+
+FAQ_TOPICS_FOR_MODEL = 8
+
+
+def relevant_faq(faq, context, limit=FAQ_TOPICS_FOR_MODEL):
+    """The FAQ topics closest to the words and services in play (the whole FAQ is ~42KB)."""
+    import math
+    rows = [row for row in faq or [] if isinstance(row, dict) and row.get('id')]
+    if len(rows) <= limit:
+        return rows
+    context = context or {}
+    history = [row for row in context.get('history') or [] if isinstance(row, dict)]
+    burst = str(context.get('burst') or '')
+    state = context.get('dialog_state') or {}
+    near = ' '.join(str(row.get('text') or '') for row in history[-5:])
+    query = {}
+    for stem in _stems(near + ' ' + str(state.get('service') or '') + ' ' + str(state.get('service_id') or '')):
+        query[stem] = 1.0
+    for stem in _stems(burst):
+        query[stem] = 2.0
+    if not query:
+        return []
+    docs = []
+    for row in rows:
+        title = _stems(str(row.get('title') or '') + ' ' + str(row.get('id') or '').replace('_', ' '))
+        body = _stems(row.get('answer'))
+        docs.append((row, title, body))
+    df = {}
+    for _, title, body in docs:
+        for stem in title | body:
+            df[stem] = df.get(stem, 0) + 1
+    total = len(docs)
+    scored = []
+    for order, (row, title, body) in enumerate(docs):
+        score = 0.0
+        for stem, weight in query.items():
+            if stem not in df:
+                continue
+            idf = math.log(1 + total / df[stem])
+            if stem in title:
+                score += 3 * weight * idf
+            elif stem in body:
+                score += weight * idf
+        if score > 0:
+            scored.append((-score, order, row))
+    scored.sort()
+    return [row for _, _, row in scored[:limit]]
+
+
+_CATALOG_WIDE = re.compile(r'(?i)какие\s+(?:есть\s+|у\s+вас\s+)?(?:сервис|подписк|нейросет|тариф|товар)|что\s+(?:у\s+вас\s+)?(?:есть|продаете|продаёте)|'
+                           r'весь\s+(?:список|каталог)|список\s+(?:сервис|подписок|нейросет)|ассортимент')
+_APPLE = re.compile(r'(?i)app\s*store|apple|айклауд|icloud|эпл|аппстор|апстор|itunes')
+
+
+def services_in_play(context):
+    """Services named in the client's messages, in the recent dialog, or open in the dialog state."""
+    context = context or {}
+    found = set(_named_services(context))
+    history = [row for row in context.get('history') or [] if isinstance(row, dict)]
+    recent = ' '.join(str(row.get('text') or '') for row in history[-8:])
+    if recent:
+        found |= set(_named_services(dict(context, burst=recent, hints=[])))
+    state = str((context.get('dialog_state') or {}).get('service_id') or '')
+    if state:
+        found.add(state)
+    if found & {'grok', 'supergrok'}:
+        found.add('cursor')  # owner 20.11.2026: Grok questions get Cursor's tariffs
+    return {item for item in found if item}
+
+
+def model_view(context):
+    """What the model reads as JSON: the same context with the FAQ and the catalogue cut to what is in play.
+
+    Code keeps the full context (prices are checked against all tariffs, FAQ answers come from the full FAQ).
+    """
+    context = context or {}
+    view = {key: value for key, value in context.items()
+            if key not in ('dialog_text', 'current_step_text', 'current_step', 'now')}
+    faq = context.get('faq') or []
+    if isinstance(faq, list) and len(faq) > FAQ_TOPICS_FOR_MODEL:
+        view['faq'] = relevant_faq(faq, context)
+        view['faq_index'] = [[row.get('id'), _clip(row.get('title'), 60)] for row in faq if isinstance(row, dict)]
+        view['faq_note'] = ('faq — темы владельца, близкие к этому разговору, с ответами. faq_index — все темы (id и название): '
+                            'owner_topic можно выбрать и из faq_index, ответ по такой теме подставит код.')
+    tariffs = context.get('tariffs') or []
+    burst = str(context.get('burst') or '')
+    if isinstance(tariffs, list) and len(tariffs) > 40 and not (_COMPARE.search(burst) or _CATALOG_WIDE.search(burst)):
+        named = services_in_play(context)
+        def wanted(row):
+            sid = str(row.get('service_id') or '')
+            return sid in named or any(_compact(sid) and (_compact(sid) in _compact(item) or _compact(item) in _compact(sid))
+                                       for item in named if len(_compact(item)) >= 4)
+        view['tariffs'] = [row for row in tariffs if isinstance(row, dict) and wanted(row)]
+        index, seen = [], set()
+        for row in tariffs:
+            if isinstance(row, dict) and row.get('service_id') not in seen:
+                seen.add(row.get('service_id'))
+                index.append([row.get('service_id'), row.get('service')])
+        view['services_index'] = index
+        view['tariffs_note'] = ('tariffs — тарифы только сервисов из этого разговора. services_index — все сервисы каталога (id и название). '
+                                'service_id можно взять из services_index; цены других сервисов в ответе не называй.')
+    nominals = context.get('nominals') or []
+    if nominals and not (_APPLE.search(burst + ' ' + ' '.join(str(row.get('text') or '') for row in (context.get('history') or [])[-6:]
+                                                       if isinstance(row, dict)))
+                         or str((context.get('dialog_state') or {}).get('service_id') or '') == 'appstore'
+                         or (context.get('dialog_state') or {}).get('region')):
+        view['nominals'] = []
+        view['nominals_note'] = 'Номиналы App Store не переданы: о пополнении Apple речи нет.'
+    return view
+
+
+def model_input_text(context):
+    """Dialog first, then the JSON reference data."""
+    import json
+    head = dialog_input(context)
+    data = json.dumps(model_view(context), ensure_ascii=False, default=str)
+    return (head + '\n\nДАННЫЕ (JSON, справка):\n' + data) if head else data
+
+
+def fresh_other_purchase(context):
+    """The client's new message is a purchase or price question about a service not in this conversation."""
+    context = context or {}
+    burst = str(context.get('burst') or '')
+    if not (_ASKS_PRICE.search(burst) or asks_how_to_pay(burst) or _BUY_OR_RENEW.search(burst)
+            or re.search(r'(?i)(?:хочу|хотел\w*|можно|нужн\w*)\s+(?:\w+\s+){0,2}(?:купить|оформить|оплатить|взять|подписк|тариф)|'
+                         r'а\s+(?:есть|у\s+вас\s+есть)\b|тариф', burst)):
+        return False
+    named = set(_named_services(context))
+    if not named:
+        return False
+    rows = [row for row in context.get('history') or [] if isinstance(row, dict)]
+    end = len(rows)
+    while end and rows[end - 1].get('role') == 'client':
+        end -= 1
+    earlier = ' '.join(str(row.get('text') or '') for row in rows[:end])
+    in_play = set(_named_services(dict(context, burst=earlier, hints=[]))) if earlier else set()
+    state = str((context.get('dialog_state') or {}).get('service_id') or '')
+    if state:
+        in_play.add(state)
+    norm = lambda v: 'cursor' if v in ('grok', 'supergrok') else v
+    return bool({norm(v) for v in named} - {norm(v) for v in in_play})
+
+
+def continue_step(context):
+    """Owner 21.11.2026: Alexander is talking with this client (≤12 h) and the new message is not a fresh
+    purchase of another service — the model's own answer in Alexander's step goes out; code templates do not."""
+    if not isinstance(context, dict):
+        return False
+    if 'continue_step' in context:
+        return bool(context.get('continue_step'))
+    try:
+        return ongoing_dialog(context) and not fresh_other_purchase(context)
+    except Exception:
+        return False
 
 
 def catalog_index(facts, limit=400):
@@ -259,7 +611,9 @@ def conversation_focus(window, burst, state):
     return {'answers_to': '', 'who': '', 'stage': ''}
 
 
-def build_context(db, chat, facts):
+def build_context(db, chat, facts, now=None):
+    import time
+    now = time.time() if now is None else now
     burst, window = burst_and_window(db, chat)
     state = load(db, chat)
     catalog = (facts or {}).get('catalog') or []
@@ -282,7 +636,8 @@ def build_context(db, chat, facts):
         payment = {}
     region = active_region(burst, state)
     focus = conversation_focus(window, burst, state)
-    return {'burst': burst,
+    step = current_step(window)
+    context = {'burst': burst,
             # Owner 16.11.2026: the latest message is the question; this says what it answers.
             'latest_client_message': burst,
             'answers_to': focus['answers_to'],
@@ -312,6 +667,14 @@ def build_context(db, chat, facts):
             'usd_to_rub': _usd_context(burst, state.get('service_key') or ''),
             'bot_generation': _bot_generation(facts, burst),
             'hints': hint_services(burst, catalog)}
+    # Owner 21.11.2026: the dialog as text comes first in the model input; JSON fields above stay for code.
+    context['now'] = now
+    context['dialog_text'] = render_dialog(window, now)
+    context['current_step'] = {key: value for key, value in step.items() if key != 'owner_rows'}
+    context['current_step_text'] = render_current_step(step, now)
+    context['ongoing_dialog'] = ongoing_dialog(context)
+    context['continue_step'] = bool(context['ongoing_dialog'] and not fresh_other_purchase(context))
+    return context
 
 
 OWNER_CATALOG = {'chatgpt', 'claude', 'grok', 'supergrok', 'zoom', 'perplexity', 'lovable', 'gamma', 'appstore', 'freepik',
@@ -1652,6 +2015,9 @@ def package(understanding, context, db=None, chat=None):
         validated['owner_topic'] = 'none'  # the service is sold: name its plans instead of «какой тариф нужен»
         validated['payment_asked'] = True
     reply = str((understanding or {}).get('reply') or '').strip()
+    # Owner 21.11.2026: inside Alexander's ongoing step the model's own checked answer goes out —
+    # no tariff list, payment card or plans summary composed by code.
+    cont = continue_step(context)
     from .handoff import handoff_text
     from .payment_guide import (kind_for, merged_setup, missing_setup, mixes_activation_into_payment,
                                 render, setup_ask, setup_ready)
@@ -1671,7 +2037,7 @@ def package(understanding, context, db=None, chat=None):
             validated['tariff'] = named_plan[0]
             validated['tariff_id'] = named_plan[0].get('id') or ''
             kind = kind_for(validated.get('service_id') or '', named_plan[0].get('plan') or '', context.get('tariffs') or [])
-    options = [] if validated.get('payment_asked') or composed else matching_tariffs(context, validated.get('service_id'))
+    options = [] if validated.get('payment_asked') or composed or cont else matching_tariffs(context, validated.get('service_id'))
     if len(options) >= 2 and _asked_tariff_before(context):
         # The client answered our «X или Y?» — take the option with no extra words, do not ask again.
         picked = _closest_option(options, context.get('burst') or '')
@@ -1700,7 +2066,7 @@ def package(understanding, context, db=None, chat=None):
         validated['questions'] = [reply]
         composed = True
         verdict = classify_draft(reply, validated['allowed_prices'])
-    elif (not composed and validated.get('payment_asked') and not (validated.get('tariff') or {})
+    elif (not composed and not cont and validated.get('payment_asked') and not (validated.get('tariff') or {})
             and kind != 'appstore' and not _asked_tariff_before(context)
             and str(validated.get('owner_topic') or 'none') in ('none', '')  # a topic answer (Business, Grok) wins over the list
             and not re.search(r'(?i)бизнес|business|\bteam\b', str(context.get('burst') or ''))
@@ -1720,7 +2086,7 @@ def package(understanding, context, db=None, chat=None):
             and not (validated.get('service_id') or validated.get('_other_service')):
         validated['owner_topic'] = 'off_catalog'  # «премьер про хочу оплатить»: ask tariff, region, term
         verdict = classify_draft(reply, validated['allowed_prices'])
-    elif not composed and (validated.get('payment_asked') or mixes_activation_into_payment(reply)
+    elif not composed and not cont and (validated.get('payment_asked') or mixes_activation_into_payment(reply)
             or (kind == 'chatgpt_new_account' and setup and missing_setup(setup))):
         service_id = validated.get('service_id') or validated.get('_other_service') or ''
         tariff = validated.get('tariff') or {}
@@ -1743,7 +2109,7 @@ def package(understanding, context, db=None, chat=None):
         validated['questions'] = [reply]
         composed = True
         verdict = classify_draft(reply, validated['allowed_prices'])
-    elif not composed and validated['confidence'] == 'low':
+    elif not composed and not cont and validated['confidence'] == 'low':
         options = clarify_options(understanding, context)
         validated['service_id'] = ''
         validated['tariff_id'] = ''
@@ -1804,7 +2170,7 @@ def package(understanding, context, db=None, chat=None):
             verdict = {'send': False, 'class': 'unverified', 'reason': 'Ответ с правилом VPN длиннее 3500 символов.'}
     # Owner 12.11.2026: a detailed answer without a separate paragraph per question is not a reason
     # to stop; only a one-line reply to several questions still is.
-    if verdict['send'] and not composed and len(reply) < 160 \
+    if verdict['send'] and not composed and not cont and len(reply) < 160 \
             and not questions_addressed(reply, validated['questions'], context):
         verdict = {'send': False, 'class': 'unverified',
                    'reason': 'В ответе нет отдельного пункта на каждый вопрос из разбора.'}
@@ -1818,6 +2184,7 @@ def package(understanding, context, db=None, chat=None):
             'evidence': {'status': 'catalog_direct' if verdict['send'] else 'owner_policy',
                          'sources': [],
                          'composed_by_code': bool(composed),
+                         'continue_step': bool(cont),
                          'reply_class': verdict['class'],
                          'turn_understanding': {'intent': validated['intent'],
                                                 'service_id': validated['service_id'],
@@ -1858,6 +2225,7 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
     if not isinstance(answer, dict):
         return answer
     validated = validate(understanding or {}, context or {})
+    cont = continue_step(context)
     if isinstance(answer.get('reply'), str) and validated.get('allowed_prices'):
         # 2489 ₽ instead of 2490 ₽ is a slip, not a reason to stop the answer.
         answer = dict(answer, reply=snap_prices(answer['reply'], validated['allowed_prices'])[0])
@@ -1891,6 +2259,7 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
         # «Я то в России» is not a VPN question; «клод код» is not Codex.
         topic = validated['owner_topic'] = 'none'
     focus_said = str((context or {}).get('answers_to') or '')
+    step_topic = False  # code read Alexander's own step (gmail, registration): his next step text wins
     if topic == 'org_id_sent_here' and re.search(r'(?i)organization|org\w*\s*id|отправ\w+\s+(?:сюда|мне)|скин\w+', focus_said) \
             and str((context or {}).get('answers_to_who') or '') == 'Александр':
         # Alexander himself asked for the ID in this chat: it is expected here, he takes it from here.
@@ -1900,9 +2269,11 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
     if re.search(r'(?i)gmail', focus_said) and re.search(r'(?i)^\W*(?:да|есть|ага|конечно)\b|gmail|\[email', offcat_burst) \
             and not re.search(r'(?i)\bнет\b|нету', offcat_burst) and len(offcat_burst) <= 160:
         topic = validated['owner_topic'] = 'gmail_confirmed'
+        step_topic = True
     elif re.search(r'(?i)зарегистр', focus_said) and re.search(r'(?i)зарегистр\w*|готово|сделал\w*|создал\w*|^\W*да\W*$', offcat_burst) \
             and len(offcat_burst) <= 120 and re.search(r'(?i)chatgpt|gpt', focus_said + ' ' + str(((context or {}).get('dialog_state') or {}).get('service') or '')):
         topic = validated['owner_topic'] = 'chatgpt_token_after_register'
+        step_topic = True
     if topic == 'activation_overdue' and not _LONG_WAIT.search(offcat_burst):
         topic = validated['owner_topic'] = 'delivery_time'
     if _install_reply(offcat_burst, context) and topic in ('app_download', 'tech_setup', 'none', 'new_account_email'):
@@ -1960,7 +2331,10 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                          else 'Заказ вне каталога: сервис и детали получены. Нужен Александр. Клиенту оставлена фраза ожидания.'
                          if topic == 'off_catalog'
                          else 'Номер заказа по теме «' + topic + '» получен. Нужен Александр. Клиенту оставлена фраза ожидания.')
-        elif _verbatim(topic) and answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']:
+        elif (_verbatim(topic) and answer_text and classify_draft(answer_text, validated.get('allowed_prices'))['send']
+              and not (cont and reply.strip() and not answer.get('handoff')
+                       and not asserts_outcome(reply) and not _PROMISE.search(reply)
+                       and classify_draft(reply, validated.get('allowed_prices'))['send'])):
             answer = dict(answer, reply=answer_text, handoff=False)
             owner_text_used = True
         elif asserts_outcome(reply) or _PROMISE.search(reply) or not re.search(r'(?i)пришлите|напишите|укажите|\?', reply):
@@ -1993,10 +2367,11 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
             platform_text = DEVICE_ASK
         if platform_text:
             answer_text = platform_text
-        keep_draft = (ongoing_dialog(context) and not platform_text and reply.strip() and not answer.get('handoff')
+        keep_draft = (ongoing_dialog(context) and not platform_text and not step_topic and reply.strip() and not answer.get('handoff')
                       and classify_draft(reply, prices)['send']
-                      # a draft that asks for access data is never preferred over the owner's approved text
-                      and not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply))
+                      # a draft that asks for access data is never preferred over the owner's approved text —
+                      # except inside Alexander's own step (owner 21.11.2026), where he asked for the token himself
+                      and (cont or not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply)))
         if keep_draft:
             pass  # ongoing dialog: the model's own checked answer stays; the FAQ was its reference
         elif platform_text or fact_gap(answer_text, reply, beyond, prices, context) or answer.get('handoff') or _verbatim(topic):
@@ -2011,7 +2386,7 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                 # the model's checked draft keeps the answers to the others.
                 many = (len(validated.get('questions') or []) > 1 or len(set(validated.get('situations') or [])) > 1
                         or validated.get('situation') == 'compare_choose')
-                if (many and reply and not answer.get('handoff') and answer_text[:60] not in reply
+                if (many and not cont and reply and not answer.get('handoff') and answer_text[:60] not in reply
                         and classify_draft(reply, prices)['send']
                       # a draft that asks for access data is never preferred over the owner's approved text
                       and not re.search(r'(?i)парол|токен|sessionkey|api/auth|cookie|резервн\w*\s+код', reply)):
@@ -2021,7 +2396,7 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                 owner_followup = beyond
             else:
                 holds.append('Ответ выходит за записанный факт владельца.')
-    if (not holds and not answer.get('handoff') and _CLAUDE_BUY.search(burst_text)
+    if (not holds and not cont and not answer.get('handoff') and _CLAUDE_BUY.search(burst_text)
             and re.search(r'(?i)claude|клод|клауд|клоуд|\bcloud\b', burst_text)
             # Owner 20.11.2026: only when Claude is what the client is buying now, not «с Клодом пока отмена».
             and not re.search(r'(?i)(?:claude|клод\w*)\W+(?:\w+\W+){0,2}(?:отмен|не\s+надо|не\s+буд|передума)', burst_text)
@@ -2059,6 +2434,8 @@ def _enforce_turn_policy_core(answer, understanding, context, freshness=None):
                 owner_topic=validated['owner_topic'])
     evidence['turn_understanding'] = turn
     evidence['catalog_freshness'] = dict(freshness or {})
+    if cont:
+        evidence['continue_step'] = True
     if course_email:
         evidence.update(course_email_hold=True, course_email=course_email)
     if owner_followup and not holds:
