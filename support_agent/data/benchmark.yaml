@@ -1472,3 +1472,198 @@ cases:
 - id: fresh-perplexity-what-need
   client: "хочу перплексити про, что от меня понадобится?"
   need: ['₽', 'почт']
+# ---- Свежий набор 2 (22.11.2026): опечатки, длинные сообщения, активация, оплата, новые сервисы, история ----
+- id: fresh2-typo-chatgpt-price
+  client: "скока стоит чатжпт плюс??"
+  need: ['1990|₽']
+- id: fresh2-slang-need-gpt
+  client: "брат нужна гпшка на месяц, че по цене"
+  need: ['₽', '@neirosetkaa_bot']
+- id: fresh2-long-multi
+  client: "Здравствуйте! Хочу оформить ChatGPT Plus. Подскажите, пожалуйста: 1) сколько стоит, 2) можно ли на мой аккаунт, 3) нужен ли VPN после оформления?"
+  need: ['1990|₽', 'ваш аккаунт|на ваш|ваш', 'VPN|впн']
+- id: fresh2-token-what
+  client: "что такое токен и где его взять для активации?"
+  need: ['api/auth/session|chatgpt.com']
+- id: fresh2-token-empty-braces
+  client: "открываю ссылку для токена, а там пустые скобки {}"
+  need: ['войд|вошли|войти|авторизу']
+- id: fresh2-activation-expired
+  client: "кнопка активации пишет что время вышло"
+  need: ['повторн|номер заказа']
+- id: fresh2-already-subscribed
+  client: "при активации пишет что на аккаунте уже есть подписка"
+  need: ['дождаться|другой аккаунт']
+- id: fresh2-wrong-account
+  client: "активировал не на тот аккаунт, можно перенести?"
+  need: ['нельзя|не получится|не переносится|перенести']
+  forbid: ['перенесём']
+- id: fresh2-fkwallet-qr
+  client: "при оплате по сбп просит скачать какой-то FKwallet, это нормально?"
+  need: ['СБП']
+- id: fresh2-where-my-order
+  client: "оплатил час назад, где мой заказ?"
+  need: ['номер заказа|заказ|бот']
+  forbid: ['будет на связи']
+- id: fresh2-order-number-given
+  client: "Заказ #12001, оплатил плюс, а кнопка не работает"
+  need: ['Александр|заказ|активац']
+  forbid: ['вижу']
+- id: fresh2-refund-when-money
+  client: "возврат оформили, когда деньги придут?"
+  need: ['дн|банк|срок']
+- id: fresh2-team-plan
+  client: "нужен чатгпт на команду из 5 человек"
+  need: ['Business|команд|Александр']
+- id: fresh2-chatgpt-business
+  client: "есть chatgpt business?"
+  need: ['Business']
+- id: fresh2-codex-plus
+  client: "кодекс входит в плюс?"
+  need: ['Codex|Кодекс', 'Plus']
+- id: fresh2-limits-ended
+  client: "лимиты в гпт закончились, что делать?"
+  need: ['лимит', 'Pro|дождаться|сброс|выше']
+- id: fresh2-sora
+  client: "сора для видео у вас есть?"
+  need: ['не работает|закрыл', 'Kling|Runway|Higgsfield']  # owner 22.11.2026: Sora is closed (OpenAI, March 2026)
+  forbid: ['входит в подписку']
+- id: fresh2-lovable
+  client: "лавабл про сколько?"
+  need: ['Lovable', '₽|ссылк']
+- id: fresh2-runway
+  client: "runway хочу, как оплатить?"
+  need: ['Runway', '@neirosetkaa_bot']
+- id: fresh2-elevenlabs
+  client: "elevenlabs для озвучки есть?"
+  need: ['ElevenLabs|Eleven']
+- id: fresh2-krea
+  client: "krea ai подписка есть?"
+  need: ['Krea']
+- id: fresh2-manus
+  client: "манус можно купить?"
+  need: ['Manus']
+- id: fresh2-genspark
+  client: "genspark сколько стоит?"
+  need: ['Genspark', '₽|ссылк']
+- id: fresh2-make
+  client: "make.com подписку оплатите?"
+  need: ['Make']
+- id: fresh2-higgsfield
+  client: "хигсфилд кредиты как купить?"
+  need: ['Higgsfield']
+- id: fresh2-freepik
+  client: "фрипик премиум сколько?"
+  need: ['Freepik|Magnific', '₽']
+- id: fresh2-github-copilot
+  client: "github copilot оплатите?"
+  need: ['GitHub|Copilot']
+- id: fresh2-zai
+  client: "z.ai glm подписка есть?"
+  need: ['Z\.?ai|GLM']
+- id: fresh2-netflix
+  client: "нетфликс можете оплатить?"
+  need: ['ссылк|Другой сервис|Netflix']
+- id: fresh2-duolingo
+  client: "дуолинго супер оплатите?"
+  need: ['ссылк|Другой сервис']
+- id: fresh2-appstore-us
+  client: "мне нужна карта app store usa на 10 долларов"
+  need: ['USD|US|США', '₽']
+- id: fresh2-appstore-change-region
+  client: "как сменить регион apple id на сша?"
+  need: ['Страна или регион|регион']
+- id: fresh2-number-whatsapp
+  client: "номер для ватсапа можно купить?"
+  need: ['Виртуальные номера|номер']
+- id: fresh2-number-not-came
+  client: "купил номер, а смс не приходит"
+  need: ['Код не пришёл|не пришёл|новый номер']
+- id: fresh2-coins-pay
+  client: "можно оплатить подписку монетками?"
+  need: ['монет']
+- id: fresh2-giveaway
+  client: "у вас розыгрыш был, как участвовать?"
+  need: ['розыгрыш|канал']
+- id: fresh2-reseller
+  client: "хочу брать у вас оптом и перепродавать, какие цены?"
+  stop: true
+- id: fresh2-partnership-blog
+  client: "у меня тг канал про нейросети 20к, давайте сотрудничать"
+  need: ['подробн']
+- id: fresh2-gpt-blocked
+  client: "мой аккаунт гпт заблокировали после вашей подписки"
+  need: ['Александр|скрин|заказ']
+  forbid: ['вернём деньги']
+- id: fresh2-claude-blocked
+  client: "клод заблокировал аккаунт, верните деньги"
+  need: ['номер заказа|Александр|Понимаю']
+  forbid: ['вернём']
+- id: fresh2-claude-kyc-buy
+  client: "хочу клод про с верификацией за вас"
+  need: ['6990']
+- id: fresh2-claude-ultra
+  client: "клод ультра чем отличается от макс?"
+  need: ['Ultra', 'Max']
+- id: fresh2-claude-code-cli
+  client: "claude code в терминале будет работать с про?"
+  need: ['Claude Code', 'Pro']
+- id: fresh2-perplexity-what
+  client: "что умеет перплексити про?"
+  need: ['Perplexity']
+- id: fresh2-midjourney-link
+  client: "мидджорни оплатил, куда ссылку кидать?"
+  need: ['сюда|ссылк']
+- id: fresh2-kling-currency
+  client: "клинг ссылка в рублях открывается, что делать?"
+  need: ['VPN|впн|стран|доллар']
+- id: fresh2-emoji-only
+  client: "🙏"
+  forbid: ['₽']
+- id: fresh2-voice-like-text
+  client: "[Расшифровка голосового] короче мне нужен клод на месяц сколько это будет"
+  need: ['₽', 'Claude']
+- id: fresh2-kazakh-lang
+  client: "Сәлеметсіз бе, ChatGPT Plus қанша тұрады?"
+  need: ['1990|₽']
+- id: fresh2-ukr-lang
+  client: "Скільки коштує ChatGPT Plus?"
+  need: ['1990|₽']
+- id: fresh2-hist-owner-asked-email
+  history: [['owner', 'Можно пожалуйста почту от аккаунта Cursor']]
+  client: "а какую почту, ту на которую регистрировался?"
+  need: ['да|ту|котор|аккаунт']
+  forbid: ['Получил, Александр продолжит']
+- id: fresh2-hist-after-price
+  history: [['assistant', 'ChatGPT Plus — 1990 ₽. Оплатить можно в боте @neirosetkaa_bot.'], ['client', 'а Go сколько?']]
+  client: "и чем они отличаются?"
+  need: ['Go', 'Plus']
+- id: fresh2-hist-owner-wait
+  history: [['owner', 'пару минут']]
+  client: "жду"
+  need: ['Александр|Хорошо']
+  forbid: ['₽']
+- id: fresh2-hist-claude-consent
+  history: [['assistant', 'Заказ #500: Claude, тариф Max. Прежде чем начать, важно знать: гарантии на Claude нет. Напишите, пожалуйста, что согласны с этими рисками — после этого Александр продолжит оформление.']]
+  client: "да, согласен"
+  need: ['почт']
+- id: fresh2-hist-region-asked
+  history: [['owner', 'Какой регион у вашего аккаунта PlayStation?']]
+  client: "турция"
+  need: ['Александр|Турц']
+  forbid: ['₽']
+- id: fresh2-two-questions-gpt-claude
+  client: "что лучше гпт или клод и сколько каждый стоит?"
+  need: ['ChatGPT[^\n]*₽|ChatGPT', 'Claude[^\n]*₽|Claude', '₽']
+- id: fresh2-price-dollars-site
+  client: "а сколько плюс стоит на официальном сайте в долларах?"
+  need: ['1990|₽|\$|доллар']
+- id: fresh2-installments
+  client: "можно оплатить частями?"
+  need: ['СБП|Мир|целиком|частями']
+- id: fresh2-night
+  client: "вы ночью работаете?"
+  need: ['ИИ-помощник|отвеч|при первой возможности']
+- id: fresh2-sbp-commission
+  client: "по сбп есть комиссия?"
+  need: ['СБП', 'без комиссии|комисси']
