@@ -112,7 +112,7 @@ class Stage5Tests(unittest.TestCase):
         self.assertIn('conflict', UNDERSTANDING_INSTRUCTIONS)
         self.model.conflict = 'high'
         self.model.reason = 'Клиент требует возврат и грозит жалобой.'
-        first = self.ask('верните деньги')
+        first = self.ask('верните деньги, буду жаловаться')
         # Owner 21.11.2026: a calm reply goes out automatically and the owner gets one urgent alert.
         self.assertFalse(first['handoff'])
         self.assertTrue(first['evidence']['urgent'])
@@ -120,7 +120,7 @@ class Stage5Tests(unittest.TestCase):
         notes = [text for method, text in self.tg.sent if 'Конфликт' in text]
         self.assertEqual(len(notes), 1)
         self.assertIn('жалоб', notes[0])
-        self.assertIn('верните деньги', notes[0])
+        self.assertIn('верните деньги', notes[0])  # the alert quotes the client
         second = self.ask('и ещё раз верните')
         self.assertIn('Понимаю вас', second['reply'])
         notes = [text for method, text in self.tg.sent if 'Конфликт' in text]

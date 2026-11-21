@@ -118,12 +118,21 @@ class BuildContextTests(StoreCase):
         facts = suno_facts()
         facts['catalog'] += [{'service': 'Svc%d' % n, 'service_key': 'svc%d' % n, 'plan': 'Pro', 'catalog_price_rub': 1000 + n,
                               'fulfillment': 'account_details'} for n in range(60)]
-        self.put('client', 'Сколько стоит Suno?', NOW - 10)
+        self.put('client', 'Suno не открывается, что делать?', NOW - 10)
         context = build_context(self.store.db, self.cid, facts, now=NOW)
         view = model_view(context)
         self.assertEqual({row['service_id'] for row in view['tariffs']}, {'suno'})
         self.assertGreater(len(context['tariffs']), 60)  # code keeps every tariff for price checks
         self.assertIn(['svc5', 'Svc5'], view['services_index'])
+
+    def test_price_question_keeps_the_whole_catalogue(self):
+        # Bench 10 (21.11.2026): typos like «чат гтп» are not recognised by code; a cut catalogue hid the price.
+        facts = suno_facts()
+        facts['catalog'] += [{'service': 'Svc%d' % n, 'service_key': 'svc%d' % n, 'plan': 'Pro', 'catalog_price_rub': 1000 + n,
+                              'fulfillment': 'account_details'} for n in range(60)]
+        self.put('client', 'Сколько стоит Suno и свк5?', NOW - 10)
+        view = model_view(build_context(self.store.db, self.cid, facts, now=NOW))
+        self.assertGreater(len(view['tariffs']), 60)
 
 
 def _understanding(reply, **extra):

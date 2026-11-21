@@ -165,7 +165,7 @@ class TermAndClaudeRulesTests(unittest.TestCase):
         self.assertIn('на месяц', usable_answer('subscription_term'))  # owner 13.11.2026: monthly by default
         self.assertIn('один VPN', usable_answer('claude_block_risk'))
         self.assertIn('загранпаспорт', usable_answer('claude_verification'))
-        self.assertIn('Российские номера', usable_answer('claude_verification'))
+        self.assertNotIn('Российские номера', usable_answer('claude_verification'))  # owner 21.11.2026: only on a phone question
         for topic in ('subscription_term', 'claude_block_risk', 'claude_verification'):
             answer = _turn('вопрос', {'owner_topic': topic, 'reply': usable_answer(topic)})
             self.assertFalse(answer['handoff'], (topic, answer['evidence'].get('diagnostic')))
@@ -351,7 +351,9 @@ class SofterStopsTests(unittest.TestCase):
         Service.__init__(svc, type('S', (), {})(), None, None, None, 5, chats, 600,
                          auto_test_ids=(111,), auto_for_all=True)
         self.assertTrue(svc.auto_permitted({'uid': 111}))
-        self.assertFalse(svc.auto_permitted({'uid': 222}))
+        # Owner 21.11.2026: «сразу для всех» — with SUPPORT_AUTO_FOR_ALL every readable client may get AUTO.
+        self.assertTrue(svc.auto_permitted({'uid': 222}))
+        self.assertFalse(svc.auto_permitted({'uid': 5}))
         self.assertIn(222, svc.allowed)
 
 
@@ -1366,7 +1368,7 @@ class Owner20NovTests(unittest.TestCase):
         from support_agent.playbook import tidy
         out = tidy({'reply': 'Напишите ему, пожалуйста, в @Neirosetkaalex, как вам и подсказали.'}, {})
         self.assertNotIn('@Neirosetkaalex', out['reply'])
-        self.assertIn('бонусной подписке', out['reply'])
+        self.assertIn('почту, с которой вы зарегистрированы на курсе', out['reply'])  # owner 21.11.2026
 
     def test_token_steps_do_not_push_the_bot(self):
         from support_agent.faq import load_faq

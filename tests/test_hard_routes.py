@@ -276,3 +276,87 @@ class OwnerAnswers21NovD(unittest.TestCase):
         answer = next(t['answer'] for t in load_faq()['topics'] if t['id'] == 'chatgpt_already_subscribed')
         self.assertIn('дождаться окончания', answer)
         self.assertIn('другой аккаунт', answer)
+
+
+class Bench10Fixes(unittest.TestCase):
+    """bench 10 / live 5 (21.11.2026)."""
+
+    def _apply(self, burst, **evidence):
+        return hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': dict(evidence)}, {'burst': burst})
+
+    def test_phone_number_is_not_a_payment_failure(self):
+        self.assertIsNone(self._apply('кодекс просит номер телефона, а российский не принимает')['evidence'].get('hard_routes'))
+
+    def test_qr_not_accepted_is_a_payment_failure(self):
+        out = self._apply('QR-код СБП не принимается ни одним банковским приложением')
+        self.assertEqual(out['evidence']['hard_routes'], ['payment_failure'])
+
+    def test_joke_about_not_being_scammers_is_not_a_conflict(self):
+        out = self._apply('теперь надо доказать банку, что вы не мошенники)))')
+        self.assertNotIn('conflict', out['evidence'].get('hard_routes') or [])
+
+    def test_calm_refund_beats_the_model_conflict_verdict(self):
+        out = self._apply('верните деньги, подписка не работает уже неделю', conflict_hold=True)
+        self.assertEqual(out['reply'], hard_routes.REFUND_ASK)
+        self.assertFalse(out['evidence']['conflict_hold'])
+
+    def test_complaint_threat_is_a_conflict(self):
+        self.assertEqual(self._apply('верните всё немедленно, я буду жаловаться')['reply'], hard_routes.CONFLICT_REPLY)
+
+
+class Bench10Tidy(unittest.TestCase):
+    def test_repeated_payment_blocks_are_dropped(self):
+        from support_agent.playbook import dedupe
+        reply = ('Оплата в @neirosetkaa_bot.\n\n1. Откройте бота и нажмите «Каталог».\n2. Оплата: «СБП» или «Картой».\n\n'
+                 'Оплатить можно в боте @neirosetkaa_bot: «Каталог» → сервис → тариф, по СБП или картой «Мир».\n\n'
+                 'Есть такие варианты:\n• A — 1 ₽\n\nЕсть такие варианты:\n• A — 1 ₽')
+        out = dedupe(reply)
+        self.assertEqual(out.count('Оплатить можно в боте'), 0)
+        self.assertEqual(out.count('Есть такие варианты'), 1)
+
+    def test_single_payment_line_stays(self):
+        from support_agent.playbook import dedupe
+        text = 'Есть такие варианты:\n• A — 1 ₽\n\nНапишите, какой тариф оформить.\nОплатить можно в боте @neirosetkaa_bot: «Каталог» → сервис → тариф, по СБП или картой «Мир».'
+        self.assertEqual(dedupe(text), text)
+
+    def test_relative_clause_is_not_an_outcome(self):
+        from support_agent.reply_assertion import asserts_outcome
+        self.assertFalse(asserts_outcome('После оплаты пришлите почту, на которую зарегистрирован аккаунт Perplexity.'))
+        self.assertTrue(asserts_outcome('Аккаунт уже зарегистрирован на вашу почту.'))
+
+    def test_mcp_setup_is_not_an_app_download(self):
+        from support_agent.turn_understanding import _install_reply
+        self.assertEqual(_install_reply('помогите поставить mcp сервер в клод десктоп'), '')
+        self.assertIn('claude.com/download', _install_reply('Как скачать клод на компьютер?'))
+
+    def test_hidden_data_reply_claims_nothing(self):
+        src = open('support_agent/media_batch.py', encoding='utf-8').read()
+        self.assertNotIn('данные получил', src)
+
+
+class OwnerAnswers21NovRound5(unittest.TestCase):
+    def test_paid_without_order_asks_order_number(self):
+        out = hard_routes.apply({'reply': 'Кнопка «Активировать подписку» в боте…', 'handoff': False, 'evidence': {}},
+                                {'burst': 'Здравствуйте, Александр! Я оплатила zoom', 'history': []})
+        self.assertEqual(out['reply'], hard_routes.ORDER_FIRST)
+
+    def test_paid_with_known_order_keeps_the_flow(self):
+        out = hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}},
+                                {'burst': 'я оплатила zoom', 'history': [{'role': 'client', 'text': 'Оплатил заказ #11314'}]})
+        self.assertNotIn('paid_without_order', out['evidence'].get('hard_routes') or [])
+
+    def test_question_before_paying_is_not_paid(self):
+        out = hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}}, {'burst': 'если оплачу, когда придёт?'})
+        self.assertNotIn('paid_without_order', out['evidence'].get('hard_routes') or [])
+
+    def test_simple_question_inside_owner_step_goes_to_the_model(self):
+        from support_agent.service import Service
+        self.assertTrue(Service._step_question({'burst': 'куда вставить текст?'}))
+        self.assertFalse(Service._step_question({'burst': '482913'}))
+        self.assertFalse(Service._step_question({'burst': 'как там?'}))
+        self.assertFalse(Service._step_question({'burst': 'вот'}, ['photo']))
+
+    def test_verification_answer_has_no_phone_paragraph(self):
+        from support_agent.faq import load_faq
+        answer = next(t['answer'] for t in load_faq()['topics'] if t['answer'].startswith('Для верификации личности в Claude'))
+        self.assertNotIn('Российские номера', answer)
