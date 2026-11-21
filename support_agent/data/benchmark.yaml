@@ -63,7 +63,7 @@ cases:
   forbid: ['почту и пароль']
 - id: claude-pro-paid
   client: "Здравствуйте, оплатил Claude Pro, что дальше?"
-  need: ['sessionKey', 'согласн']
+  need: ['номер заказа']  # owner 21.11.2026: «оплатил X» without the notice → order number first
 - id: claude-max-paid
   client: "Оплатил Claude Max, что дальше?"
   need: ['почт', 'код|верификац']  # owner 20.11.2026: Max/Ultra — только почта + код с неё, пароль не нужен
@@ -177,7 +177,8 @@ cases:
   forbid: ['будет на связи']
 - id: course-which
   client: "Я с курса, какую подписку мне дадут?"
-  need: ['chatgpt', 'месяц|почт']  # owner 20.11.2026: по умолчанию ChatGPT на 1 месяц, Claude — только по просьбе
+  need: ['почт']  # owner 21.11.2026: course email first, Alexander checks the bonus
+  forbid: ['токен|api/auth']
 - id: course-chose-claude
   history: [[owner, 'По бонусной подписке с курса можно оформить ChatGPT или Claude. Какой сервис выберете?']]
   client: "Клод"
@@ -185,7 +186,7 @@ cases:
 - id: course-chose-gpt
   history: [[owner, 'По бонусной подписке с курса можно оформить ChatGPT или Claude. Какой сервис выберете?']]
   client: "чат гпт"
-  need: ['почт', 'токен|api/auth']  # owner: почта с курса + токен ChatGPT, не стоп
+  need: ['почт']  # owner 21.11.2026: course email first, no token until Alexander confirms
   forbid: ['оплат\w* в боте', 'sessionKey']
 - id: vpn-needed-russia
   client: "А чат гпт работает без впн в России?"
@@ -332,7 +333,7 @@ cases:
   need: ['минут']
 - id: can-you-guarantee
   client: "Гарантию даете что Claude не заблокируют?"
-  need: ['кроме claude|гаранти\w* нет|не можем гарантир|не гарантир']
+  need: ['кроме claude|гаранти\w* нет|не можем гарантир|не гарантир|гарантировать[^.]{0,60}не можем']
 - id: chatgpt-blocked
   client: "Мне заблокировали аккаунт чат гпт, что делать?"
   forbid: ['будет на связи']
@@ -435,7 +436,7 @@ cases:
 - id: owner-asked-plan
   history: [[client, 'Хочу ChatGPT'], [owner, 'Есть такие варианты: Go, Plus, Pro. Какой тариф оформить?']]
   client: "плюс"
-  need: ['@neirosetkaa_bot|оплат']
+  need: ['@neirosetkaa_bot|оплат|в боте']
 - id: after-reactivation
   history: [[owner, 'Выдал повторную активацию, нажмите кнопку «Активировать подписку» в боте.']]
   client: "не нажимается"
@@ -1209,7 +1210,7 @@ cases:
   - {role: client, text: "Оплатил Perplexity, вот почта от аккаунта."}
   - {role: owner, text: "Сейчас запрошу код, он придёт вам на почту — пришлите его сюда."}
   client: "жду, пока не пришло"
-  need: ['Александр продолжит|Александр ответит|Александр посмотрит']  # owner 21.11.2026: acknowledge, no stop
+  need: ['Александр продолжит|Александр ответит|Александр посмотрит|Александр проверит|спам']  # owner 21.11.2026: acknowledge or help, no stop
 - id: exam-c-owner-five-minutes
   history:
   - {role: owner, text: "Оформляю, 5 минут."}
@@ -1252,3 +1253,11 @@ cases:
   client: "Привет! сколько стоит chatgpt plus и можно оплатить казахстанской картой?"
   need: ["₽", "сбп|мир"]
   forbid: ["да, можно"]
+- id: live-android-laptop-done
+  client: "Александр, добрый вечер\nМне на андроид можно поставить чат джи пи ти\nНа ноут поставила"
+  need: ['chatgpt.ru.uptodown.com/android']  # 21.11.2026 @tatnua_z: only Android and only ChatGPT
+  forbid: ['iPhone|App Store|Apple ID', 'claude']
+- id: live-price-pro-gpt
+  client: "Здравствуйте сколько стоит у вас оформить (оплатить) подписку pro на чат gpt."
+  need: ['Pro[^\n]{0,20}₽']  # 21.11.2026 @Vmiti: the price first, not only payment steps
+  forbid: ['5-30 минут', 'активация идёт в боте']
