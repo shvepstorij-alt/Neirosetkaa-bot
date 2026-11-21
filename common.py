@@ -17062,6 +17062,27 @@ async def setup_webhook_server():
         markup_for_category=_appstore_markup_web,usd_rate=_nsg_usd_rate,
         calc_price=_support_nsg.calc_price_rub,workflow_snapshot=_support_workflows,
         bot_identity=_support_bot_identity,generation=_support_generation))
+    # Повторная активация от помощника (решение владельца 21.11.2026): тот же
+    # gpt_resend_activation, что у кнопки в админке, раз в 24 ч на заказ.
+    import support_shop_actions as _ssa
+    def _support_plan_info(pack):
+        _pp = str(pack or "").split(":")
+        _sk = _pp[1] if len(_pp) > 1 else ""
+        _ix = int(_pp[2]) if len(_pp) > 2 and _pp[2].isdigit() else 0
+        _sv, _pl = _plan_by_order(_sk, _ix, _pack_plan_name(pack))
+        _pn = _pl.get("name") or _pack_plan_name(pack) or ("Plus" if _sk == "chatgpt" else "")
+        return {"label": f"{_sv.get('name', _sk)} {_pn}".strip(),
+                "auto": (plan_name_to_key(_pn) in GPT_AUTO_PLANS) if _sk == "chatgpt" else None}
+    async def _support_resend_fetch(uid, ref):
+        return await _ssa.fetch_facts(await get_pool(), uid, ref, plan_info=_support_plan_info)
+    async def _support_resend_notify(text):
+        try:
+            await bot.send_message(ADMIN_ID, text, parse_mode="HTML")
+        except Exception:
+            await bot.send_message(ADMIN_ID, re.sub(r"<[^>]*>", "", text))
+    app.router.add_post('/api/support/resend_activation', _ssa.make_support_resend_handler(
+        fetch=_support_resend_fetch, claim=activation_cooldown,
+        resend=gpt_resend_activation, notify=_support_resend_notify))
     app.router.add_post("/api/cabinet", api_cabinet_handler)
     app.router.add_post("/api/order/status", api_order_status_handler)
     app.router.add_post("/api/gen/image", api_gen_image_handler)
