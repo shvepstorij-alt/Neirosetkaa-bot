@@ -59,8 +59,8 @@ class Business(unittest.TestCase):
 class OrderNumber(unittest.TestCase):
     def test_known_order(self):
         out = run('Оплатил заказ #12345, подписка не пришла', ASK_ORDER)
-        self.assertTrue(out['reply'].startswith('Заказ #12345 вижу.'), out['reply'])
-        self.assertNotIn('номер заказа', out['reply'].lower())
+        self.assertTrue(out['reply'].startswith('Номер заказа #12345 получил.'), out['reply'])
+        self.assertNotRegex(out['reply'].lower(), r'(подскажите|пришлите)[^.]{0,40}номер заказа')  # no re-ask; «Номер заказа #N получил» is fine
         self.assertNotIn('номера заказа', out['reply'].lower())
         self.assertIn('Пришлите, пожалуйста, скриншот', out['reply'])
         self.assertIn('Активировать подписку', out['reply'])
@@ -68,18 +68,18 @@ class OrderNumber(unittest.TestCase):
     def test_order_and_freekassa(self):
         burst = 'Заказ #9974 freekassa 346894753 / оплатил, есть ли смысл активировать'
         out = run(burst, 'Напишите, пожалуйста, номер заказа и уточните, какая подписка.')
-        self.assertIn('Заказ #9974 вижу.', out['reply'])
+        self.assertIn('Номер заказа #9974 получил.', out['reply'])
         self.assertNotIn('номер заказа', out['reply'])
         self.assertIn('Уточните, пожалуйста, какая подписка.', out['reply'])
 
     def test_freekassa_only(self):
         out = run('freekassa 346894753 не пришло', 'Пришлите номер заказа и скриншот экрана, Александр проверит.')
-        self.assertEqual(out['reply'], 'Номер FreeKassa 346894753 вижу. Пришлите скриншот экрана, Александр проверит.')
+        self.assertEqual(out['reply'], 'Номер FreeKassa 346894753 получил. Пришлите скриншот экрана, Александр проверит.')
 
     def test_from_history_tail(self):
         history = [{'role': 'client', 'text': 'номер заказа 55123', 'at': 1}]
         out = run('не активируется', 'Здравствуйте! Подскажите, пожалуйста, номер заказа.', history=history)
-        self.assertEqual(out['reply'], 'Здравствуйте! Заказ #55123 вижу.')
+        self.assertEqual(out['reply'], 'Здравствуйте! Номер заказа #55123 получил.')
 
     def test_no_number_keeps_request(self):
         out = run('Оплатил, подписка не пришла', ASK_ORDER)
@@ -173,3 +173,106 @@ class Safety(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OwnerAnswers21Nov(unittest.TestCase):
+    """Owner answers 21.11.2026: payment failure text, «оплатил, не работает» draft-only, Claude paid → consent."""
+
+    def test_payment_failure_gets_owner_text(self):
+        out = hard_routes.apply({'reply': 'Оплата в @neirosetkaa_bot.', 'handoff': False, 'evidence': {}},
+                                {'burst': 'по этим кнопкам никак не могу оплатить'})
+        self.assertIn('/start', out['reply'])
+        self.assertIn('ошибку', out['reply'])
+
+    def test_paid_issue_model_text_is_draft_only(self):
+        out = hard_routes.apply({'reply': 'У Kimi Pro вдвое больше кредитов.', 'handoff': False, 'evidence': {}},
+                                {'burst': 'оплатил кими, подписка не появилась'})
+        self.assertTrue(out['evidence']['situation_hold'])
+        owner = hard_routes.apply({'reply': 'Пришлите номер заказа.', 'handoff': False, 'evidence': {'owner_text_used': True}},
+                                  {'burst': 'оплатил кими, подписка не появилась'})
+        self.assertFalse(owner['evidence'].get('situation_hold'))
+
+    def test_claude_paid_notice_asks_consent_first(self):
+        from support_agent.paid_notice import parse, compose
+        kind, text = compose(parse('Оплатил заказ #555\nСервис: Claude\nТариф: Max'),
+                             [{'service_id': 'claude', 'service': 'Claude', 'plan': 'Max', 'price': 9990}])
+        self.assertIn('согласны с этими рисками', text)
+        self.assertNotIn('пароль', text)
+        self.assertNotIn('водительск', text)
+
+    def test_plan_after_dash(self):
+        from support_agent.paid_notice import parse
+        self.assertEqual(parse('Оплатил заказ #1\nСервис: ✨ ChatGPT - Pro 5×')['plan'], 'Pro 5×')
+
+
+class OwnerAnswers21NovB(unittest.TestCase):
+    """Owner 21.11.2026: conflict → calm reply + urgent; «вы бот?» → honest and keep helping; no time promises."""
+
+    def test_conflict(self):
+        out = hard_routes.apply({'reply': 'Пришлите номер заказа.', 'handoff': False, 'evidence': {}},
+                                {'burst': 'вы мошенники, открою спор в банке'})
+        self.assertEqual(out['reply'], hard_routes.CONFLICT_REPLY)
+        self.assertTrue(out['evidence']['urgent'])
+
+    def test_bot_question_is_honest(self):
+        out = hard_routes.apply({'reply': 'Да, это Александр 🙂', 'handoff': False, 'evidence': {}}, {'burst': 'вы бот?'})
+        self.assertIn('ИИ-помощник Александра', out['reply'])
+        self.assertNotIn('это Александр', out['reply'])
+
+    def test_human_request_keeps_the_answer(self):
+        out = hard_routes.apply({'reply': 'ChatGPT Plus — 1990 ₽. Оплатить можно в боте.', 'handoff': False, 'evidence': {}},
+                                {'burst': 'позовите александра, сколько стоит plus?'})
+        self.assertIn('1990', out['reply'])
+        self.assertIn('при первой возможности', out['reply'])
+
+    def test_no_time_promise_in_handoff(self):
+        from support_agent.handoff import handoff_text
+        self.assertNotRegex(handoff_text(), r'получаса|в течение часа')
+
+
+class OwnerAnswers21NovC(unittest.TestCase):
+    """Owner 21.11.2026 (round 3): conflict auto-sent, calm refund asks reason+order, Claude Max consent → email."""
+
+    def test_conflict_reply_is_auto(self):
+        from support_agent.auto_policy import block_reason
+        out = hard_routes.apply({'reply': 'x', 'handoff': True, 'evidence': {'conflict_hold': True}},
+                                {'burst': 'вы мошенники'})
+        self.assertFalse(out['evidence']['conflict_hold'])
+        self.assertTrue(out['evidence']['urgent'])
+        self.assertNotIn('конфликт', str(block_reason(out) or ''))
+
+    def test_calm_refund_asks_reason_and_order(self):
+        out = hard_routes.apply({'reply': 'Вернём деньги!', 'handoff': False, 'evidence': {}},
+                                {'burst': 'хочу вернуть деньги'})
+        self.assertEqual(out['reply'], hard_routes.REFUND_ASK)
+        self.assertNotIn('conflict', out['evidence'].get('hard_routes'))
+
+    def test_refund_with_reason_and_order_goes_to_owner(self):
+        out = hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}},
+                                {'burst': 'хочу вернуть деньги за заказ 10502, не подошёл тариф для работы'})
+        self.assertEqual(out['reply'], hard_routes.REFUND_TAKEN)
+
+    def test_claude_max_consent_asks_email(self):
+        ctx = {'burst': 'да, согласен', 'history': [
+            {'role': 'assistant', 'text': 'Заказ #1 вижу: Claude, тариф Max. ... Напишите, пожалуйста, что согласны с этими рисками'}]}
+        out = hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}}, ctx)
+        self.assertEqual(out['reply'], hard_routes.CLAUDE_EMAIL_ASK)
+
+    def test_repeat_activation_claim_is_the_window(self):
+        import support_shop_actions
+        self.assertLessEqual(support_shop_actions.COOLDOWN_SECONDS, 2 * 3600)
+
+
+class OwnerAnswers21NovD(unittest.TestCase):
+    def test_wrong_plan(self):
+        out = hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}}, {'burst': 'я оплатил не тот тариф'})
+        self.assertEqual(out['reply'], hard_routes.WRONG_PLAN_ASK)
+        out = hard_routes.apply({'reply': 'x', 'handoff': False, 'evidence': {}},
+                                {'burst': 'оплатил не тот тариф, заказ 10502, нужно поменять на Pro'})
+        self.assertEqual(out['reply'], hard_routes.WRONG_PLAN_TAKEN)
+
+    def test_chatgpt_already_subscribed_faq(self):
+        from support_agent.faq import load_faq
+        answer = next(t['answer'] for t in load_faq()['topics'] if t['id'] == 'chatgpt_already_subscribed')
+        self.assertIn('дождаться окончания', answer)
+        self.assertIn('другой аккаунт', answer)

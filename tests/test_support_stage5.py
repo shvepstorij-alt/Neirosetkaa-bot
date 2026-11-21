@@ -113,15 +113,16 @@ class Stage5Tests(unittest.TestCase):
         self.model.conflict = 'high'
         self.model.reason = 'Клиент требует возврат и грозит жалобой.'
         first = self.ask('верните деньги')
-        self.assertTrue(first['handoff'])
-        self.assertTrue(first['evidence']['conflict_hold'])
-        self.assertIsNotNone(block_reason(first))
+        # Owner 21.11.2026: a calm reply goes out automatically and the owner gets one urgent alert.
+        self.assertFalse(first['handoff'])
+        self.assertTrue(first['evidence']['urgent'])
+        self.assertIn('Понимаю вас', first['reply'])
         notes = [text for method, text in self.tg.sent if 'Конфликт' in text]
         self.assertEqual(len(notes), 1)
         self.assertIn('жалоб', notes[0])
         self.assertIn('верните деньги', notes[0])
         second = self.ask('и ещё раз верните')
-        self.assertTrue(second['handoff'])
+        self.assertIn('Понимаю вас', second['reply'])
         notes = [text for method, text in self.tg.sent if 'Конфликт' in text]
         self.assertEqual(len(notes), 1)
 
@@ -136,8 +137,8 @@ class Stage5Tests(unittest.TestCase):
         self.mid += 1
         self.store.ingest('biz', 50, self.mid, 'assistant', 'Уточните номер.', {}, time.time())
         again = self.ask('где заказ')
-        self.assertTrue(again['handoff'])
-        self.assertTrue(again['evidence']['conflict_hold'])
+        self.assertIn('Понимаю вас', again['reply'])  # owner 21.11.2026: calm reply + urgent alert
+        self.assertTrue(again['evidence']['urgent'])
         self.assertTrue(any('Конфликт' in text for method, text in self.tg.sent))
 
     def test_owner_words_pause_then_lead_the_next_reply(self):

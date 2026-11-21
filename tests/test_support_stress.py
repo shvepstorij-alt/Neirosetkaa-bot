@@ -18,7 +18,7 @@ class StressTests(unittest.TestCase):
         self.assertEqual(report['passed'], report['checked'])
 
     def test_owner_facts_match_the_given_words_only(self):
-        self.assertEqual(usable_answer('guarantee'), 'Гарантия есть на все сервисы, кроме Claude.')
+        self.assertIn('на весь срок подписки', usable_answer('guarantee'))  # owner 21.11.2026
         self.assertIn('заблокировать', usable_answer('account_ban'))
         self.assertIn('гарантии на Claude нет', usable_answer('account_ban'))
         self.assertEqual(usable_answer('delivery_time'),

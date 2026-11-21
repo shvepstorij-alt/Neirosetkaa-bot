@@ -199,7 +199,7 @@ class Flow(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, {'ok': True, 'error': None, 'msg': ssa.OK_MSG})
         self.assertEqual(calls['fetch'], (5, '42'))
-        self.assertEqual(calls['claim'], [('support_resend:shop_5_1700000000abc', 86400)])
+        self.assertEqual(calls['claim'], [('support_resend:shop_5_1700000000abc', 7200)])
         self.assertEqual(calls['resend'], ['shop_5_1700000000abc'])
         self.assertIn('Помощник выдал повторную активацию · заказ #42 · ChatGPT Plus · ok', calls['notify'][0])
         self.assertNotIn('AAAA1111BBBB', json.dumps(body))

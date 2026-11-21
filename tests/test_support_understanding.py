@@ -154,7 +154,7 @@ class ReplayTests(unittest.TestCase):
         answer = asyncio.run(self.service.generate(job))
         self.assertEqual(len(self.model.payloads), before + 1)
         self.assertEqual(self.model.payloads[-1]['burst'], text)
-        self.assertLessEqual(len(self.model.payloads[-1]['history']), 10)
+        self.assertLessEqual(len(self.model.payloads[-1]['history']), 15)  # owner 21.11.2026: dialog-first window
         self.assertTrue(answer and answer.get('reply'), text)
         for banned in CANNED:
             self.assertNotIn(banned, answer['reply'])

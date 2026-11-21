@@ -53,14 +53,14 @@ class HandoffTests(unittest.TestCase):
         night = dt.datetime(2026, 11, 7, 23, 30, tzinfo=zone)
         edge = dt.datetime(2026, 11, 7, 22, 0, tzinfo=zone)
         self.assertFalse(outside_working_hours(day))
-        self.assertTrue(outside_working_hours(night))
-        self.assertTrue(outside_working_hours(edge))
-        self.assertEqual(handoff_text(day).split('.')[0], 'Александр будет на связи в течение получаса-часа')
+        self.assertFalse(outside_working_hours(night))  # owner 21.11.2026: almost 24/7
+        self.assertFalse(outside_working_hours(edge))  # owner 21.11.2026: almost 24/7
+        self.assertEqual(handoff_text(day).split('.')[0], 'Александр ответит здесь при первой возможности')
         self.assertIn('другими вопросами', handoff_text(day))
         self.assertNotIn('задержк', handoff_text(day))
-        self.assertIn('задержк', handoff_text(night))
+        self.assertNotIn('задержк', handoff_text(night))
         asked = scenario('позовите человека', now=day)
-        self.assertIn('получаса-часа', asked['reply'])
+        self.assertIn('при первой возможности', asked['reply'])
         self.assertIn('другими вопросами', asked['reply'])
 
 

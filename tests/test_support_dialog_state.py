@@ -211,7 +211,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(kind_for(evidence, 'не подтверждено', 'бонус', usable_reply=False), 'information')
         replaced, dropped = prepare_outgoing('Там есть GPT-9.1 и Opus 8.2.', {})
         self.assertTrue(dropped)
-        self.assertIn('Александр будет на связи', replaced)
+        self.assertIn('Александр ответит здесь при первой возможности', replaced)
 
 
 if __name__ == '__main__':

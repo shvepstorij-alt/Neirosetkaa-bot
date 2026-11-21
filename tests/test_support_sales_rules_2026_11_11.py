@@ -182,7 +182,8 @@ class DiagnosticsRulesTests(unittest.TestCase):
                       'claude_review_pending'):
             answer = _turn('вопрос', {'owner_topic': topic, 'reply': usable_answer(topic)})
             self.assertFalse(answer['handoff'], (topic, answer['evidence'].get('diagnostic')))
-        self.assertIn('выключите VPN', usable_answer('payment_error'))
+        self.assertIn('СБП', usable_answer('payment_error'))  # owner 21.11.2026: /start, new order, better via SBP
+        self.assertIn('/start', usable_answer('payment_error'))
         self.assertNotIn('Александр', usable_answer('payment_error'))
         self.assertIn('Спам', usable_answer('login_problem'))
         self.assertIn('CHATIK10', usable_answer('subscription_ended_early'))
@@ -650,7 +651,7 @@ class PaidNoticeTests(unittest.TestCase):
     def test_next_step_per_kind(self):
         from support_agent.paid_notice import compose
         cases = {('Kimi', 'Plus'): 'ссылку', ('ChatGPT', 'Plus'): 'Активировать подписку',
-                 ('Claude', 'Pro'): 'sessionKey', ('Zoom', 'Pro'): 'почту и пароль'}
+                 ('Claude', 'Pro'): 'согласны с этими рисками', ('Zoom', 'Pro'): 'почту и пароль'}
         for (service, plan), expected in cases.items():
             _kind, text = compose({'order': '10502', 'service': service, 'plan': plan, 'fk': ''}, self.ROWS)
             self.assertIn(expected, text, service)
@@ -835,7 +836,7 @@ class DialogCheckTests(unittest.TestCase):
 
         class AI:
             model = 'test'
-            async def grade_reply(self, case, reply, stopped):
+            async def grade_reply(self, case, reply, stopped, tariffs=()):
                 return {'verdict': 'needless_stop' if stopped else 'good', 'category': 'needless_stop' if stopped else 'none',
                         'problem': 'x' if stopped else '', 'fix': ''}
 
@@ -1221,13 +1222,14 @@ class ClaudePlans19NovTests(unittest.TestCase):
     def test_pro_uses_session_key_max_ultra_use_login(self):
         from support_agent.paid_notice import compose, parse
         pro = compose(parse('Оплатил заказ #1\nСервис: Claude\nТариф: Pro\nID: 5'), [])[1]
-        self.assertIn('sessionKey', pro)
+        # Owner 21.11.2026: a paid Claude order starts with the risks and the client's consent, sessionKey comes after.
+        self.assertIn('согласны с этими рисками', pro)
         self.assertNotIn('пароль', pro)
         for plan in ('Max', 'Ultra'):
             text = compose(parse('Оплатил заказ #1\nСервис: Claude\nТариф: %s\nID: 5' % plan), [])[1]
-            self.assertIn('почт', text)  # owner 20.11.2026: email of the Claude account, a code from it, verification
+            # Owner 21.11.2026: risks and consent first; the Claude account email is asked after consent.
+            self.assertIn('согласны с этими рисками', text)
             self.assertNotRegex(text, r'(?i)пришлите[^.]{0,40}пароль|почту\s+и\s+пароль')
-            self.assertIn('иностранной карты', text)
             self.assertNotIn('sessionKey', text)
 
 

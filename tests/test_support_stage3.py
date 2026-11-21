@@ -17,7 +17,7 @@ class WeekendTests(unittest.TestCase):
         text = handoff_text(saturday)
         self.assertNotIn('задержк', text)
         self.assertNotIn('выходн', text)
-        self.assertIn('получаса-часа', text)
+        self.assertIn('при первой возможности', text)
 
 
 class CoinTests(unittest.TestCase):
